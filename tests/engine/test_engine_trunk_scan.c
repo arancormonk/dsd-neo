@@ -23833,6 +23833,56 @@ test_scan_quiet_trunk_sync_free_publication(void) {
     return rc;
 }
 
+/* issue #834 B8: a check suspended while its landing is still in force (a revision moved: a numbered receive request,
+   a note of change) owes the next frame boundary one republication: taken once, never again for the same suspension,
+   and owed again after a new one. A suspension because the visit itself changed owes nothing, a publication clears
+   what is owed, and with the setting off nothing is owed. */
+static int
+test_scan_quiet_suspension_owes_one_republication(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const int T = SCAN_QUIET_OWNER_TRUNK;
+    quiet_publish(&opts, &state);
+    int rc = qt_expect("measuring", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    rc |= qt_expect("nothing owed while measuring", dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
+    g_tap.receive_seq++; /* a receive request the stream numbered */
+    rc |=
+        qt_expect("the revision suspends", dsd_engine_scan_quiet_frame_service(&opts, &state, T) == DSD_SCAN_QUIET_NONE
+                                               && scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED);
+    rc |= qt_expect("another owner is owed nothing",
+                    dsd_engine_scan_quiet_take_republish(&opts, &state, SCAN_QUIET_OWNER_Y) == 0);
+    opts.scan_skip_silent = 0;
+    rc |= qt_expect("setting off: nothing owed", dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
+    opts.scan_skip_silent = 1;
+    rc |= qt_expect("owed once", dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 1);
+    rc |= qt_expect("not twice for one suspension", dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("republished: measured again",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+    dsd_engine_scan_quiet_note_change(&state);
+    (void)dsd_engine_scan_quiet_frame_service(&opts, &state, T);
+    rc |= qt_expect("a new suspension (a note of change) owes again",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED
+                        && dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 1);
+    g_tap.receive_seq++;
+    quiet_publish(&opts, &state); /* restarts, then the revision moves under it */
+    (void)dsd_engine_scan_quiet_frame_service(&opts, &state, T);
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("a publication clears what is owed", dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
+    dsd_engine_scan_landing_forget(&state);
+    (void)dsd_engine_scan_quiet_frame_service(&opts, &state, T);
+    rc |= qt_expect("suspended because the landing went: nothing owed",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED
+                        && dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
 /* With the setting off a frame boundary's service does nothing: no read, no request, the check left as it is. */
 static int
 test_scan_quiet_frame_boundary_setting_off(void) {
@@ -26212,6 +26262,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_sync_free_visit_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_setting_off);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_sync_free_publication);
+    rc |= run_with_default_tune_hook(test_scan_quiet_suspension_owes_one_republication);
 #else
     rc |= test_scan_quiet_radio_off_is_a_no_op();
 #endif

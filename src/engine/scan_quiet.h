@@ -241,6 +241,12 @@ int dsd_engine_scan_quiet_frame_service(const dsd_opts* opts, dsd_state* state, 
  * frame-boundary service answers DSD_SCAN_QUIET_HAND_BACK, so the loop ends and noCarrier() decides as after the hunt's
  * hand-back. */
 int dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state);
+/** Whether @p owner_kind's check owes a frame boundary its republication (issue #834 B8): it was suspended (a revision
+ * changed, such as a receive request the stream numbered, or a note of change) while its visit's landing was still in
+ * force. Under syncs that keep the synced-frames loop running no outer pass or noCarrier() comes to publish it again,
+ * so the frame boundary does, once: 1 at most once per suspension, which this clears; a publication or a new start
+ * clears it too. 0 with the setting off (one load), for another owner, or for a check not suspended. */
+int dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state, int owner_kind);
 /** Something a check depends on changed (dsd_engine_scan_quiet_note_change(), now): a check under way is cancelled
  * (its request ticket-matched) and SUSPENDED until republished. A DONE check stays DONE for its visit. */
 void dsd_engine_scan_quiet_invalidate(dsd_state* state);

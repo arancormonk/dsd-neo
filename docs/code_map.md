@@ -557,7 +557,14 @@ Generated (do not edit/commit):
       failure for a frame boundary), and a capture still there past it is requested (by a legacy point at once, by a
       frame boundary past its settle); it ends DONE only once no qualifying capture is left. Main's schedule otherwise
       stays: the 300-symbol hook, the 50 ms recheck, one phase step per call, the 400 ms request deadline and READY's
-      250 ms age.
+      250 ms age. A check suspended while its visit's landing is still in force (a revision moved, as the hunt's own
+      symbol-profile requests move `rtl_stream_receive_request_seq()` even when they leave the receive chain as it
+      is, or a note of change; defect B8) owes one republication (`scan_quiet_check::republish_owed`, set by the
+      reconcile or `dsd_engine_scan_quiet_invalidate()`, cleared by any publication or start): the next frame boundary
+      takes it once (`dsd_engine_scan_quiet_take_republish()`), since under syncs that keep the loop running no outer
+      pass or `noCarrier()` comes to publish it. The trunk scan's then owes the per-frame tick a pass
+      (`live_scanner_trunk_quiet_frame_service()`), -Y publishes the row (`live_scanner_y_quiet_frame_yield()` ->
+      `dsd_engine_scan_quiet_publish_row()`). Once per suspension, never per frame; nothing with the setting off.
     - REQUESTED: 400 ms (realtime), then cancelled and DONE; a lost, capture-changed or dropped request waits for the
       capture again, at most 3 times a visit; clipped, non-finite, failed and busy results are DONE. An answer that
       completed at or past the deadline (`dsd_signal_quiet_result::completed_realtime_ns`, which the tap stamps when the
@@ -722,9 +729,11 @@ Generated (do not edit/commit):
       `test_scan_quiet_y_noise_frames_still_step`, `test_scan_quiet_pending_verdict_holds_every_skip_point`,
       `test_scan_quiet_evidence_*`, and the frame-boundary service on the check's clock seam:
       `test_scan_quiet_frame_boundary_*`, `test_scan_quiet_frame_boundaries_run_every_step`,
-      `test_scan_quiet_sync_free_visit_timing`, `test_scan_quiet_trunk_sync_free_publication`), `ENGINE_NO_CARRIER_RESET` (`test_live_loop_counts_only_checked_frames`,
+      `test_scan_quiet_sync_free_visit_timing`, `test_scan_quiet_trunk_sync_free_publication`,
+      `test_scan_quiet_suspension_owes_one_republication`), `ENGINE_NO_CARRIER_RESET` (`test_live_loop_counts_only_checked_frames`,
       `test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict`,
-      `test_y_quiet_noise_syncs_still_step`, `test_trunk_quiet_noise_syncs_still_skip`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_SIGNAL_SEARCH`,
+      `test_y_quiet_noise_syncs_still_step`, `test_trunk_quiet_noise_syncs_still_skip`,
+      `test_trunk_quiet_suspended_target_republished`, `test_y_quiet_suspended_row_republished`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_SIGNAL_SEARCH`,
       `APP_COMMAND_QUEUE`, `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`, `FRAME_SYNC_HISTORY_CARRY`; the content-evidence sites in
       `P25_P1_SYNC_DISPATCH`, `P25_P2_RELIABILITY`, `DMR_CONFIDENCE_GATE`, `DMR_RAS_DETECT`, `NXDN_CONFIRM`,
       `DPMR_CONFIRM`, `M17_CONFIRM`, `DSTAR_CONFIRM` and `YSF_DCH_DECODE`.

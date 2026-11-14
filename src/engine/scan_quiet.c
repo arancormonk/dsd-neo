@@ -245,6 +245,9 @@ typedef struct {
     int settle_set;
     uint64_t settle_from_ms;
     int capture_seen;
+    /* Suspended while the visit's landing was still in force (issue #834 B8): the next frame boundary publishes it
+       again, once (dsd_engine_scan_quiet_take_republish()); a publication or a new start clears it. */
+    int republish_owed;
     int retries;
     uint64_t request_seq;
     uint32_t ticket;
@@ -381,8 +384,10 @@ quiet_reconcile(const dsd_opts* opts, const dsd_state* state, const dsd_engine_s
     }
     scan_quiet_revisions now_rev;
     scan_quiet_revisions_read(opts, state, &now_rev);
-    if (!quiet_visit_current(owner, c, 1) || !quiet_revisions_equal(&now_rev, &c->revisions)) {
+    const int current = quiet_visit_current(owner, c, 1);
+    if (!current || !quiet_revisions_equal(&now_rev, &c->revisions)) {
         quiet_end(c, SCAN_QUIET_SUSPENDED);
+        c->republish_owed = current;
         return;
     }
     if (quiet_visit_heard_activity(owner, c)) {
@@ -669,6 +674,7 @@ quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_
     c->settle_set = 0;
     c->settle_from_ms = 0U;
     c->capture_seen = 0;
+    c->republish_owed = 0;
     c->retries = 0;
 }
 
@@ -750,6 +756,7 @@ scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner
         return;
     }
     const uint64_t now_ms = quiet_realtime_ms();
+    c->republish_owed = 0; /* this is its publication */
     if (quiet_publication_ends_visit(opts, state, owner, c, e, now_ms)) {
         return;
     }
@@ -817,6 +824,19 @@ dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
 }
 
 int
+dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state, int owner_kind) {
+    if (!opts || !opts->scan_skip_silent) {
+        return 0;
+    }
+    scan_quiet_check* c = quiet_check_get(dsd_engine_scan_owner_get(state));
+    if (!c || !c->republish_owed || c->phase != SCAN_QUIET_SUSPENDED || c->key.owner != owner_kind) {
+        return 0;
+    }
+    c->republish_owed = 0;
+    return 1;
+}
+
+int
 scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind, const scan_quiet_eligibility* current) {
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
     scan_quiet_check* c = quiet_check_get(owner);
@@ -856,6 +876,7 @@ dsd_engine_scan_quiet_invalidate(dsd_state* state) {
     scan_quiet_check* c = quiet_check_get(owner);
     if (c && quiet_check_active(c)) {
         quiet_end(c, SCAN_QUIET_SUSPENDED);
+        c->republish_owed = quiet_visit_current(owner, c, 0);
     }
 }
 
@@ -941,6 +962,14 @@ int
 dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    return 0;
+}
+
+int
+dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state, int owner_kind) {
+    (void)opts;
+    (void)state;
+    (void)owner_kind;
     return 0;
 }
 

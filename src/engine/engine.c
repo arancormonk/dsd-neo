@@ -4335,6 +4335,31 @@ live_scanner_quiet_pending_reset(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* The trunk scan's quiet check at a frame boundary (issue #834 D8): its service, and once per suspension a
+   republication its landing still in force is owed (B8): the per-frame tick after this one publishes the target on air
+   as the outer pass's would. */
+static void
+live_scanner_trunk_quiet_frame_service(const dsd_opts* opts, dsd_state* state) {
+    (void)dsd_engine_scan_quiet_frame_service(opts, state, SCAN_QUIET_OWNER_TRUNK);
+    if (dsd_engine_scan_quiet_take_republish(opts, state, SCAN_QUIET_OWNER_TRUNK)) {
+        dsd_engine_trunk_scan_quiet_service_pass(state);
+    }
+}
+
+/* The -Y frame-boundary yield (issue #834): the row steps on its quiet result; else a check suspended while its row's
+   landing is still in force is published again, once per suspension (B8), since no noCarrier() comes to do it while
+   the syncs keep coming. */
+static int
+live_scanner_y_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
+    if (dsd_engine_scan_quiet_frame_yield(opts, state)) {
+        return 1;
+    }
+    if (dsd_engine_scan_quiet_take_republish(opts, state, SCAN_QUIET_OWNER_Y)) {
+        dsd_engine_scan_quiet_publish_row(opts, state);
+    }
+    return 0;
+}
+
 /* The reasons a frame boundary hands the receiver back to the outer loop, after the trunk scan's per-frame tick: a
    Signal search's turn, the receive policy, the voice gate, the per-visit cap and a -Y row's quiet result. Returns 1
    when the synced-frames loop ends there. */
@@ -4365,7 +4390,7 @@ live_scanner_frame_boundary_yields(const dsd_opts* opts, dsd_state* state, int f
     /* A -Y row's quiet result (issue #834): a rejected sync no longer ends the check, so under syncs that keep coming
        (NXDN48 or dPMR noise) the -Y check is serviced at every frame boundary and the row steps here when it hands
        back, as after the hunt's hand-back: noCarrier() decides. */
-    return dsd_engine_scan_quiet_frame_yield(opts, state);
+    return live_scanner_y_quiet_frame_yield(opts, state);
 }
 
 static void
@@ -4404,7 +4429,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
            protocol's gate rejects the hunts stay too short to reach their 300-symbol service. The per-frame tick then
            decides as at any tick. One load with skip-silent off. */
         if (opts->scan_skip_silent) {
-            (void)dsd_engine_scan_quiet_frame_service(opts, state, SCAN_QUIET_OWNER_TRUNK);
+            live_scanner_trunk_quiet_frame_service(opts, state);
         }
         dsd_trunk_scan_hook_tick(opts, state);
         if (live_scanner_frame_boundary_yields(opts, state, frame_dispatchable)) {

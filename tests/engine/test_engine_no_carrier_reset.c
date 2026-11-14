@@ -13316,6 +13316,62 @@ test_trunk_quiet_noise_syncs_still_skip(int on) {
     return rc;
 }
 
+/* Issue #834 B8: a check suspended while its landing is still in force (here a note of change; on air, a receive request
+   the stream numbered) is published again at the next frame boundary, once, though the syncs keep coming and no outer
+   pass or noCarrier() runs: measured again, then skipped at the boundary after, for the trunk scan and for -Y. */
+static int
+test_trunk_quiet_suspended_target_republished(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    /* A frequency unique to this case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 1321012500L;
+    int rc = trunk_quiet_one_pass(opts, state, path, sizeof path, base_hz, 1);
+    const int tunes = g_rtl_tune_calls;
+    dsd_engine_scan_quiet_note_change(state);
+    run_synced_frames(opts, state, 0, -1);
+    rc |= expect_true("trunk: suspended, then published again at the frame boundary and measured",
+                      g_yq.requests == 2 && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED
+                          && g_rtl_tune_calls == tunes);
+    run_synced_frames(opts, state, 0, -1);
+    rc |= expect_true("trunk: skipped at the boundary after", g_rtl_tune_calls == tunes + 1 && g_yq.notices == 1);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    (void)remove(path);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: trunk scan suspended target republished\n");
+    }
+    return rc;
+}
+
+static int
+test_y_quiet_suspended_row_republished(int typed) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 1331012500L + (typed ? 10000000L : 0L);
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz) == 0);
+    rc |= expect_true("measured as it lands", g_yq.requests == 1);
+    dsd_engine_scan_quiet_note_change(state);
+    run_synced_frames(opts, state, 5, -1);
+    rc |= expect_true("-Y: published again at the first boundary, measured, and the loop yields at the next",
+                      g_yq.requests == 2 && g_frame_count == 2 && g_rtl_tune_calls == 0);
+    noCarrier(opts, state);
+    rc |= expect_true("-Y: the row steps on its quiet result", g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y suspended row republished, typed %d\n", typed);
+    }
+    return rc;
+}
+
 static int
 test_scan_quiet_decisions(void) {
     int rc = 0;
@@ -13331,6 +13387,9 @@ test_scan_quiet_decisions(void) {
     }
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);
     rc |= test_trunk_quiet_noise_syncs_still_skip(0);
+    rc |= test_trunk_quiet_suspended_target_republished();
+    rc |= test_y_quiet_suspended_row_republished(0);
+    rc |= test_y_quiet_suspended_row_republished(1);
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_typed_row_judges_the_monitor(12500);
     rc |= test_y_quiet_typed_row_judges_the_monitor(0);
