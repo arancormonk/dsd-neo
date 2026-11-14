@@ -3899,10 +3899,10 @@ suite runs under this compiler.
     bandwidth a system runs at (its own, else 72 for `-fT`, else the app default; normalized by
     `session_args_dsp_bandwidth_khz()`: as the engine reads a USB or rtl_tcp spec, `dsd_analog_rtl_dsp_bw_or_default()`,
     and for an Airspy the nearest selectable bandwidth, 48 for none or above 72, issue #806 D4), the one rule the start
-    check, the wizard gate and its bandwidth placeholder share (`sessionArgs.effectiveBandwidthKhz()`,
+    check, the wizard gate and its App default note share (`sessionArgs.effectiveBandwidthKhz()`,
     `sessionArgs.tetraRateError()`); `session_args_tetra_runs_on()` refuses `-fT` on any radio, an Airspy included,
     off a TETRA rate (`SessionArgsError::TetraRate`, category `tetra-rate`, one text: the 72 kHz bandwidth), and the
-    wizard offers the TETRA chip on every radio, with the bandwidth field shown on an Airspy too. Tests:
+    wizard offers the TETRA chip on every radio, with the bandwidth choice shown on an Airspy too. Tests:
     `RUNTIME_DECODE_MODE`, `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`, `IO_RTL_DEMOD_CONFIG`,
     `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_ROUNDTRIP`, QML `tst_wizard_decode_chip`, `tst_session_initialized`.
   - rdio-scanner export (`src/runtime/rdio_export.c`, `include/dsd-neo/runtime/rdio_export.h`): DirWatch sidecars and,
