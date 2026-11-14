@@ -2269,6 +2269,22 @@ dsd_tg_policy_evaluate_group_source_fallback(const dsd_opts* opts, const dsd_sta
     return 0;
 }
 
+uint32_t
+dsd_tg_policy_ota_final_reasons(const dsd_state* state, const dsd_tg_policy_decision* sg_decision) {
+    if (!sg_decision) {
+        return 0U;
+    }
+    uint32_t final = sg_decision->block_reasons & DSD_TG_POLICY_BLOCK_OTA_FINAL;
+    if (final & (uint32_t)DSD_TG_POLICY_BLOCK_MODE) {
+        dsd_tg_policy_lookup lookup;
+        if (!tg_policy_lookup_group_in_ctx(tg_policy_ctx_get_const(state), sg_decision->target_id, &lookup)
+            || !tg_policy_lookup_knows_talkgroup(&lookup)) {
+            final &= ~(uint32_t)DSD_TG_POLICY_BLOCK_MODE;
+        }
+    }
+    return final;
+}
+
 int
 dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* state, uint32_t ota_target,
                                      uint32_t policy_target, uint32_t src, dsd_tg_policy_decision* decision) {
@@ -2279,7 +2295,7 @@ dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* stat
     if (dsd_tg_policy_evaluate_group_call(opts, state, ota_target, src, 0, 0, &ota) != 0) {
         return 0;
     }
-    const uint32_t final = ota.block_reasons & DSD_TG_POLICY_BLOCK_OTA_FINAL;
+    const uint32_t final = dsd_tg_policy_ota_final_reasons(state, &ota);
     if (final == 0U) {
         return 0;
     }

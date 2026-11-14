@@ -219,22 +219,36 @@ int dsd_tg_policy_evaluate_group_source_fallback(const dsd_opts* opts, const dsd
 /**
  * Blocks on a patched call's over-the-air supergroup (SG) that no member WG
  * overrides: a call skip, the encryption lockout (armed on the SG), a session
- * avoid or a mode B/DE row. Every member rides the SG's traffic, so an allowed
- * or held member must not readmit it. An allow-list or Hold miss on the SG is
- * not in the set: a listed or held member is how patch-aware following admits
- * the patch.
+ * avoid or a mode B/DE row that knows the SG. Every member rides the SG's
+ * traffic, so an allowed or held member must not readmit it. A mode B/DE that
+ * only the `*` catch-all row gives the SG is not final: that row stands for
+ * "every other talkgroup", as an allow-list miss does, so a listened member
+ * admits the patch (dsd_tg_policy_ota_final_reasons() applies that rule). An
+ * allow-list or Hold miss on the SG is not in the set either: a listed or held
+ * member is how patch-aware following admits the patch.
  */
 #define DSD_TG_POLICY_BLOCK_OTA_FINAL                                                                                  \
     ((uint32_t)DSD_TG_POLICY_BLOCK_CALL_SKIP | (uint32_t)DSD_TG_POLICY_BLOCK_ENC_LOCKOUT                               \
      | (uint32_t)DSD_TG_POLICY_BLOCK_SESSION_AVOID | (uint32_t)DSD_TG_POLICY_BLOCK_MODE)
 
 /**
+ * @brief The final reasons of a supergroup's own group decision.
+ *
+ * @p sg_decision is the SG's decision from dsd_tg_policy_evaluate_group_call()
+ * (its `target_id` is the SG), as the caller may have adjusted it. Returns its
+ * DSD_TG_POLICY_BLOCK_OTA_FINAL reasons, where DSD_TG_POLICY_BLOCK_MODE counts
+ * only when the row deciding the SG knows it (an exact or range row, or a digit
+ * pattern other than the `*` catch-all). 0 for NULL.
+ */
+uint32_t dsd_tg_policy_ota_final_reasons(const dsd_state* state, const dsd_tg_policy_decision* sg_decision);
+
+/**
  * @brief Merge a patched call's final supergroup blocks into its member decision.
  *
- * P25 judges a patched call on the member WG its grant matched (@p policy_target,
- * the decision in @p decision). When @p ota_target differs and its own group
- * evaluation carries any DSD_TG_POLICY_BLOCK_OTA_FINAL reason, those reasons are
- * merged, tuning is denied, and media is denied unless the only reason is the
+ * P25 judges a patched call on a member WG (@p policy_target, the decision in
+ * @p decision). When @p ota_target differs and its own group evaluation has
+ * final reasons (dsd_tg_policy_ota_final_reasons()), those reasons are merged,
+ * tuning is denied, and media is denied unless the only reason is the
  * encryption lockout, which never gated media. Nothing else from the supergroup
  * is merged.
  *
