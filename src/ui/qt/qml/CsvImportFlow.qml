@@ -339,7 +339,7 @@ Item {
         id: sheet
         objectName: "csvCompanionSheet"
         parent: flow.overlayParent
-        accessibleName: !flow.choosingCompanions ? qsTr("Copying %1").arg(flow.displayName) : flow.type === "trunkTargets" ? qsTr("Target CSV companion files") : qsTr("Channel-map companion files")
+        accessibleName: !flow.choosingCompanions ? (flow.displayName ? qsTr("Copying %1").arg(flow.displayName) : qsTr("Copying the file")) : flow.type === "trunkTargets" ? qsTr("Target CSV companion files") : qsTr("Channel-map companion files")
         // A form sheet (issue #718): an outside tap keeps the choices made here.
         closesOnOutsideTap: false
         dismissHandler: function () {
@@ -353,20 +353,37 @@ Item {
             objectName: "csvCopyingText"
             width: parent.width
             visible: !flow.choosingCompanions
-            text: qsTr("Copying %1…").arg(flow.displayName)
+            text: flow.displayName ? qsTr("Copying %1…").arg(flow.displayName) : qsTr("Copying the file…")
             wrapMode: Text.Wrap
             color: Theme.textPrimary
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(17)
             font.weight: Font.Bold
         }
+        // Which CSV needs what, and the way out when a file it names is not
+        // on this device: a picked CSV has no folder to find it in (#829), so
+        // a band plan or map left on another computer can only be cancelled.
         ReadableText {
+            objectName: "csvCompanionIntro"
             width: parent.width
             visible: flow.choosingCompanions
-            text: qsTr("This CSV references additional files. Choose an imported file or a file from your device for each companion to store a complete, private copy.")
+            // A shared file can come with no name (Open with, #831): it is
+            // "this CSV" then, as the incoming sheet calls it "This file".
+            text: flow.displayName ? (flow.requiredFiles.length === 1 ? qsTr("%1 needs 1 more file. Choose it below; DSD-neo keeps its own copy.").arg(flow.displayName) : Util.fill(qsTr("%1 needs %2 more files. Choose each one below; DSD-neo keeps its own copy."), [flow.displayName, flow.requiredFiles.length])) : flow.requiredFiles.length === 1 ? qsTr("This CSV needs 1 more file. Choose it below; DSD-neo keeps its own copy.") : qsTr("This CSV needs %1 more files. Choose each one below; DSD-neo keeps its own copy.").arg(flow.requiredFiles.length)
             wrapMode: Text.Wrap
             color: Theme.textPrimary
+            font.family: Theme.sans
             font.pixelSize: Theme.fontSize(15)
+        }
+        ReadableText {
+            objectName: "csvCompanionMissingHint"
+            width: parent.width
+            visible: flow.choosingCompanions
+            text: !flow.displayName ? (flow.requiredFiles.length === 1 ? qsTr("Not on this device yet? Cancel, copy it here, then import this CSV again.") : qsTr("Not on this device yet? Cancel, copy them here, then import this CSV again.")) : (flow.requiredFiles.length === 1 ? qsTr("Not on this device yet? Cancel, copy it here, then import %1 again.") : qsTr("Not on this device yet? Cancel, copy them here, then import %1 again.")).arg(flow.displayName)
+            wrapMode: Text.Wrap
+            color: Theme.textSecondary
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(13)
         }
         // Issue #829: why "Choose a file…" could not ask. It is about the
         // device, not one companion, so it sits above them all.

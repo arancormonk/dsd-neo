@@ -380,6 +380,48 @@ Item {
             verify(headers.indexOf("Hex keys · unavailable/shared.csv") >= 0);
             verify(headers[0] !== headers[1]);
         }
+        // A picked CSV has no folder to find the files it names in, so a
+        // target list naming a band plan left on another computer stops on
+        // this sheet. It says which CSV needs how many files and what to do
+        // when one is not on this device. A name holding "%1" reads as written.
+        function test_sheet_says_what_the_csv_needs_data() {
+            var two = "channel,frequency,mode,keys_dec_csv,keys_hex_csv\n1,851012500,p25,unavailable/a.csv,unavailable/b.csv\n";
+            return [
+                {tag: "target band plan", kind: "trunkTargets", name: "target.csv", label: "P25 band plan · plan.csv",
+                 csv: "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,options,p25_bandplan_csv\n"
+                      + "Site 01,p25-trunk,851012500,,500,,,cqpsk,--enc-lockout --scan-max-visit-ms 60000,plan.csv\n",
+                 count: 1, intro: "target.csv needs 1 more file. Choose it below; DSD-neo keeps its own copy.",
+                 hint: "Not on this device yet? Cancel, copy it here, then import target.csv again."},
+                {tag: "two files", kind: "chan", name: "Map.csv", label: "", csv: two, count: 2,
+                 intro: "Map.csv needs 2 more files. Choose each one below; DSD-neo keeps its own copy.",
+                 hint: "Not on this device yet? Cancel, copy them here, then import Map.csv again."},
+                {tag: "placeholder name", kind: "chan", name: "Map%1.csv", label: "", csv: two, count: 2,
+                 intro: "Map%1.csv needs 2 more files. Choose each one below; DSD-neo keeps its own copy.",
+                 hint: "Not on this device yet? Cancel, copy them here, then import Map%1.csv again."},
+                // Open with can hand over a file with no name (#831).
+                {tag: "unnamed one", kind: "trunkTargets", name: "", label: "",
+                 csv: "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,p25_bandplan_csv\none,p25-trunk,851012500,,,,,plan.csv\n",
+                 count: 1, intro: "This CSV needs 1 more file. Choose it below; DSD-neo keeps its own copy.",
+                 hint: "Not on this device yet? Cancel, copy it here, then import this CSV again."},
+                {tag: "unnamed two", kind: "chan", name: "", label: "", csv: two, count: 2,
+                 intro: "This CSV needs 2 more files. Choose each one below; DSD-neo keeps its own copy.",
+                 hint: "Not on this device yet? Cancel, copy them here, then import this CSV again."}
+            ];
+        }
+        function test_sheet_says_what_the_csv_needs(data) {
+            var path = testContext.writeFixtureCsv("flow-needs.csv", data.csv);
+            flow.begin(path, data.name, data.kind);
+            tryVerify(function () { return flow.requiredFiles.length === data.count; }, 5000, "the companions are asked for");
+            var intro = item("csvCompanionIntro");
+            var hint = item("csvCompanionMissingHint");
+            verify(intro.visible);
+            verify(hint.visible);
+            compare(intro.text, data.intro);
+            compare(hint.text, data.hint);
+            if (data.label)
+                compare(item("csvCompanionLabel_0").text, data.label);
+            verify(!item("csvCompleteBundle").enabled, "nothing chosen yet");
+        }
         function test_wrong_kind_pick_preserves_other_selections_data() {
             return companionRolesData();
         }
@@ -454,6 +496,13 @@ Item {
             flow.begin(standaloneMap(), "County%20map.csv", "chan");
             compare(item("csvCopyingText").text, "Copying County%20map.csv…");
             compare(item("csvCompanionSheet").Accessible.name, "Copying County%20map.csv");
+        }
+        // A file handed over with no name (Open with, #831) is "the file".
+        function test_busy_sheet_without_a_name() {
+            testContext.holdImports(true);
+            flow.begin(standaloneMap(), "", "chan");
+            compare(item("csvCopyingText").text, "Copying the file…");
+            compare(item("csvCompanionSheet").Accessible.name, "Copying the file");
         }
         // #830: a file literally named map%20v2.csv reads as that, never
         // as "map v2.csv". Only a pick with no name falls back to the

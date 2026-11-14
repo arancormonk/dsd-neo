@@ -408,7 +408,9 @@ Android. The companion selection flow copies referenced files into a private bun
 and rewrites the stored paths. A target CSV additionally includes its channel maps,
 band plans, scoped policy/mapping files, and dependencies inside channel maps.
 A CSV picked with Android's picker has no folder DSD-neo can look in, so the sheet asks
-for each file it names. A CSV picked in DSD-neo's file browser does: the files it names
+for each file it names, saying how many the CSV needs. A file that is not on the device
+yet (a band plan exported on a computer, say) is copied there first, then the CSV is
+imported again. A CSV picked in DSD-neo's file browser does: the files it names
 are found beside it, but only by a relative name and only inside the CSV's folder or a
 folder below it. An absolute path, a `../` that leaves the folder, or a link that points
 out of it is asked for on the sheet instead, so a CSV cannot pull in any file the app can

@@ -833,6 +833,8 @@ Rectangle {
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         color: Theme.textPrimary
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(13)
                         text: modelData.id + " · " + modelData.type + " · " + modelData.frequency + " MHz\n" + Util.fill(qsTr("Dwell: %1 · Hold: %2"), [modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms", modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms"]) + (analog ? "" : " · " + qsTr("Modulation: %1").arg(modelData.modulation || qsTr("inherit"))) + " · " + qsTr("Gain: %1").arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB") + " · " + Util.squelchSummary(modelData.squelchDb, modelData.squelchMarginDb, modelData.squelchNoise) + (analog || modelData.bandwidthHz !== undefined ? " · " + Util.analogBandwidthSummary(modelData.type === "am-conventional", modelData.bandwidthHz) : "") + (modelData.type === "nfm-conventional" || modelData.toneFilter !== undefined ? " · " + Util.toneFilterSummary(modelData.toneFilter, modelData.toneList) : "") + (modelData.receiveSummary ? "\n" + modelData.receiveSummary : "")
                     }
                 }

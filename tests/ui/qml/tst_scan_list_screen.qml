@@ -526,6 +526,10 @@ Item {
                 verify(preview.itemAtIndex(0).text.indexOf("Squelch: -60 dB") >= 0, preview.itemAtIndex(0).text);
                 verify(preview.itemAtIndex(1).text.indexOf("Squelch: off") >= 0, preview.itemAtIndex(1).text);
                 verify(preview.itemAtIndex(2).text.indexOf("Squelch: inherit") >= 0, preview.itemAtIndex(2).text);
+                // The rows read in the editor's own type, not the platform's
+                // larger default.
+                compare(preview.itemAtIndex(0).font.family, Ui.Theme.sans);
+                compare(preview.itemAtIndex(0).font.pixelSize, Math.round(Ui.Theme.fontSize(13)));
             } finally {
                 importedFiles.remove(importedFiles.rowForPath(result.path));
             }
