@@ -36,9 +36,12 @@
 #define TEACH_N     ((size_t)3 * RATE_HZ)
 /* A constant probe level the top of the AGC's range (+30 dB) still keeps under the -1 dBFS limiter. */
 #define PROBE_LEVEL 500.0f
-/* The start gain every reception plays at until it learns, dB and linear. */
+/* The start gain, the most a tone frame plays at, dB and linear. */
 #define START_DB    ((double)DSD_VOICE_LEVEL_START_GAIN_DB)
 #define START_LIN   pow(10.0, START_DB / 20.0)
+/* The opening gain every reception from a talker not remembered plays at until it learns, dB and linear. */
+#define OPEN_DB     ((double)DSD_VOICE_LEVEL_OPEN_GAIN_DB)
+#define OPEN_LIN    pow(10.0, OPEN_DB / 20.0)
 
 static int
 expect_true(const char* tag, int cond) {
@@ -128,8 +131,8 @@ db_of(float linear) {
 }
 
 /* B3: only decoded, decodable, admitted speech teaches the level. The same quiet speech that lifts the gain as speech
-   leaves it at the start gain (DSD_VOICE_LEVEL_START_GAIN_DB over the -g 1 level) as undecryptable garbage, repeats, frames the receive policy
-   refuses, or tone frames; zeros of failed decodes, comfort noise, AMBE silence, near-silent decoded speech and loud
+   leaves it at the opening gain (DSD_VOICE_LEVEL_OPEN_GAIN_DB over the -g 1 level) as undecryptable garbage, repeats,
+   frames the receive policy refuses, or tone frames; zeros of failed decodes, comfort noise, AMBE silence, near-silent decoded speech and loud
    ciphertext leave it there too. */
 static int
 test_frames_that_may_not_learn_do_not_teach(void) {
@@ -153,7 +156,7 @@ test_frames_that_may_not_learn_do_not_teach(void) {
     const dsd_voice_frame_info learn = frame_info(DSD_VOICE_MEDIA_SPEECH, 1, 1);
     run_material(opts, state, 0, speech, TEACH_N, &learn);
     const float taught = probe_gain(opts, state, 0);
-    rc |= expect_true("decoded speech teaches: quiet speech is lifted at least 6 dB", db_of(taught) >= START_DB + 6.0);
+    rc |= expect_true("decoded speech teaches: quiet speech is lifted at least 6 dB", db_of(taught) >= OPEN_DB + 6.0);
     free_state(state);
 
     static const struct {
@@ -178,7 +181,7 @@ test_frames_that_may_not_learn_do_not_teach(void) {
         const dsd_voice_frame_info info =
             frame_info(speech_cases[i].media, speech_cases[i].decodable, speech_cases[i].admitted);
         run_material(opts, state, 0, speech, TEACH_N, &info);
-        rc |= expect_near(speech_cases[i].tag, db_of(probe_gain(opts, state, 0)), START_DB, 1e-4);
+        rc |= expect_near(speech_cases[i].tag, db_of(probe_gain(opts, state, 0)), OPEN_DB, 1e-4);
         free_state(state);
     }
 
@@ -211,7 +214,7 @@ test_frames_that_may_not_learn_do_not_teach(void) {
         rc |= expect_true("noise material", ok == 0);
         const dsd_voice_frame_info info = frame_info(noise_cases[i].media, noise_cases[i].decodable, 1);
         run_material(opts, state, 0, other, TEACH_N, &info);
-        rc |= expect_near(noise_cases[i].tag, db_of(probe_gain(opts, state, 0)), START_DB, 1e-4);
+        rc |= expect_near(noise_cases[i].tag, db_of(probe_gain(opts, state, 0)), OPEN_DB, 1e-4);
         free_state(state);
     }
     free(opts);
@@ -220,8 +223,8 @@ test_frames_that_may_not_learn_do_not_teach(void) {
     return rc;
 }
 
-/* B4: auto gain starts at one level, the start gain (DSD_VOICE_LEVEL_START_GAIN_DB over the -g 1 level), whatever state the decoder came up in: a
-   zeroed state, or one initState() made for any entry path (live, -r, M17). */
+/* B4: auto gain opens at one level, the opening gain (DSD_VOICE_LEVEL_OPEN_GAIN_DB over the -g 1 level), whatever state
+   the decoder came up in: a zeroed state, or one initState() made for any entry path (live, -r, M17). */
 static int
 test_auto_gain_starts_at_the_reference_level(void) {
     int rc = 0;
@@ -235,12 +238,12 @@ test_auto_gain_starts_at_the_reference_level(void) {
         return 1;
     }
     initState(initialised);
-    rc |= expect_near("a zeroed state plays its first frame at the start gain", db_of(probe_gain(opts, zeroed, 0)),
-                      START_DB, 1e-4);
-    rc |= expect_near("slot 2 too", db_of(probe_gain(opts, zeroed, 1)), START_DB, 1e-4);
-    rc |= expect_near("an initialised state plays its first frame at the start gain",
-                      db_of(probe_gain(opts, initialised, 0)), START_DB, 1e-4);
-    rc |= expect_near("its slot 2 too", db_of(probe_gain(opts, initialised, 1)), START_DB, 1e-4);
+    rc |= expect_near("a zeroed state plays its first frame at the opening gain", db_of(probe_gain(opts, zeroed, 0)),
+                      OPEN_DB, 1e-4);
+    rc |= expect_near("slot 2 too", db_of(probe_gain(opts, zeroed, 1)), OPEN_DB, 1e-4);
+    rc |= expect_near("an initialised state plays its first frame at the opening gain",
+                      db_of(probe_gain(opts, initialised, 0)), OPEN_DB, 1e-4);
+    rc |= expect_near("its slot 2 too", db_of(probe_gain(opts, initialised, 1)), OPEN_DB, 1e-4);
     freeState(initialised);
     free(initialised);
     free_state(zeroed);
@@ -268,7 +271,7 @@ test_tone_frames_play_at_most_the_start_gain(void) {
     run_material(opts, state, 0, speech, TEACH_N, &learn);
     run_material(opts, control, 0, speech, TEACH_N, &learn);
     const float learned = probe_gain(opts, control, 0);
-    rc |= expect_true("the speech lifted the gain", db_of(learned) >= START_DB + 6.0);
+    rc |= expect_true("the speech lifted the gain", db_of(learned) >= OPEN_DB + 6.0);
     (void)probe_gain(opts, state, 0);
 
     const dsd_voice_frame_info tone = frame_info(DSD_VOICE_MEDIA_TONE, 1, 1);
@@ -359,19 +362,27 @@ agc_of(const dsd_state* state, int slot) {
     return dsd_voice_level_agc(state, slot);
 }
 
-/* The slot learned: committed speech and a gain off the start. */
+/* The slot learned: committed speech and a gain off the opening gain. */
 static int
 slot_learned(const dsd_state* state, int slot) {
     const dsd_speech_agc* agc = agc_of(state, slot);
-    return agc != NULL && agc->learned.commits > 0 && agc->learned.gain_db > DSD_VOICE_LEVEL_START_GAIN_DB + 3.0f;
+    return agc != NULL && agc->learned.commits > 0 && agc->learned.gain_db > DSD_VOICE_LEVEL_OPEN_GAIN_DB + 3.0f;
 }
 
-/* The slot is at the start gain with nothing learned. */
+/* The slot's AGC was reset and has run no frame since: the start gain with nothing learned. */
+static int
+slot_reset(const dsd_state* state, int slot) {
+    const dsd_speech_agc* agc = agc_of(state, slot);
+    return agc != NULL && agc->learned.commits == 0 && agc->learned.steps == 0
+           && fabsf(agc->learned.gain_db - DSD_VOICE_LEVEL_START_GAIN_DB) < 1e-6f;
+}
+
+/* The slot opened a new reception: at the opening gain with nothing learned. */
 static int
 slot_fresh(const dsd_state* state, int slot) {
     const dsd_speech_agc* agc = agc_of(state, slot);
-    return agc != NULL && agc->learned.commits == 0
-           && fabsf(agc->learned.gain_db - DSD_VOICE_LEVEL_START_GAIN_DB) < 1e-6f;
+    return agc != NULL && agc->learned.commits == 0 && agc->learned.steps == 0
+           && fabsf(agc->learned.gain_db - DSD_VOICE_LEVEL_OPEN_GAIN_DB) < 1e-6f;
 }
 
 /* The slot's estimate and gain are exactly what @p before held (frames since then only moved its clocks). */
@@ -382,6 +393,70 @@ slot_kept(const dsd_state* state, int slot, const dsd_speech_agc_learned* before
            && agc->learned.commits > 0 && fabsf(agc->learned.power - before->power) <= 1e-12f
            && fabsf(agc->learned.gain_db - before->gain_db) <= 1e-6f
            && fabsf(agc->learned.noise_floor_db - before->noise_floor_db) <= 1e-6f;
+}
+
+/* The largest magnitude in a frame. */
+static float
+frame_peak(const float* frame) {
+    float peak = 0.0f;
+    for (int n = 0; n < FRAME; n++) {
+        peak = fabsf(frame[n]) > peak ? fabsf(frame[n]) : peak;
+    }
+    return peak;
+}
+
+/* A slot's first frame plays at the opening gain from its first sample, with the acquisition stage on for both slots;
+   dsd_voice_level_reset() leaves the opening gain in the readouts; a tone frame that opens a reception still plays at
+   no more than the start gain. */
+static int
+test_a_reception_opens_at_the_opening_gain(void) {
+    int rc = 0;
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    if (!opts || !state) {
+        free(opts);
+        free_state(state);
+        return 1;
+    }
+    float frame[FRAME];
+    const dsd_voice_frame_info concealed = frame_info(DSD_VOICE_MEDIA_CONCEALED, 1, 1);
+    for (int slot = 0; slot < 2; slot++) {
+        for (int n = 0; n < FRAME; n++) {
+            frame[n] = 100.0f;
+        }
+        dsd_voice_chain_run(opts, state, slot, frame, &concealed);
+        rc |= expect_near("open: the first sample plays at the opening gain", frame[0], 100.0 * OPEN_LIN, 1e-3);
+        rc |= expect_near("open: the whole first frame does", frame[FRAME - 1], 100.0 * OPEN_LIN, 1e-3);
+        rc |= expect_true("open: the slot opened the reception", slot_fresh(state, slot));
+        rc |= expect_true("open: the slot's AGC has the acquisition stage on", agc_of(state, slot)->acquisition == 1);
+    }
+    rc |= expect_near("open: the readout shows the opening gain", state->aout_gain, OPEN_DB, 1e-4);
+    rc |= expect_near("open: slot 2's readout too", state->aout_gainR, OPEN_DB, 1e-4);
+
+    /* The readouts after a reset show the gain the next frame opens at. */
+    state->aout_gain = -50.0f;
+    state->aout_gainR = -50.0f;
+    dsd_voice_level_reset(state, 1);
+    rc |= expect_near("open: one slot's reset leaves the other's readout", state->aout_gain, -50.0, 1e-6);
+    rc |= expect_near("open: a reset shows the opening gain", state->aout_gainR, OPEN_DB, 1e-6);
+    dsd_voice_level_reset(state, -1);
+    rc |= expect_near("open: both slots' resets show it", state->aout_gain, OPEN_DB, 1e-6);
+    rc |= expect_near("open: on slot 2 too", state->aout_gainR, OPEN_DB, 1e-6);
+
+    /* A tone frame on a fresh reception: capped at the start gain, which stays the tone cap. */
+    const dsd_voice_frame_info tone = frame_info(DSD_VOICE_MEDIA_TONE, 1, 1);
+    for (int k = 0; k < 3; k++) {
+        for (int n = 0; n < FRAME; n++) {
+            frame[n] = PROBE_LEVEL;
+        }
+        dsd_voice_chain_run(opts, state, 0, frame, &tone);
+        rc |= expect_true("open: a tone frame plays at no more than the start gain",
+                          frame_peak(frame) <= (float)(PROBE_LEVEL * START_LIN) + 1e-3f);
+    }
+    rc |= expect_near("open: the tone left the opening gain", agc_of(state, 0)->learned.gain_db, OPEN_DB, 1e-6);
+    free_state(state);
+    free(opts);
+    return rc;
 }
 
 /* One frame the AGC cannot learn from, on @p slot with @p talkspurt: the tracker sees its reception. */
@@ -516,11 +591,12 @@ test_explicit_resets_and_what_keeps_the_level(const float* speech) {
     rc |= expect_true("explicit: purges and a rate change keep the level",
                       slot_kept(state, 0, &before[0]) && slot_kept(state, 1, &before[1]));
     dsd_voice_level_reset(state, 1);
-    rc |= expect_true("explicit: one slot starts over", slot_fresh(state, 1) && slot_kept(state, 0, &before[0]));
+    rc |= expect_true("explicit: one slot starts over", slot_reset(state, 1) && slot_kept(state, 0, &before[0]));
     dsd_voice_level_reset(state, -1);
-    rc |= expect_true("explicit: both start over", slot_fresh(state, 0) && slot_fresh(state, 1));
-    rc |= expect_near("explicit: the next frame plays at the start gain", db_of(probe_gain(opts, state, 0)), START_DB,
+    rc |= expect_true("explicit: both start over", slot_reset(state, 0) && slot_reset(state, 1));
+    rc |= expect_near("explicit: the next frame plays at the opening gain", db_of(probe_gain(opts, state, 0)), OPEN_DB,
                       1e-4);
+    rc |= expect_true("explicit: and opens the reception", slot_fresh(state, 0));
     free_state(state);
     free(opts);
     return rc;
@@ -573,7 +649,7 @@ first_sample_of(const dsd_opts* opts, dsd_state* state, int slot) {
     return frame[0];
 }
 
-/* A new reception starts at the start gain even when auto takes over from a fixed -g between receptions: the
+/* A new reception opens at the opening gain even when auto takes over from a fixed -g between receptions: the
    fixed->auto start applies only within the reception the fixed gain played in. Both ways a reception starts over: an
    explicit reset (a carrier boundary) and the tracker (the next transmission, seen on the frame auto takes over on). */
 static int
@@ -590,8 +666,8 @@ test_a_new_reception_wins_over_the_fixed_gain(void) {
     rc |= expect_near("reset wins: the fixed call plays x50", first_sample_of(opts, state, 0), 5000.0, 1e-3);
     dsd_voice_level_reset(state, 0);
     opts->audio_gain = 0.0f;
-    rc |= expect_near("reset wins: auto after a reset starts at the start gain", first_sample_of(opts, state, 0),
-                      100.0 * START_LIN, 1e-3);
+    rc |= expect_near("reset wins: auto after a reset opens at the opening gain", first_sample_of(opts, state, 0),
+                      100.0 * OPEN_LIN, 1e-3);
 
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     rc |= expect_true("reset wins: call observed", observe_call(state, 0U, 100U, 10.0) > 0);
@@ -600,8 +676,8 @@ test_a_new_reception_wins_over_the_fixed_gain(void) {
     rc |= expect_true("reset wins: call ended", dsd_call_state_end(state, 0U, 11.0) > 0);
     rc |= expect_true("reset wins: next call observed", observe_call(state, 0U, 200U, 12.0) > 0);
     opts->audio_gain = 0.0f;
-    rc |= expect_near("reset wins: auto on the next transmission starts at the start gain",
-                      first_sample_of(opts, state, 0), 100.0 * START_LIN, 1e-3);
+    rc |= expect_near("reset wins: auto on the next transmission opens at the opening gain",
+                      first_sample_of(opts, state, 0), 100.0 * OPEN_LIN, 1e-3);
 
     /* Within one reception the switch still starts from the fixed gain. */
     opts->audio_gain = 2.0f;
@@ -639,14 +715,14 @@ test_decodability_returns_per_slot(void) {
         frame[n] = PROBE_LEVEL;
     }
     dsd_voice_chain_run(opts, state, 0, frame, &clear);
-    rc |= expect_near("decodable: slot 1 plays its first clear sample at its gain", frame[0], PROBE_LEVEL * START_LIN,
+    rc |= expect_near("decodable: slot 1 plays its first clear sample at its gain", frame[0], PROBE_LEVEL * OPEN_LIN,
                       1e-3);
     for (int n = 0; n < FRAME; n++) {
         frame[n] = PROBE_LEVEL;
     }
     dsd_voice_chain_run(opts, state, 1, frame, &cipher);
     rc |= expect_true("decodable: slot 2, still undecodable, keeps its limiter",
-                      frame[0] < PROBE_LEVEL * START_LIN * 0.95);
+                      frame[0] < PROBE_LEVEL * OPEN_LIN * 0.95);
 
     /* The control: loud decodable audio, then quiet decodable audio, releases at 50 dB/s. */
     dsd_state* control = new_state();
@@ -664,7 +740,7 @@ test_decodability_returns_per_slot(void) {
     }
     dsd_voice_chain_run(opts, control, 0, frame, &clear);
     rc |= expect_true("decodable: decodable audio after a loud frame releases gradually",
-                      frame[0] < PROBE_LEVEL * START_LIN * 0.95);
+                      frame[0] < PROBE_LEVEL * OPEN_LIN * 0.95);
     free_state(control);
     free_state(state);
     free(opts);
@@ -750,6 +826,7 @@ main(void) {
     int rc = 0;
     rc |= test_frames_that_may_not_learn_do_not_teach();
     rc |= test_auto_gain_starts_at_the_reference_level();
+    rc |= test_a_reception_opens_at_the_opening_gain();
     rc |= test_tone_frames_play_at_most_the_start_gain();
     rc |= test_high_pass_keeps_its_state_across_a_healed_fade();
     float* speech = calloc(TEACH_N, sizeof(float));

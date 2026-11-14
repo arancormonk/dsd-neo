@@ -28,6 +28,8 @@ typedef struct {
     uint64_t transmission;
     uint32_t talkspurt;
     int family;
+    /* The AGC was initialised or reset: the slot's next frame opens a reception. */
+    int opening;
 } voice_level_slot;
 
 typedef struct {
@@ -57,6 +59,11 @@ voice_level_ext_get(dsd_state* state) {
             return NULL;
         }
     }
+    /* Every transmission is a new reception, many of them over before the AGC's slow startup arrives. */
+    for (int s = 0; s < 2; s++) {
+        dsd_speech_agc_set_acquisition(&ext->slot[s].agc, 1);
+        ext->slot[s].opening = 1;
+    }
     if (dsd_peak_limiter_init(&ext->dmr_mix, (int)DSD_VOICE_HPF_RATE_HZ, DSD_SPEECH_AGC_CEILING_DBFS) != 0) {
         free(ext);
         return NULL;
@@ -75,6 +82,7 @@ voice_level_slot_reset(voice_level_slot* s) {
     s->transmission = 0U;
     s->talkspurt = 0U;
     s->family = 0;
+    s->opening = 1;
 }
 
 void
@@ -90,8 +98,8 @@ dsd_voice_level_reset(dsd_state* state, int slot) {
     for (int s = 0; s < 2; s++) {
         if (slot < 0 || slot == s) {
             voice_level_slot_reset(&ext->slot[s]);
-            /* The readout shows the start gain until the slot's next frame. */
-            *(s == 1 ? &state->aout_gainR : &state->aout_gain) = DSD_VOICE_LEVEL_START_GAIN_DB;
+            /* The readout shows the gain the slot's next frame opens at. */
+            *(s == 1 ? &state->aout_gainR : &state->aout_gain) = DSD_VOICE_LEVEL_OPEN_GAIN_DB;
         }
     }
     /* The DMR mixer's limiter goes with both slots: the next talkers are another reception's. */
@@ -169,6 +177,11 @@ dsd_voice_level_run(const dsd_opts* opts, dsd_state* state, int slot, float* fra
     }
     voice_level_slot* s = &ext->slot[slot];
     voice_level_follow(s, reception, info ? info->talkspurt : 0U);
+    if (s->opening) {
+        /* The reception's first frame: it opens at the opening gain from its first sample. */
+        dsd_speech_agc_open_at(&s->agc, DSD_VOICE_LEVEL_OPEN_GAIN_DB, 0);
+        s->opening = 0;
+    }
     dsd_speech_agc_set_fixed(&s->agc, setting > 0.0f ? setting : 0.0f);
     const int learn = dsd_voice_frame_may_learn(info);
     const int decodable = info ? info->decodable != 0U : 1;
