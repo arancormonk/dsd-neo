@@ -96,10 +96,16 @@ Item {
             compare(modeControl().Accessible.name, "Tuner gain");
             compare(field().label, "Tuner gain");
             compare(field().unit, "dB");
-            var hint = findChild(screenLoader.item, "settingsGainHint");
+            var hint = findChild(screenLoader.item, "gainEditorHint");
             verify(hint !== null && hint.visible);
             compare(hint.text, "For RTL-SDR and RTL-TCP. Automatic adjusts the receiver gain for you.");
             compare(hint.Accessible.name, hint.text, "the hint reads by itself");
+            // It explains the choice: right under the strip, above the field.
+            var strip = modeControl().mapToItem(null, 0, 0).y + modeControl().height;
+            var at = hint.mapToItem(null, 0, 0).y;
+            verify(at >= strip && at < field().mapToItem(null, 0, 0).y, "hint between the strip and the field");
+            choose("Automatic");
+            verify(hint.visible, "and under Automatic too");
         }
 
         function test_settingsAutomaticWritesZero() {
@@ -179,30 +185,77 @@ Item {
             choose("Automatic");
             compare(prefs.gainDb, 0);
 
-            // A word still composing when Automatic is chosen is committed first, and its late
-            // commit (focus leaving the field) cannot undo Automatic.
+            // A word still composing when Automatic is chosen is committed first, and its commit
+            // (the field letting go of the focus as it hides) cannot undo Automatic.
             choose("Set");
             compare(prefs.gainDb, 25);
             type("");
             verify(testContext.composeText("33"), "the field holds the word as composing text");
             choose("Automatic");
-            compare(field().text, "33", "the composing word was committed before the choice");
-            compare(prefs.gainDb, 0);
-            verify(field().input.activeFocus, "a choice leaves the field focused, as every choice does");
-            leaveField();
+            compare(field().input.preeditText, "", "the composing word was committed, not dropped");
+            verify(!field().input.activeFocus, "the hidden field gave up the focus");
             compare(prefs.gainDb, 0, "a commit after Automatic writes nothing");
             compare(shownMode(), "Automatic");
             choose("Set");
             compare(prefs.gainDb, 25, "the composed 33 was never a valid commit");
         }
 
-        // Set chosen again over a refused edit goes back to the last valid gain too.
+        // Keys typed after Automatic go nowhere, and a change from elsewhere shows at once: no hidden
+        // field holds it back.
+        function test_settingsAutomaticLeavesNoHiddenField() {
+            type("2");
+            choose("Automatic");
+            verify(!field().input.activeFocus);
+            keyClick("4");
+            keyClick(Qt.Key_Return);
+            compare(prefs.gainDb, 0);
+            compare(shownMode(), "Automatic");
+            prefs.gainDb = 17;
+            compare(shownMode(), "Set", "applied at once");
+            compare(field().text, "17");
+            choose("Automatic");
+            choose("Set");
+            compare(prefs.gainDb, 17);
+        }
+
+        // Set chosen again commits what was typed first: a valid gain is kept, composing or not.
+        function test_settingsSetAgainKeepsValidText() {
+            type("");
+            verify(testContext.composeText("33"));
+            choose("Set");
+            compare(prefs.gainDb, 33);
+            compare(field().text, "33");
+            type("21");
+            choose("Set");
+            compare(prefs.gainDb, 21);
+            compare(field().text, "21");
+        }
+
+        // Set chosen again over a refused edit goes back to the last valid gain.
         function test_settingsSetAgainOverRefusedText() {
             type("50");
             choose("Set");
             compare(prefs.gainDb, 30);
             compare(field().text, "30");
             compare(field().error, "");
+            // The same for a refused word still composing when Set is chosen.
+            type("");
+            verify(testContext.composeText("77"));
+            choose("Set");
+            compare(prefs.gainDb, 30);
+            compare(field().text, "30");
+        }
+
+        // A change from elsewhere during a valid edit waits; on focus loss the user's own edit, the
+        // latest action, wins.
+        function test_settingsValidEditWinsOverExternalChange() {
+            type("33");
+            prefs.gainDb = 12;
+            compare(field().text, "33");
+            leaveField();
+            compare(prefs.gainDb, 33);
+            compare(field().text, "33");
+            compare(shownMode(), "Set");
         }
 
         function test_settingsReopen() {

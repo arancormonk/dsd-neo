@@ -180,9 +180,9 @@ Item {
                 card.source = "RTL-SDR";
             }},
             {file: "FrequencyField"},
-            // Its App default note and the field's error under Set, both shown in the every-branch pass.
+            // Its hint, its App default note and the field's error under Set, all shown in the every-branch pass.
             {file: "GainEditor", properties: {title: "Gain", inheritable: true, inheritNote: "App default · Automatic",
-                mode: 2, manualText: "50"}},
+                hint: "Automatic adjusts the receiver gain for you.", mode: 2, manualText: "50"}},
             {file: "HistoryDetailSheet", open: function (sheet) {
                 sheet.open({uid: "call-1", name: "Fire dispatch", when: 1767225600, systemName: "County P25", systemUid: "",
                     channel: "", tg: "100", src: "2001", sourceName: "", enc: false, emergency: false, detail: "",

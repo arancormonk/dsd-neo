@@ -194,11 +194,77 @@ Item {
             compare(draftSpy.signalArguments[1][0], "2");
             compare(draftSpy.signalArguments[2][0], "25");
             compare(commitSpy.count, 0, "no commit while typing");
-            // Return ends the edit, and the field then lets go of the focus, which ends it too: the caller's
-            // commit is idempotent.
+            // Return ends the edit, and the field then lets go of the focus: one end, one commit.
             keyClick(Qt.Key_Return);
-            verify(commitSpy.count >= 1, "Return commits");
+            compare(commitSpy.count, 1, "Return commits once");
+            verify(!field.input.activeFocus);
             compare(plain.manualText, "30", "the caller keeps manualText; the editor does not write it");
+            // Back in and out with nothing changed: no new end.
+            field.input.forceActiveFocus();
+            plain.forceActiveFocus();
+            compare(commitSpy.count, 1, "nothing changed, nothing committed");
+            // A new edit ends once again, by focus loss alone.
+            field.input.forceActiveFocus();
+            keyClick("6");
+            plain.forceActiveFocus();
+            compare(commitSpy.count, 2);
+            // A value the caller puts in is a change too: the next end reports it.
+            plain.manualText = "40";
+            field.input.forceActiveFocus();
+            plain.forceActiveFocus();
+            compare(commitSpy.count, 3);
+        }
+
+        // valid and storedValue read the field as shown, even when a caller leaves manualText behind.
+        function test_valid_follows_the_field() {
+            plain.mode = 2;
+            var field = plain.field;
+            field.input.forceActiveFocus();
+            field.input.selectAll();
+            keyClick("5");
+            keyClick("0");
+            compare(plain.manualText, "30");
+            verify(!plain.valid, "the error shows, so it is not valid");
+            verify(isNaN(plain.storedValue));
+            compare(field.error, "Enter a gain from 1 to 49 dB.");
+            field.input.selectAll();
+            keyClick("9");
+            verify(plain.valid);
+            compare(plain.storedValue, 9);
+        }
+
+        // Leaving Set hides the field, which then gives up the focus: no key goes to a hidden field.
+        function test_leaving_set_takes_the_focus_from_the_field() {
+            inherit.mode = 2;
+            var field = inherit.field;
+            field.input.forceActiveFocus();
+            verify(field.input.activeFocus);
+            inherit.mode = 1;
+            verify(!field.input.activeFocus, "Automatic");
+            keyClick("7");
+            compare(field.text, "", "a key after Automatic reached nothing");
+            inherit.mode = 2;
+            field.input.forceActiveFocus();
+            inherit.mode = 0;
+            verify(!field.input.activeFocus, "App default");
+        }
+
+        // The hint explains the choice: under the strip whatever is chosen, above the field.
+        function test_hint_sits_under_the_choice() {
+            var hint = findChild(plain, "gainEditorHint");
+            verify(hint !== null);
+            verify(!findChild(inherit, "gainEditorHint").visible, "no hint, no line");
+            plain.hint = "What Automatic does.";
+            plain.mode = 2;
+            verify(hint.visible);
+            compare(hint.Accessible.name, "What Automatic does.");
+            waitForRendering(plain);
+            var strip = findChild(plain, "plainGainMode");
+            verify(hint.y >= strip.y + strip.height);
+            verify(hint.y + hint.height <= plain.field.y);
+            plain.mode = 1;
+            verify(hint.visible);
+            plain.hint = "";
         }
 
         function test_nothing_is_reported_while_syncing() {

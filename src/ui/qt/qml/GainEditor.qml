@@ -7,10 +7,15 @@ import QtQuick
 // the value can follow the app (`inheritable`). Settings, the system editor and
 // the scan list editor share it. `mode` is 0 App default, 1 Automatic, 2 Set
 // in either layout. The caller owns the state: this never writes `mode` or
-// `manualText`, it reports a choice (`modeSelected`), each keystroke
-// (`draftEdited`) and the end of an edit (`committed`), and the caller keeps
-// `manualText` in step with what was typed. None of them fire while the
-// caller loads or resyncs (`syncing`).
+// `manualText` (the value the caller puts in the field), it reports a choice
+// (`modeSelected`), each keystroke (`draftEdited`) and the end of an edit
+// (`committed`, once per edit: Return and the focus loss after it are one
+// end, and an end with nothing changed since the last is none). A caller
+// keeps `manualText` in step with the typing, so that putting a value back
+// in the field is a change. `valid` and `storedValue` read the field as
+// shown. None of the signals fire while the caller loads or resyncs
+// (`syncing`). Leaving Set takes the focus and the keyboard from the hidden
+// field, after the choice has committed a composing word.
 Column {
     id: editor
 
@@ -18,6 +23,8 @@ Column {
     property bool inheritable: false
     // What App default runs, shown under the choice while it is chosen.
     property string inheritNote: ""
+    // What the choice means, under it whatever is chosen.
+    property string hint: ""
     property int mode: 1
     property string manualText: ""
     property bool syncing: false
@@ -27,10 +34,12 @@ Column {
     // The 1-49 dB field, for a caller that reveals or focuses it on an error.
     readonly property PlexTextField field: gainField
 
-    readonly property bool valid: mode !== 2 || !isNaN(parseGain(manualText))
+    readonly property bool valid: mode !== 2 || !isNaN(parseGain(gainField.text))
     // What the caller stores: -1 App default, 0 Automatic, the set dB, NaN
     // while Set holds no valid gain.
-    readonly property var storedValue: mode === 0 ? -1 : mode === 1 ? 0 : parseGain(manualText)
+    readonly property var storedValue: mode === 0 ? -1 : mode === 1 ? 0 : parseGain(gainField.text)
+    // The end of an edit already reported, until the text changes.
+    property bool commitReported: false
 
     signal draftEdited(string text)
     signal modeSelected(int mode)
@@ -43,6 +52,15 @@ Column {
             return NaN;
         var value = Number(text);
         return value >= 1 && value <= 49 ? value : NaN;
+    }
+
+    // A hidden field keeps no focus: keys typed after Automatic or App default
+    // would go to it unseen, and the keyboard would stay up over nothing.
+    onModeChanged: {
+        if (mode !== 2 && gainField.input.activeFocus) {
+            gainField.input.focus = false;
+            Qt.inputMethod.hide();
+        }
     }
 
     spacing: 6
@@ -60,6 +78,16 @@ Column {
             if (!editor.syncing)
                 editor.modeSelected(editor.inheritable ? index : index + 1);
         }
+    }
+    ReadableText {
+        objectName: "gainEditorHint"
+        width: parent.width
+        visible: editor.hint.length > 0
+        text: editor.hint
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(12)
+        color: Theme.textSecondary
     }
     ReadableText {
         width: parent.width
@@ -88,9 +116,12 @@ Column {
             if (!editor.syncing)
                 editor.draftEdited(text);
         }
+        onTextChanged: editor.commitReported = false
         onEditingFinished: {
-            if (!editor.syncing)
-                editor.committed();
+            if (editor.syncing || editor.commitReported)
+                return;
+            editor.commitReported = true;
+            editor.committed();
         }
     }
 }

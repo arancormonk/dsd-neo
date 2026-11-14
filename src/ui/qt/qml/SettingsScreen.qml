@@ -226,14 +226,16 @@ Item {
 
     // Tuner gain: Automatic (0) or a set 1-49 dB. Only a valid gain is written,
     // when its edit ends while Set is chosen; Automatic writes 0, and Set writes
-    // the last valid gain, the preference's own while it is set, else 30. A
-    // change from elsewhere (a restore) shows once the field has no focus, so
-    // what is being typed is never replaced.
+    // the last valid gain, the preference's own while it is set, else 30 (Set
+    // chosen again first commits what was typed, so a valid gain is kept and a
+    // refused one gives way). A change from elsewhere (a restore) shows once
+    // the field being typed in under Set lets go of the focus: what is typed is
+    // never replaced, and a valid edit then wins, as the user's latest.
     property int lastValidManual: 30
     property bool gainResyncPending: false
     readonly property int storedGain: prefs.gainDb
     onStoredGainChanged: {
-        if (settingsGain.field.input.activeFocus)
+        if (settingsGain.mode === 2 && settingsGain.field.input.activeFocus)
             gainResyncPending = true;
         else
             syncGain();
@@ -250,6 +252,8 @@ Item {
         settingsGain.syncing = false;
     }
     function chooseGainMode(mode) {
+        if (mode === 2 && settingsGain.mode === 2)
+            commitGain();
         settingsGain.mode = mode;
         if (mode === 2)
             settingsGain.manualText = String(lastValidManual);
@@ -917,39 +921,24 @@ Item {
 
                     Item {
                         width: parent.width
-                        height: settingsGainColumn.height + 16
+                        height: settingsGain.height + 16
 
-                        Column {
-                            id: settingsGainColumn
+                        GainEditor {
+                            id: settingsGain
                             x: Theme.cardPadding
                             y: 8
                             width: parent.width - 2 * Theme.cardPadding
-                            spacing: 6
-
-                            GainEditor {
-                                id: settingsGain
-                                width: parent.width
-                                title: qsTr("Tuner gain")
-                                modeObjectName: "settingsGainMode"
-                                fieldObjectName: "settingsGainDb"
-                                onModeSelected: function (mode) {
-                                    screen.chooseGainMode(mode);
-                                }
-                                onDraftEdited: function (text) {
-                                    settingsGain.manualText = text;
-                                }
-                                onCommitted: screen.commitGain()
+                            title: qsTr("Tuner gain")
+                            hint: qsTr("For RTL-SDR and RTL-TCP. Automatic adjusts the receiver gain for you.")
+                            modeObjectName: "settingsGainMode"
+                            fieldObjectName: "settingsGainDb"
+                            onModeSelected: function (mode) {
+                                screen.chooseGainMode(mode);
                             }
-
-                            ReadableText {
-                                objectName: "settingsGainHint"
-                                width: parent.width
-                                text: qsTr("For RTL-SDR and RTL-TCP. Automatic adjusts the receiver gain for you.")
-                                wrapMode: Text.Wrap
-                                font.family: Theme.sans
-                                font.pixelSize: Theme.fontSize(12)
-                                color: Theme.textSecondary
+                            onDraftEdited: function (text) {
+                                settingsGain.manualText = text;
                             }
+                            onCommitted: screen.commitGain()
                         }
                     }
 
