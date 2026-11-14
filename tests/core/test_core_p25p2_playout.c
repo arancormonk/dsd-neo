@@ -1615,6 +1615,8 @@ __wrap_dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapsho
 /* While armed (n > 0), the first patch goes stale right after the n-th group-call policy evaluation from now returns: the
    clock crossing the patch's TTL inside the decode gate. */
 static int g_stale_patch_after_evaluation = 0;
+/* Group-call policy evaluations made through the library's public entry point. */
+static int g_group_evaluations = 0;
 
 int __real_dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
                                              int encrypted, int data_call, dsd_tg_policy_decision* out);
@@ -1625,6 +1627,7 @@ int
 __wrap_dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
                                          int encrypted, int data_call, dsd_tg_policy_decision* out) {
     const int rc = __real_dsd_tg_policy_evaluate_group_call(opts, state, tg, src, encrypted, data_call, out);
+    g_group_evaluations++;
     if (g_stale_patch_after_evaluation > 0 && --g_stale_patch_after_evaluation == 0) {
         g_state.p25_patch_listen_s += 60.0; // 60 s of control-channel listening with no refresh
     }
@@ -1698,6 +1701,42 @@ test_gate_key_matches_its_decision(void) {
     }
     rc |= expect_int("some looks judged the supergroup", refused > 0, 1);
     rc |= expect_int("some looks judged the member", allowed > 0, 1);
+    return rc;
+}
+
+/* The mono gate (the Phase 1 path) judges a frame with one group evaluation, as for a call no patch carries, when the
+   call is stored on its supergroup and that supergroup may play: the judgement the keep made is the decision. */
+static int
+test_mono_gate_evaluates_once(void) {
+    int rc = 0;
+    for (int patched = 0; patched < 2; patched++) {
+        setup(0, 1);
+        g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P1_POS;
+        g_state.currentslot = 0;
+        if (patched) {
+            g_state.p25_patch_count = 1;
+            g_state.p25_patch_active[0] = 1;
+            g_state.p25_patch_sgid[0] = 0x0100U;
+            g_state.p25_patch_wgid_count[0] = 1;
+            g_state.p25_patch_wgid[0][0] = 0x0200U;
+            dsd_p25_patch_touch_members(&g_state, 0);
+        }
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 0x0100U,
+            .policy_target_id = 0x0100U,
+            .ota_source_id = 1000U,
+        };
+        (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        int muted = -1;
+        g_group_evaluations = 0;
+        rc |= expect_int("mono gate runs", dsd_audio_group_gate_mono(&g_opts, &g_state, 0x0100U, 0, &muted), 0);
+        rc |= expect_int(patched ? "kept supergroup plays" : "plain call plays", muted, 0);
+        rc |= expect_int(patched ? "kept supergroup: one evaluation per frame" : "plain call: one evaluation per frame",
+                         g_group_evaluations, 1);
+    }
     return rc;
 }
 
@@ -2264,6 +2303,7 @@ main(void) {
 #if defined(DSD_TEST_WRAP_CALL_STATE)
     rc |= test_verdict_taken_as_the_call_ends();
     rc |= test_gate_key_matches_its_decision();
+    rc |= test_mono_gate_evaluates_once();
 #endif
     rc |= test_close_after_covered_superframe_keeps_18();
     rc |= test_sacch_at_voice_position_fills();

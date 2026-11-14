@@ -104,7 +104,8 @@ dsd_audio_p25_judge_slot(const dsd_opts* opts, const dsd_state* state, int slot,
     dsd_audio_p25_judge_call(opts, state, &call, ota_target, judged);
 }
 
-// A mono gate's group: the first slot judged on another talkgroup than @p ota_target, else @p ota_target.
+// A mono gate's group: the first slot judged on another talkgroup than @p ota_target, else @p ota_target with the first
+// decision a slot made for it (the gate reuses it only for a call of that source on @p ota_target).
 static void
 dsd_audio_p25_judge_group(const dsd_opts* opts, const dsd_state* state, uint32_t ota_target,
                           dsd_audio_judged_call* judged) {
@@ -118,6 +119,9 @@ dsd_audio_p25_judge_group(const dsd_opts* opts, const dsd_state* state, uint32_t
         if (slot_judged.target != ota_target) {
             *judged = slot_judged;
             return;
+        }
+        if (slot_judged.decided && !judged->decided) {
+            *judged = slot_judged;
         }
     }
 }
