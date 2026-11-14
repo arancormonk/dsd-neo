@@ -133,6 +133,18 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_iq_fixtures as bif
+from build_iq_fixtures import (
+    bits_to_levels,
+    fm_from_levels,
+    msb_bits,
+    nxdn_levels,
+    nxdn_response,
+    raised_cosine,
+    rrc_response,
+    sinc_response,
+    spectrum_taps,
+    ysf_levels,
+)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE_DIR = os.path.join(ROOT, "tests", "fixtures", "iq")
@@ -170,7 +182,6 @@ DMR_RAMP_S = 0.0015  # ETSI TS 102 361-1 10.2.3.1.1, figure 10.3: regions A and 
 NFM_NARROW_TONE_HZ = 1500.0
 NFM_WIDE_TONE_HZ = 3000.0
 AM_TONE_DEPTH = 0.3
-SHAPER_SPAN_SYMBOLS = 8  # transmit filter taps either side of the centre
 
 # D-STAR DV (JARL D-STAR standard; MMDVM DStarTX.cpp; OP25 dv_tx.py)
 DSTAR_BIT_RATE = 4800
@@ -339,41 +350,9 @@ def symbol_levels(dibits, floats, sync_levels):
     return levels
 
 
-def spectrum_taps(response, symbol_rate):
-    """FIR taps (SHAPER_SPAN_SYMBOLS either side) of a zero-phase transfer function response(f) given in Hz on a
-    1 Hz grid, summing to the samples per symbol: a held symbol level comes out at its own value."""
-    freqs = np.arange(RATE_HZ // 2 + 1, dtype=np.float64)
-    impulse = np.fft.fftshift(np.fft.irfft(response(freqs), RATE_HZ))
-    sps = RATE_HZ // symbol_rate
-    half = SHAPER_SPAN_SYMBOLS * sps
-    centre = RATE_HZ // 2
-    taps = impulse[centre - half : centre + half + 1]
-    return taps * sps / taps.sum()
-
-
-def raised_cosine(freqs, alpha, symbol_rate):
-    low = (1.0 - alpha) * symbol_rate / 2.0
-    high = (1.0 + alpha) * symbol_rate / 2.0
-    edge = 0.5 * (1.0 + np.cos(math.pi * (freqs - low) / (alpha * symbol_rate)))
-    return np.where(freqs <= low, 1.0, np.where(freqs <= high, edge, 0.0))
-
-
-def sinc_response(freqs, symbol_rate):
-    return np.sinc(freqs / symbol_rate)  # sin(pi f T) / (pi f T)
-
-
 def c4fm_response(freqs):
     """TIA-102.BAAA C4FM: Nyquist raised cosine (alpha 0.2) times the inverse-sinc shaping filter, 0 above 2880 Hz."""
     return raised_cosine(freqs, 0.2, 4800) / sinc_response(np.minimum(freqs, 2880.0), 4800)
-
-
-def nxdn_response(symbol_rate):
-    """NXDN TS 1-A 3.4: square root raised cosine (alpha 0.2) times sinc."""
-    return lambda freqs: np.sqrt(raised_cosine(freqs, 0.2, symbol_rate)) * sinc_response(freqs, symbol_rate)
-
-
-def rrc_response(alpha, symbol_rate):
-    return lambda freqs: np.sqrt(raised_cosine(freqs, alpha, symbol_rate))
 
 
 def harmonized_response(freqs):
@@ -387,14 +366,6 @@ def symbol_span(name, symbol_rate):
     first, last = carrier_bounds(load_fixture(name))
     sps = RATE_HZ / symbol_rate
     return math.ceil(first / sps), int(last // sps)
-
-
-def fm_from_levels(levels, symbol_rate, response, outer_hz):
-    sps = RATE_HZ // symbol_rate
-    impulses = np.zeros(len(levels) * sps)
-    impulses[::sps] = levels
-    freq_hz = np.convolve(impulses, spectrum_taps(response, symbol_rate), mode="same") * outer_hz / 3.0
-    return np.exp(2j * math.pi * np.cumsum(freq_hz) / RATE_HZ)
 
 
 def hdqpsk_from_levels(levels, response):
@@ -601,93 +572,12 @@ def dstar_source(bt):
     return Source(samples, note=note, expected=expected, sent=len(expected))
 
 
-# ---------------------------------------------------------------- shared FEC (YSF and NXDN generators)
-
-
-def msb_bits(value, width):
-    return [(value >> (width - 1 - i)) & 1 for i in range(width)]
-
-
-def k5_convolve(bits):
-    """Rate-1/2, K = 5 convolutional code of YSF and NXDN: g1 = 1+D^3+D^4 sent first, g2 = 1+D+D^2+D^4, register
-    from zero (MMDVMHost YSFConvolution.cpp and NXDNConvolution.cpp encode(); NXDN TS 1-A 4.5)."""
-    d1 = d2 = d3 = d4 = 0
-    out = []
-    for d in bits:
-        out += [d ^ d3 ^ d4, d ^ d1 ^ d2 ^ d4]
-        d1, d2, d3, d4 = d, d1, d2, d3
-    return out
-
-
-def bits_to_levels(bits):
-    """Bit pairs to 4FSK levels, first bit most significant (01 +3, 00 +1, 10 -1, 11 -3; NXDN TS 1-A Table 3.3-1,
-    the YSF and P25 mapping alike)."""
-    return np.array([bif.DPMR_DIBIT_TO_LEVEL[2 * bits[i] + bits[i + 1]] for i in range(0, len(bits), 2)])
-
-
-# ---------------------------------------------------------------- YSF generator
+# ---------------------------------------------------------------- YSF and NXDN sources
 #
-# Yaesu publishes no System Fusion air interface, so this follows two independent implementations: MMDVMHost
-# (YSFFICH.cpp, YSFConvolution.cpp, Golay24128.cpp, CRC.cpp addCCITT162) and dsd-neo's decoder
-# (src/protocol/ysf/ysf.c ysf_conv_fich(), ysf_crc16()). A frame is 480 symbols (100 ms at 4800 symbol/s): the
-# frame sync, the FICH (200 bits), then 720 payload bits.
+# The frame generators live in tools/build_iq_fixtures.py, which builds the ysf_synth, nxdn96_synth and nxdn48_synth
+# fixtures from them.
 
-YSF_FS = 0xD471C9634D  # MMDVM YSFDefines.h YSF_SYNC_BYTES; dsd-neo FUSION_SYNC
 YSF_FRAMES_PER_SECOND = 10
-YSF_PAYLOAD_BITS = 720
-YSF_SEED = 834
-GOLAY_23_12 = 0xC75  # x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1
-
-
-def golay_24_12(data):
-    """Extended Golay (24,12): data in the top 12 bits, the (23,12) parity, then even overall parity (MMDVM
-    ENCODING_TABLE_24128 layout)."""
-    rem = data << 11
-    for shift in range(22, 10, -1):
-        if rem >> shift & 1:
-            rem ^= GOLAY_23_12 << (shift - 11)
-    word = ((data << 11) | rem) << 1
-    return word | (word.bit_count() & 1)
-
-
-def crc16_ccitt_inverted(bits):
-    """CRC-16 x^16+x^12+x^5+1, register from zero, inverted (MMDVM addCCITT162; dsd-neo ysf_crc16())."""
-    crc = 0
-    for bit in bits:
-        top = (crc >> 15) & 1
-        crc = (crc << 1) & 0xFFFF
-        if top ^ bit:
-            crc ^= 0x1021
-    return crc ^ 0xFFFF
-
-
-def ysf_fich_bits(fn):
-    """The 200 transmitted FICH bits of a V/D mode 2 communications frame numbered fn of 8: FI 1, CS 0, CM 0 (group),
-    BN 0, BT 0, FN, FT 7, MR 2, VoIP 0, DT 2, SQL 0."""
-    info = msb_bits(1, 2) + msb_bits(0, 2) + msb_bits(0, 2) + msb_bits(0, 2) + msb_bits(0, 2) + msb_bits(fn, 3)
-    info += msb_bits(7, 3) + [0, 0] + msb_bits(2, 3) + [0] + msb_bits(2, 2) + [0] + msb_bits(0, 7)
-    info += msb_bits(crc16_ccitt_inverted(info), 16)
-    words = [int("".join(map(str, info[12 * k : 12 * k + 12])), 2) for k in range(4)]
-    coded = k5_convolve([b for w in words for b in msb_bits(golay_24_12(w), 24)] + [0, 0, 0, 0])
-    sent = [0] * 200
-    for i in range(100):
-        position = 40 * (i % 5) + 2 * (i // 5)  # MMDVM YSFFICH.cpp INTERLEAVE_TABLE
-        sent[position], sent[position + 1] = coded[2 * i], coded[2 * i + 1]
-    return sent
-
-
-def ysf_levels(frames, outer_sync=False):
-    """The symbol levels of the generator's first frames (also the I/Q fixture ysf_synth in
-    tools/build_iq_fixtures.py)."""
-    rng = np.random.default_rng(YSF_SEED)
-    levels = []
-    for frame in range(frames):
-        sync = bits_to_levels(msb_bits(YSF_FS, 40))
-        if outer_sync:
-            sync = 3.0 * np.sign(sync)
-        rest = ysf_fich_bits(frame % 8) + rng.integers(0, 2, YSF_PAYLOAD_BITS).tolist()
-        levels += [sync, bits_to_levels(rest)]
-    return np.concatenate(levels)
 
 
 def ysf_source(outer_hz, outer_sync=False):
@@ -699,77 +589,6 @@ def ysf_source(outer_hz, outer_sync=False):
         ", sync at outer levels" if outer_sync else ""
     )
     return Source(samples, note=note, sent=round(DURATION_S * YSF_FRAMES_PER_SECOND))
-
-
-# ---------------------------------------------------------------- NXDN generator
-#
-# NXDN TS 1-A (frame, LICH, SACCH coding, scrambler) and MMDVMHost (NXDNLICH.cpp, NXDNSACCH.cpp, NXDNCRC.cpp
-# createCRC6(), NXDNConvolution.cpp, NXDNControl.cpp SCRAMBLER), checked against dsd-neo's decoder
-# (src/protocol/nxdn). A frame is 384 bits (192 symbols): FSW 20, LICH 16, SACCH 60, then 288 bits of voice. NXDN96
-# and NXDN48 share it at 4800 and 2400 symbol/s (40 and 80 ms).
-
-NXDN_FSW = 0xCDF59  # NXDN TS 1-A Table 4.4-2
-# LICH: RF channel RDCH (2), functional channel SACCH superframe (2), option voice in both halves (3), outbound (1)
-NXDN_LICH = (2 << 6) | (2 << 4) | (3 << 2) | (1 << 1)
-NXDN_RAN = 1
-NXDN_SEED = 834
-# The 72-bit layer 3 message the superframe's four SACCHs carry: VCALL (type 0x01), group, source 101, destination
-# 1, clear (NXDN TS 1-A 6.4.1.1 field order, as MMDVM NXDNLayer3).
-NXDN_SACCH_MESSAGE = bytes([0x01, 0x00, 0x20, 0x00, 0x65, 0x00, 0x01, 0x00, 0x00])
-NXDN_SACCH_PUNCTURE = (5, 11, 17, 23, 29, 35, 41, 47, 53, 59, 65, 71)  # MMDVM NXDNSACCH.cpp PUNCTURE_LIST
-
-
-def nxdn_scrambler_signs():
-    """The per-symbol sign of the scrambler over a frame's 192 symbols: X^9 + X^4 + 1 from S8..S0 = 011100100, reset
-    every frame, nothing on the FSW's 10 symbols (NXDN TS 1-A 4.6)."""
-    reg = [0, 0, 1, 0, 0, 1, 1, 1, 0]  # S0..S8
-    signs = [1] * 10
-    for _ in range(182):
-        out = reg[0]
-        signs.append(-1 if out else 1)
-        reg = reg[1:] + [reg[0] ^ reg[4]]
-    return np.array(signs, dtype=np.float64)
-
-
-def nxdn_crc6(bits):
-    """CRC-6 of the SACCH: x^6 + x^5 + x^2 + x + 1, register 0x3F (MMDVM createCRC6(); NXDN TS 1-A 4.5.1)."""
-    crc = 0x3F
-    for bit in bits:
-        top = (crc >> 5) & 1
-        crc = (crc << 1) & 0x3F
-        if bit ^ top:
-            crc ^= 0x27
-    return msb_bits(crc, 6)
-
-
-def nxdn_frame_bits(part, rng):
-    """One RDCH voice frame carrying part (0-3) of the superframe's SACCH message; 384 bits before scrambling."""
-    lich = NXDN_LICH | ((NXDN_LICH >> 4).bit_count() & 1)  # even parity over the 4 most significant bits
-    bits = msb_bits(NXDN_FSW, 20)
-    for b in msb_bits(lich, 8):
-        bits += [b, 1]  # NXDN TS 1-A 4.5.3: each LICH bit sent as the dibit (b, 1)
-    message = [b for byte in NXDN_SACCH_MESSAGE for b in msb_bits(byte, 8)]
-    sacch = msb_bits(3 - part, 2) + msb_bits(NXDN_RAN, 6) + message[18 * part : 18 * part + 18]
-    coded = k5_convolve(sacch + nxdn_crc6(sacch) + [0, 0, 0, 0])
-    punctured = [b for i, b in enumerate(coded) if i not in NXDN_SACCH_PUNCTURE]
-    interleaved = [0] * 60
-    for i, b in enumerate(punctured):
-        interleaved[5 * (i % 12) + i // 12] = b  # MMDVM NXDNSACCH.cpp INTERLEAVE_TABLE
-    return bits + interleaved + rng.integers(0, 2, 288).tolist()
-
-
-def nxdn_levels(frames, outer_sync=False):
-    """The symbol levels of the generator's first frames, 192 a frame at either rate (also the I/Q fixtures
-    nxdn96_synth and nxdn48_synth, tools/build_iq_fixtures.py)."""
-    rng = np.random.default_rng(NXDN_SEED)
-    signs = nxdn_scrambler_signs()
-    levels = []
-    for frame in range(frames):
-        frame_levels = bits_to_levels(nxdn_frame_bits(frame % 4, rng)) * signs
-        if outer_sync:
-            frame_levels[:10] = 3.0 * np.sign(frame_levels[:10])
-        levels.append(frame_levels)
-    return np.concatenate(levels)
 
 
 def nxdn_source(symbol_rate, outer_hz, outer_sync=False):
