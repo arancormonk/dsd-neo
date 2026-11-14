@@ -2702,8 +2702,12 @@ suite runs under this compiler.
   (`dsd_call_state_update_policy_target()`, no boundary; the received service options and priority stay as received)
   and the ledger takes its priority; when nothing in the patch may be followed the held call is described with no
   priority protection (-1). Admission also judges the row-edit release (`tg_listen_blocked_slots()`), the talkgroup
-  Hold check (`dsd_scan_tg_hold_call_active()`) and conventional trunk-scan activity; the -Y voice check takes the
-  media resolution, and a conventional (trunking off) call is published on the media target. Tests:
+  Hold check (`dsd_scan_tg_hold_call_active()`, only for a Hold on the supergroup or a current member: any other Hold
+  answers no without an evaluation) and conventional trunk-scan activity. The -Y voice check runs every frame, so it
+  takes the keep-or-resolve media target the audio follows (`dsd_p25_patch_media_resolve()`) with that target's own
+  tune verdict and the encrypted-call rule (`dsd_tg_policy_encrypted_tune_denied()`): a member that plays but may not be
+  followed does not hold the channel (decided limit). A conventional (trunking off) call is published on the media
+  target, keeping the one its ACTIVE call names. Tests:
   `CORE_P25_PATCH_POLICY`, `CORE_TALKGROUP_POLICY`, `P25_GRANT_POLICY`, `P25_PATCH_FOLLOW`, `CORE_AUDIO_GROUP_GATE`,
   `CORE_P25P2_PLAYOUT`, `CORE_CALL_ALERT_HISTORY`, `APP_COMMAND_QUEUE` (`test_row_edit_keeps_a_patch_another_member_carries`),
   `ENGINE_P25_PATCH_SCAN`, `ENGINE_TRUNK_SCAN` (`test_p25_conventional_activity_patch`), `UI_QT_METRICS_MODEL`

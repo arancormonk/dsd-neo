@@ -139,6 +139,34 @@ dsd_p25_patch_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t sg,
     return -1;
 }
 
+int
+dsd_p25_patch_media_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t stored, uint32_t src,
+                            dsd_p25_patch_resolution* out) {
+    (void)opts;
+    (void)state;
+    (void)sg;
+    (void)stored;
+    (void)src;
+    (void)out;
+    g_failures++;
+    return -1;
+}
+
+int
+dsd_p25_patch_is_current_member(const dsd_state* state, uint32_t sg, uint32_t wg) {
+    (void)state;
+    (void)sg;
+    (void)wg;
+    g_failures++;
+    return 0;
+}
+
+/* The stand-in evaluators apply the encrypted-call tuning rule themselves (test_tune_allowed()). */
+int
+dsd_tg_policy_encrypted_tune_denied(const dsd_opts* opts, int encrypted) {
+    return encrypted && opts && opts->trunk_tune_enc_calls == 0;
+}
+
 /* The radio the stand-in radio list blocks (0: none). */
 static uint32_t g_blocked_radio = 0U;
 

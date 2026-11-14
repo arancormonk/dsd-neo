@@ -2114,6 +2114,11 @@ tg_policy_private_set_hold_state(const dsd_state* state, uint32_t src, uint32_t 
     }
 }
 
+int
+dsd_tg_policy_encrypted_tune_denied(const dsd_opts* opts, int encrypted) {
+    return encrypted && opts && opts->trunk_tune_enc_calls == 0;
+}
+
 static void DSD_ATTR_USED
 tg_policy_apply_group_tune_blocks(const dsd_opts* opts, int encrypted, int data_call, dsd_tg_policy_decision* out) {
     if (!out) {
@@ -2127,7 +2132,7 @@ tg_policy_apply_group_tune_blocks(const dsd_opts* opts, int encrypted, int data_
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_DATA_DISABLED;
     }
-    if (encrypted && opts && opts->trunk_tune_enc_calls == 0) {
+    if (dsd_tg_policy_encrypted_tune_denied(opts, encrypted)) {
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED;
     }
@@ -2151,7 +2156,7 @@ tg_policy_apply_private_tune_blocks(const dsd_opts* opts, int encrypted, int dat
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_DATA_DISABLED;
     }
-    if (encrypted && opts && opts->trunk_tune_enc_calls == 0) {
+    if (dsd_tg_policy_encrypted_tune_denied(opts, encrypted)) {
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED;
     }

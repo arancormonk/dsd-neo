@@ -745,6 +745,34 @@ dsd_p25_patch_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t sg,
     return 0;
 }
 
+/* The voice check's keep-or-resolve and the Hold check's membership read, on the same stand-in: the stored target is
+   never kept, so the resolution above answers; a member is current when it is g_patch_member of the live g_patch_sg. */
+int
+dsd_p25_patch_media_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t stored, uint32_t src,
+                            dsd_p25_patch_resolution* out) {
+    (void)stored;
+    if (!dsd_p25_patch_sg_live(state, sg)) {
+        if (out) {
+            DSD_MEMSET(out, 0, sizeof(*out));
+            out->policy_target = sg;
+        }
+        return out ? 0 : -1;
+    }
+    return dsd_p25_patch_resolve(opts, state, sg, src, 0, 0, DSD_P25_PATCH_RESOLVE_MEDIA, NULL, NULL, out) == 0 ? 1
+                                                                                                                : -1;
+}
+
+int
+dsd_p25_patch_is_current_member(const dsd_state* state, uint32_t sg, uint32_t wg) {
+    return dsd_p25_patch_sg_live(state, sg) && wg != 0U && wg == g_patch_member;
+}
+
+/* The stand-in evaluators apply the encrypted-call tuning rule themselves (test_tg_policy_tune_allowed()). */
+int
+dsd_tg_policy_encrypted_tune_denied(const dsd_opts* opts, int encrypted) {
+    return encrypted && opts && opts->trunk_tune_enc_calls == 0;
+}
+
 /* No radio list in this fixture: no radio is blocked. */
 int
 dsd_tg_policy_radio_blocked(const dsd_state* state, uint32_t radio_id) {

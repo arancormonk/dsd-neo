@@ -116,20 +116,33 @@ scan_voice_snapshot_is_voice(const dsd_call_snapshot* call) {
     return 1;
 }
 
-/* A P25 group call on a live patch's supergroup is judged through the patch resolver (@p purpose): the supergroup, then
- * each current member, so a member deleted from the patch, a final block on the supergroup and a listened member still
- * carrying it all count. 0 for any other call, which keeps its stored policy target. */
-static int
-scan_voice_patch_resolve(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call, uint32_t source,
-                         int encrypted, dsd_p25_patch_resolve_purpose purpose, dsd_p25_patch_resolution* out) {
+/* The supergroup of a P25 group call on a live patch, judged through the patch resolver; 0 for any other call, which
+ * keeps its stored policy target. */
+static uint32_t
+scan_voice_call_patch_sg(const dsd_state* state, const dsd_call_snapshot* call) {
     if (!DSD_SYNC_IS_P25(call->protocol) || call->kind == DSD_CALL_KIND_PRIVATE_VOICE
         || call->kind == DSD_CALL_KIND_DATA || call->ota_target_id == 0U || call->ota_target_id > UINT32_MAX
         || !dsd_p25_patch_sg_live(state, (uint32_t)call->ota_target_id)) {
+        return 0U;
+    }
+    return (uint32_t)call->ota_target_id;
+}
+
+/* The voice check of a patched call, judged on the call the audio follows: the patch's keep-or-resolve media target
+ * (dsd_p25_patch_media_resolve(), as the audio gate judges it every frame, so a kept call costs what the gate's does),
+ * with that target's own tune verdict and the encrypted-call tuning rule its unencrypted evaluation leaves out. The -Y
+ * gate stays for traffic it plays and would follow, as for a plain call: a member that plays but may not be followed
+ * (a Hold through a mode block, an encryption lockout of its own) does not hold the channel, even when a member the
+ * media ranking put below it could be followed (decided limit: one resolution per frame, the audio's). */
+static int
+scan_voice_patch_allows(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call, uint32_t sg,
+                        uint32_t source, int encrypted) {
+    const uint32_t stored = call->policy_target_id <= UINT32_MAX ? (uint32_t)call->policy_target_id : 0U;
+    dsd_p25_patch_resolution patch;
+    if (dsd_p25_patch_media_resolve(opts, state, sg, stored, source, &patch) != 1) {
         return 0;
     }
-    return dsd_p25_patch_resolve(opts, state, (uint32_t)call->ota_target_id, source, encrypted, 0, purpose, NULL, NULL,
-                                 out)
-           == 0;
+    return patch.decision.tune_allowed && !dsd_tg_policy_encrypted_tune_denied(opts, encrypted);
 }
 
 static int
@@ -148,9 +161,9 @@ scan_voice_snapshot_policy_allows(const dsd_opts* opts, const dsd_state* state, 
     const uint32_t source = call->ota_source_id > UINT32_MAX ? 0U : (uint32_t)call->ota_source_id;
     const int encrypted =
         call->crypto == DSD_CALL_CRYPTO_ENCRYPTED || call->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
-    dsd_p25_patch_resolution patch;
-    if (scan_voice_patch_resolve(opts, state, call, source, encrypted, DSD_P25_PATCH_RESOLVE_MEDIA, &patch)) {
-        return patch.decision.tune_allowed;
+    const uint32_t patch_sg = scan_voice_call_patch_sg(state, call);
+    if (patch_sg != 0U) {
+        return scan_voice_patch_allows(opts, state, call, patch_sg, source, encrypted);
     }
     if (wide_target == 0U || wide_target > UINT32_MAX) {
         /* Unknown target (LC never decoded, or not a 32-bit ID) counts as voice, unless the radio list blocks its
@@ -201,15 +214,21 @@ dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voic
 }
 
 /* Whether call @p call is the held talkgroup's (@p hold). A P25 group call on a live patch's supergroup is the held
- * one when the patch resolver's admission picks the held talkgroup (the supergroup or a member the patch carries now;
- * a final block on the supergroup picks neither); any other call by its remapped policy target, the OTA target standing
- * in when no remap applies. */
+ * one when the patch resolver's admission picks the held talkgroup; only the supergroup and the members the patch
+ * carries now can be picked, so any other Hold answers no without an evaluation (the check runs every frame). Any
+ * other call is held by its remapped policy target, the OTA target standing in when no remap applies. */
 static int
 scan_tg_hold_matches_call(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call, uint64_t hold) {
-    dsd_p25_patch_resolution patch;
-    const uint32_t source = call->ota_source_id > UINT32_MAX ? 0U : (uint32_t)call->ota_source_id;
-    if (scan_voice_patch_resolve(opts, state, call, source, 0, DSD_P25_PATCH_RESOLVE_ADMIT, &patch)) {
-        return patch.eligible && hold == (uint64_t)patch.policy_target;
+    const uint32_t sg = scan_voice_call_patch_sg(state, call);
+    if (sg != 0U) {
+        if (hold > UINT32_MAX || (hold != sg && !dsd_p25_patch_is_current_member(state, sg, (uint32_t)hold))) {
+            return 0;
+        }
+        const uint32_t source = call->ota_source_id > UINT32_MAX ? 0U : (uint32_t)call->ota_source_id;
+        dsd_p25_patch_resolution patch;
+        return dsd_p25_patch_resolve(opts, state, sg, source, 0, 0, DSD_P25_PATCH_RESOLVE_ADMIT, NULL, NULL, &patch)
+                   == 0
+               && patch.eligible && hold == (uint64_t)patch.policy_target;
     }
     const uint64_t target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
     return hold == target;

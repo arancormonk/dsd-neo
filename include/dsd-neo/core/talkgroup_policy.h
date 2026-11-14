@@ -153,6 +153,14 @@ int dsd_tg_policy_decision_only_radio_blocks(const dsd_tg_policy_decision* decis
  */
 int dsd_tg_policy_radio_blocked(const dsd_state* state, uint32_t radio_id);
 
+/**
+ * @brief Whether an encrypted call is denied tuning by the options alone (encrypted-call tuning off).
+ *
+ * The one rule the evaluators apply as DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED; a caller judging a decision evaluated
+ * unencrypted (a media resolution) applies it for an encrypted call. 0 for NULL @p opts or a clear call.
+ */
+int dsd_tg_policy_encrypted_tune_denied(const dsd_opts* opts, int encrypted);
+
 typedef struct {
     uint32_t target_id; /**< The call's over-the-air target: the active-call records match by it, so a patched P25 call
                              is one record (its supergroup) whichever member judges it; the decision carries the policy

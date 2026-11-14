@@ -9639,6 +9639,17 @@ else()
         PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
     )
 endif()
+# The voice and Hold checks run every frame: their policy evaluations are counted where GNU ld --wrap links.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_options(
+        dsd-neo_test_engine_p25_patch_scan
+        PRIVATE "LINKER:--wrap=dsd_tg_policy_evaluate_group_call"
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_p25_patch_scan
+        PRIVATE DSD_TEST_WRAP_POLICY_EVALUATION
+    )
+endif()
 add_test(NAME ENGINE_P25_PATCH_SCAN COMMAND dsd-neo_test_engine_p25_patch_scan)
 
 add_executable(
