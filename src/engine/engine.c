@@ -4335,6 +4335,39 @@ live_scanner_quiet_pending_reset(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* The reasons a frame boundary hands the receiver back to the outer loop, after the trunk scan's per-frame tick: a
+   Signal search's turn, the receive policy, the voice gate, the per-visit cap and a -Y row's quiet result. Returns 1
+   when the synced-frames loop ends there. */
+static int
+live_scanner_frame_boundary_yields(const dsd_opts* opts, dsd_state* state, int frame_dispatchable) {
+    if (dsd_engine_signal_search_should_yield(opts, state)) {
+        dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
+        return 1;
+    }
+    if (live_scanner_receive_should_yield(opts, state)) {
+        return 1;
+    }
+    if (opts->scanner_mode == 1 && opts->scan_voice_only == 1) {
+        dsd_scan_voice_gate_tick(opts, state, frame_dispatchable, dsd_decode_now_mono_s());
+        if (dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s())) {
+            return 1;
+        }
+    }
+    /* A busy legacy -Y row can keep syncing indefinitely. Maintain the visit clock
+     * independently of the voice gate and return to noCarrier() when it expires. */
+    dsd_engine_scan_visit_tick(opts, state, dsd_decode_now_mono_s());
+    if (dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s())) {
+        /* noCarrier() owns the hop, and it only runs once this loop exits. Dropping sync is how
+         * the voice-gate escape above hands control back, and the cap needs the same door: a
+         * row that keeps syncing would otherwise never let the outer loop reach the step. */
+        return 1;
+    }
+    /* A -Y row's quiet result (issue #834): a rejected sync no longer ends the check, so under syncs that keep coming
+       (NXDN48 or dPMR noise) the -Y check is serviced at every frame boundary and the row steps here when it hands
+       back, as after the hunt's hand-back: noCarrier() decides. */
+    return dsd_engine_scan_quiet_frame_yield(opts, state);
+}
+
 static void
 live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_threshold_cache* threshold_cache,
                                    uint64_t* frame_tune_generation) {
@@ -4367,37 +4400,14 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
             state->synctype = DSD_SYNC_NONE;
             break;
         }
+        /* A trunk-scan target's quiet check is serviced at every frame boundary too (issue #834 D8): under syncs its
+           protocol's gate rejects the hunts stay too short to reach their 300-symbol service. The per-frame tick then
+           decides as at any tick. One load with skip-silent off. */
+        if (opts->scan_skip_silent) {
+            (void)dsd_engine_scan_quiet_frame_service(opts, state, SCAN_QUIET_OWNER_TRUNK);
+        }
         dsd_trunk_scan_hook_tick(opts, state);
-        if (dsd_engine_signal_search_should_yield(opts, state)) {
-            dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
-            state->synctype = DSD_SYNC_NONE;
-            break;
-        }
-        if (live_scanner_receive_should_yield(opts, state)) {
-            state->synctype = DSD_SYNC_NONE;
-            break;
-        }
-        if (opts->scanner_mode == 1 && opts->scan_voice_only == 1) {
-            dsd_scan_voice_gate_tick(opts, state, frame_dispatchable, dsd_decode_now_mono_s());
-            if (dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s())) {
-                state->synctype = DSD_SYNC_NONE;
-                break;
-            }
-        }
-        /* A busy legacy -Y row can keep syncing indefinitely. Maintain the visit clock
-         * independently of the voice gate and return to noCarrier() when it expires. */
-        dsd_engine_scan_visit_tick(opts, state, dsd_decode_now_mono_s());
-        if (dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s())) {
-            /* noCarrier() owns the hop, and it only runs once this loop exits. Dropping sync is how
-             * the voice-gate escape above hands control back, and the cap needs the same door: a
-             * row that keeps syncing would otherwise never let the outer loop reach the step. */
-            state->synctype = DSD_SYNC_NONE;
-            break;
-        }
-        /* A -Y row's quiet result (issue #834): a rejected sync no longer ends the check, so under syncs that keep
-           coming (NXDN48 or dPMR noise) the row steps here, at a frame boundary, as after the hunt's hand-back:
-           noCarrier() decides. */
-        if (dsd_engine_scan_quiet_frame_yield(opts, state)) {
+        if (live_scanner_frame_boundary_yields(opts, state, frame_dispatchable)) {
             state->synctype = DSD_SYNC_NONE;
             break;
         }

@@ -13245,6 +13245,60 @@ test_live_trunk_scan_skips_a_quiet_target(int on) {
     return rc;
 }
 
+/* Issue #834 D8, trunk scan: a target whose noise keeps passing a sync word its protocol's gate rejects (NXDN48 or dPMR
+   noise) keeps the synced-frames loop running, so the hunt's 300-symbol service never comes and the outer pass that
+   publishes the target never runs. The loop's frame-boundary service collects the quiet result after the first
+   rejected frame, and the per-frame tick skips the target with its NOTICE, long before its 3 s dwell. With the setting
+   off nothing is asked and the target stays. */
+static int
+test_trunk_quiet_noise_syncs_still_skip(int on) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    yq_dmr_only(opts);
+    opts->scan_skip_silent = on;
+    char path[DSD_TEST_PATH_MAX];
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = on ? 1301012500L : 1311012500L;
+    g_live_trunk_dwell_ms = 3000;
+    int rc = expect_true("trunk scan set up", live_trunk_scan(opts, state, path, sizeof path, base_hz) == 0);
+    g_live_trunk_dwell_ms = 250;
+    g_yq.gen_base = 100U; /* the landing's capture is newer than the generation read at its tune */
+    /* One outer pass: its tick notes target 0's landing and publishes it, and the tap is asked. No pass after it
+       collects the answer: only the frame boundaries can. */
+    if (on) {
+        dsd_engine_trunk_scan_quiet_service_pass(state);
+    }
+    dsd_trunk_scan_hook_tick(opts, state);
+    rc |= expect_true("target 0 landed and, on, measured",
+                      g_rtl_tune_freq == (uint32_t)base_hz && g_yq.requests == (on ? 1 : 0)
+                          && scan_quiet_phase_get(state) == (on ? SCAN_QUIET_REQUESTED : SCAN_QUIET_SUSPENDED));
+    const int tunes = g_rtl_tune_calls;
+    run_synced_frames(opts, state, 5, -1);
+    if (on) {
+        rc |= expect_true("the per-frame tick skips the target at the first rejected frame's boundary",
+                          g_rtl_tune_calls == tunes + 1 && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L)
+                              && g_yq.notices == 1);
+    } else {
+        rc |= expect_true("off: nothing asked, the target stays",
+                          g_rtl_tune_calls == tunes && g_yq.requests == 0 && g_yq.notices == 0);
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    (void)remove(path);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: trunk scan noise syncs, skip-silent %d\n", on);
+    }
+    return rc;
+}
+
 static int
 test_scan_quiet_decisions(void) {
     int rc = 0;
@@ -13258,6 +13312,8 @@ test_scan_quiet_decisions(void) {
     for (int which = YQ_LAND_TYPED_LATE; which <= YQ_LAND_RESUME; which++) {
         rc |= yq_landing_case(which);
     }
+    rc |= test_trunk_quiet_noise_syncs_still_skip(1);
+    rc |= test_trunk_quiet_noise_syncs_still_skip(0);
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_typed_row_judges_the_monitor(12500);
     rc |= test_y_quiet_typed_row_judges_the_monitor(0);

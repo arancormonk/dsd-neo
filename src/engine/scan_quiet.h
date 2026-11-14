@@ -17,7 +17,11 @@
  *   newer than the one read at the tune request, centred where the visit landed. Looked at no more often than every
  *   50 ms, for no longer than 1000 ms (realtime) after the landing was noted (a trunk-scan park still in flight: after
  *   the tuning ledger published its completion, which the hunt reads lock-free), or after the check started again on a
- *   visit it already published.
+ *   visit it already published. A frame boundary of the synced-frames loop services the check too
+ *   (dsd_engine_scan_quiet_frame_service()): it reads the capture without moving that 50 ms schedule and requests only
+ *   SCAN_QUIET_FRAME_SETTLE_MS after the first qualifying capture the service saw (a retry: after the retryable
+ *   failure), and a capture seen in time is no capture failure: its deadline is max(origin + 1000 ms, settle start +
+ *   125 ms), and a capture still there past it is requested.
  * - REQUESTED: the tap measures; 400 ms (realtime) to answer. A lost, capture-changed or dropped request waits for the
  *   capture again, at most 3 times a visit; clipping, a non-finite sample, a failed transform or the deadline end it.
  * - READY: a quiet result the scan may skip on, for 250 ms.
@@ -57,6 +61,9 @@ enum {
     SCAN_QUIET_REQUEST_DEADLINE_MS = 400,
     SCAN_QUIET_READY_MAX_AGE_MS = 250,
     SCAN_QUIET_MAX_RETRIES = 3,
+    /** A request a frame-boundary service starts waits this long (issue #834 D8): from the first qualifying capture the
+        service saw, or from the retryable failure it collected. */
+    SCAN_QUIET_FRAME_SETTLE_MS = 125,
 };
 
 /** The longest a PARTIAL content note holds a quiet result back, in ms (decode clock): above every protocol's hold. */
@@ -223,8 +230,16 @@ void dsd_engine_scan_quiet_note_frame_sync(dsd_state* state);
 void dsd_engine_scan_quiet_frame_end(dsd_state* state);
 /** Nothing is waited for any more: the frame loop left before a frame's end, or a boundary ended what it waited on. */
 void dsd_engine_scan_quiet_pending_reset(dsd_state* state);
-/** The -Y frame-boundary yield of the synced-frames loop: 1 when the scan is -Y with skip-silent on and the hunt's
- * service answers DSD_SCAN_QUIET_HAND_BACK, so the loop ends and noCarrier() decides as after the hunt's hand-back. */
+/** The service at a frame boundary of the synced-frames loop (issue #834 D8), for @p owner_kind's check: as the hunt's
+ * (reconcile, then start, collect or expire), except that a request it starts waits SCAN_QUIET_FRAME_SETTLE_MS from
+ * the first qualifying capture the service saw, or from the retryable failure, and that it never moves the hunt's
+ * capture schedule. Syncs the protocol's gate rejects keep the hunts short, so they rarely reach the hunt's
+ * 300-symbol point: this is what runs the check through them. DSD_SCAN_QUIET_NONE at once with the setting off (one
+ * load), for another owner's check, or none. */
+int dsd_engine_scan_quiet_frame_service(const dsd_opts* opts, dsd_state* state, int owner_kind);
+/** The -Y frame-boundary yield of the synced-frames loop: 1 when the scan is -Y with skip-silent on and the -Y check's
+ * frame-boundary service answers DSD_SCAN_QUIET_HAND_BACK, so the loop ends and noCarrier() decides as after the hunt's
+ * hand-back. */
 int dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state);
 /** Something a check depends on changed (dsd_engine_scan_quiet_note_change(), now): a check under way is cancelled
  * (its request ticket-matched) and SUSPENDED until republished. A DONE check stays DONE for its visit. */

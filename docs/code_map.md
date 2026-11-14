@@ -542,6 +542,22 @@ Generated (do not edit/commit):
       with offset tuning on, as an E4000 runs by default over USB; the shift off), a rate or analog width the
       calibration did not validate (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_analog_supported()` with the
       analog kind), a refused request.
+    - Frame-boundary service (issue #834 D8, `dsd_engine_scan_quiet_frame_service()`): a sync its protocol's gate
+      rejects no longer ends the check, so a channel whose noise keeps passing a sync word (NXDN48, dPMR) restarts
+      short hunts that rarely reach the hunt's 300-symbol service, and the trunk scan's per-frame ticks publish only
+      when an outer pass is owed. The synced-frames loop therefore runs the check's service at every frame boundary,
+      for its owner only: the trunk scan's before the per-frame tick, which then decides as at any tick; -Y's in
+      `dsd_engine_scan_quiet_frame_yield()`. Reconcile, collection, deadlines and READY are as at the hunt's point.
+      Only the request differs: one a frame boundary starts (initial or retry) also waits `SCAN_QUIET_FRAME_SETTLE_MS`
+      (125 ms, realtime) from the first qualifying capture the service saw, or from the retryable failure it collected,
+      and a frame boundary reads the capture without moving the 50 ms schedule. The legacy opportunities (the hunt's
+      300-symbol point, engine publications) keep their timing, so a visit with no frame boundary (no sync at all)
+      requests and expires exactly as before. The 1000 ms bound is on obtaining a capture: a qualifying capture seen
+      before it is no capture failure, so the deadline becomes max(origin + 1000 ms, settle start + 125 ms) (a retry's
+      failure for a frame boundary), and a capture still there past it is requested (by a legacy point at once, by a
+      frame boundary past its settle); it ends DONE only once no qualifying capture is left. Main's schedule otherwise
+      stays: the 300-symbol hook, the 50 ms recheck, one phase step per call, the 400 ms request deadline and READY's
+      250 ms age.
     - REQUESTED: 400 ms (realtime), then cancelled and DONE; a lost, capture-changed or dropped request waits for the
       capture again, at most 3 times a visit; clipped, non-finite, failed and busy results are DONE. An answer that
       completed at or past the deadline (`dsd_signal_quiet_result::completed_realtime_ns`, which the tap stamps when the
@@ -617,7 +633,8 @@ Generated (do not edit/commit):
       expiry or on its quiet result (`no_carrier_quiet_skip()`), heard voice (VOICE, TAIL) is the gate's alone;
       otherwise the hangtime rule, or the quiet result. Syncs that keep coming and check nothing never let the
       synced-frames loop reach `noCarrier()` through a no-sync hunt, so the loop yields at a frame boundary when the
-      hunt's service answers HAND_BACK under -Y (`dsd_engine_scan_quiet_frame_yield()`, after the visit cap), and
+      frame-boundary service answers HAND_BACK under -Y (`dsd_engine_scan_quiet_frame_yield()`, after the visit cap,
+      in `live_scanner_frame_boundary_yields()`), and
       `noCarrier()` decides as after the hunt's hand-back. A result is applied only where no stay can follow (the hold,
       an awaited tune and an avoided row are in the row's conditions), so a result consumed always steps, through
       `no_carrier_step_scanner_mode_if_needed()` (typed and untyped). A typed step still in flight
@@ -699,9 +716,11 @@ Generated (do not edit/commit):
       `dsd_realtime_mono_ms()`, separate from the TEST decode clock; the D8 regressions run on the real realtime clock
       with no link wrap, so they build everywhere: `test_scan_quiet_rejected_sync_keeps_the_check`,
       `test_scan_quiet_y_noise_frames_still_step`, `test_scan_quiet_pending_verdict_holds_every_skip_point`,
-      `test_scan_quiet_evidence_*`), `ENGINE_NO_CARRIER_RESET` (`test_live_loop_counts_only_checked_frames`,
+      `test_scan_quiet_evidence_*`, and the frame-boundary service on the check's clock seam:
+      `test_scan_quiet_frame_boundary_*`, `test_scan_quiet_frame_boundaries_run_every_step`,
+      `test_scan_quiet_sync_free_visit_timing`), `ENGINE_NO_CARRIER_RESET` (`test_live_loop_counts_only_checked_frames`,
       `test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict`,
-      `test_y_quiet_noise_syncs_still_step`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_SIGNAL_SEARCH`,
+      `test_y_quiet_noise_syncs_still_step`, `test_trunk_quiet_noise_syncs_still_skip`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_SIGNAL_SEARCH`,
       `APP_COMMAND_QUEUE`, `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`, `FRAME_SYNC_HISTORY_CARRY`; the content-evidence sites in
       `P25_P1_SYNC_DISPATCH`, `P25_P2_RELIABILITY`, `DMR_CONFIDENCE_GATE`, `DMR_RAS_DETECT`, `NXDN_CONFIRM`,
       `DPMR_CONFIRM`, `M17_CONFIRM`, `DSTAR_CONFIRM` and `YSF_DCH_DECODE`.

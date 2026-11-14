@@ -237,6 +237,14 @@ typedef struct {
     int origin_set;
     uint64_t origin_ms;
     uint64_t next_capture_check_ms;
+    /* The frame-boundary settle wait (issue #834 D8): a request a frame-boundary service starts waits
+       SCAN_QUIET_FRAME_SETTLE_MS (realtime) from settle_from_ms, the first qualifying capture the service saw (the first
+       request) or the retryable failure it collected (a retry); settle_set 0 while there is neither. capture_seen: a
+       qualifying capture was seen in this wait before its deadline, so the wait is no longer for a capture and its
+       deadline expires it only once no qualifying capture is left. */
+    int settle_set;
+    uint64_t settle_from_ms;
+    int capture_seen;
     int retries;
     uint64_t request_seq;
     uint32_t ticket;
@@ -429,8 +437,27 @@ quiet_request(scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_m
     c->phase = SCAN_QUIET_REQUESTED;
 }
 
+/* The WAIT_CAPTURE deadline: 1000 ms from its origin, the bound on obtaining a qualifying capture. Where the
+   frame-boundary settle wait runs (a frame-boundary call, @p at_frame, or a capture already seen), it is
+   max(origin + 1000 ms, settle start + SCAN_QUIET_FRAME_SETTLE_MS), so waiting out the settle never expires a check. A
+   legacy opportunity with no capture seen keeps the plain bound: a visit with no frame-boundary service times every
+   request and expiry exactly as before. */
+static uint64_t
+quiet_capture_deadline_ms(const scan_quiet_check* c, int at_frame) {
+    const uint64_t bound_ms = c->origin_ms + SCAN_QUIET_CAPTURE_WAIT_MS;
+    if (!c->settle_set || !(at_frame || c->capture_seen)) {
+        return bound_ms;
+    }
+    const uint64_t settled_ms = c->settle_from_ms + SCAN_QUIET_FRAME_SETTLE_MS;
+    return settled_ms > bound_ms ? settled_ms : bound_ms;
+}
+
+/* WAIT_CAPTURE, from a legacy opportunity (the hunt's 300-symbol point, an engine publication: @p at_frame 0) or a
+   frame boundary (@p at_frame 1). A legacy call reads the capture at most every 50 ms and requests as soon as it finds
+   a qualifying one. A frame-boundary call reads it without moving that schedule and requests only once the settle wait
+   has run since the first qualifying capture the service saw (or since the retryable failure, for a retry). */
 static void
-quiet_wait_capture(scan_quiet_check* c, uint64_t now_ms) {
+quiet_wait_capture(scan_quiet_check* c, uint64_t now_ms, int at_frame) {
     if (!c->origin_set) {
         /* A park still in flight: its wait starts once the tuning ledger published its completion. */
         if (!dsd_trunk_tuning_request_landed(c->key.tune_request)) {
@@ -439,16 +466,32 @@ quiet_wait_capture(scan_quiet_check* c, uint64_t now_ms) {
         c->origin_set = 1;
         c->origin_ms = now_ms;
     }
-    if (quiet_age_ms(now_ms, c->origin_ms) >= SCAN_QUIET_CAPTURE_WAIT_MS) {
+    const int expired = now_ms >= quiet_capture_deadline_ms(c, at_frame);
+    if (expired && !c->capture_seen) {
         c->phase = SCAN_QUIET_DONE;
         return;
     }
-    if (now_ms < c->next_capture_check_ms) {
-        return;
+    if (!at_frame) {
+        if (now_ms < c->next_capture_check_ms) {
+            return;
+        }
+        c->next_capture_check_ms = now_ms + SCAN_QUIET_CAPTURE_RECHECK_MS;
     }
-    c->next_capture_check_ms = now_ms + SCAN_QUIET_CAPTURE_RECHECK_MS;
     dsd_signal_capture cap;
     if (!quiet_landed_capture(c, &cap)) {
+        if (expired) {
+            c->phase = SCAN_QUIET_DONE; /* the capture seen is gone, past the deadline */
+        }
+        return;
+    }
+    if (!c->capture_seen) {
+        c->capture_seen = 1;
+        if (!c->settle_set) {
+            c->settle_set = 1;
+            c->settle_from_ms = now_ms;
+        }
+    }
+    if (at_frame && quiet_age_ms(now_ms, c->settle_from_ms) < SCAN_QUIET_FRAME_SETTLE_MS) {
         return;
     }
     if (!quiet_geometry_supported(c, &cap)) {
@@ -497,17 +540,21 @@ quiet_collect(scan_quiet_check* c, uint64_t now_ms) {
     if (quiet_failure_retries(result.failure) && c->retries < SCAN_QUIET_MAX_RETRIES) {
         c->retries++;
         c->next_capture_check_ms = 0U;
+        /* A retry started at a frame boundary waits out the settle from this failure. */
+        c->settle_set = 1;
+        c->settle_from_ms = now_ms;
+        c->capture_seen = 0;
         c->phase = SCAN_QUIET_WAIT_CAPTURE;
         return;
     }
     c->phase = SCAN_QUIET_DONE;
 }
 
-/* Start, collect or expire, by phase. */
+/* Start, collect or expire, by phase; @p at_frame for a frame-boundary call (quiet_wait_capture()). */
 static void
-quiet_step(scan_quiet_check* c, uint64_t now_ms) {
+quiet_step(scan_quiet_check* c, uint64_t now_ms, int at_frame) {
     if (c->phase == SCAN_QUIET_WAIT_CAPTURE) {
-        quiet_wait_capture(c, now_ms);
+        quiet_wait_capture(c, now_ms, at_frame);
     } else if (c->phase == SCAN_QUIET_REQUESTED) {
         quiet_collect(c, now_ms);
     }
@@ -619,6 +666,9 @@ quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_
     c->origin_set = landed;
     c->origin_ms = restart ? now_ms : (landed ? owner->landing.landed_realtime_ms : 0U);
     c->next_capture_check_ms = 0U;
+    c->settle_set = 0;
+    c->settle_from_ms = 0U;
+    c->capture_seen = 0;
     c->retries = 0;
 }
 
@@ -715,19 +765,16 @@ scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner
     if (c->phase == SCAN_QUIET_SUSPENDED || !quiet_published_as_measured(c, e)) {
         quiet_start(owner, c, e, now_ms);
     }
-    quiet_step(c, now_ms);
+    quiet_step(c, now_ms, 0);
 }
 
-int
-dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
-    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
-    scan_quiet_check* c = quiet_check_get(owner);
-    if (!c || c->phase == SCAN_QUIET_SUSPENDED || c->phase == SCAN_QUIET_DONE) {
-        return DSD_SCAN_QUIET_NONE;
-    }
+/* The service of a check under way (@p c, reconciled and stepped here), for the hunt or a frame boundary. */
+static int
+quiet_service(const dsd_opts* opts, const dsd_state* state, const dsd_engine_scan_owner* owner, scan_quiet_check* c,
+              int at_frame) {
     const uint64_t now_ms = quiet_realtime_ms();
     quiet_reconcile(opts, state, owner, c, now_ms);
-    quiet_step(c, now_ms);
+    quiet_step(c, now_ms, at_frame);
     if (!quiet_check_active(c)) {
         return DSD_SCAN_QUIET_NONE;
     }
@@ -739,10 +786,34 @@ dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
 }
 
 int
+dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
+    scan_quiet_check* c = quiet_check_get(owner);
+    if (!c || c->phase == SCAN_QUIET_SUSPENDED || c->phase == SCAN_QUIET_DONE) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    return quiet_service(opts, state, owner, c, 0);
+}
+
+int
+dsd_engine_scan_quiet_frame_service(const dsd_opts* opts, dsd_state* state, int owner_kind) {
+    /* The setting before anything else: with it off, the null check and one load. */
+    if (!opts || !opts->scan_skip_silent) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
+    scan_quiet_check* c = quiet_check_get(owner);
+    if (!c || c->key.owner != owner_kind || c->phase == SCAN_QUIET_SUSPENDED || c->phase == SCAN_QUIET_DONE) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    return quiet_service(opts, state, owner, c, 1);
+}
+
+int
 dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
     /* The setting before anything else: with it off, the null check and one load. */
     return opts && opts->scan_skip_silent && opts->scanner_mode == 1
-           && dsd_engine_scan_quiet_service(opts, state) == DSD_SCAN_QUIET_HAND_BACK;
+           && dsd_engine_scan_quiet_frame_service(opts, state, SCAN_QUIET_OWNER_Y) == DSD_SCAN_QUIET_HAND_BACK;
 }
 
 int
@@ -855,6 +926,14 @@ int
 dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    return DSD_SCAN_QUIET_NONE;
+}
+
+int
+dsd_engine_scan_quiet_frame_service(const dsd_opts* opts, dsd_state* state, int owner_kind) {
+    (void)opts;
+    (void)state;
+    (void)owner_kind;
     return DSD_SCAN_QUIET_NONE;
 }
 
