@@ -43,6 +43,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
@@ -2918,6 +2919,51 @@ test_block_label_radio_blocked() {
     dsd_state_ext_free_all(&state);
 }
 
+/* A patched P25 call's block label judges the member its audio follows: with the member the call was stored on deleted
+   from the patch, a listened member still carrying it leaves no label; once none does, the label names the allow-list
+   miss. */
+static void
+test_block_label_patched_call() {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_use_allow_list = 1;
+    dsd_tg_policy_entry row = {};
+    expect("listed member row",
+           dsd_tg_policy_make_exact_entry(24U, "A", "LISTED", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+    expect("listed member appended", dsd_tg_policy_append_exact(&state, &row) == 0);
+    state.p25_patch_count = 1;
+    state.p25_patch_sgid[0] = 500U;
+    state.p25_patch_is_patch[0] = 1U;
+    state.p25_patch_active[0] = 1U;
+    state.p25_patch_wgid_count[0] = 1U;
+    state.p25_patch_wgid[0][0] = 24U;
+    dsd_p25_patch_touch_members(&state, 0);
+    dsd_call_observation observation = {};
+    observation.protocol = DSD_SYNC_P25P1_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 500U;
+    observation.policy_target_id = 22U; // a member the patch no longer carries, and unlisted
+    observation.ota_source_id = 11U;
+    observation.observed_m = 4.0;
+    dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_qt::MetricsModel model;
+    model.refresh(&opts, &state);
+    auto slots = model.decryptionSlots();
+    expect("a listened member carrying the patch leaves no label",
+           !slots.isEmpty() && slots[0].toMap().value("blockReason").toString().isEmpty());
+    state.p25_patch_wgid[0][0] = 26U;
+    dsd_p25_patch_touch_members(&state, 0);
+    model.refresh(&opts, &state);
+    slots = model.decryptionSlots();
+    expect("no listened member: the label names the block",
+           !slots.isEmpty() && !slots[0].toMap().value("blockReason").toString().isEmpty());
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -2953,6 +2999,7 @@ main(int argc, char** argv) {
     test_direct_key_presence();
     test_decryption_metadata();
     test_block_label_radio_blocked();
+    test_block_label_patched_call();
     test_site();
     test_quality();
     test_lead_slot_keeps_earlier_call_and_quality();
