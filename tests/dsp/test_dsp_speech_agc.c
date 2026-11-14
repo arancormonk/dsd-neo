@@ -2314,13 +2314,22 @@ acq_after_step(const dsd_speech_agc* agc, const dsd_speech_agc_learned* b, const
     return b->gain_db + clampf(aim - b->gain_db, -0.20f, 0.12f);
 }
 
-/* The acquisition state a frame of level @p level at or over the absolute floor leaves: the loudest frame, the three
-   loudest levels at or over -70 dBFS (descending), and the bursts over the last of them. */
+/* The acquisition state a frame of level @p level at or over the absolute floor leaves: the held loudest frame (a frame
+   within 6 dB of it renews the hold; more than 10 frames after the last such one it eases 1 dB a frame; a louder frame
+   takes it at once), the three loudest levels at or over -70 dBFS (descending), and the bursts over the last of
+   them. */
 static void
 acq_expected_state(const dsd_speech_agc_learned* b, float level, dsd_speech_agc_learned* e) {
     *e = *b;
-    if (!b->loudest_known || level > b->loudest_db) {
+    if (b->loudest_known) {
+        e->loudest_age = level >= b->loudest_db - 6.0f ? 0 : b->loudest_age + 1;
+        if (e->loudest_age > 10) {
+            e->loudest_db = b->loudest_db - 1.0f;
+        }
+    }
+    if (!b->loudest_known || level > e->loudest_db) {
         e->loudest_db = level;
+        e->loudest_age = 0;
     }
     e->loudest_known = 1;
     if (level >= ACQ_PEAK_ABS_DBFS) {
@@ -2357,9 +2366,9 @@ acq_expected_state(const dsd_speech_agc_learned* b, float level, dsd_speech_agc_
 
 static int
 acq_state_equal(const dsd_speech_agc_learned* a, const dsd_speech_agc_learned* e) {
-    int ok = same_bits(&a->prior_db, &e->prior_db, sizeof(float)) && a->loudest_known == e->loudest_known
-             && a->peaks == e->peaks && a->high_run == e->high_run && a->burst_armed == e->burst_armed
-             && a->bursts == e->bursts;
+    int ok = same_bits(&a->prior_db, &e->prior_db, sizeof(float)) && same_bits(&a->open_db, &e->open_db, sizeof(float))
+             && a->loudest_known == e->loudest_known && a->loudest_age == e->loudest_age && a->peaks == e->peaks
+             && a->high_run == e->high_run && a->burst_armed == e->burst_armed && a->bursts == e->bursts;
     ok = ok && (!e->loudest_known || same_bits(&a->loudest_db, &e->loudest_db, sizeof(float)));
     for (int i = 0; i < e->peaks; i++) {
         ok = ok && same_bits(&a->peak_db[i], &e->peak_db[i], sizeof(float));
@@ -2368,11 +2377,13 @@ acq_state_equal(const dsd_speech_agc_learned* a, const dsd_speech_agc_learned* e
 }
 
 /* The acquisition stage on every frame of @p t (every sample learning): the step (acq_after_step()), then for a frame
-   at or over the absolute floor its own level: while fewer than 20 frames have committed, the guard (a frame that would
-   play over -12 dBFS takes the gain to clamp(-12 - L) when that is lower) and, once a burst has completed, the rise of
-   at most 1 dB toward min(clamp(-17 - third loudest), clamp(-12 - loudest)). Recomputed in the AGC's own float order
-   from each frame's state before and after it, so it holds bit for bit, with the state itself. Returns the frames where
-   it does not. */
+   at or over the absolute floor its own level: the held loudest frame (acq_expected_state()); while nothing has
+   committed and the frame does not play over -12 dBFS, the return of at most 1 dB toward min(the opening gain,
+   clamp(-12 - held loudest)); while fewer than 20 frames have committed, the guard (a frame that would play over -12
+   dBFS takes the gain to clamp(-12 - L) when that is lower) and, once a burst has completed, the rise of at most 1 dB
+   toward min(clamp(-17 - third loudest), clamp(-12 - held loudest)). Recomputed in the AGC's own float order from each
+   frame's state before and after it, so it holds bit for bit, with the state itself. Returns the frames where it does
+   not. */
 static int
 check_acq_law(const dsd_speech_agc* agc, const trace_t* t) {
     const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
@@ -2385,6 +2396,13 @@ check_acq_law(const dsd_speech_agc* agc, const trace_t* t) {
         dsd_speech_agc_learned e = f->before;
         if (f->level >= agc->abs_floor_db) {
             acq_expected_state(&f->before, f->level, &e);
+            if (a->commits == 0 && f->level + g <= ACQ_CAP_DBFS) {
+                const float held = clampf(ACQ_CAP_DBFS - e.loudest_db, lo, hi);
+                const float to = f->before.open_db < held ? f->before.open_db : held;
+                if (g < to) {
+                    g += to - g < 1.0f ? to - g : 1.0f;
+                }
+            }
             const int early = a->commits < 20;
             if (early && f->level + g > ACQ_CAP_DBFS) {
                 const float capped = clampf(ACQ_CAP_DBFS - f->level, lo, hi);
@@ -2403,15 +2421,21 @@ check_acq_law(const dsd_speech_agc* agc, const trace_t* t) {
     return bad;
 }
 
+/* The acquisition state with the stage off, or after a reset: 0, but for the opening gain @p open_db. */
+static void
+acq_off_state(float open_db, dsd_speech_agc_learned* z) {
+    DSD_MEMSET(z, 0, sizeof *z);
+    z->open_db = open_db;
+}
+
 /* Today's law with the acquisition stage off, on every frame of @p t, bit for bit: a step moves G by
    clamp(clamp(T - S, lo, hi) - G, -dn, +up) (2 dB for the first 20 steps, then +0.12 / -0.20), every other frame
-   leaves G alone, and the acquisition state stays 0. Returns the frames where it does not. */
+   leaves G alone, and the acquisition state stays 0 (the opening gain as it was). Returns the frames where it does
+   not. */
 static int
 check_off_law(const dsd_speech_agc* agc, const trace_t* t) {
     const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
     const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
-    dsd_speech_agc_learned zero;
-    DSD_MEMSET(&zero, 0, sizeof zero);
     int bad = 0;
     for (size_t i = 0; i < t->count; i++) {
         const dsd_speech_agc_learned* b = &t->f[i].before;
@@ -2423,6 +2447,8 @@ check_off_law(const dsd_speech_agc* agc, const trace_t* t) {
             const float dn = b->steps < 20 ? 2.0f : 0.20f;
             g += clampf(want - g, -dn, up);
         }
+        dsd_speech_agc_learned zero;
+        acq_off_state(b->open_db, &zero);
         bad += !same_bits(&g, &a->gain_db, sizeof g) || !acq_state_equal(a, &zero);
     }
     return bad;
@@ -2817,7 +2843,325 @@ test_acq_burst_then_voiced(void) {
     free(x);
 }
 
-/* A reset forgets the acquisition state (the loudest frames, the bursts and P) and keeps the stage on. */
+/* A pop (@p pop_frames frames of voice-band noise at @p pop_db), @p gap_frames frames of digital silence, then
+   @p quiet_frames frames of voice-band noise at @p quiet_db, into @p x. Returns the samples written. */
+static size_t
+synth_pop(float* x, int rate, int pop_frames, double pop_db, int gap_frames, int quiet_frames, double quiet_db,
+          uint64_t seed) {
+    const size_t F = (size_t)frame_len(rate);
+    const size_t np = (size_t)pop_frames * F;
+    const size_t ng = (size_t)gap_frames * F;
+    const size_t nq = (size_t)quiet_frames * F;
+    assert(dsd_test_synth_noise(x, np, rate, seed, DSD_TEST_NOISE_VOICE_BAND, pop_db) == 0);
+    DSD_MEMSET(x + np, 0, ng * sizeof(float));
+    if (nq > 0) {
+        assert(dsd_test_synth_noise(x + np + ng, nq, rate, seed + 1U, DSD_TEST_NOISE_VOICE_BAND, quiet_db) == 0);
+    }
+    return np + ng + nq;
+}
+
+/* The louder of a trace's first two frames: the pop of the cases below. */
+static float
+pop_level(const trace_t* t) {
+    return t->f[0].level > t->f[1].level ? t->f[0].level : t->f[1].level;
+}
+
+/* A pop, then quieter sound, nothing committed, opened 8 dB over the start gain: the pop's two frames cut the gain to
+   where the louder of them plays at -12 dBFS. @p gap frames of digital silence after the pop (under the absolute floor)
+   do not count toward the hold. The ten quieter frames that follow leave the gain and the held level where they are;
+   from the eleventh the held level eases 1 dB a frame, the gain returns with it 1 dB a frame, and it stops exactly at
+   the opening gain. */
+static void
+test_acq_pop_returns(int gap) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const float open = g0 + 8.0f;
+    const size_t F = (size_t)frame_len(rate);
+    float* x = alloc_f((size_t)(2 + gap + 40) * F);
+    const size_t n = synth_pop(x, rate, 2, -10.0, gap, 40, -40.0, 300);
+    dsd_speech_agc* agc = new_acq_agc(rate, g0);
+    dsd_speech_agc_open_at(agc, open, 0);
+    trace_t t;
+    trace_init(&t, n / F);
+    run_traced(agc, x, n, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0 && agc->learned.commits == 0 && agc->learned.bursts == 0);
+    const float pop = pop_level(&t);
+    const float cut = -12.0f - pop;
+    assert(t.f[0].after.gain_db < open && same_bits(&t.f[1].after.gain_db, &cut, sizeof cut));
+    const long q = 2 + gap; /* the first quieter frame */
+    for (long i = 1; i < q + 10; i++) {
+        const frame_rec* f = &t.f[i];
+        assert(same_bits(&f->after.gain_db, &cut, sizeof cut) && same_bits(&f->after.loudest_db, &pop, sizeof pop));
+        assert(f->after.loudest_age == (i < q ? 0 : (int)(i - q + 1)));
+    }
+    /* 14 frames of exactly 1 dB from the eleventh quieter frame (frame 12 after the pop alone), then the last part of a
+       dB onto the opening gain (frame 26), where the gain stays. */
+    const int ones = (int)(open - cut);
+    const long land = q + 10 + ones;
+    float held = pop;
+    for (long i = q + 10; i < (long)t.count; i++) {
+        const frame_rec* f = &t.f[i];
+        if (i <= land) {
+            held -= 1.0f;
+            assert(same_bits(&f->after.loudest_db, &held, sizeof held));
+        }
+        if (i < land) {
+            assert(fabsf(f->after.gain_db - f->before.gain_db - 1.0f) < 1e-4f);
+        } else {
+            assert(same_bits(&f->after.gain_db, &open, sizeof open));
+        }
+    }
+    SAY("pop then quieter sound (%d frames of silence between): pop %.2f dBFS cuts %+.2f to %+.2f dB, held through "
+        "frame %ld, %d rises of 1 dB from frame %ld, at %+.2f dB from frame %ld\n",
+        gap, (double)pop, (double)open, (double)cut, q + 9, ones, q + 10, (double)agc->learned.gain_db, land);
+    assert(ones == 14 && q + 10 == 12 + gap && land == 26 + gap && t.count == (size_t)(q + 40));
+    trace_free(&t);
+    free(agc);
+    free(x);
+}
+
+/* A loud talker that does not commit (three loud unvoiced frames, then eight quieter ones: gaps shorter than the hold,
+   repeated), opened 8 dB over the start gain: the cut stays where the loudest frame plays at -12 dBFS, the held level
+   never eases, and the gain never rises. Its bursts complete, but their floor lies under the cut. */
+static void
+test_acq_loud_unvoiced_holds(void) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const float lo = g0 - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = g0 + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    const size_t F = (size_t)frame_len(rate);
+    float* x = alloc_f(110U * F);
+    const size_t n = synth_blocks(x, rate, 10, 3, -15.0, 8, -40.0, 305);
+    dsd_speech_agc* agc = new_acq_agc(rate, g0);
+    dsd_speech_agc_open_at(agc, g0 + 8.0f, 0);
+    trace_t t;
+    trace_init(&t, n / F);
+    run_traced(agc, x, n, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0 && agc->learned.commits == 0 && agc->learned.bursts >= 5);
+    float loud = t.f[0].level;
+    for (long i = 1; i < 3; i++) {
+        loud = t.f[i].level > loud ? t.f[i].level : loud;
+    }
+    const float cut = clampf(-12.0f - loud, lo, hi);
+    int oldest = 0;
+    for (long i = 0; i < (long)t.count; i++) {
+        const frame_rec* f = &t.f[i];
+        assert(f->after.gain_db <= f->before.gain_db);
+        if (i >= 3) {
+            assert(same_bits(&f->after.gain_db, &cut, sizeof cut)
+                   && same_bits(&f->after.loudest_db, &loud, sizeof loud));
+            oldest = f->after.loudest_age > oldest ? f->after.loudest_age : oldest;
+        }
+    }
+    SAY("loud unvoiced talker: loudest %.2f dBFS, cut to %+.2f dB and held for %zu frames (longest gap %d frames), "
+        "%d bursts\n",
+        (double)loud, (double)cut, t.count - 3U, oldest, agc->learned.bursts);
+    assert(oldest == 8);
+    trace_free(&t);
+    free(agc);
+    free(x);
+}
+
+/* The return stops at the first commit: a pop, then a voiced talker at -26 dBFS whose first run commits before the
+   pop's hold ends, opened 8 dB over the start gain. The first step starts from the pop's cut (P) and every frame after
+   it is the startup law's step exactly (acq_after_step()), though on some of them (10 measured: once the hold has
+   eased past the aim and before it comes to rest over the talker) the gain stands under both the opening gain and the
+   held level's cap, where a return would have lifted it. */
+static void
+test_acq_return_stops_at_commit(void) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const float open = g0 + 8.0f;
+    const float lo = g0 - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = g0 + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    const size_t F = (size_t)frame_len(rate);
+    const size_t nv = secs(rate, 2.0);
+    float* x = alloc_f(2 * F + nv);
+    const size_t np = synth_pop(x, rate, 2, -10.0, 0, 0, 0.0, 310);
+    voiced_params vp;
+    voiced_defaults(&vp, 120.0, 0.015, 311);
+    synth_voiced(x + np, nv, rate, &vp, -26.0);
+    dsd_speech_agc* agc = new_acq_agc(rate, g0);
+    dsd_speech_agc_open_at(agc, open, 0);
+    trace_t t;
+    trace_init(&t, (np + nv) / F);
+    run_traced(agc, x, np + nv, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0 && agc->learned.bursts == 0);
+    const float cut = -12.0f - pop_level(&t);
+    const long k1 = first_commit(&t, 0);
+    assert(k1 > 2 && k1 < 12);
+    assert(same_bits(&t.f[k1].before.gain_db, &cut, sizeof cut));
+    assert(same_bits(&t.f[k1].after.prior_db, &cut, sizeof cut));
+    int would = 0;
+    for (long i = k1; i < (long)t.count; i++) {
+        const frame_rec* f = &t.f[i];
+        const float step = acq_after_step(agc, &f->before, &f->after);
+        assert(f->after.commits > 0 && same_bits(&f->after.gain_db, &step, sizeof step));
+        const float held = clampf(-12.0f - f->after.loudest_db, lo, hi);
+        would += f->level + step <= -12.0f && step < (open < held ? open : held);
+    }
+    SAY("return stops at the first commit: first commit at frame %ld from the cut %+.2f dB; %d frames the law left "
+        "under the opening gain and the held cap; G at the end %+.2f dB\n",
+        k1, (double)cut, would, (double)agc->learned.gain_db);
+    assert(would >= 8 && agc->learned.gain_db < open - 1.0f);
+    trace_free(&t);
+    free(agc);
+    free(x);
+}
+
+/* A pop before a talker's first voiced run, then 40 frames of quieter sound: the pop's hold eases and the gain returns
+   to the opening gain, so the first step goes to the startup law's aim P + 0.6 (W - P) from there, where a loudest
+   frame that never eased would have capped it at the pop's cut. */
+static void
+test_acq_pop_eased_before_talker(void) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const float lo = g0 - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = g0 + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    const size_t F = (size_t)frame_len(rate);
+    const size_t nv = secs(rate, 2.0);
+    float* x = alloc_f(42 * F + nv);
+    const size_t np = synth_pop(x, rate, 2, -10.0, 0, 40, -50.0, 315);
+    voiced_params vp;
+    voiced_defaults(&vp, 120.0, 0.015, 317);
+    synth_voiced(x + np, nv, rate, &vp, -40.0);
+    dsd_speech_agc* agc = new_acq_agc(rate, g0);
+    trace_t t;
+    trace_init(&t, (np + nv) / F);
+    run_traced(agc, x, np + nv, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0);
+    const long k1 = first_commit(&t, 0);
+    assert(k1 > 42);
+    const frame_rec* f1 = &t.f[k1];
+    const float never = clampf(-12.0f - pop_level(&t), lo, hi);
+    const float aim = acq_blend(agc, &f1->before, &f1->after);
+    SAY("pop eased before the talker: first commit at frame %ld from %+.2f dB to the aim %+.2f dB; a loudest frame "
+        "that never eased would have capped it at %+.2f dB\n",
+        k1, (double)f1->before.gain_db, (double)aim, (double)never);
+    assert(same_bits(&f1->before.gain_db, &g0, sizeof g0) && same_bits(&f1->after.prior_db, &g0, sizeof g0));
+    assert(same_bits(&f1->after.gain_db, &aim, sizeof aim) && aim > never + 10.0f);
+    trace_free(&t);
+    free(agc);
+    free(x);
+}
+
+/* The held level after a pop: ten quieter frames hold it, then it eases exactly 1 dB a frame and comes to rest within
+   6 dB over the quieter sound (a frame that near renews the hold); a new louder frame takes it at once. */
+static void
+test_acq_held_peak_rests(void) {
+    const int rate = 8000;
+    const size_t F = (size_t)frame_len(rate);
+    float* x = alloc_f(103 * F);
+    size_t n = synth_pop(x, rate, 2, -10.0, 0, 80, -40.0, 320);
+    assert(dsd_test_synth_noise(x + n, F, rate, 322, DSD_TEST_NOISE_VOICE_BAND, -20.0) == 0);
+    assert(dsd_test_synth_noise(x + n + F, 20 * F, rate, 323, DSD_TEST_NOISE_VOICE_BAND, -40.0) == 0);
+    n += 21 * F;
+    dsd_speech_agc* agc = new_acq_agc(rate, 4.0f);
+    trace_t t;
+    trace_init(&t, n / F);
+    run_traced(agc, x, n, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0 && agc->learned.commits == 0);
+    const float pop = pop_level(&t);
+    for (long i = 2; i < 12; i++) {
+        assert(same_bits(&t.f[i].after.loudest_db, &pop, sizeof pop));
+    }
+    long rest_at = 12;
+    while (rest_at < 82 && t.f[rest_at].after.loudest_age != 0) {
+        const float eased = t.f[rest_at].before.loudest_db - 1.0f;
+        assert(same_bits(&t.f[rest_at].after.loudest_db, &eased, sizeof eased));
+        rest_at++;
+    }
+    const float rest = t.f[rest_at].after.loudest_db;
+    float top = -1e30f;
+    for (long i = rest_at; i < 82; i++) {
+        assert(same_bits(&t.f[i].after.loudest_db, &rest, sizeof rest));
+        top = t.f[i].level > top ? t.f[i].level : top;
+    }
+    const frame_rec* louder = &t.f[82];
+    SAY("held level: pop %.2f dBFS, eased from frame 12 to rest at %.2f dBFS from frame %ld (the quieter sound's "
+        "loudest frame %.2f); a frame at %.2f takes it\n",
+        (double)pop, (double)rest, rest_at, (double)top, (double)louder->level);
+    assert(rest_at > 30 && rest_at < 60 && rest >= top && rest - top <= 6.0f);
+    assert(same_bits(&louder->after.loudest_db, &louder->level, sizeof(float)) && louder->after.loudest_age == 0);
+    trace_free(&t);
+    free(agc);
+    free(x);
+}
+
+/* The burst fallback after a pop (then bursts of 5 frames at -45 dBFS and 10 at -68, repeated: nothing commits): the
+   pop cuts the gain; while its hold lasts the fallback's rise stops at the held level's cap; once the hold has eased
+   the rise reaches the burst floor -17 - H, H the third loudest frame, far over where the pop alone would have held
+   it, and no rise ever goes past the held level's cap. */
+static void
+test_acq_burst_after_pop(void) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const float lo = g0 - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = g0 + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    const size_t F = (size_t)frame_len(rate);
+    float* x = alloc_f(122 * F);
+    const size_t np = synth_pop(x, rate, 2, -10.0, 0, 0, 0.0, 330);
+    const size_t n = np + synth_blocks(x + np, rate, 8, 5, -45.0, 10, -68.0, 331);
+    dsd_speech_agc* agc = new_acq_agc(rate, g0);
+    trace_t t;
+    trace_init(&t, n / F);
+    run_traced(agc, x, n, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0 && agc->learned.commits == 0 && agc->learned.bursts == 8);
+    int bound = 0;
+    for (size_t i = 0; i < t.count; i++) {
+        const frame_rec* f = &t.f[i];
+        const float held = clampf(-12.0f - f->after.loudest_db, lo, hi);
+        assert(f->after.gain_db <= f->before.gain_db || f->after.gain_db <= held);
+        bound += f->after.bursts >= 1 && same_bits(&f->after.gain_db, &held, sizeof held)
+                 && held < clampf(-17.0f - f->after.peak_db[2], lo, hi);
+    }
+    const frame_rec* last = &t.f[t.count - 1U];
+    const float floor_db = clampf(-17.0f - last->after.peak_db[2], lo, hi);
+    const float never = clampf(-12.0f - pop_level(&t), lo, hi);
+    SAY("bursts after a pop: the held level's cap bound the rise on %d frames; G at the end %+.2f dB (floor %+.2f), "
+        "where the pop alone held it at %+.2f\n",
+        bound, (double)agc->learned.gain_db, (double)floor_db, (double)never);
+    assert(bound >= 3 && fabsf(agc->learned.gain_db - floor_db) < 1e-6f && floor_db > never + 20.0f);
+    for (size_t i = t.count - 20U; i < t.count; i++) {
+        assert(same_bits(&t.f[i].after.gain_db, &agc->learned.gain_db, sizeof(float)));
+    }
+    trace_free(&t);
+    free(agc);
+    free(x);
+}
+
+/* Leaving fixed mode with the stage on and nothing committed is a new opening: after a pop the gain returns to the
+   fixed gain it left at, never toward the earlier opening. */
+static void
+test_acq_fixed_to_auto_stays(void) {
+    const int rate = 8000;
+    const size_t F = (size_t)frame_len(rate);
+    float* x = alloc_f(42 * F);
+    const size_t n = synth_pop(x, rate, 2, -10.0, 0, 40, -40.0, 335);
+    dsd_speech_agc* agc = new_acq_agc(rate, 4.0f);
+    dsd_speech_agc_open_at(agc, 16.0f, 0);
+    dsd_speech_agc_set_fixed(agc, 2.0f);
+    dsd_speech_agc_set_fixed(agc, 0.0f);
+    const float fixed_db = agc->learned.gain_db;
+    assert(fabsf(fixed_db - 6.0206f) < 1e-3f && same_bits(&agc->learned.open_db, &fixed_db, sizeof fixed_db));
+    trace_t t;
+    trace_init(&t, n / F);
+    run_traced(agc, x, n, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0 && agc->learned.commits == 0);
+    assert(t.f[1].after.gain_db < fixed_db - 5.0f);
+    for (size_t i = 0; i < t.count; i++) {
+        assert(t.f[i].after.gain_db <= fixed_db);
+    }
+    SAY("fixed then auto: opened +16, left fixed mode at %+.2f dB; the pop cut it to %+.2f, back at %+.2f dB\n",
+        (double)fixed_db, (double)t.f[1].after.gain_db, (double)agc->learned.gain_db);
+    assert(same_bits(&agc->learned.gain_db, &fixed_db, sizeof fixed_db));
+    trace_free(&t);
+    free(agc);
+    free(x);
+}
+
+/* A reset forgets the acquisition state (the loudest frames, the bursts and P), opens at the start gain and keeps the
+   stage on. */
 static void
 test_acq_reset_forgets(void) {
     const int rate = 8000;
@@ -2827,13 +3171,15 @@ test_acq_reset_forgets(void) {
     const size_t nb = synth_blocks(x, rate, 2, 5, -45.0, 10, -68.0, 285);
     speech_into(x + nb, nv, rate, 286, -30.0, 140.0, 0.0);
     dsd_speech_agc* agc = new_acq_agc(rate, 4.0f);
+    dsd_speech_agc_open_at(agc, 15.0f, 0);
+    assert(fabsf(agc->learned.open_db - 15.0f) < 1e-6f);
     dsd_speech_agc_process(agc, x, nb + nv, 1, 1, 0);
     const dsd_speech_agc_learned* d = &agc->learned;
     assert(d->bursts >= 1 && d->loudest_known && d->peaks == DSD_SPEECH_AGC_PEAKS && d->steps > 0);
     assert(fabsf(d->prior_db) > 1.0f);
     dsd_speech_agc_reset(agc);
     dsd_speech_agc_learned zero;
-    DSD_MEMSET(&zero, 0, sizeof zero);
+    acq_off_state(4.0f, &zero);
     assert(acq_state_equal(d, &zero) && agc->acquisition == 1);
     dsd_speech_agc_set_acquisition(agc, 0);
     assert(agc->acquisition == 0);
@@ -2847,7 +3193,7 @@ test_acq_reset_forgets(void) {
 /* With the acquisition stage off the gain follows today's law bit for bit and its state stays 0 (check_off_law()) on
    long mixed signals: the cross-rate material (speech, vowels and tones, 33.9 s) at 8 and 48 kHz and the partition
    stream (speech, DTMF, a tone, undecodable audio, closes, non-finite samples) through per-call flags at 8 kHz, each
-   with several hundred commits. */
+   with several hundred commits; and a pop before a talker, which it never cuts, holds or returns from. */
 static void
 test_acq_off_is_off(void) {
     static const int rates[] = {8000, 48000};
@@ -2873,11 +3219,31 @@ test_acq_off_is_off(void) {
     float* y = alloc_f(s.n);
     dsd_speech_agc* agc = drive_fresh(&s, 8000, 4.0f, 0, 0, 0, y, 160);
     dsd_speech_agc_learned zero;
-    DSD_MEMSET(&zero, 0, sizeof zero);
+    acq_off_state(4.0f, &zero);
     assert(agc->learned.commits > 100 && acq_state_equal(&agc->learned, &zero));
     free(agc);
     free(y);
     stream_free(&s);
+    /* A pop, quieter sound, then a talker, opened 8 dB over the start gain: no cut, no hold, no return. */
+    const size_t F = (size_t)frame_len(8000);
+    const size_t nv = secs(8000, 3.0);
+    float* x = alloc_f(42 * F + nv);
+    const size_t np = synth_pop(x, 8000, 2, -10.0, 0, 40, -40.0, 340);
+    speech_into(x + np, nv, 8000, 341, -30.0, 140.0, 0.0);
+    agc = new_agc(8000, 4.0f);
+    dsd_speech_agc_open_at(agc, 12.0f, 0);
+    trace_t t;
+    trace_init(&t, (np + nv) / F);
+    run_traced(agc, x, np + nv, NULL, k_learn, &t);
+    const int bad = check_off_law(agc, &t);
+    SAY("acquisition off, a pop then a talker: G %+.2f dB after the pop, %d commits, %d frames off today's law\n",
+        (double)t.f[1].after.gain_db, agc->learned.commits, bad);
+    assert(bad == 0 && agc->learned.commits > 20 && same_bits(&t.f[41].after.gain_db, &(float){12.0f}, sizeof(float)));
+    acq_off_state(12.0f, &zero);
+    assert(acq_state_equal(&agc->learned, &zero));
+    trace_free(&t);
+    free(agc);
+    free(x);
 }
 
 /* A non-finite (or absurdly large) sample comes out as 0 and leaves the state alone: the output around it is what the
@@ -3072,6 +3438,14 @@ main(int argc, char** argv) {
     test_acq_burst_fallback();
     test_acq_no_bursts();
     test_acq_burst_then_voiced();
+    test_acq_pop_returns(0);
+    test_acq_pop_returns(25);
+    test_acq_loud_unvoiced_holds();
+    test_acq_return_stops_at_commit();
+    test_acq_pop_eased_before_talker();
+    test_acq_held_peak_rests();
+    test_acq_burst_after_pop();
+    test_acq_fixed_to_auto_stays();
     test_acq_reset_forgets();
     test_acq_off_is_off();
     test_non_finite();
