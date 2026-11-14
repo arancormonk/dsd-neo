@@ -14,7 +14,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`, `--scan-skip-silent`
-- RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
+- RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]` (`gain` `0` = automatic, `1`–`49` = manual dB)
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
   `--rtl-udp-control-bind <ipv4>` for explicit remote exposure (see `docs/udp-control.md`). It stays off under
@@ -90,6 +90,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - RTL‑SDR (USB): `-i rtl` or advanced string:
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
   - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
+  - `gain` `0` is automatic gain (the tuner's AGC and the RTL2832U's digital AGC); `1`–`49` is a manual gain in dB,
+    run at the nearest step the tuner has. The first example runs a manual 22 dB, the second automatic gain. See
+    RTL‑SDR details below.
   - `sql` is a power squelch in dB and is **off** when set to `0`, which is what the examples above use. The startup
     banner and the terminal input line say so (`SQ=off`, `SQL: off`). Give a negative value (`-60`) to gate on power,
     `auto` / `auto+N` for the [auto squelch](#auto-squelch---squelch-auto), which opens N dB over each analog
@@ -102,6 +105,7 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
     An analog session makes calls (history rows, `-J` lines, recordings) only under a squelch above -110 dB, the
     startup default: see [Analog calls need a squelch](#analog-calls-need-a-squelch-on-a-radio-input).
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
+  (`gain` as for `rtl`: `0` automatic, `1`–`49` manual dB at the nearest step of the server's tuner)
   Connects to an rtl_tcp server (`rtl_tcp` itself, or another server that speaks its protocol) for unsigned 8-bit
   I/Q, and tunes it over the connection. It is the only network input that carries I/Q: `tcp` and `udp` below carry
   demodulated PCM audio. For TETRA use `bw` 72 (`-fT -i rtltcp:host:port:freq:gain:ppm:72`).
@@ -2633,12 +2637,21 @@ does.
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48 or 72; anything else runs at the 48 kHz default), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise)), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
+- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (`0` automatic, `1`–`49` manual dB; see below), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48 or 72; anything else runs at the 48 kHz default), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise)), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
   is one whole word: `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no` (any case). A value or trailing option it cannot
   read is ignored with a warning and leaves the bias tee as it was; the startup `RTL #N:` line ends in `BIAS=on` when
   it is on. 72 kHz is TETRA's bandwidth: it gives `-fT` a whole 4 samples per symbol at 18 ksym/s. The other modes run
   best at the 48 kHz default: at 72 kHz their channel filter would need more taps than it has, and runs its wider fixed
   prototype instead.
+- `gain` `0` is automatic gain: the tuner's own AGC, plus the RTL2832U's digital AGC unless `DSD_NEO_RTL_AGC=0`. A
+  negative value is automatic too. `1`–`49` is a manual gain in dB, and the dongle runs the nearest step its tuner has
+  (an R820T asked for 30 runs 29.7 dB). A manual 0 dB cannot be asked for, since `0` is automatic.
+- Over rtl_tcp a manual gain runs at the nearest step of the server's tuner, from librtlsdr's gain tables for the
+  tuner type the server's header names. When the header names a tuner type librtlsdr has no table for, or a gain count
+  that does not match the table, the gain is sent as asked and the server's tuner settles it. rtl_tcp sends no
+  acknowledgement, so the gain shown is the step DSD-neo sent, not one read back from the server.
+- A `gain` too large to set (above 214748364, whose tenths of a dB would not fit) is ignored with a warning, and the
+  gain set before stays, as with a `gain` that is not a number.
 - A `sql` value that is neither a number, `auto[+N]` nor `noise[+N]` leaves the squelch as it was rather than switching
   it off. A
   disabled squelch is reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP
@@ -2728,7 +2741,9 @@ Advanced (env)
   (E4000, FC0012/FC0013, FC2580) displace the LO and drop the Fs/4 shift; R820T/R828D and direct sampling refuse it
   and keep the Fs/4 shift.
 - `DSD_NEO_RTL_XTAL_HZ` / `DSD_NEO_TUNER_XTAL_HZ` — Override crystal refs in Hz (optional).
-- `DSD_NEO_RTL_IF_GAINS="stage:gain[,stage:gain]..."` — Set IF gain(s); gain in dB (e.g., `10`) or 0.1 dB (`125`).
+- `DSD_NEO_RTL_IF_GAINS="stage:gain[,stage:gain]..."` — Set IF gain(s); gain in dB (e.g., `10`, `9.5` or `9dB`) or,
+  for a whole number above 90 or below -90, 0.1 dB (`125`). A stage whose number or gain cannot be read is skipped with
+  a warning rather than set to 0 dB.
 - `DSD_NEO_RTL_TESTMODE=0|1` — Enable librtlsdr test mode (ramp) instead of I/Q (for diagnostics). On a USB dongle
   and over rtl_tcp test mode stays on through gain changes (and through an rtl_tcp reconnect), and turning it off gives
   the RTL AGC (`DSD_NEO_RTL_AGC`) back to automatic gain.

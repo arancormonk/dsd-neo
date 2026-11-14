@@ -8136,6 +8136,19 @@ controller_cleanup(struct controller_state* s) {
     dsd_mutex_destroy(&s->retune_done_m);
 }
 
+/* The tenths of a dB a manual gain in whole dB asks the tuner for, held at INT_MAX (the tuner's top step) past what int
+   tenths hold, and at INT_MIN below. */
+static int
+stream_gain_tenth_db_from_db(int gain_db) {
+    if (gain_db > INT_MAX / 10) {
+        return INT_MAX;
+    }
+    if (gain_db < INT_MIN / 10) {
+        return INT_MIN;
+    }
+    return gain_db * 10;
+}
+
 /**
  * @brief Seed initial device index, center frequency, gain and UDP port.
  *
@@ -8173,7 +8186,7 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
         DSD_SNPRINTF(udp_control_bindaddr, sizeof udp_control_bindaddr, "%s", "127.0.0.1");
     }
     if (opts->rtl_gain_value > 0) {
-        dongle_note_gain(opts->rtl_gain_value * 10);
+        dongle_note_gain(stream_gain_tenth_db_from_db(opts->rtl_gain_value));
     }
 }
 
@@ -9311,6 +9324,9 @@ stream_open_open_device(RadioSourceKind source_kind, const dsd_opts* opts, const
     return 0;
 }
 
+/* One DSD_NEO_RTL_IF_GAINS stage's gain ("9", "9dB", "9.5", "-91"): an integer up to 90 in magnitude is whole dB, a
+   larger one is already tenths of a dB, and a decimal is dB. 0 with the tenths in *gain_tenth_out, or -1 when the text
+   is not a gain whose tenths, and their magnitude, fit an int. */
 static int
 stream_open_parse_if_gain_tenth_db(const char* gain_text, int* gain_tenth_out) {
     if (!gain_text || !gain_tenth_out) {
@@ -9325,24 +9341,25 @@ stream_open_parse_if_gain_tenth_db(const char* gain_text, int* gain_tenth_out) {
             gbuf[gl - 2] = '\0';
         }
     }
-    double gain_db = 0.0;
-    if (dsd_parse_double_strict(gbuf, -HUGE_VAL, HUGE_VAL, &gain_db) != 0) {
-        gain_db = 0.0;
-    }
     if (strchr(gbuf, '.')) {
+        const double max_db = (double)INT_MAX / 10.0;
+        double gain_db = 0.0;
+        if (dsd_parse_double_strict(gbuf, -max_db, max_db, &gain_db) != 0) {
+            return -1;
+        }
         *gain_tenth_out = (int)lrint(gain_db * 10.0);
         return 0;
     }
     int gi = 0;
-    if (dsd_parse_int_strict(gbuf, 10, INT_MIN, INT_MAX, &gi) != 0) {
-        gi = 0;
+    if (dsd_parse_int_strict(gbuf, 10, -INT_MAX, INT_MAX, &gi) != 0) {
+        return -1;
     }
-    *gain_tenth_out = (abs(gi) > 90) ? gi : (gi * 10);
+    *gain_tenth_out = (gi > 90 || gi < -90) ? gi : (gi * 10);
     return 0;
 }
 
 static void
-stream_open_apply_if_gains_config(const char* gains) {
+stream_open_apply_if_gains_config(struct rtl_device* dev, const char* gains) {
     if (!gains || gains[0] == '\0') {
         return;
     }
@@ -9356,18 +9373,38 @@ stream_open_apply_if_gains_config(const char* gains) {
         }
         *colon = '\0';
         int stage = 0;
-        if (dsd_parse_int_strict(tok, 10, INT_MIN, INT_MAX, &stage) != 0) {
-            stage = 0;
-        }
-        if (stage < 0) {
+        if (dsd_parse_int_strict(tok, 10, 0, INT_MAX, &stage) != 0) {
+            LOG_WARN("WARNING: Ignoring IF gain stage '%s' (expected a stage number from 0)\n", tok);
             continue;
         }
         int gain_tenth = 0;
-        stream_open_parse_if_gain_tenth_db(colon + 1, &gain_tenth);
-        int rc = rtl_device_set_if_gain(rtl_device_handle, stage, gain_tenth);
+        if (stream_open_parse_if_gain_tenth_db(colon + 1, &gain_tenth) != 0) {
+            LOG_WARN("WARNING: Ignoring IF gain '%s' for stage %d (expected dB, as 9 or 9.5, or tenths of a dB above "
+                     "90)\n",
+                     colon + 1, stage);
+            continue;
+        }
+        int rc = rtl_device_set_if_gain(dev, stage, gain_tenth);
         log_unsupported_control_if_needed("IF gain control", rc);
     }
 }
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" int
+rtl_stream_test_parse_if_gain_tenth_db(const char* gain_text, int* out_tenth_db) {
+    return stream_open_parse_if_gain_tenth_db(gain_text, out_tenth_db);
+}
+
+extern "C" void
+rtl_stream_test_apply_if_gains(struct rtl_device* dev, const char* gains) {
+    stream_open_apply_if_gains_config(dev, gains);
+}
+
+extern "C" int
+rtl_stream_test_gain_tenth_db_from_db(int gain_db) {
+    return stream_gain_tenth_db_from_db(gain_db);
+}
+#endif
 
 static void
 stream_open_apply_bias_tee(const dsd_opts* opts) {
@@ -9431,7 +9468,7 @@ stream_open_apply_runtime_controls(const dsd_opts* opts) {
     stream_open_apply_xtal_control(cfg);
     stream_open_apply_testmode(cfg);
     if (cfg->rtl_if_gains_is_set && cfg->rtl_if_gains[0] != '\0') {
-        stream_open_apply_if_gains_config(cfg->rtl_if_gains);
+        stream_open_apply_if_gains_config(rtl_device_handle, cfg->rtl_if_gains);
     }
 }
 

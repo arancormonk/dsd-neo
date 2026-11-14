@@ -14,6 +14,7 @@ extern "C" {
 #endif
 
 struct demod_state;
+struct rtl_device;
 
 /* Install only while the stream is stopped. NULL restores platform creation. */
 void rtl_stream_test_set_thread_create(int (*create)(dsd_thread_t*, dsd_thread_fn, void*));
@@ -30,6 +31,14 @@ void rtl_stream_test_seed_open_profile(void);
    with the search's bypass set to @p bypass for the call: whether the block was dropped, and whether the look-ahead
    is still live after it. */
 void rtl_stream_test_signal_search_drop(int bypass, int* out_dropped, int* out_lookahead_live);
+
+/* One stage's gain text from DSD_NEO_RTL_IF_GAINS, as the stream's open reads it: 0 with its tenths of a dB in
+   @p out_tenth_db, or -1 when the text is not a gain (the open skips that stage). */
+int rtl_stream_test_parse_if_gain_tenth_db(const char* gain_text, int* out_tenth_db);
+/* DSD_NEO_RTL_IF_GAINS's "stage:gain[,stage:gain]..." applied to @p dev, as the stream's open applies it. */
+void rtl_stream_test_apply_if_gains(struct rtl_device* dev, const char* gains);
+/* The tenths of a dB the stream's open asks the tuner for at a manual gain of @p gain_db whole dB. */
+int rtl_stream_test_gain_tenth_db_from_db(int gain_db);
 
 /* Device backends, as rtl_device.cpp numbers them. */
 enum {

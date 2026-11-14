@@ -3647,7 +3647,15 @@ suite runs under this compiler.
     into another frequency. `dsd_normalize_soapy_input_spec()` reads a K/M/G-suffixed number (any strtod() number
     before the suffix: `+5.8G`, `5.8e0G`) in the frequency place as a frequency, never device args: out of range
     (refused by `dsd_parse_freq_hz()` or under the 1 MHz floor) it logs the token and fails, and engine setup and `--print-config` fail with it; a bare number keeps the opaque-args
-    fallback (`RUNTIME_INPUT_SPEC`). Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`,
+    fallback (`RUNTIME_INPUT_SPEC`). Both read a gain field the same way: one whose tenths of a dB (the gain times ten,
+    as the tuner is set) do not fit an int, above 214748364, is ignored with a warning naming it, like a field that
+    does not parse, and the gain before stays; 0 and negatives (automatic) are taken as written. The two places that
+    turn the configured gain into tenths, the stream's open (`rtl_sdr_fm.cpp`) and a trunk scan's retune gain profile
+    (`trunk_tuning.c`), hold it at `INT_MAX` (the tuner's top step) rather than overflow (`IO_RTL_GAIN_VALUES`,
+    `ENGINE_TRUNK_RETUNE_REGRESSION`). The open reads each `DSD_NEO_RTL_IF_GAINS` stage's gain as whole dB up to 90 in
+    magnitude, tenths beyond, and dB for a decimal; a stage number or gain it cannot read, or whose tenths or their
+    magnitude do not fit an int, skips that stage with a warning instead of programming 0 dB (`IO_RTL_GAIN_VALUES`).
+    Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`,
     `RUNTIME_CONFIG_USER`, and for the tone filter's "no effect" line `ENGINE_RUN_SETUP` (a config file's `-Y` list,
     one without rows included), `APP_COMMAND_QUEUE` (a running session, a channel map imported into a `-Y` scan
     included) and `ENGINE_TRUNK_SCAN`.

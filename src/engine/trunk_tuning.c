@@ -333,6 +333,13 @@ typedef struct {
     int rtl_ted_sps_override;
 } dsd_engine_rtl_profile_snapshot;
 
+/* The tenths of a dB a manual gain (@p gain_db above 0, in whole dB) asks the tuner for, held at INT_MAX (the tuner's
+   top step) past what int tenths hold. */
+static int
+dsd_engine_trunk_scan_manual_gain_tenth_db(int gain_db) {
+    return gain_db > INT_MAX / 10 ? INT_MAX : gain_db * 10;
+}
+
 static rtl_stream_retune_gain_profile
 dsd_engine_trunk_scan_gain_profile(const dsd_opts* opts, const dsd_state* state) {
     rtl_stream_retune_gain_profile profile;
@@ -344,7 +351,7 @@ dsd_engine_trunk_scan_gain_profile(const dsd_opts* opts, const dsd_state* state)
 
     profile.tuner_gain_is_set = 1;
     if (opts->rtl_gain_value > 0) {
-        profile.tuner_gain_tenth_db = opts->rtl_gain_value * 10;
+        profile.tuner_gain_tenth_db = dsd_engine_trunk_scan_manual_gain_tenth_db(opts->rtl_gain_value);
         profile.tuner_gain_is_auto = 0;
         profile.tuner_autogain_is_set = 1;
         profile.tuner_autogain_on = 0;
