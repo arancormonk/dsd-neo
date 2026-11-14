@@ -9,8 +9,8 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <stdint.h>
 #include <string.h>
-#include <time.h>
 #include "../../src/app_control/snapshot_internal.h"
 
 int

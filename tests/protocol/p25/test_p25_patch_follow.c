@@ -21,13 +21,11 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include "../../test_support/radio_policy_test.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_env.h"
-#include "test_support.h"
 
 #define CH_HELD    0x100A /* slot 0 on a TDMA plan */
 #define CH_HELD_1  0x100B /* slot 1 of the same TDMA carrier */

@@ -8,6 +8,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/trellis34.h>
@@ -735,11 +736,14 @@ test_mfid90_regroup_tsbk(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     rc |= expect_eq_int("regroup add crc", run_mfid90_tsbk(&opts, &state, 0x00, 1400, 1401, 1400, 1402), 1);
-    int idx = tsbk_patch_idx(&state, 1400);
-    rc |= expect_eq_int("regroup add creates the patch", idx >= 0, 1);
-    rc |= expect_eq_int("regroup add stores the real members", idx >= 0 ? state.p25_patch_wgid_count[idx] : -1, 2);
-    rc |= expect_eq_int("regroup add first member", idx >= 0 ? state.p25_patch_wgid[idx][0] : -1, 1401);
-    rc |= expect_eq_int("regroup add second member", idx >= 0 ? state.p25_patch_wgid[idx][1] : -1, 1402);
+    const int idx = tsbk_patch_idx(&state, 1400);
+    if (idx < 0) {
+        DSD_FPRINTF(stderr, "regroup add created no patch\n");
+        return 1;
+    }
+    rc |= expect_eq_int("regroup add stores the real members", state.p25_patch_wgid_count[idx], 2);
+    rc |= expect_eq_int("regroup add first member", state.p25_patch_wgid[idx][0], 1401);
+    rc |= expect_eq_int("regroup add second member", state.p25_patch_wgid[idx][1], 1402);
 
     p25_patch_test_listen_for(&state, 10.0);
     p25_patch_update(&state, 1400, 1, 1); // a grant naming the SG

@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static int g_failures = 0;
 
@@ -87,10 +88,11 @@ test_clock_fractional_accumulation(void) {
     // 30 ms PDUs for 25 s of continuous reception, from a large monotonic origin.
     const double origin = 86400.0;
     dsd_p25_patch_listen_note(st, origin);
-    for (int i = 1; i <= 25000 / 30; i++) {
+    const int pdus = 25000 / 30; // whole 30 ms PDUs in 25 s
+    for (int i = 1; i <= pdus; i++) {
         dsd_p25_patch_listen_note(st, origin + (double)i * 0.030);
     }
-    const double want = (double)(25000 / 30) * 0.030;
+    const double want = (double)pdus * 0.030;
     check(fabs(st->p25_patch_listen_s - want) < 1e-6, "fractional gaps accumulate without drift");
     free(st);
 }

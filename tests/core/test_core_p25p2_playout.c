@@ -1628,8 +1628,11 @@ __wrap_dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* 
                                          int encrypted, int data_call, dsd_tg_policy_decision* out) {
     const int rc = __real_dsd_tg_policy_evaluate_group_call(opts, state, tg, src, encrypted, data_call, out);
     g_group_evaluations++;
-    if (g_stale_patch_after_evaluation > 0 && --g_stale_patch_after_evaluation == 0) {
-        g_state.p25_patch_listen_s += 60.0; // 60 s of control-channel listening with no refresh
+    if (g_stale_patch_after_evaluation > 0) {
+        g_stale_patch_after_evaluation--;
+        if (g_stale_patch_after_evaluation == 0) {
+            g_state.p25_patch_listen_s += 60.0; // 60 s of control-channel listening with no refresh
+        }
     }
     return rc;
 }
