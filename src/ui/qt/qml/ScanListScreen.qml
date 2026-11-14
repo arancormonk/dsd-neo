@@ -14,9 +14,14 @@ Rectangle {
     property string validationText: ""
     property Item validationField: null
     property bool validationRevealPending: false
-    // The validation line reports a target CSV pick that went wrong (issue
-    // #829): a screen reader hears it once, as an alert.
-    property bool validationIsProblem: false
+    // Why the last target CSV import was refused (issues #829, #832), on a
+    // line of its own under the Entries choice, so Validate and Save, which
+    // rewrite the validation line, never hide it. A screen reader hears it
+    // once per failure, as an alert. It stays through a retry, a cancel and
+    // an answer that came too late, and goes with a chosen target CSV, a
+    // change of target source or another draft.
+    property string targetImportProblem: ""
+    property bool importRevealPending: false
     property string announced: ""
     property int announcements: 0
     // Bumped by every choice of target CSV or of target source, so a pick
@@ -57,7 +62,7 @@ Rectangle {
     }
 
     function revealFocus() {
-        if (validationRevealPending) {
+        if (validationRevealPending || importRevealPending) {
             revealValidation();
             return;
         }
@@ -65,38 +70,63 @@ Rectangle {
         if (window)
             Theme.revealFocus(scroll, content, window.activeFocusItem);
     }
+    // Reveals the one message waiting to be seen: the validation line's or
+    // the import problem's, whichever came last (each takes the reveal from
+    // the other).
     function revealValidation() {
-        if (!visible || !validationRevealPending || !validationText.length || advancedAnimation.running)
+        if (!visible || advancedAnimation.running)
             return;
         // PlexTextField includes its error in its height. Reveal the whole field
         // after layout; scroll.height already excludes the keyboard rectangle.
-        Theme.revealFocus(scroll, content, validationField || validationMessage);
+        if (validationRevealPending && validationText.length)
+            Theme.revealFocus(scroll, content, validationField || validationMessage);
+        else if (importRevealPending && targetImportProblem.length)
+            Theme.revealFocus(scroll, content, targetImportProblemLine);
     }
     function showValidation(text, field) {
-        validationIsProblem = false;
         validationField = field || null;
         validationText = text;
         validationRevealPending = text.length > 0;
+        if (validationRevealPending)
+            importRevealPending = false;
         // Also handle repeated failures whose text and geometry do not change.
         Qt.callLater(screen.revealValidation);
+    }
+    // The import problem's reveal runs after layout, from a timer the screen
+    // owns: openFor() and a close stop it with the screen's other state.
+    Timer {
+        id: importRevealTimer
+        interval: 0
+        onTriggered: screen.revealValidation()
     }
     Connections {
         target: screen.Window.window
         function onActiveFocusItemChanged() {
-            if (Navigation.contains(content, screen.Window.window.activeFocusItem))
+            if (Navigation.contains(content, screen.Window.window.activeFocusItem)) {
                 screen.validationRevealPending = false;
+                screen.importRevealPending = false;
+            }
             if (screen.visible)
                 Qt.callLater(screen.revealFocus);
         }
     }
 
     function showImportProblem(text) {
-        showValidation(text);
-        validationIsProblem = true;
-        Navigation.announce(screen, validationMessage, text);
+        targetImportProblem = text;
+        validationRevealPending = false;
+        importRevealPending = true;
+        // Also handle a repeated failure whose text and geometry do not change.
+        importRevealTimer.restart();
+        Navigation.announce(screen, targetImportProblemLine, text);
+    }
+    function clearImportProblem() {
+        targetImportProblem = "";
+        importRevealPending = false;
+        importRevealTimer.stop();
     }
 
     function selectTargets(path) {
+        clearImportProblem();
         targetsGeneration++;
         draft = Object.assign({}, draft, {
             "targetSource": "csv",
@@ -127,8 +157,10 @@ Rectangle {
     }
     // Closing the editor, by any route, ends a pick still out.
     onVisibleChanged: {
-        if (!visible)
+        if (!visible) {
             stopImport();
+            importRevealTimer.stop();
+        }
     }
 
     function importTargets() {
@@ -180,9 +212,14 @@ Rectangle {
             airspyText: scanAirspy.pendingText()
         });
     }
+    // Whether closing now would lose changes (requestClose() asks first then;
+    // Main tells the file browser's restart confirmation, issue #830).
+    function hasUnsavedDraft() {
+        return initialDraft !== fingerprint();
+    }
     function requestClose() {
         Navigation.clearInput(screen.Window.window);
-        if (initialDraft !== fingerprint())
+        if (hasUnsavedDraft())
             discardDialog.ask(function () {
                 screen.closed();
             });
@@ -233,6 +270,7 @@ Rectangle {
         draft = row >= 0 ? scanLists.get(row) : scanLists.newDraft();
         editUid = row >= 0 ? draft.uid || "" : "";
         entries = draft.entries || [];
+        clearImportProblem();
         showValidation("");
         advancedOpen = false;
         // Earlier releases persisted numeric fields as TextInput strings.
@@ -561,7 +599,38 @@ Rectangle {
                 currentIndex: screen.csvMode ? 1 : 0
                 onSelected: function (index) {
                     screen.targetsGeneration++;
-                    screen.setDraft("targetSource", index ? "csv" : "entries");
+                    var source = index ? "csv" : "entries";
+                    if (source === (screen.draft.targetSource || "entries"))
+                        return;
+                    // What was said about the other source's targets no longer applies.
+                    screen.clearImportProblem();
+                    screen.showValidation("");
+                    screen.setDraft("targetSource", source);
+                }
+            }
+
+            // Why the last target CSV import was refused. Here, above both
+            // sources, it shows whichever the draft is on: a refused Open with
+            // leaves a new draft on saved systems & frequencies.
+            ReadableText {
+                id: targetImportProblemLine
+                objectName: "scanTargetImportProblem"
+                width: parent.width
+                text: screen.targetImportProblem
+                textFormat: Text.PlainText
+                visible: text.length > 0
+                wrapMode: Text.Wrap
+                color: Theme.magenta
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                Accessible.role: Accessible.AlertMessage
+                onYChanged: {
+                    if (screen.importRevealPending)
+                        importRevealTimer.restart();
+                }
+                onHeightChanged: {
+                    if (screen.importRevealPending)
+                        importRevealTimer.restart();
                 }
             }
 
@@ -1256,7 +1325,6 @@ Rectangle {
                 color: Theme.textPrimary
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)
-                Accessible.role: screen.validationIsProblem ? Accessible.AlertMessage : Accessible.StaticText
                 onYChanged: Qt.callLater(screen.revealValidation)
                 onHeightChanged: Qt.callLater(screen.revealValidation)
             }

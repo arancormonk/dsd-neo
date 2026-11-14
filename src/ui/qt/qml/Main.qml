@@ -2742,6 +2742,13 @@ Window {
                 return "";
             return wizard.editRow >= 0 ? "edit" : "add";
         }
+        // So is a scan list being added or edited (Import target CSV browses
+        // from it), told apart from the system so both can be named.
+        unsavedScanList: function () {
+            if (!mainRoot.scanListOpen || !scanListEditor.hasUnsavedDraft())
+                return "";
+            return scanListEditor.editUid.length ? "edit" : "add";
+        }
         onCloseConfirmed: {
             mainRoot.dropPendingStarts();
             restartCloser.begin();

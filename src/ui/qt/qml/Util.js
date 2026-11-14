@@ -833,7 +833,7 @@ function importMessage(result, context) {
     if (error === "local")
         return localCopyMessage(result.noSpace === true, name)
     if (error === "format")
-        return result.detail || formatMessage(result.type, name)
+        return result.detail ? formatDetailMessage(result.detail, name) : formatMessage(result.type, name)
     if (error === "stale")
         return qsTr("The imported file changed while the new copy was being made. Nothing was replaced.")
     // The row an update was picked for went while the picker was up (issue #829).
@@ -898,6 +898,12 @@ function localCopyMessage(noSpace, name) {
 }
 
 // A file its kind cannot parse, when the parser gave no reason of its own.
+// A refused file's reason, said with what failed: the reason alone (a
+// parser's "header must start with …") does not say the file was not taken.
+function formatDetailMessage(detail, name) {
+    return name ? qsTr("Could not import %1: %2").arg(name).arg(detail) : qsTr("Could not import this file: %1").arg(detail)
+}
+
 function formatMessage(type, name) {
     var kinds = {
         chan: qsTr("channel map"),

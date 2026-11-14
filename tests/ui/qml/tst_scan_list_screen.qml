@@ -104,12 +104,14 @@ Item {
             var flow = findChild(screen, "targetCsvImport");
             flow.begin(testContext.storePath("fixtures/scan-gone.csv"), "scan-gone.csv", "trunkTargets", screen.importContext());
             tryCompare(flow, "active", false);
-            compare(screen.validationText, "Could not read scan-gone.csv. Check that it is still available, then try again.");
+            compare(screen.targetImportProblem, "Could not read scan-gone.csv. Check that it is still available, then try again.");
             var bad = testContext.writeFixtureCsv("scan-bad-targets.csv", "not,a,target,header\n1,2,3,4\n");
             flow.begin(bad, "scan-bad-targets.csv", "trunkTargets", screen.importContext());
             tryCompare(flow, "active", false);
-            verify(screen.validationText.length > 0, "a format failure is explained");
-            verify(screen.validationText.indexOf("Could not read") < 0, "and reads apart from a read failure: " + screen.validationText);
+            verify(screen.targetImportProblem.length > 0, "a format failure is explained");
+            verify(screen.targetImportProblem.indexOf("Could not read") < 0, "and reads apart from a read failure: " + screen.targetImportProblem);
+            // The parser's reason, said with the file it is about.
+            verify(screen.targetImportProblem.indexOf("Could not import scan-bad-targets.csv: ") === 0, screen.targetImportProblem);
             verify(!screen.csvMode);
         }
 
@@ -254,16 +256,17 @@ Item {
                 clearLibrary();
             }
         }
-        // A picker failure shows its reason on the validation line, as an
+        // A picker failure shows its reason on the import problem line, as an
         // alert read out once; the same failure again is read out again.
         function test_picker_failure_is_shown_and_read_out() {
             var said = screen.announcements;
             screen.importTargets();
             testContext.answerDocumentUnavailable(testContext.lastDocumentRequest().id, "unreadable");
             var message = "That app gave DSD-neo a file it can't open. Pick the file from another app.";
-            compare(screen.validationText, message);
-            var line = control("scanValidation");
-            verify(line.visible);
+            compare(screen.targetImportProblem, message);
+            var line = control("scanTargetImportProblem");
+            verify(line.visible, "shown on saved systems & frequencies too");
+            compare(line.text, message);
             compare(line.Accessible.role, Accessible.AlertMessage);
             compare(screen.announcements, said + 1);
             compare(screen.announced, message);
@@ -272,7 +275,158 @@ Item {
             testContext.answerDocumentUnavailable(testContext.lastDocumentRequest().id, "unreadable");
             compare(screen.announcements, said + 2);
             screen.showValidation("Name this scan list.");
-            compare(line.Accessible.role, Accessible.StaticText, "an ordinary message is not an alert");
+            var validation = control("scanValidation");
+            compare(validation.Accessible.role, Accessible.StaticText, "an ordinary message is not an alert");
+            verify(line.visible, "and does not hide the import's reason");
+            compare(line.Accessible.role, Accessible.AlertMessage);
+        }
+
+        // ---- A refused target CSV keeps its reason; a list without one is told so ----
+
+        readonly property string targetsHeader: "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+        readonly property string noTargetText: "Choose a target CSV for this list: import one, or select one you imported before."
+        function chooseTargetCsvMode() {
+            control("scanTargetMode").selected(1);
+            verify(screen.csvMode);
+        }
+        function pickTargets(name, content) {
+            screen.importTargets();
+            var path = testContext.writeFixtureCsv(name, content);
+            testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, "file://" + path, name, false);
+            tryCompare(findChild(screen, "targetCsvImport"), "active", false, 5000);
+        }
+        function refuseTargets() {
+            pickTargets("scan-refused.csv", "name,frequency\nA,851.0125\n");
+            verify(screen.targetImportProblem.indexOf("Could not import scan-refused.csv: ") === 0, screen.targetImportProblem);
+            return screen.targetImportProblem;
+        }
+
+        // The report: Target CSV, a CSV the import refuses, then Validate and
+        // Save. The reason stays on screen, and the list is told it has no
+        // target CSV, not that one went missing.
+        function test_refused_target_csv_keeps_its_reason_through_validate() {
+            try {
+                edit("scanListName", "Refused");
+                chooseTargetCsvMode();
+                var said = screen.announcements;
+                var reason = refuseTargets();
+                verify(reason.indexOf("header must start with") > 0, reason);
+                var line = control("scanTargetImportProblem");
+                verify(line.visible);
+                compare(screen.announcements, said + 1);
+                compare(screen.draft.targetsCsvPath || "", "");
+                verify(!screen.validate());
+                compare(screen.validationText, noTargetText);
+                verify(control("scanValidation").visible);
+                compare(line.text, reason, "Validate keeps the import's reason");
+                screen.save();
+                compare(scanLists.count, 0);
+                compare(line.text, reason, "so does Save");
+                // The same failure again is said again.
+                refuseTargets();
+                compare(screen.announcements, said + 2);
+                // A target CSV the import takes ends it.
+                pickTargets("scan-taken.csv", targetsHeader + "one,p25-conventional,851500000,,,,\n");
+                compare(screen.targetImportProblem, "");
+                verify(!line.visible);
+                verify(screen.validate(), screen.validationText);
+            } finally {
+                clearLibrary();
+            }
+        }
+
+        // Nothing picked at all says the same: there is no target CSV yet.
+        function test_target_csv_list_without_a_file_is_told_to_choose_one() {
+            edit("scanListName", "Empty");
+            chooseTargetCsvMode();
+            verify(!screen.validate());
+            compare(screen.validationText, noTargetText);
+        }
+
+        // What keeps the reason and what ends it.
+        function test_import_problem_lifecycle_data() {
+            return [{tag: "picker cancel", keeps: true}, {tag: "companion cancel", keeps: true},
+                    {tag: "late answer dropped", keeps: true}, {tag: "same source again", keeps: true},
+                    {tag: "other source", keeps: false}, {tag: "another draft", keeps: false},
+                    {tag: "dropdown choice", keeps: false}];
+        }
+        function test_import_problem_lifecycle(data) {
+            var flow = findChild(screen, "targetCsvImport");
+            try {
+                chooseTargetCsvMode();
+                var reason = refuseTargets();
+                if (data.tag === "picker cancel") {
+                    screen.importTargets();
+                    compare(screen.targetImportProblem, reason, "asking again keeps it until there is an answer");
+                    testContext.answerDocumentCancelled(testContext.lastDocumentRequest().id);
+                } else if (data.tag === "companion cancel") {
+                    var source = testContext.writeFixtureCsv("lifecycle-companion.csv",
+                        targetsHeader + "one,p25-trunk,851012500,missing-map.csv,,,\n");
+                    flow.begin(source, "Targets.csv", "trunkTargets", screen.importContext());
+                    tryVerify(function () { return flow.requiredFiles.length > 0; }, 5000, "the companions are asked for");
+                    findChild(screen, "csvCompanionSheet").requestDismiss();
+                    tryCompare(flow, "active", false);
+                } else if (data.tag === "late answer dropped") {
+                    var late = testContext.writeFixtureCsv("lifecycle-late.csv", targetsHeader + "one,p25-conventional,851500000,,,,\n");
+                    testContext.holdImports(true);
+                    flow.begin(late, "Late.csv", "trunkTargets", screen.importContext());
+                    // A newer choice of source (the same one again) makes the copy's answer late.
+                    control("scanTargetMode").selected(1);
+                    testContext.holdImports(false);
+                    tryCompare(flow, "active", false, 5000);
+                    compare(screen.draft.targetsCsvPath || "", "", "the late answer is not taken");
+                } else if (data.tag === "same source again") {
+                    control("scanTargetMode").selected(1);
+                } else if (data.tag === "other source") {
+                    control("scanTargetMode").selected(0);
+                } else if (data.tag === "another draft") {
+                    screen.openFor(-1);
+                } else {
+                    var taken = testContext.writeFixtureCsv("lifecycle-library.csv", targetsHeader + "one,p25-conventional,851500000,,,,\n");
+                    verify(testContext.importNow(taken, "trunkTargets").ok);
+                    choose("scanTargetCsvPicker", 1);
+                }
+                compare(screen.targetImportProblem, data.keeps ? reason : "");
+            } finally {
+                testContext.holdImports(false);
+                clearLibrary();
+            }
+        }
+
+        // Open with: a refused target CSV leaves the new draft on saved
+        // systems & frequencies, where the reason shows all the same.
+        function test_refused_open_with_shows_its_reason() {
+            var bad = testContext.writeFixtureCsv("incoming-refused.csv", "name,frequency\nA,851.0125\n");
+            verify(screen.importTargetsFrom(bad, "incoming-refused.csv"));
+            tryCompare(findChild(screen, "targetCsvImport"), "active", false, 5000);
+            verify(!screen.csvMode);
+            verify(control("scanTargetImportProblem").visible);
+            verify(screen.targetImportProblem.indexOf("Could not import incoming-refused.csv: ") === 0, screen.targetImportProblem);
+        }
+
+        // A change of target source clears what Validate said about the other one.
+        function test_source_change_clears_the_validation_line() {
+            edit("scanListName", "Switch");
+            chooseTargetCsvMode();
+            verify(!screen.validate());
+            compare(screen.validationText, noTargetText);
+            control("scanTargetMode").selected(1);
+            compare(screen.validationText, noTargetText, "choosing the same source again changes nothing");
+            control("scanTargetMode").selected(0);
+            compare(screen.validationText, "");
+        }
+
+        // The reveal of a refused import waits for layout on a timer the screen
+        // owns; closing and opening another draft before it runs drops it.
+        function test_close_before_the_import_reveal_runs() {
+            chooseTargetCsvMode();
+            screen.showImportProblem("Could not import late.csv: bad header");
+            screen.visible = false;
+            screen.visible = true;
+            screen.openFor(-1);
+            wait(50);
+            compare(screen.targetImportProblem, "");
+            verify(!screen.importRevealPending);
         }
 
         function test_edit_entries_and_persist() {

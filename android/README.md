@@ -2523,7 +2523,10 @@ talkgroups or radio IDs file clears it from the list, which keeps running withou
 it. Deleting a list keeps shared assets. A removal that cannot save those changes
 or finish removing the file says so and keeps the file's row in the library;
 remove it again to finish. Validation reports the failing row/field without
-displaying key values.
+displaying key values. When the import refuses a target CSV, the reason stays
+under the Entries choice until another target CSV is chosen, the list switches
+to saved systems & frequencies, or the editor closes; Validate and Save then say
+the list has no target CSV yet.
 
 Listen's **Scan lists** tab combines saved systems and bare P25/DMR/NXDN frequencies
 into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,

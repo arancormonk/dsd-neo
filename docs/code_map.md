@@ -15710,7 +15710,8 @@ Qt Quick frontend (`src/ui/qt`):
   offers Close DSD-neo: `restartCloser.refused()` shows the refusal line, else a `ConfirmDialog` lists what ends
   (`decoderHost.sessionActive`; a `csv` request's import or a `backup` request's restore; the system editor's unsaved
   draft, which Main reports through `unsavedDraft()` as "add" or "edit" from `WizardScreen.hasUnsavedDraft()` and
-  `editRow`; `backup.restorePending`), and its confirm emits `closeConfirmed()`, which Main answers with
+  `editRow`; the scan-list editor's, through `unsavedScanList()` from `ScanListScreen.hasUnsavedDraft()` and `editUid`;
+  `backup.restorePending`), and its confirm emits `closeConfirmed()`, which Main answers with
   `dropPendingStarts()` and `restartCloser.begin()`; "Closing DSD-neo…" shows while `restartCloser.active`, and a
   `finished` other than "closing" shows the failure line (the refusal line for "refused") and keeps the browser. While
   `restartCloser.active` nothing new can be picked: a file tap does nothing (files show dimmed, and a folder says
@@ -15761,7 +15762,13 @@ Qt Quick frontend (`src/ui/qt`):
   `{generation, targets}`; `ImportsScreen.importContext()`: `{replacing, replacePath, generation}`) and the owner's
   `wanted(context)` answers whether it still holds; a pick that comes back after a newer choice ends as cancelled with
   nothing copied or imported and no notice, and a late companion pick leaves the slot alone (B6: a later pick never
-  carries an earlier reference). The wizard fills `context.target` with `context.keyFormat`, never `pickerTarget`, which
+  carries an earlier reference). The scan list editor keeps a refused target import's reason in `targetImportProblem`
+  (its own line under the target source switch, so `validate()` and `save()`, which rewrite the validation line, never
+  hide it): a new failure replaces it; `selectTargets()`, an actual change of target source and `openFor()` clear it; a
+  retry, a refused start, a cancel and a dropped late answer leave it. The validation line and that line take the
+  reveal from each other (`validationRevealPending`/`importRevealPending`), the import line's from a `Timer` the
+  editor owns. `ScanListStarter` tells a csv list with no `targetsCsvPath` to choose one, and one whose path is not a
+  known imported target CSV that it is unavailable. The wizard fills `context.target` with `context.keyFormat`, never `pickerTarget`, which
   the next sheet rewrites. An update names its row by the stored path taken at pick time (`replacePath`):
   `beginImport()` refuses a row that went with `error` "changed" ("That file changed while you were picking. Try
   again."), and the flow refuses an update whose row gave no path (`replacing` with an empty `replacePath`) the same way
@@ -15769,8 +15776,9 @@ Qt Quick frontend (`src/ui/qt`):
   the key file and bumps its generation too. A primary picker that is `unavailable` ends the flow with `{ok false, error
   "unavailable", detail: message}`; a companion one brings the sheet back with every choice kept and the message in
   `csvCompanionNotice` (cleared by the next "Choose a file…", a library choice or the end of the import). Owners show
-  `Util.importMessage(result, "csv")`, which gives `detail` for "changed" and "unavailable" (Imports' notice, the scan
-  list's validation line, the wizard's `csvNotice`); each of those lines and the companion notice is an `AlertMessage`
+  `Util.importMessage(result, "csv")`, which gives `detail` for "changed" and "unavailable", and a "format" refusal's
+  `detail` as "Could not import <name>: <detail>" (Imports' notice, the scan list's `scanTargetImportProblem` line, the
+  wizard's `csvNotice`); each of those lines and the companion notice is an `AlertMessage`
   while it reports a problem and is read out once per failure while `Navigation.allows` it
   (`announced`/`announcements` for tests). Tests: `UI_QT_QML_CSV_IMPORT_FLOW`, `UI_QT_IMPORTED_FILES`, and the scan
   list, imports, wizard band plan, modal input and settings layout QML suites.
@@ -17579,7 +17587,7 @@ when `line` is null) when the Qt in use has it. Speaking makes the speaker an ac
 (`test_3d_covered_screen_leaves_the_tree` with an export result set). Each failure is read once, and a repeat is read
 again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`, `replayNotice`), `CallRecordingsScreen`,
 `CallRecordingPlayer`, `CsvImportFlow` (the companion sheet's notice), `ImportsScreen` (an import problem,
-`noticeLine`), `ScanListScreen` (a target CSV import problem, `validationMessage`), `FileBrowserScreen`,
+`noticeLine`), `ScanListScreen` (a target CSV import problem, `scanTargetImportProblem`), `FileBrowserScreen`,
 `IncomingDocumentFlow`, `SignalSearchScreen` (an export's result, once its line can be reached:
 `announceExport()`) and `HistoryScreen` (its export's result, the same way).
 

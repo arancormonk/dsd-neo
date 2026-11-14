@@ -996,7 +996,10 @@ Item {
                 {tag: "restore", active: false, kind: "backup", pending: false, message: "This restore is dropped.\nThen open DSD-neo again."},
                 {tag: "adding a system", active: false, kind: "replay", pending: false, draft: "add", message: "The system you're adding is dropped.\nThen open DSD-neo again."},
                 {tag: "editing a system", active: true, kind: "replay", pending: false, draft: "edit", message: "Listening stops.\nYour changes to this system are dropped.\nThen open DSD-neo again."},
-                {tag: "import into an edit", active: false, kind: "csv", pending: false, draft: "edit", message: "This import is dropped.\nYour changes to this system are dropped.\nThen open DSD-neo again."}
+                {tag: "import into an edit", active: false, kind: "csv", pending: false, draft: "edit", message: "This import is dropped.\nYour changes to this system are dropped.\nThen open DSD-neo again."},
+                {tag: "adding a scan list", active: false, kind: "csv", pending: false, scanList: "add", message: "This import is dropped.\nThe scan list you're adding is dropped.\nThen open DSD-neo again."},
+                {tag: "editing a scan list", active: true, kind: "csv", pending: false, scanList: "edit", message: "Listening stops.\nThis import is dropped.\nYour changes to this scan list are dropped.\nThen open DSD-neo again."},
+                {tag: "a system and a scan list", active: false, kind: "csv", pending: false, draft: "add", scanList: "edit", message: "This import is dropped.\nThe system you're adding is dropped.\nYour changes to this scan list are dropped.\nThen open DSD-neo again."}
             ];
         }
         function test_restart_row(data) {
@@ -1021,6 +1024,9 @@ Item {
             testContext.setBackup("restorePending", data.pending);
             screen.unsavedDraft = function () {
                 return data.draft || "";
+            };
+            screen.unsavedScanList = function () {
+                return data.scanList || "";
             };
             close.clicked();
             verify(dialog.visible, "the close asks first");
@@ -1186,6 +1192,26 @@ Item {
             wizard.editRow = -1;
             app.wizardOpen = false;
             compare(browser.unsavedDraft(), "");
+
+            // And one the scan-list editor holds, told apart from the system's.
+            var scanEditor = item("scanListScreen", app);
+            compare(browser.unsavedScanList(), "", "no scan list while its editor is closed");
+            scanEditor.openFor(-1);
+            app.scanListOpen = true;
+            compare(browser.unsavedScanList(), "", "a new scan list not changed yet loses nothing");
+            scanEditor.setDraft("name", "Unsaved list");
+            compare(browser.unsavedScanList(), "add", "a new scan list with changes");
+            scanEditor.editUid = "saved-list";
+            compare(browser.unsavedScanList(), "edit", "a saved scan list with changes");
+            wizard.openForAdd(false);
+            app.wizardOpen = true;
+            wizard.freqText = "852.0125";
+            compare(browser.unsavedDraft(), "add", "both editors are reported");
+            compare(browser.unsavedScanList(), "edit");
+            app.wizardOpen = false;
+            scanEditor.editUid = "";
+            app.scanListOpen = false;
+            compare(browser.unsavedScanList(), "");
 
             app.pendingStart = {sourceType: "usb"};
             var begins = testContext.closeBegins();
