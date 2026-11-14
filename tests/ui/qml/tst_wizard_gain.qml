@@ -366,22 +366,26 @@ Item {
             verify(!tc.wizard.advancedOpen, "a valid system opens folded");
         }
 
-        // A stored gain above 49 (the editor took up to 99 before) opens under
-        // Set with its error and holds the tune step. When the saved systems
-        // model maps a stored gain above 49 to 49 as it loads, a stored 50
-        // reaches the editor as 49 and opens folded: this case changes with it.
+        // A gain above 49 (the editor took up to 99 before) never reaches the
+        // editor: the saved systems model holds it to 49 as it stores it, so
+        // the system opens folded under Set 49, valid, and the tune step goes
+        // on. A refused gain typed in the editor still holds it.
         function test_refused_saved_gain_opens_advanced() {
             var row = addSystem(-1, "");
             verify(savedSystems.update(row, {"gainDb": 50}));
-            compare(savedSystems.get(row).gainDb, 50);
+            compare(savedSystems.get(row).gainDb, 49);
             tc.wizard.openForEdit(row);
-            verify(tc.wizard.advancedOpen, "the refused gain is shown");
+            verify(!tc.wizard.advancedOpen, "a gain held to 49 is valid and opens folded");
             compare(shownMode(), "Set");
-            compare(control("systemGainField").text, "50");
-            compare(control("systemGainField").error, "Enter a gain from 1 to 49 dB.");
+            compare(control("systemGainField").text, "49");
+            compare(control("systemGainField").error, "");
             compare(tc.wizard.draftFingerprint(), tc.wizard.initialDraft);
             tc.wizard.step = 1;
-            verify(!tc.wizard.stepValid());
+            verify(tc.wizard.stepValid());
+            tc.wizard.advancedOpen = true;
+            control("systemGainField").text = "50";
+            compare(control("systemGainField").error, "Enter a gain from 1 to 49 dB.");
+            verify(!tc.wizard.stepValid(), "a refused gain typed in the editor holds the tune step");
         }
 
         // A refused value hidden at load (an Airspy system's old PPM) comes into
