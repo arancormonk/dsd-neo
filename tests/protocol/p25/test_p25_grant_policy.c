@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "../../test_support/radio_policy_test.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -206,6 +207,198 @@ patch_member_hold_after(uint64_t away_s, int cc_after_tenths, int want_tuned, co
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return expect_true(tag, tuned == want_tuned);
+}
+
+/* A fresh trunking receiver on a Phase 1 control channel, the policy list empty. */
+static void
+patch_grant_fixture(dsd_opts* opts, dsd_state* st, int allow_list) {
+    dsd_state_ext_free_all(st);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(st, 0, sizeof(*st));
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_enc_calls = 1;
+    opts->trunk_use_allow_list = allow_list;
+    st->p25_cc_freq = 851000000;
+    seed_fdma_iden(st, 1);
+    p25_sm_init_ctx(p25_sm_get_ctx(), opts, st);
+    mark_cc_reacquired(st);
+}
+
+static int
+patch_grant_tunes(dsd_opts* opts, dsd_state* st, int tg, int src, int svc_bits) {
+    const unsigned before = st->p25_sm_tune_count;
+    opts->trunk_is_tuned = 0;
+    p25_sm_event(p25_sm_get_ctx(), opts, st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = (1 << 12) | 0x000A,
+                                   .tg = tg,
+                                   .src = src,
+                                   .svc_bits = svc_bits,
+                                   .is_group = 1});
+    return st->p25_sm_tune_count == before + 1;
+}
+
+/* Voice starts on the followed Phase 1 call: the call's policy target, 0 when no active call. */
+static uint64_t
+patch_voice_policy_target(dsd_opts* opts, dsd_state* st) {
+    st->synctype = DSD_SYNC_P25P1_POS;
+    p25_sm_event_t active = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &active);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(st, 0, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0U;
+    }
+    return call.policy_target_id;
+}
+
+static int
+patch_gate_plays(const dsd_opts* opts, const dsd_state* st, unsigned long tg) {
+    int muted = -1;
+    return dsd_audio_group_gate_mono(opts, st, tg, 0, &muted) == 0 && muted == 0;
+}
+
+static int
+seed_catch_all(dsd_state* st, const char* mode) {
+    dsd_tg_policy_entry e;
+    DSD_MEMSET(&e, 0, sizeof(e));
+    e.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(e.pattern, sizeof(e.pattern), "%s", "*");
+    DSD_SNPRINTF(e.mode, sizeof(e.mode), "%s", mode);
+    DSD_SNPRINTF(e.name, sizeof(e.name), "%s", "EVERYONE-ELSE");
+    e.source = DSD_TG_POLICY_SOURCE_IMPORTED;
+    return dsd_tg_policy_add_pattern_entry(st, &e);
+}
+
+static int
+seed_exact_audio_off(dsd_state* st, uint32_t id) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(id, "A", "AUDIO-OFF", DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        return 1;
+    }
+    row.audio = 0u;
+    row.record = 0u;
+    row.stream = 0u;
+    return dsd_tg_policy_upsert_exact(st, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+}
+
+static void
+patch_grant_done(dsd_opts* opts, dsd_state* st) {
+    p25_sm_release(p25_sm_get_ctx(), opts, st, "explicit-release");
+    dsd_state_ext_free_all(st);
+}
+
+/* M1: a `*` catch-all with listening off skips no patch a listened member carries; the call is judged on the member and
+   plays. An explicit row on the supergroup stays final (preservation). */
+static int
+test_patch_catch_all_member(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    patch_grant_fixture(&opts, &st, 0);
+    int rc = expect_true("m1 seed catch-all", seed_catch_all(&st, "B") == 0);
+    rc |= expect_true("m1 seed member", seed_exact(&st, 1401, "A", "MEMBER", 0, 0) == 0);
+    p25_patch_add_wgid(&st, 1400, 1402);
+    p25_patch_add_wgid(&st, 1400, 1401);
+    rc |=
+        expect_true("m1 catch-all B patch tunes on its listened member", patch_grant_tunes(&opts, &st, 1400, 2400, 0));
+    rc |= expect_true("m1 judged on the member", patch_voice_policy_target(&opts, &st) == 1401U);
+    rc |= expect_true("m1 member plays", patch_gate_plays(&opts, &st, 1400));
+    p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
+    mark_cc_reacquired(&st);
+    // Preservation: an exact SG row with listening off stays final even beside the catch-all.
+    rc |= expect_true("m1 seed exact SG B", seed_exact(&st, 1410, "B", "SG-OFF", 0, 0) == 0);
+    p25_patch_add_wgid(&st, 1410, 1401);
+    rc |= expect_true("m1 explicit SG B stays final", !patch_grant_tunes(&opts, &st, 1410, 2410, 0));
+    patch_grant_done(&opts, &st);
+    return rc;
+}
+
+/* M2: an SG that may tune but plays no audio does not beat a listened member of equal priority. */
+static int
+test_patch_media_ranks_before_priority(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    patch_grant_fixture(&opts, &st, 0);
+    int rc = expect_true("m2 seed SG audio off", seed_exact_audio_off(&st, 1420) == 0);
+    rc |= expect_true("m2 seed member", seed_exact(&st, 1421, "A", "MEMBER", 0, 0) == 0);
+    p25_patch_add_wgid(&st, 1420, 1421);
+    rc |= expect_true("m2 tunes", patch_grant_tunes(&opts, &st, 1420, 2420, 0));
+    rc |= expect_true("m2 judged on the listened member", patch_voice_policy_target(&opts, &st) == 1421U);
+    rc |= expect_true("m2 plays", patch_gate_plays(&opts, &st, 1420));
+    patch_grant_done(&opts, &st);
+    return rc;
+}
+
+/* Preservation: priority orders members, and a Hold comes first. */
+static int
+test_patch_priority_and_hold(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    patch_grant_fixture(&opts, &st, 0);
+    int rc = expect_true("prio seed low", seed_exact(&st, 1431, "A", "LOW", 10, 0) == 0);
+    rc |= expect_true("prio seed high", seed_exact(&st, 1432, "A", "HIGH", 60, 0) == 0);
+    p25_patch_add_wgid(&st, 1430, 1431);
+    p25_patch_add_wgid(&st, 1430, 1432);
+    rc |= expect_true("prio tunes", patch_grant_tunes(&opts, &st, 1430, 2430, 0));
+    rc |= expect_true("prio judged on the higher priority", patch_voice_policy_target(&opts, &st) == 1432U);
+    p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
+    mark_cc_reacquired(&st);
+    st.tg_hold = 1431;
+    rc |= expect_true("hold tunes", patch_grant_tunes(&opts, &st, 1430, 2430, 0));
+    rc |= expect_true("hold judged on the held member", patch_voice_policy_target(&opts, &st) == 1431U);
+    st.tg_hold = 0;
+    patch_grant_done(&opts, &st);
+    return rc;
+}
+
+/* Preservation: a locked, unlisted SG with a listed member is admitted through the planned release of a clear grant,
+   accepted (the release commits), and kept through the voice-start recheck. */
+static int
+test_patch_locked_sg_planned_release(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    patch_grant_fixture(&opts, &st, 1);
+    opts.trunk_tune_enc_calls = 0;
+    int rc = expect_true("lock seed member", seed_exact(&st, 1451, "A", "MEMBER", 0, 0) == 0);
+    p25_patch_add_wgid(&st, 1450, 1451);
+    p25_sm_note_encrypted_call_typed(&opts, &st, 1450, 1, 0x84, 0x2714);
+    rc |= expect_true("lock armed", !enc_tg_cache_is_absent(&st, 1450U));
+    rc |= expect_true("lock encrypted grant refused", !patch_grant_tunes(&opts, &st, 1450, 2450, 0x40));
+    rc |=
+        expect_true("lock clear grant tunes through the planned release", patch_grant_tunes(&opts, &st, 1450, 2450, 0));
+    rc |= expect_true("lock release committed", enc_tg_cache_is_absent(&st, 1450U));
+    rc |= expect_true("lock voice recheck keeps the member", patch_voice_policy_target(&opts, &st) == 1451U);
+    p25_sm_event_t talker = p25_sm_ev_active_call(0, 1450, 0, 2451, 1, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st, &talker);
+    rc |= expect_true("lock new talker keeps the call",
+                      p25_sm_get_ctx()->slots[0].voice_active
+                          && active_call_matches(&st, 0U, DSD_CALL_KIND_GROUP_VOICE, 1450U, 1451U, 2451U));
+    patch_grant_done(&opts, &st);
+    return rc;
+}
+
+/* A blocked source applies to whichever candidate wins: a new grant is refused, and a followed call that learns the
+   blocked talker is kept (radio-only rejection) and muted, not released. */
+static int
+test_patch_blocked_source(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    patch_grant_fixture(&opts, &st, 1);
+    int rc = expect_true("src seed member", seed_exact(&st, 1461, "A", "MEMBER", 0, 0) == 0);
+    rc |= expect_true("src radio list", dsd_test_install_radio_policy(&st, 2462, "B", 0, 0, 0) == 0);
+    p25_patch_add_wgid(&st, 1460, 1461);
+    rc |= expect_true("src blocked talker's grant refused", !patch_grant_tunes(&opts, &st, 1460, 2462, 0));
+    rc |= expect_true("src allowed talker tunes", patch_grant_tunes(&opts, &st, 1460, 2460, 0));
+    rc |= expect_true("src judged on the member", patch_voice_policy_target(&opts, &st) == 1461U);
+    p25_sm_event_t talker = p25_sm_ev_active_call(0, 1460, 0, 2462, 1, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st, &talker);
+    rc |= expect_true("src blocked talker keeps the call",
+                      p25_sm_get_ctx()->slots[0].voice_active
+                          && active_call_matches(&st, 0U, DSD_CALL_KIND_GROUP_VOICE, 1460U, 1461U, 2462U));
+    rc |= expect_true("src blocked talker muted", !patch_gate_plays(&opts, &st, 1460));
+    patch_grant_done(&opts, &st);
+    return rc;
 }
 
 int
@@ -1276,6 +1469,11 @@ main(void) {
     rc |= patch_member_hold_after(60U, 10, 1, "patch member hold survives a 60 s voice-channel dwell");
     // Preservation of the TTL: 21 s of control channel without an Add lets the members expire.
     rc |= patch_member_hold_after(0U, 190, 0, "patch member hold expires after 21 s of control channel without an Add");
+    rc |= test_patch_catch_all_member();
+    rc |= test_patch_media_ranks_before_priority();
+    rc |= test_patch_priority_and_hold();
+    rc |= test_patch_locked_sg_planned_release();
+    rc |= test_patch_blocked_source();
     p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

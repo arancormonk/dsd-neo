@@ -11,7 +11,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
@@ -1266,26 +1266,6 @@ p25_grant_release_enc_lockout_if_clear(p25_sm_ctx_t* ctx, const dsd_opts* opts, 
     }
 }
 
-/* Candidates (the supergroup and its members) share the grant's source, so its radio part is the same for all: they are
-   ranked on their talkgroup part, and a radio block applies to whichever wins. */
-static int
-p25_grant_policy_candidate_is_better(const dsd_tg_policy_decision* candidate, const dsd_tg_policy_decision* best,
-                                     int have_best) {
-    if (!candidate || !candidate->tg_tune_allowed) {
-        return 0;
-    }
-    if (!have_best || !best) {
-        return 1;
-    }
-    if (candidate->tg_hold_match != best->tg_hold_match) {
-        return candidate->tg_hold_match ? 1 : 0;
-    }
-    if (candidate->priority != best->priority) {
-        return (candidate->priority > best->priority) ? 1 : 0;
-    }
-    return (candidate->preempt_requested && !best->preempt_requested) ? 1 : 0;
-}
-
 // Blocks that deny tuning; the rest only restrict media.
 #define P25_GRANT_TUNE_DENY_BLOCKS                                                                                     \
     (~((uint32_t)DSD_TG_POLICY_BLOCK_AUDIO | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD                                      \
@@ -1309,54 +1289,26 @@ p25_grant_apply_planned_release(const p25_grant_eval_ctx_t* eval_ctx, uint32_t t
     }
 }
 
+// The resolver's adjust hook: judge each candidate as the planned lockout release leaves it.
+static void
+p25_grant_adjust_candidate(uint32_t target, dsd_tg_policy_decision* decision, const void* ctx) {
+    p25_grant_apply_planned_release((const p25_grant_eval_ctx_t*)ctx, target, decision);
+}
+
+/* A group grant is judged by the patch resolver (ADMIT): the supergroup, then its current members, with the planned
+   lockout release applied to each candidate first. The candidates share the grant's source, so a radio block applies to
+   whichever wins. */
 static int
 p25_grant_eval_group_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm_event_t* ev,
                             const p25_grant_eval_ctx_t* eval_ctx, dsd_tg_policy_decision* out_decision) {
-    uint16_t members[DSD_P25_PATCH_GROUP_MAX] = {0};
-    // The collector returns how many members it wrote, never more than the buffer holds.
-    int member_count =
-        p25_patch_collect_active_wgids(state, eval_ctx->tg, members, sizeof(members) / sizeof(members[0]));
-    dsd_tg_policy_decision best;
-    dsd_tg_policy_decision first;
-    int have_best = 0;
-    int have_first = 0;
-    DSD_MEMSET(&best, 0, sizeof(best));
-    DSD_MEMSET(&first, 0, sizeof(first));
-
-    for (int i = 0; i <= member_count; i++) {
-        uint32_t target = (i == 0) ? (uint32_t)eval_ctx->tg : (uint32_t)members[i - 1];
-        dsd_tg_policy_decision candidate;
-        if (i > 0 && (target == 0U || target == (uint32_t)eval_ctx->tg)) {
-            continue;
-        }
-        if (dsd_tg_policy_evaluate_group_call(opts, state, target, (uint32_t)ev->src, eval_ctx->encrypted_call,
-                                              eval_ctx->data_call, &candidate)
-            != 0) {
-            return -1;
-        }
-        p25_grant_apply_planned_release(eval_ctx, target, &candidate);
-        // A block on the supergroup itself is final (see DSD_TG_POLICY_BLOCK_OTA_FINAL):
-        // a member reprieve here cost an encryption-locked SG a tune / classify /
-        // re-lock cycle per grant update, and let unlisted members in blacklist
-        // mode carry nearly any patch through its SG's user lockout.
-        if (i == 0 && (candidate.block_reasons & DSD_TG_POLICY_BLOCK_OTA_FINAL)) {
-            *out_decision = candidate;
-            return 0;
-        }
-        if (!have_first) {
-            first = candidate;
-            have_first = 1;
-        }
-        if (p25_grant_policy_candidate_is_better(&candidate, &best, have_best)) {
-            best = candidate;
-            have_best = 1;
-        }
-    }
-
-    if (!have_first) {
+    dsd_p25_patch_resolution resolution;
+    if (dsd_p25_patch_resolve(opts, state, (uint32_t)eval_ctx->tg, (uint32_t)ev->src, eval_ctx->encrypted_call,
+                              eval_ctx->data_call, DSD_P25_PATCH_RESOLVE_ADMIT, p25_grant_adjust_candidate, eval_ctx,
+                              &resolution)
+        != 0) {
         return -1;
     }
-    *out_decision = have_best ? best : first;
+    *out_decision = resolution.decision;
     return 0;
 }
 
