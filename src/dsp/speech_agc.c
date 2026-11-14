@@ -113,6 +113,8 @@
 #define AGC_ATT_NOISE_ALPHA      0.1f
 
 #define AGC_LIM_RELEASE_DB_PER_S 50.0f
+/* A boundary's target within this fraction of the one a pending ramp heads for is the same target (agc_boundary_ramp). */
+#define AGC_RAMP_SAME_REL        1e-6f
 #define AGC_SINCE_COMMIT_MAX     (1 << 20)
 /* Counters saturate here; a run length wraps by a multiple of the run ring, which keeps every test on it. */
 #define AGC_COUNT_MAX            (1 << 30)
@@ -902,16 +904,23 @@ agc_attenuate(dsd_speech_agc* agc, float level_db, int speech) {
     }
 }
 
-/* The gain ramp at a frame boundary. A boundary that changes the target, or finds no ramp pending, starts a ramp from
+/* The gain ramp at a frame boundary. A boundary that moves the target, or finds no ramp pending, starts a ramp from
    the current gain to the target over the next frame. A ramp dsd_speech_agc_open_at() started partway through the
-   frame just finished keeps its step and runs to its own end; every other ramp started at a boundary and is used up by
-   exactly one frame. */
+   frame just finished keeps its step and runs to its own end unless the target moved; every other ramp started at a
+   boundary and is used up by exactly one frame. The gain marked as touched is not the target moved: the attenuator
+   marks every frame that passes both cues and every quieted frame, and a gain step marks a step that left the gain
+   where it was, so the target is recomputed and compared with the one the ramp heads for. One recomputed from
+   unchanged dB values is the same bits; a target that moved by less than a millionth is reached by the ramp's last
+   sample anyway. */
 static void
 agc_boundary_ramp(dsd_speech_agc* agc) {
     if (agc->gain_dirty) {
-        agc->g_target = agc_db2lin(agc->learned.gain_db + agc->learned.atten_db);
+        const float target = agc_db2lin(agc->learned.gain_db + agc->learned.atten_db);
+        if (fabsf(target - agc->g_target) > AGC_RAMP_SAME_REL * agc->g_target) {
+            agc->ramp_left = 0; /* the target moved: ramp to it over this frame */
+        }
+        agc->g_target = target;
         agc->gain_dirty = 0;
-        agc->ramp_left = 0; /* a new target: ramp to it over this frame */
     }
     if (agc->ramp_left == 0) {
         agc->g_step = (agc->g_target - agc->g_cur) / (float)agc->frame_len;

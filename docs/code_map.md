@@ -6974,8 +6974,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `dsd_speech_agc_open_at()` opens the reception in progress at a given gain (clamped into the controller's range, at
   once or over one frame's worth of samples, only before its first commit; a new opening checkpoint; the start gain,
   tone cap and absolute floor stay). Called partway through a frame, its ramp runs to its own end across the boundary
-  (`agc_boundary_ramp()` keeps a pending ramp whose target that frame did not change; every other ramp starts at a
-  boundary and ends with the next frame, so those outputs stay the same bits). `dsd_speech_agc_settled_gain_db()`
+  unless that boundary moves the target. `agc_boundary_ramp()` takes the recomputed target whenever the gain was
+  touched (`gain_dirty`), but ends a pending ramp only when that target differs from the one the ramp heads for by
+  more than a millionth of it (`AGC_RAMP_SAME_REL`): `gain_dirty` is not "the target moved" (the attenuator sets it on
+  every frame that passes both cues and on a quieted frame, a gain step even when it left the gain where it was).
+  Every other ramp starts at a boundary and ends with the next frame, so no ramp is pending there and those outputs
+  stay the same bits. `dsd_speech_agc_settled_gain_db()`
   reports the settled aim once the estimate is established, for a caller that remembers talkers. Flags: `learn` and `decodable` per call, `tone` caps a decoder's
   tone frames at the start gain; `dsd_speech_agc_process_runs()` takes a learn flag per sample and turns its edges
   into `dsd_speech_agc_gate_closed()` (a complete rollback to the oldest of 13 per-frame checkpoints, dropping any
@@ -6985,7 +6989,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   pitch edges, noise, attenuator, tone cap, decodability, rollback against a control, partitions, cross-rate, ceiling,
   reset, non-finite, fixed mode, the limiter, the veto on de-emphasised hiss; `open_at` and the settled gain; the
   acquisition stage's law bit for bit on every frame, its startup, guard, held peak, return to the opening gain and
-  burst fallback, silence and frames that do not learn in the burst watch, `open_at` partway through a frame, and the
+  burst fallback, silence and frames that do not learn in the burst watch, `open_at` partway through a frame (closed
+  samples, a voiced sine and unvoiced noise kept, a guard cut and the stage-off first step restarting it), and the
   stage off against the unchanged law), `DSP_SPEECH_AGC_LONG` (the floor after 60-120 s of hiss, with and without the
   veto); the
   `dsd-neo_bench_speech_agc` micro-benchmark (with an acquisition case at 8 kHz). End to end,

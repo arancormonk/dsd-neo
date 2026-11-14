@@ -289,8 +289,9 @@ void dsd_speech_agc_gate_opened(dsd_speech_agc* agc);
  * settled at before. The controller gain takes @p gain_db, clamped into the controller's range (-12/+30 dB around the
  * start gain): at once when @p ramp is 0 (as a reset leaves it, for a reception's first sample), or over the next
  * frame's worth of samples, linearly, when it is nonzero, also when called partway through an analysis frame (a frame
- * boundary within the ramp keeps it, unless that frame's decision moves the gain: then a new one-frame ramp starts
- * there, from where the gain stands). It is a new opening checkpoint, so a gate close never
+ * boundary within the ramp keeps it, unless that frame's decision moves the gain the ramp heads for: then a new
+ * one-frame ramp starts there, from where the gain stands; a frame that passes both cues but moves nothing keeps it).
+ * It is a new opening checkpoint, so a gate close never
  * restores the gain from before it, and the gain the acquisition stage returns to before the first commit after a
  * loud frame's cut. The start gain, the range, the tone cap and the absolute floor stay where the start gain put them.
  * No effect once the reception has committed a frame, when @p gain_db is not finite, or before init. A reset returns

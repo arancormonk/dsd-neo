@@ -2317,6 +2317,101 @@ test_open_at_mid_frame(void) {
     free(guarded);
 }
 
+/* The frame of @p x (@p frames analysis frames, learning samples, one frame per call) at whose end the AGC first
+   commits, or -1. */
+static int
+first_commit_frame(int rate, float g0, const float* x, int frames) {
+    const size_t F = (size_t)frame_len(rate);
+    dsd_speech_agc* agc = new_agc(rate, g0);
+    float* y = alloc_f(F);
+    int at = -1;
+    for (int k = 0; k < frames && at < 0; k++) {
+        DSD_MEMCPY(y, x + (size_t)k * F, F * sizeof(float));
+        dsd_speech_agc_process(agc, y, F, 1, 1, 0);
+        at = agc->learned.commits > 0 ? k : -1;
+    }
+    free(y);
+    free(agc);
+    return at;
+}
+
+/* dsd_speech_agc_open_at(..., 1) half a frame into learning samples. Every eligible frame passes the boundary with the
+   gain marked as touched, whether or not the target moved: a frame that passes both cues (a 125 Hz sine) resets the
+   attenuator, and unvoiced noise is eligible without being speech. A boundary whose target did not move keeps the
+   pending ramp: it reaches the gain exactly one frame's worth of samples after the call, linearly. A boundary that
+   moves it (the guard cutting a loud sine frame) starts a new one-frame ramp from where the pending one stood. With
+   the acquisition stage off, the analog law's first step at the first commit moves the target: a ramp pending at
+   that boundary restarts there too. */
+static void
+test_open_at_mid_frame_learning(void) {
+    enum { F = 160, N = 2 * F, FRAMES = 50 };
+
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const float open_db = 20.0f;
+    const float from = powf(10.0f, g0 / 20.0f);
+    const float to = powf(10.0f, open_db / 20.0f);
+    float g[N];
+    float sine[N];
+    float noise[N];
+    float loud[N];
+    assert(frame_len(rate) == F);
+    assert(dsd_test_synth_tone(sine, N, rate, 125.0, -40.0) == 0);
+    assert(dsd_test_synth_noise(noise, N, rate, 352, DSD_TEST_NOISE_VOICE_BAND, -55.0) == 0);
+    assert(dsd_test_synth_tone(loud, N, rate, 125.0, -10.0) == 0);
+    const float* material[] = {sine, noise};
+    const char* names[] = {"a 125 Hz sine", "unvoiced noise"};
+    for (size_t m = 0; m < 2; m++) {
+        dsd_speech_agc* agc = new_acq_agc(rate, g0);
+        run_ctrl_gains(agc, material[m], F / 2, 1, g);
+        dsd_speech_agc_open_at(agc, open_db, 1);
+        run_ctrl_gains(agc, material[m] + F / 2, F, 1, g);
+        SAY("open_at half a frame into %s: %+.4f dB one frame after the call, speech run %d\n", names[m],
+            (double)(20.0f * log10f(g[F - 1])), agc->learned.run_len);
+        assert(agc->learned.commits == 0 && agc->learned.run_len == (m == 0 ? 1 : 0));
+        assert(same_bits(&agc->learned.gain_db, &open_db, sizeof open_db) && fabsf(agc->learned.atten_db) <= 0.0f);
+        assert(is_ramp(g, F, from, to));
+        assert(fabsf(g[F / 2 - 1] - 0.5f * (from + to)) <= 1e-5f * to);
+        free(agc);
+    }
+    /* The guard cuts the loud sine frame at the boundary half way through the ramp. */
+    dsd_speech_agc* guarded = new_acq_agc(rate, g0);
+    run_ctrl_gains(guarded, loud, F / 2, 1, g);
+    dsd_speech_agc_open_at(guarded, open_db, 1);
+    run_ctrl_gains(guarded, loud + F / 2, F / 2, 1, g);
+    const float at = g[F / 2 - 1];
+    const float cut_to = powf(10.0f, (guarded->learned.gain_db + guarded->learned.atten_db) / 20.0f);
+    run_ctrl_gains(guarded, loud + F, F, 1, g);
+    SAY("open_at, then the guard on a loud sine: cut to %+.2f dB from %+.2f dB, reached one frame later\n",
+        (double)guarded->learned.gain_db, (double)(20.0f * log10f(at)));
+    assert(guarded->learned.gain_db < g0 && at > from && at < to);
+    assert(is_ramp(g, F, at, cut_to));
+    free(guarded);
+    /* The stage off: the call half a frame before the first commit, whose step moves the target. */
+    float* voiced = alloc_f((size_t)FRAMES * F);
+    assert(dsd_test_synth_tone(voiced, (size_t)FRAMES * F, rate, 125.0, -30.0) == 0);
+    const int k = first_commit_frame(rate, g0, voiced, FRAMES);
+    assert(k > 0);
+    dsd_speech_agc* off = new_agc(rate, g0);
+    dsd_speech_agc_process(off, voiced, (size_t)k * F + F / 2, 1, 1, 0);
+    assert(off->learned.commits == 0);
+    const float off_from = off->g_last;
+    dsd_speech_agc_open_at(off, open_db, 1);
+    run_ctrl_gains(off, voiced + (size_t)k * F + F / 2, F / 2, 1, g);
+    const float off_at = g[F / 2 - 1];
+    const float off_step = off->learned.gain_db;
+    const float off_to = powf(10.0f, (off->learned.gain_db + off->learned.atten_db) / 20.0f);
+    assert(off->learned.commits > 0 && off->learned.steps == 1 && fabsf(off_step - open_db) > 1.0f);
+    run_ctrl_gains(off, voiced + (size_t)(k + 1) * F, F, 1, g);
+    SAY("open_at with the stage off, half a frame before the first commit (frame %d): the step takes it to %+.2f dB "
+        "from %+.2f dB, reached one frame later\n",
+        k, (double)off_step, (double)(20.0f * log10f(off_at)));
+    assert(off_at > off_from && off_at < to);
+    assert(is_ramp(g, F, off_at, off_to));
+    free(off);
+    free(voiced);
+}
+
 /* dsd_speech_agc_settled_gain_db(): 0 (the output untouched) until 20 frames have committed, then 1 with the settled
    aim clamp(T - S) of that moment, within the controller's range; 0 again after a reset. */
 static void
@@ -3340,7 +3435,7 @@ test_acq_held_peak_rests(void) {
     float* x = alloc_f(103 * F);
     size_t n = synth_pop(x, rate, 2, -10.0, 0, 80, -40.0, 320);
     assert(dsd_test_synth_noise(x + n, F, rate, 322, DSD_TEST_NOISE_VOICE_BAND, -20.0) == 0);
-    assert(dsd_test_synth_noise(x + n + F, 20 * F, rate, 323, DSD_TEST_NOISE_VOICE_BAND, -40.0) == 0);
+    assert(dsd_test_synth_noise(x + n + F, 20 * F, rate, 323, DSD_TEST_NOISE_VOICE_BAND, -55.0) == 0);
     n += 21 * F;
     dsd_speech_agc* agc = new_acq_agc(rate, 4.0f);
     trace_t t;
@@ -3721,6 +3816,7 @@ main(int argc, char** argv) {
     test_reset_is_fresh(1);
     test_open_at();
     test_open_at_mid_frame();
+    test_open_at_mid_frame_learning();
     test_settled_gain_db();
     test_acq_startup_law();
     test_acq_open_at_prior();
