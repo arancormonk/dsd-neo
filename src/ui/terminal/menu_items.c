@@ -527,6 +527,12 @@ static const NcMenuItem TRUNK_FOLLOW_ITEMS[] = {
      .label_fn = lbl_scan_voice_only,
      .help = "Only stop the scan on voice; skip carriers without decoded voice.",
      .on_select = act_scan_voice_only},
+    {.id = "follow.skip_silent",
+     .label_fn = lbl_scan_skip_silent,
+     .help =
+         "Skip a quiet conventional scan channel after a quick signal check; weak or very short transmissions can be "
+         "missed. Unsupported receivers keep normal timing; holds still apply.",
+     .on_select = act_scan_skip_silent},
     {.id = "follow.voice_qualify",
      .label_fn = lbl_scan_voice_qualify,
      .help = "Voice qualify window in ms: window after sync in which voice must appear or the scan moves on.",

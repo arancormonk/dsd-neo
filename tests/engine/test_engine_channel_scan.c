@@ -52,6 +52,8 @@
 #include "scan_analog_internal.h"
 #include "scan_entry_internal.h"
 #include "scan_landing.h"
+#include "scan_owner.h"
+#include "scan_quiet.h"
 #include "scan_step_untyped.h"
 #include "test_env.h"
 
@@ -2547,6 +2549,12 @@ test_row_widths_on_audio_input(void) {
     }
 }
 
+/* Issue #834: the stream output generation a typed row's tune request reads, before the tune is issued. */
+static uint32_t
+quiet_stream_generation(void) {
+    return 41U;
+}
+
 /* Issue #518: session edits of a typed -Y row's own settings ("this channel"). The committed row runs an edit at once
  * (its squelch reaches the demod, its width is for the caller to publish), a row off air keeps it for its next visit,
  * a tune staged before an edit restages, refusals change nothing, and the edits and the published row go when the
@@ -2572,7 +2580,8 @@ test_row_session_edits(void) {
     assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_NFM) == 0);
     (void)nfm_row_profile(state, 0, DSD_SCAN_OPT_BANDWIDTH | DSD_SCAN_OPT_SQUELCH, 12500, -60);
     const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = output_rate,
-                                                .set_channel_squelch = record_squelch_push};
+                                                .set_channel_squelch = record_squelch_push,
+                                                .stream_generation = quiet_stream_generation};
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     g_squelch_pushes = 0;
     g_scan_dsp_rate_hz = 0;
@@ -2581,6 +2590,11 @@ test_row_session_edits(void) {
 
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(state->lcn_freq_roll == 1 && tuned_nfm_width_hz == 12500 && g_squelch_pushes == 1);
+    /* Issue #834: the landing names the visit: the row's tune request, the output generation read before the tune was
+       issued, a fresh epoch. */
+    const dsd_engine_scan_landing* landing = dsd_engine_scan_landing_get(state);
+    assert(landing && landing->index == 0 && landing->tune_request == request && request != 0U
+           && landing->generation_before_tune == 41U && landing->epoch != 0U);
     assert(state->scan_row_scanner == (uint8_t)DSD_SCAN_ROW_SCANNER_CHANNEL_SCAN && state->scan_row_index == 0);
     assert(state->scan_row_session != 0U && state->scan_row_edited == 0U);
     assert(state->scan_row_editable
@@ -2608,11 +2622,13 @@ test_row_session_edits(void) {
     assert(tuning && (tuning->present & DSD_SCAN_OPT_BANDWIDTH) && tuning->channel_bw_hz == 16000);
     assert((result.previous.set & DSD_SCAN_ROW_FIELD_SQUELCH) && !(result.previous.set & DSD_SCAN_ROW_FIELD_WIDTH));
 
-    /* Off air: stored, and run on the row's visit. */
+    /* Off air: stored, and run on the row's visit. The edit moves the counter a scan quiet check snapshots (#834). */
     value.width_hz = 11250;
+    const uint32_t edits_epoch = dsd_engine_channel_scan_quiet_edits_epoch(state);
     assert(dsd_engine_channel_scan_edit_row(opts, state, session, 2, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_SET,
                                             &value, &result)
            == DSD_SCAN_ROW_EDIT_STORED);
+    assert(dsd_engine_channel_scan_quiet_edits_epoch(state) != edits_epoch);
     assert(opts->analog_nfm_bandwidth_hz == 16000);
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(state->lcn_freq_roll == 2 && opts->frame_dmr && state->scan_row_index == 1 && state->scan_row_edited == 0U);

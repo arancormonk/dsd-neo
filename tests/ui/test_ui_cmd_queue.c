@@ -2798,7 +2798,7 @@ test_manual_scan_steps_note_landing(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         init_manual_scan_step_case(&opts, &state, cases[i].leg, cases[i].tune_result);
         dsd_state_lcn_on_air_note(&state, 0); /* landed by the scan */
-        dsd_engine_scan_landing_note_row(&state, 0, 461012500L);
+        dsd_engine_scan_landing_note_row(&state, 0, 461012500L, 0U);
         rc |= expect_true(cases[i].tag, dsd_engine_scan_landing_hz(&opts, &state) == 461012500U);
         rc |= expect_int(cases[i].tag, dsd_app_command_action(cases[i].cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
@@ -8290,7 +8290,8 @@ test_scoped_mode_commands_and_config(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("scanner toggle drained", dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_int("exit restores M17", opts->frame_m17, 1);
-    rc |= expect_int("exit restores M17 filter", opts->use_cosine_filter, 0);
+    /* The M17 preset leaves the matched-filter switch as configured (issue #834). */
+    rc |= expect_int("exit restores the configured filter switch", opts->use_cosine_filter, 1);
     rc |= expect_int("exit restores configured timing at live input rate", state->samplesPerSymbol, 20);
     rc |= expect_int("exit restores configured profile", state->sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
     opts->scanner_mode = 1;
@@ -8315,6 +8316,107 @@ test_scoped_mode_commands_and_config(void) {
     freeState(state);
     free(state);
     free(opts);
+    return rc;
+}
+
+static int g_quiet_setting_calls;
+static int g_quiet_setting_turned_on;
+
+static void
+count_quiet_setting_changed(dsd_state* state, int turned_on) {
+    (void)state;
+    g_quiet_setting_calls++;
+    g_quiet_setting_turned_on = turned_on;
+}
+
+/* Session-wide skip-silent (#834): a plain int32 setter that tells the engine through the runtime hook, never
+ * coalesces, ignores a short payload, and is not a scan-row setting (a row enter/leave never touches it). */
+static int
+test_scan_skip_silent_command(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    dsd_frame_sync_hooks hooks = {0};
+    hooks.scan_quiet_setting_changed = count_quiet_setting_changed;
+    dsd_frame_sync_hooks_set(&hooks);
+    g_quiet_setting_calls = 0;
+
+    rc |= expect_int("skip-silent id", DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 513);
+    rc |= expect_int("skip-silent rejects action shape", dsd_app_command_action(DSD_APP_CMD_SCAN_SKIP_SILENT_SET),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("skip-silent rejects u32 shape", dsd_app_command_set_u32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 1U),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+
+    rc |=
+        expect_int("skip-silent queued", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("skip-silent drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("skip-silent applied", opts.scan_skip_silent, 1);
+    rc |= expect_int("skip-silent told the engine", g_quiet_setting_calls, 1);
+    rc |= expect_int("skip-silent off to on: turned on", g_quiet_setting_turned_on, 1);
+    rc |= expect_contains("skip-silent toast", state.ui_msg, "Silent channel skip -> On");
+
+    /* A scan-mode row enter and leave neither captures nor restores it. */
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    rc |= expect_int("enter row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("skip-silent survives row enter", opts.scan_skip_silent, 1);
+    rc |= expect_int("skip-silent off queued", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("skip-silent off drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("skip-silent on to off: not turned on", g_quiet_setting_turned_on, 0);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("row leave does not restore skip-silent", opts.scan_skip_silent, 0);
+    rc |= expect_contains("skip-silent off toast", state.ui_msg, "Silent channel skip -> Off");
+
+    {
+        uint8_t short_payload = 0xFFU;
+        dsd_app_command_submit(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, &short_payload, sizeof(short_payload));
+        rc |= expect_int("short skip-silent drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("short skip-silent ignored", opts.scan_skip_silent, 0);
+        rc |= expect_int("short skip-silent not announced", g_quiet_setting_calls, 2);
+    }
+
+    rc |= expect_int("skip-silent first queued", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("skip-silent never coalesces", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 7),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("skip-silent pair drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_int("skip-silent nonzero means on", opts.scan_skip_silent, 1);
+    rc |= expect_int("skip-silent on to on: not turned on", g_quiet_setting_turned_on, 0);
+
+    /* The table outlives the trunk-scan coordinator: installing and clearing the coordinator's hooks (what its init
+     * and teardown do) leaves the slot in place. */
+    dsd_trunk_scan_hooks scan_hooks = {0};
+    dsd_trunk_scan_hooks_set(&scan_hooks);
+    dsd_trunk_scan_hooks_set(NULL);
+    g_quiet_setting_calls = 0;
+    rc |= expect_int("survivor queued", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 0), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("survivor drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("hook survives trunk-scan hook install and clear", g_quiet_setting_calls, 1);
+
+    /* A config apply may write the setting, and whatever else a quiet check was measured under: the engine is told. */
+    g_quiet_setting_calls = 0;
+    {
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunking = 1;
+        cfg.trunk_scan_skip_silent = 1;
+        rc |= expect_int("config apply queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config apply drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("config apply told the engine", g_quiet_setting_calls, 1);
+        rc |= expect_int("config apply off to on: turned on", g_quiet_setting_turned_on, 1);
+        rc |=
+            expect_int("config apply again queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                       DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config apply again drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("config apply on to on: told, not turned on",
+                         g_quiet_setting_calls == 2 && g_quiet_setting_turned_on == 0, 1);
+    }
+
+    dsd_frame_sync_hooks_set(NULL);
+    freeState(&state);
     return rc;
 }
 
@@ -30358,6 +30460,7 @@ main(void) {
 #endif
     rc |= test_trunk_set();
     rc |= test_scan_voice_gate_commands();
+    rc |= test_scan_skip_silent_command();
     rc |= test_channel_cycle_passes_a_refused_row(0);
     rc |= test_channel_cycle_first_refusal_names_no_row(0);
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP

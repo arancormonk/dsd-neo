@@ -72,6 +72,7 @@ static const char* const k_skip_exact_no_arg[] = {
     "--no-slot-filter",     "--no-dcc-filter",
     "--no-ran-filter",      "--no-nac-filter",
     "--no-service-names",   "--record-unknown-only",
+    "--scan-skip-silent",   "--no-scan-skip-silent",
 };
 
 static const char* const k_skip_exact_next_any[] = {

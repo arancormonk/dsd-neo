@@ -14,6 +14,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/signal_measure.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <limits>
 #include <random>
@@ -21,6 +22,7 @@
 #include <stdlib.h>
 #include <thread>
 #include <vector>
+#include "rtl_fft_cache.h"
 #include "rtl_stream_test_support.h"
 
 static std::vector<float>
@@ -827,6 +829,1019 @@ test_clip_levels(dsd_signal_detector* d, const dsd_signal_measure_request& r) {
     }
 }
 
+/* Scan quiet measurement: one landed channel, nine sub-windows, judged in each requested width class. */
+namespace {
+constexpr uint32_t kQuietChannel = 163012500;
+constexpr double kTwoPi = 6.283185307179586;
+constexpr float kQuietSigma = 0.01f;
+/* The behaviour tests judge with their own threshold, not the shipped one (whose noise-only false-busy rate is up to
+   5% by calibration, too often for a fixed-seed test): 8 dB is clear of every noise-only scene here (at most about
+   1.5 dB over the capture-wide reference, whichever floor estimator the guard uses), and every transmitter meant to
+   read busy is at least 9 dB over its noise in the class judged. The floor guard is out of reach (100 dB) so these
+   scenes judge the ratio alone; test_quiet_floor_guard() covers the guard. */
+constexpr dsd_signal_quiet_params kQuietTestParams = {8.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f};
+
+/* A request for the channel landed Fs/4 below the tuner centre, as the RTL chain lands it. */
+dsd_signal_quiet_request
+quiet_request(uint32_t rate, uint8_t classes, uint32_t analog_width = 0) {
+    dsd_signal_quiet_request q{};
+    q.request_id = 41;
+    q.capture.rate_hz = rate;
+    q.capture.rotation_hz = (int32_t)(rate / 4);
+    q.capture.capture_offset_hz = rate / 4;
+    q.capture.capture_hz = kQuietChannel + rate / 4;
+    q.capture.generation = 3;
+    q.frequency_hz = kQuietChannel;
+    q.classes = classes;
+    q.analog_width_hz = analog_width;
+    return q;
+}
+
+double
+quiet_narrowest(const dsd_signal_quiet_request& q) {
+    double width = 1e9;
+    if (q.classes & DSD_SIGNAL_QUIET_CLASS_12K5) {
+        width = std::min(width, (double)DSD_SIGNAL_QUIET_WIDTH_12K5_HZ);
+    }
+    if (q.classes & DSD_SIGNAL_QUIET_CLASS_6K25) {
+        width = std::min(width, (double)DSD_SIGNAL_QUIET_WIDTH_6K25_HZ);
+    }
+    if (q.classes & DSD_SIGNAL_QUIET_CLASS_ANALOG) {
+        width = std::min(width, (double)q.analog_width_hz);
+    }
+    return width;
+}
+
+size_t
+quiet_fft_size(const dsd_signal_quiet_request& q) {
+    return (size_t)dsd_signal_fft_size_for_width(q.capture.rate_hz, quiet_narrowest(q));
+}
+
+/* One sub-window: the smallest whole number of transforms of at least 10 ms. */
+size_t
+quiet_window_pairs(const dsd_signal_quiet_request& q) {
+    const size_t n = quiet_fft_size(q);
+    return n * ((q.capture.rate_hz / 100 + n - 1) / n);
+}
+
+size_t
+quiet_request_pairs(const dsd_signal_quiet_request& q) {
+    return DSD_SIGNAL_QUIET_WINDOWS * quiet_window_pairs(q);
+}
+
+/* Complex Gaussian noise, @p sigma per component. */
+std::vector<float>
+quiet_noise(size_t pairs, unsigned seed, float sigma = kQuietSigma) {
+    std::vector<float> iq(2 * pairs);
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> gauss(0, sigma);
+    for (float& v : iq) {
+        v = gauss(rng);
+    }
+    return iq;
+}
+
+/* The amplitude of a carrier @p snr_db above that noise (kQuietSigma) in @p width_hz. */
+double
+quiet_amplitude(double snr_db, uint32_t rate, double width_hz) {
+    const double noise = 2.0 * kQuietSigma * kQuietSigma * width_hz / rate;
+    return std::sqrt(noise * std::pow(10.0, snr_db / 10.0));
+}
+
+/* Symbol-stream FM deviation per sample: one of @p levels (Hz) per symbol at @p symbol_rate, through a one-pole filter
+   at @p shaping_hz. */
+std::vector<double>
+fsk_deviation(size_t pairs, uint32_t rate, double symbol_rate, const std::vector<double>& levels, double shaping_hz,
+              unsigned seed) {
+    std::vector<double> out(pairs);
+    std::mt19937 rng(seed);
+    const double a = std::exp(-kTwoPi * shaping_hz / rate);
+    double level = levels[0], smoothed = 0;
+    long long symbol = -1;
+    for (size_t i = 0; i < pairs; ++i) {
+        const long long at = (long long)((double)i * symbol_rate / rate);
+        if (at != symbol) {
+            symbol = at;
+            level = levels[rng() % levels.size()];
+        }
+        smoothed = a * smoothed + (1 - a) * level;
+        out[i] = smoothed;
+    }
+    return out;
+}
+
+/* Tone FM: @p deviation Hz peak with a @p tone Hz sine. */
+std::vector<double>
+tone_deviation(size_t pairs, uint32_t rate, double deviation, double tone) {
+    std::vector<double> out(pairs);
+    for (size_t i = 0; i < pairs; ++i) {
+        out[i] = deviation * std::sin(kTwoPi * tone * (double)i / rate);
+    }
+    return out;
+}
+
+/* Add an FM transmitter @p offset_hz from the channel centre: @p deviation Hz per sample (empty: a carrier), scaled by
+   @p envelope (empty: steady), over pairs [@p from, @p to). */
+void
+quiet_add_fm(std::vector<float>& iq, uint32_t rate, double offset_hz, double amplitude,
+             const std::vector<double>& deviation, const std::vector<double>& envelope = {}, size_t from = 0,
+             size_t to = SIZE_MAX) {
+    double phase = 0;
+    to = std::min(to, iq.size() / 2);
+    for (size_t i = from; i < to; ++i) {
+        phase += kTwoPi * (offset_hz + (deviation.empty() ? 0.0 : deviation[i])) / rate;
+        const double a = amplitude * (envelope.empty() ? 1.0 : envelope[i]);
+        iq[2 * i] += (float)(a * std::cos(phase));
+        iq[2 * i + 1] += (float)(a * std::sin(phase));
+    }
+}
+
+/* Measure @p iq in blocks of @p block pairs: the result, after asserting the detector finished as @p expect says. */
+dsd_signal_quiet_result
+quiet_run(dsd_signal_quiet_detector* d, const dsd_signal_quiet_request& q, const std::vector<float>& iq, size_t block,
+          const dsd_signal_quiet_params* params = nullptr, int expect = 1) {
+    assert(dsd_signal_quiet_detector_begin(d, &q, params, nullptr) == 0);
+    int rc = 0;
+    for (size_t i = 0; i < iq.size() / 2 && !rc; i += block) {
+        rc = dsd_signal_quiet_detector_feed(d, iq.data() + 2 * i, std::min(block, iq.size() / 2 - i), &q.capture);
+    }
+    assert(rc == expect);
+    dsd_signal_quiet_result result{};
+    assert(dsd_signal_quiet_detector_result(d, &result) == expect);
+    assert(result.request_id == q.request_id && result.capture.generation == q.capture.generation);
+    assert(result.completed_realtime_ns == 0);
+    return result;
+}
+
+/* Whether @p iq is quiet, judged with @p params; the verdict is the highest ratio against the threshold. */
+bool
+quiet_verdict(dsd_signal_quiet_detector* d, const dsd_signal_quiet_request& q, const std::vector<float>& iq,
+              const dsd_signal_quiet_params& params = kQuietTestParams) {
+    const auto result = quiet_run(d, q, iq, 4096, &params);
+    assert(result.failure == DSD_SIGNAL_MEASURE_OK && result.valid);
+    assert(result.quiet == (result.max_ratio_db < params.threshold_db));
+    assert(std::abs(result.power_dbfs - result.floor_dbfs - result.max_ratio_db) < 1e-3f);
+    return result.quiet != 0;
+}
+
+const uint32_t kQuietRates[] = {1024000, 1536000, 2400000};
+} // namespace
+
+/* Noise alone is quiet, in every class at every rate, and the measurement does not depend on how samples arrive. */
+static void
+test_quiet_noise(dsd_signal_quiet_detector* d) {
+    const struct {
+        uint8_t classes;
+        uint32_t analog;
+    } sets[] = {{DSD_SIGNAL_QUIET_CLASS_12K5, 0},
+                {DSD_SIGNAL_QUIET_CLASS_6K25, 0},
+                {DSD_SIGNAL_QUIET_CLASS_ANALOG, 5000},
+                {DSD_SIGNAL_QUIET_CLASS_ANALOG, 25000},
+                {DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_6K25 | DSD_SIGNAL_QUIET_CLASS_ANALOG, 12500}};
+
+    for (uint32_t rate : kQuietRates) {
+        for (const auto& set : sets) {
+            const auto q = quiet_request(rate, set.classes, set.analog);
+            for (unsigned seed = 1; seed <= 3; ++seed) {
+                const auto iq = quiet_noise(quiet_request_pairs(q), seed);
+                assert(quiet_verdict(d, q, iq));
+                if (seed != 1) {
+                    continue;
+                }
+                const auto whole = quiet_run(d, q, iq, iq.size() / 2);
+                const auto pieces = quiet_run(d, q, iq, 997);
+                assert(std::abs(whole.max_ratio_db - pieces.max_ratio_db) < 1e-4f);
+                assert(std::abs(whole.floor_dbfs - pieces.floor_dbfs) < 1e-4f);
+            }
+        }
+    }
+}
+
+/* A transmitter well above the threshold is not quiet: NFM, C4FM, 4FSK and GMSK in their classes. */
+static void
+test_quiet_signals(dsd_signal_quiet_detector* d) {
+    for (uint32_t rate : kQuietRates) {
+        const auto wide = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        const auto narrow = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_6K25);
+        const size_t pairs = quiet_request_pairs(narrow);
+        const double a12 = quiet_amplitude(12, rate, 12500), a6 = quiet_amplitude(12, rate, 6250);
+        const std::vector<std::vector<double>> wide_modulations = {
+            tone_deviation(pairs, rate, 2500, 1000),                              // NFM
+            fsk_deviation(pairs, rate, 4800, {-1800, -600, 600, 1800}, 2400, 11), // P25 C4FM
+            fsk_deviation(pairs, rate, 4800, {-1944, -648, 648, 1944}, 2400, 12), // DMR 4FSK
+        };
+        for (const auto& modulation : wide_modulations) {
+            auto iq = quiet_noise(pairs, 5);
+            quiet_add_fm(iq, rate, 0, a12, modulation);
+            assert(!quiet_verdict(d, wide, iq));
+        }
+        const std::vector<std::vector<double>> narrow_modulations = {
+            fsk_deviation(pairs, rate, 2400, {-1050, -350, 350, 1050}, 1200, 13), // NXDN48 4FSK
+            fsk_deviation(pairs, rate, 4800, {-1200, 1200}, 2400, 14),            // D-STAR GMSK
+        };
+        for (const auto& modulation : narrow_modulations) {
+            auto iq = quiet_noise(pairs, 6);
+            quiet_add_fm(iq, rate, 0, a6, modulation);
+            assert(!quiet_verdict(d, narrow, iq));
+        }
+        // Analog NFM at the widest and AM-narrowest widths.
+        for (uint32_t width : {5000U, 25000U}) {
+            const auto analog = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_ANALOG, width);
+            auto iq = quiet_noise(quiet_request_pairs(analog), 7);
+            quiet_add_fm(iq, rate, 0, quiet_amplitude(12, rate, width),
+                         tone_deviation(iq.size() / 2, rate, width / 5.0, 1000));
+            assert(!quiet_verdict(d, analog, iq));
+        }
+    }
+}
+
+/* A DMR mobile's single-slot burst train (27.5 ms symbol interval every 60 ms, 1.5 ms ramps outside it) is never quiet,
+   at any phase: sample-level steps across the 60 ms and phases that start or end a burst on a transform or sub-window
+   boundary. Its bursts stand 15 dB over the noise, so a sub-window a burst only partly fills reads busy too: what pins
+   the bound that one whole sub-window always falls inside a burst is test_quiet_spans(). */
+static void
+test_quiet_dmr_bursts(dsd_signal_quiet_detector* d) {
+    for (uint32_t rate : kQuietRates) {
+        const auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        const size_t pairs = quiet_request_pairs(q), n = quiet_fft_size(q);
+        const size_t period = rate * 60 / 1000, interval = rate * 275 / 10000, ramp = rate * 15 / 10000;
+        std::vector<float> burst(2 * pairs, 0.0f);
+        quiet_add_fm(burst, rate, 0, quiet_amplitude(15, rate, 12500),
+                     fsk_deviation(pairs, rate, 4800, {-1944, -648, 648, 1944}, 2400, 21));
+        const auto noise = quiet_noise(pairs, 22);
+        /* A burst train whose symbol interval starts at pair @p start (mod the period). */
+        auto train = [&](size_t start) {
+            std::vector<float> iq = noise;
+            for (size_t i = 0; i < pairs; ++i) {
+                const size_t t = (i + period - start % period + ramp) % period;
+                double envelope = 0;
+                if (t >= ramp && t < ramp + interval) {
+                    envelope = 1;
+                } else if (t < ramp) {
+                    envelope = 0.5 - 0.5 * std::cos(3.141592653589793 * (double)t / ramp);
+                } else if (t < 2 * ramp + interval) {
+                    envelope = 0.5 + 0.5 * std::cos(3.141592653589793 * (double)(t - ramp - interval) / ramp);
+                }
+                iq[2 * i] += (float)(envelope * burst[2 * i]);
+                iq[2 * i + 1] += (float)(envelope * burst[2 * i + 1]);
+            }
+            return iq;
+        };
+        /* Sample-level phases across the period (a prime step, so every alignment to the transforms occurs); then
+           bursts starting and ending on every sub-window boundary and, at the default rate, on the transform boundary
+           halfway through each sub-window and one pair either side of each. */
+        const bool fine = rate == 1536000;
+        const size_t window = quiet_window_pairs(q);
+        std::vector<size_t> starts;
+        for (size_t s = 0; s < period; s += fine ? 2003 : 6007) {
+            starts.push_back(s);
+        }
+        for (size_t at = 0; at <= pairs; at += fine ? window / 2 / n * n : window) {
+            for (int nudge = fine ? -1 : 0; nudge <= (fine ? 1 : 0); ++nudge) {
+                const size_t boundary = at + period + (size_t)(long long)nudge;
+                starts.push_back(boundary);            // a burst starts on the boundary
+                starts.push_back(boundary - interval); // a burst ends on it
+            }
+        }
+        for (size_t start : starts) {
+            assert(!quiet_verdict(d, q, train(start)));
+        }
+    }
+}
+
+/* Energy in only the first or only the last sub-window is not quiet. */
+static void
+test_quiet_one_subwindow(dsd_signal_quiet_detector* d) {
+    for (uint32_t rate : kQuietRates) {
+        const auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        const size_t window = quiet_window_pairs(q), pairs = quiet_request_pairs(q);
+        const auto modulation = fsk_deviation(pairs, rate, 4800, {-1800, -600, 600, 1800}, 2400, 31);
+        for (size_t which : {size_t{0}, size_t{DSD_SIGNAL_QUIET_WINDOWS - 1}}) {
+            auto iq = quiet_noise(pairs, 32);
+            quiet_add_fm(iq, rate, 0, quiet_amplitude(15, rate, 12500), modulation, {}, which * window,
+                         (which + 1) * window);
+            assert(!quiet_verdict(d, q, iq));
+        }
+    }
+}
+
+/* Interferers on the 12.5 kHz class's noise sidebands only, 21-37 kHz either side: carriers on the 2048-point bin
+   centres, so they leak into no bin but their neighbours, at random phases, so they do not add up to a pulse train.
+   They raise that class's floor, never the 6.25 kHz class's (9.4-18.75 kHz). */
+static void
+add_wide_sideband_carriers(std::vector<float>& iq, uint32_t rate, double amplitude, unsigned seed) {
+    const double bin = (double)rate / 2048;
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> start(0, kTwoPi);
+    for (int side = -1; side <= 1; side += 2) {
+        for (int k = (int)std::ceil(21000 / bin); k * bin < 37000; ++k) {
+            const double phase = start(rng), step = kTwoPi * side * k * bin / rate;
+            for (size_t i = 0; i < iq.size() / 2; ++i) {
+                iq[2 * i] += (float)(amplitude * std::cos(phase + step * (double)i));
+                iq[2 * i + 1] += (float)(amplitude * std::sin(phase + step * (double)i));
+            }
+        }
+    }
+}
+
+/* A request judges every class it names and is quiet only when every one is. */
+static void
+test_quiet_classes(dsd_signal_quiet_detector* d) {
+    const uint32_t rate = 1536000;
+    const auto both = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_6K25);
+    const auto wide = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const auto narrow = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_6K25);
+    const size_t pairs = quiet_request_pairs(both);
+    assert(quiet_request_pairs(wide) != pairs && quiet_request_pairs(narrow) == pairs);
+    // A carrier 4.5 kHz off centre: inside the 12.5 kHz channel, beside the 6.25 kHz one.
+    auto beside = quiet_noise(pairs, 41);
+    quiet_add_fm(beside, rate, 4500, quiet_amplitude(15, rate, 12500), {});
+    assert(!quiet_verdict(d, wide, beside) && quiet_verdict(d, narrow, beside) && !quiet_verdict(d, both, beside));
+    // A centred carrier 9 dB over the 6.25 kHz noise: (S+N)/N about 9.5 dB there, over the 8 dB threshold, but about
+    // 7 dB over the 12.5 kHz class's noise, which is twice as much.
+    auto centred = quiet_noise(pairs, 42);
+    quiet_add_fm(centred, rate, 0, quiet_amplitude(9, rate, 6250), {});
+    assert(quiet_verdict(d, wide, centred) && !quiet_verdict(d, narrow, centred) && !quiet_verdict(d, both, centred));
+}
+
+/* Noise 20 dB over kQuietSigma everywhere except where @p low says, given a bin's hardware offset as a fraction of Fs
+   (its sample frequency less @p q's rotation, folded into -0.5..0.5), shaped in the frequency domain. */
+static std::vector<float>
+quiet_shaped_noise(const dsd_signal_quiet_request& q, size_t pairs, unsigned seed, bool (*low)(double fraction)) {
+    const int n = (int)pairs;
+    const double rate = q.capture.rate_hz;
+    std::vector<float> iq = quiet_noise(pairs, seed);
+    dsd_io::FftSetupCache fft;
+    auto transform = [&](bool inverse) {
+        for (int i = 0; inverse && i < n; ++i) {
+            iq[2 * (size_t)i + 1] = -iq[2 * (size_t)i + 1];
+        }
+        assert(fft.forward(n, iq.data()));
+        for (int i = 0; inverse && i < n; ++i) {
+            iq[2 * (size_t)i] /= (float)n;
+            iq[2 * (size_t)i + 1] = -iq[2 * (size_t)i + 1] / (float)n;
+        }
+    };
+    transform(false);
+    for (int k = 0; k < n; ++k) {
+        double hardware = (k < n / 2 ? k : k - n) * rate / n - q.capture.rotation_hz;
+        hardware -= rate * std::floor((hardware + rate / 2) / rate);
+        const float gain = low(hardware / rate) ? 1.0f : 10.0f;
+        iq[2 * (size_t)k] *= gain;
+        iq[2 * (size_t)k + 1] *= gain;
+    }
+    transform(true);
+    fft.release();
+    return iq;
+}
+
+/* Noise 20 dB up everywhere but the hardware band +0.15..+0.45 Fs. */
+static std::vector<float>
+quiet_low_band_noise(const dsd_signal_quiet_request& q, size_t pairs, unsigned seed) {
+    return quiet_shaped_noise(q, pairs, seed, [](double f) { return f >= 0.15 && f < 0.45; });
+}
+
+/* The floor guard: a sideband floor standing far over the capture-wide noise reference voids the request, whatever the
+   ratio. The ratio itself is judged against the reference, so transmitters raising the floor on both sides do not hide
+   a channel between them. Noise alone stays valid, and the guard's edge falls exactly at the reported rise. */
+static void
+test_quiet_floor_guard(dsd_signal_quiet_detector* d) {
+    const uint32_t rate = 1536000;
+    const auto wide = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const size_t pairs = quiet_request_pairs(wide);
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    dsd_signal_quiet_params unguarded = shipped;
+    unguarded.guard_db = 100.0f;
+    // Noise alone, both sides' sideband blocks raised far above it: quiet on the ratio, void under the guard.
+    auto raised_sides = quiet_noise(pairs, 91);
+    add_wide_sideband_carriers(raised_sides, rate, quiet_amplitude(12, rate, 6250), 92);
+    assert(quiet_verdict(d, wide, raised_sides, unguarded));
+    const auto guarded = quiet_run(d, wide, raised_sides, 4096, &shipped);
+    assert(guarded.failure == DSD_SIGNAL_MEASURE_OK && !guarded.valid && !guarded.quiet);
+    assert(guarded.floor_rise_db > shipped.guard_db + 10.0f);
+    // A channel 12 dB over its noise between the same raised blocks is not quiet even without the guard.
+    auto between = raised_sides;
+    quiet_add_fm(between, rate, 0, quiet_amplitude(12, rate, 12500), {});
+    assert(!quiet_verdict(d, wide, between, unguarded));
+    // Noise alone stays valid under the shipped guard, in every class at every rate.
+    for (uint32_t r : kQuietRates) {
+        for (uint8_t classes : {(uint8_t)DSD_SIGNAL_QUIET_CLASS_12K5, (uint8_t)DSD_SIGNAL_QUIET_CLASS_6K25}) {
+            const auto q = quiet_request(r, classes);
+            for (unsigned seed = 93; seed < 96; ++seed) {
+                const auto noise = quiet_run(d, q, quiet_noise(quiet_request_pairs(q), seed), 4096, &shipped);
+                assert(noise.valid && noise.floor_rise_db < shipped.guard_db);
+                assert(std::abs(noise.floor_rise_db) < 2.0f);
+            }
+        }
+    }
+    // The reference spans the hardware band the tap sees under the ingest rotation (Fs/4 here, as the RTL tap runs):
+    // a floor 20 dB up everywhere but hardware +0.15..+0.45 Fs, where the lower quartile of the span must come from,
+    // is seen as raised round the channel (at hardware -Fs/4).
+    const auto raised = quiet_run(d, wide, quiet_low_band_noise(wide, pairs, 98), 4096, &shipped);
+    assert(!raised.valid && !raised.quiet && raised.floor_rise_db > 15.0f);
+    // Just under and just over the guard: valid while the rise stays at or under it, void once it exceeds it.
+    const auto noise = quiet_noise(pairs, 97);
+    const float rise = quiet_run(d, wide, noise, 4096, &unguarded).floor_rise_db;
+    dsd_signal_quiet_params edge = unguarded;
+    edge.guard_db = rise + 0.01f;
+    assert(quiet_run(d, wide, noise, 4096, &edge).valid);
+    edge.guard_db = rise - 0.01f;
+    const auto over = quiet_run(d, wide, noise, 4096, &edge);
+    assert(!over.valid && !over.quiet && std::abs(over.floor_rise_db - rise) < 1e-6f);
+}
+
+/* The floor guard's reference folds each bin by the capture's own rotation, not by Fs/4. A centred I/Q replay feeds the
+   tap unrotated (rotation 0): the noise is 20 dB up everywhere but the band edges, past 0.45 Fs of hardware offset
+   (which the reference leaves out), and hardware +0.04..+0.21 Fs. Folded by the record's rotation, the low bins are
+   about a fifth of the bins the reference counts, so its lower quartile stays on the raised floor round the channel
+   (at hardware -0.1 Fs) and the request is valid. Folded by Fs/4 instead, the edges would count and the low bins
+   would pass a quarter: the reference would fall 20 dB and the guard void the request. */
+static void
+test_quiet_floor_guard_rotation(dsd_signal_quiet_detector* d) {
+    const uint32_t rate = 1536000;
+    auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+    q.capture.rotation_hz = 0;
+    q.capture.capture_offset_hz = 0;
+    q.capture.capture_hz = kQuietChannel + rate / 10;
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    const auto noise = quiet_shaped_noise(q, quiet_request_pairs(q), 99,
+                                          [](double f) { return std::abs(f) >= 0.45 || (f >= 0.04 && f < 0.21); });
+    const auto result = quiet_run(d, q, noise, 4096, &shipped);
+    assert(result.failure == DSD_SIGNAL_MEASURE_OK && result.valid && result.quiet);
+    assert(std::abs(result.floor_rise_db) < 3.0f);
+}
+
+/* A weak C4FM channel 6 dB over its noise between C4FM transmitters 25 kHz away on both sides, 27 dB over it: they
+   lift its sideband floor 5 to 7 dB, under the guard, so the request stays valid. Judged against that raised floor the
+   channel would read under the shipped threshold; judged against the capture-wide noise reference it reads its own
+   level and is not quiet. Noise alone still reads quiet with the shipped parameters. */
+static void
+test_quiet_moderate_neighbours(dsd_signal_quiet_detector* d) {
+    const uint32_t rate = 1536000;
+    const auto wide = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const size_t pairs = quiet_request_pairs(wide);
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    const std::vector<double> c4fm = {-1800, -600, 600, 1800};
+    const double wanted = quiet_amplitude(6, rate, 12500), neighbour = wanted * std::pow(10.0, 27.0 / 20);
+    for (unsigned seed = 101; seed <= 106; ++seed) {
+        auto iq = quiet_noise(pairs, seed);
+        quiet_add_fm(iq, rate, 0, wanted, fsk_deviation(pairs, rate, 4800, c4fm, 2400, seed + 10));
+        for (int side = -1; side <= 1; side += 2) {
+            quiet_add_fm(iq, rate, side * 25000.0, neighbour,
+                         fsk_deviation(pairs, rate, 4800, c4fm, 2400, seed + 20 + (unsigned)(side + 1)));
+        }
+        const auto result = quiet_run(d, wide, iq, 4096, &shipped);
+        assert(result.failure == DSD_SIGNAL_MEASURE_OK && result.valid);
+        assert(result.floor_rise_db > 4.0f && result.floor_rise_db < shipped.guard_db);
+        assert(!result.quiet && result.max_ratio_db > shipped.threshold_db + 1.5f);
+    }
+    for (uint32_t r : kQuietRates) {
+        for (uint8_t classes : {(uint8_t)DSD_SIGNAL_QUIET_CLASS_12K5, (uint8_t)DSD_SIGNAL_QUIET_CLASS_6K25}) {
+            const auto q = quiet_request(r, classes);
+            for (unsigned seed = 111; seed < 114; ++seed) {
+                assert(quiet_verdict(d, q, quiet_noise(quiet_request_pairs(q), seed), shipped));
+            }
+        }
+    }
+}
+
+/* What a request may ask for: the analog width endpoints (NFM 8 and 25 kHz, AM 5 and 20 kHz), the 6.25 kHz class at
+   2048 points at 1.536 Msps (an NFM search range of 6.25 kHz is still refused), and nothing malformed. */
+static void
+test_quiet_requests(dsd_signal_quiet_detector* d) {
+    dsd_signal_request_failure failure = DSD_SIGNAL_REQUEST_OK;
+    for (uint32_t width : {5000U, 8000U, 20000U, 25000U}) {
+        const auto q = quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_ANALOG, width);
+        assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == 0 && failure == DSD_SIGNAL_REQUEST_OK);
+        assert(quiet_verdict(d, q, quiet_noise(quiet_request_pairs(q), 51)));
+    }
+    const auto narrow = quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_6K25);
+    assert(quiet_fft_size(narrow) == 2048 && quiet_window_pairs(narrow) == size_t{8} * 2048);
+    assert(dsd_signal_quiet_detector_begin(d, &narrow, nullptr, &failure) == 0);
+    dsd_signal_search_range nfm;
+    dsd_signal_search_range_default(&nfm);
+    nfm.step_num = nfm.bandwidth_hz = 6250;
+    assert(dsd_signal_search_validate(&nfm, nullptr, 0) < 0 && dsd_signal_search_fft_size(1536000, &nfm) == 0);
+    std::vector<dsd_signal_quiet_request> refused;
+    for (uint32_t width : {4999U, 25001U, 0U}) {
+        refused.push_back(quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_ANALOG, width));
+    }
+    refused.push_back(quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_12K5, 12500)); // a width without its class
+    refused.push_back(quiet_request(1536000, 0));
+    refused.push_back(quiet_request(1536000, 8));
+    refused.push_back(quiet_request(0, DSD_SIGNAL_QUIET_CLASS_12K5));
+    refused.push_back(quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_12K5));
+    refused.back().request_id = 0;
+    for (const auto& q : refused) {
+        failure = DSD_SIGNAL_REQUEST_OK;
+        assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == -1);
+        assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    }
+    assert(dsd_signal_quiet_detector_begin(d, nullptr, nullptr, &failure) == -1);
+    assert(dsd_signal_quiet_detector_begin(nullptr, &narrow, nullptr, &failure) == -1);
+    for (const dsd_signal_quiet_params& p :
+         {dsd_signal_quiet_params{4.0f, 2, 3.0f}, dsd_signal_quiet_params{4.0f, -1, 3.0f},
+          dsd_signal_quiet_params{std::numeric_limits<float>::quiet_NaN(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f},
+          dsd_signal_quiet_params{std::numeric_limits<float>::infinity(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f},
+          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, std::numeric_limits<float>::quiet_NaN()},
+          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, std::numeric_limits<float>::infinity()}}) {
+        assert(dsd_signal_quiet_detector_begin(d, &narrow, &p, &failure) == -1);
+        assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    }
+    // A refused request leaves nothing armed: samples finish nothing.
+    const auto noise = quiet_noise(quiet_request_pairs(narrow), 52);
+    assert(dsd_signal_quiet_detector_feed(d, noise.data(), noise.size() / 2, &narrow.capture) == 0);
+    // The shipped parameters: the calibrated 5.0 dB over the capture-wide reference, guarded at 8.7 dB over it by the
+    // trimmed-mean floor (docs/signal-search.md).
+    const auto shipped = dsd_signal_quiet_params_default();
+    assert(std::fabs(shipped.threshold_db - 5.0f) < 1e-6f);
+    assert(shipped.floor_estimator == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN);
+    assert(std::fabs(shipped.guard_db - 8.7f) < 1e-6f);
+    // The domain is exactly the rendered cells: every rendered rate, and at each the Radio sheet's widths of each kind,
+    // rendered as that kind only; nothing between, no other kind.
+    const uint32_t rendered_rates[] = {960000u,  1024000u, 1152000u, 1200000u, 1280000u, 1440000u, 1536000u, 1600000u,
+                                       1800000u, 1920000u, 2048000u, 2400000u, 2500000u, 3000000u, 6000000u, 10000000u};
+    const uint32_t nfm_widths[] = {8000u, 11250u, 12500u, 16000u, 20000u, 25000u};
+    const uint32_t am_widths[] = {5000u, 6000u, 8000u, 10000u, 15000u, 20000u};
+    for (uint32_t rate : rendered_rates) {
+        assert(dsd_signal_quiet_rate_supported(rate) == 1);
+        for (uint32_t width : nfm_widths) {
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, width, rate) == 1);
+        }
+        for (uint32_t width : am_widths) {
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, width, rate) == 1);
+        }
+        // Widths rendered only as the other kind: NFM 10 and 15 kHz, AM 11.25, 12.5 and 16 kHz.
+        for (uint32_t width : {10000u, 15000u}) {
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, width, rate) == 0);
+        }
+        for (uint32_t width : {11250u, 12500u, 16000u}) {
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, width, rate) == 0);
+        }
+        for (uint32_t width : {0u, 4999u, 7000u, 9000u, 12000u, 14000u, 18000u, 24999u, 25001u}) {
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, width, rate) == 0);
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, width, rate) == 0);
+        }
+        assert(dsd_signal_quiet_analog_supported(2, 12500u, rate) == 0);
+        assert(dsd_signal_quiet_analog_supported(-1, 12500u, rate) == 0);
+    }
+    for (uint32_t rate : {0u, 250000u, 1000000u, 1023999u, 1024001u, 1400000u, 2000000u, 2560000u, 3200000u}) {
+        assert(dsd_signal_quiet_rate_supported(rate) == 0);
+        assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, 12500u, rate) == 0);
+        assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, 6000u, rate) == 0);
+    }
+}
+
+/* A channel whose sidebands do not fit the capture (at hardware DC, or past 0.45 Fs) is measured but never valid or
+   quiet. */
+static void
+test_quiet_geometry(dsd_signal_quiet_detector* d) {
+    const uint32_t rate = 1536000;
+    const int class_sets[] = {DSD_SIGNAL_QUIET_CLASS_12K5, DSD_SIGNAL_QUIET_CLASS_6K25,
+                              DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_6K25};
+    for (double place : {0.0, 0.44}) {
+        for (int classes : class_sets) {
+            auto q = quiet_request(rate, (uint8_t)classes);
+            q.capture.rotation_hz = 0;
+            q.capture.capture_hz = (uint32_t)(kQuietChannel + place * rate);
+            const auto result = quiet_run(d, q, quiet_noise(quiet_request_pairs(q), 61), 4096);
+            assert(result.failure == DSD_SIGNAL_MEASURE_OK && !result.valid && !result.quiet);
+        }
+    }
+    // One class out of geometry spoils the request: a 6.25 kHz channel fits where a 25 kHz analog one does not.
+    auto mixed = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_6K25 | DSD_SIGNAL_QUIET_CLASS_ANALOG, 25000);
+    mixed.capture.rotation_hz = 0;
+    mixed.capture.capture_hz = kQuietChannel - (uint32_t)(0.42 * rate);
+    auto alone = mixed;
+    alone.classes = DSD_SIGNAL_QUIET_CLASS_6K25;
+    alone.analog_width_hz = 0;
+    const auto noise = quiet_noise(quiet_request_pairs(mixed), 62);
+    const auto fits = quiet_run(d, alone, noise, 4096, &kQuietTestParams);
+    assert(fits.valid && fits.quiet);
+    const auto spoiled = quiet_run(d, mixed, noise, 4096);
+    assert(!spoiled.valid && !spoiled.quiet);
+}
+
+/* More than 1% of the pairs clipped fails the request CLIPPED; fewer still measure. Every other failure keeps its
+   reason, the request's id and its capture. */
+static void
+test_quiet_failures(dsd_signal_quiet_detector* d) {
+    const auto q = quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const size_t pairs = quiet_request_pairs(q);
+    for (size_t every : {size_t{200}, size_t{50}}) {
+        auto iq = quiet_noise(pairs, 71);
+        for (size_t i = 0; i < pairs; i += every) {
+            iq[2 * i + 1] = -1.0f;
+        }
+        // The clicks' comb stands in the sideband blocks, so the floor guard would void the result: judge without it.
+        const auto result = quiet_run(d, q, iq, 4096, &kQuietTestParams, every == 200 ? 1 : -1);
+        assert(result.failure == (every == 200 ? DSD_SIGNAL_MEASURE_OK : DSD_SIGNAL_MEASURE_CLIPPED));
+        assert(every == 200 ? result.valid != 0 : !result.valid && !result.quiet);
+    }
+    // Clipping that takes the request's total over 1% only in its last sub-window.
+    auto late = quiet_noise(pairs, 72);
+    for (size_t i = pairs - quiet_window_pairs(q); i < pairs; i += 5) {
+        late[2 * i] = 1.0f;
+    }
+    assert(quiet_run(d, q, late, 4096, nullptr, -1).failure == DSD_SIGNAL_MEASURE_CLIPPED);
+    const auto noise = quiet_noise(pairs, 73);
+    auto poisoned = noise;
+    poisoned[size_t{2} * 5000] = std::numeric_limits<float>::infinity();
+    assert(quiet_run(d, q, poisoned, 4096, nullptr, -1).failure == DSD_SIGNAL_MEASURE_NONFINITE);
+    for (int retune = 0; retune < 2; ++retune) {
+        auto moved = q.capture;
+        ++moved.drops;
+        moved.generation += (uint32_t)retune;
+        assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, nullptr) == 0);
+        assert(dsd_signal_quiet_detector_feed(d, noise.data(), 1000, &q.capture) == 0);
+        assert(dsd_signal_quiet_detector_feed(d, noise.data(), 1000, &moved) == -1);
+        dsd_signal_quiet_result result{};
+        assert(dsd_signal_quiet_detector_result(d, &result) == -1);
+        assert(result.failure == (retune ? DSD_SIGNAL_MEASURE_CAPTURE_CHANGED : DSD_SIGNAL_MEASURE_DROPPED));
+        assert(result.request_id == q.request_id && result.capture.drops == q.capture.drops);
+        assert(!result.valid && !result.quiet);
+        // Later samples finish nothing more.
+        assert(dsd_signal_quiet_detector_feed(d, noise.data(), noise.size() / 2, &q.capture) == 0);
+    }
+    // Nothing measured yet: no result.
+    dsd_signal_quiet_detector* fresh = dsd_signal_quiet_detector_create();
+    dsd_signal_quiet_result untouched{};
+    untouched.request_id = 99;
+    assert(dsd_signal_quiet_detector_result(fresh, &untouched) == 0 && untouched.request_id == 99);
+    dsd_signal_quiet_detector_destroy(fresh);
+}
+
+/* Each sub-window is the smallest whole number of transforms of at least 10 ms and shorter than 13.75 ms (so one lies
+   inside any 27.5 ms DMR burst), and the nine span at least 90 ms, at every rate and for every class. */
+static void
+test_quiet_spans(dsd_signal_quiet_detector* d) {
+    const struct {
+        uint8_t classes;
+        uint32_t analog;
+    } sets[] = {{DSD_SIGNAL_QUIET_CLASS_12K5, 0},
+                {DSD_SIGNAL_QUIET_CLASS_6K25, 0},
+                {DSD_SIGNAL_QUIET_CLASS_ANALOG, 5000},
+                {DSD_SIGNAL_QUIET_CLASS_ANALOG, 8000},
+                {DSD_SIGNAL_QUIET_CLASS_ANALOG, 25000}};
+
+    for (uint32_t rate : kQuietRates) {
+        for (const auto& set : sets) {
+            const auto q = quiet_request(rate, set.classes, set.analog);
+            const auto iq = quiet_noise(quiet_request_pairs(q) + 10, 81);
+            assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, nullptr) == 0);
+            size_t used = 0;
+            int rc = 0;
+            while (!rc) {
+                rc = dsd_signal_quiet_detector_feed(d, iq.data() + 2 * used, 1, &q.capture);
+                ++used;
+            }
+            assert(rc == 1 && used % DSD_SIGNAL_QUIET_WINDOWS == 0);
+            const size_t window = used / DSD_SIGNAL_QUIET_WINDOWS, n = quiet_fft_size(q);
+            assert(window % n == 0 && window * 100 >= rate && (window - n) * 100 < rate);
+            assert((uint64_t)window * 100000 < (uint64_t)rate * 1375);
+            assert((uint64_t)used * 1000 >= (uint64_t)rate * 90);
+            dsd_signal_quiet_result single{};
+            assert(dsd_signal_quiet_detector_result(d, &single) == 1);
+            assert(std::abs(quiet_run(d, q, iq, 4096).max_ratio_db - single.max_ratio_db) < 1e-4f);
+        }
+    }
+}
+
+/* The two floor estimators on the same samples: the ratio is judged against the capture-wide reference, so it is the
+   same under either; the lowest sideband block never reads above the trimmed mean, so its floor never rises higher.
+   With the trimmed mean, a sub-window measures the channel power Signal search measures, and its sideband floor (the
+   search's noise) stands over the reference by no more than the request's highest rise. */
+static void
+test_quiet_estimators(dsd_signal_quiet_detector* d) {
+    const uint32_t rate = 1536000;
+    const auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const dsd_signal_quiet_params trimmed{30.0f, DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN, 100.0f};
+    const dsd_signal_quiet_params lowest{30.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f};
+    for (unsigned seed = 1; seed <= 4; ++seed) {
+        auto iq = quiet_noise(quiet_request_pairs(q), 90 + seed);
+        for (size_t i = 2; seed % 2 == 0 && i < iq.size(); ++i) {
+            iq[i] = 0.8f * iq[i - 2] + 0.2f * iq[i]; // a sloping floor
+        }
+        const auto by_mean = quiet_run(d, q, iq, 4096, &trimmed);
+        const auto by_lowest = quiet_run(d, q, iq, 4096, &lowest);
+        assert(by_mean.quiet && by_lowest.quiet);
+        assert(std::abs(by_lowest.max_ratio_db - by_mean.max_ratio_db) < 1e-6f);
+        assert(std::abs(by_lowest.floor_dbfs - by_mean.floor_dbfs) < 1e-6f);
+        assert(by_lowest.floor_rise_db < by_mean.floor_rise_db);
+    }
+    // A carrier only in the second sub-window: the request's highest ratio is that sub-window's, which Signal search
+    // measures as its second window of a 12.5 kHz channel.
+    const size_t window = quiet_window_pairs(q);
+    auto iq = quiet_noise(quiet_request_pairs(q), 99);
+    quiet_add_fm(iq, rate, 1000, quiet_amplitude(10, rate, 12500), {}, {}, window, 2 * window);
+    const auto quiet_side = quiet_run(d, q, iq, 4096, &trimmed);
+    dsd_signal_measure_request search{};
+    dsd_signal_search_range_default(&search.range);
+    search.range.step_num = search.range.bandwidth_hz = 12500;
+    search.session_id = search.request_id = 1;
+    search.capture = q.capture;
+    search.count = 1;
+    search.frequencies[0] = q.frequency_hz;
+    assert(dsd_signal_search_fft_size(rate, &search.range) == (int)quiet_fft_size(q));
+    dsd_signal_detector* searcher = dsd_signal_detector_create();
+    const auto report = run(searcher, search, iq, 4096);
+    dsd_signal_detector_destroy(searcher);
+    assert(report.candidates[0].valid);
+    assert(std::abs(report.candidates[0].power_dbfs - quiet_side.power_dbfs) < 1e-4f);
+    // Search's noise is the trimmed-mean floor: at most the quiet side's highest rise over the reference, and on this
+    // white floor within a dB of the reference.
+    const float search_rise_db = report.candidates[0].noise_dbfs - quiet_side.floor_dbfs;
+    assert(search_rise_db < quiet_side.floor_rise_db + 1e-4f);
+    assert(search_rise_db > -1.0f);
+}
+
+/* The transform sizes Signal search measures with are unchanged by the helper it shares with quiet requests. */
+static void
+test_search_fft_sizes() {
+    const struct {
+        uint32_t rate, step, width;
+        int n;
+    } sizes[] = {{1536000, 25000, 25000, 512},  {1536000, 12500, 16000, 1024}, {1536000, 12500, 12500, 1024},
+                 {1536000, 6250, 8000, 2048},   {1024000, 12500, 12500, 1024}, {2400000, 12500, 12500, 2048},
+                 {2400000, 25000, 20000, 1024}, {1536000, 250, 25000, 65536}};
+
+    for (const auto& s : sizes) {
+        dsd_signal_search_range range;
+        dsd_signal_search_range_default(&range);
+        range.step_num = s.step;
+        range.bandwidth_hz = s.width;
+        assert(dsd_signal_search_fft_size(s.rate, &range) == s.n);
+    }
+    assert(dsd_signal_fft_size_for_width(0, 12500) == 0 && dsd_signal_fft_size_for_width(1536000, 0) == 0);
+    assert(dsd_signal_fft_size_for_width(10000000, 100) == 0);
+}
+
+/* Feed the shared tap @p pairs of @p iq from @p at in blocks of 4096. */
+static void
+quiet_tap_feed(const std::vector<float>& iq, size_t at, size_t pairs, const dsd_signal_capture& capture) {
+    for (size_t i = at; i < at + pairs; i += 4096) {
+        rtl_signal_measure_feed(iq.data() + 2 * i, std::min<size_t>(4096, at + pairs - i), &capture);
+    }
+}
+
+/* A fake realtime clock for the tap: each read is 50 ms after the one before, from kQuietClockT0. */
+constexpr uint64_t kQuietClockT0 = 5000000000000ULL;
+constexpr uint64_t kQuietClockStep = 50000000ULL;
+static uint64_t g_quiet_clock_ns = 0;
+
+static uint64_t
+quiet_clock_now_ns(void) {
+    const uint64_t now = g_quiet_clock_ns;
+    g_quiet_clock_ns += kQuietClockStep;
+    return now;
+}
+
+/* A quiet result is stamped when its analysis completes, not when the block that completed it arrived: the final
+   block's feed reads the clock on entry, the analysis takes time (here 50 ms), and the stamp is the later reading, so
+   an answer that finished past the scan's 400 ms bound is not taken for one that came in time. */
+static void
+test_quiet_tap_completion_stamp() {
+    const auto q = quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const size_t pairs = quiet_request_pairs(q);
+    const auto noise = quiet_noise(pairs + 4096, 103);
+    uint32_t ticket = 0;
+    assert(rtl_signal_quiet_request(&q, &ticket, nullptr) == 0);
+    const size_t last = (pairs - 1) / 4096 * 4096;
+    quiet_tap_feed(noise, 0, last, q.capture);
+    assert(rtl_signal_quiet_status(ticket) == 0);
+    g_quiet_clock_ns = kQuietClockT0;
+    rtl_signal_measure_test_set_clock(quiet_clock_now_ns);
+    rtl_signal_measure_feed(noise.data() + 2 * last, pairs - last, &q.capture);
+    rtl_signal_measure_test_set_clock(nullptr);
+    assert(rtl_signal_quiet_status(ticket) == 1);
+    dsd_signal_quiet_result result{};
+    assert(rtl_signal_quiet_take(ticket, &result) == 1 && result.failure == DSD_SIGNAL_MEASURE_OK && result.valid);
+    assert(result.completed_realtime_ns > kQuietClockT0
+           && result.completed_realtime_ns == g_quiet_clock_ns - kQuietClockStep);
+}
+
+/* The shared tap's owners: a quiet request is refused while Signal search owns the tuner or holds a request or an
+   unread report; a search request supersedes a quiet one at once; search cancels leave a quiet request alone. */
+static void
+test_quiet_tap_owners(const dsd_signal_measure_request& r) {
+    const auto q = quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const auto noise = quiet_noise(quiet_request_pairs(q) + 4096, 101);
+    const auto search_iq = samples(r, r.frequencies[0], 0.1, 30000);
+    uint32_t ticket = 0;
+    dsd_signal_request_failure failure = DSD_SIGNAL_REQUEST_OK;
+    dsd_signal_quiet_result result{};
+    dsd_signal_measure_report report{};
+    // A search request outstanding, then its unread report, refuse a quiet request; reading the report frees the tap.
+    assert(rtl_signal_measure_request(&r, nullptr) == 0);
+    assert(rtl_signal_quiet_request(&q, &ticket, &failure) == -1 && failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    rtl_signal_measure_feed(search_iq.data(), 30000, &r.capture);
+    assert(rtl_signal_quiet_request(&q, &ticket, &failure) == -1 && failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    assert(rtl_signal_measure_get(&report) == 1);
+    assert(rtl_signal_quiet_request(&q, &ticket, &failure) == 0 && failure == DSD_SIGNAL_REQUEST_OK && ticket != 0);
+    rtl_signal_quiet_cancel(ticket);
+    // A search owning the tuner refuses it too.
+    rtl_signal_search_set_owner(9);
+    assert(rtl_signal_quiet_request(&q, &ticket, &failure) == -1 && failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    rtl_signal_search_set_owner(0);
+    // A search cancel or a search report read does not touch a quiet request.
+    assert(rtl_signal_quiet_request(&q, &ticket, nullptr) == 0);
+    rtl_signal_measure_cancel();
+    assert(rtl_signal_measure_get(&report) == 0);
+    assert(rtl_signal_quiet_status(ticket) == 0);
+    quiet_tap_feed(noise, 0, quiet_request_pairs(q), q.capture);
+    assert(rtl_signal_quiet_status(ticket) == 1);
+    assert(rtl_signal_measure_get(&report) == 0);
+    assert(rtl_signal_quiet_take(ticket, &result) == 1);
+    assert(result.request_id == q.request_id && result.failure == DSD_SIGNAL_MEASURE_OK && result.valid);
+    assert(result.completed_realtime_ns != 0 && result.capture.generation == q.capture.generation);
+    // A search request supersedes a pending quiet request at once, with no further samples, and one done but untaken.
+    for (size_t before : {size_t{4096}, quiet_request_pairs(q)}) {
+        assert(rtl_signal_quiet_request(&q, &ticket, nullptr) == 0);
+        quiet_tap_feed(noise, 0, before, q.capture);
+        assert(rtl_signal_quiet_status(ticket) == (before == 4096 ? 0 : 1));
+        assert(rtl_signal_measure_request(&r, nullptr) == 0);
+        assert(rtl_signal_quiet_status(ticket) == -1);
+        result = dsd_signal_quiet_result{};
+        assert(rtl_signal_quiet_take(ticket, &result) == -1 && result.failure == DSD_SIGNAL_MEASURE_SUPERSEDED);
+        assert(!result.valid && !result.quiet);
+        // The search measures on: its report is its own.
+        rtl_signal_measure_feed(search_iq.data(), 30000, &r.capture);
+        assert(rtl_signal_measure_get(&report) == 1 && report.request_id == r.request_id);
+    }
+    // A refused search request supersedes it too.
+    assert(rtl_signal_quiet_request(&q, &ticket, nullptr) == 0);
+    auto unsupported = r;
+    unsupported.capture.rate_hz = 0;
+    assert(rtl_signal_measure_request(&unsupported, nullptr) == -1);
+    assert(rtl_signal_quiet_status(ticket) == -1);
+    rtl_signal_measure_cancel();
+}
+
+/* Tickets: cancel and reset lose a quiet request at once; a stale ticket never reads, takes or cancels a newer
+   request; a taken result is gone; the 30-bit ticket wraps past zero. */
+static void
+test_quiet_tap_tickets() {
+    static_assert(ATOMIC_INT_LOCK_FREE == 2 && sizeof(uint32_t) == sizeof(int),
+                  "the quiet status word is a lock-free 32-bit atomic");
+    const auto q = quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const size_t pairs = quiet_request_pairs(q);
+    const auto noise = quiet_noise(pairs, 111);
+    dsd_signal_quiet_result result{};
+    uint32_t first = 0, second = 0;
+    assert(rtl_signal_quiet_status(0) == -1 && rtl_signal_quiet_take(0, &result) == -1);
+    // Cancel: lost at once, and later samples publish nothing.
+    assert(rtl_signal_quiet_request(&q, &first, nullptr) == 0);
+    quiet_tap_feed(noise, 0, 4096, q.capture);
+    rtl_signal_quiet_cancel(first);
+    assert(rtl_signal_quiet_status(first) == -1);
+    quiet_tap_feed(noise, 0, pairs, q.capture);
+    assert(rtl_signal_quiet_status(first) == -1);
+    assert(rtl_signal_quiet_take(first, &result) == -1 && result.failure == DSD_SIGNAL_MEASURE_SUPERSEDED);
+    // Reset: lost at once.
+    assert(rtl_signal_quiet_request(&q, &first, nullptr) == 0);
+    rtl_signal_measure_reset();
+    assert(rtl_signal_quiet_status(first) == -1);
+    quiet_tap_feed(noise, 0, pairs, q.capture);
+    assert(rtl_signal_quiet_status(first) == -1);
+    // A newer quiet request: the older ticket is lost, and cancelling or taking it does not touch the newer one.
+    assert(rtl_signal_quiet_request(&q, &first, nullptr) == 0);
+    auto newer = q;
+    newer.request_id = 42;
+    assert(rtl_signal_quiet_request(&newer, &second, nullptr) == 0 && second != first);
+    assert(rtl_signal_quiet_status(first) == -1 && rtl_signal_quiet_status(second) == 0);
+    rtl_signal_quiet_cancel(first);
+    assert(rtl_signal_quiet_take(first, &result) == -1 && result.failure == DSD_SIGNAL_MEASURE_SUPERSEDED);
+    assert(rtl_signal_quiet_status(second) == 0);
+    quiet_tap_feed(noise, 0, pairs, q.capture);
+    assert(rtl_signal_quiet_status(second) == 1 && rtl_signal_quiet_status(first) == -1);
+    rtl_signal_quiet_cancel(first);
+    assert(rtl_signal_quiet_status(second) == 1);
+    result = dsd_signal_quiet_result{};
+    assert(rtl_signal_quiet_take(second, &result) == 1 && result.request_id == 42 && result.valid);
+    // The tap measures as the stand-alone detector does with the shipped parameters.
+    dsd_signal_quiet_detector* alone = dsd_signal_quiet_detector_create();
+    const auto expected = quiet_run(alone, newer, noise, 4096);
+    dsd_signal_quiet_detector_destroy(alone);
+    assert(std::abs(expected.max_ratio_db - result.max_ratio_db) < 1e-4f && expected.quiet == result.quiet);
+    assert(std::abs(expected.floor_dbfs - result.floor_dbfs) < 1e-4f);
+    // Taken: the result is gone.
+    assert(rtl_signal_quiet_status(second) == -1);
+    assert(rtl_signal_quiet_take(second, &result) == -1 && result.failure == DSD_SIGNAL_MEASURE_SUPERSEDED);
+    // A pending take leaves the result untouched.
+    assert(rtl_signal_quiet_request(&q, &first, nullptr) == 0);
+    result.request_id = 77;
+    assert(rtl_signal_quiet_take(first, &result) == 0 && result.request_id == 77);
+    // A failure is taken as one, with its request's id.
+    auto moved = q.capture;
+    ++moved.gain;
+    rtl_signal_measure_feed(noise.data(), 10, &moved);
+    assert(rtl_signal_quiet_status(first) == 1);
+    assert(rtl_signal_quiet_take(first, &result) == -1);
+    assert(result.failure == DSD_SIGNAL_MEASURE_CAPTURE_CHANGED && result.request_id == q.request_id);
+    // A refused quiet request says why.
+    rtl_signal_measure_test_fail_allocation(1);
+    dsd_signal_request_failure failure = DSD_SIGNAL_REQUEST_OK;
+    assert(rtl_signal_quiet_request(&q, &first, &failure) == -1 && failure == DSD_SIGNAL_REQUEST_NO_MEMORY);
+    rtl_signal_measure_test_fail_allocation(0);
+    auto bad = q;
+    bad.classes = 0;
+    assert(rtl_signal_quiet_request(&bad, &first, &failure) == -1 && failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    // The ticket wraps from the last 30-bit value to 1, never 0.
+    rtl_signal_measure_test_set_ticket(0x3FFFFFFEu);
+    assert(rtl_signal_quiet_request(&q, &first, nullptr) == 0 && first == 0x3FFFFFFFu);
+    assert(rtl_signal_quiet_request(&q, &second, nullptr) == 0 && second == 1);
+    assert(rtl_signal_quiet_status(first) == -1 && rtl_signal_quiet_status(second) == 0);
+    rtl_signal_quiet_cancel(second);
+    assert(rtl_signal_quiet_status(second) == -1);
+}
+
+/* The demod thread feeding while the decoder thread requests, cancels, resets and supersedes, and a third thread reads
+   status words: every result taken is its own request's, a lost ticket reads lost at once, and status never waits. */
+static void
+test_quiet_tap_threads(const dsd_signal_measure_request& r) {
+    const auto q = quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const auto noise = quiet_noise(quiet_request_pairs(q) * 2, 121);
+    std::atomic<bool> stop{false};
+    std::atomic<uint32_t> live{0};
+    std::thread demod([&] {
+        const size_t block = 4096, blocks = noise.size() / 2 / block;
+        for (size_t at = 0; !stop.load(std::memory_order_acquire); at = (at + 1) % blocks) {
+            rtl_signal_measure_feed(noise.data() + 2 * at * block, block, &q.capture);
+        }
+    });
+    std::thread reader([&] {
+        uint32_t stale = 1;
+        while (!stop.load(std::memory_order_acquire)) {
+            const int now = rtl_signal_quiet_status(live.load(std::memory_order_acquire));
+            assert(now >= -1 && now <= 1);
+            assert(rtl_signal_quiet_status(stale & 0x3FFFFFFFu) >= -1);
+            ++stale;
+            dsd_signal_capture capture{};
+            (void)rtl_signal_capture_get(&capture);
+        }
+    });
+    int taken = 0;
+    for (uint64_t id = 1; id <= 48; ++id) {
+        auto request = q;
+        request.request_id = 2000 + id;
+        uint32_t ticket = 0;
+        assert(rtl_signal_quiet_request(&request, &ticket, nullptr) == 0);
+        live.store(ticket, std::memory_order_release);
+        dsd_signal_quiet_result result{};
+        switch (id % 4) {
+            case 1: rtl_signal_quiet_cancel(ticket); break;
+            case 2: assert(rtl_signal_measure_request(&r, nullptr) == 0); break;
+            case 3: rtl_signal_measure_reset(); break;
+            default: break;
+        }
+        if (id % 4 != 0) {
+            assert(rtl_signal_quiet_status(ticket) == -1);
+            assert(rtl_signal_quiet_take(ticket, &result) == -1 && result.failure == DSD_SIGNAL_MEASURE_SUPERSEDED);
+            rtl_signal_measure_cancel();
+            continue;
+        }
+        int status = 0;
+        for (int poll = 0; poll < 20000000 && status == 0; ++poll) {
+            status = rtl_signal_quiet_status(ticket);
+            std::this_thread::yield();
+        }
+        assert(status == 1);
+        assert(rtl_signal_quiet_take(ticket, &result) == 1);
+        assert(result.request_id == request.request_id && result.failure == DSD_SIGNAL_MEASURE_OK && result.valid);
+        ++taken;
+    }
+    stop.store(true, std::memory_order_release);
+    demod.join();
+    reader.join();
+    rtl_signal_measure_cancel();
+    assert(taken == 12);
+}
+
+static void
+test_quiet(const dsd_signal_measure_request& r) {
+    dsd_signal_quiet_detector* d = dsd_signal_quiet_detector_create();
+    assert(d);
+    test_search_fft_sizes();
+    test_quiet_requests(d);
+    test_quiet_noise(d);
+    test_quiet_signals(d);
+    test_quiet_dmr_bursts(d);
+    test_quiet_one_subwindow(d);
+    test_quiet_classes(d);
+    test_quiet_floor_guard(d);
+    test_quiet_floor_guard_rotation(d);
+    test_quiet_moderate_neighbours(d);
+    test_quiet_geometry(d);
+    test_quiet_failures(d);
+    test_quiet_spans(d);
+    test_quiet_estimators(d);
+    dsd_signal_quiet_detector_destroy(d);
+    test_quiet_tap_owners(r);
+    test_quiet_tap_completion_stamp();
+    test_quiet_tap_tickets();
+    test_quiet_tap_threads(r);
+}
+
 int
 main() {
     dsd_signal_measure_request r{};
@@ -1000,6 +2015,7 @@ main() {
     test_request_failures(r);
     test_failure_reasons(d, r);
     test_clip_levels(d, r);
+    test_quiet(r);
     // A burst shorter than the first 10 ms cannot pass two windows.
     for (size_t i = size_t{5000} * 2; i < iq.size(); ++i) {
         iq[i] = noise[i];

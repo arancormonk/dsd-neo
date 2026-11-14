@@ -191,6 +191,15 @@ void dsd_trunk_tuning_request_land_at_reopen(uint64_t request_id);
 uint64_t dsd_trunk_tuning_pending_request(void);
 
 /**
+ * @brief Lock-free peek: whether @p request_id is the request whose success finished last (issue #834).
+ *
+ * One atomic load, for a caller that may not take the ledger lock (the frame-sync hunt's scan quiet service): 1 once
+ * the request completed successfully and no other request has completed successfully since, else 0 (pending, failed,
+ * superseded by a later landing, or 0).
+ */
+int dsd_trunk_tuning_request_landed(uint64_t request_id);
+
+/**
  * @brief Query the correlated state of a tune request.
  *
  * @param request_id Request ID to query.

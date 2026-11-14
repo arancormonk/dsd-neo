@@ -1341,6 +1341,8 @@ int
 m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_packed, uint16_t crc_ext) {
     const uint16_t crc_cmp = m17_crc16(lsf_packed, 28);
     const int crc_err = (crc_cmp != crc_ext);
+    /* TYPE is bytes 12-13; its bit 0 is the packet/stream indicator. Only an LSF whose CRC passed says which. */
+    state->m17_lsf_stream_mode = (uint8_t)((crc_err == 0) ? (lsf_packed[13] & 1U) : 0U);
 
     if (crc_err == 0 || opts->aggressive_framesync == 0) {
         M17decodeLSF(opts, state, crc_err == 0);
@@ -1404,6 +1406,8 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
 
     DSD_MEMSET(soft_symbols, 0, sizeof(soft_symbols));
     DSD_MEMSET(m17_soft_bits, 0, sizeof(m17_soft_bits));
+    /* What an earlier LSF declared says nothing about this transmission's (issue #834). */
+    state->m17_lsf_stream_mode = 0U;
 
     /* An LSF a carrier boundary split (issue #575) or an input interruption cut (a Signal search left it, or a live
        read gave up on a stalled input) decodes nothing: the rest of it is another carrier's or erasures the reader

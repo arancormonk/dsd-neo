@@ -7,8 +7,10 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
@@ -59,6 +61,11 @@ static char g_last_frame_type[16];
 static int g_cac_frame_channel;
 static int g_facch_frame_channel;
 static int g_sacch_frame_channel;
+/* The sync anchor's calls (issue #834): where the recording for the next FSW was armed, and the word named. */
+static int g_hunt_arm_calls;
+static size_t g_hunt_arm_at;
+static int g_note_calls;
+static char g_note_word[DSD_SYMBOL_ANCHOR_MAX_SYMS + 1];
 
 static int
 expect_int(const char* label, int got, int want) {
@@ -159,6 +166,24 @@ reset_state(void) {
     g_cac_frame_channel = -1;
     g_facch_frame_channel = -1;
     g_sacch_frame_channel = -1;
+    g_hunt_arm_calls = 0;
+    g_hunt_arm_at = 0U;
+    g_note_calls = 0;
+    g_note_word[0] = '\0';
+}
+
+void
+dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
+    (void)state;
+    g_hunt_arm_calls++;
+    g_hunt_arm_at = g_dibit_stream_pos;
+}
+
+void
+dsd_symbol_note_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
+    (void)state;
+    g_note_calls++;
+    DSD_SNPRINTF(g_note_word, sizeof(g_note_word), "%.*s", count, sync_dibits);
 }
 
 void
@@ -913,6 +938,35 @@ test_frame_retuned_by_its_scch_stops(void) {
     return rc;
 }
 
+/* Issue #834: every frame names the FSW the hunt accepted it on (from its second symbol, at the polarity it was
+   accepted at), and a frame read whole arms the recording for the next frame's FSW where it ends, so the hunt reads
+   that FSW on the grid this frame was read on; one a LICH refused, read 8 dibits in, arms nothing. */
+static int
+test_frame_places_the_grid_on_the_next_fsw(void) {
+    int rc = 0;
+
+    reset_state();
+    g_state.synctype = DSD_SYNC_NXDN_POS;
+    rc |= expect_int("frame accepted", route_frame(0x32U), 1);
+    rc |= expect_int("fsw named", g_note_calls, 1);
+    rc |= expect_string("fsw word", g_note_word, &NXDN_FSW_DIBITS[1]);
+    rc |= expect_int("next fsw armed", g_hunt_arm_calls, 1);
+    rc |= expect_int("armed where the frame ends", (int)g_hunt_arm_at, 182);
+
+    reset_state();
+    g_state.synctype = DSD_SYNC_NXDN_NEG;
+    (void)route_frame(0x32U);
+    rc |= expect_string("inverted fsw word", g_note_word, &INV_NXDN_FSW_DIBITS[1]);
+
+    reset_state();
+    g_state.synctype = DSD_SYNC_NXDN_POS;
+    rc |= expect_int("unsupported lich rejected", route_frame(0x7FU), 0);
+    rc |= expect_int("rejected frame named its fsw", g_note_calls, 1);
+    rc |= expect_int("rejected frame arms nothing", g_hunt_arm_calls, 0);
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -930,6 +984,7 @@ main(void) {
     rc |= test_frame_channel_follows_the_lich();
     rc |= test_composite_control_channel_lich();
     rc |= test_frame_retuned_by_its_scch_stops();
+    rc |= test_frame_places_the_grid_on_the_next_fsw();
     dsd_decode_clock_use_system();
 
     if (rc == 0) {

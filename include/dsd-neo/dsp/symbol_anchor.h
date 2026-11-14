@@ -45,6 +45,32 @@ struct dsd_state;
 void dsd_symbol_arm_sync_anchor(struct dsd_state* state);
 
 /**
+ * @brief Start recording for a sync word the frame-sync hunt is about to read, and hold the grid for it.
+ *
+ * NXDN, YSF and DMR MS read a frame or burst, then go back to the hunt for the next one's sync word. The hunt's
+ * crossing loop slips the grid a sample at a time on that word's zero crossings, and a fixed word's crossings pull it
+ * to a fixed place: the inner symbols in NXDN's and YSF's words (and an MS burst's first crossings after the gap) sat
+ * clean frames one or two samples off their symbols, a phase the frame then kept. Called where the frame or burst ends,
+ * right ahead of the next word, this arms a recording as dsd_symbol_arm_sync_anchor() does and, once a measured word
+ * has placed the grid, keeps the crossing loop off it until the word is measured or the recording lapses (64 symbols),
+ * so the word is read on the grid the frame left and the measurement corrects that grid alone, as on a DMR BS call. A
+ * grid no word placed (the first frame after acquisition, a recording that lapsed or could not be measured, a word
+ * named with no recording armed, a reset) stays the crossing loop's. The hold is the arming protocol's (NXDN, YSF or
+ * DMR, from dsd_state::lastsynctype now): once lastsynctype names another protocol, the hunt having accepted its sync,
+ * the hold ends. The decoder that accepts the word names it (dsd_symbol_note_sync_anchor()).
+ */
+void dsd_symbol_arm_hunt_sync_anchor(struct dsd_state* state);
+
+/**
+ * @brief Keep a recording going across a run that announces a sync word without saying when it comes.
+ *
+ * M17's preamble runs for up to 192 symbols ahead of its LSF or BERT sync word. Called once a symbol while the run
+ * lasts, this arms a recording that is not running and keeps a running one from lapsing, without restarting it, so
+ * the sync word's measurement has the run's last symbols to work with.
+ */
+void dsd_symbol_hold_sync_anchor(struct dsd_state* state);
+
+/**
  * @brief Name the sync word the symbol grid just read.
  *
  * The last @p count symbols getSymbol() returned were @p sync_dibits ('0'..'3',

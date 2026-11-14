@@ -8444,6 +8444,16 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=p25_sm_tick_guard_try_enter"
             "-Wl,--wrap=dsd_engine_manual_tune_supersede"
             "-Wl,--wrap=rtl_stream_session_generation"
+            "-Wl,--wrap=dsd_realtime_mono_ms"
+            "-Wl,--wrap=dsd_sleep_ms"
+            # The scan quiet check's signal tap (issue #834).
+            "-Wl,--wrap=rtl_signal_capture_get"
+            "-Wl,--wrap=rtl_signal_quiet_request"
+            "-Wl,--wrap=rtl_signal_quiet_status"
+            "-Wl,--wrap=rtl_signal_quiet_take"
+            "-Wl,--wrap=rtl_signal_quiet_cancel"
+            "-Wl,--wrap=dsd_signal_quiet_rate_supported"
+            "-Wl,--wrap=dsd_signal_quiet_analog_supported"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
@@ -9225,6 +9235,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_trunk_diag.c
     ${PROJECT_SOURCE_DIR}/src/dsp/analog_tone_policy.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
+    # The scan quiet check (issue #834), over a fake signal tap.
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_quiet.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan
@@ -9245,6 +9257,17 @@ target_link_libraries(
         dsd-neo_test_event_sync_stub
         dsd-neo_test_support
 )
+# The scan quiet check's realtime bounds run on a fake realtime clock, separate from the TEST decode clock (issue #834).
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_engine_trunk_scan
+        PRIVATE DSD_NEO_TEST_RTL_WRAP=1
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_trunk_scan
+        PRIVATE "-Wl,--wrap=dsd_realtime_mono_ms"
+    )
+endif()
 add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
 
 # The command queue is built in with its test hooks, for the drain's count of its waits for the guard.
@@ -14025,6 +14048,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ms.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_confidence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
 )
@@ -16309,6 +16333,21 @@ if(Python3_Interpreter_FOUND)
         DMR_SYNTH_RECEIVE_NAMES
         PROPERTIES LABELS "dmr-synth" TIMEOUT 180
     )
+    # An MS call cut inside a superframe and followed by noise (issue #834): the only recording published is the call's,
+    # under its own colour code and identity, never the noise's under a colour code an unchecked EMB named. Followed at
+    # once by a call on another colour code, each call is published under its own code only
+    # (protocol/dmr/dmr_ms_tail_check.py).
+    add_test(
+        NAME DMR_SYNTH_MS_TAIL
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dmr/dmr_ms_tail_check.py
+            $<TARGET_FILE:dsd-neo> $<TARGET_FILE:dsd-neo_test_dmr_synth_gen>
+    )
+    set_tests_properties(
+        DMR_SYNTH_MS_TAIL
+        PROPERTIES LABELS "dmr-synth" TIMEOUT 120
+    )
 endif()
 
 set(_DSD_SYNTH_K256
@@ -16361,6 +16400,16 @@ endfunction()
 dsd_neo_add_dmr_synth_test(
     DMR_SYNTH_CLEAR_VOICE
     GEN "-t 12 --alg none"
+    MAX_MISSING 6
+)
+# An MS transmission (issue #834): MS syncs, no CACH, slot 1's bursts alone with nothing between them. dsd-neo's MS
+# path decodes every frame, short of the bursts the voice gate skips at call start, every one of its 49 bits right.
+# The hunt re-acquires each superframe on its burst A, and its crossing loop left the grid a sample or two late on
+# that sync, which bursts B to F then kept: 21 of the 540 frames came out with an unprotected bit wrong. The burst
+# before each A now arms the sync anchor, which places the grid on A's sync as the BS loop does on every burst's.
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_MS_CLEAR_VOICE
+    GEN "-t 12 --alg none --ms"
     MAX_MISSING 6
 )
 # A receiver that inverts the discriminator: BS voice syncs read as data syncs until the decoder proves the polarity
@@ -19530,6 +19579,27 @@ if(DSD_HAS_RADIO)
         -fs
         "Color Code=02 \\| VC6"
     )
+    # Issue #834: DMR's matched filter is the receive half of its root-raised-cosine pulse (roll-off 0.2). The same
+    # generator's call, 5 s of it, at the standard's pulse in noise at 8 dB S/N in 12.5 kHz (dmr_bs_weak in
+    # tools/build_iq_fixtures.py): about 160 bursts, each line printing the colour code from a slot type or EMB that
+    # decoded. Behind the legacy filter, a low-pass flat to 3 kHz, 132 did under -fs and 134 under -fa; behind the RRC
+    # 0.2, 156 and 158. 146 sits halfway.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DMR_BS_WEAK
+        dmr_bs_weak
+        -fs
+        "Color Code=02 \\|"
+        ""
+        146
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DMR_BS_WEAK_AUTO
+        dmr_bs_weak
+        -fa
+        "Color Code=02 \\|"
+        ""
+        146
+    )
     # The sigidwiki DMR recordings are control channels received at inverted polarity. A BS voice sync is an inverted
     # data sync, so -fs used to read every burst as voice and publish a colour code from noise-made EMBs (issue #729).
     # The decoder now proves the polarity from the bursts and decodes them as what they are, without -xr.
@@ -19685,6 +19755,34 @@ if(DSD_HAS_RADIO)
     # decodes 29 RANs here (the matcher before these rules 30, the same over eight sample shifts); held to one bit it
     # decodes 10.
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_WEAK_0DB nxdn96_weak_0db -fn "RAN 00" "" 25)
+    # Issue #834: clean generated NXDN frames (nxdn96_synth, nxdn48_synth; SLICER_SYNTH in tools/build_iq_fixtures.py),
+    # each frame's symbols outside the FSW checked against the dibits sent (tests/symbol_capture_check.py). The FSW's
+    # two inner symbols were taken for outer ones, which put the slicer's rails at 2.6 of 3, and each frame was read at
+    # the phase the hunt's crossing loop left on the FSW: before the fix 7 (NXDN96) and 33 (NXDN48) of the 46 frames
+    # after acquisition read clean, after it all 46.
+    if(Python3_Interpreter_FOUND)
+        foreach(_nxdn_rate IN ITEMS 96 48)
+            if(_nxdn_rate STREQUAL "96")
+                set(_nxdn_mode -fn)
+            else()
+                set(_nxdn_mode -fi)
+            endif()
+            add_test(
+                NAME DECODE_IQ_NXDN${_nxdn_rate}_SYNTH_SYMBOLS
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/symbol_capture_check.py
+                    $<TARGET_FILE:dsd-neo>
+                    ${_DSD_NEO_IQ_FIXTURE_DIR}/nxdn${_nxdn_rate}_synth.iq.json
+                    --mode=${_nxdn_mode} --frame 192 --sync 10 --skip-frames 3
+                    --min-clean 0.99
+            )
+            set_tests_properties(
+                DECODE_IQ_NXDN${_nxdn_rate}_SYNTH_SYMBOLS
+                PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
+        endforeach()
+    endif()
     # A call after a scan retune (issue #572): 7.5 s of noise_floor on one channel, the RETUNE, MUTE,
     # RESET and MUTE a real scan retune records, then all of nxdn48 on the next channel
     # (DERIVED_RETUNE in tools/build_iq_fixtures.py). -fi holds the receiver on NXDN48, so whatever
@@ -20723,6 +20821,11 @@ if(DSD_HAS_RADIO)
         -fy
         "V/D2 RID Mode Repeater CC"
     )
+    # Issue #834: 20 clean generated V/D mode 2 frames (ysf_synth, SLICER_SYNTH in tools/build_iq_fixtures.py): the
+    # frame sync's seven inner symbols, taken for outer ones, put the slicer's centre a quarter of an outer level off,
+    # and each frame was read two samples early, where the hunt's crossing loop left the grid on the sync. 9 FICHs
+    # passed before the fix, 20 after it; at least 19 (95 %) must.
+    dsd_neo_add_iq_decode_test(DECODE_IQ_YSF_SYNTH ysf_synth -fy "FN: [1-8]/8 " "" 19)
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_EDACS
         edacs
@@ -20812,6 +20915,82 @@ if(DSD_HAS_RADIO)
         m17_after_retune
         -fa
         "SRC: N0CALL"
+    )
+
+    # Issue #834: M17 runs its root-raised-cosine matched filter after an M17 sync, as every other mode runs its own.
+    # Four transmissions, each a preamble, a link setup frame, one LICH superframe and the EOT, at 9 dB S/N in
+    # 12.5 kHz (M17_SYNTH in tools/build_iq_fixtures.py). The LSF is the frame the filter switches on at, the one a
+    # filter switching on from a cold history once cost its CRC (#399): its own frame decodes behind the switch (the
+    # bytes, then the CRC check on the same line, which only the LSF frame prints so; a LICH-reassembled LSF prints
+    # its check on a line of its own), and the stream frames' LICH reassembles. Without the filter not one LSF or
+    # LICH superframe decodes here; with it all four of each do, under -fz and -fa (3 leaves a margin).
+    foreach(_m17_mode IN ITEMS -fz -fa)
+        if(_m17_mode STREQUAL "-fa")
+            set(_m17_name DECODE_IQ_M17_LSF_WEAK_AUTO)
+        else()
+            set(_m17_name DECODE_IQ_M17_LSF_WEAK)
+        endif()
+        add_test(
+            NAME ${_m17_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${_m17_mode} -Z"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/m17_lsf_weak.iq.json"
+                "-DEXPECTED=\\[1A\\]\\[B4\\] \\(CRC CHK\\) E: 1AB4; C: 1AB4;"
+                -DMIN_MATCHES=3 "-DEXPECTED2=LC: 6/6" -DMIN_MATCHES2=3 -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            ${_m17_name}
+            PROPERTIES LABELS "iq-decode" TIMEOUT 120
+        )
+    endforeach()
+
+    # Issue #834: clean LSF-first transmissions decode every LSF. Eight transmissions at 30 dB, each delayed by its own
+    # fraction of a sample (m17_lsf_clean, M17_SYNTH). The hunt's timing loop left the grid up to two samples off the
+    # preamble's symbols, which the matched filter behind the LSF does not read through, and each EOT left the next
+    # hunt slicing against levels its marker skewed. Before issue #834 this realization decoded 7 of the 8 LSFs under
+    # -fz and 2 under -fa; with the matched filter but without the grid's move at the switch and the reset at the EOT,
+    # 8 and 5. Each transmission has two stream frames.
+    foreach(_m17_mode IN ITEMS -fz -fa)
+        if(_m17_mode STREQUAL "-fa")
+            set(_m17_name DECODE_IQ_M17_LSF_CLEAN_AUTO)
+        else()
+            set(_m17_name DECODE_IQ_M17_LSF_CLEAN)
+        endif()
+        add_test(
+            NAME ${_m17_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${_m17_mode} -Z"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/m17_lsf_clean.iq.json"
+                "-DEXPECTED=\\[1A\\]\\[B4\\] \\(CRC CHK\\) E: 1AB4; C: 1AB4;"
+                -DMIN_MATCHES=8 "-DEXPECTED2=LC: 2/6" -DMIN_MATCHES2=8 -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            ${_m17_name}
+            PROPERTIES LABELS "iq-decode" TIMEOUT 120
+        )
+    endforeach()
+
+    # Issue #834: the m17-fme recording sends its stream LSF twice behind the preamble. The second LSF went untaken, and
+    # the hunt matched words within one error inside it: a packet sync (impossible behind a stream-mode LSF), then an
+    # EOT, which lost the stream's first four frames and ended its call. The repeat is taken as an LSF now, and the
+    # stream decodes from its first frame (FSN 0, printed under -Z) with no packet or EOT in a capture that has none.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_LSF_OFFAIR
+        m17_lsf_offair
+        "-fz -Z"
+        "FSN: 00000"
+        "M17 PKT|M17 EOT"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_LSF_OFFAIR_AUTO
+        m17_lsf_offair
+        "-fa -Z"
+        "FSN: 00000"
+        "M17 PKT|M17 EOT"
     )
 
     # Issue #388: P25 Phase 1 C4FM on its own profile, which is where AUTO starts -- the hunt
@@ -21497,11 +21676,11 @@ if(DSD_HAS_RADIO)
     )
 
     # Off-air digital speech at the default auto gain (issue #518). The excerpts are too short for established speech
-    # (0.3-2.6 s of it), so each case holds the whole output's P.56 level to a window of +/-1 dB around what the speech
+    # (0.3-3.05 s of it), so each case holds the whole output's P.56 level to a window of +/-1 dB around what the speech
     # AGC measures there, and requires it to have moved from the -g 1 (DVSI reference) level toward -20 dBFS, or to have
     # stayed within 3 dB of it, and to be within 10 dB of it (speech_level_check.cmake). docs/testing.md lists each
-    # excerpt's speech. Measured (auto, at -g 1): dstar -17.63 (-18.14), ysf -18.05 (-38.82), m17 -17.82 (-21.63),
-    # tetra_call_real_air_72k -23.39 (-28.53), nxdn96 -18.64 (-40.88), provoice -17.55 (-39.30), p25p1_c4fm_vc -22.73
+    # excerpt's speech. Measured (auto, at -g 1): dstar -17.63 (-18.14), ysf -21.12 (-39.47), m17 -17.82 (-21.63),
+    # tetra_call_real_air_72k -23.39 (-28.53), nxdn96 -18.68 (-40.91), provoice -17.55 (-39.30), p25p1_c4fm_vc -22.73
     # (-32.03; 0.8 s of speech, which the gain climbs through at its startup rate) and p25p1_cqpsk_vc -17.31 (-22.44;
     # 0.3 s of speech, whose first gain steps overshoot).
     function(
@@ -21535,7 +21714,7 @@ if(DSD_HAS_RADIO)
         )
     endfunction()
     dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_DSTAR dstar -fd 1 -18.63 -16.63 "-g 1")
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_YSF ysf -fy 1 -19.05 -17.05 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_YSF ysf -fy 1 -22.12 -20.12 "-g 1")
     # M17 voice is Codec2: the case needs it built in, as DECODE_IQ_M17_VOICE_OUTPUT does.
     if(DSD_HAS_CODEC2)
         dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_M17 m17 -fz 1 -18.82 -16.82 "-g 1")
@@ -21549,7 +21728,7 @@ if(DSD_HAS_RADIO)
         -22.39
         "-g 1"
     )
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_NXDN96 nxdn96 -fn 1 -19.64 -17.64 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_NXDN96 nxdn96 -fn 1 -19.68 -17.68 "-g 1")
     dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_PROVOICE provoice -fp 1 -18.55 -16.55 "-g 1")
     dsd_neo_add_iq_speech_level_test(
         DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM
@@ -25482,6 +25661,25 @@ if(DSD_HAS_RADIO)
             ${LIBS}
     )
     add_test(NAME IO_SIGNAL_MEASURE COMMAND dsd-neo_test_io_signal_measure)
+    # Manual only: the scan quiet-threshold calibration (docs/signal-search.md), minutes on every core.
+    add_executable(
+        dsd-neo_test_signal_quiet_calibrate
+        io/signal_quiet_calibrate.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_signal_quiet_calibrate
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_signal_quiet_calibrate
+        PRIVATE
+            dsd-neo_io_radio
+            dsd-neo_core
+            dsd-neo_runtime
+            dsd-neo_platform
+            Threads::Threads
+            ${LIBS}
+    )
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.
     add_executable(dsd-neo_test_io_rtl_signal_tap io/test_io_rtl_signal_tap.cpp)
     target_include_directories(

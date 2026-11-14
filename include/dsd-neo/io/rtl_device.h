@@ -317,6 +317,23 @@ dsd_rate_plan_backend rtl_device_rate_plan_backend(const struct rtl_device* dev)
 float rtl_device_signal_clip_level(const struct rtl_device* dev, int fs4_shift_active);
 
 /**
+ * @brief The Fs/4 rotation in Hz that @p dev's samples carry when they reach the demodulator
+ * (dsd_signal_capture.rotation_hz).
+ *
+ * A live capture is rotated by a quarter of the rate it is fed at (@p rate_hz) while it carries the shift. An I/Q
+ * replay applies the geometry it was recorded with: no rotation for a recording made without the shift, and for one
+ * made with it a quarter of the capture's rate, which the replay rotates by before it resamples, so the same shift in
+ * Hz reaches a resampled replay's demodulator.
+ *
+ * Reads only what the device was created or opened with, so any thread may ask while the device exists.
+ *
+ * @param fs4_shift_active Whether a live capture carries the Fs/4 shift now; a replay keeps the shift it was recorded
+ *        with.
+ * @param rate_hz The rate the demodulator is fed at.
+ */
+int32_t rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shift_active, uint32_t rate_hz);
+
+/**
  * @brief Query the current device sample rate.
  *
  * USB backend returns the actual rate reported by librtlsdr

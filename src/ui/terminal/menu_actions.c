@@ -485,6 +485,14 @@ act_scan_voice_hold(void* v) {
     ui_prompt_open_int_async("Voice hold (ms)", ms, cb_scan_voice_hold, c);
 }
 
+/* Session-wide (#834): toggles the live setting through app-control; scan rows never carry it. */
+void
+act_scan_skip_silent(void* v) {
+    const UiCtx* c = ui_ctx_from_action(v);
+    const int32_t on = (c && c->opts && c->opts->scan_skip_silent) ? 0 : 1;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, on);
+}
+
 void
 act_rr_import(void* v) {
     const UiCtx* c = ui_ctx_from_action(v);

@@ -288,6 +288,8 @@ Item {
                 reason: "The receiver status pill reads the same detail as its description."},
             {file: "WizardScreen.qml", name: /^(trunkTitle|trunkRule)$/, readBy: function (text) { return findNear(text, "wizardTrunkSwitch"); },
                 reason: "The trunking switch reads its title as its name and the rule under it as its description."},
+            {file: "ScanListScreen.qml", name: "skipSilentHelp", readBy: function (text) { return findNear(text, "scanSkipSilent"); },
+                reason: "The Skip silent channels checkbox reads the help under it as its description."},
             {file: "EncTag.qml", name: "tag", readBy: otherSlotIdentity,
                 reason: "Beside the other slot's call, whose identity line reads its tags."},
             {file: "EmergencyTag.qml", name: "tag", readBy: otherSlotIdentity,

@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -1335,6 +1336,71 @@ test_replay_last_read_leaves_stream_open(void) {
     rc |= expect_int_eq("last read: stream inactive at the end", rtl_stream_is_active(), 0);
 
     stop_and_destroy_stream(ctx);
+    return rc;
+}
+
+/* Issue #834: the decoder's hunt reads ask a live read for its idle bound (DSD_RTL_READ_WANT_IDLE_BOUND), which ends a
+ * scan's pass on a stream that delivers nothing. An I/Q replay's reads never take it: the replay is paced by the
+ * decoder's demand, so a block that is slow to come is no silent stream, and a replay never ends a scan's pass on its
+ * own. Here the demod holds the first block 250 ms before publishing it, the output ring empty, while the decoder waits
+ * in a read that asked for the bound: the read waits for the block, and every read to the end returns samples or the
+ * end, never DSD_RTL_READ_IDLE. */
+static std::atomic<int> g_slow_first_block{0};
+
+static void
+slow_first_block_stage(int stage, size_t count, void* ctx) {
+    (void)count;
+    (void)ctx;
+    if (stage == RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_OUTPUT_WRITE && g_slow_first_block.exchange(0) == 1) {
+        dsd_sleep_ms(250U);
+    }
+}
+
+static int
+test_replay_reads_never_come_back_idle(void) {
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1, 262144U)
+        != 0) {
+        return 1;
+    }
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    g_slow_first_block.store(1);
+    rtl_stream_test_set_replay_stage_hook(slow_first_block_stage, NULL);
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        stop_and_destroy_stream(ctx);
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        return 1;
+    }
+    std::vector<float> audio(2048U);
+    int got = 0;
+    const uint64_t first_start_ms = dsd_realtime_mono_ms();
+    const int first_rc = rtl_stream_read_ex2(ctx, audio.data(), NULL, audio.size(), &got, DSD_RTL_READ_WANT_IDLE_BOUND);
+    const uint64_t first_waited_ms = dsd_realtime_mono_ms() - first_start_ms;
+    int rc = expect_int_eq("idle-bound replay: the first read waits for the slow block", first_rc, 0);
+    rc |= expect_true("idle-bound replay: the first read takes samples", got > 0);
+    rc |=
+        expect_true("idle-bound replay: the first read waited out the slow block (>= 200 ms)", first_waited_ms >= 200U);
+    int idle_reads = 0;
+    int end_rc = 0;
+    const uint64_t start_ms = dsd_realtime_mono_ms();
+    while (dsd_realtime_mono_ms() - start_ms < 10000U) {
+        got = 0;
+        const int read_rc =
+            rtl_stream_read_ex2(ctx, audio.data(), NULL, audio.size(), &got, DSD_RTL_READ_WANT_IDLE_BOUND);
+        if (read_rc == DSD_RTL_READ_IDLE) {
+            idle_reads++;
+            continue;
+        }
+        if (read_rc != 0) {
+            end_rc = read_rc;
+            break;
+        }
+    }
+    rc |= expect_int_eq("idle-bound replay: no read comes back idle", idle_reads, 0);
+    rc |= expect_int_eq("idle-bound replay: the stream ends as a replay does", end_rc, -1);
+    stop_and_destroy_stream(ctx);
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
     return rc;
 }
 
@@ -4062,6 +4128,7 @@ main(void) {
     rc |= test_replay_eof_partial_block_drains_before_exit();
     rc |= test_replay_output_tail_available_after_demod_drain();
     rc |= test_replay_last_read_leaves_stream_open();
+    rc |= test_replay_reads_never_come_back_idle();
     rc |= test_eventful_replay_applies_scheduled_events();
     rc |= test_eventful_replay_preserves_ppm_reset_reason();
     rc |= test_eventful_replay_maps_stream_gap_reset_reason(RTL_STREAM_GAP_REASON_USB_RECOVERY);

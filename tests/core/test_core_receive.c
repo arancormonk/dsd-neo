@@ -45,6 +45,7 @@
 #include "analog_call_test_support.h"
 #include "analog_preroll.h"
 #include "analog_rx_internal.h"
+#include "scan_owner.h"
 #include "test_support.h"
 #include "wav_segment_test_support.h"
 
@@ -4571,6 +4572,48 @@ test_analog_recordings_export_by_mode(void) {
     }
 }
 
+/* Issue #834: a monitor block whose tap reads found the carrier itself moves the scan owner's sync sequence while
+   skip-silent is on, so a scan quiet check requested before the carrier opened sees activity. So does a carrier the
+   tone gate has not passed (a tone check pending: found but not qualified), which a carrier that ends before its tone
+   is judged would otherwise leave uncounted. A block with no carrier does not, nor does any block with the setting
+   off. */
+static void
+test_analog_carrier_moves_the_quiet_sync_sequence(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
+    assert(owner);
+    static float block[64];
+    dsd_analog_call_block call = {.samples = block, .count = 64, .sample_rate = 48000, .input = DSD_ANALOG_CALL_BREAK};
+    for (int on = 0; on <= 1; on++) {
+        opts->scan_skip_silent = on;
+        const uint64_t before = owner->sync_seq;
+        call.qualified_carrier = 0;
+        call.found_carrier = 0;
+        dsd_engine_analog_call_block(opts, state, &call);
+        assert(owner->sync_seq == before);
+        call.qualified_carrier = 1;
+        call.found_carrier = 1;
+        dsd_engine_analog_call_block(opts, state, &call);
+        assert(owner->sync_seq == before + (on ? 1U : 0U));
+        call.input = DSD_ANALOG_CALL_PENDING;
+        call.qualified_carrier = 0;
+        call.eligible_from = call.count;
+        dsd_engine_analog_call_block(opts, state, &call);
+        if (owner->sync_seq != before + (on ? 2U : 0U)) {
+            DSD_FPRINTF(stderr, "FAIL #834: a carrier under a pending tone check, setting %d: sync_seq moved %llu\n",
+                        on, (unsigned long long)(owner->sync_seq - before));
+        }
+        assert(owner->sync_seq == before + (on ? 2U : 0U));
+        call.input = DSD_ANALOG_CALL_BREAK;
+        call.eligible_from = 0U;
+    }
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -4628,6 +4671,7 @@ main(void) {
     test_analog_recordings_export_by_mode();
     test_analog_hold();
     test_analog_preroll();
+    test_analog_carrier_moves_the_quiet_sync_sequence();
     free(history);
     free(state);
     free(opts);

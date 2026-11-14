@@ -93,6 +93,7 @@ const char* lbl_hangtime(const void* v, char* b, size_t n);
 const char* lbl_scan_voice_only(const void* v, char* b, size_t n);
 const char* lbl_scan_voice_qualify(const void* v, char* b, size_t n);
 const char* lbl_scan_voice_hold(const void* v, char* b, size_t n);
+const char* lbl_scan_skip_silent(const void* v, char* b, size_t n);
 const char* lbl_rev_mute(const void* v, char* b, size_t n);
 const char* lbl_pref_cc(const void* v, char* b, size_t n);
 const char* lbl_rigctl(const void* vctx, char* b, size_t n);

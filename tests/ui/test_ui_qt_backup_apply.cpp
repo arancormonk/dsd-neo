@@ -409,8 +409,11 @@ add_systems_and_lists(Backup& b) {
     dsd_qt::ScanListsModel scans;
     const QVariantList entries{QVariantMap{{"kind", "system"}, {"systemUid", systemUid}},
                                QVariantMap{{"kind", "freq"}, {"freqMhz", "462.5625"}, {"protocol", "nfm"}}};
-    expect("add scan list",
-           scans.add({{"name", "Patrol"}, {"groupCsvPath", b.groups}, {"srcCsvPath", b.src}, {"entries", entries}}));
+    expect("add scan list", scans.add({{"name", "Patrol"},
+                                       {"groupCsvPath", b.groups},
+                                       {"srcCsvPath", b.src},
+                                       {"skipSilent", true},
+                                       {"entries", entries}}));
     // A file in a subdirectory of imports/ that only a path field names.
     b.extra = at("imports/extra/notes.csv");
     expect("write a talkgroup list in a subdirectory", write_file(b.extra, "TG,Mode,Name\n7,A,Extra\n"));
@@ -1242,6 +1245,7 @@ check_applied_content(const Backup& b, const Old& old) {
     const QJsonObject patrol = dsd_qt::json_store_load_array("scan_lists.json").at(0).toObject();
     expect("scan list references follow too",
            patrol.value("groupCsvPath") == old.groupsDest && patrol.value("srcCsvPath") == old.srcDest);
+    expect("a scan list's skip-silent switch is restored", patrol.value("skipSilent") == QJsonValue(true));
     expect("pending restore removed", !QFileInfo::exists(pending()));
 }
 

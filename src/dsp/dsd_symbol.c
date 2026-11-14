@@ -344,6 +344,8 @@ typedef struct {
     /* Whether this symbol's samples are recorded at all: for the timing trace or for the anchor. One test a sample,
        the one the trace alone used to cost. */
     int recording;
+    /* The anchor records a word the hunt reads (dsd_symbol_arm_hunt_sync_anchor()): no crossing slip this symbol. */
+    int anchor_holds_grid;
 } symbol_work_ctx;
 
 #ifdef USE_RADIO
@@ -403,12 +405,13 @@ symbol_timing_debug_char(const dsd_state* state, int timing_level, char c) {
     }
 }
 
-/* M17 is deliberately absent below. Its own preset says so -- -fz clears use_cosine_filter
- * outright -- but that is a global switch, so under AUTO the flag kept its default and M17
- * frames were the only ones handed a matched filter their preset rejects. The filter also runs
- * from a cold history the moment a sync sets lastsynctype, and its group delay lands on the very
- * payload that sync introduces: it cost the LSF its CRC and the stream its LICH, which is why
- * AUTO could match M17 sync words and never decode a frame behind them (#399). */
+/* M17 gets the receive half of its own root-raised-cosine pulse after an M17 sync, as every other
+ * mode gets its filter. It was taken out once (#399): -fz switched the filters off, AUTO left this
+ * one on, and a filter switching on from a cold history put its group delay on the very payload
+ * the sync introduced, which cost the LSF its CRC and the stream its LICH. The seam below now
+ * primes a filter with the history it missed and pays off that delay at every switch (#444), and
+ * without its matched filter an ideal M17 signal needed about 6 dB more S/N than DMR or P25
+ * Phase 1 (#834). */
 static inline dsd_sps_filter_kind
 symbol_matched_filter_kind(const dsd_opts* opts, const dsd_state* state, int rtl_symbol_rate_output,
                            int cqpsk_symbol_rate) {
@@ -417,10 +420,14 @@ symbol_matched_filter_kind(const dsd_opts* opts, const dsd_state* state, int rtl
     }
     if (DSD_SYNC_IS_DMR_BS(state->lastsynctype) || DSD_SYNC_IS_DMR_MS(state->lastsynctype)
         || DSD_SYNC_IS_YSF(state->lastsynctype)) {
+        /* DMR and YSF both send root-raised-cosine pulses of roll-off 0.2 at 4800 symbol/s. */
         return DSD_SPS_FILTER_DMR;
     }
     if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
         return DSD_SPS_FILTER_P25;
+    }
+    if (DSD_SYNC_IS_M17(state->lastsynctype)) {
+        return DSD_SPS_FILTER_M17;
     }
     if (DSD_SYNC_IS_DPMR(state->lastsynctype)) {
         if (opts->frame_dpmr == 1) {
@@ -429,6 +436,7 @@ symbol_matched_filter_kind(const dsd_opts* opts, const dsd_state* state, int rtl
         return DSD_SPS_FILTER_NONE;
     }
     if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
+        /* NXDN48 and NXDN96 share one receive pulse in symbols (NXDN TS 1-A 3.5), so one kind at either rate. */
         const dsd_nxdn_variant variant = dsd_frame_sync_active_nxdn_variant(opts, state);
         if (variant == DSD_NXDN_VARIANT_48) {
             return DSD_SPS_FILTER_NXDN;
@@ -439,7 +447,7 @@ symbol_matched_filter_kind(const dsd_opts* opts, const dsd_state* state, int rtl
         if (state->samplesPerSymbol == 8) {
             return DSD_SPS_FILTER_NONE;
         }
-        return DSD_SPS_FILTER_DMR;
+        return DSD_SPS_FILTER_NXDN;
     }
     return DSD_SPS_FILTER_NONE;
 }
@@ -492,6 +500,27 @@ seam_prime(const dsd_matched_filter_seam* seam, dsd_sps_filter_kind kind, int sp
     for (int back = skip + n; back > skip; back--) {
         dsd_sps_filter_prime(kind, seam_raw_at(seam, back), sps);
     }
+}
+
+/*
+ * The samples M17's switch-on moves the grid by, on top of the delay it owes. The grid's phase is the hunt's, set by
+ * zero crossings on the unfiltered stream; on M17's preamble, whose crossings fall on a sample when the clocks line
+ * up, the loop's dead band leaves the sampling instant up to two samples off the symbols' centres. The raw stream reads
+ * through that, the matched filter's narrower eye does not: two samples off it closes, and the LSF behind the
+ * switch lost its CRC on clean signal. The preamble's last symbols and the sync word were recorded for this
+ * (frame_sync_try_m17_lsf_or_bert()), and are measured here, before the switch discards them; the seam then takes the
+ * move with the samples it owes, so the first symbol behind the sync word is read at the corrected phase (issue #834).
+ * The hunt need not have run unfiltered: under AUTO the preamble passes NXDN96's sync and runs behind DMR's filter. A
+ * filter switch discards the recording, so what is measured was all read through one filter, a symmetric one, whose
+ * crossings sit where the signal's do, and the seam keeps the content position across the switch. The move adds to
+ * the change in delay, so a negative one hands samples back even where the delays match (DMR's filter and M17's).
+ */
+static int
+seam_switch_on_move(const dsd_state* state, dsd_sps_filter_kind kind) {
+    if (kind != DSD_SPS_FILTER_M17) {
+        return 0;
+    }
+    return dsd_symbol_anchor_take_switch_offset(state);
 }
 
 void
@@ -905,6 +934,9 @@ enum {
     /* The cache is empty and the refill's live read gave way to a queued command while the device has no stream
        (issue #518 D4, DSD_RTL_READ_YIELD): no failure (symbol_rtl_read_yielded()). */
     RTL_SYMBOL_CACHE_YIELD = 5,
+    /* The cache is empty and the refill's live read, a hunt's, found nothing for its bound (issue #834,
+       DSD_RTL_READ_IDLE): no failure (symbol_rtl_read_idle_leaves()). */
+    RTL_SYMBOL_CACHE_IDLE = 6,
 };
 
 static inline int
@@ -1230,15 +1262,35 @@ rtl_symbol_cache_fill_replay_batch(dsd_state* state, int got, const dsd_rtl_stre
     return rtl_symbol_cache_pop(state, batch->generation, sample_out);
 }
 
+/* What an empty refill read (@p read_rc) reports: a yield, a hunt read's idle bound, else nothing read. */
+static inline int
+rtl_symbol_cache_empty_status(int read_rc) {
+    if (read_rc == DSD_RTL_READ_YIELD) {
+        return RTL_SYMBOL_CACHE_YIELD;
+    }
+    return read_rc == DSD_RTL_READ_IDLE ? RTL_SYMBOL_CACHE_IDLE : RTL_SYMBOL_CACHE_EMPTY;
+}
+
+/* The refill's read. A hunt's (@p wants DSD_RTL_READ_WANT_IDLE_BOUND, issue #834) may come back DSD_RTL_READ_IDLE;
+   any other reads as it always has. */
+static inline int
+rtl_symbol_cache_read(dsd_state* state, int wants, int* got) {
+    if (wants != 0) {
+        return dsd_rtl_stream_io_hook_read_ex2(state, state->rtl_symbol_cache, NULL, DSD_RTL_SYMBOL_CACHE_CAP, got,
+                                               wants);
+    }
+    return dsd_rtl_stream_io_hook_read(state, state->rtl_symbol_cache, DSD_RTL_SYMBOL_CACHE_CAP, got);
+}
+
 static int
 rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, int symbol_rate_hz, int levels,
-                        uint32_t* generation, uint32_t expected_generation, float* sample_out) {
+                        uint32_t* generation, uint32_t expected_generation, float* sample_out, int wants) {
     int got = 0;
     uint32_t read_generation = generation ? *generation : expected_generation;
-    const int read_rc = dsd_rtl_stream_io_hook_read(state, state->rtl_symbol_cache, DSD_RTL_SYMBOL_CACHE_CAP, &got);
+    const int read_rc = rtl_symbol_cache_read(state, wants, &got);
     if (read_rc < 0 || got <= 0) {
         rtl_symbol_cache_reset_pending(state);
-        return read_rc == DSD_RTL_READ_YIELD ? RTL_SYMBOL_CACHE_YIELD : RTL_SYMBOL_CACHE_EMPTY;
+        return rtl_symbol_cache_empty_status(read_rc);
     }
     if (got > DSD_RTL_SYMBOL_CACHE_CAP) {
         got = DSD_RTL_SYMBOL_CACHE_CAP;
@@ -1276,9 +1328,10 @@ rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, 
     return rtl_symbol_cache_pop(state, read_generation, sample_out);
 }
 
+/* @p wants: what a refill's live read asks for (DSD_RTL_READ_WANT_IDLE_BOUND for a hunt read, issue #834; else 0). */
 static int
 rtl_symbol_cache_take(dsd_state* state, int output_kind, int channel_profile, int symbol_rate_hz, int levels,
-                      uint32_t* generation, float* sample_out) {
+                      uint32_t* generation, float* sample_out, int wants) {
     if (!state || !sample_out) {
         return RTL_SYMBOL_CACHE_EMPTY;
     }
@@ -1296,7 +1349,7 @@ rtl_symbol_cache_take(dsd_state* state, int output_kind, int channel_profile, in
     }
 
     return rtl_symbol_cache_refill(state, output_kind, channel_profile, symbol_rate_hz, levels, generation,
-                                   expected_generation, sample_out);
+                                   expected_generation, sample_out, wants);
 }
 #endif
 
@@ -2031,6 +2084,7 @@ symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned
         .eligible_from = eligible_from,
         .ramp_end = 0U,
         .qualified_carrier = dsd_analog_rx_block_qualified_carrier(opts, state),
+        .found_carrier = dsd_analog_rx_block_found_carrier(state),
         .wall_end_s = wall_end_s,
     };
     if (dsd_squelch_flags_in_force(opts, state)) {
@@ -2231,6 +2285,20 @@ symbol_stop_after_shutdown(float* sample_out) {
 }
 
 enum { SYMBOL_INPUT_WAIT_SLICE_MS = 100 };
+
+/* A hunt read got no input for its bound (issue #834): a silent PCM input for a stream pause, a live RTL read that came
+   back DSD_RTL_READ_IDLE, an idle analog monitor. Under a scan (trunk scan or -Y owns the tuner) the pass ends as a
+   dead-air pass does, with the scan-idle interruption, which does not stand: the hunt returns no sync and the engine
+   loop runs its tick and noCarrier(), which decide what the scan does. Returns 1 when it raised it. Asked only once a
+   read came back empty, so a stream that delivers costs nothing. */
+static int
+symbol_hunt_idle_ends_pass(const dsd_opts* opts, dsd_state* state) {
+    if (!dsd_frame_sync_hook_scan_owns_hunt(opts, state)) {
+        return 0;
+    }
+    dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SCAN_IDLE);
+    return 1;
+}
 
 /* The file or TCP input ended, and the session goes on with the Pulse input (issue #634). That switch replaces the input
    under the decoder, so it is the engine's to make between frames, under the tick guard (dsd_engine_input_fallback()):
@@ -2545,6 +2613,57 @@ symbol_rtl_read_yielded(dsd_state* state) {
     state->symbol_replay_symbol_unusable = 1;
 }
 
+/* A hunt read the live stream bounded (DSD_RTL_READ_IDLE, issue #834): the stream delivered nothing for 100 ms, though
+   it still runs. A queued command or a frontend publication a P25 watchdog tick put off takes the decoder back, with no
+   reason of its own, as a silent PCM read gives way to one: the engine loop applies it and the next pass hunts on.
+   Under a scan the pass ends (symbol_hunt_idle_ends_pass()). Else nothing waits on the decoder, and the read reads
+   again. Returns 1 when the read leaves. Nothing of the stream is lost either way: the read found no samples. */
+static int
+symbol_rtl_read_idle_leaves(const dsd_opts* opts, dsd_state* state) {
+    if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()) {
+        state->input_interrupted = 1;
+        return 1;
+    }
+    return symbol_hunt_idle_ends_pass(opts, state);
+}
+
+/* An idle analog monitor's empty read (success, 0 samples): it leaves the read without a reason of its own, so the
+   engine loop can expire a stalled call, and, in a hunt under a scan, ends the pass as any idle hunt read does (issue
+   #834), so the engine loop also runs noCarrier() for the scan. */
+static inline void
+symbol_rtl_monitor_idle(const dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work) {
+    if (!work->hunting || !symbol_hunt_idle_ends_pass(opts, state)) {
+        state->input_interrupted = 1;
+    }
+}
+
+/* What the decoder's live reads ask for: the idle bound for a hunt read (issue #834), nothing for a frame read, which
+   waits for its samples. */
+static inline int
+symbol_rtl_read_wants(const symbol_work_ctx* work) {
+    return work->hunting ? DSD_RTL_READ_WANT_IDLE_BOUND : 0;
+}
+
+/* One live read of one sample for the one-sample reader, with the stream generation before it in @p read_generation.
+   A hunt read that the stream bounded reads again unless it leaves (symbol_rtl_read_idle_leaves()). Returns the read's
+   result: DSD_RTL_READ_IDLE only when the read left. */
+static int
+symbol_rtl_read_sample(const dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work,
+                       uint32_t* read_generation, int* got) {
+    for (;;) {
+        *read_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+        *got = 0;
+        if (!work->hunting) {
+            return dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, got);
+        }
+        const int read_rc = dsd_rtl_stream_io_hook_read_ex2(state, sample_out, &work->sample_flag, 1, got,
+                                                            DSD_RTL_READ_WANT_IDLE_BOUND);
+        if (read_rc != DSD_RTL_READ_IDLE || symbol_rtl_read_idle_leaves(opts, state)) {
+            return read_rc;
+        }
+    }
+}
+
 /* The samples a read returned come after a gap in the stream (issue #518 D5: a USB recovery, an rtl_tcp reconnect, or
    one an I/Q replay's capture recorded), whose discontinuity count is @p gap_seq. The decoder takes the count up and
    raises the stream-gap interruption, which stands for every symbol read until the engine loop consumes it and resets
@@ -2601,15 +2720,18 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
         }
     }
     /* The generation before the read: a live sample past a gap is held only while it has not moved since. */
-    const uint32_t read_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+    uint32_t read_generation = 0U;
     int got = 0;
-    const int read_rc = dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, &got);
+    const int read_rc = symbol_rtl_read_sample(opts, state, sample_out, work, &read_generation, &got);
     if (read_rc == DSD_RTL_READ_YIELD) {
         symbol_rtl_read_yielded(state);
         return 0;
     }
+    if (read_rc == DSD_RTL_READ_IDLE) {
+        return 0;
+    }
     if (read_rc == 0 && got == 0 && dsd_analog_monitor_tap_active(opts)) {
-        state->input_interrupted = 1;
+        symbol_rtl_monitor_idle(opts, state, work);
         return 0;
     }
     if (read_rc < 0 || got != 1) {
@@ -2635,11 +2757,17 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
 static inline int
 symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work) {
     for (;;) {
-        int cache_status =
-            rtl_symbol_cache_take(state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz,
-                                  work->rtl_symbol_levels, &work->rtl_stream_generation, sample_out);
+        int cache_status = rtl_symbol_cache_take(state, work->rtl_output_kind, work->rtl_channel_profile,
+                                                 work->rtl_symbol_rate_hz, work->rtl_symbol_levels,
+                                                 &work->rtl_stream_generation, sample_out, symbol_rtl_read_wants(work));
         if (cache_status == RTL_SYMBOL_CACHE_READY) {
             return 1;
+        }
+        if (cache_status == RTL_SYMBOL_CACHE_IDLE) {
+            if (symbol_rtl_read_idle_leaves(opts, state)) {
+                return 0;
+            }
+            continue;
         }
         if (cache_status == RTL_SYMBOL_CACHE_GAP) {
             symbol_rtl_stream_gap(state, state->rtl_symbol_cache_boundary_seq);
@@ -2870,12 +2998,14 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out, cons
    bounded read (@p read_wait) in slices of SYMBOL_INPUT_WAIT_SLICE_MS. A frame-sync hunt read leaves the wait for a
    queued command (issue #634), for decoder-thread timers that are due (a startup control-channel hunt or DMR recovery,
    issue #703; an analog call past its stale deadline, or one a reset ended, issue #667), or for a frontend publication
-   a P25 watchdog tick put off (dsd_runtime_publish_pending()), but only once the input has been silent for a stream
-   pause, as long as the analog receiver takes for a boundary (DSD_ANALOG_STREAM_PAUSE_MIN_MS): the partial symbol and
-   sync history it gives up then belong to a paused stream, and a shorter gap never costs a sync. The silence is counted
-   from the first wait that came back empty, with nothing credited for that wait, which may have ended early. Frame
-   decoding waits on for its samples. Shutdown ends the wait. Returns 1 with a sample, 0 when the input stopped, and -1
-   when the read left with none (for a command: state->input_interrupted). */
+   a P25 watchdog tick put off (dsd_runtime_publish_pending()), and under a scan for the scan's own service (issue #834,
+   symbol_hunt_idle_ends_pass()), but only once the input has been silent for a stream pause, as long as the analog
+   receiver takes for a boundary (DSD_ANALOG_STREAM_PAUSE_MIN_MS): the partial symbol and sync history it gives up then
+   belong to a paused stream, and a shorter gap never costs a sync. The silence is counted from the first wait that came
+   back empty, with nothing credited for that wait, which may have ended early. Frame decoding waits on for its samples.
+   Shutdown ends the wait. Returns 1 with a sample, 0 when the input stopped, and -1 when the read left with none
+   (state->input_interrupted: no reason of its own for a command, a publication or a timer, DSD_INTERRUPT_SCAN_IDLE for
+   a scan). */
 static int
 symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work, int16_t* out,
                        symbol_pcm_read_wait_fn read_wait) {
@@ -2898,10 +3028,15 @@ symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* 
             silent_since_ms = now_ms;
             continue;
         }
-        if (now_ms - silent_since_ms >= DSD_ANALOG_STREAM_PAUSE_MIN_MS
-            && (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()
-                || dsd_frame_sync_hook_decoder_ticks_due(opts, state))) {
+        if (now_ms - silent_since_ms < DSD_ANALOG_STREAM_PAUSE_MIN_MS) {
+            continue;
+        }
+        if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()
+            || dsd_frame_sync_hook_decoder_ticks_due(opts, state)) {
             state->input_interrupted = 1;
+            return -1;
+        }
+        if (symbol_hunt_idle_ends_pass(opts, state)) {
             return -1;
         }
     }
@@ -3022,11 +3157,17 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
 
     for (;;) {
         apply_rtl_symbol_thresholds(state, work->rtl_symbol_levels);
-        int cache_status =
-            rtl_symbol_cache_take(state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz,
-                                  work->rtl_symbol_levels, &work->rtl_stream_generation, &work->sample);
+        int cache_status = rtl_symbol_cache_take(
+            state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz, work->rtl_symbol_levels,
+            &work->rtl_stream_generation, &work->sample, symbol_rtl_read_wants(work));
         if (cache_status == RTL_SYMBOL_CACHE_READY) {
             break;
+        }
+        if (cache_status == RTL_SYMBOL_CACHE_IDLE) {
+            if (symbol_rtl_read_idle_leaves(opts, state)) {
+                return -1;
+            }
+            continue;
         }
         if (cache_status == RTL_SYMBOL_CACHE_GAP) {
             symbol_rtl_stream_gap(state, state->rtl_symbol_cache_boundary_seq);
@@ -3254,7 +3395,7 @@ symbol_take_sample_into_history(dsd_opts* opts, dsd_state* state, symbol_work_ct
  * The stream the grid samples changes identity when a sync names a protocol: up
  * to that point the grid reads the raw discriminator, afterwards the matched
  * filter's output, which describes the signal one group delay in the past. Left
- * alone that makes the decoder re-read content it has already consumed -- 3.35
+ * alone that makes the decoder re-read content it has already consumed -- four
  * symbols for NXDN48 at 20 samples per symbol, 4.5 for P25p1, and for P25p1 half
  * a symbol of phase on top -- at every accept, which noCarrier makes roughly
  * once per frame rather than once per call (issue #444). Switching back is the
@@ -3269,7 +3410,8 @@ symbol_take_sample_into_history(dsd_opts* opts, dsd_state* state, symbol_work_ct
  * already read) or handed back (a shorter delay, or none: re-read that many
  * samples from the history through the new filter before live input resumes).
  * Only the change in delay is owed, so between two filters, which is what AUTO
- * does when the sync it accepts changes protocol, it is their difference. A
+ * does when the sync it accepts changes protocol, it is their difference; M17's
+ * switch-on adds the move its sync word asks for (seam_switch_on_move()). A
  * samples-per-symbol change is the same discontinuity by another route, because
  * the redesign clears the filter's history.
  */
@@ -3304,8 +3446,10 @@ symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, int have_sync,
        them differently, and a rewind the history cannot cover skips content. A fractional rate alternating
        samplesPerSymbol, and the group delay with it, moves nothing, and keeps the anchor's history. */
     int anchor_stale = (int)kind != previous_kind;
-    if (delay < previous_delay) {
-        int rewind = previous_delay - delay;
+    /* Positive: samples to consume; negative: samples to hand back. */
+    const int owed = delay - previous_delay + seam_switch_on_move(state, kind);
+    if (owed < 0) {
+        int rewind = -owed;
         const int held_before_in_hand = seam->raw_count - newer_than_in_hand - 1;
         if (rewind > held_before_in_hand) {
             rewind = held_before_in_hand > 0 ? held_before_in_hand : 0;
@@ -3320,7 +3464,7 @@ symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, int have_sync,
         }
     } else {
         seam_prime(seam, kind, sps, newer_than_in_hand + 1, delay);
-        for (int owed = delay - previous_delay; owed > 0; owed--) {
+        for (int n = owed; n > 0; n--) {
             (void)dsd_sps_filter_apply(kind, work->sample, sps);
             if (!work->sample_replayed) {
                 symbol_process_analog_capture(opts, state, work, have_sync);
@@ -3362,6 +3506,7 @@ symbol_anchor_begin(dsd_state* state, symbol_work_ctx* work) {
             state->jitter = -1;
         }
         work->anchor = dsd_symbol_anchor_recording(anchor) ? anchor : NULL;
+        work->anchor_holds_grid = dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype);
         if (!dsd_symbol_anchor_hot(anchor)) {
             state->symbol_anchor_hot = 0U;
         }
@@ -3405,7 +3550,7 @@ static int
 symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, symbol_work_ctx* work) {
     int i = symbol_anchor_begin(state, work);
     while (i < work->symbol_span) {
-        symbol_adjust_timing_index(state, have_sync, work->symbol_span, &i);
+        symbol_adjust_timing_index(state, have_sync || work->anchor_holds_grid, work->symbol_span, &i);
         if (!symbol_take_sample_into_history(opts, state, work)) {
             return 0;
         }
@@ -3526,11 +3671,13 @@ symbol_commit_symbol(dsd_opts* opts, dsd_state* state, int have_sync, const symb
 /* Whether an interruption a read recorded stands for every symbol until the engine loop consumes it: a stream gap
    (symbol_rtl_stream_gap()) or a yield (symbol_rtl_read_yielded()) always, one a search visit made
    (symbol_rtl_read_failed()) while the search runs, since that read counted no symbol and the count may sit off the
-   throttle for the rest of the frame. */
+   throttle for the rest of the frame. A scan's idle hunt read (DSD_INTERRUPT_SCAN_IDLE, issue #834) cut no frame and
+   never stands. */
 static inline int
 symbol_interruption_stands(const dsd_state* state) {
     return state->input_interrupted
-           && (state->input_interrupt_reason >= DSD_INTERRUPT_YIELD || dsd_signal_search_is_running(state));
+           && (state->input_interrupt_reason == DSD_INTERRUPT_YIELD
+               || state->input_interrupt_reason == DSD_INTERRUPT_STREAM_GAP || dsd_signal_search_is_running(state));
 }
 
 /* Whether a search visit takes the decoder back from a long protocol reader. The yield check runs every 64 symbols. */

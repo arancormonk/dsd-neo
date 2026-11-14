@@ -66,6 +66,16 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
         state->m17_bert_errors = 0;
         state->m17_bert_resyncs = 0;
         state->lastsynctype = DSD_SYNC_NONE;
+        /* The marker is seven outer symbols of one sign to one of the other, and the levels its sync window and its
+         * 184 marker symbols leave behind are skewed with it: the centre sat near half the outer level. The hunt for
+         * the next transmission slices and times its preamble against that centre, and with it the timing loop's
+         * crossings fell off the zero crossings, the preamble read at the wrong phase and the next LSF was missed or
+         * failed its CRC on clean signal. The transmission has ended: put the centre and the extremes back where a lost
+         * carrier leaves them (the values noCarrier() sets; nothing else of its reset is done here), and the next
+         * preamble sets its own (issue #834). */
+        state->max = 15000.0f;
+        state->min = -15000.0f;
+        state->center = 0.0f;
         /* An EOT can only be reached from an LSF, STR, PKT or BRT sync, so it inherits whatever
          * that chain proved: a transmission that cleared a CRC really did end here, and one that
          * never proved anything ends a chain of false syncs. Report the transmission's own

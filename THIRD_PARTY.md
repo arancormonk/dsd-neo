@@ -121,6 +121,8 @@ not a finding that every component is cleared for redistribution.
     file with a capture gap added. It carries no recorded material of its own.
   - The M17 fixture derives from `samples/m17_clear_voice_wav.wav` in [lwvmobile/m17-fme](https://github.com/lwvmobile/m17-fme),
     whose project license is GPL; recording-specific permission still needs confirmation.
+  - The `m17_lsf_offair` fixture is cut from the same m17-fme recording (7.5 s on, 1.5 s) the same way as the `m17`
+    fixture, and carries its terms.
   - The `m17_after_retune` fixture is the `m17` fixture from 1.5263 s on, preceded by a lead-in cut from the seeded
     `noise_floor` fixture and joined byte for byte by `tools/build_iq_fixtures.py`; its recorded portion carries the
     `m17` fixture's terms.

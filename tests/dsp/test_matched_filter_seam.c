@@ -8,7 +8,7 @@
  * protocol, and the matched-filtered one from the accept onward. Those are not
  * the same signal: a symmetric FIR of L taps reports the signal (L-1)/2 samples
  * in the past, so at the moment the filter switches on the decoder starts
- * re-reading content it has already consumed -- 3.35 symbols for NXDN48 at 20
+ * re-reading content it has already consumed -- four symbols for NXDN48 at 20
  * samples per symbol, 4.5 for P25p1, and for P25p1 the leftover is exactly half
  * a symbol of phase as well (issue #444).
  *
@@ -36,12 +36,13 @@ kind_name(dsd_sps_filter_kind kind) {
         case DSD_SPS_FILTER_P25: return "p25";
         case DSD_SPS_FILTER_NXDN: return "nxdn";
         case DSD_SPS_FILTER_DPMR: return "dpmr";
+        case DSD_SPS_FILTER_M17: return "m17";
         default: return "none";
     }
 }
 
 static const dsd_sps_filter_kind kKinds[] = {DSD_SPS_FILTER_DMR, DSD_SPS_FILTER_P25, DSD_SPS_FILTER_NXDN,
-                                             DSD_SPS_FILTER_DPMR};
+                                             DSD_SPS_FILTER_DPMR, DSD_SPS_FILTER_M17};
 static const int kSps[] = {20, 10, 8, 5, 4, 3, 2};
 
 /* A deterministic, non-repeating stimulus: every position is distinguishable,

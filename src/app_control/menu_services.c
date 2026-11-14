@@ -1185,6 +1185,14 @@ svc_set_scan_voice_only(dsd_opts* opts, int on) {
 }
 
 void
+svc_set_scan_skip_silent(dsd_opts* opts, int on) {
+    if (!opts) {
+        return;
+    }
+    opts->scan_skip_silent = on ? 1 : 0;
+}
+
+void
 svc_set_scan_voice_qualify_ms(dsd_opts* opts, int ms) {
     if (!opts) {
         return;

@@ -445,7 +445,9 @@ session_args_scan_extra_safe(const QString& tokens) {
                                "--p25-bandplan",
                                "--iq-replay",
                                "--scan-voice-only",
-                               "--no-scan-voice-only"};
+                               "--no-scan-voice-only",
+                               "--scan-skip-silent",
+                               "--no-scan-skip-silent"};
     return std::none_of(parts.cbegin(), parts.cend(), [&prefixes](const QString& token) {
         return std::any_of(prefixes.cbegin(), prefixes.cend(),
                            [&token](const QString& prefix) { return token.startsWith(prefix); });
@@ -538,9 +540,13 @@ appendScanOptions(QStringList& args, const QVariantMap& list, const QStringList&
     if (stored_int_or(list.value("defaultHoldMs"), 0) != 0) {
         args << QStringLiteral("--trunk-scan-activity-hold-ms") << list.value("defaultHoldMs").toString();
     }
-    if (list.value("voiceOnly").toBool()) {
-        args << QStringLiteral("--scan-voice-only");
-    }
+    /* The list's boxes own voice-only and skip-silent (issue #834): off, or a list saved before the setting existed,
+       says so over a config file the extra options may load with --config, which the decoder reads before the command
+       line. */
+    args << (list.value("voiceOnly").toBool() ? QStringLiteral("--scan-voice-only")
+                                              : QStringLiteral("--no-scan-voice-only"));
+    args << (list.value("skipSilent").toBool() ? QStringLiteral("--scan-skip-silent")
+                                               : QStringLiteral("--no-scan-skip-silent"));
     if (prefs.skipEncrypted) {
         args << QStringLiteral("--enc-lockout");
     }
@@ -1076,6 +1082,7 @@ scan_join_settings(const QVariantMap& list, const SessionArgPrefs& prefs) {
          rtl && bias_tee_effective(list.value(QStringLiteral("biasTee"), -1), prefs.biasTee)},
         {QStringLiteral("Different Airspy settings"), scan_join_airspy(list)},
         {QStringLiteral("Different voice-only setting"), list.value(QStringLiteral("voiceOnly")).toBool()},
+        {QStringLiteral("Different skip-silent setting"), list.value(QStringLiteral("skipSilent")).toBool()},
         {QStringLiteral("Different default dwell"),
          scan_join_ms(list, "defaultDwellMs", SessionArgsScanDwellDefaultMs)},
         {QStringLiteral("Different default hold"), scan_join_ms(list, "defaultHoldMs", SessionArgsScanHoldDefaultMs)},

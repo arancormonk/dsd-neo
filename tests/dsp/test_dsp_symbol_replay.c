@@ -63,6 +63,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "m17_rrc_taps.h"
 #include "pcm_tap_synth.h"
 #include "speech_synth.h"
 #include "symbol_test_support.h"
@@ -828,11 +829,33 @@ test_symbol_helper_analog_i16_conversion_contract(void) {
     assert(output[5] == -1);
 }
 
+/* The symbolizer's filter for this sync reads, sample for sample, as @p wrapper's impulse response. */
+static void
+expect_matched_filter_is(const dsd_opts* opts, const dsd_state* state, float (*wrapper)(float, int), const char* what) {
+    enum { kImpulseSamples = 160 };
+
+    static float want[kImpulseSamples];
+    init_rrc_filter_memory();
+    for (int n = 0; n < kImpulseSamples; n++) {
+        want[n] = wrapper(n == 0 ? 1.0f : 0.0f, state->samplesPerSymbol);
+    }
+    init_rrc_filter_memory();
+    for (int n = 0; n < kImpulseSamples; n++) {
+        const float got = dsd_symbol_test_apply_matched_filter(opts, state, n == 0 ? 1.0f : 0.0f, 0, 0);
+        if (fabsf(got - want[n]) > 1e-6f) {
+            DSD_FPRINTF(stderr, "%s: impulse response sample %d is %.6f, want %.6f\n", what, n, (double)got,
+                        (double)want[n]);
+            assert(0);
+        }
+    }
+}
+
+/* NXDN96 and NXDN48 run one receive pulse in symbols (NXDN TS 1-A 3.5), NXDN96's at 4800 symbol/s; dPMR runs the same
+   pulse under its own kind (issue #834: NXDN96 ran DMR's root raised cosine). */
 static void
 test_symbol_matched_filter_uses_active_nxdn_variant(void) {
     static dsd_opts opts;
     static dsd_state state;
-    const float sample = 1.0f;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -842,28 +865,59 @@ test_symbol_matched_filter_uses_active_nxdn_variant(void) {
     state.lastsynctype = DSD_SYNC_NXDN_POS;
     state.samplesPerSymbol = 10;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-
-    init_rrc_filter_memory();
-    const float expected_nxdn96 = dmr_filter(sample, state.samplesPerSymbol);
-    init_rrc_filter_memory();
-    const float actual_nxdn96 = dsd_symbol_test_apply_matched_filter(&opts, &state, sample, 0, 0);
-    assert(fabsf(actual_nxdn96 - expected_nxdn96) < 1e-6f);
+    expect_matched_filter_is(&opts, &state, nxdn_filter, "NXDN96");
 
     state.samplesPerSymbol = 20;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
-    init_rrc_filter_memory();
-    const float expected_nxdn48 = nxdn_filter(sample, state.samplesPerSymbol);
-    init_rrc_filter_memory();
-    const float actual_nxdn48 = dsd_symbol_test_apply_matched_filter(&opts, &state, sample, 0, 0);
-    assert(fabsf(actual_nxdn48 - expected_nxdn48) < 1e-6f);
+    expect_matched_filter_is(&opts, &state, nxdn_filter, "NXDN48");
 
     opts.frame_dpmr = 1;
     state.lastsynctype = DSD_SYNC_DPMR_FS1_POS;
+    expect_matched_filter_is(&opts, &state, dpmr_filter, "dPMR");
+
+    state.samplesPerSymbol = 10;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    expect_matched_filter_is(&opts, &state, dmr_filter, "DMR");
+    state.lastsynctype = DSD_SYNC_YSF_POS;
+    expect_matched_filter_is(&opts, &state, dmr_filter, "YSF");
+}
+
+/* Every M17 sync hands the stream to the receive half of M17's own pulse, the encoder's root-raised-cosine taps at
+   unity DC gain, as each other mode's sync hands it to that mode's filter; the hunt stays unfiltered (issue #834). */
+static void
+test_symbol_matched_filter_runs_m17_rrc_after_an_m17_sync(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const int syncs[] = {DSD_SYNC_M17_LSF_POS, DSD_SYNC_M17_LSF_NEG, DSD_SYNC_M17_STR_POS, DSD_SYNC_M17_STR_NEG,
+                                DSD_SYNC_M17_PKT_POS, DSD_SYNC_M17_PKT_NEG, DSD_SYNC_M17_BRT_POS, DSD_SYNC_M17_BRT_NEG,
+                                DSD_SYNC_M17_PRE_POS, DSD_SYNC_M17_PRE_NEG, DSD_SYNC_M17_EOT_POS, DSD_SYNC_M17_EOT_NEG};
+    double tap_sum = 0.0;
+    for (int n = 0; n < DSD_M17_RRC_48KHZ_TAP_COUNT; n++) {
+        tap_sum += dsd_m17_rrc_48khz_taps[n];
+    }
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.use_cosine_filter = 1;
+    opts.frame_m17 = 1;
+    state.samplesPerSymbol = 10;
+    for (size_t s = 0; s < sizeof(syncs) / sizeof(syncs[0]); s++) {
+        state.lastsynctype = syncs[s];
+        init_rrc_filter_memory();
+        for (int n = 0; n < DSD_M17_RRC_48KHZ_TAP_COUNT; n++) {
+            const float got = dsd_symbol_test_apply_matched_filter(&opts, &state, n == 0 ? 1.0f : 0.0f, 0, 0);
+            const float want = (float)(dsd_m17_rrc_48khz_taps[n] / tap_sum);
+            if (fabsf(got - want) > 1e-6f) {
+                DSD_FPRINTF(stderr, "M17 sync %d: impulse response tap %d is %.6f, want %.6f\n", syncs[s], n,
+                            (double)got, (double)want);
+                assert(0);
+            }
+        }
+    }
+
+    state.lastsynctype = DSD_SYNC_NONE;
     init_rrc_filter_memory();
-    const float expected_dpmr = dpmr_filter(sample, state.samplesPerSymbol);
-    init_rrc_filter_memory();
-    const float actual_dpmr = dsd_symbol_test_apply_matched_filter(&opts, &state, sample, 0, 0);
-    assert(fabsf(actual_dpmr - expected_dpmr) < 1e-6f);
+    assert(fabsf(dsd_symbol_test_apply_matched_filter(&opts, &state, 1.0f, 0, 0) - 1.0f) < 1e-6f);
 }
 
 static void
@@ -2398,6 +2452,7 @@ typedef struct {
     int gate;
     int sample_rate;
     int qualified_carrier;
+    int found_carrier;
     int has_heard;
     float samples[960];
     float heard[960];
@@ -2423,6 +2478,7 @@ capture_call_block(dsd_opts* opts, dsd_state* state, const dsd_analog_call_block
         seen->eligible_from = block->eligible_from;
         seen->ramp_end = block->ramp_end;
         seen->qualified_carrier = block->qualified_carrier;
+        seen->found_carrier = block->found_carrier;
         seen->wall_end_s = block->wall_end_s;
         seen->has_heard = block->heard != NULL;
         const size_t keep = block->count < 960U ? block->count : 960U;
@@ -6431,6 +6487,46 @@ test_qualified_carrier_needs_an_eligible_read_of_the_carrier(void) {
     }
 }
 
+/* found_carrier (issue #834): a read that found the carrier itself marks the block whatever the tone gate made of it,
+   so a carrier heard while the tone check is pending, or one the policy rejects, is activity to a scan quiet check
+   though it never qualifies the block. A block whose reads found no carrier, the hangover after it included, is not
+   marked. */
+static void
+test_found_carrier_under_any_tone_verdict(void) {
+    enum { P = DSD_ANALOG_TONE_GATE_PENDING, A = DSD_ANALOG_TONE_GATE_ALLOWED, R = DSD_ANALOG_TONE_GATE_REJECTED };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static const double loud[B6_READS] = {3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0};
+    static const double silent[B6_READS] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+    static const struct {
+        const char* what;
+        int gates[B6_READS];
+        const double* amps;
+        int qualified;
+        int found;
+    } cases[] = {
+        {"pending throughout, carrier", {P, P, P, P, P, P}, loud, 0, 1},
+        {"rejected throughout, carrier", {R, R, R, R, R, R}, loud, 0, 1},
+        {"allowed throughout, carrier", {A, A, A, A, A, A}, loud, 1, 1},
+        {"pending throughout, no carrier", {P, P, P, P, P, P}, silent, 0, 0},
+    };
+
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        start_b6_case(&opts, &state);
+        (void)push_gated_block(&opts, &state, cases[c].gates[0], 0.0, 0);
+        (void)push_gated_block(&opts, &state, cases[c].gates[0], 0.0, 0);
+        const call_block_seen* seen = push_scripted_block(&opts, &state, cases[c].gates, cases[c].amps, 0);
+        if (seen->qualified_carrier != cases[c].qualified || seen->found_carrier != cases[c].found) {
+            DSD_FPRINTF(stderr, "FAIL #834: found carrier, %s: qualified %d found %d\n", cases[c].what,
+                        seen->qualified_carrier, seen->found_carrier);
+        }
+        assert(seen->qualified_carrier == cases[c].qualified && seen->found_carrier == cases[c].found);
+        finish_b6_case(&opts, &state);
+    }
+}
+
 /* Flags for one 960-sample block: the gate closed over [@p closed_from, @p closed_to) and over [@p closed2_from, 960),
    open elsewhere. */
 static void
@@ -6949,6 +7045,7 @@ main(void) {
     test_symbol_helper_window_sync_and_timing_contracts();
     test_symbol_helper_analog_i16_conversion_contract();
     test_symbol_matched_filter_uses_active_nxdn_variant();
+    test_symbol_matched_filter_runs_m17_rrc_after_an_m17_sync();
     test_symbol_helper_rtl_cache_and_center_contract();
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
     test_carrier_stamp_does_not_need_audio_out();
@@ -7026,6 +7123,7 @@ main(void) {
     test_level_path_ramp_runs_on_into_the_next_block();
     test_call_heard_only_where_a_call_can_be();
     test_qualified_carrier_needs_an_eligible_read_of_the_carrier();
+    test_found_carrier_under_any_tone_verdict();
     test_qualified_carrier_ends_open_or_opens_in_its_read();
     test_qualified_carrier_across_the_reads_of_a_block();
     test_qualified_carrier_across_a_dropped_read();

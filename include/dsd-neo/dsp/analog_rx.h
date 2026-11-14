@@ -387,6 +387,14 @@ unsigned int dsd_analog_rx_block_eligible_from(const dsd_opts* opts, const dsd_s
 int dsd_analog_rx_block_qualified_carrier(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * @brief Whether any read of the monitor block found the carrier itself (issue #834), whatever the tone gate made of
+ * it: the per-read decision dsd_analog_rx_block_qualified_carrier() takes, before any tone verdict, so a carrier heard
+ * while a tone check is pending, or one the tone policy rejects, counts. Activity to a scan quiet check, never audio
+ * or recording eligibility. Read-only.
+ */
+int dsd_analog_rx_block_found_carrier(const dsd_state* state);
+
+/**
  * @brief The published carrier, held to the channel the receiver is on now (issue #526).
  *
  * dsd_state::analog_rx.carrier_open says what the tap heard at its last read, at every input rate: one the tap's front

@@ -29,6 +29,9 @@
 
 #define FUSION_SYNC                    "31111311313113131131"
 #define INV_FUSION_SYNC                "13333133131331313313"
+/* The frame sync D471C9634D as dibits, inner symbols included (0 +1, 1 +3, 2 -1, 3 -3); FUSION_SYNC is its signs. */
+#define FUSION_SYNC_DIBITS             "31101301302112031031"
+#define INV_FUSION_SYNC_DIBITS         "13323123120330213213"
 
 #define INV_P25P1_SYNC                 "333331331133111131311111"
 #define P25P1_SYNC                     "111113113311333313133333"
@@ -63,6 +66,9 @@
 /* Part 1-A CAI 4.4.4 (FSW only - Late Entry - Marginal Signal) */
 #define NXDN_FSW                       "3131331131"
 #define INV_NXDN_FSW                   "1313113313"
+/* The FSW as dibits, inner symbols included (-3 +1 -3 +3 -3 -3 +3 +3 -1 +3, Table 4.4-2); NXDN_FSW is its signs. */
+#define NXDN_FSW_DIBITS                "3031331121"
+#define INV_NXDN_FSW_DIBITS            "1213113303"
 /* Part 1-A CAI 4.4.3 Preamble last 9 plus FSW (start of RDCH) */
 #define NXDN_PANDFSW                   "3131133313131331131" /* 19 symbols */
 #define INV_NXDN_PANDFSW               "1313311131313113313" /* 19 symbols */

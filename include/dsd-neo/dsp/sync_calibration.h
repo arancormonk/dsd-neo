@@ -138,11 +138,10 @@ int dsd_sync_warm_start_enabled(void);
  *
  * Also pre-fills state->minbuf/maxbuf to skip warmup period.
  *
- * This function is protocol-agnostic and works with any outer-only sync:
+ * This function is protocol-agnostic and works with any outer-only sync (NXDN's and YSF's carry inner symbols and
+ * take dsd_sync_warm_start_thresholds_from_dibits()):
  *   - DMR: sync_len = 24
  *   - P25p1: sync_len = 24
- *   - YSF: sync_len = 20
- *   - NXDN: sync_len = 10
  *   - dPMR: sync_len = 12
  *   - M17: sync_len = 8
  *
@@ -153,6 +152,27 @@ int dsd_sync_warm_start_enabled(void);
  */
 dsd_warm_start_result_t dsd_sync_warm_start_thresholds_outer_only(const struct dsd_opts* opts, struct dsd_state* state,
                                                                   int sync_len);
+
+/**
+ * @brief Warm-start slicer thresholds from a sync word whose levels are known, inner symbols included.
+ *
+ * NXDN's FSW and YSF's frame sync carry inner symbols (+1/-1) among their outer ones, so their positive and negative
+ * symbols do not average to the outer levels: taking them as outer-only put the NXDN rails at 2.6 of 3 and shifted
+ * YSF's centre by a quarter of an outer level, which read clean inner symbols as outer. This fits the last
+ * @p sync_len symbols in history to the word's levels by least squares (symbol = centre + gain * level), every symbol
+ * at its own level, and sets the thresholds from the fitted outer levels (centre -/+ 3 * gain) exactly as
+ * dsd_sync_warm_start_thresholds_outer_only() sets them from its means, with the same rolling-buffer prefill. On a
+ * word of outer symbols alone the fit is the two means.
+ *
+ * @param opts        Decoder options (for msize; may be NULL)
+ * @param state       Decoder state to update
+ * @param sync_dibits The word as received, oldest first: '0' +1, '1' +3, '2' -1, '3' -3 (dsd_symbol_level_from_dibit())
+ * @param sync_len    Number of symbols in the word
+ * @return Result code: DEGENERATE as well for a word of one level, a character outside '0'..'3', or a fit whose
+ *         outer levels are less than DSD_WARM_START_MIN_SPAN apart or the wrong way round
+ */
+dsd_warm_start_result_t dsd_sync_warm_start_thresholds_from_dibits(const struct dsd_opts* opts, struct dsd_state* state,
+                                                                   const char* sync_dibits, int sync_len);
 
 /**
  * @brief Warm-start only the DC center estimate from an outer-only sync.

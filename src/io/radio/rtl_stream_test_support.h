@@ -55,9 +55,14 @@ float rtl_device_test_signal_clip_level(const rtl_device_test_conversion* conver
    on bad arguments. */
 int rtl_device_test_widen_cu8(const rtl_device_test_conversion* conversion, int fs4_shift_active,
                               const unsigned char* bytes, size_t len, float* out);
-/* While @p fail is set, the Signal search tap has no detector and cannot allocate one (its next request fails as an
-   allocation failure); clearing it lets the next request allocate again. */
+/* While @p fail is set, the shared tap has no search or quiet detector and cannot allocate one (its next request of
+   either kind fails as an allocation failure); clearing it lets the next request allocate again. */
 void rtl_signal_measure_test_fail_allocation(int fail);
+/* Set the tap's ticket counter, so the next request (search or quiet), cancel or reset takes the ticket after
+   @p ticket (wrapping past the last 30-bit value to 1). */
+void rtl_signal_measure_test_set_ticket(uint32_t ticket);
+/* The realtime clock the tap's feed reads, in ns, in place of dsd_realtime_mono_ns() (NULL: the real one). */
+void rtl_signal_measure_test_set_clock(uint64_t (*now_ns)(void));
 int rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
                                               uint32_t* out_generation_before, uint32_t* out_generation_after);
 int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,
@@ -1318,21 +1323,23 @@ int rtl_stream_test_search_live_read_bound(uint64_t search_owner, const dsd_opts
 
 /* rtl_stream_test_search_live_read_bound()'s read (issue #518 D4) with @p dev as the open device, whose stream (or lack
  * of one, rtl_device_has_stream()) it reads by, for a reader that does (@p want_no_stream) or does not take
- * DSD_RTL_READ_NO_STREAM. After @p event_after_ms the producer calls @p event (when set), then delivers one sample when
+ * DSD_RTL_READ_NO_STREAM, and does (@p want_idle_bound, the decoder's hunt: issue #834) or does not take
+ * DSD_RTL_READ_IDLE. After @p event_after_ms the producer calls @p event (when set), then delivers one sample when
  * @p feed is set. */
 typedef struct {
     struct rtl_device* dev;
     uint64_t search_owner;
     const dsd_opts* live_opts;
     int want_no_stream;
+    int want_idle_bound;
     int event_after_ms;
     void (*event)(void* ctx);
     void* event_ctx;
     int feed;
 } rtl_stream_test_live_read_request;
 
-/* Reports what the read returned (a sample count, -1, 0 for an idle monitor, DSD_RTL_READ_YIELD or
- * DSD_RTL_READ_NO_STREAM) and how long it waited; returns 0 when the read ran. */
+/* Reports what the read returned (a sample count, -1, 0 for an idle monitor, DSD_RTL_READ_YIELD,
+ * DSD_RTL_READ_NO_STREAM or DSD_RTL_READ_IDLE) and how long it waited; returns 0 when the read ran. */
 int rtl_stream_test_live_read(const rtl_stream_test_live_read_request* req, int* out_got, uint64_t* out_waited_ms);
 /* Set or clear a USB device's recovering state (the swap's), which rtl_device_has_stream() reads as no stream. */
 void rtl_device_test_set_recovering(struct rtl_device* dev, int on);

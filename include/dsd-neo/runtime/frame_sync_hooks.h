@@ -70,6 +70,10 @@ typedef struct {
         the receiver's own per-read decision (under a per-sample squelch, open at the read's end or opening inside it),
         never the level of the whole block or the playback gate. */
     int qualified_carrier;
+    /** 1 when some tap read of the block found the carrier itself, whatever the tone gate made of it
+        (dsd_analog_rx_block_found_carrier(), issue #834): activity to a scan quiet check, never audio or recording
+        eligibility, which @c qualified_carrier alone gives. */
+    int found_carrier;
     /** The decode-domain wall time at the block's end (dsd_decode_now_realtime_s()), read before the block's raw WAV
         write; 0 while per-call recording (-P) is off. */
     double wall_end_s;
@@ -88,10 +92,13 @@ typedef struct {
     void (*receive_policy_boundary)(dsd_opts* opts, dsd_state* state, int filters_were_enabled);
     void (*replay_retune)(dsd_opts* opts, dsd_state* state);
     int (*decoder_ticks_due)(const dsd_opts* opts, const dsd_state* state);
+    int (*scan_owns_hunt)(const dsd_opts* opts, const dsd_state* state);
     int (*p25_probe_in_flight)(const dsd_opts* opts, const dsd_state* state);
     int (*signal_search_probe)(const dsd_opts* opts, const dsd_state* state);
     int (*tick_guard_enter)(void);
     void (*tick_guard_leave)(void);
+    void (*scan_quiet_setting_changed)(dsd_state* state, int turned_on);
+    int (*scan_quiet_service)(const dsd_opts* opts, dsd_state* state);
 } dsd_frame_sync_hooks;
 
 /** The engine's conventional NFM lifecycle sees every processed monitor block, even with muted speakers, with what the
@@ -106,6 +113,12 @@ int dsd_frame_sync_hook_signal_search_should_yield(const dsd_opts* opts, dsd_sta
  * under way): a frame-sync hunt read that sits on a silent input leaves it for them after a stream pause, as it does
  * for a queued command (issue #703). 0 when nothing is installed. Call on the decoder thread outside the SM guard. */
 int dsd_frame_sync_hook_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state);
+
+/** Whether a scan owns the hunt (issue #834): trunk scan owns the tuner, or -Y owns it. A hunt read that got no input
+ * for a bounded time (a silent PCM input for a stream pause, a live RTL read that came back DSD_RTL_READ_IDLE, an idle
+ * analog monitor) then ends the pass with DSD_INTERRUPT_SCAN_IDLE, so the engine loop services the scan. Asked only
+ * after such a read, never while samples flow. 0 when nothing is installed. Decoder thread. */
+int dsd_frame_sync_hook_scan_owns_hunt(const dsd_opts* opts, const dsd_state* state);
 
 /** Whether a P25-driven control-channel probe is in flight: trunking on, the P25 state machine hunting (the startup
  * hunt, or recovery under a P25 owner) and no other protocol owning the control channel. While one is, the frame-sync
@@ -128,6 +141,24 @@ int dsd_frame_sync_hook_signal_search_probe(const dsd_opts* opts, const dsd_stat
 int dsd_frame_sync_hook_tick_guard_enter(void);
 /** Leave the guard dsd_frame_sync_hook_tick_guard_enter() took (@p taken). */
 void dsd_frame_sync_hook_tick_guard_leave(int taken);
+
+/**
+ * The session-wide scan skip-silent setting (dsd_opts::scan_skip_silent, #834) was written. The app-control handler
+ * calls it on the decoder thread after storing the value; the engine drops the quiet checks it already made. With
+ * @p turned_on (off before, on now) no visit tuned before gets a check: the setting applies from the next tune. This
+ * table lives for the whole engine run, not a trunk-scan coordinator's, so it serves -Y too. A no-op when nothing is
+ * installed (headless runs, tests).
+ */
+void dsd_scan_quiet_setting_changed(dsd_state* state, int turned_on);
+
+/**
+ * The scan quiet check's in-hunt service (issue #834), asked at the frame-sync hunt's 300-symbol point beside the
+ * trunk-scan dwell: the engine starts, collects and expires the landed channel's measurement here, on the decoder
+ * thread, and answers 1 only when a quiet result it may skip on is ready. The hunt then hands back as at a pass end,
+ * keeping its history, and the engine loop's tick decides. With the skip-silent setting off it is one load and 0;
+ * 0 when nothing is installed.
+ */
+int dsd_frame_sync_hook_scan_quiet_service(const dsd_opts* opts, dsd_state* state);
 
 /** Install a copy of @p hooks; NULL clears every slot. */
 void dsd_frame_sync_hooks_set(const dsd_frame_sync_hooks* hooks);

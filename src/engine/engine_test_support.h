@@ -14,4 +14,8 @@
    (processFrame()). */
 void dsd_engine_test_process_synced_frames(dsd_opts* opts, dsd_state* state);
 
+/* Up to @p max_passes passes of the live loop (live_scanner_main_loop()'s own pass), fewer once the exit flag is set:
+   for tests that run the real hunt, symbol reader and interruption routing over scripted inputs (issue #834). */
+void dsd_engine_test_live_scanner_run(dsd_opts* opts, dsd_state* state, int max_passes);
+
 #endif

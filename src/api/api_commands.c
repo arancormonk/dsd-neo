@@ -1126,6 +1126,7 @@ static const api_command_desc k_commands[] = {
     API_I32_RANGE("slot_pref_set", DSD_APP_CMD_SLOT_PREF_SET, 0, 2, "{value:0=slot 1|1=slot 2|2=auto}"),
     API_I32("slots_onoff_set", DSD_APP_CMD_SLOTS_ONOFF_SET, "{value:mask}"),
     API_I32_RANGE("scan_voice_only_set", DSD_APP_CMD_SCAN_VOICE_ONLY_SET, 0, 1, "{value:0|1}"),
+    API_I32_RANGE("scan_skip_silent_set", DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 0, 1, "{value:0|1}"),
     API_I32("scan_voice_qualify_ms_set", DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, "{value:ms 100..600000}"),
     API_I32("scan_voice_hold_ms_set", DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, "{value:ms 100..600000}"),
     API_I32("nfm_bandwidth_set", DSD_APP_CMD_NFM_BANDWIDTH_SET, "{value:Hz 8000..25000, 0=default}"),

@@ -10,8 +10,10 @@
 #include <cstdlib>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/signal_measure.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <iterator>
 #include <mutex>
 #include <new>
 #include <stdint.h>
@@ -1118,33 +1120,40 @@ reject_leakage(dsd_signal_detector* d, const bool* second_raw) {
     DSD_MEMCPY(d->raw, keep, sizeof(keep));
 }
 
-/* The mean power per FFT bin of a channel's noise sidebands, from 1.5 to 3 widths either side of @p position (FFT bins,
-   rotation applied) in four blocks a side, over prefix sums @p bins: the mean of the blocks within 6 dB of the third
-   lowest. A block a transmitter raises more than that is left out (up to five of the eight); one it raises less still
-   counts, so with up to five raised blocks the mean reads at most 2.875 times the third lowest (about 4.6 dB high over a
-   flat floor). Noise alone (a sloping floor too) is measured over all of them. Negative when a side has too few bins. */
+constexpr int kSidebandBlocks = 8;
+
+/* The mean power per FFT bin of each of a channel's eight noise sideband blocks, from 1.5 to 3 widths either side of
+   @p position (FFT bins, rotation applied), four blocks a side, over prefix sums @p bins. False when a side has fewer
+   than four bins. */
 template <typename S>
-double
-sideband_noise(const S& bins, double position, double width_bins) {
-    constexpr int kBlocks = 8;
-    double blocks[kBlocks];
+bool
+sideband_blocks(const S& bins, double position, double width_bins, double* blocks) {
     for (int side = -1; side <= 1; side += 2) {
         const double inner = position + side * 1.5 * width_bins, outer = position + side * 3 * width_bins;
         const long long lowest = (long long)std::ceil(std::min(inner, outer));
         const long long highest = (long long)std::floor(std::max(inner, outer));
         const long long count = highest - lowest + 1;
         if (count < 4) {
-            return -1;
+            return false;
         }
         for (int j = 0; j < 4; ++j) {
             const long long from = lowest + count * j / 4, to = lowest + count * (j + 1) / 4 - 1;
             blocks[(side + 1) * 2 + j] = bins(from, to) / (double)(to - from + 1);
         }
     }
-    std::sort(blocks, blocks + kBlocks);
+    return true;
+}
+
+/* Signal search's floor: the mean of the blocks within 6 dB of the third lowest. A block a transmitter raises more
+   than that is left out (up to five of the eight); one it raises less still counts, so with up to five raised blocks
+   the mean reads at most 2.875 times the third lowest (about 4.6 dB high over a flat floor). Noise alone (a sloping
+   floor too) is measured over all of them. Sorts @p blocks. */
+double
+trimmed_mean_floor(double* blocks) {
+    std::sort(blocks, blocks + kSidebandBlocks);
     double quiet = 0;
     int quiet_count = 0;
-    for (int j = 0; j < kBlocks; ++j) {
+    for (int j = 0; j < kSidebandBlocks; ++j) {
         if (blocks[j] <= 4 * blocks[2]) {
             quiet += blocks[j];
             ++quiet_count;
@@ -1152,20 +1161,88 @@ sideband_noise(const S& bins, double position, double width_bins) {
     }
     return quiet / quiet_count;
 }
+
+/* The local noise per FFT bin beside a channel by @p estimator (a dsd_signal_quiet_floor_estimator); negative when a
+   side has too few bins. */
+template <typename S>
+double
+sideband_noise(const S& bins, double position, double width_bins, int estimator) {
+    double blocks[kSidebandBlocks];
+    if (!sideband_blocks(bins, position, width_bins, blocks)) {
+        return -1;
+    }
+    if (estimator == DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK) {
+        return *std::min_element(blocks, blocks + kSidebandBlocks);
+    }
+    return trimmed_mean_floor(blocks);
+}
+
+/* One channel measured in one window's spectrum: its total power and the local noise over the same bins, both in
+   linear full-scale units, and whether its geometry lets it be measured at all. */
+struct channel_level {
+    bool valid;
+    double signal, noise;
+    /* The sideband floor per FFT bin, scaled as signal and noise, and the channel's bin count. */
+    double floor, bins;
+};
+
+/* Measure the channel at @p frequency_hz, @p width Hz wide, in the @p n-point spectrum whose prefix sums @p bins reads,
+   scaled by @p norm. Valid when the channel and its sidebands, three widths either side, clear the hardware DC guard
+   and stay inside 0.45 Fs, with at least one channel bin and four sideband bins a side. Signal search and quiet
+   requests measure every channel through this. The window assumes the tap is the whole capture shifted circularly by
+   the rotation, as every live capture is. A shifted I/Q replay resampled to another rate keeps only the band around
+   its rotated DC, so a channel far from it would read another channel's bins: such a capture is safe only because
+   measurement is refused on replay, which callers key on the stream (opts->iq_replay_active / iq_replay_requested),
+   never on the decode clock. */
+template <typename S>
+channel_level
+measure_channel(const S& bins, const dsd_signal_capture& capture, int n, double frequency_hz, double width, double norm,
+                int estimator) {
+    channel_level out{false, 0, 0, 0, 0};
+    const double bin_hz = (double)capture.rate_hz / n;
+    const double rotation = capture.rotation_hz;
+    const double delta = frequency_hz - capture.capture_hz;
+    const double dc_guard = std::max(bin_hz * 3, capture.rate_hz / 100.0);
+    if (!(std::abs(delta) > dc_guard + 3 * width && std::abs(delta) + 3 * width < capture.rate_hz * 0.45)) {
+        return out;
+    }
+    /* The channel's bins, and the local noise of its sidebands. */
+    const long long signal_first = (long long)std::ceil((delta - width / 2 + rotation) / bin_hz);
+    const long long signal_last = (long long)std::floor((delta + width / 2 + rotation) / bin_hz);
+    const long long signal_bins = signal_last - signal_first + 1;
+    const double per_bin = sideband_noise(bins, (delta + rotation) / bin_hz, width / bin_hz, estimator);
+    if (signal_bins <= 0 || per_bin < 0) {
+        return out;
+    }
+    out.valid = true;
+    out.signal = bins(signal_first, signal_last) * norm;
+    out.noise = per_bin * norm * (double)signal_bins;
+    out.floor = per_bin * norm;
+    out.bins = (double)signal_bins;
+    return out;
+}
+
+/* Prefix sums of an @p n-bin spectrum @p power into @p prefix (n + 1 long). */
+void
+prefix_sums(const double* power, int n, double* prefix) {
+    prefix[0] = 0;
+    for (int i = 0; i < n; ++i) {
+        prefix[i + 1] = prefix[i] + power[i];
+    }
+}
+
+double
+power_db(double linear) {
+    return 10 * std::log10(std::max(linear, 1e-16));
+}
 } // namespace
 
 static void
 measure_window(dsd_signal_detector* detector, dsd_signal_measure_report* report, bool last) {
     const auto& request = detector->request;
     const int n = detector->n;
-    const double bin_hz = (double)request.capture.rate_hz / n;
-    const double width = request.range.bandwidth_hz;
-    const double rotation = request.capture.rotation_hz;
     const double norm = 1.0 / (n * detector->energy * detector->frames);
-    detector->prefix[0] = 0;
-    for (int i = 0; i < n; ++i) {
-        detector->prefix[i + 1] = detector->prefix[i] + detector->power[i];
-    }
+    prefix_sums(detector->power, n, detector->prefix);
     auto bins = [&](long long first, long long last) {
         return circular_sum(detector->prefix, n, first, last - first + 1);
     };
@@ -1173,26 +1250,15 @@ measure_window(dsd_signal_detector* detector, dsd_signal_measure_report* report,
         auto& out = report->candidates[c];
         detector->raw[c] = false;
         out.frequency_hz = request.frequencies[c];
-        const double delta = (double)out.frequency_hz - request.capture.capture_hz;
-        const double dc_guard = std::max(bin_hz * 3, request.capture.rate_hz / 100.0);
-        out.valid =
-            std::abs(delta) > dc_guard + 3 * width && std::abs(delta) + 3 * width < request.capture.rate_hz * 0.45;
+        const channel_level level =
+            measure_channel(bins, request.capture, n, (double)out.frequency_hz, request.range.bandwidth_hz, norm,
+                            DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN);
+        out.valid = level.valid;
         if (!out.valid) {
             continue;
         }
-        /* The channel's bins, and the local noise of its sidebands. */
-        const long long signal_first = (long long)std::ceil((delta - width / 2 + rotation) / bin_hz);
-        const long long signal_last = (long long)std::floor((delta + width / 2 + rotation) / bin_hz);
-        const long long signal_bins = signal_last - signal_first + 1;
-        const double per_bin = sideband_noise(bins, (delta + rotation) / bin_hz, width / bin_hz);
-        if (signal_bins <= 0 || per_bin < 0) {
-            out.valid = 0;
-            continue;
-        }
-        const double signal = bins(signal_first, signal_last) * norm;
-        const double noise = per_bin * norm * (double)signal_bins;
-        out.power_dbfs = (float)(10 * std::log10(std::max(signal, 1e-16)));
-        out.noise_dbfs = (float)(10 * std::log10(std::max(noise, 1e-16)));
+        out.power_dbfs = (float)power_db(level.signal);
+        out.noise_dbfs = (float)power_db(level.noise);
         detector->raw[c] = out.power_dbfs - out.noise_dbfs >= request.range.sensitivity_db
                            && (!request.range.minimum_set || out.power_dbfs >= request.range.minimum_dbfs);
     }
@@ -1235,8 +1301,9 @@ finish_window(dsd_signal_detector* detector, dsd_signal_measure_report* report) 
 
 /* Windows as many of the @p pairs samples at @p iq as the frame has room for into it, in one pass, counting a pair
    clipped when either component reaches @p clip_level: how many it took, or -1 on a non-finite sample. */
+template <typename D>
 static long long
-fill_frame(dsd_signal_detector* detector, const float* iq, size_t pairs, const float* window, float clip_level) {
+fill_frame(D* detector, const float* iq, size_t pairs, const float* window, float clip_level) {
     const size_t start = detector->filled;
     const size_t take = std::min(pairs, (size_t)detector->n - start);
     float* out = detector->samples + 2 * start;
@@ -1261,42 +1328,53 @@ fill_frame(dsd_signal_detector* detector, const float* iq, size_t pairs, const f
     return (long long)take;
 }
 
-extern "C" int
-dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t pairs,
-                         const dsd_signal_capture* capture, dsd_signal_measure_report* report) {
-    if (!detector || !detector->armed || !iq || !capture || !report) {
-        return 0;
+/* Transform a full frame and add its power to the window's: false when the transform cannot run. */
+template <typename D>
+static bool
+accumulate_frame(D* detector) {
+    if (!detector->fft.forward(detector->n, detector->samples)) {
+        return false;
     }
-    const dsd_signal_measure_failure changed = capture_difference(detector->request.capture, *capture);
+    for (int b = 0; b < detector->n; ++b) {
+        double re = detector->samples[2 * (size_t)b], im = detector->samples[2 * (size_t)b + 1];
+        detector->power[b] += re * re + im * im;
+    }
+    detector->filled = 0;
+    ++detector->frames;
+    detector->window_samples += (size_t)detector->n;
+    return true;
+}
+
+/* Feed @p pairs into an armed detector's Hann-windowed frames. A window ends at the first frame boundary at or past
+   10 ms; @p finish analyses it and returns nonzero once the request is done. A capture change, a non-finite sample or a
+   transform that cannot run retires the request through @p fail. Both the search and the quiet detector measure
+   through this. */
+template <typename D, typename Finish, typename Fail>
+static int
+feed_frames(D* detector, const float* iq, size_t pairs, const dsd_signal_capture& capture, Finish finish, Fail fail) {
+    const dsd_signal_measure_failure changed = capture_difference(detector->request.capture, capture);
     if (changed != DSD_SIGNAL_MEASURE_OK) {
-        return fail_request(detector, report, changed);
+        return fail(changed);
     }
     /* The source's level, read once for the block: the per-sample test compares against a register. */
-    const float clip_level = capture->clip_level > 0.0f ? capture->clip_level : DSD_SIGNAL_CLIP_LEVEL_DEFAULT;
+    const float clip_level = capture.clip_level > 0.0f ? capture.clip_level : DSD_SIGNAL_CLIP_LEVEL_DEFAULT;
     const float* window = detector->hann.get(detector->n);
     for (size_t p = 0; p < pairs;) {
         const long long took = fill_frame(detector, iq + 2 * p, pairs - p, window, clip_level);
         if (took < 0) {
-            return fail_request(detector, report, DSD_SIGNAL_MEASURE_NONFINITE);
+            return fail(DSD_SIGNAL_MEASURE_NONFINITE);
         }
         p += (size_t)took;
         if (detector->filled != (size_t)detector->n) {
             continue;
         }
-        if (!detector->fft.forward(detector->n, detector->samples)) {
-            return fail_request(detector, report, DSD_SIGNAL_MEASURE_FAILED);
+        if (!accumulate_frame(detector)) {
+            return fail(DSD_SIGNAL_MEASURE_FAILED);
         }
-        for (int b = 0; b < detector->n; ++b) {
-            double re = detector->samples[2 * (size_t)b], im = detector->samples[2 * (size_t)b + 1];
-            detector->power[b] += re * re + im * im;
-        }
-        detector->filled = 0;
-        ++detector->frames;
-        detector->window_samples += (size_t)detector->n;
-        if (detector->window_samples * 100 < capture->rate_hz) {
+        if (detector->window_samples * 100 < capture.rate_hz) {
             continue;
         }
-        int ready = finish_window(detector, report);
+        int ready = finish();
         if (ready) {
             return ready;
         }
@@ -1304,24 +1382,349 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
     return 0;
 }
 
+extern "C" int
+dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t pairs,
+                         const dsd_signal_capture* capture, dsd_signal_measure_report* report) {
+    if (!detector || !detector->armed || !iq || !capture || !report) {
+        return 0;
+    }
+    return feed_frames(
+        detector, iq, pairs, *capture, [&] { return finish_window(detector, report); },
+        [&](dsd_signal_measure_failure reason) { return fail_request(detector, report, reason); });
+}
+
+/* The shipped quiet threshold, floor estimator and floor guard, from tests/io/signal_quiet_calibrate.cpp
+   (docs/signal-search.md "Quiet-channel calibration"). The ratio is judged against the capture-wide noise reference,
+   so the estimator sets only the floor the guard compares. The guard is 0.5 dB under the lowest floor rise of any
+   active trial whose ratio sat within the threshold's margin when the ratio was judged against the sideband floor
+   (9.23 dB, a weak NFM 8 kHz channel between +30 dB neighbours), rounded down; noise alone rises at most 2.4 dB.
+   Judged against the reference, the threshold's interval is (2.02, 5.08] dB and the threshold is its top, rounded
+   down. */
+#define DSD_SIGNAL_QUIET_THRESHOLD_DB    5.0f
+#define DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
+#define DSD_SIGNAL_QUIET_GUARD_DB        8.7f
+/* The capture rates and analog widths the calibration rendered and validated; nothing between them is admitted. Rates:
+   the RTL rate planner's (1.024, 1.152, 1.536 Msps for every selectable DSP bandwidth, rtl_sdr_fm.cpp
+   rtl_downsample_passes_for_rate_in()), an Airspy's (2.5, 3, 6, 10 MS/s), and the common RTL-SDR rates a SoapySDR
+   device may be given. Widths, per kind: the Radio sheet's NFM steps and its AM steps (src/ui/qt/qml/Util.js), each
+   rendered as that kind only. */
+static const uint32_t kQuietRatesHz[] = {960000,  1024000, 1152000, 1200000, 1280000, 1440000, 1536000, 1600000,
+                                         1800000, 1920000, 2048000, 2400000, 2500000, 3000000, 6000000, 10000000};
+static const uint32_t kQuietNfmWidthsHz[] = {8000, 11250, 12500, 16000, 20000, 25000};
+static const uint32_t kQuietAmWidthsHz[] = {5000, 6000, 8000, 10000, 15000, 20000};
+
+struct dsd_signal_quiet_detector {
+    /* Keep aligned buffers first so records never require interior alignment padding. */
+    alignas(16) float samples[2 * DSD_SEARCH_MAX_FFT]{};
+    dsd_io::HannWindowCache<DSD_SEARCH_MAX_FFT> hann;
+    dsd_io::FftSetupCache fft;
+    dsd_signal_quiet_request request{};
+    dsd_signal_quiet_params params{};
+    /* This sub-window's power, and scratch prefix sums of it (one longer than the spectrum; the capture-wide noise
+       reference uses it first as its own scratch). */
+    double power[DSD_SEARCH_MAX_FFT]{};
+    double prefix[DSD_SEARCH_MAX_FFT + 1]{};
+    /* The judged classes' widths. */
+    double widths[3]{};
+    int width_count = 0;
+    double energy = 0;
+    size_t filled = 0, window_samples = 0, total_samples = 0, clipped = 0;
+    unsigned frames = 0, windows = 0;
+    int n = 0;
+    bool armed = false;
+    /* Over the sub-windows so far: whether every class measured was valid, whether any was, and the highest ratio with
+       its power and floor (dB). */
+    bool all_valid = true, any_valid = false, any_rise = false;
+    double max_ratio_db = 0, max_power_db = 0, max_floor_db = 0, max_rise_db = 0;
+    /* The result of the request last begun once it finished: 1 complete, -1 failed, 0 not yet. */
+    dsd_signal_quiet_result result{};
+    int finished = 0;
+};
+
+extern "C" dsd_signal_quiet_params
+dsd_signal_quiet_params_default(void) {
+    dsd_signal_quiet_params params{};
+    params.threshold_db = DSD_SIGNAL_QUIET_THRESHOLD_DB;
+    params.floor_estimator = DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR;
+    params.guard_db = DSD_SIGNAL_QUIET_GUARD_DB;
+    return params;
+}
+
+extern "C" int
+dsd_signal_quiet_rate_supported(uint32_t rate_hz) {
+    return std::find(std::begin(kQuietRatesHz), std::end(kQuietRatesHz), rate_hz) != std::end(kQuietRatesHz);
+}
+
+extern "C" int
+dsd_signal_quiet_analog_supported(int kind, uint32_t width_hz, uint32_t rate_hz) {
+    if (!dsd_signal_quiet_rate_supported(rate_hz)) {
+        return 0;
+    }
+    if (kind == DSD_ANALOG_DEMOD_FM) {
+        return std::find(std::begin(kQuietNfmWidthsHz), std::end(kQuietNfmWidthsHz), width_hz)
+               != std::end(kQuietNfmWidthsHz);
+    }
+    if (kind == DSD_ANALOG_DEMOD_AM) {
+        return std::find(std::begin(kQuietAmWidthsHz), std::end(kQuietAmWidthsHz), width_hz)
+               != std::end(kQuietAmWidthsHz);
+    }
+    return 0;
+}
+
+extern "C" dsd_signal_quiet_detector*
+dsd_signal_quiet_detector_create(void) {
+    return new (std::nothrow) dsd_signal_quiet_detector;
+}
+
+extern "C" void
+dsd_signal_quiet_detector_destroy(dsd_signal_quiet_detector* detector) {
+    if (detector) {
+        detector->fft.release();
+        delete detector;
+    }
+}
+
+/* The widths @p request judges, into @p widths: false for an unknown class, no class, or an analog width missing,
+   outside DSD_ANALOG_AM_WIDTH_MIN_HZ..DSD_ANALOG_NFM_WIDTH_MAX_HZ, or given without the analog class. */
+static bool
+quiet_widths(const dsd_signal_quiet_request& request, double* widths, int* count) {
+    const unsigned known = DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_6K25 | DSD_SIGNAL_QUIET_CLASS_ANALOG;
+    const bool analog = (request.classes & DSD_SIGNAL_QUIET_CLASS_ANALOG) != 0;
+    if (!request.classes || (request.classes & ~known) || analog != (request.analog_width_hz != 0)
+        || (analog
+            && (request.analog_width_hz < DSD_ANALOG_AM_WIDTH_MIN_HZ
+                || request.analog_width_hz > DSD_ANALOG_NFM_WIDTH_MAX_HZ))) {
+        return false;
+    }
+    *count = 0;
+    if (request.classes & DSD_SIGNAL_QUIET_CLASS_12K5) {
+        widths[(*count)++] = DSD_SIGNAL_QUIET_WIDTH_12K5_HZ;
+    }
+    if (request.classes & DSD_SIGNAL_QUIET_CLASS_6K25) {
+        widths[(*count)++] = DSD_SIGNAL_QUIET_WIDTH_6K25_HZ;
+    }
+    if (analog) {
+        widths[(*count)++] = request.analog_width_hz;
+    }
+    return true;
+}
+
+/* Arm @p detector, whose transform buffers are kept between requests of one size. */
+static dsd_signal_request_failure
+quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* request,
+          const dsd_signal_quiet_params& params) {
+    double widths[3] = {0, 0, 0};
+    int count = 0;
+    if (!request || !request->request_id || !std::isfinite(params.threshold_db) || !std::isfinite(params.guard_db)
+        || (params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
+            && params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK)
+        || !quiet_widths(*request, widths, &count)) {
+        return DSD_SIGNAL_REQUEST_UNSUPPORTED;
+    }
+    const int n = dsd_signal_fft_size_for_width(request->capture.rate_hz, *std::min_element(widths, widths + count));
+    const float* window = n ? detector->hann.get(n) : nullptr;
+    if (!window) {
+        return DSD_SIGNAL_REQUEST_UNSUPPORTED;
+    }
+    if (!detector->fft.prepare(n)) {
+        return DSD_SIGNAL_REQUEST_NO_MEMORY;
+    }
+    detector->n = n;
+    detector->request = *request;
+    detector->params = params;
+    DSD_MEMCPY(detector->widths, widths, sizeof(widths));
+    detector->width_count = count;
+    detector->energy = 0;
+    for (int i = 0; i < n; ++i) {
+        detector->energy += (double)window[i] * window[i];
+    }
+    detector->filled = detector->window_samples = detector->total_samples = detector->clipped = 0;
+    detector->frames = detector->windows = 0;
+    detector->all_valid = true;
+    detector->any_valid = detector->any_rise = false;
+    detector->max_ratio_db = detector->max_power_db = detector->max_floor_db = detector->max_rise_db = 0;
+    DSD_MEMSET(detector->power, 0, (size_t)n * sizeof(detector->power[0]));
+    detector->armed = true;
+    return DSD_SIGNAL_REQUEST_OK;
+}
+
+extern "C" int
+dsd_signal_quiet_detector_begin(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* request,
+                                const dsd_signal_quiet_params* params, dsd_signal_request_failure* out_failure) {
+    dsd_signal_request_failure why = DSD_SIGNAL_REQUEST_UNSUPPORTED;
+    if (detector) {
+        detector->armed = false;
+        detector->finished = 0;
+        why = quiet_arm(detector, request, params ? *params : dsd_signal_quiet_params_default());
+    }
+    if (out_failure) {
+        *out_failure = why;
+    }
+    return why == DSD_SIGNAL_REQUEST_OK ? 0 : -1;
+}
+
+/* Finish the request with @p reason: its id and capture, neither valid nor quiet. */
+static int
+quiet_finish(dsd_signal_quiet_detector* detector, dsd_signal_measure_failure reason) {
+    detector->armed = false;
+    detector->result = dsd_signal_quiet_result{};
+    detector->result.request_id = detector->request.request_id;
+    detector->result.capture = detector->request.capture;
+    detector->result.failure = reason;
+    detector->finished = reason == DSD_SIGNAL_MEASURE_OK ? 1 : -1;
+    return detector->finished;
+}
+
+/* The capture-wide noise reference per FFT bin, in the units of the sub-window's power (summed over its transforms):
+   the 25th percentile of the bins whose hardware offset (the bin's frequency less the ingest rotation, folded into
+   -Fs/2..Fs/2 as measure_channel() reads its bins) clears the hardware DC guard, stays inside 0.45 Fs and lies outside
+   the channel's widest class, scaled to the mean that percentile implies for Gaussian noise (a chi-square of
+   2 * frames degrees of freedom, Wilson-Hilferty). A low percentile of the whole span stays on the noise however many
+   transmitters stand in up to three quarters of it. @p scratch (n doubles) takes the copies the selection reorders.
+   Negative when no bin qualifies. */
+static double
+wide_reference(const dsd_signal_quiet_detector* detector, double* scratch) {
+    const dsd_signal_capture& capture = detector->request.capture;
+    const int n = detector->n;
+    const double rate = capture.rate_hz, bin_hz = rate / n;
+    const double dc_guard = std::max(bin_hz * 3, rate / 100.0);
+    const double channel = (double)detector->request.frequency_hz - capture.capture_hz;
+    const double half_width = *std::max_element(detector->widths, detector->widths + detector->width_count) / 2;
+    int count = 0;
+    for (int m = -n / 2; m < n / 2; ++m) {
+        double delta = m * bin_hz - capture.rotation_hz;
+        delta -= rate * std::floor((delta + rate / 2) / rate);
+        if (std::abs(delta) > dc_guard && std::abs(delta) < rate * 0.45 && std::abs(delta - channel) > half_width) {
+            scratch[count++] = detector->power[(m + n) % n];
+        }
+    }
+    if (count == 0) {
+        return -1;
+    }
+    double* rank = scratch + count / 4;
+    std::nth_element(scratch, rank, scratch + count);
+    constexpr double kLowerQuartileZ = -0.6744897501960817;
+    const double k = 2.0 * detector->frames, wh = 2.0 / (9.0 * k);
+    return *rank / std::pow(1.0 - wh + kLowerQuartileZ * std::sqrt(wh), 3);
+}
+
+/* Measure one sub-window in every judged class, keeping the highest ratio and floor rise over the request. The ratio
+   is the channel's power over the capture-wide noise reference across the same bins, so transmitters beside the
+   channel that lift its sideband floor do not lower it; the sideband floor serves only the guard, and a floor over the
+   guard leaves the request invalid. */
+static void
+quiet_measure_window(dsd_signal_quiet_detector* detector) {
+    const int n = detector->n;
+    const double norm = 1.0 / (n * detector->energy * detector->frames);
+    const double reference = wide_reference(detector, detector->prefix);
+    prefix_sums(detector->power, n, detector->prefix);
+    auto bins = [&](long long first, long long last) {
+        return circular_sum(detector->prefix, n, first, last - first + 1);
+    };
+    for (int c = 0; c < detector->width_count; ++c) {
+        const channel_level level =
+            measure_channel(bins, detector->request.capture, n, (double)detector->request.frequency_hz,
+                            detector->widths[c], norm, detector->params.floor_estimator);
+        if (!level.valid || reference <= 0) {
+            detector->all_valid = false;
+            continue;
+        }
+        const double rise = power_db(level.floor) - power_db(reference * norm);
+        if (!detector->any_rise || rise > detector->max_rise_db) {
+            detector->max_rise_db = rise;
+        }
+        detector->any_rise = true;
+        if (rise > detector->params.guard_db) {
+            detector->all_valid = false;
+        }
+        const double power = power_db(level.signal), floor = power_db(reference * norm * level.bins);
+        if (!detector->any_valid || power - floor > detector->max_ratio_db) {
+            detector->max_ratio_db = power - floor;
+            detector->max_power_db = power;
+            detector->max_floor_db = floor;
+        }
+        detector->any_valid = true;
+    }
+}
+
+static int
+quiet_finish_window(dsd_signal_quiet_detector* detector) {
+    if (detector->clipped * 100 > detector->total_samples) {
+        return quiet_finish(detector, DSD_SIGNAL_MEASURE_CLIPPED);
+    }
+    quiet_measure_window(detector);
+    if (++detector->windows < DSD_SIGNAL_QUIET_WINDOWS) {
+        detector->window_samples = 0;
+        detector->frames = 0;
+        DSD_MEMSET(detector->power, 0, (size_t)detector->n * sizeof(detector->power[0]));
+        return 0;
+    }
+    quiet_finish(detector, DSD_SIGNAL_MEASURE_OK);
+    dsd_signal_quiet_result& result = detector->result;
+    result.valid = detector->all_valid && detector->any_valid;
+    result.max_ratio_db = (float)detector->max_ratio_db;
+    result.power_dbfs = (float)detector->max_power_db;
+    result.floor_dbfs = (float)detector->max_floor_db;
+    result.floor_rise_db = (float)detector->max_rise_db;
+    result.quiet = result.valid && result.max_ratio_db < detector->params.threshold_db;
+    return 1;
+}
+
+extern "C" int
+dsd_signal_quiet_detector_feed(dsd_signal_quiet_detector* detector, const float* iq, size_t pairs,
+                               const dsd_signal_capture* capture) {
+    if (!detector || !detector->armed || !iq || !capture) {
+        return 0;
+    }
+    return feed_frames(
+        detector, iq, pairs, *capture, [&] { return quiet_finish_window(detector); },
+        [&](dsd_signal_measure_failure reason) { return quiet_finish(detector, reason); });
+}
+
+extern "C" int
+dsd_signal_quiet_detector_result(const dsd_signal_quiet_detector* detector, dsd_signal_quiet_result* result) {
+    if (!detector || !result || !detector->finished) {
+        return 0;
+    }
+    *result = detector->result;
+    return detector->finished;
+}
+
 namespace {
-/* The shared tap. feed_mutex serialises the detector: the demod thread holds it while it transforms and analyses, and
-   requests and cancels take it to reset or disarm the detector. tap_mutex guards only what is published (the capture,
-   the time of its latest samples, readiness and the finished report), so polling never waits for analysis. Locks are
-   always taken feed first, then tap. */
+/* The shared tap. feed_mutex serialises the detectors: the demod thread holds it while it transforms and analyses, and
+   requests and cancels take it to reset or disarm a detector. tap_mutex guards only what is published (the capture,
+   the time of its latest samples, readiness, the finished report and quiet result, and the status word's writes), so
+   polling never waits for analysis. Locks are always taken feed first, then tap.
+
+   The tap holds one request: Signal search's (tap_detector) or a scan quiet request (tap_quiet). The status word is
+   ticket << 2 | quiet owner << 1 | done. The 30-bit ticket moves at every request (search or quiet), cancel and reset,
+   never to 0, so an earlier ticket compares unequal at once. It is written only under tap_mutex, the done bit with
+   release after the quiet result, and read with acquire without a lock. While tap_quiet is armed the word names its
+   ticket as the quiet owner, not done: everything that moves the word away disarms it first under feed_mutex. */
 std::mutex feed_mutex;
 std::mutex tap_mutex;
 dsd_signal_detector* tap_detector = nullptr;
+dsd_signal_quiet_detector* tap_quiet = nullptr; /* under feed_mutex */
 dsd_signal_measure_report feed_report{};
 dsd_signal_capture tap_capture{};
 dsd_signal_measure_report tap_report{};
+dsd_signal_quiet_result tap_quiet_result{};
 int tap_ready = 0;
 uint64_t tap_last_ms = 0;
+std::atomic<uint32_t> tap_status{0};
 std::atomic<int> bypass{0};
 std::atomic<uint64_t> search_owner{0};
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 int test_fail_allocation = 0; /* under feed_mutex */
+std::atomic<uint64_t (*)(void)> test_clock_ns{nullptr};
 #endif
+
+/* std::atomic<uint32_t>::is_always_lock_free is C++17; on every target uint32_t is an unsigned int. */
+static_assert(ATOMIC_INT_LOCK_FREE == 2 && sizeof(uint32_t) == sizeof(unsigned int),
+              "the quiet status word must be a lock-free 32-bit atomic");
+constexpr uint32_t kTicketMask = 0x3FFFFFFFu;
+constexpr uint32_t kStatusQuiet = 2u;
+constexpr uint32_t kStatusDone = 1u;
 
 dsd_signal_detector*
 tap_detector_create() {
@@ -1331,6 +1734,71 @@ tap_detector_create() {
     }
 #endif
     return dsd_signal_detector_create();
+}
+
+dsd_signal_quiet_detector*
+tap_quiet_create() {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (test_fail_allocation) {
+        return nullptr;
+    }
+#endif
+    return dsd_signal_quiet_detector_create();
+}
+
+/* The tap's realtime clock, in ns. */
+uint64_t
+tap_now_ns() {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    uint64_t (*const clock)(void) = test_clock_ns.load(std::memory_order_acquire);
+    if (clock) {
+        return clock();
+    }
+#endif
+    return dsd_realtime_mono_ns();
+}
+
+/* Under feed_mutex: drop any quiet measurement in progress. */
+void
+disarm_quiet() {
+    if (tap_quiet) {
+        tap_quiet->armed = false;
+    }
+}
+
+/* Under both locks: move the tap to its next ticket, held by a quiet request or by no quiet owner. */
+uint32_t
+advance_ticket(bool quiet) {
+    uint32_t next = ((tap_status.load(std::memory_order_relaxed) >> 2) + 1) & kTicketMask;
+    if (!next) {
+        next = 1;
+    }
+    tap_status.store(next << 2 | (quiet ? kStatusQuiet : 0u), std::memory_order_release);
+    return next;
+}
+
+/* Under feed_mutex: whether Signal search owns the tuner, or holds a request or a report not yet read. */
+bool
+search_holds_tap() {
+    if (search_owner.load(std::memory_order_acquire) != 0 || (tap_detector && tap_detector->armed)) {
+        return true;
+    }
+    std::lock_guard<std::mutex> lock(tap_mutex);
+    return tap_ready != 0;
+}
+
+/* Under feed_mutex, after tap_quiet finished: publish its result, stamped now that its analysis is complete (not when
+   the block that completed it arrived: the feed may wait for feed_mutex and analyse long after), then the done bit. */
+void
+publish_quiet() {
+    std::lock_guard<std::mutex> lock(tap_mutex);
+    const uint32_t word = tap_status.load(std::memory_order_relaxed);
+    if ((word & (kStatusQuiet | kStatusDone)) != kStatusQuiet) {
+        return;
+    }
+    (void)dsd_signal_quiet_detector_result(tap_quiet, &tap_quiet_result);
+    tap_quiet_result.completed_realtime_ns = tap_now_ns();
+    tap_status.store(word | kStatusDone, std::memory_order_release);
 }
 } // namespace
 
@@ -1342,7 +1810,24 @@ rtl_signal_measure_test_fail_allocation(int fail) {
     if (fail) {
         dsd_signal_detector_destroy(tap_detector);
         tap_detector = nullptr;
+        dsd_signal_quiet_detector_destroy(tap_quiet);
+        tap_quiet = nullptr;
+        std::lock_guard<std::mutex> lock(tap_mutex);
+        advance_ticket(false);
     }
+}
+
+extern "C" void
+rtl_signal_measure_test_set_clock(uint64_t (*now_ns)(void)) {
+    test_clock_ns.store(now_ns, std::memory_order_release);
+}
+
+extern "C" void
+rtl_signal_measure_test_set_ticket(uint32_t ticket) {
+    std::lock_guard<std::mutex> feed(feed_mutex);
+    disarm_quiet();
+    std::lock_guard<std::mutex> lock(tap_mutex);
+    tap_status.store((ticket & kTicketMask) << 2, std::memory_order_release);
 }
 #endif
 
@@ -1360,14 +1845,16 @@ rtl_signal_measure_request(const dsd_signal_measure_request* request, dsd_signal
             *out_failure = tap_detector ? DSD_SIGNAL_REQUEST_UNSUPPORTED : DSD_SIGNAL_REQUEST_NO_MEMORY;
         }
     }
+    disarm_quiet();
     std::lock_guard<std::mutex> lock(tap_mutex);
     tap_ready = 0;
+    advance_ticket(false);
     return rc;
 }
 
 extern "C" void
 rtl_signal_measure_feed(const float* iq, size_t pairs, const dsd_signal_capture* capture) {
-    const uint64_t received = dsd_realtime_mono_ns();
+    const uint64_t received = tap_now_ns();
     std::lock_guard<std::mutex> feed(feed_mutex);
     {
         std::lock_guard<std::mutex> lock(tap_mutex);
@@ -1391,6 +1878,9 @@ rtl_signal_measure_feed(const float* iq, size_t pairs, const dsd_signal_capture*
             tap_report.received_realtime_ns = received;
             tap_ready = rc;
         }
+    }
+    if (dsd_signal_quiet_detector_feed(tap_quiet, iq, pairs, capture)) {
+        publish_quiet();
     }
 }
 
@@ -1432,6 +1922,10 @@ rtl_signal_measure_cancel(void) {
     }
     std::lock_guard<std::mutex> lock(tap_mutex);
     tap_ready = 0;
+    /* A search cancel never touches a quiet request. */
+    if (!(tap_status.load(std::memory_order_relaxed) & kStatusQuiet)) {
+        advance_ticket(false);
+    }
 }
 
 extern "C" void
@@ -1440,10 +1934,78 @@ rtl_signal_measure_reset(void) {
     if (tap_detector) {
         tap_detector->armed = false;
     }
+    disarm_quiet();
     std::lock_guard<std::mutex> lock(tap_mutex);
     tap_ready = 0;
     tap_capture = dsd_signal_capture{};
     tap_last_ms = 0;
+    advance_ticket(false);
+}
+
+extern "C" int
+rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* ticket,
+                         dsd_signal_request_failure* out_failure) {
+    std::lock_guard<std::mutex> feed(feed_mutex);
+    dsd_signal_request_failure why = DSD_SIGNAL_REQUEST_UNSUPPORTED;
+    int rc = -1;
+    /* Signal search's request, report or tuner is never taken from it. */
+    if (ticket && !search_holds_tap()) {
+        if (!tap_quiet) {
+            tap_quiet = tap_quiet_create();
+        }
+        why = DSD_SIGNAL_REQUEST_NO_MEMORY;
+        rc = tap_quiet ? dsd_signal_quiet_detector_begin(tap_quiet, request, nullptr, &why) : -1;
+        std::lock_guard<std::mutex> lock(tap_mutex);
+        const uint32_t next = advance_ticket(rc == 0);
+        if (rc == 0) {
+            *ticket = next;
+        }
+    }
+    if (out_failure) {
+        *out_failure = why;
+    }
+    return rc;
+}
+
+extern "C" int
+rtl_signal_quiet_status(uint32_t ticket) {
+    const uint32_t word = tap_status.load(std::memory_order_acquire);
+    if (!ticket || ticket > kTicketMask || (word >> 2) != ticket || !(word & kStatusQuiet)) {
+        return -1;
+    }
+    return (word & kStatusDone) ? 1 : 0;
+}
+
+extern "C" int
+rtl_signal_quiet_take(uint32_t ticket, dsd_signal_quiet_result* result) {
+    if (!result) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(tap_mutex);
+    const int state = rtl_signal_quiet_status(ticket);
+    if (state == 0) {
+        return 0;
+    }
+    if (state < 0) {
+        *result = dsd_signal_quiet_result{};
+        result->failure = DSD_SIGNAL_MEASURE_SUPERSEDED;
+        return -1;
+    }
+    *result = tap_quiet_result;
+    /* Taken: the ticket no longer names a quiet request. */
+    tap_status.store(ticket << 2, std::memory_order_release);
+    return result->failure == DSD_SIGNAL_MEASURE_OK ? 1 : -1;
+}
+
+extern "C" void
+rtl_signal_quiet_cancel(uint32_t ticket) {
+    std::lock_guard<std::mutex> feed(feed_mutex);
+    std::lock_guard<std::mutex> lock(tap_mutex);
+    if (rtl_signal_quiet_status(ticket) < 0) {
+        return;
+    }
+    disarm_quiet();
+    advance_ticket(false);
 }
 
 extern "C" void

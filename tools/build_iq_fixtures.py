@@ -167,6 +167,9 @@ FIXTURES = [
     # deviation stays near M17's real +/-2.4 kHz so the synthetic FM signal fits
     # the 12.5 kHz channel filter profile (0.15 * 24 kHz Nyquist = 3.6 kHz peak).
     ("m17", "m17", "audio", 19, 4.3, 0.15),
+    # The same recording's second transmission from its start: preamble, its stream LSF sent twice, then the stream
+    # (issue #834). The repeated LSF used to go untaken, and the hunt matched packet, stream and EOT words inside it.
+    ("m17_lsf_offair", "m17", "audio", 7.5, 1.5, 0.15),
 ]
 
 # Audio sources recorded after a receiver's de-emphasis, and the single-pole time constant
@@ -626,14 +629,34 @@ DPMR_SYNTH_NAME = "dpmr_synth"
 
 # A clear DMR BS voice call on slot 1, slot 2 idle (a repeater's usual traffic), written by the test generator tests/protocol/dmr/dmr_synth.c (issue #729): the
 # two sigidwiki DMR recordings are control channels received at inverted polarity, not voice, so the voice and audio
-# chain cases need a call that really is one. The generator writes discriminator audio (raised-cosine 4FSK, outer
-# symbols at +/-1944 Hz), which remodulate() turns back into baseband with the audio's 99.5th percentile at the
-# deviation below (the raised-cosine overshoot sits a little above the outer level). It needs the built generator
+# chain cases need a call that really is one. The generator writes discriminator audio (raised-cosine 4FSK under
+# --pulse rc, which this fixture has kept since #729), its +/-3 symbol level at DMR_SYNTH_OUTER_LEVEL in s16 units.
+# remodulate() maps that known level to DMR_VOICE_SYNTH_OUTER_HZ, the +/-1944 Hz of ETSI TS 102 361-1 section 10.2.2.1
+# (Table 10.3), with nothing removed: a 99.5th-percentile mapping put the outer symbols near 1300 Hz (the raised-cosine
+# overshoot sits about 1.6 times above the level), and removing the audio's mean left them at +1880 / -2008 Hz.
+# check_dmr_outer_deviation() measures each outer level in the written baseband. It needs the built generator
 # (--dmr-synth-gen), which links mbelib-neo's AMBE encoder.
 DMR_VOICE_SYNTH_NAME = "dmr_voice_synth"
 DMR_VOICE_SYNTH_ARGS = ["-t", "4", "--cc", "2", "--s1", "voice", "--s2", "idle", "--snr", "40", "--seed", "7",
-                        "--lead", "0.3", "--tail", "0.2"]
-DMR_VOICE_SYNTH_DEVIATION = 2100.0 / (SAMPLE_RATE_HZ / 2.0)
+                        "--lead", "0.3", "--tail", "0.2", "--pulse", "rc"]
+DMR_VOICE_SYNTH_OUTER_HZ = 1944.0
+DMR_SYNTH_OUTER_LEVEL = 9000.0  # tests/protocol/dmr/dmr_synth.c: level 3 times its 3000 s16 scale
+DMR_SYNTH_SYMBOL_RATE = 4800
+DMR_OUTER_TOLERANCE = 0.03
+# The same generator's BS call (slot 1 voice, slot 2 idle, colour code 2) at the standard's pulse, in noise (issue
+# #834). It reads the generator's symbols back from its raised-cosine audio (--pulse rc: the audio at a symbol centre
+# is that symbol's level) and sends them through ETSI TS 102 361-1 clause 10.2.2.2's square root raised cosine
+# (roll-off 0.2), at unity DC gain so a held level 3 is the outer 1944 Hz, as tools/scan_quiet_reception.py's DMR BS
+# row does, in complex Gaussian noise at DMR_BS_WEAK_SNR_DB inside the 12.5 kHz channel. dsd-neo's DMR filter was not
+# that pulse's receive half until #834, which cost about 1.5 dB: here it lost about one burst in six.
+DMR_BS_WEAK_NAME = "dmr_bs_weak"
+DMR_BS_WEAK_ARGS = ["-t", "5", "--cc", "2", "--s1", "voice", "--s2", "idle", "--snr", "200", "--seed", "7",
+                    "--pulse", "rc"]
+DMR_BS_WEAK_SNR_DB = 8.0
+DMR_BS_WEAK_NOISE_SEED = 7
+DMR_BS_WEAK_RRC_ALPHA = 0.2
+DMR_BS_WEAK_RRC_SPAN_SYMBOLS = 8  # either side of the centre
+DMR_BS_WEAK_CHANNEL_HZ = 12500.0
 DPMR_SYNTH_SEED = 407
 DPMR_SYNTH_SYMBOL_RATE = 2400
 DPMR_SYNTH_OUTER_DEVIATION_HZ = 1050.0
@@ -641,6 +664,61 @@ DPMR_SYNTH_LEAD_IN_S = 0.25
 DPMR_SYNTH_FRAME_REPEATS = 30
 DPMR_SYNTH_NOISE_SIGMA = 0.02
 DPMR_DIBIT_TO_LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}
+
+# M17 voice transmissions that open with their link setup frame, in noise (issue #834). The m17 capture is joined in
+# the stream and holds no LSF, so no fixture had the frame M17's matched filter switches on at: a filter switching on
+# from a cold history once cost that frame its CRC (#399). Each transmission is a preamble, the LSF, one LICH
+# superframe of stream frames and the end-of-transmission marker, at the specification's pulse shape (root raised
+# cosine, roll-off 0.5) and outer deviation (2400 Hz), with M17_SYNTH_GAP_S of noise alone after it. The frames come
+# from m17_frame_dibits() and friends, which m17_self_check() holds to the committed reference vectors
+# (tests/protocol/m17/fixtures/m17_reference_vectors.h). The noise is complex Gaussian at a set S/N inside the
+# 12.5 kHz channel, the measure tools/scan_quiet_reception.py uses: without its matched filter dsd-neo decoded none of
+# m17_lsf_weak's link setups. m17_lsf_clean is the clean case, eight shorter transmissions each delayed by its own
+# fraction of a sample, so the hunt meets each preamble at another phase: the hunt's timing loop left the grid up to
+# two samples off the preamble's symbols, and an EOT left the next hunt slicing against its skewed levels, which cost
+# about one LSF in five on clean signal.
+#
+# name, S/N dB in 12.5 kHz, seed, stream frames per transmission, gap s, each transmission's delay in samples
+M17_SYNTH = [
+    ("m17_lsf_weak", 9.0, 807, 6, 0.2, (0.0, 0.0, 0.0, 0.0)),
+    ("m17_lsf_clean", 30.0, 10, 2, 0.2, (0.0, 0.25, 0.5, 0.75, 0.125, 0.375, 0.625, 0.875)),
+]
+# Clean NXDN and YSF frames from tools/scan_quiet_reception.py's generators (issue #834): each sync word carries inner
+# symbols among its outer ones (NXDN's FSW two, YSF's frame sync seven), and the decoder set its slicer from those words
+# as if they were outer only, then read each frame at the phase the hunt's crossing loop left on the word. nxdn96_synth
+# and nxdn48_synth are 50 RDCH voice frames each (RRC 0.2 x sinc, NXDN TS 1-A), ysf_synth 20 V/D mode 2 frames (RRC
+# 0.2, 2700 Hz as MMDVM's level), all at the standard's outer deviation with no noise. Each NXDN fixture carries the
+# dibits sent in <name>.dibits ('0' +1, '1' +3, '2' -1, '3' -3), which tests/symbol_capture_check.py compares with
+# the decoder's -c symbol capture.
+#
+# name, generator, symbol rate, frames, outer deviation Hz
+SLICER_SYNTH_AMPLITUDE = 0.5  # the carrier's magnitude at full scale 1.0: clear of the RF Level HOT advisory
+SLICER_SYNTH = [
+    ("nxdn96_synth", "nxdn", 4800, 50, 2400.0),
+    ("nxdn48_synth", "nxdn", 2400, 50, 1050.0),
+    ("ysf_synth", "ysf", 4800, 20, 2700.0),
+]
+M17_SYNTH_DST = "N0CALL"
+M17_SYNTH_SRC = "LSF-FIRST"
+M17_SYNTH_TYPE = 0x0005  # stream, voice, no encryption, CAN 0
+M17_SYNTH_LEAD_S = 0.25
+M17_SYNTH_SYMBOL_RATE = 4800
+M17_SYNTH_OUTER_HZ = 2400.0
+M17_SYNTH_RRC_ALPHA = 0.5
+M17_SYNTH_RRC_SPAN_SYMBOLS = 4  # either side: the 81 taps of dsd-neo's own M17 transmit filter at 10 samples/symbol
+M17_SYNTH_CHANNEL_HZ = 12500.0
+M17_SYNC_LSF = 0x55F7
+M17_SYNC_STREAM = 0xFF5D
+M17_PREAMBLE_WORD = 0x7777  # +3, -3 alternating, ahead of an LSF
+M17_EOT_WORD = 0x555D
+M17_FRAME_SYMBOLS = 192
+M17_PUNCTURE_P1 = "11" + "0111" * 14 + "011"
+M17_PUNCTURE_P2 = "1" * 11 + "0"
+M17_RANDOMIZER = bytes.fromhex(
+    "d6b5e23082ff8462ba4e9690d898dd5d0cc85243911df86e682f35da14eacd76198dd580d133871357182d2978c3"
+)
+M17_BASE40 = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/."
+M17_DIBIT_TO_LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}  # M17 spec: 01 +3, 00 +1, 10 -1, 11 -3
 
 # Deterministic TETRA Synchronisation Bursts carrying one valid BSCH. The
 # physical channel runs at 18 ksym/s pi/4-DQPSK; the selected identity is
@@ -1027,13 +1105,18 @@ def undo_deemphasis(audio, tau_us):
     return (audio - a * previous) / (1.0 - a)
 
 
-def remodulate(audio, deviation):
-    """Integrate discriminator audio back into complex baseband (inverse FM demod)."""
-    audio = audio - np.mean(audio)
-    scale = np.percentile(np.abs(audio), 99.5)
-    if scale <= 0.0:
-        scale = 1.0
-    freq = audio / scale * deviation
+def remodulate(audio, deviation, level=None):
+    """Integrate discriminator audio back into complex baseband (inverse FM demod).
+
+    Without level, the audio's mean is removed and its 99.5th percentile maps to deviation (a fraction of Nyquist).
+    With level, the audio maps as it stands: an audio value of level is deviation, its mean kept.
+    """
+    if level is None:
+        audio = audio - np.mean(audio)
+        level = np.percentile(np.abs(audio), 99.5)
+        if level <= 0.0:
+            level = 1.0
+    freq = audio / level * deviation
     phase = np.cumsum(freq) * math.pi
     return np.exp(1j * phase)
 
@@ -1478,21 +1561,295 @@ def build_dpmr_synth(out_dir):
     return written
 
 
+def m17_bits(value, width):
+    return [(value >> (width - 1 - i)) & 1 for i in range(width)]
+
+
+def m17_bytes_bits(data):
+    return [bit for byte in data for bit in m17_bits(byte, 8)]
+
+
+def m17_callsign(text):
+    """Base-40 address of a callsign, first character least significant (M17 specification, address encoding)."""
+    value = 0
+    for char in reversed(text):
+        value = value * 40 + M17_BASE40.index(char)
+    return value
+
+
+def m17_crc16(data):
+    """CRC-16 of the LSF: polynomial 0x5935, register from 0xFFFF (src/protocol/m17/m17_algorithms.c)."""
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x5935) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def m17_lsf_bytes(dst, src, type_word, meta=bytes(14)):
+    body = dst.to_bytes(6, "big") + src.to_bytes(6, "big") + type_word.to_bytes(2, "big") + meta
+    return body + m17_crc16(body).to_bytes(2, "big")
+
+
+def m17_convolve(bits):
+    """Rate-1/2, K = 5: g1 = 1+D^3+D^4 sent first, g2 = 1+D+D^2+D^4, register from zero."""
+    d1 = d2 = d3 = d4 = 0
+    out = []
+    for d in bits:
+        out += [d ^ d3 ^ d4, d ^ d1 ^ d2 ^ d4]
+        d1, d2, d3, d4 = d, d1, d2, d3
+    return out
+
+
+def m17_puncture(bits, pattern):
+    return [bit for i, bit in enumerate(bits) if pattern[i % len(pattern)] == "1"]
+
+
+def m17_golay24(data):
+    """Extended Golay (24,12): the 12 data bits, the (23,12) parity of 0xC75, then even overall parity."""
+    rem = data << 11
+    for shift in range(22, 10, -1):
+        if rem >> shift & 1:
+            rem ^= 0xC75 << (shift - 11)
+    word = ((data << 11) | rem) << 1
+    return m17_bits(word | (bin(word).count("1") & 1), 24)
+
+
+def m17_lich_bits(lsf, count):
+    """One 48-bit LICH chunk (40 LSF bits, the 3-bit counter, 5 reserved zeros) as four Golay (24,12) words."""
+    content = m17_bytes_bits(lsf)[40 * count : 40 * count + 40] + m17_bits(count, 3) + [0] * 5
+    out = []
+    for block in range(4):
+        out += m17_golay24(int("".join(map(str, content[12 * block : 12 * block + 12])), 2))
+    return out
+
+
+def m17_frame_dibits(sync_word, payload_bits):
+    """Sync word, then the 368 payload bits interleaved (QPP 45, 92) and randomized."""
+    interleaved = [0] * 368
+    for i, bit in enumerate(payload_bits):
+        interleaved[(45 * i + 92 * i * i) % 368] = bit
+    randomizer = m17_bytes_bits(M17_RANDOMIZER)
+    bits = m17_bits(sync_word, 16) + [bit ^ mask for bit, mask in zip(interleaved, randomizer)]
+    return [2 * bits[i] + bits[i + 1] for i in range(0, len(bits), 2)]
+
+
+def m17_lsf_frame(lsf):
+    return m17_frame_dibits(M17_SYNC_LSF, m17_puncture(m17_convolve(m17_bytes_bits(lsf) + [0] * 4), M17_PUNCTURE_P1))
+
+
+def m17_stream_frame(lsf, lich_count, frame_number, payload=bytes(16)):
+    type1 = m17_bits(frame_number, 16) + m17_bytes_bits(payload) + [0] * 4
+    payload_bits = m17_lich_bits(lsf, lich_count) + m17_puncture(m17_convolve(type1), M17_PUNCTURE_P2)
+    return m17_frame_dibits(M17_SYNC_STREAM, payload_bits)
+
+
+def m17_repeat_word(word):
+    return m17_frame_dibits(word, [])[:8] * (M17_FRAME_SYMBOLS // 8)
+
+
+def m17_self_check():
+    """Hold the frame builders to the committed reference vectors' frame hashes (FNV-1a 64 over the dibits)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests", "protocol", "m17", "fixtures",
+                        "m17_reference_vectors.h")
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+
+    def array(name):
+        body = text.split(f"{name}[", 1)[1].split("{", 1)[1].split("}", 1)[0]
+        return bytes(int(token.rstrip("U"), 16) for token in body.replace(",", " ").split())
+
+    def scalar(name):
+        return int(text.split(f"{name} = ", 1)[1].split(";", 1)[0].replace("UINT64_C(", "").rstrip(")U"), 16)
+
+    def fnv(dibits):
+        value = 1469598103934665603
+        for dibit in dibits:
+            value = ((value ^ dibit) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+        return value
+
+    lsf = array("M17_REF_LSF_BYTES")
+    stream = m17_stream_frame(lsf, 0, scalar("M17_REF_STREAM_FN"), array("M17_REF_STREAM_PAYLOAD_BYTES"))
+    for label, dibits, want in (
+        ("LSF", m17_lsf_frame(lsf), "M17_REF_LSF_FRAME_DIBIT_FNV64"),
+        ("stream", stream, "M17_REF_STREAM_FRAME_DIBIT_FNV64"),
+    ):
+        if fnv(dibits) != scalar(want):
+            raise SystemExit(f"m17_self_check: the {label} frame does not match {want}")
+    if m17_lsf_bytes(m17_callsign("N0CALL"), m17_callsign("DSD-NEO"), 0x0C95, lsf[14:28]) != lsf:
+        raise SystemExit("m17_self_check: the LSF fields do not match M17_REF_LSF_BYTES")
+
+
+def m17_transmission_dibits(stream_frames):
+    lsf = m17_lsf_bytes(m17_callsign(M17_SYNTH_DST), m17_callsign(M17_SYNTH_SRC), M17_SYNTH_TYPE)
+    dibits = m17_repeat_word(M17_PREAMBLE_WORD) + m17_lsf_frame(lsf)
+    for fn in range(stream_frames):
+        last = 0x8000 if fn == stream_frames - 1 else 0
+        dibits += m17_stream_frame(lsf, fn % 6, fn | last)
+    return dibits + m17_repeat_word(M17_EOT_WORD)
+
+
+def rrc_unity_dc_taps(a, sps, span_symbols):
+    """A root raised cosine of roll-off a, span_symbols either side of the centre at sps samples per symbol, summing to
+    sps: impulses through it hold a repeated level at that level."""
+    t = np.arange(-span_symbols * sps, span_symbols * sps + 1) / sps
+    with np.errstate(divide="ignore", invalid="ignore"):
+        taps = (np.sin(math.pi * t * (1 - a)) + 4 * a * t * np.cos(math.pi * t * (1 + a))) / (
+            math.pi * t * (1 - (4 * a * t) ** 2)
+        )
+    taps[t == 0] = 1 + a * (4 / math.pi - 1)
+    edge = np.isclose(np.abs(t), 1 / (4 * a))
+    taps[edge] = a / math.sqrt(2) * ((1 + 2 / math.pi) * math.sin(math.pi / (4 * a))
+                                     + (1 - 2 / math.pi) * math.cos(math.pi / (4 * a)))
+    taps *= sps / taps.sum()
+    return taps
+
+
+def m17_modulate(dibits, delay=0.0):
+    """4FSK through a root raised cosine at unity DC gain, so a held level 3 is the outer deviation, @p delay samples
+    late (the frequency read between samples)."""
+    sps = SAMPLE_RATE_HZ // M17_SYNTH_SYMBOL_RATE
+    taps = rrc_unity_dc_taps(M17_SYNTH_RRC_ALPHA, sps, M17_SYNTH_RRC_SPAN_SYMBOLS)
+    impulses = np.zeros(len(dibits) * sps)
+    impulses[::sps] = [M17_DIBIT_TO_LEVEL[dibit] for dibit in dibits]
+    freq_hz = np.convolve(impulses, taps, mode="same") * M17_SYNTH_OUTER_HZ / 3.0
+    if delay != 0.0:
+        n = np.arange(len(freq_hz), dtype=np.float64)
+        freq_hz = np.interp(n - delay, n, freq_hz, left=0.0)
+    return np.exp(2j * math.pi * np.cumsum(freq_hz) / SAMPLE_RATE_HZ)
+
+
+def m17_synth_samples(snr_db, seed, stream_frames, gap_s, delays):
+    """The transmissions on a carrier keyed only while they last, in noise at snr_db inside the 12.5 kHz channel."""
+    dibits = m17_transmission_dibits(stream_frames)
+    burst = m17_modulate(dibits)
+    gap = np.zeros(int(round(gap_s * SAMPLE_RATE_HZ)), dtype=complex)
+    signal = np.concatenate(
+        [np.zeros(int(round(M17_SYNTH_LEAD_S * SAMPLE_RATE_HZ)), dtype=complex)]
+        + [np.concatenate([m17_modulate(dibits, delay), gap]) for delay in delays]
+    )
+    spectrum = np.abs(np.fft.fft(burst)) ** 2 / len(burst) ** 2
+    freqs = np.fft.fftfreq(len(burst), 1.0 / SAMPLE_RATE_HZ)
+    burst_power = float(spectrum[np.abs(freqs) <= M17_SYNTH_CHANNEL_HZ / 2.0].sum())
+    sigma = math.sqrt(burst_power / 10.0 ** (snr_db / 10.0) * SAMPLE_RATE_HZ / M17_SYNTH_CHANNEL_HZ / 2.0)
+    rng = np.random.default_rng(seed)
+    return signal + rng.normal(0.0, sigma, len(signal)) + 1j * rng.normal(0.0, sigma, len(signal))
+
+
+def build_m17_synth(out_dir):
+    """Write the LSF-first M17 transmissions in noise (issue #834; see M17_SYNTH)."""
+    m17_self_check()
+    total = 0
+    for name, snr_db, seed, stream_frames, gap_s, delays in M17_SYNTH:
+        written = write_fixture(out_dir, name, m17_synth_samples(snr_db, seed, stream_frames, gap_s, delays))
+        total += written
+        print(f"{name:28s} synth   {written // 1024:6d} KiB")
+    return total
+
+
+def build_slicer_synth(out_dir):
+    """Write the clean NXDN and YSF generator fixtures (issue #834; see SLICER_SYNTH)."""
+    import scan_quiet_reception as sqr  # it imports this module, so not at the top
+
+    level_to_dibit = {level: dibit for dibit, level in DPMR_DIBIT_TO_LEVEL.items()}
+    total = 0
+    for name, generator, symbol_rate, frames, outer_hz in SLICER_SYNTH:
+        if generator == "nxdn":
+            levels = sqr.nxdn_levels(frames)
+            response = sqr.nxdn_response(symbol_rate)
+        else:
+            levels = sqr.ysf_levels(frames)
+            response = sqr.rrc_response(0.2, symbol_rate)
+        samples = SLICER_SYNTH_AMPLITUDE * sqr.fm_from_levels(levels, symbol_rate, response, outer_hz)
+        written = write_fixture(out_dir, name, samples, normalize=False)
+        if generator == "nxdn":
+            dibits = "".join(str(level_to_dibit[float(level)]) for level in levels)
+            with open(os.path.join(out_dir, name + ".dibits"), "w", encoding="ascii", newline="\n") as handle:
+                handle.write(dibits + "\n")
+            written += len(dibits) + 1
+        total += written
+        print(f"{name:28s} synth   {written // 1024:6d} KiB")
+    return total
+
+
+def dmr_synth_baseband(audio):
+    """The DMR generator's discriminator audio as baseband, its +/-3 level at +/-DMR_VOICE_SYNTH_OUTER_HZ."""
+    return remodulate(audio, DMR_VOICE_SYNTH_OUTER_HZ / (SAMPLE_RATE_HZ / 2.0), level=DMR_SYNTH_OUTER_LEVEL)
+
+
+def check_dmr_outer_deviation(samples):
+    """Refuse a DMR synthesis whose +3 or -3 symbols miss +/-DMR_VOICE_SYNTH_OUTER_HZ by more than
+    DMR_OUTER_TOLERANCE; returns the two levels.
+
+    The generator centres symbol k on sample k * sps, and its raised-cosine pulses cross zero at every other centre,
+    so the instantaneous frequency there is the symbol's own level. A side's outer symbols are its larger half.
+    """
+    sps = SAMPLE_RATE_HZ // DMR_SYNTH_SYMBOL_RATE
+    centres = np.arange(sps, len(samples), sps)
+    freq = np.angle(samples[centres] * np.conj(samples[centres - 1])) * SAMPLE_RATE_HZ / (2.0 * math.pi)
+    levels = []
+    for side in (freq[freq > 0], -freq[freq < 0]):
+        outer = float(np.median(side[side > np.median(side)]))
+        if abs(outer - DMR_VOICE_SYNTH_OUTER_HZ) > DMR_OUTER_TOLERANCE * DMR_VOICE_SYNTH_OUTER_HZ:
+            raise SystemExit(
+                f"{DMR_VOICE_SYNTH_NAME}: outer symbols at {outer:.0f} Hz on the "
+                f"{'positive' if not levels else 'negative'} side, not {DMR_VOICE_SYNTH_OUTER_HZ:.0f} Hz "
+                f"+/-{DMR_OUTER_TOLERANCE:.0%}"
+            )
+        levels.append(outer)
+    return levels
+
+
 def build_dmr_voice_synth(out_dir, generator, work_dir):
     """Write the synthetic DMR BS voice fixture from the test generator's discriminator audio (issue #729)."""
+    samples = dmr_synth_baseband(dmr_synth_wav_audio(generator, DMR_VOICE_SYNTH_ARGS, work_dir, DMR_VOICE_SYNTH_NAME))
+    check_dmr_outer_deviation(samples)
+    written = write_fixture(out_dir, DMR_VOICE_SYNTH_NAME, samples)
+    print(f"{DMR_VOICE_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")
+    return written
+
+
+def dmr_synth_wav_audio(generator, args, work_dir, name):
+    """Run the DMR test generator with args; return its 48 kHz discriminator audio as floats."""
     os.makedirs(work_dir, exist_ok=True)
     generator = os.path.abspath(generator)
     with tempfile.TemporaryDirectory(prefix="dmr-synth-", dir=work_dir) as synth_dir:
-        wav_name = DMR_VOICE_SYNTH_NAME + ".wav"
-        subprocess.run([generator, "-o", wav_name] + DMR_VOICE_SYNTH_ARGS, cwd=synth_dir, check=True)
+        wav_name = name + ".wav"
+        subprocess.run([generator, "-o", wav_name] + args, cwd=synth_dir, check=True)
         wav_path = os.path.join(synth_dir, wav_name)
         with wave.open(wav_path, "rb") as wav:
             if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() != SAMPLE_RATE_HZ:
                 raise SystemExit(f"{wav_path}: expected 48 kHz mono s16 from the DMR generator")
-            audio = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float64)
-    samples = remodulate(audio, DMR_VOICE_SYNTH_DEVIATION)
-    written = write_fixture(out_dir, DMR_VOICE_SYNTH_NAME, samples)
-    print(f"{DMR_VOICE_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")
+            return np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float64)
+
+
+def dmr_synth_symbol_levels(audio):
+    """The generator's symbol levels: its raised-cosine pulses centre symbol k on sample k * sps and cross zero at every
+    other centre, so the audio there is the level times DMR_SYNTH_OUTER_LEVEL / 3."""
+    levels = np.round(audio[:: SAMPLE_RATE_HZ // DMR_SYNTH_SYMBOL_RATE] * 3.0 / DMR_SYNTH_OUTER_LEVEL)
+    if not set(np.unique(levels)) <= {-3.0, -1.0, 1.0, 3.0}:
+        raise SystemExit(f"{DMR_BS_WEAK_NAME}: the DMR generator's audio does not sit on its symbol levels")
+    return levels
+
+
+def build_dmr_bs_weak(out_dir, generator, work_dir):
+    """Write the DMR BS call at the standard's pulse in noise (issue #834; see DMR_BS_WEAK_NAME)."""
+    levels = dmr_synth_symbol_levels(dmr_synth_wav_audio(generator, DMR_BS_WEAK_ARGS, work_dir, DMR_BS_WEAK_NAME))
+    sps = SAMPLE_RATE_HZ // DMR_SYNTH_SYMBOL_RATE
+    impulses = np.zeros(len(levels) * sps)
+    impulses[::sps] = levels
+    taps = rrc_unity_dc_taps(DMR_BS_WEAK_RRC_ALPHA, sps, DMR_BS_WEAK_RRC_SPAN_SYMBOLS)
+    freq_hz = np.convolve(impulses, taps, mode="same") * DMR_VOICE_SYNTH_OUTER_HZ / 3.0
+    signal = np.exp(2j * math.pi * np.cumsum(freq_hz) / SAMPLE_RATE_HZ)
+    spectrum = np.abs(np.fft.fft(signal)) ** 2 / len(signal) ** 2
+    freqs = np.fft.fftfreq(len(signal), 1.0 / SAMPLE_RATE_HZ)
+    power = float(spectrum[np.abs(freqs) <= DMR_BS_WEAK_CHANNEL_HZ / 2.0].sum())
+    sigma = math.sqrt(power / 10.0 ** (DMR_BS_WEAK_SNR_DB / 10.0) * SAMPLE_RATE_HZ / DMR_BS_WEAK_CHANNEL_HZ / 2.0)
+    rng = np.random.default_rng(DMR_BS_WEAK_NOISE_SEED)
+    samples = signal + rng.normal(0.0, sigma, len(signal)) + 1j * rng.normal(0.0, sigma, len(signal))
+    written = write_fixture(out_dir, DMR_BS_WEAK_NAME, samples)
+    print(f"{DMR_BS_WEAK_NAME:28s} synth   {written // 1024:6d} KiB")
     return written
 
 
@@ -2601,6 +2958,8 @@ def derived_fixture_names():
         + [entry[0] for entry in DERIVED_GAP]
         + [entry[0] for entry in DERIVED_THEN_NOISE]
         + [DPMR_SYNTH_NAME]
+        + [entry[0] for entry in M17_SYNTH]
+        + [entry[0] for entry in SLICER_SYNTH]
         + [entry[0] for entry in NFM_SYNTH]
         + [entry[0] for entry in AM_SYNTH]
         + [entry[0] for entry in ANALOG_CTCSS_SYNTH]
@@ -2656,6 +3015,8 @@ def build_all_derived(out_dir, dmr_synth_gen, speech_synth_gen, cache):
     total += build_derived_gap(out_dir)
     total += build_then_noise(out_dir)
     total += build_dpmr_synth(out_dir)
+    total += build_m17_synth(out_dir)
+    total += build_slicer_synth(out_dir)
     total += build_tetra_synth(out_dir)
     total += build_tetra_gap(out_dir)
     total += build_tetra_stress(out_dir)
@@ -2668,8 +3029,10 @@ def build_all_derived(out_dir, dmr_synth_gen, speech_synth_gen, cache):
     total += build_squelch_burst(out_dir)
     if dmr_synth_gen:
         total += build_dmr_voice_synth(out_dir, dmr_synth_gen, cache)
+        total += build_dmr_bs_weak(out_dir, dmr_synth_gen, cache)
     else:
-        print(f"{DMR_VOICE_SYNTH_NAME:28s} skipped (needs --dmr-synth-gen)")
+        for name in (DMR_VOICE_SYNTH_NAME, DMR_BS_WEAK_NAME):
+            print(f"{name:28s} skipped (needs --dmr-synth-gen)")
     if speech_synth_gen:
         total += build_speech_synth(out_dir, speech_synth_gen, cache)
     else:
@@ -2719,7 +3082,7 @@ def verify_derived(args):
     # Without a generator the copy keeps the fixtures it writes, so they compare equal unchecked.
     unchecked = []
     if not args.dmr_synth_gen:
-        unchecked.append(f"{DMR_VOICE_SYNTH_NAME} (needs --dmr-synth-gen)")
+        unchecked.append(f"{DMR_VOICE_SYNTH_NAME}, {DMR_BS_WEAK_NAME} (needs --dmr-synth-gen)")
     if not args.speech_synth_gen:
         unchecked.append(f"{', '.join(entry[0] for entry in SPEECH_SYNTH)} (needs --speech-synth-gen)")
     if unchecked:
@@ -2743,7 +3106,7 @@ def main():
     )
     parser.add_argument(
         "--dmr-synth-gen",
-        help="the built DMR test generator (dsd-neo_test_dmr_synth_gen) that writes the dmr_voice_synth fixture",
+        help="the built DMR test generator (dsd-neo_test_dmr_synth_gen) that writes dmr_voice_synth and dmr_bs_weak",
     )
     parser.add_argument(
         "--speech-synth-gen",

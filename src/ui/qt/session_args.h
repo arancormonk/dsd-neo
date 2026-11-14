@@ -111,11 +111,12 @@ constexpr int SessionArgsScanHoldDefaultMs = 1200;
  * The session runs one receiver and one set of scan options, @p primary's, so every setting a list puts into its
  * argv has to come out the same for both once the app-wide defaults in @p prefs fill what a list leaves unset and side
  * files are resolved to absolute paths: radio source (source type and device: Airspy serial, host and port), gain,
- * PPM correction, DSP bandwidth (as the radio runs it), bias tee, every other Airspy setting, voice only, default dwell
- * and hold (0 runs the engine's default), fallback talkgroups and source aliases. The first that differs, in that
- * order, is named: "Different radio source", "Different gain", "Different PPM correction", "Different bandwidth",
- * "Different bias tee", "Different Airspy settings", "Different voice-only setting", "Different default dwell",
- * "Different default hold", "Different fallback talkgroups" or "Different source aliases".
+ * PPM correction, DSP bandwidth (as the radio runs it), bias tee, every other Airspy setting, voice only, skip silent
+ * channels (issue #834), default dwell and hold (0 runs the engine's default), fallback talkgroups and source aliases.
+ * The first that differs, in that order, is named: "Different radio source", "Different gain", "Different PPM
+ * correction", "Different bandwidth", "Different bias tee", "Different Airspy settings", "Different voice-only
+ * setting", "Different skip-silent setting", "Different default dwell", "Different default hold", "Different fallback
+ * talkgroups" or "Different source aliases".
  */
 QString session_args_scan_join_conflict(const QVariantMap& primary, const QVariantMap& other,
                                         const SessionArgPrefs& prefs);

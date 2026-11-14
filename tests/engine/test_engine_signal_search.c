@@ -38,6 +38,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../src/engine/scan_owner.h"
 
 static dsd_signal_search_status status;
 static dsd_signal_capture capture = {1536000, 100384000, 1, 384000, 384000, 0, 0, DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
@@ -403,7 +404,12 @@ test_listening_verdict_and_live_strength(dsd_opts* o, dsd_state* s, dsd_signal_s
     config->session_id = 44;
     config->ranges[0].digital = 0;
     config->ranges[0].max_visit_ms = 0;
+    /* A scan quiet check made before the search is not the search's (issue #834): the start moves its counter. */
+    const dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(s);
+    assert(owner);
+    const uint64_t quiet_inv = owner->quiet_inv_seq;
     assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+    assert(dsd_engine_scan_owner_get(s)->quiet_inv_seq != quiet_inv);
     tick(o, s);
 
     // An analog monitor that has not judged the landed channel yet is no quiet channel: a front end still designing

@@ -28,6 +28,7 @@ typedef enum {
     DSD_SPS_FILTER_P25,
     DSD_SPS_FILTER_NXDN,
     DSD_SPS_FILTER_DPMR,
+    DSD_SPS_FILTER_M17,
 } dsd_sps_filter_kind;
 
 /** Largest history any of these filters keeps, and so the most a prime can use. */

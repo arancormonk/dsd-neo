@@ -376,8 +376,9 @@ test_remaining_preset_modes(void) {
                         opts.pulse_digi_out_channels);
             return 1;
         }
-        if (cases[i].mode == DSDCFG_MODE_M17 && opts.use_cosine_filter != 0) {
-            DSD_FPRINTF(stderr, "M17 should disable cosine filter\n");
+        /* No preset owns the matched-filter switch: M17 has its filter like every other mode (issue #834). */
+        if (opts.use_cosine_filter != 1) {
+            DSD_FPRINTF(stderr, "preset %s changed the matched-filter switch\n", cases[i].name);
             return 1;
         }
         if (cases[i].mode == DSDCFG_MODE_EDACS_PV && (state.ea_mode != 0 || state.esk_mask != 0)) {

@@ -808,12 +808,18 @@ typedef struct {
 /* Why an input interruption stands (dsd_state::input_interrupt_reason). The values rank: a raise never lowers the
    reason that stands (dsd_state_raise_input_interrupt()). */
 typedef enum {
-    /* None of its own: a hunt read left a silent input's wait for a queued command, or the input ended. The engine loop
-       clears it at its next pass. */
+    /* None of its own: a hunt read left a silent input's wait for a queued command, or the input ended; or a hunt read
+       on a live RTL stream that came back idle (DSD_RTL_READ_IDLE) gave way to a queued command or a put-off
+       publication (issue #834). The engine loop clears it at its next pass. */
     DSD_INTERRUPT_NONE = 0,
     /* A Signal search left the frame, or a live read gave up on a stalled input during a search visit: getSymbol()
        stands erasures in while the search runs. */
     DSD_INTERRUPT_SEARCH,
+    /* A hunt read under a scan (trunk scan owns the tuner, or -Y runs) got no input for a bounded time (issue #834: a
+       silent PCM input for DSD_ANALOG_STREAM_PAUSE_MIN_MS, a live RTL read that came back DSD_RTL_READ_IDLE, an idle
+       analog monitor): the pass ends as a dead-air pass does, and the engine loop runs noCarrier(), which services the
+       scan. It does not stand: no frame was cut. */
+    DSD_INTERRUPT_SCAN_IDLE,
     /* A live read with no stream gave way to queued commands: sticky until the engine loop consumes it. */
     DSD_INTERRUPT_YIELD,
     /* The radio stream has a gap on the same carrier (a USB recovery, an rtl_tcp reconnect, or a capture's recorded
@@ -2626,6 +2632,11 @@ struct dsd_state {
     uint8_t m17_pre_run;
     uint8_t m17_pre_candidate;
     uint8_t m17_pre_candidate_ttl;
+    /* 1 when the link setup frame just read passed its CRC and declared stream mode (TYPE bit 0, the packet/stream
+     * indicator, is 1), so the frames behind it are stream frames and never packet frames; 0 before any LSF, after one
+     * that failed its CRC and after a packet-mode one. Frame sync reads it for the sync right after an LSF (issue
+     * #834). */
+    uint8_t m17_lsf_stream_mode;
     /* M17 joined mid-transmission (src/dsp/dsd_frame_sync.c): the windows that lately held a stream, LSF, packet or BERT
      * sync word exactly, with the word (kind 1-4) and where (dsd_state::symbolcnt). The same word exactly one and two
      * 192-symbol frames before a window joins the transmission there, for that frame alone: the history is cleared

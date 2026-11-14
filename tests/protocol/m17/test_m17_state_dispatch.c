@@ -2415,6 +2415,42 @@ test_ip_decoder_propagates_udp_backend_failure(void) {
     return err;
 }
 
+static int
+finalize_lsf_of_mode(dsd_opts* opts, dsd_state* state, uint16_t packet_stream, int corrupt_crc) {
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t data_type = packet_stream != 0U ? 2U : 0U;
+    build_lsf_bits(lsf_bits, dst, src, m17_compose_frame_info(packet_stream, data_type, 0U, 0U, 5U, 0U, 0U), NULL);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    return m17_finalize_lsf_crc(opts, state, lsf_packed, corrupt_crc ? (uint16_t)(crc ^ 1U) : crc);
+}
+
+/* A link setup frame names its transmission's mode in TYPE bit 0, and frame sync keeps a packet sync word out of the
+   stream a stream-mode LSF opened. Only an LSF whose CRC passed says so, and each LSF is read afresh, so a packet
+   transmission behind its own LSF is taken (issue #834). */
+static int
+test_lsf_names_stream_mode_only_behind_its_crc(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->aggressive_framesync = 1;
+
+    int err = 0;
+    err |= expect_int("stream LSF passes", finalize_lsf_of_mode(opts, state, 1U, 0), 0);
+    err |= expect_u8("a stream LSF names stream mode", state->m17_lsf_stream_mode, 1U);
+    err |= expect_int("packet LSF passes", finalize_lsf_of_mode(opts, state, 0U, 0), 0);
+    err |= expect_u8("the next LSF, a packet one, clears it", state->m17_lsf_stream_mode, 0U);
+    (void)finalize_lsf_of_mode(opts, state, 1U, 0);
+    err |= expect_int("damaged stream LSF fails", finalize_lsf_of_mode(opts, state, 1U, 1), 1);
+    err |= expect_u8("an LSF whose CRC failed names nothing", state->m17_lsf_stream_mode, 0U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
 /* An M17 preamble is only an alternating symbol run, so the frame body has to prove itself
  * before the decoder publishes identity or plays audio (issue #399). */
 static int
@@ -4707,6 +4743,7 @@ main(void) {
     err |= test_clear_signed_payload_updates_digest_and_dispatches();
     err |= test_stream_voice_replaces_foreign_active_call();
     err |= test_lsf_crc_confirms_the_transmission();
+    err |= test_lsf_names_stream_mode_only_behind_its_crc();
     err |= test_lsf_search_evidence_follows_the_published_call();
     err |= test_unconfirmed_stream_publishes_no_call();
     err |= test_stream_voice_chain_covers_the_whole_frame();

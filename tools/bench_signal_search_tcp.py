@@ -21,9 +21,10 @@ import numpy as np
 
 
 class Source:
-    def __init__(self):
+    def __init__(self, port=0):
         self.socket = socket.socket()
-        self.socket.bind(("127.0.0.1", 0))
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.bind(("127.0.0.1", port))
         self.socket.listen(1)
         self.socket.settimeout(30)
         self.port = self.socket.getsockname()[1]

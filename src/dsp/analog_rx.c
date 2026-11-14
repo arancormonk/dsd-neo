@@ -581,9 +581,11 @@ typedef struct {
     int pcm_sq_logged_native_hz;
     /** The monitor block being assembled, as the NFM call takes it (issue #668): the first sample from which the tone
         gate in force has stayed OFF or ALLOWED, ANALOG_RX_NOT_ELIGIBLE while it does not pass, and whether a read
-        starting there or later found the carrier itself (not only its hangover). */
+        starting there or later found the carrier itself (not only its hangover). block_carrier: whether any read of
+        the block found the carrier itself, whatever the tone gate (issue #834: activity to a scan quiet check). */
     unsigned int block_eligible_from;
     int block_qualified;
+    int block_carrier;
     /** Whether the per-sample squelch's gate was open at the last read's last sample (issue #668), a read the tap
         dropped or skipped included: a read that starts open after a read that ended closed opens the gate at its first
         sample. Closed at every reset (analog_rx_forget()). */
@@ -706,6 +708,7 @@ analog_rx_block_eligibility_begin(const dsd_opts* opts, const dsd_state* state, 
     session->block_eligible_from =
         dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state)) ? 0U : ANALOG_RX_NOT_ELIGIBLE;
     session->block_qualified = 0;
+    session->block_carrier = 0;
 }
 
 /* Whether the gate opens inside the read [@p start, @p end) of @p flags: a closed sample, or the last read's end
@@ -753,11 +756,13 @@ analog_rx_read_found_carrier(const dsd_opts* opts, const dsd_state* state, analo
 /* A read of the monitor block from sample @p start to @p end has published its verdict (issue #668), which describes
    the read's samples: a verdict that does not pass makes nothing of the block eligible yet, and the first one that
    passes after it makes the block eligible from the read's start. A read that found the carrier itself
-   (analog_rx_read_found_carrier(), @p flags NULL for none) while the block is eligible qualifies it. */
+   (analog_rx_read_found_carrier(), @p flags NULL for none) while the block is eligible qualifies it; under any
+   verdict it marks the block's carrier found (issue #834). */
 static void
 analog_rx_block_note_read(const dsd_opts* opts, const dsd_state* state, analog_rx_session* session, unsigned int start,
                           unsigned int end, const uint8_t* flags, int carrier_now) {
     const int found = analog_rx_read_found_carrier(opts, state, session, flags, start, end, carrier_now);
+    session->block_carrier |= found;
     if (!dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state))) {
         session->block_eligible_from = ANALOG_RX_NOT_ELIGIBLE;
         session->block_qualified = 0;
@@ -1480,6 +1485,12 @@ dsd_analog_rx_block_qualified_carrier(const dsd_opts* opts, const dsd_state* sta
     }
     const analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
     return session && session->block_eligible_from != ANALOG_RX_NOT_ELIGIBLE && session->block_qualified;
+}
+
+int
+dsd_analog_rx_block_found_carrier(const dsd_state* state) {
+    const analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
+    return session && session->block_carrier;
 }
 
 /* --------------------------------------------------------------------------------------------- the PCM noise squelch */

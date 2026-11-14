@@ -15,6 +15,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/dsp/tetra_training.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -43,6 +44,8 @@
 
 static void
 reset(dsd_opts* opts, dsd_state* state) {
+    /* An M17 preamble run allocates the symbol grid's sync anchor in a state extension slot. */
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
 }
@@ -1785,6 +1788,71 @@ test_a_dpmr_frame_is_not_reopened_by_the_nxdn_matcher(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+}
+
+/* The sync words' levels as sent, inner symbols included: NXDN's FSW (NXDN TS 1-A Table 4.4-2) and YSF's frame sync
+   D471C9634D (MMDVM YSFDefines.h), whose signs are NXDN_FSW and FUSION_SYNC. */
+static const float k_nxdn_fsw_levels[10] = {-3, 1, -3, 3, -3, -3, 3, 3, -1, 3};
+static const float k_ysf_fs_levels[20] = {-3, 3, 3, 1, 3, -3, 1, 3, -3, 1, -1, 3, 3, -1, 1, -3, 3, 1, -3, 3};
+
+/* A sync word's levels as the receiver read them into the symbol history: polarity, a gain and a DC offset. */
+static void
+load_sync_word_history(dsd_state* state, float* history, int size, const float* levels, int count, float polarity) {
+    DSD_MEMSET(history, 0, sizeof(*history) * (size_t)size);
+    state->symbol_history = history;
+    state->symbol_history_size = size;
+    state->symbol_history_head = 0;
+    state->symbol_history_count = 0;
+    for (int i = 0; i < count; i++) {
+        dsd_symbol_history_push(state, (polarity * levels[i] * 1000.0f) + 250.0f);
+    }
+}
+
+static void
+assert_slicer_on_true_rails(const dsd_state* state) {
+    assert(fabsf(state->max - 3250.0f) < 1.0f);
+    assert(fabsf(state->min - -2750.0f) < 1.0f);
+    assert(fabsf(state->center - 250.0f) < 1.0f);
+    assert(fabsf(state->umid - (250.0f + (3000.0f * DSD_WARM_START_MID_FRACTION))) < 1.0f);
+    assert(fabsf(state->lmid - (250.0f - (3000.0f * DSD_WARM_START_MID_FRACTION))) < 1.0f);
+}
+
+/* An accepted NXDN or YSF sync sets the slicer from the word just read. Both words carry inner symbols, which a
+   start that took every symbol for outer averaged into the rails: NXDN's at 2.6 of 3, YSF's centre a quarter of an
+   outer level off, which read clean inner symbols as outer (issue #834). */
+static void
+test_nxdn_and_ysf_syncs_set_the_slicer_on_the_true_rails(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static float history[64];
+
+    for (int inverted = 0; inverted <= 1; inverted++) {
+        const float polarity = inverted ? -1.0f : 1.0f;
+        reset(&opts, &state);
+        opts.frame_nxdn48 = 1;
+        opts.msize = 8;
+        state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+        state.min = -3.0f;
+        state.max = 3.0f;
+        load_sync_word_history(&state, history, 64, k_nxdn_fsw_levels, 10, polarity);
+        const char* fsw = inverted ? INV_NXDN_FSW : NXDN_FSW;
+        const int want = inverted ? DSD_SYNC_NXDN_NEG : DSD_SYNC_NXDN_POS;
+        /* NXDN48 counts the second hit at any distance. */
+        assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, fsw, 10) == DSD_SYNC_NONE);
+        assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, fsw, 10) == want);
+        assert_slicer_on_true_rails(&state);
+
+        reset(&opts, &state);
+        opts.frame_ysf = 1;
+        opts.msize = 8;
+        state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+        state.min = -3.0f;
+        state.max = 3.0f;
+        load_sync_word_history(&state, history, 64, k_ysf_fs_levels, 20, polarity);
+        assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, inverted ? INV_FUSION_SYNC : FUSION_SYNC, 20)
+               == (inverted ? DSD_SYNC_YSF_NEG : DSD_SYNC_YSF_POS));
+        assert_slicer_on_true_rails(&state);
+    }
 }
 
 /* The suppression is dPMR's frame, not a mute switch: NXDN96 lives on 4800/4 where dPMR cannot
@@ -5614,6 +5682,7 @@ main(void) {
     test_m17_alternating_runs_alone_are_never_a_sync();
     test_an_nxdn_sync_accept_leaves_the_sync_clock();
     test_a_dpmr_frame_is_not_reopened_by_the_nxdn_matcher();
+    test_nxdn_and_ysf_syncs_set_the_slicer_on_the_true_rails();
     test_the_dpmr_frame_suppression_is_scoped_to_its_own_profile();
     test_a_p25p1_frame_is_not_reopened_by_the_nxdn96_matcher();
     test_a_suppressed_nxdn96_window_still_blends_levels();

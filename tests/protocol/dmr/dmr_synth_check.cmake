@@ -11,7 +11,9 @@
 # position whose VC number matches, counting frame-sync-miss bursts; after a
 # BS loop drop-out the decoder can only re-enter at a later VC1) and is
 # re-anchored to the superframe whose expected frames the burst matches best
-# when a run of bursts went missing unseen.
+# when a run of bursts went missing unseen. An MS transmission (--ms, issue
+# #834) prints one "DMR MS/DM MODE/MONO ... | VC*" line per superframe, at
+# burst A; its frames are slot 1's, VC1 to VC6 in order, three per burst.
 #
 # Required -D inputs: DSD_BIN, GEN_BIN, WORK_DIR, CASE, GEN_ARGS.
 # Optional -D inputs:
@@ -174,56 +176,91 @@ set(_have_1 0) # a burst of the slot has been placed
 set(_have_2 0)
 set(_cur_slot "")
 set(_cur_vc "")
+set(_ms_vc "") # the MS superframe's next burst number after a flush, "" outside one
+set(_ms_first 0) # the MS superframe's first decoded burst is still to be placed
 set(_pending)
 set(_decoded) # entries "slot|sf|vc|frame|hex|line"
+
+# The superframe of the pending frames on slot _s at burst _cur_vc: the next position whose VC number matches,
+# re-anchored on content when a run of bursts went missing unseen. Sets _est, and _bestm to the most pending frames any
+# candidate superframe's expected frames matched.
+macro(_dmr_synth_place)
+    math(EXPR _min_pos "${_last_pos_${_s}} + 1 + ${_skipped_${_s}}")
+    if(_dropped_${_s} AND _have_${_s})
+        # the loop ended after the last decoded burst; re-entry is at a later VC1
+        math(EXPR _vc1 "((${_last_pos_${_s}} + 1) / 6 + 1) * 6")
+        if(_vc1 GREATER _min_pos)
+            set(_min_pos ${_vc1})
+        endif()
+    endif()
+    math(
+        EXPR
+        _pos
+        "${_min_pos} + ((((${_cur_vc} - 1 - ${_min_pos}) % 6) + 6) % 6)"
+    )
+    math(EXPR _est "${_pos} / 6")
+    # re-anchor on content when a run of bursts went missing unseen
+    set(_best ${_est})
+    set(_bestm -1)
+    math(EXPR _cand "${_est} - 1")
+    if(_cand LESS 0)
+        set(_cand 0)
+    endif()
+    math(EXPR _cand_end "${_est} + 5")
+    while(_cand LESS_EQUAL _cand_end)
+        set(_m 0)
+        set(_i 0)
+        foreach(_hx IN LISTS _pending)
+            if(
+                DEFINED _E_${_s}_${_cand}_${_cur_vc}_${_i}
+                AND "${_E_${_s}_${_cand}_${_cur_vc}_${_i}}" STREQUAL "${_hx}"
+            )
+                math(EXPR _m "${_m} + 1")
+            endif()
+            math(EXPR _i "${_i} + 1")
+        endforeach()
+        if(_m GREATER _bestm)
+            set(_best ${_cand})
+            set(_bestm ${_m})
+        endif()
+        math(EXPR _cand "${_cand} + 1")
+    endwhile()
+    if(_bestm GREATER_EQUAL 2 AND NOT _best EQUAL _est)
+        set(_est ${_best})
+    endif()
+endmacro()
+
+# The first burst an MS superframe decodes after its burst A line (issue #834): burst A, or a later one when the voice
+# gate held the bursts before it (an MS call plays from its first EMB that agrees with an earlier colour code, so from
+# B or C at call start; the gate holds at most A and B). It is the burst of A to C whose expected frames the pending
+# ones match best, at least two; the earliest on a tie. A decoder that started a superframe at a later burst, or
+# placed frames at the wrong one, is still caught: no candidate past C is tried.
+macro(_dmr_synth_ms_anchor)
+    set(_s ${_cur_slot})
+    set(_ms_best_vc ${_cur_vc})
+    set(_ms_best_m -1)
+    foreach(_ms_v RANGE 1 3)
+        set(_cur_vc ${_ms_v})
+        _dmr_synth_place()
+        if(_bestm GREATER _ms_best_m)
+            set(_ms_best_vc ${_ms_v})
+            set(_ms_best_m ${_bestm})
+        endif()
+    endforeach()
+    if(_ms_best_m GREATER_EQUAL 2)
+        set(_cur_vc ${_ms_best_vc})
+    else()
+        set(_cur_vc 1)
+    endif()
+    math(EXPR _ms_vc "${_cur_vc} + 1")
+    set(_ms_first 0)
+endmacro()
 
 macro(_dmr_synth_flush)
     list(LENGTH _pending _np)
     if(NOT "${_cur_slot}" STREQUAL "" AND _np GREATER 0)
         set(_s ${_cur_slot})
-        math(EXPR _min_pos "${_last_pos_${_s}} + 1 + ${_skipped_${_s}}")
-        if(_dropped_${_s} AND _have_${_s})
-            # the loop ended after the last decoded burst; re-entry is at a later VC1
-            math(EXPR _vc1 "((${_last_pos_${_s}} + 1) / 6 + 1) * 6")
-            if(_vc1 GREATER _min_pos)
-                set(_min_pos ${_vc1})
-            endif()
-        endif()
-        math(
-            EXPR
-            _pos
-            "${_min_pos} + ((((${_cur_vc} - 1 - ${_min_pos}) % 6) + 6) % 6)"
-        )
-        math(EXPR _est "${_pos} / 6")
-        # re-anchor on content when a run of bursts went missing unseen
-        set(_best ${_est})
-        set(_bestm -1)
-        math(EXPR _cand "${_est} - 1")
-        if(_cand LESS 0)
-            set(_cand 0)
-        endif()
-        math(EXPR _cand_end "${_est} + 5")
-        while(_cand LESS_EQUAL _cand_end)
-            set(_m 0)
-            set(_i 0)
-            foreach(_hx IN LISTS _pending)
-                if(
-                    DEFINED _E_${_s}_${_cand}_${_cur_vc}_${_i}
-                    AND "${_E_${_s}_${_cand}_${_cur_vc}_${_i}}" STREQUAL "${_hx}"
-                )
-                    math(EXPR _m "${_m} + 1")
-                endif()
-                math(EXPR _i "${_i} + 1")
-            endforeach()
-            if(_m GREATER _bestm)
-                set(_best ${_cand})
-                set(_bestm ${_m})
-            endif()
-            math(EXPR _cand "${_cand} + 1")
-        endwhile()
-        if(_bestm GREATER_EQUAL 2 AND NOT _best EQUAL _est)
-            set(_est ${_best})
-        endif()
+        _dmr_synth_place()
         math(EXPR _last_pos_${_s} "${_est} * 6 + ${_cur_vc} - 1")
         set(_skipped_${_s} 0)
         set(_dropped_${_s} 0)
@@ -249,8 +286,16 @@ foreach(_line IN LISTS _lines)
     math(EXPR _ln "${_ln} + 1")
     if(_line MATCHES "<SLOT([12])>.*\\| VC([1-6])")
         _dmr_synth_flush()
+        set(_ms_vc "")
+        set(_ms_first 0)
         set(_cur_slot ${CMAKE_MATCH_1})
         set(_cur_vc ${CMAKE_MATCH_2})
+    elseif(_line MATCHES "DMR MS/DM MODE/MONO .*\\| VC\\*")
+        _dmr_synth_flush()
+        set(_cur_slot 1)
+        set(_cur_vc 1)
+        set(_ms_vc 2)
+        set(_ms_first 1)
     elseif(_line MATCHES "^ *AMBE ([0-9A-F]+) err")
         set(_last_ambe_ln ${_ln})
         if(NOT "${_cur_slot}" STREQUAL "")
@@ -258,7 +303,15 @@ foreach(_line IN LISTS _lines)
             list(APPEND _pending_lines ${_ln})
             list(LENGTH _pending _np)
             if(_np EQUAL 3)
+                if(_ms_first)
+                    _dmr_synth_ms_anchor()
+                endif()
                 _dmr_synth_flush()
+                if(NOT "${_ms_vc}" STREQUAL "" AND _ms_vc LESS_EQUAL 6)
+                    set(_cur_slot 1)
+                    set(_cur_vc ${_ms_vc})
+                    math(EXPR _ms_vc "${_ms_vc} + 1")
+                endif()
             endif()
         endif()
     elseif(_line MATCHES "Frame Sync Err")
@@ -275,6 +328,8 @@ foreach(_line IN LISTS _lines)
         list(APPEND _dropout_lns ${_ln})
     elseif(_line MATCHES "Sync:")
         _dmr_synth_flush()
+        set(_ms_vc "")
+        set(_ms_first 0)
     endif()
 endforeach()
 _dmr_synth_flush()

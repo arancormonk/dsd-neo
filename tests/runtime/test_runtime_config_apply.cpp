@@ -2922,6 +2922,7 @@ test_ui_malformed_payload_commands_drain_without_mutation(void) {
     opts->slot1_on = 1;
     opts->slot2_on = 0;
     opts->scan_voice_only = 1;
+    opts->scan_skip_silent = 1;
     opts->scan_voice_qualify_ms = 1500;
     opts->scan_voice_hold_ms = 2500;
     dsd_app_command_submit(DSD_APP_CMD_RIGCTL_SET_MOD_BW, &short_scalar, sizeof short_scalar);
@@ -2930,11 +2931,12 @@ test_ui_malformed_payload_commands_drain_without_mutation(void) {
     dsd_app_command_submit(DSD_APP_CMD_SLOT_PREF_SET, &short_scalar, sizeof short_scalar);
     dsd_app_command_submit(DSD_APP_CMD_SLOTS_ONOFF_SET, &short_scalar, sizeof short_scalar);
     dsd_app_command_submit(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, &short_scalar, sizeof short_scalar);
+    dsd_app_command_submit(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, &short_scalar, sizeof short_scalar);
     dsd_app_command_submit(DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, &short_scalar, sizeof short_scalar);
     dsd_app_command_submit(DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, &short_scalar, sizeof short_scalar);
     applied = dsd_app_drain_cmds(opts, state);
 
-    rc |= expect_int_eq("short scalar payload commands are drained", applied, 8);
+    rc |= expect_int_eq("short scalar payload commands are drained", applied, 9);
     rc |= expect_int_eq("short rigctl payload preserves bandwidth", opts->setmod_bw, 12500);
     rc |= expect_int_eq("short TG payload preserves hold", (int)state->tg_hold, 4242);
     rc |= expect_true("short hangtime payload preserves value", fabs(opts->trunk_hangtime - 7.25f) <= 1e-6f);
@@ -2942,6 +2944,7 @@ test_ui_malformed_payload_commands_drain_without_mutation(void) {
     rc |= expect_int_eq("short slot mask payload preserves slot 1", opts->slot1_on, 1);
     rc |= expect_int_eq("short slot mask payload preserves slot 2", opts->slot2_on, 0);
     rc |= expect_int_eq("short voice-only payload preserves flag", opts->scan_voice_only, 1);
+    rc |= expect_int_eq("short skip-silent payload preserves flag", opts->scan_skip_silent, 1);
     rc |= expect_int_eq("short voice qualify payload preserves value", opts->scan_voice_qualify_ms, 1500);
     rc |= expect_int_eq("short voice hold payload preserves value", opts->scan_voice_hold_ms, 2500);
 
@@ -2982,6 +2985,7 @@ test_ui_runtime_parameter_commands_clamp_and_update_state(void) {
     int32_t slot_pref = 9;
     int32_t slot_mask = 2;
     int32_t voice_only = 7;
+    int32_t skip_silent = 7;
     int32_t voice_qualify = 50;
     int32_t voice_hold = 700000;
 
@@ -2991,12 +2995,13 @@ test_ui_runtime_parameter_commands_clamp_and_update_state(void) {
     dsd_app_command_submit(DSD_APP_CMD_SLOT_PREF_SET, &slot_pref, sizeof slot_pref);
     dsd_app_command_submit(DSD_APP_CMD_SLOTS_ONOFF_SET, &slot_mask, sizeof slot_mask);
     dsd_app_command_submit(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, &voice_only, sizeof voice_only);
+    dsd_app_command_submit(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, &skip_silent, sizeof skip_silent);
     dsd_app_command_submit(DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, &voice_qualify, sizeof voice_qualify);
     dsd_app_command_submit(DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, &voice_hold, sizeof voice_hold);
     int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
-    rc |= expect_int_eq("runtime parameter drain count", applied, 8);
+    rc |= expect_int_eq("runtime parameter drain count", applied, 9);
     rc |= expect_int_eq("rigctl bandwidth clamps high", opts->setmod_bw, 25000);
     rc |= expect_int_eq("TG hold updates state", (int)state->tg_hold, (int)tg);
     rc |= expect_true("negative hangtime clamps to zero", fabs(opts->trunk_hangtime) <= 1e-9);
@@ -3004,6 +3009,7 @@ test_ui_runtime_parameter_commands_clamp_and_update_state(void) {
     rc |= expect_int_eq("slot mask clears slot 1", opts->slot1_on, 0);
     rc |= expect_int_eq("slot mask enables slot 2", opts->slot2_on, 1);
     rc |= expect_int_eq("voice-only clamps to on", opts->scan_voice_only, 1);
+    rc |= expect_int_eq("skip-silent clamps to on", opts->scan_skip_silent, 1);
     rc |= expect_int_eq("voice qualify clamps low", opts->scan_voice_qualify_ms, 100);
     rc |= expect_int_eq("voice hold clamps high", opts->scan_voice_hold_ms, 600000);
     rc |= expect_true("last runtime command writes voice hold toast", strstr(state->ui_msg, "Voice hold") != NULL);

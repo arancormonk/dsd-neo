@@ -965,6 +965,11 @@ dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const dsd_analog_
     if (!opts || !state || !block) {
         return;
     }
+    /* The carrier itself heard is activity to a scan quiet check (issue #834), qualified or not: one heard while its
+       tone check is pending counts, though it may end before the tone is judged. One load while skip-silent is off. */
+    if (opts->scan_skip_silent && block->found_carrier) {
+        dsd_engine_scan_quiet_note_sync(state);
+    }
     const int input = block->input;
     /* A RECEPTION or lead-in block's one decode-clock read, before any of its file work on any path: the
        reconciliation's end, a new identity's end and a resumed reception's pause all close or write a recording before

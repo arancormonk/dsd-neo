@@ -551,6 +551,16 @@ Explore sources. PCM, rigctl-only inputs and production I/Q replay cannot search
 Conventional scanning and trunk following must stop first. CLI controls, public
 TCP API commands and simultaneous analog/digital reception are not provided.
 
+The measurement tap is shared with the scan skip-silent check
+([Skipping silent channels](trunk-scan.md#skipping-silent-channels)). It holds one
+request at a time and knows whose it is: Signal search's, or a scan's quiet request
+for one landed channel. A quiet request is refused while a search owns the tuner or
+has a request or an unread report outstanding, and any search request replaces a
+quiet one at once; cancelling a search never touches a quiet request. Scanning and
+searching cannot run together anyway, so in practice this only orders the hand-over
+when a search starts. The quiet request's measurement is described under
+[Quiet-channel calibration](#quiet-channel-calibration).
+
 A stalled radio input (an rtl_tcp stall, for example) does not hold a visit or
 end the session: after 100 ms without samples the decoder leaves the frame it was
 reading and returns to the coordinator, so controls and visit deadlines still take
@@ -959,3 +969,212 @@ per build: NFM in-band ratio 17.73 dB, audible duration 3940 ms, RMS −25.97 dB
 AM 31.90 dB, 6160 ms, −23.93 dBFS. These excerpts have no event realization offsets;
 the repeats are deterministic checks of two fixtures, not independent RF trials.
 Longer independent real RF captures remain useful acceptance evidence.
+
+## Quiet-channel calibration
+
+The scan skip-silent check (issue #834) calls a landed conventional channel quiet only when every one of nine
+back-to-back sub-windows (each the smallest whole number of transforms of at least 10 ms) reads a channel power over
+the capture-wide noise reference across the same bins, (S+N)/N, below one fixed threshold in every judged width class,
+and no class's sideband floor stands over the floor guard. It shares Signal search's channel measurement.
+`DSD_SIGNAL_QUIET_THRESHOLD_DB`, `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR` and `DSD_SIGNAL_QUIET_GUARD_DB`
+(`src/io/radio/signal_measure.cpp`) and the domain `dsd_signal_quiet_rate_supported()` /
+`dsd_signal_quiet_analog_supported()` come from the calibration below; changing the measurement means running it
+again.
+
+### Reception thresholds
+
+`tools/scan_quiet_reception.py` measures the lowest S/N at which dsd-neo still receives each mode: S/N is the
+signal's power inside the mode's class width (12.5 kHz, 6.25 kHz, or the configured analog width; DMR MS during its
+bursts) over the noise inside the same width. Digital modes need 90% of the frames sent to pass CRC/FEC in a 10 s
+signal; analog needs 12 dB SINAD of a 1 kHz tone (NFM at 60% of the transmitter's maximum deviation, AM at 30%
+depth). Each is the median of five noise seeds on a 0.5 dB grid. NFM is measured with a 12.5 kHz channel's
+transmitter (1.5 kHz tone) at 8 and 12.5 kHz, a 25 kHz channel's (3 kHz tone) at 25 kHz, and both at 11.25, 16 and
+20 kHz, the lower kept.
+
+| Mode | Class | Threshold S/N | Mode | Class | Threshold S/N |
+| --- | --- | --- | --- | --- | --- |
+| M17 | 12.5 kHz | 6.0 dB | NFM | 8 kHz | 10.5 dB |
+| DMR BS | 12.5 kHz | 7.5 dB | NFM (25 kHz channel's tone) | 11.25 kHz | 6.5 dB |
+| DMR MS (burst-on) | 12.5 kHz | 7.5 dB | NFM | 12.5 kHz | 9.5 dB |
+| P25 Phase 1 | 12.5 kHz | 8.0 dB | NFM (25 kHz channel's tone) | 16 kHz | 6.0 dB |
+| YSF | 12.5 kHz | 9.0 dB | NFM (25 kHz channel's tone) | 20 kHz | 6.0 dB |
+| P25 Phase 2 | 12.5 kHz | 9.5 dB | NFM | 25 kHz | 6.0 dB |
+| NXDN96 | 12.5 kHz | 10.0 dB | AM | 5 kHz | 23.0 dB |
+| dPMR | 6.25 kHz | 8.0 dB | AM | 6 kHz | 22.5 dB |
+| NXDN48 | 6.25 kHz | 11.0 dB | AM | 8 kHz | 21.5 dB |
+| D-STAR | 6.25 kHz | 12.0 dB | AM | 10 kHz | 21.0 dB |
+| | | | AM | 15 kHz | 19.0 dB |
+| | | | AM | 20 kHz | 18.0 dB |
+
+X2-TDMA and ProVoice have no sourced bandwidth and time structure, so they get no check and are not calibrated.
+
+### Domain: rates and widths
+
+The check runs only where the calibration rendered and validated it, matched exactly; anything between gets no check.
+
+- Capture rates (`dsd_signal_quiet_rate_supported()`, every class): the RTL rate planner's 1.024, 1.152 and
+  1.536 Msps (the request is the DSP bandwidth rate times the power of two nearest a good RTL-SDR rate,
+  `rtl_downsample_passes_for_rate_in()` in `src/io/radio/rtl_sdr_fm.cpp`; the selectable DSP bandwidths 4 to 72 kHz
+  give only these three, and an RTL-SDR or rtl_tcp stream runs the request as asked), an Airspy's 2.5, 3, 6 and
+  10 MS/s, and the common RTL-SDR rates a SoapySDR device may be given, which picks its own nearest rate: 0.96, 1.2,
+  1.28, 1.44, 1.6, 1.8, 1.92, 2.048 and 2.4 Msps. A SoapySDR device that runs any other rate gets no check. The
+  Airspy rates apply to an Airspy through SoapySDR: a native Airspy input delivers centred I/Q with no quarter-rate
+  shift, which the measurement's geometry needs, so it gets no check at any rate; neither does an RTL-SDR with offset
+  tuning on, or any capture with the shift turned off.
+- Analog widths (`dsd_signal_quiet_analog_supported()`, given the kind as `dsd_opts.analog_demod` carries it): the
+  Radio sheet's NFM steps 8, 11.25, 12.5, 16, 20 and 25 kHz for NFM and its AM steps 5, 6, 8, 10, 15 and 20 kHz for AM
+  (`src/ui/qt/qml/Util.js`), each rendered as that kind, at every admitted rate. The engine takes any whole Hz from
+  8000 to 25000 (NFM) or 5000 to 20000 (AM) from the terminal, the CLI and the config; a width off its kind's steps
+  gets no check, including NFM at 10 or 15 kHz and AM at 11.25, 12.5 or 16 kHz, which were rendered only as the other
+  kind.
+
+### Driver and conditions
+
+`dsd-neo_test_signal_quiet_calibrate` (`tests/io/signal_quiet_calibrate.cpp`, built with the tests, never run by CTest)
+runs the stand-alone quiet detector, the one the shared tap runs. Its signals are the reception tool's own clean
+sources (`--export-sources DIR`), interpolated to the capture rate in the frequency domain so each band's power is
+unchanged, and placed in the RTL tap's geometry (tuned a quarter of the rate above the channel, the ingest rotation
+bringing the channel to the samples' 0 Hz) with a random start, phase and sample alignment per trial. The S/N is the
+tool's; the driver's `--phase snr` renders each wanted signal as the trials do and measures it back from the samples:
+over 100 trials each it lands within 0.05 dB of the target for every mode at every rate.
+
+Active trials sit 1 dB below each mode's reception threshold:
+
+- every digital mode at all 16 rates, offsets 0, ±500 Hz and ±1 kHz (and ±2.5 kHz for 6.25 kHz classes);
+- DMR MS at random burst phase and sample alignment with its 1.5 ms ramps, and again with its region B power at the
+  mask limits (+1 dBp, then −3 dBp for the last third of the burst, or the reverse);
+- every NFM and AM width at every rate, with the channel on a transform bin and a quarter and half a bin off it;
+- AM offset-carrier scenes inside a 20 kHz width at every rate: one carrier at ±2.5, ±5 or ±8 kHz, and the 2-, 3-, 4-
+  and 5-carrier systems (±5; 0, ±7.3; ±2.5, ±7.5; 0, ±4, ±8 kHz), the scene's total power at the threshold;
+- every mode and width (1.536 Msps) with a C4FM neighbour (the P25 Phase 1 source) ±12.5 or ±25 kHz away at +5 to
+  +30 dB in 2.5 dB steps and +35 to +50 dB in 5 dB steps over the wanted signal's power in its class width, on one
+  side and on both; a floor sloping ±0.1 or
+  ±0.3 dB/kHz through the channel (0 dB there, held flat beyond ±100 kHz); and a broad interferer (a Gaussian hump of
+  30 kHz sigma, 20 dB over the floor at its peak, centred on the channel or 40 kHz either side). On a shaped floor the
+  S/N is over the noise and interference inside the width. These scene parameters are the calibration's own choice;
+  the specification names the scenes;
+- mixed requests: digital modes judged in both digital classes, analog widths in all three.
+
+Noise-only conditions judge each class and analog width at each rate and bin position, and the mixed sets: 5,176
+conditions in all (4,198 active, 880 noise-only, and 98 noise-only on a sloped floor or a broad interferer, reported
+but not gated). Every trial has its own seed, so the results do not depend on the thread count.
+
+### Noise reference and floor guard
+
+Each sub-window takes a capture-wide noise reference from the same transforms: the lower quartile of the per-bin
+powers whose hardware offset (the bin's frequency less the ingest rotation, folded into ±half the rate) clears the
+hardware DC guard, stays inside 0.45 of the rate and lies outside the channel's widest class, scaled to the mean that
+quartile implies for Gaussian noise averaged over the sub-window's transforms (a chi-square of twice as many degrees
+of freedom, by the Wilson-Hilferty approximation). A low quartile of the whole span stays on the noise while
+transmitters fill up to three quarters of it, and the scaling makes noise alone read about 0 dB at every rate and
+width. The ratio is the channel's power over that reference across the channel's bins.
+
+The first calibration judged the ratio against the local floor instead, Signal search's trimmed mean of the eight
+sideband blocks 1.5 to 3 widths out. Neighbours on both sides 25 kHz away at +10 to +25 dB lifted that floor by 3 to
+8.7 dB, the wanted signal's ratio fell by as much, and a signal dsd-neo still receives read quiet: 4,771 of 3,564,000
+such trials at the 4.1 dB threshold it used then. Judged against the reference, the ratio does not move when
+neighbours raise the floor beside the channel.
+
+The sideband floor (the trimmed mean) now serves only as a guard. When a class's floor stands more than
+`DSD_SIGNAL_QUIET_GUARD_DB` (8.7 dB) over the reference, the reference does not stand for the noise round the channel
+(a front end whose floor is far from flat, a strong broad interferer, strong transmitters crowding the sidebands), so
+the request is invalid and the channel is never skipped. The guard was set under the first calibration, 0.5 dB under
+the lowest floor rise (9.23 dB) of any active trial whose ratio fell inside the threshold's margin, rounded down, and
+is kept as it was. Judged against the reference, no active trial needs it: the lowest active ratio is 5.58 dB with
+the guard and without it. Highest floor rise (trimmed mean) at 2,000 trials per condition: noise alone 2.39 dB, every
+signal scene without a neighbour, slope or broad interferer 2.18 dB, a neighbour on one side 4.73 dB.
+
+The reference runs only while a quiet request is armed, nothing on the decode path. On one core (the driver's
+`--phase cost`, on a host loaded by other work, so high) a whole request takes 0.16 to 0.76 ms at the RTL and SoapySDR
+rates, up to 1.2 ms at 2.5 and 3 MS/s and 1.2 to 3.7 ms at 6 and 10 MS/s; the reference alone (the same bin selection
+and quartile, nine times per request) is 9 to 94 µs of it at the RTL and SoapySDR rates, up to 0.18 ms at 2.5 and 3 MS/s
+and up to 0.41 ms at 6 and 10 MS/s. Judging the ratio against the reference instead of the sideband floor costs nothing
+measurable: run against the earlier detector under the same load, the request time differs by a median of 0.4% (−1.6% to
++5.0% over the 80 rate and class cells).
+
+At 8.7 dB (validation, below) the guard voids no noise-only trial and no trial of any signal scene without a neighbour,
+slope or broad interferer. It voids 30% of the trials with neighbours on both sides (172 of those 660 conditions always,
+430 never, 58 partly), the broad interferer (86%; 56 of 66 conditions always) and the sloped floors (91%; 72 of 88
+always, both the rising and the falling slopes: in the tap's geometry the reference spans the capture on both sides of
+the channel, which the clamped slope leaves 10 to 30 dB from the channel's floor). Noise alone on the same floors is
+voided as often (on a broad interferer 78%, on a slope 86%). Those scenes are busy whatever is on the channel: the cost
+is speed, not a missed signal.
+
+### Selection and validation
+
+With the guard at 8.7 dB, `A` is the lowest max-of-9 ratio over every valid active trial (2,000 per condition) and
+`N95` the highest per-condition 95th percentile of the noise-only max-of-9 ratio, a voided noise-only trial counting
+as busy (none was). A threshold `T` in `(N95, A − 0.5 dB]` misses no active trial with 0.5 dB to spare and leaves at
+most 5% of noise-only channels busy.
+
+| Floor estimator (for the guard) | A | at | N95 | at | Interval |
+| --- | --- | --- | --- | --- | --- |
+| Trimmed mean | 5.58 dB | M17, −500 Hz, 1.6 Msps | 2.02 dB | noise, AM 5 kHz, 2.4 Msps | (2.02, 5.08] dB |
+| Lowest block | 5.58 dB | M17, −500 Hz, 1.6 Msps | 2.02 dB | noise, AM 5 kHz, 2.4 Msps | (2.02, 5.08] dB |
+
+The ratio no longer depends on the estimator, and the guard voids no trial that sets either end, so both intervals
+are the same. The check keeps the trimmed-mean floor for the guard and ships with T = 5.0 dB (A − 0.5 dB, rounded
+down), against 4.1 dB when the ratio was judged against the sideband floor. Lowest valid active ratio per condition
+group (guard 8.7 dB):
+
+| Group | Conditions | With a valid trial | Lowest ratio | At |
+| --- | --- | --- | --- | --- |
+| Digital, offsets | 896 | 896 | 5.58 dB | M17, −500 Hz, 1.6 Msps |
+| Digital, mixed classes | 160 | 160 | 7.27 dB | dPMR, 1.6 Msps |
+| DMR MS at the mask limits | 80 | 80 | 6.86 dB | −1 kHz, 1.6 Msps |
+| Analog | 576 | 576 | 5.60 dB | NFM 16 kHz, 2.048 Msps |
+| Analog, mixed classes | 192 | 192 | 8.00 dB | NFM 11.25 kHz, 1.6 Msps |
+| AM offset carriers | 160 | 160 | 15.47 dB | 4 carriers, 1.28 Msps |
+| Neighbour on one side | 1,320 | 1,320 | 5.59 dB | M17, +35 dB, 25 kHz above |
+| Neighbours on both sides | 660 | 494 | 5.78 dB | M17, +7.5 dB, 25 kHz |
+| Sloped floor | 88 | 24 | 14.93 dB | NFM 16 kHz, +0.1 dB/kHz |
+| Broad interferer | 66 | 10 | 22.11 dB | NFM 25 kHz, hump 40 kHz above |
+
+Per rate (digital classes) the lowest valid active ratio is 5.58 to 6.16 dB and the noise-only 95th percentile 1.67 to
+1.79 dB; per analog width (all rates) the lowest valid active ratio is 5.60 dB (NFM 16 kHz) or more and the noise-only
+95th percentile 0.96 dB (25 kHz) to 2.02 dB (AM 5 kHz).
+
+Validation at 5.0 dB and the 8.7 dB guard with fresh seeds, 3,000 trials per condition at every one of the 16 rates
+and every analog width (160 analog cells): no quiet verdict in any of the 4,198 active conditions (12,594,000 trials;
+the one-sided 95% bound is about 1.0e-3 per condition). The lowest valid active ratio was 5.64 dB (NFM 16 kHz,
+2.048 Msps), 0.64 dB over the threshold. No noise-only trial read busy in any of the 880 noise-only conditions
+(2,640,000 trials; the highest max-of-9 ratio was 3.48 dB), against the 5% allowed. The run took 92 minutes on 30
+threads. Its floor rises and voided counts match the first calibration's validation exactly in every one of the 3,460
+conditions both ran (the same seeds and the same guard).
+
+### Neighbour sweep
+
+A C4FM transmitter 12.5 or 25 kHz away, above, below or on both sides, at +5 to +30 dB over the wanted signal in
+2.5 dB steps and +35 to +50 dB in 5 dB steps, for every mode and width at 1.536 Msps (1,980 conditions, 3,000 trials
+each in validation): no quiet verdict at any level. Lowest valid ratio over all modes and widths:
+
+| Spacing | Side | Lowest valid ratio, any level | Voided |
+| --- | --- | --- | --- |
+| 12.5 kHz | one side | 5.78 dB (M17, +5 dB below) | 0% |
+| 12.5 kHz | both | 5.74 dB (M17, +5 dB) | 23% at +5 dB to 32% at +50 dB |
+| 25 kHz | one side | 5.74 dB (M17, +15 dB below) | 0% |
+| 25 kHz | both | 5.74 dB (M17, +17.5 dB) | 4.5% at +5 dB to 59% at +50 dB |
+
+Under the first calibration the 25 kHz pair at +10 to +25 dB lowered the wanted ratio by as much as the floor rose
+(the lowest valid ratio fell to −0.5 dB); judged against the reference, the lowest valid ratio at each of those levels
+is 5.74 to 5.90 dB, as with no neighbour. With neighbours 12.5 kHz away on both sides, the 6.25 kHz classes and AM 5
+and 6 kHz are voided at every level (dPMR at 96% or more), and NFM 8 kHz and AM 8 kHz at the higher levels: their
+sideband blocks hold the neighbours.
+
+### Limits
+
+- A channel whose sideband floor stands more than 8.7 dB over the capture's noise is never skipped, whatever it
+  carries: one between transmitters that crowd its sidebands, or on a floor that stands that far over the rest of the
+  capture (a strong broad interferer, a sloped floor). That is a speed cost only.
+- The ratio leans on the reference standing for the receiver's own noise at the channel, which assumes that noise is
+  roughly flat across the capture inside 0.45 of the rate. Two real RTL-SDR noise captures (1.152 Msps at 38.6 dB gain
+  and 1.536 Msps at 29.7 dB gain) varied by at most about ±1.6 dB out to 0.45 of the rate, their lower quartile moved
+  by at most 0.3 dB, and the floor at the channel's place stood 0.7 dB over the reference, which reads a channel
+  busier, not quieter. No real 2.4 Msps or Airspy noise capture was available, so those rates were validated on
+  rendered noise only. A front end whose floor at the channel sits lower than across the rest of the band reads the
+  channel that much quieter; the threshold leaves 0.6 dB between it and the weakest signal validated. One whose floor
+  varies by more than about 8.7 dB across the span voids requests on its high parts.
+- Neighbour scenes were rendered at 1.536 Msps only (the driver renders its neighbour, slope and broad-interferer
+  scenes at that rate) and with a C4FM neighbour only.
+- The DMR bound covers an ongoing burst train; a transmission starting late in the measurement, isolated single
+  bursts and short data bursts are not covered.

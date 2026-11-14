@@ -866,8 +866,14 @@ cli_parse_squelch_option(const char* in, dsd_opts* opts, int* out_exit_rc) {
 }
 
 /* The bit of dsd_parse_args()' analog_cli_seen set once a tone switch was given; the bits below it are the analog width
-   options, 1 << dsd_analog_demod. */
-enum { CLI_TONE_FILTER_SEEN = 1 << 8 };
+   options, 1 << dsd_analog_demod. The CLI_SCAN_* bits above it mark the scan options argv set, as opposed to the
+   config file, and pick the name a "no effect" warning uses. */
+enum {
+    CLI_TONE_FILTER_SEEN = 1 << 8,
+    CLI_SCAN_VOICE_ONLY_SEEN = 1 << 9,
+    CLI_SCAN_MAX_VISIT_SEEN = 1 << 10,
+    CLI_SCAN_SKIP_SILENT_SEEN = 1 << 11,
+};
 
 /**
  * The WAV recording mode the command line chose. -P and -w refuse each other on one command line but each replaces a
@@ -1846,10 +1852,22 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--no-scan-voice-only") == 0) {                                                            \
             opts->scan_voice_only = 0;                                                                                 \
+            analog_cli_seen &= ~CLI_SCAN_VOICE_ONLY_SEEN;                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--scan-voice-only") == 0) {                                                               \
             opts->scan_voice_only = 1;                                                                                 \
+            analog_cli_seen |= CLI_SCAN_VOICE_ONLY_SEEN;                                                               \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--no-scan-skip-silent") == 0) {                                                           \
+            opts->scan_skip_silent = 0;                                                                                \
+            analog_cli_seen &= ~CLI_SCAN_SKIP_SILENT_SEEN;                                                             \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--scan-skip-silent") == 0) {                                                              \
+            opts->scan_skip_silent = 1;                                                                                \
+            analog_cli_seen |= CLI_SCAN_SKIP_SILENT_SEEN;                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--scan-voice-qualify-ms") == 0) {                                                         \
@@ -1900,6 +1918,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                                   &opts->scan_max_visit_ms, out_exit_rc)) {                            \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            analog_cli_seen |= CLI_SCAN_MAX_VISIT_SEEN;                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--scan-max-visit-ms=", 20) == 0) {                                                       \
@@ -1907,6 +1926,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                                   &opts->scan_max_visit_ms, out_exit_rc)) {                            \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            analog_cli_seen |= CLI_SCAN_MAX_VISIT_SEEN;                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--nfm-bandwidth-hz") == 0 || strncmp(argv[i], "--nfm-bandwidth-hz=", 19) == 0) {          \
@@ -2908,8 +2928,32 @@ cli_finish_airspy_input(dsd_opts* opts, int parse_rc, int* out_exit_rc) {
     return parse_rc;
 }
 
+/* A scan option does nothing without -Y or --trunk-scan. The warning names the flag when argv set the value and the
+ * [trunking] key when only the config file did, so the user is pointed at the place to change it. */
+static void
+dsd_warn_ineffective_scan_opt(int active, unsigned int cli_seen, const char* flag, const char* ini_key) {
+    if (!active) {
+        return;
+    }
+    LOG_WARN("WARNING: %s has no effect without -Y or --trunk-scan.\n", cli_seen ? flag : ini_key);
+}
+
+static void
+dsd_warn_ineffective_scan_opts(const dsd_opts* opts, unsigned int seen) {
+    if (opts->scanner_mode || opts->trunk_scan_enabled) {
+        return;
+    }
+    dsd_warn_ineffective_scan_opt(opts->scan_voice_only, seen & CLI_SCAN_VOICE_ONLY_SEEN, "--scan-voice-only",
+                                  "[trunking] scan_voice_only");
+    dsd_warn_ineffective_scan_opt(opts->scan_max_visit_ms > 0, seen & CLI_SCAN_MAX_VISIT_SEEN, "--scan-max-visit-ms",
+                                  "[trunking] scan_max_visit_ms");
+    dsd_warn_ineffective_scan_opt(opts->scan_skip_silent, seen & CLI_SCAN_SKIP_SILENT_SEEN, "--scan-skip-silent",
+                                  "[trunking] scan_skip_silent");
+}
+
 /* What runs once every option has been read, whatever order they came in. @p analog_cli_seen has bit
-   1 << dsd_analog_demod set for each analog width option given (and CLI_TONE_FILTER_SEEN for a tone switch). */
+   1 << dsd_analog_demod set for each analog width option given (and CLI_TONE_FILTER_SEEN for a tone switch,
+   CLI_SCAN_*_SEEN for each scan option). */
 static int
 cli_finish_parse(dsd_opts* opts, const dsd_state* state, int parse_rc, int analog_cli_seen, int* out_exit_rc) {
     parse_rc = cli_finish_airspy_input(opts, parse_rc, out_exit_rc);
@@ -2921,6 +2965,7 @@ cli_finish_parse(dsd_opts* opts, const dsd_state* state, int parse_rc, int analo
     }
     if (parse_rc == DSD_PARSE_CONTINUE) {
         cli_warn_tone_filter_without_fm_monitor(opts, state);
+        dsd_warn_ineffective_scan_opts(opts, (unsigned int)analog_cli_seen);
     }
     return parse_rc;
 }
@@ -2978,7 +3023,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int chan_csv_cli_seen = 0;
     int p25_bandplan_cli_seen = 0;
     unsigned int receive_cli_seen = 0;
-    int analog_cli_seen = 0; /* bit 1 << dsd_analog_demod per analog width option given, CLI_TONE_FILTER_SEEN too */
+    int analog_cli_seen = 0; /* bit 1 << dsd_analog_demod per width option, CLI_TONE_FILTER_SEEN, CLI_SCAN_*_SEEN */
     int config_one_shot_cli_seen = cli_has_config_one_shot_arg(argc, argv);
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
     DSD_PARSE_ARGS_IQ_PRE_BLOCK();
@@ -4019,12 +4064,6 @@ dsd_warn_ineffective_short_opts(const dsd_opts* opts, const dsd_state* state) {
     // rather than at the `-C` flag so a later `-Y` on the same command line counts.
     if (opts->chan_in_file[0] != '\0') {
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
-    }
-    if (opts->scan_voice_only && !opts->scanner_mode && !opts->trunk_scan_enabled) {
-        LOG_WARN("WARNING: --scan-voice-only has no effect without -Y or --trunk-scan.\n");
-    }
-    if (opts->scan_max_visit_ms > 0 && !opts->scanner_mode && !opts->trunk_scan_enabled) {
-        LOG_WARN("WARNING: --scan-max-visit-ms has no effect without -Y or --trunk-scan.\n");
     }
 }
 

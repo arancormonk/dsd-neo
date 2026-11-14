@@ -3389,6 +3389,7 @@ test_persistence_gap_schema_rows(void) {
         {"trunking", "p25_bandplan_csv"},
         {"trunking", "src_csv"},
         {"trunking", "scan_voice_only"},
+        {"trunking", "scan_skip_silent"},
         {"trunking", "scan_voice_qualify_ms"},
         {"trunking", "scan_voice_hold_ms"},
         {"trunking", "scan_max_visit_ms"},
@@ -3912,6 +3913,68 @@ test_scan_voice_gate_roundtrip(void) {
         return 1;
     }
     rc |= expect_contains_quiet("trunking scan voice off", rendered, "scan_voice_only = false\n");
+    return rc;
+}
+
+/* The session-wide skip-silent setting (#834): INI -> cfg -> opts -> snapshot -> render, off written explicitly, and an
+ * omitted key resetting a live value to off when the config is applied. */
+static int
+test_scan_skip_silent_roundtrip(void) {
+    int rc = 0;
+    char path[DSD_TEST_PATH_MAX];
+    static const char* const on_ini = "[trunking]\nscan_skip_silent = true\n";
+    static const char* const omitted_ini = "[trunking]\nscan_voice_only = false\n";
+    static dsd_opts opts;
+    static dsd_state state;
+    dsdneoUserConfig cfg;
+
+    if (write_temp_config(on_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0 || !cfg.trunk_scan_skip_silent) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] scan_skip_silent did not load\n");
+        return 1;
+    }
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.scan_skip_silent != 1) {
+        DSD_FPRINTF(stderr, "FAIL: scan_skip_silent did not reach dsd_opts\n");
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (!snap.trunk_scan_skip_silent || render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped scan_skip_silent\n");
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking scan skip silent", rendered, "scan_skip_silent = true\n");
+
+    /* An omitted key applies as off, even over a live "on". */
+    if (write_temp_config(omitted_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    opts.scan_skip_silent = 1;
+    if (load_rc != 0) {
+        return 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.scan_skip_silent != 0) {
+        DSD_FPRINTF(stderr, "FAIL: an omitted scan_skip_silent did not reset to off\n");
+        rc |= 1;
+    }
+
+    /* Off round-trips as an explicit off. */
+    dsdneoUserConfig off_snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &off_snap);
+    if (render_config_to_buffer(&off_snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking scan skip silent off", rendered, "scan_skip_silent = false\n");
     return rc;
 }
 
@@ -5819,6 +5882,7 @@ main(void) {
     rc |= test_dmr_udp_comp_ports_bad_entries_are_skipped();
     rc |= test_scanner_and_candidates_roundtrip();
     rc |= test_scan_voice_gate_roundtrip();
+    rc |= test_scan_skip_silent_roundtrip();
     rc |= test_scan_max_visit_roundtrip();
     rc |= test_analog_nfm_bandwidth_roundtrip();
     rc |= test_radio_input_spec();

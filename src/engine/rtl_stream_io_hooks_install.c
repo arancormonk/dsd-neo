@@ -24,14 +24,14 @@ rtl_stream_io_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, i
 }
 
 static int
-rtl_stream_io_read_ex2(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream) {
-    return rtl_stream_read_ex2((RtlSdrContext*)rtl_ctx, out, flags, count, out_got, want_no_stream);
+rtl_stream_io_read_ex2(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got, int wants) {
+    return rtl_stream_read_ex2((RtlSdrContext*)rtl_ctx, out, flags, count, out_got, wants);
 }
 
 static int
 rtl_stream_io_read_lanes(void* rtl_ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got,
-                         int want_no_stream) {
-    return rtl_stream_read_lanes((RtlSdrContext*)rtl_ctx, out, voice, flags, count, out_got, want_no_stream);
+                         int wants) {
+    return rtl_stream_read_lanes((RtlSdrContext*)rtl_ctx, out, voice, flags, count, out_got, wants);
 }
 
 static int

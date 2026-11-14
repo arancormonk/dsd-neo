@@ -182,6 +182,10 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing commented scan_voice_only key\n");
         rc = 1;
     }
+    if (!strstr(content, "# scan_skip_silent")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing commented scan_skip_silent key\n");
+        rc = 1;
+    }
     if (!strstr(content, "# scan_voice_qualify_ms")) {
         DSD_FPRINTF(stderr, "FAIL: template missing commented scan_voice_qualify_ms key\n");
         rc = 1;

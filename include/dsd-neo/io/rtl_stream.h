@@ -81,15 +81,16 @@ class RtlSdrOrchestrator {
     int read(float* out, uint8_t* flags, size_t count, int& out_got);
 
     /**
-     * @brief read() with flags for a reader that takes DSD_RTL_READ_NO_STREAM (@p want_no_stream): returned for each
-     * wait slice a live read with no stream found nothing in, in place of DSD_RTL_READ_YIELD.
+     * @brief read() with flags for a reader that asks for more of a live read (@p wants, DSD_RTL_READ_WANT_* bits):
+     * DSD_RTL_READ_NO_STREAM for each wait slice a live read with no stream found nothing in, in place of
+     * DSD_RTL_READ_YIELD; DSD_RTL_READ_IDLE once a live read found nothing for 100 ms (issue #834).
      */
-    int read(float* out, uint8_t* flags, size_t count, int& out_got, int want_no_stream);
+    int read(float* out, uint8_t* flags, size_t count, int& out_got, int wants);
 
     /**
      * @brief read() with the FSK voice lane into @p voice (as many as @p out, or nullptr; rtl_stream_read_lanes()).
      */
-    int read(float* out, float* voice, uint8_t* flags, size_t count, int& out_got, int want_no_stream);
+    int read(float* out, float* voice, uint8_t* flags, size_t count, int& out_got, int wants);
 
   private:
     // Non-copyable to avoid accidental shared lifecycle

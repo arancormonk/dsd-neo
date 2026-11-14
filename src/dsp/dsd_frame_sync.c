@@ -36,6 +36,7 @@
 #include <dsd-neo/dsp/p25p1_sync_anchor.h>
 #include <dsd-neo/dsp/p25p2_sync_anchor.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/dsp/sync_hamming.h>
@@ -1075,7 +1076,7 @@ frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
         frame_sync_set_basic_lock(ctx);
         opts->inverted_ysf = 0;
         state->lastsynctype = DSD_SYNC_YSF_POS;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 20);
+        dsd_sync_warm_start_thresholds_from_dibits(opts, state, FUSION_SYNC_DIBITS, 20);
         return DSD_SYNC_YSF_POS;
     }
 
@@ -1084,7 +1085,7 @@ frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
         frame_sync_set_basic_lock(ctx);
         opts->inverted_ysf = 1;
         state->lastsynctype = DSD_SYNC_YSF_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 20);
+        dsd_sync_warm_start_thresholds_from_dibits(opts, state, INV_FUSION_SYNC_DIBITS, 20);
         return DSD_SYNC_YSF_NEG;
     }
 
@@ -1474,6 +1475,9 @@ frame_sync_note_m17_pre_candidate(frame_sync_match_ctx* ctx, int ham_pre, int ha
 
     state->m17_pre_candidate = (ham_pre <= 1) ? 1 : 2;
     state->m17_pre_candidate_ttl = DSD_FRAME_SYNC_M17_CANDIDATE_TTL;
+    /* The grid records the run while it lasts, so the sync word that spends the candidate can measure where the
+       symbols really sit before the matched filter switches on behind it (frame_sync_consume_m17_pre_candidate()). */
+    dsd_symbol_hold_sync_anchor(state);
 }
 
 /** @brief Age a latched candidate by one evaluation, dropping it when it lapses. */
@@ -1538,14 +1542,30 @@ frame_sync_try_m17_eot(frame_sync_match_ctx* ctx, int ham_eot, int ham_eot_inv, 
     return state->lastsynctype;
 }
 
+/*
+ * Whether a packet frame can follow the sync before it. The M17 specification (Part I, the air interface) has a link
+ * setup frame name its transmission's mode in bit 0 of its TYPE field, the packet/stream indicator: a stream-mode LSF
+ * (1) is followed by stream frames, and packet frames follow only a packet-mode one. A packet sync word right after an
+ * LSF whose CRC passed and declared stream mode is therefore never the transmission's: the hunt met one within a
+ * single error inside the m17-fme sample's repeated LSF, which cost the stream its first four frames and, read as a
+ * packet that ended, sent AUTO's hunt off the transmission (issue #834). An LSF that failed its CRC says nothing, and
+ * every new LSF is read afresh (processM17LSF()), so a packet transmission behind its own preamble and LSF is taken.
+ */
+static int
+frame_sync_m17_packet_can_follow(const dsd_state* state, int lsf_type, int pkt_type) {
+    if (state->lastsynctype == lsf_type) {
+        return state->m17_lsf_stream_mode == 0U;
+    }
+    return state->lastsynctype == pkt_type && frame_sync_m17_chain_has_evidence(state);
+}
+
 static int
 frame_sync_try_m17_packet(frame_sync_match_ctx* ctx, int ham_pkt, int ham_brt, int is_inverted) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
 
     if (ham_pkt <= 1 && !is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS
-            && !(state->lastsynctype == DSD_SYNC_M17_PKT_POS && frame_sync_m17_chain_has_evidence(state))) {
+        if (!frame_sync_m17_packet_can_follow(state, DSD_SYNC_M17_LSF_POS, DSD_SYNC_M17_PKT_POS)) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "+M17 PKT", ctx->synctest_pos + 1, ctx->modulation);
@@ -1556,8 +1576,7 @@ frame_sync_try_m17_packet(frame_sync_match_ctx* ctx, int ham_pkt, int ham_brt, i
     }
 
     if (ham_brt <= 1 && is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG
-            && !(state->lastsynctype == DSD_SYNC_M17_PKT_NEG && frame_sync_m17_chain_has_evidence(state))) {
+        if (!frame_sync_m17_packet_can_follow(state, DSD_SYNC_M17_LSF_NEG, DSD_SYNC_M17_PKT_NEG)) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "-M17 PKT", ctx->synctest_pos + 1, ctx->modulation);
@@ -1611,11 +1630,22 @@ frame_sync_accept_m17(frame_sync_match_ctx* ctx, const char* label, int synctype
     return synctype;
 }
 
+/* The last 16 preamble symbols ahead of an LSF or BERT sync word, then the word: what the grid just read, at the
+   transmitter's polarity (the measurement takes the sign from the data). */
+#define M17_PRE_TAIL_LSF M17_PIV M17_PIV M17_LSF
+#define M17_PRE_TAIL_BRT M17_PRE M17_PRE M17_BRT
+
 /**
  * @brief Spend a candidate on the sync word that confirmed it, at the polarity that word named.
+ *
+ * The preamble's tail and the word, @p run_and_word, are named to the symbol grid: the hunt set its phase on the
+ * preamble's crossings and can sit up to two samples off the symbols' centres there, which the matched filter that
+ * switches on behind this word does not read through. The grid measures them before the switch and moves by what
+ * they ask (issue #834).
  */
 static void
-frame_sync_consume_m17_pre_candidate(dsd_state* state, int polarity) {
+frame_sync_consume_m17_pre_candidate(dsd_state* state, int polarity, const char* run_and_word) {
+    dsd_symbol_note_sync_anchor(state, run_and_word, (int)strlen(run_and_word));
     state->m17_polarity = (uint8_t)polarity;
     state->m17_pre_candidate = 0;
     state->m17_pre_candidate_ttl = 0;
@@ -1646,33 +1676,75 @@ frame_sync_try_m17_bert_after_context(frame_sync_match_ctx* ctx, int ham_brt, in
                        : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
 }
 
+/*
+ * A tolerance for an LSF sent twice. The M17 specification sends one LSF synchronization burst per transmission, but
+ * m17-fme sends two, from its stream and its packet encoder alike (m17_str_encoder.c, m17_pkt_encoder.c), and its
+ * sample recording does. No preamble precedes the second, so it was not taken, and the hunt ran on through its
+ * payload, where words within one error of the packet, stream and EOT words turned up and cost the stream its first
+ * four frames (issue #834). Only straight after an LSF of the same polarity (the inverted LSF word reads as the stream
+ * word). The packet sync word is within two errors of the LSF word, so behind an LSF that did not declare stream mode,
+ * where a conformant packet frame follows, the repeat is declined whenever the packet word matches at least as well:
+ * a packet's first frame read with one error would otherwise be taken as a second LSF.
+ */
+static int
+frame_sync_try_m17_lsf_again(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int ham_pkt, int ham_brt,
+                             int is_inverted) {
+    const dsd_state* state = ctx->state;
+    const int last = state->lastsynctype;
+    const int packet_may_follow = state->m17_lsf_stream_mode == 0U;
+    if (!is_inverted && last == DSD_SYNC_M17_LSF_POS && ham_lsf <= 1 && !(packet_may_follow && ham_pkt <= ham_lsf)) {
+        return frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
+    }
+    if (is_inverted && last == DSD_SYNC_M17_LSF_NEG && ham_str <= 1 && !(packet_may_follow && ham_brt <= ham_str)) {
+        return frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG);
+    }
+    return DSD_SYNC_NONE;
+}
+
+/* The LSF or BERT word that spends a preamble candidate. */
+static int
+frame_sync_try_m17_from_candidate(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int ham_brt, int ham_pkt) {
+    dsd_state* state = ctx->state;
+    if (state->m17_pre_candidate == 0) {
+        return DSD_SYNC_NONE;
+    }
+    /* An alternating run is symmetric: read one symbol later, the marker is its own
+     * inversion, so a preamble can never say which polarity the transmission has -- the old
+     * code's answer was whichever phase it happened to accept on. The sync word behind it
+     * can say, because M17_LSF and M17_STR are not shifts of each other. Try both readings
+     * and let the one that matches name the polarity the rest of the chain locks to. */
+    for (int pass = 0; pass < 2; pass++) {
+        const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
+        if ((inverted ? ham_str : ham_lsf) <= 1) {
+            frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1, M17_PRE_TAIL_LSF);
+            return inverted ? frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG)
+                            : frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
+        }
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
+        if ((inverted ? ham_pkt : ham_brt) <= 1) {
+            frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1, M17_PRE_TAIL_BRT);
+            return inverted ? frame_sync_accept_m17(ctx, "-M17 BRT", DSD_SYNC_M17_BRT_NEG)
+                            : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
+        }
+    }
+    return DSD_SYNC_NONE;
+}
+
 static int
 frame_sync_try_m17_lsf_or_bert(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int ham_brt, int ham_pkt,
                                int is_inverted) {
-    dsd_state* state = ctx->state;
+    const dsd_state* state = ctx->state;
 
-    if (state->m17_pre_candidate != 0) {
-        /* An alternating run is symmetric: read one symbol later, the marker is its own
-         * inversion, so a preamble can never say which polarity the transmission has -- the old
-         * code's answer was whichever phase it happened to accept on. The sync word behind it
-         * can say, because M17_LSF and M17_STR are not shifts of each other. Try both readings
-         * and let the one that matches name the polarity the rest of the chain locks to. */
-        for (int pass = 0; pass < 2; pass++) {
-            const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
-            if ((inverted ? ham_str : ham_lsf) <= 1) {
-                frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
-                return inverted ? frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG)
-                                : frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
-            }
-        }
-        for (int pass = 0; pass < 2; pass++) {
-            const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
-            if ((inverted ? ham_pkt : ham_brt) <= 1) {
-                frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
-                return inverted ? frame_sync_accept_m17(ctx, "-M17 BRT", DSD_SYNC_M17_BRT_NEG)
-                                : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
-            }
-        }
+    const int from_candidate = frame_sync_try_m17_from_candidate(ctx, ham_lsf, ham_str, ham_brt, ham_pkt);
+    if (from_candidate != DSD_SYNC_NONE) {
+        return from_candidate;
+    }
+
+    const int again = frame_sync_try_m17_lsf_again(ctx, ham_lsf, ham_str, ham_pkt, ham_brt, is_inverted);
+    if (again != DSD_SYNC_NONE) {
+        return again;
     }
 
     /* A BERT session repeats its own sync word without a fresh preamble between frames. */
@@ -2398,6 +2470,14 @@ frame_sync_nxdn96_accepts(const frame_sync_match_ctx* ctx, int synctype) {
     return accepts;
 }
 
+/* The slicer from the FSW just accepted, at its own levels: the word was sent as the FSW whichever variant matched its
+   signs. */
+static void
+frame_sync_warm_start_nxdn(const dsd_opts* opts, dsd_state* state, int synctype) {
+    const char* fsw = synctype == DSD_SYNC_NXDN_POS ? NXDN_FSW_DIBITS : INV_NXDN_FSW_DIBITS;
+    (void)dsd_sync_warm_start_thresholds_from_dibits(opts, state, fsw, 10);
+}
+
 static int
 frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
@@ -2446,7 +2526,7 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
         /* No sync clock here: a ten-symbol word and a one-parity-bit LICH are what receiver noise clears (#398), so the
            clock a -Y scan holds on and the trunking state machines read waits for a frame the transmission's CRCs
            confirmed (nxdn_mark_carrier_sync_active()). */
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
+        frame_sync_warm_start_nxdn(opts, state, synctype);
         return synctype;
     }
     return DSD_SYNC_NONE;
@@ -5555,9 +5635,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             /* A trunk-scan target's idle dwell ran out inside the pass (discussion #717). On dead air the hunt hands
                back once per 1800-symbol pass, so a dwell checked only between passes ran up to a pass long (375 ms at
                4800 sym/s, 750 ms at 2400). The hand-back is a no-sync return like the pass's own, only earlier: the
-               engine's next tick rotates under the coordinator's guard, and its no-carrier pass runs as after any. */
-            if (dsd_trunk_scan_hook_dwell_due(opts, state)) {
-                frame_sync_history_drop(state);
+               engine's next tick rotates under the coordinator's guard, and its no-carrier pass runs as after any. It
+               keeps its history as the pass end does: a tick that keeps the target leaves a sync straddling the
+               hand-back to the next call, and one that rotates retunes, which drops the history (issue #834). A scan
+               quiet check whose quiet result the tick may skip on hands back the same way; it does its measurement
+               work inside the call and costs one load with skip-silent off (issue #834). */
+            if (dsd_trunk_scan_hook_dwell_due(opts, state) || dsd_frame_sync_hook_scan_quiet_service(opts, state)) {
+                frame_sync_history_keep(&rt, state);
                 frame_sync_sps_hunt_mark_return(state);
                 return DSD_SYNC_NONE;
             }

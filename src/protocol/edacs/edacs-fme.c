@@ -395,9 +395,10 @@ edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, float* voice
             return 1;
         }
         int got = 0;
-        const int read_rc = voice
-                                ? dsd_rtl_stream_io_hook_read_lanes(state, &rtl_sample, &voice_sample, flag, 1, &got, 1)
-                                : dsd_rtl_stream_io_hook_read_ex2(state, &rtl_sample, flag, 1, &got, 1);
+        const int read_rc =
+            voice ? dsd_rtl_stream_io_hook_read_lanes(state, &rtl_sample, &voice_sample, flag, 1, &got,
+                                                      DSD_RTL_READ_WANT_NO_STREAM)
+                  : dsd_rtl_stream_io_hook_read_ex2(state, &rtl_sample, flag, 1, &got, DSD_RTL_READ_WANT_NO_STREAM);
         if (read_rc == DSD_RTL_READ_NO_STREAM) {
             edacs_no_stream_pay(opts, state);
             continue;

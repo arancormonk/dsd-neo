@@ -40,7 +40,7 @@ target_link_libraries(
 
 target_link_libraries(
     dsd-neo_proto_nxdn
-    PRIVATE dsd-neo_warnings dsd-neo_feature_lz
+    PRIVATE dsd-neo_dsp dsd-neo_warnings dsd-neo_feature_lz
 )
 
 find_package(Iconv QUIET)

@@ -70,6 +70,17 @@ class FftSetupCache {
     }
 
     /**
+     * @brief Build the setup and work buffer for @p n points now, so a later
+     * forward() at that size allocates nothing.
+     *
+     * @return false when pffft rejects the size or an allocation fails.
+     */
+    bool
+    prepare(int n) {
+        return get(n) != nullptr;
+    }
+
+    /**
      * @brief Forward complex transform of @p n points, in place.
      *
      * @param n Transform size in complex points.

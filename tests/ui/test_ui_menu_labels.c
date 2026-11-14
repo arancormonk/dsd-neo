@@ -588,6 +588,11 @@ test_trunking_labels(void) {
     rc |= expect_str("voice hold null ctx", lbl_scan_voice_hold(NULL, b, sizeof(b)), "Voice hold... [0 ms]");
     opts.scan_voice_hold_ms = 2500;
     rc |= expect_str("voice hold", lbl_scan_voice_hold(&ctx, b, sizeof(b)), "Voice hold... [2500 ms]");
+    rc |= expect_str("skip-silent null ctx", lbl_scan_skip_silent(NULL, b, sizeof(b)), "Silent channel skip [Off]");
+    opts.scan_skip_silent = 0;
+    rc |= expect_str("skip-silent off", lbl_scan_skip_silent(&ctx, b, sizeof(b)), "Silent channel skip [Off]");
+    opts.scan_skip_silent = 1;
+    rc |= expect_str("skip-silent on", lbl_scan_skip_silent(&ctx, b, sizeof(b)), "Silent channel skip [On]");
 
     opts.use_rigctl = 1;
     opts.rigctl_sockfd = 4;
@@ -660,6 +665,10 @@ test_encryption_labels(void) {
     rc |= expect_str("CRC configured", lbl_crc_relax(&ctx, b, sizeof(b)), "Relaxed CRC checks [Off]");
     rc |= expect_str("voice gate configured", lbl_scan_voice_only(&ctx, b, sizeof(b)), "Voice-only scan [On]");
     rc |= expect_str("voice hold configured", lbl_scan_voice_hold(&ctx, b, sizeof(b)), "Voice hold... [4000 ms]");
+    /* Session-wide (#834): an entered row's configured view never holds it, so the row shows the live value. */
+    opts.scan_skip_silent = 1;
+    rc |= expect_str("skip-silent ignores the configured view", lbl_scan_skip_silent(&ctx, b, sizeof(b)),
+                     "Silent channel skip [On]");
     rc |= expect_str("data calls target override", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [Off] (target: On)");
     rc |= expect_str("enc lockout target override", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
                      "Lock out encrypted calls [Off] (target: On)");

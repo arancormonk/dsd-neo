@@ -402,6 +402,8 @@ struct dsd_opts {
     int trunk_scan_idle_dwell_ms;
     int trunk_scan_activity_hold_ms;
     int scan_voice_only;
+    /* Session-wide (#834): skip a silent conventional scan channel after a quick RF check. Never a scan-row option. */
+    int scan_skip_silent;
     int scan_voice_qualify_ms;
     int scan_voice_hold_ms;
     /* 0 disables; else 1000..3600000 ms cap on one scan-target visit (issue #507) */

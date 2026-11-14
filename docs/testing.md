@@ -501,8 +501,9 @@ missing or is new and exits 1, or exits 0 when every derived fixture reproduces 
 committed set. A generator change that is meant to change fixtures must then change only the intended files: regenerate
 into a copy, check that `diff -rq` against the committed set lists exactly those, copy only those in, and run
 `--verify` again, which must pass. It is not a CTest case (the bytes are pinned to one numpy version). Without
-`--dmr-synth-gen` the copy keeps the committed `dmr_voice_synth`, and without `--speech-synth-gen` the committed
-`speech_*_synth` fixtures ("Speech level parity" below); the OK line names the fixtures it did not verify.
+`--dmr-synth-gen` the copy keeps the committed `dmr_voice_synth` and `dmr_bs_weak`, and without
+`--speech-synth-gen` the committed `speech_*_synth` fixtures ("Speech level parity" below); the OK line names the
+fixtures it did not verify.
 
 `nxdn48_attenuated` is `nxdn48` replayed 20 dB down, for the per-row squelch cases
 (`DECODE_IQ_SCAN_NXDN48_SQUELCH_*`, issue #521). The source is normalized near full scale, so
@@ -785,6 +786,40 @@ construction: every CCH CRC-7 in it passes, and `DECODE_IQ_DPMR_SYNTH` asserts
 the identity the vectors encode. Its voice payload is deterministic filler, so
 the run reports vocoder errors; the CCH is what it pins.
 
+`m17_lsf_weak` (`M17_SYNTH`, 233 kB) is synthetic as well: four M17 voice transmissions, each a preamble, a link setup
+frame, one LICH superframe of stream frames and the EOT marker, at M17's root-raised-cosine pulse (roll-off 0.5) and
+2400 Hz outer deviation, with 0.2 s of noise alone after each, in complex Gaussian noise at 9 dB S/N inside 12.5 kHz
+(seed 807). The frames come from the fixture builder's own M17 encoder, which `m17_self_check()` holds to the LSF and
+stream frame hashes in `tests/protocol/m17/fixtures/m17_reference_vectors.h`. The committed `m17` capture is joined in
+the stream and has no LSF, and the LSF is the frame M17's matched filter switches on at (issue #834; a filter switching
+on from a cold history once cost it its CRC, #399). `DECODE_IQ_M17_LSF_WEAK` (`-fz`) and `_AUTO` (`-fa`) run `-Z` and
+need at least three LSFs whose CRC passes on their own frame (the check printed on the bytes' line, which a
+LICH-reassembled LSF prints on a line of its own) and three complete LICH superframes. Without the filter this
+realization decodes neither; with it, four of each under both presets.
+
+`m17_lsf_clean` (`M17_SYNTH`, 323 kB) is the clean case: eight shorter LSF-first transmissions (two stream frames each,
+0.2 s gaps) at 30 dB, each delayed by its own fraction of a sample, seed 10. Over 576 such transmissions (36
+realizations, both presets) every LSF decodes; before issue #834 about one in five failed, because the hunt left the
+grid up to two samples off the preamble's symbols and each EOT left the next hunt slicing against the levels its
+marker skewed. `DECODE_IQ_M17_LSF_CLEAN` and `_AUTO` need all eight LSFs and eight `LC: 2/6`; this realization decoded
+7 under `-fz` and 2 under `-fa` before issue #834. `m17_lsf_offair` (140 kB) is cut from the m17-fme recording at its
+second transmission's start, where the stream LSF is sent twice: `DECODE_IQ_M17_LSF_OFFAIR` and `_AUTO` need the
+stream's frame 0 (`FSN: 00000`) and no packet or EOT sync, where before the hunt matched both inside the repeated
+LSF.
+
+`nxdn96_synth` (192 kB), `nxdn48_synth` (384 kB) and `ysf_synth` (192 kB) (`SLICER_SYNTH`, issue #834) are clean
+frames from `tools/scan_quiet_reception.py`'s generators (`nxdn_levels()`, `ysf_levels()`, the same symbols its
+threshold rows send): 50 NXDN RDCH voice frames at each rate (RRC 0.2 x sinc, NXDN TS 1-A, 2400 / 1050 Hz) and 20 YSF
+V/D mode 2 frames (RRC 0.2, 2700 Hz), at half full scale and with no noise. Both sync words carry inner symbols (the
+FSW two, the frame sync seven); the decoder set its slicer from them as if every symbol were outer and read each frame
+at the phase the hunt's crossing loop left on the word. Each NXDN fixture carries the dibits it sent in
+`<name>.dibits` ('0' +1, '1' +3, '2' -1, '3' -3), and `tests/symbol_capture_check.py` compares them with the
+decoder's `-c` symbol capture: `DECODE_IQ_NXDN96_SYNTH_SYMBOLS` and `DECODE_IQ_NXDN48_SYNTH_SYMBOLS` need 99 % of the
+frames after acquisition (the first three) and before the last (whose end the clip cuts out of the filters) clean
+outside the FSW, which the hunt records by sign only. Before the fix 7 (NXDN96) and 33 (NXDN48) of those 46 frames read
+clean, after it all 46. `DECODE_IQ_YSF_SYNTH` needs 19 of the 20 FICHs; 9 passed before the fix, 20 after it. The
+checker needs only the Python standard library and registers when CTest finds Python 3.
+
 `DECODE_IQ_DSTAR_AUTO_HUNT` and `DECODE_IQ_P25P2_CC_AUTO_HUNT` assert on an `SPS hunt:` rotation line rather than a
 decoded payload. The `dstar` (4 s) and `p25p2_cc` (2 s) fixtures are shorter than one full hunt rotation (~6 s at
 48 kHz), so under `-fa` they cannot be expected to decode; what they can prove is that the hunt is not pinned on its
@@ -837,9 +872,11 @@ rather than a count, per the policy above, plus the absence of any hunt rotation
 `DECODE_IQ_M17_AUTO` covers issue #399. M17's own profile is where the hunt starts, so the `m17` capture needs no
 rotation and gets none: it must publish the same identity under `-fa` that `DECODE_IQ_M17` asserts under `-fz`.
 Before the fix it published nothing, because AUTO demanded an exact repeated preamble marker that real M17 never
-presents, and because `-fz` switches the matched filter off through the global `use_cosine_filter` while AUTO left it
-on over every M17 payload. A BERT transmission has no fixture; under `-fa` its first frames report unproductive to
-the SPS hunt until PRBS9 locks, which is the price of a frame type that carries no CRC of its own.
+presents, and because `-fz` switched the matched filter off through the global `use_cosine_filter` while AUTO left it
+on over every M17 payload, switching on from a cold history. M17 now runs its own filter after a sync under both,
+behind the seam that pays off the switch (issue #834; `DECODE_IQ_M17_LSF_WEAK` above). A BERT transmission has no
+fixture; under `-fa` its first frames report unproductive to the SPS hunt until PRBS9 locks, which is the price of a
+frame type that carries no CRC of its own.
 
 The other half of #399 — that a capture containing no M17 does not decode any — is pinned in
 `FRAME_SYNC_INTERNAL_HELPERS` (`test_m17_alternating_runs_alone_are_never_a_sync`) rather than as a reject case on
@@ -1965,20 +2002,42 @@ The query treats the outer `open_output()` call as the file-access sink without 
 Those checks run before the actual open, and exclusive creation prevents following existing or dangling symlinks.
 The alerts are handled individually with the `DMR_SYNTH_OUTPUT_PATHS` evidence; the query remains enabled.
 
-What the generator models: a DMR repeater (BS) outbound channel at 48 kHz as raised-cosine 4FSK discriminator audio
-(alpha 0.2) with white Gaussian noise and an optional symbol-clock offset; CACH/TACT, voice superframes (voice sync,
-EMB, embedded LC), voice LC, PI, terminator and idle bursts with their FEC built through the project's decoders, AMBE+2
-voice from mbelib-neo's encoder, DMRA AES-256, AES-128 and RC4 voice with the per-superframe MI advance and late-entry
-MI fragments, and faults placed on a named burst: a lost burst (the redundant-carrier copy that ends the BS frame loop
+What the generator models: a DMR repeater (BS) outbound channel at 48 kHz as 4FSK discriminator audio through ETSI TS
+102 361-1's square root raised cosine (alpha 0.2), whose receive half is the decoder's DMR filter, with white Gaussian
+noise and an optional symbol-clock offset. Until issue #834 it wrote the whole raised cosine, which suited the decoder's
+old wide low-pass; through the matched root raised cosine that pulse carries inter-symbol interference, and
+`DMR_SYNTH_RC4_BURST_LOSS` read one unprotected bit wrong. `--pulse rc` still writes the raised cosine, whose audio at
+each symbol centre is that symbol's level: the I/Q fixture builder and `tools/scan_quiet_reception.py` read the symbols
+back that way and shape them themselves. The channel carries CACH/TACT, voice superframes (voice sync, EMB, embedded
+LC), voice LC, PI, terminator and idle bursts with their FEC built through the project's decoders, AMBE+2 voice from
+mbelib-neo's encoder, DMRA AES-256, AES-128 and RC4 voice with the per-superframe MI advance and late-entry MI
+fragments, and faults placed on a named burst: a lost burst (the redundant-carrier copy that ends the BS frame loop
 exactly there), CACH and sync noise, a wrong colour code, a TACT miscorrected to the other slot, corrupted late-entry
 fragments, and voice superframes lost after the headers. It can also change the colour code from a given voice
-superframe on, with no new header (`--cc-change`), and start the voice at another point of its waveform
-(`--voice-t0`), so separately generated calls carry different audio. Output is deterministic for a given seed.
+superframe on, with no new header (`--cc-change`), and start the voice at another point of its waveform (`--voice-t0`),
+so separately generated calls carry different audio. Output is deterministic for a given seed.
+With `--ms` it writes one MS transmission instead (issue #834): the MS sourced voice and data syncs, no CACH, and slot
+1's bursts alone, 27.5 ms on every 60 ms, with the audio at 0 between them. `DMR_SYNTH_MS_CLEAR_VOICE` decodes it
+through the MS path and checks all 49 bits of every frame. The hunt re-acquires each voice superframe on its burst A,
+and its crossing loop left the grid one or two samples off that sync, which bursts B to F then kept: 21 of the 540
+frames came out with an unprotected bit wrong (an inner symbol read as outer), which the continuous BS channel, whose
+loop places the grid on every burst's sync (the sync anchor), never did. The MS path now places the grid on each
+burst A's sync the same way (`docs/code_map.md`, sync anchor). The checker places an MS frame by the one `VC*` line
+the MS path prints per superframe, then VC1 to VC6 three frames at a time; the superframe's first decoded burst is the
+one of A to C whose expected frames it matches, since the voice gate holds the bursts before the colour code repeats
+(burst A, and B too unless exactly one header decoded).
+`DMR_SYNTH_MS_TAIL` (`tests/protocol/dmr/dmr_ms_tail_check.py`, issue #834) cuts an MS call without a terminator at
+each burst of its last superframes, adds discriminator noise and decodes with per-call recordings and the recording
+journal: the only recording published is the call's, under colour code 2, talkgroup 100 and source 1001. Before the MS
+path took its EMB colour code through the colour-code gate, a noise EMB that QR(16,7,6) decoded named a random colour
+code, which ended the call and published the noise as `DMR_CC_<n>__TGT_0_SRC_0`.
 
 `DMR_SYNTH_RECEIVE_NAMES` (`tests/protocol/dmr/dmr_receive_names_check.py`, issue #637) decodes three repeaters that
 share one frequency and differ only by colour code, named with `--dcc-name`: three calls with silence between them,
 the same calls back to back, and one call whose colour code changes twice. Every call must carry its own name, and each
-per-call recording must hold its own audio (normalised correlation with the expected audio).
+per-call recording must hold its own audio (normalised correlation with the expected audio; for a colour-code piece
+after the first, its frame-by-frame loudness, since the bursts the voice gate holds at the change change the vocoder's
+synthesis after them).
 
 The expectation file gives, for every transmitted voice frame, the 49 bits a correct decoder prints: the plaintext
 (for an encrypted call the plaintext that decrypts from the ciphertext actually sent, whose four late-entry bits carry
@@ -1988,14 +2047,16 @@ used to search parity are the project's. The checker places each decoded frame b
 before it and the per-slot burst sequence, re-anchoring by content after an unseen gap, and names every mismatch by
 case, slot, superframe, VC and frame with the expected and decoded value.
 
-What it does not prove: the channel is ideal apart from noise and clock offset (no fading, multipath, frequency
-offset, deviation error or receiver filtering), the signal comes in as discriminator audio rather than I/Q, and only
-the BS path is covered. A pass shows the decoder agrees with an independent model of the standard, not with a real
-radio; `tools/replay_ab.sh` on real captures remains the evidence for decode quality.
+What it does not prove: the channel is ideal apart from noise and clock offset (no fading, multipath, frequency offset,
+deviation error or receiver filtering), the signal comes in as discriminator audio rather than I/Q, and the MS path is
+covered only for a clear voice call. A pass shows the decoder agrees with an independent model of the standard, not with
+a real radio; `tools/replay_ab.sh` on real captures remains the evidence for decode quality.
 
 | Case | What it pins |
 | --- | --- |
 | `DMR_SYNTH_CLEAR_VOICE` | A clear call decodes exactly, at most the two bursts the voice gate skips at call start missing. |
+| `DMR_SYNTH_MS_CLEAR_VOICE` | An MS transmission (`--ms`) decodes through the MS path: every frame but the bursts the voice gate skips at call start, exactly. |
+| `DMR_SYNTH_MS_TAIL` | An MS call cut inside a superframe and followed by noise publishes one recording, the call's, under its own colour code and identity. |
 | `DMR_SYNTH_AES256_CALL_START`, `DMR_SYNTH_AES128_BOTH_SLOTS` | Every decoded frame of an encrypted call decrypts right from superframe 0 on, on one or both slots. |
 | `DMR_SYNTH_AES256_BURST_LOSS`, `DMR_SYNTH_RC4_BURST_LOSS` | One burst lost at slot 1 superframe 10 VC3: every later frame decrypts right, and every frame from the next superframe's first opened burst on is decoded. |
 | `DMR_SYNTH_AES256_LOSS_NO_LE` | The same with every later late-entry MI undecodable, so the MI chain has to survive on its own. |
@@ -2007,8 +2068,11 @@ radio; `tools/replay_ab.sh` on real captures remains the evidence for decode qua
 The same generator writes the I/Q fixture `dmr_voice_synth` (a clear call on slot 1, colour code 2, slot 2 idle),
 which the DMR voice, MBE capture, voice-chain and float-output cases replay: `tools/build_iq_fixtures.py
 --dmr-synth-gen build/dev-debug/tests/dsd-neo_test_dmr_synth_gen` regenerates it with the other fixtures (without the
-option the script skips it). Its bytes follow mbelib-neo's AMBE encoder: the committed ones are 2.6.8's, so an mbelib
-bump that changes the encoder fails `--verify --dmr-synth-gen` until the fixture is regenerated.
+option the script skips it). Its outer symbols sit at the standard's +/-1944 Hz: the script maps the generator's known
++/-3 level to it, with no mean removed, and measures the +3 and -3 symbols of the written baseband separately, refusing
+a synthesis with either more than 3 % off (a 99.5th-percentile deviation once put them near 1300 Hz, and removing the
+audio's mean put them at 1880 Hz and -2008 Hz). Its bytes follow mbelib-neo's AMBE encoder: the committed ones are
+2.6.8's, so an mbelib bump that changes the encoder fails `--verify --dmr-synth-gen` until the fixture is regenerated.
 
 The generator's voice is a vowel-like buzz, not speech: the harmonics of a pitch gliding between 80 and 160 Hz, weighted
 by three formants, under a 3 Hz envelope that never pauses. Until issue #518 (B21) each harmonic's phase was the pitch
@@ -2026,6 +2090,15 @@ The two sigidwiki DMR fixtures, `dmr_voice` and `dmr_t3_cc`, are control channel
 before issue #729 `-fs` read their data bursts as voice, and the old voice cases pinned that. `DECODE_IQ_DMR_T3_CC` and
 `DECODE_IQ_DMR_POLARITY_AUTO` now pin what they are: CSBK and idle bursts on colour code 1, found at the polarity the
 decoder proves, with no voice burst decoded.
+
+`dmr_bs_weak` (504 kB) takes the same generator's call (5 s, `--seed 7`) as symbols rather than as its discriminator
+audio: the generator's raised-cosine pulse is not the standard's, and a receive filter is matched to the standard's.
+The script reads the levels at the symbol centres, sends them through ETSI TS 102 361-1's square root raised cosine
+(roll-off 0.2, eight symbols either side, unity DC gain, outer +/-1944 Hz) as `tools/scan_quiet_reception.py`'s DMR BS
+row does, and adds complex Gaussian noise at 8 dB S/N inside 12.5 kHz (seed 7). `DECODE_IQ_DMR_BS_WEAK` (`-fs`) and
+`_AUTO` (`-fa`) need at least 146 lines printing `Color Code=02 |`, each a burst whose slot type or EMB decoded, of
+about 160. Until issue #834 the DMR matched filter was a low-pass flat to 3 kHz rather than the receive half of that
+pulse, and 132 decoded under `-fs` and 134 under `-fa`; behind the root raised cosine, 156 and 158.
 
 ### MBE capture checks (issue #661)
 
@@ -2188,10 +2261,10 @@ decoded output; a digital output holds only the voice that played.
 | Fixture | Mode | Speech (s) | Speech intervals (s) | Reference gain (dBFS P.56) | Auto (dBFS P.56) | Case |
 | --- | --- | --- | --- | --- | --- | --- |
 | `dstar` | `-fd` | 2.3 | 0.20-2.50 | -18.14 (`-g 1`) | -17.63 | `DECODE_IQ_SPEECH_LEVEL_DSTAR` |
-| `ysf` | `-fy` | 2.55 | 0.0-0.25, 1.05-3.35 | -38.82 | -18.05 | `DECODE_IQ_SPEECH_LEVEL_YSF` |
+| `ysf` | `-fy` | 3.05 | 0.05-0.50, 1.25-3.85 | -39.47 | -21.12 | `DECODE_IQ_SPEECH_LEVEL_YSF` |
 | `m17` | `-fz` | 1.9 | 0.0-1.45, 2.0-2.47 | -21.63 | -17.82 | `DECODE_IQ_SPEECH_LEVEL_M17` (Codec2 builds) |
 | `tetra_call_real_air_72k` | `-fT` | 2.06 | 0.0-1.10 (first talker), 2.0-2.96 (the next, 10.8 dB louder) | -28.53 | -23.39 | `DECODE_IQ_SPEECH_LEVEL_TETRA` |
-| `nxdn96` | `-fn` | 1.25 | 0.20-1.45 | -40.88 | -18.64 | `DECODE_IQ_SPEECH_LEVEL_NXDN96` |
+| `nxdn96` | `-fn` | 1.25 | 0.20-1.45 | -40.91 | -18.68 | `DECODE_IQ_SPEECH_LEVEL_NXDN96` |
 | `provoice` | `-fp` | 1.35 | 0.0-0.25, 1.40-1.90, 2.10-2.70 | -39.30 | -17.55 | `DECODE_IQ_SPEECH_LEVEL_PROVOICE` |
 | `p25p1_c4fm_vc` | `-f1` | 0.8 | 0.60-1.42 | -32.03 | -22.73 | `DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM` |
 | `p25p1_cqpsk_vc` | `-f1 -mq` | 0.3 | 0.70-1.00 | -22.44 | -17.31 | `DECODE_IQ_SPEECH_LEVEL_P25P1_CQPSK` |
@@ -2200,8 +2273,12 @@ decoded output; a digital output holds only the voice that played.
 | `nfm_squelch_real_a` | `-fA` | 2.7 | 0.40-3.10 | -29.31 | -21.96 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_A` |
 | `nfm_squelch_real_b` | `-fA` | 3.3 | 0.0-3.30 | -26.71 | -18.22 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_B` |
 
-A few notes. `nxdn96`'s 1.25 s of speech sits 21 dB under the target at `-g 1`; the start gain and the 2 dB startup
-steps bring it within 1.5 dB of the target over the excerpt (it played 12 dB under at 1 dB steps from 0 dB).
+A few notes. `ysf` was measured again once issue #834's YSF receive filter and slicer fixes cleared most of its FICH and
+DCH CRC errors: more of the call plays (4.6 s of output, was 4.0 s), 0.65 dB quieter at `-g 1`, and the auto level reads
+3.07 dB lower. The NXDN filter and slicer fixes of the same issue change `nxdn96`'s decoded voice slightly (and decode
+two more SACCH fragments): 0.03 dB quieter at `-g 1`, 0.04 dB at auto. `nxdn96`'s 1.25 s of speech sits 21 dB under
+the target at `-g 1`; the start gain and the 2 dB startup steps bring it within 1.5 dB of the target over the excerpt
+(it played 12 dB under at 1 dB steps from 0 dB).
 `p25p1_cqpsk_vc`'s 0.3 s of speech commits a few times, and those first steps toward a level read from the rising edge
 of the speech overshoot, so its level moves 0.25 dB away from -20 dBFS while staying within 3 dB of it. The analog
 gap noise between words is 11-17 dB under the speech, so P.56 counts it as active.

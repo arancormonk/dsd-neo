@@ -578,6 +578,7 @@ avoids and call skips, as an import does.
 | `slot_pref_set` | `{value:0=slot 1\|1=slot 2\|2=auto}` |
 | `slots_onoff_set` | `{value:mask}` |
 | `scan_voice_only_set` | `{value:0\|1}` |
+| `scan_skip_silent_set` | `{value:0\|1}` |
 | `scan_voice_qualify_ms_set` | `{value:ms 100..600000}` |
 | `scan_voice_hold_ms_set` | `{value:ms 100..600000}` |
 | `nfm_bandwidth_set` | `{value:Hz 8000..25000, 0=default}` |

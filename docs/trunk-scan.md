@@ -184,8 +184,9 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   `(suspended)` beside the dwell means it is disarmed while something holds the target, not that it expired. See
   [the terminal UI guide](ui-terminal.md).
 - `-t <seconds>` is voice/sync-loss hangtime, not the interval between trunk-scan targets. Zero does not
-  bypass target dwell or control-channel acquisition. After a followed trunked call releases, a fresh idle
-  dwell starts; repeated calls can keep a busy system parked.
+  bypass target dwell or control-channel acquisition, and `-t` never shortens a conventional target's idle dwell; to
+  leave a silent conventional target sooner, see [Skipping silent channels](#skipping-silent-channels). After a
+  followed trunked call releases, a fresh idle dwell starts; repeated calls can keep a busy system parked.
 - DMR allows six seconds without decoded control on a confirmed channel before hunting. Each probe gets
   two seconds to acquire control after the backend completes its tune. Either window runs from the last DMR content
   that passed the colour-code check when that is later, so a target's channel carrying a call is not left
@@ -232,6 +233,9 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   in its `options` column, because a trunked system following call after call is exactly what it exists to interrupt.
   It is a ceiling on the visit, not another reason to stay, so it can end an ongoing call; that is why it is off by
   default.
+- `--scan-skip-silent` (`--no-scan-skip-silent` turns it off, also over a config file value): leave a conventional
+  target early when a quick signal check finds it silent, instead of waiting out its idle dwell. Trunked targets are
+  never checked. It is session-wide, never a target option. See [Skipping silent channels](#skipping-silent-channels).
 
 Each target's `type` selects its decoder class regardless of the configured global preset. Both `p25-trunk` and
 `p25-conventional` enable both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared class
@@ -314,6 +318,10 @@ Voice-only scan from a config file lives in `[trunking]` (`scan_voice_only`, `sc
 `scan_voice_hold_ms`): conventional targets reuse `dwell_ms` as the qualify window and `activity_hold_ms` as the
 hold, refreshed only from decoded voice; trunked targets are unchanged.
 
+Silent-channel skipping lives there too, as `[trunking] scan_skip_silent = true` (see
+[Skipping silent channels](#skipping-silent-channels)). A config loaded during a session without the key turns it
+off, as it does voice-only scan.
+
 The per-visit cap lives in the same section, as `[trunking] scan_max_visit_ms`, and applies to every target type:
 `0` (the default) disables it, otherwise use `1000..3600000`. Config loading does not clamp the value, so a
 hand-written `1..999` reaches the decoder, which treats it as disabled.
@@ -383,7 +391,9 @@ During scanning:
   table is in [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
 - Idle targets rotate after their dwell time. Call following or a conventional activity hold suspends that dwell;
   once the target becomes idle again, a fresh full dwell starts. Time spent following the call or holding activity
-  does not use up the next idle dwell. The tone filter's check is the exception: it holds the target while its carrier
+  does not use up the next idle dwell. After a conventional activity hold the fresh dwell counts from the hold's end,
+  even when the hold runs out between the scan's checks; after a `Y` hold or another stay it starts at the scan's
+  next check. The tone filter's check is the exception: it holds the target while its carrier
   lasts but is not activity, so the dwell keeps running through it.
   The dwell runs from the instant the target's retune lands. On a silent frequency the decoder checks it every 300
   symbols of its sync search (62.5 ms at 4800 symbols/s, 125 ms at the 2400 symbols/s of NXDN48 and dPMR), so a
@@ -752,10 +762,11 @@ A ready scan list's More menu (on Listen) offers **Scan with other lists…** wh
 has a switch for each other ready list, all off, in Home order; switch on the lists to scan along with this one and tap
 **Start N lists**. The lists run as one session on this list's receiver and settings, so a list joins only when every
 setting the session shares matches: the radio source, gain, PPM correction, bandwidth, bias tee, Airspy settings,
-voice-only setting, default dwell and hold, fallback talkgroup file and source aliases, each compared after defaults and
-path resolution. A setting the radio does not use is not compared: gain, PPM correction and bias tee only on a USB or
-rtl_tcp radio, the bandwidth only on those and an Airspy. A list that differs is shown greyed out with the first
-difference (`Different gain`), and a session runs at most 8 lists. All the lists are checked before anything starts
+voice-only setting, skip-silent setting, default dwell and hold, fallback talkgroup file and source aliases, each
+compared after defaults and path resolution. A setting the radio does not use is not compared: gain, PPM correction
+and bias tee only on a USB or rtl_tcp radio, the bandwidth only on those and an Airspy. A list that differs is shown
+greyed out with the first difference (`Different gain`, `Different skip-silent setting`), and a session runs at most 8
+lists. All the lists are checked before anything starts
 (each list's own checks, the target ids two lists share, the target budget); a refusal names the list (`“Louder” can't
 scan with “Security”: different gain.`), or, for a target id two lists hold with different settings, gives the
 decoder's message after `Scan lists rejected: `. Every list starts switched on: the app cannot start a list switched
@@ -962,6 +973,149 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   refused while it is parked. `nfm-trunk` and `am-trunk` are refused with `analog targets are conventional only`, and
   `nfm`, `am` or the analog FM spellings (`fm-conventional`, ...) with a hint naming the conventional type to use.
 
+## Skipping silent channels
+
+Skip-silent lets a scan leave a silent conventional channel early (issue #834). When the receiver lands on a
+conventional trunk-scan target or a `-Y` row, DSD-neo takes one quick reading of the radio signal on that channel. If
+the reading finds nothing there, the scan moves on at once instead of waiting out the target's idle dwell or the `-Y`
+hangtime (`-t`). A channel that is carrying a signal DSD-neo can receive normally reads busy and keeps its normal
+timing; the [limits](#limits) below list what can be missed. It is off by default, and with it off no scan timing
+changes.
+
+Turn it on with `--scan-skip-silent` (`--no-scan-skip-silent` turns it off, also over a config file value), with
+`[trunking] scan_skip_silent = true`, with the terminal's Trunking > Follow > `Silent channel skip`, which applies from
+the next visit (the channel on air or being tuned when you turn it on is not checked), or with a Qt/Android scan list's
+**Skip silent channels** checkbox, which applies at the next start. It is one setting for the whole session: it covers
+every conventional target and every `-Y` row, and it is never a row or target option (an `options` cell refuses it).
+Without `-Y` or `--trunk-scan` it does nothing, and the start warns
+`--scan-skip-silent has no effect without -Y or --trunk-scan` (naming `[trunking] scan_skip_silent` when the config
+turned it on).
+
+### What the check measures
+
+- The receiver measures the power inside the channel and compares it with the receiver's own noise, read across the
+  whole band it takes in. It takes a low reading of that band (the level three quarters of it stand above), so other
+  transmitters in the band, busy neighbours included, do not raise it. It reads nine back-to-back slices of at least
+  10 ms each, so the reading covers at least 90 ms (90 to 96 ms at the RTL-SDR's default 1.536 Msps, depending on the
+  channel width). The channel is silent only when every slice reads less than 5.0 dB above that noise. One busy slice
+  is enough to keep the channel.
+- It also reads the noise just beside the channel, on both sides. If that stands more than 8.7 dB over the band's
+  noise, the band's noise does not stand for the noise at the channel, and the check gives up (below).
+- The width it looks at is the channel's own: 12.5 kHz for P25 (both phases), DMR, NXDN96, YSF and M17; 6.25 kHz for
+  NXDN48, dPMR and D-STAR; the channel width an `nfm` or `am` row or target runs. A typed row or target is judged in
+  its mode's width. An untyped `-Y` row is judged in every width of the decoders the session runs, and is silent only
+  if it is silent in all of them. With the analog monitor on beside digital decoders (`-8`) the monitor's width is
+  judged too, on an untyped row and on a typed digital row or target alike, since the monitor plays there as well; an
+  `-8` monitor with no NFM width set gets those rows and targets no check. Judging more widths can only mean fewer
+  skips, never an extra one.
+- An ongoing DMR transmission from a single radio sends a 27.5 ms burst every 60 ms. A reading of 90 ms or more always
+  holds a whole slice inside one of those bursts, so the burst timing alone never makes such a channel read silent.
+- The threshold and the rest of the measurement come from a calibration against DSD-neo's own reception: a signal
+  1 dB weaker than the weakest one DSD-neo still receives was never read as silent in testing, in any mode, width or
+  supported sample rate, with or without busy neighbours (4,198 signal conditions). Noise alone on a flat noise floor
+  read silent in every test (880 noise conditions, 2.64 million trials). The method and figures are in
+  [Quiet-channel calibration](signal-search.md#quiet-channel-calibration).
+
+### What a skip costs and logs
+
+- A visit is skipped at most once. The check waits for the first samples from the new frequency (up to 1 second after
+  the tune lands, or after the check starts again later in the visit), then needs about 100 ms of them and up to
+  400 ms for its answer. The scan acts on the answer at its next check: on a silent channel that comes every 300
+  symbols of the sync search (62.5 ms at 4800 symbols/s, 125 ms at 2400 symbols/s). So a skipped visit lasts about as
+  long as the tune and the reading take, not a whole dwell or hangtime.
+- Measured on a synthetic test scene (`tools/bench_scan_skip_silent.py`: 12 silent channels and three that each call
+  for 4 s about every 20 s, over a local rtl_tcp stream), a silent channel's visit took 0.33 s instead of 3.0 s (about
+  0.56 s on real channels with a USB RTL dongle), the scan caught 54 to 69 % of the calls instead of 13 to 17 % (for an
+  untyped list, which cannot hear analog, the share is of the digital calls), and CPU use did not rise (1.2 to 1.9 % of
+  one core either way).
+- A check that cannot finish (no samples in time, no answer in time, clipped samples) changes nothing: the visit runs
+  its normal timing.
+- Each skip logs one line, for example
+  `NOTICE: scan: skipped quiet County Fire 154.000000 MHz: -97.2 dBFS, floor -98.8 dBFS (1.6 dB)` for a target (its
+  label, or its id when it has none) or `NOTICE: scan: skipped quiet row 3 154.000000 MHz: ...` for a `-Y` row
+  (counted from 1). It gives the channel's power, the receiver's noise it was compared with and how far apart they
+  are. The line is written when the scan decides to skip, just before it moves. If the tuner then refuses the tune,
+  the line is in the log but the receiver stays where it was.
+- The signal reading is never activity. It never holds a channel, never counts as a decode, never extends a dwell or
+  hold, and nothing it measures goes to call history, event or location files, or counts as activity for trunk scan.
+  It can only make a visit shorter.
+
+### When a channel is never skipped
+
+- Trunked targets: they are never checked.
+- A held target or row (`Y`, or a target or row you typed the frequency of), a conventional activity hold, a target
+  whose tone check is still running, and an open analog carrier, whatever its tone or code.
+- A `-Y` row under `--scan-voice-only` that has synced or heard voice: the sync ends the check (below), and the voice
+  gate decides when it steps. A row that has not synced yet can be skipped as under any other setting.
+- A list with nowhere else to go: one target or row, or every other one avoided, cooling down after a failed retune,
+  or skipped at every visit for its width.
+- A row whose step, walk or entry tune is still pending.
+- A visit with a sync or a carrier at any point, counted from the moment the scan starts tuning to the channel: that
+  ends the visit's check, and the visit runs its normal dwell, hangtime or hold. Any carrier counts, whatever its tone
+  or code, even one that ends before its tone check finishes.
+- A hold, an edit to the list or channel map, a width change, an input switch, a pause or a loaded config throws the
+  reading away. Once nothing keeps the channel any more, the check can run again on the same visit.
+- A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API
+  or a loaded config) leaves the channel on air, or the one being tuned, unchecked: calls it carried while the setting
+  was off were not counted, so the setting applies from the next tune.
+- A channel whose neighbours on both sides raise the noise beside it by more than 8.7 dB over the receiver's own
+  noise: the check gives up on it. A steeply sloping noise floor or a broad interferer usually makes it give up too.
+  That costs speed, never a missed signal.
+
+### Receivers and settings that get no check
+
+On these the scan keeps its normal timing, as if the setting were off:
+
+- A native Airspy input (`-i airspy`): its samples lack the frequency shift the measurement needs. An Airspy through
+  SoapySDR is checked at 2.5, 3, 6 and 10 MS/s.
+- An RTL-SDR whose tuner takes offset tuning (an E4000, for example), which DSD-neo turns on by default over USB and
+  which also removes that shift.
+  Setting `DSD_NEO_RTL_OFFSET_TUNING=0` gives it the check. The common R820T and R828D tuners refuse offset tuning
+  and are checked, and so is rtl_tcp unless `DSD_NEO_RTL_OFFSET_TUNING=1` turns offset tuning on there.
+- `DSD_NEO_DISABLE_FS4_SHIFT=1`, which turns that shift off.
+- A sample rate the calibration did not cover. Checked rates are 0.96, 1.024, 1.152, 1.2, 1.28, 1.44, 1.536, 1.6, 1.8,
+  1.92, 2.048 and 2.4 Msps, and an Airspy's 2.5, 3, 6 and 10 MS/s, exactly. An RTL-SDR or rtl_tcp stream runs 1.024,
+  1.152 or 1.536 Msps at every DSP bandwidth; a SoapySDR device picks its own rate and gets no check at any other.
+- Audio inputs (rigctl with TCP, UDP or Pulse audio, files), I/Q replay, and builds without radio support.
+- An analog width the calibration did not cover. Checked NFM widths are 8, 11.25, 12.5, 16, 20 and 25 kHz; checked AM
+  widths are 5, 6, 8, 10, 15 and 20 kHz, exactly. Any other width gets no check, for example NFM 10 or 15 kHz or AM
+  8.333 kHz.
+- An NFM row, target or session with no width set: its default filter is not one fixed width. Set a width (the row's
+  `--nfm-bandwidth-hz`, or the configured `--nfm-bandwidth-hz`) to give it the check. An AM channel with no width set
+  is checked at its 6 kHz default.
+- An untyped `-Y` row under a decoder set that holds ProVoice, X2-TDMA or TETRA, which have no known channel width for
+  the check. Auto (`-fa`, the default) holds ProVoice and X2-TDMA, so untyped rows under Auto are never checked. Type
+  the rows (a `mode` column), or choose decoders without those modes.
+
+### Limits
+
+Turning the setting on accepts these:
+
+- A transmission that starts late in the reading, or just after it, is missed for that visit.
+- A single short burst outside the reading is missed: a DMR wake-up burst, a short data or status burst.
+- A channel that drops its carrier between transmissions can be checked in a gap and skipped: a DMR repeater after its
+  hang time, or dPMR Mode 2 replies sent without a hang period.
+- A signal more than about 1 dB weaker than the weakest one DSD-neo still receives can read silent, so a weak
+  transmission can be skipped.
+- An always-keyed channel (a control channel, a repeater that never drops) is never skipped, so the setting saves
+  nothing there.
+- Busy neighbours were tested 12.5 or 25 kHz away, on one side and on both, from 5 to 50 dB stronger than the wanted
+  signal, and never made a signal DSD-neo can receive read silent. Those tests used a P25 Phase 1 neighbour at
+  1.536 Msps only; other sample rates and other kinds of neighbour were not tested.
+- An AM carrier outside the configured channel width is not seen: on a wide offset-carrier AM system set a width that
+  takes in every carrier.
+- Every receiver, input, width, rate and decoder set listed above runs without the check.
+- The check assumes the receiver's noise floor is about level across the band it takes in. A floor that sits lower
+  right at the channel than across the rest of the band makes a weak signal there read quieter. Real RTL-SDR noise
+  recordings at 1.152 and 1.536 Msps were level enough; no real 2.4 Msps or Airspy noise recording was available, so
+  at those rates the check was tested on computed noise only.
+- The calibration's own limits, with their figures, are under [Limits](signal-search.md#limits) in the Signal search
+  guide.
+
+While a trunk scan or `-Y` runs, a sync search that gets no samples at all (a stalled rtl_tcp server, an audio input
+that stops sending) gives up its read after 100 ms on a radio input and 500 ms on audio input. The scan's own timers
+(dwell, visit cap, hangtime, departures) then run as on a silent channel, whether or not skip-silent is on.
+
 ## Limitations
 
 - P25 trunk, P25 conventional, DMR trunk, DMR conventional, NXDN trunk at both rates (`nxdn-trunk`, `nxdn48-trunk`),
@@ -1118,6 +1272,12 @@ PPM/modulation inherit their corresponding defaults. Nonzero dwell/hold must be
 250–600000 ms. Lists use the app's voice hang time, not per-system hang-time overrides;
 Extra decoder arguments containing `-t` still take precedence. Voice/sync-loss hang time
 is separate from idle dwell on every target and the activity hold on conventional targets.
+The editor's Advanced section has **Voice only** and **Skip silent channels** checkboxes. Each list
+stores its own, but they are session settings (`--scan-voice-only`, `--scan-skip-silent`): lists that differ cannot
+scan together, Extra decoder arguments may not carry those switches, and a change applies at the next start. An
+unchecked box starts the scan with `--no-scan-voice-only` or `--no-scan-skip-silent`, so a config file loaded with
+`--config` in Extra decoder arguments cannot turn that setting on. See
+[Skipping silent channels](#skipping-silent-channels).
 The editor does not model the per-visit cap: put `--scan-max-visit-ms <ms>` in Extra decoder
 arguments to cap every target in the session, or import a target CSV whose `options`
 cells cap individual targets. Per-target squelch is likewise CSV-only: import a target CSV

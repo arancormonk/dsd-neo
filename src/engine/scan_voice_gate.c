@@ -300,6 +300,11 @@ dsd_scan_voice_gate_owns_step(const dsd_opts* opts, const dsd_state* state) {
 }
 
 int
+dsd_scan_voice_gate_qualifying(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_scan_voice_gate_owns_step(opts, state) && state->scan_voice_gate_voice_m < 0.0;
+}
+
+int
 dsd_scan_voice_gate_should_step(const dsd_opts* opts, const dsd_state* state, double now_m) {
     if (!dsd_scan_voice_gate_owns_step(opts, state)) {
         return 0;

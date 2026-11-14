@@ -91,6 +91,20 @@ dsd_frame_sync_hook_decoder_ticks_due(const dsd_opts* opts, const dsd_state* sta
 }
 
 int
+dsd_frame_sync_hook_scan_owns_hunt(const dsd_opts* opts, const dsd_state* state) {
+    return g_frame_sync_hooks.scan_owns_hunt ? g_frame_sync_hooks.scan_owns_hunt(opts, state) : 0;
+}
+
+int
+dsd_frame_sync_hook_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
+    /* The setting off: this one load is the hunt's whole cost. */
+    if (!opts->scan_skip_silent) {
+        return 0;
+    }
+    return g_frame_sync_hooks.scan_quiet_service ? g_frame_sync_hooks.scan_quiet_service(opts, state) : 0;
+}
+
+int
 dsd_frame_sync_hook_tick_guard_enter(void) {
     return g_frame_sync_hooks.tick_guard_enter ? g_frame_sync_hooks.tick_guard_enter() : 0;
 }
@@ -99,6 +113,13 @@ void
 dsd_frame_sync_hook_tick_guard_leave(int taken) {
     if (taken && g_frame_sync_hooks.tick_guard_leave) {
         g_frame_sync_hooks.tick_guard_leave();
+    }
+}
+
+void
+dsd_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
+    if (g_frame_sync_hooks.scan_quiet_setting_changed) {
+        g_frame_sync_hooks.scan_quiet_setting_changed(state, turned_on);
     }
 }
 

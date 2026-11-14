@@ -53,6 +53,7 @@
 #include "scan_entry_internal.h"
 #include "scan_landing.h"
 #include "scan_owner.h"
+#include "scan_quiet.h"
 #include "scan_step_untyped.h"
 
 /* One row's session edit (issue #518). */
@@ -160,6 +161,12 @@ channel_scan_free(void* ptr) {
 static channel_scan*
 channel_scan_get(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(channel_scan, state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN);
+}
+
+uint32_t
+dsd_engine_channel_scan_quiet_edits_epoch(const dsd_state* state) {
+    const channel_scan* scan = state ? channel_scan_get(state) : NULL;
+    return scan ? scan->edits_epoch : 0U;
 }
 
 /* The scan's extension, created by the first row a scan starts. NULL when it cannot be allocated. */
@@ -417,12 +424,13 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     state->nxdn_last_ran = -1;
     dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
+    const uint64_t landed_request = scan->request;
     scan->request = 0;
     scan->needs_commit = 0;
     dsd_engine_channel_scan_resume_landed(opts, state);
     /* The row landed and committed: an analog call on audio input is heard on its frequency (issue #667 D9), and an
        entry waiting on it holds it (issue #644). */
-    dsd_engine_scan_landing_note_row(state, scan->row, *dsd_state_trunk_lcn_slot(state, scan->row));
+    dsd_engine_scan_landing_note_row(state, scan->row, *dsd_state_trunk_lcn_slot(state, scan->row), landed_request);
     dsd_engine_scan_entry_landed(state, scan->row, scan->attempt);
     return 1;
 }
@@ -1291,6 +1299,8 @@ channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, c
     scan->family_requests = dsd_engine_scan_family_requests(opts);
     scan->familyless_supersedes = dsd_engine_scan_familyless_retune_supersedes(opts);
     scan->family_attached = dsd_engine_scan_retune_attaches_family(opts, state, state->samplesPerSymbol);
+    /* The output generation before the tune is issued: only a newer capture can be the row's (issue #834). */
+    dsd_engine_scan_landing_note_tune(state);
     const dsd_trunk_tune_result result =
         dsd_engine_scan_tune_to_freq(opts, state, scan->row_freq, state->samplesPerSymbol, &scan->request);
     dsd_scan_settings_restore(&before, opts, state);
@@ -1600,6 +1610,7 @@ channel_scan_release_entry(dsd_state* state) {
     if (state->lcn_scan_entry_hold) {
         state->lcn_scan_hold = 0U;
         state->lcn_scan_entry_hold = 0U;
+        dsd_engine_scan_quiet_note_change(state);
     }
 }
 
@@ -1616,6 +1627,8 @@ channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     state->lcn_scan_session++;
     /* The scan no longer says where the receiver is (issue #667 D9). */
     dsd_engine_scan_landing_forget(state);
+    /* Nor does a quiet check of its row hold (issue #834). */
+    dsd_engine_scan_quiet_note_change(state);
     channel_scan_release_entry(state);
     channel_scan* scan = channel_scan_get(state);
     const int already_left = !keep && state->lcn_scan_paused && !state->lcn_scan_resume_pending;
@@ -1675,6 +1688,7 @@ dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place) {
     state->lcn_scan_paused = 1U;
     state->lcn_scan_resume_pending = 0U;
     state->operator_tuned = 1U;
+    dsd_engine_scan_quiet_note_change(state);
     return monitor_request;
 }
 
@@ -1725,6 +1739,7 @@ channel_scan_start_settles_hold(const dsd_opts* opts, dsd_state* state, int adop
         }
     }
     state->lcn_scan_hold = 0U;
+    dsd_engine_scan_quiet_note_change(state);
 }
 
 void
@@ -1816,6 +1831,7 @@ dsd_engine_channel_scan_resume_landed(dsd_opts* opts, dsd_state* state) {
     state->lcn_scan_paused = 0U;
     state->lcn_scan_resume_pending = 0U;
     state->operator_tuned = 0U;
+    dsd_engine_scan_quiet_note_change(state);
 }
 
 void
@@ -1872,6 +1888,7 @@ dsd_engine_channel_scan_resume_failed(dsd_opts* opts, dsd_state* state, long fre
         state->lcn_scan_paused = 1U;
         state->lcn_scan_resume_pending = 0U;
         state->operator_tuned = 1U;
+        dsd_engine_scan_quiet_note_change(state);
     }
     dsd_engine_scan_toast_resume_failed(state, freq, why);
 }
@@ -2365,6 +2382,7 @@ dsd_engine_channel_scan_entry_release(dsd_opts* opts, dsd_state* state) {
     }
     state->lcn_scan_hold = 0U;
     state->lcn_scan_entry_hold = 0U;
+    dsd_engine_scan_quiet_note_change(state);
     /* The rotation left its windows alone while held: the row gets a full hangtime from now, as at `Y` off. */
     state->last_cc_sync_time = dsd_decode_time();
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
@@ -2380,6 +2398,8 @@ dsd_engine_channel_scan_entry_cancel(dsd_state* state) {
     }
     dsd_engine_scan_entry_intent_cancel(state);
     state->lcn_scan_entry_hold = 0U;
+    /* `Y` and every other operator hold change on the -Y scan come through here first (issue #834). */
+    dsd_engine_scan_quiet_note_change(state);
 }
 
 void

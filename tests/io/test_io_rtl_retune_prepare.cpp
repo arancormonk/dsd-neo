@@ -1662,6 +1662,99 @@ live_read(struct rtl_device* dev, uint64_t search_owner, const dsd_opts* live_op
     return rtl_stream_test_live_read(&req, got, waited_ms);
 }
 
+/* A live read for a hunt (issue #834): live_read() with the idle bound asked for, and DSD_RTL_READ_NO_STREAM too when
+ * @p want_no_stream. The producer delivers one sample after @p feed_after_ms. */
+static int
+hunt_read(struct rtl_device* dev, uint64_t search_owner, const dsd_opts* live_opts, int want_no_stream,
+          int feed_after_ms, int* got, uint64_t* waited_ms) {
+    rtl_stream_test_live_read_request req = {};
+    req.dev = dev;
+    req.search_owner = search_owner;
+    req.live_opts = live_opts;
+    req.want_no_stream = want_no_stream;
+    req.want_idle_bound = 1;
+    req.event_after_ms = feed_after_ms;
+    req.feed = 1;
+    return rtl_stream_test_live_read(&req, got, waited_ms);
+}
+
+/* Issue #834 (B2): a connected stream that stops delivering held the decoder's hunt read for as long as the stream
+ * lasted, so neither queued commands nor a scan's service ran. A hunt read asks for the idle bound: after 100 ms with
+ * no samples it returns DSD_RTL_READ_IDLE, the stream still running, a command queued or not (the decoder decides what
+ * the idle read gives way to). A read that finds samples inside the bound takes them. Frame reads (no ask) keep waiting
+ * for the producer, as test_search_live_read_bound() pins. The bounds beside it win: a Signal search's read still fails
+ * (-1), an idle analog monitor's still returns 0 samples; with no stream a queued command still yields at once, and a
+ * reader that asks for both takes DSD_RTL_READ_NO_STREAM first. */
+static int
+test_hunt_live_read_idle_bound(void) {
+    auto digital_storage = std::make_unique<dsd_opts>();
+    dsd_opts& digital = *digital_storage;
+    auto nfm_storage = std::make_unique<dsd_opts>();
+    dsd_opts& nfm = *nfm_storage;
+    DSD_MEMSET(&digital, 0, sizeof digital);
+    digital.audio_in_type = AUDIO_IN_RTL;
+    nfm = digital;
+    nfm.analog_only = 1;
+    nfm.monitor_input_audio = 1;
+    nfm.analog_demod = DSD_ANALOG_DEMOD_FM;
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    int failed = expect_int_eq("idle-bound device", dev != nullptr ? 1 : 0, 1);
+    if (dev == nullptr) {
+        return failed;
+    }
+    dsd_runtime_set_controls_pending(live_commands_pending);
+    g_live_commands_pending.store(0);
+    int got = 0;
+    uint64_t waited_ms = 0U;
+
+    failed |= expect_int_eq("stalled hunt read", hunt_read(dev, 0U, &digital, 0, 3000, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a hunt read on a connected stream that delivers nothing comes back idle", got,
+                            DSD_RTL_READ_IDLE);
+    failed |= expect_waited("a stalled hunt read", waited_ms, 100U, 2000U);
+
+    failed |= expect_int_eq("prompt hunt read", hunt_read(dev, 0U, &digital, 0, 30, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a hunt read whose samples come inside the bound takes them", got, 1);
+
+    g_live_commands_pending.store(1);
+    failed |=
+        expect_int_eq("stalled hunt read with a command", hunt_read(dev, 0U, &digital, 0, 3000, &got, &waited_ms), 0);
+    failed |= expect_int_eq("with a stream a queued command meets the bound, and the read comes back idle", got,
+                            DSD_RTL_READ_IDLE);
+    failed |= expect_waited("a stalled hunt read with a command", waited_ms, 100U, 2000U);
+    g_live_commands_pending.store(0);
+
+    failed |=
+        expect_int_eq("frame read", live_read(dev, 0U, &digital, 0, 300, nullptr, nullptr, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a frame read (no ask) still waits for the producer", got, 1);
+    failed |= expect_waited("a frame read", waited_ms, 250U, 60000U);
+
+    failed |= expect_int_eq("search hunt read", hunt_read(dev, 7U, &digital, 0, 3000, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a search's read keeps its failed-read contract", got, -1);
+    failed |= expect_int_eq("NFM hunt read", hunt_read(dev, 0U, &nfm, 0, 3000, &got, &waited_ms), 0);
+    failed |= expect_int_eq("an idle analog monitor's read keeps its 0-sample contract", got, 0);
+
+    rtl_device_test_set_recovering(dev, 1);
+    failed |= expect_int_eq("no-stream hunt read", hunt_read(dev, 0U, &digital, 0, 3000, &got, &waited_ms), 0);
+    failed |= expect_int_eq("no stream and no command: the hunt read comes back idle", got, DSD_RTL_READ_IDLE);
+    failed |= expect_waited("a no-stream hunt read", waited_ms, 100U, 2000U);
+    g_live_commands_pending.store(1);
+    failed |=
+        expect_int_eq("no-stream hunt read with a command", hunt_read(dev, 0U, &digital, 0, 3000, &got, &waited_ms), 0);
+    failed |= expect_int_eq("no stream and a queued command: the hunt read yields at once", got, DSD_RTL_READ_YIELD);
+    failed |= expect_waited("a yielding hunt read", waited_ms, 0U, 100U);
+    g_live_commands_pending.store(0);
+    failed |= expect_int_eq("no-stream reader's hunt read", hunt_read(dev, 0U, &digital, 1, 3000, &got, &waited_ms), 0);
+    failed |=
+        expect_int_eq("a reader that asks for both gets DSD_RTL_READ_NO_STREAM first", got, DSD_RTL_READ_NO_STREAM);
+    rtl_device_test_set_recovering(dev, 0);
+
+    dsd_runtime_set_controls_pending(nullptr);
+    rtl_device_test_usb_gain_device_free(dev);
+    return failed;
+}
+
 /* A block the signal search drops (it takes over the tuner) also forgets what a TETRA uplink look-ahead held: pushed
  * out later, those symbols would reach the decoder after the gap, spliced to whatever follows it. A block the search
  * does not drop leaves the look-ahead as it was. */
@@ -2540,6 +2633,7 @@ test_waits_under_coarse_timer_tick(void) {
     g_sleep_tick_ms.store(15U, std::memory_order_relaxed);
     int failed = test_retune_drain_wait_bound();
     failed |= test_live_read_without_stream();
+    failed |= test_hunt_live_read_idle_bound();
     g_sleep_tick_ms.store(0U, std::memory_order_relaxed);
     return failed;
 #else
@@ -3483,6 +3577,7 @@ main(void) {
     failed |= test_live_republish_lands_where_it_was_timed();
     failed |= test_search_live_read_bound();
     failed |= test_live_read_without_stream();
+    failed |= test_hunt_live_read_idle_bound();
     failed |= test_retune_drain_wait_bound();
     failed |= test_waits_under_coarse_timer_tick();
     failed |= test_signal_search_drop_forgets_uplink_lookahead();

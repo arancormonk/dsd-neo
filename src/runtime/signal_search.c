@@ -164,6 +164,18 @@ dsd_signal_search_validate_config(const dsd_signal_search_config* config, char* 
 }
 
 int
+dsd_signal_fft_size_for_width(uint32_t rate, double width_hz) {
+    if (!rate || !(width_hz > 0)) {
+        return 0;
+    }
+    int n = 32;
+    while ((double)rate * 8 > width_hz * n && n < DSD_SEARCH_MAX_FFT) {
+        n *= 2;
+    }
+    return (double)rate * 8 <= width_hz * n ? n : 0;
+}
+
+int
 dsd_signal_search_fft_size(uint32_t rate, const dsd_signal_search_range* range) {
     if (!rate || dsd_signal_search_validate(range, NULL, 0)) {
         return 0;
@@ -172,11 +184,7 @@ dsd_signal_search_fft_size(uint32_t rate, const dsd_signal_search_range* range) 
     if (width > range->bandwidth_hz) {
         width = range->bandwidth_hz;
     }
-    int n = 32;
-    while ((double)rate * 8 > width * n && n < DSD_SEARCH_MAX_FFT) {
-        n *= 2;
-    }
-    return (double)rate * 8 <= width * n ? n : 0;
+    return dsd_signal_fft_size_for_width(rate, width);
 }
 
 int

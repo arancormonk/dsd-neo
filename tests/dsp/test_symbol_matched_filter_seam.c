@@ -24,6 +24,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/sps_filters.h>
@@ -135,7 +136,7 @@ dsd_analog_audio_note_reception(const dsd_state* state) {
 #define CENTER     4
 #define TOTAL      6000 /* samples in the WAV: far more than any sequence reads */
 #define PHASE_SYMS 20   /* symbols read in each phase of a sequence */
-#define MAX_KINDS  3
+#define MAX_KINDS  4
 
 /* Deterministic and non-repeating, so a rewind or a skip of one sample shows. */
 static short
@@ -155,6 +156,7 @@ kind_slot(dsd_sps_filter_kind kind) {
         case DSD_SPS_FILTER_NONE: return 0;
         case DSD_SPS_FILTER_P25: return 1;
         case DSD_SPS_FILTER_DMR: return 2;
+        case DSD_SPS_FILTER_M17: return 3;
         default: assert(0); return 0;
     }
 }
@@ -164,6 +166,7 @@ kind_name(dsd_sps_filter_kind kind) {
     switch (kind) {
         case DSD_SPS_FILTER_P25: return "p25";
         case DSD_SPS_FILTER_DMR: return "dmr";
+        case DSD_SPS_FILTER_M17: return "m17";
         default: return "raw";
     }
 }
@@ -174,7 +177,7 @@ build_references(void) {
         g_raw[n] = stimulus(n);
         g_ref[0][n] = (float)g_raw[n];
     }
-    const dsd_sps_filter_kind kinds[] = {DSD_SPS_FILTER_P25, DSD_SPS_FILTER_DMR};
+    const dsd_sps_filter_kind kinds[] = {DSD_SPS_FILTER_P25, DSD_SPS_FILTER_DMR, DSD_SPS_FILTER_M17};
     for (unsigned k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++) {
         const int delay = dsd_sps_filter_group_delay(kinds[k], SPS);
         assert(delay > 0);
@@ -272,7 +275,7 @@ window_for(int lastsynctype, int* l, int* r) {
  * over the decision window at the positions the grid should be reading.
  */
 static int
-run_symbols(grid* g, int lastsynctype, dsd_sps_filter_kind kind, int symbols, const char* label) {
+run_symbols_sync(grid* g, int lastsynctype, dsd_sps_filter_kind kind, int symbols, const char* label, int have_sync) {
     g->state->lastsynctype = lastsynctype;
     int l = 0;
     int r = 0;
@@ -280,7 +283,7 @@ run_symbols(grid* g, int lastsynctype, dsd_sps_filter_kind kind, int symbols, co
     const float* ref = g_ref[kind_slot(kind)];
     int mismatches = 0;
     for (int m = 0; m < symbols; m++) {
-        const float got = getSymbol(g->opts, g->state, 1);
+        const float got = getSymbol(g->opts, g->state, have_sync);
         assert(exitflag == 0);
         float want = 0.0f;
         for (int i = CENTER - l; i <= CENTER + r; i++) {
@@ -299,6 +302,11 @@ run_symbols(grid* g, int lastsynctype, dsd_sps_filter_kind kind, int symbols, co
     }
     DSD_FPRINTF(stderr, "%s: %s phase, %d of %d symbols off\n", label, kind_name(kind), mismatches, symbols);
     return mismatches;
+}
+
+static int
+run_symbols(grid* g, int lastsynctype, dsd_sps_filter_kind kind, int symbols, const char* label) {
+    return run_symbols_sync(g, lastsynctype, kind, symbols, label, 1);
 }
 
 static int
@@ -441,6 +449,126 @@ test_filter_switch_drops_the_anchor_move(const char* wav_path) {
     grid_close(&g);
 }
 
+/* M17 switches its filter on at the sync that opens a transmission, the link setup frame's, and keeps it through the
+   stream until the grid returns to the hunt: the LSF behind that sync is read from the filter's output at the
+   position the grid was about to read, which is what a filter switching on from a cold history once cost its CRC
+   (#399, #834). */
+static void
+test_m17_filter_switches_at_the_lsf_and_back(const char* wav_path) {
+    static dsd_opts opts;
+    static dsd_state state;
+    grid g;
+    grid_open(&g, &opts, &state, wav_path);
+    assert(run_phase(&g, DSD_SYNC_NONE, DSD_SPS_FILTER_NONE, "m17") == 0);
+    assert(run_phase(&g, DSD_SYNC_M17_LSF_POS, DSD_SPS_FILTER_M17, "m17") == 0);
+    assert(run_phase(&g, DSD_SYNC_M17_STR_POS, DSD_SPS_FILTER_M17, "m17") == 0);
+    assert(run_phase(&g, DSD_SYNC_NONE, DSD_SPS_FILTER_NONE, "m17") == 0);
+    grid_close(&g);
+}
+
+/* A raised-cosine pulse (roll-off 0.2) @p t symbols from its centre. */
+static double
+raised_cosine(double t) {
+    const double pi = 3.14159265358979323846;
+    const double alpha = 0.2;
+    if (fabs(t) < 1e-9) {
+        return 1.0;
+    }
+    const double sinc = sin(pi * t) / (pi * t);
+    const double den = 1.0 - 4.0 * alpha * alpha * t * t;
+    if (fabs(den) < 1e-9) {
+        return pi / 4.0 * sinc;
+    }
+    return sinc * cos(pi * alpha * t) / den;
+}
+
+/* What the anchor holds when an M17 link setup's sync word is accepted: the preamble's last symbols and the word,
+   recorded ahead of the switch-on with the symbols @p move samples later than the grid's centres, and the word named.
+   The samples go to the anchor alone: the grid's own read position is the test's to move. */
+static void
+seed_m17_sync_word(dsd_state* state, int move) {
+    static const char word[] = M17_PIV M17_PIV M17_LSF;
+    const int word_len = (int)strlen(word);
+    const int lead = 8;
+    const int symbols = lead + word_len + 8;
+    dsd_symbol_hold_sync_anchor(state);
+    dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    assert(anchor != NULL);
+    for (int k = 0; k < lead + word_len; k++) {
+        for (int i = 0; i < SPS; i++) {
+            double v = 0.0;
+            for (int j = 0; j < symbols; j++) {
+                const char c = (j >= lead && j < lead + word_len) ? word[j - lead] : ((j % 2) ? '1' : '3');
+                const double level = (c == '1') ? 3.0 : -3.0;
+                v += level * raised_cosine((double)(k * SPS + i - (j * SPS + CENTER + move)) / (double)SPS);
+            }
+            dsd_symbol_anchor_push_sample(anchor, (float)v, i == CENTER);
+        }
+        dsd_symbol_anchor_end_symbol(anchor, SPS);
+    }
+    dsd_symbol_note_sync_anchor(state, word, word_len);
+}
+
+/* M17's switch-on takes the move the anchor measured on its sync word with the delay it owes, a negative one (the
+   symbols sit earlier than the grid) by handing samples back. Under AUTO the preamble runs behind DMR's filter, whose
+   delay is M17's, so the move is all that is owed; behind P25's longer one the switch hands back samples, and the move
+   adds to or takes from them (issue #834). */
+static void
+test_m17_switch_on_takes_the_measured_move(const char* wav_path) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const dsd_sps_filter_kind before[] = {DSD_SPS_FILTER_DMR, DSD_SPS_FILTER_P25};
+    const int before_sync[] = {DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_P25P1_POS};
+    const int moves[] = {2, -2, 1, -1};
+    assert(dsd_sps_filter_group_delay(DSD_SPS_FILTER_DMR, SPS) == dsd_sps_filter_group_delay(DSD_SPS_FILTER_M17, SPS));
+    assert(dsd_sps_filter_group_delay(DSD_SPS_FILTER_P25, SPS) > dsd_sps_filter_group_delay(DSD_SPS_FILTER_M17, SPS));
+    for (unsigned b = 0; b < sizeof(before) / sizeof(before[0]); b++) {
+        for (unsigned m = 0; m < sizeof(moves) / sizeof(moves[0]); m++) {
+            grid g;
+            grid_open(&g, &opts, &state, wav_path);
+            assert(run_phase(&g, before_sync[b], before[b], "m17 move") == 0);
+            seed_m17_sync_word(&state, moves[m]);
+            DSD_FPRINTF(stderr, "m17 move: %d samples after %s\n", moves[m], kind_name(before[b]));
+            g.position += moves[m];
+            assert(run_phase(&g, DSD_SYNC_M17_LSF_POS, DSD_SPS_FILTER_M17, "m17 move") == 0);
+            dsd_state_ext_free_all(&state);
+            grid_close(&g);
+        }
+    }
+}
+
+/* A frame that arms the recording for the word the hunt reads next (dsd_symbol_arm_hunt_sync_anchor(): NXDN, YSF, DMR
+   MS) keeps the hunt's crossing loop off a grid a measured word placed: the hunt reads on at the content position the
+   frame left, until the recording lapses. A recording on a grid no word placed leaves the loop to slip it, as before
+   (issue #834). */
+static void
+test_hunt_recording_holds_a_placed_grid(const char* wav_path) {
+    static dsd_opts opts;
+    static dsd_state state;
+    grid g;
+    grid_open(&g, &opts, &state, wav_path);
+    assert(run_phase(&g, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SPS_FILTER_DMR, "hunt hold") == 0);
+    /* Rails the stimulus crosses inside, so its centre crossings latch the slips the hunt takes (maxref/minref). */
+    state.maxref = 30000.0f;
+    state.minref = -30000.0f;
+    dsd_symbol_anchor_test_place_grid(&state);
+    dsd_symbol_arm_hunt_sync_anchor(&state);
+    /* 64 symbols are recorded before an unnamed recording lapses: every one of them is read in place. */
+    assert(run_symbols_sync(&g, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SPS_FILTER_DMR, 64, "hunt hold", 0) == 0);
+    dsd_state_ext_free_all(&state);
+    grid_close(&g);
+
+    /* The control: unplaced, the crossing loop slips the hunt's reads on this stimulus. */
+    grid_open(&g, &opts, &state, wav_path);
+    assert(run_phase(&g, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SPS_FILTER_DMR, "hunt unheld") == 0);
+    state.maxref = 30000.0f;
+    state.minref = -30000.0f;
+    dsd_symbol_arm_hunt_sync_anchor(&state);
+    assert(run_symbols_sync(&g, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SPS_FILTER_DMR, 64, "hunt unheld", 0) > 0);
+    dsd_state_ext_free_all(&state);
+    grid_close(&g);
+}
+
 typedef struct {
     const char* name;
     void (*run)(const char* wav_path);
@@ -455,6 +583,9 @@ static const seam_case kCases[] = {
     {"handing-back", test_switch_on_while_handing_back_continues_the_position},
     {"fractional-anchor", test_fractional_span_keeps_the_sync_anchor},
     {"anchor-move", test_filter_switch_drops_the_anchor_move},
+    {"m17", test_m17_filter_switches_at_the_lsf_and_back},
+    {"m17-move", test_m17_switch_on_takes_the_measured_move},
+    {"hunt-hold", test_hunt_recording_holds_a_placed_grid},
 };
 
 /* An optional argument names one case to run alone, for watching it fail. */
