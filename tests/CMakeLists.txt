@@ -9614,6 +9614,33 @@ add_test(
     COMMAND dsd-neo_test_engine_scan_voice_gate
 )
 
+# The -Y voice check and the talkgroup Hold check judge a patched P25 call through the patch resolver (real policy)
+add_executable(
+    dsd-neo_test_engine_p25_patch_scan
+    engine/test_engine_p25_patch_scan.c
+)
+target_include_directories(
+    dsd-neo_test_engine_p25_patch_scan
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_engine_p25_patch_scan
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_p25_patch_scan
+        PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(NAME ENGINE_P25_PATCH_SCAN COMMAND dsd-neo_test_engine_p25_patch_scan)
+
 add_executable(
     dsd-neo_test_runtime_config_user
     runtime/test_runtime_config_user.cpp
@@ -15441,7 +15468,10 @@ target_link_libraries(
 add_test(NAME P25_PREEMPT COMMAND dsd-neo_test_p25_preempt)
 
 # A followed patched P25 call is one call while its resolution re-selects members: OTA keys, re-resolution, held call
-add_executable(dsd-neo_test_p25_patch_follow protocol/p25/test_p25_patch_follow.c)
+add_executable(
+    dsd-neo_test_p25_patch_follow
+    protocol/p25/test_p25_patch_follow.c
+)
 target_include_directories(
     dsd-neo_test_p25_patch_follow
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25

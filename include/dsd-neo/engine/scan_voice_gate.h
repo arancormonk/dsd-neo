@@ -92,13 +92,15 @@ int dsd_scan_analog_tone_rejection_ended(const dsd_opts* opts, const dsd_state* 
 /**
  * Non-zero when the operator's talkgroup hold is on a call that is being followed right now:
  * some slot carries an active, non-data call whose target -- after policy remapping -- is the
- * held talkgroup, or, on a private call, whose source is.
+ * held talkgroup, or, on a private call, whose source is. A P25 group call on a live patch's
+ * supergroup is judged by the patch resolver's admission under @p opts: the held talkgroup must be
+ * the supergroup or a member the patch carries now, with no final block on the supergroup.
  *
  * Both scanners suspend the per-visit limit while this holds (issue #507), so the limit cannot
  * cut short the very call the hold exists to follow, and a fresh limit starts once that call
  * ends. Read-only and null-safe.
  */
-int dsd_scan_tg_hold_call_active(const dsd_state* state);
+int dsd_scan_tg_hold_call_active(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * Restart the per-visit gate memory on a scan hop, and open the visit the per-visit cap

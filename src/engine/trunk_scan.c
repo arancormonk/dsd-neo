@@ -12,6 +12,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/scan_profile.h>
@@ -4187,7 +4188,7 @@ trunk_scan_visit_suspended(const dsd_opts* opts, const dsd_state* state, const d
     if (coord->hold_active) {
         return 1;
     }
-    if (!dsd_scan_tg_hold_call_active(state)) {
+    if (!dsd_scan_tg_hold_call_active(opts, state)) {
         return 0;
     }
     return !trunk_scan_target_is_trunked(rt->target.type) || opts->trunk_is_tuned == 1;
@@ -5882,6 +5883,27 @@ trunk_scan_type_in_conventional_family(dsd_trunk_scan_target_type type, trunk_sc
     return 0;
 }
 
+/* Whether policy lets the reported call hold its target. A P25 group call on a live patch's supergroup is judged by the
+ * patch resolver's admission (the supergroup, then each current member), so a listened member carrying the patch holds
+ * it; every other call by its own target. */
+static int
+trunk_scan_activity_tune_allowed(trunk_scan_conventional_family family, const dsd_opts* opts, const dsd_state* state,
+                                 uint32_t target, uint32_t source, int is_private, int encrypted, int data_call) {
+    dsd_tg_policy_decision decision;
+    int rc = 0;
+    if (is_private) {
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call, &decision);
+    } else if (family == TRUNK_SCAN_CONVENTIONAL_FAMILY_P25 && dsd_p25_patch_sg_live(state, target)) {
+        dsd_p25_patch_resolution patch;
+        rc = dsd_p25_patch_resolve(opts, state, target, source, encrypted, data_call, DSD_P25_PATCH_RESOLVE_ADMIT, NULL,
+                                   NULL, &patch);
+        decision = patch.decision;
+    } else {
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call, &decision);
+    }
+    return rc == 0 && decision.tune_allowed;
+}
+
 /* Shared body for every conventional target type: the hold decision is protocol-independent,
  * so the per-protocol entry points below differ only in which family may claim the hold. The receive policy judges the
  * reporting call's own protocol and slot (issue #637): only traffic it admits holds the target. */
@@ -5907,14 +5929,7 @@ trunk_scan_conventional_activity(trunk_scan_conventional_family family, const ds
         return;
     }
 
-    dsd_tg_policy_decision decision;
-    int rc = 0;
-    if (is_private) {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call, &decision);
-    } else {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call, &decision);
-    }
-    if (rc == 0 && decision.tune_allowed) {
+    if (trunk_scan_activity_tune_allowed(family, opts, state, target, source, is_private, encrypted, data_call)) {
         rt->last_allowed_activity_m = trunk_scan_now_m();
         trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_ACTIVITY_HOLD);
     }
