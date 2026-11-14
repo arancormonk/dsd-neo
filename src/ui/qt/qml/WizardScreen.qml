@@ -34,8 +34,9 @@ Item {
     }
     function draftFingerprint() {
         // The Airspy fields' typing counts before it commits (they commit on
-        // editingFinished, and an emptied gain index never does).
-        return JSON.stringify([sourceType, airspySettings, wizardAirspy.pendingText(), hostText, portText, fileText, freqText, decodeFlag, trunking, gainText, ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
+        // editingFinished, and an emptied gain index never does). The gain
+        // text counts only under Set, the one mode that saves it.
+        return JSON.stringify([sourceType, airspySettings, wizardAirspy.pendingText(), hostText, portText, fileText, freqText, decodeFlag, trunking, gainMode, gainMode === 2 ? gainText : "", ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
     }
     // Whether leaving now would lose something typed or picked.
     function hasUnsavedDraft() {
@@ -92,7 +93,10 @@ Item {
     // explicit answer must survive every later chip change.
     property bool trunkingAnswered: false
     property bool advancedOpen: false
-    property alias gainText: gainField.text
+    // The tuner gain as GainEditor shows it: 0 App default, 1 Automatic, 2 Set,
+    // with Set's typing in gainText (kept while another mode is chosen).
+    property int gainMode: 0
+    property string gainText: ""
     property alias ppmText: ppmField.text
     property alias hangtimeText: hangtimeField.text
     property alias bwText: bwField.text
@@ -159,6 +163,8 @@ Item {
     property alias nameText: nameField.text
 
     readonly property bool radioSource: sourceType === "usb" || sourceType === "airspy" || sourceType === "rtltcp"
+    // An RTL tuner, local or rtl_tcp: the sources that show the gain and PPM.
+    readonly property bool rtlTuner: sourceType === "usb" || sourceType === "rtltcp"
     // A file source replaying a symbol capture, which carries TETRA's symbols as a radio's I/Q does.
     readonly property bool symbolSource: sourceType === "file" && Util.isSymbolCapture(fileText)
 
@@ -356,7 +362,7 @@ Item {
         // control channel, so this is what keeps the shipped defaults decoding.
         refreshTrunkingSuggestion();
         advancedOpen = false;
-        gainField.text = "";
+        loadGain(-1);
         ppmField.text = "";
         hangtimeField.text = "";
         bwField.text = "";
@@ -407,7 +413,7 @@ Item {
         // waterfall — so the same suggestion applies, and more strongly.
         refreshTrunkingSuggestion();
         advancedOpen = false;
-        gainField.text = "";
+        loadGain(-1);
         ppmField.text = "";
         hangtimeField.text = "";
         bwField.text = "";
@@ -429,8 +435,8 @@ Item {
             trunking = false;
             trunkingAnswered = true;
             // A whole-dB override (0 is the tuner's AGC); -1 for an Airspy,
-            // whose gains are in its own settings, leaves the field unset.
-            gainField.text = detection.gainDb >= 0 ? String(detection.gainDb) : "";
+            // whose gains are in its own settings, is App default.
+            loadGain(detection.gainDb);
             bwField.text = String(detection.bandwidthKhz > 0 ? detection.bandwidthKhz : 48);
             // The receiver the detection was made with, not the app defaults
             // reset above: an Airspy's own settings, or an RTL's PPM and its
@@ -442,6 +448,7 @@ Item {
             csvNotice = detection.searchUnresolved ? qsTr("Digital identification is unresolved. NFM monitoring does not confirm an analog transmission.") : "";
         }
         wizardAirspy.resetText();
+        revealRefusedTuning();
         initialDraft = draftFingerprint();
     }
 
@@ -464,7 +471,7 @@ Item {
         answerTrunking(sys.trunking);
         advancedOpen = false;
         airspySettings = sys.airspy || ({});
-        gainField.text = sys.gainDb >= 0 ? String(sys.gainDb) : "";
+        loadGain(sys.gainDb);
         ppmField.text = sys.ppm;
         hangtimeField.text = sys.hangtime || "";
         bwField.text = sys.bandwidthKhz > 0 ? String(sys.bandwidthKhz) : "";
@@ -488,6 +495,7 @@ Item {
         csvNotice = "";
         csvNoticeIsProblem = false;
         wizardAirspy.resetText();
+        revealRefusedTuning();
         initialDraft = draftFingerprint();
     }
 
@@ -590,8 +598,8 @@ Item {
     }
 
     // parseInt alone lets a hardware-keyboard "abc" become NaN, which QVariant
-    // then reads as 0 — and a gain of 0 is a meaningful override, not "unset".
-    // NaN must collapse to the field's explicit "no override" value instead.
+    // then reads as 0, not "unset". NaN must collapse to the field's explicit
+    // "no override" value instead.
     function intOr(text, fallback) {
         var v = parseInt(text, 10);
         return isNaN(v) ? fallback : v;
@@ -600,6 +608,35 @@ Item {
     function portValid() {
         var p = Number(portText);
         return /^[0-9]+$/.test(portText) && p >= 1 && p <= 65535;
+    }
+
+    // Shows a stored gain (below 0 App default, 0 Automatic, else the set dB).
+    // A stored gain above 49 shows under Set with its error until changed.
+    function loadGain(db) {
+        gainMode = db > 0 ? 2 : db === 0 ? 1 : 0;
+        gainText = db > 0 ? String(db) : "";
+    }
+
+    // The gain and PPM are an RTL tuner's: hidden on any other source, they
+    // hold nothing there (and a refused value is not saved, see commit()).
+    function gainValid() {
+        return !rtlTuner || gainEditor.valid;
+    }
+
+    function ppmInRange() {
+        return ppmText.length === 0 || (/^-?[0-9]+$/.test(ppmText) && Math.abs(Number(ppmText)) <= 200);
+    }
+
+    function ppmValid() {
+        return !rtlTuner || ppmInRange();
+    }
+
+    // A loaded value the editor refuses (an older build took PPM up to
+    // +-999): the Advanced pane opens on its error rather than holding
+    // Continue with nothing shown.
+    function revealRefusedTuning() {
+        if (!gainValid() || !ppmValid())
+            advancedOpen = true;
     }
 
     function hangtimeValid() {
@@ -621,9 +658,9 @@ Item {
         // capture can: not until another chip is picked. Nor on a radio whose
         // bandwidth cannot filter the AM channel, or that cannot decode TETRA.
         if (step === 1)
-            return hangtimeValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText))
+            return hangtimeValid() && gainValid() && ppmValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText))
                 && decodeFlagRunsHere(decodeFlag) && amBandwidthError().length === 0 && tetraRateError().length === 0;
-        return hangtimeValid() && encryptionValid && nameText.trim().length > 0;
+        return hangtimeValid() && gainValid() && ppmValid() && encryptionValid && nameText.trim().length > 0;
     }
 
     // Whether @a sys still tunes what the import answered (@a imported): only
@@ -671,7 +708,7 @@ Item {
     }
 
     function commit() {
-        if (!hangtimeValid() || !encryptionValid || replayPending)
+        if (!hangtimeValid() || !gainValid() || !ppmValid() || !encryptionValid || replayPending)
             return;
         var sys = {
             name: nameText.trim(),
@@ -682,8 +719,8 @@ Item {
             decodeFlag: decodeFlag,
             trunking: trunking,
             airspy: wizardAirspy.pendingSettings(),
-            gainDb: gainText.length > 0 ? intOr(gainText, -1) : -1,
-            ppm: ppmText,
+            gainDb: gainEditor.valid ? gainEditor.storedValue : -1,
+            ppm: ppmInRange() ? ppmText : "",
             hangtime: hangtimeText,
             bandwidthKhz: bwText.length > 0 ? intOr(bwText, -1) : -1,
             biasTee: biasTee,
@@ -1732,48 +1769,33 @@ Item {
                         // Gain and PPM are an RTL tuner's (an Airspy's gains are
                         // its own controls above, and it takes no PPM); the DSP
                         // bandwidth is every radio's (issue #806).
+                        GainEditor {
+                            id: gainEditor
+                            width: parent.width
+                            visible: wizard.rtlTuner
+                            title: qsTr("Gain")
+                            inheritable: true
+                            inheritNote: qsTr("App default · %1").arg(prefs.gainDb === 0 ? qsTr("Automatic") : qsTr("%1 dB").arg(prefs.gainDb))
+                            mode: wizard.gainMode
+                            manualText: wizard.gainText
+                            modeObjectName: "systemGainMode"
+                            fieldObjectName: "systemGainField"
+                            onModeSelected: function (mode) {
+                                wizard.gainMode = mode;
+                            }
+                            onDraftEdited: function (text) {
+                                wizard.gainText = text;
+                            }
+                        }
+
                         Row {
                             width: parent.width
                             visible: wizard.radioSource
                             spacing: 10
 
                             Column {
-                                width: (parent.width - 20) / 3
-                                visible: wizard.sourceType !== "airspy"
-                                spacing: 6
-
-                                // Read in the field below, which carries the same words (issue #782).
-                                Text {
-                                    objectName: "wizardGainCaption"
-                                    Accessible.ignored: true
-                                    text: qsTr("Gain dB")
-                                    font.family: Theme.sans
-                                    font.pixelSize: Theme.fontSize(12)
-                                    color: Theme.textSecondary
-                                }
-
-                                PlexTextField {
-                                    id: gainField
-                                    objectName: "systemGainField"
-                                    label: qsTr("Gain (dB)")
-                                    width: parent.width
-                                    mono: true
-                                    placeholderText: String(prefs.gainDb)
-                                    // Like the PPM field: the hint does not
-                                    // constrain hardware keyboards, and a
-                                    // non-numeric entry would otherwise read
-                                    // back as an explicit 0 dB override.
-                                    inputMethodHints: Qt.ImhDigitsOnly
-                                    input.validator: IntValidator {
-                                        bottom: 0
-                                        top: 99
-                                    }
-                                }
-                            }
-
-                            Column {
-                                width: (parent.width - 20) / 3
-                                visible: wizard.sourceType !== "airspy"
+                                width: (parent.width - 10) / 2
+                                visible: wizard.rtlTuner
                                 spacing: 6
 
                                 // Read in the field below, which carries the same words (issue #782).
@@ -1793,22 +1815,26 @@ Item {
                                     width: parent.width
                                     mono: true
                                     placeholderText: String(prefs.ppm)
-                                    // Signed integer only: this string is spliced
-                                    // verbatim into the rtl input spec, and a hint
-                                    // alone does not constrain hardware keyboards.
+                                    // Signed whole numbers only: this string is
+                                    // spliced verbatim into the rtl input spec,
+                                    // and a hint alone does not constrain
+                                    // hardware keyboards. ASCII digits, as a
+                                    // locale-aware validator lets through text
+                                    // Number cannot read.
                                     inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                    input.validator: IntValidator {
-                                        bottom: -999
-                                        top: 999
+                                    input.validator: RegularExpressionValidator {
+                                        regularExpression: /^-?[0-9]*$/
                                     }
+                                    // What the engine runs: it clamps to +-200.
+                                    error: wizard.ppmInRange() ? "" : qsTr("Enter a correction from -200 to 200 ppm.")
                                 }
                             }
 
                             // Alone on an Airspy, the field takes the row and
-                            // its own label, without the caption the three
-                            // narrow columns share.
+                            // its own label, without the caption the two
+                            // columns share.
                             Column {
-                                width: wizard.sourceType === "airspy" ? parent.width : (parent.width - 20) / 3
+                                width: wizard.sourceType === "airspy" ? parent.width : (parent.width - 10) / 2
                                 spacing: 6
 
                                 ReadableText {

@@ -26,7 +26,8 @@ Item {
             wizard.openForAdd(false);
             wizard.step = 1;
             wizard.advancedOpen = true;
-            var controls = ["systemGainField", "systemPpmField", "systemBiasTee"];
+            wizard.gainMode = 2;
+            var controls = ["systemGainMode", "systemGainField", "systemPpmField", "systemBiasTee"];
             for (var source of ["airspy", "usb", "rtltcp", "airspy"]) {
                 wizard.sourceType = source;
                 for (var name of controls) {
@@ -43,7 +44,8 @@ Item {
         // Issue #806: on an Airspy the Advanced pane names only what it shows
         // (its own gain controls and bias tee, no PPM), and the bandwidth field,
         // alone in its row, takes the row and its own label without the
-        // caption the three narrow columns share.
+        // caption the PPM and bandwidth columns share. An RTL's gain has its
+        // own row above them.
         function test_wizard_airspy_advanced_pane() {
             screenLoader.source = uiDir + "/WizardScreen.qml";
             var wizard = screenLoader.item;
@@ -64,7 +66,7 @@ Item {
                 if (airspy)
                     compare(bw.width, row.width, source + ": full row");
                 else
-                    verify(bw.width < row.width / 2, source + ": a third of the row");
+                    compare(bw.width, (row.width - row.spacing) / 2, source + ": half the row, beside the PPM");
             }
         }
 
