@@ -2462,14 +2462,17 @@ acquisition stage (`dsd_speech_agc_set_acquisition()`, on for the per-slot insta
 `src/core/audio/voice_level.c`, off on the analog chain). Both were set on 45 minutes of live P25 Phase 1 and Phase 2
 trunked traffic, kept outside the repository like the corpus. Only aggregate numbers are recorded here. Talkers there
 needed 10 dB of gain over `-g 1` on average (standard deviation 7 dB), so the old +4 dB start opened 40% of
-transmissions more than 6 dB too quiet. The constants (the startup law, the guard and the burst fallback act only
-until the reception's estimate is established, 20 committed frames):
+transmissions more than 6 dB too quiet. The constants (the guard and the burst fallback act only until the
+reception's estimate is established, 20 committed frames; the startup law acts on every step):
 
 - Opening gain. `DSD_VOICE_LEVEL_OPEN_GAIN_DB`, +8 dB over `-g 1`, from the reception's first sample. The range
   (-12/+30 dB), the tone cap and the absolute floor stay around the start gain, +4 dB.
-- Startup law. Each of the first 20 gain steps goes straight to P + (W - P) n^2 / (n^2 + 24), with P the gain the
-  first step found, W the settled aim and n the committed frames: 60% of the way at the first commit (6 frames), 81%
-  at 10, 94% at 20. Then the gain moves +0.12 / -0.20 dB per committing frame, as before. A first voiced run
+- Startup law. Every gain step aims at P + (W - P) n^2 / (n^2 + 24), with P the gain the first step found, W the
+  settled aim and n the committed frames: 60% of the way at the first commit (6 frames), 81% at 10, 94% at 20. The
+  first 20 steps go straight to that aim; since the first step commits six frames at once, that is through the 25th
+  committed frame of unbroken speech. After them the gain moves +0.12 / -0.20 dB per committing frame toward the same
+  weighted aim, as before; the weight is 0.966 at the 21st step and rises toward 1, so that aim is the settled one to
+  within a few tenths of a dB and closing. A first voiced run
   measures a talker's level with a standard deviation of 5 dB, 3.3 dB after 10 frames and 2 dB after 20; the weight
   sets that against the 7 dB spread of talkers around a fixed start.
 - Loud-frame guard. A frame that plays over -12 dBFS (RMS over the frame) takes the gain at once to where that frame

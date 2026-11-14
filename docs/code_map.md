@@ -6952,9 +6952,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the frame target is calibrated on digital speech, and the digital output stays the same bits. The acquisition stage
   (`dsd_speech_agc_set_acquisition()`, off after init, kept by a reset) is on for the digital voice chain's per-slot
   instances, which restart every transmission, many of them shorter than the 2 dB startup steps; the analog chain
-  leaves it off and keeps its 2 dB steps bit for bit. Until the estimate is established (20 committed frames) it changes
-  three things: a step aims at P + (W - P) n^2 / (n^2 + 24) (P the gain the reception's first step found, W the
-  settled aim clamp(T - S), n the committed frames), straight there for the first 20 steps; a frame that would play
+  leaves it off and keeps its 2 dB steps bit for bit. It changes three things, the last two only until the estimate is
+  established (20 committed frames): every step aims at P + (W - P) n^2 / (n^2 + 24) (P the gain the reception's first
+  step found, W the settled aim clamp(T - S), n the committed frames), straight there for the first 20 steps and
+  toward it at +0.12 / -0.20 dB after; a frame that would play
   over -12 dBFS takes the gain at once to where it plays at -12 dBFS, and no startup aim plays the held peak louder
   (the loud-frame guard); and once a burst has completed (three frames within 6 dB of the reception's third loudest
   frame at or over -70 dBFS, then one 12 dB under it) the gain rises 1 dB a frame until that frame plays at -17 dBFS,

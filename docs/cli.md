@@ -599,23 +599,26 @@ Notes
   each slot's speech is brought to one level, -20 dBFS active speech. A transmission opens 8 dB over the decoder's own
   level (`-g 1`, where speech at the vocoders' reference level plays at about -24 dBFS), or, when its radio ID has
   talked long enough before in this run for its level to settle, at the gain that radio's speech settled at (a P25
-  Phase 1 radio ID arrives about 0.2 s into a transmission, and its remembered gain eases in there over 20 ms).
-  Within the talker's first voiced frames the gain goes most of the way to the talker's level. Until 20 voiced frames
-  are in, a frame that plays louder than -12 dBFS takes the gain, at once, to where that frame would have played at
-  -12 dBFS. The change eases in over the next frame (20 ms), and peaks stay held at -1 dBFS. That cut is let go again
-  200 ms after the last loud frame, so a pop or a bump does not hold the gain down. The gain moves only on
-  decoded speech, never on encrypted audio it cannot decrypt, silence, noise or tones, holds through pauses, stays
-  within 12 dB below and 30 dB above its start level (4 dB over `-g 1`, the middle of its range), and never lets a
-  peak past -1 dBFS. Tone frames (DTMF and other call tones) play no louder than that start level. A new transmission,
-  a new channel or a new file starts the gain over at its opening; a short fade inside one transmission does not. The
-  remembered gains belong to the 64 radios heard most recently, per protocol family, and last until `dsd-neo` exits.
-  `0.001`–`50` is a fixed multiplier on the vocoder's reference level (`1`; `0.5` is 6 dB quieter), with peaks held at
-  -1 dBFS. The terminal shows the auto gain in dB (`G: Auto (+3.5 dB)`, one value per channel on stereo output) and a
-  fixed one as its multiplier (`G: x2 (+|-) Manual`). Any other value (negative, above `50`, between `0` and `0.001`,
-  NaN or infinity) is refused with an error; it is never clamped or played as auto. The menu's Digital gain... prompt
-  takes the same values, fractions included, and the `+` / `-` keys step by 1: from auto `+` goes to `1`, stepping
-  below `0.001` goes back to auto, and they stop at `50`. Since issue #653 `-g N` under `-y` is this fixed multiplier
-  too, where it used to scale a float auto gain that kept adapting.
+  Phase 1 radio ID arrives about 0.2 s into a transmission, and its remembered gain eases in there over 20 ms). Within
+  the talker's first voiced frames the gain goes most of the way to the talker's level. Until 20 voiced frames are in, a
+  frame that plays louder than -12 dBFS takes the gain, at once, to where that frame would have played at -12 dBFS. The
+  change eases in over the next frame (20 ms), and peaks stay held at -1 dBFS. That cut is let go again 200 ms after the
+  last loud frame, so a pop or a bump does not hold the gain down. The gain learns the talker's level only from voiced
+  decoded speech (six voiced frames in a row, then each voiced frame). Early in a transmission other decoded sound,
+  voiced or not, can move it too: a loud frame brings it down, and bursts of sound that rise and fall lift it (see the
+  limits below). Encrypted audio it cannot decrypt, frames the decoder marks as tones, frames of calls that are not
+  admitted, and silence never move it (silence only ends a burst). It holds through pauses, stays within 12 dB below and
+  30 dB above its start level (4 dB over `-g 1`, the middle of its range), and never lets a peak past -1 dBFS. Tone
+  frames (DTMF and other call tones) play no louder than that start level. A new transmission, a new channel or a new
+  file starts the gain over at its opening; a short fade inside one transmission does not. The remembered gains belong
+  to the 64 radios heard most recently, per protocol family, and last until `dsd-neo` exits. `0.001`–`50` is a fixed
+  multiplier on the vocoder's reference level (`1`; `0.5` is 6 dB quieter), with peaks held at -1 dBFS. The terminal
+  shows the auto gain in dB (`G: Auto (+3.5 dB)`, one value per channel on stereo output) and a fixed one as its
+  multiplier (`G: x2 (+|-) Manual`). Any other value (negative, above `50`, between `0` and `0.001`, NaN or infinity) is
+  refused with an error; it is never clamped or played as auto. The menu's Digital gain... prompt takes the same values,
+  fractions included, and the `+` / `-` keys step by 1: from auto `+` goes to `1`, stepping below `0.001` goes back to
+  auto, and they stop at `50`. Since issue #653 `-g N` under `-y` is this fixed multiplier too, where it used to scale a
+  float auto gain that kept adapting.
 - `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: each transmission's speech is
   brought to -20 dBFS active speech, the level `-g 0` aims digital voice at, FM and AM alike. It starts from a level
   set for the band, where a typical talker at full deviation or modulation already plays near that level: narrowband

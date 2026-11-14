@@ -206,11 +206,14 @@ void dsd_speech_agc_set_noise_veto(dsd_speech_agc* agc, int on);
  * @brief Turn the acquisition stage on (nonzero @p on) or off. Init turns it off; a reset keeps it.
  *
  * Digital voice turns it on: every transmission is a new reception, and many are over before 2 dB startup steps
- * arrive. Until the reception's estimate is established (20 committed frames) it changes three things:
- * - Startup law. A gain step aims at P + (W - P) n^2 / (n^2 + 24), where W is the gain the estimate asks for, n the
- *   frames committed so far and P the gain the reception's first step found (the gain it opened at, as the parts below
- *   may have moved it): the estimate's measured reliability against the spread of talkers, 0.60 at the first commit
- *   and 0.94 at 20. The first 20 steps go straight to the aim; later ones move at +0.12 / -0.20 dB as without it.
+ * arrive. It changes three things; the guard and the burst fallback act only until the reception's estimate is
+ * established (20 committed frames), the startup law on every step:
+ * - Startup law. Every gain step aims at P + (W - P) n^2 / (n^2 + 24), where W is the gain the estimate asks for, n
+ *   the frames committed so far and P the gain the reception's first step found (the gain it opened at, as the parts
+ *   below may have moved it): the estimate's measured reliability against the spread of talkers, 0.60 at the first
+ *   commit and 0.94 at 20. The first 20 steps go straight to the aim (through the 25th committed frame, since the first
+ *   step commits six at once); later ones move toward that same weighted aim at +0.12 / -0.20 dB a step, as without
+ *   it, while the weight (0.97 at the 21st step) closes on 1.
  * - Loud-frame guard. A frame that would play over -12 dBFS pulls the gain down to where it plays at -12 dBFS at once
  *   (the change ramps in over the next frame, as any), and no startup aim plays the held loudest frame louder.
  *   It bounds an opening gain that was too high: the excess lasts a frame or two, with peaks held by the limiter. The

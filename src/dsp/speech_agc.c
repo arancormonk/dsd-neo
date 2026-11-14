@@ -76,21 +76,22 @@
 #define AGC_STEP_DOWN_DB         0.20f
 
 /* The acquisition stage (digital voice, dsd_speech_agc_set_acquisition()), measured on live trunked digital traffic and
-   the acceptance corpus; it acts until the estimate is established (AGC_EST_CUMULATIVE commits). A startup step aims at
-   P + (W - P) n^2 / (n^2 + c), a weight that follows the estimate's measured reliability (against the gain a reception
-   needed: sd 5.0 dB after one run, 3.3 after 10 commits, 2.1 after 20) against the spread of talkers' needs around a
-   fixed start (sd 7 dB): 0.60 at the first commit, 0.81 at 10, 0.94 at 20. The guard pulls the gain down after the
-   first frame that plays over the cap, so an opening gain that was too high plays loud for a frame or two. A burst is
-   AGC_ACQ_HIGH_FRAMES frames in a row within AGC_ACQ_HIGH_DB of the third loudest frame at or over
-   AGC_ACQ_PEAK_ABS_DBFS, completed by a frame AGC_ACQ_LOW_DB under it or by digital silence (a frame under the
-   absolute floor). Syllables rise and fall like that; steady noise, tones and a step out of silence do not, and
-   reading the third loudest frame ignores two stray ones. Once a burst has completed, the gain rises AGC_ACQ_RISE_DB
-   a frame until that frame plays at the burst floor, which brought the far-field talkers that never complete a voiced
-   run up to their level. The loudest frame the cap reads is held
-   while frames come within AGC_ACQ_HIGH_DB of it and for AGC_ACQ_HOLD_FRAMES frames of sound after the last one, then
-   eases AGC_ACQ_RISE_DB a frame, and until the first commit the gain returns AGC_ACQ_RISE_DB a frame to the gain the
-   reception opened at: a pop or a bump early in a transmission is not the talker's level, and a loudest frame kept for
-   the whole reception held 1.1% of the live speech frames more than 6 dB under their need (0.3% with the hold). */
+   the acceptance corpus; the guard and the burst fallback act until the estimate is established (AGC_EST_CUMULATIVE
+   commits), the startup law on every step. A gain step aims at P + (W - P) n^2 / (n^2 + c), a weight that follows the
+   estimate's measured reliability (against the gain a reception needed: sd 5.0 dB after one run, 3.3 after 10 commits,
+   2.1 after 20) against the spread of talkers' needs around a fixed start (sd 7 dB): 0.60 at the first commit, 0.81 at
+   10, 0.94 at 20. The first AGC_START_STEPS steps go straight to that aim, later ones toward it at the slow rate. The
+   guard pulls the gain down after the first frame that plays over the cap, so an opening gain that was too high plays
+   loud for a frame or two. A burst is AGC_ACQ_HIGH_FRAMES frames in a row within AGC_ACQ_HIGH_DB of the third loudest
+   frame at or over AGC_ACQ_PEAK_ABS_DBFS, completed by a frame AGC_ACQ_LOW_DB under it or by digital silence (a frame
+   under the absolute floor). Syllables rise and fall like that; steady noise, tones and a step out of silence do not,
+   and reading the third loudest frame ignores two stray ones. Once a burst has completed, the gain rises
+   AGC_ACQ_RISE_DB a frame until that frame plays at the burst floor, which brought the far-field talkers that never
+   complete a voiced run up to their level. The loudest frame the cap reads is held while frames come within
+   AGC_ACQ_HIGH_DB of it and for AGC_ACQ_HOLD_FRAMES frames of sound after the last one, then eases AGC_ACQ_RISE_DB a
+   frame, and until the first commit the gain returns AGC_ACQ_RISE_DB a frame to the gain the reception opened at: a pop
+   or a bump early in a transmission is not the talker's level, and a loudest frame kept for the whole reception held
+   1.1% of the live speech frames more than 6 dB under their need (0.3% with the hold). */
 #define AGC_ACQ_WEIGHT_C         24.0f
 #define AGC_ACQ_CAP_DBFS         (-12.0f)
 #define AGC_ACQ_BURST_FLOOR_DBFS (-17.0f)
@@ -526,10 +527,10 @@ agc_acq_cap(const dsd_speech_agc_learned* d, float lo, float hi) {
     return agc_clamp(AGC_ACQ_CAP_DBFS - d->loudest_db, lo, hi);
 }
 
-/* A gain step with the acquisition stage on: the aim weighs the settled aim @p want against the prior P by the frames
-   committed so far, within the burst floor and the loudest frame's cap until the estimate is established; the first
-   AGC_START_STEPS steps go straight to it. The loudest frame and the bursts are as the frames before this one left
-   them. */
+/* A gain step with the acquisition stage on: on every step the aim weighs the settled aim @p want against the prior P
+   by the frames committed so far, within the burst floor and the loudest frame's cap until the estimate is
+   established; the first AGC_START_STEPS steps go straight to it, later ones move toward it at AGC_STEP_UP_DB /
+   AGC_STEP_DOWN_DB. The loudest frame and the bursts are as the frames before this one left them. */
 static void
 agc_acq_gain_step(dsd_speech_agc* agc, float want, float lo, float hi) {
     dsd_speech_agc_learned* d = &agc->learned;
