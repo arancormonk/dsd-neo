@@ -88,8 +88,9 @@ static unsigned long g_gate_mono_tg;
 
 static int g_voice_chain_calls;
 static int g_voice_chain_slot;
-/* What the last chain run was told about its frame, and how many runs were told something else than the first. */
-static const dsd_voice_frame_info* g_voice_chain_info;
+/* What the last chain run was told about its frame (its address, kept as a number: the test only compares it, and a
+   caller's frame info may be on its stack), and how many runs were told something else than the first. */
+static uintptr_t g_voice_chain_info;
 static int g_voice_chain_info_changes;
 static int g_stage_short_calls;
 static int g_write_voice_calls;
@@ -101,12 +102,12 @@ void
 dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float* frame, const dsd_voice_frame_info* info) {
     (void)opts;
     (void)state;
-    if (g_voice_chain_calls > 0 && info != g_voice_chain_info) {
+    if (g_voice_chain_calls > 0 && (uintptr_t)info != g_voice_chain_info) {
         g_voice_chain_info_changes++;
     }
     g_voice_chain_calls++;
     g_voice_chain_slot = slot;
-    g_voice_chain_info = info;
+    g_voice_chain_info = (uintptr_t)info;
     for (size_t i = 0; i < 160U; i++) {
         frame[i] *= 2.0f;
     }
@@ -2404,7 +2405,7 @@ run_decoded_pcm16_case(dsd_opts* opts, dsd_state* state, const short* pcm, int f
     g_voice_chain_calls = 0;
     g_stage_short_calls = 0;
     g_voice_chain_slot = -1;
-    g_voice_chain_info = NULL;
+    g_voice_chain_info = 0;
     g_voice_chain_info_changes = 0;
     g_write_voice_calls = 0;
     // The decoder's word on its frames reaches the chain with every frame, whatever plays.
@@ -2419,7 +2420,7 @@ run_decoded_pcm16_case(dsd_opts* opts, dsd_state* state, const short* pcm, int f
     rc |= expect_int(label, writes, plays ? 2 : 0);
     rc |= expect_int("decoded pcm chain once per frame", g_voice_chain_calls, 2);
     rc |= expect_int("decoded pcm chain uses slot 0", g_voice_chain_slot, 0);
-    rc |= expect_int("decoded pcm chain told the frames' info", g_voice_chain_info == &info, 1);
+    rc |= expect_int("decoded pcm chain told the frames' info", g_voice_chain_info == (uintptr_t)&info, 1);
     rc |= expect_int("decoded pcm every frame told the same info", g_voice_chain_info_changes, 0);
     rc |= expect_int("decoded pcm short stage once per frame", g_stage_short_calls, 2);
     const int records = slot1_on && opts->static_wav_file == 1;
@@ -2605,13 +2606,14 @@ test_decoded_pcm16_unrecorded_frames_play_without_recording(void) {
             reset_gate_capture();
             g_write_voice_calls = 0;
             g_voice_chain_calls = 0;
-            g_voice_chain_info = NULL;
+            g_voice_chain_info = 0;
             g_voice_chain_info_changes = 0;
             const dsd_voice_frame_info info = {(uint8_t)DSD_VOICE_MEDIA_CONCEALED, 0U, 1U, 3U};
             dsd_audio_play_decoded_pcm16_record(opts, state, pcm, DECODED_PCM_SAMPLES, record, &info);
             rc |= expect_int("unrecorded decoded pcm still plays", g_udp_blast_calls, 2);
             rc |= expect_int("decoded pcm record tells the chain the frames' info",
-                             g_voice_chain_calls == 2 && g_voice_chain_info == &info && g_voice_chain_info_changes == 0,
+                             g_voice_chain_calls == 2 && g_voice_chain_info == (uintptr_t)&info
+                                 && g_voice_chain_info_changes == 0,
                              1);
             rc |= expect_int("static wav takes recorded frames only", g_sf_write_short_calls,
                              (!per_call && record) ? 2 : 0);

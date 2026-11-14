@@ -1334,7 +1334,7 @@ parse_options(int argc, char** argv, Options* o) {
             return false;
         }
     }
-    return argc % 2 == 1 && finish_options(o);
+    return argc % 2 != 0 && finish_options(o);
 }
 
 } // namespace
