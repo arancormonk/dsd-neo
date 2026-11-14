@@ -2461,7 +2461,7 @@ analog_start(dsd_opts* opts, dsd_state* state, void* context) {
     io.read = analog_counting_read;
     io.read_ex = analog_counting_read_ex;
     io.return_pwr = analog_return_pwr;
-    dsd_rtl_stream_io_hooks_set(io);
+    dsd_rtl_stream_io_hooks_set(&io);
 #endif
     return 0;
 }

@@ -79,7 +79,8 @@ typedef struct {
     int (*voice_lane_available)(void);
 } dsd_rtl_stream_io_hooks;
 
-void dsd_rtl_stream_io_hooks_set(dsd_rtl_stream_io_hooks hooks);
+/** Install a copy of @p hooks; NULL clears every slot. */
+void dsd_rtl_stream_io_hooks_set(const dsd_rtl_stream_io_hooks* hooks);
 
 /** @brief Start of the last NO_STREAM wait slice, or 0 without the optional hook. */
 uint64_t dsd_rtl_stream_io_hook_no_stream_since_ms(void);

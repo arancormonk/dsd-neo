@@ -97,7 +97,7 @@ fake_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
 
 static void
 install_hooks(void) {
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = fake_rtl_read,
         .return_pwr = fake_rtl_pwr,
     });
@@ -114,7 +114,7 @@ install_hooks(void) {
 
 static void
 clear_hooks(void) {
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
 }

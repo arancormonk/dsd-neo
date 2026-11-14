@@ -207,7 +207,7 @@ fake_output_rate_hz(void) {
 static void
 install_fake_stream(void) {
     dsd_rtl_stream_io_hooks_set(
-        (dsd_rtl_stream_io_hooks){.read = fake_read, .return_pwr = fake_pwr, .read_ex = fake_read_ex});
+        &(dsd_rtl_stream_io_hooks){.read = fake_read, .return_pwr = fake_pwr, .read_ex = fake_read_ex});
     static const dsd_rtl_stream_metrics_hooks hooks = {
         .output_rate_hz = fake_output_rate_hz,
         .output_kind = fake_output_kind,
@@ -839,7 +839,7 @@ main(void) {
         test_gap_splits_two_short_receptions(replay);
     }
 
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     freeState(state);
     free(state);

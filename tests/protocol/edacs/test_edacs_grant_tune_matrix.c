@@ -526,7 +526,7 @@ edacs_fake_rtl_return_pwr(const void* rtl_ctx) {
 
 static void
 edacs_install_rtl_stream_hooks(void) {
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = edacs_fake_rtl_read,
         .return_pwr = edacs_fake_rtl_return_pwr,
     });
@@ -608,7 +608,7 @@ edacs_reset_audio_hook_state(void) {
     g_rtl_read_count = 0;
     g_rtl_return_pwr_count = 0;
     g_rtl_fail_at = -1;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
 #endif
     dsd_exitflag_store(0);
 }
@@ -3179,7 +3179,7 @@ edacs_run_analog_call(int mode) {
     g_state.dmr_payload_buf = call_payload_buf;
     g_state.dibit_buf_p = call_dibit_buf + 200;
     g_state.dmr_payload_p = call_payload_buf + 200;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = edacs_call_read,
         .return_pwr = edacs_call_return_pwr,
         .read_ex = edacs_call_read_ex,
@@ -3271,7 +3271,7 @@ edacs_run_voice_lane_request_cases(void) {
                        "analog-b10", "voice-lane", "a refused tune stops the lane it asked for");
 
     edacs_reset_audio_hook_state();
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.set_voice_lane = edacs_call_set_voice_lane});
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){.set_voice_lane = edacs_call_set_voice_lane});
     g_lane_request_count = 0;
     g_tcp_signal = EDACS_TCP_DOTTING;
     g_tcp_fail_at = 2880;
@@ -3666,7 +3666,7 @@ edacs_run_analog_gap_case(unsigned int rate_hz) {
     g_state.dibit_buf_p = call_dibit_buf + 200;
     g_state.dmr_payload_p = call_payload_buf + 200;
     g_state.rtl_stream_gap_seq = 0U;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = edacs_call_read,
         .return_pwr = edacs_call_return_pwr,
         .read_ex = edacs_call_read_ex,
@@ -3814,7 +3814,7 @@ edacs_run_no_stream_case(unsigned int rate_hz, int mode, const char* name) {
     g_state.dmr_payload_buf = call_payload_buf;
     g_state.dibit_buf_p = call_dibit_buf + 200;
     g_state.dmr_payload_p = call_payload_buf + 200;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = edacs_no_stream_read,
         .return_pwr = edacs_no_stream_stale_pwr,
         .read_ex = edacs_no_stream_read_ex,
@@ -4218,7 +4218,7 @@ main(void) {
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 #ifdef USE_RADIO
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
 #endif
     if (rc == 0) {
         printf("EDACS_GRANT_TUNE_MATRIX: OK\n");

@@ -2966,13 +2966,13 @@ encoder_rtl_tone_db(double hz, double amplitude, int volume) {
     opts.rtl_volume_multiplier = volume;
     state.rtl_ctx = (struct RtlSdrContext*)&token;
     start_tone(hz, amplitude, 48000);
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = fake_rtl_tone_read,
         .return_pwr = fake_rtl_return_pwr,
     });
     double peak = 0.0;
     const double level = encoder_read_db(&opts, &state, 48000, 8231.0, &peak);
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     return level;
 }
 
@@ -3041,7 +3041,7 @@ test_m17_encoder_gap_drops_partial_block(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->rtl_volume_multiplier = 1;
     state->rtl_ctx = (struct RtlSdrContext*)&token;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = fake_rtl_gap_read,
         .return_pwr = fake_rtl_return_pwr,
     });
@@ -3075,7 +3075,7 @@ test_m17_encoder_gap_drops_partial_block(void) {
     rc |= expect_int("gap: the block after the gap starts from a fresh filter", memcmp(out, want, sizeof out) == 0, 1);
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     free(fresh_state);
     free(state);
     free(opts);
@@ -3115,7 +3115,7 @@ test_m17_encoder_survives_yield(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->rtl_volume_multiplier = 1;
     state->rtl_ctx = (struct RtlSdrContext*)&token;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = fake_rtl_yield_read,
         .return_pwr = fake_rtl_return_pwr,
     });
@@ -3139,7 +3139,7 @@ test_m17_encoder_survives_yield(void) {
     rc |= expect_int("yield: still no shutdown", dsd_exitflag_load(), 0);
     g_yield_at = UINT64_MAX;
     dsd_exitflag_store(0);
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     free(state);
     free(opts);
     return rc;
@@ -4176,7 +4176,7 @@ fake_rtl_gate_return_pwr(const void* rtl_ctx) {
 
 static void
 install_gate_rtl_hooks(void) {
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = fake_rtl_gate_read,
         .return_pwr = fake_rtl_gate_return_pwr,
         .read_ex = fake_rtl_gate_read_ex,
@@ -4246,7 +4246,7 @@ test_encoder_rtl_reader_gates_closed_samples(void) {
     (void)m17_encoder_read_block(&opts, &state, &in, block, 160U);
     err |= expect_int("no gate running: the flags are not read", in.squelch_gated == 0 && in.squelch_heard == 1, 1);
     g_gate_status_active = 1;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     return err;
 }
 
@@ -4493,7 +4493,7 @@ vox_run(dsd_opts* opts, dsd_state* state, int mode, int vox) {
     DSD_MEMSET(g_codec2_encode_peaks, 0, sizeof g_codec2_encode_peaks);
 #endif
     start_tone(1000.0, 0.125, 8000);
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = fake_vox_read,
         .return_pwr = fake_vox_return_pwr,
         .read_ex = fake_vox_read_ex,
@@ -4520,7 +4520,7 @@ vox_run(dsd_opts* opts, dsd_state* state, int mode, int vox) {
         (void)remove(capture_path);
     }
     opts->audio_raw_out = NULL;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){0});
     dsd_state_ext_free_all(state);

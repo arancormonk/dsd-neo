@@ -11670,10 +11670,10 @@ live_session_start(dsd_opts* opts, dsd_state* state, int output_kind, uint64_t s
         g_live_output_kind = output_kind;
         opts->audio_in_type = AUDIO_IN_RTL;
         state->rtl_ctx = (RtlSdrContext*)state;
-        dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.read = live_rtl_read,
-                                                              .return_pwr = live_rtl_pwr,
-                                                              .read_ex = live_rtl_read_ex,
-                                                              .read_ex2 = live_rtl_read_ex2});
+        dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){.read = live_rtl_read,
+                                                               .return_pwr = live_rtl_pwr,
+                                                               .read_ex = live_rtl_read_ex,
+                                                               .read_ex2 = live_rtl_read_ex2});
         static const dsd_rtl_stream_metrics_hooks metrics = {
             .output_rate_hz = live_output_rate_hz,
             .output_kind = live_output_kind,
@@ -11691,7 +11691,7 @@ live_session_stop(dsd_opts* opts, dsd_state* state) {
     dsd_app_frontend_runtime_stop();
     dsd_frame_sync_hooks_set(NULL);
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_trunk_tuning_requests_reset();

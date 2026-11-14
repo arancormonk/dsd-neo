@@ -37,7 +37,7 @@ fake_return_pwr(const void* rtl_ctx) {
 
 int
 main(void) {
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     assert(dsd_rtl_stream_io_hook_no_stream_since_ms() == 0U);
 
     dsd_state* state = calloc(1, sizeof(*state));
@@ -61,7 +61,7 @@ main(void) {
     g_read_calls = 0;
     g_return_pwr_calls = 0;
     g_last_rtl_ctx = NULL;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = fake_read,
         .return_pwr = fake_return_pwr,
     });
@@ -86,6 +86,13 @@ main(void) {
     assert(dsd_rtl_stream_io_hook_return_pwr(state) == 123.45);
     assert(g_return_pwr_calls == 1);
     assert(g_last_rtl_ctx == (const void*)state->rtl_ctx);
+
+    /* NULL clears every slot the table installed. */
+    dsd_rtl_stream_io_hooks_set(NULL);
+    got = 123;
+    assert(dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) == -1);
+    assert(got == 0);
+    assert(g_read_calls == 1);
 
     dsd_state_ext_free_all(state);
     free(state);
