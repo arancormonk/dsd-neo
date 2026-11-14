@@ -13,6 +13,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <time.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"

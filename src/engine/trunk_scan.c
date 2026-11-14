@@ -103,7 +103,6 @@ typedef struct {
        channel map, and its site broadcasts (pending announcements, secondary control channels, protection, services,
        LRA, network active). */
     dsd_p25_site_snapshot site;
-    int trunk_recovery_protocol;
     time_t p25_sys_time;
     long p25_cc_eval_freq;
     double p25_cc_eval_start_m;
@@ -136,6 +135,7 @@ typedef struct {
     dsd_enc_lockout_entry enc_lockout_entries[DSD_ENC_LOCKOUT_MAX];
     time_t p25_aff_last_seen[256];
     time_t p25_ga_last_seen[512];
+    int trunk_recovery_protocol;
     unsigned int dmr_color_code;
     int p25_vc_cqpsk_pref;
     int p25_vc_cqpsk_override;
@@ -175,8 +175,8 @@ typedef struct {
     uint16_t p25_prot_kid;
     int16_t p25_sys_time_offset;
     uint16_t p25_ga_tg[512];
-    uint8_t p2_cc_verified; /* p2_cc proven on the target's carrier (issue #575) */
     int p2_proven_nac;      /* the NAC the latest Phase 2 proof there named (issue #802) */
+    uint8_t p2_cc_verified; /* p2_cc proven on the target's carrier (issue #575) */
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
     uint8_t p25_sys_time_valid;
@@ -194,7 +194,6 @@ typedef struct {
     uint8_t dmr_confidence_mismatch_count;
     double dmr_confidence_voice_m[2];
     uint8_t dmr_lcn_trust[0x1000];
-    uint16_t nxdn_grant_chan;
     long int nxdn_grant_freq;
     dsd_nxdn_follow_route nxdn_follow;
     dsd_nxdn_call_identity nxdn_call;
@@ -202,6 +201,7 @@ typedef struct {
     uint32_t nxdn_idas_system_id;
     uint8_t nxdn_last_ran_stand_in;
     uint8_t nxdn_idas_site_code;
+    uint16_t nxdn_grant_chan; /* nxdn_grant_freq's channel: here it fills the gap before the next 32-bit field */
     uint32_t nxdn_location_sys_code;
     uint16_t nxdn_location_site_code;
     char nxdn_location_category[14];

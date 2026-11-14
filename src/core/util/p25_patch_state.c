@@ -11,6 +11,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
+#include "dsd-neo/core/state_fwd.h"
 
 /* Floating-point slack on the 0.25 s gap bound, so a gap that is 0.25 s in clock ticks still counts. */
 #define DSD_P25_PATCH_LISTEN_GAP_SLACK_S 1e-9

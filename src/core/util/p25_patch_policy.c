@@ -12,7 +12,10 @@
 #include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <stddef.h>
 #include <stdint.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #include "../audio/dsd_audio_gate_internal.h"
 #include "talkgroup_policy_internal.h"

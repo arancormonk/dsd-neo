@@ -19,6 +19,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"

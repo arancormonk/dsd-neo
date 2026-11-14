@@ -26,8 +26,8 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <time.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
