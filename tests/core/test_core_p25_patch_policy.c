@@ -438,6 +438,83 @@ test_media_hold_member_through_sg_mode(void) {
     return rc;
 }
 
+/* The full ADMIT answer to "is the Hold the talkgroup this call is admitted on". */
+static int
+full_admit_picks_hold(const fixture* f, uint32_t sg, uint32_t src) {
+    dsd_p25_patch_resolution res;
+    return resolve(f, sg, src, DSD_P25_PATCH_RESOLVE_ADMIT, &res) == 0 && res.eligible
+           && res.policy_target == f->st->tg_hold;
+}
+
+/* One setup of the Hold shortcut's equivalence check, on SG 2500 with members 2501 (listed) and 2502. */
+typedef enum {
+    HOLD_SETUP_MEMBER_ELIGIBLE,
+    HOLD_SETUP_MEMBER_TUNE_DENIED,
+    HOLD_SETUP_SG_SKIP,
+    HOLD_SETUP_SG_AVOID,
+    HOLD_SETUP_SG_EXPLICIT_B,
+    HOLD_SETUP_CATCH_ALL_B,
+    HOLD_SETUP_COUNT,
+} hold_setup;
+
+static int
+apply_hold_setup(fixture* f, hold_setup setup) {
+    switch (setup) {
+        case HOLD_SETUP_MEMBER_ELIGIBLE: return 0;
+        case HOLD_SETUP_MEMBER_TUNE_DENIED:
+            f->opts->trunk_tune_enc_calls = 0;
+            return dsd_enc_lockout_note(f->st, 2502, 1, 0x84, 4) == 1 ? 0 : 1;
+        case HOLD_SETUP_SG_SKIP: return dsd_tg_policy_call_skip_arm(f->st, 2500, 3500, 0, dsd_decode_now_mono_s());
+        case HOLD_SETUP_SG_AVOID: return dsd_tg_policy_session_avoid_add(f->st, 2500);
+        case HOLD_SETUP_SG_EXPLICIT_B: return row(f->st, 2500, "B", 0, 0, 1);
+        case HOLD_SETUP_CATCH_ALL_B: return catch_all(f->st, "B");
+        default: return 1;
+    }
+}
+
+/* dsd_p25_patch_admits_hold() answers as the full ADMIT does, for a Hold on a listed member, an unlisted member, the
+   SG and a talkgroup the patch does not carry, in each setup. */
+static int
+test_admits_hold_matches_full_admit(void) {
+    static const uint32_t holds[] = {2501, 2502, 2500, 2599};
+    int rc = 0;
+    for (int setup = 0; setup < HOLD_SETUP_COUNT; setup++) {
+        for (size_t h = 0; h < sizeof holds / sizeof holds[0]; h++) {
+            fixture f;
+            if (fixture_open(&f) != 0) {
+                return 1;
+            }
+            rc |= expect_true("admits hold: member row", row(f.st, 2501, "A", 0, 0, 1) == 0);
+            const uint16_t members[] = {2501, 2502};
+            seed_patch(f.st, 2500, members, 2);
+            rc |= expect_true("admits hold: setup", apply_hold_setup(&f, (hold_setup)setup) == 0);
+            f.st->tg_hold = holds[h];
+            const int full = full_admit_picks_hold(&f, 2500, 3500);
+            const int shortcut = dsd_p25_patch_admits_hold(f.opts, f.st, 2500, 3500);
+            if (full != shortcut) {
+                DSD_FPRINTF(stderr, "admits hold: setup %d hold %u: full %d shortcut %d\n", setup, (unsigned)holds[h],
+                            full, shortcut);
+                rc = 1;
+            }
+            fixture_close(&f);
+        }
+    }
+    // The setups are not all the same answer: the eligible held member is admitted, the tune-denied one is not.
+    fixture f;
+    if (fixture_open(&f) != 0) {
+        return 1;
+    }
+    const uint16_t members[] = {2501, 2502};
+    rc |= expect_true("admits hold: control row", row(f.st, 2501, "A", 0, 0, 1) == 0);
+    seed_patch(f.st, 2500, members, 2);
+    f.st->tg_hold = 2502;
+    rc |= expect_true("admits hold: an eligible held member", dsd_p25_patch_admits_hold(f.opts, f.st, 2500, 3500));
+    rc |= expect_true("admits hold: SG avoid", dsd_tg_policy_session_avoid_add(f.st, 2500) == 0);
+    rc |= expect_true("admits hold: an avoided SG ends it", !dsd_p25_patch_admits_hold(f.opts, f.st, 2500, 3500));
+    fixture_close(&f);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -450,6 +527,7 @@ main(void) {
     rc |= test_media_keep_or_resolve();
     rc |= test_media_keeps_a_listened_supergroup();
     rc |= test_media_hold_member_through_sg_mode();
+    rc |= test_admits_hold_matches_full_admit();
     if (rc == 0) {
         printf("CORE_P25_PATCH_POLICY: OK\n");
     }

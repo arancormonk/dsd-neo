@@ -161,6 +161,16 @@ dsd_p25_patch_is_current_member(const dsd_state* state, uint32_t sg, uint32_t wg
     return 0;
 }
 
+int
+dsd_p25_patch_admits_hold(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t src) {
+    (void)opts;
+    (void)state;
+    (void)sg;
+    (void)src;
+    g_failures++;
+    return 0;
+}
+
 /* The stand-in evaluators apply the encrypted-call tuning rule themselves (test_tune_allowed()). */
 int
 dsd_tg_policy_encrypted_tune_denied(const dsd_opts* opts, int encrypted) {

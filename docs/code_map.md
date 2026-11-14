@@ -2708,8 +2708,11 @@ suite runs under this compiler.
   (`dsd_call_state_update_policy_target()`, no boundary; the received service options and priority stay as received)
   and the ledger takes its priority; when nothing in the patch may be followed the held call is described with no
   priority protection (-1). Admission also judges the row-edit release (`tg_listen_blocked_slots()`), the talkgroup
-  Hold check (`dsd_scan_tg_hold_call_active()`, only for a Hold on the supergroup or a current member: any other Hold
-  answers no without an evaluation) and conventional trunk-scan activity. The -Y voice check runs every frame, so it
+  Hold check and conventional trunk-scan activity. The Hold check (`dsd_scan_tg_hold_call_active()`, every frame)
+  answers through `dsd_p25_patch_admits_hold()`: ADMIT ranks a matching Hold first, so the held supergroup or current
+  member is admitted exactly when the supergroup has no final reason and the held candidate may itself be followed,
+  at one evaluation for a Hold on the supergroup and two for a member however many the patch carries; any other Hold
+  answers no without an evaluation. The -Y voice check runs every frame, so it
   takes the keep-or-resolve media target the audio follows (`dsd_p25_patch_media_resolve()`, so a kept call costs what
   the audio gate's does) with that target's own tune verdict and the encrypted-call rule
   (`dsd_tg_policy_encrypted_tune_denied()`): a member that plays but may not be followed does not hold the channel,

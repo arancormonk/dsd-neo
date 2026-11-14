@@ -19,7 +19,6 @@
 #include <dsd-neo/runtime/decode_clock.h>
 
 #include <math.h>
-#include <stddef.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -214,22 +213,17 @@ dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voic
     return out->retained_media_m >= 0.0 ? 1 : 0;
 }
 
-/* Whether call @p call is the held talkgroup's (@p hold). A P25 group call on a live patch's supergroup is the held
- * one when the patch resolver's admission picks the held talkgroup; only the supergroup and the members the patch
- * carries now can be picked, so any other Hold answers no without an evaluation (the check runs every frame). Any
- * other call is held by its remapped policy target, the OTA target standing in when no remap applies. */
+/* Whether call @p call is the held talkgroup's (@p hold, the state's Hold). A P25 group call on a live patch's
+ * supergroup is the held one when the patch resolver's admission picks the held talkgroup
+ * (dsd_p25_patch_admits_hold(): no evaluation for a Hold the patch does not carry, at most two otherwise, since the
+ * check runs every frame). Any other call is held by its remapped policy target, the OTA target standing in when no
+ * remap applies. */
 static int
 scan_tg_hold_matches_call(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call, uint64_t hold) {
     const uint32_t sg = scan_voice_call_patch_sg(state, call);
     if (sg != 0U) {
-        if (hold > UINT32_MAX || (hold != sg && !dsd_p25_patch_is_current_member(state, sg, (uint32_t)hold))) {
-            return 0;
-        }
         const uint32_t source = call->ota_source_id > UINT32_MAX ? 0U : (uint32_t)call->ota_source_id;
-        dsd_p25_patch_resolution patch;
-        return dsd_p25_patch_resolve(opts, state, sg, source, 0, 0, DSD_P25_PATCH_RESOLVE_ADMIT, NULL, NULL, &patch)
-                   == 0
-               && patch.eligible && hold == (uint64_t)patch.policy_target;
+        return dsd_p25_patch_admits_hold(opts, state, sg, source);
     }
     const uint64_t target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
     return hold == target;

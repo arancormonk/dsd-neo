@@ -232,7 +232,25 @@ test_evaluation_counts(void) {
     f.st->tg_hold = 22;
     g_group_evaluations = 0;
     rc |= expect_true("count: a Hold on a member the patch carries", dsd_scan_tg_hold_call_active(f.opts, f.st) == 1);
-    rc |= expect_true("count: ... is judged by admission", g_group_evaluations > 0);
+    rc |= expect_true("count: ... costs the supergroup's and the member's evaluations", g_group_evaluations == 2);
+    open_voice(f.st, 540, 540, 102.5);
+    f.st->tg_hold = 540;
+    g_group_evaluations = 0;
+    rc |= expect_true("count: a Hold on the supergroup", dsd_scan_tg_hold_call_active(f.opts, f.st) == 1);
+    rc |= expect_true("count: ... costs the supergroup's evaluation", g_group_evaluations == 1);
+
+    // However many members the patch carries: a 32-member patch costs no more.
+    uint16_t many[DSD_P25_PATCH_GROUP_MAX];
+    for (int k = 0; k < DSD_P25_PATCH_GROUP_MAX; k++) {
+        many[k] = (uint16_t)(700 + k);
+    }
+    seed_patch(f.st, 560, many, DSD_P25_PATCH_GROUP_MAX);
+    open_voice(f.st, 560, 560, 103.0);
+    f.st->tg_hold = 731;
+    rc |= expect_true("count: listed held member", listed(f.st, 731) == 0);
+    g_group_evaluations = 0;
+    rc |= expect_true("count: a Hold on the last of 32 members", dsd_scan_tg_hold_call_active(f.opts, f.st) == 1);
+    rc |= expect_true("count: ... still costs two evaluations", g_group_evaluations == 2);
     fixture_close(&f);
 #endif
     return rc;

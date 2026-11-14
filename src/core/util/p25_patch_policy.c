@@ -197,6 +197,42 @@ dsd_p25_patch_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t sg,
     return 0;
 }
 
+/* The full ADMIT resolution's answer to whether it picks @p hold. */
+static int
+p25_patch_policy_full_admit_picks(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t src,
+                                  uint32_t hold) {
+    dsd_p25_patch_resolution resolution;
+    return dsd_p25_patch_resolve(opts, state, sg, src, 0, 0, DSD_P25_PATCH_RESOLVE_ADMIT, NULL, NULL, &resolution) == 0
+           && resolution.eligible && resolution.policy_target == hold;
+}
+
+int
+dsd_p25_patch_admits_hold(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t src) {
+    if (!state || sg == 0U || state->tg_hold == 0U) {
+        return 0;
+    }
+    const uint32_t hold = state->tg_hold;
+    if (hold != sg && !dsd_p25_patch_is_current_member(state, sg, hold)) {
+        return 0;
+    }
+    const p25_patch_resolve_args args = {opts, state, src, 0, 0, DSD_P25_PATCH_RESOLVE_ADMIT, NULL, NULL};
+    dsd_tg_policy_decision sg_decision;
+    p25_patch_policy_evaluate(&args, sg, &sg_decision);
+    const uint32_t final = dsd_tg_policy_ota_final_reasons(state, &sg_decision);
+    if (p25_patch_policy_ending_reasons(DSD_P25_PATCH_RESOLVE_ADMIT, final) != 0U) {
+        return 0;
+    }
+    dsd_tg_policy_decision held = sg_decision;
+    if (hold != sg) {
+        p25_patch_policy_evaluate_member(&args, hold, final, &held);
+    }
+    if (!held.tg_hold_match) {
+        // Without a matching Hold the held candidate does not rank first: only the full ranking answers.
+        return p25_patch_policy_full_admit_picks(opts, state, sg, src, hold);
+    }
+    return p25_patch_policy_eligible(DSD_P25_PATCH_RESOLVE_ADMIT, &held);
+}
+
 /* Keep the stored target with @p decision as the answer. */
 static int
 p25_patch_policy_keep(dsd_p25_patch_resolution* out, uint32_t target, const dsd_tg_policy_decision* decision,

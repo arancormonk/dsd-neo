@@ -80,6 +80,18 @@ int dsd_p25_patch_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t
                           const void* adjust_ctx, dsd_p25_patch_resolution* out);
 
 /**
+ * @brief Whether ADMIT on supergroup @p sg picks the held talkgroup (`state->tg_hold`), at no more than two evaluations.
+ *
+ * Exactly `dsd_p25_patch_resolve(ADMIT)`'s answer `eligible && policy_target == tg_hold` for an unencrypted, non-data
+ * call from @p src with no adjustment: a Hold that is neither @p sg nor a current member answers 0 without an
+ * evaluation. Otherwise the SG is evaluated once; a final reason ends ADMIT (0), and a Hold on the SG answers its own
+ * eligibility. A held member is evaluated once with the SG's final reasons merged: ADMIT ranks a matching Hold first,
+ * so the held candidate wins whenever it is eligible. A held candidate whose decision does not match the Hold falls
+ * back to the full resolution.
+ */
+int dsd_p25_patch_admits_hold(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t src);
+
+/**
  * @brief How a media consumer judges a live group call on supergroup @p sg (keep-or-resolve).
  *
  * @p stored is the call's stored policy target. Unless a call skip or session avoid on the SG ends media resolution, it

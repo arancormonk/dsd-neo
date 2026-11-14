@@ -767,6 +767,21 @@ dsd_p25_patch_is_current_member(const dsd_state* state, uint32_t sg, uint32_t wg
     return dsd_p25_patch_sg_live(state, sg) && wg != 0U && wg == g_patch_member;
 }
 
+/* The Hold check's admission, answered by the stand-in resolution as the full ADMIT would answer it. */
+int
+dsd_p25_patch_admits_hold(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t src) {
+    if (!state || state->tg_hold == 0U) {
+        return 0;
+    }
+    const uint32_t hold = state->tg_hold;
+    if (hold != sg && !dsd_p25_patch_is_current_member(state, sg, hold)) {
+        return 0;
+    }
+    dsd_p25_patch_resolution resolution;
+    return dsd_p25_patch_resolve(opts, state, sg, src, 0, 0, DSD_P25_PATCH_RESOLVE_ADMIT, NULL, NULL, &resolution) == 0
+           && resolution.eligible && resolution.policy_target == hold;
+}
+
 /* The stand-in evaluators apply the encrypted-call tuning rule themselves (test_tg_policy_tune_allowed()). */
 int
 dsd_tg_policy_encrypted_tune_denied(const dsd_opts* opts, int encrypted) {
