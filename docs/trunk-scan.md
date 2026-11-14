@@ -1050,8 +1050,8 @@ turned it on).
 - A list with nowhere else to go: one target or row, or every other one avoided, cooling down after a failed retune,
   or skipped at every visit for its width.
 - A row whose step, walk or entry tune is still pending.
-- A visit with a sync or a carrier at any point, counted from the moment the scan lands on the channel: that ends the
-  visit's check, and the visit runs its normal dwell, hangtime or hold.
+- A visit with a sync or a carrier at any point, counted from the moment the scan starts tuning to the channel: that
+  ends the visit's check, and the visit runs its normal dwell, hangtime or hold.
 - A hold, an edit to the list or channel map, a width change, an input switch, a pause or a loaded config throws the
   reading away. Once nothing keeps the channel any more, the check can run again on the same visit.
 - A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API

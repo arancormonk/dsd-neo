@@ -225,10 +225,11 @@ typedef struct {
     uint64_t request_seq;
     uint32_t ticket;
     uint64_t deadline_ms;
-    /* The visit's activity baseline: the sync sequence and the decode time at its landing's note (a park still in
-       flight: at its first publication, kept when its landing adopts it), kept for that visit across its suspensions,
-       restarts and retries. A sync, a carrier or allowed activity since then ends the visit's check, whatever phase the
-       check was in. visit_set 0 before the visit's first publication. */
+    /* The visit's activity baseline: the sync sequence and the decode time when its tune was issued (a landed visit
+       carries them on its landing's note; a park still in flight takes them at its first publication, and keeps them
+       when its landing adopts it), kept for that visit across its suspensions, restarts and retries. A sync, a carrier
+       or allowed activity since then ends the visit's check, whatever phase the check was in. visit_set 0 before the
+       visit's first publication. */
     int visit_set;
     scan_quiet_visit_key visit_key;
     uint64_t sync_seq;
@@ -595,8 +596,9 @@ quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_
     c->retries = 0;
 }
 
-/* The visit's activity baseline for @p key: its landing's note, or a park still in flight's first publication. A later
-   publication of the same visit keeps it, so what was heard while its check was suspended still counts. */
+/* The visit's activity baseline for @p key: its tune's issue, which its landing's note carries, or which a park still
+   in flight reads at its first publication. A later publication of the same visit keeps it, so what was heard while
+   its check was suspended still counts. */
 static void
 quiet_visit_baseline(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_quiet_visit_key* key) {
     if (c->visit_set && quiet_key_equal(&c->visit_key, key)) {
@@ -606,14 +608,14 @@ quiet_visit_baseline(const dsd_engine_scan_owner* owner, scan_quiet_check* c, co
     c->visit_key = *key;
     const dsd_engine_scan_landing* landing = &owner->landing;
     if (key->epoch != 0U && landing->by == quiet_landing_by(key->owner) && landing->epoch == key->epoch) {
-        /* A landed visit counts from its landing's note. */
+        /* A landed visit counts from its tune's issue, which its landing's note carries. */
         c->sync_seq = landing->sync_seq;
-        c->visit_decode_m = landing->landed_decode_m;
+        c->visit_decode_m = landing->tune_decode_m;
         return;
     }
-    /* A park still in flight counts from its first publication. */
-    c->sync_seq = owner->sync_seq;
-    c->visit_decode_m = dsd_decode_now_mono_s();
+    /* A park still in flight counts from its tune's issue, the scan's last tune request. */
+    c->sync_seq = owner->tune_sync_seq;
+    c->visit_decode_m = owner->tune_decode_m;
 }
 
 /* A publication's reconcile, and whether @p e's visit has its check ended already: DONE for the visit, or a sync or a

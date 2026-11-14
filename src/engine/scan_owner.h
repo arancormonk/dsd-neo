@@ -30,10 +30,11 @@ typedef struct {
     /** dsd_realtime_mono_ms() when the landing was noted: where the visit's first quiet check's wait for its capture
         is bounded from (one that starts again later in the visit waits from its restart). */
     uint64_t landed_realtime_ms;
-    /** The owner's sync sequence and the decode-mono time when the landing was noted: a quiet check's activity baseline
-        for the visit, so a sync or carrier heard on the landed channel before the check is first published counts. */
+    /** The owner's sync sequence and the decode-mono time when the tune that landed was issued
+        (dsd_engine_scan_landing_note_tune()): a quiet check's activity baseline for the visit, so a sync or carrier
+        heard on the landed channel before the landing is noted, or before the check is first published, counts. */
     uint64_t sync_seq;
-    double landed_decode_m;
+    double tune_decode_m;
 } dsd_engine_scan_landing;
 
 /** The -Y row or trunk-scan target a frequency typed by hand went to, whose confirmed landing holds the scan there
@@ -72,12 +73,15 @@ typedef struct {
     /* Issue #834. landing_epoch: moved by every landing note and forget (scan_landing.h). tune_generation_before: the
        RTL output generation at the last scan tune request, carried to the landing it notes. sync_seq: moved, only while
        skip-silent is on, whenever the frame sync returns a sync and whenever the analog carrier opens, so a quiet check
-       sees activity since its visit's landing. quiet_inv_seq: moved where a quiet check's facts change and no counter
-       of their own says so (a hold, a pause, a resume, a tune in flight, a stop, the setting, a config apply, a Signal
-       search start). */
+       sees activity since its visit's tune. tune_sync_seq, tune_decode_m: sync_seq and the decode-mono time at the last
+       scan tune request, carried to the landing it notes (the visit's activity baseline). quiet_inv_seq: moved where a
+       quiet check's facts change and no counter of their own says so (a hold, a pause, a resume, a tune in flight, a
+       stop, the setting, a config apply, a Signal search start). */
     uint64_t landing_epoch;
     uint32_t tune_generation_before;
     uint64_t sync_seq;
+    uint64_t tune_sync_seq;
+    double tune_decode_m;
     uint64_t quiet_inv_seq;
 } dsd_engine_scan_owner;
 

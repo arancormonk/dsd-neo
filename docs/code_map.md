@@ -543,14 +543,17 @@ Generated (do not edit/commit):
       `edits_epoch`, `lcn_avoid_rev`, `trunk_scan_avoid_rev`, `pcm_input_generation`,
       `rtl_stream_receive_request_seq()`, the configured NFM and AM widths, `quiet_inv_seq`) cancels and suspends; a
       sync or carrier anywhere in the visit cancels and ends it, whatever phase the check is in: the visit's activity
-      baseline (`sync_seq` and the decode time) is the landing's own, recorded when the landing is noted
-      (`dsd_engine_scan_landing::sync_seq`, `landed_decode_m`), so a sync on a channel landed mid-call, heard before the
-      check is first published, counts; a park still in flight takes it at its first publication instead and keeps it
-      when its landing adopts it (an in-flight publication that was ineligible records what the landing adopts it by, so
-      a check that never started is adopted too); the baseline is kept for that visit key across suspensions, restarts
-      and retries, so a sync heard while the check was suspended ends it at the next publication with nothing requested;
-      a syncing old channel just after the tune may end a check, which only loses a skip; a new visit key takes a new
-      baseline, and a setting change drops it; a READY result older than 250 ms ends it.
+      baseline (`sync_seq` and the decode time) is taken when its tune is issued (`dsd_engine_scan_landing_note_tune()`,
+      kept on the owner as `tune_sync_seq`, `tune_decode_m`) and carried by the landing it notes
+      (`dsd_engine_scan_landing::sync_seq`, `tune_decode_m`), so a sync the new channel returns before the landing is
+      noted (an asynchronous tune, such as a Next handled between synced frames, lands before the next tick or pass
+      notes it), or on a channel landed mid-call before the check is first published, counts; a park still in flight
+      reads the same tune baseline at its first publication and keeps it when its landing adopts it (an in-flight
+      publication that was ineligible records what the landing adopts it by, so a check that never started is adopted
+      too); the baseline is kept for that visit key across suspensions, restarts and retries, so a sync heard while the
+      check was suspended ends it at the next publication with nothing requested; a syncing old channel just after the
+      tune may end a check, which only keeps the channel (a lost skip); a new visit key takes a new baseline, and a
+      setting change drops it; a READY result older than 250 ms ends it.
     - Decision (`scan_quiet_apply()`): the visit and revisions unchanged; the classes, analog kind and width and DSP
       rate in force, which the caller passes as this pass's `scan_quiet_eligibility`, equal to those measured (a NULL
       one declines); the tap's capture still the result's and the live output generation still its generation (a
@@ -17968,7 +17971,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     output generation `dsd_engine_scan_landing_note_tune()` read at the tune request, before the retune was issued
     (`channel_scan_tune_staged()`, `untyped_tune_row()`, `trunk_scan_switch_to()` before `trunk_scan_retune_active()`),
     carried on the owner (`tune_generation_before`) until the landing; `landed_realtime_ms`, when it was noted; and the
-    owner's `sync_seq` with the decode time then (`landed_decode_m`), the visit's activity baseline. As with
+    owner's `sync_seq` with the decode time read by that same tune request (`tune_sync_seq`, `tune_decode_m` on the
+    owner, `sync_seq`, `tune_decode_m` on the landing), the visit's activity baseline. As with
     `dsd_opts_tuned_freq_hz()`, a frequency changed on the peer itself is not seen. Analog rows only take the frequency:
     digital rows on a rigctl -Y channel keep the `dsd_opts_tuned_freq_hz()` rule. The row or target is the "confirmed on
     air" proof a typed frequency reads (`dsd_engine_channel_scan_row_confirmed()`,

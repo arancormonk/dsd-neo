@@ -25,12 +25,13 @@
  *   until the visit changes.
  *
  * A visit is (owner, landing epoch, tune request). A sync or a carrier (dsd_engine_scan_quiet_note_sync()) anywhere in
- * the visit ends its check, suspended or not, so no check is made for it again: a landed visit counts from its
- * landing's note, a park still in flight from its first publication (and keeps that when its landing adopts it). A
- * changed visit, or any counter its revision snapshot holds, suspends it. The frame-sync hunt runs the check through
+ * the visit ends its check, suspended or not, so no check is made for it again: a visit counts from its tune's issue
+ * (dsd_engine_scan_landing_note_tune()), which its landing's note carries and a park still in flight reads at its first
+ * publication (and keeps when its landing adopts it), so a sync heard before the landing is noted counts. A changed
+ * visit, or any counter its revision snapshot holds, suspends it. The frame-sync hunt runs the check through
  * dsd_frame_sync_hook_scan_quiet_service() (dsd_engine_scan_quiet_service()), and engine service through
- * scan_quiet_publish_eligibility(). RF power is never activity: nothing here touches holds, activity stamps, history
- * or events. Radio-off builds compile it as a no-op service.
+ * scan_quiet_publish_eligibility(). RF power is never activity: nothing here touches holds, activity stamps, history or
+ * events. Radio-off builds compile it as a no-op service.
  */
 #ifndef DSD_NEO_ENGINE_SCAN_QUIET_H
 #define DSD_NEO_ENGINE_SCAN_QUIET_H
@@ -147,11 +148,10 @@ int scan_quiet_wants_eligibility(const dsd_opts* opts, const dsd_state* state, i
 
 /** Publish the visit on air @p e for @p owner_kind (@p e->key.owner), then run one service step (start, collect,
  * expire). It reconciles the check first, adopting a park measured or suspended in flight once its landing is noted. A
- * DONE visit stays DONE. A sync or a carrier heard since the visit's activity baseline (its landing's note, or a park's
- * first publication in flight) ends the visit DONE at once, eligible or not, with nothing requested. Otherwise an
- * ineligible visit is SUSPENDED (keeping what its landing adopts it by); a new visit, one republished after a
- * suspension, or one published with other facts than were measured starts again. No-op with the setting off or in a
- * radio-off build. */
+ * DONE visit stays DONE. A sync or a carrier heard since the visit's activity baseline (its tune's issue) ends the
+ * visit DONE at once, eligible or not, with nothing requested. Otherwise an ineligible visit is SUSPENDED (keeping what
+ * its landing adopts it by); a new visit, one republished after a suspension, or one published with other facts than
+ * were measured starts again. No-op with the setting off or in a radio-off build. */
 void scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner_kind,
                                     const scan_quiet_eligibility* e);
 
@@ -177,8 +177,8 @@ int scan_quiet_format_skip(char* out, size_t out_size, const char* name, int row
 /** Log the NOTICE line for the result scan_quiet_apply() just consumed. */
 void scan_quiet_log_skip(const dsd_state* state, const char* name, int row);
 
-/** The decode-mono time of the visit's activity baseline, its landing's note or a park in flight's first publication
- * (trunk scan: allowed activity at or after it declines); 0 with none. */
+/** The decode-mono time of the visit's activity baseline, its tune's issue (trunk scan: allowed activity at or after it
+ * declines); 0 with none. */
 double scan_quiet_visit_decode_m(const dsd_state* state);
 /** The check's phase (SUSPENDED with none). */
 scan_quiet_phase scan_quiet_phase_get(const dsd_state* state);

@@ -22819,8 +22819,8 @@ test_scan_quiet_ready_rechecks_capture_generation_and_age(void) {
 }
 
 /* Activity in the visit ends the check: a sync (any: the engine bumps the sequence for YSF and D-STAR syncs too,
-   ENGINE_NO_CARRIER_RESET) from the landing's note on, before the check is published, while it waits for its capture,
-   requested or READY; a sync before the landing's note does not. Allowed trunk-scan activity and an analog carrier
+   ENGINE_NO_CARRIER_RESET) from the visit's tune on, before the check is published, while it waits for its capture,
+   requested or READY; a sync before the visit's tune does not. Allowed trunk-scan activity and an analog carrier
    heard decline a READY result. */
 static int
 test_scan_quiet_activity_in_the_visit_ends_the_check(void) {
@@ -22831,7 +22831,7 @@ test_scan_quiet_activity_in_the_visit_ends_the_check(void) {
     if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
-    /* The visit counts from its landing's note: a sync before the landing does not count. */
+    /* The visit counts from its tune: a sync before the tune does not count. */
     dsd_engine_scan_quiet_note_sync(&state);
     quiet_land_again(&state, k_qt_hz_a);
     g_tap.have_capture = 0;
@@ -22839,7 +22839,7 @@ test_scan_quiet_activity_in_the_visit_ends_the_check(void) {
     quiet_tap_capture(k_qt_hz_a, g_quiet_stream_gen);
     (void)quiet_service_after(&opts, &state, 50U);
     int rc =
-        qt_expect("a sync before the landing's note: measured", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+        qt_expect("a sync before the visit's tune: measured", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
     const uint32_t ticket = g_tap.ticket;
     dsd_engine_scan_quiet_note_sync(&state);
     (void)quiet_service_after(&opts, &state, 5U);
@@ -24243,6 +24243,62 @@ test_scan_quiet_never_started_park_keeps_its_baseline(void) {
     return rc;
 }
 
+/* A visit counts its activity from its tune's issue: an advance (a Next handled between synced frames) leaves the park
+   in flight, and a sync its channel returns before the tick notes the landing ends the visit's check, whether the check
+   was first published in flight or only after the landing: nothing is requested and the target keeps its dwell. With
+   nothing heard the landed visit is measured. */
+static int
+test_scan_quiet_counts_from_the_tune(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int run = 0; run < 3; run++) {
+        const int heard = run != 2;
+        const int in_flight = run == 1;
+        if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+            return 1;
+        }
+        const uint32_t session = dsd_engine_scan_landing_get(&state)->session;
+        g_scan_tune_to_freq_pending = 1;
+        (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+        const uint64_t park = g_scan_tune_pending_request;
+        int requests = g_tap.requests;
+        if (heard) {
+            dsd_engine_scan_quiet_note_sync(&state);
+        }
+        if (in_flight) {
+            scan_quiet_eligibility e = quiet_elig(&opts, &state);
+            e.key.index = 1;
+            e.key.session = session;
+            e.key.tune_request = park;
+            e.frequency_hz = k_qt_hz_b;
+            scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
+            rc |= qt_expect("a sync after the park's tune, published in flight: DONE, nothing requested",
+                            scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests);
+        }
+        g_quiet_stream_gen = QT_GEN + 3;
+        quiet_tap_capture(k_qt_hz_b, QT_GEN + 3);
+        dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        rc |= qt_expect("the tick noted the park's landing", dsd_engine_scan_landing_get(&state)->tune_request == park
+                                                                 && dsd_engine_scan_landing_get(&state)->index == 1);
+        requests = g_tap.requests;
+        quiet_publish(&opts, &state);
+        if (heard) {
+            rc |= qt_expect("a sync between the park's tune and its landing's note: DONE, nothing requested",
+                            scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests
+                                && quiet_service_after(&opts, &state, 5U) == 0);
+        } else {
+            rc |= qt_expect("nothing heard since the park's tune: measured",
+                            scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == requests + 1);
+        }
+        quiet_rig_finish(&opts, &state, dir, path);
+    }
+    return rc;
+}
+
 /* Held and no-alternate visits stay SUSPENDED (no request, the hunt never handed back), and a trunked target
    is never checked: pass after pass, the tap is never asked. */
 static int
@@ -24621,6 +24677,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_keeps_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_counts_from_the_landing);
     rc |= run_with_default_tune_hook(test_scan_quiet_never_started_park_keeps_its_baseline);
+    rc |= run_with_default_tune_hook(test_scan_quiet_counts_from_the_tune);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_ineligible_visits_request_nothing);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_stays_and_releases_come_first);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_setting_off_keeps_timing);

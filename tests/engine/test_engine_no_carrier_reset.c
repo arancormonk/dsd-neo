@@ -12347,6 +12347,53 @@ test_y_quiet_counts_from_the_landing(int heard) {
     return rc;
 }
 
+/* -Y: a row counts its syncs from its tune's issue. A Next whose RTL tune timed out lands while a frame decodes, and the
+   sync the new channel returns comes before the outer pass notes the landing: that sync ends the row's check, so the
+   tap is never asked and the row keeps its hangtime. With nothing heard the landed row is measured and steps. */
+static int
+test_y_quiet_counts_from_the_walk_tune(int heard) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 529012500L + (heard ? 0L : 4000000L);
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, base_hz) == 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("the Next walks into a timeout",
+                      dsd_engine_channel_scan_walk_row(opts, state, 1, 1) == DSD_SCAN_WALK_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    if (heard) {
+        g_frame_sync_type = DSD_SYNC_DMR_BS_VOICE_POS;
+        run_synced_frames(opts, state, 1, 0); /* the tune lands while frame 0 decodes; the next sync is row 1's */
+        g_frame_sync_type = DSD_SYNC_NXDN_POS;
+    } else {
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    }
+    rc |= expect_true("the walk lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
+                                            && dsd_engine_scan_landing_is_row(state, 1));
+    g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    if (heard) {
+        rc |= expect_true("a sync between the walk's tune and its landing's note: no request, no step",
+                          g_yq.requests == 0 && g_rtl_tune_calls == 0 && g_yq.notices == 0);
+    } else {
+        rc |= expect_true("nothing heard since the walk's tune: measured and stepped",
+                          g_yq.requests == 1 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    }
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y counts from the walk's tune, heard %d\n", heard);
+    }
+    return rc;
+}
+
 /* -Y: a sync heard while a landed row's check was suspended (here a live-loop YSF sync after an invalidation) ends the
    row's check when it is published again: nothing more is requested and the row keeps its hangtime. With nothing heard
    the restarted check measures and the row steps on its quiet result. */
@@ -12740,6 +12787,8 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_turned_on_mid_visit_keeps_the_row();
     rc |= test_y_quiet_counts_from_the_landing(1);
     rc |= test_y_quiet_counts_from_the_landing(0);
+    rc |= test_y_quiet_counts_from_the_walk_tune(1);
+    rc |= test_y_quiet_counts_from_the_walk_tune(0);
     rc |= test_live_y_skips_a_quiet_row(1);
     rc |= test_live_y_skips_a_quiet_row(0);
     rc |= test_live_trunk_scan_skips_a_quiet_target(1);
