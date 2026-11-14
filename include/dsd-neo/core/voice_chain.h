@@ -88,9 +88,10 @@ int dsd_voice_frame_may_learn(const dsd_voice_frame_info* info);
  * left buffer). With `-g 0` (`audio_gain`, slot 2 `audio_gainR`) the AGC, with its acquisition stage on
  * (dsd_speech_agc_set_acquisition()), aims the slot's speech at DSD_SPEECH_AGC_TARGET_DBFS, learning only from frames
  * dsd_voice_frame_may_learn() takes. Each reception opens at DSD_VOICE_LEVEL_OPEN_GAIN_DB over the `-g 1` level (the
- * decoder's own) from its first sample; a tone frame plays at no more than the start gain
- * (DSD_VOICE_LEVEL_START_GAIN_DB); an undecodable frame never teaches, and when the slot's frames turn decodable again
- * its limiter starts over. A `-g` above 0 is a fixed multiplier through the AGC's limiter (DSD_SPEECH_AGC_CEILING_DBFS);
+ * decoder's own) from its first sample, or, from a radio both slots remember (the source of the slot's active call, in
+ * its protocol family), at the gain that radio's speech last settled at; a tone frame plays at no more than the start
+ * gain (DSD_VOICE_LEVEL_START_GAIN_DB); an undecodable frame never teaches, and when the slot's frames turn decodable
+ * again its limiter starts over. A `-g` above 0 is a fixed multiplier through the AGC's limiter (DSD_SPEECH_AGC_CEILING_DBFS);
  * switching back to auto keeps what the AGC learned and starts from the fixed gain, within the AGC's range. A setting
  * below 0 (no user surface sets one) passes the frame at unity. Each frame leaves the gain it got, in dB, in `aout_gain`
  * (slot 2 `aout_gainR`) for the readouts.
@@ -112,10 +113,11 @@ void dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float
                          const dsd_voice_frame_info* info);
 
 /**
- * @brief Slot @p slot's speech level starts a new reception (both slots when @p slot is negative): its AGC forgets what
- * it learned and the reception it ran for, and the slot's next frame opens a reception at the opening gain
- * (DSD_VOICE_LEVEL_OPEN_GAIN_DB), which the slot's readout (`aout_gain`, `aout_gainR`) shows until then. For both
- * slots the DMR superframe mixer's one-channel limiter (audio_mix_mono_sum_s16()) goes back to unity too.
+ * @brief Slot @p slot's speech level starts a new reception (both slots when @p slot is negative): the gain its talker's
+ * speech settled at is remembered, its AGC forgets what it learned and the reception it ran for, and the slot's next
+ * frame opens a reception at the opening gain (DSD_VOICE_LEVEL_OPEN_GAIN_DB), which the slot's readout (`aout_gain`,
+ * `aout_gainR`) shows until then, or at a remembered talker's gain. For both slots the DMR superframe mixer's
+ * one-channel limiter (audio_mix_mono_sum_s16()) goes back to unity too.
  *
  * The receiver left the carrier (a carrier boundary other than a stream gap, a trunk-scan target switch, a manual P25
  * control-channel selection) or a file starts. A stream gap, the no-carrier pass, a crypto purge and a rate change keep
