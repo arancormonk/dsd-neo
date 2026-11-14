@@ -154,7 +154,9 @@ int dsd_tg_policy_decision_only_radio_blocks(const dsd_tg_policy_decision* decis
 int dsd_tg_policy_radio_blocked(const dsd_state* state, uint32_t radio_id);
 
 typedef struct {
-    uint32_t target_id;
+    uint32_t target_id; /**< The call's over-the-air target: the active-call records match by it, so a patched P25 call
+                             is one record (its supergroup) whichever member judges it; the decision carries the policy
+                             priority. */
     uint32_t source_id;
     long freq_hz;
     int channel;

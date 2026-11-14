@@ -2664,8 +2664,9 @@ suite runs under this compiler.
 - Invariant (preemption bookkeeping, `dsd_tg_policy_should_preempt()`): the active-call records are what a protocol
   describes, not a history. Right before asking, a protocol calls `dsd_tg_policy_describe_followed_call()` for each
   call it holds, with the time it began following that call (dwell runs from it; a matching record keeps its start and
-  cooldown; nothing is stamped). A candidate is the held call itself, and never preempts it, only when it matches a
-  record's target, channel, slot and group or private class (`tg_policy_active_call_matches_route_slot()`, as a
+  cooldown; nothing is stamped). A route's target is the call's over-the-air target (a patched P25 call's supergroup),
+  while its decision carries the policy priority. A candidate is the held call itself, and never preempts it, only
+  when it matches a record's target, channel, slot and group or private class (`tg_policy_active_call_matches_route_slot()`, as a
   describe matches): a talkgroup and a unit may share a number, so a candidate of the other class is another call that
   displaces the record by priority. The channel matches by `tg_policy_route_same_channel()`: the same channel number
   when both routes name one, else the same positive frequency (a route without a channel, such as an unresolved DMR
@@ -2690,9 +2691,23 @@ suite runs under this compiler.
   keep-or-resolve through `dsd_p25_patch_media_resolve()`: the stored target is kept while it may play (the supergroup
   on its own decision, or a current member), else the resolver answers, judged at every read, and the gates use the
   decision it returns instead of evaluating again. `dsd_tg_policy_apply_ota_final_blocks()` merges the same final
-  reasons; the gates' other paths, the row-edit release in app-control and the Qt block label call it with the
-  over-the-air target. Tests: `CORE_P25_PATCH_POLICY`, `CORE_TALKGROUP_POLICY`, `P25_GRANT_POLICY`,
-  `CORE_AUDIO_GROUP_GATE`, `CORE_P25P2_PLAYOUT`, `CORE_CALL_ALERT_HISTORY`. User blocks (Lock out, Avoid TG, Skip) are
+  reasons; the gates' other paths call it with the over-the-air target, and the Qt block label judges the
+  keep-or-resolve media target the audio follows. A call is judged through the resolver only while its supergroup is a
+  live patch's (`dsd_p25_patch_sg_live()`); any other call keeps its stored target and spends no evaluation. A followed
+  patch is one call while its member is re-selected: the trunk SM keys follow and dwell, duplicate grants, Phase 2
+  moved slots, the crypto sticky block and the reprobe hand-over on the over-the-air target, kind and route, and its
+  active-call ledger routes carry the over-the-air target (so a re-selection counts no preemption and keeps the
+  cooldown). On an unchanged voice identity, each SM tick, a duplicate grant and the held-call description it
+  re-resolves for admission: the winner becomes the slot's and the snapshot's policy target in place
+  (`dsd_call_state_update_policy_target()`, no boundary; the received service options and priority stay as received)
+  and the ledger takes its priority; when nothing in the patch may be followed the held call is described with no
+  priority protection (-1). Admission also judges the row-edit release (`tg_listen_blocked_slots()`), the talkgroup
+  Hold check (`dsd_scan_tg_hold_call_active()`) and conventional trunk-scan activity; the -Y voice check takes the
+  media resolution, and a conventional (trunking off) call is published on the media target. Tests:
+  `CORE_P25_PATCH_POLICY`, `CORE_TALKGROUP_POLICY`, `P25_GRANT_POLICY`, `P25_PATCH_FOLLOW`, `CORE_AUDIO_GROUP_GATE`,
+  `CORE_P25P2_PLAYOUT`, `CORE_CALL_ALERT_HISTORY`, `APP_COMMAND_QUEUE` (`test_row_edit_keeps_a_patch_another_member_carries`),
+  `ENGINE_P25_PATCH_SCAN`, `ENGINE_TRUNK_SCAN` (`test_p25_conventional_activity_patch`), `UI_QT_METRICS_MODEL`
+  (`test_block_label_patched_call`). User blocks (Lock out, Avoid TG, Skip) are
   written against the over-the-air target. A private call has no
   talkgroup: `apply_cmd_lockout_resolve_target()` refuses its lockout with a toast (issue #773), since the talkgroup
   row it would write blocks the talkgroup with the radio's number; a radio is blocked from the radio ID list.
@@ -10904,7 +10919,8 @@ Private per-protocol modules worth knowing about:
   ordinary announcements never touch SM timers. Calls announced together, on Phase 2 and in LC `0x42`, are ranked
   (audible before probe as `p25_sm_grant_is_silent_probe()` classifies them, admitted, hold, priority, listed order)
   and the first carrier change ends the update. Before `should_preempt` the SM
-  describes every assigned slot with `followed_since_m` (kept across repeats and re-grants of the same call; reset by
+  describes every assigned slot by its over-the-air target, a patched one re-resolved first, with `followed_since_m`
+  (kept across repeats and re-grants of the same call, a patch's member re-selections included; reset by
   `p25_sm_clear_followed_history()`; restarted when a TDMA slot's conversation lapsed, its last stop a whole hangtime
   old with no voice awaited since). A TDMA slot counts as held while its voice is live, within the hangtime after it,
   or while its voice is awaited (`p25_slot_awaiting_voice()`) for at most the grant timeout from `acquire_since_m`.
@@ -10914,7 +10930,7 @@ Private per-protocol modules worth knowing about:
   voice starts and accepted grants describe; only a preemption commits a cooldown, after the candidate is tuned. A
   preemption whose CC return fails or defers restores the force-release latch and keeps the held call. A clear-bit
   encryption-lockout release (`p25_grant_commit_enc_release()`) and the stale-regrant guard's probe are spent only on
-  acceptance. Tests: `P25_PREEMPT`, `P25_GRANT_POLICY`, `P25_P2_VPDU_GRANTS`.
+  acceptance. Tests: `P25_PREEMPT`, `P25_GRANT_POLICY`, `P25_P2_VPDU_GRANTS`, `P25_PATCH_FOLLOW`.
 - P25 followed-call identity across a fade (`p25_trunk_sm.c`, `p25_voice_canonical_lacks_identity()`). The engine's
   no-carrier pass ends the canonical calls as a sync loss and resets the P25 crypto without telling the P25 SM, which
   keeps following the assignment. Past the reacquire window a Phase 1 call comes back through the clear ESS with the
