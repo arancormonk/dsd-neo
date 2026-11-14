@@ -472,16 +472,16 @@ test_process_audio_native_right_clamps_and_tracks_output(void) {
     return rc;
 }
 
-/* The int16 sample the auto gain's start (DSD_VOICE_LEVEL_START_GAIN_DB over the -g 1 level) stages @p x at. */
+/* The int16 sample the auto gain's opening (DSD_VOICE_LEVEL_OPEN_GAIN_DB over the -g 1 level) stages @p x at. */
 static short
-at_start_gain(double x) {
-    return (short)lrint(x * pow(10.0, (double)DSD_VOICE_LEVEL_START_GAIN_DB / 20.0));
+at_open_gain(double x) {
+    return (short)lrint(x * pow(10.0, (double)DSD_VOICE_LEVEL_OPEN_GAIN_DB / 20.0));
 }
 
-/* Auto gain (issue #518) starts at its start gain on a fresh state, on either slot: the first frame stages at that gain
-   and reads it in dB. */
+/* Auto gain (issue #518) opens a reception at its opening gain on a fresh state, on either slot: the first frame stages
+   at that gain from its first sample and reads it in dB. */
 static int
-test_process_audio_auto_gain_starts_at_start_gain(void) {
+test_process_audio_auto_gain_opens_at_the_opening_gain(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -504,16 +504,16 @@ test_process_audio_auto_gain_starts_at_start_gain(void) {
     chain_and_stage_left(&opts, &state);
 
     int rc = 0;
-    rc |= expect_int_eq("auto gain first sample at the start gain", out[0], at_start_gain(1000.0));
-    rc |= expect_int_eq("auto gain last sample at the start gain", out[159], at_start_gain(1000.0));
-    rc |= expect_float_close("auto gain reads the start gain", state.aout_gain, DSD_VOICE_LEVEL_START_GAIN_DB, 1e-6f);
+    rc |= expect_int_eq("auto gain first sample at the opening gain", out[0], at_open_gain(1000.0));
+    rc |= expect_int_eq("auto gain last sample at the opening gain", out[159], at_open_gain(1000.0));
+    rc |= expect_float_close("auto gain reads the opening gain", state.aout_gain, DSD_VOICE_LEVEL_OPEN_GAIN_DB, 1e-6f);
     rc |= expect_int_eq("auto gain output index", state.audio_out_idx, 160);
     dsd_state_ext_free_all(&state);
     return rc;
 }
 
 static int
-test_process_audio_right_auto_gain_starts_at_start_gain(void) {
+test_process_audio_right_auto_gain_opens_at_the_opening_gain(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -537,12 +537,12 @@ test_process_audio_right_auto_gain_starts_at_start_gain(void) {
     chain_and_stage_right(&opts, &state);
 
     int rc = 0;
-    rc |= expect_int_eq("right auto gain first sample", out[0], at_start_gain(1000.0));
-    rc |= expect_int_eq("right auto gain negative sample", out[1], at_start_gain(-2000.0));
-    rc |= expect_int_eq("right auto gain small sample", out[2], at_start_gain(250.0));
-    rc |= expect_int_eq("right auto gain peak sample", out[3], at_start_gain(-4000.0));
-    rc |= expect_int_eq("right auto gain mirror sample", state.s_r[0], at_start_gain(1000.0));
-    rc |= expect_float_close("right auto gain reads the start gain", state.aout_gainR, DSD_VOICE_LEVEL_START_GAIN_DB,
+    rc |= expect_int_eq("right auto gain first sample", out[0], at_open_gain(1000.0));
+    rc |= expect_int_eq("right auto gain negative sample", out[1], at_open_gain(-2000.0));
+    rc |= expect_int_eq("right auto gain small sample", out[2], at_open_gain(250.0));
+    rc |= expect_int_eq("right auto gain peak sample", out[3], at_open_gain(-4000.0));
+    rc |= expect_int_eq("right auto gain mirror sample", state.s_r[0], at_open_gain(1000.0));
+    rc |= expect_float_close("right auto gain reads the opening gain", state.aout_gainR, DSD_VOICE_LEVEL_OPEN_GAIN_DB,
                              1e-6f);
     rc |= expect_int_eq("right auto gain output index", state.audio_out_idxR, 160);
     rc |= expect_int_eq("right auto gain long output index", state.audio_out_idx2R, 160);
@@ -1460,8 +1460,8 @@ main(void) {
     rc |= test_manual_analog_gain_helper();
     rc |= test_process_audio_native_left_clamps_and_tracks_output();
     rc |= test_process_audio_native_right_clamps_and_tracks_output();
-    rc |= test_process_audio_auto_gain_starts_at_start_gain();
-    rc |= test_process_audio_right_auto_gain_starts_at_start_gain();
+    rc |= test_process_audio_auto_gain_opens_at_the_opening_gain();
+    rc |= test_process_audio_right_auto_gain_opens_at_the_opening_gain();
     rc |= test_stage_short_left_upsampled_clamps_and_tracks_output();
     rc |= test_process_audio_upsampled_right_clamps_and_tracks_output();
     rc |= test_voice_outputs_round_to_nearest();

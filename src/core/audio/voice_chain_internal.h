@@ -22,9 +22,11 @@ extern "C" {
 #endif
 
 /* The reception a frame belongs to, as the chain reads it from the call state: the slot's transmission
-   (dsd_call_snapshot_transmission() of its active call) and the protocol family; 0 for none known. */
+   (dsd_call_snapshot_transmission() of its active call), the radio it comes from (the active call's ota_source_id) and
+   the protocol family; 0 for none known. */
 typedef struct {
     uint64_t transmission;
+    uint64_t source;
     int family;
 } dsd_voice_reception;
 

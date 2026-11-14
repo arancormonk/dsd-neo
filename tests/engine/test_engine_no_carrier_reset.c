@@ -7442,9 +7442,9 @@ test_tetra_stream_gap_keeps_the_voice_level_a_new_party_starts_it_over(void) {
     tetra_dmo_speech(opts, state, 0x11U, 1);
     agc = dsd_voice_level_agc(state, 0);
     rc |= expect_true("tetra level: another talker is the next transmission", tetra_st(state)->voice.agc_tx_seq != seq);
-    rc |= expect_true("tetra level: another talker starts the level over",
-                      agc != NULL && agc->learned.commits == 0
-                          && fabsf(agc->learned.gain_db - DSD_VOICE_LEVEL_START_GAIN_DB) < 1e-6f);
+    rc |= expect_true("tetra level: another talker starts the level over at the opening gain",
+                      agc != NULL && agc->learned.commits == 0 && agc->learned.steps == 0
+                          && fabsf(agc->learned.gain_db - DSD_VOICE_LEVEL_OPEN_GAIN_DB) < 1e-6f);
 
     dsd_decode_clock_use_system();
     tetra_voice_set_codec_for_test(NULL);

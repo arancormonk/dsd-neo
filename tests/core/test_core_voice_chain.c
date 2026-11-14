@@ -318,8 +318,8 @@ test_high_pass_restarts_at_reception_boundaries(void) {
 }
 
 /* The chain's gain (issue #518): a fixed -g is a plain multiplier held at the speech AGC's -1 dBFS ceiling, in both
-   formats; below 0, unity; 0, the speech AGC, which starts DSD_VOICE_LEVEL_START_GAIN_DB over the reference level
-   (-g 1) and holds the same ceiling.
+   formats; below 0, unity; 0, the speech AGC, which opens a reception DSD_VOICE_LEVEL_OPEN_GAIN_DB over the reference
+   level (-g 1) and holds the same ceiling.
    Every frame leaves the gain it got, in dB, for the readouts. */
 static int
 test_chain_gain_laws(void) {
@@ -361,8 +361,9 @@ test_chain_gain_laws(void) {
     rc |= expect_near("negative gain is unity", frame[3], 1000.0, 1e-3);
     rc |= expect_near("negative gain reads 0 dB", state->aout_gain, 0.0, 1e-6);
 
-    // Auto on a fresh slot: the start gain; a DC frame is not speech and teaches nothing (and, under -32 dBFS, is not
-    // loud enough for the attenuator either).
+    // Auto on a fresh slot: the opening gain; a DC frame is not speech and teaches nothing (and, played at -34.3 dBFS,
+    // under -32, is not loud enough for the attenuator or the loud-frame guard either, and a steady level completes no
+    // burst).
     dsd_state* fresh = new_state();
     if (!fresh) {
         free(opts);
@@ -372,12 +373,14 @@ test_chain_gain_laws(void) {
     opts->audio_gain = 0.0f;
     const dsd_voice_frame_info speech = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
     for (int k = 0; k < 60; k++) {
-        fill_dc(frame, 400.0f);
+        fill_dc(frame, 250.0f);
         dsd_voice_chain_run(opts, fresh, 0, frame, &speech);
-        rc |= expect_near("auto starts at the start gain and a DC frame teaches nothing", frame[159],
-                          400.0 * pow(10.0, DSD_VOICE_LEVEL_START_GAIN_DB / 20.0), 1e-3);
+        rc |= expect_near("auto opens at the opening gain and a DC frame teaches nothing", frame[0],
+                          250.0 * pow(10.0, DSD_VOICE_LEVEL_OPEN_GAIN_DB / 20.0), 1e-3);
+        rc |= expect_near("the whole frame plays at it", frame[159],
+                          250.0 * pow(10.0, DSD_VOICE_LEVEL_OPEN_GAIN_DB / 20.0), 1e-3);
     }
-    rc |= expect_near("the auto readout reads the start gain", fresh->aout_gain, DSD_VOICE_LEVEL_START_GAIN_DB, 1e-4);
+    rc |= expect_near("the auto readout reads the opening gain", fresh->aout_gain, DSD_VOICE_LEVEL_OPEN_GAIN_DB, 1e-4);
     // A frame past the ceiling is cut at once.
     fill_dc(frame, 32000.0f);
     dsd_voice_chain_run(opts, fresh, 0, frame, &speech);

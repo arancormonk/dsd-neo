@@ -15,6 +15,11 @@
  *   controller learned,
  * - a causal peak limiter at the ceiling (-1 dBFS by default).
  *
+ * Digital voice restarts the AGC for every transmission, many of them shorter than the controller's startup, so its
+ * instances also turn on an acquisition stage (dsd_speech_agc_set_acquisition()) that reaches a talker's level within
+ * the first syllables: a startup law that goes straight to an aim weighing the estimate by its reliability, a guard
+ * against frames played too loud, and a fallback that lifts talkers whose speech never passes the pitch cue.
+ *
  * The analysis runs on 20 ms frames. A finished frame's decision changes the gain from the next sample on, as a linear
  * ramp over one frame, so the AGC adds no latency and looks at no future samples. Every recurrence runs per sample or
  * per frame, so the output is the same bit for bit however the caller splits the samples into calls (for the same
@@ -60,6 +65,8 @@ extern "C" {
 #define DSD_SPEECH_AGC_STATIONARY_FRAMES 12
 /** Rollback checkpoints: one per finished frame, so a gate close undoes up to the last 12 frames. */
 #define DSD_SPEECH_AGC_CHECKPOINTS       13
+/** The loudest frame levels of a reception the acquisition stage's burst fallback holds; it reads the last. */
+#define DSD_SPEECH_AGC_PEAKS             3
 
 /** The pitch cue works on the frame decimated to about 8 kHz (one sample in round(rate / 8000)). The decimated rate
     stays under 12 kHz at every supported rate, so its 20 ms frame and its 15 ms longest lag stay under 240 and 180
@@ -91,6 +98,18 @@ typedef struct {
     float stale_lag_min_ms;
     float stale_lag_max_ms;
     float stale_lag_last_ms;
+    /* The acquisition stage (dsd_speech_agc_set_acquisition()); it leaves these at 0 when off, but for open_db, which
+       every opening sets and only the stage reads. */
+    float prior_db;   /**< P: the gain the reception's first gain step found */
+    float open_db;    /**< the gain the reception opened at (reset, dsd_speech_agc_open_at(), leaving fixed mode) */
+    float loudest_db; /**< the reception's loudest frame, held while frames come within 6 dB of it, then easing */
+    int loudest_known;
+    int loudest_age;                     /**< eligible frames since one came within 6 dB of loudest_db (saturates) */
+    float peak_db[DSD_SPEECH_AGC_PEAKS]; /**< the loudest frame levels at or over -70 dBFS, descending */
+    int peaks;                           /**< levels held in peak_db */
+    int high_run;                        /**< frames in a row within 6 dB of the last of them (saturates) */
+    int burst_armed;                     /**< a run of high frames waits for the fall that completes a burst */
+    int bursts;                          /**< completed bursts (saturates) */
 } dsd_speech_agc_learned;
 
 typedef struct {
@@ -116,8 +135,9 @@ typedef struct {
     float tone_cap;           /**< the start gain, linear: the most a tone frame gets */
     int fixed;
     float fixed_gain;
-    int fixed_seed; /**< a fixed gain was set since the last reset: leaving fixed mode starts from it */
-    int noise_veto; /**< the coloured-noise veto (dsd_speech_agc_set_noise_veto()) */
+    int fixed_seed;  /**< a fixed gain was set since the last reset: leaving fixed mode starts from it */
+    int noise_veto;  /**< the coloured-noise veto (dsd_speech_agc_set_noise_veto()) */
+    int acquisition; /**< the acquisition stage (dsd_speech_agc_set_acquisition()) */
 
     dsd_speech_agc_learned learned;
 
@@ -183,13 +203,50 @@ void dsd_speech_agc_set_start_gain_db(dsd_speech_agc* agc, float start_gain_db);
 void dsd_speech_agc_set_noise_veto(dsd_speech_agc* agc, int on);
 
 /**
+ * @brief Turn the acquisition stage on (nonzero @p on) or off. Init turns it off; a reset keeps it.
+ *
+ * Digital voice turns it on: every transmission is a new reception, and many are over before 2 dB startup steps
+ * arrive. It changes three things; the guard and the burst fallback act only until the reception's estimate is
+ * established (20 committed frames), the startup law on every step:
+ * - Startup law. Every gain step aims at P + (W - P) n^2 / (n^2 + 24), where W is the gain the estimate asks for, n
+ *   the frames committed so far and P the gain the reception's first step found (the gain it opened at, as the parts
+ *   below may have moved it): the estimate's measured reliability against the spread of talkers, 0.60 at the first
+ *   commit and 0.94 at 20. The first 20 steps go straight to the aim (through the 25th committed frame, since the first
+ *   step commits six at once); later ones move toward that same weighted aim at +0.12 / -0.20 dB a step, as without
+ *   it, while the weight (0.97 at the 21st step) closes on 1.
+ * - Loud-frame guard. A frame that would play over -12 dBFS pulls the gain down to where it plays at -12 dBFS at once
+ *   (the change ramps in over the next frame, as any), and no startup aim plays the held loudest frame louder.
+ *   It bounds an opening gain that was too high: the excess lasts a frame or two, with peaks held by the limiter. The
+ *   loudest frame is held while loud frames keep coming, and for 200 ms of sound (10 frames at or over the absolute
+ *   floor; silence does not count) after the last frame within 6 dB of it; then it eases 1 dB a frame, to rest within
+ *   6 dB over the sound that follows. Until the first commit the gain also returns 1 dB a frame to the gain the
+ *   reception opened at, as far as the held frame allows. A pop, a bump or one shouted syllable early in a
+ *   transmission is not the talker's level, so its cut no longer lasts until 20 frames have committed. The cost: a
+ *   loud sound that never commits (not voiced) and pauses for more than 200 ms of quieter sound comes back up to the
+ *   opening gain, so its next onset plays loud for a frame again.
+ * - Burst fallback. Far-field and low-level talkers decode mostly unvoiced, so their speech may never complete a run
+ *   and never move the gain. Once a burst of sound has risen and fallen (three frames in a row within 6 dB of the
+ *   reception's third loudest frame at or over -70 dBFS, then one 12 dB under it), the gain rises 1 dB a frame of
+ *   sound until that third loudest frame plays at -17 dBFS (never past the guard's limit on the held loudest frame),
+ *   and startup aims stay over that floor. A frame under -70 dBFS is judged against the third loudest like any other;
+ *   digital silence (a learning frame under the absolute floor) always counts as the fall: it completes a burst and
+ *   ends a run of high frames, and does nothing else. Frames that do not learn count as neither. It cannot tell such a
+ *   talker from sounds before speech (a breath, a bump), which it lifts too until the speech arrives. Steady noise, a
+ *   tone and a step out of silence never complete a burst. The three loudest levels never ease, so a pop followed by
+ *   steady noise cannot raise the floor with no new burst.
+ * Analog receptions leave it off and keep the 2 dB startup steps.
+ */
+void dsd_speech_agc_set_acquisition(dsd_speech_agc* agc, int on);
+
+/**
  * @brief Fixed or automatic gain.
  *
  * A positive finite @p gain is a fixed linear gain: nothing is learned and tone frames are not capped, but the limiter
  * still runs; gains above 1e6 count as 1e6. Anything else means automatic; leaving fixed mode keeps what was learned
  * and starts from the fixed gain, clamped into the controller's range, with the attenuator at 0, when that fixed gain
  * was set within the current reception. A reset since then wins: the new reception stays at its start gain. The switch
- * is a new opening checkpoint, so a gate close never restores a gain from before it.
+ * is a new opening checkpoint, so a gate close never restores a gain from before it, and its gain is the one the
+ * acquisition stage returns to before the first commit.
  */
 void dsd_speech_agc_set_fixed(dsd_speech_agc* agc, float gain);
 
@@ -227,6 +284,32 @@ void dsd_speech_agc_gate_closed(dsd_speech_agc* agc);
 
 /** A reception opened: push a checkpoint, so a close never undoes more than this reception taught. */
 void dsd_speech_agc_gate_opened(dsd_speech_agc* agc);
+
+/**
+ * @brief Open the reception in progress at @p gain_db in place of the start gain.
+ *
+ * For a caller that knows better than the start gain where a reception should open, such as the gain the same talker
+ * settled at before. The controller gain takes @p gain_db, clamped into the controller's range (-12/+30 dB around the
+ * start gain): at once when @p ramp is 0 (as a reset leaves it, for a reception's first sample), or over the next
+ * frame's worth of samples, linearly, when it is nonzero, also when called partway through an analysis frame (a frame
+ * boundary within the ramp keeps it, unless that frame's decision moves the gain the ramp heads for: then a new
+ * one-frame ramp starts there, from where the gain stands; a frame that passes both cues but moves nothing keeps it).
+ * It is a new opening checkpoint, so a gate close never
+ * restores the gain from before it, and the gain the acquisition stage returns to before the first commit after a
+ * loud frame's cut. The start gain, the range, the tone cap and the absolute floor stay where the start gain put them.
+ * No effect once the reception has committed a frame, when @p gain_db is not finite, or before init. A reset returns
+ * to the start gain.
+ */
+void dsd_speech_agc_open_at(dsd_speech_agc* agc, float gain_db, int ramp);
+
+/**
+ * @brief The gain the reception's estimate has settled at, for a caller that remembers talkers.
+ *
+ * Once the estimate is established (20 committed frames, 400 ms of speech), @p gain_db gets the gain that plays the
+ * estimated level at the target, within the controller's range, and the call returns 1. Before that, after a reset,
+ * before init or for a NULL @p gain_db it returns 0 and leaves @p gain_db alone.
+ */
+int dsd_speech_agc_settled_gain_db(const dsd_speech_agc* agc, float* gain_db);
 
 /** The gain the last sample got, controller, attenuator and limiter together, in dB (for readouts). */
 float dsd_speech_agc_gain_db(const dsd_speech_agc* agc);

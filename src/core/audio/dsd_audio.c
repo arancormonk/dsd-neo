@@ -589,16 +589,18 @@ dsd_audio_pcm16_from_f32(float sample) {
 }
 
 /* The reception the slot's frame belongs to: its active call's transmission, which a fade the call state heals keeps
-   (a new raw epoch does not cut it), and the protocol family. */
+   (a new raw epoch does not cut it), the radio the call comes from, and the protocol family. With no active call, the
+   frame names no transmission and no radio. */
 static dsd_voice_reception
 dsd_voice_reception_of(const dsd_state* state, int slot) {
-    dsd_voice_reception r = {0U, 0};
+    dsd_voice_reception r = {0U, 0U, 0};
     dsd_call_snapshot call;
     // The protocol the frame was dispatched under, as dsd_mbe_out_frame_protocol() reads it: YSF and scrambled dPMR
     // decode under a borrowed synctype but stay their own.
     int protocol = state->frame_dispatch_active ? state->frame_dispatch_synctype : state->synctype;
     if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
         r.transmission = dsd_call_snapshot_transmission(&call);
+        r.source = call.ota_source_id;
         protocol = call.protocol;
     }
     r.family = dsd_call_state_protocol_family(protocol);
