@@ -8505,11 +8505,14 @@ Key public headers:
     header's tuner (E4000 14 steps, FC0012 5, FC0013 23, FC2580 1, R820T and R828D the shared 29). A tuner the tables
     do not know, or a gain count other than that tuner's table size, sends the request raw, as before. The step is
     picked from the connection the unit goes out on (`rtl_tcp_apply_on_conn()` hands it to the build) and recorded
-    (`gain`, beside `gain_request`, the tenths asked for) and reported to the caller (both setters) only once the unit
-    went out on the still-published connection; a failed or superseded send changes neither. A step of 0 dB or less
-    stays a manual gain. A reconnect's replay sends `gain_request` as the new connection's own step (a server back with
-    another tuner gets its nearest step to what was asked, not to the old step) and records that step only once the
-    hand-off is published. Before any gain takes the record holds the session's
+    (`gain`, beside `gain_request`, the tenths asked for; both setters) and reported to
+    `rtl_device_set_gain_nearest()`'s caller only once the unit went out on the still-published connection; a failed or
+    superseded send changes neither. A step of 0 dB or less stays a manual gain. A reconnect's replay sends
+    `gain_request` as the new connection's own step (a server back with another tuner gets its nearest step to what was
+    asked, not to the old step) and records that step only once the hand-off is published; the stream's
+    `controller_tcp_handoff_op()` then moves its own copy (`dongle.gain`, the auto squelch's context, a search capture's
+    gain) to a manual step that changed, and leaves it under automatic gain.
+    Before any gain takes the record holds the session's
     default (automatic, digital AGC as configured); a gain or test-mode change that failed part way, or whose
     connection was replaced before commitment, marks it (`gain_unknown`, `testmode_unknown`), and the replay then
     asserts the record's state even if none ever took (as a

@@ -698,6 +698,9 @@ enum {
 void rtl_stream_test_set_stream_boundary_probe(void (*probe)(int step, void* ctx), void* ctx);
 /* The device the running stream opened, NULL without one. */
 struct rtl_device* rtl_stream_test_device(void);
+/* The stream's copies of the tuner gain as applied (tenths of a dB, AUTO_GAIN for automatic): the dongle's, and the
+ * auto squelch's context (which a search capture's gain also reads). */
+void rtl_stream_test_tuner_gain_copies(int* out_dongle_gain, int* out_squelch_gain);
 /* Whether the controller's reconfigure gate is closed (the demod parked between blocks). */
 int rtl_stream_test_reconfigure_gate_closed(void);
 /* Whether @p dev holds its capture for a reconfiguration (rtl_device_begin_capture_reconfigure()). */

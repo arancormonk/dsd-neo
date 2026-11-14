@@ -6921,13 +6921,31 @@ struct TcpHandoffOp {
 };
 } // namespace
 
+/* The manual gain step @p dev holds (tenths of a dB), or AUTO_GAIN when its gain is automatic or reads as nothing. */
+static int
+controller_tcp_manual_gain_step(struct rtl_device* dev) {
+    int gain = 0;
+    if (rtl_device_is_auto_gain(dev) != 0 || rtl_device_get_tuner_gain(dev, &gain) != 0) {
+        return AUTO_GAIN;
+    }
+    return gain;
+}
+
 static int
 controller_tcp_handoff_op(void* ctx) {
     auto* op = static_cast<TcpHandoffOp*>(ctx);
+    const int step_before = controller_tcp_manual_gain_step(op->dev);
     const int rc = rtl_device_tcp_publish_handoff(op->dev, op->why, sizeof op->why);
     if (rc == 0) {
-        /* The replay put the server's gain back; the frontends read it from the published copy. */
-        rtl_stream_publish_tuner_gain();
+        /* The replay put the server's gain back; the frontends read it from the published copy. A manual gain went
+         * out as the new server's own step: on another tuner that is another step, which the stream's copy (the auto
+         * squelch's context, a search capture's gain) follows; an automatic gain leaves it as it is. */
+        const int step_after = controller_tcp_manual_gain_step(op->dev);
+        if (step_after != AUTO_GAIN && step_after != step_before) {
+            dongle_note_gain(step_after);
+        } else {
+            rtl_stream_publish_tuner_gain();
+        }
     }
     return rc;
 }
@@ -13354,6 +13372,16 @@ rtl_stream_test_full_output_write_on_stop(rtl_stream_test_full_output_write* out
 extern "C" struct rtl_device*
 rtl_stream_test_device(void) {
     return rtl_device_handle;
+}
+
+extern "C" void
+rtl_stream_test_tuner_gain_copies(int* out_dongle_gain, int* out_squelch_gain) {
+    if (out_dongle_gain) {
+        *out_dongle_gain = dongle.gain;
+    }
+    if (out_squelch_gain) {
+        *out_squelch_gain = g_squelch_tuner_gain.load(std::memory_order_relaxed);
+    }
 }
 
 extern "C" int

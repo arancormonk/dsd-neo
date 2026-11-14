@@ -760,16 +760,22 @@ wait_drained(const dev_rig& r) {
     assert(wait_until([&] { return input_ring_used(&r.ring) == 0U && r.draining.load() == 0; }, kWaitMs));
 }
 
-/* Wait until a connection with generation @p gen is published and released to the reader. */
+/* Wait until a connection of @p dev with generation @p gen is published and released to the reader (by the test's
+ * controller, or a stream's). */
 void
-wait_generation(const dev_rig& r, uint64_t gen) {
+wait_generation_of(rtl_device* dev, uint64_t gen) {
     assert(wait_until(
         [&] {
             rtl_device_test_tcp_state st{};
-            rtl_device_test_tcp_state_get(r.dev, &st);
+            rtl_device_test_tcp_state_get(dev, &st);
             return st.generation == gen && st.handoff == RTL_TEST_TCP_HANDOFF_NONE;
         },
         kWaitMs));
+}
+
+void
+wait_generation(const dev_rig& r, uint64_t gen) {
+    wait_generation_of(r.dev, gen);
 }
 
 /* Wait until the server's connection @p idx exists and got @p n commands. */
@@ -2354,6 +2360,36 @@ test_unavailable_server_command_applies(void) {
     dsd_runtime_set_controls_pending(nullptr);
 }
 
+/* tcp_gain_stream_copy_follows_reconnect: the stream opens at 30 dB on an R820T (29.7 dB on the device) and the server
+ * comes back with an E4000, where the replay puts 29.0 dB: the stream's own copies of the gain (the dongle's, the auto
+ * squelch's context) follow the new step with the device and the published gain. */
+void
+test_tcp_gain_stream_copy_follows_reconnect(void) {
+    server_reset(default_script());
+    stream_rig r;
+    stream_opts(r, 0);
+    r.opts->rtl_gain_value = 30;
+    dsd_input_failure_clear();
+    dsd_exitflag_store(0);
+    assert(rtl_stream_create(r.opts.get(), &r.ctx) == 0 && r.ctx != nullptr);
+    assert(rtl_stream_start(r.ctx) == 0);
+    r.dev = rtl_stream_test_device();
+    assert(r.dev != nullptr);
+    assert(recorded_manual_gain(r.dev) == 297);
+    server_queue(tuner_script(1U, 14U));
+    stream_lose_connection(r);
+    wait_generation_of(r.dev, 2U);
+    assert(recorded_manual_gain(r.dev) == 290);
+    int published = 0;
+    int is_auto = -1;
+    assert(rtl_stream_get_gain(&published, &is_auto) == 0 && published == 290 && is_auto == 0);
+    int dongle_gain = 0;
+    int squelch_gain = 0;
+    rtl_stream_test_tuner_gain_copies(&dongle_gain, &squelch_gain);
+    assert(dongle_gain == 290 && squelch_gain == 290);
+    stream_close(r);
+}
+
 /* preconfig_backlog_discarded: the controller is held behind a retune while the reconnected server streams far more
  * pre-configuration I/Q than the post-reset mute covers; none of it reaches the capture (which sees what reaches the
  * rings), and the capture after the gap holds whole pairs of the server's configured I/Q. */
@@ -2833,6 +2869,7 @@ const named_test kTests[] = {
     {"tcp_gain_stale_connection_records_nothing", test_tcp_gain_stale_connection_records_nothing},
     {"tcp_gain_reconnect_changed_tuner", test_tcp_gain_reconnect_changed_tuner},
     {"unavailable_server_command_applies", test_unavailable_server_command_applies},
+    {"tcp_gain_stream_copy_follows_reconnect", test_tcp_gain_stream_copy_follows_reconnect},
     {"preconfig_backlog_discarded", test_preconfig_backlog_discarded},
     {"stop_with_handoff_queued_and_claimed", test_stop_with_handoff_queued_and_claimed},
     {"stop_waits_for_demod_block_before_retune", test_stop_waits_for_demod_block_before_retune},
