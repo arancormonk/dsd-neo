@@ -4185,9 +4185,10 @@ live_scanner_receive_should_yield(const dsd_opts* opts, dsd_state* state) {
    settled after processFrame()): one load while skip-silent is off. */
 static int
 live_scanner_frame_sync(dsd_opts* opts, dsd_state* state) {
+    const uint64_t accepts_before = dsd_engine_scan_quiet_sync_accepts(state);
     const int synctype = getFrameSync(opts, state);
     if (synctype > DSD_SYNC_NONE && opts->scan_skip_silent) {
-        dsd_engine_scan_quiet_note_frame_sync(state);
+        dsd_engine_scan_quiet_note_frame_sync(state, accepts_before);
     }
     return synctype;
 }

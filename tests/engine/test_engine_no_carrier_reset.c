@@ -931,8 +931,13 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     g_frame_syncs_left--;
     if (g_frame_candidate == 3) {
         state->p25_p2_sync_candidate.valid = 1U;
+        state->p25_p2_sync_anchor.tolerant_syncs++;
+    } else if (g_frame_candidate == 2) {
+        state->p25_p1_sync_candidate.valid = 1U;
+        state->p25_p1_sync_anchor.acquisition_syncs++;
     } else if (g_frame_candidate != 0) {
         state->p25_p1_sync_candidate.valid = 1U;
+        state->p25_p1_sync_anchor.tolerant_syncs++;
     }
     return g_frame_sync_type;
 }
@@ -2896,31 +2901,53 @@ test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict(void) 
     g_frame_sync_type = DSD_SYNC_NXDN_POS;
     opts->scan_skip_silent = 0;
 
-    /* The helpers alone: an exact sync is noted at once; a provisional one waits for its verdict, which a frame withheld
-       or never dispatched does not give (dropped unnoted), and a passed verdict counter notes it at the settle. */
+    /* The helpers alone: an exact sync is noted at once; a provisional one (this call accepted a candidate) waits for its
+       verdict, which a frame withheld or never dispatched does not give (dropped unnoted), and a passed verdict counter
+       notes it at the settle. A candidate an earlier call accepted, whose frame was withheld so that it still reads as
+       held, defers nothing after it: the next exact sync is noted at once. */
     if (owner) {
         const uint64_t before = owner->sync_seq;
-        dsd_engine_scan_quiet_note_frame_sync(state);
+        dsd_engine_scan_quiet_note_frame_sync(state, dsd_engine_scan_quiet_sync_accepts(state));
         rc |= expect_true("an exact sync noted at once", owner->sync_seq == before + 1U && !owner->sync_deferred);
+        uint64_t accepts = dsd_engine_scan_quiet_sync_accepts(state);
         state->p25_p1_sync_candidate.valid = 1U;
-        dsd_engine_scan_quiet_note_frame_sync(state);
+        state->p25_p1_sync_anchor.tolerant_syncs++;
+        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
         rc |= expect_true("a provisional sync deferred", owner->sync_seq == before + 1U && owner->sync_deferred);
         dsd_engine_scan_quiet_drop_sync(state);
         state->p25_p1_sync_candidate.valid = 0U;
         state->p25_p1_sync_anchor.tolerant_frames++;
         dsd_engine_scan_quiet_settle_sync(state);
         rc |= expect_true("a dropped deferral never noted", owner->sync_seq == before + 1U && !owner->sync_deferred);
+        accepts = dsd_engine_scan_quiet_sync_accepts(state);
         state->p25_p2_sync_candidate.valid = 1U;
-        dsd_engine_scan_quiet_note_frame_sync(state);
+        state->p25_p2_sync_anchor.tolerant_syncs++;
+        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
         state->p25_p2_sync_candidate.valid = 0U;
         dsd_engine_scan_quiet_settle_sync(state);
         rc |= expect_true("a failed verdict not noted", owner->sync_seq == before + 1U && !owner->sync_deferred);
+        accepts = dsd_engine_scan_quiet_sync_accepts(state);
         state->p25_p2_sync_candidate.valid = 1U;
-        dsd_engine_scan_quiet_note_frame_sync(state);
+        state->p25_p2_sync_anchor.tolerant_syncs++;
+        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
         state->p25_p2_sync_candidate.valid = 0U;
         state->p25_p2_sync_anchor.tolerant_windows++;
         dsd_engine_scan_quiet_settle_sync(state);
         rc |= expect_true("a passed verdict noted", owner->sync_seq == before + 2U && !owner->sync_deferred);
+        /* A Phase 2 candidate whose window was withheld still reads as held; the exact syncs after it are noted. */
+        accepts = dsd_engine_scan_quiet_sync_accepts(state);
+        state->p25_p2_sync_candidate.valid = 1U;
+        state->p25_p2_sync_anchor.tolerant_syncs++;
+        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
+        dsd_engine_scan_quiet_drop_sync(state);
+        for (int k = 0; k < 2; k++) {
+            accepts = dsd_engine_scan_quiet_sync_accepts(state);
+            dsd_engine_scan_quiet_note_frame_sync(state, accepts);
+            dsd_engine_scan_quiet_settle_sync(state);
+        }
+        rc |= expect_true("exact syncs after an abandoned candidate noted",
+                          owner->sync_seq == before + 4U && !owner->sync_deferred);
+        state->p25_p2_sync_candidate.valid = 0U;
     }
     free_test_runtime(opts, state);
     return rc;

@@ -168,19 +168,30 @@ dsd_engine_scan_quiet_sync_verdicts(const dsd_state* state) {
            + (uint64_t)state->p25_p2_sync_anchor.tolerant_windows;
 }
 
-/** The frame sync just returned a sync, noted only while skip-silent is on (issue #834). A provisional one, a P25 word
- * accepted within a tolerance whose frame or window the strict NID or window verdict has yet to pass
- * (dsd_p25p1_sync_candidate, dsd_p25p2_sync_candidate, held until then), is no activity yet: a noise near-miss whose
- * verdict fails is put back everywhere else, and must not end a silent channel's quiet check. It is deferred, with the
- * verdict counters as they stand, for dsd_engine_scan_quiet_settle_sync() once its frame was processed. Any other sync
- * is noted at once. A state with no scan owner has no check. */
+/** The P25 words the frame sync has accepted within a tolerance so far: Phase 1 anchored and acquisition words and
+ * Phase 2 tolerant syncs. Diagnostics the frame sync never resets; one moves exactly when a call accepts a candidate. */
+static inline uint64_t
+dsd_engine_scan_quiet_sync_accepts(const dsd_state* state) {
+    return (uint64_t)state->p25_p1_sync_anchor.tolerant_syncs + (uint64_t)state->p25_p1_sync_anchor.acquisition_syncs
+           + (uint64_t)state->p25_p2_sync_anchor.tolerant_syncs;
+}
+
+/** The frame sync just returned a sync, noted only while skip-silent is on (issue #834); @p accepts_before is
+ * dsd_engine_scan_quiet_sync_accepts() as it stood before the call. A provisional one, a P25 word this call accepted
+ * within a tolerance whose frame or window the strict NID or window verdict has yet to pass (dsd_p25p1_sync_candidate,
+ * dsd_p25p2_sync_candidate, held until then), is no activity yet: a noise near-miss whose verdict fails is put back
+ * everywhere else, and must not end a silent channel's quiet check. It is deferred, with the verdict counters as they
+ * stand, for dsd_engine_scan_quiet_settle_sync() once its frame was processed. Any other sync is noted at once: a
+ * candidate an earlier call accepted whose frame was withheld or never dispatched still reads as held, and must not
+ * defer the exact syncs after it. A state with no scan owner has no check. */
 static inline void
-dsd_engine_scan_quiet_note_frame_sync(dsd_state* state) {
+dsd_engine_scan_quiet_note_frame_sync(dsd_state* state, uint64_t accepts_before) {
     dsd_engine_scan_owner* p = dsd_engine_scan_owner_get(state);
     if (!p) {
         return;
     }
-    if (state->p25_p1_sync_candidate.valid || state->p25_p2_sync_candidate.valid) {
+    if (dsd_engine_scan_quiet_sync_accepts(state) != accepts_before
+        && (state->p25_p1_sync_candidate.valid || state->p25_p2_sync_candidate.valid)) {
         p->sync_deferred = 1U;
         p->sync_deferred_verdicts = dsd_engine_scan_quiet_sync_verdicts(state);
         return;

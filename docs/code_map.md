@@ -614,8 +614,10 @@ Generated (do not edit/commit):
       against the setting off).
     - `sync_seq` moves whenever the live loop's frame sync returns a sync (`live_scanner_frame_sync()`, YSF and D-STAR
       included, which stamp no `last_cc_sync_time_m`; a provisional P25 sync, a word accepted within a tolerance whose
-      frame waits on its strict NID or window verdict, `p25_p1_sync_candidate`/`p25_p2_sync_candidate` still held when
-      the sync returns, is deferred on the owner with the verdict counters, `tolerant_frames` + `acquisition_frames` +
+      frame waits on its strict NID or window verdict, `p25_p1_sync_candidate`/`p25_p2_sync_candidate` held when the
+      sync returns and accepted by that call, its accept counters `tolerant_syncs` + `acquisition_syncs` (both phases)
+      moved, `dsd_engine_scan_quiet_sync_accepts()`, so a candidate an earlier call left held behind a withheld frame
+      defers no exact sync after it, is deferred on the owner with the verdict counters, `tolerant_frames` + `acquisition_frames` +
       `tolerant_windows`, by `dsd_engine_scan_quiet_note_frame_sync()`, and moves it only when a counter moved by the
       time its frame was processed, `dsd_engine_scan_quiet_settle_sync()` right after `processFrame()`; a withheld or
       undispatched frame drops the deferral, `dsd_engine_scan_quiet_drop_sync()`, so a noise near-miss whose NID fails
