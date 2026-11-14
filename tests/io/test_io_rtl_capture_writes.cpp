@@ -46,7 +46,8 @@
  *   stream.
  *
  * Automatic tuner gain (B8): a capture under automatic gain records the mode and no gain, not the stale manual gain
- * librtlsdr still reports, and a replay of it reports automatic whatever its gain setters are asked.
+ * librtlsdr still reports, and a replay of it reports automatic whatever its gain setters are asked. A SoapySDR device
+ * reports automatic only when its driver took the automatic request, and its capture records the same.
  */
 
 #include <assert.h>
@@ -1322,6 +1323,88 @@ test_capture_records_gain_mode(void) {
     assert(dsd_test_remove_temp_dir(dir, kFiles) == 0);
 }
 
+/* B8 on SoapySDR: the gain mode a Soapy device reports is the one that took. A driver without an automatic gain mode
+ * refuses the automatic request (the stream's default), so it reports a manual gain live, and its capture records the
+ * gain it reads, or no gain when it reports none, never "tuner_gain_auto": true. A driver with the mode records
+ * automatic. */
+void
+test_soapy_capture_records_gain_mode(void) {
+    static const struct {
+        const char* name;
+        int no_gain_mode;
+        int no_gain_range;
+        int want_auto;
+        int want_unknown;
+        int want_tenths;
+    } k_cases[] = {
+        {"gain mode", 0, 0, 1, 1, 0},
+        {"no gain mode", 1, 0, 0, 0, 197},
+        {"no gain mode, no gain range", 1, 1, 0, 1, 0},
+    };
+
+    char dir[DSD_TEST_PATH_MAX];
+    char data_path[DSD_TEST_PATH_MAX];
+    char meta_path[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_soapy_capture_gain") != nullptr);
+    assert(dsd_test_path_join(data_path, sizeof data_path, dir, "soapy.iq") == 0);
+    assert(dsd_test_path_join(meta_path, sizeof meta_path, dir, "soapy.iq.json") == 0);
+    for (const auto& c : k_cases) {
+        rtl_device_test_soapy_gain_fake fake{};
+        fake.driver_key = "generic";
+        fake.gain_db = 19.7;
+        fake.selected_db = 19.7;
+        fake.no_gain_mode = c.no_gain_mode;
+        fake.no_gain_range = c.no_gain_range;
+        fake.cf32_stream = 1;
+        rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+        if (dev == nullptr) {
+            printf("IO_RTL_CAPTURE_WRITES: no SoapySDR in this build; Soapy gain mode case skipped\n");
+            assert(dsd_test_rmdir(dir) == 0);
+            return;
+        }
+        /* Nothing has asked for a gain yet: no mode has taken. */
+        assert(rtl_device_is_auto_gain(dev) == 0);
+        dsd_opts* opts = make_rtl_opts();
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=generic");
+        opts->rtlsdr_center_freq = kCenterHz;
+        opts->iq_capture_requested = 1;
+        opts->iq_capture_format = DSD_IQ_FORMAT_CF32;
+        DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", data_path);
+        rtl_stream_test_capture_result start{};
+        assert(rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &start) == 0);
+        assert(start.rc == 0);
+        /* The stream's default request: automatic gain. */
+        (void)step(RTL_STREAM_TEST_CAPTURE_GAIN_AUTO, 0);
+        assert(rtl_device_is_auto_gain(dev) == c.want_auto);
+        int gain = 12345;
+        int is_auto = -1;
+        const int read_rc = rtl_stream_get_gain(&gain, &is_auto);
+        assert(is_auto == c.want_auto);
+        assert(read_rc == ((c.want_auto || !c.want_unknown) ? 0 : -1));
+        if (!c.want_auto && !c.want_unknown) {
+            assert(gain == c.want_tenths);
+        }
+        dsd_iq_capture_writer* writer = rtl_stream_test_capture_session_open_capture(opts);
+        assert(writer != nullptr);
+        rtl_stream_test_capture_session_close_capture(0U);
+        dsd_iq_replay_config meta{};
+        char err[256] = {0};
+        assert(dsd_iq_replay_read_metadata(meta_path, &meta, err, sizeof err) == DSD_IQ_OK);
+        if (meta.tuner_gain_auto != c.want_auto || meta.tuner_gain_unknown != c.want_unknown
+            || meta.tuner_gain_tenth_db != c.want_tenths) {
+            printf("FAIL: Soapy capture gain (%s): auto %d unknown %d tenths %d\n", c.name, meta.tuner_gain_auto,
+                   meta.tuner_gain_unknown, meta.tuner_gain_tenth_db);
+            assert(0);
+        }
+        dsd_iq_replay_config_clear(&meta);
+        rtl_stream_test_capture_session_end();
+        rtl_device_test_soapy_gain_device_free(dev);
+        free(opts);
+    }
+    static const char* const kFiles[] = {"soapy.iq", "soapy.iq.json", nullptr};
+    assert(dsd_test_remove_temp_dir(dir, kFiles) == 0);
+}
+
 } // namespace
 
 int
@@ -1372,6 +1455,7 @@ main(int argc, char** argv) {
         {"rollback_third_rate_fails", test_rollback_third_rate_design_failure_stops},
         {"rate_change_seals_capture", test_rate_change_seals_capture},
         {"capture_records_gain_mode", test_capture_records_gain_mode},
+        {"soapy_capture_records_gain_mode", test_soapy_capture_records_gain_mode},
     };
 
     /* An argument runs that case alone. */

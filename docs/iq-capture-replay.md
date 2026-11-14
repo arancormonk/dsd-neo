@@ -105,7 +105,8 @@ The writer records:
     as 0, since the device reports no gain that the tuner runs (over USB librtlsdr still reports the last manual gain,
     over rtl_tcp 0). Replay reports automatic gain and `--iq-info` prints `Tuner gain: automatic`.
   - Manual gain (`tuner_gain_auto` `false`, `tuner_gain_known` `true`): the gain in tenths of a dB as the device
-    reported it. Negative gains are real: an E4K's lowest is -1.0 dB, an FC0012's -9.9 dB.
+    reported it. Negative gains are real: an E4K's lowest is -1.0 dB, an FC0012's -9.9 dB. A SoapySDR device whose
+    driver has no automatic gain mode refuses the automatic request and keeps a manual gain, which is what it records.
   - Unknown (`tuner_gain_auto` and `tuner_gain_known` `false`, gain 0): the tuner reported none (an Airspy, a SoapySDR
     device without a gain range) or its mode was unknown. Replay reports no gain.
 
@@ -117,10 +118,10 @@ The writer records:
   capture made by an older build cannot be told from a manual one and replays as manual at the gain it recorded. For
   such a capture the configured gain follows the older rule for gains at or below 0 dB: a recorded gain above 0 dB sets
   its nearest whole dB held to 1-49 (0.9 dB is 1 dB), and one at or below 0 dB leaves the configured gain as it was,
-  since an older build recorded an rtl_tcp capture under automatic gain as a known 0 dB. Those
-  builds also have no `tuner_gain_known`; an Airspy capture among them recorded an error code as its gain and replays
-  without one, and any other reads as known. An older build reading a newer automatic capture skips `tuner_gain_auto`,
-  as it skips any field it does not know, and reads the capture as unknown gain.
+  since an older build recorded an rtl_tcp capture under automatic gain as a known 0 dB. Those builds also have no
+  `tuner_gain_known`; an Airspy capture among them recorded an error code as its gain and replays without one, and any
+  other reads as known. An older build reading a newer automatic capture skips `tuner_gain_auto`, as it skips any field
+  it does not know, and reads the capture as unknown gain.
 - retune fields (`contains_retunes`, `capture_retune_count`).
 - `capture_end_reason`: present only when the capture stopped before its stream did. `"rate_changed"`: a retune changed
   the device's sample rate (below). `--iq-info` prints it as `Capture end:`.

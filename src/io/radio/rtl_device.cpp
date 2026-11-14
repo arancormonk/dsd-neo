@@ -9436,7 +9436,9 @@ rtl_device_alloc_soapy_base(struct input_ring_state* input_ring) {
     rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
     dev->host[0] = '\0';
     dev->run.store(0);
-    dev->agc_mode = 1;
+    /* No gain mode is applied yet: the mode reads automatic only once an automatic request takes
+       (rtl_device_set_gain_soapy()), as the stream's open asks for its configured gain right after. */
+    dev->agc_mode = 0;
     return dev;
 }
 
@@ -10760,6 +10762,9 @@ rtl_device_set_gain_soapy(struct rtl_device* dev, int gain, bool nearest, int* o
         dev->agc_mode = automatic;
         dev->gain = selected;
         *out_applied_gain = selected;
+    } else if (!nearest && gain == RTL_AUTO_GAIN) {
+        /* Automatic gain refused (no gain mode, or the driver threw): the device keeps a manual gain, and says so. */
+        dev->agc_mode = 0;
     }
     return rc;
 }
@@ -12412,7 +12417,7 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
 
     bool
     hasGainMode(const int, const size_t) const override {
-        return true;
+        return fake_->no_gain_mode == 0;
     }
 
     void
@@ -12420,11 +12425,17 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
 
     std::vector<std::string>
     listGains(const int, const size_t) const override {
+        if (fake_->no_gain_range) {
+            return {};
+        }
         return {"LNA"};
     }
 
     SoapySDR::Range
     getGainRange(const int, const size_t) const override {
+        if (fake_->no_gain_range) {
+            return {0.0, 0.0};
+        }
         return {0.0, 50.0};
     }
 
@@ -12484,6 +12495,9 @@ rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int nam
     dev->soapy_lock_inited = 1;
     dev->soapy_dev = new RtlTestSoapyGainDevice(fake);
     dev->soapy_named_gain_override = named_override;
+    if (fake->cf32_stream) {
+        dev->soapy_format = SOAPY_FMT_CF32;
+    }
     if (fake->driver_key) {
         rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), fake->driver_key);
         soapy_select_profile_locked(dev);

@@ -2370,7 +2370,7 @@ test_metadata_legacy_without_auto_key(void) {
         expect_int("legacy tcp: parses", dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof(err)), DSD_IQ_OK);
     rc |= expect_gain_fields("legacy tcp", &cfg, 0, 0, 0);
     rc |= expect_int("legacy tcp: mode not stated", cfg.tuner_gain_mode_known, 0);
-    rc |= expect_int("legacy tcp: keeps the configured gain", dsd_iq_replay_configured_gain_db(&cfg, 0), 0);
+    rc |= expect_int("legacy tcp: keeps the configured gain", dsd_iq_replay_configured_gain_db(&cfg, 23), 23);
     dsd_iq_replay_config_clear(&cfg);
 
     /* Not a bool: refused, naming the key. */

@@ -669,6 +669,9 @@ typedef struct {
     int frequency_writes;
     int rate_writes;
     int bandwidth_writes;
+    int no_gain_mode;  /* the driver has no automatic gain mode (hasGainMode() false) */
+    int no_gain_range; /* the driver lists no gain stages and a 0..0 dB range: it reports no gain */
+    int cf32_stream;   /* the device streams cf32, so an I/Q capture can open on it */
 } rtl_device_test_soapy_gain_fake;
 /* A control-only Soapy driver with quantized gain readback, counting its tuning writes. NULL without SoapySDR. */
 struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);

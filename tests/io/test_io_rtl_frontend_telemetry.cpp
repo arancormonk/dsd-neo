@@ -327,7 +327,8 @@ test_tuner_gain_readback_without_device(const char* input_a, const char* input_b
 }
 
 /* B8: a replay of an automatic capture reports automatic gain to the frontends, however the gain configured before it
- * stood; its start asking the device for a gain does not clear the recorded mode. */
+ * stood (the replay configures automatic over it). That no gain setter clears the recorded mode, a manual request
+ * included, is IO_RTL_CAPTURE_WRITES' capture_records_gain_mode. */
 static int
 test_replay_gain_mode_reaches_frontends(const char* input_auto) {
     int rc = 0;
