@@ -634,10 +634,8 @@ dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* sta
 static int
 trunk_hunt_session_eligible(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || opts->trunk_enable != 1 || opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1
-        || opts->trunk_is_tuned != 0 || state->input_boundary != 0 || dsd_opts_input_is_iq_replay(opts)) {
-        return 0;
-    }
-    if (opts->use_rigctl != 1 && opts->audio_in_type != AUDIO_IN_RTL) {
+        || opts->trunk_is_tuned != 0 || state->input_boundary != 0
+        || !dsd_opts_session_can_tune(opts, opts->use_rigctl == 1)) {
         return 0;
     }
     if (!dsd_state_trunk_lcn_user_list_present(opts, state)) {

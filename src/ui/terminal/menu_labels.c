@@ -159,12 +159,12 @@ scan_lists_offered(const void* ctx) {
 }
 
 /* The frequency entry tunes a radio input, or a connected rigctl peer from any input (issue #671); a running or paused
-   scan pauses for it. An I/Q replay refuses every manual tune: it plays the tuning its capture recorded. A live peer,
-   not rigctl configured: a dropped peer's tune would fail. Hidden elsewhere rather than opening a prompt whose answer
-   is refused. */
+   scan pauses for it. An input with fixed tuning refuses every manual tune: an I/Q replay plays the tuning its capture
+   recorded. A live peer, not rigctl configured: a dropped peer's tune would fail. Hidden elsewhere rather than opening
+   a prompt whose answer is refused. */
 bool
 freq_entry_offered(const dsd_opts* opts) {
-    if (!opts || dsd_opts_input_is_iq_replay(opts)) {
+    if (!opts || dsd_opts_input_has_fixed_tuning(opts)) {
         return false;
     }
     return dsd_opts_input_is_radio(opts) || dsd_opts_rigctl_live(opts);

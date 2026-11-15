@@ -7810,6 +7810,17 @@ target_include_directories(
 )
 add_test(NAME CORE_OPTS_TUNED_FREQ COMMAND dsd-neo_test_core_opts_tuned_freq)
 
+# Issue #743: the I/Q stream spec predicates and the tunability predicates (header-only)
+add_executable(
+    dsd-neo_test_core_opts_tunability
+    core/test_core_opts_tunability.c
+)
+target_include_directories(
+    dsd-neo_test_core_opts_tunability
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME CORE_OPTS_TUNABILITY COMMAND dsd-neo_test_core_opts_tunability)
+
 add_executable(dsd-neo_test_core_channel_label core/test_core_channel_label.c)
 target_include_directories(
     dsd-neo_test_core_channel_label

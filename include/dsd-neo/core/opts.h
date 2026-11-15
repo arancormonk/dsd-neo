@@ -875,6 +875,18 @@ dsd_opts_audio_in_dev_is_iqreplay_spec(const char* dev) {
     return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "iqreplay", "iqreplay:");
 }
 
+/** Whether @p dev names a raw I/Q stream dsd-neo receives over TCP (`iqtcp:HOST:PORT:RATE:FORMAT[:FREQ]`). */
+static inline int
+dsd_opts_audio_in_dev_is_iqtcp_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "iqtcp", "iqtcp:");
+}
+
+/** Whether @p dev names a raw I/Q stream dsd-neo receives over UDP (`iqudp:BIND:PORT:RATE:FORMAT[:FREQ]`). */
+static inline int
+dsd_opts_audio_in_dev_is_iqudp_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "iqudp", "iqudp:");
+}
+
 static inline int
 dsd_opts_audio_in_dev_is_tcp_spec(const char* dev) {
     return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "tcp", "tcp:");
@@ -904,12 +916,13 @@ dsd_opts_audio_in_dev_is_symbol_capture(const char* dev) {
                : 0;
 }
 
-/** Whether @p dev names a radio input: an RTL-SDR, rtl_tcp, Airspy, SoapySDR or I/Q replay spec. */
+/** Whether @p dev names a radio input: an RTL-SDR, rtl_tcp, Airspy, SoapySDR, I/Q replay or I/Q stream spec. */
 static inline int
 dsd_opts_audio_in_dev_is_radio_spec(const char* dev) {
     return dsd_opts_audio_in_dev_is_rtl_spec(dev) || dsd_opts_audio_in_dev_is_rtltcp_spec(dev)
            || dsd_opts_audio_in_dev_is_airspy_spec(dev) || dsd_opts_audio_in_dev_is_soapy_spec(dev)
-           || dsd_opts_audio_in_dev_is_iqreplay_spec(dev);
+           || dsd_opts_audio_in_dev_is_iqreplay_spec(dev) || dsd_opts_audio_in_dev_is_iqtcp_spec(dev)
+           || dsd_opts_audio_in_dev_is_iqudp_spec(dev);
 }
 
 /**
@@ -1065,6 +1078,89 @@ dsd_opts_forget_iq_replay_center(dsd_opts* opts) {
 static inline int
 dsd_opts_input_is_iq_replay(const dsd_opts* opts) {
     return (dsd_opts_input_is_radio(opts) && dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) ? 1 : 0;
+}
+
+/**
+ * @brief Return 1 while the input in force is a raw I/Q stream another program sends (`iqtcp:` / `iqudp:`), 0
+ * otherwise.
+ *
+ * Like dsd_opts_input_is_iq_replay(), it reads the input type and device string the session runs.
+ *
+ * @param opts Decoder options (may be NULL).
+ * @return 1 for an RTL-family input whose device is an `iqtcp` or `iqudp` spec; 0 otherwise and for NULL.
+ */
+static inline int
+dsd_opts_input_is_iq_stream(const dsd_opts* opts) {
+    return (dsd_opts_input_is_radio(opts)
+            && (dsd_opts_audio_in_dev_is_iqtcp_spec(opts->audio_in_dev)
+                || dsd_opts_audio_in_dev_is_iqudp_spec(opts->audio_in_dev)))
+               ? 1
+               : 0;
+}
+
+/**
+ * @brief Return 1 when the radio input in force has a tuning DSD-neo cannot change: an I/Q replay or an I/Q stream.
+ *
+ * A replay plays the tuning its capture recorded, and the program that sends a stream picks its channel. Neither has a
+ * tuner DSD-neo can move, set the gain or PPM of, or release.
+ *
+ * @param opts Decoder options (may be NULL).
+ * @return 1 for an I/Q replay or I/Q stream input; 0 otherwise and for NULL.
+ */
+static inline int
+dsd_opts_input_has_fixed_tuning(const dsd_opts* opts) {
+    return (dsd_opts_input_is_iq_replay(opts) || dsd_opts_input_is_iq_stream(opts)) ? 1 : 0;
+}
+
+/**
+ * @brief Return 1 when DSD-neo itself moves the receiver that feeds it: a radio input whose tuning is not fixed.
+ *
+ * The question for the tuner and device controls (gain, PPM, bias tee, device) and for anything that measures RF while
+ * it moves the receiver (signal search, scan skip-silent, the spectrum's go-to and tap).
+ *
+ * @param opts Decoder options (may be NULL).
+ * @return 1 for an RTL-SDR, rtl_tcp, SoapySDR or Airspy input; 0 otherwise and for NULL.
+ */
+static inline int
+dsd_opts_radio_can_tune(const dsd_opts* opts) {
+    return (dsd_opts_input_is_radio(opts) && !dsd_opts_input_has_fixed_tuning(opts)) ? 1 : 0;
+}
+
+/**
+ * @brief Return 1 when something moves what this session hears: the radio on a radio input, else a rigctl peer.
+ *
+ * The question for trunk following, `-Y`, trunk scan, channel cycling, the return to the control channel, manual tunes,
+ * the control-channel hunt and TETRA following. On a radio input the radio answers (dsd_opts_radio_can_tune()): a rigctl
+ * peer beside an I/Q replay or stream would move a receiver the session does not hear. Off one, a rigctl peer behind
+ * the audio answers, and the caller says whether it can: each site keeps the peer test it has always asked (`use_rigctl`
+ * configured, or a live connection).
+ *
+ * @param opts Decoder options (may be NULL).
+ * @param peer_can_tune Nonzero when the caller's rigctl peer can tune; read only off a radio input.
+ * @return 1 when a tune can move what the session hears; 0 otherwise and for NULL.
+ */
+static inline int
+dsd_opts_session_can_tune(const dsd_opts* opts, int peer_can_tune) {
+    if (opts == NULL) {
+        return 0;
+    }
+    if (dsd_opts_input_is_radio(opts)) {
+        return dsd_opts_radio_can_tune(opts);
+    }
+    return peer_can_tune ? 1 : 0;
+}
+
+/**
+ * @brief Return 1 when the source sets the input sample rate: an I/Q replay or an I/Q stream.
+ *
+ * No device can be asked for another rate, so a mode or DSP-bandwidth change re-plans the chain from the source's rate.
+ *
+ * @param opts Decoder options (may be NULL).
+ * @return 1 for an I/Q replay or I/Q stream input; 0 otherwise and for NULL.
+ */
+static inline int
+dsd_opts_input_rate_is_fixed(const dsd_opts* opts) {
+    return (dsd_opts_input_is_iq_replay(opts) || dsd_opts_input_is_iq_stream(opts)) ? 1 : 0;
 }
 
 /**

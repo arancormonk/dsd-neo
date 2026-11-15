@@ -3396,10 +3396,20 @@ suite runs under this compiler.
   `dsd_app_vc_freq()`/`dsd_app_cc_freq()`, the trunk `Frequency:` lines) stay on their decoded values.
   `dsd_opts_input_is_iq_replay()` says whether the input in force is an I/Q replay (an RTL input
   with an `iqreplay` spec), from the input type and device string rather than `iq_replay_active`, which an input switch
-  does not clear. `dsd_opts_trunk_vc_followed()` says whether the receiver sits on a voice channel a trunking grant sent
+  does not clear. The tunability predicates read the same way (issue #743): `dsd_opts_input_is_iq_stream()` is an RTL
+  input with an `iqtcp` or `iqudp` spec (`dsd_opts_audio_in_dev_is_iqtcp_spec()` / `_iqudp_spec()`, both radio specs);
+  `dsd_opts_input_has_fixed_tuning()` is a replay or a stream; `dsd_opts_radio_can_tune()` is a radio input without
+  fixed tuning (the tuner and device controls, signal search, scan skip-silent, the spectrum's go-to and tap);
+  `dsd_opts_session_can_tune(opts, peer)` is that on a radio input and the caller's own rigctl test (`use_rigctl`
+  configured, or a live peer) elsewhere (trunk following, scans, channel cycling, manual tunes, the CC hunt, TETRA
+  following, the RadioReference import's tune); `dsd_opts_input_rate_is_fixed()` is a replay or a stream (re-plan
+  sites). No session decision reads `iq_replay_active` / `iq_replay_requested`, which a config apply that moves a replay
+  session onto a live radio leaves set; only "the process started as a replay" does (the engine's sidecar path and exit
+  code), and the RTL orchestrator's private options copy keeps its own `iq_replay_active`. Pull-replay mechanics (the
+  checkpoint re-plan, capture rates) stay on `dsd_opts_input_is_iq_replay()`. `dsd_opts_trunk_vc_followed()` says whether the receiver sits on a voice channel a trunking grant sent
   it to (`trunk_enable` and `trunk_is_tuned` both 1): only then does `trunk_vc_freq[]` name the carrier being decoded,
   and a call observation whose message carries no frequency may stamp it (P25's target-matched `p25_vc_freq[]` differs;
-  see Protocols). Tests: `CORE_OPTS_TUNED_FREQ`.
+  see Protocols). Tests: `CORE_OPTS_TUNED_FREQ`, `CORE_OPTS_TUNABILITY`.
 - Session predicates (EDACS and M17): a decoder-enabled flag is a capability, not a session, since Auto enables
   ProVoice and M17 beside every other decoder. `dsd_edacs_session(opts, state)` (`<dsd-neo/core/edacs_session.h>`,
   header-only so the runtime squelch policy reads it without linking core) is a selected EDACS session:
@@ -10285,8 +10295,9 @@ while network band plans and user settings survive.
 Startup control-channel hunt (issue #703). A single-system trunked session whose start frequency yields no validated
 control within the CC grace walks its channel map with the ordinary hunts.
 - Eligibility: `dsd_state_trunk_cold_start_eligible()` (core): trunking on outside `-Y` and `--trunk-scan`, not on a
-  granted voice channel, no input switch pending (`input_boundary`), not an I/Q replay
-  (`dsd_opts_input_is_iq_replay()`), a tuner the trunking hooks move (RTL family or rigctl), a user channel map with a
+  granted voice channel, no input switch pending (`input_boundary`), a tuner the trunking hooks move
+  (`dsd_opts_session_can_tune()` with `use_rigctl` as the peer test: a radio input without fixed tuning, so no I/Q
+  replay or stream, or rigctl), a user channel map with a
   nonzero row, and no owner yet. P25 runs it when recovery is admitted or `dsd_trunk_p25_cold_start_presumed()`
   holds; DMR when its recovery is admitted (`dmr_sm_hunt_eligible()`), with no owner or with a DMR owner whose machine
   has confirmed no control channel (`dsd_state_trunk_dmr_hunt_eligible()`), and never on a Hytera XPT site.
@@ -13602,7 +13613,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     in MHz on a radio input, `dsd_opts::rigctl_sent_freq_hz` (the frequency the rigctl peer last accepted on this
     connection: set by the manual, scan and trunking rigctl legs, 0 after a connect) off one, `[-]` at 0.
     `input_freq_offered()` / `freq_entry_offered(opts)` offer it on a radio input or with a live rigctl peer
-    (`dsd_opts_rigctl_live()`), never during an I/Q replay; a scan no longer hides it, since an accepted entry pauses
+    (`dsd_opts_rigctl_live()`), never on an input with fixed tuning (`dsd_opts_input_has_fixed_tuning()`: an I/Q
+    replay); a scan no longer hides it, since an accepted entry pauses
     the scan or, on a row of its list, holds it there (issue #644). The `-Y` Scan Mode row and the Trunk Scan row show
     that entry hold as one field, `HOLD (y continues)` (`ui_row_scan_hold_field()`, from the scan-state view's
     `entry_hold` for the row's own scan kind), in place of `HOLD`, so a narrow row's cut drops whole fields after it;
@@ -13650,7 +13662,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `frontend_terminal_display.mouse_wheel` is on, `dsd_app_scan_state_view_get()` on the frame's opts and state
     snapshots (fetched once per frame; the draw renders the same state snapshot) reports `running` (a paused scan does
     not), no menu, prompt or overlay is open (`ui_menu_is_open()`, so the `=` prompt counts), the input is not STDIN
-    nor an I/Q replay (`dsd_opts_input_is_iq_replay()`: it refuses every retune, so a notch could only toast), and
+    nor one with fixed tuning (`dsd_opts_input_has_fixed_tuning()`: an I/Q replay refuses every retune, so a notch
+    could only toast), and
     `ui_mouse_wheel_available()` (also the `disp.mouse_wheel` row's predicate); `ui_mouse_capture_set()` acts on a
     change only. ncurses: the first capture calls `mouseinterval(0)` and `mousemask()` with buttons 1-3 press and
     release plus the 4 and 5 presses; that parse mask is never cleared at runtime, because a report outside the mask

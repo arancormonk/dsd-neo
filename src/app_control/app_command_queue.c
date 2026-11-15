@@ -7082,8 +7082,7 @@ rr_apply_tune_frequency_fits(const dsd_app_rr_apply_payload* p) {
    (issue #803): the capture decides the frequency, and the replay defers every live retune. */
 static int
 rr_apply_moves_the_receiver(const dsd_opts* opts, const dsd_app_rr_apply_payload* p) {
-    return rr_apply_tune_frequency_fits(p) && !dsd_opts_input_is_iq_replay(opts)
-           && (dsd_opts_input_is_radio(opts) || dsd_opts_rigctl_live(opts));
+    return rr_apply_tune_frequency_fits(p) && dsd_opts_session_can_tune(opts, dsd_opts_rigctl_live(opts));
 }
 
 /* What the import's tune did (issue #803). */
@@ -7111,7 +7110,7 @@ rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* 
     rr_apply_tune_result r = {RR_TUNE_NONE, 0U, opts->rtlsdr_center_freq};
     /* Before the RTL and rigctl alternatives io_control_set_freq_tagged() dispatches to: a replay's import would
        otherwise move a connected rigctl peer the replay does not hear (issue #803). */
-    if (dsd_opts_input_is_iq_replay(opts) || !rr_apply_tune_frequency_fits(p)) {
+    if (dsd_opts_input_has_fixed_tuning(opts) || !rr_apply_tune_frequency_fits(p)) {
         return r;
     }
     const int rc = io_control_set_freq_tagged(opts, state, p->tune_hz, &r.pending_id);
