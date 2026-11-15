@@ -820,8 +820,9 @@ dmr_flco_crypto_carried(const dmr_flco_ctx* ctx, uint8_t slot, uint8_t algid, ui
     return carried;
 }
 
+/* @p replaced_other_protocol: this LC's call replaced another protocol's call on the slot (dmr_flco_publish_voice()). */
 static void
-dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot) {
+dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot, int replaced_other_protocol) {
     const int encrypted = (ctx->so & 0x40U) != 0U;
     const uint8_t algid = (uint8_t)(slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
     const uint16_t kid = (uint16_t)(slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
@@ -841,9 +842,10 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot) {
     // nothing.
     const uint8_t received = dmr_flco_precall_received(ctx, slot, algid, kid);
     dmr_pi_precall_drop_hold(ctx->state, slot);
-    // A held PI's values are this call's own, as dmr_pi() says of a PI it publishes, never ones a call it replaced left
-    // behind (another protocol's call there ended when this LC opened its own).
-    if (received != 0U) {
+    // A PI held while another protocol's call was open is this call's own, as dmr_pi() says of a PI it publishes:
+    // that call left no DMR values behind. Replacing a DMR call (an identity-less epoch the voice opened, its LCs
+    // lost), the live values are still that transmission's, the PI's included, and stay carried.
+    if (received != 0U && replaced_other_protocol) {
         ctx->state->dmr_crypto_inherited[slot] = 0U;
     }
     // Live values a replaced call left behind (its terminator missed) are still what the voice path decrypts with,
@@ -982,7 +984,7 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         ctx->state->dmr_crypto_inherited_algid[slot] = *live.algid;
         ctx->state->dmr_crypto_inherited_keyid[slot] = *live.keyid;
     }
-    dmr_flco_publish_crypto(ctx, slot);
+    dmr_flco_publish_crypto(ctx, slot, was_active && !DSD_SYNC_IS_DMR(before.protocol));
     dsd_event_sync_slot(ctx->opts, ctx->state, slot);
     dsd_signal_search_note_call(ctx->state, slot);
 }

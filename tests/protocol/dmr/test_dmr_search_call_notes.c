@@ -220,6 +220,28 @@ test_pi_leaves_another_protocols_call_alone(dsd_opts* opts) {
     free_state(state);
 }
 
+/* Transmission X's PI is held (its voice LC header lost, no call open), X's voice opens an identity-less DMR epoch, and
+   none of X's LCs decode. Y's voice LC header follows within the hold, X's terminator missed: the live ALG ID and key
+   id are still X's, so Y publishes them as carried, never as its own received values. The hold transfers into the
+   call only where the call it replaced was another protocol's. */
+static void
+test_held_pi_is_not_the_next_transmissions(dsd_opts* opts) {
+    dsd_state* state = fresh_state();
+    dsd_decode_clock_use_test(30000000000ULL);
+    run_pi(opts, state, 0U, 0x21U, 0x05U);
+    assert(state->dmr_pi_precall_rx[0] == RX_BOTH);
+    run_media_mark(state, 0U);
+    assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+    dsd_decode_clock_test_set_ns(30500000000ULL);
+    run_lc(opts, state, 0U, 1U, 0x40U, 3333U, 4444U);
+    const dsd_call_snapshot call = call_on(state, 0U);
+    assert(call.ota_target_id == 3333U && DSD_SYNC_IS_DMR(call.protocol));
+    assert(call.crypto_received == 0U);
+    assert(call.algid == 0U && call.kid == 0U);
+    dsd_decode_clock_use_system();
+    free_state(state);
+}
+
 /* A forced or inferred ALG ID is published as the call's ALG ID, as before, but never as received. */
 static void
 test_forced_and_inferred_algid_not_received(dsd_opts* opts) {
@@ -724,6 +746,7 @@ main(void) {
     test_identity_then_pi(opts);
     test_precall_pi_on_both_slots(opts);
     test_pi_leaves_another_protocols_call_alone(opts);
+    test_held_pi_is_not_the_next_transmissions(opts);
     test_forced_and_inferred_algid_not_received(opts);
     test_unverified_pi_not_received(opts);
     test_reacquired_call_keeps_received(opts);
