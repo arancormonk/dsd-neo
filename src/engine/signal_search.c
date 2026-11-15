@@ -560,9 +560,12 @@ search_valid_config(const dsd_signal_search_config* config) {
     return config && config->session_id && config->range_count && config->range_count <= DSD_SEARCH_MAX_RANGES;
 }
 
+/* A radio DSD-neo tunes (dsd_opts_radio_can_tune()), running on the system's decode clock, with no trunking or scan of
+   its own. The clock alone does not say the input can retune: a replay restarted mid-run runs on the system clock, and
+   a start past this check would run a carrier boundary before the first visit's tune failed. */
 static int
 search_live_receiver(const dsd_opts* opts, const dsd_state* state) {
-    return opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && rtl_stream_is_active() && !opts->trunk_enable
+    return dsd_opts_radio_can_tune(opts) && state->rtl_ctx && rtl_stream_is_active() && !opts->trunk_enable
            && !opts->scanner_mode && !opts->trunk_scan_enabled && dsd_decode_clock_source() != DSD_DECODE_CLOCK_REPLAY;
 }
 

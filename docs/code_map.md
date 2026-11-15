@@ -61,6 +61,9 @@ Generated (do not edit/commit):
     the decoder thread. Its private owner shares the stable trunk-scan extension slot
     through `scan_owner.h`; extension IDs are unchanged. Search excludes other tuner
     owners, suppresses visited frequencies per pass and keeps two avoid lists (below).
+    Start needs a running radio DSD-neo tunes (`dsd_opts_radio_can_tune()`) on the system's
+    decode clock, so an I/Q replay restarted onto the system clock, or an I/Q stream, is
+    refused before the search takes the tuner or runs a carrier boundary (issue #743).
     Its decoder baseline is the CONFIG-profile Auto preset, which leaves the DMR dispatch
     flags as the session had them; when a mono preset (`-f1`) has turned both off, the
     baseline takes dual-slot dispatch (`dmr_stereo`), since with both off no direct-mode
@@ -8395,11 +8398,11 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   resampled to another rate keeps only the band around its rotated DC, while
   `measure_channel()` and the floor guard's reference treat the tap as a circular shift of
   the whole capture: a channel far from the rotated DC reads another channel's bins. That
-  capture is safe only because measurement is refused on replay (Signal search fails at its
-  tune; trunk scan refuses replay). Any quiet or scan caller must keep that refusal, keyed
-  on the stream fact (`opts->iq_replay_active` / `opts->iq_replay_requested`, or the
-  stream's own source), never on the decode clock, which a replay can leave on SYSTEM
-  (after an RTL restart, for one).
+  capture is safe only because measurement is refused on replay (Signal search refuses
+  its start; scan skip-silent never runs; trunk scan refuses replay). Any quiet or scan
+  caller must keep that refusal, keyed on the input in force (`dsd_opts_radio_can_tune()`,
+  or the stream's own source), never on the decode clock, which a replay can leave on
+  SYSTEM (after an RTL restart, for one).
   Leakage rejection runs once per request on both
   windows' power: transmitters are located in the spectrum (not just the requested
   channels), each from the anchor its channels' windows climb to, centred where its
