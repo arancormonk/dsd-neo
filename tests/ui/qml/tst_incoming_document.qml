@@ -459,13 +459,28 @@ Item {
             var scroll = findChild(editor, "scanListScroll");
             verify(stop !== null && stop.visible);
             verify(save !== null && scroll !== null);
-            // Scroll Save onto Stop listening's centre.
-            var target = stop.mapToItem(null, stop.width / 2, stop.height / 2);
-            var at = save.mapToItem(null, save.width / 2, save.height / 2);
-            scroll.contentY += at.y - target.y;
-            waitForRendering(editor);
-            var onSave = save.mapFromItem(null, target.x, target.y);
-            verify(save.contains(onSave), "Save lies over Stop listening");
+            // Scroll Save as near Stop listening's centre as the editor goes,
+            // then press where the two overlap. Each try scrolls within the
+            // editor's bounds and reads the overlap after a frame, so a layout
+            // or focus reveal that moves the editor late is caught by the next
+            // try instead of moving Save off Stop between the check and the
+            // click.
+            var onSave = null;
+            tryVerify(function () {
+                var target = stop.mapToItem(null, stop.width / 2, stop.height / 2);
+                var at = save.mapToItem(null, save.width / 2, save.height / 2);
+                scroll.contentY = Math.max(0, Math.min(scroll.contentHeight - scroll.height, scroll.contentY + at.y - target.y));
+                // A contentY already at its bound asks for no frame: ask for one.
+                editor.Window.window.update();
+                if (!waitForRendering(editor))
+                    return false;
+                var top = Math.max(save.mapToItem(null, 0, 0).y, stop.mapToItem(null, 0, 0).y);
+                var bottom = Math.min(save.mapToItem(null, 0, save.height).y, stop.mapToItem(null, 0, stop.height).y);
+                if (bottom - top < 2)
+                    return false;
+                onSave = save.mapFromItem(null, target.x, (top + bottom) / 2);
+                return save.contains(onSave) && stop.contains(stop.mapFromItem(save, onSave.x, onSave.y));
+            }, 5000, "Save lies over Stop listening");
             var stops = decoderHost.stopCalls();
             mousePress(save, onSave.x, onSave.y);
             mouseRelease(save, onSave.x, onSave.y);
