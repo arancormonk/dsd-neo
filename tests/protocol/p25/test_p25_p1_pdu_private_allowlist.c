@@ -280,6 +280,16 @@ p25_aff_register(dsd_state* state, uint32_t rid) {
 }
 
 void
+p25_aff_register_assigned(dsd_state* state, uint32_t assigned, const p25_home_id* home, uint32_t serving_wacn,
+                          uint16_t serving_sys) {
+    (void)state;
+    (void)assigned;
+    (void)home;
+    (void)serving_wacn;
+    (void)serving_sys;
+}
+
+void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_ga_add(dsd_state* state, uint32_t rid, uint16_t tg) {
     (void)state;

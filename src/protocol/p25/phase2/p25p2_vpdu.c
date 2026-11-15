@@ -3354,6 +3354,17 @@ BLOCK_END:
     ctx->iter_idx = i;
 }
 
+/* The Registration Value of a Unit Registration Response (TIA-102.AABC-D §6.2.21.1). */
+static void
+p25p2_vpdu_print_registration_value(int rv) {
+    switch (rv) {
+        case 0: DSD_FPRINTF(stderr, " REG_ACCEPT;"); break;
+        case 1: DSD_FPRINTF(stderr, " REG_FAIL;"); break;     // the RFSS was unable to verify the registration
+        case 2: DSD_FPRINTF(stderr, " REG_DENY;"); break;     // not allowed at this location
+        default: DSD_FPRINTF(stderr, " REG_REFUSED;"); break; // WUID invalid; may re-register after a user stimulus
+    }
+}
+
 static void
 p25p2_vpdu_iter_block_38(p25p2_vpdu_ctx* ctx) {
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
@@ -3368,30 +3379,24 @@ p25p2_vpdu_iter_block_38(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0xEC && !p25p2_vpdu_is_bridged_p1(ctx)) {
+        /* Unit Registration Response - Extended (TIA-102.BBAD-A §3.47 Fig 110, length 13): octet 2 the length, octet 3
+           reserved bits 7-2 and RV bits 1-0, Source SUID octets 4-10 (WACN, System ID, Source ID), Source Address (the
+           assigned address) octets 11-13. */
         int res = (MAC[3 + len_a] >> 2) & 0x3F;
-        int RV = (MAC[2 + len_a] >> 0) & 0x3;
-        int src = (MAC[8 + len_a] << 16) | (MAC[9 + len_a] << 8) | MAC[10 + len_a];
+        int RV = (MAC[3 + len_a] >> 0) & 0x3;
         int uwacn = (MAC[4 + len_a] << 12) | (MAC[5 + len_a] << 4) | ((MAC[6 + len_a] & 0xF0) >> 4);
         int usys = ((MAC[6 + len_a] & 0xF) << 8) | MAC[7 + len_a];
-        DSD_FPRINTF(stderr, "\n Unit Registration Response - WACN: %05X; SYS: %03X; SRC: %d", uwacn, usys, src);
+        int sid = p25p2_vpdu_u24(MAC, 8 + len_a);
+        int src = p25p2_vpdu_u24(MAC, 11 + len_a);
+        DSD_FPRINTF(stderr, "\n Unit Registration Response - WACN: %05X; SYS: %03X; SRC_ID: %d SRC: %d", uwacn, usys,
+                    sid, src);
         if (res) {
             DSD_FPRINTF(stderr, " RES: %d;", res);
         }
-        if (RV == 0) {
-            DSD_FPRINTF(stderr, " REG_ACCEPT;");
-            // Track affiliated RID
-            if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
-                p25_aff_register(state, (uint32_t)src);
-            }
-        }
-        if (RV == 1) {
-            DSD_FPRINTF(stderr, " REG_FAIL;"); //RFSS was unable to verify
-        }
-        if (RV == 2) {
-            DSD_FPRINTF(stderr, " REG_DENY;"); //Not allowed at this location
-        }
-        if (RV == 3) {
-            DSD_FPRINTF(stderr, " REG_REFUSED;"); //WUID invalid but re-register after a user stimulus
+        p25p2_vpdu_print_registration_value(RV);
+        if (RV == 0 && p25p2_vpdu_network_table_writable(ctx, "registration")) {
+            const p25_home_id home = {(uint32_t)uwacn, (uint16_t)usys, (uint32_t)sid, 1U};
+            p25_aff_register_assigned(state, (uint32_t)src, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid);
         }
         DSD_FPRINTF(stderr, " - Extended;");
     }
@@ -3468,34 +3473,26 @@ p25p2_vpdu_iter_block_39(p25p2_vpdu_ctx* ctx) {
     				[07][6C][01][EC][72][70][EC][72][70][EC][00][00]
     				[00][00][00][00][00][00][00][00][00][00][00][00]
     			*/
+        /* RV octet bits 5-4, then the 12-bit System ID, Source ID and Source Address (TIA-102.AABC-D §6.2.21.1;
+           TIA-102.BBAD-A §3.47 Fig 109 one octet later, after the length octet). The abbreviated form is used when
+           the unit's home WACN is this site's, so its SUID is this WACN, that System ID and the Source ID. */
         int k = 1; //vPDU is one octet higher than TSBK
         if (p25p2_vpdu_is_bridged_p1(ctx)) {
             k = 0;
         }
         int res = (MAC[2 + len_a + k] >> 6) & 0x3;
         int RV = (MAC[2 + len_a + k] >> 4) & 0x3;
-        int usite = ((MAC[2 + len_a + k] & 0xF) << 8) | MAC[3 + len_a + k];
+        int usys = ((MAC[2 + len_a + k] & 0xF) << 8) | MAC[3 + len_a + k];
         int sid = (MAC[4 + len_a + k] << 16) | (MAC[5 + len_a + k] << 8) | MAC[6 + len_a + k];
         int src = (MAC[7 + len_a + k] << 16) | (MAC[8 + len_a + k] << 8) | MAC[9 + len_a + k];
-        DSD_FPRINTF(stderr, "\n Unit Registration Response - SITE: %03X SRC_ID: %d SRC: %d", usite, sid, src);
+        DSD_FPRINTF(stderr, "\n Unit Registration Response - SYS: %03X SRC_ID: %d SRC: %d", usys, sid, src);
         if (res) {
             DSD_FPRINTF(stderr, " RES: %d;", res);
         }
-        if (RV == 0) {
-            DSD_FPRINTF(stderr, " REG_ACCEPT;");
-            // Track affiliated RID
-            if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
-                p25_aff_register(state, (uint32_t)src);
-            }
-        }
-        if (RV == 1) {
-            DSD_FPRINTF(stderr, " REG_FAIL;"); //RFSS was unable to verify
-        }
-        if (RV == 2) {
-            DSD_FPRINTF(stderr, " REG_DENY;"); //Not allowed at this location
-        }
-        if (RV == 3) {
-            DSD_FPRINTF(stderr, " REG_REFUSED;"); //WUID invalid but re-register after a user stimulus
+        p25p2_vpdu_print_registration_value(RV);
+        if (RV == 0 && p25p2_vpdu_network_table_writable(ctx, "registration")) {
+            const p25_home_id home = {(uint32_t)state->p2_wacn, (uint16_t)usys, (uint32_t)sid, 1U};
+            p25_aff_register_assigned(state, (uint32_t)src, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid);
         }
     }
 
@@ -3555,6 +3552,8 @@ p25p2_vpdu_iter_block_41(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x6F || MAC[1 + len_a] == 0xEF) {
+        /* The SUID the deregistration was for (TIA-102.BBAD-A §3.48 Fig 111; TIA-102.AABC-D §6.2.22), never the local
+           address its registration assigned: the entry that address keys goes only while it is still this SUID's. */
         int src = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
         int uwacn = (MAC[3 + len_a] << 12) | (MAC[4 + len_a] << 4) | ((MAC[5 + len_a] & 0xF0) >> 4);
         int usys = ((MAC[5 + len_a] & 0xF) << 8) | MAC[6 + len_a];
@@ -3562,9 +3561,9 @@ p25p2_vpdu_iter_block_41(p25p2_vpdu_ctx* ctx) {
         if (MAC[1 + len_a] == 0xEF) {
             DSD_FPRINTF(stderr, " - Extended;");
         }
-        // Remove RID from affiliation table
         if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
-            p25_aff_deregister(state, (uint32_t)src);
+            const p25_home_id home = {(uint32_t)uwacn, (uint16_t)usys, (uint32_t)src, 1U};
+            (void)p25_aff_deregister_home(state, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid);
         }
     }
 

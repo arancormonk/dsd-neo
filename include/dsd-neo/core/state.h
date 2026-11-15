@@ -512,6 +512,23 @@ typedef struct {
     uint8_t data[DSD_P25_MAC_FRAGMENT_MAX_OCTETS];
 } p25_mac_fragment_state_t;
 
+/** Capacity of the P25 affiliation (registered unit) table, dsd_state::p25_aff_rid. */
+#define P25_AFF_MAX 256
+
+/**
+ * Who an affiliation-table entry's local address was assigned to: the home identity (WACN, System ID, unit ID: the
+ * SUID) a Unit Registration Response named, and the serving system it was heard on. A registration away from a unit's
+ * home system gives it a local address unlike its unit ID (TIA-102.AABC-D §2.3.27); the deregistration names the
+ * SUID, never that address. home_id 0 means the entry has no association (no unit has ID 0).
+ */
+typedef struct {
+    uint32_t home_wacn;
+    uint32_t home_id;
+    uint32_t serving_wacn;
+    uint16_t home_sys;
+    uint16_t serving_sys;
+} p25_aff_assoc_t;
+
 /** Capacity of one Motorola alias assembly, in bit entries: the stored header layout, then the blocks by number. */
 #define P25_APX_ALIAS_STORE_BITS  (24 * 128)
 /** Longest received header kept for the benign-repeat compare (the Phase 2 MAC header; Phase 1 uses 72). */
@@ -2472,9 +2489,11 @@ struct dsd_state {
     // Tracks up to 256 recent unit registrations (RIDs) with last-seen time for aging.
     // Entries are added on Unit Registration Accept and removed on Deregistration Ack
     // or when the last-seen exceeds an aging threshold.
-    int p25_aff_count;             // number of active entries
-    uint32_t p25_aff_rid[256];     // RID values
-    time_t p25_aff_last_seen[256]; // last seen timestamp per RID
+    int p25_aff_count;                     // number of active entries
+    uint32_t p25_aff_rid[P25_AFF_MAX];     // RID values (the local address a registration assigned)
+    time_t p25_aff_last_seen[P25_AFF_MAX]; // last seen timestamp per RID
+    // Per entry: the home SUID the address was assigned to and the serving system (p25_aff_register_assigned()).
+    p25_aff_assoc_t p25_aff_assoc[P25_AFF_MAX];
 
     // P25 Group Affiliation tracking: RID↔TG observations with aging
     int p25_ga_count;

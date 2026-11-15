@@ -1644,6 +1644,12 @@ seed_target0_p25_state(dsd_state* state) {
     state->p25_aff_count = 1;
     state->p25_aff_rid[0] = 400;
     state->p25_aff_last_seen[0] = 222;
+    /* Address 400 was assigned to home 0xBEE01:3A5.43981 while target 0's system served it. */
+    state->p25_aff_assoc[0].home_wacn = 0xBEE01;
+    state->p25_aff_assoc[0].home_sys = 0x3A5;
+    state->p25_aff_assoc[0].home_id = 43981;
+    state->p25_aff_assoc[0].serving_wacn = 0xABCDE;
+    state->p25_aff_assoc[0].serving_sys = 0x123;
     state->p25_ga_count = 1;
     state->p25_ga_rid[0] = 500;
     state->p25_ga_tg[0] = 600;
@@ -1720,6 +1726,11 @@ seed_target1_p25_state(dsd_state* state) {
     state->p25_aff_count = 1;
     state->p25_aff_rid[0] = 903;
     state->p25_aff_last_seen[0] = 904;
+    state->p25_aff_assoc[0].home_wacn = 0xBEE02;
+    state->p25_aff_assoc[0].home_sys = 0x456;
+    state->p25_aff_assoc[0].home_id = 903;
+    state->p25_aff_assoc[0].serving_wacn = 0x77777;
+    state->p25_aff_assoc[0].serving_sys = 0x777;
     state->p25_ga_count = 1;
     state->p25_ga_rid[0] = 905;
     state->p25_ga_tg[0] = 906;
@@ -1758,6 +1769,7 @@ expect_empty_target_p25_state(const dsd_state* state) {
     if (state->p25_prot_valid != 0 || state->p25_cc_prot_valid != 0 || state->p25_sys_time_valid != 0
         || state->p25_sys_services_valid != 0 || state->p25_site_lra_valid != 0
         || state->p25_site_network_active_valid != 0 || state->p25_patch_count != 0 || state->p25_aff_count != 0
+        || state->p25_aff_assoc[0].home_id != 0U || state->p25_aff_assoc[0].serving_wacn != 0U
         || state->p25_ga_count != 0 || state->p25_nb_count != 0 || state->p25_secondary_cc_count != 0
         || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0 || state->p25_patch_owner_known != 0
         || state->p25_patch_seq_counter != 0U || fabs(state->p25_patch_listen_s) > 1e-9) {
@@ -1797,6 +1809,14 @@ expect_target0_p25_state(const dsd_state* state) {
         test_rc = 1;
     }
     test_rc |= expect_p25_patch_freshness(state, 100.0, 10U);
+    /* test_assoc_trunk_scan_restore: who an address was assigned to, and on which serving system, is the target's own
+       and comes back with it. */
+    if (state->p25_aff_assoc[0].home_wacn != 0xBEE01U || state->p25_aff_assoc[0].home_sys != 0x3A5U
+        || state->p25_aff_assoc[0].home_id != 43981U || state->p25_aff_assoc[0].serving_wacn != 0xABCDEU
+        || state->p25_aff_assoc[0].serving_sys != 0x123U) {
+        DSD_FPRINTF(stderr, "P25 registration owners leaked across scan targets\n");
+        test_rc = 1;
+    }
     if (state->p25_aff_count != 1 || state->p25_aff_rid[0] != 400 || state->p25_aff_last_seen[0] != 222
         || state->p25_ga_count != 1 || state->p25_ga_rid[0] != 500 || state->p25_ga_tg[0] != 600
         || state->p25_ga_last_seen[0] != 333) {

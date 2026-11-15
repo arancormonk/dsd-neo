@@ -896,7 +896,9 @@ p25_handle_mbt_unit_registration_response(dsd_state* state, const uint8_t* mpdu_
     }
     if (rv == 0) {
         DSD_FPRINTF(stderr, " REG_ACCEPT");
-        p25_aff_register(state, src);
+        /* The header's address is the one assigned to the SUID in the data block (TIA-102.AABC-D §6.2.21.2). */
+        const p25_home_id home = {(uint32_t)wacn, (uint16_t)sysid, sid, 1U};
+        p25_aff_register_assigned(state, src, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid);
     } else if (rv == 1) {
         DSD_FPRINTF(stderr, " REG_FAIL");
     } else if (rv == 2) {

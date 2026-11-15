@@ -830,11 +830,14 @@ put24(unsigned char* mac, int pos, uint32_t value) {
     mac[pos + 2] = (unsigned char)(value & 0xFF);
 }
 
-/* Unit Registration Response, extended (0xEC): accepted, SRC at octets 8-10. */
+/* Unit Registration Response, extended (0xEC, TIA-102.BBAD-A §3.47 Fig 110): length 13, accepted (RV 0 in octet 3),
+   the assigned Source Address at octets 11-13. */
 static void
 build_failed_unit_reg_ext(unsigned char mac[24]) {
     mac[1] = 0xEC;
+    mac[2] = 0x0D;
     put24(mac, 8, 0x000202);
+    put24(mac, 11, 0x000203);
 }
 
 /* Location Registration Response (0x6B): accepted, GROUP at 4-5, TARGET at 8-10. */

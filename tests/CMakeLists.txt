@@ -10950,6 +10950,21 @@ add_test(
     COMMAND dsd-neo_test_p25_tsbk_bridge_boundary
 )
 
+# P25 unit registration: the assigned address, the home SUID it belongs to, and deregistration by that SUID
+add_executable(
+    dsd-neo_test_p25_aff_assignment
+    protocol/p25/test_p25_aff_assignment.c
+)
+target_include_directories(
+    dsd-neo_test_p25_aff_assignment
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_aff_assignment
+    PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME P25_AFF_ASSIGNMENT COMMAND dsd-neo_test_p25_aff_assignment)
+
 # P25 IDEN variants (TDMA denom + map override)
 add_executable(
     dsd-neo_test_p25_iden_variants

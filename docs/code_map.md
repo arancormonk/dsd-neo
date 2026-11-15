@@ -10140,6 +10140,20 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   Update) print octets 2-9 raw: no Phase 2 handler runs, so none writes a network table.
   Native lengths follow TIA-102.BBAD-A where sdrtrunk differs: 0x45 / 0xC5 are 8 / 12, 0x4A is 9 (`p25p2_mac_tables.c`).
   Tests: `P25_TSBK_BRIDGE_BOUNDARY`, `P25_MAC_LENGTHS`, `P25_MAC_SEGMENT`.
+- Unit registrations (`p25_aff_*` in `<dsd-neo/protocol/p25/p25_trunk_sm.h>`, `dsd_state::p25_aff_rid` /
+  `p25_aff_assoc`). An accepted Unit Registration Response names the unit's home SUID (WACN, System ID, Source ID) and
+  the local address the system assigned it (Source Address, the WUID: TIA-102.AABC-D §2.3.27, §6.2.21); the table is
+  keyed by that address, and `p25_aff_register_assigned()` keeps, per entry, the home SUID and the serving system
+  (`p2_wacn`/`p2_sysid`) it was heard on. The abbreviated form (0x6C / TSBK 0x2C) is sent to a unit whose home WACN is
+  the site's, so its SUID is the serving WACN, the message's System ID and Source ID; the extended form (Phase 2 0xEC,
+  TIA-102.BBAD-A §3.47 Fig 110: RV in octet 3, SUID octets 4-10, Source Address 11-13; the MBT 0x2C with the address in
+  its header) carries the full SUID. A Unit Deregistration Acknowledge names only the SUID (§6.2.22; BBAD-A Fig 111):
+  `p25_aff_deregister_home()` removes the entries still owned by that SUID on this serving system, plus an unowned
+  entry whose address is the unit ID when the unit is at home (or no serving system is known). A new owner of an
+  address replaces the old one, a unit registering again under a new address gives up the old one, and a new system
+  identity (`p25_update_system_identity()`) drops owners another system named; eviction, the 15-minute aging and
+  trunk-scan save/restore move the owner with its entry. Registrations are written only from content that passed its
+  CRC (`p25p2_vpdu_network_table_writable()`). Tests: `P25_AFF_ASSIGNMENT`, `ENGINE_TRUNK_SCAN`, `P25_MBT_DECODE`.
 - Scrambling code recovery (`p25p2_seed_recover.c`, issue #804). On a carrier whose code is not proven
   (`p2_cc_verified == 0`), not hand-set (`p2_hardset == 0`) and not trunked (`trunk_enable == 0`), `processP2()` hands
   each window to `p25p2_seed_recover_window()` after `p25p2_window_position()` and before the descrambler, with

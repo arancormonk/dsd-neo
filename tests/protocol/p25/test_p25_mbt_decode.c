@@ -1057,6 +1057,12 @@ main(void) {
         rc |= expect_contains_text("mbt 0x2C SRC_ID", out, "SRC_ID [56789A]");
         rc |= expect_contains_text("mbt 0x2C SRC", out, "SRC [74565]");
         rc |= expect_contains_text("mbt 0x2C response", out, "REG_ACCEPT");
+        /* The header address was assigned to the SUID in the data block, on the serving system. */
+        const p25_home_id home = {0xABCDE, 0x123, 0x56789A, 1U};
+        uint32_t assigned = 0;
+        rc |= expect_eq_int("mbt 0x2C owner kept", p25_aff_assigned_for_home(&state, &home, 0x11111, 0x222, &assigned),
+                            1);
+        rc |= expect_eq_long("mbt 0x2C owner's address", (long)assigned, 0x012345);
     }
 
     // AMBTC Unit Registration Response (0x2C): rejected response does not track affiliation.
