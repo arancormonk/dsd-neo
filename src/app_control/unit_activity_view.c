@@ -627,6 +627,15 @@ ua_row_from(const dsd_state* snapshot, const dsd_unit_activity* r, dsd_app_unit_
 
 /* ---- Reading ---- */
 
+/* One page of the ring after @p cursor: the rows read, or -1 for a failed read. A read never returns more rows than it
+   was given room for; one that did is refused rather than written past @p room. */
+static int
+ua_read_page(const dsd_state* snapshot, const dsd_app_unit_activity_cursor* cursor, dsd_unit_activity* page, int room,
+             dsd_unit_activity_read_meta* rm) {
+    const int n = dsd_unit_activity_read(snapshot, cursor->instance, cursor->rev, page, room, rm);
+    return (n < 0 || n > room) ? -1 : n;
+}
+
 int
 dsd_app_unit_activity_rows(const dsd_state* snapshot, dsd_app_unit_activity_cursor* cursor,
                            dsd_app_unit_activity_row* out, int cap, dsd_app_unit_activity_meta* meta) {
@@ -639,9 +648,12 @@ dsd_app_unit_activity_rows(const dsd_state* snapshot, dsd_app_unit_activity_curs
     for (;;) {
         const int room = cap - total < UA_VIEW_PAGE ? cap - total : UA_VIEW_PAGE;
         dsd_unit_activity_read_meta rm;
-        const int n = dsd_unit_activity_read(snapshot, cursor->instance, cursor->rev, page, room, &rm);
-        if (n < 0 || !rm.held) {
-            return n < 0 ? -1 : total;
+        const int n = ua_read_page(snapshot, cursor, page, room, &rm);
+        if (n < 0) {
+            return -1;
+        }
+        if (!rm.held) {
+            return total;
         }
         meta->held = 1U;
         meta->lost |= rm.lost;

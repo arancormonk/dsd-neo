@@ -794,7 +794,10 @@ dsd_app_unit_activity_rows(const dsd_state* snapshot, dsd_app_unit_activity_curs
         cursor->rev = 0U;
     }
     int n = 0;
-    for (int i = 0; i < g_ua_row_count && n < cap; i++) {
+    const int held = g_ua_row_count < (int)(sizeof g_ua_rows / sizeof g_ua_rows[0])
+                         ? g_ua_row_count
+                         : (int)(sizeof g_ua_rows / sizeof g_ua_rows[0]);
+    for (int i = 0; i < held && n < cap; i++) {
         if (g_ua_rows[i].rev > cursor->rev) {
             out[n++] = g_ua_rows[i];
             cursor->rev = g_ua_rows[i].rev;
