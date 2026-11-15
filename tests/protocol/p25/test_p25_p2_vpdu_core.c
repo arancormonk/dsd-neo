@@ -2188,9 +2188,11 @@ run_standard_mac_multifragment_cases(void) {
         base[17] = 0x10;
         base[18] = 0x05;
 
+        /* Data Length 24: the continuation's 8 data octets are 16-23, cont[3..10], and the last two (cont[9..10])
+           are the Multi-Fragment CRC-16, so the fields fill cont[3..8] only. */
         init_multifragment_continuation(cont, 10);
         put_u24_ull(cont, 3, 0x445566);
-        put_fqid_tail_ull(cont, 6, 0x0BCDE, 0x234, 0x778899);
+        put_u24_ull(cont, 6, 0x778899);
         seal_two_fragments(base, cont);
 
         lcch_vpdu(&opts, &state, 0, base);

@@ -445,6 +445,7 @@ enum {
     BETWEEN_DATA_BURST,   /* a burst that is no LCCH */
     BETWEEN_LOST_WINDOW,  /* a missed sync: a window's timeslots pass unread */
     BETWEEN_CARRIER_MOVE, /* the receiver changed carrier */
+    BETWEEN_FRAME_RESET,  /* the frame decoder was reset (a retune, a symbol-rate change) on the same carrier */
 };
 
 /* The base in window timeslot 2 (superframe slot 4) of one window, the continuation in a later window's timeslot 0:
@@ -479,6 +480,8 @@ across_windows(int relaxed, int between) {
         t0 = 10;
     } else if (between == BETWEEN_CARRIER_MOVE) {
         g_state->carrier_seq++;
+    } else if (between == BETWEEN_FRAME_RESET) {
+        p25_p2_frame_reset();
     }
     build_window(t0, &c, NULL);
     feed(gap);
@@ -486,8 +489,9 @@ across_windows(int relaxed, int between) {
 }
 
 /* Fragments come in consecutive bursts of the LCCH's logical channel (TIA-102.BBAD-A §3), on one carrier: a burst of
-   that channel that failed its CRC-16 or was no LCCH, timeslots a missed sync skipped, or a carrier change between two
-   fragments ends the assembly, strict CRC or -F. */
+   that channel that failed its CRC-16 or was no LCCH, timeslots a missed sync skipped, a carrier change, or a frame
+   decoder reset (after which no window says what was missed) between two fragments ends the assembly, strict CRC or
+   -F. */
 static int
 test_frag_discontinuity_resets(void) {
     int rc = 0;
@@ -502,6 +506,8 @@ test_frag_discontinuity_resets(void) {
                      !across_windows(relaxed, BETWEEN_LOST_WINDOW) && no_assembly());
         rc |= expect(relaxed ? "-F: carrier change between resets" : "carrier change between resets",
                      !across_windows(relaxed, BETWEEN_CARRIER_MOVE) && no_assembly());
+        rc |= expect(relaxed ? "-F: frame reset between resets" : "frame reset between resets",
+                     !across_windows(relaxed, BETWEEN_FRAME_RESET) && no_assembly());
     }
 
     /* Both fragments in one window, as consecutive LCCH bursts: the frame decoder completes it. */

@@ -1929,6 +1929,14 @@ p25p2_frame_forget_carrier(dsd_state* state) {
     }
 }
 
+/* Whether a previous window on this carrier, with no retune or frame reset since, can say where the window just
+   collected starts and what was missed before it. Pure. */
+static int
+p25p2_window_has_reference(const dsd_state* state) {
+    return s_prev_window.valid && s_prev_window.carrier_seq == state->carrier_seq
+           && !p25p2_retune_token_changed(&s_prev_window.token);
+}
+
 /* Where the window just collected sits in the superframe (issue #651). Its symbol distance from the previous window
    on this carrier says whether a missed sync skipped timeslots, and how many; a decoded channel-1 I-ISCH says where it
    starts. Returns 1 when the position is proven: by the ISCH, or (no ISCH decoded) by continuity, which then sets the
@@ -1946,8 +1954,7 @@ p25p2_window_position(dsd_state* state, uint32_t entry_symbol, int* retire_first
     *contradicted = 0;
     int expected = -1;
     int close_streams = 0;
-    if (s_prev_window.valid && s_prev_window.carrier_seq == state->carrier_seq
-        && !p25p2_retune_token_changed(&s_prev_window.token)) {
+    if (p25p2_window_has_reference(state)) {
         const uint32_t delta = entry_symbol - s_prev_window.end_symbol;
         if (delta == P25P2_SYNC_DIBITS) {
             expected = p25p2_timeslot_mod12(s_prev_window.start + 4);
@@ -1990,9 +1997,7 @@ p25p2_window_position(dsd_state* state, uint32_t entry_symbol, int* retire_first
    sync came right after it (20 dibits) on the same carrier, with no retune since; -1 otherwise. Pure. */
 static int
 p25p2_window_continuity_start(const dsd_state* state, uint32_t entry_symbol) {
-    if (!s_prev_window.valid || s_prev_window.carrier_seq != state->carrier_seq
-        || p25p2_retune_token_changed(&s_prev_window.token)
-        || entry_symbol - s_prev_window.end_symbol != P25P2_SYNC_DIBITS) {
+    if (!p25p2_window_has_reference(state) || entry_symbol - s_prev_window.end_symbol != P25P2_SYNC_DIBITS) {
         return -1;
     }
     return p25p2_timeslot_mod12(s_prev_window.start + 4);
@@ -2165,12 +2170,14 @@ processP2(dsd_opts* opts, dsd_state* state) {
     int retire_count = 0;
     int broken = 0;
     int contradicted = 0;
+    const int has_reference = p25p2_window_has_reference(state);
     s_window_proven = p25p2_window_position(state, entry_symbol, &retire_first, &retire_count, &broken, &contradicted);
     p25p2_window_set_slot_unproven(!s_window_proven);
-    if (!s_window_proven || broken) {
+    if (!s_window_proven || broken || !has_reference) {
         // A MAC assembly continued from a window whose slot parity is unknown could complete against the wrong
-        // slot: none is kept, and the VPDU drops this window's fragments. A window that broke continuity may follow
-        // bursts nothing retired: the LCCH bursts were not consecutive.
+        // slot: none is kept, and the VPDU drops this window's fragments. A window that broke continuity, or that no
+        // earlier window on the carrier places (the first after a retune or p25_p2_frame_reset()), may follow bursts
+        // nothing retired: the LCCH bursts are not known to be consecutive.
         DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
     }
     const int anchor_start = p25p2_window_anchor_start(state, contradicted);
