@@ -1228,14 +1228,12 @@ m17_finalize_userdata_log(dsd_state* state) {
     /* The stream encoder keeps one input sample in INPUT_RATE / 8000: a rate below 8000 kept none and hung reading
        nothing, and one between the multiples fed codec2 audio at the wrong rate. */
     if (state->m17_rate < 8000 || state->m17_rate > 48000 || (state->m17_rate % 8000) != 0) {
-        LOG_WARN("M17: INPUT_RATE %d is not a multiple of 8000 up to 48000; using 48000", state->m17_rate);
+        LOG_WARN("M17: INPUT_RATE %d is not a multiple of 8000 up to 48000; using 48000\n", state->m17_rate);
         state->m17_rate = 48000;
     }
-    LOG_INFO("NOTICE:  M17:%d:%s:%s:%d;", state->m17_can_en, state->str50c, state->str50b, state->m17_rate);
-    if (state->m17_vox == 1) {
-        LOG_INFO("NOTICE: VOX;");
-    }
-    LOG_INFO("NOTICE: \n");
+    /* One line, after the fields are read (issue #743 B10). */
+    LOG_INFO("NOTICE: M17 User Data: M17:%d:%s:%s:%d;%s\n", state->m17_can_en, state->str50c, state->str50b,
+             state->m17_rate, state->m17_vox == 1 ? "VOX;" : "");
 }
 
 static void
@@ -1246,7 +1244,6 @@ dsd_engine_parse_m17_userdata(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    LOG_INFO("NOTICE: M17 User Data: ");
     m17_uppercase_inplace(state->m17dat);
     m17_parse_userdata_fields(state);
     m17_finalize_userdata_log(state);

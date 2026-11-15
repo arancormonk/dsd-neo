@@ -897,6 +897,23 @@ test_network_notices_are_one_line(void) {
     g_tcp_refusing_port = 0;
     dsd_exitflag_store(0);
 #endif
+    /* `-M M17:...`: the user data the encoder keys with, read and said in one line, VOX included. */
+    {
+        dsd_opts* m17_opts = NULL;
+        dsd_state* m17_state = NULL;
+        char m17_banner[8192];
+        int m17_rc = 0;
+        if (init_test_runtime(&m17_opts, &m17_state) != 0) {
+            return 1;
+        }
+        DSD_SNPRINTF(m17_state->m17dat, sizeof m17_state->m17dat, "%s", "M17:7:n0call:all:16000:1");
+        m17_banner[0] = '\0';
+        rc |= run_lifecycle_capturing_banner(m17_opts, m17_state, m17_banner, sizeof m17_banner, &m17_rc);
+        rc |=
+            expect_contains("m17 user data notice", m17_banner, "NOTICE: M17 User Data: M17:7:N0CALL:ALL:16000;VOX;\n");
+        rc |= expect_line_starts("m17 user data notice", m17_banner, "NOTICE: ");
+        free_test_runtime(m17_opts, m17_state);
+    }
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_START_WRAP)
     /* With no dongle the error is a line of its own; with one, the device list follows the notice's line. */
     dsd_opts* opts = NULL;
