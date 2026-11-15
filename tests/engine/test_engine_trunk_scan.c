@@ -23121,6 +23121,9 @@ qt_pass(dsd_opts* opts, dsd_state* state) {
 
 static int g_qt_notices = 0;
 static char g_qt_notice[192];
+/* The silent-channel skip's WARN lines (issue #834 B1), counted by the same tap: a process installs one tap only. */
+static int g_qt_warns = 0;
+static char g_qt_warn[512];
 
 static void
 qt_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
@@ -23129,6 +23132,10 @@ qt_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
     if (text && strncmp(text, "NOTICE: scan: skipped quiet", 27) == 0) {
         g_qt_notices++;
         DSD_SNPRINTF(g_qt_notice, sizeof g_qt_notice, "%s", text);
+    }
+    if (text && strncmp(text, "WARNING: scan: silent-channel skip", 34) == 0) {
+        g_qt_warns++;
+        DSD_SNPRINTF(g_qt_warn, sizeof g_qt_warn, "%s", text);
     }
 }
 
@@ -24107,11 +24114,37 @@ test_scan_quiet_waits_for_the_landed_capture(void) {
     return rc;
 }
 
-/* Known unsupported (DONE, nothing requested): centred I/Q (no Fs/4 rotation: Airspy, offset tuning, the shift off),
-   a rate the calibration did not validate, an analog width or kind it did not; a request the tap refuses. Never an
-   error. */
+/* A capture the calibration refuses (issue #834 A5, B1): centred I/Q (no Fs/4 rotation: Airspy, offset tuning, the
+   shift off), a rate it did not validate, an analog width or kind it did not. Nothing is requested and the visit is
+   SUSPENDED with its reason, not DONE, so it stays restartable; while the facts, revisions and stream generation stay
+   the ones refused a publication starts nothing and reads no capture (one compare), and the hunt hands nothing back. A
+   request the tap refuses is DONE. Never an error. */
 static int
-test_scan_quiet_unsupported_capture_is_done(void) {
+qt_refused(dsd_opts* opts, dsd_state* state, const scan_quiet_eligibility* e, const char* stage) {
+    scan_quiet_publish_eligibility(opts, state, SCAN_QUIET_OWNER_TRUNK, e);
+    int rc = qt_expect(stage, scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED && g_tap.requests == 0);
+    const int reads = g_tap.capture_reads;
+    for (int i = 0; i < 3; i++) {
+        scan_quiet_publish_eligibility(opts, state, SCAN_QUIET_OWNER_TRUNK, e);
+        rc |= qt_expect("a refusal published again starts nothing",
+                        quiet_service_after(opts, state, SCAN_QUIET_CAPTURE_RECHECK_MS) == DSD_SCAN_QUIET_NONE);
+    }
+    rc |= qt_expect("the refusal costs no capture read, request or hand-back",
+                    g_tap.capture_reads == reads && g_tap.requests == 0
+                        && scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED);
+    return rc;
+}
+
+/* The analog facts of @p e: @p kind at @p width_hz. */
+static void
+qt_analog_facts(scan_quiet_eligibility* e, int kind, uint32_t width_hz) {
+    e->classes = DSD_SIGNAL_QUIET_CLASS_ANALOG;
+    e->analog_kind = kind;
+    e->analog_width_hz = width_hz;
+}
+
+static int
+test_scan_quiet_capture_refusals_are_cached(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
@@ -24119,38 +24152,80 @@ test_scan_quiet_unsupported_capture_is_done(void) {
     if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
+    /* Centred I/Q, then the stream moves to a new generation (the shift back on): the same visit starts again. */
     g_tap.capture.rotation_hz = 0;
-    quiet_publish(&opts, &state);
-    int rc = qt_expect("centred I/Q: DONE", scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == 0);
-
-    quiet_land_again(&state, k_qt_hz_a);
-    g_tap.rate_ok = 0;
-    quiet_publish(&opts, &state);
-    rc |=
-        qt_expect("an unvalidated rate: DONE", scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == 0);
-    g_tap.rate_ok = 1;
-
-    quiet_land_again(&state, k_qt_hz_a);
-    g_tap.analog_ok = 0;
     scan_quiet_eligibility e = quiet_elig(&opts, &state);
-    e.classes = DSD_SIGNAL_QUIET_CLASS_ANALOG;
-    e.analog_kind = DSD_ANALOG_DEMOD_FM;
-    e.analog_width_hz = 10000U;
-    scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
-    rc |= qt_expect("an unvalidated analog width: DONE",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == 0);
-    g_tap.analog_ok = 1;
+    int rc = qt_refused(&opts, &state, &e, "centred I/Q: SUSPENDED, nothing requested");
+    g_quiet_stream_gen++;
+    quiet_tap_capture(k_qt_hz_a, g_quiet_stream_gen);
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("a new stream generation starts the same visit again",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
 
+    /* An unvalidated rate, then another DSP rate in force: started again. */
     quiet_land_again(&state, k_qt_hz_a);
+    g_tap.requests = 0;
+    g_tap.rate_ok = 0;
     e = quiet_elig(&opts, &state);
-    e.classes = DSD_SIGNAL_QUIET_CLASS_ANALOG;
-    e.analog_kind = DSD_ANALOG_DEMOD_AM;
-    e.analog_width_hz = 6000U;
+    rc |= qt_refused(&opts, &state, &e, "an unvalidated rate: SUSPENDED, nothing requested");
+    g_tap.rate_ok = 1;
+    e.dsp_rate_hz = 24000U;
     scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
-    rc |= qt_expect("a validated analog width is measured at its width",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED
-                        && g_tap.last_request.classes == DSD_SIGNAL_QUIET_CLASS_ANALOG
-                        && g_tap.last_request.analog_width_hz == 6000U);
+    rc |= qt_expect("a rate change starts it again", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+
+    /* An unvalidated analog width, then a width edit (the facts and the configured width move): started again. */
+    quiet_land_again(&state, k_qt_hz_a);
+    g_tap.requests = 0;
+    g_tap.analog_ok = 0;
+    e = quiet_elig(&opts, &state);
+    qt_analog_facts(&e, DSD_ANALOG_DEMOD_FM, 13500U);
+    rc |= qt_refused(&opts, &state, &e, "an unvalidated analog width: SUSPENDED, nothing requested");
+    g_tap.analog_ok = 1;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    e = quiet_elig(&opts, &state);
+    qt_analog_facts(&e, DSD_ANALOG_DEMOD_FM, 12500U);
+    scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
+    rc |= qt_expect("a width edit starts it again on the same visit",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.last_request.analog_width_hz == 12500U
+                        && g_tap.requests == 1);
+
+    /* Refused again, then the decoder set's classes change: started again. */
+    quiet_land_again(&state, k_qt_hz_a);
+    g_tap.requests = 0;
+    g_tap.analog_ok = 0;
+    e = quiet_elig(&opts, &state);
+    qt_analog_facts(&e, DSD_ANALOG_DEMOD_AM, 7000U);
+    rc |= qt_refused(&opts, &state, &e, "an AM width it did not validate: SUSPENDED");
+    e = quiet_elig(&opts, &state);
+    scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
+    rc |=
+        qt_expect("a decoder change starts it again", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED
+                                                          && g_tap.last_request.classes == DSD_SIGNAL_QUIET_CLASS_12K5);
+
+    /* Refused, then a list edit (a revision): started again. */
+    quiet_land_again(&state, k_qt_hz_a);
+    g_tap.requests = 0;
+    g_tap.capture.rotation_hz = 0;
+    e = quiet_elig(&opts, &state);
+    rc |= qt_refused(&opts, &state, &e, "centred again: SUSPENDED");
+    g_tap.capture.rotation_hz = 384000;
+    state.trunk_scan_lists_seq++;
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("a list change starts it again", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+
+    /* Refused, then the input switched away and back (the session refuses, then admits): started again. */
+    quiet_land_again(&state, k_qt_hz_a);
+    g_tap.requests = 0;
+    g_tap.rate_ok = 0;
+    e = quiet_elig(&opts, &state);
+    rc |= qt_refused(&opts, &state, &e, "an unvalidated rate again: SUSPENDED");
+    g_tap.rate_ok = 1;
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("audio input: SUSPENDED", scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("the radio input back: started again", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
 
     quiet_land_again(&state, k_qt_hz_a);
     g_tap.refuse = 1;
@@ -25325,8 +25400,9 @@ test_scan_quiet_mixed_set_judges_the_analog_class(void) {
                                        == (DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_ANALOG)
                                 && g_tap.last_request.analog_width_hz == 10000U);
         } else {
+            /* Refused by the capture (SUSPENDED with its reason, issue #834 A5), nothing requested. */
             rc |= qt_expect("a mixed set outside the analog domain: no check",
-                            scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests);
+                            scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED && g_tap.requests == requests);
         }
     }
     /* An unset width resolves as the stream runs it: AM at its 6 kHz default is measured there; an unset NFM width has
@@ -26152,6 +26228,228 @@ test_scan_quiet_y_ready_declines_at_its_own_sites(void) {
 #endif
 
 /* The NOTICE line and the width classes. */
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* --- Issue #834 B1: the check says when and why it cannot check a visit, through the trunk scan's timing publication
+ * (quiet_status and quiet_reason, shown on the idle dwell) and with a WARN line once per key. --- */
+/* Count the WARN lines from here (qt_count_notice(), the process's one tap). */
+static void
+qt_warns_watch(void) {
+    g_qt_warns = 0;
+    g_qt_warn[0] = '\0';
+    dsd_neo_log_set_tap(qt_count_notice, NULL);
+}
+
+/* The quiet status and reason the timing publication carries. */
+static int
+qt_expect_quiet(const dsd_state* state, const char* stage, unsigned status, unsigned reason) {
+    if ((unsigned)state->scan_timing.quiet_status != status || (unsigned)state->scan_timing.quiet_reason != reason) {
+        DSD_FPRINTF(stderr, "FAIL #834 scan quiet: %s: quiet status %u reason %u (stay %u), want %u/%u\n", stage,
+                    (unsigned)state->scan_timing.quiet_status, (unsigned)state->scan_timing.quiet_reason,
+                    (unsigned)state->scan_timing.reason, status, reason);
+        return 1;
+    }
+    return 0;
+}
+
+/* The last WARN line is the one scan_quiet_format_warn() gives for these arguments, and @p count were logged. */
+static int
+qt_expect_warn(const char* stage, int count, uint8_t reason, int detail, uint32_t rate_hz, const char* name,
+               uint32_t hz, int kind, uint32_t width_hz) {
+    char want[512];
+    (void)scan_quiet_format_warn(want, sizeof want, reason, detail, rate_hz, name, 0, hz, kind, width_hz);
+    if (g_qt_warns != count || strcmp(g_qt_warn, want) != 0) {
+        DSD_FPRINTF(stderr, "FAIL #834 scan quiet: %s: %d WARN lines, last '%s', want %d, '%s'\n", stage, g_qt_warns,
+                    g_qt_warn, count, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+qt_warn_rig_start(dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* path, size_t path_sz,
+                  const char* body) {
+    if (make_temp_dir(dir, dir_sz) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header, body, path, path_sz) != 0) {
+        return 1;
+    }
+    return quiet_rig_init(opts, state, path);
+}
+
+/* The operator's Next onto the next target, whose capture comes on a new stream generation (@p rotation_hz). */
+static void
+qt_next_target(dsd_opts* opts, dsd_state* state, uint32_t hz, int32_t rotation_hz) {
+    (void)dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    g_quiet_stream_gen++;
+    quiet_tap_capture(hz, g_quiet_stream_gen);
+    g_tap.capture.rotation_hz = rotation_hz;
+}
+
+static const char k_qt_warn_targets[] = "n15,nfm-conventional,452000000,,2000,1000,,--nfm-bandwidth-hz 15000\n"
+                                        "nun,nfm-conventional,453000000,,2000,1000,,\n";
+
+/* The reporter's case on an RTL capture: an NFM 15 kHz target is measured (Quiet check while it runs, the plain
+   phrase once it reads busy); an NFM target with no width set gets no check: No check: width, and one WARN line naming
+   it however many ticks follow. A native Airspy (a centred capture): No check: tuner, with its own WARN line, which
+   also outranks the width target's reason; another device logs again, and so does the setting turned off and on. */
+static int
+test_scan_quiet_trunk_says_why_a_visit_is_not_checked(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (qt_warn_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_warn_targets) != 0) {
+        return 1;
+    }
+    qt_warns_watch();
+    qt_decode_at(10U);
+    qt_pass(&opts, &state);
+    int rc = qt_expect("NFM 15 kHz is measured", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED
+                                                     && g_tap.last_request.classes == DSD_SIGNAL_QUIET_CLASS_ANALOG
+                                                     && g_tap.last_request.analog_width_hz == 15000U);
+    rc |= qt_expect_quiet(&state, "measuring", DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE);
+    quiet_tap_finish(0, DSD_SIGNAL_MEASURE_OK);
+    (void)quiet_service_after(&opts, &state, 10U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_quiet(&state, "busy: the plain phrase", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    rc |= qt_expect("a checked target logs nothing", g_qt_warns == 0);
+
+    qt_next_target(&opts, &state, k_qt_hz_b, 384000);
+    for (int pass = 0; pass < 3; pass++) {
+        qt_decode_at(20U + 10U * (uint64_t)pass);
+        qt_pass(&opts, &state);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    rc |= qt_expect_quiet(&state, "no NFM width", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_NO_WIDTH);
+    rc |= qt_expect_warn("no NFM width: one line", 1, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "nun", k_qt_hz_b,
+                         DSD_ANALOG_DEMOD_FM, 0U);
+    rc |= qt_expect("no width: nothing requested", g_tap.requests == 1);
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    qt_next_target(&opts, &state, k_qt_hz_a, 0);
+    for (int pass = 0; pass < 3; pass++) {
+        qt_decode_at(60U + 10U * (uint64_t)pass);
+        qt_pass(&opts, &state);
+    }
+    rc |= qt_expect_quiet(&state, "a native Airspy", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_TUNER);
+    rc |= qt_expect_warn("a native Airspy: one line", 2, DSD_SCAN_QUIET_REASON_TUNER, SCAN_QUIET_WARN_AIRSPY, 0U, NULL,
+                         0U, 0, 0U);
+    rc |= qt_expect("a centred capture: nothing requested", g_tap.requests == 1);
+    qt_next_target(&opts, &state, k_qt_hz_b, 0);
+    qt_decode_at(100U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_quiet(&state, "the receiver outranks the width", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_TUNER);
+    rc |= qt_expect("no second line for either", g_qt_warns == 2);
+
+    /* Another device with a centred capture (an RTL-SDR with offset tuning): a new key, logged. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0");
+    qt_next_target(&opts, &state, k_qt_hz_a, 0);
+    qt_decode_at(110U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_warn("another device: logged", 3, DSD_SCAN_QUIET_REASON_TUNER, SCAN_QUIET_WARN_CENTRED, 0U, NULL,
+                         0U, 0, 0U);
+
+    /* Off, then on: the visit on air waits for the next tune, which logs its line again. */
+    opts.scan_skip_silent = 0;
+    dsd_engine_scan_quiet_setting_changed(&state, 0);
+    qt_decode_at(120U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_quiet(&state, "the setting off", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    opts.scan_skip_silent = 1;
+    dsd_engine_scan_quiet_setting_changed(&state, 1);
+    qt_next_target(&opts, &state, k_qt_hz_b, 0);
+    qt_next_target(&opts, &state, k_qt_hz_a, 0);
+    qt_decode_at(130U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_warn("off and on: logged again", 4, DSD_SCAN_QUIET_REASON_TUNER, SCAN_QUIET_WARN_CENTRED, 0U, NULL,
+                         0U, 0, 0U);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* Every no-check cause, through the trunk scan's timing publication: the -8 monitor with no width, an uncalibrated
+   rate and analog width at the capture, an input with no check (outranking the target's reason); each WARN line once.
+   A quiet result held for a frame's verdict is still Quiet check; a held target and a trunked one say nothing. */
+static int
+test_scan_quiet_trunk_publishes_each_cause(void) {
+    static const char k_targets[] = "d,dmr-conventional,452000000,,2000,1000,,\n"
+                                    "w,nfm-conventional,453000000,,2000,1000,,--nfm-bandwidth-hz 13500\n"
+                                    "t,p25-trunk,454000000,,2000,,,\n";
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    g_qt_monitor_nfm_hz = 0; /* the -8 monitor beside DMR, at no NFM width */
+    const int failed = qt_warn_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_targets);
+    g_qt_monitor_nfm_hz = -1;
+    if (failed != 0) {
+        return 1;
+    }
+    qt_warns_watch();
+    qt_decode_at(10U);
+    qt_pass(&opts, &state);
+    int rc = qt_expect_quiet(&state, "the monitor has no width", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                             DSD_SCAN_QUIET_REASON_NO_WIDTH);
+    rc |= qt_expect_warn("the monitor has no width: one line", 1, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "d", k_qt_hz_a,
+                         0, 0U);
+    opts.monitor_input_audio = 0;
+
+    /* An uncalibrated rate at the capture; a quiet result held for a frame's verdict reads Quiet check. */
+    g_tap.rate_ok = 0;
+    qt_decode_at(20U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_quiet(&state, "an uncalibrated rate", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_RATE);
+    rc |= qt_expect_warn("an uncalibrated rate: one line", 2, DSD_SCAN_QUIET_REASON_RATE, 0, 1536000U, NULL, 0U, 0, 0U);
+    g_tap.rate_ok = 1;
+    quiet_land_again(&state, k_qt_hz_a);
+    qt_decode_at(30U);
+    rc |= qt_pass_to_ready(&opts, &state);
+    dsd_engine_scan_quiet_note_frame_sync(&state);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    rc |=
+        qt_expect_quiet(&state, "READY held for a verdict", DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE);
+    rc |= expect_active_target(&state, "READY held: the target stays", 0U);
+    dsd_engine_scan_quiet_frame_end(&state);
+
+    /* Held: the dwell is paused and the phrase says so; nothing about the check. */
+    qt_mut_hold_toggle(&opts, &state);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_quiet(&state, "held", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    qt_mut_hold_toggle(&opts, &state);
+
+    /* An uncalibrated analog width at the capture. */
+    g_tap.analog_ok = 0;
+    qt_next_target(&opts, &state, k_qt_hz_b, 384000);
+    qt_decode_at(40U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_quiet(&state, "an uncalibrated NFM width", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_WIDTH);
+    rc |= qt_expect_warn("an uncalibrated NFM width: one line", 3, DSD_SCAN_QUIET_REASON_WIDTH, 0, 0U, "w", k_qt_hz_b,
+                         DSD_ANALOG_DEMOD_FM, 13500U);
+    g_tap.analog_ok = 1;
+
+    /* An input with no check outranks everything; it is logged once. */
+    opts.iq_replay_requested = 1;
+    qt_decode_at(50U);
+    qt_pass(&opts, &state);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_quiet(&state, "an I/Q replay", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
+    rc |= qt_expect_warn("an I/Q replay: one line", 4, DSD_SCAN_QUIET_REASON_INPUT, SCAN_QUIET_WARN_REPLAY, 0U, NULL,
+                         0U, 0, 0U);
+
+    /* A trunked target is never checked: nothing to say, even on this input. */
+    qt_next_target(&opts, &state, 454000000U, 384000);
+    qt_decode_at(60U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_quiet(&state, "a trunked target", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    rc |= qt_expect("no line for a trunked target", g_qt_warns == 4);
+    opts.iq_replay_requested = 0;
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+#endif
+
 static int
 test_scan_quiet_notice_and_classes(void) {
     char line[192];
@@ -26227,6 +26525,76 @@ test_scan_quiet_notice_and_classes(void) {
     return rc;
 }
 
+/* Issue #834 B1: an input with no check (in a radio-off build, every input) says so on the conventional target on air:
+   No check: input through the trunk scan's timing publication, one WARN line however many ticks follow, logged again
+   once the setting is turned off and on. */
+static int
+test_scan_quiet_input_has_no_check(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_runtime_targets("a,dmr-conventional,452000000,,2000,1000,\nb,dmr-conventional,453000000,,2000,1000,\n",
+                             path, sizeof path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path);
+    opts.trunk_scan_list_count = 1;
+    opts.scan_skip_silent = 1;
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "quietinput") != 0) {
+        cleanup_paths(dir, path, NULL);
+        return 1;
+    }
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0;
+#ifdef USE_RADIO
+    /* A replay asked for under a running scan (the scan itself refuses to start on one). */
+    opts.iq_replay_requested = 1;
+    const int detail = SCAN_QUIET_WARN_REPLAY;
+#else
+    const int detail = SCAN_QUIET_WARN_NO_RADIO;
+#endif
+    for (int i = 0; i < 4; i++) {
+        trunk_scan_test_set_now(0.1 * (double)(i + 1));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    const dsd_scan_timing_publication on = state.scan_timing;
+    opts.scan_skip_silent = 0;
+    dsd_engine_scan_quiet_setting_changed(&state, 0);
+    trunk_scan_test_set_now(0.6);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    const dsd_scan_timing_publication off = state.scan_timing;
+    opts.scan_skip_silent = 1;
+    dsd_engine_scan_quiet_setting_changed(&state, 1);
+    trunk_scan_test_set_now(0.7);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char buf[16384] = {0};
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    char want[512];
+    (void)scan_quiet_format_warn(want, sizeof want, DSD_SCAN_QUIET_REASON_INPUT, detail, 0U, NULL, 0, 0U, 0, 0U);
+    want[strcspn(want, "\n")] = '\0';
+    const int lines = count_text(buf, want);
+    rc |= on.reason != DSD_SCAN_STAY_IDLE_DWELL || on.quiet_status != DSD_SCAN_QUIET_STATUS_NO_CHECK
+          || on.quiet_reason != DSD_SCAN_QUIET_REASON_INPUT || off.quiet_status != DSD_SCAN_QUIET_STATUS_NONE
+          || lines != 2;
+    if (rc) {
+        DSD_FPRINTF(stderr,
+                    "FAIL #834 scan quiet: input with no check (%s): stay %u quiet %u/%u, off %u, %d lines\n%s\n", err,
+                    (unsigned)on.reason, (unsigned)on.quiet_status, (unsigned)on.quiet_reason,
+                    (unsigned)off.quiet_status, lines, buf);
+    }
+    return rc;
+}
+
 #ifndef USE_RADIO
 /* A radio-off build compiles the check as a no-op service: nothing is published, the hunt is never handed back. */
 static int
@@ -26264,7 +26632,7 @@ test_scan_quiet_all(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= run_with_default_tune_hook(test_scan_quiet_measures_a_landed_target_once);
     rc |= run_with_default_tune_hook(test_scan_quiet_waits_for_the_landed_capture);
-    rc |= run_with_default_tune_hook(test_scan_quiet_unsupported_capture_is_done);
+    rc |= run_with_default_tune_hook(test_scan_quiet_capture_refusals_are_cached);
     rc |= run_with_default_tune_hook(test_scan_quiet_request_deadline_and_retries);
     rc |= run_with_default_tune_hook(test_scan_quiet_ready_rechecks_capture_generation_and_age);
     rc |= run_with_default_tune_hook(test_scan_quiet_activity_in_the_visit_ends_the_check);
@@ -26298,6 +26666,8 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_stays_and_releases_come_first);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_setting_off_keeps_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_y_ready_declines_at_its_own_sites);
+    rc |= run_with_default_tune_hook(test_scan_quiet_trunk_says_why_a_visit_is_not_checked);
+    rc |= run_with_default_tune_hook(test_scan_quiet_trunk_publishes_each_cause);
 #endif
 #ifdef USE_RADIO
     rc |= test_scan_quiet_evidence_notes_bookkeeping();
@@ -26317,6 +26687,7 @@ test_scan_quiet_all(void) {
 #else
     rc |= test_scan_quiet_radio_off_is_a_no_op();
 #endif
+    rc |= run_with_default_tune_hook(test_scan_quiet_input_has_no_check);
     return rc;
 }
 

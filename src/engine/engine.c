@@ -1637,18 +1637,19 @@ static void
 no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int row, scan_quiet_eligibility* e) {
     const dsd_scan_mode mode =
         dsd_channel_modes_present(state) ? dsd_channel_mode_get(state, (size_t)row) : DSD_SCAN_MODE_INHERIT;
+    const int kind = dsd_scan_mode_analog_kind(mode);
     if (mode == DSD_SCAN_MODE_INHERIT) {
         e->classes = scan_quiet_decoder_classes(opts, &e->analog_kind, &e->analog_width_hz);
-        return;
+    } else if (kind < 0) {
+        e->classes =
+            scan_quiet_monitor_classes(opts, scan_quiet_mode_classes(mode), &e->analog_kind, &e->analog_width_hz);
+    } else {
+        e->classes = scan_quiet_mode_classes(mode);
+        dsd_scan_option_values scratch;
+        scan_quiet_analog_facts(opts, state, kind, dsd_engine_channel_scan_row_values(state, row, &scratch), e);
     }
-    e->classes = scan_quiet_mode_classes(mode);
-    const int kind = dsd_scan_mode_analog_kind(mode);
-    if (kind < 0) {
-        e->classes = scan_quiet_monitor_classes(opts, e->classes, &e->analog_kind, &e->analog_width_hz);
-        return;
-    }
-    dsd_scan_option_values scratch;
-    scan_quiet_analog_facts(opts, state, kind, dsd_engine_channel_scan_row_values(state, row, &scratch), e);
+    /* Why these facts give the row no check, if they give none (issue #834 B1). */
+    e->reason = scan_quiet_facts_reason(opts, e, mode == DSD_SCAN_MODE_INHERIT);
 }
 
 /* The -Y scan's conditions for checking the landed row @p row: the row on air from a landing in this

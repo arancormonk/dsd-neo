@@ -12,7 +12,11 @@
  * SUSPENDED -> WAIT_CAPTURE -> REQUESTED -> READY (quiet) | DONE:
  *
  * - SUSPENDED: the visit is not eligible, or what it was published with changed; nothing runs until engine service
- *   publishes it again (scan_quiet_publish_eligibility()).
+ *   publishes it again (scan_quiet_publish_eligibility()). A visit that cannot be checked is SUSPENDED too, with its
+ *   reason (dsd_scan_quiet_reason, issue #834 B1): its session's (an input with no check), its facts' (decoders with no
+ *   known width, no NFM width), or its capture's (a centred capture, an uncalibrated rate or analog width). A capture's
+ *   refusal is cached: published again with the same facts and revisions while the stream keeps the output generation
+ *   it refused, the visit starts nothing and reads no capture; an edit, a rate or receive change starts it again.
  * - WAIT_CAPTURE: waits for the tap's capture of the landed channel: a capture of the stream's live output generation,
  *   newer than the one read at the tune request, centred where the visit landed. Looked at no more often than every
  *   50 ms, for no longer than 1000 ms (realtime) after the landing was noted (a trunk-scan park still in flight: after
@@ -25,8 +29,8 @@
  * - REQUESTED: the tap measures; 400 ms (realtime) to answer. A lost, capture-changed or dropped request waits for the
  *   capture again, at most 3 times a visit; clipping, a non-finite sample, a failed transform or the deadline end it.
  * - READY: a quiet result the scan may skip on, for 250 ms.
- * - DONE: terminal for the visit (busy, failed, timed out, unsupported, activity, declined, applied): no new request
- *   until the visit changes.
+ * - DONE: terminal for the visit (busy, failed, timed out, refused by the tap, activity, declined, applied): no new
+ *   request until the visit changes.
  *
  * A visit is (owner, landing epoch, tune request). Activity anywhere in the visit ends its check, suspended or not, so
  * no check is made for it again: content that passed its protocol's CRC/FEC gate (a PROVEN content note,
@@ -116,6 +120,9 @@ typedef struct {
     uint32_t analog_width_hz; /**< the analog class's configured width; 0 without it */
     uint32_t dsp_rate_hz;     /**< the DSP rate in force */
     uint32_t frequency_hz;    /**< where the visit lands */
+    /** Why the facts give the visit no check (dsd_scan_quiet_reason: MODES or NO_WIDTH, scan_quiet_facts_reason()),
+        NONE when they give one, and for a trunked target, which is never checked by design. */
+    uint8_t reason;
     scan_quiet_revisions revisions;
 } scan_quiet_eligibility;
 
@@ -158,9 +165,63 @@ int scan_quiet_decoder_set_unchecked(const dsd_opts* opts);
  * left as they are without it); a monitor at no definite width (an unset NFM width) makes the set 0, no check. */
 uint8_t scan_quiet_monitor_classes(const dsd_opts* opts, uint8_t digital, int* analog_kind, uint32_t* analog_width_hz);
 
+/** Why the facts @p e give a conventional row or target no check (dsd_scan_quiet_reason), with its classes and analog
+ * width worked out: NONE when they give one; for no class, or the analog class at no definite width, MODES when the
+ * classes are the decoder set's (@p decoder_set: an untyped -Y row, or a typed one inheriting it) and the set holds a
+ * mode with no known width (X2-TDMA, ProVoice, TETRA), the M17 encoder, or no mode of a class at all, else NO_WIDTH (an
+ * NFM channel, or the -8 monitor, with no width set). */
+uint8_t scan_quiet_facts_reason(const dsd_opts* opts, const scan_quiet_eligibility* e, int decoder_set);
+
 /** Whether the session can make a check at all: the setting on, a radio build, an RTL-family input that is no I/Q
  * replay (neither the stream nor the decode clock). */
 int scan_quiet_session_supported(const dsd_opts* opts);
+
+/** The scan visit on air, as a timing writer names it (issue #834 B1). */
+typedef struct {
+    int owner;        /**< SCAN_QUIET_OWNER_TRUNK or SCAN_QUIET_OWNER_Y */
+    int index;        /**< the target or row on air; -1 with none */
+    uint32_t session; /**< the coordinator's session, or dsd_state::lcn_scan_session */
+    uint64_t list_id; /**< the list's identity: the coordinator's session, or dsd_state::lcn_list_rev */
+    const char* name; /**< a target's label or id; NULL for a -Y row, named "row N" */
+    int shows_status; /**< the stay on air is one the status is shown on (scan_quiet_stay_shows_status()) */
+    int conventional; /**< 0 for a trunked target: never checked, so nothing is said about it */
+} scan_quiet_visit_ref;
+
+/** Whether the Scan Timing row shows the check's status on a visit whose stay is @p stay_reason (dsd_scan_stay_reason):
+ * the idle dwell (trunk scan, and a -Y visit still qualifying under the voice gate) and -Y's hangtime, the windows a
+ * skip ends early. Every other stay explains the visit by itself. */
+int scan_quiet_stay_shows_status(uint8_t stay_reason);
+
+/** Fill @p report's quiet_status and quiet_reason for the visit on air @p ref (issue #834 B1), on the decoder thread,
+ * from what the check knows of it: NONE with the setting off, for a trunked target, for a stay not shown, and for a
+ * check of another visit or one that ended; NO_CHECK with its reason, the receiver's first (an input with no check, in a
+ * radio-off build too; a centred capture or an uncalibrated rate the last capture showed), then the channel's
+ * (decoders, width); CHECKING while the check waits for its capture, settles, measures or holds a quiet result. A
+ * reason the visit has is logged as a WARN line once per key, whatever the stay: the receiver's once per (input,
+ * device, rate, reason), the channel's once per (list, row or target, kind, width, decoder set and -8 monitor width,
+ * reason); the keys are compared before anything is formatted, and turning the setting on again logs them anew. */
+void scan_quiet_timing_fill(const dsd_opts* opts, dsd_state* state, const scan_quiet_visit_ref* ref,
+                            dsd_scan_timing_publication* report);
+
+/** Format the WARN line for @p reason into @p out (the one table of its wording). The receiver's reasons take @p detail
+ * (SCAN_QUIET_WARN_*), and RATE the capture rate @p rate_hz; the channel's take @p name (NULL or empty: -Y row
+ * @p row, 0-based), the frequency @p hz, and for WIDTH the analog @p kind and @p width_hz. Returns the snprintf
+ * result. */
+int scan_quiet_format_warn(char* out, size_t out_size, uint8_t reason, int detail, uint32_t rate_hz, const char* name,
+                           int row, uint32_t hz, int kind, uint32_t width_hz);
+
+/** The analog widths of @p kind (DSD_ANALOG_DEMOD_AM, else NFM) the WARN line names as checked, @p count of them: the
+ * calibration's admitted widths, which a test holds to dsd_signal_quiet_analog_supported(). */
+const uint32_t* scan_quiet_warn_widths(int kind, size_t* count);
+
+/** The receiver detail scan_quiet_format_warn() takes: why the input or the tuner has no check. */
+enum {
+    SCAN_QUIET_WARN_AUDIO = 0,    /**< INPUT: audio input */
+    SCAN_QUIET_WARN_REPLAY = 1,   /**< INPUT: an I/Q replay */
+    SCAN_QUIET_WARN_NO_RADIO = 2, /**< INPUT: a build without radio support */
+    SCAN_QUIET_WARN_AIRSPY = 3,   /**< TUNER: a native Airspy input */
+    SCAN_QUIET_WARN_CENTRED = 4,  /**< TUNER: offset tuning, or the Fs/4 shift off */
+};
 
 /** Whether engine service has eligibility to work out for @p owner: 0 with the setting off or the visit on air's check
  * DONE, so the caller returns before any of its walk. */

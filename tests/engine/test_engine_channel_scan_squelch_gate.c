@@ -104,6 +104,23 @@ dsd_engine_scan_quiet_publish_row(const dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
+/* The quiet check's status for the -Y timing writer (scan_quiet.c, issue #834 B1), which ENGINE_NO_CARRIER_RESET
+   drives; stubbed so the check, and the trunk scan it reads, stay out of this link. */
+int
+scan_quiet_stay_shows_status(uint8_t stay_reason) {
+    (void)stay_reason;
+    return 0;
+}
+
+void
+scan_quiet_timing_fill(const dsd_opts* opts, dsd_state* state, const scan_quiet_visit_ref* ref,
+                       dsd_scan_timing_publication* report) {
+    (void)opts;
+    (void)state;
+    (void)ref;
+    (void)report;
+}
+
 int
 dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, double now) {
     (void)opts;

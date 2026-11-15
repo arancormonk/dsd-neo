@@ -4718,6 +4718,27 @@ trunk_scan_timing_fill_visit(const dsd_opts* opts, const dsd_state* state, const
     }
 }
 
+/* The silent-channel skip's status on the target on air (issue #834 B1): shown on its idle dwell, said of a
+   conventional target only. One load with the setting off. */
+static void
+trunk_scan_timing_fill_quiet(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_coord* coord,
+                             dsd_scan_timing_publication* report) {
+    if (!opts->scan_skip_silent) {
+        return;
+    }
+    const dsd_trunk_scan_target* target = &coord->targets[coord->active].target;
+    scan_quiet_visit_ref ref;
+    DSD_MEMSET(&ref, 0, sizeof ref);
+    ref.owner = SCAN_QUIET_OWNER_TRUNK;
+    ref.index = (int)coord->active;
+    ref.session = coord->session;
+    ref.list_id = coord->session;
+    ref.name = target->label[0] != '\0' ? target->label : target->id;
+    ref.shows_status = report->reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
+    ref.conventional = !trunk_scan_target_is_trunked(target->type);
+    scan_quiet_timing_fill(opts, state, &ref, report);
+}
+
 /*
  * One scan-timing report for the target on air (issue #508). Absolute monotonic anchors only:
  * the frontends difference them against their own clock, so a stalled UI cannot invent a
@@ -4764,6 +4785,7 @@ trunk_scan_publish_timing(const dsd_opts* opts, dsd_state* state, const dsd_trun
             report.hang_ms = (uint32_t)((hang_s * 1000.0) + 0.5);
         }
     }
+    trunk_scan_timing_fill_quiet(opts, state, coord, &report);
     dsd_scan_timing_publish(state, &report);
 }
 
@@ -5113,18 +5135,20 @@ trunk_scan_idle_dwell_ran_out(const dsd_opts* opts, dsd_trunk_scan_target_runtim
 static void
 trunk_scan_quiet_classes(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
                          scan_quiet_eligibility* e) {
+    if (!trunk_scan_type_is_conventional(rt->target.type)) {
+        return; /* a trunked target: in no class, and never checked by design */
+    }
     const dsd_scan_mode mode = trunk_scan_target_mode(rt->target.type);
-    e->classes = trunk_scan_type_is_conventional(rt->target.type) ? scan_quiet_mode_classes(mode) : 0U;
     const int kind = dsd_scan_mode_analog_kind(mode);
+    e->classes = scan_quiet_mode_classes(mode);
     if (kind < 0) {
         e->classes = scan_quiet_monitor_classes(opts, e->classes, &e->analog_kind, &e->analog_width_hz);
-        return;
+    } else {
+        dsd_scan_option_values scratch;
+        scan_quiet_analog_facts(opts, state, kind, trunk_scan_target_values(rt, &scratch), e);
     }
-    if (e->classes == 0U) {
-        return;
-    }
-    dsd_scan_option_values scratch;
-    scan_quiet_analog_facts(opts, state, kind, trunk_scan_target_values(rt, &scratch), e);
+    /* Why these facts give the target no check, if they give none (issue #834 B1). */
+    e->reason = scan_quiet_facts_reason(opts, e, 0);
 }
 
 /* The visit of the target on air: its landing in this session, or its park still in flight. 0 for neither. */

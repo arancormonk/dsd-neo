@@ -43,6 +43,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "scan_quiet.h"
 
 static int g_failures = 0;
 
@@ -223,6 +224,29 @@ dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
 int
 dsd_engine_channel_scan_can_rotate(const dsd_opts* opts, const dsd_state* state) {
     return dsd_state_trunk_lcn_user_list_present(opts, state) && dsd_state_trunk_lcn_usable_count(state) >= 2;
+}
+
+/* From engine/channel_scan.c and engine/scan_quiet.c, which this fixture does not link: skip-silent stays off here, so
+   the -Y timing writer never asks for the quiet check's status (issue #834). */
+int
+dsd_engine_channel_scan_on_air_row(const dsd_state* state) {
+    (void)state;
+    return -1;
+}
+
+int
+scan_quiet_stay_shows_status(uint8_t stay_reason) {
+    (void)stay_reason;
+    return 0;
+}
+
+void
+scan_quiet_timing_fill(const dsd_opts* opts, dsd_state* state, const scan_quiet_visit_ref* ref,
+                       dsd_scan_timing_publication* report) {
+    (void)opts;
+    (void)state;
+    (void)ref;
+    (void)report;
 }
 
 typedef struct {

@@ -1103,6 +1103,34 @@ typedef enum {
     DSD_SCAN_STAY_NO_LIST = 12,       /**< -Y with no channel map of the user's: nothing to step to (issue #697) */
 } dsd_scan_stay_reason;
 
+/** Whether the silent-channel skip (issue #834) is checking the scan visit on air, for the Scan Timing row: published
+ * only while the visit waits out its idle dwell (trunk scan) or its idle dwell or hangtime (-Y), so a stay that
+ * explains the visit by itself keeps its plain phrase. NONE: nothing to say (the setting off, a trunked target, a
+ * check that ended: busy, skipped, timed out, refused by the tap, or activity heard). CHECKING: the check runs
+ * (waiting for its capture, settling, measuring, or a quiet result waiting to be applied). NO_CHECK: the visit cannot
+ * be checked, for the dsd_scan_quiet_reason published beside it. */
+typedef enum {
+    DSD_SCAN_QUIET_STATUS_NONE = 0,
+    DSD_SCAN_QUIET_STATUS_CHECKING = 1,
+    DSD_SCAN_QUIET_STATUS_NO_CHECK = 2,
+} dsd_scan_quiet_status;
+
+/** Why a scan visit gets no silent-channel check (DSD_SCAN_QUIET_STATUS_NO_CHECK). The receiver's reasons (INPUT,
+ * TUNER, RATE) outrank the channel's (MODES, then WIDTH and NO_WIDTH). INPUT: audio input, an I/Q replay, or a build
+ * without radio support. TUNER: a centred capture, with no Fs/4 shift (a native Airspy, offset tuning, the shift off).
+ * RATE: a capture rate the calibration did not cover. MODES: an untyped -Y row under decoders with no known channel
+ * width (ProVoice, X2-TDMA, TETRA). WIDTH: an analog width the calibration did not cover. NO_WIDTH: an NFM channel with
+ * no width set, so no definite channel to judge. */
+typedef enum {
+    DSD_SCAN_QUIET_REASON_NONE = 0,
+    DSD_SCAN_QUIET_REASON_INPUT = 1,
+    DSD_SCAN_QUIET_REASON_TUNER = 2,
+    DSD_SCAN_QUIET_REASON_RATE = 3,
+    DSD_SCAN_QUIET_REASON_MODES = 4,
+    DSD_SCAN_QUIET_REASON_WIDTH = 5,
+    DSD_SCAN_QUIET_REASON_NO_WIDTH = 6,
+} dsd_scan_quiet_reason;
+
 /** Live scan timing for the frontends' Scan Timing row (issue #508). Plain inline
  * scalars: it rides the vertex_ks_count..ui_msg snapshot copy range (ui_snapshot.c static
  * assert) and must never grow a pointer, or the byte-range copy would alias decoder memory. */
@@ -1121,6 +1149,8 @@ struct dsd_scan_timing_publication {
     uint32_t hang_ms;     /**< active protocol's effective hangtime budget; 0 when n/a */
     uint8_t reason;       /**< dsd_scan_stay_reason */
     uint8_t conventional; /**< 1 = conventional / -Y row, so hold_ms means something */
+    uint8_t quiet_status; /**< dsd_scan_quiet_status of the visit on air (issue #834) */
+    uint8_t quiet_reason; /**< dsd_scan_quiet_reason, with DSD_SCAN_QUIET_STATUS_NO_CHECK; NONE otherwise */
 };
 
 /** Which sub-audible signalling the analog receiver has identified: a CTCSS tone (issue #522)

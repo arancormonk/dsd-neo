@@ -12308,6 +12308,8 @@ static struct {
     dsd_signal_quiet_request last;
     int notices;
     char notice[192];
+    int warns; /* the silent-channel skip's WARN lines (issue #834 B1) */
+    char warn[512];
 } g_yq;
 
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
@@ -12426,6 +12428,10 @@ yq_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
     if (text && strncmp(text, "NOTICE: scan: skipped quiet", 27) == 0) {
         g_yq.notices++;
         DSD_SNPRINTF(g_yq.notice, sizeof g_yq.notice, "%s", text);
+    }
+    if (text && strncmp(text, "WARNING: scan: silent-channel skip", 34) == 0) {
+        g_yq.warns++;
+        DSD_SNPRINTF(g_yq.warn, sizeof g_yq.warn, "%s", text);
     }
 }
 
@@ -12651,6 +12657,90 @@ yq_landing_case(int which) {
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y landing case %d\n", which);
+    }
+    return rc;
+}
+
+/* issue #834 B1: the -Y timing publication says what the check does on the row on air. A typed row measured as it
+   lands, its hangtime running: Quiet check. An untyped row under a decoder set holding ProVoice: No check: modes, with
+   one WARN line naming the row however many ticks follow. */
+static int
+yq_expect_quiet(const dsd_state* state, const char* stage, unsigned stay, unsigned status, unsigned reason) {
+    const dsd_scan_timing_publication* t = &state->scan_timing;
+    if ((unsigned)t->reason != stay || (unsigned)t->quiet_status != status || (unsigned)t->quiet_reason != reason) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y %s: stay %u, quiet %u/%u, want %u, %u/%u\n", stage, (unsigned)t->reason,
+                    (unsigned)t->quiet_status, (unsigned)t->quiet_reason, stay, status, reason);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+yq_timing_tick(const dsd_opts* opts, dsd_state* state) {
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
+}
+
+static int
+test_y_quiet_timing_says_why(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    const long int base_hz = 481012500L;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, base_hz) == 0);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a typed row measured in its hangtime", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE);
+    rc |= expect_true("no WARN line for a row it checks", g_yq.warns == 0);
+    yq_finish(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    const long int untyped_hz = 491012500L;
+    rc |= expect_true("the first step lands untyped row 0", yq_list(opts, state, 3, 0, 1, untyped_hz) == 0);
+    opts->frame_provoice = 1;
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    for (int tick = 0; tick < 3; tick++) {
+        yq_timing_tick(opts, state);
+    }
+    rc |= yq_expect_quiet(state, "an untyped row under ProVoice", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_MODES);
+    char want[512];
+    (void)scan_quiet_format_warn(want, sizeof want, DSD_SCAN_QUIET_REASON_MODES, 0, 0U, NULL, 0, (uint32_t)untyped_hz,
+                                 0, 0U);
+    rc |= expect_true("one WARN line naming the row", g_yq.warns == 1 && strcmp(g_yq.warn, want) == 0);
+    rc |= expect_true("a row it cannot check requests nothing", g_yq.requests == 1);
+    opts->frame_provoice = 0;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y timing says why (warns %d, last '%s')\n", g_yq.warns, g_yq.warn);
+    }
+    return rc;
+}
+
+/* issue #834 B1: the widths the WARN line names as checked are exactly the admitted ones, NFM and AM. */
+static int
+test_y_quiet_warn_widths_are_the_admitted_ones(void) {
+    int rc = 0;
+    static const int kinds[] = {DSD_ANALOG_DEMOD_FM, DSD_ANALOG_DEMOD_AM};
+    for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+        size_t count = 0U;
+        const uint32_t* named = scan_quiet_warn_widths(kinds[k], &count);
+        for (uint32_t hz = 1000U; hz <= 40000U; hz++) {
+            int listed = 0;
+            for (size_t i = 0; i < count; i++) {
+                listed |= named[i] == hz;
+            }
+            if (listed != (__real_dsd_signal_quiet_analog_supported(kinds[k], hz, 1536000U) != 0)) {
+                DSD_FPRINTF(stderr, "FAIL #834: kind %d width %u Hz: named %d, admitted %d\n", kinds[k], (unsigned)hz,
+                            listed, !listed);
+                rc = 1;
+            }
+        }
     }
     return rc;
 }
@@ -13630,6 +13720,8 @@ test_scan_quiet_decisions(void) {
     for (int which = YQ_LAND_TYPED_LATE; which <= YQ_LAND_RESUME; which++) {
         rc |= yq_landing_case(which);
     }
+    rc |= test_y_quiet_timing_says_why();
+    rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);
     rc |= test_trunk_quiet_noise_syncs_still_skip(0);
     rc |= test_trunk_quiet_suspended_target_republished();

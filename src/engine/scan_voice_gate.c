@@ -23,6 +23,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "scan_quiet.h"
 
 /* Voice must have run this long before it counts: D-STAR and ProVoice run the
  * vocoder before their confirm, DMR/NXDN/dPMR are already confirm-gated. */
@@ -600,6 +601,21 @@ scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, double
     out->span_ms = scan_y_timing_span_ms(span_s);
 }
 
+/* The silent-channel skip's status on the -Y row on air (issue #834 B1): shown on its idle dwell (the voice gate's
+   qualify window) and its hangtime, the windows a skip ends early. */
+static void
+scan_y_timing_fill_quiet(const dsd_opts* opts, dsd_state* state, dsd_scan_timing_publication* report) {
+    scan_quiet_visit_ref ref;
+    DSD_MEMSET(&ref, 0, sizeof ref);
+    ref.owner = SCAN_QUIET_OWNER_Y;
+    ref.index = dsd_engine_channel_scan_on_air_row(state);
+    ref.session = state->lcn_scan_session;
+    ref.list_id = state->lcn_list_rev;
+    ref.shows_status = scan_quiet_stay_shows_status(report->reason);
+    ref.conventional = 1;
+    scan_quiet_timing_fill(opts, state, &ref, report);
+}
+
 void
 dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now_m, double now_wall_s) {
     if (!opts || !state) {
@@ -647,6 +663,9 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now
      * counting down at once, and the reason names the rule the hop would be blamed on. Under a
      * hold the deadline function returns < 0, so MANUAL_HOLD reports the cap as paused. */
     report.visit_deadline_m = dsd_engine_scan_visit_deadline_m(opts, state);
+    if (opts->scan_skip_silent) {
+        scan_y_timing_fill_quiet(opts, state, &report);
+    }
     dsd_scan_timing_publish(state, &report);
 }
 

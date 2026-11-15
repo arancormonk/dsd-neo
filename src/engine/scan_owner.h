@@ -109,6 +109,14 @@ typedef struct {
     uint8_t frame_evidence;
     uint32_t frame_hold_ms;
     double pending_until_m;
+    /* The receiver's last no-check WARN line (issue #834 B1; scan_quiet.c, radio-off builds too): its reason
+       (dsd_scan_quiet_reason, NONE before any), detail, input kind, device spec hash and capture rate. A line is logged
+       only when the key differs; turning skip-silent on or off forgets it, so off -> on logs again. */
+    uint8_t quiet_warned_reason;
+    uint8_t quiet_warned_detail;
+    int quiet_warned_input;
+    uint32_t quiet_warned_device;
+    uint32_t quiet_warned_rate_hz;
 } dsd_engine_scan_owner;
 
 static inline void

@@ -10095,9 +10095,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
+# src/engine for scan_quiet.h, whose status call the -Y timing writer makes (issue #834; stubbed in the test).
 target_include_directories(
     dsd-neo_test_engine_scan_voice_gate
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
 )
 target_link_libraries(
     dsd-neo_test_engine_scan_voice_gate
