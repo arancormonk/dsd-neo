@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <stdint.h>
@@ -69,6 +70,7 @@ dsd_key_state_secure_wipe(dsd_state* state) {
     DSD_SECURE_ZERO(&state->R, sizeof(state->R));
     DSD_SECURE_ZERO(&state->RR, sizeof(state->RR));
     DSD_SECURE_ZERO(&state->H, sizeof(state->H));
+    DSD_SECURE_ZERO(&state->dmr_tg_autoload, sizeof(state->dmr_tg_autoload));
     DSD_SECURE_ZERO(state->A1, sizeof(state->A1));
     DSD_SECURE_ZERO(state->A2, sizeof(state->A2));
     DSD_SECURE_ZERO(state->A3, sizeof(state->A3));
@@ -83,12 +85,27 @@ key_scalars_capture(dsd_key_scalars* out, const dsd_state* state) {
     out->K2 = state->K2;
     out->K3 = state->K3;
     out->K4 = state->K4;
+    out->H = state->H;
+    out->basic_key_present = state->basic_key_present;
+    out->hytera_key_segments = state->hytera_key_segments;
+    // While the talkgroup key autoload's key is the working key, the operator's own is the one it replaced: a capture
+    // reinstalled later must not turn a talkgroup's key into a key set directly.
+    unsigned long long int words[6];
+    uint8_t flags[2];
+    if (dsd_dmr_tg_autoload_baseline(state, words, flags)) {
+        out->K = words[0];
+        out->K1 = words[1];
+        out->K2 = words[2];
+        out->K3 = words[3];
+        out->K4 = words[4];
+        out->H = words[5];
+        out->basic_key_present = flags[0];
+        out->hytera_key_segments = flags[1];
+        DSD_SECURE_ZERO(words, sizeof(words));
+    }
     out->R = state->R;
     out->RR = state->RR;
     DSD_MEMCPY(out->scalar_key_present, state->scalar_key_present, sizeof out->scalar_key_present);
-    out->basic_key_present = state->basic_key_present;
-    out->H = state->H;
-    out->hytera_key_segments = state->hytera_key_segments;
     DSD_MEMCPY(out->A1, state->A1, sizeof(out->A1));
     DSD_MEMCPY(out->A2, state->A2, sizeof(out->A2));
     DSD_MEMCPY(out->A3, state->A3, sizeof(out->A3));

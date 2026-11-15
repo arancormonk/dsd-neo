@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "../../src/core/util/key_set_internal.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -527,8 +528,76 @@ test_row_apply_epoch(void) {
     return failed;
 }
 
+/* The talkgroup key autoload has the working Basic Privacy key: talkgroup 123's 0x33 replaced the operator's own (none,
+   or a -b key), as keyring_dmr_tg_autoload_apply() leaves it. */
+static void
+seed_autoloaded_key(dsd_state* state, unsigned long long int operator_key) {
+    state->K = 0x33ULL;
+    state->K1 = state->H = 0x33ULL;
+    state->basic_key_present = 1U;
+    state->hytera_key_segments = 1U;
+    const unsigned long long int installed[6] = {0x33ULL, 0x33ULL, 0ULL, 0ULL, 0ULL, 0x33ULL};
+    for (int i = 0; i < 6; i++) {
+        state->dmr_tg_autoload.installed[i] = installed[i];
+        state->dmr_tg_autoload.baseline[i] = 0ULL;
+    }
+    state->dmr_tg_autoload.baseline[0] = operator_key;
+    state->dmr_tg_autoload.installed_flags[0] = 1U;
+    state->dmr_tg_autoload.installed_flags[1] = 1U;
+    state->dmr_tg_autoload.baseline_flags[0] = operator_key != 0ULL ? 1U : 0U;
+    state->dmr_tg_autoload.baseline_flags[1] = 0U;
+    state->dmr_tg_autoload.active = 1U;
+}
+
+/* A scan row's keys entered while the autoload's key is the working key: leaving restores the operator's own key, not
+   a talkgroup's key turned into one set directly. The secure wipe clears the autoload's key copies with the keys. */
+static int
+test_scan_keys_and_wipe_leave_no_autoloaded_key(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int failed = 0;
+    for (int with_direct = 0; with_direct < 2; with_direct++) {
+        const unsigned long long int operator_key = with_direct ? 70ULL : 0ULL;
+        seed_autoloaded_key(state, operator_key);
+        dsd_key_set row;
+        DSD_MEMSET(&row, 0, sizeof(row));
+        row.present = 1;
+        row.keyloader = 1;
+        if (dsd_scan_keys_enter(state, &row) != 1) {
+            DSD_FPRINTF(stderr, "enter must report a change\n");
+            failed = 1;
+        }
+        dsd_scan_keys_leave(state);
+        if (state->K != operator_key || state->basic_key_present != (with_direct ? 1U : 0U) || state->K1 != 0ULL
+            || state->H != 0ULL) {
+            DSD_FPRINTF(stderr,
+                        "leave reinstalled K=%llu (operator key %llu): the autoloaded key became a direct key\n",
+                        state->K, operator_key);
+            failed = 1;
+        }
+        dsd_key_set_free(&row);
+    }
+    seed_autoloaded_key(state, 70ULL);
+    dsd_key_state_secure_wipe(state);
+    const unsigned char* bytes = (const unsigned char*)&state->dmr_tg_autoload;
+    for (size_t i = 0; i < sizeof(state->dmr_tg_autoload); i++) {
+        if (bytes[i] != 0U) {
+            DSD_FPRINTF(stderr, "the secure wipe left the autoload's key copies\n");
+            failed = 1;
+            break;
+        }
+    }
+    free_test_state(state);
+    return failed;
+}
+
 int
 main(void) {
+    if (test_scan_keys_and_wipe_leave_no_autoloaded_key() != 0) {
+        return 1;
+    }
     if (test_capture_install_roundtrip() != 0) {
         return 1;
     }
