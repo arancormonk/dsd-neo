@@ -1795,7 +1795,8 @@ suite runs under this compiler.
   buffer, a NULL ring is left NULL rather than set up through `&event_history_s[i]`, and `freeState()` releases a
   partial state. Only the DMR soft-metric buffer is optional (its readers take NULL); `write_event_to_log_file()`
   indexes the ring unchecked, so no decoder runs without it. The CLI (`apps/dsd-cli/main.c`) and the Android
-  `nativeInit` refuse to start a state with `init_failed` set. Test builds fail one checked allocation at a time
+  `nativeInit` refuse to start a state with `init_failed` set, and so does `nativeConfigure` when the reset it runs
+  before a later configure (`SessionObjects::prepare_for_configure()`, issue #786 B1) sets it. Test builds fail one checked allocation at a time
   through `dsd_init_test_alloc_fail_after()` (`CORE_INIT_STATE`).
 - Invariant (dibit reliability coordinates, `<dsd-neo/core/dibit.h>`, `src/core/frames/dsd_dibit.c`): a four-level
   dibit's reliability is measured in the coordinates of the slicer that cut it, and every caller of
@@ -3687,8 +3688,8 @@ suite runs under this compiler.
     one list of decode stamps `initOpts()`/`initState()` seed with "now"; a sidecar that does not parse fails the run
     there). REPLAY is entered only there, at a run's start, on a state fresh from `initState()`, and the engine enforces
     that: `dsd_state::engine_fresh`, set by `initState()` and cleared by the run once it has made the choice, says no
-    run has used the state. A replay run on a state an earlier run used (the Android service's reuse when a start races
-    `stopSelf()`) stays on SYSTEM with one `LOG_WARN`, since the stamps that run left (such as
+    run has used the state. A replay run on a state an earlier run used (no longer the Android service, which resets its
+    objects before every later configure, issue #786 B1) stays on SYSTEM with one `LOG_WARN`, since the stamps that run left (such as
     `slco_sfrag_last`) are on the system clock and no rebase reaches them; its decode times are then not the
     capture's. The system clock only moves forward, so those stamps stay behind now, with one exception: an earlier
     replay of a capture stamped ahead of the device's clock (recorded elsewhere, or on a clock that is behind) leaves
@@ -16939,6 +16940,29 @@ host diagnostics line. Times are `dsd_realtime_mono_ms()` read through `DecoderH
 `UI_QT_ANDROID_HOST` replaces. The request lives in the host; a recreated
 Activity maps the service state as before. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST`,
 `tst_monitor_call_actions.qml`.
+
+Fresh decoder objects for every configure (issue #786 B1): a stop then a start can reach the same `DecoderService`
+instance before its `onDestroy()`, so the process keeps one `dsd_opts`/`dsd_state` pair from `nativeInit()` to
+`nativeDestroy()`, owned by `dsd_android::SessionObjects` (`android/session_objects.{h,cpp}`, free of JNI and Qt).
+The bootstrap only adds to what it finds (a `-C` map appends at `lcn_freq_count`, an option sets its flag and nothing
+clears the ones a later argv leaves out) and a run clears `engine_fresh`, so `nativeConfigure()` calls
+`prepare_for_configure()` under `g_lock`, with `g_running` false, before its bootstrap. The first configure after
+`create()` takes the objects as `nativeInit()` made them; every later one, whatever the earlier attempt did (ran,
+failed, exited, was discarded or was configured and left), closes the output files still open
+(`dsd_engine_release_outputs()`), then resets both in place: `freeState()`, both structures erased
+(`DSD_SECURE_ZERO`, so no key outlives its session), `initOpts()`, `initState()`. The allocations are kept, so
+`g_session.opts()`/`state()` and Kotlin's `initialized` stay valid. A reset whose `initState()` sets `init_failed`
+fails that configure; the objects stay marked used, so the next configure resets them again, and `g_configured`, cleared
+at the start of every configure, keeps `nativeRun()` off them. Readers of the objects outside a run: only
+`android/dsdneo_jni.cpp` holds them (configure, run, discard, destroy, all under `g_lock`); the status, notification and
+lifecycle polls read their own records and publishers, never the objects; app-control snapshots and the history tap
+key on `state_instance` and the event-history identity, which `initState()` renews; the USB policy, diagnostics, host
+overrides and history attribution are process-owned and untouched; state-extension owners are freed by `freeState()`
+as on `nativeDestroy()`. Tests: `ANDROID_SESSION_OBJECTS` (a run, a failed and an exiting configure, a discard and an
+unrun configure, each followed by another site's: only its LCN rows and map keys, Hold TG and `-F` back to defaults;
+the unrun outputs closed by the reset and by `destroy()`; an injected `initState()` failure and its retry; a replay after
+a live run on the REPLAY decode clock), `ANDROID_ENGINE_STOP_JVM` (`native_lifecycle_contract`: `nativeConfigure()`
+calls `prepare_for_configure()` before its bootstrap).
 
 Receiver endings (issue #647): `RunStatus` (`android/run_status.h`) keeps, per run, why it ended (`end_cause`: user,
 detached, receiver failed, lifecycle) and the local receiver it was configured on (`receiver_source`, from the last

@@ -325,17 +325,29 @@ def native_lifecycle_contract():
     if not init or "dsd_android::install_receiver_policy();" not in init.group(0):
         return "android/dsdneo_jni.cpp: nativeInit must call dsd_android::install_receiver_policy()"
     # #782 gate r2 H3: only a run's dsd_engine_cleanup() closes the files the bootstrap opens (-c, -w, -P, -6), so
-    # every way a configured session ends without nativeRun() closes them: a discard, a failed or exiting configure (and
-    # the next configure over one never run), and nativeDestroy() before it frees the options.
-    release = "dsd_engine_release_outputs(g_opts, g_state);"
-    for name, count in (("nativeDiscardConfigured", 1), ("nativeConfigure", 2), ("nativeDestroy", 1)):
+    # every way a configured session ends without nativeRun() closes them: a discard, a failed or exiting configure, the
+    # next configure over one never run (SessionObjects::prepare_for_configure() releases before its reset), and
+    # nativeDestroy() (SessionObjects::destroy() releases before it frees the objects).
+    release = "g_session.release_outputs();"
+    prepare = "g_session.prepare_for_configure()"
+    for name, call, why in (
+        ("nativeDiscardConfigured", release, "for a session that never ran"),
+        ("nativeConfigure", release, "after a failed or exiting bootstrap"),
+        ("nativeConfigure", prepare, "so each configure starts from fresh objects (#786 B1)"),
+        ("nativeDestroy", "g_session.destroy();", "for a session that never ran"),
+    ):
         body = re.search(rf"DsdNative_{name}\(.*?\n\}}", jni, re.S)
-        if not body or body.group(0).count(release) < count:
-            return f"android/dsdneo_jni.cpp: {name} must call {release} ({count} time(s)) for a session that never ran"
+        if not body or call not in body.group(0):
+            return f"android/dsdneo_jni.cpp: {name} must call {call} {why}"
+    # #786 B1: a start can reach the service instance an earlier one configured or ran on, so every configure resets
+    # the objects (prepare_for_configure()) before its bootstrap, and releases what a failed one opened after it.
     configure = re.search(r"DsdNative_nativeConfigure\(.*?\n\}", jni, re.S).group(0)
-    tail = configure.split("g_configured = false;", 1)
-    if len(tail) != 2 or release not in tail[1] or configure.find(release) > configure.find("dsd_runtime_bootstrap("):
-        return "android/dsdneo_jni.cpp: nativeConfigure must release before the bootstrap and after a failed one"
+    bootstrap = configure.find("dsd_runtime_bootstrap(")
+    if bootstrap < 0 or not 0 <= configure.find(prepare) < bootstrap or configure.rfind(release) < bootstrap:
+        return (
+            "android/dsdneo_jni.cpp: nativeConfigure must call prepare_for_configure() before the bootstrap and "
+            "release after a failed one"
+        )
     return None
 
 

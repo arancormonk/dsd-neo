@@ -35,7 +35,6 @@
 
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/notification_status.h>
-#include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -59,6 +58,7 @@
 #include "diagnostics_log.h"
 #include "dsdneo_jni.h"
 #include "run_status.h"
+#include "session_objects.h"
 
 namespace {
 
@@ -73,12 +73,12 @@ constexpr jint kStatusConfigExit = 1;
 std::mutex g_lock;
 std::mutex g_lifecycle_lock;
 dsd_android::RunStatus g_run_status;
-dsd_opts* g_opts = nullptr;
-dsd_state* g_state = nullptr;
+/* The one dsd_opts/dsd_state pair, from nativeInit to nativeDestroy; every configure starts it fresh (#786 B1). */
+dsd_android::SessionObjects g_session;
 bool g_configured = false;
 std::atomic<bool> g_running{false};
 std::atomic<bool> g_log_pump_started{false};
-/* Mirrors "g_opts/g_state exist" for nativeStop, which must not take g_lock; see
+/* Mirrors "g_session exists" for nativeStop, which must not take g_lock; see
  * there. Written under g_lock by nativeInit/nativeDestroy. */
 std::atomic<bool> g_initialized{false};
 /* Latches a stop that arrives before the engine loop is watching the exit flag.
@@ -465,29 +465,11 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz
     dsd_android::install_receiver_policy();
 
     std::lock_guard<std::mutex> guard(g_lock);
-    if (g_opts != nullptr || g_state != nullptr) {
+    if (g_session.exists()) {
         return kStatusBadState;
     }
-
-    g_opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
-    g_state = static_cast<dsd_state*>(calloc(1, sizeof(dsd_state)));
-    if (g_opts == nullptr || g_state == nullptr) {
-        free(g_opts);
-        free(g_state);
-        g_opts = nullptr;
-        g_state = nullptr;
-        return kStatusError;
-    }
-
-    initOpts(g_opts);
-    initState(g_state);
-    if (g_state->init_failed != 0U) {
-        /* initState() logged which buffer it could not allocate; a state missing one cannot decode. */
-        freeState(g_state);
-        free(g_opts);
-        free(g_state);
-        g_opts = nullptr;
-        g_state = nullptr;
+    /* initState() logs which buffer it could not allocate; a state missing one cannot decode. */
+    if (!g_session.create()) {
         return kStatusError;
     }
     g_configured = false;
@@ -501,7 +483,7 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     (void)clazz;
 
     std::lock_guard<std::mutex> guard(g_lock);
-    if (g_opts == nullptr || g_state == nullptr || g_running.load()) {
+    if (!g_session.exists() || g_running.load()) {
         return kStatusBadState;
     }
 
@@ -527,28 +509,35 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     rtl_device_clear_open_error();
     rtl_device_airspy_clear_open_error();
 #endif
-    /* A configured session that never ran still holds the output files its bootstrap opened (-c, -w, -P, -6); this
-     * configure would open its own over them (#782). A run's cleanup already closed its own. */
-    dsd_engine_release_outputs(g_opts, g_state);
+    /* This attempt ends any configuration an earlier one left: no run takes that from here. */
+    g_configured = false;
+    /* #786 B1: a start can reach the service instance, and so the objects, an earlier attempt configured or ran on, and
+     * the bootstrap only adds to what it finds. Every configure after the first therefore closes the output files a
+     * configured session that never ran still holds (-c, -w, -6; #782), which this one would open its own over, and
+     * resets both objects in place to what nativeInit made, so a replay after a live run gets a fresh decode clock. A
+     * reset that cannot allocate fails the start; the next configure retries it. */
+    if (!g_session.prepare_for_configure()) {
+        return kStatusError;
+    }
     cli_argv cli = {};
     if (!build_argv(env, args, &cli)) {
         return kStatusError;
     }
 
     int exit_rc = 0;
-    const int rc = dsd_runtime_bootstrap(cli.argc, cli.argv, g_opts, g_state, nullptr, &exit_rc);
+    const int rc = dsd_runtime_bootstrap(cli.argc, cli.argv, g_session.opts(), g_session.state(), nullptr, &exit_rc);
     free_argv(&cli);
 
     if (rc == DSD_BOOTSTRAP_CONTINUE) {
         g_configured = true;
         std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
-        g_run_status.note_configured(dsd_android::receiver_source_for_input(g_opts->audio_in_dev));
+        g_run_status.note_configured(dsd_android::receiver_source_for_input(g_session.opts()->audio_in_dev));
         return kStatusOk;
     }
 
     g_configured = false;
     /* What the bootstrap opened before it failed or exited, as a parse error after -c leaves (#782). */
-    dsd_engine_release_outputs(g_opts, g_state);
+    g_session.release_outputs();
     if (rc != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
         dsd_input_failure_report(DSD_INPUT_FAILURE_CONFIGURATION, exit_rc);
         std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
@@ -575,8 +564,9 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeDiscardConfigured(JNIEnv* env,
         return kStatusBadState;
     }
     g_configured = false;
-    /* No nativeRun, so no dsd_engine_cleanup(): close the output files the bootstrap opened here (#782). */
-    dsd_engine_release_outputs(g_opts, g_state);
+    /* No nativeRun, so no dsd_engine_cleanup(): close the output files the bootstrap opened here (#782). The next
+     * configure resets the objects (#786 B1). */
+    g_session.release_outputs();
     std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
     g_run_status.discard_configured();
     return kStatusOk;
@@ -591,7 +581,7 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeRun(JNIEnv* env, jclass clazz)
     dsd_state* state = nullptr;
     {
         std::lock_guard<std::mutex> guard(g_lock);
-        if (g_opts == nullptr || g_state == nullptr || !g_configured || g_running.load()) {
+        if (!g_session.exists() || !g_configured || g_running.load()) {
             // Do not overwrite an active run when rejecting a duplicate caller.
             if (!g_running.load()) {
                 std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
@@ -599,8 +589,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeRun(JNIEnv* env, jclass clazz)
             }
             return kStatusBadState;
         }
-        opts = g_opts;
-        state = g_state;
+        opts = g_session.opts();
+        state = g_session.state();
         g_running.store(true);
     }
 
@@ -723,15 +713,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeDestroy(JNIEnv* env, jclass cl
         return kStatusBadState;
     }
     g_initialized.store(false);
-    /* A session configured and never run still holds the output files its bootstrap opened (#782). */
-    dsd_engine_release_outputs(g_opts, g_state);
-    if (g_state != nullptr) {
-        freeState(g_state);
-    }
-    free(g_opts);
-    free(g_state);
-    g_opts = nullptr;
-    g_state = nullptr;
+    /* Closes the output files a session configured and never run still holds (#782), then frees both objects. */
+    g_session.destroy();
     g_configured = false;
     return kStatusOk;
 }
