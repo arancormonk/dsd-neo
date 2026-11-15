@@ -917,6 +917,9 @@ static int g_frame_candidate_frames = 0;
    sync its protocol's gate rejected), with g_frame_evidence_hold_ms for PARTIAL. */
 static int g_frame_evidence = 0;
 static uint32_t g_frame_evidence_hold_ms = 0U;
+/* Whether each scripted frame is of a protocol with no content check (X2-TDMA, ProVoice, TETRA): processFrame()'s
+   dispatch notes one for the -Y step (issue #834), as ENGINE_PROTOCOL_DISPATCH pins. */
+static int g_frame_unchecked = 0;
 static int g_frame_roll[FAKE_FRAMES_MAX];
 static unsigned long long g_frame_rkey[FAKE_FRAMES_MAX];
 static char g_frame_label[FAKE_FRAMES_MAX][DSD_CHANNEL_LABEL_SIZE];
@@ -971,6 +974,9 @@ __wrap_processFrame(dsd_opts* opts, dsd_state* state) {
     }
     if (g_frame_evidence != 0) {
         dsd_frame_sync_hook_content_evidence(opts, state, g_frame_evidence, g_frame_evidence_hold_ms);
+    }
+    if (g_frame_unchecked) {
+        state->scan_y_unchecked_seq++;
     }
     if (g_frame_count < FAKE_FRAMES_MAX) {
         g_frame_roll[g_frame_count] = state->lcn_freq_roll;
@@ -13378,18 +13384,19 @@ test_y_quiet_suspended_row_republished(int typed) {
    the hangtime anchor on raw syncs keep it as before; and no stay is overridden. Each case lands row 0, then makes the
    row's -t (10 s) run out by moving its anchors back. */
 enum {
-    YC_NOISE = 0,     /* rejected syncs: yields at the first boundary, noCarrier() steps */
-    YC_CALL,          /* every frame's content passes its gate: no yield; then the content stops: yields */
-    YC_ANCHOR_FRESH,  /* the hangtime anchor fresh (a DMR or P25 hunt stamps it on raw syncs): no yield */
-    YC_HOLD,          /* an operator hold */
-    YC_WALK_AWAITED,  /* a walk the scan owns waiting on its tune */
-    YC_SINGLE_ROW,    /* nowhere else to go */
-    YC_VOICE_GATE,    /* --scan-voice-only owns the step */
-    YC_UNCHECKED_SET, /* X2-TDMA in the decoder set: no checked content to hear */
-    YC_ONCE,          /* a noCarrier() that did not step: no second yield for the same anchor */
-    YC_QUIET_FIRST,   /* skip-silent on, a quiet row inside -t: the quiet yield steps it with its NOTICE */
-    YC_PARTIAL,       /* verdicts still open (PARTIAL): no yield until the latest hold, capped at 1 s, is -t old */
-    YC_STALE_NOTES,   /* a check and an open verdict the row left noted: the landing forgets both */
+    YC_NOISE = 0,        /* rejected syncs: yields at the first boundary, noCarrier() steps */
+    YC_CALL,             /* every frame's content passes its gate: no yield; then the content stops: yields */
+    YC_ANCHOR_FRESH,     /* the hangtime anchor fresh (a DMR or P25 hunt stamps it on raw syncs): no yield */
+    YC_HOLD,             /* an operator hold */
+    YC_WALK_AWAITED,     /* a walk the scan owns waiting on its tune */
+    YC_SINGLE_ROW,       /* nowhere else to go */
+    YC_VOICE_GATE,       /* --scan-voice-only owns the step */
+    YC_UNCHECKED_SET,    /* the default set (-fa: X2-TDMA and ProVoice in it) with rejected NXDN48 syncs: steps */
+    YC_ONCE,             /* a noCarrier() that did not step: no second yield for the same anchor */
+    YC_QUIET_FIRST,      /* skip-silent on, a quiet row inside -t: the quiet yield steps it with its NOTICE */
+    YC_PARTIAL,          /* verdicts still open (PARTIAL): no yield until the latest hold, capped at 1 s, is -t old */
+    YC_STALE_NOTES,      /* a check and an open verdict the row left noted: the landing forgets both */
+    YC_UNCHECKED_FRAMES, /* X2-TDMA frames, which no check can prove: held while they come, then steps */
 };
 
 /* The row's -t run out: the hangtime anchor and the last checked content 11 s back (the rig's -t is 10 s). */
@@ -13413,8 +13420,9 @@ yc_setup(dsd_opts* opts, dsd_state* state, int which, long int base_hz) {
         opts->scan_voice_qualify_ms = 60000;
         opts->scan_voice_hold_ms = 60000;
         seed_visit_anchor(state, dsd_decode_now_mono_s());
-    } else if (which == YC_UNCHECKED_SET) {
+    } else if (which == YC_UNCHECKED_SET || which == YC_UNCHECKED_FRAMES) {
         opts->frame_x2tdma = 1;
+        opts->frame_provoice = 1;
     }
     if (which != YC_QUIET_FIRST) { /* a quiet row steps on its result long before -t runs out */
         yc_age(state, which != YC_ANCHOR_FRESH);
@@ -13426,6 +13434,7 @@ yc_clear(dsd_opts* opts, dsd_state* state, int which) {
     state->lcn_scan_hold = 0;
     opts->scan_voice_only = 0;
     opts->frame_x2tdma = 0;
+    opts->frame_provoice = 0;
     if (which == YC_WALK_AWAITED) {
         dsd_engine_manual_tune_supersede(state);
         while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
@@ -13436,7 +13445,7 @@ yc_clear(dsd_opts* opts, dsd_state* state, int which) {
 static int
 yc_check(dsd_opts* opts, dsd_state* state, int which) {
     int rc = 0;
-    if (which == YC_NOISE) {
+    if (which == YC_NOISE || which == YC_UNCHECKED_SET) {
         rc |= expect_true("noise: yields at the first boundary past -t", g_frame_count == 1);
         noCarrier(opts, state);
         rc |= expect_true("noise: noCarrier() steps, with no quiet NOTICE", g_rtl_tune_calls == 1 && g_yq.notices == 0);
@@ -13461,6 +13470,14 @@ yc_check(dsd_opts* opts, dsd_state* state, int which) {
         state->scan_y_partial_until_m = now_m - 11.0; /* the latest hold ended -t ago */
         run_synced_frames(opts, state, 5, -1);
         rc |= expect_true("the hold ended -t ago: yields", g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("and steps", g_rtl_tune_calls == 1);
+    } else if (which == YC_UNCHECKED_FRAMES) {
+        rc |= expect_true("unchecked frames: no yield, no step", g_frame_count == 6 && g_rtl_tune_calls == 0);
+        rc |= expect_true("unchecked frames: never content", state->scan_y_content_seq == 0U);
+        state->scan_y_unchecked_m = dsd_decode_now_mono_s() - 11.0; /* the last of them -t ago */
+        run_synced_frames(opts, state, 5, -1);
+        rc |= expect_true("the unchecked frames stopped -t ago: yields", g_frame_count == 1);
         noCarrier(opts, state);
         rc |= expect_true("and steps", g_rtl_tune_calls == 1);
     } else if (which == YC_STALE_NOTES) {
@@ -13509,6 +13526,10 @@ yc_case(int which, int on) {
     yc_setup(opts, state, which, base_hz);
     if (which == YC_CALL) {
         run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    } else if (which == YC_UNCHECKED_FRAMES) {
+        g_frame_unchecked = 1;
+        run_synced_frames(opts, state, 5, -1);
+        g_frame_unchecked = 0;
     } else if (which == YC_PARTIAL) {
         /* A hold longer than any gate's: the rule caps it at SCAN_QUIET_PENDING_MAX_MS. */
         run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PARTIAL, 5000U);
@@ -13527,7 +13548,7 @@ yc_case(int which, int on) {
 static int
 test_y_frames_with_no_checked_content_leave(void) {
     int rc = 0;
-    for (int which = YC_NOISE; which <= YC_STALE_NOTES; which++) {
+    for (int which = YC_NOISE; which <= YC_UNCHECKED_FRAMES; which++) {
         if (which != YC_QUIET_FIRST) {
             rc |= yc_case(which, 0);
         }

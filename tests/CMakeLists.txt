@@ -10251,6 +10251,7 @@ if(DSD_HAS_RADIO AND NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             ${LIBS}
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=dsd_engine_channel_scan_step"
+            "-Wl,--wrap=dsd_engine_scan_untyped_find_row"
     )
 endif()
 

@@ -56,6 +56,12 @@ processFrame(dsd_opts* opts, dsd_state* state) {
     }
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {
+        /* A frame whose protocol has no content check the -Y step could read (issue #834): one store, whatever the
+           settings, so a real call of it keeps its -Y row while its frames come. */
+        if (DSD_SYNC_IS_X2TDMA(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)
+            || DSD_SYNC_IS_TETRA(state->synctype)) {
+            state->scan_y_unchecked_seq++;
+        }
         /* A frame of another protocol family replaces the identity the last one left, also when the new protocol
            sends none: what this frame's decoder notes is the carrier's from here. Behind a P25p1 word accepted within a
            tolerance, which may be no word at all, the P25p1 dispatcher notes it once the frame's NID passes. */

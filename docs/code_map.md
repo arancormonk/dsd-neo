@@ -659,13 +659,15 @@ Generated (do not edit/commit):
       it, tone gate OFF, no analog carrier, which never reads open while synced), the hangtime rule `noCarrier()` applies
       is due (`now - last_cc_sync_time > -t`; the DMR, P25 Phase 1 and 2, ProVoice and EDACS hunts stamp that anchor on
       raw syncs, so those rows keep their old timing), no content a protocol's CRC/FEC gate passed for `-t`
-      (`dsd_state::scan_y_content_m`, the latest of it, the anchor's decode-mono time and the end of the latest open
-      verdict's hold, `dsd_state::scan_y_partial_until_m`; PARTIAL never counts as content, it only delays the step by
+      (`live_scanner_y_window_start_m()`: the latest of `dsd_state::scan_y_content_m`, the anchor's decode-mono time,
+      the end of the latest open verdict's hold, `dsd_state::scan_y_partial_until_m`, and the last frame of a protocol
+      with no such gate, `dsd_state::scan_y_unchecked_m`; PARTIAL never counts as content, it only delays the step by
       its hold, capped at `SCAN_QUIET_PENDING_MAX_MS`, so a D-STAR voice superframe still waiting on its header is not
-      cut), the decoder set has such content to hear (`scan_quiet_decoder_set_unchecked()`: X2-TDMA, ProVoice and
-      TETRA sets are left alone), nothing keeps the row (`live_scanner_y_frame_step_may_decide()`: hold, awaited
-      tune, typed step in flight, avoided row, no other row), and it has not yielded for this landing epoch and anchor
-      yet (`dsd_engine_scan_owner::y_frame_yield_epoch`, `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the
+      cut; nor does an X2-TDMA, ProVoice or TETRA frame, which `processFrame()` notes as it dispatches one
+      (`scan_y_unchecked_seq`) and which holds the row only while such frames keep coming, so the default set's -Y row
+      on NXDN48 or dPMR noise leaves like a typed one), nothing keeps the row
+      (`live_scanner_y_frame_step_may_decide()`: hold, awaited tune, typed step in flight, avoided row, no other row),
+      and it has not yielded for this landing epoch and anchor yet (`dsd_engine_scan_owner::y_frame_yield_epoch`, `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the
       row is never repeated per frame. Checked content reaches it with no hook and no allocation: the content-evidence
       wrapper (`dsd_frame_sync_hook_content_evidence()`) moves `dsd_state::scan_y_content_seq` for every PROVEN note, and
       `scan_y_partial_seq` with the longest `scan_y_partial_hold_ms` for every PARTIAL one, before its setting test; the
@@ -695,9 +697,10 @@ Generated (do not edit/commit):
       qualifying and qualifying-busy rows, an avoided row, a walk waiting on its tune, a typed step in flight, an open
       analog carrier, and the end-to-end skip through `dsd_engine_test_live_scanner_run()` for -Y and trunk scan, each
       against the setting off), `NXDN_FRAME_ROUTING` (`test_y_scan_hold_needs_a_checked_frame()`),
-      `NXDN_DEPERM_PRIMITIVES` (`test_cac_fail_run_on_conventional_scan_keeps_anchor()`), and `DECODE_IQ_Y_CALL_HOLD`
+      `NXDN_DEPERM_PRIMITIVES` (`test_cac_fail_run_on_conventional_scan_keeps_anchor()`), `DECODE_IQ_Y_CALL_HOLD`
       (`tests/y_call_hold_check.py` over the `dsd-neo_test_y_call_hold_replay` host: every real call fixture kept while
-      its frames come and left once it ends, at -t 1 and -t 2).
+      its frames come and left once it ends, typed and as an untyped `-fa` row, at -t 1 and -t 2), and
+      `ENGINE_PROTOCOL_DISPATCH` (the unchecked-frame note for X2-TDMA, ProVoice and TETRA only).
     - Checked content (issue #834 D8): `activity_seq` moves, only while skip-silent is on, when a frame's content
       passes its protocol's CRC/FEC gate (a PROVEN content note, `dsd_frame_sync_hook_content_evidence()`, the engine's
       `dsd_engine_scan_quiet_note_evidence()`: once a frame however many of its checks pass, once a note outside a

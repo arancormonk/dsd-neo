@@ -108,12 +108,14 @@ dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_la
     owner->landing = landing;
 }
 
-/* A landing starts the row's -Y content window afresh (issue #834): checked content or an open verdict noted on the row
-   left and not yet read at a frame boundary is not this row's, and neither counts for it nor delays its step. */
+/* A landing starts the row's -Y content window afresh (issue #834): checked content, an open verdict or an unchecked
+   frame noted on the row left and not yet read at a frame boundary is not this row's, and neither counts for it nor
+   delays its step. */
 static inline void
 dsd_engine_scan_landing_forget_y_notes(dsd_state* state) {
     state->scan_y_content_seen = state->scan_y_content_seq;
     state->scan_y_partial_seen = state->scan_y_partial_seq;
+    state->scan_y_unchecked_seen = state->scan_y_unchecked_seq;
     state->scan_y_partial_hold_ms = 0U;
     state->scan_y_partial_until_m = -1.0;
 }

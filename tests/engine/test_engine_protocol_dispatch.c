@@ -294,6 +294,11 @@ run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict 
                                                      : (int)verdict));
     /* Productivity (including sticky NXDN call confirmation) is not recovery ownership. */
     assert(state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25);
+    /* Issue #834: a frame of a protocol with no content check (X2-TDMA, ProVoice, TETRA) is noted for the -Y step as it
+       is dispatched, once; any other frame, or a synctype no handler takes, is not. */
+    const int unchecked = expected_handler == TEST_HANDLER_X2TDMA || expected_handler == TEST_HANDLER_PROVOICE
+                          || expected_handler == TEST_HANDLER_TETRA;
+    assert(state->scan_y_unchecked_seq == (unchecked ? 1U : 0U));
     g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
     free(state);
     free(opts);
@@ -559,6 +564,10 @@ main(void) {
     run_dispatch_case(DSD_SYNC_DMR_BS_VOICE_POS, TEST_HANDLER_DMR);
     run_dispatch_case(DSD_SYNC_DPMR_FS1_POS, TEST_HANDLER_DPMR);
     run_dispatch_case(DSD_SYNC_TETRA_NDB_POS, TEST_HANDLER_TETRA);
+    run_dispatch_case(DSD_SYNC_TETRA_SB_NEG, TEST_HANDLER_TETRA);
+    run_dispatch_case(DSD_SYNC_PROVOICE_NEG, TEST_HANDLER_PROVOICE);
+    run_dispatch_case(DSD_SYNC_X2TDMA_DATA_NEG, TEST_HANDLER_X2TDMA);
+    run_dispatch_case(DSD_SYNC_EDACS_POS, TEST_HANDLER_EDACS);
     run_dispatch_case(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1);
     run_dispatch_case(-1, TEST_HANDLER_NONE);
     run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);

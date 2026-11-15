@@ -4361,13 +4361,12 @@ live_scanner_y_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
 }
 
 /* The -Y frame-boundary step (issue #834 item 3), its terms other than the time: -Y owns the step with no voice gate,
-   tone verdict or analog carrier deciding it, the decoder set has checked content to hear (not X2-TDMA, ProVoice or
-   TETRA), and nothing keeps the row: no operator hold, awaited tune or typed step in flight, not an avoided row (its
-   paced departure decides), and another row to land on. */
+   tone verdict or analog carrier deciding it, and nothing keeps the row: no operator hold, awaited tune or typed step
+   in flight, not an avoided row (its paced departure decides), and another row to land on. */
 static int
 live_scanner_y_frame_step_may_decide(const dsd_opts* opts, const dsd_state* state) {
     if (opts->trunk_scan_enabled == 1 || !dsd_state_trunk_lcn_user_list_present(opts, state)
-        || dsd_scan_voice_gate_owns_step(opts, state) || scan_quiet_decoder_set_unchecked(opts)
+        || dsd_scan_voice_gate_owns_step(opts, state)
         || dsd_scan_analog_tone_gate(opts, state) != DSD_ANALOG_TONE_GATE_OFF
         || dsd_scan_analog_carrier_open(opts, state)) {
         return 0;
@@ -4377,10 +4376,27 @@ live_scanner_y_frame_step_may_decide(const dsd_opts* opts, const dsd_state* stat
            && dsd_engine_channel_scan_has_other_row(opts, state);
 }
 
+/* Where the -Y step's content window starts: the latest of the landing or hangtime anchor, the last checked content, the
+   end of the latest open verdict's hold, and the last frame of a protocol with no content check (X2-TDMA, ProVoice,
+   TETRA), whose frames hold the row while they keep coming. */
+static double
+live_scanner_y_window_start_m(const dsd_state* state) {
+    double mark_m =
+        state->scan_y_content_m > state->last_cc_sync_time_m ? state->scan_y_content_m : state->last_cc_sync_time_m;
+    if (state->scan_y_partial_until_m > mark_m) {
+        mark_m = state->scan_y_partial_until_m; /* a verdict still open: wait for its hold to end */
+    }
+    if (state->scan_y_unchecked_m > mark_m) {
+        mark_m = state->scan_y_unchecked_m;
+    }
+    return mark_m;
+}
+
 /* Whether a frame boundary may end the synced-frames loop for the -Y step (issue #834 item 3): frames that keep coming
    never let noCarrier(), where the step is decided, run. Only when the hangtime rule noCarrier() applies is due (raw
    syncs of the protocols whose hunt stamps the anchor keep it fresh, as before), no content a protocol's CRC/FEC gate
-   passed came for -t (dsd_state::scan_y_content_m; a real call's checks keep it fresh, whatever skip-silent says), the
+   passed came for -t, nor a frame of a protocol with no such gate (live_scanner_y_window_start_m(); a real call's checks
+   or frames keep it fresh, whatever skip-silent says), the
    other terms hold (live_scanner_y_frame_step_may_decide()), and it has not yielded for this landing and anchor yet;
    the pair it would yield for goes in @p out_epoch and @p out_mark_ms. Pure: it reads, and decides nothing itself.
    Off -Y, one compare. */
@@ -4390,11 +4406,7 @@ live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state
     if (opts->scanner_mode != 1 || (dsd_decode_time() - state->last_cc_sync_time) <= opts->trunk_hangtime) {
         return 0;
     }
-    double mark_m =
-        state->scan_y_content_m > state->last_cc_sync_time_m ? state->scan_y_content_m : state->last_cc_sync_time_m;
-    if (state->scan_y_partial_until_m > mark_m) {
-        mark_m = state->scan_y_partial_until_m; /* a verdict still open: wait for its hold to end */
-    }
+    const double mark_m = live_scanner_y_window_start_m(state);
     if (dsd_decode_now_mono_s() - mark_m <= (double)opts->trunk_hangtime
         || !live_scanner_y_frame_step_may_decide(opts, state)) {
         return 0;
@@ -4410,15 +4422,21 @@ live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state
     return owner->y_frame_yield_epoch != *out_epoch || owner->y_frame_yield_mark_ms != *out_mark_ms;
 }
 
-/* What the frames since the last boundary noted, for the -Y step: checked content becomes its time (the frame's end),
-   and a verdict still open (PARTIAL) the end of its hold, bounded by SCAN_QUIET_PENDING_MAX_MS. */
+/* What the frames since the last boundary noted, for the -Y step: checked content and an unchecked protocol's frame
+   become their time (the frame's end), and a verdict still open (PARTIAL) the end of its hold, bounded by
+   SCAN_QUIET_PENDING_MAX_MS. */
 static void
 live_scanner_y_note_frame_content(dsd_state* state) {
     if (state->scan_y_content_seq == state->scan_y_content_seen
-        && state->scan_y_partial_seq == state->scan_y_partial_seen) {
+        && state->scan_y_partial_seq == state->scan_y_partial_seen
+        && state->scan_y_unchecked_seq == state->scan_y_unchecked_seen) {
         return;
     }
     const double now_m = dsd_decode_now_mono_s();
+    if (state->scan_y_unchecked_seq != state->scan_y_unchecked_seen) {
+        state->scan_y_unchecked_seen = state->scan_y_unchecked_seq;
+        state->scan_y_unchecked_m = now_m;
+    }
     if (state->scan_y_content_seq != state->scan_y_content_seen) {
         state->scan_y_content_seen = state->scan_y_content_seq;
         state->scan_y_content_m = now_m;

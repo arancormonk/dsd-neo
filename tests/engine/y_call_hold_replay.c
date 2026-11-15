@@ -42,19 +42,21 @@ static int g_landed = 0;
 static uint64_t g_yield_epoch_seen = 0U;
 static int64_t g_yield_mark_seen = 0;
 
-/* Row zero's own options, as the conventional scanner installs them on commit (issue #521). */
+/* Row zero's own options, as the conventional scanner installs them on commit (issue #521). An untyped row (a list
+   with no mode column, mode INHERIT) keeps the session's decoder set, as the untyped step does. */
 static void
 enter_row_zero(dsd_opts* opts, dsd_state* state) {
     const dsd_scan_mode mode = dsd_channel_mode_get(state, 0);
-    assert(mode != DSD_SCAN_MODE_INHERIT);
-    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, 0);
-    dsd_scan_settings prepared;
-    const int prepared_rc = dsd_scan_mode_prepare(opts, state, mode, profile ? &profile->values : NULL, &prepared);
-    assert(prepared_rc == 0);
-    const int entered_rc = dsd_scan_mode_enter(opts, state, mode);
-    assert(entered_rc == 0);
-    const int options_rc = dsd_scan_mode_options(opts, state, profile ? &profile->values : NULL);
-    assert(options_rc == 0);
+    if (mode != DSD_SCAN_MODE_INHERIT) {
+        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, 0);
+        dsd_scan_settings prepared;
+        const int prepared_rc = dsd_scan_mode_prepare(opts, state, mode, profile ? &profile->values : NULL, &prepared);
+        assert(prepared_rc == 0);
+        const int entered_rc = dsd_scan_mode_enter(opts, state, mode);
+        assert(entered_rc == 0);
+        const int options_rc = dsd_scan_mode_options(opts, state, profile ? &profile->values : NULL);
+        assert(options_rc == 0);
+    }
     /* The cursor past the row, the row heard, the tuner the scan's: what the commit leaves. */
     state->lcn_freq_roll = 1;
     dsd_state_lcn_on_air_note(state, 0);
@@ -82,6 +84,8 @@ int __real_getFrameSync(dsd_opts* opts, dsd_state* state);
 int __wrap_getFrameSync(dsd_opts* opts, dsd_state* state);
 int __real_dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state);
 int __wrap_dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state);
+int __real_dsd_engine_scan_untyped_find_row(const dsd_state* state, int from_roll, int skip_placeholders);
+int __wrap_dsd_engine_scan_untyped_find_row(const dsd_state* state, int from_roll, int skip_placeholders);
 
 int
 __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
@@ -96,8 +100,9 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     return synctype;
 }
 
-int
-__wrap_dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state) {
+/* A -Y step attempt, and whether a frame-boundary yield led to it: every yield writes a new (epoch, mark) pair. */
+static void
+note_step(const dsd_state* state) {
     const dsd_engine_scan_owner* owner =
         (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
     int via_frame = 0;
@@ -108,7 +113,23 @@ __wrap_dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state) {
         g_yield_mark_seen = owner->y_frame_yield_mark_ms;
     }
     DSD_FPRINTF(stderr, "YHOLD step t=%.3f via=%s\n", dsd_decode_now_mono_s(), via_frame ? "frame" : "nocarrier");
+}
+
+/* A typed list's step. */
+int
+__wrap_dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state) {
+    note_step(state);
     return __real_dsd_engine_channel_scan_step(opts, state);
+}
+
+/* An untyped list's step looks for its next row first (no_carrier_step_scanner_mode_if_needed(), placeholders kept);
+   the resume that skips them is no step. */
+int
+__wrap_dsd_engine_scan_untyped_find_row(const dsd_state* state, int from_roll, int skip_placeholders) {
+    if (!skip_placeholders && g_landed) {
+        note_step(state);
+    }
+    return __real_dsd_engine_scan_untyped_find_row(state, from_roll, skip_placeholders);
 }
 
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)

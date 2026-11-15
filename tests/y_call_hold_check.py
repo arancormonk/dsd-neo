@@ -2,17 +2,22 @@
 """The -Y step's frame-boundary rule over real calls (issue #834 item 3).
 
 Each call fixture, followed by the receiver-noise fixture, is replayed through the real engine on a landed -Y row
-(tests/engine/y_call_hold_replay.c) of a two-row typed map, with -t 1 (or --hangtime, comma-separated for several) and no
-visit cap, skip-silent off and on. From the
-host's timeline it checks:
+(tests/engine/y_call_hold_replay.c) of a two-row map, with no visit cap and skip-silent off and on, at each --hangtime
+(-t; comma-separated for several) and for each --sets decoder set: "typed" (the row's own mode) and "fa" (an untyped
+list under -fa, the default set). From the host's timeline it checks:
 
   * no frame-boundary departure while the call's frames are still coming: no step that a frame-boundary yield led to
     before the call's last sync;
   * the row is left once the call ends: a step after the call's last sync, within the hangtime plus LEAVE_PAD_S
     (LEAVE_PAD_NXDN_S for NXDN, whose rows are held 2 s past each checked frame).
 
+A call with no PROVEN or PARTIAL note in its decoder set is the case the rule exists to leave: it is reported as
+"unchecked" and judged only for leaving within the same bound, counted from the landing.
+
 A step noCarrier() takes between the call's frames (a hunt pass that found no sync) is the rule from before the
-frame-boundary yield and is reported, not failed. Usage: y_call_hold_check.py [--hangtime S[,S...]] HOST FIXTURE_DIR [NAME...]
+frame-boundary yield and is reported, not failed.
+
+Usage: y_call_hold_check.py [--hangtime S[,S...]] [--sets typed,fa] HOST FIXTURE_DIR [NAME...]
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -35,14 +40,22 @@ CALLS = {
     "m17_lsf_weak": "m17",
     "nxdn96_weak_0db": "nxdn96",
     "dmr_bs_weak": "dmr",
+    "dpmr_synth": "dpmr",
+    "ysf_synth": "ysf",
+    "nxdn48_synth": "nxdn48",
 }
+# The decoder sets a row runs: "typed", the row's own mode from a typed map; "fa", an untyped list under -fa, the
+# default set (X2-TDMA and ProVoice in it, whose frames no check can prove).
+SETS = ("typed", "fa")
+# Bytes per complex sample, by the sidecar's sample_format.
+SAMPLE_BYTES = {"cu8": 2, "cs16": 4, "cf32": 8}
 TAIL = "noise_floor"
 # How long the row may stay on after the call's last sync, past the hangtime. Every protocol: the hangtime is compared
 # in whole seconds (up to 1 s over), plus up to a second for the hunt pass that steps. NXDN also holds a -Y row 2 s
-# past each frame whose own CRCs proved its content (nxdn_finish_decoded_frame(), from issue #406, so the gap to the next frame
-# does not read as loss of signal); with that hold on top, its bound is 3.5 s. Measured at -t 1: 0.4-1.9 s for the
-# others, 3.0-4.1 s for NXDN (2 s hold + 1 s hangtime + rounding + a pass, from its last checked frame); about a
-# second more at -t 2.
+# past each frame whose own CRCs proved its content (nxdn_finish_decoded_frame(), from issue #406, so the gap to the
+# next frame does not read as loss of signal); with that hold on top, its bound is 3.5 s. Measured at -t 1: 0.4-1.9 s
+# for the others, 3.0-4.1 s for NXDN (2 s hold + 1 s hangtime + rounding + a pass, from its last checked frame); about
+# a second more at -t 2.
 LEAVE_PAD_S = 2.0
 LEAVE_PAD_NXDN_S = 3.5
 LINE = re.compile(r"YHOLD (landed|sync|step) t=([0-9.]+)(?: proven=(\d+))?(?: partial=(\d+))?(?: via=(\w+))?")
@@ -53,8 +66,10 @@ def with_tail(fixtures, name, out_dir):
     tail = json.loads((fixtures / f"{TAIL}.iq.json").read_text(encoding="utf-8"))
     if (meta["sample_rate_hz"], meta["sample_format"]) != (tail["sample_rate_hz"], tail["sample_format"]):
         raise SystemExit(f"{name}: the noise tail does not match the fixture's rate or format")
+    if meta["sample_format"] not in SAMPLE_BYTES:
+        raise SystemExit(f"{name}: sample format {meta['sample_format']} has no size here")
     data = (fixtures / meta["data_file"]).read_bytes()
-    call_s = len(data) / 2.0 / meta["sample_rate_hz"]
+    call_s = len(data) / SAMPLE_BYTES[meta["sample_format"]] / meta["sample_rate_hz"]
     data += (fixtures / tail["data_file"]).read_bytes()
     (out_dir / f"{name}_tail.iq").write_bytes(data)
     meta.update({"data_file": f"{name}_tail.iq", "data_bytes": len(data), "notes": "fixture + receiver-noise tail"})
@@ -63,16 +78,19 @@ def with_tail(fixtures, name, out_dir):
     return path, call_s, meta["center_frequency_hz"]
 
 
-def run_case(host, fixtures, out_dir, name, skip, hangtime):
+def run_case(host, fixtures, out_dir, name, skip, hangtime, decoder_set="typed"):
     replay, call_s, centre = with_tail(fixtures, name, out_dir)
     mode = CALLS[name]
     pad = LEAVE_PAD_NXDN_S if mode.startswith("nxdn") else LEAVE_PAD_S
     chan = out_dir / f"{name}_map.csv"
-    chan.write_text(
-        f"channel,frequency_hz,name,mode,options\n1,{centre},call,{mode},\n2,{centre + 1000000},other,{mode},\n",
-        encoding="ascii",
-    )
+    if decoder_set == "typed":
+        rows = f"channel,frequency_hz,name,mode,options\n1,{centre},call,{mode},\n2,{centre + 1000000},other,{mode},\n"
+    else:
+        rows = f"channel,frequency_hz,name\n1,{centre},call\n2,{centre + 1000000},other\n"
+    chan.write_text(rows, encoding="ascii")
     cmd = [host, "--frontend", "none", "-Y", "-C", str(chan), "-t", str(hangtime)]
+    if decoder_set == "fa":
+        cmd += ["-fa"]
     cmd += ["--scan-skip-silent" if skip else "--no-scan-skip-silent", "--iq-replay", str(replay), "-o", "null"]
     result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=240, check=False)
     if result.returncode != 0:
@@ -107,6 +125,21 @@ def run_case(host, fixtures, out_dir, name, skip, hangtime):
         "steps": [(round(rel(t), 2), via) for t, via in steps],
     }
     failures = []
+    # A call that gets no PROVEN or PARTIAL note in this decoder set carries nothing the rule can tell from noise, and
+    # the rule exists to let such a row go: it is not judged for a cut, only for leaving within the bound, counted from
+    # the landing, where its content window starts. (Today: the off-air dpmr capture, whose CRCs never pass, and dstar
+    # under -fa, which the default set never decodes as D-STAR in its 4 s.)
+    info["unchecked"] = info["proven_total"] == 0 and info["partial_total"] == 0
+    if info["unchecked"]:
+        first = [rel(t) for t, _via in steps]
+        info["left_at"] = round(first[0], 2) if first else None
+        if not first:
+            failures.append("the row with no checked content was never left (run ended)")
+        elif first[0] > hangtime + pad:
+            failures.append(
+                f"the row with no checked content left {first[0]:.2f} s after landing (over {hangtime + pad} s)"
+            )
+        return failures, info
     for t, via in steps:
         if via == "frame" and rel(t) < last_sync:
             failures.append(f"frame-boundary departure at {rel(t):.2f} s, frames still coming until {last_sync:.2f} s")
@@ -125,24 +158,32 @@ def main():
     parser.add_argument("fixtures")
     parser.add_argument("names", nargs="*")
     parser.add_argument("--hangtime", default="1", help="the -t hangtime in seconds, or several, comma-separated")
+    parser.add_argument("--sets", default=",".join(SETS), help="decoder sets, comma-separated: typed, fa")
     args = parser.parse_args()
     fixtures = Path(args.fixtures).resolve()
     names = args.names or list(CALLS)
     hangtimes = [int(value) for value in args.hangtime.split(",")]
-    cases = [(name, skip, hangtime) for hangtime in hangtimes for name in names for skip in (False, True)]
+    sets = args.sets.split(",")
+    cases = [
+        (name, skip, hangtime, decoder_set)
+        for decoder_set in sets
+        for hangtime in hangtimes
+        for name in names
+        for skip in (False, True)
+    ]
     failed = 0
     with tempfile.TemporaryDirectory(prefix="dsd-y-call-hold-") as temporary:
         root = Path(temporary)
 
         def run(case):
-            name, skip, hangtime = case
-            out_dir = root / f"{name}-{int(skip)}-{hangtime}"
+            name, skip, hangtime, decoder_set = case
+            out_dir = root / f"{name}-{int(skip)}-{hangtime}-{decoder_set}"
             out_dir.mkdir()
-            return run_case(args.host, fixtures, out_dir, name, skip, hangtime)
+            return run_case(args.host, fixtures, out_dir, name, skip, hangtime, decoder_set)
 
         with ThreadPoolExecutor(max_workers=4) as pool:
-            for (name, skip, hangtime), (failures, info) in zip(cases, pool.map(run, cases)):
-                label = f"{name} -t {hangtime} skip-silent {'on' if skip else 'off'}"
+            for (name, skip, hangtime, decoder_set), (failures, info) in zip(cases, pool.map(run, cases)):
+                label = f"{name} {decoder_set} -t {hangtime} skip-silent {'on' if skip else 'off'}"
                 status = "FAIL" if failures else "ok"
                 summary = {key: value for key, value in info.items() if key not in ("steps", "proven_at")}
                 summary["proven_first_last"] = info["proven_at"][:1] + info["proven_at"][-1:] if info else []
