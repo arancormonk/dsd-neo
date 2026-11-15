@@ -14,10 +14,12 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "../../src/app_control/snapshot_internal.h"
 
+/* The row for @p rid; a missing row fails the test here, so no caller reads through a null row. */
 static const dsd_app_p25_affiliation*
 row_of(const dsd_app_p25_affiliation* rows, int n, uint32_t rid) {
     for (int i = 0; i < n; i++) {
@@ -25,7 +27,8 @@ row_of(const dsd_app_p25_affiliation* rows, int n, uint32_t rid) {
             return &rows[i];
         }
     }
-    return NULL;
+    DSD_FPRINTF(stderr, "no row for RID %u\n", (unsigned)rid);
+    abort();
 }
 
 /* Affiliation and radio rows carry their names: the radio's in the current system's scope (a learned alias of another
