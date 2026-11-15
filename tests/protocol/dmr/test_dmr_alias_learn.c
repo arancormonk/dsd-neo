@@ -147,11 +147,26 @@ test_learn_header_only(dsd_opts* opts) {
     expect_learned(st, 2345678U, "DISP", "a padded header is a whole alias");
     free_state(st);
 
-    /* Six characters filling the header, no padding and no block: shown but not learned (it may go on). */
+    /* A six-character callsign sent in the header alone, its Data Length 6: it fills the header exactly and the length
+       agrees, so it ended. */
     st = new_state();
     seed_active_call(st, 1U, 2345679U);
     send_header(opts, st, 1U, 1U, 6U, "DISPAT");
-    expect_learned(st, 2345679U, NULL, "a header with no visible end");
+    expect_learned(st, 2345679U, "DISPAT", "a header-only callsign whose length agrees");
+    free_state(st);
+
+    /* The same six characters with a Data Length of 8: it may go on into block 1, so it waits. */
+    st = new_state();
+    seed_active_call(st, 1U, 2345680U);
+    send_header(opts, st, 1U, 1U, 8U, "DISPAT");
+    expect_learned(st, 2345680U, NULL, "a full header whose length says more is coming");
+    free_state(st);
+
+    /* Spaces to the edge of the header are no end, whatever the length. */
+    st = new_state();
+    seed_active_call(st, 1U, 2345681U);
+    send_header(opts, st, 1U, 1U, 6U, "BOB   ");
+    expect_learned(st, 2345681U, NULL, "space padding is no end");
     free_state(st);
 }
 
@@ -353,9 +368,6 @@ run_flco_alias(dsd_opts* opts, dsd_state* st, uint32_t source, int header_ok, in
 
 static void
 test_learn_through_flco(dsd_opts* opts) {
-    Event_History_I* history = calloc(2U, sizeof *history);
-    assert(history != NULL);
-
     static const struct {
         int header_ok;
         int block_ok;
@@ -369,7 +381,8 @@ test_learn_through_flco(dsd_opts* opts) {
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         dsd_state* st = new_state();
-        DSD_MEMSET(history, 0, 2U * sizeof *history);
+        Event_History_I* history = calloc(2U, sizeof *history);
+        assert(history != NULL);
         init_event_history(&history[0], 0, 255);
         init_event_history(&history[1], 0, 255);
         st->event_history_s = history;
@@ -379,8 +392,8 @@ test_learn_through_flco(dsd_opts* opts) {
         expect_learned(st, 1001U + (uint32_t)i, cases[i].want, cases[i].tag);
         st->event_history_s = NULL;
         free_state(st);
+        free(history);
     }
-    free(history);
 }
 
 int

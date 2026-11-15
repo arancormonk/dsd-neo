@@ -2378,10 +2378,11 @@ suite runs under this compiler.
   header; a failed checksum (`dmr_talker_alias_lc_invalidate()`) clears it. The alias is learned once per assembly, as
   the call source's alias of the reception's scope, only when the header and every block up to the one decoded
   arrived and the text visibly ended inside them: a padding unit (all zeros or all ones, never a space) follows its
-  last character, or all three blocks are there. The Data Length does not say where the text ends (radios understate
-  it, and a name learned short would be kept by the group file); it only has to be a length the format can hold. So a
-  radio that pads with spaces, or whose alias exactly fills the header and fewer than three blocks, is shown but never
-  learned (a decided limit). A block that completes the set out of order waits for the next cycle's decode; an empty
+  last character, all three blocks are there, or the text exactly fills what arrived and the header's Data Length is
+  exactly that many units (a six-character callsign sent in the header alone). The Data Length alone does not say
+  where the text ends (radios understate it, and a name learned short would be kept by the group file). So an alias
+  padded with spaces to the edge of what arrived, or one that fills it while its Data Length says otherwise (an
+  understated length, the KE8NAX sample's 2 for six characters), is shown but never learned (a decided limit). A block that completes the set out of order waits for the next cycle's decode; an empty
   alias and one with a U+FFFD are never learned. Tests:
   `DMR_TALKER_ALIAS_UTF8`, `DMR_TALKER_ALIAS_UTF16`, `DMR_TALKER_ALIAS_HEADER_LEN`, `DMR_ALIAS_LEARN`.
 - Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the

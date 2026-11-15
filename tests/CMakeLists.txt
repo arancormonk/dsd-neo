@@ -351,6 +351,7 @@ target_include_directories(
     dsd-neo_test_dmr_decoder_stubs
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
+target_link_libraries(dsd-neo_test_dmr_decoder_stubs PRIVATE dsd-neo_warnings)
 
 # Links dsd-neo_runtime without its usage requirements, so a test can compile
 # decoder sources with its own feature macros: a SoapySDR-only or Airspy-only

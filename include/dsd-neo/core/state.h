@@ -581,8 +581,8 @@ typedef struct nxdn_alias_assembly {
  * this epoch and source on this tuning generation. A header of another format, length, text or binding restarts it; a
  * block under another binding, or one that differs from the block already held, ends it until the next header. The
  * alias is learned (dsd_alias_learn_radio()) once, when the header and every block up to the one decoded arrived and
- * the text visibly ended inside them: padding follows it, or all three blocks are there (dmr_talker_alias_lc_decode();
- * the Data Length is not trusted for where the text ends).
+ * the text visibly ended inside them: padding follows it, all three blocks are there, or it exactly fills them and
+ * the Data Length agrees (dmr_talker_alias_lc_decode(); the Data Length alone is not trusted for where the text ends).
  */
 typedef struct dmr_talker_alias_assembly {
     uint8_t mask;    /* bit 0 the header, bit n block n; 0: no assembly */

@@ -1164,11 +1164,25 @@ dmr_talker_alias_padding_seen(const uint8_t* bits, uint8_t char_size, uint16_t e
     return 0;
 }
 
+// Whether the text, its last character before unit @p end of the @p max_chars units the pieces up to @p block_num
+// hold, visibly ended there: all three blocks arrived, the text exactly fills them and the Data Length @p block_len
+// agrees, or padding follows it.
+static int
+dmr_talker_alias_text_ended(const uint8_t* bits, uint8_t char_size, uint8_t block_len, uint8_t block_num, uint16_t end,
+                            uint16_t max_chars) {
+    if (block_num == 3U || (end == max_chars && end == block_len)) {
+        return 1;
+    }
+    return dmr_talker_alias_padding_seen(bits, char_size, end, max_chars);
+}
+
 // Learn the alias @p alias_string, decoded over the @p max_chars units the header and blocks up to @p block_num hold,
-// once per assembly. The text must have visibly ended inside what arrived: padding follows its last character, or the
-// header and all three blocks are there (nothing more can come). The Data Length is not trusted to say where the
-// text ends (radios understate it: a learned name would be cut and the group file would keep it); it only has to be a
-// length the format can hold. Every piece from the header to @p block_num must have arrived under the assembly's
+// once per assembly. The text must have visibly ended inside what arrived: padding follows its last character, the
+// header and all three blocks are there (nothing more can come), or the text exactly fills what arrived and the
+// header's Data Length says exactly that many units (a spec-compliant alias that fills its last PDU, such as a
+// six-character callsign in the header alone). The Data Length alone is not trusted to say where the text ends
+// (radios understate it: a learned name would be cut and the group file would keep it); a space never counts as an
+// end, since names contain spaces. Every piece from the header to @p block_num must have arrived under the assembly's
 // binding (dmr_talker_alias_note_header() / _note_block()). An empty alias and one with a U+FFFD are not learned.
 static void
 dmr_talker_alias_maybe_learn(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, uint16_t end,
@@ -1181,10 +1195,8 @@ dmr_talker_alias_maybe_learn(const dsd_opts* opts, dsd_state* state, uint8_t slo
         || block_len == 0U || block_len > dmr_talker_alias_max_units(char_size)) {
         return;
     }
-    if (block_num != 3U && !dmr_talker_alias_padding_seen(state->dmr_pdu_sf[slot], char_size, end, max_chars)) {
-        return;
-    }
-    if (strstr(alias_string, "\xEF\xBF\xBD") != NULL) {
+    if (!dmr_talker_alias_text_ended(state->dmr_pdu_sf[slot], char_size, block_len, block_num, end, max_chars)
+        || strstr(alias_string, "\xEF\xBF\xBD") != NULL) {
         return;
     }
     // Room for the longest alias decoded whole (27 ISO 8-bit octets of 2 UTF-8 bytes each); the learn cuts it to a row
