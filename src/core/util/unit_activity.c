@@ -574,17 +574,16 @@ dsd_unit_activity_freeze_name(const dsd_state* state, dsd_unit_activity* row) {
     if (state == NULL || row == NULL) {
         return;
     }
-    const dsd_ua_identity* named = NULL;
-    if (row->assigned.valid && row->assigned.subtype == DSD_UA_ID_RADIO) {
-        named = &row->assigned;
-    } else if (row->subject.valid && row->subject.subtype == DSD_UA_ID_RADIO
-               && dsd_unit_activity_identity_at_home(state, &row->subject)) {
-        named = &row->subject;
-    }
     char mode[8];
     char name[DSD_SOURCE_ALIAS_NAME_MAX];
-    if (named == NULL
-        || !dsd_source_label_lookup_scoped(state, NULL, named->id, mode, sizeof mode, name, sizeof name)) {
+    /* The assigned identity first; when it has no name, the subject at home (as the view names a live row). */
+    const int found =
+        (row->assigned.valid && row->assigned.subtype == DSD_UA_ID_RADIO
+         && dsd_source_label_lookup_scoped(state, NULL, row->assigned.id, mode, sizeof mode, name, sizeof name))
+        || (row->subject.valid && row->subject.subtype == DSD_UA_ID_RADIO
+            && dsd_unit_activity_identity_at_home(state, &row->subject)
+            && dsd_source_label_lookup_scoped(state, NULL, row->subject.id, mode, sizeof mode, name, sizeof name));
+    if (!found) {
         return;
     }
     /* A name that fills the field is copied unterminated; the push cuts it at a character boundary. */

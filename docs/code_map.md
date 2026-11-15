@@ -10414,8 +10414,8 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   0x5C / 0xDC / MBT / LC 0x55 / 0x5B (reports: subject the reporting source, the target as recipient, value the 16-bit
   status, User Status high octet, or message), Status Query 0x5A / 0xDA / MBT (command to the target), Call Alert 0x5F /
   0xDF / MBT, Unit-to-Unit 0x45 / 0xC5 and telephone 0x4A Answer Requests, and the TSBK 0x2E Authentication Command
-  (target SUID). An extended form's source SUID gives its identity a home (0xE4 when the Source ID is the argument's;
-  0xE5's WACN / System ID to the argument), and an extended MBT (AABC-D Figs 6.2.4-2, 6.2.10-2, 6.2.17-2, 6.2.18-2)
+  (target SUID). An extended form's source SUID gives its identity a home (0xE4 on a command operand when the Source ID is the
+  argument's; 0xE5 carries no Source ID, so its argument gets none), and an extended MBT (AABC-D Figs 6.2.4-2, 6.2.10-2, 6.2.17-2, 6.2.18-2)
   names each unit by its SUID with its WUID on the sending system as the subject's `assigned` identity. Addresses
   $FFFFFC-$FFFFFF are infrastructure, never radios (§2.3.30), and 0 names nobody. A repeated deregistration
   acknowledgement, which finds the registration gone, merges into the first one's row (the core's DEREGISTRATION key

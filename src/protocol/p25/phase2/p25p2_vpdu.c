@@ -5046,10 +5046,13 @@ p25p2_vpdu_handle_extended_function_extended_vch(p25p2_vpdu_ctx* ctx) {
                                  "EXTFUNC-X Target: %d Source: %d Function: %04X Arg: %06X; ", target, source, function,
                                  argument);
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-    /* The Source SUID names the unit the argument does when its ID is the argument's (a command's requester). */
+    /* A command's argument is the Source Address / ID (TIA-102.AABC-D Table 2.3.15-1): the Source SUID names that unit
+       when its ID is the argument's. An acknowledgement's argument is the radio acknowledging, which no text ties to
+       the Source SUID. */
     const p25_home_id source_home = {(uint32_t)source_wacn, (uint16_t)source_sys, (uint32_t)source, 1U};
+    const int command = (operand & 0x80) == 0;
     const p25_ua_ext_function f = {(uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target,
-                                   source == argument ? &source_home : NULL};
+                                   command && source == argument ? &source_home : NULL};
     p25_ua_extended_function(&origin, &f);
 }
 
@@ -5076,11 +5079,9 @@ p25p2_vpdu_handle_extended_function_extended_lcch(p25p2_vpdu_ctx* ctx) {
                                  "EXTFUNC-L Target: %d Source: %05X:%03X Function: %04X Arg: %06X; ", target,
                                  source_wacn, source_sys, function, argument);
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-    /* The LCCH form's Source SUID carries no unit ID: its WACN and System ID are the home of the unit the argument
-       names. */
-    const p25_home_id source_home = {(uint32_t)source_wacn, (uint16_t)source_sys, (uint32_t)argument, 1U};
-    const p25_ua_ext_function f = {(uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target,
-                                   &source_home};
+    /* The LCCH form carries a Source WACN and System ID but no Source ID, and no text ties them to the argument's unit:
+       the argument gets no home (the print shows them). */
+    const p25_ua_ext_function f = {(uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target, NULL};
     p25_ua_extended_function(&origin, &f);
 }
 

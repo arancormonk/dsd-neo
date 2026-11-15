@@ -620,6 +620,17 @@ test_p25_radio_command_rows(void) {
     rc |= expect_row("0xE4 inhibit", r, DSD_UA_PROTO_P25P2, DSD_UA_INHIBIT, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA);
     if (r) {
         rc |= expect_id("0xE4 subject", &r->subject, 0x006671, DSD_UA_ID_RADIO);
+        rc |= expect_home("0xE4 command requester home", &r->actor, SERVING_WACN, SERVING_SYS);
+    }
+    /* The ACK form: the argument is the radio acknowledging, which the Source SUID does not name. */
+    mac[4] = 0xFF;
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |= expect_row("0xE4 inhibit ack", r, DSD_UA_PROTO_P25P2, DSD_UA_INHIBIT, DSD_UA_ROLE_ACK,
+                     DSD_UA_RESULT_ACKNOWLEDGED);
+    if (r) {
+        rc |= expect_id("0xE4 ack subject", &r->subject, 0x000043, DSD_UA_ID_RADIO);
+        rc |= expect_u("0xE4 ack subject has no home", r->subject.home_valid, 0U);
     }
 
     /* Motorola 0x84 (MFID 0x90, length 3, function 4-5, argument 6-8, target 9-11), class $00. */
@@ -935,6 +946,14 @@ test_p25_names_at_push(void) {
     run_tsbk(&f, mac);
     r = last_row(&f);
     rc |= expect_true("local ID named", r != NULL && strcmp(r->name_frozen, "Bob") == 0);
+
+    /* A home unit whose assigned address has no name is named by its own ID, as the view names a live row. */
+    (void)dsd_alias_learn_radio(NULL, f.state, NULL, 0x00ABCF, "Carol", NULL);
+    tsbk_reg_rsp(mac, 0, SERVING_SYS, 0x00ABCF, 0x001299);
+    run_tsbk(&f, mac);
+    r = last_row(&f);
+    rc |= expect_true("unnamed assigned falls back to the home ID",
+                      r != NULL && r->assigned.valid && strcmp(r->name_frozen, "Carol") == 0);
     fixture_close(&f);
     return rc;
 }
@@ -1143,7 +1162,7 @@ test_p25_more_forms(void) {
     if (r) {
         rc |= expect_id("0xE5 subject", &r->subject, 0x00710A, DSD_UA_ID_RADIO);
         rc |= expect_id("0xE5 actor", &r->actor, 0x007109, DSD_UA_ID_RADIO);
-        rc |= expect_home("0xE5 actor home", &r->actor, OTHER_WACN, OTHER_SYS);
+        rc |= expect_u("0xE5 actor has no home (no Source ID ties it)", r->actor.home_valid, 0U);
     }
 
     /* 0x5E Radio Unit Monitor Enhanced in source mode: the source is the actor. */

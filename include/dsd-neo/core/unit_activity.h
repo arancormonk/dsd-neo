@@ -305,8 +305,9 @@ int dsd_unit_activity_identity_at_home(const dsd_state* state, const dsd_ua_iden
  * before dsd_unit_activity_push() (P25, DMR, NXDN and TETRA use this one rule, so the frozen names agree with the
  * view's live ones).
  *
- * The identity named is the row's assigned identity when it is a valid RADIO (the local ID a visiting radio was given),
- * else the subject when it is a valid RADIO at home (dsd_unit_activity_identity_at_home()). Its name is the current
+ * The name is the row's assigned identity's when it is a valid RADIO with a name (the local ID a visiting radio was
+ * given), else the subject's when it is a valid RADIO at home (dsd_unit_activity_identity_at_home()): the order the
+ * view names a live row in. Each name is the current
  * reception's (dsd_source_label_lookup_scoped() with the current scope: a learned alias of another system never names
  * it). Groups, infrastructure, TEI pieces and identities of unknown kind are never named. A producer that knows a
  * subject number belongs to another network without a home to say so (a TETRA USSI) does not call this. name_frozen is
