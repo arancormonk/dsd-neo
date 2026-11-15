@@ -6255,8 +6255,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `src/ui/terminal/unit_activity_panel.{h,c}` (no curses) holds the 8 rows with the highest seq, newest first,
     updated in place by seq, dropped on `meta.reset`, and read again from `{instance, 0}` when the name key changes; it
     builds each row's lines: time, headline, subject with its name in brackets, target, `(xN)`, then a `\--` line
-    with the reason a headline does not carry and the protocol and system when they differ from the row above. A row
-    dropped unread lies below the 8 newest (the ring keeps 1024), so the section shows no gap row.
+    with the reason a headline does not carry and the protocol and system when they differ from the row above. No gap
+    row: a row dropped unread was revised before the 1024 the ring keeps (least recently revised is evicted), and seq
+    departs from revision order only through merges, which reach just the 16 most recently revised rows
+    (`DSD_UNIT_ACTIVITY_DEDUP_LOOKBACK`); so about 1000 kept rows outrank any dropped row by seq and the loss lies
+    below the 8 shown. A larger lookback or another eviction order breaks this (`test_wrap_keeps_highest_seq`).
     `dsd_ncurses_printer.c` cuts each line to the panel (`ui_text_fit()`) and draws a warning row (`tone`) in colour
     pair 2. Tests: `UI_UNIT_ACTIVITY_PANEL` (real ring and view), `UI_NCURSES_PRINTER_HELPERS` (the drawn lines,
     stubbed view).

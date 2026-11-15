@@ -5295,7 +5295,7 @@ test_unit_activity_section(void) {
     dsd_state* state = calloc(1, sizeof(*state));
     dsd_opts* opts = calloc(1, sizeof(*opts));
     assert(state && opts);
-    ui_unit_activity_panel_reset(&ui_unit_activity_rows);
+    ui_unit_activity_panel_reset(&ui_unit_activity_state);
     g_ua_row_count = 0;
 
     reset_printw_capture();
@@ -5360,7 +5360,7 @@ test_unit_activity_section(void) {
     g_unicode_stub = 1;
 
     g_ua_row_count = 0;
-    ui_unit_activity_panel_reset(&ui_unit_activity_rows);
+    ui_unit_activity_panel_reset(&ui_unit_activity_state);
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);

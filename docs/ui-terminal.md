@@ -1322,7 +1322,7 @@ commands (inhibit, kill, radio check, ...) and status messages. The newest eight
 same words as the Activity screen in the Android and desktop apps:
 
 ```text
-| 12:34:56 Denied: Target Unit Not Valid (0x20); 1234567 [Engine 5]; TG 200 (x3)
+| 12:34:56 Denied: Target Unit Not Valid (0x20); 1234567; TG 200 (x3)
 |  \-- P25 Phase 1, WACN BEE00 SYS 123
 | 12:34:51 Joined talkgroup; 1234567 [Engine 5]; TG 100
 ```
@@ -1330,9 +1330,10 @@ same words as the Activity screen in the Android and desktop apps:
 Each row gives the time it was first heard, what was heard, the radio (with its name in brackets when the radio list
 or an over-the-air alias names it on that system), the talkgroup or other details, and `(x3)` when the same message
 was heard again within two seconds of the first. A second line gives any other reason, and the protocol and system
-whenever they change from the row above. An inhibit or kill command is drawn in red. A command row says the command
-was sent, never that the radio acted on it: a listener cannot see that. Lines longer than the terminal end in `…`.
-The section is hidden in compact view; `(none)` means nothing has been heard yet.
+whenever they change from the row above. An inhibit, kill or permanent disable command, or its acknowledgement, is
+drawn in red. A command row says the command was sent, never that the radio acted on it: a listener cannot see that.
+Lines longer than the terminal end in `…`. The section is hidden in compact view; `(none)` means nothing has been
+heard yet.
 
 ## Event History Rows
 

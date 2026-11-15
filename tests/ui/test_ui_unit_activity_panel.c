@@ -245,10 +245,58 @@ test_line_text(void) {
     free_state(st);
 }
 
+/* The ring wraps past the panel's cursor (rows dropped unread, some older rows kept alive by merges): the panel still
+ * shows the 8 highest seq, newest first, so a loss always lies below the rows shown and the section needs no gap row. */
+static void
+test_wrap_keeps_highest_seq(void) {
+    dsd_state* st = new_state();
+    dsd_decode_clock_use_test(T0_NS);
+    tune_p25(st);
+    ui_unit_activity_panel* panel = new_panel();
+    for (uint32_t i = 0U; i < 3U; i++) {
+        dsd_unit_activity r = join_row(1U + i);
+        assert(dsd_unit_activity_push(st, &r) == 1);
+    }
+    update_from(panel, st);
+    assert(panel->count == 3);
+    const dsd_app_unit_activity_cursor before = panel->cursor;
+
+    const uint32_t flood = (uint32_t)DSD_UNIT_ACTIVITY_CAPACITY + 100U;
+    for (uint32_t i = 0U; i < flood; i++) {
+        dsd_unit_activity r = join_row(10001U + i);
+        assert(dsd_unit_activity_push(st, &r) == 1);
+        if (i >= 5U && i % 10U == 0U) {
+            dsd_unit_activity again = join_row(10001U + i - 5U); /* an older row, merged and kept alive */
+            assert(dsd_unit_activity_push(st, &again) == 0);
+        }
+    }
+
+    /* The ring did drop rows after the panel's cursor. */
+    dsd_state* snap = snapshot_of(st);
+    dsd_app_unit_activity_cursor probe = before;
+    dsd_app_unit_activity_meta meta;
+    assert(dsd_app_unit_activity_rows(snap, &probe, panel->page, 1, &meta) == 1);
+    assert(meta.lost == 1U && meta.reset == 0U);
+    free_state(snap);
+
+    update_from(panel, st);
+    assert(panel->count == UI_UNIT_ACTIVITY_SHOWN);
+    const uint64_t newest = 3U + flood;
+    char id[16];
+    for (int i = 0; i < panel->count; i++) {
+        assert(panel->rows[i].seq == newest - (uint64_t)i);
+        DSD_SNPRINTF(id, sizeof id, "%u", (unsigned)(10001U + flood - 1U - (uint32_t)i));
+        assert(strcmp(panel->rows[i].subject_text, id) == 0);
+    }
+    free(panel);
+    free_state(st);
+}
+
 int
 main(void) {
     test_no_log();
     test_newest_rows_and_merges();
+    test_wrap_keeps_highest_seq();
     test_rename_updates_rows();
     test_line_text();
     printf("UI_UNIT_ACTIVITY_PANEL: OK\n");

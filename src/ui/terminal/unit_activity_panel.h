@@ -10,8 +10,11 @@
  *
  * The panel holds the UI_UNIT_ACTIVITY_SHOWN rows with the highest seq (the top of the newest-first list the Qt screen
  * shows), newest first. A merge updates its row in place by seq, so a repeated message raises the row's count and never
- * moves it. A row the ring dropped before it was read is older than the 1024 rows the ring keeps, far more than the
- * section shows, so it falls below them and the section shows no gap row. When a row's name could change
+ * moves it. No gap row: a row the ring dropped before it was read was revised before the 1024 rows the ring keeps
+ * (it evicts the least recently revised), and seq follows revision order but for merges, which only reach the
+ * DSD_UNIT_ACTIVITY_DEDUP_LOOKBACK (16) most recently revised rows; so about 1000 kept rows have a higher seq than any
+ * dropped one, far more than the section shows, and the loss falls below them. A larger lookback or another eviction
+ * order breaks this (UI_UNIT_ACTIVITY_PANEL test_wrap_keeps_highest_seq). When a row's name could change
  * (dsd_app_unit_activity_name_key()), the panel reads the log again from its start and updates the rows it holds.
  *
  * Threading: the UI thread, from snapshots; the panel never reads the live decoder state.
