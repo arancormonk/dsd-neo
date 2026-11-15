@@ -45,6 +45,14 @@ extern "C" {
 const dsd_state* dsd_app_get_latest_snapshot(void);
 
 /**
+ * @brief Wipe the key material of the buffer dsd_app_get_latest_snapshot() returns (DSD_SECURE_ZERO), as the stop
+ * wipes the published copy's. Called by the reading thread once it reads no more (the terminal UI thread as it exits):
+ * the stop leaves that buffer to the thread's next read, which never comes. A later read copies the published state
+ * again.
+ */
+void dsd_app_snapshot_consumer_wipe_keys(void);
+
+/**
  * @brief Latest published options snapshot.
  * @return Read-only snapshot, or NULL before the first publish.
  */

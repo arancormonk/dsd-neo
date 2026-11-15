@@ -220,7 +220,15 @@ stopped_session_snapshot_keeps_no_key(void) {
     dsd_app_frontend_runtime_start(&opts, &state);
     const dsd_state* snapshot = dsd_app_get_latest_snapshot();
     check(snapshot && snapshot_keys_are(snapshot, 0x5AU), "a running session's snapshot has its keys");
+    dsd_app_snapshot_consumer_wipe_keys();
+    check(snapshot && snapshot_keys_are(snapshot, 0U), "a reader's wipe clears its buffer's keys");
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot_keys_are(snapshot, 0x5AU), "its next read in a running session copies them again");
     dsd_app_frontend_runtime_stop();
+    /* A reader that reads no more (the terminal UI thread at its exit) wipes its own buffer, with no next read. */
+    const dsd_state* last_read = snapshot;
+    dsd_app_snapshot_consumer_wipe_keys();
+    check(last_read && snapshot_keys_are(last_read, 0U), "a reader that read its last keeps no key in its buffer");
     snapshot = dsd_app_get_latest_snapshot();
     check(snapshot && snapshot_keys_are(snapshot, 0U), "a stopped session's snapshot keeps no key");
     check(snapshot && snapshot->payload_algid == 0x21, "a stopped session's snapshot keeps the rest");

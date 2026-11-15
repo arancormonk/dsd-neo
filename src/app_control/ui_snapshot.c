@@ -648,6 +648,16 @@ dsd_app_snapshot_wipe_keys(void) {
     dsd_mutex_unlock(&g_mu);
 }
 
+void
+dsd_app_snapshot_consumer_wipe_keys(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    ui_snapshot_wipe_key_copies(&g_consume);
+    g_consume_wipe_keys = 0;
+    g_consume_needs_retry = 1;
+    dsd_mutex_unlock(&g_mu);
+}
+
 const dsd_state*
 dsd_app_get_latest_snapshot(void) {
     ensure_mu_init();
