@@ -11858,7 +11858,16 @@ EN 300 392-7 annex A; `tetra_mm_pdu.h`). The dispatchers (`tetra_mac_parse_schd(
 `tetra_mm_dispatch()`) decode through the same readers and act only on a complete PDU: the summary line, the call event,
 the notice, the SDS reassembly, the KSG an SCK Provide of a trunked mode SCK (SCK use 0, EN 300 392-7 table A.101;
 SCKs for direct mode alone name no trunked algorithm) or a GCK Provide names, and the KSG the ciphering parameters of a
-D-LOCATION UPDATE COMMAND or REJECT name for the serving network (not the MS's network of its address extension). Of
+D-LOCATION UPDATE COMMAND or REJECT name for the serving network (not the MS's network of its address extension).
+D-LOCATION UPDATE ACCEPT and REJECT carry no ISSI (EN 300 392-2 clause 16.4.1 note 5), so `tetra_mm_dispatch_as()`
+takes the MAC address the TM-SDU came with (`tetra_mm_addr`: SSI, USSI, SMI or event label, the encrypted flag, the
+cell's MCC/MNC; `mle_mm_addr()` in `tetra_mle.c`, for a PDU behind its own discriminator and for the MM SDU of a
+D-NEW-CELL or D-PREPARE-FAIL) and the summary line names the MS by it: only a clear SSI or USSI is a radio
+(`tetra_mm_addr_radio_ssi()`); an SMI is shown as a management identity and an encrypted short identity names nobody.
+The ACCEPT's SSI element is the ASSI or (V)ASSI given to that MS (`assigned=`), and the accept type (table 16.68),
+location update type (table 16.67) and reject cause (table 16.81) are named. D-DISABLE / D-ENABLE print the
+Intent/confirm element as `stage=intent` or `stage=confirm` (EN 300 392-7 table A.68): a command either way, never an
+outcome. Tests: `TETRA_MM_ADDRESS`. Of
 signalling, `tetra_state_t` keeps only what the decoder reads back: the cell's main carrier, band, offset and location
 area with its broadcast security (the extended services broadcast's security information, EN 300 392-7 table A.104, and
 the BS service details' air interface encryption bit, each kept until the next SYSINFO that carries it), the KSG

@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/runtime/decode_clock.h>
 
@@ -1843,6 +1844,37 @@ tetra_mle_decode(const uint8_t* bits, int nbits, tetra_mle_pdu* out) {
     return tetra_bits_ok(&r) && k_decoders[out->type & 7u](&r, out);
 }
 
+/* The MAC address an MM PDU came with (tetra_mm_addr), with the network of the cell it was decoded on. */
+static tetra_mm_addr
+mle_mm_addr(const tetra_state_t* ts, const tetra_mac_sdu* sdu) {
+    tetra_mm_addr a = {0};
+    if (!sdu) {
+        return a;
+    }
+    a.valid = 1;
+    if (ts->net_known && !ts->dmo) {
+        a.mcc = ts->mcc;
+        a.mnc = ts->mnc;
+    }
+    if (!sdu->has_addr) {
+        a.type = TETRA_MM_ADDR_EVENT_LABEL; /* a MAC-D-BLCK: an event label only */
+        return a;
+    }
+    switch (sdu->addr.type) {
+        case TETRA_MAC_ADDR_SSI:
+        case TETRA_MAC_ADDR_SSI_EVENT:
+        case TETRA_MAC_ADDR_SSI_USAGE: a.type = TETRA_MM_ADDR_SSI; break;
+        case TETRA_MAC_ADDR_USSI: a.type = TETRA_MM_ADDR_USSI; break;
+        case TETRA_MAC_ADDR_SMI:
+        case TETRA_MAC_ADDR_SMI_EVENT: a.type = TETRA_MM_ADDR_SMI; break;
+        case TETRA_MAC_ADDR_EVENT_LABEL: a.type = TETRA_MM_ADDR_EVENT_LABEL; return a;
+        default: a.type = TETRA_MM_ADDR_UNKNOWN; return a;
+    }
+    a.encrypted = sdu->addr.esi;
+    a.ssi = a.encrypted ? 0u : sdu->addr.ssi;
+    return a;
+}
+
 /* Acting on a complete MLE PDU. */
 
 /* The SDU after the fields of a D-NEW-CELL or D-PREPARE-FAIL is an MM PDU without its protocol discriminator (tables
@@ -1850,8 +1882,9 @@ tetra_mle_decode(const uint8_t* bits, int nbits, tetra_mle_pdu* out) {
 static void
 mle_report_mm_sdu(const mle_ctx* ctx, const tetra_mle_pdu* pdu) {
     if (ctx->nbits - pdu->sdu_pos > 0) {
+        const tetra_mm_addr addr = mle_mm_addr(ctx->ts, ctx->sdu);
         tetra_mm_dispatch_as(ctx->bits + pdu->sdu_pos, ctx->nbits - pdu->sdu_pos, ctx->cc,
-                             tetra_mac_sdu_other_cell(ctx->sdu), ctx->opts, ctx->state);
+                             tetra_mac_sdu_other_cell(ctx->sdu), &addr, ctx->opts, ctx->state);
     }
 }
 
@@ -1933,9 +1966,11 @@ tetra_mle_dispatch_sdu(const uint8_t* bits, int nbits, int cc, tetra_mac_sdu* sd
         return;
     }
     switch (protocol) {
-        case TETRA_MLE_PD_MM:
-            tetra_mm_dispatch_as(bits + 3, nbits - 3, cc, tetra_mac_sdu_other_cell(sdu), opts, state);
+        case TETRA_MLE_PD_MM: {
+            const tetra_mm_addr addr = mle_mm_addr(ts, sdu);
+            tetra_mm_dispatch_as(bits + 3, nbits - 3, cc, tetra_mac_sdu_other_cell(sdu), &addr, opts, state);
             break;
+        }
         case TETRA_MLE_PD_CMCE: parse_cmce(&r, &ctx); break;
         case TETRA_MLE_PD_SNDCP: parse_sndcp(&r, &ctx); break;
         case TETRA_MLE_PD_MLE: parse_mle(&ctx); break;

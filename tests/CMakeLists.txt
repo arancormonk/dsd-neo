@@ -15880,6 +15880,7 @@ set(_dsd_tetra_test_sources
     cmce_pdus
     sds_pdus
     mm_dispatch
+    tetra_mm_address
     rcpc_map
     real_air_bit_trace
     sds_reference_mac
