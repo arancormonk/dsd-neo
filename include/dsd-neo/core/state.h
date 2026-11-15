@@ -3126,6 +3126,14 @@ struct dsd_state {
     uint32_t scan_y_content_seq;
     uint32_t scan_y_content_seen;
     double scan_y_content_m;
+    /* A content verdict a protocol still holds open for the -Y step (a PARTIAL note, whatever the skip-silent setting):
+     * scan_y_partial_seq moves with each, scan_y_partial_hold_ms keeps the longest hold since the -Y frame boundary last
+     * read them, which turns them into scan_y_partial_until_m, the decode-mono end of the latest hold (-1.0 for none).
+     * PARTIAL is never content: it only keeps the frame-boundary step waiting for its bounded hold. */
+    uint32_t scan_y_partial_seq;
+    uint32_t scan_y_partial_seen;
+    uint32_t scan_y_partial_hold_ms;
+    double scan_y_partial_until_m;
     int scan_voice_gate_roll_seen;
     uint8_t scan_voice_gate_hold_seen;
     uint8_t scan_voice_gate_phase;

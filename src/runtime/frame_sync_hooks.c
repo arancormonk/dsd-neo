@@ -112,6 +112,12 @@ dsd_frame_sync_hook_content_evidence(const dsd_opts* opts, dsd_state* state, int
        clock read, no owner looked up or made, no hook called. */
     if (state && level == DSD_CONTENT_EVIDENCE_PROVEN) {
         state->scan_y_content_seq++;
+    } else if (state && level == DSD_CONTENT_EVIDENCE_PARTIAL) {
+        /* A verdict still open: the -Y step waits its hold out, and counts nothing for it. */
+        state->scan_y_partial_seq++;
+        if (hold_ms > state->scan_y_partial_hold_ms) {
+            state->scan_y_partial_hold_ms = hold_ms;
+        }
     }
     /* The setting off: this one load is the rest of the frame's cost, before any owner is looked up. */
     if (!opts || !opts->scan_skip_silent) {

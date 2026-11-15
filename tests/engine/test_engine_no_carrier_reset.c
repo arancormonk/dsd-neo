@@ -13388,6 +13388,7 @@ enum {
     YC_UNCHECKED_SET, /* X2-TDMA in the decoder set: no checked content to hear */
     YC_ONCE,          /* a noCarrier() that did not step: no second yield for the same anchor */
     YC_QUIET_FIRST,   /* skip-silent on, a quiet row inside -t: the quiet yield steps it with its NOTICE */
+    YC_PARTIAL,       /* verdicts still open (PARTIAL): no yield until the latest hold, capped at 1 s, is -t old */
 };
 
 /* The row's -t run out: the hangtime anchor and the last checked content 11 s back (the rig's -t is 10 s). */
@@ -13449,6 +13450,18 @@ yc_check(dsd_opts* opts, dsd_state* state, int which) {
         rc |= expect_true("once: the first yield", g_frame_count == 1);
         run_synced_frames(opts, state, 5, -1); /* no noCarrier() between: as if it had kept the row */
         rc |= expect_true("once: no second yield for the same anchor", g_frame_count == 6 && g_rtl_tune_calls == 0);
+    } else if (which == YC_PARTIAL) {
+        const double now_m = dsd_decode_now_mono_s();
+        rc |= expect_true("open verdicts: no yield, no step", g_frame_count == 6 && g_rtl_tune_calls == 0);
+        rc |= expect_true("open verdicts: never content",
+                          state->scan_y_content_seq == 0U && state->scan_y_content_m < now_m - 10.0);
+        rc |= expect_true("open verdicts: the hold capped at 1 s",
+                          state->scan_y_partial_until_m > now_m + 0.5 && state->scan_y_partial_until_m <= now_m + 1.01);
+        state->scan_y_partial_until_m = now_m - 11.0; /* the latest hold ended -t ago */
+        run_synced_frames(opts, state, 5, -1);
+        rc |= expect_true("the hold ended -t ago: yields", g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("and steps", g_rtl_tune_calls == 1);
     } else if (which == YC_QUIET_FIRST) {
         rc |= expect_true("quiet first: yields at the first boundary", g_frame_count == 1);
         noCarrier(opts, state);
@@ -13479,6 +13492,9 @@ yc_case(int which, int on) {
     yc_setup(opts, state, which, base_hz);
     if (which == YC_CALL) {
         run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    } else if (which == YC_PARTIAL) {
+        /* A hold longer than any gate's: the rule caps it at SCAN_QUIET_PENDING_MAX_MS. */
+        run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PARTIAL, 5000U);
     } else {
         run_synced_frames(opts, state, 5, -1);
     }
@@ -13494,7 +13510,7 @@ yc_case(int which, int on) {
 static int
 test_y_frames_with_no_checked_content_leave(void) {
     int rc = 0;
-    for (int which = YC_NOISE; which <= YC_QUIET_FIRST; which++) {
+    for (int which = YC_NOISE; which <= YC_PARTIAL; which++) {
         if (which != YC_QUIET_FIRST) {
             rc |= yc_case(which, 0);
         }

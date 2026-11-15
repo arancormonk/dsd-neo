@@ -4390,8 +4390,11 @@ live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state
     if (opts->scanner_mode != 1 || (dsd_decode_time() - state->last_cc_sync_time) <= opts->trunk_hangtime) {
         return 0;
     }
-    const double mark_m =
+    double mark_m =
         state->scan_y_content_m > state->last_cc_sync_time_m ? state->scan_y_content_m : state->last_cc_sync_time_m;
+    if (state->scan_y_partial_until_m > mark_m) {
+        mark_m = state->scan_y_partial_until_m; /* a verdict still open: wait for its hold to end */
+    }
     if (dsd_decode_now_mono_s() - mark_m <= (double)opts->trunk_hangtime
         || !live_scanner_y_frame_step_may_decide(opts, state)) {
         return 0;
@@ -4407,6 +4410,32 @@ live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state
     return owner->y_frame_yield_epoch != *out_epoch || owner->y_frame_yield_mark_ms != *out_mark_ms;
 }
 
+/* What the frames since the last boundary noted, for the -Y step: checked content becomes its time (the frame's end),
+   and a verdict still open (PARTIAL) the end of its hold, bounded by SCAN_QUIET_PENDING_MAX_MS. */
+static void
+live_scanner_y_note_frame_content(dsd_state* state) {
+    if (state->scan_y_content_seq == state->scan_y_content_seen
+        && state->scan_y_partial_seq == state->scan_y_partial_seen) {
+        return;
+    }
+    const double now_m = dsd_decode_now_mono_s();
+    if (state->scan_y_content_seq != state->scan_y_content_seen) {
+        state->scan_y_content_seen = state->scan_y_content_seq;
+        state->scan_y_content_m = now_m;
+    }
+    if (state->scan_y_partial_seq != state->scan_y_partial_seen) {
+        state->scan_y_partial_seen = state->scan_y_partial_seq;
+        const uint32_t hold_ms = state->scan_y_partial_hold_ms < SCAN_QUIET_PENDING_MAX_MS
+                                     ? state->scan_y_partial_hold_ms
+                                     : SCAN_QUIET_PENDING_MAX_MS;
+        state->scan_y_partial_hold_ms = 0U;
+        const double until_m = now_m + (double)hold_ms / 1000.0;
+        if (until_m > state->scan_y_partial_until_m) {
+            state->scan_y_partial_until_m = until_m;
+        }
+    }
+}
+
 /* The -Y frame-boundary step: the checked content the frame's gates noted becomes its time, then, when the rule says
    so, the loop ends and noCarrier() decides, with the pair it yielded for noted. */
 static int
@@ -4414,11 +4443,7 @@ live_scanner_y_content_frame_yield(const dsd_opts* opts, dsd_state* state) {
     if (opts->scanner_mode != 1) {
         return 0; /* off -Y, the one compare */
     }
-    if (state->scan_y_content_seq != state->scan_y_content_seen) {
-        /* Checked content since the last boundary: its time is now, the frame's end. */
-        state->scan_y_content_seen = state->scan_y_content_seq;
-        state->scan_y_content_m = dsd_decode_now_mono_s();
-    }
+    live_scanner_y_note_frame_content(state);
     uint64_t epoch = 0U;
     int64_t mark_ms = 0;
     if (!live_scanner_y_frames_carry_nothing(opts, state, &epoch, &mark_ms)) {

@@ -23441,8 +23441,14 @@ test_scan_quiet_evidence_hook_off_is_one_load(void) {
     dsd_frame_sync_hook_content_evidence(&opts, &state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
     dsd_frame_sync_hook_content_evidence(NULL, &state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     int rc = qt_expect("off: the engine is not asked", g_qt_evidence_calls == 0);
-    /* The -Y step's checked content (issue #834 item 3) is noted whatever the setting: PROVEN only, one store each. */
+    /* The -Y step's checked content (issue #834 item 3) is noted whatever the setting: PROVEN only, one store each. An
+       open verdict (PARTIAL) moves its own count and keeps its hold for the -Y step's frame boundary. */
     rc |= qt_expect("off: PROVEN notes move the -Y content count, PARTIAL does not", state.scan_y_content_seq == 2U);
+    rc |= qt_expect("off: PARTIAL notes move the open-verdict count and keep the hold",
+                    state.scan_y_partial_seq == 1U && state.scan_y_partial_hold_ms == 160U);
+    dsd_frame_sync_hook_content_evidence(&opts, &state, DSD_CONTENT_EVIDENCE_PARTIAL, 80U);
+    rc |=
+        qt_expect("off: the longest hold kept", state.scan_y_partial_seq == 2U && state.scan_y_partial_hold_ms == 160U);
     rc |=
         qt_expect("off: no scan owner made", dsd_state_ext_get_const(&state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) == NULL);
     opts.scan_skip_silent = 1;

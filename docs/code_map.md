@@ -659,16 +659,19 @@ Generated (do not edit/commit):
       it, tone gate OFF, no analog carrier, which never reads open while synced), the hangtime rule `noCarrier()` applies
       is due (`now - last_cc_sync_time > -t`; the DMR, P25 Phase 1 and 2, ProVoice and EDACS hunts stamp that anchor on
       raw syncs, so those rows keep their old timing), no content a protocol's CRC/FEC gate passed for `-t`
-      (`dsd_state::scan_y_content_m`, the later of it and the anchor's decode-mono time; PARTIAL never counts), the
-      decoder set has such content to hear (`scan_quiet_decoder_set_unchecked()`: X2-TDMA, ProVoice and TETRA sets are
-      left alone), nothing keeps the row (`live_scanner_y_frame_step_may_decide()`: hold, awaited tune, typed step in
-      flight, avoided row, no other row), and it has not yielded for this landing epoch and anchor yet
-      (`dsd_engine_scan_owner::y_frame_yield_epoch`, `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the row is
-      never repeated per frame. Checked content reaches it with no hook and no allocation: the content-evidence wrapper
-      (`dsd_frame_sync_hook_content_evidence()`) moves `dsd_state::scan_y_content_seq` for every PROVEN note before its
-      setting test, and the boundary turns a move into the decode time. A real dPMR, D-STAR, YSF, M17 or NXDN call
-      (whose frames stamp no anchor, or only once confirmed) keeps the row through those checks, encrypted or locked out
-      alike. Off -Y the boundary costs one compare. The NOTICE names the row
+      (`dsd_state::scan_y_content_m`, the latest of it, the anchor's decode-mono time and the end of the latest open
+      verdict's hold, `dsd_state::scan_y_partial_until_m`; PARTIAL never counts as content, it only delays the step by
+      its hold, capped at `SCAN_QUIET_PENDING_MAX_MS`, so a D-STAR voice superframe still waiting on its header is not
+      cut), the decoder set has such content to hear (`scan_quiet_decoder_set_unchecked()`: X2-TDMA, ProVoice and
+      TETRA sets are left alone), nothing keeps the row (`live_scanner_y_frame_step_may_decide()`: hold, awaited
+      tune, typed step in flight, avoided row, no other row), and it has not yielded for this landing epoch and anchor
+      yet (`dsd_engine_scan_owner::y_frame_yield_epoch`, `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the
+      row is never repeated per frame. Checked content reaches it with no hook and no allocation: the content-evidence
+      wrapper (`dsd_frame_sync_hook_content_evidence()`) moves `dsd_state::scan_y_content_seq` for every PROVEN note, and
+      `scan_y_partial_seq` with the longest `scan_y_partial_hold_ms` for every PARTIAL one, before its setting test; the
+      boundary (`live_scanner_y_note_frame_content()`) turns a move into the decode time or the hold's end. A real dPMR,
+      D-STAR, YSF, M17 or NXDN call (whose frames stamp no anchor, or only once confirmed) keeps the row through those
+      checks, encrypted or locked out alike. Off -Y the boundary costs one compare. The NOTICE names the row
       (`row N`, 1-based) and, as for the trunk scan, logs the decision before the step runs. Tests: `ENGINE_TRUNK_SCAN`
       (`test_scan_quiet_tick_*`: the skip through the pass and its tick with the exact NOTICE, a lost guard, keep timing
       from a READY result for each mutation, a hold and activity, the dwell on the same tick, a tone check
@@ -676,7 +679,8 @@ Generated (do not edit/commit):
       visits that request nothing, the setting off and a busy channel advancing at the same pass;
       `test_scan_quiet_y_ready_declines_at_its_own_sites`), `ENGINE_NO_CARRIER_RESET` (`test_scan_quiet_decisions()`:
       typed and untyped -Y skips through `noCarrier()` over a link-wrapped tap, the -Y step at frame boundaries for
-      frames with no checked content and every case that must keep the row (`test_y_frames_with_no_checked_content_leave()`),
+      frames with no checked content, every case that must keep the row and an open verdict's capped hold
+      (`test_y_frames_with_no_checked_content_leave()`),
       every landing path measured as it lands
       and its failures and supersessions arming nothing (`yq_landing_case()`), busy, held, single-row, heard-voice,
       qualifying and qualifying-busy rows, an avoided row, a walk waiting on its tune, a typed step in flight, an open
