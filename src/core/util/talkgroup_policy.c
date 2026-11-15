@@ -3030,17 +3030,25 @@ tg_policy_append_lists_incomplete(const tg_policy_append_lists* lists) {
     return 0;
 }
 
-/* A list held aside that stands for the file takes the appended row too, as its next load of the file would (the file's
- * first row for an ID wins, so a list with a row for the ID keeps it). Otherwise its next rewrite of the file would drop
- * the row just appended. Its baseline already counts the row, so a list that cannot store it (out of memory) no longer
- * holds every row of its file: it is marked incomplete, and refuses to be written back until it is reloaded. */
+/* A list held aside that stands for the file takes the appended row too, as its next load of the file would read it (the
+ * file's first row for an ID wins, so a list with a row for the ID keeps it). Otherwise its next rewrite of the file
+ * would drop the row just appended. A scoped row is read back as a learned row of its scope; a row without a scope is
+ * written as a plain row, which a load reads as an imported row, so it is mirrored as one and ranks as the reload would
+ * rank it. Its baseline already counts the row, so a list that cannot store it (out of memory) no longer holds every
+ * row of its file: it is marked incomplete, and refuses to be written back until it is reloaded. */
 static void
 tg_policy_store_mirror_learned(dsd_tg_policy_context* ctx, const dsd_tg_policy_entry* entry) {
-    const tg_policy_exact_rows rows = tg_policy_find_exact_rows(ctx, entry->id_start, &entry->scope);
-    if (rows.user >= 0 || rows.imported_alias >= 0 || rows.learned_alias >= 0) {
+    dsd_tg_policy_entry row = *entry;
+    if (!tg_policy_entry_scoped(entry)) {
+        row.source = DSD_TG_POLICY_SOURCE_IMPORTED;
+        DSD_MEMSET(&row.scope, 0, sizeof(row.scope));
+    }
+    const tg_policy_exact_rows rows = tg_policy_find_exact_rows(ctx, row.id_start, &row.scope);
+    if (rows.user >= 0 || rows.imported_alias >= 0
+        || (row.source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS && rows.learned_alias >= 0)) {
         return;
     }
-    if (tg_policy_store_append_kind(ctx, entry, 0) != 0) {
+    if (tg_policy_store_append_kind(ctx, &row, 0) != 0) {
         ctx->incomplete = 1;
     }
 }

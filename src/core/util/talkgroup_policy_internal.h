@@ -53,8 +53,8 @@ int dsd_tg_policy_rows_hash_line(uint64_t* hash, const dsd_tg_policy_group_heade
 int dsd_tg_policy_rows_hash_file(const char* path, uint64_t* hash, dsd_tg_policy_load_report* report);
 
 /* A learned alias row's scope in the group file (docs/csv-formats.md): one cell `scope=<kind>:<a>:<b>`, kind `p25`,
- * `dmr`, `nxdn` or `tetra` and a, b in hexadecimal (<dsd-neo/core/alias_learn.h>), after every column the header
- * models. */
+ * `dmr`, `nxdn`, `tetra` or `p25nac` and a, b in hexadecimal (<dsd-neo/core/alias_learn.h> gives a and b per kind),
+ * after every column the header models. */
 #define DSD_TG_POLICY_SCOPE_PREFIX   "scope="
 #define DSD_TG_POLICY_SCOPE_TEXT_MAX 32
 /* Write @p scope's cell into @p out: 1 written, 0 for an invalid scope or a buffer too small (@p out emptied). */

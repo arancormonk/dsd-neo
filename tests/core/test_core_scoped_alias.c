@@ -18,8 +18,10 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -27,6 +29,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -712,6 +715,144 @@ test_malformed_scope_cell(void) {
     tune_system(f.st, WACN_A, SYS_A);
     expect_true("an imported row names the radio everywhere", radio_name_is(f.st, RID, "Odd"));
     fixture_close(&f);
+
+    /* A hand-typed scope cell on a talkgroup row never makes it a radio's alias. */
+    fixture_open(&f, 1);
+    write_file(f.group_path, "id,mode,name\n100,A,Dispatch,,scope=p25:BEE00:123\n101,B,Quiet,scope=p25:BEE00:123\n");
+    expect_true("file with scoped talkgroup rows loads", dsd_tg_policy_reload_group_file(f.opts, f.st) == 0);
+    int talkgroup_rows = 0;
+    for (size_t i = 0; dsd_tg_policy_entry_at(f.st, i, &row); i++) {
+        talkgroup_rows += row.source == DSD_TG_POLICY_SOURCE_IMPORTED && !row.scope.valid;
+    }
+    expect_true("scope cells on talkgroup rows are ignored", talkgroup_rows == 2);
+    tune_system(f.st, WACN_A, SYS_A);
+    char tg_name[64] = {0};
+    expect_true("the talkgroup row still decides and labels its talkgroup",
+                dsd_tg_policy_lookup_group_label(f.st, 100U, NULL, 0, tg_name, sizeof tg_name)
+                    && strcmp(tg_name, "Dispatch") == 0);
+    fixture_close(&f);
+}
+
+/* The scope cell round-trips under the other header shapes: a tags header (metadata one column past the empty tags
+ * cell) and an extended policy header, for the append, the reload and the rewrite. */
+static void
+test_scope_cell_header_shapes(void) {
+    static const struct {
+        const char* file;
+        const char* appended;
+        const char* header_after_rewrite;
+        const char* rewritten;
+    } shapes[] = {
+        {"id,mode,name,tags\n100,A,Dispatch,ops\n", "42,D,Alice,,M,scope=p25:BEE00:123\n", "id,mode,name,tags,scope\n",
+         "42,D,Alice,,scope=p25:BEE00:123\n"},
+        {"id,mode,name,priority,preempt,audio,record,stream,tags\n100,A,Dispatch,5,false,on,on,on,ops\n",
+         "42,D,Alice,0,false,on,on,on,,M,scope=p25:BEE00:123\n",
+         "id,mode,name,priority,preempt,audio,record,stream,tags,scope\n",
+         "42,D,Alice,0,false,on,on,on,,scope=p25:BEE00:123\n"},
+    };
+
+    const dsd_alias_scope a = p25_scope(WACN_A, SYS_A);
+    for (size_t i = 0; i < sizeof shapes / sizeof shapes[0]; i++) {
+        fixture f;
+        fixture_open(&f, 1);
+        write_file(f.group_path, shapes[i].file);
+        expect_true("shape loads", dsd_tg_policy_reload_group_file(f.opts, f.st) == 0);
+        expect_true("shape learn",
+                    dsd_alias_learn_radio(f.opts, f.st, &a, RID, "Alice", "M") == DSD_TG_POLICY_LEARN_ADDED);
+        expect_true("shape append line", file_count(f.group_path, shapes[i].appended) == 1);
+        fixture_restart(&f);
+        expect_true("shape reload", dsd_tg_policy_reload_group_file(f.opts, f.st) == 0);
+        expect_true("shape reload keeps the scope",
+                    scoped_name_is(f.st, &a, RID, "Alice") && radio_name_is(f.st, RID, NULL));
+        char tags[64] = {0};
+        dsd_tg_policy_entry row;
+        expect_true("shape keeps the talkgroup's tags", dsd_tg_policy_entry_at(f.st, 0U, &row)
+                                                            && DSD_SNPRINTF(tags, sizeof tags, "%s", row.tags) > 0
+                                                            && strcmp(tags, "ops") == 0);
+        expect_true("shape edit", dsd_tg_policy_set_mode(f.st, 100U, 100U, "B") == 0);
+        expect_true("shape rewrite", dsd_tg_policy_write_group_file(f.opts, f.st) == 0);
+        expect_true("shape rewrite header", file_count(f.group_path, shapes[i].header_after_rewrite) == 1);
+        expect_true("shape rewrite line", file_count(f.group_path, shapes[i].rewritten) == 1);
+        fixture_restart(&f);
+        expect_true("shape reload after the rewrite", dsd_tg_policy_reload_group_file(f.opts, f.st) == 0);
+        expect_true("shape rewrite keeps the scope",
+                    scoped_name_is(f.st, &a, RID, "Alice") && radio_name_is(f.st, RID, NULL));
+        expect_true("shape rewrite stays complete", dsd_tg_policy_write_group_file(f.opts, f.st) == 0);
+        fixture_close(&f);
+    }
+}
+
+/* A learn while a -Y row's or trunk-scan target's own list for the same file is in effect is mirrored into the global
+ * list held aside, ranked as that list's next reload of the file would rank it: a scoped row as a learned row of its
+ * scope, an unscoped (plain) row as an imported row. */
+static void
+test_held_list_mirror(void) {
+    fixture f;
+    fixture_open(&f, 1);
+    write_file(f.group_path, "id,mode,name\n100,A,Dispatch\n");
+    expect_true("mirror load", dsd_tg_policy_reload_group_file(f.opts, f.st) == 0);
+    dsd_scan_options parsed = {0};
+    parsed.values.present = DSD_SCAN_OPT_GROUP;
+    DSD_SNPRINTF(parsed.values.group_file, sizeof(parsed.values.group_file), "%s", f.group_path);
+    dsd_key_set keys = {0};
+    dsd_scan_row_profile* profile = NULL;
+    expect_true("row profile", dsd_scan_profile_load(&parsed, 0, &profile, &keys) == 0);
+    expect_true("row groups begin", dsd_scan_groups_begin(f.st) == 0);
+    dsd_scan_groups_enter(f.st, profile);
+    expect_true("row list in effect", dsd_scan_groups_row_active(f.st));
+
+    tune_system(f.st, WACN_A, SYS_A);
+    hear_motorola(&f, 300U, RID, "Alice", 0x1U);
+    tune_system(f.st, 0U, 0U);
+    hear_motorola(&f, 300U, RID, "Plain", 0x2U);
+    expect_true("both rows appended",
+                file_count(f.group_path, "42,D,Alice,") == 1 && file_count(f.group_path, "42,D,Plain,") == 1);
+    dsd_scan_groups_leave(f.st);
+
+    tune_system(f.st, WACN_A, SYS_A);
+    char held_name[64] = {0};
+    (void)dsd_source_label_lookup(f.st, RID, NULL, 0, held_name, sizeof held_name);
+    int imported_plain = 0;
+    int scoped_alice = 0;
+    dsd_tg_policy_entry row;
+    for (size_t i = 0; dsd_tg_policy_entry_at(f.st, i, &row); i++) {
+        imported_plain += strcmp(row.name, "Plain") == 0 && row.source == DSD_TG_POLICY_SOURCE_IMPORTED;
+        scoped_alice += strcmp(row.name, "Alice") == 0 && row.scope.valid;
+    }
+    expect_true("held list mirrored the scoped row scoped", scoped_alice == 1);
+    expect_true("held list mirrored the plain row as an imported row", imported_plain == 1);
+    expect_true("held list keeps saving", dsd_tg_policy_write_group_file(f.opts, f.st) == 0);
+
+    fixture_restart(&f);
+    expect_true("reload of the file", dsd_tg_policy_reload_group_file(f.opts, f.st) == 0);
+    tune_system(f.st, WACN_A, SYS_A);
+    char reload_name[64] = {0};
+    (void)dsd_source_label_lookup(f.st, RID, NULL, 0, reload_name, sizeof reload_name);
+    expect_true("held list ranks as its reload does",
+                strcmp(held_name, reload_name) == 0 && strcmp(reload_name, "Plain") == 0);
+    dsd_scan_profile_free(profile);
+    dsd_key_set_free(&keys);
+    fixture_close(&f);
+}
+
+/* dsd_tg_policy_learn_exact() (the P25 Phase 1 LSD soft ID path) learns an entry without a scope in the reception's. */
+static void
+test_learn_exact_takes_reception_scope(void) {
+    fixture f;
+    fixture_open(&f, 0);
+    tune_system(f.st, WACN_A, SYS_A);
+    dsd_tg_policy_entry entry;
+    expect_true("entry",
+                dsd_tg_policy_make_exact_entry(RID, "D", "Soft ID", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &entry) == 0);
+    expect_true("learned", dsd_tg_policy_learn_exact(f.st, &entry) == DSD_TG_POLICY_LEARN_ADDED);
+    dsd_tg_policy_entry row;
+    expect_true("stored with A's scope", dsd_tg_policy_entry_at(f.st, 0U, &row) && row.scope.valid
+                                             && row.scope.kind == DSD_ALIAS_SCOPE_P25 && row.scope.b == SYS_A);
+    tune_system(f.st, WACN_B, SYS_B);
+    expect_true("not B's radio", radio_name_is(f.st, RID, NULL));
+    tune_system(f.st, WACN_A, SYS_A);
+    expect_true("A's radio", radio_name_is(f.st, RID, "Soft ID"));
+    fixture_close(&f);
 }
 
 int
@@ -726,6 +867,9 @@ main(void) {
     test_name_key();
     test_scope_from_rxid();
     test_malformed_scope_cell();
+    test_scope_cell_header_shapes();
+    test_held_list_mirror();
+    test_learn_exact_takes_reception_scope();
     if (g_fail) {
         return 1;
     }

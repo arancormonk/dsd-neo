@@ -2552,26 +2552,31 @@ suite runs under this compiler.
   radio's new alias holds for the session. Tests: `CORE_TALKGROUP_POLICY`, `P25_MOTOROLA_ALIAS`, `CORE_SCOPED_ALIAS`.
 - Invariant (scoped learned aliases, issue B28, `<dsd-neo/core/alias_learn.h>`): a learned row
   (`DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS`) carries `dsd_tg_policy_entry::scope`, the system of the reception it was heard
-  on: `dsd_alias_scope_current()` reads `dsd_state::rx_id` (P25 WACN/SYSID, else the NAC as kind `P25_NAC`; DMR
-  Tier III/Connect Plus network, or Capacity Plus site number + colour code; NXDN Type-C system code or Type-D system
-  ID; TETRA MCC/MNC), never the alias message's own metadata; `dsd_tg_policy_learn_exact()` takes it for an entry without one. Exact lookups by state
-  (`dsd_tg_policy_lookup_id()`, `_lookup_label()`, private-call endpoints, `dsd_source_label_lookup()`) take the
-  current scope; `dsd_tg_policy_lookup_label_scoped()` and `dsd_source_label_lookup_scoped()` take one. Precedence for
-  one ID: a talkgroup/user row, then an imported alias row (mode `D` without a scope: typed, or appended by an older
-  version), then the learned row of the lookup's scope, then a row learned with no scope (it names the radio
-  everywhere, as every learned row did before scopes). The trunk-scan targets without their own
-  `-G` list share the baseline list (`dsd_scan_groups_enter()` installs it), so scoping happens in the rows, not by
-  list. Persistence: the append writes a valid scope as a `scope=<kind>:<a hex>:<b hex>` cell after the metadata cell
-  (`dsd_tg_policy_scope_format()`, `talkgroup_policy_internal.h`); the importer (`group_apply_scope_field()`,
-  `dsd_import.c`) scans the cells past the modelled columns, and a parsed cell makes the exact row a scoped learned row
-  again; the rows hash folds the scope, and the rewrite keeps the cell (header `...,scope`). A row learned with no
-  scope (no system and no access code known) keeps the pre-scope behaviour: appended as a plain row, which reloads as
-  an imported row. Limits: two conventional P25 channels on one NAC (0x293, the default, is common) share their
-  aliases, and so do two Capacity Plus systems with the same site number and colour code (dsd-neo's own received site
-  identity stands in for a system number Capacity Plus does not send; not a protocol rule). The active-call priority refresh has no reception and reads a learned row of any scope (every learned row has
-  priority 0). `dsd_alias_name_key()` hashes the group list's context identity and generation, the radio list's
-  identity and generation and the current scope: a frontend re-resolves retained names when it changes. Tests:
-  `CORE_SCOPED_ALIAS`.
+  on: `dsd_alias_scope_current()` reads `dsd_state::rx_id`, never the alias message's own metadata, and
+  `dsd_tg_policy_learn_exact()` takes it for an entry without one. Scope kinds and their a/b: `P25` WACN/SYSID;
+  `P25_NAC` the NAC/0 (P25 without a network status); `DMR` `(trunk << 8) | Tier III model` with the raw network number
+  (Tier III, Connect Plus), or `(trunk << 8) | colour code` with the site number (Capacity Plus); `NXDN` `0x100 |
+  category` with the Type-C system code, or `0x200` with the Type-D system ID; `TETRA` MCC/MNC. Exact lookups by state
+  (`dsd_tg_policy_lookup_id()`, `_lookup_label()`, private-call endpoints, `dsd_source_label_lookup()`) take the current
+  scope; `dsd_tg_policy_lookup_label_scoped()` and `dsd_source_label_lookup_scoped()` take one. Precedence for one ID
+  (`tg_policy_find_exact_rows()`, shared by lookup, learn and the held-list mirror): a talkgroup/user row, then an
+  imported alias row (mode `D` without a scope: typed, or appended by an older version), then the learned row of the
+  lookup's scope, then a row learned with no scope (it names the radio everywhere, as every learned row did before
+  scopes). The trunk-scan targets without their own `-G` list share the baseline list (`dsd_scan_groups_enter()`
+  installs it), so scoping happens in the rows, not by list. Persistence: the append writes a valid scope as a
+  `scope=<kind>:<a hex>:<b hex>` cell after the metadata cell (`dsd_tg_policy_scope_format()`,
+  `talkgroup_policy_internal.h`); the importer (`group_apply_scope_field()`, `dsd_import.c`) scans the cells past the
+  modelled columns, and a parsed cell on an exact mode `D`/`DE` row makes it a scoped learned row again (on any other
+  mode the cell is reported and ignored, so a hand-typed cell never turns a talkgroup row into an alias); the rows hash
+  folds the scope, and the rewrite keeps the cell (header `...,scope`). A row learned with no scope (no system and no
+  access code known) keeps the pre-scope behaviour: appended as a plain row, which reloads as an imported row, and the
+  held-list mirror stores it as an imported row so the held list ranks it as its reload would. Limits: two conventional
+  P25 channels on one NAC (0x293, the default, is common) share their aliases, and so do two Capacity Plus systems with
+  the same site number and colour code (dsd-neo's own received site identity stands in for a system number Capacity Plus
+  does not send; not a protocol rule). The active-call priority refresh has no reception and reads a learned row of any
+  scope (every learned row has priority 0). `dsd_alias_name_key()` hashes the group list's context identity and
+  generation, the radio list's identity and generation and the current scope: a frontend re-resolves retained names when
+  it changes. Tests: `CORE_SCOPED_ALIAS`.
 - Invariant (the group file stands for the list, discussion #748, `<dsd-neo/core/talkgroup_policy.h>`): dsd-neo writes
   its group file back (a rewrite on every saved edit, an export, an appended alias row), so a list that is not what
   the file holds must never be written over it.

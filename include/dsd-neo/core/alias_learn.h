@@ -34,7 +34,8 @@
  * A row learned with no scope behaves as every learned row did before scopes: it names its radio on every system
  * (behind the reception scope's own learned row), and its first learn is appended to the group file as a plain row,
  * which the next start loads as an imported row. A scoped row is appended with its scope as a `scope=` cell
- * (docs/csv-formats.md), which the importer reads back into a learned, scoped row, and a rewrite keeps that cell.
+ * (docs/csv-formats.md), which the importer reads back into a learned, scoped row (on an exact mode `D` or `DE` row
+ * only: a talkgroup row's cell is ignored), and a rewrite keeps that cell.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_ALIAS_LEARN_H_

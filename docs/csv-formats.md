@@ -828,7 +828,8 @@ Important behavior:
 - When a group file is configured, edits atomically rewrite that file in table order, preserving ranges, patterns
   (in their normalized form) and modeled fields. Existing extended policy headers remain extended; otherwise the
   output is `id,mode,name,tags` when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are
-  discarded; a learned alias's `scope` cell is kept, in a last `scope` column. Android rewrites its app-private imported copy, not the original document.
+  discarded; a learned alias's `scope` cell is kept, in a last `scope` column. Android rewrites its app-private
+  imported copy, not the original document.
 - A basic group-file header is promoted to the extended policy header when any canonical row has
   `priority != 0`, `preempt` enabled, or audio/record/stream flags that differ from the mode defaults,
   so those settings survive saving and reloading even to a new file.
@@ -973,25 +974,38 @@ ID written in decimal without leading zeros:
   older versions may hold an encrypted radio's alias as a `DE` row, which reads as a talkgroup lockout: delete it if
   that number is a talkgroup you want.
 - Learned aliases are kept with the system they were heard on. Two systems can give the same radio ID to different
-  radios, so a learned alias names its radio only on the system the receiver was decoding when it heard the alias:
-  the P25 WACN and System ID (on a conventional P25 channel, which sends no network status, its NAC), the DMR Tier
-  III or Connect Plus network (Capacity Plus, which sends no network number: its site number and colour code), the
-  NXDN system code, the TETRA MCC and MNC. Two conventional channels on the same NAC, or two Capacity Plus systems
-  with the same site number and colour code, share their learned aliases. That system comes from what the receiver decoded on the
-  channel, never from the alias message itself (a Tait alias carries only a NAC). A first-learned alias is appended
-  with a `scope` cell after its metadata cell, for example
-  `1234567,D,Engine 7,FQS:BEE00.123.12D687(1234567) Moto,scope=p25:BEE00:123`: `scope=`, the kind (`p25`, `dmr`,
-  `nxdn`, `tetra` or `p25nac`) and two hexadecimal numbers (P25: WACN and System ID; `p25nac`: the NAC and 0). A file the append creates gets the header
-  `id,mode,name,metadata,scope`. On the next start such a row loads as a learned alias of that system: it names the
-  radio only there, and a later alias of that system renames it for the session. A rewrite of the file keeps the cell
-  after the modelled columns (the header then ends in `scope`). The cell is read wherever it sits past the columns
-  the header models; one that does not parse is reported and the row loads without it.
+  radios, so a learned alias names its radio only on the system the receiver was decoding when it heard the alias: the
+  P25 WACN and System ID (on a conventional P25 channel, which sends no network status, its NAC), the DMR Tier III or
+  Connect Plus network (Capacity Plus, which sends no network number: its site number and colour code), the NXDN system
+  code, the TETRA MCC and MNC. Two conventional channels on the same NAC, or two Capacity Plus systems with the same
+  site number and colour code, share their learned aliases. That system comes from what the receiver decoded on the
+  channel, never from the alias message itself (a Tait alias carries only a NAC).
+- A first-learned alias is appended with a `scope` cell after its metadata cell, for example
+  `1234567,D,Engine 7,FQS:BEE00.123.12D687(1234567) Moto,scope=p25:BEE00:123`. A file the append creates gets the
+  header `id,mode,name,metadata,scope`. The cell is `scope=<kind>:<a>:<b>`, with a and b in hexadecimal:
+
+  | Kind | a | b |
+  | --- | --- | --- |
+  | `p25` | WACN | System ID |
+  | `p25nac` | NAC (conventional P25) | `0` |
+  | `dmr` Tier III | `10x` (`x` = model 0-3) | network number |
+  | `dmr` Capacity Plus | `2xx` (`xx` = colour code) | site number |
+  | `dmr` Connect Plus | `300` | network number |
+  | `nxdn` Type-C | `10x` (`x` = category 0-2) | system code |
+  | `nxdn` Type-D | `200` | 19-bit system ID |
+  | `tetra` | MCC | MNC |
+
+- On the next start such a row loads as a learned alias of that system: it names the radio only there, and a later alias
+  of that system renames it for the session. A rewrite of the file keeps the cell after the modelled columns (the header
+  then ends in `scope`). The cell is read wherever it sits past the columns the header models, and only on an exact row
+  in mode `D` (or `DE`, which older versions wrote for an encrypted radio). A cell that does not parse, or one on a row
+  of another mode (a talkgroup row), is reported and the row loads without it.
 - A mode `D` row without a `scope` cell (one you typed, or one an older version appended) names the radio on every
   system and wins over learned aliases, as before; so does a talkgroup row for the same number. Delete such a row, or
   give it a `scope` cell, if the number is another radio on another system.
-- An alias heard before the receiver decoded the system or an access code keeps the behaviour from before: it names
-  the radio on every system (after a system's own learned alias), and it is appended as a plain row without a `scope`
-  cell, which the next start loads as an imported row.
+- An alias heard before the receiver decoded the system or an access code keeps the behaviour from before: it names the
+  radio on every system (after a system's own learned alias), and it is appended as a plain row without a `scope` cell,
+  which the next start loads as an imported row.
 
 Preemption needs the system to announce the other call **on the channel being received**. What each protocol
 provides:

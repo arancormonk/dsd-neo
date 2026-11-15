@@ -289,7 +289,10 @@ group_first_unmodelled_column(const group_policy_header* header) {
 
 /* A learned alias row dsd-neo wrote with its scope (a `scope=` cell past the modelled columns,
  * <dsd-neo/core/alias_learn.h>) loads as the learned row it was: scoped, and replaceable by a later alias of that
- * scope. Without one (or on a range or pattern row) the row loads as an imported row, as before. */
+ * scope. Only a learned alias's form takes the cell: an exact row in mode `D` (or `DE`, which older versions wrote for
+ * an encrypted radio). On a talkgroup or user row (any other mode) the cell is reported and ignored, so a hand-typed
+ * cell never turns a talkgroup row into a radio's alias. Without a cell (or on a range or pattern row) the row loads
+ * as an imported row, as before. */
 static void
 group_apply_scope_field(const group_policy_header* header, const csv_row_origin* at, size_t field_count, char** fields,
                         dsd_tg_policy_entry* entry) {
@@ -303,10 +306,15 @@ group_apply_scope_field(const group_policy_header* header, const csv_row_origin*
         if (parsed == 0) {
             continue;
         }
-        if (parsed > 0) {
+        const int learned_form = strcmp(entry->mode, "D") == 0 || strcmp(entry->mode, "DE") == 0;
+        if (parsed > 0 && learned_form) {
             entry->scope = scope;
             entry->source = DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS;
-        } else if (!at->quiet) {
+        } else if (parsed > 0 && !at->quiet) {
+            LOG_WARN("WARNING: Group file '%s' row %u has a scope on a mode %s row, which is not a learned alias; "
+                     "loaded without it.\n",
+                     at->filename, at->row, entry->mode);
+        } else if (parsed < 0 && !at->quiet) {
             LOG_WARN("WARNING: Group file '%s' row %u has invalid scope '%s'; loaded without it.\n", at->filename,
                      at->row, cell);
         }
