@@ -193,6 +193,8 @@ class MetricsModel : public QObject {
     /* The carrier on air is two-slot TDMA, as the decoder decided it (dsd_state::tdma_carrier): the Monitor keeps
        the second slot's strip in place while it holds, so the other slot's calls do not move the screen. */
     Q_PROPERTY(bool twoSlotCarrier READ twoSlotCarrier NOTIFY twoSlotCarrierChanged)
+    /* Issue #786: site roaming waits while the engine follows a trunked voice channel. */
+    Q_PROPERTY(bool callBusy READ callBusy NOTIFY callBusyChanged)
     Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
     Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
@@ -1273,6 +1275,20 @@ class MetricsModel : public QObject {
         return m_view.two_slot_carrier;
     }
 
+    /**
+     * @brief Whether the engine is following a trunked voice channel (issue #786).
+     *
+     * dsd_opts_trunk_vc_followed(), read from the options snapshot of the same frame as the other trunk readings:
+     * trunking on and a grant's voice channel tuned. Encrypted and data traffic count exactly when the engine follows
+     * them. A Hytera XPT site status raises `trunk_is_tuned` on the rest channel the receiver parks on, and trunking
+     * keeps it raised there, so on an XPT site the follow counts only while a slot's call is open. Site roaming holds
+     * a switch while this reads true; its wait cap lives with the roaming verdict, not here.
+     */
+    bool
+    callBusy() const {
+        return m_view.call_busy;
+    }
+
     const QString&
     slot1CallName() const {
         return m_view.slot_call[0].name;
@@ -2205,6 +2221,7 @@ class MetricsModel : public QObject {
     void slot2Changed();
     void leadSlotChanged();
     void twoSlotCarrierChanged();
+    void callBusyChanged();
     void controlChanged();
     void scanTimingChanged();
     void scanAvoidsChanged();
@@ -2416,6 +2433,7 @@ class MetricsModel : public QObject {
         int scan_row_listed = 0;
         dsd_app_frame_errs last_frame{};
         bool two_slot_carrier = false;
+        bool call_busy = false;
         /* Keep flags together so additions do not leave padding between the larger fields. */
         bool automatic_keys = false;
         bool direct_keys = false;
@@ -2671,6 +2689,14 @@ class MetricsModel : public QObject {
                    && squelch_auto_status == other.squelch_auto_status && squelch_gate_open == other.squelch_gate_open;
         }
 
+        /** @brief The slot calls, the lead slot, the two-slot verdict and callBusy. */
+        bool
+        slotCallsEqual(const View& other) const {
+            return slot_call[0] == other.slot_call[0] && slot_call[1] == other.slot_call[1]
+                   && lead_slot == other.lead_slot && two_slot_carrier == other.two_slot_carrier
+                   && call_busy == other.call_busy;
+        }
+
         bool
         tgLockoutsEqual(const View& other) const {
             return persist_tg_lockouts == other.persist_tg_lockouts
@@ -2711,6 +2737,8 @@ class MetricsModel : public QObject {
     static void fillSiteView(View& next, const dsd_state* snapshot);
     static void fillCrcPolicy(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     void fillSlotCalls(View& next, const dsd_state* snapshot, double now_m) const;
+    /** @brief callBusy from the options snapshot and the slot calls fillSlotCalls() just built. */
+    static void fillCallBusy(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     static void fillQualityView(View& next, const dsd_state* snapshot);
 
     /** @brief Build one slot's structured call identity from the snapshot. */

@@ -28,6 +28,7 @@
 #include <QChar>
 #include <QtGlobal>
 #include <cmath>
+#include <cstring>
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
@@ -380,10 +381,9 @@ MetricsModel::~MetricsModel() = default;
 
 bool
 MetricsModel::View::operator==(const View& other) const {
-    return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
-           && slot_call[1] == other.slot_call[1] && lead_slot == other.lead_slot
-           && two_slot_carrier == other.two_slot_carrier && controlEquals(other) && scanReadingsEqual(other)
-           && rxToneEquals(other) && rx_tone_configured_text == other.rx_tone_configured_text && toneFilterEquals(other)
+    return site == other.site && qualityEquals(other) && tunerEquals(other) && slotCallsEqual(other)
+           && controlEquals(other) && scanReadingsEqual(other) && rxToneEquals(other)
+           && rx_tone_configured_text == other.rx_tone_configured_text && toneFilterEquals(other)
            && toneFilterSettingEquals(other) && tetraEquals(other) && ui_message == other.ui_message;
 }
 
@@ -399,6 +399,7 @@ MetricsModel::publish(const View& next) {
     const bool slot2Moved = !(next.slot_call[1] == m_view.slot_call[1]);
     const bool leadMoved = next.lead_slot != m_view.lead_slot;
     const bool twoSlotMoved = next.two_slot_carrier != m_view.two_slot_carrier;
+    const bool callBusyMoved = next.call_busy != m_view.call_busy;
     const bool controlMoved = !next.controlEquals(m_view);
     const bool scanTimingMoved = !next.scanTimingEquals(m_view);
     const bool scanAvoidsMoved = !next.scanAvoidsEquals(m_view);
@@ -429,6 +430,9 @@ MetricsModel::publish(const View& next) {
     }
     if (twoSlotMoved) {
         Q_EMIT twoSlotCarrierChanged();
+    }
+    if (callBusyMoved) {
+        Q_EMIT callBusyChanged();
     }
     if (controlMoved) {
         Q_EMIT controlChanged();
@@ -1140,6 +1144,20 @@ MetricsModel::fillSlotCalls(View& next, const dsd_state* snapshot, double now_m)
     next.two_slot_carrier = snapshot->tdma_carrier != 0U;
 }
 
+/* Issue #786: busy is the engine's follow of a voice channel (dsd_opts_trunk_vc_followed()). A Hytera XPT site status
+   raises trunk_is_tuned on the rest channel the receiver parks on, with trunking on or off, and the next status raises
+   it again after every release (dmr_cspdu_xpt_update_cc_from_input()). There the flag alone is no followed call, so an
+   XPT site, which the engine names by this branding (dmr_branding_is()), is busy only while a slot's call is open. */
+void
+MetricsModel::fillCallBusy(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    next.call_busy = dsd_opts_trunk_vc_followed(opts_snapshot) != 0;
+    if (!next.call_busy || std::strcmp(snapshot->dmr_branding_sub, "XPT ") != 0) {
+        return;
+    }
+    next.call_busy = std::any_of(std::begin(next.slot_call), std::end(next.slot_call),
+                                 [](const SlotCall& call) { return call.state == DSD_APP_CALL_LINE_ACTIVE; });
+}
+
 void
 MetricsModel::fillQualityView(View& next, const dsd_state* snapshot) {
     dsd_app_p25_quality_from_state(snapshot, &next.quality);
@@ -1316,6 +1334,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot, 
      * from the decode clock. */
     const double now_m = dsd_decode_now_mono_s();
     fillSlotCalls(next, snapshot, now_m);
+    fillCallBusy(next, opts_snapshot, snapshot);
     fillQualityView(next, snapshot);
     fillSiteView(next, snapshot);
     fillCrcPolicy(next, opts_snapshot, snapshot);

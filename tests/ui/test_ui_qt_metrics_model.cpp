@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <utility>
 
+#include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
@@ -1300,6 +1301,71 @@ test_two_slot_carrier_mirrors_the_decoder() {
     model.refresh(&opts, &state);
     model.clear();
     expect("clear drops the verdict", !model.twoSlotCarrier() && changes == 4);
+    freeState(&state);
+}
+
+/* Issue #786: callBusy is dsd_opts_trunk_vc_followed() read from the options snapshot of the same frame: trunking on and
+   a voice channel tuned. A tuned flag without trunking is no follow. A Hytera XPT site status raises trunk_is_tuned on
+   the rest channel it parks on, so for XPT the follow counts only while a slot's call is open there. */
+static void
+test_call_busy_follows_the_voice_channel() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_qt::MetricsModel model;
+    int changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::callBusyChanged, [&]() { ++changes; });
+
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 0;
+    model.refresh(&opts, &state);
+    expect("trunking on the control channel is not busy", !model.callBusy() && changes == 0);
+
+    opts.trunk_is_tuned = 1;
+    model.refresh(&opts, &state);
+    expect("a followed voice channel is busy, with no call open yet", model.callBusy() && changes == 1);
+
+    opts.trunk_enable = 0;
+    model.refresh(&opts, &state);
+    expect("a tuned flag without trunking is not busy", !model.callBusy() && changes == 2);
+
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 0;
+    model.refresh(&opts, &state);
+    expect("the return to the control channel ends busy", !model.callBusy() && changes == 2);
+
+    /* XPT: parked on the rest channel, the site status's raise alone is no call. */
+    DSD_SNPRINTF(state.dmr_branding_sub, sizeof state.dmr_branding_sub, "%s", "XPT ");
+    opts.trunk_is_tuned = 1;
+    model.refresh(&opts, &state);
+    expect("an XPT rest channel with no call open is not busy", !model.callBusy() && changes == 2);
+
+    dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_DMR_BS_VOICE_POS, 1U, 4242U, 77U);
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.observed_m = dsd_decode_now_mono_s();
+    expect("an XPT call opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    model.refresh(&opts, &state);
+    expect("an XPT call open on a slot is busy",
+           model.slot2CallState() == DSD_APP_CALL_LINE_ACTIVE && model.callBusy() && changes == 3);
+
+    opts.trunk_enable = 0;
+    model.refresh(&opts, &state);
+    expect("an XPT call without trunking is not busy", !model.callBusy() && changes == 4);
+    opts.trunk_enable = 1;
+    model.refresh(&opts, &state);
+    expect("trunking back on an open XPT call is busy again", model.callBusy() && changes == 5);
+
+    expect("the XPT call ends", dsd_call_state_end(&state, 1U, dsd_decode_now_mono_s()) == 1);
+    model.refresh(&opts, &state);
+    expect("an ended XPT call is not busy",
+           model.slot2CallState() == DSD_APP_CALL_LINE_ENDED && !model.callBusy() && changes == 6);
+
+    expect("the XPT call opens again", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    model.refresh(&opts, &state);
+    model.clear();
+    expect("clear drops busy", !model.callBusy() && changes == 8);
     freeState(&state);
 }
 
@@ -3005,6 +3071,7 @@ main(int argc, char** argv) {
     test_lead_slot_keeps_earlier_call_and_quality();
     test_lead_slot_change_alone_notifies();
     test_two_slot_carrier_mirrors_the_decoder();
+    test_call_busy_follows_the_voice_channel();
     test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 0);
     test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 1);
     test_quality_without_identity(DSD_SYNC_NXDN_POS, 0);

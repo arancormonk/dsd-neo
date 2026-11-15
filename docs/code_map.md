@@ -14784,6 +14784,14 @@ Qt Quick frontend (`src/ui/qt`):
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `UI_QT_METRICS_MODEL` (`test_two_slot_carrier_mirrors_the_decoder()`),
   `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`, `tst_monitor_layout_budget.qml` `test_two_slot_*`),
   `UI_QT_QML_A11Y_CHURN` (`test_d_two_slot_hops_leave_the_monitor_still`).
+- Call busy (issue #786): `MetricsModel::callBusy` (`callBusyChanged`, its own signal) is `dsd_opts_trunk_vc_followed()`
+  on the options snapshot of the same frame as `trunkingEnabled` (`fillCallBusy()`, after `fillSlotCalls()`): trunking
+  on and a voice channel tuned; a tuned flag without trunking is no follow. A Hytera XPT site status raises
+  `trunk_is_tuned` on the rest channel the receiver parks on, trunking on or off, and raises it again after every
+  release (`dmr_cspdu_xpt_update_cc_from_input()`), so on a site the engine brands XPT (`dmr_branding_sub` `"XPT "`)
+  busy also needs a slot's call line `ACTIVE`, and the hangtime after an XPT call reads not busy. GPS site roaming
+  holds a switch while it reads true; the wait cap lives with the roaming verdict. Tests: `UI_QT_METRICS_MODEL`
+  (`test_call_busy_follows_the_voice_channel()`), `CORE_OPTS_TUNED_FREQ`.
 - Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's
   recent calls (`homeRecentList`) and the Talkgroups grid (`talkgroupGrid`) get their models from a `KeepPlace` only
   while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with

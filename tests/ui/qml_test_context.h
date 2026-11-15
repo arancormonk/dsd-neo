@@ -6427,6 +6427,8 @@ class Setup : public QObject {
         metrics[QStringLiteral("leadSlot")] = 0;
         // Whether the carrier is two-slot TDMA (dsd_state::tdma_carrier): false at rest, as on an FDMA carrier.
         metrics[QStringLiteral("twoSlotCarrier")] = false;
+        // Issue #786: the engine follows no voice channel at rest.
+        metrics[QStringLiteral("callBusy")] = false;
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
         metrics[QStringLiteral("persistTgLockouts")] = true;
