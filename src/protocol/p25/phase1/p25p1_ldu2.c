@@ -417,7 +417,7 @@ ldu2_maybe_begin_lsd_alias(dsd_state* state, const Ldu2Frame* frame) {
 static void
 ldu2_enrich_lsd_alias_if_call(dsd_state* state, const dsd_call_snapshot* call, int has_call, const char* alias) {
     if (has_call) {
-        (void)dsd_event_enrich_alias(state, 0U, call->epoch, alias);
+        (void)dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P1_POS, call->epoch, alias);
     }
 }
 

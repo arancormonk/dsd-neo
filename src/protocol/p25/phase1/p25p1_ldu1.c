@@ -436,7 +436,7 @@ p25p1_ldu1_softid_finalize_alias(dsd_state* state, int k) {
             == 0) {
             (void)dsd_tg_policy_learn_exact(state, &alias_entry);
         }
-        (void)dsd_event_enrich_alias(state, 0U, call.epoch, str);
+        (void)dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P1_POS, call.epoch, str);
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);

@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -17,6 +18,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -259,6 +261,52 @@ test_prop_complete_api(void) {
     return rc;
 }
 
+/* An NXDN alias assembled before its VCALL opened the NXDN call, while the slot still holds another protocol's open
+   call (its end never decoded): the alias is NXDN's, so that call's row takes none of it. */
+static int
+test_alias_skips_another_protocols_call(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    uint8_t bits[96];
+    int rc = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    Event_History_I* history = (Event_History_I*)calloc(2U, sizeof(*history));
+    if (history == NULL) {
+        return 1;
+    }
+    state.event_history_s = history;
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    const dsd_call_observation dmr = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 200U,
+    };
+    (void)dsd_call_state_observe(&state, &dmr, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    // Kenwood aliases publish once all four fragments arrived.
+    build_prop_msg(bits, 1U, 4U, "NXDN");
+    nxdn_alias_decode_prop(&opts, &state, bits);
+    for (uint8_t fragment = 2U; fragment <= 4U; fragment++) {
+        build_prop_msg(bits, fragment, 4U, "    ");
+        nxdn_alias_decode_prop(&opts, &state, bits);
+    }
+    rc |= expect_str("foreign-call-display", state.generic_talker_alias[0], "NXDN");
+    if (history[0].Event_History_Items[0].alias[0] != '\0') {
+        DSD_FPRINTF(stderr, "foreign-call-row: the dmr call's row took \"%s\"\n",
+                    history[0].Event_History_Items[0].alias);
+        rc = 1;
+    }
+    dsd_state_ext_free_all(&state);
+    free(history);
+    return rc;
+}
+
 int
 main(void) {
     static dsd_state state;
@@ -385,6 +433,7 @@ main(void) {
         }
         rc |= expect_size("sjis-multibyte-len", out_len, strlen(out));
     }
+    rc |= test_alias_skips_another_protocols_call();
 
     dsd_state_ext_free_all(&state);
     if (rc == 0) {

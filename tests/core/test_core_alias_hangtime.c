@@ -14,10 +14,13 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +30,15 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static int g_fail;
+
+/* The GPS decoders' Cellocator path prints through the DMR text helper, which this core-only binary does not link. */
+void
+utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
+    (void)state;
+    (void)wr;
+    (void)len;
+    (void)input;
+}
 
 static void
 expect_true(const char* label, int got) {
@@ -99,6 +111,142 @@ history_has_alias(const dsd_state* state, const char* needle) {
         }
     }
     return 0;
+}
+
+/* A fresh state whose slot @p slot holds an open call of @p protocol, @p tg / @p src, its epoch opened on the event row:
+   another protocol's call whose end never decoded (-fa, or a -Y step), which slot 0 keeps until the next call begins. */
+static dsd_state*
+foreign_call_fixture(dsd_opts* opts, int protocol, uint8_t slot, uint64_t tg, uint64_t src) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    Event_History_I* history = (Event_History_I*)calloc(2, sizeof(Event_History_I));
+    if (!state || !history) {
+        free(state);
+        free(history);
+        return NULL;
+    }
+    state->event_history_s = history;
+    init_event_history(&state->event_history_s[0], 0, 255);
+    init_event_history(&state->event_history_s[1], 0, 255);
+    state->currentslot = slot;
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = slot,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = tg,
+        .policy_target_id = tg,
+        .ota_source_id = src,
+        .observed_m = 1.0,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_sync_slot(opts, state, slot);
+    return state;
+}
+
+static void
+free_fixture(dsd_state* state) {
+    if (state) {
+        Event_History_I* history = state->event_history_s;
+        dsd_state_ext_free_all(state);
+        free(history);
+        free(state);
+    }
+}
+
+/* Whether a radio alias was learned for @p id (the talkgroup policy's runtime alias rows). */
+static int
+alias_learned_for(dsd_state* state, uint32_t id) {
+    dsd_tg_policy_lookup lookup;
+    return dsd_tg_policy_lookup_id(state, id, &lookup) == 0 && lookup.match != DSD_TG_POLICY_MATCH_NONE;
+}
+
+/* Whether the open call's row (the staged row of @p slot) took an alias or a position. */
+static int
+call_row_took_detail(const dsd_state* state, uint8_t slot) {
+    const Event_History* row = &state->event_history_s[slot].Event_History_Items[0];
+    return row->alias[0] != '\0' || row->gps_s[0] != '\0';
+}
+
+/* An alias or a position decoded before its own protocol's call opened on the slot is that protocol's, never the open
+   call of another protocol the slot still holds: that call's row takes nothing, whichever writer it comes from. */
+static void
+test_enrichment_skips_another_protocols_call(dsd_opts* opts) {
+    uint8_t input[3200];
+    uint8_t decoded[200];
+    uint8_t bits[512];
+    char label[96];
+
+    /* P25 Motorola (APX) talker alias naming a radio whose ID an open DMR call happens to carry. */
+    dsd_state* state = foreign_call_fixture(opts, DSD_SYNC_DMR_BS_VOICE_POS, 0U, 100U, 10976U);
+    build_alias_input(input, sizeof(input), 0xBEE00, 0x4C9, 10976U);
+    uint16_t num_bytes = build_alias_decoded(decoded, sizeof(decoded), "APXUNIT");
+    apx_embedded_alias_dump(opts, state, 0U, num_bytes, input, decoded);
+    expect_true("p25 apx alias leaves the dmr call's row alone", !call_row_took_detail(state, 0U));
+    expect_true("p25 apx alias shows no alias for the dmr call", state->generic_talker_alias[0][0] == '\0');
+    free_fixture(state);
+
+    /* P25 Phase 2 Harris talker alias (it names no source: the slot's call is taken as its talker). */
+    state = foreign_call_fixture(opts, DSD_SYNC_DMR_BS_VOICE_POS, 1U, 100U, 810001U);
+    uint8_t l3h_msg[24];
+    DSD_MEMSET(l3h_msg, 0, sizeof(l3h_msg));
+    DSD_MEMCPY(l3h_msg + 4, "HARRIS1", 7);
+    l3h_embedded_alias_decode(opts, state, 1U, 10, l3h_msg);
+    expect_true("p25 harris alias leaves the dmr call's row alone", !call_row_took_detail(state, 1U));
+    expect_true("p25 harris alias shows no alias for the dmr call", state->generic_talker_alias[1][0] == '\0');
+    expect_true("p25 harris alias teaches the dmr radio no alias", !alias_learned_for(state, 810001U));
+    free_fixture(state);
+
+    /* P25 Tait talker alias (it names no source either). */
+    state = foreign_call_fixture(opts, DSD_SYNC_NXDN_POS, 0U, 100U, 4242U);
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    const char tait[] = "TAITUNIT";
+    for (int i = 0; i < 8; i++) {
+        set_bits(bits, 16 + (i * 7), 7, (uint32_t)tait[i]);
+    }
+    tait_iso7_embedded_alias_decode(opts, state, 0U, 8, bits);
+    expect_true("p25 tait alias leaves the nxdn call's row alone", !call_row_took_detail(state, 0U));
+    expect_true("p25 tait alias teaches the nxdn radio no alias", !alias_learned_for(state, 4242U));
+    free_fixture(state);
+
+    /* DMR talker alias, its voice LC not decoded yet, with a P25 call still open on the slot. */
+    state = foreign_call_fixture(opts, DSD_SYNC_P25P1_POS, 0U, 100U, 3333U);
+    DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+    const char ta[] = "DMRUNIT7";
+    for (int i = 0; i < 8; i++) {
+        set_bits(state->dmr_pdu_sf[0], i * 8, 8, (uint32_t)ta[i]);
+    }
+    dmr_talker_alias_lc_decode(opts, state, 0U, 0U, 8U, 8U);
+    expect_true("dmr talker alias leaves the p25 call's row alone", !call_row_took_detail(state, 0U));
+    free_fixture(state);
+
+    /* Positions: DMR embedded GPS and LIP, P25 Motorola and Harris GPS, NXDN GPS, DMR UDT NMEA. Each payload is a
+       valid position at 0, 0; the open call is another protocol's (with the source the report names, where it names
+       one). */
+    static const struct {
+        const char* name;
+        int call_protocol;
+        int writer;
+    } gps[] = {
+        {"dmr embedded gps", DSD_SYNC_P25P1_POS, 0}, {"p25 apx gps", DSD_SYNC_DMR_BS_VOICE_POS, 1},
+        {"p25 harris gps", DSD_SYNC_NXDN_POS, 2},    {"nxdn gps", DSD_SYNC_DMR_BS_VOICE_POS, 3},
+        {"dmr lip report", DSD_SYNC_P25P1_POS, 4},   {"dmr udt nmea", DSD_SYNC_NXDN_POS, 5},
+    };
+
+    for (size_t i = 0; i < sizeof(gps) / sizeof(gps[0]); i++) {
+        const uint32_t src = 5555U;
+        state = foreign_call_fixture(opts, gps[i].call_protocol, 0U, 100U, src);
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        switch (gps[i].writer) {
+            case 0: dmr_embedded_gps(opts, state, bits); break;
+            case 1: apx_embedded_gps(opts, state, bits); break;
+            case 2: nmea_harris(opts, state, bits, 0U, 0); break;
+            case 3: nxdn_gps_report(opts, state, bits, src); break;
+            case 4: lip_pdu_decoder(opts, state, bits, 76U, src); break;
+            default: nmea_iec_61162_1(opts, state, bits, src, 1); break;
+        }
+        DSD_SNPRINTF(label, sizeof(label), "%s leaves the other protocol's call row alone", gps[i].name);
+        expect_true(label, state->event_history_s[0].Event_History_Items[0].gps_s[0] == '\0');
+        free_fixture(state);
+    }
 }
 
 int
@@ -222,6 +370,7 @@ main(void) {
     dsd_state_ext_free_all(state);
     free(history);
     free(state);
+    test_enrichment_skips_another_protocols_call(opts);
     free(opts);
     return g_fail;
 }

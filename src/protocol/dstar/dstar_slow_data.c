@@ -334,13 +334,14 @@ dstar_sd_handle_aprs(dsd_state* state, const uint8_t* sd_bytes) {
     if (start == -1) {
         // The display keeps the position either way; the history row takes it only through an open
         // call (a block decoded before the call was observed repeats once it is).
-        (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_GPS, state->dstar_gps);
+        (void)dsd_event_set_open_call_detail(state, 0U, DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_DETAIL_GPS,
+                                             state->dstar_gps);
         return;
     }
 
     dstar_sd_print_aprs_lat(state, aprs, &start, temp);
     dstar_sd_print_aprs_lon(state, aprs, &start, temp, tempa);
-    (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_GPS, state->dstar_gps);
+    (void)dsd_event_set_open_call_detail(state, 0U, DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_DETAIL_GPS, state->dstar_gps);
 }
 
 static void
@@ -350,7 +351,7 @@ dstar_sd_handle_text_message(dsd_state* state, dstar_sd_ctx* ctx) {
     dstar_sd_emit_truncated_ascii(ctx->sd_bytes, ctx->strt, 1);
     DSD_MEMCPY(state->dstar_txt, ctx->strt, sizeof(ctx->strt));
     // The display keeps the text either way; the history row takes it only through an open call.
-    (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_TEXT, state->dstar_txt);
+    (void)dsd_event_set_open_call_detail(state, 0U, DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_DETAIL_TEXT, state->dstar_txt);
 }
 
 static void

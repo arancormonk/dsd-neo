@@ -2040,14 +2040,21 @@ suite runs under this compiler.
   never decoded, until the next call begins there (`-fa`, a `-Y` or trunk scan step between protocols), so the check
   sits in the store rather than in each writer: a DMR PI with another protocol's call open is held for the DMR call
   the next checked LC opens (`dsd_state::dmr_pi_precall_*`), and an NXDN VCALL_IV or SCCH republish describes no call
-  there. Writers still choose the phase themselves where the store's rule is wider than theirs (a key choice record
+  there. The event rows follow the same rule (`dsd_call_state_update_is_protocols()`, `call_state_internal.h`): an
+  alias, position or text a protocol decoded reaches only its own protocol's call row (`dsd_event_enrich_alias()`,
+  `_alias_ex()`, `_gps()`, `_text()`, `dsd_event_set_open_call_detail()` take the writer's protocol), so a P25 Motorola,
+  Harris or Tait alias, a DMR talker alias, DMR/P25/NXDN GPS, DMR LIP and UDT NMEA, D-STAR slow data or an NXDN alias
+  decoded before its own call opened leaves another protocol's open call alone; the P25 aliases that take their talker
+  from the slot's call (Harris, Tait, and the Motorola source match) take it only from a P25 call, so no other
+  protocol's radio learns a P25 alias. Writers still choose the phase themselves where the store's rule is wider than theirs (a key choice record
   takes an ended call, so P25 `p25_crypto_publish_canonical()` and the DMR autoload record only on the open call). An
   identity a frame takes from the slot's call by copying that call's own protocol into an observation is outside this
   check, so those readers keep their own protocol checks (`p25p1_current_call()`, `nxdn_scch_enrich_identity()`,
   `ysf_enrich_identity()`, the DMR Cap+ seed). A P25 TDULC's link control, read after its end has run, takes an ended
   call only when it is the one that TDULC ended or that the TDULC it repeats back to back ended (`processTDULC()`,
   `dsd_state::p25_p1_tdulc_end_*`, `p25_lcw_from_tdulc()`'s `ended_epoch`), never an older call the slot still holds.
-  Tests: `CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `NXDN_ENC_CLASS`, `P25_P1_TDULC`.
+  Tests: `CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `NXDN_ENC_CLASS`, `P25_P1_TDULC`, `CORE_ALIAS_HANGTIME`,
+  `DSTAR_HEADER_UTILS`, `NXDN_ALIAS_DECODE`.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
   `received_algid`/`received_kid` say which of a call's ALG ID and key id were decoded from over-the-air signalling
   that passed its check, beside the live `algid`/`kid` every crypto update rewrites. Only an update whose `received`

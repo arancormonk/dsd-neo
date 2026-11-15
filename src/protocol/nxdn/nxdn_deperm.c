@@ -410,7 +410,7 @@ nxdn_handle_dcr_csm_alias(const dsd_opts* opts, dsd_state* state, const uint8_t*
         // a CSM decoded ahead of the SACCH2 SB0 observation has no row of its own yet.
         char row_alias[sizeof(csm_alias) + 2U];
         DSD_SNPRINTF(row_alias, sizeof(row_alias), "%s; ", csm_alias);
-        (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_ALIAS, row_alias);
+        (void)dsd_event_set_open_call_detail(state, 0U, DSD_SYNC_NXDN_POS, DSD_EVENT_DETAIL_ALIAS, row_alias);
     } else if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Call Sign Memory: decode error; ");
     }
@@ -820,7 +820,7 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         dsd_call_snapshot call;
         if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
-            (void)dsd_event_enrich_alias(state, 0U, call.epoch, "JPN DCR");
+            (void)dsd_event_enrich_alias(state, 0U, DSD_SYNC_NXDN_POS, call.epoch, "JPN DCR");
         }
     } else if (fields->sf_mes == 0x1EU) {
         // Release signaling decoded over the air: positive end evidence, distinguishable from an

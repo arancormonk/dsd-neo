@@ -27,9 +27,9 @@
 static int g_unicode_supported;
 
 static void
-seed_active_call(dsd_state* state, uint8_t slot, uint32_t source, uint32_t target) {
+seed_active_call_of(dsd_state* state, int protocol, uint8_t slot, uint32_t source, uint32_t target) {
     dsd_call_observation observation = {
-        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .protocol = protocol,
         .slot = slot,
         .kind = DSD_CALL_KIND_GROUP_VOICE,
         .ota_target_id = target,
@@ -45,8 +45,21 @@ seed_active_call(dsd_state* state, uint8_t slot, uint32_t source, uint32_t targe
     }
 }
 
+/* An open DMR call, for the DMR talker alias. */
+static void
+seed_active_call(dsd_state* state, uint8_t slot, uint32_t source, uint32_t target) {
+    seed_active_call_of(state, DSD_SYNC_DMR_BS_VOICE_POS, slot, source, target);
+}
+
+/* An open P25 call, for the P25 aliases (Harris, Motorola, Tait): they name a P25 call's talker. */
+static void
+seed_active_p25_call(dsd_state* state, uint8_t slot, uint32_t source, uint32_t target) {
+    seed_active_call_of(state, DSD_SYNC_P25P1_POS, slot, source, target);
+}
+
 int
-dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+dsd_event_enrich_alias(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* alias) {
+    (void)protocol;
     dsd_call_snapshot call;
     if (state == NULL || state->event_history_s == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || alias == NULL
         || dsd_call_state_get(state, slot, &call) <= 0 || call.epoch != epoch) {
@@ -60,9 +73,10 @@ dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
 }
 
 int
-dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                          const char* alias) {
     (void)opts;
-    return dsd_event_enrich_alias(state, slot, epoch, alias);
+    return dsd_event_enrich_alias(state, slot, protocol, epoch, alias);
 }
 
 int
@@ -190,7 +204,7 @@ test_harris_l3h_alias_state(dsd_opts* opts, dsd_state* st) {
     input[8] = 0x01;
 
     DSD_MEMSET(st->dmr_pdu_sf[0], 0xA5, sizeof(st->dmr_pdu_sf[0]));
-    seed_active_call(st, 0U, 700003U, 42U);
+    seed_active_p25_call(st, 0U, 700003U, 42U);
 
     l3h_embedded_alias_decode(opts, st, 0, 8, input);
 
@@ -210,7 +224,7 @@ test_harris_l3h_alias_state(dsd_opts* opts, dsd_state* st) {
     input[8] = '2';
 
     DSD_MEMSET(st->dmr_pdu_sf[1], 0xA5, sizeof(st->dmr_pdu_sf[1]));
-    seed_active_call(st, 1U, 700004U, 43U);
+    seed_active_p25_call(st, 1U, 700004U, 43U);
 
     l3h_embedded_alias_decode(opts, st, 1, 8, input);
 
@@ -246,7 +260,7 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
     uint8_t lcw[72];
 
-    seed_active_call(st, 0U, 710001U, 44U);
+    seed_active_p25_call(st, 0U, 710001U, 44U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x32U, "ALPHA  ");
@@ -268,7 +282,7 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAUNIT7", "l3h unique block4");
     rc |= expect_policy_name(st, 710001U, "ALPHAUNIT7", "l3h complete policy");
 
-    seed_active_call(st, 0U, 710004U, 47U);
+    seed_active_p25_call(st, 0U, 710004U, 47U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x32U, "ECHO   ");
@@ -284,7 +298,7 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ECHOONE", "l3h repeated complete alias");
     rc |= expect_policy_name(st, 710004U, "ECHOONE", "l3h repeated complete policy");
 
-    seed_active_call(st, 0U, 710005U, 48U);
+    seed_active_p25_call(st, 0U, 710005U, 48U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x32U, "ALPHA  ");
@@ -301,7 +315,7 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
                      "l3h contained fragment repeated complete alias");
     rc |= expect_policy_name(st, 710005U, "ALPHAA", "l3h contained fragment complete policy");
 
-    seed_active_call(st, 0U, 710003U, 46U);
+    seed_active_p25_call(st, 0U, 710003U, 46U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x33U, "STALE  ");
@@ -309,7 +323,7 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "", "l3h stray block2 ignored");
     rc |= expect_no_policy(st, 710003U, "l3h stray block2 no policy");
 
-    seed_active_call(st, 0U, 710002U, 45U);
+    seed_active_p25_call(st, 0U, 710002U, 45U);
     st->event_history_s[0].Event_History_Items[0].source_id = 999999u;
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
@@ -321,7 +335,7 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
                      "l3h epoch enrichment ignores stale numeric history mirrors");
     rc |= expect_no_policy(st, 710002U, "l3h mismatch no policy");
 
-    seed_active_call(st, 0U, 710006U, 49U);
+    seed_active_p25_call(st, 0U, 710006U, 49U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x33U, "GOOD   ");
@@ -338,13 +352,13 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
                      "l3h current sequence recovers after deferred mismatch");
     rc |= expect_no_policy(st, 710006U, "l3h recovered partial sequence no policy");
 
-    seed_active_call(st, 0U, 710007U, 50U);
+    seed_active_p25_call(st, 0U, 710007U, 50U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x32U, "OLD    ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
 
-    seed_active_call(st, 0U, 710008U, 51U);
+    seed_active_p25_call(st, 0U, 710008U, 51U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x33U, "NEW    ");
@@ -484,7 +498,7 @@ test_tait_iso7_alias_sanitizes_and_policies(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(tait_bits, 30, sizeof(tait_bits), 0x1FU, 7);
     value_to_bits_msb(tait_bits, 37, sizeof(tait_bits), 'Z', 7);
 
-    seed_active_call(st, 0U, 700005U, 0U);
+    seed_active_p25_call(st, 0U, 700005U, 0U);
     st->nac = 0x293u;
 
     tait_iso7_embedded_alias_decode(opts, st, 0, 4, tait_bits);
@@ -627,7 +641,7 @@ test_apx_alias_dump_updates_history_and_policy(dsd_opts* opts, dsd_state* st) {
     decoded[3] = ',';
     decoded[5] = 0x01;
 
-    seed_active_call(st, 0U, rid, 0U);
+    seed_active_p25_call(st, 0U, rid, 0U);
 
     apx_embedded_alias_dump(opts, st, 0, 6, input, decoded);
 
@@ -642,7 +656,7 @@ test_apx_alias_dump_updates_history_and_policy(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(input, 92, sizeof(input), 0x678U, 12);
     value_to_bits_msb(input, 104, sizeof(input), rid_mismatch, 24);
     decoded[1] = 'X';
-    seed_active_call(st, 0U, rid_mismatch + 1U, 0U);
+    seed_active_p25_call(st, 0U, rid_mismatch + 1U, 0U);
     apx_embedded_alias_dump(opts, st, 0, 2, input, decoded);
     rc |= expect_no_policy(st, rid_mismatch, "apx dump mismatch no policy");
 
@@ -694,8 +708,8 @@ test_alias_sequence_state_is_per_decoder(dsd_opts* opts) {
     apx_embedded_alias_blocks_phase1(opts, st_a, 0, block);
     rc |= expect_u8(st_a->p25_apx_alias_rx[0].bits[72], 1U, "apx state A accepts block after state B header");
 
-    seed_active_call(st_a, 0U, 720001U, 52U);
-    seed_active_call(st_b, 0U, 720002U, 53U);
+    seed_active_p25_call(st_a, 0U, 720001U, 52U);
+    seed_active_p25_call(st_b, 0U, 720002U, 53U);
 
     build_l3h_alias_lcw(lcw, 0x32U, "ALPHA  ");
     l3h_embedded_alias_blocks_phase1(opts, st_a, 0, lcw);
@@ -761,7 +775,7 @@ main(void) {
     rc |= test_alias_sequence_state_is_per_decoder(opts);
 
     // Runtime alias handling stores learned aliases through the policy table.
-    seed_active_call(st, 0U, 600000U, 0U);
+    seed_active_p25_call(st, 0U, 600000U, 0U);
     st->late_entry_mi_fragment[0][0][0] = 0x1122334455667788ULL;
 
     uint8_t tait_bits[64];

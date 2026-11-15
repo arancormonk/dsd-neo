@@ -3323,8 +3323,9 @@ watchdog_event_slot_call_is_open(const dsd_call_snapshot* call, const dsd_call_e
 // lands once the call is open. While the previous call is still active, the next transmission's
 // detail cannot be told apart from its own: none of these messages names its call.
 int
-dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value) {
-    if (!state || !state->event_history_s || slot > 1U || !value
+dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, int protocol, dsd_event_detail_field field,
+                               const char* value) {
+    if (!state || !state->event_history_s || slot > 1U || !value || protocol == DSD_SYNC_NONE
         || (field != DSD_EVENT_DETAIL_ALIAS && field != DSD_EVENT_DETAIL_GPS && field != DSD_EVENT_DETAIL_TEXT)) {
         return -1;
     }
@@ -3333,7 +3334,8 @@ dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_
         return 0;
     }
     dsd_call_state_ext_lock(ext);
-    if (!watchdog_event_slot_call_is_open(&ext->calls.slots[slot], &ext->events[slot])) {
+    if (!watchdog_event_slot_call_is_open(&ext->calls.slots[slot], &ext->events[slot])
+        || !dsd_call_state_update_is_protocols(&ext->calls.slots[slot], protocol)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
@@ -3733,9 +3735,10 @@ dsd_event_enrich_row_locked(const dsd_opts* opts, dsd_state* state, uint8_t slot
 }
 
 static int
-dsd_event_enrich_epoch(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* value,
-                       dsd_event_enrichment_kind kind) {
-    if (!state || !state->event_history_s || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U || !value) {
+dsd_event_enrich_epoch(const dsd_opts* opts, dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                       const char* value, dsd_event_enrichment_kind kind) {
+    if (!state || !state->event_history_s || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE
+        || epoch == 0U || !value) {
         return -1;
     }
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
@@ -3744,9 +3747,10 @@ dsd_event_enrich_epoch(const dsd_opts* opts, dsd_state* state, uint8_t slot, uin
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* call = &ext->calls.slots[slot];
-    /* A call the receive policy is still checking or rejects publishes nothing, enrichment included (issue #637). */
-    if (call->epoch != epoch || call->receive_verdict == DSD_RECEIVE_CHECKING
-        || call->receive_verdict == DSD_RECEIVE_REJECTED) {
+    /* A call the receive policy is still checking or rejects publishes nothing, enrichment included (issue #637); nor
+       does another protocol's call take what this protocol decoded. */
+    if (call->epoch != epoch || !dsd_call_state_update_is_protocols(call, protocol)
+        || call->receive_verdict == DSD_RECEIVE_CHECKING || call->receive_verdict == DSD_RECEIVE_REJECTED) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
@@ -3766,23 +3770,24 @@ dsd_event_enrich_epoch(const dsd_opts* opts, dsd_state* state, uint8_t slot, uin
 }
 
 int
-dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
-    return dsd_event_enrich_epoch(NULL, state, slot, epoch, alias, DSD_EVENT_ENRICH_ALIAS);
+dsd_event_enrich_alias(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* alias) {
+    return dsd_event_enrich_epoch(NULL, state, slot, protocol, epoch, alias, DSD_EVENT_ENRICH_ALIAS);
 }
 
 int
-dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
-    return dsd_event_enrich_epoch(opts, state, slot, epoch, alias, DSD_EVENT_ENRICH_ALIAS);
+dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                          const char* alias) {
+    return dsd_event_enrich_epoch(opts, state, slot, protocol, epoch, alias, DSD_EVENT_ENRICH_ALIAS);
 }
 
 int
-dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char* gps) {
-    return dsd_event_enrich_epoch(NULL, state, slot, epoch, gps, DSD_EVENT_ENRICH_GPS);
+dsd_event_enrich_gps(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* gps) {
+    return dsd_event_enrich_epoch(NULL, state, slot, protocol, epoch, gps, DSD_EVENT_ENRICH_GPS);
 }
 
 int
-dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* text) {
-    return dsd_event_enrich_epoch(NULL, state, slot, epoch, text, DSD_EVENT_ENRICH_TEXT);
+dsd_event_enrich_text(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* text) {
+    return dsd_event_enrich_epoch(NULL, state, slot, protocol, epoch, text, DSD_EVENT_ENRICH_TEXT);
 }
 
 void

@@ -270,7 +270,7 @@ test_rejected_call_takes_no_enrichment(dsd_opts* opts, dsd_state* state) {
     dsd_event_sync_slot(opts, state, 1U);
     dsd_call_snapshot call;
     assert(dsd_call_state_get(state, 1U, &call) > 0 && call.receive_verdict == DSD_RECEIVE_REJECTED);
-    assert(dsd_event_enrich_alias(state, 1U, call.epoch, "Unit 11") == 0);
+    assert(dsd_event_enrich_alias(state, 1U, call.protocol, call.epoch, "Unit 11") == 0);
     dsd_event_sync_slot(opts, state, 1U);
     assert(dsd_call_state_end(state, 1U, 0.0) == 1);
     dsd_event_sync_slot(opts, state, 1U);
@@ -464,7 +464,8 @@ test_events(dsd_opts* opts, dsd_state* state) {
     assert(!history[0].Event_History_Items[1].event_string[0]);
     dsd_event_note_current_call(opts, state, 0, "Denied detail");
     assert(!history[0].Event_History_Items[0].internal_str[0]);
-    assert(dsd_event_set_open_call_detail(state, 0, DSD_EVENT_DETAIL_GPS, "Denied GPS") == 0);
+    assert(dsd_event_set_open_call_detail(state, 0, DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_DETAIL_GPS, "Denied GPS")
+           == 0);
     state->dmr_color_code = 7;
     dsd_event_sync_slot(opts, state, 0); /* A late validated identifier admits this call. */
     assert(!strcmp(history[0].Event_History_Items[0].service_label, "Hospital"));

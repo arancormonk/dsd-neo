@@ -26,7 +26,9 @@
 
 // The fallback decode runs without the event layer; with no history attached nothing is written.
 int
-dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value) {
+dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, int protocol, dsd_event_detail_field field,
+                               const char* value) {
+    (void)protocol;
     (void)state;
     (void)slot;
     (void)field;

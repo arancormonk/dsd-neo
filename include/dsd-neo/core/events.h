@@ -167,18 +167,21 @@ typedef enum {
 } dsd_event_detail_field;
 
 /**
- * Write a protocol's decoded detail into the row of the slot's open call.
+ * Write a protocol's decoded detail into the row of the slot's open call, a call of @p protocol (the DSD_SYNC_* value
+ * of the protocol whose signalling decoded it; dsd_call_state_update_crypto() says whose call an update may describe).
  *
  * Written only while the slot's canonical call is active and its epoch has been opened, so the staged row is that
  * call's own. Otherwise the detail is declined: decoded before any call for the transmission was observed (an RF
  * header that failed its CRC, late entry, an alias ahead of the call message), or after the call ended, it has no row
  * to go to, and written into the staged row it would become a detail-only row or land on another call's row. Slow data
- * and aliases repeat, so declined detail lands once the call is open. Callers must not hold an event-history
- * transaction.
+ * and aliases repeat, so declined detail lands once the call is open. The open call of another protocol, which the slot
+ * keeps when that call's end never decoded, declines it too: the detail is not that call's. Callers must not hold an
+ * event-history transaction.
  *
- * @return 1 when written, 0 when declined, -1 for invalid arguments.
+ * @return 1 when written, 0 when declined, -1 for invalid arguments (DSD_SYNC_NONE among them).
  */
-int dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value);
+int dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, int protocol, dsd_event_detail_field field,
+                                   const char* value);
 void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
 /**
  * Re-judge the rdio-scanner export of slot @p slot's staged row now, as its next render would (issue #773 D7), so a
@@ -256,7 +259,13 @@ int dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_
                                         const dsd_call_observation* observation, const char* notice, const char* gps);
 /** Commit an informational system notice without attributing it to radio traffic. */
 int dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice);
-int dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias);
+/**
+ * Enrich call epoch @p epoch's event row with an alias (_gps(): a position, _text(): a text message) decoded from
+ * @p protocol's signalling (DSD_SYNC_*). Only a call of that protocol takes it (dsd_call_state_update_crypto() says
+ * whose call an update may describe): an epoch of another protocol's call is refused with 0, as an epoch the slot no
+ * longer holds is. -1 for invalid arguments (DSD_SYNC_NONE among them).
+ */
+int dsd_event_enrich_alias(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* alias);
 /**
  * dsd_event_enrich_alias() with the options the event log is written through. An alias that lands on the epoch's
  * already committed row (a Motorola alias sent in hangtime) also re-resolves that row's source label through the
@@ -265,9 +274,10 @@ int dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const
  * and appends one "Enriched:" continuation to the event log carrying the row's own stamp. dsd_event_enrich_alias()
  * does the same without the log line. Call it after the alias has updated the learned policy row.
  */
-int dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias);
-int dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char* gps);
-int dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* text);
+int dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                              const char* alias);
+int dsd_event_enrich_gps(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* gps);
+int dsd_event_enrich_text(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* text);
 
 #ifdef __cplusplus
 }

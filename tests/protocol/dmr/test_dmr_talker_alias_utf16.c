@@ -33,7 +33,8 @@
 #endif
 
 int
-dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+dsd_event_enrich_alias(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* alias) {
+    (void)protocol;
     dsd_call_snapshot call;
     if (state == NULL || state->event_history_s == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || alias == NULL
         || dsd_call_state_get(state, slot, &call) <= 0 || call.epoch != epoch) {
@@ -47,9 +48,10 @@ dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
 }
 
 int
-dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                          const char* alias) {
     (void)opts;
-    return dsd_event_enrich_alias(state, slot, epoch, alias);
+    return dsd_event_enrich_alias(state, slot, protocol, epoch, alias);
 }
 
 void

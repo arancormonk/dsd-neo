@@ -774,17 +774,16 @@ call_state_update_owner(int protocol) {
     return dsd_call_state_protocol_family(DSD_SYNC_IS_P25(protocol) ? DSD_SYNC_P25P1_POS : protocol);
 }
 
-/* Whether a crypto or identity update from @p protocol's signalling may describe @p snapshot: a call of that protocol.
-   A call that names no protocol is no protocol's. */
-static int
-call_state_update_is_protocols(const dsd_call_snapshot* snapshot, int protocol) {
+// Exported through call_state_internal.h: the event layer's row enrichment checks by the same rule.
+int
+dsd_call_state_update_is_protocols(const dsd_call_snapshot* snapshot, int protocol) {
     return snapshot->protocol != DSD_SYNC_NONE
            && call_state_update_owner(snapshot->protocol) == call_state_update_owner(protocol);
 }
 
 static int
 call_state_crypto_target_accepts(const dsd_call_snapshot* snapshot, int protocol, int include_ended) {
-    if (snapshot->epoch == 0U || !call_state_update_is_protocols(snapshot, protocol)) {
+    if (snapshot->epoch == 0U || !dsd_call_state_update_is_protocols(snapshot, protocol)) {
         return 0;
     }
     if (snapshot->phase == DSD_CALL_PHASE_ACTIVE) {
@@ -951,7 +950,8 @@ dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protocol, 
     selection.profile_ref[sizeof(selection.profile_ref) - 1U] = '\0';
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* call = &ext->calls.slots[slot];
-    if (call->epoch != epoch || call->phase == DSD_CALL_PHASE_IDLE || !call_state_update_is_protocols(call, protocol)) {
+    if (call->epoch != epoch || call->phase == DSD_CALL_PHASE_IDLE
+        || !dsd_call_state_update_is_protocols(call, protocol)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
@@ -985,7 +985,7 @@ dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot, int protocol
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
     if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
-        || !call_state_update_is_protocols(snapshot, protocol) || call_state_crypto_values_empty(snapshot)) {
+        || !dsd_call_state_update_is_protocols(snapshot, protocol) || call_state_crypto_values_empty(snapshot)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
@@ -1288,7 +1288,7 @@ dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, int protocol, uint64_
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
     if (snapshot->phase != DSD_CALL_PHASE_ACTIVE || snapshot->epoch != epoch
-        || !call_state_update_is_protocols(snapshot, protocol)) {
+        || !dsd_call_state_update_is_protocols(snapshot, protocol)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }

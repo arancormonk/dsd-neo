@@ -439,6 +439,46 @@ test_slow_data_text_keeps_byte_after_marker(void) {
     free(history);
 }
 
+/* Slow-data text decoded before its D-STAR call opened (its header lost) while the slot still holds another
+   protocol's open call, its end never decoded: the text is D-STAR's, so that call's row takes none of it. */
+static void
+test_slow_data_text_skips_another_protocols_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    Event_History_I* history;
+    uint8_t bytes[60];
+    uint8_t bits[480];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    history = (Event_History_I*)calloc(2u, sizeof(*history));
+    assert(history != NULL);
+    state.event_history_s = history;
+    dsd_call_observation dmr;
+    DSD_MEMSET(&dmr, 0, sizeof(dmr));
+    dmr.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr.slot = 0U;
+    dmr.kind = DSD_CALL_KIND_GROUP_VOICE;
+    dmr.ota_target_id = 100U;
+    dmr.policy_target_id = 100U;
+    dmr.ota_source_id = 200U;
+    assert(dsd_call_state_observe(&state, &dmr, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    DSD_MEMSET(bytes, 0x20, sizeof(bytes));
+    bytes[0] = 0x40;
+    bytes[1] = 'H';
+    bytes[2] = 'E';
+    bytes[3] = 'L';
+    bytes[4] = 'L';
+    bytes[5] = 'O';
+    pack_slow_data_bytes(bytes, bits);
+    processDSTAR_SD(&opts, &state, bits);
+    assert(state.dstar_txt[2] == 'E'); /* the display keeps it */
+    assert(state.event_history_s[0].Event_History_Items[0].text_message[0] == '\0');
+    dsd_state_ext_free_all(&state);
+    free(history);
+}
+
 static void
 test_slow_data_aprs_latitude_uses_compacted_direction(void) {
     static dsd_opts opts;
@@ -514,6 +554,7 @@ main(void) {
     test_slow_data_header_accepts_wire_crc_order();
     test_slow_data_header_search_evidence_follows_the_published_call();
     test_slow_data_text_keeps_byte_after_marker();
+    test_slow_data_text_skips_another_protocols_call();
     test_slow_data_aprs_latitude_uses_compacted_direction();
     return 0;
 }

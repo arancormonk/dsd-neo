@@ -34,7 +34,8 @@
 #endif
 
 int
-dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+dsd_event_enrich_alias(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* alias) {
+    (void)protocol;
     (void)state;
     (void)slot;
     (void)epoch;
@@ -43,9 +44,10 @@ dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
 }
 
 int
-dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                          const char* alias) {
     (void)opts;
-    return dsd_event_enrich_alias(state, slot, epoch, alias);
+    return dsd_event_enrich_alias(state, slot, protocol, epoch, alias);
 }
 
 void
