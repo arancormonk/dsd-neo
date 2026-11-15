@@ -4,17 +4,73 @@
  */
 /**
  * @file
- * @brief The unit activity reason tables: the P25 tables read exactly as the P25 prints' own (so switching a print to
- * the shared table changes no output), and the DMR, NXDN and TETRA tables name only their standards' values.
+ * @brief The unit activity reason tables: the P25 tables read exactly as the P25 prints' own table did before the
+ * prints moved to the shared one (so the move changed no output), and the DMR, NXDN and TETRA tables name only their
+ * standards' values.
  */
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/unit_activity_reason.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "p25_response_reason.h"
+/* The P25 prints' own table (p25_response_reason.c) as it was when the prints moved to dsd_ua_reason_text(): every
+ * code must still read the same. */
+static const char*
+print_queued_reason(uint8_t code) {
+    switch (code) {
+        case 0x10: return "Requesting Unit Busy Other Service";
+        case 0x20: return "Target Unit Busy Other Service";
+        case 0x2F: return "Target Unit Queued This Call";
+        case 0x30: return "Target Group Currently Active";
+        case 0x40: return "Channel Resources Unavailable";
+        case 0x41: return "Telephone Resources Unavailable";
+        case 0x42: return "Data Resources Unavailable";
+        case 0x50: return "Superseding Service Currently Active";
+        default: break;
+    }
+    return code <= 0x7F ? "Reserved" : "User/System Defined";
+}
+
+static const char*
+print_deny_reason(uint8_t code) {
+    static const struct {
+        uint8_t code;
+        const char* text;
+    } k_deny[] = {
+        {0x10, "Requesting Unit Not Valid"},
+        {0x11, "Requesting Unit Not Authorized"},
+        {0x20, "Target Unit Not Valid"},
+        {0x21, "Target Unit Not Authorized"},
+        {0x2F, "Target Unit Refused Call"},
+        {0x30, "Target Group Not Valid"},
+        {0x31, "Target Group Not Authorized"},
+        {0x40, "Invalid Dialing"},
+        {0x41, "Telephone Number Not Authorized"},
+        {0x42, "PSTN Not Valid"},
+        {0x50, "Call Timeout"},
+        {0x51, "Landline Terminated Call"},
+        {0x52, "Subscriber Unit Terminated Call"},
+        {0x5F, "Call Preempted"},
+        {0x60, "Site Access Denial"},
+        {0x67, "PTT Collide"},
+        {0x77, "PTT Bonk"},
+        {0xF0, "Call Options Not Valid For Service"},
+        {0xF1, "Protection Service Option Not Valid"},
+        {0xF2, "Duplex Service Option Not Valid"},
+        {0xF3, "Circuit/Packet Mode Option Not Valid"},
+        {0xFF, "System Does Not Support Service"},
+    };
+
+    for (size_t i = 0; i < sizeof(k_deny) / sizeof(k_deny[0]); i++) {
+        if (k_deny[i].code == code) {
+            return k_deny[i].text;
+        }
+    }
+    return code <= 0x5E ? "Reserved" : "User/System Defined";
+}
 
 static void
 expect_text(uint8_t set, uint16_t code, const char* want) {
@@ -26,12 +82,12 @@ expect_text(uint8_t set, uint16_t code, const char* want) {
     }
 }
 
-/* Every 8-bit P25 code reads as p25_deny_response_reason() / p25_queued_response_reason() print it. */
+/* Every 8-bit P25 code reads as the prints' own table read it. */
 static void
 test_p25_matches_the_print(void) {
     for (unsigned code = 0; code <= 0xFFU; code++) {
-        expect_text(DSD_UA_REASON_P25_DENY, (uint16_t)code, p25_deny_response_reason((uint8_t)code));
-        expect_text(DSD_UA_REASON_P25_QUEUED, (uint16_t)code, p25_queued_response_reason((uint8_t)code));
+        expect_text(DSD_UA_REASON_P25_DENY, (uint16_t)code, print_deny_reason((uint8_t)code));
+        expect_text(DSD_UA_REASON_P25_QUEUED, (uint16_t)code, print_queued_reason((uint8_t)code));
     }
     assert(dsd_ua_reason_text(DSD_UA_REASON_P25_DENY, 0x100U) == NULL);
 }

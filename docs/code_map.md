@@ -2472,15 +2472,15 @@ suite runs under this compiler.
     nothing per target. Tests: `CORE_UNIT_ACTIVITY`, `APP_CONTROL_SNAPSHOT_UNIT_ACTIVITY`.
   - Stages and reasons: `stage` is a `dsd_ua_stage` (a TETRA D-DISABLE / D-ENABLE intent or its authenticated
     confirm: both are commands). `reason_set` names one of the reason tables in `<dsd-neo/core/unit_activity_reason.h>`
-    (`src/core/util/unit_activity_reason.c`, data only): P25 deny and queued (the exact words of
-    `p25_response_reason.c`, which the P25 prints switch to), DMR Tier III C_ACKD (TS 102 361-4 Tables 7.42-7.45) and
+    (`src/core/util/unit_activity_reason.c`, data only): P25 deny and queued (the words the P25 Deny / Queued
+    prints always used; `p25p2_vpdu.c` and `p25p1_tsbk.c` print through it, and their own table is gone), DMR Tier III C_ACKD (TS 102 361-4 Tables 7.42-7.45) and
     Tier II NACK_Rsp (TS 102 361-2 Table 7.13, kept apart: 0x21 differs), NXDN Cause (MM) and Cause (SS) (TS 1-A Tables
     6.5-27 / 6.5-29) and the TETRA location update reject cause (EN 300 392-2 Table 16.81). `dsd_ua_reason_text()`
     returns NULL for a value its table does not define (P25 reads its ranges, "Reserved" / "User/System Defined", as
     its prints did), so a print shows the raw value then. One table serves the log and the prints. The same header
     names the TETRA location update accept types (`dsd_ua_tetra_accept_type_text()`, Table 16.68; NULL above 7), the
     value of a TETRA location registration row. Test: `CORE_UNIT_ACTIVITY_REASON` (every 8-bit P25 code against
-    `p25_response_reason.c`).
+    the prints' former table, kept in the test).
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
@@ -10325,6 +10325,28 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   on 0x64, 0xE4, 0xE5 and Motorola 0x84 alike (`p25_extended_function_class0_label()`). Link control (TIA-102.AABF-D
   §7.3): 0x50 Group Affiliation Query prints its target and source and adds no affiliation (it carries no group), 0x55
   is Message Update and 0x5B its Source ID Extension form (Message, Target, Source), and 0x6B (LCO 43) is reserved.
+- Unit activity rows (`src/protocol/p25/p25_unit_activity.{c,h}`, one emit helper per message family, into
+  `<dsd-neo/core/unit_activity.h>`). The handlers decode; a helper builds and pushes the row: Unit Registration
+  Response 0x6C / 0xEC / MBT (subject the home SUID, `assigned` the Source Address on an accept when it is not the
+  home ID on the serving system; the abbreviated form's home WACN is the site's, so it has a home only once that is
+  known), Location Registration Response 0x6B (group), Unit Deregistration Acknowledge 0x6F / 0xEF (the home SUID, with
+  the address `p25_aff_assigned_for_home()` held before the entry goes), Unit Registration Command 0x6D / TSBK 0x2D,
+  Group Affiliation Response 0x68 / 0xE8 / MBT (RV and GAV: accept, fail, deny, refused), Deny / Queued Response
+  (standard and Motorola, P25 and MFID90 TSBK: service type as value, the reason in the P25 table, the additional
+  information as value2 when AIV), Extended Function class $00 on 0x64 / 0xE4 / 0xE5 / Motorola 0x84 (check, detach,
+  uninhibit, inhibit; a command's argument is the requester, an ACK's argument is the radio that acknowledged and its
+  target the party told: Table 2.3.15-1; other classes and reserved operands add none), Radio Unit Monitor (TSBK 0x1D,
+  0x4C, 0xCC, 0x5E in talkgroup mode with the group and no actor), Status Update 0x58 / 0xD8 and Message Update 0x5C /
+  0xDC / LC 0x55 / 0x5B (reports: subject the reporting source, the target as recipient, value the 16-bit status or
+  message), Status Query 0x5A / 0xDA (command to the target), Call Alert 0x5F / 0xDF, Unit-to-Unit 0x45 / 0xC5 and
+  telephone 0x4A Answer Requests, and the TSBK 0x2E Authentication Command (target SUID). An extended form's source SUID
+  gives its identity a home. Addresses $FFFFFC-$FFFFFF are infrastructure, never radios (§2.3.30), and 0 names nobody.
+  Provenance: a row needs `p25p2_vpdu_ctx::crc_ok` (a MAC PDU `-F` let through makes none); TSBKs, MBTs and link
+  control words reach the handlers only after their CRC / FEC. Multi-fragment messages, the Group Affiliation Query,
+  the ACK Response, the MBT command metadata forms and the multi-block Authentication Demand make no row. `name_frozen`
+  is the subject's name in the current reception scope, resolved as the view resolves a current-scope row (the
+  assigned address first, then the subject's ID when its home is this system). Tests: `P25_UNIT_ACTIVITY`,
+  `P25_P1_TSBK_HANDLERS` (MFID90 rows), `P25_P2_MULTIFRAG_CRC` (no row).
 - Phase 2 Network Status Broadcast and the control channel's access method. An accepted broadcast notes a TDMA system
   (`p25_sys_is_tdma`) wherever it is heard, but marks the control channel TDMA (`p25_cc_is_tdma`) only when heard on
   an LCCH (`p2_is_lcch`): on a voice channel's SACCH or FACCH it names the control channel, which may be FDMA (a site

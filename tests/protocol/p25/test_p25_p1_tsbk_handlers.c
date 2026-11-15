@@ -37,6 +37,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_mfid90_utils.h"
 #include "test_support.h"
+#include "unit_activity_capture.h"
 
 static int g_add_wgid_count;
 static int g_add_wuid_count;
@@ -1552,6 +1553,59 @@ test_mfid90_grant_update_trunk_dispatch(void) {
     return rc;
 }
 
+/* A Motorola Deny / Queued TSBK (MFID 0x90 opcode 0x07 / 0x06) that passed its CRC is one unit activity row, in the
+   P25 reason table as its print reads it; a block that failed its CRC reaches no handler and makes none. */
+static int
+test_mfid90_deny_queued_activity_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    tsbk_decode_ctx_t ctx;
+    unsigned long long pdu[24] = {0};
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    ctx.tsbk_byte[0] = 0x07;
+    ctx.tsbk_byte[1] = 0x90;
+    ctx.tsbk_byte[2] = 0x80 | 0x02;
+    ctx.tsbk_byte[3] = 0x60;
+    ctx.tsbk_byte[4] = 0x00;
+    ctx.tsbk_byte[5] = 0x01;
+    ctx.tsbk_byte[6] = 0x01;
+    ctx.tsbk_byte[7] = 0x00;
+    ctx.tsbk_byte[8] = 0x01;
+    ctx.tsbk_byte[9] = 0x23;
+
+    int rc = 0;
+    reset_calls();
+    dsd_test_ua_capture_reset();
+    tsbk_dispatch_message(&opts, &state, &ctx, 1, 0x90, 0, pdu);
+    rc |= expect_int("failed-CRC MFID90 deny no row", dsd_test_ua_capture_count(), 0);
+
+    tsbk_dispatch_message(&opts, &state, &ctx, 0, 0x90, 0, pdu);
+    const dsd_unit_activity* r = dsd_test_ua_capture_last();
+    rc |= expect_int("MFID90 deny one row", dsd_test_ua_capture_count(), 1);
+    rc |= expect_int("MFID90 deny protocol", r->protocol, DSD_UA_PROTO_P25P1);
+    rc |= expect_int("MFID90 deny kind", r->kind, DSD_UA_DENY);
+    rc |= expect_int("MFID90 deny result", r->result, DSD_UA_RESULT_DENIED);
+    rc |= expect_int("MFID90 deny subject", (int)r->subject.id, 0x000123);
+    rc |= expect_int("MFID90 deny subject radio", r->subject.subtype, DSD_UA_ID_RADIO);
+    rc |= expect_int("MFID90 deny service", (int)r->value, 0x02);
+    rc |= expect_int("MFID90 deny reason set", r->reason_set, DSD_UA_REASON_P25_DENY);
+    rc |= expect_int("MFID90 deny reason", r->reason_code, 0x60);
+    rc |= expect_int("MFID90 deny info", r->value2_valid && r->value2 == 0x000101U, 1);
+
+    ctx.tsbk_byte[0] = 0x06;
+    ctx.tsbk_byte[2] = 0x02;
+    ctx.tsbk_byte[3] = 0x40;
+    tsbk_dispatch_message(&opts, &state, &ctx, 0, 0x90, 0, pdu);
+    r = dsd_test_ua_capture_last();
+    rc |= expect_int("MFID90 queued row", dsd_test_ua_capture_count(), 2);
+    rc |= expect_int("MFID90 queued kind", r->kind, DSD_UA_QUEUED);
+    rc |= expect_int("MFID90 queued reason set", r->reason_set, DSD_UA_REASON_P25_QUEUED);
+    rc |= expect_int("MFID90 queued no info", r->value2_valid, 0);
+    return rc;
+}
+
 static int
 test_mfid90_queued_and_deny_callbacks(void) {
     static dsd_opts opts;
@@ -1925,6 +1979,7 @@ main(void) {
     rc |= test_mfid90_grant_seeds_trunk_state();
     rc |= test_mfid90_grant_update_trunk_dispatch();
     rc |= test_mfid90_queued_and_deny_callbacks();
+    rc |= test_mfid90_deny_queued_activity_rows();
     rc |= test_deny_never_releases_mfid90_p1();
     rc |= test_mfid90_ack_display_only();
     rc |= test_mfid90_tdma_data_channel_display_only();

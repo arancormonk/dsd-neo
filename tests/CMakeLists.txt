@@ -7772,16 +7772,15 @@ target_link_libraries(
 )
 add_test(NAME CORE_UNIT_ACTIVITY COMMAND dsd-neo_test_core_unit_activity)
 
-# The unit activity reason tables; the P25 ones against the P25 prints' own tables.
+# The unit activity reason tables; the P25 ones against the P25 prints' former table.
 add_executable(
     dsd-neo_test_core_unit_activity_reason
     core/test_core_unit_activity_reason.c
     ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
-    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
 )
 target_include_directories(
     dsd-neo_test_core_unit_activity_reason
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 add_test(
     NAME CORE_UNIT_ACTIVITY_REASON
@@ -11125,6 +11124,21 @@ target_link_libraries(
 )
 add_test(NAME P25_AFF_ASSIGNMENT COMMAND dsd-neo_test_p25_aff_assignment)
 
+# P25 unit activity rows: every message family through the TSBK, MAC, MBT and link control dispatch
+add_executable(
+    dsd-neo_test_p25_unit_activity
+    protocol/p25/test_p25_unit_activity.c
+)
+target_include_directories(
+    dsd-neo_test_p25_unit_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_unit_activity
+    PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME P25_UNIT_ACTIVITY COMMAND dsd-neo_test_p25_unit_activity)
+
 # P25 Deny / Queued responses are shown, never acted on: no carrier is released over one
 add_executable(
     dsd-neo_test_p25_deny_no_release
@@ -11197,7 +11211,10 @@ add_executable(
     # The network status names the patch table's owner; a validated control block advances its listening clock.
     ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
-    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
+    # The Deny / Queued prints' reason table and the unit activity rows, into a recording ring.
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/unit_activity_capture.c
 )
 target_include_directories(
     dsd-neo_test_p25_p1_tsbk_handlers
@@ -11981,7 +11998,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_patch.c
     ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/fec/trellis34.c
-    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
+    # The Deny / Queued prints' reason table and the unit activity rows, into a recording ring.
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/unit_activity_capture.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_tsbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_12.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_crc.c
@@ -15869,6 +15889,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_patch.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_pdu_trunking.c
+    # The MBT registration and affiliation rows, into the real ring.
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c

@@ -16,7 +16,7 @@ target_sources(
         p25_cc_selection.c
         p25_extended_function.c
         p25_mfid90_utils.c
-        p25_response_reason.c
+        p25_unit_activity.c
         p25_sm_ui.c
         p25_sm_watchdog.c
         p25_patch.c

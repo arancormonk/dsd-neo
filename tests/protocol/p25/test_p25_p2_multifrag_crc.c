@@ -17,6 +17,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
@@ -119,6 +120,14 @@ newest_notice(void) {
 static int
 decoded(void) {
     return strstr(newest_notice(), "STATUS-L") != NULL;
+}
+
+/* The rows of the unit activity log. */
+static int
+activity_rows(void) {
+    dsd_unit_activity rows[4];
+    dsd_unit_activity_read_meta meta;
+    return dsd_unit_activity_read(g_state, 0U, 0U, rows, 4, &meta);
 }
 
 static int
@@ -243,6 +252,8 @@ test_frag_valid_lcch_completes(void) {
     rc |= expect("valid: target", strstr(newest_notice(), "Target: 1234567") != NULL);
     rc |= expect("valid: source", strstr(newest_notice(), "Source: 7654321") != NULL);
     rc |= expect("valid: assembly done", no_assembly());
+    /* A multi-fragment message never makes a unit activity row (plan D9: LCCH stream decoding, issue #874). */
+    rc |= expect("valid: no unit activity row", activity_rows() == 0);
 
     /* A FACCH or SACCH PDU of the other logical channel, between two consecutive bursts of the LCCH's, is no burst of
        the LCCH's stream: its messages leave the LCCH's assembly alone. */

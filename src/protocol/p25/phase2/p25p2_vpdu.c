@@ -25,6 +25,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -45,9 +46,9 @@
 #include <time.h>
 #include "../p25_cc_update.h"
 #include "../p25_extended_function.h"
-#include "../p25_response_reason.h"
 #include "../p25_search_site.h"
 #include "../p25_trunk_sm_internal.h"
+#include "../p25_unit_activity.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -883,6 +884,34 @@ p25p2_vpdu_u24(const unsigned long long int* mac, int idx) {
 static int
 p25p2_vpdu_is_bridged_p1(const p25p2_vpdu_ctx* ctx) {
     return ctx != NULL && ctx->bridged_p1 != 0;
+}
+
+/* Where a message of this PDU was heard, for its unit activity row: a bridged TSBK is Phase 1 on no slot. A row comes
+   only from a message whose CRC passed (p25_ua_origin::crc_ok). */
+static p25_ua_origin
+p25p2_vpdu_ua_origin(const p25p2_vpdu_ctx* ctx) {
+    const int bridged = p25p2_vpdu_is_bridged_p1(ctx);
+    const p25_ua_origin o = {
+        .opts = ctx->opts,
+        .state = ctx->state,
+        .phase2 = (uint8_t)!bridged,
+        .slot = (uint8_t)(bridged ? 0 : (ctx->slot & 1)),
+        .crc_ok = (uint8_t)(ctx->crc_ok != 0),
+    };
+    return o;
+}
+
+/* A source unit with the home system of its SUID (WACN and System ID the message carries). */
+static p25_ua_unit
+p25p2_vpdu_ua_fq_unit(uint32_t id, int wacn, int sys) {
+    const p25_ua_unit u = {id, {(uint32_t)wacn, (uint16_t)sys, id, 1U}};
+    return u;
+}
+
+static p25_ua_unit
+p25p2_vpdu_ua_unit(uint32_t id) {
+    const p25_ua_unit u = {id, {0U, 0U, 0U, 0U}};
+    return u;
 }
 
 static int
@@ -3395,11 +3424,13 @@ p25p2_vpdu_iter_block_38(p25p2_vpdu_ctx* ctx) {
             DSD_FPRINTF(stderr, " RES: %d;", res);
         }
         p25p2_vpdu_print_registration_value(RV);
+        const p25_home_id home = {(uint32_t)uwacn, (uint16_t)usys, (uint32_t)sid, 1U};
         if (RV == 0 && p25p2_vpdu_network_table_writable(ctx, "registration")) {
-            const p25_home_id home = {(uint32_t)uwacn, (uint16_t)usys, (uint32_t)sid, 1U};
             p25_aff_register_assigned(state, (uint32_t)src, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid);
         }
         DSD_FPRINTF(stderr, " - Extended;");
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_registration_response(&origin, RV, &home, (uint32_t)src);
     }
 
     if (len_b < 0) {
@@ -3448,6 +3479,8 @@ p25p2_vpdu_handle_location_registration_response(const p25p2_vpdu_ctx* ctx) {
         case 3: DSD_FPRINTF(stderr, " REG_REFUSED;"); break;
         default: break;
     }
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_location_registration_response(&origin, rv, (uint32_t)target, (uint16_t)group);
 }
 
 static void
@@ -3491,10 +3524,14 @@ p25p2_vpdu_iter_block_39(p25p2_vpdu_ctx* ctx) {
             DSD_FPRINTF(stderr, " RES: %d;", res);
         }
         p25p2_vpdu_print_registration_value(RV);
+        const p25_home_id home = {(uint32_t)state->p2_wacn, (uint16_t)usys, (uint32_t)sid, 1U};
         if (RV == 0 && p25p2_vpdu_network_table_writable(ctx, "registration")) {
-            const p25_home_id home = {(uint32_t)state->p2_wacn, (uint16_t)usys, (uint32_t)sid, 1U};
             p25_aff_register_assigned(state, (uint32_t)src, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid);
         }
+        /* The abbreviated form's home WACN is the site's: a home system only once the site's WACN is known. */
+        const p25_home_id row_home = {home.wacn, home.sys, home.id, (uint8_t)(state->p2_wacn != 0ULL)};
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_registration_response(&origin, RV, &row_home, (uint32_t)src);
     }
 
     if (len_b < 0) {
@@ -3527,6 +3564,8 @@ p25p2_vpdu_iter_block_40(p25p2_vpdu_ctx* ctx) {
         int tgt = p25p2_vpdu_u24(MAC, 2 + len_a + k);
         int src = p25p2_vpdu_u24(MAC, 5 + len_a + k);
         DSD_FPRINTF(stderr, "\n Unit Registration Command - TGT: %d; SRC: %d;", tgt, src);
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_registration_command(&origin, (uint32_t)tgt);
     }
 
     if (len_b < 0) {
@@ -3562,10 +3601,15 @@ p25p2_vpdu_iter_block_41(p25p2_vpdu_ctx* ctx) {
         if (MAC[1 + len_a] == 0xEF) {
             DSD_FPRINTF(stderr, " - Extended;");
         }
+        const p25_home_id home = {(uint32_t)uwacn, (uint16_t)usys, (uint32_t)src, 1U};
+        /* The address the registration held, read before its entry goes. */
+        uint32_t assigned = 0U;
+        (void)p25_aff_assigned_for_home(state, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, &assigned);
         if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
-            const p25_home_id home = {(uint32_t)uwacn, (uint16_t)usys, (uint32_t)src, 1U};
             (void)p25_aff_deregister_home(state, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid);
         }
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_deregistration_ack(&origin, &home, assigned);
     }
 
     if (len_b < 0) {
@@ -4216,6 +4260,8 @@ p25p2_vpdu_iter_block_52(p25p2_vpdu_ctx* ctx) {
             // Also track group affiliation (RID -> TG mapping)
             p25_ga_add(state, (uint32_t)ta, (uint32_t)ga);
         }
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_group_affiliation_response(&origin, gav, (uint32_t)ta, (uint16_t)ga);
     }
 
     if (len_b < 0) {
@@ -4257,6 +4303,8 @@ p25p2_vpdu_iter_block_53(p25p2_vpdu_ctx* ctx) {
             DSD_FPRINTF(stderr, " Other Command");
         }
         DSD_FPRINTF(stderr, ";");
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_extended_function(&origin, class_id, operand, argument, target);
     }
 
     if (MAC[1 + len_a] == 0x69) {
@@ -4502,7 +4550,7 @@ p25p2_vpdu_iter_block_57(p25p2_vpdu_ctx* ctx) {
         int target_addr = (int)((MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a]);
 
         const char* reason_str =
-            is_deny ? p25_deny_response_reason((uint8_t)reason_code) : p25_queued_response_reason((uint8_t)reason_code);
+            dsd_ua_reason_text(is_deny ? DSD_UA_REASON_P25_DENY : DSD_UA_REASON_P25_QUEUED, (uint16_t)reason_code);
 
         DSD_FPRINTF(stderr, "\n %s Response", is_deny ? "Deny" : "Queued");
         DSD_FPRINTF(stderr, "\n  SVC [%02X] Reason [%s]", svc_type, reason_str);
@@ -4522,6 +4570,10 @@ p25p2_vpdu_iter_block_57(p25p2_vpdu_ctx* ctx) {
         }
 
         p25p2_vpdu_count_response(ctx, is_deny);
+        const p25_ua_response response = {(uint8_t)is_deny,       (uint8_t)svc_type,   (uint8_t)reason_code,
+                                          (uint8_t)has_addl_info, (uint32_t)addl_info, (uint32_t)target_addr};
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_deny_queued(&origin, &response);
     }
 
     if (len_b < 0) {
@@ -4559,25 +4611,31 @@ p25p2_vpdu_handle_unit_to_unit_answer_request(const p25p2_vpdu_ctx* ctx, int opc
     int target = p25p2_vpdu_u24(MAC, 3 + len_a);
 
     DSD_FPRINTF(stderr, "\n Unit-to-Unit Answer Request");
+    p25_ua_unit caller;
     if (p25p2_vpdu_is_bridged_p1(ctx)) {
         /* Phase 1 TSBK 0x05 (TIA-102.AABC-D §4.2.4.1 Fig 4.2.4-1): Service Options octet 2, octet 3 reserved, Target
            Address octets 4-6, Source ID octets 7-9. Phase 2 0x45 has no reserved octet (TIA-102.BBAD-A §3.10 Fig 36). */
         int source = p25p2_vpdu_u24(MAC, 7 + len_a);
         target = p25p2_vpdu_u24(MAC, 4 + len_a);
+        caller = p25p2_vpdu_ua_unit((uint32_t)source);
         DSD_FPRINTF(stderr, " - Abbreviated");
         DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Source [%d]", svc, target, source);
     } else if (opcode == 0xC5) {
         int src_wacn = p25p2_vpdu_fqid_wacn(MAC, 6 + len_a);
         int src_sys = p25p2_vpdu_fqid_sysid(MAC, 6 + len_a);
         int source = p25p2_vpdu_u24(MAC, 10 + len_a);
+        caller = p25p2_vpdu_ua_fq_unit((uint32_t)source, src_wacn, src_sys);
         DSD_FPRINTF(stderr, " - Extended");
         DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Source [%05X:%03X.%d]", svc, target, src_wacn, src_sys, source);
     } else {
         int source = p25p2_vpdu_u24(MAC, 6 + len_a);
+        caller = p25p2_vpdu_ua_unit((uint32_t)source);
         DSD_FPRINTF(stderr, " - Abbreviated");
         DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Source [%d]", svc, target, source);
     }
     p25p2_vpdu_print_svc_no_state(ctx->opts, svc);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_answer_request(&origin, (uint32_t)target, &caller, 1, (uint8_t)svc);
 }
 
 static void
@@ -4599,6 +4657,8 @@ p25p2_vpdu_handle_telephone_interconnect_answer_request(const p25p2_vpdu_ctx* ct
     int target = p25p2_vpdu_u24(MAC, 7 + len_a);
     DSD_FPRINTF(stderr, "\n Telephone Interconnect Answer Request");
     DSD_FPRINTF(stderr, "\n  Target [%d] Digits [%s]", target, digits);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_answer_request(&origin, (uint32_t)target, NULL, 0, 0U);
 }
 
 static void
@@ -4619,6 +4679,9 @@ p25p2_vpdu_handle_status_update_abbreviated(p25p2_vpdu_ctx* ctx) {
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "STATUS Target: %d Source: %d User: %02X Unit: %02X; ", target, source, user_status,
                                  unit_status);
+    const p25_ua_unit reporter = p25p2_vpdu_ua_unit((uint32_t)source);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_status_update(&origin, (uint16_t)((user_status << 8) | unit_status), (uint32_t)target, &reporter);
 }
 
 static const char*
@@ -4631,6 +4694,17 @@ p25p2_vpdu_query_alert_label(int opcode) {
         case 0x6A:
         case 0xEA: return "Group Affiliation Query";
         default: return "Query";
+    }
+}
+
+/* A Status Query or Call Alert row (a Group Affiliation Query adds none: the plan's table has no row for it). */
+static void
+p25p2_vpdu_ua_query_or_alert(const p25p2_vpdu_ctx* ctx, int opcode, uint32_t target, p25_ua_unit source) {
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    if (opcode == 0x5A || opcode == 0xDA) {
+        p25_ua_status_query(&origin, target, &source);
+    } else if (opcode == 0x5F || opcode == 0xDF) {
+        p25_ua_call_alert(&origin, target, &source);
     }
 }
 
@@ -4653,6 +4727,7 @@ p25p2_vpdu_handle_query_alert_affiliation_abbreviated(p25p2_vpdu_ctx* ctx, int o
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d]", target, source);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "%s Target: %d Source: %d; ", label, target, source);
+    p25p2_vpdu_ua_query_or_alert(ctx, opcode, (uint32_t)target, p25p2_vpdu_ua_unit((uint32_t)source));
 }
 
 static void
@@ -4669,6 +4744,9 @@ p25p2_vpdu_handle_message_update_abbreviated(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Message [%04X]", target, source, message);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "MSG Target: %d Source: %d Message: %04X; ", target, source, message);
+    const p25_ua_unit reporter = p25p2_vpdu_ua_unit((uint32_t)source);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_message_update(&origin, (uint16_t)message, (uint32_t)target, &reporter);
 }
 
 static void
@@ -4752,18 +4830,21 @@ p25p2_vpdu_handle_telephone_interconnect_voice_user(p25p2_vpdu_ctx* ctx) {
 /* A Radio Unit Monitor Command - Abbreviated, from either layout: Target is the unit monitored, Source the unit that
    monitors (TIA-102.AABC-D §6.2.24.1). */
 static void
-p25p2_vpdu_report_radio_unit_monitor(dsd_state* state, int target, int source, int transmit_time, int multiplier,
-                                     int silent) {
+p25p2_vpdu_report_radio_unit_monitor(const p25p2_vpdu_ctx* ctx, int target, int source, int transmit_time,
+                                     int multiplier, int silent) {
+    dsd_state* state = ctx->state;
     DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Abbreviated");
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Time [%d] Mult [%d]%s", target, source, transmit_time, multiplier,
                 silent ? " Silent" : "");
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "RUM Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time,
                                  multiplier, silent ? " Silent" : "");
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, (uint32_t)source, 0U);
 }
 
 static void
-p25p2_vpdu_handle_radio_unit_monitor_abbreviated(p25p2_vpdu_ctx* ctx) {
+p25p2_vpdu_handle_radio_unit_monitor_abbreviated(const p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
     const int len_a = ctx->len_a;
     int transmit_time = (int)MAC[3 + len_a];
@@ -4771,14 +4852,14 @@ p25p2_vpdu_handle_radio_unit_monitor_abbreviated(p25p2_vpdu_ctx* ctx) {
     int multiplier = (int)(MAC[4 + len_a] & 0x03U);
     int target = p25p2_vpdu_u24(MAC, 5 + len_a);
     int source = p25p2_vpdu_u24(MAC, 8 + len_a);
-    p25p2_vpdu_report_radio_unit_monitor(ctx->state, target, source, transmit_time, multiplier, silent);
+    p25p2_vpdu_report_radio_unit_monitor(ctx, target, source, transmit_time, multiplier, silent);
 }
 
 /* Phase 1 TSBK 0x1D Radio Unit Monitor Command (TIA-102.AABC-D §6.2.24.1 Fig 6.2.24-1): TX Time octet 2, SM bit 7 and
    TX Multiplier bits 1-0 of octet 3, Source Address octets 4-6 (the unit that monitors), Target Address octets 7-9
    (the unit monitored). Its Phase 2 opcode 0x5D is the obsolete form (TIA-102.BBAD-A Fig 82). */
 static void
-p25p2_vpdu_handle_radio_unit_monitor_p1(p25p2_vpdu_ctx* ctx) {
+p25p2_vpdu_handle_radio_unit_monitor_p1(const p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
     const int len_a = ctx->len_a;
     int transmit_time = (int)MAC[2 + len_a];
@@ -4786,11 +4867,11 @@ p25p2_vpdu_handle_radio_unit_monitor_p1(p25p2_vpdu_ctx* ctx) {
     int multiplier = (int)(MAC[3 + len_a] & 0x03U);
     int source = p25p2_vpdu_u24(MAC, 4 + len_a);
     int target = p25p2_vpdu_u24(MAC, 7 + len_a);
-    p25p2_vpdu_report_radio_unit_monitor(ctx->state, target, source, transmit_time, multiplier, silent);
+    p25p2_vpdu_report_radio_unit_monitor(ctx, target, source, transmit_time, multiplier, silent);
 }
 
 static void
-p25p2_vpdu_handle_radio_unit_monitor_obsolete(p25p2_vpdu_ctx* ctx) {
+p25p2_vpdu_handle_radio_unit_monitor_obsolete(const p25p2_vpdu_ctx* ctx) {
     if (p25p2_vpdu_is_bridged_p1(ctx)) {
         p25p2_vpdu_handle_radio_unit_monitor_p1(ctx);
         return;
@@ -4814,6 +4895,9 @@ p25p2_vpdu_handle_authentication_command_p1(const p25p2_vpdu_ctx* ctx) {
 
     DSD_FPRINTF(stderr, "\n Authentication Command (obsolete)");
     DSD_FPRINTF(stderr, "\n  Target [%05X:%03X.%d]", target_wacn, target_sys, target);
+    const p25_ua_unit unit = p25p2_vpdu_ua_fq_unit((uint32_t)target, target_wacn, target_sys);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_authentication_command(&origin, &unit);
 }
 
 static void
@@ -4838,6 +4922,8 @@ p25p2_vpdu_handle_radio_unit_monitor_enhanced_abbreviated(p25p2_vpdu_ctx* ctx) {
         state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, talkgroup_mode ? 0U : (uint64_t)source, 0U, 0, 0U,
         "RUM-E Target: %d %s: %d Time: %d ALG: %02X KID: %04X%s; ", target, talkgroup_mode ? "TG" : "RID", monitor,
         transmit_time, algid, key_id, silent ? " Silent" : "");
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, (uint32_t)source, talkgroup_mode ? (uint16_t)group : 0U);
 }
 
 static void
@@ -4859,6 +4945,8 @@ p25p2_vpdu_handle_radio_unit_monitor_extended_vch(p25p2_vpdu_ctx* ctx) {
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "RUM-X Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time,
                                  multiplier, silent ? " Silent" : "");
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, (uint32_t)source, 0U);
 }
 
 static void
@@ -4880,6 +4968,9 @@ p25p2_vpdu_handle_status_update_extended_vch(p25p2_vpdu_ctx* ctx) {
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "STATUS-X Target: %d Source: %d User: %02X Unit: %02X; ", target, source, user_status,
                                  unit_status);
+    const p25_ua_unit reporter = p25p2_vpdu_ua_fq_unit((uint32_t)source, source_wacn, source_sys);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_status_update(&origin, (uint16_t)((user_status << 8) | unit_status), (uint32_t)target, &reporter);
 }
 
 static void
@@ -4897,6 +4988,8 @@ p25p2_vpdu_handle_status_query_alert_affiliation_extended_vch(p25p2_vpdu_ctx* ct
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d]", target, source_wacn, source_sys, source);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "%s-X Target: %d Source: %d; ", label, target, source);
+    p25p2_vpdu_ua_query_or_alert(ctx, opcode, (uint32_t)target,
+                                 p25p2_vpdu_ua_fq_unit((uint32_t)source, source_wacn, source_sys));
 }
 
 static void
@@ -4915,6 +5008,9 @@ p25p2_vpdu_handle_message_update_extended_vch(p25p2_vpdu_ctx* ctx) {
                 message);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "MSG-X Target: %d Source: %d Message: %04X; ", target, source, message);
+    const p25_ua_unit reporter = p25p2_vpdu_ua_fq_unit((uint32_t)source, source_wacn, source_sys);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_message_update(&origin, (uint16_t)message, (uint32_t)target, &reporter);
 }
 
 static void
@@ -4940,6 +5036,8 @@ p25p2_vpdu_handle_extended_function_extended_vch(p25p2_vpdu_ctx* ctx) {
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "EXTFUNC-X Target: %d Source: %d Function: %04X Arg: %06X; ", target, source, function,
                                  argument);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_extended_function(&origin, (uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target);
 }
 
 static void
@@ -4964,6 +5062,8 @@ p25p2_vpdu_handle_extended_function_extended_lcch(p25p2_vpdu_ctx* ctx) {
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, 0U, 0U, 0, 0U,
                                  "EXTFUNC-L Target: %d Source: %05X:%03X Function: %04X Arg: %06X; ", target,
                                  source_wacn, source_sys, function, argument);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_extended_function(&origin, (uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target);
 }
 
 static void
@@ -4991,6 +5091,8 @@ p25p2_vpdu_handle_group_affiliation_response_extended(p25p2_vpdu_ctx* ctx) {
         p25_aff_register(state, (uint32_t)target);
         p25_ga_add(state, (uint32_t)target, (uint16_t)group);
     }
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_group_affiliation_response(&origin, response, (uint32_t)target, (uint16_t)group);
 }
 
 static int
@@ -5063,7 +5165,7 @@ p25p2_vpdu_handle_motorola_queued_deny(p25p2_vpdu_ctx* ctx, int is_deny) {
     int addl_info = p25p2_vpdu_u24(MAC, 6 + len_a);
     int target_addr = p25p2_vpdu_u24(MAC, 9 + len_a);
     const char* reason_str =
-        is_deny ? p25_deny_response_reason((uint8_t)reason_code) : p25_queued_response_reason((uint8_t)reason_code);
+        dsd_ua_reason_text(is_deny ? DSD_UA_REASON_P25_DENY : DSD_UA_REASON_P25_QUEUED, (uint16_t)reason_code);
 
     DSD_FPRINTF(stderr, "\n Motorola %s Response", is_deny ? "Deny" : "Queued");
     DSD_FPRINTF(stderr, "\n  SVC [%02X] Reason [%s]", svc_type, reason_str);
@@ -5080,6 +5182,10 @@ p25p2_vpdu_handle_motorola_queued_deny(p25p2_vpdu_ctx* ctx, int is_deny) {
     DSD_FPRINTF(stderr, " Target [%d]", target_addr);
 
     p25p2_vpdu_count_response(ctx, is_deny);
+    const p25_ua_response response = {(uint8_t)is_deny,       (uint8_t)svc_type,   (uint8_t)reason_code,
+                                      (uint8_t)has_addl_info, (uint32_t)addl_info, (uint32_t)target_addr};
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_deny_queued(&origin, &response);
 }
 
 static void
@@ -5112,6 +5218,8 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) 
     DSD_FPRINTF(stderr, "\n  Class [%02X] Operand [%02X] Arg [%06X] Target [%d]", class_id, operand, argument, target);
     if (class_id == 0) {
         DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_label((uint8_t)operand));
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_extended_function(&origin, (uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target);
     } else if (class_id == 0x02 && operand == 0x00) {
         int sg = argument & 0xFFFF;
         DSD_FPRINTF(stderr, " Create Supergroup");

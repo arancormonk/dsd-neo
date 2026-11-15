@@ -17,6 +17,7 @@
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
@@ -32,8 +33,8 @@
 #include <stdio.h>
 #include "../p25_cc_update.h"
 #include "../p25_mfid90_utils.h"
-#include "../p25_response_reason.h"
 #include "../p25_search_site.h"
+#include "../p25_unit_activity.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -501,7 +502,7 @@ tsbk_handle_mfid90_queued_deny(const dsd_opts* opts, dsd_state* state, const uin
     int addl_info = tsbk_u24(tsbk_byte, 4);
     int target_addr = tsbk_u24(tsbk_byte, 7);
     const char* reason_str =
-        is_deny ? p25_deny_response_reason((uint8_t)reason_code) : p25_queued_response_reason((uint8_t)reason_code);
+        dsd_ua_reason_text(is_deny ? DSD_UA_REASON_P25_DENY : DSD_UA_REASON_P25_QUEUED, (uint16_t)reason_code);
 
     DSD_FPRINTF(stderr, "\n MFID90 (Moto) %s Response\n", is_deny ? "Deny" : "Queued");
     DSD_FPRINTF(stderr, "  SVC [%02X] Reason [%s]", svc_type, reason_str);
@@ -529,6 +530,11 @@ tsbk_handle_mfid90_queued_deny(const dsd_opts* opts, dsd_state* state, const uin
             state->p25_sm_queued_count++;
         }
     }
+    /* The TSBK passed its CRC: tsbk_dispatch_message() dispatches no other. */
+    const p25_ua_origin origin = {opts, state, 0U, 0U, 1U};
+    const p25_ua_response response = {(uint8_t)is_deny,        (uint8_t)svc_type,   (uint8_t)reason_code,
+                                      (uint8_t)has_additional, (uint32_t)addl_info, (uint32_t)target_addr};
+    p25_ua_deny_queued(&origin, &response);
 }
 
 static void
