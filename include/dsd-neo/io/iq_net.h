@@ -156,7 +156,9 @@ typedef enum {
      *  sender's lock is released: the next valid sender is locked again. */
     DSD_IQ_NET_EVENT_STALL = 4,
     /** Samples again from the same connection or UDP sender after a stall (`net_resume`). Delivered before the first
-     *  resumed sample: run the stream boundary here. A TCP partial sample carried across the stall is kept. */
+     *  resumed sample: run the stream boundary here. A TCP partial sample carried across the stall is kept. It also
+     *  comes when a TCP connection stalled before it delivered any sample (CONNECTED or RECONNECT, STALL, RESUME):
+     *  then nothing came before it on that connection, so it marks the start of the data, not lost samples. */
     DSD_IQ_NET_EVENT_RESUME = 5,
     /** The locked UDP sender sent a datagram that does not hold whole samples, so it was dropped: samples were lost
      *  before any resampler. Discard any partial output chunk, clear resampler history and mark a gap before the next
@@ -235,9 +237,11 @@ dsd_iq_net_reader* dsd_iq_net_reader_create(const dsd_iq_net_spec* spec, const d
 
 /**
  * @brief Open the input on the calling thread: TCP resolves the host and connects (within
- *        DSD_IQ_NET_CONNECT_TIMEOUT_MS); UDP binds (SO_REUSEADDR, or SO_EXCLUSIVEADDRUSE on Windows).
+ *        DSD_IQ_NET_CONNECT_TIMEOUT_MS); UDP binds (SO_EXCLUSIVEADDRUSE on Windows).
  *
- * Both ask for a DSD_IQ_NET_SO_RCVBUF_BYTES receive buffer; TCP also turns keepalive on. A stop or the process exit
+ * Both ask for a DSD_IQ_NET_SO_RCVBUF_BYTES receive buffer; TCP also turns keepalive on. The UDP port is the
+ * input's alone: no SO_REUSEADDR, so a port another socket holds is refused, and it is free again once this reader
+ * stopped. A stop or the process exit
  * flag cancels a connect within about 100 ms. Call once, before dsd_iq_net_reader_start() / _run().
  *
  * @param err Receives why it failed (may be NULL); nothing is logged.
@@ -248,12 +252,14 @@ int dsd_iq_net_reader_open(dsd_iq_net_reader* reader, dsd_iq_net_open_error* err
 /**
  * @brief Start the reader on a thread of its own, which applies the session's floating-point mode
  *        (dsd_runtime_fp_mode_apply_thread("iq_net")) and then runs dsd_iq_net_reader_run().
- * @return 0 when the thread started, -1 when the reader is not open, already started or the thread failed.
+ * @return 0 when the thread started, -1 when the reader is not open, its loop already started (here or through
+ *         dsd_iq_net_reader_run()) or the thread failed.
  */
 int dsd_iq_net_reader_start(dsd_iq_net_reader* reader);
 
 /**
  * @brief The reader loop, for a caller that runs it on a thread it made (and applied the floating-point mode on).
+ *        Runs once per open reader; a second call, or a call after dsd_iq_net_reader_start(), returns at once.
  *
  * Returns after dsd_iq_net_reader_stop() or once the process exit flag is set, with the socket closed and the state
  * STOPPED. Callbacks run on this thread with no reader lock held, in order: a RECONNECT or RESUME event comes before

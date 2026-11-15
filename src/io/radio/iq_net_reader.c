@@ -67,6 +67,7 @@ struct dsd_iq_net_reader {
     atomic_int drop_noted;
     atomic_int local_port;
     atomic_int joinable; /* dsd_iq_net_reader_start() made a thread nobody joined yet */
+    atomic_int runnable; /* open succeeded and no loop has been started on it yet */
     int opened;
     dsd_thread_t thread;
 
@@ -133,11 +134,10 @@ iq_net_emit(dsd_iq_net_reader* r, dsd_iq_net_event_kind kind, const char* peer, 
     r->cfg.on_event(r->cfg.ctx, &event);
 }
 
-/* Whether a failed socket call (result r < 0, or a wait's -1) only means a timeout or a signal cut it short. */
-static int
-iq_net_error_is_transient(int code) {
+int
+iq_net_tcp_error_is_transient(int code) {
 #if DSD_PLATFORM_WIN_NATIVE
-    return code == WSAEWOULDBLOCK || code == WSAETIMEDOUT || code == WSAEINTR;
+    return code == WSAEWOULDBLOCK || code == WSAEINTR;
 #else
 #if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
     if (code == EWOULDBLOCK) {
@@ -145,6 +145,16 @@ iq_net_error_is_transient(int code) {
     }
 #endif
     return code == EAGAIN || code == EINTR;
+#endif
+}
+
+int
+iq_net_udp_error_is_transient(int code) {
+#if DSD_PLATFORM_WIN_NATIVE
+    /* The UDP socket's receive timeout (DSD_IQ_NET_WAIT_SLICE_MS) ends a recvfrom() with WSAETIMEDOUT. */
+    return code == WSAETIMEDOUT || iq_net_tcp_error_is_transient(code);
+#else
+    return iq_net_tcp_error_is_transient(code);
 #endif
 }
 
@@ -249,8 +259,9 @@ iq_net_tcp_connect(dsd_iq_net_reader* r, iq_net_failure* f) {
     iq_net_count(&r->counters.connect_attempts, 1U);
     struct sockaddr_in addr;
     if (dsd_socket_resolve(r->spec.host, r->spec.port, &addr) != 0) {
+        /* The resolver reports through its own code (h_errno, getaddrinfo's result), which this call does not see. */
         f->kind = DSD_INPUT_FAILURE_RESOLVE;
-        f->code = dsd_socket_get_error();
+        f->code = 0;
         return DSD_INVALID_SOCKET;
     }
     dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
@@ -279,8 +290,9 @@ static dsd_socket_t
 iq_net_udp_bind(const dsd_iq_net_reader* r, iq_net_failure* f) {
     struct sockaddr_in addr;
     if (dsd_socket_resolve(r->spec.host, r->spec.port, &addr) != 0) {
+        /* The resolver reports through its own code (h_errno, getaddrinfo's result), which this call does not see. */
         f->kind = DSD_INPUT_FAILURE_RESOLVE;
-        f->code = dsd_socket_get_error();
+        f->code = 0;
         return DSD_INVALID_SOCKET;
     }
     dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -289,12 +301,13 @@ iq_net_udp_bind(const dsd_iq_net_reader* r, iq_net_failure* f) {
         f->code = dsd_socket_get_error();
         return DSD_INVALID_SOCKET;
     }
-    const int one = 1;
+    /* The port is this input's alone: a second socket on it would take some of the datagrams with no error on
+       either side. Windows lets another socket's SO_REUSEADDR take a port nobody claimed, so claim it there; elsewhere
+       a plain bind already refuses a port in use, and a UDP port is free again as soon as its socket closes (no
+       TIME_WAIT), so SO_REUSEADDR is not needed for a rebind either. */
 #if DSD_PLATFORM_WIN_NATIVE
-    /* Windows' SO_REUSEADDR would let another process bind the same port and take the datagrams; claim it instead. */
+    const int one = 1;
     (void)dsd_socket_setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, &one, (int)sizeof(one));
-#else
-    (void)dsd_socket_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, (int)sizeof(one));
 #endif
     iq_net_set_rcvbuf(sock);
     (void)dsd_socket_set_recv_timeout(sock, DSD_IQ_NET_WAIT_SLICE_MS);
@@ -339,6 +352,7 @@ dsd_iq_net_reader_create(const dsd_iq_net_spec* spec, const dsd_iq_net_reader_co
     atomic_init(&r->drop_noted, 0);
     atomic_init(&r->local_port, -1);
     atomic_init(&r->joinable, 0);
+    atomic_init(&r->runnable, 0);
     return r;
 }
 
@@ -361,6 +375,7 @@ dsd_iq_net_reader_open(dsd_iq_net_reader* reader, dsd_iq_net_open_error* err) {
         f.code = 0;
     } else if (sock != DSD_INVALID_SOCKET) {
         iq_net_set_state(reader, DSD_IQ_NET_STATE_WAITING);
+        atomic_store(&reader->runnable, 1);
         return 0;
     }
     iq_net_set_state(reader, DSD_IQ_NET_STATE_STOPPED);
@@ -368,22 +383,26 @@ dsd_iq_net_reader_open(dsd_iq_net_reader* reader, dsd_iq_net_open_error* err) {
     return -1;
 }
 
+static void iq_net_run_loop(dsd_iq_net_reader* r);
+
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
 #endif
     iq_net_thread_main(void* arg) {
     dsd_runtime_fp_mode_apply_thread("iq_net");
-    dsd_iq_net_reader_run((dsd_iq_net_reader*)arg);
+    iq_net_run_loop((dsd_iq_net_reader*)arg);
     DSD_THREAD_RETURN;
 }
 
 int
 dsd_iq_net_reader_start(dsd_iq_net_reader* reader) {
-    if (!reader || reader->sock == DSD_INVALID_SOCKET || atomic_load(&reader->joinable)) {
+    /* Only the caller's threads touch joinable and runnable here; the reader thread owns the socket fields. */
+    if (!reader || atomic_load(&reader->joinable) || !atomic_exchange(&reader->runnable, 0)) {
         return -1;
     }
     if (dsd_thread_create(&reader->thread, iq_net_thread_main, reader) != 0) {
+        atomic_store(&reader->runnable, 1);
         return -1;
     }
     atomic_store(&reader->joinable, 1);
@@ -587,7 +606,7 @@ iq_net_tcp_read_once(dsd_iq_net_reader* r, int* code) {
     }
     if (ready < 0) {
         *code = dsd_socket_get_error();
-        return iq_net_error_is_transient(*code) ? IQ_NET_READ_OK : IQ_NET_READ_LOST;
+        return iq_net_tcp_error_is_transient(*code) ? IQ_NET_READ_OK : IQ_NET_READ_LOST;
     }
     /* The carried bytes go in front of the new ones; the carry itself changes only once the read succeeded. */
     const size_t head = iq_net_carry_restore(&r->carry, r->rx);
@@ -597,7 +616,7 @@ iq_net_tcp_read_once(dsd_iq_net_reader* r, int* code) {
     }
     if (n <= 0) {
         *code = n == 0 ? 0 : dsd_socket_get_error();
-        return (n < 0 && iq_net_error_is_transient(*code)) ? IQ_NET_READ_OK : IQ_NET_READ_LOST;
+        return (n < 0 && iq_net_tcp_error_is_transient(*code)) ? IQ_NET_READ_OK : IQ_NET_READ_LOST;
     }
     iq_net_count(&r->counters.bytes, (uint64_t)n);
     /* The wait may have begun before the stall's deadline and ended after it: a pause that long is a stall even
@@ -795,7 +814,7 @@ iq_net_udp_run(dsd_iq_net_reader* r) {
         }
         if (ready <= 0) {
             const int code = ready < 0 ? dsd_socket_get_error() : 0;
-            if (ready < 0 && !iq_net_error_is_transient(code)) {
+            if (ready < 0 && !iq_net_udp_error_is_transient(code)) {
                 iq_net_udp_recv_error(r, code);
             }
             continue;
@@ -809,7 +828,7 @@ iq_net_udp_run(dsd_iq_net_reader* r) {
         }
         if (n < 0) {
             const int code = dsd_socket_get_error();
-            if (!iq_net_error_is_transient(code)) {
+            if (!iq_net_udp_error_is_transient(code)) {
                 iq_net_udp_recv_error(r, code);
             }
             continue;
@@ -818,16 +837,20 @@ iq_net_udp_run(dsd_iq_net_reader* r) {
     }
 }
 
+static void
+iq_net_run_loop(dsd_iq_net_reader* r) {
+    if (r->spec.kind == DSD_IQ_NET_KIND_TCP) {
+        iq_net_tcp_run(r);
+    } else {
+        iq_net_udp_run(r);
+    }
+    iq_net_close_socket(r);
+    iq_net_set_state(r, DSD_IQ_NET_STATE_STOPPED);
+}
+
 void
 dsd_iq_net_reader_run(dsd_iq_net_reader* reader) {
-    if (!reader || reader->sock == DSD_INVALID_SOCKET) {
-        return;
+    if (reader && atomic_exchange(&reader->runnable, 0)) {
+        iq_net_run_loop(reader);
     }
-    if (reader->spec.kind == DSD_IQ_NET_KIND_TCP) {
-        iq_net_tcp_run(reader);
-    } else {
-        iq_net_udp_run(reader);
-    }
-    iq_net_close_socket(reader);
-    iq_net_set_state(reader, DSD_IQ_NET_STATE_STOPPED);
 }

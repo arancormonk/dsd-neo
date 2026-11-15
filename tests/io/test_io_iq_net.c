@@ -21,8 +21,11 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
+#include <errno.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -79,16 +82,20 @@ put_le32(uint8_t* p, uint32_t v) {
     p[3] = (uint8_t)(v >> 24);
 }
 
-/* ---- Log tap: counts the once-per-run lines ---------------------------------------------------------------- */
+/* ---- Logger: counts the once-per-run lines and keeps the test's output clean ------------------------------- */
 
 static atomic_int g_log_malformed;
 static atomic_int g_log_foreign;
 static atomic_int g_log_rate;
 
-static void
-log_tap(dsd_neo_log_level_t level, const char* text, void* ctx) {
+void
+dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     (void)level;
-    (void)ctx;
+    char text[512];
+    va_list ap;
+    va_start(ap, format);
+    (void)DSD_VSNPRINTF(text, sizeof(text), format, ap);
+    va_end(ap);
     if (strstr(text, "set the sender's packet size to a multiple of")) {
         (void)atomic_fetch_add(&g_log_malformed, 1);
     }
@@ -1113,8 +1120,36 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
-/* A stop cancels a connect that would otherwise wait out its bound. The server's accept queue is full, so the
-   handshake gets no answer (where the platform drops the SYN; elsewhere the connect fails at once). */
+/* A stop or the exit flag latched before the open: the connect is cancelled before it is made (every platform). */
+static void
+test_tcp_cancelled_before_connect(void) {
+    int port = 0;
+    dsd_socket_t listener = bound_socket(SOCK_STREAM, 4, &port);
+    CHECK(listener != DSD_INVALID_SOCKET);
+    for (int by_exit = 0; by_exit < 2; by_exit++) {
+        recorder* rec = rec_new();
+        dsd_iq_net_reader* r = reader_new(DSD_IQ_NET_KIND_TCP, port, DSD_IQ_NET_FORMAT_CS16, 48000U, rec);
+        if (by_exit) {
+            dsd_exitflag_store(1);
+        } else {
+            dsd_iq_net_reader_stop(r);
+        }
+        dsd_iq_net_open_error err;
+        CHECK(dsd_iq_net_reader_open(r, &err) == -1);
+        dsd_exitflag_store(0);
+        CHECK(err.native_code != 0);
+        CHECK(dsd_iq_net_reader_state(r) == DSD_IQ_NET_STATE_STOPPED);
+        CHECK(dsd_iq_net_reader_start(r) == -1); /* nothing was opened to run */
+        dsd_iq_net_reader_destroy(r);
+        rec_free(rec);
+    }
+    CHECK(accept_within(listener, 100U) == DSD_INVALID_SOCKET); /* no connection was made */
+    (void)dsd_socket_close(listener);
+}
+
+/* A stop cancels a connect that is waiting for its handshake. The server's accept queue is full: where the platform
+   drops the SYN (Linux, which must take this path) the connect waits and the stop has to cancel it; where it answers
+   with a reset the connect fails at once, which the test checks instead, so one of the two always runs. */
 static void
 test_tcp_stop_during_connect(void) {
     int port = 0;
@@ -1146,14 +1181,31 @@ test_tcp_stop_during_connect(void) {
     while (!atomic_load(&o.done) && dsd_realtime_mono_ms() - t0 < (uint64_t)k_wait_ms) {
         dsd_sleep_ms(2U);
     }
-    CHECK(dsd_realtime_mono_ms() - t0 < k_prompt_ms / 3U);
+    const uint64_t took = dsd_realtime_mono_ms() - t0;
     (void)dsd_thread_join(thread);
+#ifdef __linux__
+    CHECK(still_connecting);
+#endif
+    int paths = 0;
     if (still_connecting) {
+        /* The cancel path: the stop ended a connect that had no answer. */
+        paths++;
+        CHECK(took < k_prompt_ms / 3U);
         CHECK(o.rc == -1);
+    } else if (o.rc == 0) {
+        /* The accepted path: the platform's backlog took the connect after all (macOS admits more than the fillers),
+           so there was nothing to cancel; the reader is open and not yet started. */
+        paths++;
+        CHECK(dsd_iq_net_reader_state(o.reader) == DSD_IQ_NET_STATE_WAITING);
+    } else {
+        /* The reset path: the platform refused the connect before the stop. */
+        paths++;
+        CHECK(o.err.failure_kind == DSD_INPUT_FAILURE_REFUSED || o.err.failure_kind == DSD_INPUT_FAILURE_NETWORK);
+    }
+    CHECK(paths == 1);
+    if (o.rc != 0) {
         CHECK(dsd_iq_net_reader_state(o.reader) == DSD_IQ_NET_STATE_STOPPED);
     }
-    DSD_FPRINTF(stderr, "stop_during_connect: connect %s when stopped\n",
-                still_connecting ? "was waiting" : "had already ended");
     dsd_iq_net_reader_destroy(o.reader);
     for (int i = 0; i < k_fillers; i++) {
         (void)dsd_socket_close(fillers[i]);
@@ -1162,14 +1214,18 @@ test_tcp_stop_during_connect(void) {
     rec_free(rec);
 }
 
-/* Nothing listens on the port: open fails as refused, names the server, and the reader stays stopped. */
+/* Nothing listens on the port: open fails as refused, names the server, and the reader stays stopped. The port is
+   one no socket holds: macOS drops a connect to a port a socket is bound to but not listening on, which would time out
+   rather than be refused. */
 static void
 test_tcp_connect_refused(void) {
     int port = 0;
-    dsd_socket_t holder = bound_socket(SOCK_STREAM, -1, &port); /* bound, not listening: the port stays ours */
+    dsd_socket_t holder = bound_socket(SOCK_STREAM, -1, &port);
+    CHECK(holder != DSD_INVALID_SOCKET);
+    (void)dsd_socket_close(holder); /* the port is free again, and nothing answers on it */
     recorder* rec = rec_new();
     dsd_iq_net_reader* r = reader_new(DSD_IQ_NET_KIND_TCP, port, DSD_IQ_NET_FORMAT_CS16, 48000U, rec);
-    CHECK(holder != DSD_INVALID_SOCKET && r);
+    CHECK(r);
     dsd_iq_net_open_error err;
     CHECK(dsd_iq_net_reader_open(r, &err) == -1);
     CHECK(err.failure_kind == DSD_INPUT_FAILURE_REFUSED);
@@ -1182,7 +1238,6 @@ test_tcp_connect_refused(void) {
     CHECK(dsd_iq_net_reader_start(r) == -1);
     dsd_iq_net_reader_run(r); /* returns at once */
     dsd_iq_net_reader_destroy(r);
-    (void)dsd_socket_close(holder);
     rec_free(rec);
 }
 
@@ -1397,7 +1452,7 @@ test_udp_stall_seen_after_the_wait(void) {
     rec_free(rec);
 }
 
-/* The port is taken: open fails, and the reader stays stopped. */
+/* The port is taken, by a plain socket or by another reader: open fails, and the reader stays stopped. */
 static void
 test_udp_bind_refused(void) {
     int port = 0;
@@ -1415,6 +1470,79 @@ test_udp_bind_refused(void) {
     dsd_iq_net_reader_destroy(r);
     (void)dsd_socket_close(occupant);
     rec_free(rec);
+
+    /* Two readers cannot share a port either (no SO_REUSEADDR): the second would silently take datagrams. */
+    recorder* first_rec = rec_new();
+    dsd_iq_net_reader* first = udp_reader_open(DSD_IQ_NET_FORMAT_CS16, 48000U, first_rec);
+    recorder* second_rec = rec_new();
+    dsd_iq_net_reader* second = reader_new(DSD_IQ_NET_KIND_UDP, dsd_iq_net_reader_local_port(first),
+                                           DSD_IQ_NET_FORMAT_CS16, 48000U, second_rec);
+    CHECK(dsd_iq_net_reader_open(second, &err) == -1);
+    dsd_iq_net_reader_destroy(second);
+    dsd_iq_net_reader_destroy(first);
+    rec_free(second_rec);
+    rec_free(first_rec);
+}
+
+/* A stopped reader frees its port: a new reader binds it at once (a restart) and receives on it. */
+static void
+test_udp_rebind_after_stop(void) {
+    recorder* rec = rec_new();
+    dsd_iq_net_reader* r = udp_reader_open(DSD_IQ_NET_FORMAT_CS16, 48000U, rec);
+    const int port = dsd_iq_net_reader_local_port(r);
+    udp_sender a;
+    CHECK(udp_sender_open(&a, port));
+    const uint8_t one[4] = {0x00, 0x40, 0x00, 0xC0};
+    udp_send(&a, one, sizeof(one));
+    CHECK(wait_floats(rec, 2U));
+    CHECK(stop_ms(r) < k_prompt_ms / 3U);
+    CHECK(dsd_iq_net_reader_local_port(r) == -1);
+
+    recorder* again_rec = rec_new();
+    dsd_iq_net_reader* again = reader_new(DSD_IQ_NET_KIND_UDP, port, DSD_IQ_NET_FORMAT_CS16, 48000U, again_rec);
+    CHECK(open_ok(again));
+    CHECK(dsd_iq_net_reader_local_port(again) == port);
+    CHECK(dsd_iq_net_reader_start(again) == 0);
+    udp_send(&a, one, sizeof(one));
+    CHECK(wait_floats(again_rec, 2U));
+    CHECK(rec_count_event(again_rec, DSD_IQ_NET_EVENT_CONNECTED) == 1U);
+    dsd_iq_net_reader_destroy(again);
+    dsd_iq_net_reader_destroy(r);
+    (void)dsd_socket_close(a.sock);
+    rec_free(again_rec);
+    rec_free(rec);
+}
+
+/* Send 6800 cu8 samples per second of the fake clock, against a rate of 8000 (15 % low), for the warm-up and three
+   windows: ten 1360-byte (680-sample) writes per 1 s step, each step received before the clock moves on. */
+typedef void (*rate_send_fn)(void* ctx, const uint8_t* p, size_t n);
+
+static void
+drive_low_rate(recorder* rec, rate_send_fn send, void* ctx) {
+    uint8_t chunk[1360];
+    DSD_MEMSET(chunk, 0x80, sizeof(chunk));
+    size_t floats = rec_floats(rec);
+    const uint64_t steps = (IQ_NET_RATE_WARMUP_MS + 3U * IQ_NET_RATE_WINDOW_MS) / 1000U + 1U;
+    for (uint64_t s = 0; s < steps; s++) {
+        for (int k = 0; k < 10; k++) {
+            send(ctx, chunk, sizeof(chunk));
+        }
+        floats += 10U * sizeof(chunk);
+        if (!wait_floats(rec, floats)) {
+            return;
+        }
+        advance_clock(1000U);
+    }
+}
+
+static void
+udp_rate_send(void* ctx, const uint8_t* p, size_t n) {
+    udp_send((const udp_sender*)ctx, p, n);
+}
+
+static void
+tcp_rate_send(void* ctx, const uint8_t* p, size_t n) {
+    CHECK(send_all(*(const dsd_socket_t*)ctx, p, n) == 0);
 }
 
 /* Through the reader: 15 % fewer samples than the rate for the warm-up and three windows warns once. */
@@ -1425,27 +1553,65 @@ test_udp_rate_warning(void) {
     dsd_iq_net_reader* r = udp_reader_open(DSD_IQ_NET_FORMAT_CU8, 8000U, rec);
     udp_sender a;
     CHECK(udp_sender_open(&a, dsd_iq_net_reader_local_port(r)));
-    /* 6800 samples/s, in 1 s steps of two 3400-sample (6800-byte) datagrams' worth, sent as 1360-byte datagrams. */
-    uint8_t chunk[1360];
-    DSD_MEMSET(chunk, 0x80, sizeof(chunk));
-    size_t floats = 0;
-    const uint64_t steps = (IQ_NET_RATE_WARMUP_MS + 3U * IQ_NET_RATE_WINDOW_MS) / 1000U + 1U;
-    for (uint64_t s = 0; s < steps; s++) {
-        for (int k = 0; k < 10; k++) {
-            udp_send(&a, chunk, sizeof(chunk));
-        }
-        floats += 10U * sizeof(chunk);
-        if (!wait_floats(rec, floats)) {
-            break;
-        }
-        advance_clock(1000U);
-    }
+    drive_low_rate(rec, udp_rate_send, &a);
     CHECK(WAIT_COUNTER(r, rate_warnings, 1U));
     CHECK(rec_count_event(rec, DSD_IQ_NET_EVENT_STALL) == 0U);
     dsd_iq_net_reader_destroy(r);
     CHECK(atomic_load(&g_log_rate) == warnings_before + 1);
     (void)dsd_socket_close(a.sock);
     rec_free(rec);
+}
+
+/* Through the reader over TCP: the warning, then a reconnect re-arms it, and the same rate warns once more. */
+static void
+test_tcp_rate_warning_rearmed(void) {
+    const int warnings_before = atomic_load(&g_log_rate);
+    int port = 0;
+    dsd_socket_t listener = bound_socket(SOCK_STREAM, 4, &port);
+    recorder* rec = rec_new();
+    dsd_iq_net_reader* r = reader_new(DSD_IQ_NET_KIND_TCP, port, DSD_IQ_NET_FORMAT_CU8, 8000U, rec);
+    CHECK(listener != DSD_INVALID_SOCKET && rec && open_ok(r));
+    dsd_socket_t conn = accept_within(listener, k_wait_ms);
+    CHECK(conn != DSD_INVALID_SOCKET);
+    CHECK(dsd_iq_net_reader_start(r) == 0);
+    drive_low_rate(rec, tcp_rate_send, &conn);
+    CHECK(WAIT_COUNTER(r, rate_warnings, 1U));
+    /* More windows on the same connection: no second warning. */
+    drive_low_rate(rec, tcp_rate_send, &conn);
+    dsd_iq_net_counters c;
+    dsd_iq_net_reader_get_counters(r, &c);
+    CHECK(c.rate_warnings == 1U);
+
+    (void)dsd_socket_close(conn);
+    conn = accept_within(listener, k_wait_ms);
+    CHECK(conn != DSD_INVALID_SOCKET);
+    CHECK(wait_event(rec, DSD_IQ_NET_EVENT_RECONNECT, 1U));
+    drive_low_rate(rec, tcp_rate_send, &conn);
+    CHECK(WAIT_COUNTER(r, rate_warnings, 2U));
+    CHECK(rec_count_event(rec, DSD_IQ_NET_EVENT_STALL) == 0U);
+    dsd_iq_net_reader_destroy(r);
+    CHECK(atomic_load(&g_log_rate) == warnings_before + 2);
+    (void)dsd_socket_close(conn);
+    (void)dsd_socket_close(listener);
+    rec_free(rec);
+}
+
+/* TCP takes only "nothing yet" and a signal as transient; a Winsock or POSIX timeout on its socket, which has no
+   receive timeout, is a dead connection. The UDP socket's receive timeout is transient there. */
+static void
+test_error_classes(void) {
+#if DSD_PLATFORM_WIN_NATIVE
+    CHECK(iq_net_tcp_error_is_transient(WSAEWOULDBLOCK) && iq_net_tcp_error_is_transient(WSAEINTR));
+    CHECK(!iq_net_tcp_error_is_transient(WSAETIMEDOUT) && !iq_net_tcp_error_is_transient(WSAECONNRESET));
+    CHECK(iq_net_udp_error_is_transient(WSAETIMEDOUT) && iq_net_udp_error_is_transient(WSAEWOULDBLOCK));
+    CHECK(!iq_net_udp_error_is_transient(WSAECONNRESET));
+#else
+    CHECK(iq_net_tcp_error_is_transient(EAGAIN) && iq_net_tcp_error_is_transient(EWOULDBLOCK));
+    CHECK(iq_net_tcp_error_is_transient(EINTR));
+    CHECK(!iq_net_tcp_error_is_transient(ETIMEDOUT) && !iq_net_tcp_error_is_transient(ECONNRESET));
+    CHECK(iq_net_udp_error_is_transient(EAGAIN) && !iq_net_udp_error_is_transient(ETIMEDOUT));
+#endif
+    CHECK(!iq_net_tcp_error_is_transient(0));
 }
 
 int
@@ -1458,9 +1624,9 @@ main(void) {
     atomic_init(&g_log_foreign, 0);
     atomic_init(&g_log_rate, 0);
     dsd_atomic_u64_init(&g_clock_ms, 100000U);
-    dsd_neo_log_set_tap(log_tap, NULL);
 
     test_split_fields();
+    test_error_classes();
     test_spec_parse_ok();
     test_spec_parse_refusals();
     test_spec_format_refusals();
@@ -1479,13 +1645,16 @@ main(void) {
     test_tcp_stall_seen_after_the_wait();
     test_tcp_backoff_cancellable();
     test_tcp_stop_during_recv();
+    test_tcp_cancelled_before_connect();
     test_tcp_stop_during_connect();
     test_tcp_connect_refused();
     test_udp_datagrams();
     test_udp_one_sender_and_relock();
     test_udp_stall_seen_after_the_wait();
     test_udp_bind_refused();
+    test_udp_rebind_after_stop();
     test_udp_rate_warning();
+    test_tcp_rate_warning_rearmed();
 
     dsd_socket_cleanup();
     if (g_failures != 0) {

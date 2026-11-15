@@ -9367,10 +9367,12 @@ Key public headers:
     `bound_cf32_to_f32()` itself. Clip levels (`dsd_iq_net_format_clip_level()`): cs8 127/128, cu8 0.996, else 0.999.
   - Reader (`dsd_iq_net_reader_*`): `_create()` allocates every buffer (64 KiB receive, 32768-pair output; nothing
     per read); `_open()` runs on the caller's thread (TCP: resolve, then `dsd_socket_connect_bounded()` 10 s,
-    keepalive, SO_RCVBUF 4 MiB before the connect; UDP: bind with SO_REUSEADDR, SO_EXCLUSIVEADDRUSE on Windows,
-    SO_RCVBUF, 200 ms receive timeout) and reports a `dsd_input_failure_kind` plus message, logging nothing; `_start()`
+    keepalive, SO_RCVBUF 4 MiB before the connect; UDP: bind without SO_REUSEADDR, so a port in use is refused and
+    no second socket can share it, SO_EXCLUSIVEADDRUSE on Windows, SO_RCVBUF, 200 ms receive timeout) and reports a `dsd_input_failure_kind` plus message, logging nothing; `_start()`
     makes the `iq_net` thread (FP mode applied first), or a caller runs `_run()` on its own thread. Every wait is a
-    200 ms `dsd_socket_wait()` slice. Callbacks run on the reader thread with no reader lock held; a RECONNECT or
+    200 ms `dsd_socket_wait()` slice; TCP treats only EAGAIN/EWOULDBLOCK/EINTR (Winsock WSAEWOULDBLOCK/WSAEINTR) as
+    "nothing yet": its socket has no receive timeout, so Winsock's WSAETIMEDOUT there is a dead connection, which only
+    the UDP socket (receive timeout set) may take as a timeout. Callbacks run on the reader thread with no reader lock held; a RECONNECT or
     RESUME event comes before the first sample after it, which is where the stream boundary belongs. TCP: the carry
     of a partial sample survives a stall and is discarded at a reconnect; a loss reconnects forever, resolving again
     at every attempt, the first at once and then 0.2 s x attempt (cap 2 s) in 20 ms slices; a connection that ends

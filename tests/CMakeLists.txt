@@ -18357,9 +18357,7 @@ if(DSD_HAS_RADIO)
         PRIVATE dsd-neo_io_iq_net dsd-neo_runtime dsd-neo_dsp dsd-neo_platform
     )
     add_test(NAME IO_IQ_NET COMMAND dsd-neo_test_io_iq_net)
-endif()
 
-if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_rtl_auto_ppm io/test_io_rtl_auto_ppm.cpp)
     target_include_directories(
         dsd-neo_test_io_rtl_auto_ppm

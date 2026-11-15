@@ -39,6 +39,15 @@ int iq_net_parse_hz(const char* text, const char* suffixes, int whole_only, uint
 /* Whether a reader can run spec: a kind, a wire format, a non-empty host, a port in 0..65535 (not 0 for TCP). */
 int iq_net_spec_usable(const dsd_iq_net_spec* spec);
 
+/* ---- Socket errors ---- */
+
+/* Whether a failed wait or recv() on the TCP socket (no receive timeout) was only cut short by a signal or found
+   nothing to read. Not Winsock's WSAETIMEDOUT: on a socket with no receive timeout that is a dead connection
+   (keepalive or retransmission gave up). */
+int iq_net_tcp_error_is_transient(int code);
+/* The same for the UDP socket, whose receive timeout also ends a recvfrom() with WSAETIMEDOUT on Windows. */
+int iq_net_udp_error_is_transient(int code);
+
 /* ---- TCP partial-sample carry ---- */
 
 /* The bytes of a complex sample a TCP read cut short, kept for the next read. */
