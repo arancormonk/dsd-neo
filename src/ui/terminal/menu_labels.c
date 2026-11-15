@@ -1415,6 +1415,13 @@ lbl_ui_channels(const void* v, char* b, size_t n) {
 }
 
 const char*
+lbl_ui_unit_activity(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    DSD_SNPRINTF(b, n, "Unit activity [%s]", onoff(c && c->opts && c->opts->frontend_display.show_unit_activity));
+    return b;
+}
+
+const char*
 lbl_ui_p25_metrics(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "P25 metrics [%s]", onoff(c && c->opts && c->opts->frontend_display.show_p25_metrics));

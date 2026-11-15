@@ -132,6 +132,7 @@
     X(act_toggle_ui_p25_iden)                                                                                          \
     X(act_toggle_ui_p25_metrics)                                                                                       \
     X(act_toggle_ui_p25_neighbors)                                                                                     \
+    X(act_toggle_ui_unit_activity)                                                                                     \
     X(act_receive_slot)                                                                                                \
     X(act_receive_dcc)                                                                                                 \
     X(act_receive_ran)                                                                                                 \
@@ -335,6 +336,7 @@
     X(lbl_ui_p25_iden)                                                                                                 \
     X(lbl_ui_p25_metrics)                                                                                              \
     X(lbl_ui_p25_neighbors)                                                                                            \
+    X(lbl_ui_unit_activity)                                                                                            \
     X(lbl_vis_const)                                                                                                   \
     X(lbl_vis_const_norm)                                                                                              \
     X(lbl_vis_eye)                                                                                                     \

@@ -625,6 +625,7 @@ avoids and call skips, as an import does.
 | `ui_show_p25_ccc_toggle` | – |
 | `ui_show_channels_toggle` | – |
 | `ui_show_p25_callsign_toggle` | – |
+| `ui_show_unit_activity_toggle` | – |
 | `key_basic_set` | `{value:uint32}` |
 | `key_scrambler_set` | `{value:uint32}` |
 | `key_rc4des_set` | `{value:uint64}` |

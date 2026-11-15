@@ -3625,6 +3625,27 @@ add_test(
     COMMAND dsd-neo_test_app_control_unit_activity
 )
 
+# The terminal's Unit Activity rows over a real ring and the real view: the newest rows by seq, merges in place, a new
+# log, names after a rename, and each row's line text.
+add_executable(
+    dsd-neo_test_ui_unit_activity_panel
+    ui/test_ui_unit_activity_panel.c
+    ${PROJECT_SOURCE_DIR}/src/ui/terminal/unit_activity_panel.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
+)
+target_include_directories(
+    dsd-neo_test_ui_unit_activity_panel
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
+)
+target_link_libraries(
+    dsd-neo_test_ui_unit_activity_panel
+    PRIVATE dsd-neo_core dsd-neo_runtime dsd-neo_platform
+)
+add_test(
+    NAME UI_UNIT_ACTIVITY_PANEL
+    COMMAND dsd-neo_test_ui_unit_activity_panel
+)
+
 # The system identity received on the carrier being decoded, as every frontend shows it.
 add_executable(
     dsd-neo_test_app_control_site_identity_view
@@ -3996,6 +4017,8 @@ if(DSD_ENABLE_TERMINAL_UI)
             ui/test_ui_ncurses_printer_helpers.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/unit_activity_panel.c
+            ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time.c
             ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c

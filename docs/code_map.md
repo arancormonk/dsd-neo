@@ -6250,6 +6250,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     already tells the systems apart. `dsd_app_unit_activity_name_key()` (`dsd_alias_name_key()`) changes whenever a
     name could change; a frontend then reads again from `{instance, 0}` and updates its rows by seq.
   - Test: `APP_CONTROL_UNIT_ACTIVITY`.
+  - Terminal: the Unit Activity section (`frontend_display.show_unit_activity`, Display -> Sections -> Unit activity,
+    `DSD_APP_CMD_UI_SHOW_UNIT_ACTIVITY_TOGGLE`) draws from each frame's snapshot.
+    `src/ui/terminal/unit_activity_panel.{h,c}` (no curses) holds the 8 rows with the highest seq, newest first,
+    updated in place by seq, dropped on `meta.reset`, and read again from `{instance, 0}` when the name key changes; it
+    builds each row's lines: time, headline, subject with its name in brackets, target, `(xN)`, then a `\--` line
+    with the reason a headline does not carry and the protocol and system when they differ from the row above. A row
+    dropped unread lies below the 8 newest (the ring keeps 1024), so the section shows no gap row.
+    `dsd_ncurses_printer.c` cuts each line to the panel (`ui_text_fit()`) and draws a warning row (`tone`) in colour
+    pair 2. Tests: `UI_UNIT_ACTIVITY_PANEL` (real ring and view), `UI_NCURSES_PRINTER_HELPERS` (the drawn lines,
+    stubbed view).
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;

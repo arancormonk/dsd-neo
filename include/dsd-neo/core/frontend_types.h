@@ -37,6 +37,7 @@ typedef struct dsd_frontend_common_display_opts {
     uint8_t show_p25_affiliations;
     uint8_t show_p25_group_affiliations;
     uint8_t show_p25_callsign_decode;
+    uint8_t show_unit_activity;
 } dsd_frontend_common_display_opts;
 
 typedef struct dsd_frontend_terminal_display_opts {

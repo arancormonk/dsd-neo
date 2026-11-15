@@ -13,6 +13,7 @@
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/channel_label.h>
@@ -27,6 +28,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
@@ -772,6 +774,47 @@ int
 dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
     (void)rate_hz;
     return 0;
+}
+
+/* The unit activity view, as the Unit Activity section reads it: g_ua_rows rows, revised in order, read after the
+   cursor; the real view and the panel over a real ring are UI_UNIT_ACTIVITY_PANEL's. */
+static dsd_app_unit_activity_row g_ua_rows[4];
+static int g_ua_row_count;
+
+int
+dsd_app_unit_activity_rows(const dsd_state* snapshot, dsd_app_unit_activity_cursor* cursor,
+                           dsd_app_unit_activity_row* out, int cap, dsd_app_unit_activity_meta* meta) {
+    (void)snapshot;
+    DSD_MEMSET(meta, 0, sizeof(*meta));
+    meta->held = 1U;
+    meta->reset = cursor->instance != 1U ? 1U : 0U;
+    if (meta->reset) {
+        cursor->instance = 1U;
+        cursor->rev = 0U;
+    }
+    int n = 0;
+    for (int i = 0; i < g_ua_row_count && n < cap; i++) {
+        if (g_ua_rows[i].rev > cursor->rev) {
+            out[n++] = g_ua_rows[i];
+            cursor->rev = g_ua_rows[i].rev;
+        }
+    }
+    return n;
+}
+
+uint64_t
+dsd_app_unit_activity_name_key(const dsd_state* snapshot) {
+    (void)snapshot;
+    return 1U;
+}
+
+void
+dsd_app_unit_activity_headline(const dsd_app_unit_activity_row* row, char* out, size_t cap) {
+    if (strcmp(row->kind_label, "Denied") == 0 && row->reason_text[0] != '\0') {
+        DSD_SNPRINTF(out, cap, "%s: %s", row->kind_label, row->reason_text);
+    } else {
+        DSD_SNPRINTF(out, cap, "%s", row->kind_label);
+    }
 }
 
 #if defined(DSD_USE_PDCURSES)
@@ -5229,8 +5272,103 @@ test_identity_lines_read_the_received_record(void) {
     free(opts);
 }
 
+static void
+ua_stub_row(dsd_app_unit_activity_row* row, uint64_t seq, const char* kind, const char* subject, const char* name,
+            const char* target) {
+    DSD_MEMSET(row, 0, sizeof(*row));
+    row->seq = seq;
+    row->rev = seq;
+    row->wall_s = 1700000000;
+    row->repeat = 1U;
+    DSD_SNPRINTF(row->kind_label, sizeof(row->kind_label), "%s", kind);
+    DSD_SNPRINTF(row->subject_text, sizeof(row->subject_text), "%s", subject);
+    DSD_SNPRINTF(row->subject_name, sizeof(row->subject_name), "%s", name);
+    DSD_SNPRINTF(row->target_text, sizeof(row->target_text), "%s", target);
+    DSD_SNPRINTF(row->protocol_text, sizeof(row->protocol_text), "%s", "P25 Phase 1");
+    DSD_SNPRINTF(row->scope_text, sizeof(row->scope_text), "%s", "WACN BEE00 SYS 123");
+}
+
+/* The Unit Activity section (Display -> Sections -> Unit activity): drawn only while on, newest row first, a kill or
+   inhibit command in the dashboard's red, the reason and the system on a second line, every line cut to the panel. */
+static void
+test_unit_activity_section(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(state && opts);
+    ui_unit_activity_panel_reset(&ui_unit_activity_rows);
+    g_ua_row_count = 0;
+
+    reset_printw_capture();
+    g_last_header[0] = '\0';
+    ui_render_unit_activity_section(opts, state);
+    assert(g_printw_capture[0] == '\0');
+    assert(g_last_header[0] == '\0');
+
+    opts->frontend_display.show_unit_activity = 1U;
+    ui_render_unit_activity_section(opts, state);
+    assert(strcmp(g_last_header, "Unit Activity") == 0);
+    assert(strcmp(g_printw_capture, " (none)\n") == 0);
+
+    char time_text[16];
+    (void)dsd_format_local_datetime((time_t)1700000000, DSD_LOCAL_DATETIME_TIME_COLON, time_text, sizeof time_text);
+    ua_stub_row(&g_ua_rows[0], 1U, "Joined talkgroup", "1234567", "Engine 5", "TG 100");
+    ua_stub_row(&g_ua_rows[1], 2U, "Kill sent", "7654321", "", "from 55");
+    g_ua_rows[1].tone = DSD_UA_TONE_WARNING;
+    ua_stub_row(&g_ua_rows[2], 3U, "Denied", "1234567", "Engine 5", "TG 200");
+    DSD_SNPRINTF(g_ua_rows[2].reason_text, sizeof g_ua_rows[2].reason_text, "%s", "Target Unit Not Valid (0x20)");
+    g_ua_rows[2].repeat = 3U;
+    g_ua_row_count = 3;
+    g_stub_max_x = 120;
+    reset_printw_capture();
+    reset_color_trace();
+    ui_render_unit_activity_section(opts, state);
+    char expected[1024];
+    DSD_SNPRINTF(expected, sizeof expected,
+                 " %s Denied: Target Unit Not Valid (0x20); 1234567 [Engine 5]; TG 200 (x3)\n"
+                 "  \\-- P25 Phase 1, WACN BEE00 SYS 123\n"
+                 " %s Kill sent; 7654321; from 55\n"
+                 " %s Joined talkgroup; 1234567 [Engine 5]; TG 100\n",
+                 time_text, time_text, time_text);
+    assert(strcmp(g_printw_capture, expected) == 0);
+    assert(strcmp(g_color_trace, "+2") == 0);
+
+    /* A merge comes back with its seq and a higher rev: updated in place, never moved. */
+    g_ua_rows[0].rev = 4U;
+    g_ua_rows[0].repeat = 2U;
+    reset_printw_capture();
+    ui_render_unit_activity_section(opts, state);
+    assert(strstr(g_printw_capture, "TG 100 (x2)\n") != NULL);
+    assert(strstr(g_printw_capture, "Joined talkgroup") > strstr(g_printw_capture, "Kill sent"));
+
+    /* A narrow terminal cuts each line with the marker before the last column, after the border and lead. */
+    g_stub_max_x = 30;
+    g_unicode_stub = 0;
+    reset_printw_capture();
+    ui_render_unit_activity_section(opts, state);
+    const char* line = g_printw_capture;
+    int lines = 0;
+    while (*line != '\0') {
+        const char* end = strchr(line, '\n');
+        assert(end != NULL);
+        assert((int)(end - line) <= 30 - 2);
+        assert(strncmp(end - 3, "...", 3) == 0);
+        line = end + 1;
+        lines++;
+    }
+    assert(lines == 4);
+    g_stub_max_x = 80;
+    g_unicode_stub = 1;
+
+    g_ua_row_count = 0;
+    ui_unit_activity_panel_reset(&ui_unit_activity_rows);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_unit_activity_section();
     test_tetra_rows_follow_the_view();
     test_tetra_call_block();
     test_tetra_call_block_renders_above_the_rows();
