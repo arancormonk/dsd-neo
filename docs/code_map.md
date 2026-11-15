@@ -10039,6 +10039,12 @@ control within the CC grace walks its channel map with the ordinary hunts.
 - Tests: `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`, `P25_SM_COLD_START`, `P25_MBT_DECODE`,
   `ENGINE_DMR_CC_RECOVERY`, `ENGINE_COLD_START_HUNT`, `APP_COMMAND_QUEUE`, `DMR_CONFIDENCE_GATE`,
   `ENGINE_TRUNK_RETUNE_REGRESSION`, `RUNTIME_FRAME_SYNC_HOOKS`, `FRAME_SYNC_POLICY`, `FRAME_SYNC_INTERNAL_HELPERS`.
+- EDACS status LCNs (`src/protocol/edacs/edacs-fme.c`): an assignment's LCN field names a channel only below 26;
+  26-31 are status values (reserved, convert to callee, call queued, system busy, call denied:
+  `edacs_lcn_status_string()`). Such an assignment is printed with its status and gets no recent-activity row, voice or
+  data (`edacs_lcn_names_channel()`); main published LCNs 26-30 as grants on a 0 Hz channel. This rests on the
+  decoder's own reserved-LCN handling; EDACS gets no unit-event semantics (no public spec). Tests:
+  `EDACS_GRANT_TUNE_MATRIX` (`edacs_run_status_lcn_cases`).
 - NXDN (`src/protocol/nxdn/nxdn_cc_hunt.c`, `<dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>`, context in state-ext slot 28
   `DSD_STATE_EXT_PROTO_NXDN_CC_HUNT`): NXDN has no trunk state machine and no other control-channel hunt, so this one
   runs at session start and after a control channel is lost. Eligibility is
