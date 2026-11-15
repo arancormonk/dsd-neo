@@ -1281,13 +1281,21 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
     frame_ctx->capture = MBE_CAPTURE_NXDN;
 }
 
+/* The slot call a DMR frame's talkgroup key autoload may record its choice on: the open DMR call. A frame the receive
+ * policy has not admitted yet opens no call (mark_vocoder_call_media()), so its slot can still hold an ended call or
+ * another protocol's; the autoload keeps loading that talkgroup's key, which keeps the vocoder state the admitted
+ * frames continue from, but stamps no key choice on a call record that is over or not DMR's. */
+static int
+mbe_dmr_call_open(const dsd_call_snapshot* call) {
+    return call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_DMR(call->protocol);
+}
+
 static void
 mbeslot_left_autoload_keys(dsd_state* state) {
     if (state->M == 0 && state->payload_algid == 0) {
         dsd_call_snapshot call;
-        uint32_t target = dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= UINT32_MAX
-                              ? (uint32_t)call.ota_target_id
-                              : 0U;
+        const int have_call = dsd_call_state_get(state, 0U, &call) > 0;
+        uint32_t target = have_call && call.ota_target_id <= UINT32_MAX ? (uint32_t)call.ota_target_id : 0U;
         uint32_t hash = mbe_hash_tg_for_key(target);
         if (keyring_kid_scalar_present(state, (int)hash)) {                // an imported zero is a key too
             state->K = state->rkey_array[hash] & 0xFF;                     //doesn't exceed 255
@@ -1295,8 +1303,10 @@ mbeslot_left_autoload_keys(dsd_state* state) {
             state->K2 = state->K3 = state->K4 = 0ULL;
             state->basic_key_present = 1U;
             state->hytera_key_segments = 1U;
-            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
-                                                    (int)target, 1, 0);
+            if (have_call && mbe_dmr_call_open(&call)) {
+                (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
+                                                        (int)target, 1, 0);
+            }
         }
     }
 }
@@ -1305,9 +1315,8 @@ static void
 mbeslot_right_autoload_keys(dsd_state* state) {
     if (state->M == 0 && state->payload_algidR == 0) {
         dsd_call_snapshot call;
-        uint32_t target = dsd_call_state_get(state, 1U, &call) > 0 && call.ota_target_id <= UINT32_MAX
-                              ? (uint32_t)call.ota_target_id
-                              : 0U;
+        const int have_call = dsd_call_state_get(state, 1U, &call) > 0;
+        uint32_t target = have_call && call.ota_target_id <= UINT32_MAX ? (uint32_t)call.ota_target_id : 0U;
         uint32_t hash = mbe_hash_tg_for_key(target);
         if (keyring_kid_scalar_present(state, (int)hash)) { // an imported zero is a key too
             state->K = state->rkey_array[hash] & 0xFF;
@@ -1315,8 +1324,10 @@ mbeslot_right_autoload_keys(dsd_state* state) {
             state->K2 = state->K3 = state->K4 = 0ULL;
             state->basic_key_present = 1U;
             state->hytera_key_segments = 1U;
-            (void)dsd_call_state_note_key_selection(state, 1, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
-                                                    (int)target, 1, 0);
+            if (have_call && mbe_dmr_call_open(&call)) {
+                (void)dsd_call_state_note_key_selection(state, 1, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
+                                                        (int)target, 1, 0);
+            }
         }
     }
 }
