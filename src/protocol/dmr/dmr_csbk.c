@@ -1680,7 +1680,7 @@ dmr_cspdu_pf0_handle_c_bcast(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
 // Opcodes whose meaning only the standard feature set (FID 0x00) gives (every one of their tables says "FID shall be set
 // to 0000 0000"): vendors reuse the numbers for their own PDUs (TS 102 361-2 / -4).
 static int
-dmr_cspdu_pf0_is_standard_only(int csbk_o) {
+dmr_cspdu_pf0_is_standard_only(const dsd_state* state, int csbk_o) {
     switch (csbk_o) {
         case 4:  // UU_V_Req
         case 5:  // UU_Ans_Rsp
@@ -1695,16 +1695,19 @@ dmr_cspdu_pf0_is_standard_only(int csbk_o) {
         case 38: // NACK_Rsp
         case 42: // P_MAINT
             return 1;
+        case 56: // BS_Dwn_Act on MS data; elsewhere a grant opcode, which runs for any FID
+            return state->synctype == DSD_SYNC_DMR_MS_DATA;
         default: return 0;
     }
 }
 
-// The standard-only handlers run for FID 0x00. Under another FID the opcode is the manufacturer's: shown as such unless
-// a vendor handler below decodes it.
+// The standard-only handlers run for FID 0x00. Under another FID the opcode is the manufacturer's and prints as a
+// manufacturer CSBK. No vendor dispatcher below decodes any of these opcodes; one that comes to must also take its
+// opcode out of dmr_cspdu_pf0_is_standard_only(), or both lines print.
 static void
 dmr_cspdu_pf0_handle_standard_only(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
     if (csbk_fid != 0) {
-        if (dmr_cspdu_pf0_is_standard_only(csbk_o)) {
+        if (dmr_cspdu_pf0_is_standard_only(state, csbk_o)) {
             DSD_FPRINTF(stderr, "\n");
             DSD_FPRINTF(stderr, " Manufacturer CSBK: FID %02X; Opcode %02X;", csbk_fid, csbk_o);
         }

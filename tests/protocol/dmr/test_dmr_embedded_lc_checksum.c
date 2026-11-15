@@ -196,6 +196,38 @@ test_checked_alias_and_gps_apply(dsd_opts* opts, dsd_state* state) {
     return failed;
 }
 
+// A UTF-8 talker alias (Data Format 10, TS 102 361-2 Table 7.25) through dmr_flco() and its checksum gate: "AB" then
+// U+65E5 U+672C, the second character split between the header and block 1. The header's length (8) counts octets, so
+// the cut character waits for block 1 instead of showing as U+FFFD.
+static int
+test_checked_utf8_alias_through_flco(dsd_opts* opts, dsd_state* state) {
+    int failed = 0;
+    static const uint8_t head[6] = {'A', 'B', 0xE6, 0x97, 0xA5, 0xE6};
+    static const uint8_t blk1[2] = {0x9C, 0xAC};
+    fixture(opts, state);
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    set_bits(bits, 2, 6, 0x04U);
+    set_bits(bits, 16, 2, 2U);
+    set_bits(bits, 18, 5, 8U);
+    for (size_t i = 0; i < sizeof head; ++i) {
+        set_bits(bits, 24U + i * 8U, 8U, head[i]);
+    }
+    send_lc(opts, state, bits, 1, 3);
+    CHECK(strcmp(state->generic_talker_alias[0], "AB\xE6\x97\xA5; ") == 0);
+    DSD_MEMSET(bits, 0, sizeof bits);
+    set_bits(bits, 2, 6, 0x05U);
+    for (size_t i = 0; i < sizeof blk1; ++i) {
+        set_bits(bits, 16U + i * 8U, 8U, blk1[i]);
+    }
+    send_lc(opts, state, bits, 1, 3);
+    const Event_History* row = &state->event_history_s[0].Event_History_Items[0];
+    CHECK(strcmp(state->generic_talker_alias[0], "AB\xE6\x97\xA5\xE6\x9C\xAC; ") == 0);
+    CHECK(strstr(row->alias, "AB\xE6\x97\xA5\xE6\x9C\xAC") != NULL);
+    CHECK(call_is_clean(state));
+    return failed;
+}
+
 static int
 test_failed_fragment_abandons_assembly(dsd_opts* opts, dsd_state* state) {
     int failed = 0;
@@ -277,6 +309,7 @@ main(void) {
     state->event_history_s = history;
     int failed = test_failed_checksum_applies_nothing(opts, state);
     failed |= test_checked_alias_and_gps_apply(opts, state);
+    failed |= test_checked_utf8_alias_through_flco(opts, state);
     failed |= test_failed_fragment_abandons_assembly(opts, state);
     failed |= test_failed_lc_holds_no_scan(opts, state);
     dsd_state_ext_free_all(state);

@@ -11326,9 +11326,12 @@ Private per-protocol modules worth knowing about:
   with flag 1 the talkgroup subscription list request; any other combination UNRECOGNISED. Each names the command or
   poll the TSCC sent, never its outcome (the radio's answer is inbound). NACK_Rsp carries its source before its target
   (Table 7.6). Standard-only CSBK opcodes (UU_V_Req, UU_Ans_Rsp, CT_CSBK, C_AHOY, C_ACKVIT, C_RAND, C_ACKD, C_ACKU,
-  P_ACKD, P_ACKU, NACK_Rsp, P_MAINT) decode only under FID 0x00 (`dmr_cspdu_pf0_handle_standard_only()`); under another
-  FID they print as `Manufacturer CSBK` unless a vendor handler decodes them. Grants, moves, C_ALOHA (Capacity Max
-  recognition included), P_CLEAR, P_PROTECT, C_BCAST and preambles still run for any FID. Tests: `DMR_CSBK_FIXES`.
+  P_ACKD, P_ACKU, NACK_Rsp, P_MAINT, and BS_Dwn_Act on MS data) decode only under FID 0x00
+  (`dmr_cspdu_pf0_handle_standard_only()`); under another FID they print as `Manufacturer CSBK`. No vendor dispatcher
+  decodes these opcodes today; one that comes to must take its opcode out of `dmr_cspdu_pf0_is_standard_only()`, or
+  both lines print. Grants, moves, C_ALOHA (Capacity Max recognition included), P_CLEAR, P_PROTECT, C_BCAST and
+  preambles still run for any FID. Tests: `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through
+  `dmr_flco()`).
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
   stays at the CSBK/status layer, which alone knows each grant's classification (Tier III data grants rewritten to
   group, Connect Plus private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,

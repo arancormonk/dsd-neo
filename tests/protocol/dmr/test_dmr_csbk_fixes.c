@@ -25,6 +25,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -146,6 +147,19 @@ test_vendor_opcodes_not_standard(dsd_opts* opts, dsd_state* state) {
         expect_absent(cases[i].standard, "vendor opcode not printed as standard");
         expect_contains(cases[i].manufacturer, "vendor opcode printed as manufacturer");
     }
+
+    /* Opcode 56 on MS data is BS_Dwn_Act only under FID 0x00 (elsewhere it is a grant opcode, run for any FID). */
+    static const uint8_t bs_dwn_vendor[10] = {0xB8, 0x10};
+    static const uint8_t bs_dwn_standard[10] = {0xB8, 0x00};
+    const int saved_synctype = state->synctype;
+    state->synctype = DSD_SYNC_DMR_MS_DATA;
+    run_csbk(opts, state, bs_dwn_vendor);
+    expect_absent("BS_Dwn_Act", "vendor op 56 on MS data not BS_Dwn_Act");
+    expect_contains("Manufacturer CSBK: FID 10; Opcode 38;", "vendor op 56 on MS data printed as manufacturer");
+    run_csbk(opts, state, bs_dwn_standard);
+    expect_contains("BS_Dwn_Act", "standard op 56 on MS data");
+    expect_absent("Manufacturer CSBK", "standard op 56 not manufacturer");
+    state->synctype = saved_synctype;
 
     /* FID 0x00 keeps the standard meaning. */
     static const uint8_t c_rand[10] = {0x9F, 0x00};

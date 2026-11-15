@@ -1383,10 +1383,8 @@ void
 dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, uint8_t char_size,
                            uint16_t max_chars) {
     UNUSED(opts);
-    // block_num 0 is the header; blocks 1-3 follow it.
-    if (block_num == 0U) {
-        DSD_FPRINTF(stderr, " Slot %d - Talker Alias Header;", slot + 1);
-    } else {
+    // block_num 0 is the header, whose own line already named it; blocks 1-3 follow it.
+    if (block_num != 0U) {
         DSD_FPRINTF(stderr, " Slot %d - Talker Alias Block %d;", slot + 1, block_num);
     }
     DSD_FPRINTF(stderr, " Talker Alias: ");

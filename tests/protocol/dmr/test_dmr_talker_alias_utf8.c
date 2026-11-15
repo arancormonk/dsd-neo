@@ -29,11 +29,6 @@
 #include "test_env.h"
 #include "test_support.h"
 
-#if defined(__GNUC__) && !defined(__cplusplus)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmissing-prototypes"
-#endif
-
 int
 dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
     dsd_call_snapshot call;
@@ -53,19 +48,6 @@ dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, 
     (void)opts;
     return dsd_event_enrich_alias(state, slot, epoch, alias);
 }
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
-    (void)opts;
-    (void)state;
-    (void)lcw_bits;
-    (void)irrecoverable_errors;
-}
-
-#if defined(__GNUC__) && !defined(__cplusplus)
-#pragma GCC diagnostic pop
-#endif
 
 static int g_failures;
 
