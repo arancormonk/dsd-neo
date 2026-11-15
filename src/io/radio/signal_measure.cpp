@@ -1410,7 +1410,9 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
    rendered as that kind only, and four widths a scan can be given that the sheet does not step through, each
    validated on its own: NFM 10, 12 and 15 kHz and AM 8.333 kHz. On the RTL tap's geometry (the default one, at the
    rate list above, 3000 validation trials, threshold 5.0 dB) their lowest valid select/validation ratios, against
-   that threshold, are:
+   that threshold, are (narrow and wide: the NFM transmitter of a 12.5 kHz channel, a 1.5 kHz test tone at +/-2.5 kHz
+   deviation, and of a 25 kHz channel, a 3 kHz tone at +/-5 kHz; voice: a speech-like multitone at each one's full
+   deviation, received at 12 dB or more audio S/N):
      NFM 10 kHz  narrow 9.02/8.93 dB, wide 6.06/6.13 dB, voice 13.15/13.17 dB (narrow) and 8.08/8.11 dB (wide);
      NFM 12 kHz  narrow 8.48/8.40 dB, wide 5.92/5.91 dB, voice 12.62/12.59 dB (narrow) and 7.53/7.59 dB (wide);
      NFM 15 kHz  narrow 8.11/8.10 dB, wide 6.04/6.04 dB, voice 11.76/11.74 dB (narrow) and 7.22/7.26 dB (wide);
