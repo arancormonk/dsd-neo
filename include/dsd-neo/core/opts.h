@@ -154,7 +154,9 @@ struct dsd_opts {
     dsd_audio_stream* audio_out_streamR; /* Secondary audio output stream (slot 2/right) */
     dsd_audio_stream* audio_raw_out;     /* Raw/analog audio output stream (48kHz) */
     FILE* symbolfile;
-    void* udp_in_ctx;                  // opaque UDP input context
+    void* udp_in_ctx; // opaque UDP input context
+    /* The UDP input's counts as the decoder thread last copied them from the input, which counts on its receive thread
+       (udp_input.c); written by the decoder thread only, so a UI snapshot of the options never races the receiver. */
     unsigned long long udp_in_packets; // received datagrams
     unsigned long long udp_in_bytes;   // received bytes
     unsigned long long udp_in_drops;   // dropped samples due to ring overflow

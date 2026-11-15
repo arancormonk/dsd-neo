@@ -45,6 +45,12 @@ typedef struct udp_input_ctx {
     udp_input_ring ring;
     dsd_thread_t th;
     int sample_rate;
+    /* Counted by the receive thread and copied into the options by the decoder thread (udp_input_mirror_counters()).
+       Never counted in the options themselves: the decoder copies them whole for every UI snapshot while this thread
+       runs. */
+    dsd_atomic_u64 packets;
+    dsd_atomic_u64 bytes;
+    dsd_atomic_u64 drops;
 } udp_input_ctx;
 
 /**
@@ -121,12 +127,28 @@ ring_signal(udp_input_ring* r) {
 }
 
 /**
+ * @brief Copy the receive thread's counters into the options the UI reads.
+ *
+ * The decoder thread only: it owns the options, and publishes their snapshots.
+ *
+ * @param opts Decoder options receiving the counts.
+ * @param ctx UDP input whose counts they are.
+ */
+static void
+udp_input_mirror_counters(dsd_opts* opts, const udp_input_ctx* ctx) {
+    opts->udp_in_packets = (unsigned long long)dsd_atomic_u64_load_relaxed(&ctx->packets);
+    opts->udp_in_bytes = (unsigned long long)dsd_atomic_u64_load_relaxed(&ctx->bytes);
+    opts->udp_in_drops = (unsigned long long)dsd_atomic_u64_load_relaxed(&ctx->drops);
+}
+
+/**
  * @brief Background UDP receive thread that widens PCM16LE datagrams.
  *
  * Receives UDP datagrams, converts to int16 samples, and pushes them into the
- * ring while tracking drop statistics on overflow.
+ * ring while tracking drop statistics on overflow. It never touches the
+ * decoder's options.
  *
- * @param arg Pointer to owning `dsd_opts`.
+ * @param arg Pointer to the owning `udp_input_ctx`.
  * @return NULL on exit.
  */
 static DSD_THREAD_RETURN_TYPE
@@ -134,8 +156,7 @@ static DSD_THREAD_RETURN_TYPE
     __stdcall
 #endif
     udp_rx_thread(void* arg) {
-    dsd_opts* opts = (dsd_opts*)arg;
-    udp_input_ctx* ctx = (udp_input_ctx*)opts->udp_in_ctx;
+    udp_input_ctx* ctx = (udp_input_ctx*)arg;
     const size_t max_bytes = 65536;
     uint8_t* buf = (uint8_t*)malloc(max_bytes);
     if (!buf) {
@@ -170,8 +191,8 @@ static DSD_THREAD_RETURN_TYPE
             // no data
             continue;
         }
-        opts->udp_in_packets++;
-        opts->udp_in_bytes += (unsigned long long)n;
+        (void)dsd_atomic_u64_fetch_add_relaxed(&ctx->packets, 1U);
+        (void)dsd_atomic_u64_fetch_add_relaxed(&ctx->bytes, (uint64_t)n);
         // Must be even number of bytes for int16 samples
         size_t nsamp = (size_t)(n / 2);
         if (nsamp == 0) {
@@ -184,7 +205,7 @@ static DSD_THREAD_RETURN_TYPE
         dsd_mutex_lock(&ctx->ring.m);
         wrote = ring_write(&ctx->ring, s, nsamp);
         if (wrote < nsamp) {
-            opts->udp_in_drops += (unsigned long long)(nsamp - wrote);
+            (void)dsd_atomic_u64_fetch_add_relaxed(&ctx->drops, (uint64_t)(nsamp - wrote));
         }
         dsd_mutex_unlock(&ctx->ring.m);
         ring_signal(&ctx->ring);
@@ -261,6 +282,10 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
     ctx->sockfd = sockfd;
     atomic_store(&ctx->running, 1);
     ctx->sample_rate = samplerate;
+    /* Counting on from the options' counts, so a restarted input keeps the totals it showed. */
+    dsd_atomic_u64_init(&ctx->packets, (uint64_t)opts->udp_in_packets);
+    dsd_atomic_u64_init(&ctx->bytes, (uint64_t)opts->udp_in_bytes);
+    dsd_atomic_u64_init(&ctx->drops, (uint64_t)opts->udp_in_drops);
 
     // Ring capacity: ~500ms at samplerate
     size_t cap = (size_t)(samplerate / 2);
@@ -276,7 +301,7 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
 
     opts->udp_in_ctx = ctx;
     opts->udp_in_sockfd = sockfd;
-    int rc = dsd_thread_create(&ctx->th, udp_rx_thread, opts);
+    int rc = dsd_thread_create(&ctx->th, udp_rx_thread, ctx);
     if (rc != 0) {
         ring_destroy(&ctx->ring);
         dsd_socket_close(sockfd);
@@ -304,6 +329,8 @@ udp_input_stop(dsd_opts* opts) {
     // wake any blocked reader
     ring_signal(&ctx->ring);
     dsd_thread_join(ctx->th);
+    /* The receive thread is gone: the last counts it made are final. */
+    udp_input_mirror_counters(opts, ctx);
     if (sockfd != DSD_INVALID_SOCKET) {
         dsd_socket_close(sockfd);
         ctx->sockfd = DSD_INVALID_SOCKET;
@@ -342,7 +369,7 @@ udp_input_read_sample(dsd_opts* opts, int16_t* out) {
  * One timed wait on an empty ring, so a caller can do something else while the input is silent (the decoder applies
  * queued commands; issue #634). A spurious wakeup can end the wait early, as a timeout.
  *
- * @param opts Decoder options containing UDP context.
+ * @param opts Decoder options containing UDP context; their packet, byte and drop counts are brought up to date.
  * @param out [out] Receives one PCM16 sample.
  * @param timeout_ms Longest wait for a sample.
  * @return 1 with a sample, 0 on shutdown or a stopped input, -1 when none arrived in time.
@@ -353,6 +380,8 @@ udp_input_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms
         return 0;
     }
     udp_input_ctx* ctx = (udp_input_ctx*)opts->udp_in_ctx;
+    /* Each read brings the counts the UI shows up to date, on the decoder's thread. */
+    udp_input_mirror_counters(opts, ctx);
     if (!atomic_load(&ctx->running)) {
         return 0;
     }

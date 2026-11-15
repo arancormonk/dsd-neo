@@ -9971,7 +9971,10 @@ Notes:
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`). `udp_input_read_sample_wait()` gives up after a timeout with no sample, so the decoder can
-  apply a queued command while the input is silent (issue #634). `tcp_input.c` reads its socket through one
+  apply a queued command while the input is silent (issue #634). The UDP input counts packets, bytes and dropped samples in atomics
+  on its receive thread; each read copies them into `dsd_opts::udp_in_*` on the decoder thread, and a stop copies the
+  final counts, so an options snapshot never races the receiver (issue #743 B3; `IO_UDP_INPUT` under TSan). A restart
+  counts on from the totals the options show. `tcp_input.c` reads its socket through one
   `dsd_pcm_stream` (platform). Its one read, `tcp_input_read_sample_wait()` (issue #667 D12), times out and keeps the
   connection, so only a real close or socket error is a lost connection (B7): the symbol path reconnects, and EDACS
   analog voice and the M17 encoder close the input and shut down, as they did. EDACS analog voice reads TCP and UDP in

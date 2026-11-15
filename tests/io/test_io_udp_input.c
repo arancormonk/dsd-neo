@@ -6,6 +6,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
@@ -290,6 +291,149 @@ test_read_wait(void) {
     return rc;
 }
 
+/* The receive thread counts while the decoder thread copies the whole options for a UI snapshot (issue #743 B3):
+   the counts live in the input and reach the options only on the decoder's thread, so the copy never races the
+   receiver. A sender floods the input while this thread reads and copies the options as the snapshot publisher does
+   (ui_opts_snapshot_publish()); under TSan the copy raced the receiver's counting while it counted in the options. */
+enum { FLOOD_DATAGRAMS = 400, FLOOD_SAMPLES = 500 };
+
+typedef struct flood_sender {
+    int port;
+    atomic_int done;
+    int failed;
+} flood_sender;
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    flood_thread(void* arg) {
+    flood_sender* fs = (flood_sender*)arg;
+    static int16_t samples[FLOOD_SAMPLES];
+    for (int i = 0; i < FLOOD_SAMPLES; i++) {
+        samples[i] = (int16_t)(i - FLOOD_SAMPLES / 2);
+    }
+    dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (tx == DSD_INVALID_SOCKET) {
+        fs->failed = 1;
+    } else {
+        for (int d = 0; d < FLOOD_DATAGRAMS; d++) {
+            if (send_pcm16le(tx, "127.0.0.1", fs->port, samples, FLOOD_SAMPLES) != 0) {
+                fs->failed = 1;
+                break;
+            }
+        }
+        dsd_socket_close(tx);
+    }
+    atomic_store(&fs->done, 1);
+    DSD_THREAD_RETURN;
+}
+
+static int
+expect_ull(const char* label, unsigned long long got, unsigned long long want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %llu want %llu\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* Reads until the sender is done and the input has been silent for a while, copying the options every 64 samples;
+   returns the samples read. */
+static unsigned long long
+read_and_publish_until_silent(dsd_opts* opts, dsd_opts* published, flood_sender* fs) {
+    unsigned long long got = 0ULL;
+    int quiet = 0;
+    while (quiet < 10) {
+        int16_t sample = 0;
+        const int rc = udp_input_read_sample_wait(opts, &sample, 20U);
+        if (rc == 1) {
+            got++;
+            quiet = 0;
+            if ((got & 63ULL) == 0ULL) {
+                DSD_MEMCPY(published, opts, sizeof *published);
+            }
+        } else if (rc < 0 && atomic_load(&fs->done)) {
+            quiet++;
+        } else if (rc == 0) {
+            break;
+        }
+    }
+    DSD_MEMCPY(published, opts, sizeof *published);
+    return got;
+}
+
+static int
+test_counters_race_free_under_snapshots(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_opts published;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.wav_sample_rate = 48000;
+    if (udp_input_start(&opts, "127.0.0.1", 0, 48000) != 0) {
+        DSD_FPRINTF(stderr, "udp_input_start failed for the counter flood\n");
+        return 1;
+    }
+    flood_sender fs;
+    DSD_MEMSET(&fs, 0, sizeof(fs));
+    fs.port = get_bound_port(opts.udp_in_sockfd);
+    atomic_init(&fs.done, 0);
+    dsd_thread_t th;
+    if (dsd_thread_create(&th, flood_thread, &fs) != 0) {
+        DSD_FPRINTF(stderr, "failed to create the flood sender\n");
+        udp_input_stop(&opts);
+        return 1;
+    }
+    const unsigned long long got = read_and_publish_until_silent(&opts, &published, &fs);
+    (void)dsd_thread_join(th);
+    rc |= expect_int("the flood sender sent every datagram", fs.failed, 0);
+
+    /* Datagrams the socket lost were never counted; every one counted is in the samples read or the drops. */
+    const unsigned long long packets = opts.udp_in_packets;
+    if (packets == 0ULL || packets > (unsigned long long)FLOOD_DATAGRAMS) {
+        DSD_FPRINTF(stderr, "flood packets: got %llu, want 1..%d\n", packets, FLOOD_DATAGRAMS);
+        rc = 1;
+    }
+    rc |= expect_ull("flood bytes", opts.udp_in_bytes, packets * FLOOD_SAMPLES * 2ULL);
+    rc |= expect_ull("flood samples read or dropped", got + opts.udp_in_drops, packets * FLOOD_SAMPLES);
+    rc |= expect_ull("the snapshot's packets", published.udp_in_packets, opts.udp_in_packets);
+    rc |= expect_ull("the snapshot's bytes", published.udp_in_bytes, opts.udp_in_bytes);
+    rc |= expect_ull("the snapshot's drops", published.udp_in_drops, opts.udp_in_drops);
+
+    /* A restarted input counts on from the totals it showed. */
+    udp_input_stop(&opts);
+    const unsigned long long before_packets = opts.udp_in_packets;
+    const unsigned long long before_bytes = opts.udp_in_bytes;
+    if (udp_input_start(&opts, "127.0.0.1", 0, 48000) != 0) {
+        DSD_FPRINTF(stderr, "udp_input_start failed for the restart\n");
+        return 1;
+    }
+    rc |= expect_ull("a restart keeps the packets", opts.udp_in_packets, before_packets);
+    dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    const int16_t v[] = {5, -5, 7};
+    if (tx == DSD_INVALID_SOCKET || send_pcm16le(tx, "127.0.0.1", get_bound_port(opts.udp_in_sockfd), v, 3) != 0) {
+        DSD_FPRINTF(stderr, "failed to send after the restart\n");
+        rc = 1;
+    } else {
+        for (int i = 0; i < 3; i++) {
+            int16_t sample = 0;
+            int r = -1;
+            for (int tries = 0; tries < 50 && r < 0; tries++) {
+                r = udp_input_read_sample_wait(&opts, &sample, 20U);
+            }
+            rc |= expect_int("a sample after the restart", r, 1);
+        }
+        /* The last read copied the counts from before its sample, which the datagram's arrival had already moved. */
+        rc |= expect_ull("the restart counts on", opts.udp_in_packets, before_packets + 1ULL);
+        rc |= expect_ull("the restart counts its bytes on", opts.udp_in_bytes, before_bytes + 6ULL);
+    }
+    if (tx != DSD_INVALID_SOCKET) {
+        dsd_socket_close(tx);
+    }
+    udp_input_stop(&opts);
+    return rc;
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -309,6 +453,9 @@ main(void) {
         goto cleanup;
     }
     if (test_read_wait() != 0) {
+        goto cleanup;
+    }
+    if (test_counters_race_free_under_snapshots() != 0) {
         goto cleanup;
     }
 
