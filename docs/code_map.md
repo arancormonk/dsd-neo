@@ -651,14 +651,33 @@ Generated (do not edit/commit):
       `no_carrier_step_scanner_mode_if_needed()` (typed and untyped). A typed step still in flight
       (`dsd_engine_channel_scan_waiting()`) is excluded as well, though every typed start forgets the landing first, so
       it never reaches that term with a landing. An open analog carrier never skips: it makes the row ineligible, and
-      the base rules keep deciding it, so the setting off times every row exactly as before. The NOTICE names the row
+      the base rules keep deciding it. The -Y step itself also gets a frame boundary (issue #834 item 3, with the
+      setting on or off): frames that keep coming never let `noCarrier()` run, so a row whose noise keeps passing a sync
+      word (NXDN48) would never leave with no visit cap. `live_scanner_y_content_frame_yield()` (after the quiet yield
+      in `live_scanner_frame_boundary_yields()`) ends the loop for `noCarrier()` to step only when the pure predicate
+      `live_scanner_y_frames_carry_nothing()` holds: -Y owns the step (no trunk scan, a user list, no voice gate owning
+      it, tone gate OFF, no analog carrier, which never reads open while synced), the hangtime rule `noCarrier()` applies
+      is due (`now - last_cc_sync_time > -t`; the DMR, P25 Phase 1 and 2, ProVoice and EDACS hunts stamp that anchor on
+      raw syncs, so those rows keep their old timing), no content a protocol's CRC/FEC gate passed for `-t`
+      (`dsd_state::scan_y_content_m`, the later of it and the anchor's decode-mono time; PARTIAL never counts), the
+      decoder set has such content to hear (`scan_quiet_decoder_set_unchecked()`: X2-TDMA, ProVoice and TETRA sets are
+      left alone), nothing keeps the row (`live_scanner_y_frame_step_may_decide()`: hold, awaited tune, typed step in
+      flight, avoided row, no other row), and it has not yielded for this landing epoch and anchor yet
+      (`dsd_engine_scan_owner::y_frame_yield_epoch`, `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the row is
+      never repeated per frame. Checked content reaches it with no hook and no allocation: the content-evidence wrapper
+      (`dsd_frame_sync_hook_content_evidence()`) moves `dsd_state::scan_y_content_seq` for every PROVEN note before its
+      setting test, and the boundary turns a move into the decode time. A real dPMR, D-STAR, YSF, M17 or NXDN call
+      (whose frames stamp no anchor, or only once confirmed) keeps the row through those checks, encrypted or locked out
+      alike. Off -Y the boundary costs one compare. The NOTICE names the row
       (`row N`, 1-based) and, as for the trunk scan, logs the decision before the step runs. Tests: `ENGINE_TRUNK_SCAN`
       (`test_scan_quiet_tick_*`: the skip through the pass and its tick with the exact NOTICE, a lost guard, keep timing
       from a READY result for each mutation, a hold and activity, the dwell on the same tick, a tone check
       (TONE_PENDING) and the per-visit cap ahead of the idle decision, held, held-in-flight, no-alternate and trunked
       visits that request nothing, the setting off and a busy channel advancing at the same pass;
       `test_scan_quiet_y_ready_declines_at_its_own_sites`), `ENGINE_NO_CARRIER_RESET` (`test_scan_quiet_decisions()`:
-      typed and untyped -Y skips through `noCarrier()` over a link-wrapped tap, every landing path measured as it lands
+      typed and untyped -Y skips through `noCarrier()` over a link-wrapped tap, the -Y step at frame boundaries for
+      frames with no checked content and every case that must keep the row (`test_y_frames_with_no_checked_content_leave()`),
+      every landing path measured as it lands
       and its failures and supersessions arming nothing (`yq_landing_case()`), busy, held, single-row, heard-voice,
       qualifying and qualifying-busy rows, an avoided row, a walk waiting on its tune, a typed step in flight, an open
       analog carrier, and the end-to-end skip through `dsd_engine_test_live_scanner_run()` for -Y and trunk scan, each

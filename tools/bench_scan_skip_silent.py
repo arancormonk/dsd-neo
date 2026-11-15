@@ -14,7 +14,8 @@ strong is 30 dB, far above every mode's reception threshold; --level near is 2 d
 DMR MS 7.5 and P25 8.0 dB, the calibration's kept thresholds).
 
 The scene runs on tools/bench_signal_search_tcp.py's paced rtl_tcp source, logging every retune. The tool runs the
-real dsd-neo against it for --seconds with --scan-skip-silent or --no-scan-skip-silent, --scan-max-visit-ms 8000 and
+real dsd-neo against it for --seconds with --scan-skip-silent or --no-scan-skip-silent, --scan-max-visit-ms 8000 (or
+--max-visit-ms; 0 runs with no visit cap) and
 one of three scans: --trunk-scan conventional targets (--scan trunk), a typed -Y channel map (--scan typed) or an
 untyped -Y channel map under -ft (--scan untyped, which has no analog decoder, so it cannot hear the NFM calls). Silent
 channels take the three modes in turn, or the modes --silent-modes lists: nxdn48 and dpmr give noise rows whose raw
@@ -40,7 +41,8 @@ With --by-mode it adds, per mode the silent channels run, every scored visit to 
 many were skipped (a skip logged inside the visit) as a share of all of them, visits that never measured included; the
 skip latency (the scene's retune onto the channel to the skip's line, median and p95); and how each visit ended:
 skipped, left early with no skip (under 1.5 s), left at its dwell or hangtime (1.5 to 3.5 s), or held past it (a
--Y row whose syncs refresh its hangtime, up to the 8 s visit cap).
+-Y row whose syncs refresh its hangtime, up to the 8 s visit cap); and the visits to an active channel that left while
+its call was still on air with at least LEFT_MID_CALL_S of it to go (a call cut short).
 
 Usage, from the repository root:
     python3 tools/bench_scan_skip_silent.py --dsd build/dev-release/apps/dsd-cli/dsd-neo \\
@@ -96,6 +98,7 @@ SILENT_MODES = ACTIVE + ("nxdn48", "dpmr")  # the modes a silent channel can run
 NXDN48_DWELL_MS = 2000
 EARLY_S = 1.5  # --by-mode's visit end buckets: under this a visit left early, past HELD_S it was held
 HELD_S = 3.5
+LEFT_MID_CALL_S = 0.5  # --by-mode: a visit to an active channel that ends with this much of its call still to go
 P25_LDU_S = 0.18
 DMR_FRAMES_PER_BURST = 3
 SCHEDULE_PHASE_S = 7.3  # the schedule's shift per seed, in seconds (mod PERIOD_S)
@@ -322,7 +325,10 @@ def write_lists(channels, out_dir, silent_modes=ACTIVE):
 
 def dsd_command(args, port, lists):
     cmd = [str(Path(args.dsd).resolve()), "--frontend", "none", "-i", f"rtltcp:127.0.0.1:{port}:{BASE_HZ}:0:0:48:0:1"]
-    cmd += ["-o", "null", "--scan-max-visit-ms", "8000", "--frame-log", "frames.log"]
+    cmd += ["-o", "null"]
+    if args.max_visit_ms > 0:
+        cmd += ["--scan-max-visit-ms", str(args.max_visit_ms)]
+    cmd += ["--frame-log", "frames.log"]
     cmd += ["-P", "-7", "calls", "--wav-journal", "calls.jsonl", "--analog-record-preroll-ms", "0"]
     cmd += ["--scan-skip-silent" if args.skip == "on" else "--no-scan-skip-silent"]
     if args.scan == "trunk":
@@ -398,6 +404,7 @@ def run(args):
     if args.silent_modes != ACTIVE or args.by_mode:
         record["silent_modes"] = list(args.silent_modes)
         record["by_mode"] = bool(args.by_mode)
+        record["max_visit_ms"] = args.max_visit_ms
     with open(os.path.join(out_dir, "run.json"), "w", encoding="utf-8") as handle:
         json.dump(record, handle, indent=1)
     return record, channels
@@ -574,6 +581,7 @@ def score(record, channels, out_dir):
     if record.get("by_mode"):
         result["silent_modes"] = record["silent_modes"]
         result["silent_by_mode"] = silent_by_mode(record, channels, lines, skips)
+        result["left_mid_call"] = left_mid_call(record, channels)
     with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as handle:
         json.dump(result, handle, indent=1)
     return result
@@ -634,6 +642,21 @@ def silent_by_mode(record, channels, lines, skips):
     return out
 
 
+def left_mid_call(record, channels):
+    """--by-mode: per active mode, the visits that left the channel while a call was on air with LEFT_MID_CALL_S or more
+    of it still to go (scene time, the scored visits only)."""
+    out = {}
+    scored = visits(record, channels)
+    lead = next((i for i, (c, _v0, _v1) in enumerate(scored) if c is not None), len(scored))
+    for c, v0, v1 in scored[lead + 1 : -1]:
+        if c is None or c.kind == "silent":
+            continue
+        start = c.call_at(v1)
+        cut = start is not None and start <= v1 and start + CALL_S - v1 >= LEFT_MID_CALL_S and start < v1 - 0.2
+        out[c.kind] = out.get(c.kind, 0) + (1 if cut else 0)
+    return out
+
+
 def perf_summary(path):
     """The demodulator's busy time per second and the input drops, from the RTL perf CSV."""
     if not os.path.exists(path):
@@ -673,6 +696,9 @@ def by_mode_table(results):
         "|" + "---|" * 10,
     ]
     for r in sorted(results, key=lambda r: (r["scan"], r["seed"], r["skip"])):
+        if "left_mid_call" in r:
+            cut = ", ".join(f"{k} {v}" for k, v in sorted(r["left_mid_call"].items()))
+            lines.append(f"| {r['scan']} | {r['skip']} | {r['seed']} | (active channels left mid-call: {cut}) |")
         for mode, row in sorted(r.get("silent_by_mode", {}).items()):
             ends = ", ".join(f"{k} {v}" for k, v in sorted(row["ends"].items(), key=lambda kv: -kv[1]))
             cells = [r["scan"], r["skip"], str(r["seed"]), mode, str(row["visits"]), str(row["skipped"])]
@@ -778,6 +804,9 @@ def parse_args():
         f"(default {','.join(ACTIVE)})",
     )
     parser.add_argument("--by-mode", action="store_true", help="also report each silent mode's visits and skips")
+    parser.add_argument(
+        "--max-visit-ms", type=int, default=8000, help="--scan-max-visit-ms for dsd-neo, 0 for none (default 8000)"
+    )
     parser.add_argument("--seconds", type=float, default=600.0, help="run length (default 600)")
     parser.add_argument("--seed", type=int, default=1, help="noise and schedule seed (default 1)")
     parser.add_argument(

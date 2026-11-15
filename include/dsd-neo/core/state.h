@@ -3119,6 +3119,13 @@ struct dsd_state {
     double scan_voice_gate_arrive_m;
     double scan_voice_gate_sync_m;
     double scan_voice_gate_voice_m;
+    /* Checked content for the -Y step (issue #834 item 3): scan_y_content_seq moves with every content a protocol's
+     * CRC/FEC gate passed (a PROVEN content note, dsd_frame_sync_hook_content_evidence(), whatever the skip-silent
+     * setting); the -Y frame boundary turns a move into scan_y_content_m, its decode-mono time (-1.0 for none). A -Y
+     * row whose frames keep coming but carry no checked content for -t leaves at a frame boundary. */
+    uint32_t scan_y_content_seq;
+    uint32_t scan_y_content_seen;
+    double scan_y_content_m;
     int scan_voice_gate_roll_seen;
     uint8_t scan_voice_gate_hold_seen;
     uint8_t scan_voice_gate_phase;

@@ -1231,6 +1231,9 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->scan_voice_gate_arrive_m = -1.0;
     state->scan_voice_gate_sync_m = -1.0;
     state->scan_voice_gate_voice_m = -1.0;
+    state->scan_y_content_seq = 0U;
+    state->scan_y_content_seen = 0U;
+    state->scan_y_content_m = -1.0;
     state->scan_voice_gate_roll_seen = 0;
     state->scan_voice_gate_hold_seen = 0;
     state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;

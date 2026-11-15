@@ -4360,6 +4360,78 @@ live_scanner_y_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* The -Y frame-boundary step (issue #834 item 3), its terms other than the time: -Y owns the step with no voice gate,
+   tone verdict or analog carrier deciding it, the decoder set has checked content to hear (not X2-TDMA, ProVoice or
+   TETRA), and nothing keeps the row: no operator hold, awaited tune or typed step in flight, not an avoided row (its
+   paced departure decides), and another row to land on. */
+static int
+live_scanner_y_frame_step_may_decide(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->trunk_scan_enabled == 1 || !dsd_state_trunk_lcn_user_list_present(opts, state)
+        || dsd_scan_voice_gate_owns_step(opts, state) || scan_quiet_decoder_set_unchecked(opts)
+        || dsd_scan_analog_tone_gate(opts, state) != DSD_ANALOG_TONE_GATE_OFF
+        || dsd_scan_analog_carrier_open(opts, state)) {
+        return 0;
+    }
+    return !dsd_engine_channel_scan_hold_keeps_row(state) && !no_carrier_scan_tune_awaited(state)
+           && !dsd_engine_channel_scan_waiting(state) && !dsd_engine_channel_scan_on_avoided_row(state)
+           && dsd_engine_channel_scan_has_other_row(opts, state);
+}
+
+/* Whether a frame boundary may end the synced-frames loop for the -Y step (issue #834 item 3): frames that keep coming
+   never let noCarrier(), where the step is decided, run. Only when the hangtime rule noCarrier() applies is due (raw
+   syncs of the protocols whose hunt stamps the anchor keep it fresh, as before), no content a protocol's CRC/FEC gate
+   passed came for -t (dsd_state::scan_y_content_m; a real call's checks keep it fresh, whatever skip-silent says), the
+   other terms hold (live_scanner_y_frame_step_may_decide()), and it has not yielded for this landing and anchor yet;
+   the pair it would yield for goes in @p out_epoch and @p out_mark_ms. Pure: it reads, and decides nothing itself.
+   Off -Y, one compare. */
+static int
+live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state, uint64_t* out_epoch,
+                                    int64_t* out_mark_ms) {
+    if (opts->scanner_mode != 1 || (dsd_decode_time() - state->last_cc_sync_time) <= opts->trunk_hangtime) {
+        return 0;
+    }
+    const double mark_m =
+        state->scan_y_content_m > state->last_cc_sync_time_m ? state->scan_y_content_m : state->last_cc_sync_time_m;
+    if (dsd_decode_now_mono_s() - mark_m <= (double)opts->trunk_hangtime
+        || !live_scanner_y_frame_step_may_decide(opts, state)) {
+        return 0;
+    }
+    const dsd_engine_scan_landing* landing = dsd_engine_scan_landing_get(state);
+    const dsd_engine_scan_owner* owner =
+        (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    if (!landing || !owner || landing->by != DSD_ENGINE_SCAN_LANDING_ROW) {
+        return 0;
+    }
+    *out_epoch = landing->epoch;
+    *out_mark_ms = (int64_t)(mark_m * 1000.0);
+    return owner->y_frame_yield_epoch != *out_epoch || owner->y_frame_yield_mark_ms != *out_mark_ms;
+}
+
+/* The -Y frame-boundary step: the checked content the frame's gates noted becomes its time, then, when the rule says
+   so, the loop ends and noCarrier() decides, with the pair it yielded for noted. */
+static int
+live_scanner_y_content_frame_yield(const dsd_opts* opts, dsd_state* state) {
+    if (opts->scanner_mode != 1) {
+        return 0; /* off -Y, the one compare */
+    }
+    if (state->scan_y_content_seq != state->scan_y_content_seen) {
+        /* Checked content since the last boundary: its time is now, the frame's end. */
+        state->scan_y_content_seen = state->scan_y_content_seq;
+        state->scan_y_content_m = dsd_decode_now_mono_s();
+    }
+    uint64_t epoch = 0U;
+    int64_t mark_ms = 0;
+    if (!live_scanner_y_frames_carry_nothing(opts, state, &epoch, &mark_ms)) {
+        return 0;
+    }
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
+    if (owner) {
+        owner->y_frame_yield_epoch = epoch;
+        owner->y_frame_yield_mark_ms = mark_ms;
+    }
+    return 1;
+}
+
 /* The reasons a frame boundary hands the receiver back to the outer loop, after the trunk scan's per-frame tick: a
    Signal search's turn, the receive policy, the voice gate, the per-visit cap and a -Y row's quiet result. Returns 1
    when the synced-frames loop ends there. */
@@ -4390,7 +4462,12 @@ live_scanner_frame_boundary_yields(const dsd_opts* opts, dsd_state* state, int f
     /* A -Y row's quiet result (issue #834): a rejected sync no longer ends the check, so under syncs that keep coming
        (NXDN48 or dPMR noise) the -Y check is serviced at every frame boundary and the row steps here when it hands
        back, as after the hunt's hand-back: noCarrier() decides. */
-    return live_scanner_y_quiet_frame_yield(opts, state);
+    if (live_scanner_y_quiet_frame_yield(opts, state)) {
+        return 1;
+    }
+    /* A -Y row whose frames carry no checked content leaves at its hangtime (issue #834 item 3), with skip-silent on or
+       off: noise that keeps passing a sync word (NXDN48) would otherwise hold it for good. */
+    return live_scanner_y_content_frame_yield(opts, state);
 }
 
 static void

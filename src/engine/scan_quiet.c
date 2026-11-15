@@ -147,6 +147,11 @@ quiet_decoder_analog(const dsd_opts* opts, int* analog_kind, uint32_t* analog_wi
     return QUIET_CLASS_ANALOG;
 }
 
+int
+scan_quiet_decoder_set_unchecked(const dsd_opts* opts) {
+    return opts && (opts->frame_x2tdma || opts->frame_provoice || opts->frame_tetra);
+}
+
 uint8_t
 scan_quiet_decoder_classes(const dsd_opts* opts, int* analog_kind, uint32_t* analog_width_hz) {
     if (analog_kind) {
@@ -163,7 +168,7 @@ scan_quiet_decoder_classes(const dsd_opts* opts, int* analog_kind, uint32_t* ana
     }
     /* ProVoice and X2-TDMA have no sourced width and time structure, nor TETRA a class: a set holding one gets no
        check. */
-    if (opts->frame_x2tdma || opts->frame_provoice || opts->frame_tetra) {
+    if (scan_quiet_decoder_set_unchecked(opts)) {
         return 0U;
     }
     const uint8_t digital = (uint8_t)((quiet_decoder_wide(opts) ? QUIET_CLASS_12K5 : 0U)

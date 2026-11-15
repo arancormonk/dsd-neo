@@ -6,6 +6,7 @@
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -107,7 +108,12 @@ dsd_frame_sync_hook_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
 
 void
 dsd_frame_sync_hook_content_evidence(const dsd_opts* opts, dsd_state* state, int level, uint32_t hold_ms) {
-    /* The setting off: this one load is the frame's whole cost, before any owner is looked up. */
+    /* Checked content, whatever the setting, for the -Y step's frame-boundary rule (issue #834 item 3): one store, no
+       clock read, no owner looked up or made, no hook called. */
+    if (state && level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        state->scan_y_content_seq++;
+    }
+    /* The setting off: this one load is the rest of the frame's cost, before any owner is looked up. */
     if (!opts || !opts->scan_skip_silent) {
         return;
     }

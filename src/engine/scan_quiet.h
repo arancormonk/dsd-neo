@@ -147,6 +147,11 @@ void scan_quiet_analog_facts(const dsd_opts* opts, const dsd_state* state, int k
  * visit ends DONE at its capture. */
 uint8_t scan_quiet_decoder_classes(const dsd_opts* opts, int* analog_kind, uint32_t* analog_width_hz);
 
+/** Whether the decoder set in force holds a mode with no checked content to hear (X2-TDMA, ProVoice, TETRA: no PROVEN
+ * content-evidence site, issue #834): the set scan_quiet_decoder_classes() gives no check, and the -Y frame-boundary
+ * step leaves alone. */
+int scan_quiet_decoder_set_unchecked(const dsd_opts* opts);
+
 /** The @p digital classes a digital decoder runs in, with the analog monitor's when it plays beside them (-8): the
  * mixed set's rule of scan_quiet_decoder_classes(), for a typed digital row or target as for the decoder set. The
  * analog class comes with the configured kind and width in @p analog_kind and @p analog_width_hz (either may be NULL;

@@ -13372,6 +13372,137 @@ test_y_quiet_suspended_row_republished(int typed) {
     return rc;
 }
 
+/* Issue #834 item 3: frames that keep coming never let noCarrier(), where the -Y step is decided, run. A row whose frames
+   carry no content a protocol's CRC/FEC gate passed (NXDN48 noise) leaves at a frame boundary once -t has run out, with
+   skip-silent on or off and no visit cap; a real call, whose checks pass, keeps the row; the protocols whose hunt stamps
+   the hangtime anchor on raw syncs keep it as before; and no stay is overridden. Each case lands row 0, then makes the
+   row's -t (10 s) run out by moving its anchors back. */
+enum {
+    YC_NOISE = 0,     /* rejected syncs: yields at the first boundary, noCarrier() steps */
+    YC_CALL,          /* every frame's content passes its gate: no yield; then the content stops: yields */
+    YC_ANCHOR_FRESH,  /* the hangtime anchor fresh (a DMR or P25 hunt stamps it on raw syncs): no yield */
+    YC_HOLD,          /* an operator hold */
+    YC_WALK_AWAITED,  /* a walk the scan owns waiting on its tune */
+    YC_SINGLE_ROW,    /* nowhere else to go */
+    YC_VOICE_GATE,    /* --scan-voice-only owns the step */
+    YC_UNCHECKED_SET, /* X2-TDMA in the decoder set: no checked content to hear */
+    YC_ONCE,          /* a noCarrier() that did not step: no second yield for the same anchor */
+    YC_QUIET_FIRST,   /* skip-silent on, a quiet row inside -t: the quiet yield steps it with its NOTICE */
+};
+
+/* The row's -t run out: the hangtime anchor and the last checked content 11 s back (the rig's -t is 10 s). */
+static void
+yc_age(dsd_state* state, int anchor_too) {
+    if (anchor_too) {
+        state->last_cc_sync_time = time(NULL) - 11;
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 11.0;
+    }
+    state->scan_y_content_m = dsd_decode_now_mono_s() - 11.0;
+}
+
+static void
+yc_setup(dsd_opts* opts, dsd_state* state, int which, long int base_hz) {
+    if (which == YC_HOLD) {
+        state->lcn_scan_hold = 1;
+    } else if (which == YC_WALK_AWAITED) {
+        dsd_engine_manual_tune_note_lcn_cycle(state, 4343U, (uint32_t)(base_hz + 1000000L), (uint32_t)base_hz, 1, 1, 1);
+    } else if (which == YC_VOICE_GATE) {
+        opts->scan_voice_only = 1;
+        opts->scan_voice_qualify_ms = 60000;
+        opts->scan_voice_hold_ms = 60000;
+        seed_visit_anchor(state, dsd_decode_now_mono_s());
+    } else if (which == YC_UNCHECKED_SET) {
+        opts->frame_x2tdma = 1;
+    }
+    if (which != YC_QUIET_FIRST) { /* a quiet row steps on its result long before -t runs out */
+        yc_age(state, which != YC_ANCHOR_FRESH);
+    }
+}
+
+static void
+yc_clear(dsd_opts* opts, dsd_state* state, int which) {
+    state->lcn_scan_hold = 0;
+    opts->scan_voice_only = 0;
+    opts->frame_x2tdma = 0;
+    if (which == YC_WALK_AWAITED) {
+        dsd_engine_manual_tune_supersede(state);
+        while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
+    }
+}
+
+/* What the case expects once its frames ran: 1 when a yield and a step are owed. */
+static int
+yc_check(dsd_opts* opts, dsd_state* state, int which) {
+    int rc = 0;
+    if (which == YC_NOISE) {
+        rc |= expect_true("noise: yields at the first boundary past -t", g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("noise: noCarrier() steps, with no quiet NOTICE", g_rtl_tune_calls == 1 && g_yq.notices == 0);
+    } else if (which == YC_CALL) {
+        rc |= expect_true("a call's checked frames: no yield, no step", g_frame_count == 6 && g_rtl_tune_calls == 0);
+        yc_age(state, 1);
+        run_synced_frames(opts, state, 5, -1);
+        rc |= expect_true("the content stopped -t ago: yields", g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("and steps", g_rtl_tune_calls == 1);
+    } else if (which == YC_ONCE) {
+        rc |= expect_true("once: the first yield", g_frame_count == 1);
+        run_synced_frames(opts, state, 5, -1); /* no noCarrier() between: as if it had kept the row */
+        rc |= expect_true("once: no second yield for the same anchor", g_frame_count == 6 && g_rtl_tune_calls == 0);
+    } else if (which == YC_QUIET_FIRST) {
+        rc |= expect_true("quiet first: yields at the first boundary", g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("quiet first: steps on its quiet result", g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    } else {
+        rc |= expect_true("a stay keeps the row: no yield", g_frame_count == 6 && g_rtl_tune_calls == 0);
+    }
+    return rc;
+}
+
+static int
+yc_case(int which, int on) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    /* With the setting on, a busy channel (DONE) leaves the step to the hangtime rule, except where the quiet yield is
+       the point. */
+    yq_start(which == YC_QUIET_FIRST);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 1401012500L + (long int)which * 10000000L + (on ? 200000000L : 0L);
+    int rc = expect_true("the first step lands row 0",
+                         yq_list(opts, state, which == YC_SINGLE_ROW ? 1 : 3, 0, on, base_hz) == 0);
+    if (on && which != YC_QUIET_FIRST) {
+        (void)dsd_engine_scan_quiet_service(opts, state); /* the busy answer: DONE */
+    }
+    yc_setup(opts, state, which, base_hz);
+    if (which == YC_CALL) {
+        run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    } else {
+        run_synced_frames(opts, state, 5, -1);
+    }
+    rc |= yc_check(opts, state, which);
+    yc_clear(opts, state, which);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y frames with no checked content, case %d, skip-silent %d\n", which, on);
+    }
+    return rc;
+}
+
+static int
+test_y_frames_with_no_checked_content_leave(void) {
+    int rc = 0;
+    for (int which = YC_NOISE; which <= YC_QUIET_FIRST; which++) {
+        if (which != YC_QUIET_FIRST) {
+            rc |= yc_case(which, 0);
+        }
+        rc |= yc_case(which, 1);
+    }
+    return rc;
+}
+
 static int
 test_scan_quiet_decisions(void) {
     int rc = 0;
@@ -13390,6 +13521,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_trunk_quiet_suspended_target_republished();
     rc |= test_y_quiet_suspended_row_republished(0);
     rc |= test_y_quiet_suspended_row_republished(1);
+    rc |= test_y_frames_with_no_checked_content_leave();
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_typed_row_judges_the_monitor(12500);
     rc |= test_y_quiet_typed_row_judges_the_monitor(0);

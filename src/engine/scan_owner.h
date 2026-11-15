@@ -94,6 +94,11 @@ typedef struct {
     uint64_t quiet_inv_seq;
     uint64_t tune_seq;
     uint64_t quiet_first_tune_seq;
+    /* The -Y frame-boundary step's last yield (issue #834 item 3; engine.c): the landing epoch and the anchor (ms of
+       the later of the hangtime anchor and the last checked content, decode mono) it yielded for. A noCarrier() that
+       did not step after all gets no second yield for the same pair, so a held row is never reset at every frame. */
+    uint64_t y_frame_yield_epoch;
+    int64_t y_frame_yield_mark_ms;
     /* A sync awaiting its frame's verdict (issue #834 D8; scan_quiet.c), moved only while skip-silent is on.
        frame_pending: the frame sync returned a sync whose frame has not ended yet. frame_evidence, frame_hold_ms: the
        strongest content note that frame made so far (DSD_CONTENT_EVIDENCE_*, 0 for none) and its longest PARTIAL hold.
