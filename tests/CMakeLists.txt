@@ -2200,7 +2200,10 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
 )
-target_link_libraries(dsd-neo_test_dpmr_voice_bridge PRIVATE dsd-neo_platform)
+target_link_libraries(
+    dsd-neo_test_dpmr_voice_bridge
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
 add_test(NAME DPMR_VOICE_BRIDGE COMMAND dsd-neo_test_dpmr_voice_bridge)
 
 # Conformance of the CCH pipeline against external reference vectors. Unlike the

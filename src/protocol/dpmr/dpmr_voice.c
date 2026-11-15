@@ -298,11 +298,23 @@ dpmr_update_superframe_part(dsd_opts* opts, dsd_state* state, const dpmr_superfr
     dpmr_mark_unknown_superframe_part(opts);
 }
 
+/* The identities a frame may show: those of the open dPMR call a confirmed transmission published, read whole from
+ * frames whose CCH passed its CRC-7. The canonical call alone is not enough: its text outlives the transmission that
+ * decoded it, and another protocol's call leaves its own there, so a noise frame that syncs as dPMR would show an
+ * earlier call's identities as if it had decoded them. */
+static int
+dpmr_shown_call(const dsd_state* state, dsd_call_snapshot* call) {
+    return dpmr_confirm_is_confirmed(state) && dsd_call_state_get(state, 0U, call) > 0
+           && call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_DPMR(call->protocol);
+}
+
 void
 dpmr_print_ids(const dsd_state* state) {
     dsd_call_snapshot call;
     DSD_MEMSET(&call, 0, sizeof(call));
-    (void)dsd_call_state_get(state, 0U, &call);
+    if (!dpmr_shown_call(state, &call)) {
+        DSD_MEMSET(&call, 0, sizeof(call));
+    }
     DSD_FPRINTF(stderr, "\n");
     if (call.target_text[0] != '\0') {
         DSD_FPRINTF(stderr, "%s", KGRN);
