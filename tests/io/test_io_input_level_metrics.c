@@ -539,7 +539,6 @@ test_stale_live_warning_suppressed(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
-    opts->iq_replay_active = 0;
     dsd_decode_clock_use_test(1000ULL * 1000000000ULL);
 
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
@@ -571,7 +570,7 @@ test_replay_paused_over_2s_keeps_advisories(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
-    opts->iq_replay_active = 1;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "iqreplay:capture.iq.json");
     const time_t capture_s = 1262304000; /* 2010-01-01Z */
     dsd_decode_clock_use_test((uint64_t)capture_s * 1000000000ULL);
 

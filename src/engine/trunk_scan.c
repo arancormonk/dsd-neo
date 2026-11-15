@@ -2916,18 +2916,14 @@ trunk_scan_sync_active_sm_mode(dsd_state* state, const dsd_trunk_scan_target_run
 }
 
 static int
-trunk_scan_is_iq_replay(const dsd_opts* opts) {
-    return opts && (opts->iq_replay_requested != 0 || opts->iq_replay_active != 0);
-}
-
-static int
 trunk_scan_has_open_rtl_stream(const dsd_opts* opts, const dsd_state* state) {
     return opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx;
 }
 
+/* A radio input answers for itself: a rigctl peer beside a fixed-tuning input moves a receiver the scan does not hear. */
 static int
 trunk_scan_has_tuning_backend(const dsd_opts* opts, const dsd_state* state) {
-    return opts && !trunk_scan_is_iq_replay(opts)
+    return opts && !dsd_opts_input_has_fixed_tuning(opts)
            && (opts->use_rigctl == 1 || trunk_scan_has_open_rtl_stream(opts, state));
 }
 
@@ -6044,7 +6040,7 @@ trunk_scan_init_validate(const dsd_opts* opts, const dsd_state* state, char* err
         scan_set_error(err, err_sz, "%s", why);
         return -1;
     }
-    if (trunk_scan_is_iq_replay(opts)) {
+    if (dsd_opts_input_is_iq_replay(opts)) {
         scan_set_error(err, err_sz, "--trunk-scan cannot use IQ replay input because replay cannot retune");
         return -1;
     }

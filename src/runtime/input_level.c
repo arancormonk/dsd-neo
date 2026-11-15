@@ -581,12 +581,12 @@ input_level_publish_notifies(const dsd_opts* opts, const dsd_state* state, const
     /* A live receiver's level that real time has left behind is the last one of a receiver that stopped: no warning
        about it. A replay's levels keep their warnings, which follow the capture: one that pauses (a slow decoder, a
        jittered read) prints the same ones in every run. Read only when a warning would print. */
-    return (opts && opts->iq_replay_active) || !dsd_input_level_is_stale(next, dsd_realtime_mono_ms());
+    return dsd_opts_input_is_iq_replay(opts) || !dsd_input_level_is_stale(next, dsd_realtime_mono_ms());
 }
 
 static void
 input_level_refresh_live(const dsd_opts* opts, dsd_input_level_snapshot* next) {
-    if (!opts || opts->iq_replay_active || !dsd_input_level_source_is_rf(next->source)) {
+    if (!opts || dsd_opts_input_is_iq_replay(opts) || !dsd_input_level_source_is_rf(next->source)) {
         return;
     }
     const uint64_t now_ms = dsd_realtime_mono_ms();

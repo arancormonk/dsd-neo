@@ -518,8 +518,7 @@ quiet_ready_passes(const dsd_opts* opts, const dsd_state* state, const scan_quie
 
 int
 scan_quiet_session_supported(const dsd_opts* opts) {
-    return opts && opts->scan_skip_silent && opts->audio_in_type == AUDIO_IN_RTL && !opts->iq_replay_active
-           && !opts->iq_replay_requested && !dsd_opts_input_is_iq_replay(opts)
+    return opts && opts->scan_skip_silent && dsd_opts_radio_can_tune(opts)
            && dsd_decode_clock_source() != DSD_DECODE_CLOCK_REPLAY;
 }
 

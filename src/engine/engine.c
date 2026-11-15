@@ -1139,7 +1139,7 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
                            || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
                            || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev);
     const dsd_input_dsp_rate rate =
-        dsd_input_dsp_rate_for(opts->audio_in_dev, opts->audio_in_type, opts->iq_replay_active, bw_khz);
+        dsd_input_dsp_rate_for(opts->audio_in_dev, opts->audio_in_type, dsd_opts_input_is_iq_replay(opts), bw_khz);
     if (!live_radio || rate.rate_hz <= 0) {
         return 0;
     }

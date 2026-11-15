@@ -513,8 +513,8 @@ Generated (do not edit/commit):
       `scan_quiet_eligibility::eligible`, the classes, analog kind and width, DSP rate, frequency and revision
       snapshot), never in the hunt and never per frame; with the setting off, or the visit DONE
       (`scan_quiet_wants_eligibility()`), the caller does none of that work. The session's part is checked here
-      (`scan_quiet_session_supported()`: the setting, a radio build, an RTL-family input that is no I/Q replay by
-      `iq_replay_active`, `iq_replay_requested`, the input spec or the REPLAY decode clock), and so is a class to
+      (`scan_quiet_session_supported()`: the setting, a radio build, a radio DSD-neo tunes (`dsd_opts_radio_can_tune()`:
+      no I/Q replay or I/Q stream in force) and no REPLAY decode clock), and so is a class to
       judge (`scan_quiet_mode_classes()` for a typed row or target, `scan_quiet_decoder_classes()` for the decoder
       set: X2-TDMA, ProVoice and TETRA are in no class, so a set holding one gets no check; with the -8 analog monitor
       on beside a digital set the set is mixed and the analog class is judged too, at the configured kind and
@@ -8914,8 +8914,8 @@ Key public headers:
     refreshes only every 64 decoded symbols, and classified with `opts->input_warn_db` by `dsd_input_level_classify()`;
     a stale or missing level reads `No input` with no readings. When the live decoder is behind,
     `dsd_input_level_publish()` replaces its stale RF level with a fresh producer snapshot before classifying
-    warnings; with no fresh measurement it keeps the old level and warns about nothing. An I/Q replay
-    (`opts->iq_replay_active`) keeps every warning its capture calls for, so a paused replay prints the same advisories in every run. PCM inputs keep the decoder's level. Tests:
+    warnings; with no fresh measurement it keeps the old level and warns about nothing. An I/Q replay in force
+    (`dsd_opts_input_is_iq_replay()`) keeps every warning its capture calls for, so a paused replay prints the same advisories in every run. PCM inputs keep the decoder's level. Tests:
     `IO_INPUT_LEVEL_METRICS`, `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`. CU8 moments keep
     64-bit totals while accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening
     reduces its byte extrema in registers and maps the four clipping-edge values to one unsigned interval. These

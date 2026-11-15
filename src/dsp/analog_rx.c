@@ -972,7 +972,7 @@ analog_rx_input_may_pause(const dsd_opts* opts) {
         case AUDIO_IN_STDIN:
         case AUDIO_IN_UDP:
         case AUDIO_IN_TCP: return 1;
-        case AUDIO_IN_RTL: return opts->iq_replay_active == 0U;
+        case AUDIO_IN_RTL: return !dsd_opts_input_is_iq_replay(opts);
         default: return 0;
     }
 }

@@ -471,7 +471,8 @@ test_warning_cooldown_runs_on_the_decode_clock(void) {
     assert(state != NULL);
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
-    opts->iq_replay_active = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:capture.iq.json");
     const time_t capture_s = 1262304000; /* 2010-01-01Z: a replay's decode time */
     dsd_decode_clock_use_test((uint64_t)capture_s * 1000000000ULL);
 
@@ -539,7 +540,7 @@ test_lagging_decoder_uses_fresh_receiver_level(void) {
     publish(opts, state, &old, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(state->input_level.status == DSD_INPUT_LEVEL_OK);
     assert(strcmp(state->ui_msg, "sentinel") == 0);
-    opts->iq_replay_active = 1;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:capture.iq.json");
     old.decode_s += 100;
     publish(opts, state, &old, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
@@ -549,9 +550,44 @@ test_lagging_decoder_uses_fresh_receiver_level(void) {
     free(opts);
 }
 
+/* Issue #743 (B14): a session started as an I/Q replay keeps its replay flags after a config apply moves it onto a live
+   rtl_tcp radio. The input in force decides, so that radio's levels are live ones: a stale one gives way to the
+   receiver's current level, and without a current one it is the last level of a receiver that stopped, which warns
+   about nothing. */
+static void
+test_live_radio_after_a_replay_reads_live_levels(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    opts->iq_replay_requested = 1;
+    opts->iq_replay_active = 1;
+    opts->input_warn_db = -40.0;
+    const dsd_rtl_stream_metrics_hooks hooks = {.input_level = producer_level};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    const timed_level healthy = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -25.0, -3.0, 0.0, 100);
+    const timed_level clipped = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -6.0, -0.1, 1.0, 101);
+    timed_level old = clipped;
+    old.level.updated_ms = 0U;
+    g_producer_level = healthy.level;
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", "sentinel");
+    publish(opts, state, &old, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_OK);
+    assert(strcmp(state->ui_msg, "sentinel") == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    old.decode_s += 100;
+    publish(opts, state, &old, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(strcmp(state->ui_msg, "sentinel") == 0);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     test_lagging_decoder_uses_fresh_receiver_level();
+    test_live_radio_after_a_replay_reads_live_levels();
     test_warning_cooldown_runs_on_the_decode_clock();
     test_classifier_thresholds();
     test_pcm_publish_backfills_rtl_power_but_rf_publish_does_not();

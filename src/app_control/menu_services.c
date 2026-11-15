@@ -1978,8 +1978,7 @@ svc_rtl_stop_ex_locked(dsd_opts* opts, dsd_state* state, int keep_replay_clock) 
     }
     const int leaves_replay = dsd_decode_clock_source() == DSD_DECODE_CLOCK_REPLAY;
     dsd_engine_decode_clock_leave_replay(opts, state);
-    if (leaves_replay && opts->audio_in_type == AUDIO_IN_RTL && opts->iq_replay_requested
-        && dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
+    if (leaves_replay && dsd_opts_input_is_iq_replay(opts)) {
         LOG_INFO("IQ replay restarted mid-run; decode timestamps now follow the system clock.\n");
     }
 }

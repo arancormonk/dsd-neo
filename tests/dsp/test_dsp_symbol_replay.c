@@ -2423,13 +2423,22 @@ test_rx_tone_stalled_radio_stream_goes_stale(void) {
 
     /* IQ replay keeps no deadline and carries on across a gap. */
     opts.rtltcp_enabled = 0;
-    opts.iq_replay_active = 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
     feed_stream_block(&opts, &state, 131.8);
     assert(state.analog_rx.stale_after_ms == 0U);
     generation = state.analog_rx.generation;
     g_fake_now_ms += 5000U;
     feed_stream_block(&opts, &state, 131.8);
     assert(state.analog_rx.ctcss_tenths_hz == 1318 && state.analog_rx.generation == generation);
+
+    /* Issue #743 (B14): the replay flags a session keeps after a config apply moved it onto a live rtl_tcp radio do not
+       make that radio a file: it stamps its deadline again. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    opts.rtltcp_enabled = 1;
+    opts.iq_replay_requested = 1;
+    opts.iq_replay_active = 1;
+    feed_stream_block(&opts, &state, 131.8);
+    assert(state.analog_rx.stale_after_ms == g_fake_now_ms + (uint64_t)DSD_ANALOG_STREAM_PAUSE_MIN_MS);
 
     dsd_analog_rx_test_set_clock(NULL);
     dsd_state_ext_free_all(&state);

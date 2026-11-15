@@ -136,9 +136,9 @@ int dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, ch
  * prints it at the same capture time in every run. The toast stays up for real time (`state->ui_msg_expire`).
  *
  * A stale live RF level is replaced by a fresh producer measurement when available. Without one it is kept
- * but warns about nothing: it is the last level of a receiver that stopped. An I/Q replay (`opts->iq_replay_active`)
- * warns as its capture says whatever the real-time age, so a replay that pauses still prints the same warnings in
- * every run.
+ * but warns about nothing: it is the last level of a receiver that stopped. An I/Q replay in force
+ * (dsd_opts_input_is_iq_replay()) warns as its capture says whatever the real-time age, so a replay that pauses still
+ * prints the same warnings in every run.
  */
 void dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_snapshot* snapshot,
                              unsigned int notify_mask);

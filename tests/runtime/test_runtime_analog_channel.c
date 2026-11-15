@@ -435,7 +435,13 @@ test_input_dsp_rate_policy(void) {
     dsd_input_dsp_rate got = dsd_input_dsp_rate_policy(&opts);
     expect_int("opts: an Airspy at 72 kHz runs at 72 kHz", got.rate_hz, 72000);
     expect_int("opts: an Airspy is a device", got.source, DSD_ANALOG_RATE_DEVICE);
+    /* Issue #743 (B14): the replay flags a session keeps after a config apply moved it off a replay decide nothing. */
+    opts.iq_replay_requested = 1;
     opts.iq_replay_active = 1;
+    got = dsd_input_dsp_rate_policy(&opts);
+    expect_int("opts: an Airspy after a replay runs at 72 kHz", got.rate_hz, 72000);
+    expect_int("opts: an Airspy after a replay is a device", got.source, DSD_ANALOG_RATE_DEVICE);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
     got = dsd_input_dsp_rate_policy(&opts);
     expect_int("opts: a replay in force knows no rate up front", got.rate_hz, 0);
     expect_int("opts: a replay is its capture", got.source, DSD_ANALOG_RATE_CAPTURE);

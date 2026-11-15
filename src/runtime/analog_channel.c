@@ -449,6 +449,6 @@ dsd_input_dsp_rate_policy(const dsd_opts* opts) {
     if (!opts) {
         return dsd_input_dsp_rate_for(NULL, AUDIO_IN_RTL, 0, 0);
     }
-    return dsd_input_dsp_rate_for(opts->audio_in_dev, opts->audio_in_type, opts->iq_replay_active,
+    return dsd_input_dsp_rate_for(opts->audio_in_dev, opts->audio_in_type, dsd_opts_input_is_iq_replay(opts),
                                   opts->rtl_dsp_bw_khz);
 }
