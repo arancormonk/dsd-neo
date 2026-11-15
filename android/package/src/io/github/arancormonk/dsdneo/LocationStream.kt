@@ -66,7 +66,7 @@ object LocationStream {
     }
 
     /** One provider's callbacks for one subscription; they reach the main looper (executor or looper). */
-    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    @Suppress("OVERRIDE_DEPRECATION") // onStatusChanged: deprecated, but abstract on API 29, so it is overridden.
     private class Feed(val subscription: Subscription, val provider: String) : LocationListener {
         override fun onLocationChanged(location: Location) = fixArrived(subscription, provider, location)
         override fun onProviderDisabled(provider: String) = providerChanged(subscription, this.provider, false)
@@ -170,7 +170,6 @@ object LocationStream {
     }
 
     /** Registers every present provider, enabled or not (a disabled one starts when location is turned on). */
-    @Suppress("DEPRECATION")
     private fun register(subscription: Subscription): String {
         val manager = subscription.context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
             ?: return PROVIDER_UNAVAILABLE

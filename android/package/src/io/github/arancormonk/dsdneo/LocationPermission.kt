@@ -24,6 +24,7 @@ object LocationPermission {
     const val REQUEST_CODE = 4303
     private val main = Handler(Looper.getMainLooper())
     private var promptActivity: Activity? = null
+    private var promptPermissions = emptyList<String>()
     private var roamingId: Long? = null
     private val waiters = linkedMapOf<Asker, (Activity, IntArray) -> Unit>()
 
@@ -33,13 +34,20 @@ object LocationPermission {
     internal fun granted(context: Context, permission: String) =
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
-    /** On the main looper: opens the prompt for [permissions] unless one is open, and waits for its answer. */
-    internal fun ask(activity: Activity, permissions: Array<String>, asker: Asker, answer: (Activity, IntArray) -> Unit) {
+    /**
+     * On the main looper: opens the prompt for [permissions] unless one is open, and waits for its answer. Returns what
+     * the prompt that will answer asks for, which is less than [permissions] when an open prompt asked for less.
+     */
+    internal fun ask(
+        activity: Activity, permissions: Array<String>, asker: Asker, answer: (Activity, IntArray) -> Unit,
+    ): List<String> {
         waiters.remove(asker)
         waiters[asker] = answer
-        if (promptActivity != null) return
+        if (promptActivity != null) return promptPermissions
         promptActivity = activity
+        promptPermissions = permissions.toList()
         activity.requestPermissions(permissions, REQUEST_CODE)
+        return promptPermissions
     }
 
     /**
@@ -57,10 +65,18 @@ object LocationPermission {
                 return@post
             }
             val permissions = arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
-            ask(activity, permissions, Asker.ROAMING) { _, grants ->
+            var offeredPrecise = true
+            val asked = ask(activity, permissions, Asker.ROAMING) { answered, grants ->
+                // A coarse-only prompt that was already open (Use my location) never offered precise: the same id
+                // may ask again.
+                if (!offeredPrecise && !granted(answered, Manifest.permission.ACCESS_FINE_LOCATION) && roamingId == id) {
+                    roamingId = null
+                }
                 // An interrupted prompt changes nothing; the user can ask again.
                 if (grants.isNotEmpty()) LocationStream.permissionAnswered()
             }
+            // Set before any answer can come: answers arrive later, on this looper.
+            offeredPrecise = Manifest.permission.ACCESS_FINE_LOCATION in asked
         }
     }
 

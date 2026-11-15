@@ -74,9 +74,12 @@ private fun coarseAlreadyGrantedAsksAgain() {
     check(feed().optString("state") == "approximateOnly")
     askRoaming(activity)
     check(activity.permissionRequests == 1 && activity.requestedPermissions == PRECISE_AND_COARSE)
-    // The user keeps approximate.
+    // The user keeps approximate, and the request that offered precise does not ask again by itself.
+    val id = nextId - 1
     answer(activity, 0, -1)
     check(feed().optString("state") == "approximateOnly" && activity.manager.updates.isEmpty())
+    askRoaming(activity, id)
+    check(activity.permissionRequests == 1) { "a prompt that offered precise latches its request id" }
 
     LocationSupport.requestCurrentLocation(activity, 500)
     Handler.drain()
@@ -163,18 +166,27 @@ private fun sharedPrompt() {
         Handler.drain()
         stopFeed()
     }
-    // A Use my location prompt asks coarse only; a roaming ask while it is open waits on it rather than prompting.
+    // A Use my location prompt asks coarse only; a roaming ask while it is open waits on it rather than prompting. That
+    // prompt never offered precise, so the same roaming request may ask for it afterwards.
     val activity = noAccess()
     startFeed(activity)
     LocationSupport.requestCurrentLocation(activity, 710)
     Handler.drain()
-    askRoaming(activity)
+    val id = nextId++
+    askRoaming(activity, id)
     check(activity.permissionRequests == 1 && activity.requestedPermissions == listOf(Manifest.permission.ACCESS_COARSE_LOCATION))
     activity.grant(coarse = true, fine = false)
     answer(activity, 0)
     check(feed().optString("state") == "approximateOnly")
     LocationSupport.cancelLocationRequest(710)
     Handler.drain()
+    askRoaming(activity, id)
+    check(activity.permissionRequests == 2 && activity.requestedPermissions == PRECISE_AND_COARSE) {
+        "a roaming request that joined a coarse-only prompt asks for precise itself"
+    }
+    activity.grant(coarse = true, fine = true)
+    answer(activity, 0, 0)
+    check(feed().optString("state") == "ok")
     stopFeed()
 }
 

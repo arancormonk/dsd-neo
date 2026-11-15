@@ -191,6 +191,9 @@ private fun generations() {
         }
         LocationStream.stopStream()
         check(LocationStream.pollStream() == null) { "a stop answers at once, before the main looper runs" }
+        // A fix that reaches the listener before the queued removal publishes nothing.
+        old.onLocationChanged(fix())
+        check(LocationStream.pollStream() == null) { "a fix between a stop and its removal published a record" }
         Handler.drain()
         check(old in activity.manager.removedListeners)
         old.onLocationChanged(fix())
