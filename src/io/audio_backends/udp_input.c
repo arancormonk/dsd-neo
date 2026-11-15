@@ -215,6 +215,33 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
+/* The address to bind on @p port: 0.0.0.0 is any address, an empty or NULL @p bindaddr loopback, anything else a
+   numeric address. A port htons() would narrow is refused here, before the binds that take no lookup to refuse it
+   (issue #743 B15). */
+static int
+udp_input_bind_address(const char* bindaddr, int port, struct sockaddr_in* addr) {
+    if (port < 0 || port > 65535) {
+        DSD_FPRINTF(stderr, "Invalid UDP input port %d\n", port);
+        return -1;
+    }
+    DSD_MEMSET(addr, 0, sizeof(*addr));
+    addr->sin_family = AF_INET;
+    addr->sin_port = htons((uint16_t)port);
+    if (!bindaddr || bindaddr[0] == '\0') {
+        addr->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        return 0;
+    }
+    if (strcmp(bindaddr, "0.0.0.0") == 0) {
+        addr->sin_addr.s_addr = htonl(INADDR_ANY);
+        return 0;
+    }
+    if (dsd_socket_resolve(bindaddr, port, addr) != 0) {
+        DSD_FPRINTF(stderr, "Invalid UDP bind address: %s\n", bindaddr);
+        return -1;
+    }
+    return 0;
+}
+
 /**
  * @brief Start UDP input thread and ring.
  *
@@ -236,6 +263,10 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
         return 0; // already started
     }
 
+    struct sockaddr_in addr;
+    if (udp_input_bind_address(bindaddr, port, &addr) != 0) {
+        return -1;
+    }
     dsd_socket_t sockfd = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sockfd == DSD_INVALID_SOCKET) {
         DSD_FPRINTF(stderr, "Error creating UDP input socket\n");
@@ -248,25 +279,6 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
 
     // Set a short receive timeout so thread can notice stop requests
     (void)dsd_socket_set_recv_timeout(sockfd, 200); // 200ms
-
-    struct sockaddr_in addr;
-    DSD_MEMSET(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)port);
-    if (bindaddr && strlen(bindaddr) > 0) {
-        if (strcmp(bindaddr, "0.0.0.0") == 0) {
-            addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        } else {
-            /* Parse numeric address */
-            if (dsd_socket_resolve(bindaddr, port, &addr) != 0) {
-                DSD_FPRINTF(stderr, "Invalid UDP bind address: %s\n", bindaddr);
-                dsd_socket_close(sockfd);
-                return -1;
-            }
-        }
-    } else {
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    }
 
     if (dsd_socket_bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
         DSD_FPRINTF(stderr, "Failed to bind UDP %s:%d\n", bindaddr ? bindaddr : "127.0.0.1", port);

@@ -195,6 +195,10 @@ test_startup_contracts(void) {
     rc |= expect_int("start rejects null opts", udp_input_start(NULL, "127.0.0.1", 0, 48000), -1);
     rc |= expect_int("start rejects invalid bind address", udp_input_start(&invalid, "not-a-numeric-address", 0, 48000),
                      -1);
+    /* Issue #743 B15: a port htons() would narrow is refused, on a bind that takes no lookup too (70000 bound 4464). */
+    rc |= expect_int("start rejects a port over 65535", udp_input_start(&invalid, "0.0.0.0", 70000, 48000), -1);
+    rc |= expect_int("start rejects a negative port", udp_input_start(&invalid, "", -1, 48000), -1);
+    rc |= expect_int("a refused port leaves no context", invalid.udp_in_ctx == NULL, 1);
 
     int reserved_port = -1;
     reserved = bind_loopback_ephemeral(&reserved_port);

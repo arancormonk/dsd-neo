@@ -10,7 +10,8 @@
  * It always drains the socket and never waits on its consumer's ring, so a sender that drops what it cannot send
  * (SDR++ ignores short writes) does not find dsd-neo's receive buffer full while dsd-neo keeps up. Every wait is a
  * DSD_IQ_NET_WAIT_SLICE_MS slice, never a bare blocking recv(), so a stop, the exit flag and a stall are seen at least
- * that often.
+ * that often. A host name is looked up on a helper thread the reader waits on in slices (iq_net_resolve()), so a slow
+ * resolver never holds up a stop.
  *
  * Socket handle protocol (as rtl_tcp's, rtl_device.cpp): the reader publishes its socket under sock_lock, a leaf
  * lock never held across a recv, connect, backoff or callback. A stop latches the flag and shuts down only the
@@ -247,6 +248,108 @@ iq_net_open_error_fill(const dsd_iq_net_reader* r, const iq_net_failure* f, dsd_
     }
 }
 
+/* A host name looked up off the reader thread: the reader and the helper each hold a reference, and whichever lets go
+   last frees it, so a stop can abandon a lookup the resolver is still answering. */
+typedef struct {
+    atomic_int refs;
+    atomic_int done;
+    int rc;
+    int port;
+    struct sockaddr_in addr;
+    char host[DSD_IQ_NET_HOST_MAX + 1];
+} iq_net_lookup;
+
+static void
+iq_net_lookup_release(iq_net_lookup* job) {
+    if (atomic_fetch_sub(&job->refs, 1) == 1) {
+        free(job);
+    }
+}
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    iq_net_lookup_main(void* arg) {
+    iq_net_lookup* job = (iq_net_lookup*)arg;
+    job->rc = dsd_socket_resolve(job->host, job->port, &job->addr);
+    atomic_store(&job->done, 1);
+    iq_net_lookup_release(job);
+    DSD_THREAD_RETURN;
+}
+
+enum { IQ_NET_RESOLVED = 0, IQ_NET_RESOLVE_FAILED = -1, IQ_NET_RESOLVE_CANCELLED = -2 };
+
+/* An IPv4 address in the one form inet_pton() reads, four decimal fields of 0..255 with no leading zero, which
+   dsd_socket_resolve() reads without asking a resolver. Anything else, "127.0.0.1." or "01.2.3.4" included, is a name
+   the resolver is asked for, so it takes the cancellable path. */
+static int
+iq_net_host_is_numeric(const char* host) {
+    int fields = 0;
+    const char* c = host;
+    for (;;) {
+        unsigned value = 0U;
+        int digits = 0;
+        while (*c >= '0' && *c <= '9') {
+            if (digits > 0 && value == 0U) {
+                return 0; /* a leading zero */
+            }
+            value = value * 10U + (unsigned)(*c - '0');
+            if (++digits > 3 || value > 255U) {
+                return 0;
+            }
+            c++;
+        }
+        if (digits == 0) {
+            return 0;
+        }
+        if (++fields == 4) {
+            return *c == '\0';
+        }
+        if (*c != '.') {
+            return 0;
+        }
+        c++;
+    }
+}
+
+/* The spec's host and port as an address. A numeric address is read at once; a name is looked up on a helper thread
+   while this one waits in IQ_NET_BACKOFF_SLICE_MS slices, giving up (and leaving the helper to finish on its own) on
+   a stop or exit, which getaddrinfo() itself cannot be asked to. */
+static int
+iq_net_resolve(dsd_iq_net_reader* r, struct sockaddr_in* addr) {
+    if (iq_net_host_is_numeric(r->spec.host)) {
+        return dsd_socket_resolve(r->spec.host, r->spec.port, addr) == 0 ? IQ_NET_RESOLVED : IQ_NET_RESOLVE_FAILED;
+    }
+    iq_net_lookup* job = (iq_net_lookup*)calloc(1, sizeof(*job));
+    if (!job) {
+        return IQ_NET_RESOLVE_FAILED;
+    }
+    atomic_init(&job->refs, 2);
+    atomic_init(&job->done, 0);
+    job->port = r->spec.port;
+    DSD_SNPRINTF(job->host, sizeof(job->host), "%s", r->spec.host);
+    dsd_thread_t helper;
+    if (dsd_thread_create(&helper, iq_net_lookup_main, job) != 0) {
+        free(job);
+        return IQ_NET_RESOLVE_FAILED;
+    }
+    (void)dsd_thread_detach(helper);
+    while (!atomic_load(&job->done)) {
+        if (iq_net_cancelled(r)) {
+            iq_net_lookup_release(job);
+            return IQ_NET_RESOLVE_CANCELLED;
+        }
+        dsd_sleep_ms(IQ_NET_BACKOFF_SLICE_MS);
+    }
+    const int rc = job->rc == 0 ? IQ_NET_RESOLVED : IQ_NET_RESOLVE_FAILED;
+    if (rc == IQ_NET_RESOLVED) {
+        *addr = job->addr;
+    }
+    iq_net_lookup_release(job);
+    return rc;
+}
+
 static void
 iq_net_set_rcvbuf(dsd_socket_t sock) {
     const int rcvbuf = DSD_IQ_NET_SO_RCVBUF_BYTES;
@@ -258,7 +361,7 @@ static dsd_socket_t
 iq_net_tcp_connect(dsd_iq_net_reader* r, iq_net_failure* f) {
     iq_net_count(&r->counters.connect_attempts, 1U);
     struct sockaddr_in addr;
-    if (dsd_socket_resolve(r->spec.host, r->spec.port, &addr) != 0) {
+    if (iq_net_resolve(r, &addr) != IQ_NET_RESOLVED) {
         /* The resolver reports through its own code (h_errno, getaddrinfo's result), which this call does not see. */
         f->kind = DSD_INPUT_FAILURE_RESOLVE;
         f->code = 0;
@@ -287,9 +390,9 @@ iq_net_tcp_connect(dsd_iq_net_reader* r, iq_net_failure* f) {
 }
 
 static dsd_socket_t
-iq_net_udp_bind(const dsd_iq_net_reader* r, iq_net_failure* f) {
+iq_net_udp_bind(dsd_iq_net_reader* r, iq_net_failure* f) {
     struct sockaddr_in addr;
-    if (dsd_socket_resolve(r->spec.host, r->spec.port, &addr) != 0) {
+    if (iq_net_resolve(r, &addr) != IQ_NET_RESOLVED) {
         /* The resolver reports through its own code (h_errno, getaddrinfo's result), which this call does not see. */
         f->kind = DSD_INPUT_FAILURE_RESOLVE;
         f->code = 0;

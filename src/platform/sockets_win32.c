@@ -304,7 +304,8 @@ dsd_socket_set_keepalive(dsd_socket_t sock, unsigned int idle_s, unsigned int in
 
 int
 dsd_socket_resolve(const char* hostname, int port, struct sockaddr_in* addr) {
-    if (!hostname || !addr) {
+    /* A port outside 0..65535 is refused rather than narrowed: 105659 would reach port 40123 (issue #743 B15). */
+    if (!hostname || !addr || port < 0 || port > 65535) {
         return -1;
     }
 

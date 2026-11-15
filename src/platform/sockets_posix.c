@@ -308,7 +308,8 @@ dsd_socket_set_keepalive(dsd_socket_t sock, unsigned int idle_s, unsigned int in
 
 int
 dsd_socket_resolve(const char* hostname, int port, struct sockaddr_in* addr) {
-    if (!hostname || !addr) {
+    /* A port outside 0..65535 is refused rather than narrowed: 105659 would reach port 40123 (issue #743 B15). */
+    if (!hostname || !addr || port < 0 || port > 65535) {
         return -1;
     }
 
@@ -321,14 +322,25 @@ dsd_socket_resolve(const char* hostname, int port, struct sockaddr_in* addr) {
         return 0;
     }
 
-    /* Fall back to DNS lookup */
-    const struct hostent* he = gethostbyname(hostname);
-    if (!he || !he->h_addr_list[0]) {
+    /* Look the name up, the first IPv4 answer, as on Windows. getaddrinfo() is thread-safe where gethostbyname() is
+       not: rtl_tcp looks its host up again on its reader thread at each reconnect while the decoder thread can be
+       looking up rigctl's, UDP output's or M17's (issue #743 B18). */
+    struct addrinfo hints;
+    struct addrinfo* result = NULL;
+    DSD_MEMSET(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    if (getaddrinfo(hostname, NULL, &hints, &result) != 0 || !result) {
         return -1;
     }
-
-    DSD_MEMCPY(&addr->sin_addr, he->h_addr_list[0], sizeof(addr->sin_addr));
-    return 0;
+    int rc = -1;
+    if (result->ai_family == AF_INET && result->ai_addr && result->ai_addrlen >= (socklen_t)sizeof(*addr)) {
+        struct sockaddr_in found;
+        DSD_MEMCPY(&found, result->ai_addr, sizeof(found));
+        addr->sin_addr = found.sin_addr;
+        rc = 0;
+    }
+    freeaddrinfo(result);
+    return rc;
 }
 
 #endif /* !DSD_PLATFORM_WIN_NATIVE */

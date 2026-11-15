@@ -23,6 +23,11 @@ UDPBind(char* hostname, int portno) {
     dsd_socket_t sockfd;
     struct sockaddr_in serveraddr;
     const char* bind_host = (hostname && hostname[0] != '\0') ? hostname : "127.0.0.1";
+    /* The 0.0.0.0 bind below takes no lookup that would refuse a port htons() would narrow (issue #743 B15). */
+    if (portno < 0 || portno > 65535) {
+        DSD_FPRINTF(stderr, "ERROR invalid UDP port %d\n", portno);
+        return DSD_INVALID_SOCKET;
+    }
 
     /* socket: create the socket */
     //UDP socket

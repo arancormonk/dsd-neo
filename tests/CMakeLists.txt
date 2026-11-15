@@ -18206,8 +18206,18 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_platform_socket_resolve
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
+# Issue #743 B18: on POSIX the executable answers its own getaddrinfo() calls, so the
+# test sees how dsd_socket_resolve() looks a name up.
+if(NOT WIN32)
+    target_sources(
+        dsd-neo_test_platform_socket_resolve
+        PRIVATE test_support/fake_getaddrinfo.c
+    )
+endif()
 target_link_libraries(
     dsd-neo_test_platform_socket_resolve
     PRIVATE dsd-neo_platform
@@ -19507,6 +19517,7 @@ if(DSD_HAS_RADIO)
         add_executable(
             dsd-neo_test_io_rtl_tcp_reconnect
             io/test_io_rtl_tcp_reconnect.cpp
+            test_support/fake_getaddrinfo.c
         )
         target_include_directories(
             dsd-neo_test_io_rtl_tcp_reconnect

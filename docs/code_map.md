@@ -1535,7 +1535,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     blocks SIGTSTP in the creator around its `pthread_create()` and puts the creator's mask back, so every thread starts
     with Ctrl+Z blocked and the creator keeps its own; `dsd_thread_block_stop_signal()` sets it on the calling thread
     (Windows: no-op). The terminal UI thread is the one that unblocks it (see UI, Ctrl+Z / `fg`). Test:
-    `PLATFORM_THREAD_STOP_SIGNAL`
+    `PLATFORM_THREAD_STOP_SIGNAL`. `dsd_thread_detach()` lets a thread end on its own (`pthread_detach()`; Windows
+    closes the handle), for work a stop must not wait for, such as the network I/Q reader's name lookup
   - Whole-frame descriptor writes (issue #659): `dsd_write_frames()` in `file_compat.h` finishes interrupted and short
     writes, returns `DSD_WRITE_FRAMES_WOULD_BLOCK` at once when a non-blocking descriptor is full at a frame boundary,
     waits (`poll()`, POSIX only, at most 250 ms in all, an interrupted wait going on only for what is left of it) only to
@@ -1550,6 +1551,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     readable and/or writable (`poll()` on POSIX, `select()` on Windows), reporting end of stream and errors as ready
     so the next `recv()`/`send()` returns them. Servers poll non-blocking sockets with it rather than receive
     timeouts, which leave a Windows TCP socket in an indeterminate state when they fire
+  - Name lookup: `dsd_socket_resolve()` refuses a port outside 0..65535 before it narrows one into `sin_port` (issue #743
+    B15), reads a numeric IPv4 address without a lookup, and looks any other name up through `getaddrinfo()` (IPv4,
+    first answer) on every call, on Windows and POSIX alike: it is thread-safe, which `gethostbyname()` was not, and
+    rtl_tcp looks its host up again on its reader thread at each reconnect while the decoder thread can look up
+    rigctl's, UDP output's or M17's (B18). `PLATFORM_SOCKET_RESOLVE` and `IO_RTL_TCP_RECONNECT` answer the lookups
+    with their own `getaddrinfo()` (`tests/test_support/fake_getaddrinfo.c`, POSIX)
   - TCP keepalive: `dsd_socket_set_keepalive()` turns on SO_KEEPALIVE with the idle time, probe interval and probe
     count each platform lets a socket set (TCP_KEEPIDLE, or macOS's TCP_KEEPALIVE; TCP_KEEPINTVL; TCP_KEEPCNT; on
     Windows those options, else `SIO_KEEPALIVE_VALS`), each guarded where a platform lacks it.

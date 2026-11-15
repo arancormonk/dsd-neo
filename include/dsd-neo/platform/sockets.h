@@ -275,10 +275,14 @@ int dsd_socket_set_send_timeout(dsd_socket_t sock, unsigned int timeout_ms);
 int dsd_socket_set_keepalive(dsd_socket_t sock, unsigned int idle_s, unsigned int interval_s, unsigned int count);
 
 /**
- * @brief Resolve hostname to address.
+ * @brief Resolve hostname to an IPv4 address.
+ *
+ * A numeric IPv4 address is read without a lookup; any other name is looked up through the system resolver
+ * (getaddrinfo(), which is thread-safe) every time, taking its first IPv4 answer, so a record that changed is seen at
+ * the next call.
  *
  * @param hostname  Hostname to resolve.
- * @param port      Port number.
+ * @param port      Port number, 0..65535; any other is refused, never narrowed to 16 bits.
  * @param addr      Output sockaddr_in structure.
  * @return 0 on success, non-zero on failure.
  */

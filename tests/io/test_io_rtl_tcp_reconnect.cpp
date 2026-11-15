@@ -54,6 +54,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "fake_getaddrinfo.h"
 #include "rtl_stream_test_support.h"
 #include "test_env.h"
 #include "test_support.h"
@@ -678,13 +679,13 @@ rig_open_capture(dev_rig& r) {
     assert(rc == DSD_IQ_OK && r.writer != nullptr);
 }
 
-/* Open the device on the fake server: its first connection, the controller, the ring's reader and, with
- * @p capture, an I/Q capture. With @p offset hardware offset tuning is on, so nothing rotates the ring's I/Q. */
+/* Open the device on the fake server, named @p host: its first connection, the controller, the ring's reader and,
+ * with @p capture, an I/Q capture. With @p offset hardware offset tuning is on, so nothing rotates the ring's I/Q. */
 void
-rig_open(dev_rig& r, int capture, int offset) {
+rig_open(dev_rig& r, int capture, int offset, const char* host = "127.0.0.1") {
     assert(input_ring_init(&r.ring, 1U << 20) == 0);
     assert(dsd_mutex_init(&r.phases_lock) == 0);
-    r.dev = rtl_device_create_tcp("127.0.0.1", g_srv.port, &r.ring, 0);
+    r.dev = rtl_device_create_tcp(host, g_srv.port, &r.ring, 0);
     assert(r.dev != nullptr);
     rtl_device_set_recovery_callback(r.dev, rig_post, &r);
     if (offset != 0) {
@@ -1125,6 +1126,27 @@ test_latest_effective_settings_replayed(void) {
     const std::vector<uint32_t> tuner_xtal{28800400U};
     assert(server_params(1, 0x0B) == rtl_xtal);
     assert(server_params(1, 0x0C) == tuner_xtal);
+    rig_close(r);
+}
+
+/* reconnect_looks_the_host_up_again (issue #743 B18): a host name is looked up through getaddrinfo(), for IPv4, at the
+ * first connection and again at the reconnect, on the reader's thread, so a server whose address changed is found
+ * again (gethostbyname(), which this replaced, is not thread-safe). */
+void
+test_reconnect_looks_the_host_up_again(void) {
+    server_reset(default_script());
+    dsd_fake_resolver_reset(0x7F000001U, 0x7F000001U);
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
+    rig_open(r, 0, 0, DSD_FAKE_RESOLVER_HOST);
+    configure(r.dev);
+    const int at_open = dsd_fake_resolver_lookups();
+    assert(at_open >= 1);
+    rig_start(r);
+    lose_connection(r);
+    wait_generation(r, 2U);
+    assert(dsd_fake_resolver_lookups() > at_open);
+    assert(dsd_fake_resolver_non_ipv4_lookups() == 0);
     rig_close(r);
 }
 
@@ -2903,6 +2925,7 @@ const named_test kTests[] = {
     {"stop_during_silent_header", test_stop_during_silent_header},
     {"setting_change_while_disconnected_fails", test_setting_change_while_disconnected_fails},
     {"latest_effective_settings_replayed", test_latest_effective_settings_replayed},
+    {"reconnect_looks_the_host_up_again", test_reconnect_looks_the_host_up_again},
     {"hops_write_every_setting", test_hops_write_every_setting},
     {"capture_records_automatic_gain", test_capture_records_automatic_gain},
     {"replay_failure_not_published", test_replay_failure_not_published},

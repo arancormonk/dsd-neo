@@ -7,6 +7,8 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <errno.h>
+#include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -18,6 +20,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include "fake_getaddrinfo.h"
 #endif
 
 static int
@@ -51,7 +54,61 @@ expect_numeric_ipv4_resolves(const char* host, int port) {
     return 0;
 }
 
+/* Issue #743 B15: a port outside 0..65535 is refused, never narrowed to 16 bits on its way into sin_port (105659 went
+   to port 40123, 99999 to 34463). 0 stays: a bind to it takes an ephemeral port. */
+static int
+test_port_range(void) {
+    int rc = 0;
+    const int refused[] = {65536, 99999, 105659, -1, INT_MIN, INT_MAX};
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        struct sockaddr_in addr;
+        if (dsd_socket_resolve("127.0.0.1", refused[i], &addr) != -1) {
+            DSD_FPRINTF(stderr, "expected port %d to be refused, got port %d\n", refused[i], (int)ntohs(addr.sin_port));
+            rc = 1;
+        }
+    }
+    rc |= expect_numeric_ipv4_resolves("127.0.0.1", 0);
+    rc |= expect_numeric_ipv4_resolves("127.0.0.1", 65535);
+    return rc;
+}
+
 #if !DSD_PLATFORM_WIN_NATIVE
+/* Issue #743 B18: a name is looked up through getaddrinfo(), for IPv4 (gethostbyname() is not thread-safe, and rtl_tcp
+   looks its host up on its reader thread while the decoder thread can look up rigctl's, UDP output's or M17's), every
+   time: a record that changed between two connections is seen on the second. Port checks come before any lookup. */
+static int
+test_names_resolve_through_getaddrinfo(void) {
+    int rc = 0;
+    dsd_fake_resolver_reset(0x7F000001U, 0x7F000002U);
+    const uint32_t want[] = {0x7F000001U, 0x7F000002U};
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        struct sockaddr_in addr;
+        DSD_MEMSET(&addr, 0, sizeof addr);
+        if (dsd_socket_resolve(DSD_FAKE_RESOLVER_HOST, 7355, &addr) != 0) {
+            DSD_FPRINTF(stderr, "lookup %zu of %s failed\n", i + 1U, DSD_FAKE_RESOLVER_HOST);
+            rc = 1;
+            continue;
+        }
+        if (addr.sin_family != AF_INET || ntohs(addr.sin_port) != 7355 || ntohl(addr.sin_addr.s_addr) != want[i]) {
+            DSD_FPRINTF(stderr, "lookup %zu: family %d port %d address %08x, want AF_INET 7355 %08x\n", i + 1U,
+                        (int)addr.sin_family, (int)ntohs(addr.sin_port), (unsigned)ntohl(addr.sin_addr.s_addr),
+                        (unsigned)want[i]);
+            rc = 1;
+        }
+    }
+    struct sockaddr_in addr;
+    if (dsd_socket_resolve(DSD_FAKE_RESOLVER_HOST, 65536, &addr) != -1) {
+        DSD_FPRINTF(stderr, "expected a name with port 65536 to be refused\n");
+        rc = 1;
+    }
+    if (dsd_fake_resolver_lookups() != 2 || dsd_fake_resolver_non_ipv4_lookups() != 0) {
+        DSD_FPRINTF(stderr, "getaddrinfo() lookups %d (want 2), not IPv4 %d (want 0)\n", dsd_fake_resolver_lookups(),
+                    dsd_fake_resolver_non_ipv4_lookups());
+        rc = 1;
+    }
+    return rc;
+}
+
 static int
 get_bound_addr(dsd_socket_t sock, struct sockaddr_in* addr) {
     socklen_t len = sizeof(*addr);
@@ -292,6 +349,7 @@ main(void) {
     }
 
     rc |= test_cancelled_connect();
+    rc |= test_port_range();
     rc |= expect_numeric_ipv4_resolves("127.0.0.1", 7355);
     rc |= expect_numeric_ipv4_resolves("192.168.1.50", 7355);
     if (dsd_socket_resolve(NULL, 7355, &(struct sockaddr_in){0}) != -1) {
@@ -303,6 +361,7 @@ main(void) {
         rc = 1;
     }
 #if !DSD_PLATFORM_WIN_NATIVE
+    rc |= test_names_resolve_through_getaddrinfo();
     rc |= expect_udp_loopback_round_trips();
     rc |= expect_tcp_loopback_accepts();
 #endif

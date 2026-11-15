@@ -97,6 +97,11 @@ dsd_thread_join(dsd_thread_t thread) {
     return pthread_join(thread, NULL);
 }
 
+int
+dsd_thread_detach(dsd_thread_t thread) {
+    return pthread_detach(thread);
+}
+
 dsd_thread_t
 dsd_thread_self(void) {
     return pthread_self();
