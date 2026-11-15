@@ -2370,8 +2370,17 @@ suite runs under this compiler.
   does not cut the text, since radios send lengths that disagree with it. Malformed UTF-8 (one U+FFFD per maximal
   ill-formed subpart) and unpaired surrogates become U+FFFD; a character cut where the received blocks stop, while the
   length says more units follow, is left out until the block that completes it. Every non-control character is stored
-  as UTF-8, whole sequences only (`generic_talker_alias`, the event row). Tests: `DMR_TALKER_ALIAS_UTF8`,
-  `DMR_TALKER_ALIAS_UTF16`, `DMR_TALKER_ALIAS_HEADER_LEN`.
+  as UTF-8, whole sequences only (`generic_talker_alias`, the event row). Learning
+  (`dsd_alias_learn_radio()`, metadata `DMR TA`): `dsd_state::dmr_alias_assembly[slot]` (`dmr_talker_alias_assembly`)
+  records which of the header and blocks 1-3 arrived, each with a checked embedded LC checksum, while the slot's call
+  was the ACTIVE one with that epoch and source on that tuning generation. A header of another format, length, text or
+  binding restarts it; a block under another binding, or one that differs from the block held, ends it until the next
+  header; a failed checksum (`dmr_talker_alias_lc_invalidate()`) clears it. The alias is learned once per assembly, as
+  the call source's alias of the reception's scope, when the header's Data Length in code units is covered by the
+  header and the blocks that arrived and the decode reaches that far (a block that completes the set out of order waits
+  for the next cycle's last block); a length the header and three blocks cannot hold, an empty alias and one with a
+  U+FFFD are never learned. The learned text is the decoded text, not cut at the length (as shown). Tests:
+  `DMR_TALKER_ALIAS_UTF8`, `DMR_TALKER_ALIAS_UTF16`, `DMR_TALKER_ALIAS_HEADER_LEN`, `DMR_ALIAS_LEARN`.
 - Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the
   MFID 0x90 alias (Phase 1 LCW 0x15/0x17, Phase 2 MAC 0x91/0x95) assembles in `dsd_state::p25_apx_alias_rx[slot]`
   (`p25_apx_alias_rx_state_t`), which owns its header copy, block bitmap and record store; it never touches the
@@ -2481,6 +2490,20 @@ suite runs under this compiler.
     names the TETRA location update accept types (`dsd_ua_tetra_accept_type_text()`, Table 16.68; NULL above 7), the
     value of a TETRA location registration row. Test: `CORE_UNIT_ACTIVITY_REASON` (every 8-bit P25 code against
     the prints' former table, kept in the test).
+  - Protocol producers (`src/protocol/<name>/<name>_unit_activity.c`): one row per checked message, the subject's
+    current name resolved at push (a home that is not the reception's names nothing), `freq_hz` the tuned frequency,
+    `scope_epoch` 0 (nothing exposes a trunk-scan generation).
+    - DMR (`dmr_unit_activity.c`; standard FID 0x00 CSBKs that passed their own CRC, never one `-F` accepted as RAS):
+      C_ACKD 0x62 from REGI is REGISTRATION / ACK / ACKNOWLEDGED with no reason (a deregistration is answered alike, TS
+      102 361-4 clause 6.4.6), 0x2A / 0x2B from REGI REGISTRATION refused / denied, 0x65 from REGI GROUP_AFFILIATION
+      with the Response_Info acceptance mask as the value (accepted when non-zero, refused when zero; no talkgroup
+      invented), any other NACK DENY, QACK QUEUED, WACK WAITING, each with its Tier III reason; the other
+      acknowledgements add no row. G/I (Response_Info bit 16, Table 7.41) makes the target a talkgroup; the additional
+      information is the actor when it is a Table A.8 gateway, else the recipient (the request's destination, of
+      unknown kind). C_AHOY: stun / revive / kill / radio check / subscription list request (REGISTRATION COMMAND) with
+      the gateway as the INFRASTRUCTURE actor, authentication with no actor (the challenge is no identity and not
+      keyed). Motorola ARS (an exact ARS message on a checked DMR data PDU, `dmr_ars_note_activity()`): device / user
+      registration and deregistration as REPORT rows of the sending radio. Test: `DMR_UNIT_ACTIVITY`.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
@@ -2586,7 +2609,8 @@ suite runs under this compiler.
   Tests: `CORE_TALKGROUP_POLICY`, `CORE_TG_POLICY_ALLOC_FAIL`, `APP_COMMAND_QUEUE`, `UI_QT_TALKGROUP_LIST_MODEL`.
 - Invariant (learned alias rows, `<dsd-neo/core/talkgroup_policy.h>`, `<dsd-neo/core/alias_learn.h>`): every
   over-the-air alias publisher learns its row in mode `D` (an encrypted radio is locked out by the encryption ledger,
-  never by its alias row): Motorola, Harris and Tait in `dsd_alias.c` through `dsd_alias_learn_radio()`, the P25
+  never by its alias row): Motorola, Harris, Tait and the DMR standard talker alias in `dsd_alias.c` through
+  `dsd_alias_learn_radio()`, the P25
   Phase 1 LSD soft ID in `p25p1_ldu1.c`/`p25p1_ldu2.c` through `dsd_tg_policy_learn_exact()`. A talkgroup/user row
   for the ID wins, a learned row is replaced only when its normalised name changed, and a repeat changes nothing, so
   the policy generation (and every frontend's snapshot copy keyed on it) stays put while a radio keeps sending the same
@@ -11468,23 +11492,23 @@ Private per-protocol modules worth knowing about:
   `dmr_cspdu_cap_plus_slot_lsn()`), not the record's, so a slot whose identity expired with its call while the
   companion kept the carrier busy (no record left) takes the group a status names for its next call. Tests:
   `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`.
-- DMR reasons and C_AHOY meaning (`src/protocol/dmr/dmr_reason.{c,h}`). The Tier II NACK_Rsp Reason Code (TS 102
-  361-2 Table 7.13) and the Tier III C_ACKD / C_ACKU / P_ACKD / P_ACKU Reason (TS 102 361-4 Tables 7.42-7.45, plus
-  MS_Duplex_Not_Supported 0x16 from the clause 7.2.8.2 text) are separate tables, as they give 0x21 different meanings:
-  `dmr_tier2_nack_reason_text()`, `dmr_tier3_reason_text()` (NULL for an undefined value: print it raw) and
-  `dmr_tier3_reason_class_of()` (NACK / ACK / QACK / WACK). `dmr_ahoy_classify()` reads a Service_Kind 13 / 14 C_AHOY
-  by its whole field combination (Tables 6.11, 6.17, 6.19, 6.23, 6.27): STUNI with flag 0 / 1 is stun / revive and
-  KILLI with flag 0 kill, each to one radio; TSI with flag 0 a radio check (radio or talkgroup); flag 0 with a
-  000000-FFFCDF value in the source field an authentication challenge to one radio, the value never an identity; TATTSI
-  with flag 1 the talkgroup subscription list request; any other combination UNRECOGNISED. Each names the command or
-  poll the TSCC sent, never its outcome (the radio's answer is inbound). NACK_Rsp carries its source before its target
-  (Table 7.6). Standard-only CSBK opcodes (UU_V_Req, UU_Ans_Rsp, CT_CSBK, C_AHOY, C_ACKVIT, C_RAND, C_ACKD, C_ACKU,
-  P_ACKD, P_ACKU, NACK_Rsp, P_MAINT, and BS_Dwn_Act on MS data) decode only under FID 0x00
+- DMR reasons and C_AHOY meaning (`src/protocol/dmr/dmr_reason.{c,h}`). The Tier II NACK_Rsp Reason Code (TS 102 361-2
+  Table 7.13) and the Tier III C_ACKD / C_ACKU / P_ACKD / P_ACKU Reason (TS 102 361-4 Tables 7.42-7.45, plus
+  MS_Duplex_Not_Supported 0x16 from the clause 7.2.8.2 text) are separate tables, as they give 0x21 different meanings;
+  the CSBK prints read them from the core's one table set (`dsd_ua_reason_text()` with `DSD_UA_REASON_DMR_TIER2_NACK` /
+  `DSD_UA_REASON_DMR_TIER3`, NULL for an undefined value: print it raw), which the unit activity log shares, and
+  `dmr_tier3_reason_class_of()` gives the class (NACK / ACK / QACK / WACK). `dmr_ahoy_classify()` reads a Service_Kind
+  13 / 14 C_AHOY by its whole field combination (Tables 6.11, 6.17, 6.19, 6.23, 6.27): STUNI with flag 0 / 1 is stun /
+  revive and KILLI with flag 0 kill, each to one radio; TSI with flag 0 a radio check (radio or talkgroup); flag 0 with
+  a 000000-FFFCDF value in the source field an authentication challenge to one radio, the value never an identity;
+  TATTSI with flag 1 the talkgroup subscription list request; any other combination UNRECOGNISED. Each names the command
+  or poll the TSCC sent, never its outcome (the radio's answer is inbound). NACK_Rsp carries its source before its
+  target (Table 7.6). Standard-only CSBK opcodes (UU_V_Req, UU_Ans_Rsp, CT_CSBK, C_AHOY, C_ACKVIT, C_RAND, C_ACKD,
+  C_ACKU, P_ACKD, P_ACKU, NACK_Rsp, P_MAINT, and BS_Dwn_Act on MS data) decode only under FID 0x00
   (`dmr_cspdu_pf0_handle_standard_only()`); under another FID they print as `Manufacturer CSBK`. No vendor dispatcher
-  decodes these opcodes today; one that comes to must take its opcode out of `dmr_cspdu_pf0_is_standard_only()`, or
-  both lines print. Grants, moves, C_ALOHA (Capacity Max recognition included), P_CLEAR, P_PROTECT, C_BCAST and
-  preambles still run for any FID. Tests: `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through
-  `dmr_flco()`).
+  decodes these opcodes today; one that comes to must take its opcode out of `dmr_cspdu_pf0_is_standard_only()`, or both
+  lines print. Grants, moves, C_ALOHA (Capacity Max recognition included), P_CLEAR, P_PROTECT, C_BCAST and preambles
+  still run for any FID. Tests: `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through `dmr_flco()`).
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
   stays at the CSBK/status layer, which alone knows each grant's classification (Tier III data grants rewritten to
   group, Connect Plus private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,

@@ -26,6 +26,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -237,21 +238,30 @@ test_ahoy_classify_table(void) {
     expect_true(dmr_ahoy_classify(NULL) == DMR_AHOY_UNRECOGNISED, "classify null");
 }
 
+/* The reason texts the prints use: the core's one table set. */
+static const char*
+tier3_text(uint8_t code) {
+    return dsd_ua_reason_text(DSD_UA_REASON_DMR_TIER3, code);
+}
+
+static const char*
+tier2_text(uint8_t code) {
+    return dsd_ua_reason_text(DSD_UA_REASON_DMR_TIER2_NACK, code);
+}
+
 static void
 test_reason_tables(void) {
-    const char* t3 = dmr_tier3_reason_text(0x21U);
-    const char* t2 = dmr_tier2_nack_reason_text(0x21U);
+    const char* t3 = tier3_text(0x21U);
+    const char* t2 = tier2_text(0x21U);
     expect_true(t3 != NULL && t2 != NULL && strcmp(t3, t2) != 0, "0x21 differs between Tier II and Tier III");
-    expect_true(dmr_tier2_nack_reason_text(0x20U) == NULL, "tier2 defines only 0x21");
-    expect_true(dmr_tier3_reason_text(0x2AU) != NULL && strstr(dmr_tier3_reason_text(0x2AU), "refused") != NULL,
-                "tier3 reg refused");
-    expect_true(dmr_tier3_reason_text(0x2BU) != NULL && strstr(dmr_tier3_reason_text(0x2BU), "denied") != NULL,
-                "tier3 reg denied");
-    expect_true(dmr_tier3_reason_text(0xA1U) != NULL, "tier3 queued-for-busy is 0xA1");
-    expect_true(dmr_tier3_reason_text(0xAAU) == NULL, "0xAA is not queued-for-busy");
-    expect_true(dmr_tier3_reason_text(0x16U) != NULL, "tier3 MS duplex not supported from the clause text");
-    expect_true(dmr_tier3_reason_text(0xE0U) != NULL, "tier3 wait");
-    expect_true(dmr_tier3_reason_text(0x3EU) == NULL, "tier3 undefined value");
+    expect_true(tier2_text(0x20U) == NULL, "tier2 defines only 0x21");
+    expect_true(tier3_text(0x2AU) != NULL && strstr(tier3_text(0x2AU), "refused") != NULL, "tier3 reg refused");
+    expect_true(tier3_text(0x2BU) != NULL && strstr(tier3_text(0x2BU), "denied") != NULL, "tier3 reg denied");
+    expect_true(tier3_text(0xA1U) != NULL, "tier3 queued-for-busy is 0xA1");
+    expect_true(tier3_text(0xAAU) == NULL, "0xAA is not queued-for-busy");
+    expect_true(tier3_text(0x16U) != NULL, "tier3 MS duplex not supported from the clause text");
+    expect_true(tier3_text(0xE0U) != NULL, "tier3 wait");
+    expect_true(tier3_text(0x3EU) == NULL, "tier3 undefined value");
     expect_true(dmr_tier3_reason_class_of(0x62U) == DMR_TIER3_REASON_ACK, "class ack");
     expect_true(dmr_tier3_reason_class_of(0x2BU) == DMR_TIER3_REASON_NACK, "class nack");
     expect_true(dmr_tier3_reason_class_of(0xA0U) == DMR_TIER3_REASON_QACK, "class qack");

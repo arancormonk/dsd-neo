@@ -34,6 +34,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_tables.h>
@@ -53,6 +54,7 @@
 #include "dmr_crc_provenance.h"
 #include "dmr_reason.h"
 #include "dmr_tiii_site.h"
+#include "dmr_unit_activity.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -719,7 +721,7 @@ dmr_cspdu_pf0_handle_ackvit(int csbk_o) {
 }
 
 static void
-dmr_cspdu_pf0_handle_acks(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o) {
+dmr_cspdu_pf0_handle_acks(const dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o) {
     if (!(csbk_o == 32 || csbk_o == 33 || csbk_o == 34 || csbk_o == 35)) {
         return;
     }
@@ -742,7 +744,7 @@ dmr_cspdu_pf0_handle_acks(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o) {
     uint32_t ack_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     // The Tier III reason table (TS 102 361-4 Tables 7.42-7.45), not the Tier II NACK_Rsp one.
-    const char* reason_text = dmr_tier3_reason_text(reason_code);
+    const char* reason_text = dsd_ua_reason_text(DSD_UA_REASON_DMR_TIER3, reason_code);
     if (reason_text != NULL) {
         DSD_FPRINTF(stderr, "Response: %02X; Reason: %02X (%s); ", response_info, reason_code, reason_text);
     } else {
@@ -753,7 +755,11 @@ dmr_cspdu_pf0_handle_acks(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o) {
     }
     DSD_FPRINTF(stderr, "Target: %d; Source: %d; ", ack_target, ack_source);
     dmr_gateway_identifier(ack_source, ack_target);
-    UNUSED(state);
+    // Only the outbound C_ACKD is a TSCC answer a listener hears; only a checked one reaches the activity log.
+    if (csbk_o == 32 && dmr_csbk_crc_checked(state)) {
+        const dmr_ua_ackd_fields fields = {response_info, reason_code, ack_target, ack_source};
+        dmr_ua_c_ackd(opts, state, &fields);
+    }
 }
 
 static void
@@ -783,7 +789,7 @@ dmr_cspdu_pf0_handle_nack_rsp(const uint8_t cs_pdu_bits[]) {
     const uint8_t reason = (uint8_t)convert_bits_into_output(&cs_pdu_bits[24], 8);
     const uint32_t source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
     const uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
-    const char* reason_text = dmr_tier2_nack_reason_text(reason);
+    const char* reason_text = dsd_ua_reason_text(DSD_UA_REASON_DMR_TIER2_NACK, reason);
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Negative Acknowledgement Response (NACK_Rsp) - Source [%" PRIu32 "] - Target [%" PRIu32 "] ",
@@ -861,7 +867,7 @@ dmr_cspdu_pf0_ahoy_kind_text(int kind) {
 }
 
 static void
-dmr_cspdu_pf0_handle_c_ahoy(uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
+dmr_cspdu_pf0_handle_c_ahoy(const dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
     if (csbk_o != 28) {
         return;
     }
@@ -879,6 +885,9 @@ dmr_cspdu_pf0_handle_c_ahoy(uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
     DSD_FPRINTF(stderr, "%s", dmr_cspdu_pf0_ahoy_service_text(f.service_kind));
     if (kind_text != NULL) {
         DSD_FPRINTF(stderr, "%s", kind_text);
+        if (dmr_csbk_crc_checked(state)) {
+            dmr_ua_c_ahoy(opts, state, kind, f.group, f.target, f.source);
+        }
     }
     if (kind == DMR_AHOY_AUTHENTICATION) {
         // The source field carries the 24-bit challenge (Table 6.17), not an address.
@@ -1713,10 +1722,10 @@ dmr_cspdu_pf0_handle_standard_only(dsd_opts* opts, dsd_state* state, uint8_t cs_
         }
         return;
     }
-    dmr_cspdu_pf0_handle_c_ahoy(cs_pdu_bits, csbk_o, csbk_fid);
+    dmr_cspdu_pf0_handle_c_ahoy(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
     dmr_cspdu_pf0_handle_p_maint(state, cs_pdu_bits, csbk_o);
     dmr_cspdu_pf0_handle_ackvit(csbk_o);
-    dmr_cspdu_pf0_handle_acks(state, cs_pdu_bits, csbk_o);
+    dmr_cspdu_pf0_handle_acks(opts, state, cs_pdu_bits, csbk_o);
     dmr_cspdu_pf0_handle_c_rand(csbk_o);
     dmr_cspdu_pf0_handle_tier2_simple(opts, state, cs_pdu_bits, csbk_o);
 }

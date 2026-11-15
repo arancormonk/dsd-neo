@@ -2427,6 +2427,7 @@ target_link_libraries(
 )
 add_test(NAME NXDN_ALIAS_DECODE COMMAND dsd-neo_test_nxdn_alias_decode)
 
+
 add_executable(
     dsd-neo_test_nxdn_alias_fallback
     protocol/nxdn/test_nxdn_alias_fallback.c
@@ -13131,6 +13132,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    test_support/dmr_unit_activity_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -13181,6 +13184,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    test_support/dmr_unit_activity_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -13226,6 +13231,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    test_support/dmr_unit_activity_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -13275,6 +13282,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    test_support/dmr_unit_activity_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -14795,6 +14804,35 @@ target_link_libraries(
 )
 add_test(NAME DMR_CSBK_FIXES COMMAND dsd-neo_test_dmr_csbk_fixes)
 
+# DMR unit activity rows through dmr_cspdu() and dmr_udp_comp_pdu(): C_ACKD answers, C_AHOY commands, ARS reports;
+# FID 0x00 and CRC-checked content only, gateways as the actor
+add_executable(
+    dsd-neo_test_dmr_unit_activity
+    protocol/dmr/test_dmr_unit_activity.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_unit_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_unit_activity
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_UNIT_ACTIVITY COMMAND dsd-neo_test_dmr_unit_activity)
+
+# DMR talker alias learning through the alias header / block entry points: only a complete, coherent alias bound to
+# the call is learned, in the reception's scope
+add_executable(dsd-neo_test_dmr_alias_learn protocol/dmr/test_dmr_alias_learn.c)
+target_include_directories(
+    dsd-neo_test_dmr_alias_learn
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_alias_learn
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_ALIAS_LEARN COMMAND dsd-neo_test_dmr_alias_learn)
+
 add_executable(dsd-neo_test_dmr_r34_noise protocol/dmr/test_dmr_r34_noise.c)
 target_include_directories(
     dsd-neo_test_dmr_r34_noise
@@ -14874,6 +14912,7 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_relaxed_header_ip
     protocol/dmr/test_dmr_relaxed_header_ip.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_block.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_block_crypto.c
@@ -14904,6 +14943,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_time_fallback
     protocol/dmr/test_dmr_lrrp_time_fallback.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -14936,6 +14976,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_time_valid
     protocol/dmr/test_dmr_lrrp_time_valid.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -14965,6 +15006,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_token_alignment
     protocol/dmr/test_dmr_lrrp_token_alignment.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -14996,6 +15038,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_response_token_lengths
     protocol/dmr/test_dmr_lrrp_response_token_lengths.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15027,6 +15070,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_resync_prefix
     protocol/dmr/test_dmr_lrrp_resync_prefix.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15058,6 +15102,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_position_token_precedence
     protocol/dmr/test_dmr_lrrp_position_token_precedence.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15090,6 +15135,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_crc_gating
     protocol/dmr/test_dmr_lrrp_crc_gating.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15119,6 +15165,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_empty_payload_type
     protocol/dmr/test_dmr_lrrp_empty_payload_type.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15151,6 +15198,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_wrapped_document
     protocol/dmr/test_dmr_lrrp_wrapped_document.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15183,6 +15231,7 @@ add_executable(
     dsd-neo_test_dmr_pdu_utf16_text
     protocol/dmr/test_dmr_pdu_utf16_text.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15212,6 +15261,7 @@ add_executable(
     dsd-neo_test_dmr_tms_utf16le
     protocol/dmr/test_dmr_tms_utf16le.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15237,6 +15287,7 @@ add_test(NAME DMR_TMS_UTF16LE COMMAND dsd-neo_test_dmr_tms_utf16le)
 add_executable(
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
     protocol/dmr/test_dmr_lrrp_ip_udp_lengths.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15268,6 +15319,7 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_lrrp_event_crc_gating
     protocol/dmr/test_dmr_lrrp_event_crc_gating.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15299,6 +15351,7 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_udp_comp_header
     protocol/dmr/test_dmr_udp_comp_header.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15343,6 +15396,7 @@ add_executable(
     dsd-neo_test_dmr_locn_time_fallback
     protocol/dmr/test_dmr_locn_time_fallback.c
     test_support/data_event_gps_shim.c
+    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c

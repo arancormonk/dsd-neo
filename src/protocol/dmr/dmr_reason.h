@@ -5,12 +5,12 @@
 
 /**
  * @file
- * @brief What DMR acknowledgement reasons and C_AHOY polls mean: the Tier II NACK_Rsp and Tier III C_ACKD reason
- * tables, and the C_AHOY service kinds a control channel listener can tell apart.
+ * @brief What DMR acknowledgement reasons and C_AHOY polls mean: the class of a Tier III C_ACKD reason, and the
+ * C_AHOY service kinds a control channel listener can tell apart.
  *
- * The two reason tables are separate on purpose: Tier II (ETSI TS 102 361-2 Table 7.13) and Tier III (ETSI TS 102
- * 361-4 Tables 7.42-7.45) give the same value different meanings (0x21 is "MS does not support this service" in one
- * and "Perm_User_Refused" in the other).
+ * The reason texts live in the core's one table set (<dsd-neo/core/unit_activity_reason.h>: DSD_UA_REASON_DMR_TIER3
+ * and DSD_UA_REASON_DMR_TIER2_NACK, kept apart because Tier II, ETSI TS 102 361-2 Table 7.13, and Tier III, ETSI TS
+ * 102 361-4 Tables 7.42-7.45, give 0x21 different meanings), which the CSBK prints and the unit activity log share.
  */
 
 #ifndef DSD_NEO_SRC_PROTOCOL_DMR_DMR_REASON_H_
@@ -34,21 +34,6 @@ typedef enum {
 
 /** @brief The class of a Tier III C_ACKD / C_ACKU / P_ACKD / P_ACKU Reason (its ACK type bits). */
 dmr_tier3_reason_class dmr_tier3_reason_class_of(uint8_t reason);
-
-/**
- * @brief The meaning of a Tier III Reason (TS 102 361-4 Tables 7.42-7.45, and MS_Duplex_Not_Supported 0x16 from the
- * clause 7.2.8.2 text, which Table 7.43 leaves out).
- *
- * @return A short plain-English text, or NULL for a value the tables do not define: print the raw value then.
- */
-const char* dmr_tier3_reason_text(uint8_t reason);
-
-/**
- * @brief The meaning of a Tier II NACK_Rsp Reason Code (TS 102 361-2 clause 7.2.3, Table 7.13).
- *
- * @return A short plain-English text, or NULL for a value the table does not define: print the raw value then.
- */
-const char* dmr_tier2_nack_reason_text(uint8_t reason);
 
 /**
  * @brief What a C_AHOY of Service_Kind 13 or 14 asks of its target, told from its whole field combination.

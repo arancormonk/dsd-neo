@@ -575,6 +575,22 @@ typedef struct nxdn_alias_assembly {
     uint8_t fragment[NXDN_ALIAS_FRAGMENTS][4];
 } nxdn_alias_assembly;
 
+/**
+ * What of one slot's DMR talker alias (TS 102 361-2 clause 7.2.18) has arrived, and the call it belongs to: the
+ * header and blocks 1 to 3, each with a checked embedded LC checksum, while the slot's call was the ACTIVE one with
+ * this epoch and source on this tuning generation. A header of another format, length, text or binding restarts it; a
+ * block under another binding, or one that differs from the block already held, ends it until the next header. The
+ * alias is learned (dsd_alias_learn_radio()) once, when the header's Data Length in code units is covered by the
+ * header and the blocks that arrived (dmr_talker_alias_lc_decode()).
+ */
+typedef struct dmr_talker_alias_assembly {
+    uint8_t mask;    /* bit 0 the header, bit n block n; 0: no assembly */
+    uint8_t learned; /* the complete alias of this assembly was learned */
+    uint32_t source; /* ota_source_id of the ACTIVE call the header arrived in; 0 when none was */
+    uint64_t epoch;
+    uint64_t tune_generation;
+} dmr_talker_alias_assembly;
+
 typedef struct {
     uint8_t mask;
     char last_alias[40];
@@ -2029,9 +2045,10 @@ struct dsd_state {
     int dmr_cach_counter;          //counter for dmr_cach_fragments 0-3; not sure if needed yet.
 
     //dmr talker alias new/fixed stuff
-    uint8_t dmr_alias_format[2];    //per slot
-    uint8_t dmr_alias_block_len[2]; //per slot
-    uint8_t dmr_alias_char_size[2]; //per slot
+    uint8_t dmr_alias_format[2];                     //per slot
+    uint8_t dmr_alias_block_len[2];                  //per slot
+    uint8_t dmr_alias_char_size[2];                  //per slot
+    dmr_talker_alias_assembly dmr_alias_assembly[2]; /* per slot: what of the alias arrived, for learning */
     char dmr_alias_block_segment[2][4][7]
                                 [16]; //2 slots, by 4 blocks, by up to 7 alias bytes that are up to 16-bit chars
     char dmr_embedded_gps[2][600];    //2 slots by 99 char string for string embedded gps

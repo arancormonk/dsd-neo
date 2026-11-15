@@ -1084,8 +1084,112 @@ dmr_talker_alias_format_name(uint8_t format) {
     return k_names[format & 3U];
 }
 
+// ---- DMR talker alias learning (dmr_talker_alias_assembly) ----
+
+// The slot's ACTIVE call and the tuning generation: the binding a piece of the alias arriving now belongs to.
+static dmr_talker_alias_assembly
+dmr_talker_alias_binding_now(const dsd_state* state, uint8_t slot) {
+    dmr_talker_alias_assembly now;
+    DSD_MEMSET(&now, 0, sizeof now);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && call.ota_source_id <= UINT32_MAX) {
+        now.source = (uint32_t)call.ota_source_id;
+        now.epoch = call.epoch;
+    }
+    now.tune_generation = dsd_trunk_tuning_generation();
+    return now;
+}
+
+static int
+dmr_talker_alias_same_binding(const dmr_talker_alias_assembly* a, const dmr_talker_alias_assembly* b) {
+    return a->source == b->source && a->epoch == b->epoch && a->tune_generation == b->tune_generation;
+}
+
+// A checked header about to be stored: the same header again keeps what arrived with it, anything else starts over.
+// The header's text bits are compared before they are overwritten.
+static void
+dmr_talker_alias_note_header(dsd_state* state, uint8_t slot, uint8_t format, uint8_t block_len, const uint8_t* text,
+                             size_t text_bits) {
+    dmr_talker_alias_assembly* const a = &state->dmr_alias_assembly[slot];
+    const dmr_talker_alias_assembly now = dmr_talker_alias_binding_now(state, slot);
+    const int same = (a->mask & 1U) != 0U && state->dmr_alias_char_size[slot] != 0U
+                     && state->dmr_alias_format[slot] == format && state->dmr_alias_block_len[slot] == block_len
+                     && dmr_talker_alias_same_binding(a, &now) && memcmp(state->dmr_pdu_sf[slot], text, text_bits) == 0;
+    if (!same) {
+        *a = now;
+    }
+    a->mask = (uint8_t)(a->mask | 1U);
+}
+
+// A checked block @p block (1-3) about to be stored at bit @p ptr: it joins the assembly only under the header's
+// binding and only when it does not contradict the block already held.
+static void
+dmr_talker_alias_note_block(dsd_state* state, uint8_t slot, uint8_t block, uint16_t ptr, const uint8_t* bits) {
+    dmr_talker_alias_assembly* const a = &state->dmr_alias_assembly[slot];
+    if ((a->mask & 1U) == 0U) {
+        return;
+    }
+    const dmr_talker_alias_assembly now = dmr_talker_alias_binding_now(state, slot);
+    const uint8_t bit = (uint8_t)(1U << block);
+    if (!dmr_talker_alias_same_binding(a, &now)
+        || ((a->mask & bit) != 0U && memcmp(state->dmr_pdu_sf[slot] + ptr, bits, 56U) != 0)) {
+        DSD_MEMSET(a, 0, sizeof *a);
+        return;
+    }
+    a->mask = (uint8_t)(a->mask | bit);
+}
+
+// The header carries 49 bits of a 7-bit alias, 48 of the others, and each block 56 (TS 102 361-2 clause 7.2.18): 1
+// when every piece the header's Data Length (code units of @p char_size bits) needs has arrived.
+static int
+dmr_talker_alias_assembly_complete(const dmr_talker_alias_assembly* a, uint8_t char_size, uint8_t block_len) {
+    const uint32_t header_bits = (char_size == 7U) ? 49U : 48U;
+    const uint32_t need_bits = (uint32_t)block_len * char_size;
+    uint32_t blocks = 0U;
+    while (header_bits + (blocks * 56U) < need_bits) {
+        blocks++;
+    }
+    if (block_len == 0U || char_size == 0U || blocks > 3U) {
+        return 0;
+    }
+    const uint8_t need_mask = (uint8_t)((1U << (blocks + 1U)) - 1U);
+    return (a->mask & need_mask) == need_mask;
+}
+
+// Learn the alias @p alias_string decoded over @p max_chars code units, once per assembly: when the slot's assembly is
+// bound to a call, complete, and this decode covers the whole Data Length. A malformed character (U+FFFD) or an empty
+// alias is not learned.
+static void
+dmr_talker_alias_maybe_learn(const dsd_opts* opts, dsd_state* state, uint8_t slot, const char* alias_string,
+                             uint16_t max_chars) {
+    dmr_talker_alias_assembly* const a = &state->dmr_alias_assembly[slot];
+    const uint8_t block_len = state->dmr_alias_block_len[slot];
+    if (a->learned || a->source == 0U || max_chars < block_len
+        || !dmr_talker_alias_assembly_complete(a, state->dmr_alias_char_size[slot], block_len)) {
+        return;
+    }
+    // Every piece joined under the header's binding (dmr_talker_alias_note_header() / _note_block()).
+    if (strstr(alias_string, "\xEF\xBF\xBD") != NULL) {
+        return;
+    }
+    // Room for the longest alias decoded whole (27 ISO 8-bit octets of 2 UTF-8 bytes each); the learn cuts it to a row
+    // at a character boundary.
+    char name[128];
+    DSD_SNPRINTF(name, sizeof name, "%s", alias_string);
+    size_t len = strlen(name);
+    while (len > 0U && name[len - 1U] == ' ') {
+        name[--len] = '\0';
+    }
+    if (len == 0U) {
+        return;
+    }
+    a->learned = 1U;
+    (void)dsd_alias_learn_radio(opts, state, NULL, a->source, name, "DMR TA");
+}
+
 void
-dmr_talker_alias_lc_header(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+dmr_talker_alias_lc_header(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     uint8_t format = (uint8_t)convert_bits_into_output(&lc_bits[16], 2);
     uint8_t block_len = (uint8_t)convert_bits_into_output(&lc_bits[18], 5);
     uint8_t char_size = 0;
@@ -1100,6 +1204,11 @@ dmr_talker_alias_lc_header(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
         char_size = 16;
     }
 
+    if (char_size == 7) {
+        dmr_talker_alias_note_header(state, slot, format, block_len, lc_bits + 23, 49U);
+    } else {
+        dmr_talker_alias_note_header(state, slot, format, block_len, lc_bits + 24, 48U);
+    }
     state->dmr_alias_format[slot] = format;
     // Talker Alias Data Length (Table 7.26): the length of the whole alias in code units of the format, so a UTF-8
     // alias counts octets, not characters.
@@ -1144,11 +1253,13 @@ dmr_talker_alias_lc_invalidate(dsd_state* state, uint8_t slot) {
     state->dmr_alias_format[slot] = 0;
     state->dmr_alias_block_len[slot] = 0;
     state->dmr_alias_char_size[slot] = 0;
+    DSD_MEMSET(&state->dmr_alias_assembly[slot], 0, sizeof(state->dmr_alias_assembly[slot]));
     DSD_MEMSET(state->dmr_pdu_sf[slot], 0, DMR_TALKER_ALIAS_SF_BITS);
 }
 
 void
-dmr_talker_alias_lc_blocks(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, const uint8_t* lc_bits) {
+dmr_talker_alias_lc_blocks(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num,
+                           const uint8_t* lc_bits) {
     uint8_t char_size = state->dmr_alias_char_size[slot];
     uint16_t ptr = 0;
 
@@ -1179,6 +1290,7 @@ dmr_talker_alias_lc_blocks(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
     else //valid header present, continue
     {
         uint16_t max_chars = 0;
+        dmr_talker_alias_note_block(state, slot, (uint8_t)(block_num + 1U), ptr, lc_bits + 16);
         if (char_size == 7) {
             DSD_MEMCPY(state->dmr_pdu_sf[slot] + ptr, lc_bits + 16, 56 * sizeof(uint8_t));
             ptr += 56;
@@ -1409,9 +1521,8 @@ dmr_talker_alias_decode_utf16(const uint8_t* bits, uint16_t end, int cut_pending
 
 //Decode partial or completed alias
 void
-dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, uint8_t char_size,
+dmr_talker_alias_lc_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, uint8_t char_size,
                            uint16_t max_chars) {
-    UNUSED(opts);
     // block_num 0 is the header, whose own line already named it; blocks 1-3 follow it.
     if (block_num != 0U) {
         DSD_FPRINTF(stderr, " Slot %d - Talker Alias Block %d;", slot + 1, block_num);
@@ -1443,4 +1554,5 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
         DSD_SNPRINTF(alias, sizeof(alias), "%s; ", alias_string);
         (void)dsd_event_enrich_alias(state, slot, call.epoch, alias);
     }
+    dmr_talker_alias_maybe_learn(opts, state, slot, alias_string, max_chars);
 }
