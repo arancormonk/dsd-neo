@@ -24373,6 +24373,25 @@ if(DSD_HAS_RADIO)
         "captured_ms=1480[.]00 .*ANALOG AUDIO OUT: rate_hz=48000 samples=71040.*ANALOG AUDIO OK"
         "${_analog_off_path}"
     )
+    # The same file read back: one float32 per delivered sample, whose RMS is the ANALOG
+    # METRIC line's rms_dbfs within 0.01 dB, so a scale, format or stale-slice error in
+    # the writer fails where the sample count alone would pass.
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME DECODE_IQ_ANALOG_AUDIO_OUT_LEVEL
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/analog_audio_out_check.py
+                $<TARGET_FILE:dsd-neo_test_analog_replay>
+                ${PROJECT_SOURCE_DIR}/tests/fixtures/iq/nfm_tone_synth.iq.json
+                "${_analog_nfm_tone_fixed50}"
+        )
+        set_tests_properties(
+            DECODE_IQ_ANALOG_AUDIO_OUT_LEVEL
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+        )
+    endif()
     # A fixed -n keeps the speech AGC's limiter (issue #518): open-squelch receiver noise
     # (noise_floor) at -n 50 with the 750 us de-emphasis made up (+13.65 dB at 1 kHz)
     # measures -10.92 dBFS RMS with its peaks held at -1.00 dBFS, none clipped; the fixed

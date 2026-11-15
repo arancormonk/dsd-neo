@@ -368,6 +368,15 @@ load_modes(const std::string& path, std::vector<Mode>* modes) {
             DSD_FPRINTF(stderr, "%s: mode %s is named twice\n", path.c_str(), it->name.c_str());
             return false;
         }
+        /* A tag names one width's noise-only conditions, which take the first mode's width under that tag. */
+        const auto other = std::find_if(std::next(it), modes->end(),
+                                        [&](const Mode& m) { return m.tag == it->tag && m.width_hz != it->width_hz; });
+        if (other != modes->end()) {
+            DSD_FPRINTF(stderr, "%s: tag %s names two widths: %u Hz (mode %s) and %u Hz (mode %s)\n", path.c_str(),
+                        it->tag.c_str(), (unsigned)it->width_hz, it->name.c_str(), (unsigned)other->width_hz,
+                        other->name.c_str());
+            return false;
+        }
     }
     return true;
 }
@@ -632,17 +641,18 @@ struct Builder {
         }
     }
 
+    /* A scene's name: its carriers' offsets in kHz, "-5.0k+5.0k". */
+    static std::string
+    scene_tag(const std::vector<double>& scene) {
+        std::string tag;
+        for (double f : scene) {
+            tag += signed_text(f / 1000, 1) + "k";
+        }
+        return tag;
+    }
+
     void
     offset_carriers() {
-        const Mode* am = nullptr;
-        for (const Mode& m : modes) {
-            if (m.row == kOffsetCarrierRow) {
-                am = &m;
-            }
-        }
-        if (!am) {
-            return;
-        }
         /* ICAO Annex 10 Vol III 2.2.1.1.1 / Attachment A: carriers up to +/-8 kHz in a 25 kHz channel; the 2-, 3-, 4-
          * and 5-carrier examples, and single offset carriers. The S/N is the scene's total. */
         static const std::vector<std::vector<double>> scenes = {{-8000},
@@ -655,16 +665,33 @@ struct Builder {
                                                                 {0, -7300, 7300},
                                                                 {-2500, 2500, -7500, 7500},
                                                                 {0, -4000, 4000, -8000, 8000}};
+        const Mode* am = nullptr;
+        for (const Mode& m : modes) {
+            if (m.row == kOffsetCarrierRow) {
+                am = &m;
+            }
+        }
+        if (!am) {
+            /* A modes file without the row: its scenes are left out, and the run says so. */
+            std::string dropped;
+            for (const auto& scene : scenes) {
+                dropped += (dropped.empty() ? "" : " ") + scene_tag(scene);
+            }
+            const size_t rates = (size_t)(std::end(kRates) - std::begin(kRates));
+            DSD_FPRINTF(stderr,
+                        "no mode uses the %s row: left out %zu am_offset_carrier conditions, the scenes %s at %zu "
+                        "rates\n",
+                        kOffsetCarrierRow, scenes.size() * rates, dropped.c_str(), rates);
+            return;
+        }
         for (uint32_t rate : kRates) {
             for (const auto& scene : scenes) {
                 Condition c = base("am_offset_carrier", *am, rate);
                 c.carriers.clear();
-                std::string tag;
                 for (double f : scene) {
                     c.carriers.push_back(Carrier{find_source(sources, am->row), f, 1.0 / scene.size()});
-                    tag += signed_text(f / 1000, 1) + "k";
                 }
-                add(c, tag);
+                add(c, scene_tag(scene));
             }
         }
     }
