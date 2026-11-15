@@ -757,7 +757,8 @@ main(void) {
             return 111;
         }
         rc |= expect_contains_text("mbt 0x18 label", out, "Status Update MBT - Extended");
-        rc |= expect_contains_text("mbt 0x18 statuses", out, "UNIT STATUS [21] USER STATUS [43]");
+        /* User Status first, then Unit Status (TIA-102.AABC-D §2.3.29). */
+        rc |= expect_contains_text("mbt 0x18 statuses", out, "USER STATUS [21] UNIT STATUS [43]");
         rc |= expect_contains_text("mbt 0x18 source", out, "FM [74565] FULL [12345.678.234567]");
         rc |= expect_contains_text("mbt 0x18 target", out, "TO [703710] FULL [ABCDE.234.456789]");
 

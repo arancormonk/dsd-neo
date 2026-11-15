@@ -629,7 +629,8 @@ p25_handle_mbt_extended_command_metadata(const uint8_t* mpdu_byte, uint8_t opcod
     p25_mbt_print_fq_radio("FM", src_local, src_wacn, src_sys, src_id);
     p25_mbt_print_fq_radio("TO", tgt_local, tgt_wacn, tgt_sys, tgt_id);
     if (opcode == 0x18) {
-        DSD_FPRINTF(stderr, " UNIT STATUS [%02X] USER STATUS [%02X]", mpdu_byte[17], mpdu_byte[18]);
+        /* User Status first, then Unit Status (TIA-102.AABC-D §2.3.29). */
+        DSD_FPRINTF(stderr, " USER STATUS [%02X] UNIT STATUS [%02X]", mpdu_byte[17], mpdu_byte[18]);
     } else if (opcode == 0x1C) {
         DSD_FPRINTF(stderr, " SHORT DATA [%04X]", p25_mbt_u16(mpdu_byte, 17U));
     }

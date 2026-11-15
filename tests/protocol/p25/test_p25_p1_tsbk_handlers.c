@@ -812,13 +812,15 @@ test_standard_isp_metadata_logging_and_no_retune(void) {
         return 1;
     }
     rc |= expect_contains("isp status update label", out, "Status Update Request");
-    rc |= expect_contains("isp status update fields", out, "UNIT STATUS [21] USER STATUS [43]");
+    /* User Status first, then Unit Status (TIA-102.AABC-D §2.3.29). */
+    rc |= expect_contains("isp status update fields", out, "USER STATUS [21] UNIT STATUS [43]");
 
     build_isp_two_party(tsbk, 0x19, 0x21, 0x43);
     if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
         return 1;
     }
     rc |= expect_contains("isp status response label", out, "Status Query Response");
+    rc |= expect_contains("isp status response fields", out, "USER STATUS [21] UNIT STATUS [43]");
 
     build_isp_two_party(tsbk, 0x1A, 0x00, 0x00);
     if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {

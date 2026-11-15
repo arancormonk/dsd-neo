@@ -19338,7 +19338,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_p25_lcw_site_broadcasts
-    PRIVATE dsd-neo_proto_p25
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
 )
 add_test(
     NAME P25_LCW_SITE_BROADCASTS

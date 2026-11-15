@@ -796,7 +796,8 @@ tsbk_isp_print_status(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_
     DSD_FPRINTF(stderr, "\n %s (ISP protected/inbound)", label);
     DSD_FPRINTF(stderr, " FM [%d] TO [%d]", source, target);
     if (has_status) {
-        DSD_FPRINTF(stderr, " UNIT STATUS [%02X] USER STATUS [%02X]", tsbk_byte[2], tsbk_byte[3]);
+        /* The Status field's first octet is the User Status, the second the Unit Status (TIA-102.AABC-D §2.3.29). */
+        DSD_FPRINTF(stderr, " USER STATUS [%02X] UNIT STATUS [%02X]", tsbk_byte[2], tsbk_byte[3]);
     }
 }
 

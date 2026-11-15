@@ -10154,6 +10154,12 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   identity (`p25_update_system_identity()`) drops owners another system named; eviction, the 15-minute aging and
   trunk-scan save/restore move the owner with its entry. Registrations are written only from content that passed its
   CRC (`p25p2_vpdu_network_table_writable()`). Tests: `P25_AFF_ASSIGNMENT`, `ENGINE_TRUNK_SCAN`, `P25_MBT_DECODE`.
+- Unit message fields. A Status field's first octet is the User Status and its second the Unit Status
+  (TIA-102.AABC-D §2.3.29) on every form: 0x58 / TSBK 0x18, 0xD8, the 0xD9 multi-fragment, the MBT and the inbound
+  TSBKs. Extended Function class $00 labels name the acknowledgement operands ($80 / $FD-$FF, §2.3.15 Table 2.3.15-1)
+  on 0x64, 0xE4, 0xE5 and Motorola 0x84 alike (`p25_extended_function_class0_label()`). Link control (TIA-102.AABF-D
+  §7.3): 0x50 Group Affiliation Query prints its target and source and adds no affiliation (it carries no group), 0x55
+  is Message Update and 0x5B its Source ID Extension form (Message, Target, Source), and 0x6B (LCO 43) is reserved.
 - Scrambling code recovery (`p25p2_seed_recover.c`, issue #804). On a carrier whose code is not proven
   (`p2_cc_verified == 0`), not hand-set (`p2_hardset == 0`) and not trunked (`trunk_enable == 0`), `processP2()` hands
   each window to `p25p2_seed_recover_window()` after `p25p2_window_position()` and before the descrambler, with

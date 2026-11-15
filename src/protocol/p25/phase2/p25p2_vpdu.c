@@ -4246,10 +4246,7 @@ p25p2_vpdu_iter_block_53(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n  Class: %02X Operand: %02X Arg/Src: %06X Target: %u", class_id, operand, argument,
                     target);
         if (class_id == 0) {
-            DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label(operand));
-            if (p25_extended_function_operand_is_ack(operand)) {
-                DSD_FPRINTF(stderr, " Ack");
-            }
+            DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_label(operand));
         } else {
             DSD_FPRINTF(stderr, " Other Command");
         }
@@ -4617,17 +4614,18 @@ p25p2_vpdu_handle_status_update_abbreviated(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
     const int len_a = ctx->len_a;
     const int bridged_p1 = p25p2_vpdu_is_bridged_p1(ctx);
-    int unit_status = (int)MAC[(bridged_p1 ? 2 : 3) + len_a];
-    int user_status = (int)MAC[(bridged_p1 ? 3 : 4) + len_a];
+    /* The 16-bit Status field: User Status in its first octet, Unit Status in its second (TIA-102.AABC-D §2.3.29). */
+    int user_status = (int)MAC[(bridged_p1 ? 2 : 3) + len_a];
+    int unit_status = (int)MAC[(bridged_p1 ? 3 : 4) + len_a];
     int target = p25p2_vpdu_u24(MAC, (bridged_p1 ? 4 : 5) + len_a);
     int source = p25p2_vpdu_u24(MAC, (bridged_p1 ? 7 : 8) + len_a);
 
     DSD_FPRINTF(stderr, "\n Status Update - Abbreviated");
-    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Unit [%02X] User [%02X]", target, source, unit_status,
-                user_status);
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] User [%02X] Unit [%02X]", target, source, user_status,
+                unit_status);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
-                                 "STATUS Target: %d Source: %d Unit: %02X User: %02X; ", target, source, unit_status,
-                                 user_status);
+                                 "STATUS Target: %d Source: %d User: %02X Unit: %02X; ", target, source, user_status,
+                                 unit_status);
 }
 
 static const char*
@@ -4827,19 +4825,20 @@ p25p2_vpdu_handle_status_update_extended_vch(p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
     dsd_state* state = ctx->state;
     const int len_a = ctx->len_a;
-    int unit_status = (int)MAC[3 + len_a];
-    int user_status = (int)MAC[4 + len_a];
+    /* User Status, then Unit Status (TIA-102.AABC-D §2.3.29; TIA-102.BBAD-A §3.41 Fig 92). */
+    int user_status = (int)MAC[3 + len_a];
+    int unit_status = (int)MAC[4 + len_a];
     int target = p25p2_vpdu_u24(MAC, 5 + len_a);
     int source_wacn = p25p2_vpdu_fqid_wacn(MAC, 8 + len_a);
     int source_sys = p25p2_vpdu_fqid_sysid(MAC, 8 + len_a);
     int source = p25p2_vpdu_u24(MAC, 12 + len_a);
 
     DSD_FPRINTF(stderr, "\n Status Update - Extended VCH");
-    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Unit [%02X] User [%02X]", target, source_wacn,
-                source_sys, source, unit_status, user_status);
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] User [%02X] Unit [%02X]", target, source_wacn,
+                source_sys, source, user_status, unit_status);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
-                                 "STATUS-X Target: %d Source: %d Unit: %02X User: %02X; ", target, source, unit_status,
-                                 user_status);
+                                 "STATUS-X Target: %d Source: %d User: %02X Unit: %02X; ", target, source, user_status,
+                                 unit_status);
 }
 
 static void
@@ -4895,7 +4894,7 @@ p25p2_vpdu_handle_extended_function_extended_vch(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  Class [%02X] Operand [%02X] Arg [%06X] Target [%d] Source [%05X:%03X.%d]", class_id,
                 operand, argument, target, source_wacn, source_sys, source);
     if (class_id == 0) {
-        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label((uint8_t)operand));
+        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_label((uint8_t)operand));
     }
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "EXTFUNC-X Target: %d Source: %d Function: %04X Arg: %06X; ", target, source, function,
@@ -4919,7 +4918,7 @@ p25p2_vpdu_handle_extended_function_extended_lcch(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  Class [%02X] Operand [%02X] Arg [%06X] Target [%d] Source [%05X:%03X]", class_id, operand,
                 argument, target, source_wacn, source_sys);
     if (class_id == 0) {
-        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label((uint8_t)operand));
+        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_label((uint8_t)operand));
     }
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, 0U, 0U, 0, 0U,
                                  "EXTFUNC-L Target: %d Source: %05X:%03X Function: %04X Arg: %06X; ", target,
@@ -5081,7 +5080,7 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) 
     DSD_FPRINTF(stderr, "\n Motorola Group Regroup Extended Function Command");
     DSD_FPRINTF(stderr, "\n  Class [%02X] Operand [%02X] Arg [%06X] Target [%d]", class_id, operand, argument, target);
     if (class_id == 0) {
-        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label((uint8_t)operand));
+        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_label((uint8_t)operand));
     } else if (class_id == 0x02 && operand == 0x00) {
         int sg = argument & 0xFFFF;
         DSD_FPRINTF(stderr, " Create Supergroup");
@@ -5651,17 +5650,18 @@ p25p2_vpdu_handle_multifrag_status_update(p25p2_vpdu_ctx* ctx) {
         return;
     }
 
-    int unit_status = p25p2_vpdu_frag_u8(ctx, 1);
-    int user_status = p25p2_vpdu_frag_u8(ctx, 2);
+    /* User Status, then Unit Status (TIA-102.AABC-D §2.3.29). */
+    int user_status = p25p2_vpdu_frag_u8(ctx, 1);
+    int unit_status = p25p2_vpdu_frag_u8(ctx, 2);
     int target = p25p2_vpdu_frag_u24(ctx, 3);
     int source_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 6);
     int source_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 6);
     int source = p25p2_vpdu_frag_u24(ctx, 13);
     DSD_FPRINTF(stderr, "\n Status Update - Extended LCCH Complete");
-    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Unit [%02X] User [%02X]", target, source_wacn,
-                source_sys, source, unit_status, user_status);
-    p25p2_vpdu_multifrag_set_active(state, "STATUS-L Target: %d Source: %d Unit: %02X User: %02X; ", target, source,
-                                    unit_status, user_status);
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] User [%02X] Unit [%02X]", target, source_wacn,
+                source_sys, source, user_status, unit_status);
+    p25p2_vpdu_multifrag_set_active(state, "STATUS-L Target: %d Source: %d User: %02X Unit: %02X; ", target, source,
+                                    user_status, unit_status);
 }
 
 static void

@@ -1650,7 +1650,7 @@ run_standard_mac_supplemental_display_cases(void) {
     process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
     rc |= expect_contains("p1 bridged 0x18 status target", recent_notice(&state, 0U), "STATUS Target: 703710");
     rc |= expect_contains("p1 bridged 0x18 status source", recent_notice(&state, 0U), "Source: 74565");
-    rc |= expect_contains("p1 bridged 0x18 status codes", recent_notice(&state, 0U), "Unit: 21 User: 43");
+    rc |= expect_contains("p1 bridged 0x18 status codes", recent_notice(&state, 0U), "User: 21 Unit: 43");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -2078,8 +2078,8 @@ run_standard_mac_multifragment_cases(void) {
     rc |= expect_contains("completed 0xD9 status label", recent_notice(&state, 0U), "STATUS-L");
     rc |= expect_contains("completed 0xD9 target", recent_notice(&state, 0U), "Target: 66051");
     rc |= expect_contains("completed 0xD9 source", recent_notice(&state, 0U), "Source: 4478310");
-    rc |= expect_contains("completed 0xD9 unit", recent_notice(&state, 0U), "Unit: 12");
-    rc |= expect_contains("completed 0xD9 user", recent_notice(&state, 0U), "User: 34");
+    rc |= expect_contains("completed 0xD9 user", recent_notice(&state, 0U), "User: 12");
+    rc |= expect_contains("completed 0xD9 unit", recent_notice(&state, 0U), "Unit: 34");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -2197,9 +2197,165 @@ run_standard_mac_multifragment_cases(void) {
     return rc;
 }
 
+enum { VPDU_CORE_CAPTURE_BYTES = 8192 };
+
+static char g_vpdu_out[VPDU_CORE_CAPTURE_BYTES];
+
+/* Decode @p mac as a Phase 1 TSBK in MAC form (@p bridged, the TSBK decoder's call) or a native FACCH PDU, keeping
+   what the handlers print in g_vpdu_out. */
+static int
+decode_capturing(dsd_opts* opts, dsd_state* state, unsigned long long int* mac, int bridged) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_p2_vpdu_core_case") != 0) {
+        return -1;
+    }
+    if (bridged) {
+        process_MAC_VPDU_bridged_p1(opts, state, mac);
+    } else {
+        process_MAC_VPDU(opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, mac);
+    }
+    dsd_test_capture_stderr_end(&cap);
+    return dsd_test_capture_stderr_read(&cap, g_vpdu_out, sizeof g_vpdu_out);
+}
+
+static int
+expect_lacks(const char* tag, const char* haystack, const char* needle) {
+    if (haystack && needle && strstr(haystack, needle) != NULL) {
+        DSD_FPRINTF(stderr, "%s: unexpected '%s' in '%s'\n", tag, needle, haystack);
+        return 1;
+    }
+    return 0;
+}
+
+/* The 16-bit Status field is User Status in its first octet, Unit Status in its second (TIA-102.AABC-D §2.3.29), on
+   every Status Update form. The extended LCCH (0xD9) form is pinned in run_standard_mac_multifragment_cases(), the
+   MBT in P25_MBT_DECODE, the inbound TSBK in P25_P1_TSBK_HANDLERS. */
+static int
+test_status_user_then_unit(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+
+    /* TSBK 0x18: Status octets 2-3, Target 4-6, Source 7-9. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[0] = 0x07;
+    MAC[1] = 0x58;
+    MAC[2] = 0xA1;
+    MAC[3] = 0x0B;
+    put_u24_ull(MAC, 4, 0x000064);
+    put_u24_ull(MAC, 7, 0x0000C8);
+    rc |= expect_true("p1 status decoded", decode_capturing(&opts, &state, MAC, 1) == 0);
+    rc |= expect_contains("p1 status text", g_vpdu_out, "Target [100] Source [200] User [A1] Unit [0B]");
+    rc |= expect_contains("p1 status notice", recent_notice(&state, 0U), "User: A1 Unit: 0B");
+    dsd_state_ext_free_all(&state);
+
+    /* Phase 2 0x58 (TIA-102.BBAD-A §3.41 Fig 91): length octet 2, Status 3-4, Target 5-7, Source 8-10. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x58;
+    MAC[2] = 0x0A;
+    MAC[3] = 0xA2;
+    MAC[4] = 0x0C;
+    put_u24_ull(MAC, 5, 0x000064);
+    put_u24_ull(MAC, 8, 0x0000C8);
+    rc |= expect_true("p2 status decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("p2 status text", g_vpdu_out, "Target [100] Source [200] User [A2] Unit [0C]");
+    rc |= expect_contains("p2 status notice", recent_notice(&state, 0U), "User: A2 Unit: 0C");
+    dsd_state_ext_free_all(&state);
+
+    /* Phase 2 0xD8 (Fig 92): Status 3-4, Target 5-7, Source SUID 8-14. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xD8;
+    MAC[2] = 0x0E;
+    MAC[3] = 0xA3;
+    MAC[4] = 0x0D;
+    put_u24_ull(MAC, 5, 0x000064);
+    put_fqid_tail_ull(MAC, 8, 0xBEE00, 0x123, 0x0000C8);
+    rc |= expect_true("p2 extended status decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("p2 extended status text", g_vpdu_out, "User [A3] Unit [0D]");
+    rc |= expect_contains("p2 extended status notice", recent_notice(&state, 0U), "User: A3 Unit: 0D");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* An Extended Function operand with bit 7 set is the acknowledgement of the command in its low bits
+   (TIA-102.AABC-D §2.3.15 Table 2.3.15-1): every form that names a class $00 command names its ACK too. */
+static int
+test_ext_forms_ack_label(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+
+    /* TSBK 0x24 Extended Function Command: Class 2, Operand 3, Argument 4-6, Target 7-9. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[0] = 0x07;
+    MAC[1] = 0x64;
+    MAC[2] = 0x00;
+    MAC[3] = 0xFF;
+    put_u24_ull(MAC, 7, 0x000064);
+    rc |= expect_true("0x64 decoded", decode_capturing(&opts, &state, MAC, 1) == 0);
+    rc |= expect_contains("0x64 ack", g_vpdu_out, "Radio Inhibit Ack;");
+    dsd_state_ext_free_all(&state);
+
+    /* Phase 2 0xE4 Extended VCH and 0xE5 Extended LCCH: length 2, Function (class, operand) 3-4, Argument 5-7,
+       Target 8-10, source SUID after it. */
+    static const int forms[] = {0xE4, 0xE5};
+    for (int i = 0; i < 2; i++) {
+        DSD_MEMSET(&state, 0, sizeof state);
+        DSD_MEMSET(MAC, 0, sizeof MAC);
+        MAC[1] = (unsigned long long int)forms[i];
+        MAC[2] = 0x0E;
+        MAC[3] = 0x00;
+        MAC[4] = 0xFD;
+        put_u24_ull(MAC, 8, 0x000064);
+        rc |= expect_true("extended form decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+        rc |= expect_contains("extended form ack", g_vpdu_out, "Radio Detach Ack");
+        dsd_state_ext_free_all(&state);
+    }
+
+    /* The command itself keeps its plain label, and a reserved operand never reads as an ACK. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xE4;
+    MAC[2] = 0x0E;
+    MAC[4] = 0x7E;
+    rc |= expect_true("extended command decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("extended command label", g_vpdu_out, "Radio Uninhibit");
+    rc |= expect_lacks("extended command not ack", g_vpdu_out, "Uninhibit Ack");
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[4] = 0x81;
+    rc |= expect_true("reserved operand decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("reserved operand label", g_vpdu_out, "Reserved");
+    rc |= expect_lacks("reserved operand not ack", g_vpdu_out, "Ack");
+    dsd_state_ext_free_all(&state);
+
+    /* Motorola 0x84 (MFID 0x90, length octet 3): the standard fields one octet later. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x84;
+    MAC[2] = 0x90;
+    MAC[3] = 0x0B;
+    MAC[4] = 0x00;
+    MAC[5] = 0x80;
+    put_u24_ull(MAC, 9, 0x000064);
+    rc |= expect_true("motorola form decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("motorola form ack", g_vpdu_out, "Radio Check Ack");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 run_cases(void) {
     int rc = 0;
+
+    rc |= test_status_user_then_unit();
+    rc |= test_ext_forms_ack_label();
 
     // Case 1: SACCH, PTT opcode (0x01) with basic header → JSON emits summary "PTT"
     {
