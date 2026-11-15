@@ -177,6 +177,9 @@ test_add_one_member_then_next_message(void) {
     unsigned char mac[24] = {0};
     int rc = 0;
     dsd_state* state = new_state();
+    if (!state) {
+        return 1;
+    }
 
     put_moto_regroup(mac, 1, 0x81, 7, SG_A);
     put16(mac, 6, WG(1));
@@ -204,6 +207,9 @@ test_add_short_and_empty(void) {
         unsigned char mac[24] = {0};
         char tag[64];
         dsd_state* state = new_state();
+        if (!state) {
+            return 1;
+        }
         put_moto_regroup(mac, 1, 0x81, len, SG_B);
         if (len < 5) {
             put16(mac, 6, SG_B + 1); // past the message: a parser reading it stores a member
@@ -227,6 +233,9 @@ check_span_case(const char* name, int xch, int span) {
         const int len = span + over;
         const int members = (span - 5) / 2;
         dsd_state* state = new_state();
+        if (!state) {
+            return 1;
+        }
 
         put_moto_regroup(mac, 1, 0x81, len, SG_A);
         for (int m = 0; m < members; m++) {
@@ -266,6 +275,9 @@ test_add_odd_trailing_octet(void) {
     unsigned char mac[24] = {0};
     int rc = 0;
     dsd_state* state = new_state();
+    if (!state) {
+        return 1;
+    }
 
     put_moto_regroup(mac, 1, 0x81, 8, SG_A);
     put16(mac, 6, WG(1));
@@ -293,6 +305,9 @@ test_adjacent_add_delete(void) {
     unsigned char mac[24] = {0};
     int rc = 0;
     dsd_state* state = new_state();
+    if (!state) {
+        return 1;
+    }
     seed_patch(state, SG_A, WG(2), 0);
 
     put_moto_regroup(mac, 1, 0x81, 7, SG_A);
@@ -315,6 +330,9 @@ test_delete_short(void) {
     unsigned char mac[24] = {0};
     int rc = 0;
     dsd_state* state = new_state();
+    if (!state) {
+        return 1;
+    }
     seed_patch(state, SG_B, SG_B + 1, 0);
 
     put_moto_regroup(mac, 1, 0x89, 4, SG_B);
