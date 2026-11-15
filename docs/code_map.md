@@ -667,13 +667,15 @@ Generated (do not edit/commit):
       (`scan_y_unchecked_seq`) and which holds the row only while such frames keep coming, so the default set's -Y row
       on NXDN48 or dPMR noise leaves like a typed one), nothing keeps the row
       (`live_scanner_y_frame_step_may_decide()`: hold, awaited tune, typed step in flight, avoided row, no other row),
-      and it has not yielded for this landing epoch and anchor yet (`dsd_engine_scan_owner::y_frame_yield_epoch`, `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the
-      row is never repeated per frame. Checked content reaches it with no hook and no allocation: the content-evidence
-      wrapper (`dsd_frame_sync_hook_content_evidence()`) moves `dsd_state::scan_y_content_seq` for every PROVEN note, and
-      `scan_y_partial_seq` with the longest `scan_y_partial_hold_ms` for every PARTIAL one, before its setting test; the
-      boundary (`live_scanner_y_note_frame_content()`) turns a move into the decode time or the hold's end. A landing
+      and it has not yielded for this landing epoch and anchor yet (`dsd_engine_scan_owner::y_frame_yield_epoch`,
+      `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the row is never repeated per frame. Checked content
+      reaches it with no hook and no allocation: the content-evidence wrapper (`dsd_frame_sync_hook_content_evidence()`)
+      moves `dsd_state::scan_y_content_seq` for every PROVEN note, and `scan_y_partial_seq` with the longest
+      `scan_y_partial_hold_ms` for every PARTIAL one, before its setting test; the boundary
+      (`live_scanner_y_note_frame_content()`) turns a move into the decode time or the hold's end. A landing
       (`dsd_engine_scan_landing_note_row()`, `dsd_engine_scan_landing_forget_y_notes()`) forgets the notes no boundary
-      read yet and the hold's end, so the row left neither counts for the next row nor delays its step. A real dPMR,
+      read yet (checked content, an open verdict, an unchecked frame) and the hold's end, so the row left neither
+      counts for the next row nor delays its step. A real dPMR,
       D-STAR, YSF, M17 or NXDN call (whose frames stamp no anchor, or only checked ones) keeps the row through those
       checks, encrypted or locked out alike. NXDN on a conventional -Y scan stamps the anchor, with its 2 s scanner
       hold (#406), only on a frame whose own CRCs proved its content (`nxdn_finish_decoded_frame()`,

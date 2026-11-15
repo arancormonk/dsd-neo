@@ -47,6 +47,11 @@ CALLS = {
 # The decoder sets a row runs: "typed", the row's own mode from a typed map; "fa", an untyped list under -fa, the
 # default set (X2-TDMA and ProVoice in it, whose frames no check can prove).
 SETS = ("typed", "fa")
+# The calls that get no PROVEN or PARTIAL note in their decoder set, by (fixture, set): the off-air dpmr capture, whose
+# CRCs never pass, and dstar under -fa, which the default set does not decode as D-STAR within the capture. Only these
+# are judged as unchecked; any other call with no note fails (a fixture whose checks stopped passing), and one of these
+# that gains a note fails too, so the set is kept to what the decoders do.
+EXPECTED_UNCHECKED = {("dpmr", "typed"), ("dpmr", "fa"), ("dstar", "fa")}
 # Bytes per complex sample, by the sidecar's sample_format.
 SAMPLE_BYTES = {"cu8": 2, "cs16": 4, "cf32": 8}
 TAIL = "noise_floor"
@@ -127,9 +132,13 @@ def run_case(host, fixtures, out_dir, name, skip, hangtime, decoder_set="typed")
     failures = []
     # A call that gets no PROVEN or PARTIAL note in this decoder set carries nothing the rule can tell from noise, and
     # the rule exists to let such a row go: it is not judged for a cut, only for leaving within the bound, counted from
-    # the landing, where its content window starts. (Today: the off-air dpmr capture, whose CRCs never pass, and dstar
-    # under -fa, which the default set never decodes as D-STAR in its 4 s.)
+    # the landing, where its content window starts. Which calls those are is fixed in EXPECTED_UNCHECKED.
     info["unchecked"] = info["proven_total"] == 0 and info["partial_total"] == 0
+    expected = (name, decoder_set) in EXPECTED_UNCHECKED
+    if info["unchecked"] != expected:
+        if expected:
+            return [f"{name} ({decoder_set}) is expected unchecked but got notes: update EXPECTED_UNCHECKED"], info
+        return [f"{name} ({decoder_set}) got no PROVEN or PARTIAL note: its checks stopped passing"], info
     if info["unchecked"]:
         first = [rel(t) for t, _via in steps]
         info["left_at"] = round(first[0], 2) if first else None
