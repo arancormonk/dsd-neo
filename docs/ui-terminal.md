@@ -1332,6 +1332,8 @@ or an over-the-air alias names it on that system), the talkgroup or other detail
 was heard again within two seconds of the first. A second line gives any other reason, and the protocol and system
 whenever they change from the row above. An inhibit, kill or permanent disable command, or its acknowledgement, is
 drawn in red. A command row says the command was sent, never that the radio acted on it: a listener cannot see that.
+Other things never reach a listener either: the requests radios send, the control channel while the receiver follows
+a voice channel, and DMR and TETRA logouts.
 Lines longer than the terminal end in `…`. The section is hidden in compact view; `(none)` means nothing has been
 heard yet.
 

@@ -2382,9 +2382,9 @@ suite runs under this compiler.
   exactly that many units (a six-character callsign sent in the header alone). The Data Length alone does not say
   where the text ends (radios understate it, and a name learned short would be kept by the group file). So an alias
   padded with spaces to the edge of what arrived, or one that fills it while its Data Length says otherwise (an
-  understated length, the KE8NAX sample's 2 for six characters), is shown but never learned (a decided limit). A block that completes the set out of order waits for the next cycle's decode; an empty
-  alias and one with a U+FFFD are never learned. Tests:
-  `DMR_TALKER_ALIAS_UTF8`, `DMR_TALKER_ALIAS_UTF16`, `DMR_TALKER_ALIAS_HEADER_LEN`, `DMR_ALIAS_LEARN`.
+  understated length, the KE8NAX sample's 2 for six characters), is shown but never learned (a decided limit). A block
+  that completes the set out of order waits for the next cycle's decode; an empty alias and one with a U+FFFD are never
+  learned. Tests: `DMR_TALKER_ALIAS_UTF8`, `DMR_TALKER_ALIAS_UTF16`, `DMR_TALKER_ALIAS_HEADER_LEN`, `DMR_ALIAS_LEARN`.
 - Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the
   MFID 0x90 alias (Phase 1 LCW 0x15/0x17, Phase 2 MAC 0x91/0x95) assembles in `dsd_state::p25_apx_alias_rx[slot]`
   (`p25_apx_alias_rx_state_t`), which owns its header copy, block bitmap and record store; it never touches the
@@ -2459,7 +2459,7 @@ suite runs under this compiler.
   extension 14) is the session's log of trunking unit events: registrations, deregistrations, talkgroup joins, denies,
   queued and waiting responses, radio commands, status and message reports. Protocol producers push one plain record
   (`dsd_unit_activity`, at most 192 B, static-asserted) per decoded message that passed its CRC/FEC gate (never content
-  `-F` relaxed); the ring stores numbers only, and the app-control view resolves labels, reason text, scope text and
+  `-F` let through); the ring stores numbers only, and the app-control view resolves labels, reason text, scope text and
   names.
   - Push (decoder thread; the first push creates the ring and draws its instance): normalises the record (an invalid
     identity, home, scope or value is zeroed; a valid identity, home or scope needs an in-enum subtype or kind, as
@@ -2489,6 +2489,15 @@ suite runs under this compiler.
   - Budget: 1024 rows of 192 B plus 4 KiB of links, about 196 KiB per ring; three rings (live, published, consumer),
     about 588 KiB. The ring is not part of a trunk-scan target's saved state: one log spans the session, so it adds
     nothing per target. Tests: `CORE_UNIT_ACTIVITY`, `APP_CONTROL_SNAPSHOT_UNIT_ACTIVITY`.
+  - Coverage and limits: P25 Phase 1 and 2, DMR Tier III (standard FID 0x00 CSBKs) with Motorola ARS on DMR data,
+    NXDN Type C and TETRA. EDACS adds no row (no public spec; its unit-event opcodes come from one code lineage), nor
+    do NXDN Type D and P25 multi-fragment messages (TDMA control channel support, issue #874). The log holds what a
+    downlink listener hears: a radio's requests are uplink and never heard, so only the system's answers and commands
+    make rows; while the one tuner follows a voice channel the control channel is not heard, and only what the voice
+    channel itself carries arrives; a DMR logout is not told apart from a login (C_ACKD 0x62 answers both) and a
+    TETRA detach (U-ITSI DETACH) is uplink; and no row says a radio acted on a command (a P25 acknowledgement is only
+    an acknowledgement, NXDN REM_CON_RESP comes before execution, DMR and TETRA send no outcome), which the view's
+    labels keep to (below, under App control).
   - Stages and reasons: `stage` is a `dsd_ua_stage` (a TETRA D-DISABLE / D-ENABLE intent or its authenticated
     confirm: both are commands). `reason_set` names one of the reason tables in `<dsd-neo/core/unit_activity_reason.h>`
     (`src/core/util/unit_activity_reason.c`, data only): P25 deny and queued (the words the P25 Deny / Queued
@@ -11559,7 +11568,7 @@ Private per-protocol modules worth knowing about:
   target (Table 7.6). Standard-only CSBK opcodes (UU_V_Req, UU_Ans_Rsp, CT_CSBK, C_AHOY, C_ACKVIT, C_RAND, C_ACKD,
   C_ACKU, P_ACKD, P_ACKU, NACK_Rsp, P_MAINT, and BS_Dwn_Act on MS data) decode only under FID 0x00
   (`dmr_cspdu_pf0_handle_standard_only()`); under another FID they print as `Manufacturer CSBK`. No vendor dispatcher
-  decodes these opcodes today; one that comes to must take its opcode out of `dmr_cspdu_pf0_is_standard_only()`, or both
+  decodes these opcodes today; one added later must take its opcode out of `dmr_cspdu_pf0_is_standard_only()`, or both
   lines print. Grants, moves, C_ALOHA (Capacity Max recognition included), P_CLEAR, P_PROTECT, C_BCAST and preambles
   still run for any FID. Tests: `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through `dmr_flco()`).
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy

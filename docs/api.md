@@ -207,6 +207,12 @@ Topics: `call`, `event`, `system`, `metrics`, `quality`, `status`, `result`, or
 `all`. An unknown topic name is `invalid_params`. `get` works without a
 subscription.
 
+The unit activity log (registrations, talkgroup joins, denies and radio
+commands: the apps' Activity screen and the terminal's Unit Activity section)
+is not on the API: no topic streams it and `get` does not serve it. The
+`ui_show_unit_activity_toggle` command only shows or hides the terminal
+section.
+
 `get` answers from the records the server keeps current with its telemetry
 updates: every 250 ms while a client is connected. It never serves a record
 from a previous decoder run or from before a stretch with no client connected:
