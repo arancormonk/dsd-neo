@@ -17458,6 +17458,20 @@ if(Python3_Interpreter_FOUND)
         DMR_SYNTH_MS_TAIL
         PROPERTIES LABELS "dmr-synth" TIMEOUT 120
     )
+    # A Basic Privacy call whose first frames are not admitted yet, after an ended call on another talkgroup: the right
+    # key decrypts it, no key mutes it, and the ended call's talkgroup key is not its key
+    # (protocol/dmr/dmr_bp_key_check.py).
+    add_test(
+        NAME DMR_SYNTH_BP_KEY
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dmr/dmr_bp_key_check.py
+            $<TARGET_FILE:dsd-neo> $<TARGET_FILE:dsd-neo_test_dmr_synth_gen>
+    )
+    set_tests_properties(
+        DMR_SYNTH_BP_KEY
+        PROPERTIES LABELS "dmr-synth" TIMEOUT 120
+    )
 endif()
 
 set(_DSD_SYNTH_K256

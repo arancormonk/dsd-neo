@@ -2148,6 +2148,14 @@ per-call recording must hold its own audio (normalised correlation with the expe
 after the first, its frame-by-frame loudness, since the bursts the voice gate holds at the change change the vocoder's
 synthesis after them).
 
+`DMR_SYNTH_BP_KEY` (`tests/protocol/dmr/dmr_bp_key_check.py`) uses the generator's Basic Privacy (`--alg bp
+--bp-key N`: the LC's privacy bit under FID 0x10, no PI header, the project's Basic Privacy keystream) and its
+`--no-hdr` (no voice LC header: the call is named only by its embedded LC). An RC4 call on talkgroup 123 ends, then a
+Basic Privacy call on talkgroup 456 starts on a colour code `--dcc-allow 2` refuses and changes to 2 after its first
+superframe, so its first frames are not admitted and come before its LC. Its own key decrypts it (its frames carry the
+plaintext, and play), no key mutes it, and a key for the ended call's talkgroup is not its key: it stays muted, where
+the frames before its LC once loaded that key and the call then played, decrypted with it.
+
 The expectation file gives, for every transmitted voice frame, the 49 bits a correct decoder prints: the plaintext
 (for an encrypted call the plaintext that decrypts from the ciphertext actually sent, whose four late-entry bits carry
 the fragment nibble). The MI/IV LFSRs, the late-entry layout and the RC4 keystream are written independently in the
