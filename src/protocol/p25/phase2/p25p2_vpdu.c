@@ -904,13 +904,13 @@ p25p2_vpdu_ua_origin(const p25p2_vpdu_ctx* ctx) {
 /* A source unit with the home system of its SUID (WACN and System ID the message carries). */
 static p25_ua_unit
 p25p2_vpdu_ua_fq_unit(uint32_t id, int wacn, int sys) {
-    const p25_ua_unit u = {id, {(uint32_t)wacn, (uint16_t)sys, id, 1U}};
+    const p25_ua_unit u = {id, {(uint32_t)wacn, (uint16_t)sys, id, 1U}, 0U};
     return u;
 }
 
 static p25_ua_unit
 p25p2_vpdu_ua_unit(uint32_t id) {
-    const p25_ua_unit u = {id, {0U, 0U, 0U, 0U}};
+    const p25_ua_unit u = {id, {0U, 0U, 0U, 0U}, 0U};
     return u;
 }
 
@@ -4304,7 +4304,8 @@ p25p2_vpdu_iter_block_53(p25p2_vpdu_ctx* ctx) {
         }
         DSD_FPRINTF(stderr, ";");
         const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-        p25_ua_extended_function(&origin, class_id, operand, argument, target);
+        const p25_ua_ext_function function = {class_id, operand, argument, target, NULL};
+        p25_ua_extended_function(&origin, &function);
     }
 
     if (MAC[1 + len_a] == 0x69) {
@@ -4681,7 +4682,8 @@ p25p2_vpdu_handle_status_update_abbreviated(p25p2_vpdu_ctx* ctx) {
                                  unit_status);
     const p25_ua_unit reporter = p25p2_vpdu_ua_unit((uint32_t)source);
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-    p25_ua_status_update(&origin, (uint16_t)((user_status << 8) | unit_status), (uint32_t)target, &reporter);
+    const p25_ua_unit recipient = p25p2_vpdu_ua_unit((uint32_t)target);
+    p25_ua_status_update(&origin, (uint16_t)((user_status << 8) | unit_status), &recipient, &reporter);
 }
 
 static const char*
@@ -4701,10 +4703,11 @@ p25p2_vpdu_query_alert_label(int opcode) {
 static void
 p25p2_vpdu_ua_query_or_alert(const p25p2_vpdu_ctx* ctx, int opcode, uint32_t target, p25_ua_unit source) {
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    const p25_ua_unit paged = p25p2_vpdu_ua_unit(target);
     if (opcode == 0x5A || opcode == 0xDA) {
-        p25_ua_status_query(&origin, target, &source);
+        p25_ua_status_query(&origin, &paged, &source);
     } else if (opcode == 0x5F || opcode == 0xDF) {
-        p25_ua_call_alert(&origin, target, &source);
+        p25_ua_call_alert(&origin, &paged, &source);
     }
 }
 
@@ -4746,7 +4749,8 @@ p25p2_vpdu_handle_message_update_abbreviated(p25p2_vpdu_ctx* ctx) {
                                  "MSG Target: %d Source: %d Message: %04X; ", target, source, message);
     const p25_ua_unit reporter = p25p2_vpdu_ua_unit((uint32_t)source);
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-    p25_ua_message_update(&origin, (uint16_t)message, (uint32_t)target, &reporter);
+    const p25_ua_unit recipient = p25p2_vpdu_ua_unit((uint32_t)target);
+    p25_ua_message_update(&origin, (uint16_t)message, &recipient, &reporter);
 }
 
 static void
@@ -4840,7 +4844,8 @@ p25p2_vpdu_report_radio_unit_monitor(const p25p2_vpdu_ctx* ctx, int target, int 
                                  "RUM Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time,
                                  multiplier, silent ? " Silent" : "");
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, (uint32_t)source, 0U);
+    const p25_ua_unit monitor = p25p2_vpdu_ua_unit((uint32_t)source);
+    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, &monitor, 0, 0U);
 }
 
 static void
@@ -4923,7 +4928,8 @@ p25p2_vpdu_handle_radio_unit_monitor_enhanced_abbreviated(p25p2_vpdu_ctx* ctx) {
         "RUM-E Target: %d %s: %d Time: %d ALG: %02X KID: %04X%s; ", target, talkgroup_mode ? "TG" : "RID", monitor,
         transmit_time, algid, key_id, silent ? " Silent" : "");
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, (uint32_t)source, talkgroup_mode ? (uint16_t)group : 0U);
+    const p25_ua_unit monitoring = p25p2_vpdu_ua_unit((uint32_t)source);
+    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, &monitoring, talkgroup_mode, (uint16_t)group);
 }
 
 static void
@@ -4946,7 +4952,8 @@ p25p2_vpdu_handle_radio_unit_monitor_extended_vch(p25p2_vpdu_ctx* ctx) {
                                  "RUM-X Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time,
                                  multiplier, silent ? " Silent" : "");
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, (uint32_t)source, 0U);
+    const p25_ua_unit monitor = p25p2_vpdu_ua_fq_unit((uint32_t)source, source_wacn, source_sys);
+    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, &monitor, 0, 0U);
 }
 
 static void
@@ -4970,7 +4977,8 @@ p25p2_vpdu_handle_status_update_extended_vch(p25p2_vpdu_ctx* ctx) {
                                  unit_status);
     const p25_ua_unit reporter = p25p2_vpdu_ua_fq_unit((uint32_t)source, source_wacn, source_sys);
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-    p25_ua_status_update(&origin, (uint16_t)((user_status << 8) | unit_status), (uint32_t)target, &reporter);
+    const p25_ua_unit recipient = p25p2_vpdu_ua_unit((uint32_t)target);
+    p25_ua_status_update(&origin, (uint16_t)((user_status << 8) | unit_status), &recipient, &reporter);
 }
 
 static void
@@ -5010,7 +5018,8 @@ p25p2_vpdu_handle_message_update_extended_vch(p25p2_vpdu_ctx* ctx) {
                                  "MSG-X Target: %d Source: %d Message: %04X; ", target, source, message);
     const p25_ua_unit reporter = p25p2_vpdu_ua_fq_unit((uint32_t)source, source_wacn, source_sys);
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-    p25_ua_message_update(&origin, (uint16_t)message, (uint32_t)target, &reporter);
+    const p25_ua_unit recipient = p25p2_vpdu_ua_unit((uint32_t)target);
+    p25_ua_message_update(&origin, (uint16_t)message, &recipient, &reporter);
 }
 
 static void
@@ -5037,7 +5046,11 @@ p25p2_vpdu_handle_extended_function_extended_vch(p25p2_vpdu_ctx* ctx) {
                                  "EXTFUNC-X Target: %d Source: %d Function: %04X Arg: %06X; ", target, source, function,
                                  argument);
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-    p25_ua_extended_function(&origin, (uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target);
+    /* The Source SUID names the unit the argument does when its ID is the argument's (a command's requester). */
+    const p25_home_id source_home = {(uint32_t)source_wacn, (uint16_t)source_sys, (uint32_t)source, 1U};
+    const p25_ua_ext_function f = {(uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target,
+                                   source == argument ? &source_home : NULL};
+    p25_ua_extended_function(&origin, &f);
 }
 
 static void
@@ -5063,7 +5076,12 @@ p25p2_vpdu_handle_extended_function_extended_lcch(p25p2_vpdu_ctx* ctx) {
                                  "EXTFUNC-L Target: %d Source: %05X:%03X Function: %04X Arg: %06X; ", target,
                                  source_wacn, source_sys, function, argument);
     const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-    p25_ua_extended_function(&origin, (uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target);
+    /* The LCCH form's Source SUID carries no unit ID: its WACN and System ID are the home of the unit the argument
+       names. */
+    const p25_home_id source_home = {(uint32_t)source_wacn, (uint16_t)source_sys, (uint32_t)argument, 1U};
+    const p25_ua_ext_function f = {(uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target,
+                                   &source_home};
+    p25_ua_extended_function(&origin, &f);
 }
 
 static void
@@ -5219,7 +5237,8 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) 
     if (class_id == 0) {
         DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_label((uint8_t)operand));
         const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
-        p25_ua_extended_function(&origin, (uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target);
+        const p25_ua_ext_function f = {(uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target, NULL};
+        p25_ua_extended_function(&origin, &f);
     } else if (class_id == 0x02 && operand == 0x00) {
         int sg = argument & 0xFFFF;
         DSD_FPRINTF(stderr, " Create Supergroup");

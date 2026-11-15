@@ -600,8 +600,33 @@ p25_handle_mbt_unit_to_unit_answer_request(const dsd_opts* opts, dsd_state* stat
     DSD_FPRINTF(stderr, "\n  SVC [%02X] TO [%u] FULL SRC [%05X.%03X.%06X]", svc, target, src_wacn, src_sys, src_id);
 }
 
+/* An outbound MBT reaches the handlers only after its header CRC-16 and its CRC-32 passed (p25p1_mdpu.c): Phase 1, no
+   slot. */
+static p25_ua_origin
+p25_mbt_ua_origin(const dsd_opts* opts, dsd_state* state) {
+    const p25_ua_origin o = {opts, state, 0U, 0U, 1U};
+    return o;
+}
+
+/* The unit activity row of an extended Status Update, Status Query, Message Update or Call Alert (TIA-102.AABC-D
+   Figs 6.2.18-2, 6.2.17-2, 6.2.10-2, 6.2.4-2: Target Address in the header, Source SUID in block 0 with the Status or
+   Message at its octets 5-6, Source Address across blocks 0-1, Target SUID in block 1). */
+static void
+p25_mbt_ua_command_metadata(const dsd_opts* opts, dsd_state* state, uint8_t opcode, const p25_ua_unit* source,
+                            const p25_ua_unit* target, uint16_t value) {
+    const p25_ua_origin origin = p25_mbt_ua_origin(opts, state);
+    switch (opcode) {
+        case 0x18: p25_ua_status_update(&origin, value, target, source); break;
+        case 0x1A: p25_ua_status_query(&origin, target, source); break;
+        case 0x1C: p25_ua_message_update(&origin, value, target, source); break;
+        case 0x1F: p25_ua_call_alert(&origin, target, source); break;
+        default: break;
+    }
+}
+
 static void DSD_ATTR_USED
-p25_handle_mbt_extended_command_metadata(const uint8_t* mpdu_byte, uint8_t opcode) {
+p25_handle_mbt_extended_command_metadata(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
+                                         uint8_t opcode) {
     const char* label = "Command";
     uint32_t src_local = 0;
     uint32_t src_wacn = 0;
@@ -635,6 +660,9 @@ p25_handle_mbt_extended_command_metadata(const uint8_t* mpdu_byte, uint8_t opcod
     } else if (opcode == 0x1C) {
         DSD_FPRINTF(stderr, " SHORT DATA [%04X]", p25_mbt_u16(mpdu_byte, 17U));
     }
+    const p25_ua_unit source = {src_id, {src_wacn, src_sys, src_id, 1U}, src_local};
+    const p25_ua_unit target = {tgt_id, {tgt_wacn, tgt_sys, tgt_id, 1U}, tgt_local};
+    p25_mbt_ua_command_metadata(opts, state, opcode, &source, &target, (uint16_t)p25_mbt_u16(mpdu_byte, 17U));
 }
 
 static void DSD_ATTR_USED
@@ -855,14 +883,6 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
     // The grant names the supergroup (both MBT CRCs passed: p25_mpdu_handle_trunking()): its row stays, its members
     // do not.
     p25_patch_update(state, group, /*is_patch*/ 1, /*active*/ 1);
-}
-
-/* An outbound MBT reaches the handlers only after its header CRC-16 and its CRC-32 passed (p25p1_mdpu.c): Phase 1, no
-   slot. */
-static p25_ua_origin
-p25_mbt_ua_origin(const dsd_opts* opts, dsd_state* state) {
-    const p25_ua_origin o = {opts, state, 0U, 0U, 1U};
-    return o;
 }
 
 static void DSD_ATTR_USED
@@ -1206,7 +1226,8 @@ p25_handle_mbt_data_service_opcode(dsd_opts* opts, dsd_state* state, const uint8
 }
 
 static int
-p25_handle_mbt_command_metadata_opcode(const uint8_t* mpdu_byte, size_t mpdu_len, const p25p1_mbt_fields* fields) {
+p25_handle_mbt_command_metadata_opcode(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
+                                       size_t mpdu_len, const p25p1_mbt_fields* fields) {
     switch (fields->opcode) {
         case 0x18:
         case 0x1A:
@@ -1215,7 +1236,7 @@ p25_handle_mbt_command_metadata_opcode(const uint8_t* mpdu_byte, size_t mpdu_len
             if (!p25_mbt_require_len(fields, mpdu_len, 32U, "AMBTC command/status metadata")) {
                 return 1;
             }
-            p25_handle_mbt_extended_command_metadata(mpdu_byte, fields->opcode);
+            p25_handle_mbt_extended_command_metadata(opts, state, mpdu_byte, fields->opcode);
             return 1;
         default: return 0;
     }
@@ -1278,7 +1299,7 @@ p25_handle_mbt_standard_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* 
     if (p25_handle_mbt_data_service_opcode(opts, state, mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
-    if (p25_handle_mbt_command_metadata_opcode(mpdu_byte, mpdu_len, fields)) {
+    if (p25_handle_mbt_command_metadata_opcode(opts, state, mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
     return p25_handle_mbt_affiliation_roaming_opcode(opts, state, mpdu_byte, mpdu_len, fields);

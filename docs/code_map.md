@@ -2473,7 +2473,10 @@ suite runs under this compiler.
     `slot` and the name is equal (protocol, kind, role, result, stage, reason, the four identities with their homes,
     group, value, value2, scope, `scope_epoch`, `freq_hz`), the decode clock has not gone back past the row's
     `last_ms`, and less than 2 s passed since its `first_ms` (an anchored window). A merge bumps `repeat` (saturating),
-    `last_ms` and `rev`.
+    `last_ms` and `rev`, and keeps every key field the row holds. One exception to the key: a DEREGISTRATION push with
+    no assigned identity matches whatever assigned identity the held row has, because that identity is not in the
+    message (the P25 producer reads it from the registration the first acknowledgement removes, so a repeat finds
+    none) and the repeat merges into the row that keeps it.
   - Delivery: every insert or merge stamps the next ring revision; `dsd_unit_activity_read()` returns rows after a
     cursor in revision order (never seq order), so a capped read never skips a merged row. A full ring evicts its least
     recently revised row, so every row held is newer than every row evicted: a reader whose cursor is below the highest
@@ -6235,7 +6238,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     or queued row ("Denied: Target Unit Not Valid (0x20)").
   - Texts: `subject_text` is the subject's ID ("1234567", "TG 100", "System 0x...", "Equipment 0x...", "Address n");
     a status or message report's subject is its reporting unit. `target_text` (128 bytes) joins the group with its
-    label, the value (status, message, service type, DMR mask, TETRA accept type), the assigned identity ("as n"), the
+    label, the value (status, message, service type, DMR mask, TETRA accept type; a P25 status as "status A1/0B", User
+    then Unit Status in hex, and a P25 message as "message 1234", the 16-bit value in hex, as the P25 prints show
+    them), the assigned identity ("as n"), the
     recipient ("to n") and the requester or gateway ("from System 0xFFFECF": a gateway is never the subject). Each part
     is whole: a long group label is shortened first (ending "…"), then a part that still does not fit is left out with
     those after it and the text ends ", …", so an ID is never cut. `scope_text` names the row's system ("WACN BEE00
@@ -10405,17 +10410,20 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   information as value2 when AIV), Extended Function class $00 on 0x64 / 0xE4 / 0xE5 / Motorola 0x84 (check, detach,
   uninhibit, inhibit; a command's argument is the requester, an ACK's argument is the radio that acknowledged and its
   target the party told: Table 2.3.15-1; other classes and reserved operands add none), Radio Unit Monitor (TSBK 0x1D,
-  0x4C, 0xCC, 0x5E in talkgroup mode with the group and no actor), Status Update 0x58 / 0xD8 and Message Update 0x5C /
-  0xDC / LC 0x55 / 0x5B (reports: subject the reporting source, the target as recipient, value the 16-bit status or
-  message), Status Query 0x5A / 0xDA (command to the target), Call Alert 0x5F / 0xDF, Unit-to-Unit 0x45 / 0xC5 and
-  telephone 0x4A Answer Requests, and the TSBK 0x2E Authentication Command (target SUID). An extended form's source SUID
-  gives its identity a home. Addresses $FFFFFC-$FFFFFF are infrastructure, never radios (§2.3.30), and 0 names nobody.
-  Provenance: a row needs `p25p2_vpdu_ctx::crc_ok` (a MAC PDU `-F` let through makes none); TSBKs, MBTs and link
+  0x4C, 0xCC, the 0x5E talkgroup mode with the group and no actor), Status Update 0x58 / 0xD8 / MBT and Message Update
+  0x5C / 0xDC / MBT / LC 0x55 / 0x5B (reports: subject the reporting source, the target as recipient, value the 16-bit
+  status, User Status high octet, or message), Status Query 0x5A / 0xDA / MBT (command to the target), Call Alert 0x5F /
+  0xDF / MBT, Unit-to-Unit 0x45 / 0xC5 and telephone 0x4A Answer Requests, and the TSBK 0x2E Authentication Command
+  (target SUID). An extended form's source SUID gives its identity a home (0xE4 when the Source ID is the argument's;
+  0xE5's WACN / System ID to the argument), and an extended MBT (AABC-D Figs 6.2.4-2, 6.2.10-2, 6.2.17-2, 6.2.18-2)
+  names each unit by its SUID with its WUID on the sending system as the subject's `assigned` identity. Addresses
+  $FFFFFC-$FFFFFF are infrastructure, never radios (§2.3.30), and 0 names nobody. A repeated deregistration
+  acknowledgement, which finds the registration gone, merges into the first one's row (the core's DEREGISTRATION key
+  rule). Provenance: a row needs `p25p2_vpdu_ctx::crc_ok` (a MAC PDU `-F` let through makes none); TSBKs, MBTs and link
   control words reach the handlers only after their CRC / FEC. Multi-fragment messages, the Group Affiliation Query,
-  the ACK Response, the MBT command metadata forms and the multi-block Authentication Demand make no row. `name_frozen`
-  is the subject's name in the current reception scope, resolved as the view resolves a current-scope row (the
-  assigned address first, then the subject's ID when its home is this system). Tests: `P25_UNIT_ACTIVITY`,
-  `P25_P1_TSBK_HANDLERS` (MFID90 rows), `P25_P2_MULTIFRAG_CRC` (no row).
+  the ACK Response, the MBT Unit-to-Unit Answer Request and the multi-block Authentication Demand make no row.
+  `name_frozen` comes from `dsd_unit_activity_freeze_name()`, the rule every producer shares. Tests:
+  `P25_UNIT_ACTIVITY`, `P25_P1_TSBK_HANDLERS` (MFID90 rows), `P25_P2_MULTIFRAG_CRC` (no row).
 - Phase 2 Network Status Broadcast and the control channel's access method. An accepted broadcast notes a TDMA system
   (`p25_sys_is_tdma`) wherever it is heard, but marks the control channel TDMA (`p25_cc_is_tdma`) only when heard on
   an LCCH (`p2_is_lcch`): on a voice channel's SACCH or FACCH it names the control channel, which may be FDMA (a site

@@ -179,7 +179,9 @@ typedef struct {
  *   the identity assigned to the subject (P25 assigned WUID, TETRA assigned SSI); recipient: a report's target.
  * - group/group_valid, value/value_valid, value2/value2_valid: payload fields (the message's group, its status value,
  *   command argument, accept type or service type, and a second field such as deny additional info, an NXDN visitor
- *   group or a TETRA assigned flag). Read a value only while its valid flag is set.
+ *   group or a TETRA assigned flag). Read a value only while its valid flag is set. A P25 status row's value is the
+ *   16-bit Status field (User Status << 8 | Unit Status, TIA-102.AABC-D §2.3.29), a P25 message row's the 16-bit
+ *   message.
  * - reason_code with reason_set (a dsd_ua_reason_set, <dsd-neo/core/unit_activity_reason.h>): text is resolved at
  *   view time.
  * - stage: a step within one command (a dsd_ua_stage: TETRA intent vs authenticated confirm), 0 when the message has
@@ -249,8 +251,10 @@ typedef struct dsd_unit_activity_read_meta {
  *
  * Merge key: every field but seq, rev, first_ms, last_ms, wall_s, repeat, slot and name_frozen (protocol, kind,
  * role, result, stage, reason set and code, the four identities with their home systems, group, value, value2 and
- * their valid flags, scope, scope_epoch and freq_hz). A merge keeps the row's slot and takes the pushed name when it
- * is not empty, so name_frozen holds the latest pushed name.
+ * their valid flags, scope, scope_epoch and freq_hz). One exception: a DEREGISTRATION push with no assigned identity
+ * matches a held row whatever its assigned identity (the producer reads that identity from the registration the first
+ * acknowledgement removed, so a repeat finds none). A merge keeps the row's slot and every key field the row holds,
+ * and takes the pushed name when it is not empty, so name_frozen holds the latest pushed name.
  *
  * Returns 1 when a new row was inserted, 0 when the push merged into a row, -1 on a NULL argument, a protocol, kind,
  * role or result outside its enum, a valid identity, home or scope whose subtype or kind is outside its enum, or an

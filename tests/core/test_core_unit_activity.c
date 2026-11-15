@@ -132,6 +132,40 @@ test_dedup_anchored_window(void) {
     free_state(st);
 }
 
+/* A repeated deregistration acknowledgement whose producer no longer finds the assigned identity (the first one
+ * removed the registration it came from) merges into the row and keeps that identity; another assigned identity, or
+ * a registration without one, still starts a row. */
+static void
+test_dereg_repeat_without_assigned_merges(void) {
+    dsd_state* st = new_state();
+    dsd_unit_activity dereg = base_row();
+    dereg.kind = DSD_UA_DEREGISTRATION;
+    dereg.role = DSD_UA_ROLE_ACK;
+    dereg.result = DSD_UA_RESULT_ACKNOWLEDGED;
+    dsd_unit_activity repeat = dereg;
+    DSD_MEMSET(&repeat.assigned, 0, sizeof(repeat.assigned));
+    clock_at_ms(T0_MS);
+    assert(dsd_unit_activity_push(st, &dereg) == 1);
+    clock_at_ms(T0_MS + 300U);
+    assert(dsd_unit_activity_push(st, &repeat) == 0);
+    clock_at_ms(T0_MS + 600U);
+    assert(dsd_unit_activity_push(st, &repeat) == 0);
+
+    dsd_unit_activity out[4];
+    dsd_unit_activity_read_meta meta;
+    assert(dsd_unit_activity_read(st, 0U, 0U, out, 4, &meta) == 1);
+    assert(out[0].repeat == 3U && out[0].assigned.valid && out[0].assigned.id == 100U);
+
+    dsd_unit_activity other = dereg;
+    other.assigned.id = 101U;
+    assert(dsd_unit_activity_push(st, &other) == 1);
+    dsd_unit_activity reg = base_row();
+    assert(dsd_unit_activity_push(st, &reg) == 1);
+    DSD_MEMSET(&reg.assigned, 0, sizeof(reg.assigned));
+    assert(dsd_unit_activity_push(st, &reg) == 1);
+    free_state(st);
+}
+
 static void
 test_backwards_time_never_merges(void) {
     dsd_state* st = new_state();
@@ -887,6 +921,7 @@ int
 main(void) {
     dsd_decode_clock_use_test(T0_MS * UINT64_C(1000000));
     test_dedup_anchored_window();
+    test_dereg_repeat_without_assigned_merges();
     test_backwards_time_never_merges();
     test_merge_bumps_repeat_last_and_rev();
     test_repeat_saturates();

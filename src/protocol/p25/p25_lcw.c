@@ -562,8 +562,9 @@ p25_lcw_print_message_update(const dsd_opts* opts, dsd_state* state, const uint8
     uint32_t source = (uint32_t)convert_bits_into_output(&bits[48], 24);
     DSD_FPRINTF(stderr, " - MSG %04X TGT %u SRC %u", message, target, source);
     const p25_ua_origin origin = {opts, state, 0U, 0U, 1U};
-    const p25_ua_unit reporter = {source, {0U, 0U, 0U, 0U}};
-    p25_ua_message_update(&origin, message, target, &reporter);
+    const p25_ua_unit reporter = {source, {0U, 0U, 0U, 0U}, 0U};
+    const p25_ua_unit recipient = {target, {0U, 0U, 0U, 0U}, 0U};
+    p25_ua_message_update(&origin, message, &recipient, &reporter);
 }
 
 static void

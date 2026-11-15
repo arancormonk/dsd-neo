@@ -939,6 +939,307 @@ test_p25_names_at_push(void) {
     return rc;
 }
 
+/* ---- Fix round 1 ---- */
+
+static void
+tsbk_dereg(unsigned long long int mac[24], uint8_t opcode, uint32_t wacn, uint32_t sys, uint32_t id) {
+    DSD_MEMSET(mac, 0, 24 * sizeof mac[0]);
+    mac[1] = opcode;
+    put_wacn_sys(mac, 3, wacn, sys);
+    put_u24(mac, 7, id);
+}
+
+/* A busy control channel repeats a deregistration acknowledgement: the first removes the registration it reads the
+   assigned address from, and the repeats still merge into its row, which keeps that address (plan G8). */
+static int
+test_p25_repeat_dereg_one_row(void) {
+    fixture f;
+    unsigned long long int mac[24];
+    int rc = 0;
+    if (fixture_open(&f) != 0) {
+        return 1;
+    }
+    dsd_decode_clock_use_test((uint64_t)T0_MS * UINT64_C(1000000));
+    p2_reg_rsp_ext(mac, 0, OTHER_WACN, OTHER_SYS, 0x00BCDE, 0x002345);
+    run_p2(&f, mac);
+    for (int i = 0; i < 3; i++) {
+        dsd_decode_clock_test_set_ns((uint64_t)(T0_MS + 100 + (i * 400)) * UINT64_C(1000000));
+        tsbk_dereg(mac, 0x6F, OTHER_WACN, OTHER_SYS, 0x00BCDE);
+        run_tsbk(&f, mac);
+    }
+    rc |= expect_u("registration + one dereg row", (unsigned)read_rows(&f), 2U);
+    const dsd_unit_activity* r = f.count == 2 ? &f.rows[1] : NULL;
+    rc |= expect_row("dereg row", r, DSD_UA_PROTO_P25P1, DSD_UA_DEREGISTRATION, DSD_UA_ROLE_ACK,
+                     DSD_UA_RESULT_ACKNOWLEDGED);
+    if (r) {
+        rc |= expect_u("dereg repeat", r->repeat, 3U);
+        rc |= expect_id("dereg keeps the assigned address", &r->assigned, 0x002345, DSD_UA_ID_RADIO);
+    }
+    /* Phase 2 0xEF Extended form: the same fields. */
+    tsbk_dereg(mac, 0xEF, SERVING_WACN, SERVING_SYS, 0x00BCDF);
+    mac[0] = 0x00;
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |= expect_row("0xEF dereg", r, DSD_UA_PROTO_P25P2, DSD_UA_DEREGISTRATION, DSD_UA_ROLE_ACK,
+                     DSD_UA_RESULT_ACKNOWLEDGED);
+    if (r) {
+        rc |= expect_id("0xEF subject", &r->subject, 0x00BCDF, DSD_UA_ID_RADIO);
+        rc |= expect_u("0xEF no assigned", r->assigned.valid, 0U);
+    }
+    dsd_decode_clock_use_system();
+    fixture_close(&f);
+    return rc;
+}
+
+/* Native 0x6C (length octet 2, RV octet 3 bits 5-4, System ID 3-4, Source ID 5-7, Source Address 8-10), with and
+   without the site's WACN. */
+static int
+test_p25_native_0x6c_rows(void) {
+    fixture f;
+    unsigned long long int mac[24];
+    int rc = 0;
+    if (fixture_open(&f) != 0) {
+        return 1;
+    }
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0x6C;
+    mac[2] = 0x0A;
+    mac[3] = (SERVING_SYS >> 8) & 0x0FU;
+    mac[4] = SERVING_SYS & 0xFFU;
+    put_u24(mac, 5, 0x00ABCD);
+    put_u24(mac, 8, 0x001234);
+    run_p2(&f, mac);
+    const dsd_unit_activity* r = last_row(&f);
+    rc |= expect_row("0x6C accept", r, DSD_UA_PROTO_P25P2, DSD_UA_REGISTRATION, DSD_UA_ROLE_RESPONSE,
+                     DSD_UA_RESULT_ACCEPTED);
+    if (r) {
+        rc |= expect_home("0x6C home", &r->subject, SERVING_WACN, SERVING_SYS);
+        rc |= expect_id("0x6C assigned", &r->assigned, 0x001234, DSD_UA_ID_RADIO);
+    }
+
+    /* Before the site's WACN is known the subject has no home, and an own-ID accept on this System ID adds no
+       assigned identity. */
+    f.state->p2_wacn = 0;
+    put_u24(mac, 8, 0x00ABCD);
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |= expect_true("0x6C no WACN: no home", r != NULL && r->subject.valid && !r->subject.home_valid);
+    rc |= expect_true("0x6C no WACN: own ID not assigned", r != NULL && !r->assigned.valid);
+    fixture_close(&f);
+    return rc;
+}
+
+static int
+test_p25_more_forms(void) {
+    fixture f;
+    unsigned long long int mac[24];
+    int rc = 0;
+    if (fixture_open(&f) != 0) {
+        return 1;
+    }
+    /* TSBK 0x2B Location Registration Response (RV 2, group 3-4, RFSS 5, site 6, target 7-9). */
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0x6B;
+    mac[2] = 0x00;
+    put_u16(mac, 3, 0x0102);
+    put_u24(mac, 7, 0x003457);
+    run_tsbk(&f, mac);
+    const dsd_unit_activity* r = last_row(&f);
+    rc |= expect_row("0x2B accept", r, DSD_UA_PROTO_P25P1, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_RESPONSE,
+                     DSD_UA_RESULT_ACCEPTED);
+    rc |= expect_true("0x2B fields", r != NULL && r->subject.id == 0x003457U && r->group == 0x0102U);
+
+    /* Motorola 0xA6 queued. */
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0xA6;
+    mac[2] = 0x90;
+    mac[3] = 0x0B;
+    mac[4] = 0x00;
+    mac[5] = 0x40;
+    put_u24(mac, 9, 0x005558);
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |= expect_row("0xA6 queued", r, DSD_UA_PROTO_P25P2, DSD_UA_QUEUED, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_QUEUED);
+
+    /* 0xC5 Unit-to-Unit Answer Request - Extended (service 2, target 3-5, source SUID 6-12). */
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0xC5;
+    mac[2] = 0x40;
+    put_u24(mac, 3, 0x007101);
+    put_wacn_sys(mac, 6, OTHER_WACN, OTHER_SYS);
+    put_u24(mac, 10, 0x007102);
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |= expect_row("0xC5 answer", r, DSD_UA_PROTO_P25P2, DSD_UA_ANSWER_REQUEST, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA);
+    if (r) {
+        rc |= expect_id("0xC5 caller", &r->actor, 0x007102, DSD_UA_ID_RADIO);
+        rc |= expect_home("0xC5 caller home", &r->actor, OTHER_WACN, OTHER_SYS);
+    }
+
+    /* 0xDA Status Query / 0xDF Call Alert - Extended VCH (target 2-4, source SUID 5-11). */
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0xDA;
+    put_u24(mac, 2, 0x007103);
+    put_wacn_sys(mac, 5, OTHER_WACN, OTHER_SYS);
+    put_u24(mac, 9, 0x007104);
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |= expect_row("0xDA query", r, DSD_UA_PROTO_P25P2, DSD_UA_STATUS, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA);
+    if (r) {
+        rc |= expect_id("0xDA subject", &r->subject, 0x007103, DSD_UA_ID_RADIO);
+        rc |= expect_home("0xDA actor home", &r->actor, OTHER_WACN, OTHER_SYS);
+    }
+    mac[1] = 0xDF;
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |= expect_row("0xDF alert", r, DSD_UA_PROTO_P25P2, DSD_UA_CALL_ALERT, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA);
+
+    /* 0xDC Message Update - Extended VCH (length 2, message 3-4, target 5-7, source SUID 8-14). */
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0xDC;
+    mac[2] = 0x0E;
+    put_u16(mac, 3, 0x0BAD);
+    put_u24(mac, 5, 0x007105);
+    put_wacn_sys(mac, 8, OTHER_WACN, OTHER_SYS);
+    put_u24(mac, 12, 0x007106);
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |= expect_row("0xDC message", r, DSD_UA_PROTO_P25P2, DSD_UA_MESSAGE, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA);
+    if (r) {
+        rc |= expect_id("0xDC subject", &r->subject, 0x007106, DSD_UA_ID_RADIO);
+        rc |= expect_home("0xDC home", &r->subject, OTHER_WACN, OTHER_SYS);
+        rc |= expect_u("0xDC value", r->value, 0x0BADU);
+    }
+
+    /* 0xCC Radio Unit Monitor - Extended VCH (length 2, time 3, SM/mult 4, target 5-7, source SUID 8-14). */
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0xCC;
+    mac[2] = 0x0E;
+    put_u24(mac, 5, 0x007107);
+    put_wacn_sys(mac, 8, OTHER_WACN, OTHER_SYS);
+    put_u24(mac, 12, 0x007108);
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |=
+        expect_row("0xCC monitor", r, DSD_UA_PROTO_P25P2, DSD_UA_RADIO_MONITOR, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA);
+    if (r) {
+        rc |= expect_id("0xCC actor", &r->actor, 0x007108, DSD_UA_ID_RADIO);
+        rc |= expect_home("0xCC actor home", &r->actor, OTHER_WACN, OTHER_SYS);
+    }
+
+    /* 0xE5 Extended Function - Extended LCCH (length 2, class 3, operand 4, argument 5-7, target 8-10, source WACN /
+       System ID 11-14): the argument's home. */
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0xE5;
+    mac[2] = 0x0E;
+    mac[3] = 0x00;
+    mac[4] = 0x7F;
+    put_u24(mac, 5, 0x007109);
+    put_u24(mac, 8, 0x00710A);
+    put_wacn_sys(mac, 11, OTHER_WACN, OTHER_SYS);
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |= expect_row("0xE5 inhibit", r, DSD_UA_PROTO_P25P2, DSD_UA_INHIBIT, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA);
+    if (r) {
+        rc |= expect_id("0xE5 subject", &r->subject, 0x00710A, DSD_UA_ID_RADIO);
+        rc |= expect_id("0xE5 actor", &r->actor, 0x007109, DSD_UA_ID_RADIO);
+        rc |= expect_home("0xE5 actor home", &r->actor, OTHER_WACN, OTHER_SYS);
+    }
+
+    /* 0x5E Radio Unit Monitor Enhanced in source mode: the source is the actor. */
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0x5E;
+    put_u24(mac, 2, 0x00710B);
+    put_u16(mac, 5, 0x0501);
+    put_u24(mac, 7, 0x00710C);
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |= expect_true("0x5E source mode", r != NULL && r->kind == DSD_UA_RADIO_MONITOR && !r->group_valid
+                                              && r->actor.valid && r->actor.id == 0x00710CU);
+
+    /* LC 0x5B Message Update - Source ID Extension Required (same fields as 0x55). */
+    uint8_t lc[9] = {0x5B, 0x00, 0x42, 0x00, 0x71, 0x0D, 0x00, 0x71, 0x0E};
+    uint8_t bits[72];
+    for (int i = 0; i < 72; i++) {
+        bits[i] = (uint8_t)((lc[i / 8] >> (7 - (i % 8))) & 1U);
+    }
+    dsd_test_capture_stderr cap;
+    quiet_begin(&cap);
+    p25_lcw(f.opts, f.state, bits, 0);
+    quiet_end(&cap);
+    r = last_row(&f);
+    rc |= expect_row("LC 0x5B message", r, DSD_UA_PROTO_P25P1, DSD_UA_MESSAGE, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA);
+    rc |= expect_true("LC 0x5B fields",
+                      r != NULL && r->subject.id == 0x00710EU && r->recipient.id == 0x00710DU && r->value == 0x0042U);
+    fixture_close(&f);
+    return rc;
+}
+
+/* The extended MBT Status Update, Status Query, Message Update and Call Alert (TIA-102.AABC-D Figs 6.2.18-2,
+   6.2.17-2, 6.2.10-2, 6.2.4-2): two data blocks. */
+static void
+mbt_command(uint8_t* m, uint8_t opcode, uint16_t value) {
+    DSD_MEMSET(m, 0, 36);
+    mbt_header(m, opcode, 0x000201, 2); /* Target Address (WUID) */
+    mbt_put_wacn_sys(m, OTHER_WACN, OTHER_SYS);
+    m[14] = 0x00; /* Source ID 0x000301 */
+    m[15] = 0x03;
+    m[16] = 0x01;
+    m[17] = (uint8_t)(value >> 8);
+    m[18] = (uint8_t)value;
+    m[22] = 0x00; /* Source Address (WUID) 0x000302 */
+    m[23] = 0x03;
+    m[24] = 0x02;
+    m[25] = (uint8_t)(SERVING_WACN >> 12); /* Target SUID */
+    m[26] = (uint8_t)(SERVING_WACN >> 4);
+    m[27] = (uint8_t)(((SERVING_WACN & 0x0FU) << 4) | ((SERVING_SYS >> 8) & 0x0FU));
+    m[28] = (uint8_t)SERVING_SYS;
+    m[29] = 0x00; /* Target ID 0x000202 */
+    m[30] = 0x02;
+    m[31] = 0x02;
+}
+
+static int
+test_p25_mbt_report_rows(void) {
+    fixture f;
+    uint8_t m[36];
+    int rc = 0;
+    if (fixture_open(&f) != 0) {
+        return 1;
+    }
+    mbt_command(m, 0x18, 0xA10B);
+    run_mbt(&f, m, 36);
+    const dsd_unit_activity* r = last_row(&f);
+    rc |= expect_row("MBT status", r, DSD_UA_PROTO_P25P1, DSD_UA_STATUS, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA);
+    if (r) {
+        rc |= expect_id("MBT status subject", &r->subject, 0x000301, DSD_UA_ID_RADIO);
+        rc |= expect_home("MBT status home", &r->subject, OTHER_WACN, OTHER_SYS);
+        rc |= expect_id("MBT status assigned", &r->assigned, 0x000302, DSD_UA_ID_RADIO);
+        rc |= expect_id("MBT status recipient", &r->recipient, 0x000202, DSD_UA_ID_RADIO);
+        rc |= expect_u("MBT status value", r->value, 0xA10BU);
+    }
+    mbt_command(m, 0x1A, 0);
+    run_mbt(&f, m, 36);
+    r = last_row(&f);
+    rc |= expect_row("MBT query", r, DSD_UA_PROTO_P25P1, DSD_UA_STATUS, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA);
+    if (r) {
+        rc |= expect_id("MBT query subject", &r->subject, 0x000202, DSD_UA_ID_RADIO);
+        rc |= expect_id("MBT query assigned", &r->assigned, 0x000201, DSD_UA_ID_RADIO);
+        rc |= expect_id("MBT query actor", &r->actor, 0x000301, DSD_UA_ID_RADIO);
+    }
+    mbt_command(m, 0x1C, 0x1234);
+    run_mbt(&f, m, 36);
+    r = last_row(&f);
+    rc |= expect_row("MBT message", r, DSD_UA_PROTO_P25P1, DSD_UA_MESSAGE, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA);
+    rc |= expect_true("MBT message value", r != NULL && r->value == 0x1234U);
+    mbt_command(m, 0x1F, 0);
+    run_mbt(&f, m, 36);
+    r = last_row(&f);
+    rc |= expect_row("MBT alert", r, DSD_UA_PROTO_P25P1, DSD_UA_CALL_ALERT, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA);
+    fixture_close(&f);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -951,6 +1252,10 @@ main(void) {
     rc |= test_p25_relaxed_crc_no_row();
     rc |= test_p25_repeat_tsbk_one_row();
     rc |= test_p25_names_at_push();
+    rc |= test_p25_repeat_dereg_one_row();
+    rc |= test_p25_native_0x6c_rows();
+    rc |= test_p25_more_forms();
+    rc |= test_p25_mbt_report_rows();
     if (rc == 0) {
         printf("P25_UNIT_ACTIVITY: OK\n");
     }

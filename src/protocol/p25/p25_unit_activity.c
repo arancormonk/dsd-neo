@@ -12,17 +12,13 @@
 
 #include "p25_unit_activity.h"
 
-#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
 
-#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
 enum {
     P25_UA_FIRST_SPECIAL = 0xFFFFFC, /* FNE use, System Default, Registration Default, ALL units */
@@ -34,7 +30,9 @@ enum {
     P25_UA_EXT_INHIBIT = 0x7F,
 };
 
-uint8_t
+/* Registration Value / Group Affiliation Value (TIA-102.AABC-D §6.2.21.1, §6.2.8.1): 0 accept, 1 fail, 2 deny,
+   3 refused. */
+static uint8_t
 p25_ua_rv_result(int value) {
     switch (value & 3) {
         case 0: return DSD_UA_RESULT_ACCEPTED;
@@ -99,48 +97,12 @@ p25_ua_row_init(const p25_ua_origin* o, dsd_unit_activity* row, uint8_t kind, ui
     row->freq_hz = (int64_t)dsd_opts_tuned_freq_hz(o->opts);
 }
 
-/* 1 when @p id names a radio of the current system: no home given, or its home is the current P25 scope. */
-static int
-p25_ua_identity_is_local(const dsd_ua_identity* id, const dsd_alias_scope* scope) {
-    if (!id->home_valid) {
-        return 1;
-    }
-    return scope->valid && scope->kind == id->home_kind && scope->a == id->home_a && scope->b == id->home_b;
-}
-
-static int
-p25_ua_radio_name(const dsd_state* state, const dsd_alias_scope* scope, const dsd_ua_identity* id, char* name,
-                  size_t cap) {
-    if (!id->valid || id->subtype != DSD_UA_ID_RADIO) {
-        return 0;
-    }
-    return dsd_source_label_lookup_scoped(state, scope, id->id, NULL, 0U, name, cap);
-}
-
-/* The subject's name in the current reception scope, as the view resolves it for a row of that scope: the assigned
-   (serving) address first, then the subject's own ID when it is an ID of this system. */
-static void
-p25_ua_freeze_name(const dsd_state* state, dsd_unit_activity* row) {
-    char name[DSD_SOURCE_ALIAS_NAME_MAX + 16];
-    dsd_alias_scope scope;
-    name[0] = '\0';
-    (void)dsd_alias_scope_current(state, &scope);
-    const int found = p25_ua_radio_name(state, &scope, &row->assigned, name, sizeof name)
-                      || (p25_ua_identity_is_local(&row->subject, &scope)
-                          && p25_ua_radio_name(state, &scope, &row->subject, name, sizeof name));
-    if (found) {
-        /* The push cuts a name that fills the field at a character boundary. */
-        const size_t len = strlen(name);
-        DSD_MEMCPY(row->name_frozen, name, len < sizeof row->name_frozen ? len + 1U : sizeof row->name_frozen);
-    }
-}
-
 static void
 p25_ua_push(const p25_ua_origin* o, dsd_unit_activity* row) {
     if (!row->subject.valid) {
         return; /* a row names whom it is about */
     }
-    p25_ua_freeze_name(o->state, row);
+    dsd_unit_activity_freeze_name(o->state, row);
     (void)dsd_unit_activity_push(o->state, row);
 }
 
@@ -158,10 +120,14 @@ p25_ua_set_value(dsd_unit_activity* row, uint32_t value) {
     row->value_valid = 1U;
 }
 
-/* 1 when @p home is the serving system's (the WACN and System ID the receiver holds). */
+/* 1 when @p home is the serving system's: its WACN and System ID the receiver's, or, for a home whose WACN is not
+   known yet (the abbreviated registration response before the site's WACN), its System ID. */
 static int
 p25_ua_home_is_serving(const dsd_state* state, const p25_home_id* home) {
-    return home->valid && home->wacn == (uint32_t)state->p2_wacn && home->sys == (uint16_t)state->p2_sysid;
+    if (home->sys != (uint16_t)state->p2_sysid) {
+        return 0;
+    }
+    return !home->valid || home->wacn == (uint32_t)state->p2_wacn;
 }
 
 /* The assigned address, kept when it says more than the home identity does. */
@@ -171,6 +137,19 @@ p25_ua_set_assigned(const dsd_state* state, dsd_unit_activity* row, const p25_ho
         return;
     }
     row->assigned = p25_ua_identity(assigned);
+}
+
+/* The subject from @p u: its ID with its home, and its WUID on the sending system as the assigned identity. */
+static void
+p25_ua_set_subject_unit(const dsd_state* state, dsd_unit_activity* row, const p25_ua_unit* u) {
+    row->subject = p25_ua_unit_identity(u);
+    if (u && u->local != 0U && row->subject.valid) {
+        if (u->home.valid) {
+            p25_ua_set_assigned(state, row, &u->home, u->local);
+        } else if (u->local != u->id) {
+            row->assigned = p25_ua_identity(u->local);
+        }
+    }
 }
 
 void
@@ -266,13 +245,12 @@ p25_ua_extended_function_kind(uint8_t command) {
 }
 
 void
-p25_ua_extended_function(const p25_ua_origin* o, uint8_t class_id, uint8_t operand, uint32_t argument,
-                         uint32_t target) {
-    if (!p25_ua_origin_ok(o) || class_id != 0U) {
+p25_ua_extended_function(const p25_ua_origin* o, const p25_ua_ext_function* f) {
+    if (!p25_ua_origin_ok(o) || !f || f->class_id != 0U) {
         return;
     }
-    const int ack = (operand & P25_UA_EXT_ACK) != 0;
-    const uint8_t kind = p25_ua_extended_function_kind((uint8_t)(operand & ~P25_UA_EXT_ACK));
+    const int ack = (f->operand & P25_UA_EXT_ACK) != 0;
+    const uint8_t kind = p25_ua_extended_function_kind((uint8_t)(f->operand & ~P25_UA_EXT_ACK));
     if (kind == 0U) {
         return;
     }
@@ -280,62 +258,70 @@ p25_ua_extended_function(const p25_ua_origin* o, uint8_t class_id, uint8_t opera
     p25_ua_row_init(o, &row, kind, ack ? DSD_UA_ROLE_ACK : DSD_UA_ROLE_COMMAND,
                     ack ? DSD_UA_RESULT_ACKNOWLEDGED : DSD_UA_RESULT_NA);
     /* Table 2.3.15-1: a command's argument is the Source Address, an acknowledgement's the radio acknowledging. */
-    row.subject = p25_ua_identity(ack ? argument : target);
-    row.actor = p25_ua_identity(ack ? target : argument);
+    const dsd_ua_identity argument = p25_ua_identity_home(f->argument, f->argument_home);
+    if (ack) {
+        row.subject = argument;
+        row.actor = p25_ua_identity(f->target);
+    } else {
+        row.subject = p25_ua_identity(f->target);
+        row.actor = argument;
+    }
     p25_ua_push(o, &row);
 }
 
 void
-p25_ua_radio_unit_monitor(const p25_ua_origin* o, uint32_t target, uint32_t source, uint16_t group) {
+p25_ua_radio_unit_monitor(const p25_ua_origin* o, uint32_t target, const p25_ua_unit* source, int talkgroup_mode,
+                          uint16_t group) {
     if (!p25_ua_origin_ok(o)) {
         return;
     }
     dsd_unit_activity row;
     p25_ua_row_init(o, &row, DSD_UA_RADIO_MONITOR, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA);
     row.subject = p25_ua_identity(target);
-    if (group != 0U) {
+    if (talkgroup_mode) {
         p25_ua_set_group(&row, group);
     } else {
-        row.actor = p25_ua_identity(source);
+        row.actor = p25_ua_unit_identity(source);
     }
     p25_ua_push(o, &row);
 }
 
 /* A report row: the reporting source is the subject and the target the recipient (plan G13). */
 static void
-p25_ua_report(const p25_ua_origin* o, uint8_t kind, uint32_t value, uint32_t target, const p25_ua_unit* source) {
+p25_ua_report(const p25_ua_origin* o, uint8_t kind, uint32_t value, const p25_ua_unit* target,
+              const p25_ua_unit* source) {
     if (!p25_ua_origin_ok(o)) {
         return;
     }
     dsd_unit_activity row;
     p25_ua_row_init(o, &row, kind, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA);
-    row.subject = p25_ua_unit_identity(source);
-    row.recipient = p25_ua_identity(target);
+    p25_ua_set_subject_unit(o->state, &row, source);
+    row.recipient = p25_ua_unit_identity(target);
     p25_ua_set_value(&row, value);
     p25_ua_push(o, &row);
 }
 
 void
-p25_ua_status_update(const p25_ua_origin* o, uint16_t status, uint32_t target, const p25_ua_unit* source) {
+p25_ua_status_update(const p25_ua_origin* o, uint16_t status, const p25_ua_unit* target, const p25_ua_unit* source) {
     p25_ua_report(o, DSD_UA_STATUS, status, target, source);
 }
 
 void
-p25_ua_message_update(const p25_ua_origin* o, uint16_t message, uint32_t target, const p25_ua_unit* source) {
+p25_ua_message_update(const p25_ua_origin* o, uint16_t message, const p25_ua_unit* target, const p25_ua_unit* source) {
     p25_ua_report(o, DSD_UA_MESSAGE, message, target, source);
 }
 
 /* A row about @p target that @p source started. */
 static void
-p25_ua_directed(const p25_ua_origin* o, uint8_t kind, uint8_t role, uint32_t target, const p25_ua_unit* source,
-                dsd_unit_activity* row) {
+p25_ua_directed(const p25_ua_origin* o, uint8_t kind, uint8_t role, const p25_ua_unit* target,
+                const p25_ua_unit* source, dsd_unit_activity* row) {
     p25_ua_row_init(o, row, kind, role, DSD_UA_RESULT_NA);
-    row->subject = p25_ua_identity(target);
+    p25_ua_set_subject_unit(o->state, row, target);
     row->actor = p25_ua_unit_identity(source);
 }
 
 void
-p25_ua_status_query(const p25_ua_origin* o, uint32_t target, const p25_ua_unit* source) {
+p25_ua_status_query(const p25_ua_origin* o, const p25_ua_unit* target, const p25_ua_unit* source) {
     if (!p25_ua_origin_ok(o)) {
         return;
     }
@@ -345,7 +331,7 @@ p25_ua_status_query(const p25_ua_origin* o, uint32_t target, const p25_ua_unit* 
 }
 
 void
-p25_ua_call_alert(const p25_ua_origin* o, uint32_t target, const p25_ua_unit* source) {
+p25_ua_call_alert(const p25_ua_origin* o, const p25_ua_unit* target, const p25_ua_unit* source) {
     if (!p25_ua_origin_ok(o)) {
         return;
     }
@@ -361,7 +347,8 @@ p25_ua_answer_request(const p25_ua_origin* o, uint32_t target, const p25_ua_unit
         return;
     }
     dsd_unit_activity row;
-    p25_ua_directed(o, DSD_UA_ANSWER_REQUEST, DSD_UA_ROLE_REPORT, target, source, &row);
+    const p25_ua_unit paged = {target, {0U, 0U, 0U, 0U}, 0U};
+    p25_ua_directed(o, DSD_UA_ANSWER_REQUEST, DSD_UA_ROLE_REPORT, &paged, source, &row);
     if (has_service) {
         p25_ua_set_value(&row, service);
     }

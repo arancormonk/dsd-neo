@@ -341,12 +341,22 @@ ua_reception_equal(const dsd_unit_activity* a, const dsd_unit_activity* b) {
     return ua_scope_equal(&a->scope, &b->scope) && a->scope_epoch == b->scope_epoch && a->freq_hz == b->freq_hz;
 }
 
+/* A deregistration's assigned identity is not in its message: the producer reads it from the registration the first
+ * acknowledgement removes, so a repeat that finds none is the same deregistration and keeps the held identity. */
+static int
+ua_assigned_equal(const dsd_unit_activity* held, const dsd_unit_activity* rec) {
+    if (rec->kind == DSD_UA_DEREGISTRATION && !rec->assigned.valid) {
+        return 1;
+    }
+    return ua_identity_equal(&held->assigned, &rec->assigned);
+}
+
 /* Every field the row shows but the stamps, repeat, slot and the name (dsd_unit_activity_push()). */
 static int
-ua_key_equal(const dsd_unit_activity* a, const dsd_unit_activity* b) {
-    return ua_header_equal(a, b) && ua_payload_equal(a, b) && ua_reception_equal(a, b)
-           && ua_identity_equal(&a->subject, &b->subject) && ua_identity_equal(&a->actor, &b->actor)
-           && ua_identity_equal(&a->assigned, &b->assigned) && ua_identity_equal(&a->recipient, &b->recipient);
+ua_key_equal(const dsd_unit_activity* held, const dsd_unit_activity* rec) {
+    return ua_header_equal(held, rec) && ua_payload_equal(held, rec) && ua_reception_equal(held, rec)
+           && ua_identity_equal(&held->subject, &rec->subject) && ua_identity_equal(&held->actor, &rec->actor)
+           && ua_assigned_equal(held, rec) && ua_identity_equal(&held->recipient, &rec->recipient);
 }
 
 /* The row @p rec merges into: the most recently revised of the lookback rows with its key, when the clock has not gone

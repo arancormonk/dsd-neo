@@ -41,15 +41,14 @@ typedef struct {
     uint8_t crc_ok; /**< 0: the message failed its CRC (kept under -F): no row. */
 } p25_ua_origin;
 
-/** A radio address with its home system (an SUID) when the message names one: home.valid 0 when it does not. */
+/** A radio address with its home system (an SUID) when the message names one: home.valid 0 when it does not. local
+ * is the unit's WUID on the system sending the message when the message carries one too (an MBT's Source / Target
+ * Address), else 0; it becomes the row's assigned identity when the unit is the subject. */
 typedef struct {
     uint32_t id;
     p25_home_id home;
+    uint32_t local;
 } p25_ua_unit;
-
-/** Registration Value / Group Affiliation Value (TIA-102.AABC-D §6.2.21.1, §6.2.8.1): 0 accept, 1 fail, 2 deny,
- * 3 refused. */
-uint8_t p25_ua_rv_result(int value);
 
 /**
  * Unit Registration Response (0x6C / 0xEC / MBT): the subject is the home identity, the assigned address (a value
@@ -84,31 +83,43 @@ typedef struct {
  * additional information in value2 when valid. */
 void p25_ua_deny_queued(const p25_ua_origin* o, const p25_ua_response* r);
 
+/** The fields of an Extended Function Command. */
+typedef struct {
+    uint8_t class_id;
+    uint8_t operand;
+    uint32_t argument;
+    uint32_t target;
+    /** The home system of the unit the argument names, when an extended form's Source SUID says it (NULL: none). */
+    const p25_home_id* argument_home;
+} p25_ua_ext_function;
+
 /**
  * Extended Function Command class $00 (TIA-102.AABC-D §2.3.15 Table 2.3.15-1): radio check, detach, uninhibit and
  * inhibit commands and their acknowledgements. A command's argument is the Source Address (the requester: actor) and
  * the Target Address the radio commanded (subject); an acknowledgement's argument is the radio that acknowledged
  * (subject) and the Target Address the party told (actor). Other classes and reserved operands add no row.
  */
-void p25_ua_extended_function(const p25_ua_origin* o, uint8_t class_id, uint8_t operand, uint32_t argument,
-                              uint32_t target);
+void p25_ua_extended_function(const p25_ua_origin* o, const p25_ua_ext_function* f);
 
-/** Radio Unit Monitor Command: subject the radio monitored, actor the unit that monitors; @p group non-zero when the
- * enhanced form monitors for a talkgroup instead (no actor then). */
-void p25_ua_radio_unit_monitor(const p25_ua_origin* o, uint32_t target, uint32_t source, uint16_t group);
+/** Radio Unit Monitor Command: subject the radio monitored, actor the unit that monitors; with @p talkgroup_mode (the
+ * enhanced form's TG flag) it monitors for talkgroup @p group instead (no actor then). */
+void p25_ua_radio_unit_monitor(const p25_ua_origin* o, uint32_t target, const p25_ua_unit* source, int talkgroup_mode,
+                               uint16_t group);
 
 /** Status Update (a report): subject the reporting source, @p target as the recipient, the 16-bit status (User Status
  * high octet, Unit Status low octet, §2.3.29) as the value. */
-void p25_ua_status_update(const p25_ua_origin* o, uint16_t status, uint32_t target, const p25_ua_unit* source);
+void p25_ua_status_update(const p25_ua_origin* o, uint16_t status, const p25_ua_unit* target,
+                          const p25_ua_unit* source);
 
 /** Status Query (a command): subject the queried target, actor the source. */
-void p25_ua_status_query(const p25_ua_origin* o, uint32_t target, const p25_ua_unit* source);
+void p25_ua_status_query(const p25_ua_origin* o, const p25_ua_unit* target, const p25_ua_unit* source);
 
 /** Message Update (a report): subject the reporting source, @p target as the recipient, the message as the value. */
-void p25_ua_message_update(const p25_ua_origin* o, uint16_t message, uint32_t target, const p25_ua_unit* source);
+void p25_ua_message_update(const p25_ua_origin* o, uint16_t message, const p25_ua_unit* target,
+                           const p25_ua_unit* source);
 
 /** Call Alert (a report): subject the paged target, actor the source. */
-void p25_ua_call_alert(const p25_ua_origin* o, uint32_t target, const p25_ua_unit* source);
+void p25_ua_call_alert(const p25_ua_origin* o, const p25_ua_unit* target, const p25_ua_unit* source);
 
 /** Unit-to-unit (@p source given) or telephone interconnect (@p source NULL) Answer Request (a report): subject the
  * paged target, actor the caller, the service options in value when @p has_service. */

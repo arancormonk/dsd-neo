@@ -5,7 +5,7 @@
 
 /*
  * A recording dsd_unit_activity_push() for tests that compile protocol sources without dsd-neo_core's ring (and its
- * alias lists): each push is kept, nothing is merged, and no name is ever found.
+ * alias lists): each push is kept, nothing is merged, and no name is ever frozen.
  */
 
 #ifndef DSD_NEO_TESTS_TEST_SUPPORT_UNIT_ACTIVITY_CAPTURE_H_
