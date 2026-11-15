@@ -1039,20 +1039,22 @@ turned it on).
 - The skip races the channel's normal wait: a trunk-scan conventional target's idle dwell (`dwell_ms`, 3 s by default;
   `-t` does not set it), or a `-Y` row's hangtime (`-t`). A dwell or hangtime shorter than the check's own time gains
   nothing: the visit ends on its dwell before the answer comes, and no skip line is logged. On the rtl_tcp loopback
-  bench below the check took about 0.26 to 0.39 s at the default retune mute, less with a shorter mute, and up to about
+  bench below the check took about 0.27 to 0.39 s at the default retune mute, less with a shorter mute, and up to about
   0.5 s on NXDN48 noise. The other way round, with skip-silent on a longer dwell costs little: a silent channel is still
   left as soon as the check answers, so the extra time is spent only on channels that read busy or get no check, which
   is where a call may be starting.
 - Measured on a synthetic test scene over an rtl_tcp loopback (`tools/bench_scan_skip_silent.py`: 12 silent channels and
-  three that each call for 4 s about every 20 s, 240 s per run, with a 3 s dwell or hangtime), every silent DMR, NFM and
+  three that each call for 4 s about every 20 s, 240 s per run, with a 3 s dwell, or `-t 2`), every silent DMR, NFM and
   P25 visit was skipped and no channel was skipped while a call was on it (a call that started during the reading was
   missed up to once a run, a limit listed below). With the default retune mute a skipped visit took 0.27 to 0.34 s on
   the rtl_tcp loopback; with a 25 ms mute (`DSD_NEO_RETUNE_MUTE_MS=25`, closer to a USB dongle, but still the rtl_tcp
   loopback, not real hardware) it took 0.17 to 0.26 s. The scan caught 17 to 27 of the 35 calls with the setting on,
   against 2 of 34 with it off (`-Y`, default mute). On a second loopback scene whose silent channels are NXDN48 and dPMR
-  channels carrying only noise, 99 to 100 % of those visits were skipped, each in 0.30 to 0.49 s (0 to 65 % before these
-  fixes). CPU use on the first scene was the same as without these changes (2.5 to 3.5 % of one core on a host busy with
-  other work); on the noise scene it rose by up to 0.3 points, because the scan made about twice as many visits.
+  channels carrying only noise, 99 to 100 % of those visits were skipped, in a median of 0.30 to 0.49 s each (0 to 65 %
+  before these fixes). CPU use on the first scene was the same as without these changes (2.5 to 3.5 % of one core on a
+  host busy with other work). On the noise scene it rose by up to about 0.5 points on the rtl_tcp loopback (from
+  2.79 to 3.31 % on trunk scan with the 25 ms mute), because the scan made more visits: about twice as many on trunk
+  scan, and five to seven times as many on `-Y`, whose noise rows had been held to the visit cap before.
 - A check that cannot finish (no samples in time, no answer in time, clipped samples) changes nothing: the visit runs
   its normal timing.
 - Each skip logs one line, for example
@@ -1080,9 +1082,10 @@ turned it on).
   any point, counted from the moment the scan starts tuning to the channel: that ends the visit's check, and the visit
   runs its normal dwell, hangtime or hold. Any carrier counts, whatever its tone or code, even one that ends before its
   tone check finishes. A sync alone does not count: noise that only looks like the start of a frame (NXDN48 and dPMR
-  noise often does) no longer keeps a silent channel. A frame that passed part of its checks and waits on the rest (a
-  D-STAR voice frame waiting for its header, for example) holds the skip back while it waits; if the check's answer is
-  more than a quarter of a second old by then, the visit keeps its normal timing.
+  noise often does) no longer keeps a silent channel. A frame whose verdict is still open (one that passed part of its
+  checks and waits on the rest, such as a D-STAR voice frame waiting for its header, or a dPMR frame type that carries
+  no check of its own) holds the skip back while it waits; if the check's answer is more than a quarter of a second old
+  by then, the visit keeps its normal timing.
 - A hold, an edit to the list or channel map, a width change, an input switch, a pause or a loaded config throws the
   reading away. Once nothing keeps the channel any more, the check can run again on the same visit.
 - A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API
@@ -1195,14 +1198,15 @@ that stops sending) gives up its read after 100 ms on a radio input and 500 ms o
 (dwell, visit cap, hangtime, departures) then run as on a silent channel, whether or not skip-silent is on.
 
 Under `-Y`, whether or not skip-silent is on, only frames whose content passed their protocol's checks keep a row past
-its hangtime. Noise that keeps looking like the start of a frame (NXDN48 and dPMR noise often does) used to keep a `-Y`
-row on an empty channel until the visit cap, or for good with no cap. Now the row leaves once `-t` has passed since it
-landed or since its last checked frame, whichever is later. A frame that passed part of its checks and waits on the rest
-holds the row a little longer, for at most 1 second, so a late-joined D-STAR call waiting for its header is not cut.
-ProVoice, X2-TDMA and TETRA frames, which have no such check, keep the row while they keep coming. DMR, P25, ProVoice
-and EDACS syncs restart the hangtime themselves, as before. NXDN on a conventional `-Y` scan holds the row its two extra
-seconds only after a frame whose own check passed: one short check that a noise frame passes by chance does not count,
-and neither does a run of failed control-channel checks.
+its hangtime. Noise that keeps looking like the start of a frame, NXDN48 noise in particular, used to keep a `-Y` row on
+an empty channel until the visit cap, or for good with no cap. Now the row leaves once `-t` has passed since it landed
+or since its last checked frame, whichever is later. A frame whose verdict is still open (one that passed part of its
+checks and waits on the rest, or a dPMR frame type that carries no check of its own) holds the row up to 1 s after each
+such frame, so a late-joined D-STAR call waiting for its header is not cut. ProVoice, X2-TDMA and TETRA frames, which
+have no such check, keep the row while they keep coming. DMR, P25, ProVoice and EDACS syncs restart the hangtime
+themselves, as before. NXDN on a conventional `-Y` scan holds the row its two extra seconds only after a frame whose own
+check passed: one short check that a noise frame passes by chance does not count, and neither does a run of failed
+control-channel checks.
 
 ## Limitations
 

@@ -990,12 +990,13 @@ bursts) over the noise inside the same width. Digital modes need 90% of the fram
 signal; analog needs 12 dB SINAD of a 1 kHz tone (NFM at 60% of the transmitter's maximum deviation, AM at 30%
 depth). Each is the median of five noise seeds on a 0.5 dB grid.
 
-NFM is measured at every width with two transmitters: a 12.5 kHz channel's (2.5 kHz maximum deviation, so the tone
-at 1.5 kHz) and a 25 kHz channel's (5 kHz, the tone at 3 kHz). Each also sends speech-like audio, 16 tones from 300
-to 3000 Hz weighted towards the low ones as speech is, at a 2.5 or 5 kHz peak deviation, which must come out at
-12 dB S/N over that band. AM is measured with the carrier on the channel and with it 1 kHz inside the channel's
-edge. Every one of these rows is its own condition in the trials below, each 1 dB under its own threshold. The rows
-the previous calibration measured (one NFM transmitter per width) give the same thresholds as then.
+NFM is measured at every width with two transmitters: a 12.5 kHz channel's (2.5 kHz maximum deviation, so a 1 kHz tone
+at 1.5 kHz deviation) and a 25 kHz channel's (5 kHz, so the tone at 3 kHz deviation). Each also sends speech-like audio,
+16 tones from 300 to 3000 Hz weighted towards the low ones as speech is, at a 2.5 or 5 kHz peak deviation, which must
+come out at 12 dB S/N over that band. AM is measured with the carrier on the channel and with it 1 kHz inside the
+channel's edge. Every one of these rows is its own condition in the trials below, each 1 dB under its own threshold. The
+rows the previous calibration kept (one per NFM width: the lower of the two transmitters where it measured both, at
+11.25, 16 and 20 kHz) give the same thresholds as then.
 
 | Mode | Class | Threshold S/N |
 | --- | --- | --- |
@@ -1210,7 +1211,7 @@ levels: their sideband blocks hold the neighbours.
   by at most 0.3 dB, and the floor at the channel's place stood 0.7 dB over the reference, which reads a channel
   busier, not quieter. No real 2.4 Msps or Airspy noise capture was available, so those rates were validated on
   rendered noise only. A front end whose floor at the channel sits lower than across the rest of the band reads the
-  channel that much quieter; the threshold leaves 0.6 dB between it and the weakest signal validated. One whose floor
+  channel that much quieter; the threshold leaves 0.67 dB between it and the weakest signal validated. One whose floor
   varies by more than about 8.7 dB across the span voids requests on its high parts.
 - Neighbour scenes were rendered at 1.536 Msps only (the driver renders its neighbour, slope and broad-interferer
   scenes at that rate) and with a C4FM neighbour only.

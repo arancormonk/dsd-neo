@@ -8813,7 +8813,7 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `dsd_signal_quiet_rate_supported(rate)` (every class) and `dsd_signal_quiet_analog_supported(kind, width, rate)`
   (`kind` a `dsd_analog_demod`) match the calibrated capture rates and widths of that kind exactly
   (`kQuietNfmWidthsHz`: the Radio sheet's NFM steps plus 10, 12 and 15 kHz; `kQuietAmWidthsHz`: its AM steps plus
-  8333 Hz; issue #834 A11, each width validated with both NFM transmitters); elsewhere the engine makes no check.
+  8333 Hz; issue #834 A11, each NFM width validated with both transmitters); elsewhere the engine makes no check.
   Changing the measurement, the sub-windows, either list or a constant means re-running that calibration. It judges
   `DSD_SIGNAL_QUIET_WINDOWS` (9) back-to-back sub-windows, each the smallest whole number of transforms of at least
   10 ms, in every requested width class (`DSD_SIGNAL_QUIET_CLASS_12K5`, `_6K25`, `_ANALOG` with the request's analog

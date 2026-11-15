@@ -2365,9 +2365,10 @@ channel is delayed.
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`. The later of `-T`/`-Y` wins.
 - Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). The
   later of `-T`/`-Y` wins. Only frames whose content passed their protocol's checks keep a row past `-t`: noise that
-  keeps matching a sync word (NXDN48 and dPMR noise often does) no longer holds a row on an empty channel, and the row
-  leaves once `-t` has passed since it landed or since its last checked frame. A frame still waiting on part of its
-  checks holds the row up to 1 s more; ProVoice, X2-TDMA and TETRA frames, which have no such check, hold it while they
+  keeps matching a sync word (NXDN48 noise in particular) no longer holds a row on an empty channel, and the row
+  leaves once `-t` has passed since it landed or since its last checked frame. A frame whose verdict is still open (one
+  waiting on part of its checks, or a dPMR frame type with no check of its own) holds the row up to 1 s after each such
+  frame; ProVoice, X2-TDMA and TETRA frames, which have no such check, hold it while they
   come; DMR, P25, ProVoice and EDACS syncs restart `-t` as before
   ([details](trunk-scan.md#skipping-silent-channels)). For NXDN the hold is refreshed only by a frame whose own
   content passed its CRC (a lone short CRC that a noise frame passes by chance does not count), so an open squelch on
