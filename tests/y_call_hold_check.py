@@ -39,9 +39,9 @@ CALLS = {
 TAIL = "noise_floor"
 # How long the row may stay on after the call's last sync, past the hangtime. Every protocol: the hangtime is compared
 # in whole seconds (up to 1 s over), plus up to a second for the hunt pass that steps. NXDN also holds a -Y row 2 s
-# past each frame that passed its own check (nxdn_finish_decoded_frame(), from issue #406, so the gap to the next frame
+# past each frame whose own CRCs proved its content (nxdn_finish_decoded_frame(), from issue #406, so the gap to the next frame
 # does not read as loss of signal); with that hold on top, its bound is 3.5 s. Measured at -t 1: 0.4-1.9 s for the
-# others, 3.9-4.1 s for NXDN (2 s hold + 1 s hangtime + rounding + a pass, from its last checked frame); about a
+# others, 3.0-4.1 s for NXDN (2 s hold + 1 s hangtime + rounding + a pass, from its last checked frame); about a
 # second more at -t 2.
 LEAVE_PAD_S = 2.0
 LEAVE_PAD_NXDN_S = 3.5

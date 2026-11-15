@@ -137,6 +137,16 @@ int nxdn_confirm_is_confirmed(const dsd_state* state);
  */
 int nxdn_confirm_frame_proved(const dsd_state* state);
 
+/**
+ * @brief Whether this frame's own CRCs proved its content: a strong check, or the short one that completes or continues
+ * a weak streak.
+ *
+ * Narrower than nxdn_confirm_frame_proved(), which a lone short CRC satisfies. It is the frame a scan quiet check hears
+ * as PROVEN content (nxdn_confirm_end_frame()), and the frame that refreshes a conventional -Y scan's hold (issue #834),
+ * so both read "checked" the same way. Read it after nxdn_confirm_end_frame().
+ */
+int nxdn_confirm_frame_content_proven(const dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

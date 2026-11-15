@@ -674,9 +674,11 @@ Generated (do not edit/commit):
       read yet and the hold's end, so the row left neither counts for the next row nor delays its step. A real dPMR,
       D-STAR, YSF, M17 or NXDN call (whose frames stamp no anchor, or only checked ones) keeps the row through those
       checks, encrypted or locked out alike. NXDN on a conventional -Y scan stamps the anchor, with its 2 s scanner
-      hold (#406), only on a frame whose own CRC passed (`nxdn_finish_decoded_frame()`, `nxdn_confirm_frame_proved()`):
-      the transmission's confirmation alone lets every later LICH-passing frame through, receiver noise after the call
-      included, and a hold those refreshed never let the row go. Trunked receivers and plain conventional ones keep the
+      hold (#406), only on a frame whose own CRCs proved its content (`nxdn_finish_decoded_frame()`,
+      `nxdn_confirm_frame_content_proven()`: a strong CRC, or a weak streak the frame completes or continues, the
+      frame the quiet check hears as PROVEN): the transmission's confirmation alone lets every later LICH-passing frame
+      through, receiver noise after the call included, and a hold those refreshed, or a lone 6-bit CRC one of them
+      passed by chance, never let the row go. Trunked receivers and plain conventional ones keep the
       confirmation's stamp, and a run of failed CACs pushes the anchor only off a conventional -Y scan
       (`nxdn_reset_after_cac_fail()`). Off -Y the boundary costs one compare. The NOTICE names the row
       (`row N`, 1-based) and, as for the trunk scan, logs the decision before the step runs. Tests: `ENGINE_TRUNK_SCAN`

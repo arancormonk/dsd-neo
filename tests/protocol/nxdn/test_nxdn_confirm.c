@@ -330,6 +330,24 @@ main(void) {
     expect("one strong frame proves the profile", run_frame_proved(state, NXDN_EVIDENCE_STRONG), 1);
     expect("the frame after it proves nothing", run_frame_proved(state, 0), 0);
 
+    /* Issue #834: a frame whose content a scan hears as proven, which is also what refreshes a conventional -Y scan's
+     * hold: a strong CRC, or the short one that completes or continues a weak streak. A lone short CRC inside a confirmed
+     * transmission proves the SPS profile but not the content: noise after a call passes a 6-bit CRC about 1 in 64. */
+    nxdn_confirm_reset(state);
+    expect("a fresh frame has proven no content", nxdn_confirm_frame_content_proven(state), 0);
+    run_frame(state, NXDN_EVIDENCE_STRONG);
+    expect("a strong frame proves its content", nxdn_confirm_frame_content_proven(state), 1);
+    run_frame(state, 0);
+    expect("an empty frame proves none", nxdn_confirm_frame_content_proven(state), 0);
+    run_frame(state, NXDN_EVIDENCE_WEAK);
+    expect("a lone weak frame proves the profile", nxdn_confirm_frame_proved(state), 1);
+    expect("but not its content", nxdn_confirm_frame_content_proven(state), 0);
+    run_frame(state, NXDN_EVIDENCE_WEAK);
+    expect("the weak frame completing a streak proves its content", nxdn_confirm_frame_content_proven(state), 1);
+    run_frame(state, NXDN_EVIDENCE_WEAK);
+    expect("and the frame continuing it", nxdn_confirm_frame_content_proven(state), 1);
+    expect("null state has proven no content", nxdn_confirm_frame_content_proven(NULL), 0);
+
     /* A signal search hears a frame's confirmation when the frame closes, after the channels that confirmed it have
      * published what they decoded (the RAN, a call), and once per frame however many CRCs passed in it. */
     dsd_signal_search_evidence_set(count_search_report);

@@ -174,8 +174,7 @@ nxdn_confirm_end_frame(const dsd_opts* opts, dsd_state* state) {
     /* The frame's own CRCs confirmed the transmission: a strong one, or the short one that completes or continues a weak
      * streak. A signal search hears that only now, once the frame's channels have published the RAN and call their
      * confirmation unlocked, since it reads them from state when it hears it. */
-    if (state->nxdn_confirm_frame_evidence == (uint8_t)NXDN_EVIDENCE_STRONG
-        || state->nxdn_confirm_weak_streak >= NXDN_CONFIRM_WEAK_OBSERVES) {
+    if (nxdn_confirm_frame_content_proven(state)) {
         /* Validated NXDN content: the frequency is not dead, even when it carries no control channel. */
         state->nxdn_confirm_lock_m = dsd_decode_now_mono_s();
         dsd_signal_search_note_evidence(state, "NXDN", 0, 0, NULL);
@@ -190,6 +189,13 @@ nxdn_confirm_end_frame(const dsd_opts* opts, dsd_state* state) {
 int
 nxdn_confirm_is_confirmed(const dsd_state* state) {
     return state && state->nxdn_confirmed != 0;
+}
+
+int
+nxdn_confirm_frame_content_proven(const dsd_state* state) {
+    return state && state->nxdn_confirm_frame_evidence != 0
+           && (state->nxdn_confirm_frame_evidence == (uint8_t)NXDN_EVIDENCE_STRONG
+               || state->nxdn_confirm_weak_streak >= NXDN_CONFIRM_WEAK_OBSERVES);
 }
 
 int

@@ -1082,7 +1082,8 @@ test_frame_places_the_grid_on_the_next_fsw(void) {
     return rc;
 }
 
-/* Issue #834: on a conventional -Y scan the hold needs the frame's own check, not only the transmission's confirmation.
+/* Issue #834: on a conventional -Y scan the hold needs the frame's own content proven (a strong CRC, or a weak streak the
+   frame completes), not only the transmission's confirmation.
    Receiver noise after a call passes the sync word and the LICH parity, and the confirmation lets it through; it must
    not refresh the hold, so the row leaves once -t has run past the last checked frame's 2 s hold. A call whose frames
    keep passing checks keeps the hold past -t. Trunked receivers, a trunked -Y scan and a plain conventional receiver
@@ -1141,6 +1142,20 @@ test_y_scan_hold_needs_a_checked_frame(void) {
     /* -t (1 s) past the 2 s hold: the hangtime rule is due, and the row leaves. */
     rc |= expect_int("-t past the hold: due",
                      (int)(dsd_decode_time() - g_state.last_cc_sync_time) > g_opts.trunk_hangtime, 1);
+
+    /* A lone short CRC a noise frame passes by chance (a 6-bit SACCH, about 1 in 64) is no proven content: it keeps
+       no row. Two in a row complete a weak streak, as a real call's do, and hold it again. */
+    g_stub_sacch_ok = 1;
+    y_hold_at(1009);
+    rc |= expect_int("lone short crc routed", route_frame(0x33U), 1);
+    rc |= expect_int("a lone short crc leaves the hold", (int)g_state.last_cc_sync_time, 1006);
+    rc |= expect_int(
+        "a lone short crc leaves the mono stamp",
+        (g_state.last_cc_sync_time_m - checked_m) < 1e-9 && (checked_m - g_state.last_cc_sync_time_m) < 1e-9, 1);
+    y_hold_at(1010);
+    rc |= expect_int("second short crc routed", route_frame(0x33U), 1);
+    rc |= expect_int("a completed weak streak holds the row 2 s", (int)g_state.last_cc_sync_time, 1012);
+    g_stub_sacch_ok = 0;
 
     rc |= y_hold_case(1, 1, 2003); /* a trunked -Y scan: the transmission's hold, 2 s past the noise frame */
     rc |= y_hold_case(0, 1, 2001); /* a trunked receiver: the carrier stamp on the noise frame */
