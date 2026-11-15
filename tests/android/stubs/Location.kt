@@ -22,6 +22,35 @@ interface LocationListener {
     fun onProviderEnabled(provider: String)
     fun onStatusChanged(provider: String?, status: Int, extras: Bundle?)
 }
+// The platform's request form from API 31, with its constants and getters; the minimum interval left unset reads as the
+// platform's "implicit" value, so a test sees whether it was set.
+class LocationRequest private constructor(
+    val intervalMillis: Long, val minUpdateIntervalMillis: Long, val minUpdateDistanceMeters: Float, val quality: Int,
+) {
+    companion object {
+        const val QUALITY_HIGH_ACCURACY = 100
+        const val QUALITY_BALANCED_POWER_ACCURACY = 102
+        const val QUALITY_LOW_POWER = 104
+    }
+    class Builder(private val intervalMillis: Long) {
+        private var minUpdateIntervalMillis = -1L
+        private var minUpdateDistanceMeters = 0f
+        private var quality = QUALITY_BALANCED_POWER_ACCURACY
+        fun setMinUpdateIntervalMillis(value: Long) = apply { minUpdateIntervalMillis = value }
+        fun setMinUpdateDistanceMeters(value: Float) = apply { minUpdateDistanceMeters = value }
+        fun setQuality(value: Int) = apply { quality = value }
+        fun build() = LocationRequest(intervalMillis, minUpdateIntervalMillis, minUpdateDistanceMeters, quality)
+    }
+}
+/** One continuous registration: the API 31 form fills [request] and [executor], the legacy form the rest. */
+class LocationUpdates(
+    val listener: LocationListener,
+    val request: LocationRequest? = null,
+    val executor: Executor? = null,
+    val minTimeMs: Long = -1,
+    val minDistanceM: Float = -1f,
+    val looper: Looper? = null,
+)
 class LocationManager {
     companion object {
         const val NETWORK_PROVIDER = "network"
@@ -29,6 +58,8 @@ class LocationManager {
         const val GPS_PROVIDER = "gps"
     }
     var enabled = true
+    val allProviders = mutableListOf(NETWORK_PROVIDER, FUSED_PROVIDER, GPS_PROVIDER)
+    val updates = mutableMapOf<String, LocationUpdates>()
     val disabledProviders = mutableSetOf<String>()
     val failingProviders = mutableSetOf<String>()
     val lastKnown = mutableMapOf<String, Location>()
@@ -52,6 +83,14 @@ class LocationManager {
         callback = Consumer { if (it != null) listener.onLocationChanged(it) }
         callbacks[provider] = callback!!
         listeners[provider] = listener
+    }
+    fun requestLocationUpdates(provider: String, request: LocationRequest, executor: Executor, listener: LocationListener) {
+        if (provider in failingProviders) throw IllegalArgumentException("unavailable provider")
+        updates[provider] = LocationUpdates(listener, request = request, executor = executor)
+    }
+    fun requestLocationUpdates(provider: String, minTimeMs: Long, minDistanceM: Float, listener: LocationListener, looper: Looper) {
+        if (provider in failingProviders) throw IllegalArgumentException("unavailable provider")
+        updates[provider] = LocationUpdates(listener, minTimeMs = minTimeMs, minDistanceM = minDistanceM, looper = looper)
     }
     fun removeUpdates(listener: LocationListener) { removedListeners.add(listener) }
 }

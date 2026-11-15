@@ -522,7 +522,7 @@ internal class BrowserCore(private val platform: BrowserPlatform, private val li
             Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, app),
             Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
         )
-        if (platform.apiLevel <= 32) launches += Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, app)
+        if (platform.apiLevel <= 32) launches += SettingsScreens.appDetails(platform.packageName)
         for (intent in launches) {
             try {
                 activity.startActivity(intent)
@@ -549,14 +549,9 @@ internal class BrowserCore(private val platform: BrowserPlatform, private val li
         }
     }
 
+    // When it does not open, the answer stands; the browser's text says where to allow it.
     private fun openAppInfo(activity: Activity) {
-        try {
-            activity.startActivity(
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${platform.packageName}")),
-            )
-        } catch (_: Exception) {
-            // The answer stands; the browser's text says where to allow it.
-        }
+        SettingsScreens.open(activity, SettingsScreens.appDetails(platform.packageName))
     }
 
     private fun settleAccess(request: AccessRequest, outcome: String) {

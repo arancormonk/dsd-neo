@@ -88,6 +88,10 @@ import org.qtproject.qt.android.bindings.QtActivity
  * hands it every result first. It claims its own request codes, including a result that comes after process death,
  * when no request waits for it any more (dropped), and the late RESULT_CANCELED Android sends for a launch that found
  * no app; everything else goes on to Qt's listeners.
+ *
+ * GPS roaming's location feed (#786) runs only while the app is visible: [LocationStream] learns each start, and each
+ * stop advances its foreground epoch and stops the feed itself, since Qt's thread, which would stop it, freezes once the
+ * activity stops. Location permission answers go to [LocationPermission], the one prompt for both location users.
  */
 class DsdNeoActivity : QtActivity() {
     private var backCallback: OnBackInvokedCallback? = null
@@ -151,6 +155,7 @@ class DsdNeoActivity : QtActivity() {
         trace.phase(this, "started")
         ScreenSupport.onStart(this)
         RecordingPlayback.setForeground(true)
+        LocationStream.onActivityStart()
     }
 
     override fun onPause() {
@@ -161,11 +166,13 @@ class DsdNeoActivity : QtActivity() {
     }
 
     // A stop that is part of a recreation is not a loss of the foreground (on Qt 6.11.3 the process restarts right
-    // after it; see onDestroy). Leaving the foreground pauses a call recording playing (#708 D10).
+    // after it; see onDestroy). Leaving the foreground pauses a call recording playing (#708 D10). Every stop, that one
+    // included, advances the location feed's foreground epoch and stops the feed (#786).
     override fun onStop() {
         super.onStop()
         trace.phase(this, "stopped")
         AccessibilityBridge.onStop(this)
+        LocationStream.onActivityStop()
         if (!isChangingConfigurations) {
             ScreenSupport.onStop(this)
             RecordingPlayback.setForeground(false)
@@ -236,7 +243,7 @@ class DsdNeoActivity : QtActivity() {
             AppSupport.refreshNotificationPermission()
             return
         }
-        if (!LocationSupport.onRequestPermissionsResult(this, requestCode, grantResults)) {
+        if (!LocationPermission.onRequestPermissionsResult(this, requestCode, grantResults)) {
             super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         }
     }
@@ -260,6 +267,7 @@ class DsdNeoActivity : QtActivity() {
             backCallback = null
         }
         LocationSupport.onDestroy(this)
+        LocationStream.onDestroy()
         // Not on a recreation. The manifest handles every configuration change in place
         // (configChanges, pinned by launch_policy), so a change never destroys this
         // activity. A recreation that happens anyway skips this teardown, as Qt skips

@@ -920,6 +920,43 @@ def file_browser_wiring():
     return None
 
 
+def location_wiring():
+    """#786: DsdNeoActivity never compiles here, so its forwarding to the location feed and the prompt is read from the
+    source. Every start lets the feed start again; every stop, a recreation's included, advances the foreground epoch and
+    stops the feed, which Qt cannot do once its thread freezes; destroy stops it too; and location permission answers
+    reach the broker that owns the prompt, after the file browser's and the notification's codes."""
+    where = APP_SOURCES / "DsdNeoActivity.kt"
+    try:
+        activity = (REPO / where).read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the activity: {error}"
+
+    def statements(signature):
+        body = method_body(activity, signature)
+        return [line.strip() for line in (body or "").splitlines() if line.strip() and not line.strip().startswith("//")]
+
+    required = (
+        ("override fun onStart(", "LocationStream.onActivityStart()"),
+        ("override fun onDestroy(", "LocationStream.onDestroy()"),
+        (
+            "override fun onRequestPermissionsResult(",
+            "if (!LocationPermission.onRequestPermissionsResult(this, requestCode, grantResults)) {",
+        ),
+    )
+    for signature, statement in required:
+        if statement not in statements(signature):
+            return f"{where}: {signature.split('(')[0].split()[-1]} must call {statement}"
+    stop = statements("override fun onStop(")
+    if "LocationStream.onActivityStop()" not in stop:
+        return f"{where}: onStop must call LocationStream.onActivityStop()"
+    guarded = stop.index("if (!isChangingConfigurations) {") if "if (!isChangingConfigurations) {" in stop else len(stop)
+    if stop.index("LocationStream.onActivityStop()") > guarded:
+        return f"{where}: onStop must call LocationStream.onActivityStop() on every stop, outside the recreation guard"
+    if "LocationSupport.onRequestPermissionsResult(" in activity:
+        return f"{where}: location permission answers go to LocationPermission, which owns the prompt"
+    return None
+
+
 USES_PERMISSION_TAG = re.compile(r"<uses-permission\b([^>]*)>")
 PREFIXED_ATTRIBUTE = re.compile(r'\b(android|tools):(\w+)\s*=\s*"([^"]*)"')
 STORAGE_PERMISSION = "android.permission.{}_EXTERNAL_STORAGE"
@@ -1183,12 +1220,19 @@ INCOMING_INTENT_STUBS = (
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
-    # The location broker and geocoder queue, against deterministic platform stubs.
+    # The one-shot location requests and geocoder queue, the permission prompt they share with GPS roaming, and
+    # roaming's location feed (#786), against deterministic platform stubs. The Activity's forwarding is read from source.
     "location": Suite(
+        checks=(location_wiring,),
         builds=(
             Build(
-                sources=("LocationSupport.kt",),
-                tests=("LocationGeocodeQueueTest.kt", "LocationSupportTest.kt"),
+                sources=("LocationSupport.kt", "LocationPermission.kt", "LocationStream.kt", "SettingsScreens.kt"),
+                tests=(
+                    "LocationGeocodeQueueTest.kt",
+                    "LocationSupportTest.kt",
+                    "LocationPermissionTest.kt",
+                    "LocationStreamTest.kt",
+                ),
                 stubs=(
                     "Activity.kt",
                     "Context.kt",
@@ -1197,6 +1241,8 @@ SUITES = {
                     "Manifest.kt",
                     "Os.kt",
                     "PackageManager.kt",
+                    "Settings.kt",
+                    "Uri.kt",
                 ),
             ),
         ),
@@ -1450,7 +1496,7 @@ SUITES = {
         builds=(
             Build(sources=("FileListing.kt",), tests=("FileListingTest.kt",)),
             Build(
-                sources=("FileListing.kt", "FileBrowser.kt"),
+                sources=("FileListing.kt", "FileBrowser.kt", "SettingsScreens.kt"),
                 tests=("FileBrowserTest.kt",),
                 stubs=(
                     "AssetFileDescriptor.kt",

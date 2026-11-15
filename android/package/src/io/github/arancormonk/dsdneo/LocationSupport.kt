@@ -55,9 +55,11 @@ internal class LocationGeocodeQueue(
     }
 }
 
-/** One cancellable foreground request. All mutable request state belongs to the main looper. */
+/**
+ * One cancellable foreground request. All mutable request state belongs to the main looper. Its permission prompt goes
+ * through [LocationPermission], which GPS roaming shares.
+ */
 object LocationSupport {
-    private const val PERMISSION = 4303
     private const val TIMEOUT_MS = 20_000L
     // Coarse providers can retain their last fix for ten minutes. getCurrentLocation
     // accepts a much shorter cache age and may throttle the replacement past our deadline.
@@ -68,7 +70,6 @@ object LocationSupport {
     private val main = Handler(Looper.getMainLooper())
     private val worker = LocationGeocodeQueue()
     private var active: Request? = null
-    private var permissionActivity: Activity? = null
     private var result: String? = null
 
     private class Request(val activity: Activity, val id: Long, val forSites: Boolean) {
@@ -94,24 +95,26 @@ object LocationSupport {
             active = request
             if (activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
                 locate(request)
-            } else if (permissionActivity == null) {
-                permissionActivity = activity
+            } else {
+                // A prompt already open answers this request too; the broker opens no second one.
                 val permissions = if (forSites) {
                     arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
                 } else {
                     arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)
                 }
-                activity.requestPermissions(permissions, PERMISSION)
+                LocationPermission.ask(activity, permissions, LocationPermission.Asker.ONE_SHOT, ::permissionAnswered)
             }
         }
     }
 
-    @JvmStatic fun onRequestPermissionsResult(activity: Activity, code: Int, grants: IntArray): Boolean {
-        if (code != PERMISSION) return false
-        if (permissionActivity !== activity) return true
-        permissionActivity = null
-        val request = active ?: return true
-        if (request.activity !== activity) return true
+    /** Hands a permission answer to [LocationPermission], which owns the prompt; true when the code is its own. */
+    @JvmStatic fun onRequestPermissionsResult(activity: Activity, code: Int, grants: IntArray): Boolean =
+        LocationPermission.onRequestPermissionsResult(activity, code, grants)
+
+    /** The answer to the prompt: it resumes only the active request, and only when that request asked [activity]. */
+    private fun permissionAnswered(activity: Activity, grants: IntArray) {
+        val request = active ?: return
+        if (request.activity !== activity) return
         when {
             // An interrupted prompt comes back with no answers, and Android says to treat it as a cancellation: the
             // launcher icon or the notification brings the singleTask activity forward and closes the prompt (#782).
@@ -120,7 +123,6 @@ object LocationSupport {
             grants[0] == PackageManager.PERMISSION_GRANTED -> locate(request)
             else -> finish(request, false, "", "", "Location permission denied; use Browse.")
         }
-        return true
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -312,7 +314,7 @@ object LocationSupport {
         active?.takeIf { it.activity === activity }?.let {
             finish(it, false, "", "", "Location request cancelled; use Browse.")
         }
-        if (permissionActivity === activity) permissionActivity = null
+        LocationPermission.onDestroy(activity)
     }
 
     /**
