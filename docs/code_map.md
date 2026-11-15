@@ -1884,17 +1884,22 @@ suite runs under this compiler.
   `basic_key_present`; it keys a frame only from the slot's open DMR call's talkgroup, `mbe_dmr_autoload_call()`: a
   frame the receive policy has not admitted opens no call, and the ended or other protocol's call its slot may hold
   names another call's talkgroup), the DMR data block crypto (`dmr_block_crypto.c`), the P25 Phase 1 PDU decrypt
-  (`p25p1_pdu_data.c`) and the SDRTrunk JSON replay keystreams and talkgroup-keyed lookup (`dsd_file.c`). The
-  autoload's key is the one working Basic Privacy and Hytera key both slots share (`K`, `K1`..`K4`, `H`), so it keeps
-  what it replaced (`dsd_state::dmr_tg_autoload`): a frame of a call whose talkgroup has no key puts that back (a key
-  set directly with `-b`, or none), so no call keeps another talkgroup's key, and the call's LC is judged by the key
-  its own talkgroup leaves (`keyring_dmr_tg_autoload_key_present()`, `dmr_flco_missing_alg_key_can_decrypt()`, for
-  the label and the encryption lockout alike). A key changed by anything else since is left alone, and the
-  no-carrier unload of a keyring's working keys is unchanged (`no_carrier_unload_keys_if_needed()`). Tests:
-  `P25_CRYPTO_STATE`, `NXDN_ELEMENT_BOUNDS` (imported zero keys, the narrow AES fallback, VCALL_IV keeping the VCALL's
-  key), `CORE_MBE_TRANSFORM_CONTEXT`, `DMR_BLOCK_CRYPTO`, `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO` (incomplete AES keys
-  refused on the data and replay paths), `CORE_DMR_VOICE_ALG_GATE` (DMR voice width), `CORE_DMR_TG_KEY_MAP`,
-  `DMR_SYNTH_BP_KEY`.
+  (`p25p1_pdu_data.c`) and the SDRTrunk JSON replay keystreams and talkgroup-keyed lookup (`dsd_file.c`). The autoload's
+  key is the one working Basic Privacy and Hytera key both slots share (`K`, `K1`..`K4`, `H`), so it keeps what it
+  replaced (`dsd_state::dmr_tg_autoload`): a frame of a call whose talkgroup has no key puts that back (a key set
+  directly with `-b`, or none), so no call keeps another talkgroup's key. Each slot also keeps the talkgroup its own
+  call last keyed from (`slot_tg`): a frame of a call no LC has named yet (an identity-less epoch, as a colour code
+  change reopens a call) keys from it again, or from talkgroup 0's own key, else from none, never from the other slot's.
+  The slot's terminator and the no-carrier pass forget it. A call whose terminator was missed is still the slot's call,
+  so a new call's frames before its LC key from the old call's talkgroup (the code cannot tell them apart before that
+  LC). The call's LC, its printed key and the encryption lockout are judged by the key its own slot and talkgroup leave
+  (`keyring_dmr_tg_autoload_preview()`, `dmr_flco_call_key_of()`, `dmr_flco_missing_alg_key_can_decrypt()`). A key
+  changed by anything else since is left alone, a scan's saved keys take the key the autoload replaced
+  (`key_scalars_capture()`), the secure wipe clears the autoload's copies, and the no-carrier unload of a keyring's
+  working keys is unchanged (`no_carrier_unload_keys_if_needed()`). Tests: `P25_CRYPTO_STATE`, `NXDN_ELEMENT_BOUNDS`
+  (imported zero keys, the narrow AES fallback, VCALL_IV keeping the VCALL's key), `CORE_MBE_TRANSFORM_CONTEXT`,
+  `DMR_BLOCK_CRYPTO`, `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO` (incomplete AES keys refused on the data and replay
+  paths), `CORE_DMR_VOICE_ALG_GATE` (DMR voice width), `CORE_DMR_TG_KEY_MAP`, `CORE_KEY_SET`, `DMR_SYNTH_BP_KEY`.
 - Invariant (audio sinks, `<dsd-neo/core/audio_sink.h>`, `src/core/audio/audio_sink.c`, issue #659): every writer of
   decoded or analog audio applies its own gates and picks the output type, then writes the local device streams only
   through `dsd_audio_sink_write_device()` and the `-o -` descriptor only through `dsd_audio_sink_write_fd()`: the

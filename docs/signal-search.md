@@ -1062,9 +1062,11 @@ sources (`--export-sources DIR`), interpolated to the capture rate in the freque
 unchanged, and placed in the RTL tap's geometry (tuned a quarter of the rate above the channel, the ingest rotation
 bringing the channel to the samples' 0 Hz) with a random start, phase and sample alignment per trial. The S/N is the
 tool's; the driver's `--phase snr` renders each wanted signal as the trials do and measures it back from the samples:
-in the previous calibration, over 100 trials each, it landed within 0.05 dB of the target for every mode at every
-rate. The reception run also writes `driver_modes.tsv`, which hands the driver every analog row with its width and
-threshold (`--modes-file`); the digital rows are the driver's own, with the names, and so the seeds, they always had.
+over 100 trials each it lands within 0.13 dB of the target for every row at every rate. Every digital mode and every
+width this run added is within 0.06 dB; the largest are AM with the carrier at the edge (up to 0.10 dB) and NFM 8 kHz
+with the 25 kHz channel's tone (0.13 dB at 1.2 Msps). The reception run also writes `driver_modes.tsv`, which hands
+the driver every analog row with its width and threshold (`--modes-file`); the digital rows are the driver's own, with
+the names, and so the seeds, they always had.
 
 Active trials sit 1 dB below each mode's reception threshold:
 
