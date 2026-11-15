@@ -365,6 +365,24 @@ ua_subject_name(const ua_naming* n, const dsd_unit_activity* r, char* out, size_
 /* The "…" a shortened text ends with. */
 static const char k_ellipsis[] = "\xE2\x80\xA6";
 
+/* A P25 status or message value as the P25 prints show it: the 16-bit Status field's User Status (high octet) and Unit
+ * Status (low octet) in hex (TIA-102.AABC-D §2.3.29), the 16-bit short data message in hex. 0 for another row. */
+static int
+ua_p25_value_part(const dsd_unit_activity* r, unsigned v, char* out, size_t cap) {
+    if (r->protocol != DSD_UA_PROTO_P25P1 && r->protocol != DSD_UA_PROTO_P25P2) {
+        return 0;
+    }
+    if (r->kind == DSD_UA_STATUS) {
+        DSD_SNPRINTF(out, cap, "status %02X/%02X", (v >> 8) & 0xFFU, v & 0xFFU);
+        return 1;
+    }
+    if (r->kind == DSD_UA_MESSAGE) {
+        DSD_SNPRINTF(out, cap, "message %04X", v & 0xFFFFU);
+        return 1;
+    }
+    return 0;
+}
+
 static void
 ua_value_part(const dsd_unit_activity* r, char* out, size_t cap) {
     out[0] = '\0';
@@ -372,6 +390,9 @@ ua_value_part(const dsd_unit_activity* r, char* out, size_t cap) {
         return;
     }
     const unsigned v = (unsigned)r->value;
+    if (ua_p25_value_part(r, v, out, cap)) {
+        return;
+    }
     if (r->protocol == DSD_UA_PROTO_TETRA && r->kind == DSD_UA_LOCATION_REGISTRATION) {
         const char* type = dsd_ua_tetra_accept_type_text(r->value);
         if (type) {

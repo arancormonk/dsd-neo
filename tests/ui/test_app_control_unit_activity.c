@@ -558,12 +558,27 @@ test_status_report_subject_is_source(void) {
     dsd_app_unit_activity_cursor cursor = {0, 0};
     dsd_unit_activity r = mk(DSD_UA_PROTO_P25P1, DSD_UA_STATUS, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA, 2345U);
     set_identity(&r.recipient, 6789U, DSD_UA_ID_RADIO);
-    r.value = 12U;
+    r.value = 0xA10BU; /* User Status A1, Unit Status 0B */
     r.value_valid = 1U;
     const dsd_app_unit_activity_row row = view_of(st, &cursor, &r);
     assert(strcmp(row.kind_label, "Status") == 0);
     assert(strcmp(row.subject_text, "2345") == 0);
-    assert(strcmp(row.target_text, "status 12, to 6789") == 0);
+    assert(strcmp(row.target_text, "status A1/0B, to 6789") == 0);
+    free_state(st);
+}
+
+/* A P25 short data message reads in hex, as the P25 prints show it. */
+static void
+test_p25_message_value_hex(void) {
+    dsd_state* st = new_state();
+    dsd_app_unit_activity_cursor cursor = {0, 0};
+    dsd_unit_activity r = mk(DSD_UA_PROTO_P25P2, DSD_UA_MESSAGE, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA, 2345U);
+    set_identity(&r.recipient, 6789U, DSD_UA_ID_RADIO);
+    r.value = 0x00ABU;
+    r.value_valid = 1U;
+    const dsd_app_unit_activity_row row = view_of(st, &cursor, &r);
+    assert(strcmp(row.kind_label, "Message") == 0);
+    assert(strcmp(row.target_text, "message 00AB, to 6789") == 0);
     free_state(st);
 }
 
@@ -1026,6 +1041,7 @@ main(void) {
     test_scope_and_protocol_text();
     test_subject_and_target_text();
     test_status_report_subject_is_source();
+    test_p25_message_value_hex();
     test_name_text_is_clean();
     test_pagination_and_merge();
     test_reader_lost_after_wrap();
