@@ -105,6 +105,7 @@ dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_la
     landing.activity_seq = owner->tune_activity_seq;
     landing.tune_decode_m = owner->tune_decode_m;
     landing.tune_seq = owner->tune_seq;
+    landing.sync_seq = owner->sync_seq;
     owner->landing = landing;
 }
 

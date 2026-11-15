@@ -26390,8 +26390,8 @@ test_scan_quiet_trunk_publishes_each_cause(void) {
     qt_pass(&opts, &state);
     int rc = qt_expect_quiet(&state, "the monitor has no width", DSD_SCAN_QUIET_STATUS_NO_CHECK,
                              DSD_SCAN_QUIET_REASON_NO_WIDTH);
-    rc |= qt_expect_warn("the monitor has no width: one line", 1, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "d", k_qt_hz_a,
-                         0, 0U);
+    rc |= qt_expect_warn("the monitor has no width: one line naming the monitor", 1, DSD_SCAN_QUIET_REASON_NO_WIDTH,
+                         SCAN_QUIET_WARN_MONITOR, 0U, "d", k_qt_hz_a, 0, 0U);
     opts.monitor_input_audio = 0;
 
     /* An uncalibrated rate at the capture; a quiet result held for a frame's verdict reads Quiet check. */
@@ -26444,6 +26444,105 @@ test_scan_quiet_trunk_publishes_each_cause(void) {
     rc |= qt_expect_quiet(&state, "a trunked target", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
     rc |= qt_expect("no line for a trunked target", g_qt_warns == 4);
     opts.iq_replay_requested = 0;
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* The channel lines are remembered per target (issue #834 B1, A6): two targets with no width visited in turn log one
+   line each however often the rotation comes back. A new key logs again: the -8 monitor's width changed (another
+   effective width), a target edited in place (the lists' revision), the list loaded again (another coordinator). A
+   width-refused target is refused at once on its next visit, with no Quiet check before its capture comes. */
+static void
+qt_visit(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* at) {
+    qt_next_target(opts, state, hz, 384000);
+    *at += 10U;
+    qt_decode_at(*at);
+    qt_pass(opts, state);
+}
+
+static int
+test_scan_quiet_trunk_channel_lines_once_per_key(void) {
+    static const char k_targets[] = "u1,nfm-conventional,452000000,,2000,1000,,\n"
+                                    "u2,nfm-conventional,453000000,,2000,1000,,\n"
+                                    "d,dmr-conventional,454000000,,2000,1000,,\n"
+                                    "w,nfm-conventional,455000000,,2000,1000,,--nfm-bandwidth-hz 13500\n";
+    static const uint32_t hz[] = {452000000U, 453000000U, 454000000U, 455000000U};
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (qt_warn_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_targets) != 0) {
+        return 1;
+    }
+    qt_warns_watch();
+    uint64_t at = 10U;
+    qt_decode_at(at);
+    qt_pass(&opts, &state);
+    for (int lap = 0; lap < 3; lap++) {
+        for (int t = 1; t <= 4; t++) {
+            qt_visit(&opts, &state, hz[t % 4], &at);
+        }
+    }
+    int rc = qt_expect("two unchecked targets in turn: one line each", g_qt_warns == 2);
+
+    /* Parked on the DMR target: the -8 monitor at a width the calibration does not cover, then at another one. */
+    qt_next_target(&opts, &state, hz[1], 384000);
+    qt_next_target(&opts, &state, hz[2], 384000);
+    g_tap.analog_ok = 0;
+    opts.monitor_input_audio = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 13500;
+    at += 10U;
+    qt_decode_at(at);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_warn("the monitor at 13.5 kHz", 3, DSD_SCAN_QUIET_REASON_WIDTH, 0, 0U, "d", hz[2],
+                         DSD_ANALOG_DEMOD_FM, 13500U);
+    opts.analog_nfm_bandwidth_hz = 13000;
+    at += 10U;
+    qt_decode_at(at);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_warn("the monitor at another width: logged again", 4, DSD_SCAN_QUIET_REASON_WIDTH, 0, 0U, "d",
+                         hz[2], DSD_ANALOG_DEMOD_FM, 13000U);
+    opts.monitor_input_audio = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+
+    /* A target at its own width the calibration does not cover: refused at its capture, and at once on its next
+       visit, with no capture wait and no Quiet check. */
+    qt_visit(&opts, &state, hz[3], &at);
+    rc |= qt_expect_warn("its own width, 13.5 kHz", 5, DSD_SCAN_QUIET_REASON_WIDTH, 0, 0U, "w", hz[3],
+                         DSD_ANALOG_DEMOD_FM, 13500U);
+    qt_next_target(&opts, &state, hz[0], 384000);
+    qt_next_target(&opts, &state, hz[1], 384000);
+    qt_next_target(&opts, &state, hz[2], 384000);
+    const int reads = g_tap.capture_reads;
+    const int requests = g_tap.requests;
+    qt_visit(&opts, &state, hz[3], &at);
+    rc |= qt_expect_quiet(&state, "the width-refused target's next visit", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_WIDTH);
+    rc |= qt_expect("refused without a capture read", g_tap.capture_reads == reads && g_tap.requests == requests);
+    rc |= qt_expect("no second line for it", g_qt_warns == 5);
+    g_tap.analog_ok = 1;
+
+    /* Target u1 edited in place (not on air): its next visit logs again. */
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.squelch_db = -45;
+    (void)dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "u1", DSD_SCAN_ROW_FIELD_SQUELCH,
+                                            DSD_SCAN_ROW_EDIT_SET, &value, NULL);
+    qt_visit(&opts, &state, hz[0], &at);
+    rc |=
+        qt_expect_warn("an edit in place: logged again", 6, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "u1", hz[0], 0, 0U);
+
+    /* The list loaded again: another coordinator, logged again. */
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    char err[256] = {0};
+    rc |= qt_expect("the list loads again", dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0);
+    g_quiet_stream_gen++;
+    quiet_tap_capture(hz[0], g_quiet_stream_gen);
+    at += 10U;
+    qt_decode_at(at);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_warn("a list reload: logged again", 7, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "u1", hz[0], 0, 0U);
     quiet_rig_finish(&opts, &state, dir, path);
     return rc;
 }
@@ -26668,6 +26767,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_y_ready_declines_at_its_own_sites);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_says_why_a_visit_is_not_checked);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_publishes_each_cause);
+    rc |= run_with_default_tune_hook(test_scan_quiet_trunk_channel_lines_once_per_key);
 #endif
 #ifdef USE_RADIO
     rc |= test_scan_quiet_evidence_notes_bookkeeping();

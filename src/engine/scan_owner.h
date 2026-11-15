@@ -39,6 +39,9 @@ typedef struct {
     /** The owner's tune sequence of that tune (dsd_engine_scan_owner::tune_seq): a visit tuned before skip-silent was
         turned on is never checked. */
     uint64_t tune_seq;
+    /** The owner's sync count when the landing was noted (dsd_engine_scan_owner::sync_seq): a -Y row heard a sync on
+        this visit once the count has moved past it (issue #834 B1). */
+    uint64_t sync_seq;
 } dsd_engine_scan_landing;
 
 /** The -Y row or trunk-scan target a frequency typed by hand went to, whose confirmed landing holds the scan there
@@ -109,6 +112,9 @@ typedef struct {
     uint8_t frame_evidence;
     uint32_t frame_hold_ms;
     double pending_until_m;
+    /* Moved by every sync the frame sync returns while skip-silent is on (dsd_engine_scan_quiet_note_frame_sync()),
+       checked or not: a -Y row's unsynced hangtime is the only one a no-check status is shown on (issue #834 B1). */
+    uint64_t sync_seq;
     /* The receiver's last no-check WARN line (issue #834 B1; scan_quiet.c, radio-off builds too): its reason
        (dsd_scan_quiet_reason, NONE before any), detail, input kind, device spec hash and capture rate. A line is logged
        only when the key differs; turning skip-silent on or off forgets it, so off -> on logs again. */

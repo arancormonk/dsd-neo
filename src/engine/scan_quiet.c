@@ -30,8 +30,8 @@
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include "scan_landing.h"
 #endif
+#include "scan_landing.h"
 
 /* Width classes (the values of DSD_SIGNAL_QUIET_CLASS_*, which signal_measure.h, a radio header, names). */
 enum { QUIET_CLASS_12K5 = 1, QUIET_CLASS_6K25 = 2, QUIET_CLASS_ANALOG = 4 };
@@ -304,18 +304,90 @@ quiet_format_receiver_warn(char* out, size_t out_size, int detail, uint32_t rate
                         rate);
 }
 
-/* The channel's WARN lines, for @p who at @p mhz. */
-static int
-quiet_format_channel_warn(char* out, size_t out_size, uint8_t reason, const char* who, const char* mhz, int kind,
-                          uint32_t width_hz) {
+uint8_t
+scan_quiet_channel_detail(const dsd_opts* opts, uint8_t reason, uint8_t classes) {
+    if (!opts) {
+        return 0U;
+    }
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_MODES) {
-        return DSD_SNPRINTF(
-            out, out_size,
-            "WARNING: scan: silent-channel skip cannot check %s %s MHz: the decoders in use include one "
-            "with no known channel width (ProVoice, X2-TDMA or TETRA); give the row a mode (the mode "
-            "column), or choose decoders without those, to have it checked. Normal scan timing "
-            "applies.\n",
-            who, mhz);
+        if (opts->m17encoder == 1) {
+            return (uint8_t)SCAN_QUIET_WARN_ENCODER;
+        }
+        return (uint8_t)((opts->frame_provoice ? SCAN_QUIET_WARN_PROVOICE : 0)
+                         | (opts->frame_x2tdma ? SCAN_QUIET_WARN_X2TDMA : 0)
+                         | (opts->frame_tetra ? SCAN_QUIET_WARN_TETRA : 0));
+    }
+    /* No class and no analog session: the width missing is the -8 monitor's, beside a digital decoder. */
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_NO_WIDTH && classes == 0U && !dsd_opts_is_analog_family(opts)) {
+        return (uint8_t)SCAN_QUIET_WARN_MONITOR;
+    }
+    return 0U;
+}
+
+/* The modes of @p detail (SCAN_QUIET_WARN_PROVOICE, _X2TDMA, _TETRA) as a line names them: "ProVoice", "ProVoice and
+   TETRA", "ProVoice, X2-TDMA and TETRA". */
+static void
+quiet_modes_text(uint8_t detail, char* out, size_t out_size) {
+    const char* names[3];
+    size_t count = 0U;
+    if (detail & SCAN_QUIET_WARN_PROVOICE) {
+        names[count++] = "ProVoice";
+    }
+    if (detail & SCAN_QUIET_WARN_X2TDMA) {
+        names[count++] = "X2-TDMA";
+    }
+    if (detail & SCAN_QUIET_WARN_TETRA) {
+        names[count++] = "TETRA";
+    }
+    out[0] = '\0';
+    size_t used = 0U;
+    for (size_t i = 0U; i < count && used < out_size; i++) {
+        const char* sep = i == 0U ? "" : (i + 1U == count ? " and " : ", ");
+        const int n = DSD_SNPRINTF(out + used, out_size - used, "%s%s", sep, names[i]);
+        used = n > 0 ? used + (size_t)n : out_size;
+    }
+}
+
+/* The MODES lines: the decoders in use, as they are, give the row no class. */
+static int
+quiet_format_modes_warn(char* out, size_t out_size, uint8_t detail, const char* who, const char* mhz) {
+    if (detail & SCAN_QUIET_WARN_ENCODER) {
+        return DSD_SNPRINTF(out, out_size,
+                            "WARNING: scan: silent-channel skip cannot check %s %s MHz while the M17 encoder runs; "
+                            "turn the encoder off to have it checked. Normal scan timing applies.\n",
+                            who, mhz);
+    }
+    if ((detail & (SCAN_QUIET_WARN_PROVOICE | SCAN_QUIET_WARN_X2TDMA | SCAN_QUIET_WARN_TETRA)) == 0U) {
+        return DSD_SNPRINTF(out, out_size,
+                            "WARNING: scan: silent-channel skip cannot check %s %s MHz: none of the decoders in use "
+                            "has a known channel width; give the row a mode (the mode column), or turn on a decoder "
+                            "it checks (P25, DMR, NXDN, YSF, M17, dPMR or D-STAR), to have it checked. Normal scan "
+                            "timing applies.\n",
+                            who, mhz);
+    }
+    char modes[48];
+    quiet_modes_text(detail, modes, sizeof modes);
+    const int several = (detail & (detail - 1U) & 7U) != 0U;
+    return DSD_SNPRINTF(out, out_size,
+                        "WARNING: scan: silent-channel skip cannot check %s %s MHz: %s, among the decoders in use, %s "
+                        "no known channel width; give the row a mode (the mode column), or turn %s off, to have it "
+                        "checked. Normal scan timing applies.\n",
+                        who, mhz, modes, several ? "have" : "has", several ? "them" : "it");
+}
+
+/* The channel's WARN lines, for @p who at @p mhz; @p detail is scan_quiet_channel_detail()'s. */
+static int
+quiet_format_channel_warn(char* out, size_t out_size, uint8_t reason, uint8_t detail, const char* who, const char* mhz,
+                          int kind, uint32_t width_hz) {
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_MODES) {
+        return quiet_format_modes_warn(out, out_size, detail, who, mhz);
+    }
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_NO_WIDTH && (detail & SCAN_QUIET_WARN_MONITOR)) {
+        return DSD_SNPRINTF(out, out_size,
+                            "WARNING: scan: silent-channel skip cannot check %s %s MHz: the -8 analog monitor beside "
+                            "its decoder has no NFM width set; set --nfm-bandwidth-hz for the session, or turn -8 off, "
+                            "to have it checked. Normal scan timing applies.\n",
+                            who, mhz);
     }
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_NO_WIDTH) {
         return DSD_SNPRINTF(out, out_size,
@@ -354,7 +426,7 @@ scan_quiet_format_warn(char* out, size_t out_size, uint8_t reason, int detail, u
         DSD_SNPRINTF(row_name, sizeof row_name, "row %d", row + 1);
         name = row_name;
     }
-    return quiet_format_channel_warn(out, out_size, reason, name, mhz, kind, width_hz);
+    return quiet_format_channel_warn(out, out_size, reason, (uint8_t)detail, name, mhz, kind, width_hz);
 }
 
 /* The receiver's WARN key (issue #834 B1): the reason, its detail, the input kind, the device spec and the capture
@@ -420,10 +492,20 @@ quiet_input_detail(const dsd_opts* opts) {
 #endif
 }
 
-/* NO_CHECK for @p reason on @p report, when its stay shows the status. */
+/* Whether the -Y row on air heard a sync on this visit (issue #834 A4): its hangtime then runs from the sync, a call
+   explains the visit, and no no-check status is shown on it. A check under way is still shown (D8: a sync no longer
+   ends it). */
+static int
+quiet_y_visit_synced(const dsd_state* state) {
+    const dsd_engine_scan_owner* owner = quiet_owner_const(state);
+    return owner && owner->landing.by == DSD_ENGINE_SCAN_LANDING_ROW && owner->sync_seq != owner->landing.sync_seq;
+}
+
+/* NO_CHECK for @p reason on @p report, when its stay shows the status: not on a -Y visit that synced. */
 static void
-quiet_fill_no_check(const scan_quiet_visit_ref* ref, dsd_scan_timing_publication* report, uint8_t reason) {
-    if (ref->shows_status) {
+quiet_fill_no_check(const dsd_state* state, const scan_quiet_visit_ref* ref, dsd_scan_timing_publication* report,
+                    uint8_t reason) {
+    if (ref->shows_status && !(ref->owner == SCAN_QUIET_OWNER_Y && quiet_y_visit_synced(state))) {
         report->quiet_status = (uint8_t)DSD_SCAN_QUIET_STATUS_NO_CHECK;
         report->quiet_reason = reason;
     }
@@ -514,17 +596,23 @@ typedef struct {
     int receiver_input;
     uint32_t receiver_device;
     uint32_t receiver_rate_hz;
+    /* The revisions a no-check suspension was last found moved at (dsd_engine_scan_quiet_take_republish()), so a frame
+       boundary owes one republication per change. */
+    scan_quiet_revisions republish_seen;
     /* The channel WARN keys logged, per row or target (issue #834 B1): [0] the trunk scan's, [1] -Y's. */
     struct quiet_channel_key* warned[2];
     size_t warned_cap[2];
 } scan_quiet_check;
 
-/* A channel's WARN key: its list, reason, kind, width, classes, and the decoder set and -8 monitor width in force. */
+/* A channel's WARN key: its list and the list's revision, its frequency, reason, kind, width, classes, and the decoder
+   set (scan_quiet_channel_detail()) and -8 monitor width in force. */
 typedef struct quiet_channel_key {
     uint64_t list_id;
+    uint64_t list_rev;
+    uint32_t frequency_hz;
     uint8_t reason;
     uint8_t classes;
-    uint8_t unchecked; /* the X2-TDMA, ProVoice and TETRA decoders on (bits 0-2) */
+    uint8_t detail;
     int kind;
     uint32_t width_hz;
     int monitor_width_hz; /* the -8 monitor's configured width; -1 without it */
@@ -1066,11 +1154,27 @@ quiet_suspend_ineligible(const dsd_opts* opts, const dsd_engine_scan_owner* owne
     c->classes = e->classes;
     c->analog_kind = e->analog_kind;
     c->analog_width_hz = e->analog_width_hz;
+    /* What a frame boundary compares to owe its republication once something it depends on moves. */
+    c->revisions = e->revisions;
     if (!scan_quiet_session_supported(opts)) {
         c->reason = (uint8_t)DSD_SCAN_QUIET_REASON_INPUT;
     } else if (e->key.owner == owner_kind) {
         c->reason = e->reason;
     }
+}
+
+/* Whether the started check @p c is refused for its analog width without a capture read (issue #834 A5): the last
+   capture read, on the input in force, was rotated and at a validated rate, and the calibration covers no such width
+   of this kind there. The width table does not hang on the visit, so a width-refused target is refused at once on
+   every visit (no Quiet check before its capture comes) until a width, decoder or list edit gives it other facts. */
+static int
+quiet_width_refused_ahead(const dsd_opts* opts, const scan_quiet_check* c) {
+    if (!(c->classes & QUIET_CLASS_ANALOG) || c->receiver_rate_hz == 0U
+        || c->receiver_reason != (uint8_t)DSD_SCAN_QUIET_REASON_NONE || c->receiver_input != opts->audio_in_type
+        || c->receiver_device != quiet_device_hash(opts) || !dsd_signal_quiet_rate_supported(c->receiver_rate_hz)) {
+        return 0;
+    }
+    return !dsd_signal_quiet_analog_supported(c->analog_kind, c->analog_width_hz, c->receiver_rate_hz);
 }
 
 /* Whether a refusal of the visit's capture still stands for @p e (issue #834 A5): the same visit published with the
@@ -1107,6 +1211,10 @@ scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner
     }
     if (c->phase == SCAN_QUIET_SUSPENDED || !quiet_published_as_measured(c, e)) {
         quiet_start(owner, c, e, now_ms);
+        if (quiet_width_refused_ahead(opts, c)) {
+            quiet_refuse(c, (uint8_t)DSD_SCAN_QUIET_REASON_WIDTH);
+            return;
+        }
     }
     quiet_step(opts, c, now_ms, 0);
 }
@@ -1159,17 +1267,37 @@ dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
            && dsd_engine_scan_quiet_frame_service(opts, state, SCAN_QUIET_OWNER_Y) == DSD_SCAN_QUIET_HAND_BACK;
 }
 
+/* A visit SUSPENDED with a reason it cannot be checked (a refusal, or facts with no check) whose revisions moved since
+   it was published, such as a width or row edit: once per change, so it is republished and starts again on the same
+   visit under syncs that keep the frame loop running (as a suspension of a check under way owes one, B8). */
+static int
+quiet_no_check_facts_moved(const dsd_opts* opts, const dsd_state* state, scan_quiet_check* c) {
+    if (c->reason == (uint8_t)DSD_SCAN_QUIET_REASON_NONE) {
+        return 0;
+    }
+    scan_quiet_revisions now_rev;
+    scan_quiet_revisions_read(opts, state, &now_rev);
+    if (quiet_revisions_equal(&now_rev, &c->revisions) || quiet_revisions_equal(&now_rev, &c->republish_seen)) {
+        return 0;
+    }
+    c->republish_seen = now_rev;
+    return 1;
+}
+
 int
 dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state, int owner_kind) {
     if (!opts || !opts->scan_skip_silent) {
         return 0;
     }
     scan_quiet_check* c = quiet_check_get(dsd_engine_scan_owner_get(state));
-    if (!c || !c->republish_owed || c->phase != SCAN_QUIET_SUSPENDED || c->key.owner != owner_kind) {
+    if (!c || c->phase != SCAN_QUIET_SUSPENDED || c->key.owner != owner_kind) {
         return 0;
     }
-    c->republish_owed = 0;
-    return 1;
+    if (c->republish_owed) {
+        c->republish_owed = 0;
+        return 1;
+    }
+    return quiet_no_check_facts_moved(opts, state, c);
 }
 
 int
@@ -1254,10 +1382,12 @@ scan_quiet_key_get(const dsd_state* state) {
     return none;
 }
 
-/* The receiver's verdict the last capture showed, while the input it was read on is still the one in force. */
+/* The receiver's verdict the last capture read showed, while the input it was read on is still the one in force: a
+   centred capture only (TUNER), which the input and its shift settings decide for every visit. A rate is no session
+   fact: a list's DSP bandwidth sets the capture rate a visit runs at, so RATE is a visit's own, read on its capture. */
 static uint8_t
 quiet_receiver_reason_now(const dsd_opts* opts, const scan_quiet_check* c) {
-    if (c->receiver_reason == (uint8_t)DSD_SCAN_QUIET_REASON_NONE || c->receiver_input != opts->audio_in_type
+    if (c->receiver_reason != (uint8_t)DSD_SCAN_QUIET_REASON_TUNER || c->receiver_input != opts->audio_in_type
         || c->receiver_device != quiet_device_hash(opts)) {
         return (uint8_t)DSD_SCAN_QUIET_REASON_NONE;
     }
@@ -1319,9 +1449,9 @@ quiet_warned_slot(scan_quiet_check* c, int which, int index) {
 
 static int
 quiet_channel_key_equal(const quiet_channel_key* a, const quiet_channel_key* b) {
-    return a->list_id == b->list_id && a->reason == b->reason && a->classes == b->classes
-           && a->unchecked == b->unchecked && a->kind == b->kind && a->width_hz == b->width_hz
-           && a->monitor_width_hz == b->monitor_width_hz;
+    return a->list_id == b->list_id && a->list_rev == b->list_rev && a->frequency_hz == b->frequency_hz
+           && a->reason == b->reason && a->classes == b->classes && a->detail == b->detail && a->kind == b->kind
+           && a->width_hz == b->width_hz && a->monitor_width_hz == b->monitor_width_hz;
 }
 
 /* Log the channel's WARN line for the check's reason on @p ref, once per key per row or target. */
@@ -1332,8 +1462,9 @@ quiet_warn_channel(const dsd_opts* opts, scan_quiet_check* c, const scan_quiet_v
     key.list_id = ref->list_id;
     key.reason = c->reason;
     key.classes = c->classes;
-    key.unchecked =
-        (uint8_t)((opts->frame_x2tdma ? 1U : 0U) | (opts->frame_provoice ? 2U : 0U) | (opts->frame_tetra ? 4U : 0U));
+    key.list_rev = ref->list_rev;
+    key.frequency_hz = c->frequency_hz;
+    key.detail = scan_quiet_channel_detail(opts, c->reason, c->classes);
     key.kind = c->analog_kind;
     key.width_hz = c->analog_width_hz;
     key.monitor_width_hz = opts->monitor_input_audio == 1 ? dsd_opts_analog_width_hz(opts) : -1;
@@ -1343,7 +1474,7 @@ quiet_warn_channel(const dsd_opts* opts, scan_quiet_check* c, const scan_quiet_v
     }
     *slot = key;
     char line[384];
-    (void)scan_quiet_format_warn(line, sizeof line, c->reason, 0, 0U, ref->name, ref->index, c->frequency_hz,
+    (void)scan_quiet_format_warn(line, sizeof line, c->reason, key.detail, 0U, ref->name, ref->index, c->frequency_hz,
                                  c->analog_kind, c->analog_width_hz);
     LOG_WARN("%s", line);
 }
@@ -1390,12 +1521,12 @@ quiet_timing_fill_check(const dsd_opts* opts, dsd_state* state, const scan_quiet
     const uint8_t receiver = quiet_visit_receiver_reason(opts, c);
     if (receiver != (uint8_t)DSD_SCAN_QUIET_REASON_NONE) {
         quiet_warn_capture(opts, state, c, receiver);
-        quiet_fill_no_check(ref, report, receiver);
+        quiet_fill_no_check(state, ref, report, receiver);
         return;
     }
     if (c->phase == SCAN_QUIET_SUSPENDED && quiet_channel_reason(c->reason)) {
         quiet_warn_channel(opts, c, ref);
-        quiet_fill_no_check(ref, report, c->reason);
+        quiet_fill_no_check(state, ref, report, c->reason);
         return;
     }
     if (ref->shows_status && quiet_check_active(c)) {
@@ -1559,7 +1690,7 @@ scan_quiet_timing_fill(const dsd_opts* opts, dsd_state* state, const scan_quiet_
     key.input = opts->audio_in_type;
     key.device = quiet_device_hash(opts);
     quiet_warn_receiver(state, &key);
-    quiet_fill_no_check(ref, report, (uint8_t)DSD_SCAN_QUIET_REASON_INPUT);
+    quiet_fill_no_check(state, ref, report, (uint8_t)DSD_SCAN_QUIET_REASON_INPUT);
 }
 
 void
@@ -1637,6 +1768,7 @@ void
 dsd_engine_scan_quiet_note_frame_sync(dsd_state* state) {
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
     if (owner) {
+        owner->sync_seq++;
         owner->frame_pending = 1U;
         owner->frame_evidence = 0U;
         owner->frame_hold_ms = 0U;

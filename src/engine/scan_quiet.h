@@ -178,13 +178,14 @@ int scan_quiet_session_supported(const dsd_opts* opts);
 
 /** The scan visit on air, as a timing writer names it (issue #834 B1). */
 typedef struct {
-    int owner;        /**< SCAN_QUIET_OWNER_TRUNK or SCAN_QUIET_OWNER_Y */
-    int index;        /**< the target or row on air; -1 with none */
-    uint32_t session; /**< the coordinator's session, or dsd_state::lcn_scan_session */
-    uint64_t list_id; /**< the list's identity: the coordinator's session, or dsd_state::lcn_list_rev */
-    const char* name; /**< a target's label or id; NULL for a -Y row, named "row N" */
-    int shows_status; /**< the stay on air is one the status is shown on (scan_quiet_stay_shows_status()) */
-    int conventional; /**< 0 for a trunked target: never checked, so nothing is said about it */
+    int owner;         /**< SCAN_QUIET_OWNER_TRUNK or SCAN_QUIET_OWNER_Y */
+    int index;         /**< the target or row on air; -1 with none */
+    uint32_t session;  /**< the coordinator's session, or dsd_state::lcn_scan_session */
+    uint64_t list_id;  /**< the list's identity: the coordinator's session, or dsd_state::lcn_list_rev */
+    uint64_t list_rev; /**< its revision: the trunk scan's target edits and lists; 0 for -Y (list_id moves) */
+    const char* name;  /**< a target's label or id; NULL for a -Y row, named "row N" */
+    int shows_status;  /**< the stay on air is one the status is shown on (scan_quiet_stay_shows_status()) */
+    int conventional;  /**< 0 for a trunked target: never checked, so nothing is said about it */
 } scan_quiet_visit_ref;
 
 /** Whether the Scan Timing row shows the check's status on a visit whose stay is @p stay_reason (dsd_scan_stay_reason):
@@ -204,9 +205,9 @@ void scan_quiet_timing_fill(const dsd_opts* opts, dsd_state* state, const scan_q
                             dsd_scan_timing_publication* report);
 
 /** Format the WARN line for @p reason into @p out (the one table of its wording). The receiver's reasons take @p detail
- * (SCAN_QUIET_WARN_*), and RATE the capture rate @p rate_hz; the channel's take @p name (NULL or empty: -Y row
- * @p row, 0-based), the frequency @p hz, and for WIDTH the analog @p kind and @p width_hz. Returns the snprintf
- * result. */
+ * (SCAN_QUIET_WARN_AUDIO .. _CENTRED), and RATE the capture rate @p rate_hz; the channel's take @p name (NULL or empty:
+ * -Y row @p row, 0-based), the frequency @p hz, @p detail (scan_quiet_channel_detail()), and for WIDTH the analog
+ * @p kind and @p width_hz. Returns the snprintf result. */
 int scan_quiet_format_warn(char* out, size_t out_size, uint8_t reason, int detail, uint32_t rate_hz, const char* name,
                            int row, uint32_t hz, int kind, uint32_t width_hz);
 
@@ -222,6 +223,20 @@ enum {
     SCAN_QUIET_WARN_AIRSPY = 3,   /**< TUNER: a native Airspy input */
     SCAN_QUIET_WARN_CENTRED = 4,  /**< TUNER: offset tuning, or the Fs/4 shift off */
 };
+
+/** The channel detail scan_quiet_format_warn() takes (bits): what in the session gives MODES (the ProVoice, X2-TDMA
+ * and TETRA decoders on, or the M17 encoder; none of them: no mode of a class), or a NO_WIDTH that is the -8 monitor's.
+ */
+enum {
+    SCAN_QUIET_WARN_PROVOICE = 1,
+    SCAN_QUIET_WARN_X2TDMA = 2,
+    SCAN_QUIET_WARN_TETRA = 4,
+    SCAN_QUIET_WARN_ENCODER = 8,
+    SCAN_QUIET_WARN_MONITOR = 16,
+};
+
+/** The channel detail of @p reason for a visit judged in @p classes, from the session @p opts in force. */
+uint8_t scan_quiet_channel_detail(const dsd_opts* opts, uint8_t reason, uint8_t classes);
 
 /** Whether engine service has eligibility to work out for @p owner: 0 with the setting off or the visit on air's check
  * DONE, so the caller returns before any of its walk. */
@@ -309,7 +324,8 @@ int dsd_engine_scan_quiet_frame_service(const dsd_opts* opts, dsd_state* state, 
 int dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state);
 /** Whether @p owner_kind's check owes a frame boundary its republication (issue #834 B8): it was suspended (a revision
  * changed, such as a receive request the stream numbered, or a note of change) while its visit's landing was still in
- * force. Under syncs that keep the synced-frames loop running no outer pass or noCarrier() comes to publish it again,
+ * force, or it is SUSPENDED with a reason it cannot be checked and a revision it was published with has moved since
+ * (a width or row edit; once per change, B1), so it starts again on the same visit. Under syncs that keep the synced-frames loop running no outer pass or noCarrier() comes to publish it again,
  * so the frame boundary does, once: 1 at most once per suspension, which this clears; a publication or a new start
  * clears it too. 0 with the setting off (one load), for another owner, or for a check not suspended. */
 int dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state, int owner_kind);

@@ -4733,6 +4733,8 @@ trunk_scan_timing_fill_quiet(const dsd_opts* opts, dsd_state* state, const dsd_t
     ref.index = (int)coord->active;
     ref.session = coord->session;
     ref.list_id = coord->session;
+    /* An edit of a target in place, or a list switched on or off, is a revision of the lists: a line logs again. */
+    ref.list_rev = ((uint64_t)coord->edit_seq << 32) | (uint64_t)coord->lists_seq;
     ref.name = target->label[0] != '\0' ? target->label : target->id;
     ref.shows_status = report->reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
     ref.conventional = !trunk_scan_target_is_trunked(target->type);

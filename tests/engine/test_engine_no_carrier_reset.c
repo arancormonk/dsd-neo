@@ -12300,6 +12300,8 @@ test_live_scan_over_silent_inputs(void) {
 static struct {
     int active;
     int real_widths;   /* judge the analog width with the shipped admission table rather than accept every width */
+    int centred;       /* the capture has no Fs/4 rotation (a native Airspy, issue #834 B1) */
+    int rate_refused;  /* the capture's rate is one the calibration did not validate */
     int quiet;         /* the answer: quiet (1) or busy (0) */
     uint32_t gen_base; /* the stream generation is gen_base + the tunes made */
     int requests;
@@ -12347,7 +12349,7 @@ __wrap_rtl_signal_capture_get(dsd_signal_capture* capture) {
     capture->generation = yq_stream_gen();
     capture->rate_hz = 1536000U;
     capture->capture_hz = g_rtl_tune_freq;
-    capture->rotation_hz = 384000;
+    capture->rotation_hz = g_yq.centred ? 0 : 384000;
     capture->gain = 20;
     return 1;
 }
@@ -12408,7 +12410,7 @@ __wrap_rtl_signal_quiet_cancel(uint32_t ticket) {
 
 int
 __wrap_dsd_signal_quiet_rate_supported(uint32_t rate_hz) {
-    return g_yq.active ? rate_hz != 0U : __real_dsd_signal_quiet_rate_supported(rate_hz);
+    return g_yq.active ? (rate_hz != 0U && !g_yq.rate_refused) : __real_dsd_signal_quiet_rate_supported(rate_hz);
 }
 
 int
@@ -12710,14 +12712,108 @@ test_y_quiet_timing_says_why(void) {
     rc |= yq_expect_quiet(state, "an untyped row under ProVoice", DSD_SCAN_STAY_HANGTIME,
                           DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_MODES);
     char want[512];
-    (void)scan_quiet_format_warn(want, sizeof want, DSD_SCAN_QUIET_REASON_MODES, 0, 0U, NULL, 0, (uint32_t)untyped_hz,
-                                 0, 0U);
-    rc |= expect_true("one WARN line naming the row", g_yq.warns == 1 && strcmp(g_yq.warn, want) == 0);
+    (void)scan_quiet_format_warn(want, sizeof want, DSD_SCAN_QUIET_REASON_MODES, SCAN_QUIET_WARN_PROVOICE, 0U, NULL, 0,
+                                 (uint32_t)untyped_hz, 0, 0U);
+    rc |= expect_true("one WARN line naming the row and ProVoice", g_yq.warns == 1 && strcmp(g_yq.warn, want) == 0);
     rc |= expect_true("a row it cannot check requests nothing", g_yq.requests == 1);
+    /* Another decoder set without a known width: another key, logged again; naming both. */
+    opts->frame_x2tdma = 1;
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    yq_timing_tick(opts, state);
+    (void)scan_quiet_format_warn(want, sizeof want, DSD_SCAN_QUIET_REASON_MODES,
+                                 SCAN_QUIET_WARN_PROVOICE | SCAN_QUIET_WARN_X2TDMA, 0U, NULL, 0, (uint32_t)untyped_hz,
+                                 0, 0U);
+    rc |= expect_true("another decoder set: logged again", g_yq.warns == 2 && strcmp(g_yq.warn, want) == 0);
+    /* A sync on the row (a call): its hangtime runs from the sync and says nothing of the check. */
+    dsd_engine_scan_quiet_note_frame_sync(state);
+    dsd_engine_scan_quiet_frame_end(state);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a row that synced", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
+                          DSD_SCAN_QUIET_REASON_NONE);
+    opts->frame_x2tdma = 0;
     opts->frame_provoice = 0;
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y timing says why (warns %d, last '%s')\n", g_yq.warns, g_yq.warn);
+    }
+    return rc;
+}
+
+/* issue #834 B1: each no-check cause through the real -Y timing writer, on an unsynced row in its hangtime, then the
+   same row once it synced (a call on it) reads nothing of the check. */
+enum { YQ_CAUSE_INPUT = 0, YQ_CAUSE_TUNER, YQ_CAUSE_RATE, YQ_CAUSE_WIDTH, YQ_CAUSE_NO_WIDTH, YQ_CAUSE_COUNT };
+
+static int
+yq_cause_case(int which) {
+    static const unsigned k_reason[YQ_CAUSE_COUNT] = {DSD_SCAN_QUIET_REASON_INPUT, DSD_SCAN_QUIET_REASON_TUNER,
+                                                      DSD_SCAN_QUIET_REASON_RATE, DSD_SCAN_QUIET_REASON_WIDTH,
+                                                      DSD_SCAN_QUIET_REASON_NO_WIDTH};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.centred = which == YQ_CAUSE_TUNER;
+    g_yq.rate_refused = which == YQ_CAUSE_RATE;
+    g_yq.real_widths = which == YQ_CAUSE_WIDTH;
+    g_yq_monitor_nfm_hz = which == YQ_CAUSE_WIDTH ? 13500 : (which == YQ_CAUSE_NO_WIDTH ? 0 : -1);
+    const long int base_hz = 501012500L + (long int)which * 10000000L;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, base_hz) == 0);
+    if (which == YQ_CAUSE_INPUT) {
+        /* The input switched to audio after the landing measured the row: published again, it has no check. */
+        opts->audio_in_type = AUDIO_IN_PULSE;
+        dsd_engine_scan_quiet_publish_row(opts, state);
+        g_yq.requests = 0;
+    }
+    yq_timing_tick(opts, state);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "an unsynced row it cannot check", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, k_reason[which]);
+    rc |= expect_true("one WARN line, nothing requested", g_yq.warns == 1 && g_yq.requests == 0);
+    dsd_engine_scan_quiet_note_frame_sync(state);
+    dsd_engine_scan_quiet_frame_end(state);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "the row synced", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
+                          DSD_SCAN_QUIET_REASON_NONE);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    g_yq_monitor_nfm_hz = -1;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y cause %d (warns %d, last '%s')\n", which, g_yq.warns, g_yq.warn);
+    }
+    return rc;
+}
+
+/* issue #834 A5: a -Y row refused for its width starts again on the same visit once the width is edited, through the
+   frame boundary's owed republication (syncs that keep the frame loop running let no noCarrier() publish it), owed
+   once per change. */
+static int
+test_y_quiet_refused_row_restarts_after_an_edit(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.real_widths = 1;
+    g_yq_monitor_nfm_hz = 13500;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 511012500L) == 0);
+    rc |=
+        expect_true("refused for its width", scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED && g_yq.requests == 0);
+    rc |= expect_true("nothing owed before an edit", dsd_engine_scan_quiet_take_republish(opts, state, 2) == 0);
+    opts->analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_true("the edit owes one republication",
+                      dsd_engine_scan_quiet_take_republish(opts, state, 2) == 1
+                          && dsd_engine_scan_quiet_take_republish(opts, state, 2) == 0);
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    rc |= expect_true("the same visit is measured at the new width", scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED
+                                                                         && g_yq.requests == 1
+                                                                         && g_yq.last.analog_width_hz == 12500U);
+    g_yq_monitor_nfm_hz = -1;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y refused row restarts after an edit\n");
     }
     return rc;
 }
@@ -13721,6 +13817,10 @@ test_scan_quiet_decisions(void) {
         rc |= yq_landing_case(which);
     }
     rc |= test_y_quiet_timing_says_why();
+    for (int which = YQ_CAUSE_INPUT; which < YQ_CAUSE_COUNT; which++) {
+        rc |= yq_cause_case(which);
+    }
+    rc |= test_y_quiet_refused_row_restarts_after_an_edit();
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);
     rc |= test_trunk_quiet_noise_syncs_still_skip(0);
