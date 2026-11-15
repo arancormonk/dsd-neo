@@ -170,31 +170,293 @@ inverse(dsd_io::FftSetupCache& fft, int n, cf* data) {
     return ok;
 }
 
-bool
-shape_record(const Bins& bins, int n, cf* x, bool signal, double sigma, Rng& rng, dsd_io::FftSetupCache& fft) {
-    if (signal && !fft.forward(n, reinterpret_cast<float*>(x))) {
-        return false;
-    }
-    /* A circular Gaussian record of density noise[k]^2: independent bins of variance n noise[k]^2 2 sigma^2 before the
-       unscaled inverse and its 1/n, so each sample's variance is 2 sigma^2 mean(noise^2). The inverse runs through
-       the forward transform on the conjugate (inverse()), so each bin is stored conjugated here and the samples are
-       conjugated back with the 1/n in one pass after it. */
-    const float root_n = (float)std::sqrt((double)n);
-    for (int k = 0; k < n; ++k) {
-        cf y = signal ? x[k] * bins.signal[(size_t)k] : cf(0, 0);
-        if (sigma > 0) {
-            y += rng.gauss(sigma) * (root_n * bins.noise[(size_t)k]);
+void
+Rng::gauss_fill(double sigma, int count, cf* out) {
+    constexpr double kTwoPi = 6.28318530717958647692;
+    constexpr int kBatch = 256;
+    double u[kBatch], v[kBatch];
+    float re[kBatch], im[kBatch];
+    for (int base = 0; base < count; base += kBatch) {
+        const int len = std::min(kBatch, count - base);
+        /* gauss() draws its radius's uniform, then its angle's */
+        for (int i = 0; i < len; ++i) {
+            u[i] = uniform();
+            v[i] = uniform();
         }
-        x[k] = std::conj(y);
+        for (int i = 0; i < len; ++i) {
+            const double r = sigma * std::sqrt(-2.0 * std::log(u[i])), t = kTwoPi * v[i];
+            re[i] = (float)(r * std::cos(t));
+            im[i] = (float)(r * std::sin(t));
+        }
+        for (int i = 0; i < len; ++i) {
+            out[base + i] = cf(re[i], im[i]);
+        }
     }
-    if (!fft.forward(n, reinterpret_cast<float*>(x))) {
+}
+
+namespace {
+
+/* Points of the radix stage handled at once: at the records' 5 to 20 parts, a block of every part stays in the core's
+   first-level cache. */
+constexpr int kRadixBlock = 64;
+constexpr int kMaxParts = 32;
+
+/* Whether pffft takes a complex transform of @p m points: a multiple of 16 of the form 2^a 3^b 5^c. */
+bool
+pffft_takes(int m) {
+    if (m < 16 || m % 16 != 0) {
         return false;
     }
-    const float scale = 1.0f / (float)n;
-    for (int i = 0; i < n; ++i) {
-        x[i] = std::conj(x[i]) * scale;
+    for (int f : {2, 3, 5}) {
+        while (m % f == 0) {
+            m /= f;
+        }
+    }
+    return m == 1;
+}
+
+/* w_n^-e = exp(-2 pi i e / n), from the exact integer phase. */
+cf
+twiddle(long long e, long long n) {
+    constexpr double kTwoPi = 6.28318530717958647692;
+    const double a = -kTwoPi * (double)(e % n) / (double)n;
+    return cf((float)std::cos(a), (float)std::sin(a));
+}
+
+} // namespace
+
+SplitTransform::~SplitTransform() { fft_.release(); }
+
+bool
+SplitTransform::plan(int n, int max_part) {
+    if (n == n_ && max_part == max_part_) {
+        return true;
+    }
+    n_ = 0;
+    int r = 1;
+    for (int c = 1; c <= kMaxParts; ++c) {
+        if (n % c == 0 && n / c <= max_part && pffft_takes(n / c)) {
+            r = c;
+            break;
+        }
+    }
+    const int m = n / r;
+    if (!pffft_takes(m) || !fft_.prepare(m)) {
+        return false;
+    }
+    r_ = r;
+    m_ = m;
+    max_part_ = max_part;
+    /* m / 8 + 1 cache lines: odd, since pffft's m is a multiple of 16, and a multiple of pffft's 16-byte alignment */
+    stride_ = r == 1 ? (size_t)m : (size_t)m + 8;
+    spectrum_.assign((size_t)r * stride_, cf(0, 0));
+    build_tables(n);
+    n_ = n;
+    return true;
+}
+
+/* The radix stage's twiddles, its r-point DFT matrix and its block buffers, for r_ parts of m_ points. */
+void
+SplitTransform::build_tables(int n) {
+    const int r = r_, m = m_;
+    const int blocks = (m + kRadixBlock - 1) / kRadixBlock;
+    block_twiddles_.resize((size_t)blocks * r);
+    step_twiddles_.resize((size_t)r * kRadixBlock);
+    dft_re_.resize((size_t)r * r);
+    dft_im_.resize((size_t)r * r);
+    for (int b = 0; b < blocks; ++b) {
+        for (int k2 = 0; k2 < r; ++k2) {
+            block_twiddles_[(size_t)b * r + k2] = twiddle((long long)b * kRadixBlock * k2, n);
+        }
+    }
+    for (int k2 = 0; k2 < r; ++k2) {
+        for (int j = 0; j < kRadixBlock; ++j) {
+            step_twiddles_[(size_t)k2 * kRadixBlock + j] = twiddle((long long)j * k2, n);
+        }
+    }
+    for (int p = 0; p < r; ++p) {
+        for (int q = 0; q < r; ++q) {
+            const cf w = twiddle((long long)p * q, r);
+            dft_re_[(size_t)p * r + q] = w.real();
+            dft_im_[(size_t)p * r + q] = w.imag();
+        }
+    }
+    for (std::vector<float>* v : {&in_re_, &in_im_, &out_re_, &out_im_}) {
+        v->assign((size_t)r * kRadixBlock, 0.0f);
+    }
+}
+
+/* out[q][j] = sum over p of w_r^-(p q) in[p][j], for j < len: the r-point DFT of every point of a block at once. */
+void
+SplitTransform::radix_dft(const float* in_re, const float* in_im, int len, float* out_re, float* out_im) const {
+    for (int q = 0; q < r_; ++q) {
+        float* ore = out_re + (size_t)q * kRadixBlock;
+        float* oim = out_im + (size_t)q * kRadixBlock;
+        std::fill(ore, ore + len, 0.0f);
+        std::fill(oim, oim + len, 0.0f);
+        for (int p = 0; p < r_; ++p) {
+            const float wr = dft_re_[(size_t)p * r_ + q], wi = dft_im_[(size_t)p * r_ + q];
+            const float* ire = in_re + (size_t)p * kRadixBlock;
+            const float* iim = in_im + (size_t)p * kRadixBlock;
+            for (int j = 0; j < len; ++j) {
+                ore[j] += wr * ire[j] - wi * iim[j];
+                oim[j] += wr * iim[j] + wi * ire[j];
+            }
+        }
+    }
+}
+
+/* Decimation in frequency: with t = t1 + m t2 and k = r k1 + k2, X[r k1 + k2] is the m-point DFT over t1 of
+   w_n^-(t1 k2) sum over t2 of w_r^-(t2 k2) x[t1 + m t2]. This stage leaves that inner sum, twiddled, in part(k2)[t1]. */
+void
+SplitTransform::radix_forward(const cf* x) {
+    for (int t0 = 0, b = 0; t0 < m_; t0 += kRadixBlock, ++b) {
+        const int len = std::min(kRadixBlock, m_ - t0);
+        for (int p = 0; p < r_; ++p) {
+            const cf* src = x + t0 + (size_t)m_ * p;
+            for (int j = 0; j < len; ++j) {
+                in_re_[(size_t)p * kRadixBlock + j] = src[j].real();
+                in_im_[(size_t)p * kRadixBlock + j] = src[j].imag();
+            }
+        }
+        radix_dft(in_re_.data(), in_im_.data(), len, out_re_.data(), out_im_.data());
+        for (int q = 0; q < r_; ++q) {
+            const cf base = block_twiddles_[(size_t)b * r_ + q];
+            const cf* step = step_twiddles_.data() + (size_t)q * kRadixBlock;
+            cf* dst = part(q) + t0;
+            for (int j = 0; j < len; ++j) {
+                dst[j] =
+                    cf(out_re_[(size_t)q * kRadixBlock + j], out_im_[(size_t)q * kRadixBlock + j]) * (base * step[j]);
+            }
+        }
+    }
+}
+
+/* The same split read the other way: with the m-point DFT of each part(k2) taken, z[t1 + m t2] is the sum over k2 of
+   w_r^-(t2 k2) w_n^-(t1 k2) part(k2)[t1]; written conjugated and scaled. */
+void
+SplitTransform::radix_inverse(cf* out, float scale) {
+    for (int t0 = 0, b = 0; t0 < m_; t0 += kRadixBlock, ++b) {
+        const int len = std::min(kRadixBlock, m_ - t0);
+        for (int p = 0; p < r_; ++p) {
+            const cf base = block_twiddles_[(size_t)b * r_ + p];
+            const cf* step = step_twiddles_.data() + (size_t)p * kRadixBlock;
+            const cf* src = part(p) + t0;
+            for (int j = 0; j < len; ++j) {
+                const cf v = src[j] * (base * step[j]);
+                in_re_[(size_t)p * kRadixBlock + j] = v.real();
+                in_im_[(size_t)p * kRadixBlock + j] = v.imag();
+            }
+        }
+        radix_dft(in_re_.data(), in_im_.data(), len, out_re_.data(), out_im_.data());
+        for (int q = 0; q < r_; ++q) {
+            cf* dst = out + t0 + (size_t)m_ * q;
+            const float* re = out_re_.data() + (size_t)q * kRadixBlock;
+            const float* im = out_im_.data() + (size_t)q * kRadixBlock;
+            for (int j = 0; j < len; ++j) {
+                dst[j] = cf(re[j], -im[j]) * scale;
+            }
+        }
+    }
+}
+
+bool
+SplitTransform::transform_parts() {
+    for (int k2 = 0; k2 < r_; ++k2) {
+        if (!fft_.forward(m_, reinterpret_cast<float*>(part(k2)))) {
+            return false;
+        }
     }
     return true;
+}
+
+bool
+SplitTransform::forward(const cf* x) {
+    if (n_ == 0) {
+        return false;
+    }
+    if (r_ == 1) {
+        std::copy(x, x + n_, spectrum_.begin());
+    } else {
+        radix_forward(x);
+    }
+    return transform_parts();
+}
+
+bool
+SplitTransform::inverse_from_conjugate(cf* out, float scale) {
+    if (n_ == 0 || !transform_parts()) {
+        return false;
+    }
+    if (r_ > 1) {
+        radix_inverse(out, scale);
+        return true;
+    }
+    for (int i = 0; i < n_; ++i) {
+        out[i] = std::conj(spectrum_[(size_t)i]) * scale;
+    }
+    return true;
+}
+
+SplitTransform*
+TransformCache::get(int n) {
+    int slot = 0;
+    for (int i = 0; i < kSlots; ++i) {
+        if (slots_[i] && slots_[i]->size() == n) {
+            used_[i] = ++clock_;
+            return slots_[i].get();
+        }
+        if (used_[i] < used_[slot]) {
+            slot = i;
+        }
+    }
+    if (!slots_[slot]) {
+        slots_[slot].reset(new SplitTransform());
+    }
+    used_[slot] = ++clock_;
+    return slots_[slot]->plan(n) ? slots_[slot].get() : nullptr;
+}
+
+namespace {
+
+/* The response and its noise on the split spectrum, bin by bin in bin order so the noise takes the same draws as one
+   whole-record pass would: a circular Gaussian record of density noise[k]^2, independent bins of variance
+   n noise[k]^2 2 sigma^2 before the unscaled inverse and its 1/n, so each sample's variance is 2 sigma^2
+   mean(noise^2). The inverse runs through the forward transform on the conjugate, so each bin is stored conjugated. */
+void
+shape_bins(const Bins& bins, bool signal, double sigma, Rng& rng, SplitTransform& t) {
+    const int r = t.parts(), m = t.part_points();
+    const float root_n = (float)std::sqrt((double)t.size());
+    cf noise[kRadixBlock * kMaxParts];
+    for (int k1 = 0; k1 < m; k1 += kRadixBlock) {
+        const int len = std::min(kRadixBlock, m - k1);
+        if (sigma > 0) {
+            rng.gauss_fill(sigma, len * r, noise);
+        }
+        for (int j = 0; j < len; ++j) {
+            for (int k2 = 0; k2 < r; ++k2) {
+                const size_t k = (size_t)(k1 + j) * r + k2;
+                cf& bin = t.part(k2)[k1 + j];
+                cf y = signal ? bin * bins.signal[k] : cf(0, 0);
+                if (sigma > 0) {
+                    y += noise[j * r + k2] * (root_n * bins.noise[k]);
+                }
+                bin = std::conj(y);
+            }
+        }
+    }
+}
+
+} // namespace
+
+bool
+shape_record(const Bins& bins, int n, cf* x, bool signal, double sigma, Rng& rng, TransformCache& transforms) {
+    SplitTransform* t = transforms.get(n);
+    if (!t || (signal && !t->forward(x))) {
+        return false;
+    }
+    shape_bins(bins, signal, sigma, rng, *t);
+    return t->inverse_from_conjugate(x, 1.0f / (float)n);
 }
 
 /* The smallest record of at least @p count points the transform takes: 2^a 3^b 5^c with a >= 4. */

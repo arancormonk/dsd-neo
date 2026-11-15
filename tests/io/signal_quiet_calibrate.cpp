@@ -94,6 +94,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -1079,11 +1080,19 @@ fnv1a(const std::string& text) {
     return h;
 }
 
+/* A shaped condition's response over its record, and whether the response is unity around every carrier (a placed
+ * waveform's content lies within kSourceRate / 2 of its carrier). */
+struct RecordBins {
+    qs::Bins bins;
+    bool carriers_unshaped = false;
+};
+
 struct Worker {
     std::vector<cf> trial, noise, record;
     dsd_io::FftSetupCache fft;
+    qs::TransformCache shapes; /* the shaped records' transforms */
     dsd_signal_quiet_detector* detectors[2] = {nullptr, nullptr};
-    qs::Bins bins; /* the response's bins for bins_for's record */
+    RecordBins bins; /* the response's bins for bins_for's record (the snr phase) */
     const Condition* bins_for = nullptr;
 
     Worker() {
@@ -1233,36 +1242,88 @@ trial_seed(const Condition& c, uint64_t phase, long trial) {
     return fnv1a(c.name) ^ (phase * 0x9E3779B97F4A7C15ULL) ^ ((uint64_t)trial * 0xD1B54A32D192ED03ULL);
 }
 
-/* The response's bins for @p c's record, kept by the worker while its trials run. */
-const qs::Bins&
+constexpr double kSourceBandHz = kSourceRate / 2.0; /* a placed waveform's content, either side of its carrier */
+constexpr float kUnityTolerance = 1e-6f;            /* a signal bin this close to 1 leaves the carrier as it is */
+
+/* Whether carrier @p k of @p c sees a response within kUnityTolerance of unity over its whole band. */
+bool
+carrier_unshaped(const Condition& c, const Carrier& k, const qs::Bins& bins) {
+    const long long n = c.record;
+    const double bin = (double)c.rate / (double)n, f = channel_hz(c) + k.offset_hz;
+    const long long last = (long long)std::ceil((f + kSourceBandHz) / bin);
+    for (long long m = (long long)std::floor((f - kSourceBandHz) / bin); m <= last; ++m) {
+        if (std::fabs(bins.signal[(size_t)((m % n + n) % n)] - 1.0f) > kUnityTolerance) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The response's bins over @p c's record. */
+void
+record_bins(const Condition& c, const qs::Response& response, RecordBins* out) {
+    const std::function<double(double)> colour = [&c](double f) { return floor_shape(c, f - channel_hz(c)); };
+    qs::response_bins(response, placement(c), c.record, c.floor == WHITE ? nullptr : &colour, &out->bins);
+    out->carriers_unshaped = std::all_of(c.carriers.begin(), c.carriers.end(),
+                                         [&](const Carrier& k) { return carrier_unshaped(c, k, out->bins); });
+}
+
+/* The response's bins for @p c's record, kept by the worker while its renders run (the snr phase). */
+const RecordBins&
 condition_bins(const Condition& c, const qs::Response& response, Worker& w) {
     if (w.bins_for != &c) {
-        const std::function<double(double)> colour = [&c](double f) { return floor_shape(c, f - channel_hz(c)); };
-        qs::response_bins(response, placement(c), c.record, c.floor == WHITE ? nullptr : &colour, &w.bins);
+        record_bins(c, response, &w.bins);
         w.bins_for = &c;
     }
     return w.bins;
 }
 
-/* A shaped condition's record: its transmitters (all but neighbours when @p wanted_only), from its edge to its edge,
- * through the response, with the response's noise when @p noise. The trial is its middle span, from
- * record_trial(). Returns the first carrier's start, or -1 with no carrier. */
+/* Add @p c's transmitters (all but neighbours when @p wanted_only) to @p out; the first one's start, or -1. */
 int64_t
-render_record(const Condition& c, const Scene& s, Rng& rng, Worker& w, bool wanted_only, bool noise) {
-    const int lead = (c.record - c.span) / 2;
-    w.record.assign((size_t)c.record, cf(0, 0));
+add_carriers(const Condition& c, const Scene& s, Rng& rng, bool wanted_only, cf* out, int lead, int length) {
     int64_t first = -1;
     bool any = false;
     for (const Carrier& k : c.carriers) {
         if (wanted_only && k.neighbour) {
             continue;
         }
-        const int64_t start = add_carrier(c, k, s, rng, w.record.data(), lead, c.record);
+        const int64_t start = add_carrier(c, k, s, rng, out, lead, length);
         first = any ? first : start;
         any = true;
     }
-    if (!qs::shape_record(condition_bins(c, s.response, w), c.record, w.record.data(), any, noise ? kNoiseSigma : 0.0,
-                          rng, w.fft)) {
+    return first;
+}
+
+/* A shaped condition's record: its transmitters (all but neighbours when @p wanted_only), from its edge to its edge,
+ * through the response, with the response's noise when @p noise. The trial is its middle span, from
+ * record_trial(). Where the response is unity around every carrier (@p rb), only the noise goes through the response
+ * and the carriers are added to the trial as they are: through the response they would differ only where the
+ * record's circular wrap rings, which its edges keep out of the trial. Every random draw is the same either way: the
+ * carriers' draws come first (add_carrier() draws the same whatever the length), then the noise's. Returns the first
+ * carrier's start, or -1 with no carrier. */
+int64_t
+render_record(const Condition& c, const Scene& s, const RecordBins& rb, Rng& rng, Worker& w, bool wanted_only,
+              bool noise) {
+    const int lead = (c.record - c.span) / 2;
+    const double sigma = noise ? kNoiseSigma : 0.0;
+    bool shaped = true;
+    int64_t first = -1;
+    if (rb.carriers_unshaped) {
+        w.record.resize((size_t)c.record);
+        Rng carriers = rng;
+        add_carriers(c, s, rng, wanted_only, w.record.data(), 0, 0); /* their draws only */
+        if (noise) {
+            shaped = qs::shape_record(rb.bins, c.record, w.record.data(), false, sigma, rng, w.shapes);
+        } else {
+            std::fill(w.record.begin() + lead, w.record.begin() + lead + c.span, cf(0, 0));
+        }
+        first = add_carriers(c, s, carriers, wanted_only, w.record.data() + lead, 0, c.span);
+    } else {
+        w.record.assign((size_t)c.record, cf(0, 0));
+        first = add_carriers(c, s, rng, wanted_only, w.record.data(), lead, c.record);
+        shaped = qs::shape_record(rb.bins, c.record, w.record.data(), first >= 0, sigma, rng, w.shapes);
+    }
+    if (!shaped) {
         DSD_FPRINTF(stderr, "condition %s: no transform of %d points\n", c.name.c_str(), c.record);
         std::abort();
     }
@@ -1275,12 +1336,12 @@ record_trial(const Condition& c, const Worker& w) {
     return w.record.data() + (c.record - c.span) / 2;
 }
 
-/* One trial's samples (c.span of them). */
+/* One trial's samples (c.span of them); @p rb holds a shaped condition's bins. */
 const cf*
-render(const Condition& c, const Scene& s, uint64_t seed, Worker& w) {
+render(const Condition& c, const Scene& s, uint64_t seed, Worker& w, const RecordBins* rb) {
     Rng rng(seed);
     if (c.record) {
-        render_record(c, s, rng, w, false, true);
+        render_record(c, s, *rb, rng, w, false, true);
         return record_trial(c, w);
     }
     w.trial.resize((size_t)c.span);
@@ -1452,24 +1513,42 @@ at_rate(uint32_t rate, const Inputs& in, const std::vector<size_t>& chosen) {
     return here;
 }
 
+/* A shaped condition's bins, built by the first of its trials to run and shared by the others, freed after its last. */
+struct SharedBins {
+    std::once_flag built;
+    RecordBins bins;
+    std::atomic<size_t> left{0};
+};
+
 void
 run_batch(const std::vector<size_t>& batch, const Scene& scene, const Options& o, const Inputs& in,
           std::vector<Outcome>* outcomes) {
     const bool select = o.phase == "select";
     const uint64_t phase = select ? 1 : 2;
     const size_t trials = (size_t)o.trials;
+    std::unique_ptr<SharedBins[]> shared(new SharedBins[batch.size()]);
+    for (size_t i = 0; i < batch.size(); ++i) {
+        shared[i].left = trials;
+    }
     parallel((long)(batch.size() * trials), o.jobs, [&](long job, Worker& w) {
+        SharedBins& bins = shared[(size_t)job / trials];
         const size_t index = batch[(size_t)job / trials];
         const Condition& c = in.all[index];
         Outcome& out = (*outcomes)[index];
         const long trial = (long)((size_t)job % trials);
-        const cf* samples = render(c, scene, trial_seed(c, phase, trial), w);
+        if (c.record) {
+            std::call_once(bins.built, [&] { record_bins(c, scene.response, &bins.bins); });
+        }
+        const cf* samples = render(c, scene, trial_seed(c, phase, trial), w, &bins.bins);
         for (int e = 0; e < 2; ++e) {
             if (!select && e != o.estimator) {
                 continue;
             }
             const dsd_signal_quiet_params params{select ? 0.0f : (float)o.threshold, e, (float)o.guard};
             out.trials[e][(size_t)trial] = judge(c, trial, w.detectors[e], params, samples);
+        }
+        if (--bins.left == 0) {
+            bins.bins = RecordBins();
         }
     });
 }
@@ -1651,12 +1730,12 @@ in_width_power(dsd_io::FftSetupCache& fft, const std::vector<cf>& x, uint32_t ra
     return in;
 }
 
-/* One trial's wanted carriers alone (no neighbour, no noise), through the response when the condition has one, in
- * w.trial; returns the first carrier's start. */
+/* One trial's wanted carriers alone (no neighbour, no noise), through the response when the condition has one (@p rb
+ * its bins), in w.trial; returns the first carrier's start. */
 int64_t
-render_wanted(const Condition& c, const Scene& s, Rng& rng, Worker& w) {
+render_wanted(const Condition& c, const Scene& s, const RecordBins* rb, Rng& rng, Worker& w) {
     if (c.record) {
-        const int64_t first = render_record(c, s, rng, w, true, false);
+        const int64_t first = render_record(c, s, *rb, rng, w, true, false);
         w.trial.assign(record_trial(c, w), record_trial(c, w) + c.span);
         return first;
     }
@@ -1683,9 +1762,10 @@ measured_snr_db(Condition c, const Options& o, const Scene& s, Worker& w) {
     const double centre = channel_hz(c) + c.snr_offset_hz;
     double signal = 0, noise = 0, total = 0;
     dsd_io::FftSetupCache fft;
+    const RecordBins* rb = c.record ? &condition_bins(c, s.response, w) : nullptr;
     for (long t = 0; t < o.trials; ++t) {
         Rng rng(trial_seed(c, 3, t));
-        const int64_t start = render_wanted(c, s, rng, w);
+        const int64_t start = render_wanted(c, s, rb, rng, w);
         const double in = in_width_power(fft, w.trial, c.rate, centre, c.snr_width, &total);
         double on = 0;
         long count = 0;
@@ -1699,8 +1779,7 @@ measured_snr_db(Condition c, const Options& o, const Scene& s, Worker& w) {
         if (c.record) {
             /* the response's noise alone, through the same bins */
             w.record.resize((size_t)c.record);
-            if (!qs::shape_record(condition_bins(c, s.response, w), c.record, w.record.data(), false, kNoiseSigma, rng,
-                                  w.fft)) {
+            if (!qs::shape_record(rb->bins, c.record, w.record.data(), false, kNoiseSigma, rng, w.shapes)) {
                 DSD_FPRINTF(stderr, "condition %s: no transform of %d points\n", c.name.c_str(), c.record);
                 std::abort();
             }

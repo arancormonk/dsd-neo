@@ -11,13 +11,13 @@
 // LLVM 22/GCC 16 misclassifies these runtime test oracles as compile-time assertions.
 // NOLINTBEGIN(cert-dcl03-c,misc-static-assert)
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <complex>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
-#include "rtl_fft_cache.h"
 #include "signal_quiet_scene.h"
 
 namespace qs = dsd_quiet_scene;
@@ -176,11 +176,10 @@ tone_through(const qs::Response& r, const qs::Placement& p, int n, double sample
         const double a = kTwoPi * sample_hz * i / p.rate;
         x[(size_t)i] = qs::cf((float)std::cos(a), (float)std::sin(a));
     }
-    dsd_io::FftSetupCache fft;
+    qs::TransformCache transforms;
     qs::Rng rng(1);
-    const bool shaped = qs::shape_record(bins, n, x.data(), true, 0.0, rng, fft);
+    const bool shaped = qs::shape_record(bins, n, x.data(), true, 0.0, rng, transforms);
     assert(shaped);
-    fft.release();
     return std::norm(dft_at(x, sample_hz, p.rate));
 }
 
@@ -206,6 +205,10 @@ test_tone_positions() {
     const qs::Response mirrored = response(qs::Shape::MIRRORED);
     expect_db(tone_through(mirrored, c, n, 0.335 * rate), -3.0103, 0.02, "centred mirrored: high edge");
     expect_db(tone_through(mirrored, c, n, -0.302 * rate), -3.0103, 0.02, "centred mirrored: low edge");
+    /* The same through a record long enough to be split (100000 points, two parts; 25 Hz bins). */
+    expect_db(tone_through(nominal, c, 100000, -0.335 * rate), -3.0103, 0.02, "split record: low edge");
+    expect_db(tone_through(nominal, c, 100000, 0.302 * rate), -3.0103, 0.02, "split record: high edge");
+    expect_db(tone_through(nominal, c, 100000, 0.0), 0.0, 0.01, "split record: channel");
     assert(tone_through(nominal, c, n, 0.32 * rate) < tone_through(nominal, c, n, -0.32 * rate));
     /* A tone off the response's edges keeps its frequency: nothing appears at its mirror image. */
     qs::Bins bins;
@@ -215,11 +218,10 @@ test_tone_positions() {
         const double a = kTwoPi * 0.1 * i;
         x[(size_t)i] = qs::cf((float)std::cos(a), (float)std::sin(a));
     }
-    dsd_io::FftSetupCache fft;
+    qs::TransformCache transforms;
     qs::Rng rng(1);
-    const bool shaped = qs::shape_record(bins, n, x.data(), true, 0.0, rng, fft);
+    const bool shaped = qs::shape_record(bins, n, x.data(), true, 0.0, rng, transforms);
     assert(shaped);
-    fft.release();
     assert(std::norm(dft_at(x, -0.1 * rate, rate)) < 1e-10);
 }
 
@@ -228,13 +230,13 @@ double
 noise_power_at(const qs::Response& r, const qs::Placement& p, int n, double sample_hz, int trials) {
     qs::Bins bins;
     qs::response_bins(r, p, n, nullptr, &bins);
-    dsd_io::FftSetupCache fft;
+    qs::TransformCache transforms;
     qs::Rng rng(7);
     double sum = 0;
     std::vector<qs::cf> x((size_t)n);
     const double bin_hz = (double)p.rate / n;
     for (int t = 0; t < trials; ++t) {
-        const bool shaped = qs::shape_record(bins, n, x.data(), false, 1.0, rng, fft);
+        const bool shaped = qs::shape_record(bins, n, x.data(), false, 1.0, rng, transforms);
         assert(shaped);
         /* the DFT at a bin of white noise of unit variance per component has mean power 2/n; five bins centred on
            the frequency, so a straight slope across them cancels */
@@ -242,7 +244,6 @@ noise_power_at(const qs::Response& r, const qs::Placement& p, int n, double samp
             sum += std::norm(dft_at(x, sample_hz + k * bin_hz, p.rate)) * n / 2.0;
         }
     }
-    fft.release();
     return sum / (5.0 * trials);
 }
 
@@ -272,6 +273,96 @@ test_noise_density() {
     assert(std::fabs(bins.signal[(size_t)(n / 4)] - 1.0) < 1e-6);
 }
 
+/* The direct DFT of @p x, sign -1 (forward) or +1 (inverse), unscaled, in double precision. */
+std::vector<std::complex<double>>
+direct_dft(const std::vector<qs::cf>& x, int sign) {
+    const size_t n = x.size();
+    std::vector<std::complex<double>> out(n);
+    for (size_t k = 0; k < n; ++k) {
+        std::complex<double> sum(0, 0);
+        for (size_t t = 0; t < n; ++t) {
+            sum += std::complex<double>(x[t].real(), x[t].imag())
+                   * std::polar(1.0, sign * kTwoPi * (double)((t * k) % n) / n);
+        }
+        out[k] = sum;
+    }
+    return out;
+}
+
+/* The largest error of @p got against @p want over want's rms. */
+double
+relative_error(const std::vector<std::complex<double>>& want, const std::vector<std::complex<double>>& got) {
+    double power = 0, worst = 0;
+    for (size_t i = 0; i < want.size(); ++i) {
+        power += std::norm(want[i]);
+        worst = std::max(worst, std::abs(got[i] - want[i]));
+    }
+    return worst / std::sqrt(power / (double)want.size());
+}
+
+/* The split transform against a direct DFT, both ways, for splits with every radix (2, 3, 5), parts that end in a
+ * short block, and no split at all. */
+void
+test_split_transform() {
+    struct Split {
+        int n, max_part, parts;
+    };
+
+    const Split splits[] = {{960, 160, 6}, {1440, 100, 15}, {2000, 400, 5}, {1280, 64, 20}, {1024, 65536, 1}};
+    for (const Split& s : splits) {
+        qs::SplitTransform t;
+        const bool planned = t.plan(s.n, s.max_part);
+        assert(planned);
+        assert(t.parts() == s.parts && t.part_points() * t.parts() == s.n);
+        std::vector<qs::cf> x((size_t)s.n), out((size_t)s.n);
+        qs::Rng rng((uint64_t)s.n);
+        std::generate(x.begin(), x.end(), [&] { return rng.gauss(1.0); });
+        /* forward: bin r k1 + k2 at part(k2)[k1] */
+        const bool forward = t.forward(x.data());
+        assert(forward);
+        std::vector<std::complex<double>> got((size_t)s.n);
+        for (int k = 0; k < s.n; ++k) {
+            const qs::cf v = t.part(k % t.parts())[k / t.parts()];
+            got[(size_t)k] = std::complex<double>(v.real(), v.imag());
+        }
+        const double forward_error = relative_error(direct_dft(x, -1), got);
+        /* inverse: the spectrum holds conj(Y); out is the inverse DFT of Y over n */
+        for (int k = 0; k < s.n; ++k) {
+            t.part(k % t.parts())[k / t.parts()] = std::conj(x[(size_t)k]);
+        }
+        const bool inverse = t.inverse_from_conjugate(out.data(), 1.0f / (float)s.n);
+        assert(inverse);
+        std::vector<std::complex<double>> want = direct_dft(x, +1);
+        for (int i = 0; i < s.n; ++i) {
+            want[(size_t)i] /= s.n;
+            got[(size_t)i] = std::complex<double>(out[(size_t)i].real(), out[(size_t)i].imag());
+        }
+        const double inverse_error = relative_error(want, got);
+        if (forward_error > 1e-5 || inverse_error > 1e-5) {
+            std::fprintf(stderr, "split %d in %d: forward error %.3g, inverse error %.3g\n", s.n, s.parts,
+                         forward_error, inverse_error);
+        }
+        assert(forward_error <= 1e-5 && inverse_error <= 1e-5);
+    }
+    /* pffft takes no part of 1000 points (no multiple of 16) */
+    qs::SplitTransform none;
+    const bool planned = none.plan(1000);
+    assert(!planned);
+}
+
+/* gauss_fill() gives gauss()'s values from the same draws. */
+void
+test_gauss_fill() {
+    qs::Rng one(11), batch(11);
+    std::vector<qs::cf> filled(1000);
+    batch.gauss_fill(0.5, (int)filled.size(), filled.data());
+    for (const qs::cf& v : filled) {
+        const qs::cf want = one.gauss(0.5);
+        assert(std::abs(v - want) <= 1e-6f * (std::abs(want) + 1e-6f));
+    }
+    assert(one.next() == batch.next());
+}
+
 } // namespace
 
 int
@@ -282,6 +373,8 @@ main() {
     test_depression();
     test_tone_positions();
     test_noise_density();
+    test_split_transform();
+    test_gauss_fill();
     std::printf("IO_SIGNAL_QUIET_SCENE: OK\n");
     return 0;
 }
