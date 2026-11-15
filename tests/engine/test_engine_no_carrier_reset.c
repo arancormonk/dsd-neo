@@ -13389,6 +13389,7 @@ enum {
     YC_ONCE,          /* a noCarrier() that did not step: no second yield for the same anchor */
     YC_QUIET_FIRST,   /* skip-silent on, a quiet row inside -t: the quiet yield steps it with its NOTICE */
     YC_PARTIAL,       /* verdicts still open (PARTIAL): no yield until the latest hold, capped at 1 s, is -t old */
+    YC_STALE_NOTES,   /* a check and an open verdict the row left noted: the landing forgets both */
 };
 
 /* The row's -t run out: the hangtime anchor and the last checked content 11 s back (the rig's -t is 10 s). */
@@ -13462,6 +13463,14 @@ yc_check(dsd_opts* opts, dsd_state* state, int which) {
         rc |= expect_true("the hold ended -t ago: yields", g_frame_count == 1);
         noCarrier(opts, state);
         rc |= expect_true("and steps", g_rtl_tune_calls == 1);
+    } else if (which == YC_STALE_NOTES) {
+        rc |= expect_true("stale notes: forgotten at the landing",
+                          state->scan_y_content_seen == state->scan_y_content_seq
+                              && state->scan_y_partial_seen == state->scan_y_partial_seq
+                              && state->scan_y_partial_hold_ms == 0U && state->scan_y_partial_until_m < 0.0);
+        rc |= expect_true("stale notes: yields at the first boundary past -t", g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("stale notes: noCarrier() steps", g_rtl_tune_calls == 1);
     } else if (which == YC_QUIET_FIRST) {
         rc |= expect_true("quiet first: yields at the first boundary", g_frame_count == 1);
         noCarrier(opts, state);
@@ -13482,6 +13491,14 @@ yc_case(int which, int on) {
     /* With the setting on, a busy channel (DONE) leaves the step to the hangtime rule, except where the quiet yield is
        the point. */
     yq_start(which == YC_QUIET_FIRST);
+    if (which == YC_STALE_NOTES) {
+        /* Noted on the row left, and not read at a frame boundary before the step: a PROVEN note, and a verdict still
+           open whose hold the row left turned into an end already. */
+        state->scan_y_content_seq++;
+        state->scan_y_partial_seq++;
+        state->scan_y_partial_hold_ms = 900U;
+        state->scan_y_partial_until_m = dsd_decode_now_mono_s() + 0.9;
+    }
     /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
     const long int base_hz = 1401012500L + (long int)which * 10000000L + (on ? 200000000L : 0L);
     int rc = expect_true("the first step lands row 0",
@@ -13510,7 +13527,7 @@ yc_case(int which, int on) {
 static int
 test_y_frames_with_no_checked_content_leave(void) {
     int rc = 0;
-    for (int which = YC_NOISE; which <= YC_PARTIAL; which++) {
+    for (int which = YC_NOISE; which <= YC_STALE_NOTES; which++) {
         if (which != YC_QUIET_FIRST) {
             rc |= yc_case(which, 0);
         }

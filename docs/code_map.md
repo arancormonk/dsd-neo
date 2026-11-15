@@ -669,7 +669,9 @@ Generated (do not edit/commit):
       row is never repeated per frame. Checked content reaches it with no hook and no allocation: the content-evidence
       wrapper (`dsd_frame_sync_hook_content_evidence()`) moves `dsd_state::scan_y_content_seq` for every PROVEN note, and
       `scan_y_partial_seq` with the longest `scan_y_partial_hold_ms` for every PARTIAL one, before its setting test; the
-      boundary (`live_scanner_y_note_frame_content()`) turns a move into the decode time or the hold's end. A real dPMR,
+      boundary (`live_scanner_y_note_frame_content()`) turns a move into the decode time or the hold's end. A landing
+      (`dsd_engine_scan_landing_note_row()`, `dsd_engine_scan_landing_forget_y_notes()`) forgets the notes no boundary
+      read yet and the hold's end, so the row left neither counts for the next row nor delays its step. A real dPMR,
       D-STAR, YSF, M17 or NXDN call (whose frames stamp no anchor, or only once confirmed) keeps the row through those
       checks, encrypted or locked out alike. Off -Y the boundary costs one compare. The NOTICE names the row
       (`row N`, 1-based) and, as for the trunk scan, logs the decision before the step runs. Tests: `ENGINE_TRUNK_SCAN`
@@ -679,8 +681,8 @@ Generated (do not edit/commit):
       visits that request nothing, the setting off and a busy channel advancing at the same pass;
       `test_scan_quiet_y_ready_declines_at_its_own_sites`), `ENGINE_NO_CARRIER_RESET` (`test_scan_quiet_decisions()`:
       typed and untyped -Y skips through `noCarrier()` over a link-wrapped tap, the -Y step at frame boundaries for
-      frames with no checked content, every case that must keep the row and an open verdict's capped hold
-      (`test_y_frames_with_no_checked_content_leave()`),
+      frames with no checked content, every case that must keep the row, an open verdict's capped hold and the notes
+      a landing forgets (`test_y_frames_with_no_checked_content_leave()`),
       every landing path measured as it lands
       and its failures and supersessions arming nothing (`yq_landing_case()`), busy, held, single-row, heard-voice,
       qualifying and qualifying-busy rows, an avoided row, a walk waiting on its tune, a typed step in flight, an open

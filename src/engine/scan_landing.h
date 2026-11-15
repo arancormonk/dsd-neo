@@ -108,6 +108,16 @@ dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_la
     owner->landing = landing;
 }
 
+/* A landing starts the row's -Y content window afresh (issue #834): checked content or an open verdict noted on the row
+   left and not yet read at a frame boundary is not this row's, and neither counts for it nor delays its step. */
+static inline void
+dsd_engine_scan_landing_forget_y_notes(dsd_state* state) {
+    state->scan_y_content_seen = state->scan_y_content_seq;
+    state->scan_y_partial_seen = state->scan_y_partial_seq;
+    state->scan_y_partial_hold_ms = 0U;
+    state->scan_y_partial_until_m = -1.0;
+}
+
 /** The -Y scan committed @p row, on @p freq_hz, after a tune that landed, from the trunk-tuning request @p request (0
  * for a synchronous tune). A placeholder (0 Hz) row notes none. */
 static inline void
@@ -116,6 +126,7 @@ dsd_engine_scan_landing_note_row(dsd_state* state, int row, long freq_hz, uint64
         dsd_engine_scan_landing_forget(state);
         return;
     }
+    dsd_engine_scan_landing_forget_y_notes(state);
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
     if (owner) {
         const dsd_engine_scan_landing landing = {.hz = (uint32_t)freq_hz,
