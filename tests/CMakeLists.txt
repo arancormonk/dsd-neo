@@ -7703,7 +7703,8 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_talkgroup_policy PRIVATE dsd-neo_core)
 add_test(NAME CORE_TALKGROUP_POLICY COMMAND dsd-neo_test_core_talkgroup_policy)
 
-# The unit activity ring (src/core/util/unit_activity.c), built with its allocation and copy-count seams.
+# The unit activity ring (src/core/util/unit_activity.c), built with its allocation and copy-count seams; the rest of
+# core (the learned-alias scope mapping the ring shares) comes from dsd-neo_core.
 add_executable(
     dsd-neo_test_core_unit_activity
     core/test_core_unit_activity.c
@@ -7719,7 +7720,11 @@ target_compile_definitions(
 )
 target_link_libraries(
     dsd-neo_test_core_unit_activity
-    PRIVATE dsd-neo_runtime dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_runtime
+        dsd-neo_platform
+        ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME CORE_UNIT_ACTIVITY COMMAND dsd-neo_test_core_unit_activity)
 

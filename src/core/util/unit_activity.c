@@ -12,7 +12,7 @@
  * least recently revised row is the one evicted, so every row held is newer than every row evicted, and a snapshot
  * mirrors the source slot for slot: it copies the rows revised since its own revision and the links.
  */
-#include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -168,99 +168,60 @@ ua_scope_normalize(const dsd_ua_scope* in, dsd_ua_scope* out) {
     out->c = in->c;
 }
 
-/* The P25 scope: the WACN and SYSID of a network status (with its RFSS and site), else the NAC of a checked NID. */
-static int
-ua_scope_p25(const dsd_received_identity* rx, dsd_ua_scope* out) {
-    if (rx->valid & DSD_RXID_P25_WACN) {
-        out->kind = DSD_UA_SCOPE_P25;
-        out->a = rx->p25_wacn;
-        out->b = rx->p25_sysid;
-        if (rx->valid & DSD_RXID_P25_SITE) {
-            out->c = DSD_UA_SCOPE_SITE_KNOWN | ((uint32_t)rx->p25_rfss << 8) | rx->p25_site;
-        }
-        return 1;
-    }
-    if ((rx->valid & DSD_RXID_ACCESS) && rx->access_kind == DSD_ACCESS_CODE_NAC) {
-        out->kind = DSD_UA_SCOPE_P25_NAC;
-        out->a = rx->access;
-        return 1;
-    }
-    return 0;
-}
+/* The learned-alias scope kinds are the reception scope kinds (<dsd-neo/core/unit_activity.h>, dsd_ua_scope): one
+ * mapping, dsd_alias_scope_from_rxid(), names the system of both. */
+_Static_assert((int)DSD_UA_SCOPE_NONE == (int)DSD_ALIAS_SCOPE_NONE, "scope kinds agree");
+_Static_assert((int)DSD_UA_SCOPE_P25 == (int)DSD_ALIAS_SCOPE_P25, "scope kinds agree");
+_Static_assert((int)DSD_UA_SCOPE_DMR == (int)DSD_ALIAS_SCOPE_DMR, "scope kinds agree");
+_Static_assert((int)DSD_UA_SCOPE_NXDN == (int)DSD_ALIAS_SCOPE_NXDN, "scope kinds agree");
+_Static_assert((int)DSD_UA_SCOPE_TETRA == (int)DSD_ALIAS_SCOPE_TETRA, "scope kinds agree");
+_Static_assert((int)DSD_UA_SCOPE_P25_NAC == (int)DSD_ALIAS_SCOPE_P25_NAC, "scope kinds agree");
 
-/* The DMR scope: the trunking system's network number (Tier III, Connect Plus) or, for Capacity Plus, which sends none,
- * its site number with the colour code; the site number when one was received. */
-static int
-ua_scope_dmr(const dsd_received_identity* rx, dsd_ua_scope* out) {
-    const uint32_t trunk = rx->dmr_trunk;
-    out->kind = DSD_UA_SCOPE_DMR;
-    if ((trunk == DSD_RXID_DMR_TRUNK_TIER3 || trunk == DSD_RXID_DMR_TRUNK_CONNECT_PLUS)
-        && (rx->valid & DSD_RXID_DMR_NET)) {
-        out->a = (trunk << 8) | (trunk == DSD_RXID_DMR_TRUNK_TIER3 ? (uint32_t)(rx->dmr_t3_model & 0x3U) : 0U);
-        out->b = rx->dmr_net;
-    } else if (trunk == DSD_RXID_DMR_TRUNK_CAPACITY_PLUS && (rx->valid & DSD_RXID_DMR_SITE)
-               && (rx->valid & DSD_RXID_ACCESS) && rx->access_kind == DSD_ACCESS_CODE_COLOR_CODE) {
-        out->a = (trunk << 8) | (uint32_t)(rx->access & 0xFFU);
-        out->b = rx->dmr_site;
-    } else {
-        return 0;
-    }
-    if (rx->valid & DSD_RXID_DMR_SITE) {
-        out->c = DSD_UA_SCOPE_SITE_KNOWN | rx->dmr_site;
-    }
-    return 1;
-}
-
-/* The NXDN scope: a Type-C location's category, system and site code, or a Type-D SRV_INFO system ID and site. */
-static int
-ua_scope_nxdn(const dsd_received_identity* rx, dsd_ua_scope* out) {
-    out->kind = DSD_UA_SCOPE_NXDN;
-    if (rx->valid & DSD_RXID_NXDN_LOCATION) {
-        out->category = rx->nxdn_category;
-        out->a = 0x100U | rx->nxdn_category;
-        out->b = rx->nxdn_sys;
-        out->c = DSD_UA_SCOPE_SITE_KNOWN | rx->nxdn_site;
-        return 1;
-    }
-    if (rx->valid & DSD_RXID_NXDN_TYPED_SYSTEM) {
-        out->a = 0x200U;
-        out->b = rx->nxdn_typed_sys;
-        out->c = DSD_UA_SCOPE_SITE_KNOWN | rx->nxdn_typed_site;
-        return 1;
-    }
-    return 0;
-}
-
-static int
-ua_scope_tetra(const dsd_received_identity* rx, dsd_ua_scope* out) {
-    if (!(rx->valid & DSD_RXID_TETRA_NET)) {
-        return 0;
-    }
-    out->kind = DSD_UA_SCOPE_TETRA;
-    out->a = rx->tetra_mcc;
-    out->b = rx->tetra_mnc;
-    if (rx->valid & DSD_RXID_TETRA_LA) {
-        out->c = DSD_UA_SCOPE_SITE_KNOWN | rx->tetra_la;
-    }
-    return 1;
-}
-
-/* The reception scope of @p rx in zeroed @p out: valid only when the record names a system. */
+/* What a reception scope adds to the alias scope of the same reception: the site (c) and the NXDN Type-C category.
+ * P25 by NAC has no site. */
 static void
-ua_scope_from_rxid(const dsd_received_identity* rx, dsd_ua_scope* out) {
-    int found = 0;
-    DSD_MEMSET(out, 0, sizeof(*out));
-    switch (rx->family) {
-        case DSD_RXID_FAMILY_P25: found = ua_scope_p25(rx, out); break;
-        case DSD_RXID_FAMILY_DMR: found = ua_scope_dmr(rx, out); break;
-        case DSD_RXID_FAMILY_NXDN: found = ua_scope_nxdn(rx, out); break;
-        case DSD_RXID_FAMILY_TETRA: found = ua_scope_tetra(rx, out); break;
+ua_scope_add_site(const dsd_received_identity* rx, dsd_ua_scope* out) {
+    switch (out->kind) {
+        case DSD_UA_SCOPE_P25:
+            if (rx->valid & DSD_RXID_P25_SITE) {
+                out->c = DSD_UA_SCOPE_SITE_KNOWN | ((uint32_t)rx->p25_rfss << 8) | rx->p25_site;
+            }
+            break;
+        case DSD_UA_SCOPE_DMR:
+            if (rx->valid & DSD_RXID_DMR_SITE) {
+                out->c = DSD_UA_SCOPE_SITE_KNOWN | rx->dmr_site;
+            }
+            break;
+        case DSD_UA_SCOPE_NXDN:
+            if (out->a & 0x100U) { /* Type-C location: a = 0x100 | category */
+                out->category = rx->nxdn_category;
+                out->c = DSD_UA_SCOPE_SITE_KNOWN | rx->nxdn_site;
+            } else { /* Type-D SRV_INFO system */
+                out->c = DSD_UA_SCOPE_SITE_KNOWN | rx->nxdn_typed_site;
+            }
+            break;
+        case DSD_UA_SCOPE_TETRA:
+            if (rx->valid & DSD_RXID_TETRA_LA) {
+                out->c = DSD_UA_SCOPE_SITE_KNOWN | rx->tetra_la;
+            }
+            break;
         default: break;
     }
-    if (!found) {
-        DSD_MEMSET(out, 0, sizeof(*out));
+}
+
+/* The reception scope of @p rx in @p out: the learned-alias scope of the reception (kind, a, b) plus its site; valid
+ * only when the record names a system. */
+static void
+ua_scope_from_rxid(const dsd_received_identity* rx, dsd_ua_scope* out) {
+    dsd_alias_scope alias;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!dsd_alias_scope_from_rxid(rx, &alias)) {
         return;
     }
+    out->kind = alias.kind;
+    out->a = alias.a;
+    out->b = alias.b;
+    ua_scope_add_site(rx, out);
     out->valid = 1U;
 }
 

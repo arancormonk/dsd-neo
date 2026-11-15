@@ -2448,8 +2448,8 @@ suite runs under this compiler.
   - Push (decoder thread; the first push creates the ring and draws its instance): normalises the record (an invalid
     identity, home, scope or value is zeroed; a valid identity, home or scope needs an in-enum subtype or kind, as
     protocol, kind, role and result do, or the push is refused), takes the reception scope from `rx_id` when the
-    producer gave none (`dsd_ua_scope`: the learned-alias scope's kind, a and b, plus the site in `c` with
-    `DSD_UA_SCOPE_SITE_KNOWN` and the NXDN category), and stamps `seq`, `rev`, `first_ms`/`last_ms` (decode mono ms) and
+    producer gave none (`dsd_ua_scope`: the learned-alias scope's kind, a and b from the one mapping both share,
+    `dsd_alias_scope_from_rxid()`, plus the site in `c` with `DSD_UA_SCOPE_SITE_KNOWN` and the NXDN category), and stamps `seq`, `rev`, `first_ms`/`last_ms` (decode mono ms) and
     `wall_s` (the floored decode wall reading, the history rows' convention). `name_frozen` is the latest pushed name:
     the producer resolves it, a merge that pushes a non-empty one replaces it, and nothing else rewrites it.
   - Dedup: a push merges into one of the 16 most recently revised rows when every field but the stamps, `repeat`,
