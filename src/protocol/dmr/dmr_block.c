@@ -62,12 +62,14 @@ typedef struct {
     uint8_t s_ab_fin;
     uint8_t s_dest_port;
     uint8_t s_source_port;
-    uint8_t s_status_precoded;
+    uint16_t s_status_precoded;
     uint8_t sap;
     uint8_t sd_bp;
     uint8_t sd_f;
     uint8_t sd_sarq;
     uint8_t tg_hash;
+    uint8_t udt_emergency;
+    uint8_t udt_option;
     uint8_t udt_format;
     uint8_t udt_op;
     uint8_t udt_padnib;
@@ -202,11 +204,16 @@ dmr_dheader_parse_fields(const dsd_state* state, const uint8_t dheader_bits[], d
     f->s_ab_fin = (uint8_t)((s_ab_msb << 4) | s_ab_lsb);
     f->s_source_port = (uint8_t)convert_bits_into_output(&dheader_bits[64], 3);
     f->s_dest_port = (uint8_t)convert_bits_into_output(&dheader_bits[67], 3);
-    f->s_status_precoded = (uint8_t)convert_bits_into_output(&dheader_bits[70], 10);
+    // Status/Precoded is 10 bits (TS 102 361-1 Table 9.17A).
+    f->s_status_precoded = (uint16_t)convert_bits_into_output(&dheader_bits[70], 10);
     f->sd_sarq = dheader_bits[70];
     f->sd_f = dheader_bits[71];
     f->sd_bp = (uint8_t)convert_bits_into_output(&dheader_bits[72], 8);
     f->dd_format = (uint8_t)convert_bits_into_output(&dheader_bits[64], 6);
+    // A UDT header's bits 2 and 3 are Emergency and UDT_Option_Flag (TS 102 361-4 Table 6.31), not the short data
+    // header's appended-block MSBs.
+    f->udt_emergency = dheader_bits[2];
+    f->udt_option = dheader_bits[3];
     f->udt_format = (uint8_t)convert_bits_into_output(&dheader_bits[12], 4);
     f->udt_padnib = (uint8_t)convert_bits_into_output(&dheader_bits[64], 5);
     f->udt_uab = (uint8_t)convert_bits_into_output(&dheader_bits[70], 2);
@@ -293,6 +300,10 @@ dmr_dheader_handle_udt(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint
                     f->sap_string, f->udt_format, f->udtf_string, f->udt_padnib, f->udt_uab, f->udt_sf, f->udt_pf,
                     f->udt_op);
     }
+    DSD_FPRINTF(stderr, " - Option %d", f->udt_option);
+    if (f->udt_emergency) {
+        DSD_FPRINTF(stderr, " - Emergency");
+    }
     state->data_header_blocks[slot] = f->udt_uab;
     state->data_header_valid[slot] = 1;
     state->data_block_counter[slot] = 0;
@@ -362,8 +373,8 @@ dmr_dheader_handle_short_data(dsd_state* state, uint8_t slot, const dmr_dheader_
     }
     if (f->dpf == 14) {
         if (f->s_ab_fin == 0) {
-            DSD_FPRINTF(stderr, "\n  SD:S/P [SP_HEAD] - SAP %02d [%s] - SP %02d - DP %02d - S/P %02X", f->sap,
-                        f->sap_string, f->s_source_port, f->s_dest_port, f->s_status_precoded);
+            DSD_FPRINTF(stderr, "\n  SD:S/P [SP_HEAD] - SAP %02d [%s] - SP %02d - DP %02d - S/P %u", f->sap,
+                        f->sap_string, f->s_source_port, f->s_dest_port, (unsigned)f->s_status_precoded);
         } else {
             state->data_header_bit_padding[slot] = f->sd_bp;
             DSD_FPRINTF(stderr,
@@ -737,7 +748,8 @@ static void DSD_ATTR_USED
 dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes) {
     uint8_t udt_ig;
     uint8_t udt_a;
-    uint8_t udt_res;
+    uint8_t udt_emergency;
+    uint8_t udt_option;
     uint8_t udt_format1;
     uint8_t udt_sap;
     uint8_t udt_padnib;
@@ -754,7 +766,8 @@ dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, cons
     dsd_unpack_bytes_to_bits(block_bytes, 60U, ctx->cs_bits, sizeof(ctx->cs_bits), 60U);
     udt_ig = ctx->cs_bits[0];
     udt_a = ctx->cs_bits[1];
-    udt_res = (uint8_t)convert_bits_into_output(&ctx->cs_bits[2], 2);
+    udt_emergency = ctx->cs_bits[2]; // TS 102 361-4 Table 6.31
+    udt_option = ctx->cs_bits[3];
     udt_format1 = (uint8_t)convert_bits_into_output(&ctx->cs_bits[4], 4);
     udt_sap = (uint8_t)convert_bits_into_output(&ctx->cs_bits[8], 4);
     ctx->udt_format2 = (uint8_t)convert_bits_into_output(&ctx->cs_bits[12], 4);
@@ -766,7 +779,7 @@ dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, cons
     udt_sf = ctx->cs_bits[72];
     udt_pf = ctx->cs_bits[73];
     udt_op = (uint8_t)convert_bits_into_output(&ctx->cs_bits[74], 6);
-    UNUSED4(udt_ig, udt_a, udt_res, udt_format1);
+    UNUSED4(udt_ig, udt_a, udt_option, udt_format1);
     UNUSED4(udt_sap, udt_zero, udt_sf, udt_pf);
     UNUSED(udt_op);
     ctx->payload_bits = dmr_udt_payload_bits(state, ctx->slot, udt_padnib);
@@ -777,6 +790,10 @@ dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, cons
     DSD_FPRINTF(stderr, "%s", KCYN);
     DSD_FPRINTF(stderr, "\n ");
     DSD_FPRINTF(stderr, "Slot %d - SRC: %d; TGT: %d; UDT ", ctx->slot + 1, ctx->udt_source, ctx->udt_target);
+    if (udt_emergency) {
+        DSD_FPRINTF(stderr, "Emergency; ");
+        dsd_append(ctx->udt_string, sizeof ctx->udt_string, "Emergency; ");
+    }
 }
 
 static void DSD_ATTR_USED

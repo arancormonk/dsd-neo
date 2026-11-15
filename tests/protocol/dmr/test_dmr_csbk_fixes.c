@@ -4,8 +4,8 @@
  */
 
 /*
- * DMR CSBK decode fixes, driven through the CSBK dispatcher dmr_cspdu(), plus the reason tables and the C_AHOY
- * classification they print with.
+ * DMR CSBK and data header decode fixes, driven through the CSBK dispatcher dmr_cspdu() and the data header entry
+ * dmr_dheader(), plus the reason tables and the C_AHOY classification they print with.
  *
  * - NACK_Rsp (TS 102 361-2 Table 7.6) carries the source before the target, and its Reason Code uses the Tier II
  *   table, which differs from the Tier III C_ACKD table (0x21).
@@ -13,9 +13,13 @@
  *   manufacturer CSBKs.
  * - C_AHOY Service_Kind 13 / 14 is told apart by its whole field combination (TS 102 361-4 Tables 6.11, 6.17, 6.19,
  *   6.23, 6.27): stun vs revive vs kill, radio check vs authentication vs subscription list request.
+ * - Gen_Site_Params reads its site information from BParms2 (Table 7.80), UU_Ans_Rsp is named as the spec names it,
+ *   C_BCAST shows its partition bits, a UDT header shows its Emergency / UDT_Option_Flag bits (Table 6.31) and an
+ *   SP_HEAD its whole 10-bit status (TS 102 361-1 Table 9.17A).
  */
 
 #include <assert.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
@@ -240,6 +244,113 @@ test_reason_tables(void) {
     expect_true(dmr_tier3_reason_class_of(0xE0U) == DMR_TIER3_REASON_WACK, "class wack");
 }
 
+static void
+test_cosmetic_labels(dsd_opts* opts, dsd_state* state) {
+    /* UU_Ans_Rsp (TS 102 361-2 Table 7.5c). */
+    static const uint8_t uu_ans[10] = {0x85, 0x00, 0x00, 0x20, 0x00, 0x00, 0x64, 0x00, 0x00, 0xC8};
+    run_csbk(opts, state, uu_ans);
+    expect_contains("(UU_Ans_Rsp)", "op 5 named UU_Ans_Rsp");
+    expect_absent("UU_Ans_Req", "op 5 not UU_Ans_Req");
+
+    /* C_BCAST Gen_Site_Params (type 7): BParms1 all ones (reserved), BParms2 = Current Site Information 0x40
+       (hibernating), reserved 0x00, Network Information 0x80 (Reg and TG Subscription = 1). PAR = 2. */
+    uint8_t bcast[10] = {0xA8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x80};
+    /* Announcement type 7 at bits 16-20, BParms1 (14 ones) at bits 21-34. */
+    bcast[2] = (uint8_t)((7U << 3) | 0x07U);
+    bcast[3] = 0xFFU;
+    bcast[4] = 0xE0U;
+    /* System code (14 bits at 40) 0x0123, PAR (bits 54-55) = 2. */
+    bcast[5] = (uint8_t)(0x0123U >> 6);
+    bcast[6] = (uint8_t)(((0x0123U << 2) & 0xFCU) | 0x02U);
+    opts->payload = 1;
+    run_csbk(opts, state, bcast);
+    opts->payload = 0;
+    expect_contains("Gen_Site_Params", "gen site params printed");
+    expect_contains("Hibernating: 1;", "hibernating flag from BParms2");
+    expect_contains("Current Site Info: 40;", "current site information from BParms2");
+    expect_contains("Network Info: 80;", "network information from BParms2");
+    expect_contains("Reg TG Subscription: 1", "reg and tg subscription flag");
+    expect_contains("SYS: 0123;", "system code convention kept");
+    expect_contains("PAR: 2;", "partition bits shown");
+}
+
+/* A data header (12 octets with its CRC, which the caller vouches for) through dmr_dheader(). */
+static void
+run_dheader(dsd_opts* opts, dsd_state* state, const uint8_t ten[10]) {
+    uint8_t bytes[12];
+    uint8_t bits[sizeof bytes * 8U];
+    DSD_MEMSET(bytes, 0, sizeof bytes);
+    DSD_MEMCPY(bytes, ten, 10);
+    bytes_to_bits(bytes, sizeof bytes, bits);
+    state->currentslot = 0;
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_dheader_fixes") == 0);
+    dmr_dheader(opts, state, bytes, bits, 1, 0);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_capture_stderr_read(&cap, g_out, sizeof g_out) == 0);
+}
+
+static void
+test_udt_header_flags(dsd_opts* opts, dsd_state* state) {
+    /* G/I 0, A 1, Emergency 1, UDT_Option_Flag 0, DPF 0000; SAP 0, UDT format 4; target 100, source 200; UAB 0. */
+    static const uint8_t emergency[10] = {0x60, 0x04, 0x00, 0x00, 0x64, 0x00, 0x00, 0xC8, 0x00, 0x1A};
+    run_dheader(opts, state, emergency);
+    expect_contains("Unified Data Transport (UDT)", "udt header printed");
+    expect_contains(" - Emergency", "udt emergency bit printed");
+    expect_contains(" - Option 0", "udt option flag printed");
+
+    static const uint8_t option[10] = {0x10, 0x04, 0x00, 0x00, 0x64, 0x00, 0x00, 0xC8, 0x00, 0x1A};
+    run_dheader(opts, state, option);
+    expect_absent(" - Emergency", "udt without emergency");
+    expect_contains(" - Option 1", "udt option flag set");
+}
+
+/* The assembled UDT (header + appended blocks) through the block assembler, as test_dmr_udt_utf16_text.c drives it:
+   its decode line shows the header's Emergency bit too. */
+static void
+test_udt_decoder_emergency(dsd_opts* opts, dsd_state* state, uint8_t octet0, int want_emergency) {
+    state->currentslot = 0;
+    state->data_header_valid[0] = 1;
+    state->data_header_blocks[0] = 2;
+    state->data_block_counter[0] = 2;
+    state->data_byte_ctr[0] = 0;
+    state->data_conf_data[0] = 0;
+    state->data_header_format[0] = 0;
+    state->data_header_sap[0] = 0;
+    state->data_p_head[0] = 0;
+    state->udt_uab_reserved[0] = 0;
+    state->data_block_crc_valid[0][0] = 1;
+    DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+    state->dmr_pdu_sf[0][0] = octet0;
+    state->dmr_pdu_sf[0][1] = 0x07; /* UTF-16 text */
+    state->dmr_pdu_sf[0][12] = 0x00;
+    state->dmr_pdu_sf[0][13] = 0x41;
+    uint8_t block[12];
+    DSD_MEMCPY(block, &state->dmr_pdu_sf[0][24], sizeof block);
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_udt_emergency") == 0);
+    dmr_block_assembler(opts, state, block, 12, 0x06, 3);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_capture_stderr_read(&cap, g_out, sizeof g_out) == 0);
+    expect_contains("UDT ", "udt decoder line");
+    if (want_emergency) {
+        expect_contains("UDT Emergency; ", "udt decoder emergency");
+    } else {
+        expect_absent("Emergency", "udt decoder without emergency");
+    }
+}
+
+static void
+test_sp_head_status(dsd_opts* opts, dsd_state* state) {
+    /* DPF 14 with no appended blocks (SP_HEAD); SP 1, DP 2; Status/Precoded (bits 70-79) = 1000 = 0x3E8. */
+    uint8_t sp_head[10] = {0x0E, 0xA0, 0x00, 0x00, 0x64, 0x00, 0x00, 0xC8, 0x00, 0x00};
+    sp_head[8] = (uint8_t)((1U << 5) | (2U << 2) | (0x3E8U >> 8));
+    sp_head[9] = (uint8_t)(0x3E8U & 0xFFU);
+    run_dheader(opts, state, sp_head);
+    expect_contains("[SP_HEAD]", "sp_head printed");
+    expect_contains("S/P 1000", "sp_head 10-bit status");
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -252,8 +363,21 @@ main(void) {
     test_c_ahoy_kinds(opts, state);
     test_ahoy_classify_table();
     test_reason_tables();
+    test_cosmetic_labels(opts, state);
+    test_udt_header_flags(opts, state);
+    test_sp_head_status(opts, state);
+
+    /* The UDT text path writes into event history, which the app allocates at init. */
+    state->event_history_s = (Event_History_I*)calloc(2, sizeof(Event_History_I));
+    assert(state->event_history_s != NULL);
+    for (int i = 0; i < 2; i++) {
+        init_event_history(&state->event_history_s[i], 0, 255);
+    }
+    test_udt_decoder_emergency(opts, state, 0x20U, 1);
+    test_udt_decoder_emergency(opts, state, 0x00U, 0);
 
     dsd_state_ext_free_all(state);
+    free(state->event_history_s);
     free(state);
     free(opts);
     if (g_failures != 0) {

@@ -803,7 +803,7 @@ dmr_cspdu_pf0_handle_tier2_simple(dsd_opts* opts, dsd_state* state, uint8_t cs_p
         return;
     }
     if (csbk_o == 5) {
-        dmr_cspdu_pf0_print_tier2_target_source(" Unit to Unit Voice Service Answer Response (UU_Ans_Req) - ",
+        dmr_cspdu_pf0_print_tier2_target_source(" Unit to Unit Voice Service Answer Response (UU_Ans_Rsp) - ",
                                                 cs_pdu_bits);
         return;
     }
@@ -1230,6 +1230,7 @@ typedef struct {
     uint8_t reg_req;
     uint8_t backoff;
     uint16_t syscode;
+    uint8_t par;
     uint32_t bparms2;
     uint8_t bpbits2[24];
     uint8_t mbc_csbko;
@@ -1262,6 +1263,7 @@ dmr_cspdu_pf0_c_bcast_parse(const uint8_t cs_pdu_bits[], dmr_cspdu_pf0_c_bcast_f
     f->reg_req = cs_pdu_bits[35];
     f->backoff = (uint8_t)convert_bits_into_output(&cs_pdu_bits[36], 4);
     f->syscode = (uint16_t)convert_bits_into_output(&cs_pdu_bits[40], 14);
+    f->par = (uint8_t)convert_bits_into_output(&cs_pdu_bits[54], 2);
     f->bparms2 = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
     for (int i = 0; i < 24; i++) {
         f->bpbits2[i] = cs_pdu_bits[56 + i];
@@ -1581,16 +1583,24 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
     dmr_sm_on_neighbor_update(opts, state, cand, 1);
 }
 
+// Broadcast General Site Parameters (TS 102 361-4 Table 7.80): BParms1 is reserved; BParms2 is Current Site
+// Information (8: reserved, Hibernating_Flag, 6 reserved; Table 7.101), 8 reserved bits and Network Information (8: Reg
+// and TG Subscription, 7 reserved; Table 7.102). The Reg and TG Subscription flag says whether registering radios send
+// their talkgroup list; whether they must register at all is the C_BCAST Reg bit.
 static void
 dmr_cspdu_pf0_c_bcast_handle_gen_site_params(const dmr_cspdu_pf0_c_bcast_fields* f) {
-    uint8_t csi = (uint8_t)convert_bits_into_output(&f->bpbits1[0], 8);
-    uint8_t nin = (uint8_t)convert_bits_into_output(&f->bpbits2[16], 8);
-    uint8_t hibernate_flag = f->bpbits2[1];
-    uint8_t reg_tg_sub = f->bpbits2[16];
+    const uint8_t csi = (uint8_t)convert_bits_into_output(&f->bpbits2[0], 8);
+    const uint8_t nin = (uint8_t)convert_bits_into_output(&f->bpbits2[16], 8);
+    const uint8_t hibernate_flag = f->bpbits2[1];
+    const uint8_t reg_tg_sub = f->bpbits2[16];
 
     DSD_FPRINTF(stderr, "\n");
-    DSD_FPRINTF(stderr, " Hibernate Flag: %d; Reg Flag: %d; RES1: %d; RES2: %X; RES3: %X; BPARMS1: %X", hibernate_flag,
-                reg_tg_sub, f->bpbits1[0], csi & 0x3F, nin & 0x7F, f->bparms1);
+    DSD_FPRINTF(stderr, " Hibernating: %d; Reg TG Subscription: %d (%s); Current Site Info: %02X; Network Info: %02X;",
+                hibernate_flag, reg_tg_sub, reg_tg_sub ? "register without TG list" : "register with TG list", csi,
+                nin);
+    if (f->bparms1 != 0U) {
+        DSD_FPRINTF(stderr, " BParms1 (reserved): %04X;", f->bparms1);
+    }
 }
 
 static void
@@ -1613,7 +1623,9 @@ dmr_cspdu_pf0_c_bcast_print_payload(const dsd_opts* opts, const dmr_cspdu_pf0_c_
     }
 
     DSD_FPRINTF(stderr, "\n ");
+    // The 14 MODEL + NET + SITE bits of the 16-bit System Identity Code, as everywhere else; its two PAR bits apart.
     DSD_FPRINTF(stderr, " SYS: %04X;", f->syscode);
+    DSD_FPRINTF(stderr, " PAR: %d;", f->par);
     DSD_FPRINTF(stderr, " Reg: %d;", f->reg_req);
     DSD_FPRINTF(stderr, " Backoff: %X;", f->backoff);
     DSD_FPRINTF(stderr, " BParms1: %04X;", f->bparms1);

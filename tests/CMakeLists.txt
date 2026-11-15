@@ -14602,8 +14602,8 @@ target_link_libraries(
 )
 add_test(NAME DMR_MASS_REGISTRATION COMMAND dsd-neo_test_dmr_mass_registration)
 
-# DMR CSBK decode fixes through dmr_cspdu(): NACK_Rsp order and reasons, FID-gated standard opcodes, C_AHOY
-# classification
+# DMR CSBK / data header decode fixes through dmr_cspdu() and dmr_dheader(): NACK_Rsp order and reasons, FID-gated
+# standard opcodes, C_AHOY classification, Gen_Site_Params, UDT header flags, SP_HEAD status width
 add_executable(dsd-neo_test_dmr_csbk_fixes protocol/dmr/test_dmr_csbk_fixes.c)
 target_include_directories(
     dsd-neo_test_dmr_csbk_fixes
