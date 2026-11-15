@@ -271,6 +271,24 @@ test_encrypted_identity_skipped(void) {
 
     tetra_test_mle_logged(sdu.bits, sdu.n, 0, s.opts, s.state, log, sizeof log);
     check_log(log, "[TETRA MM D-LU-ACCEPT] CC=0 type=3 (ITSI attach) addr=none", "no MAC PDU, no MS");
+
+    /* A MAC PDU without an address of its own is no address either: not an event label, and never the SSI its
+     * address field happens to hold. */
+    tetra_mac_sdu bare = {0};
+    bare.addr.type = TETRA_MAC_ADDR_SSI;
+    bare.addr.ssi = TEST_MS_SSI;
+    bare.has_addr = 0;
+    const int captured_bare = dsd_test_capture_stderr_begin(&cap, "tetra_mm_bare") == 0;
+    tetra_mle_dispatch_sdu(sdu.bits, sdu.n, 0, &bare, s.opts, s.state);
+    log[0] = '\0';
+    if (captured_bare) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    check_log(log, "[TETRA MM D-LU-ACCEPT] CC=0 type=3 (ITSI attach) addr=none",
+              "a MAC PDU without an address names no MS and no event label");
+    check_no_log(log, "event label", "a MAC PDU without an address is not an event label");
+    check_no_log(log, "1234567", "a MAC PDU without an address shows no SSI");
     session_close(&s);
 }
 

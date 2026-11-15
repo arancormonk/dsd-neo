@@ -1848,17 +1848,13 @@ tetra_mle_decode(const uint8_t* bits, int nbits, tetra_mle_pdu* out) {
 static tetra_mm_addr
 mle_mm_addr(const tetra_state_t* ts, const tetra_mac_sdu* sdu) {
     tetra_mm_addr a = {0};
-    if (!sdu) {
-        return a;
+    if (!sdu || !sdu->has_addr) {
+        return a; /* no MAC PDU, or one without an address of its own: no address (UNKNOWN, not valid) */
     }
     a.valid = 1;
     if (ts->net_known && !ts->dmo) {
         a.mcc = ts->mcc;
         a.mnc = ts->mnc;
-    }
-    if (!sdu->has_addr) {
-        a.type = TETRA_MM_ADDR_EVENT_LABEL; /* a MAC-D-BLCK: an event label only */
-        return a;
     }
     switch (sdu->addr.type) {
         case TETRA_MAC_ADDR_SSI:
