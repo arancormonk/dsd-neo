@@ -95,12 +95,16 @@ fake_udp_connect_analog(dsd_opts* opts) {
     return 0;
 }
 
+/* The last error message, as written. */
+static char g_last_error[512];
+
 static void
 count_error_logs(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
     if (level != LOG_LEVEL_ERROR || !text) {
         return;
     }
+    DSD_SNPRINTF(g_last_error, sizeof g_last_error, "%s", text);
     if (strstr(text, "Failed to open raw audio output") != NULL) {
         g_raw_error_logs++;
     } else if (strstr(text, "Failed to open the UDP analog audio output on 127.0.0.1:23458") != NULL) {
@@ -304,6 +308,37 @@ test_open_failure(void) {
     g_fail_opens = 0;
 }
 
+/* The error a session-start open failure logs (openAudioOutput()) ends its line (issue #743 B4): it ran on into
+   whatever was logged next. */
+static void
+expect_error_line(const char* label, const char* message) {
+    const size_t len = strlen(g_last_error);
+    if (strstr(g_last_error, message) == NULL || len == 0 || g_last_error[len - 1] != '\n') {
+        DSD_FPRINTF(stderr, "FAIL: %s: last error \"%s\"\n", label, g_last_error);
+        g_failures++;
+    }
+}
+
+static void
+test_start_open_failure_lines(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.ea_mode = -1;
+    device_session(&opts);
+    reset_backend();
+    g_fail_opens = 1;
+    opts.monitor_input_audio = 1;
+    g_last_error[0] = '\0';
+    expect_int("a raw sink that does not open fails the start", openAudioOutput(&opts, &state), -1);
+    expect_error_line("raw sink error", "Failed to open raw audio output: ");
+    opts.monitor_input_audio = 0;
+    g_last_error[0] = '\0';
+    expect_int("a digital sink that does not open fails the start", openAudioOutput(&opts, &state), -1);
+    expect_error_line("digital sink error", "Failed to open audio output: ");
+    g_fail_opens = 0;
+}
+
 /* The session's decoder set: @p mode's preset over a fresh state whose EDACS addressing is @p ea_mode (-1: none
    selected, as initState() leaves it; -fh and the shared EDACS/ProVoice preset select 0). */
 static void
@@ -381,6 +416,7 @@ main(void) {
     test_nothing_to_open();
     test_udp_analog_sink();
     test_open_failure();
+    test_start_open_failure_lines();
     test_auto_session_opens_no_edacs_sink();
     if (g_failures) {
         DSD_FPRINTF(stderr, "CORE_AUDIO_ENSURE_OUTPUT: %d failure(s)\n", g_failures);

@@ -124,8 +124,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - stdin (raw PCM16LE mono): `-i -` (sample rate uses `-s`)
 - A TCP or stdin source that goes quiet keeps its input, in every mode. TCP audio stays connected however long its
   sender is silent (a squelched network audio source). Only a connection that closes or fails is lost: decoding then
-  reconnects, while an EDACS analog call and the M17 stream encoder (`-fZ`) close the input and end the session, as
-  before. A sender that goes away without closing the connection (its machine lost power, or the network dropped) counts
+  tries one reconnect after a short backoff and, if that fails, falls back to Pulse input (the session ends when Pulse
+  cannot open); an M17-only session (`-fz`) keeps trying until it reconnects or you stop it. An EDACS analog call and
+  the M17 stream encoder (`-fZ`) close the input and end the session, as before. A sender that goes away without closing the connection (its machine lost power, or the network dropped) counts
   as a failed connection about 35 seconds after its last data, when TCP keepalive gets no answer (longer on a system
   that does not let a program set the keepalive timing). While stdin or TCP sends nothing, the decoder still ends an
   analog call on time, applies menu commands and runs its timers, as on UDP. An EDACS analog call, on TCP or UDP, hears

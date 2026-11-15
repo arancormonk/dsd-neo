@@ -39,8 +39,10 @@ Notes:
   between transmissions, menu commands still apply after about half a second; a sender that stops in the middle of a
   frame is waited for, as before.
 - A TCP connection stays up however long its sender is silent, in every mode. Only a connection the producer closes, or
-  one that fails, is lost: decoding then reconnects, while an EDACS analog call and the M17 stream encoder (`-fZ`) end
-  the session. A sender that goes away without closing the connection (its machine lost power, or the network dropped)
+  one that fails, is lost. dsd-neo then waits a short backoff (300 ms by default) and tries to reconnect once. If that
+  attempt fails, the input falls back to Pulse audio input, or the session ends when Pulse cannot open. An M17-only
+  session (`-fz`) keeps trying until it reconnects or you stop it. An EDACS analog call and the M17 stream encoder
+  (`-fZ`) end the session. A sender that goes away without closing the connection (its machine lost power, or the network dropped)
   is found by TCP keepalive: dsd-neo treats the connection as failed about 35 seconds after the last data came in (15
   seconds idle, then 4 probes 5 seconds apart). On a system that does not let a program set the keepalive timing, its
   own system-wide timing applies, which can be much longer. During an EDACS analog call, on TCP or UDP, a sender silent

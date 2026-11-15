@@ -312,7 +312,7 @@ dsd_audio_open_output_streams(dsd_opts* opts, int raw) {
     if (raw) {
         opts->audio_raw_out = dsd_audio_open_raw_output_stream(opts, &params);
         if (!opts->audio_raw_out) {
-            LOG_ERROR("Failed to open raw audio output: %s", dsd_audio_get_error());
+            LOG_ERROR("Failed to open raw audio output: %s\n", dsd_audio_get_error());
             return -1;
         }
     }
@@ -321,7 +321,7 @@ dsd_audio_open_output_streams(dsd_opts* opts, int raw) {
     if (opts->analog_only == 0) {
         opts->audio_out_stream = dsd_audio_open_digital_output_stream(opts, &params);
         if (!opts->audio_out_stream) {
-            LOG_ERROR("Failed to open audio output: %s", dsd_audio_get_error());
+            LOG_ERROR("Failed to open audio output: %s\n", dsd_audio_get_error());
             if (opts->audio_raw_out) {
                 dsd_audio_close(opts->audio_raw_out);
                 opts->audio_raw_out = NULL;
@@ -501,7 +501,7 @@ openAudioInput(dsd_opts* opts) {
 
     opts->audio_in_stream = dsd_audio_open_input(&params);
     if (!opts->audio_in_stream) {
-        LOG_ERROR("Failed to open audio input: %s", dsd_audio_get_error());
+        LOG_ERROR("Failed to open audio input: %s\n", dsd_audio_get_error());
         return -1;
     }
     /* Every Pulse open is a new stream, whatever asked for it (a config switch, the end of a playback, a file that
