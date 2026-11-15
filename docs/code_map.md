@@ -2707,7 +2707,11 @@ suite runs under this compiler.
   re-resolves for admission: the winner becomes the slot's and the snapshot's policy target in place
   (`dsd_call_state_update_policy_target()`, no boundary; the received service options and priority stay as received)
   and the ledger takes its priority; when nothing in the patch may be followed the held call is described with no
-  priority protection (-1). Admission also judges the row-edit release (`tg_listen_blocked_slots()`), the talkgroup
+  priority protection (-1). The watchdog's TUNED tick runs that re-resolution on its own thread, so every command that
+  writes a talkgroup policy input applies under the P25 SM tick guard: the policy store, Hold, allow list and record
+  switch (`command_changes_call_verdict()`), and the tune switches, the encryption lockout ledger, every key edit (they
+  bump its key epoch) and the Phase 2 parameters (`command_writes_tick_inputs()`). Admission also judges the row-edit
+  release (`tg_listen_blocked_slots()`), the talkgroup
   Hold check and conventional trunk-scan activity. The Hold check (`dsd_scan_tg_hold_call_active()`, every frame)
   answers through `dsd_p25_patch_admits_hold()`: ADMIT ranks a matching Hold first, so the held supergroup or current
   member is admitted exactly when the supergroup has no final reason and the held candidate may itself be followed,

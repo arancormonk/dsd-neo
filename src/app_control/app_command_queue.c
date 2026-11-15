@@ -10855,6 +10855,38 @@ command_changes_p25_system(const struct dsd_app_command* c) {
     return c && c->id == DSD_APP_CMD_P25_P2_PARAMS_SET;
 }
 
+/* A command that writes what the TUNED tick's patched-call re-resolution (p25_slot_refresh_patch()) reads through the
+   talkgroup policy, besides what command_changes_call_verdict() covers (the policy store, the Hold, the allow list, the
+   unknown-only record switch): the group, private, data and encrypted tune switches, the encryption lockout ledger, and
+   the lockout's key epoch, which every key and decryption edit bumps (dsd_enc_lockout_bump_key_epoch()). */
+static int
+command_changes_tune_policy(const struct dsd_app_command* c) {
+    static const int commands[] = {
+        DSD_APP_CMD_TRUNK_GROUP_TOGGLE, DSD_APP_CMD_TRUNK_PRIV_TOGGLE, DSD_APP_CMD_TRUNK_DATA_TOGGLE,
+        DSD_APP_CMD_TRUNK_ENC_TOGGLE,   DSD_APP_CMD_ENC_LOCKOUT_CLEAR, DSD_APP_CMD_KEY_BASIC_SET,
+        DSD_APP_CMD_KEY_SCRAMBLER_SET,  DSD_APP_CMD_KEY_RC4DES_SET,    DSD_APP_CMD_KEY_HYTERA_SET,
+        DSD_APP_CMD_KEY_AES_SET,        DSD_APP_CMD_KEY_TYT_AP_SET,    DSD_APP_CMD_KEY_RETEVIS_RC2_SET,
+        DSD_APP_CMD_KEY_TYT_EP_SET,     DSD_APP_CMD_KEY_KEN_SCR_SET,   DSD_APP_CMD_KEY_ANYTONE_BP_SET,
+        DSD_APP_CMD_KEY_XOR_SET,        DSD_APP_CMD_KEY_DIRECT_SET,    DSD_APP_CMD_DECRYPTION_APPLY,
+        DSD_APP_CMD_IMPORT_KEYS_DEC,    DSD_APP_CMD_IMPORT_KEYS_HEX,   DSD_APP_CMD_IMPORT_KEYS_CLEAR,
+    };
+    if (!c) {
+        return 0;
+    }
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        if (commands[i] == c->id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A command that writes an input of the watchdog's TUNED tick other than the playout's. */
+static int
+command_writes_tick_inputs(const struct dsd_app_command* c) {
+    return command_changes_p25_system(c) || command_changes_tune_policy(c);
+}
+
 /* A command that opens, closes or publishes a per-call, static or raw WAV. The watchdog's release publishes and reopens
    the per-call WAVs through the event layer, and its playout drain writes the static WAV, both under the tick guard, so
    these commands take it too (issue #661). Commands that reach the WAVs only through the event layer hold its call-state
@@ -10935,7 +10967,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
        verdict it takes before its return tune to the drain after it. A call's new verdict is taken before the guard is
        free again: what the playout queued for an active call plays under the verdict the command left, also when the
        call ends before the next emission (issue #651). */
-    const int guarded = command_feeds_playout(c) || command_touches_wav_outputs(c) || command_changes_p25_system(c);
+    const int guarded = command_feeds_playout(c) || command_touches_wav_outputs(c) || command_writes_tick_inputs(c);
     if (guarded) {
         if (!p25_sm_tick_guard_try_enter()) {
 #ifdef DSD_NEO_TEST_HOOKS

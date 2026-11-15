@@ -591,6 +591,58 @@ test_p25_p2_params_set_takes_the_guard(void) {
     return rc;
 }
 
+/* The P25 SM tick re-resolves a followed patched call through the talkgroup policy, which reads the tune switches, the
+   encryption lockout ledger and its key epoch (bumped by every key edit): each command that writes one of them waits
+   for the tick guard. Payloads only need the queue's sizes, since the guard is taken before the handler runs. */
+static int
+test_tune_policy_commands_take_the_guard(void) {
+    static const int no_payload[] = {
+        DSD_APP_CMD_TRUNK_GROUP_TOGGLE, DSD_APP_CMD_TRUNK_PRIV_TOGGLE, DSD_APP_CMD_TRUNK_DATA_TOGGLE,
+        DSD_APP_CMD_TRUNK_ENC_TOGGLE,   DSD_APP_CMD_ENC_LOCKOUT_CLEAR, DSD_APP_CMD_IMPORT_KEYS_CLEAR,
+    };
+    static const int string_payload[] = {
+        DSD_APP_CMD_KEY_TYT_AP_SET,  DSD_APP_CMD_KEY_RETEVIS_RC2_SET, DSD_APP_CMD_KEY_TYT_EP_SET,
+        DSD_APP_CMD_KEY_KEN_SCR_SET, DSD_APP_CMD_KEY_ANYTONE_BP_SET,  DSD_APP_CMD_KEY_XOR_SET,
+        DSD_APP_CMD_IMPORT_KEYS_DEC, DSD_APP_CMD_IMPORT_KEYS_HEX,
+    };
+
+    static const struct {
+        int id;
+        size_t size;
+    } sized_payload[] = {
+        {DSD_APP_CMD_KEY_BASIC_SET, sizeof(uint32_t)},
+        {DSD_APP_CMD_KEY_SCRAMBLER_SET, sizeof(uint32_t)},
+        {DSD_APP_CMD_KEY_RC4DES_SET, sizeof(uint64_t)},
+        {DSD_APP_CMD_KEY_HYTERA_SET, sizeof(dsd_app_hytera_key_payload)},
+        {DSD_APP_CMD_KEY_AES_SET, sizeof(dsd_app_aes_key_payload)},
+        {DSD_APP_CMD_KEY_DIRECT_SET, sizeof(dsd_app_key_direct_payload)},
+        {DSD_APP_CMD_DECRYPTION_APPLY, sizeof(dsd_app_decryption_payload)},
+    };
+
+    dsd_scan_row_profile row = {0};
+    g_phase = 24;
+    int rc = setup();
+    g_opts.trunk_enable = 1;
+    char label[96];
+    for (size_t i = 0; i < sizeof no_payload / sizeof no_payload[0]; i++) {
+        DSD_SNPRINTF(label, sizeof label, "command %d waits for the guard", no_payload[i]);
+        rc |= drain_command_under_held_guard(no_payload[i], NULL, NULL, 0, label);
+    }
+    for (size_t i = 0; i < sizeof string_payload / sizeof string_payload[0]; i++) {
+        DSD_SNPRINTF(label, sizeof label, "command %d waits for the guard", string_payload[i]);
+        rc |= drain_command_under_held_guard(string_payload[i], "0", NULL, 0, label);
+    }
+    static unsigned char zeros[sizeof(dsd_app_decryption_payload) + sizeof(dsd_app_key_direct_payload) + 64];
+    DSD_MEMSET(zeros, 0, sizeof zeros);
+    for (size_t i = 0; i < sizeof sized_payload / sizeof sized_payload[0]; i++) {
+        DSD_SNPRINTF(label, sizeof label, "command %d waits for the guard", sized_payload[i].id);
+        rc |= drain_command_under_held_guard(sized_payload[i].id, NULL, zeros, sized_payload[i].size, label);
+    }
+    rc |= expect(g_opts.trunk_tune_group_calls == 0, "the group-call toggle applied");
+    cleanup(&row);
+    return rc;
+}
+
 /* Issue #637: a change of the configured receive policy runs the receive boundary, which ends calls, drains the P25
    Phase 2 playout and rotates the per-call WAVs as the watchdog's release does, so the command waits for the guard. */
 static int
@@ -829,6 +881,7 @@ main(void) {
         }
         rc |= test_receive_set_takes_the_guard();
         rc |= test_p25_p2_params_set_takes_the_guard();
+        rc |= test_tune_policy_commands_take_the_guard();
         rc |= test_trunk_receive_release_due();
         rc |= test_trunk_receive_release_due_nxdn_foreign_control();
         g_phase = 19;
