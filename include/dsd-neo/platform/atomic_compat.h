@@ -13,6 +13,13 @@
  * MSVC's <stdatomic.h> may hard-error when C11 atomics are unavailable
  * (vcruntime_c11_stdatomic.h: "C atomic support is not enabled"). Provide a
  * small fallback implementation for the atomics used by dsd-neo.
+ *
+ * Project C code uses only what both branches provide: atomic_int with
+ * atomic_init/load/store/exchange/fetch_add/fetch_sub/compare_exchange_strong,
+ * the load/store/fetch_add _explicit forms, ATOMIC_INT_LOCK_FREE, and
+ * dsd_atomic_u64 for anything wider or unsigned. The Semgrep rule
+ * dsd-neo.atomics-within-msvc-fallback enforces it, since CI's MSVC takes the
+ * <stdatomic.h> branch.
  */
 
 #include <dsd-neo/platform/platform.h>
@@ -29,6 +36,8 @@
 #include <windows.h>
 
 typedef volatile LONG atomic_int;
+/* Interlocked operations on a LONG never take a lock. */
+#define ATOMIC_INT_LOCK_FREE 2
 
 static inline int
 atomic_load(const atomic_int* obj) {
@@ -48,6 +57,45 @@ atomic_exchange(atomic_int* obj, int desired) {
 static inline int
 atomic_fetch_add(atomic_int* obj, int arg) {
     return (int)InterlockedExchangeAdd((volatile LONG*)obj, (LONG)arg);
+}
+
+static inline int
+atomic_fetch_sub(atomic_int* obj, int arg) {
+    /* Negated in unsigned arithmetic: C11 subtraction wraps, and -(LONG)INT_MIN would overflow. */
+    return (int)InterlockedExchangeAdd((volatile LONG*)obj, (LONG)(0UL - (unsigned long)arg));
+}
+
+static inline void
+atomic_init(atomic_int* obj, int desired) {
+    atomic_store(obj, desired);
+}
+
+/* The Interlocked calls are full barriers, which satisfy every order, so the _explicit forms ignore it. */
+typedef enum {
+    memory_order_relaxed,
+    memory_order_consume,
+    memory_order_acquire,
+    memory_order_release,
+    memory_order_acq_rel,
+    memory_order_seq_cst
+} memory_order;
+
+static inline int
+atomic_load_explicit(const atomic_int* obj, memory_order order) {
+    (void)order;
+    return atomic_load(obj);
+}
+
+static inline void
+atomic_store_explicit(atomic_int* obj, int desired, memory_order order) {
+    (void)order;
+    atomic_store(obj, desired);
+}
+
+static inline int
+atomic_fetch_add_explicit(atomic_int* obj, int arg, memory_order order) {
+    (void)order;
+    return atomic_fetch_add(obj, arg);
 }
 
 static inline int

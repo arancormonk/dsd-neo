@@ -66,7 +66,7 @@ static atomic_int g_record_pending = MANUAL_TUNE_NONE_NOTED;
 static atomic_int g_record_walk_off_scan;
 /* The stream session the record noted last was asked of: stored before the record reads as noted, and read with it from
    any thread (manual_tune_record_live()). */
-static atomic_uint g_record_generation;
+static dsd_atomic_u64 g_record_generation;
 
 /* The record a stream stop found still able to land (dsd_engine_manual_tune_stream_stopping(), issue #644), and the
    source of the stream that stopped: the reopen that follows decides whether it landed there
@@ -200,7 +200,7 @@ manual_tune_applied_after_failure(void) {
 static int
 manual_tune_record_live(void) {
     return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED
-           && atomic_load(&g_record_generation) == manual_tune_session_generation();
+           && dsd_atomic_u64_load_acquire(&g_record_generation) == manual_tune_session_generation();
 }
 
 /* The noted record's completion once the controller no longer holds its tune (queued, in flight or being answered),
@@ -278,7 +278,7 @@ manual_tune_note(dsd_state* state, const dsd_manual_tune_record* record) {
     manual_tune_await(record->id);
     g_record_landed_at_reopen = 0;
     g_record.session_generation = manual_tune_session_generation();
-    atomic_store(&g_record_generation, g_record.session_generation);
+    dsd_atomic_u64_store_release(&g_record_generation, g_record.session_generation);
     atomic_store(&g_rr_owner_took_over, 0);
     atomic_store(&g_record_walk_off_scan, record->kind == DSD_MANUAL_TUNE_LCN_CYCLE && !record->scan_owned);
     atomic_store(&g_record_pending, MANUAL_TUNE_NOTED);
@@ -606,7 +606,7 @@ dsd_engine_manual_tune_stream_reopened(const dsd_opts* opts, const dsd_state* st
     }
     /* The new stream opened on the tune's target: the receiver is there, so the tune landed, in this stream. */
     g_record.session_generation = manual_tune_session_generation();
-    atomic_store(&g_record_generation, g_record.session_generation);
+    dsd_atomic_u64_store_release(&g_record_generation, g_record.session_generation);
     g_record_landed_at_reopen = 1;
 }
 
@@ -620,7 +620,7 @@ dsd_engine_manual_tune_session_reset(dsd_state* state) {
     g_displaced_unreported = 0;
     DSD_MEMSET(&g_settled, 0, sizeof g_settled);
     atomic_store(&g_record_walk_off_scan, 0);
-    atomic_store(&g_record_generation, 0U);
+    dsd_atomic_u64_store_release(&g_record_generation, 0U);
     DSD_MEMSET(&g_stop_note, 0, sizeof g_stop_note);
     g_record_landed_at_reopen = 0;
     atomic_store(&g_walk_settling, 0);

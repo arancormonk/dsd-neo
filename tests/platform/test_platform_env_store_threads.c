@@ -40,7 +40,7 @@ static atomic_int g_stop = 0;
 static atomic_int g_bad = 0;
 /* Reads each reader finished; the writer waits on them so every stretch of writes overlaps reads by every reader. */
 static atomic_int g_reads[READERS];
-/* Each reader's index, its thread argument: a pointer to an atomic counter would lose its _Atomic qualifier as a
+/* Each reader's index, its thread argument: a pointer to an atomic counter would lose its atomic qualifier as a
  * void * (MSVC C4090). */
 static int g_reader_ids[READERS];
 
