@@ -282,6 +282,7 @@ Rectangle {
         gainText = gainMode === 2 ? String(gain) : "";
         ppmText = ppmSet ? String(draft.ppm) : "";
         bandwidthText = bandwidthSet ? String(bandwidth) : "";
+        bandwidthChoice.reload();
         portText = draft.port === undefined ? "" : String(draft.port);
         timingText = {
             defaultDwellMs: Number(draft.defaultDwellMs) > 0 ? String(Number(draft.defaultDwellMs)) : "",
@@ -309,16 +310,33 @@ Rectangle {
         entryRows.setProperty(row, "entryData", updated);
     }
 
+    // Entry IDs preserve an edit and its error across add/remove/reorder.
+    function recordEntryInput(row, fields) {
+        var uid = entries[row].uid;
+        var copy = Object.assign({}, entryInputText);
+        copy[uid] = Object.assign({}, entryInputText[uid] || ({}), fields);
+        entryInputText = copy;
+    }
+
     function setEntryInput(row, field, text, value) {
         // Keep rejected text visible while the draft carries a safe sentinel.
-        // Entry IDs preserve the edit and its error across add/remove/reorder.
-        var uid = entries[row].uid;
-        var fields = Object.assign({}, entryInputText[uid] || ({}));
+        var fields = {};
         fields[field] = text;
-        var copy = Object.assign({}, entryInputText);
-        copy[uid] = fields;
-        entryInputText = copy;
+        recordEntryInput(row, fields);
         setEntry(row, field, value);
+    }
+
+    // The gain choice (0 Inherit, 1 Automatic, 2 Set) and the Set text stay in
+    // the entry's draft. The entry stores -1, 0 or a valid 1-49 dB; a refused
+    // Set keeps the last valid value and its error holds Save.
+    function setEntryGain(row, mode, text) {
+        recordEntryInput(row, {
+            gainMode: mode,
+            gainDb: text
+        });
+        var typed = parseIntStrict(text, 1, 49);
+        if (mode !== 2 || !isNaN(typed))
+            setEntry(row, "gainDb", mode === 0 ? -1 : mode === 1 ? 0 : typed);
     }
 
     function addFrequency(name, protocol, freq) {
@@ -414,13 +432,11 @@ Rectangle {
     function validateTunerSettings() {
         var field = null;
         if (draft.sourceType !== "airspy") {
-            if (gainMode === 2 && gainField.error.length)
-                field = gainField;
+            if (gainMode === 2 && gainEditor.field.error.length)
+                field = gainEditor.field;
             else if (ppmSet && ppmField.error.length)
                 field = ppmField;
         }
-        if (!field && bandwidthSet && bandwidthField.error.length)
-            field = bandwidthField;
         for (var i = 0; !field && i < timingFields.count; ++i) {
             if (timingFields.itemAt(i).field.error.length)
                 field = timingFields.itemAt(i).field;
@@ -661,11 +677,15 @@ Rectangle {
                         label: screen.entryLabel(entryData)
                         canMoveUp: index > 0
                         canMoveDown: index < screen.entries.length - 1
+                        gainOffered: screen.draft.sourceType !== "airspy"
                         onChanged: function (field, value) {
                             screen.setEntry(index, field, value);
                         }
                         onInputEdited: function (field, text, value) {
                             screen.setEntryInput(index, field, text, value);
+                        }
+                        onGainEdited: function (mode, text) {
+                            screen.setEntryGain(index, mode, text);
                         }
                         onMove: function (delta) {
                             screen.moveEntry(index, delta);
@@ -967,8 +987,13 @@ Rectangle {
                         Navigation.activationRelease(event);
                     }
                     function toggle() {
-                        if (enabled && Navigation.allows(advHeader))
-                            screen.advancedOpen = !screen.advancedOpen;
+                        if (!enabled || !Navigation.allows(advHeader))
+                            return;
+                        // Issue #718: folding hides the field being typed in,
+                        // which would drop its composing word; the word is
+                        // committed and the edit finished first, as a button does.
+                        Navigation.commitComposing(true);
+                        screen.advancedOpen = !screen.advancedOpen;
                     }
                     FocusFrame {}
 
@@ -1038,54 +1063,26 @@ Rectangle {
                         wrapMode: Text.Wrap
                     }
 
-                    Column {
+                    GainEditor {
+                        id: gainEditor
                         width: parent.width
-                        spacing: 6
                         visible: screen.draft.sourceType !== "airspy"
-                        MicroLabel {
-                            text: qsTr("Gain")
+                        title: qsTr("Gain")
+                        inheritable: true
+                        inheritNote: Util.gainDefaultNote(prefs.gainDb)
+                        mode: screen.gainMode
+                        manualText: screen.gainText
+                        modeObjectName: "scanGainMode"
+                        fieldObjectName: "scanTuner_gainDb"
+                        onModeSelected: function (mode) {
+                            var typed = gainEditor.parseGain(gainEditor.field.text);
+                            screen.gainMode = mode;
+                            screen.setDraft("gainDb", mode === 0 ? -1 : mode === 1 ? 0 : isNaN(typed) ? -1 : typed);
                         }
-                        SegmentedControl {
-                            objectName: "scanGainMode"
-                            accessibleName: qsTr("Gain")
-                            width: parent.width
-                            model: [qsTr("App default"), qsTr("Automatic"), qsTr("Set")]
-                            currentIndex: screen.gainMode
-                            onSelected: function (index) {
-                                screen.gainMode = index;
-                                screen.setDraft("gainDb", index === 0 ? -1 : index === 1 ? 0 : isNaN(gainField.parsedValue()) ? -1 : gainField.parsedValue());
-                            }
-                        }
-                        ReadableText {
-                            width: parent.width
-                            visible: screen.gainMode === 0
-                            text: qsTr("App default · %1").arg(prefs.gainDb === 0 ? qsTr("Automatic") : qsTr("%1 dB").arg(prefs.gainDb))
-                            wrapMode: Text.Wrap
-                            font.family: Theme.sans
-                            font.pixelSize: Theme.fontSize(12)
-                            color: Theme.textSecondary
-                        }
-                        PlexTextField {
-                            id: gainField
-                            function parsedValue() {
-                                return screen.parseIntStrict(text, 1, 49);
-                            }
-                            objectName: "scanTuner_gainDb"
-                            width: parent.width
-                            visible: screen.gainMode === 2
-                            label: qsTr("Gain")
-                            unit: qsTr("dB")
-                            mono: true
-                            text: screen.gainText
-                            inputMethodHints: Qt.ImhDigitsOnly
-                            input.validator: RegularExpressionValidator {
-                                regularExpression: /^-?[0-9]*$/
-                            }
-                            error: isNaN(parsedValue()) ? qsTr("Enter a gain from 1 to 49 dB.") : ""
-                            input.onTextEdited: {
-                                screen.gainText = text;
-                                screen.draft.gainDb = isNaN(parsedValue()) ? -1 : parsedValue();
-                            }
+                        onDraftEdited: function (text) {
+                            var typed = gainEditor.parseGain(text);
+                            screen.gainText = text;
+                            screen.draft.gainDb = isNaN(typed) ? -1 : typed;
                         }
                     }
 
@@ -1118,8 +1115,11 @@ Rectangle {
                         }
                         PlexTextField {
                             id: ppmField
+                            // What the engine runs: it holds the correction to
+                            // +-200. A leading plus is the number too (an older
+                            // build took one); the text is kept as typed.
                             function parsedValue() {
-                                return screen.parseIntStrict(text, -2147483648, 2147483647);
+                                return screen.parseIntStrict(/^\+[0-9]/.test(text) ? text.substring(1) : text, -200, 200);
                             }
                             objectName: "scanTuner_ppm"
                             width: parent.width
@@ -1130,9 +1130,9 @@ Rectangle {
                             text: screen.ppmText
                             inputMethodHints: Qt.ImhFormattedNumbersOnly
                             input.validator: RegularExpressionValidator {
-                                regularExpression: /^-?[0-9]*$/
+                                regularExpression: /^[-+]?[0-9]*$/
                             }
-                            error: isNaN(parsedValue()) ? qsTr("Enter a PPM correction, including 0.") : ""
+                            error: isNaN(parsedValue()) ? qsTr("Enter a correction from -200 to 200 ppm.") : ""
                             input.onTextEdited: {
                                 screen.ppmText = text;
                                 screen.draft.ppm = isNaN(parsedValue()) ? "" : text;
@@ -1140,53 +1140,20 @@ Rectangle {
                         }
                     }
 
-                    Column {
+                    // The widths every radio runs; App default (-1) runs
+                    // the app default as this list's radio takes it.
+                    BandwidthChoice {
+                        id: bandwidthChoice
                         width: parent.width
-                        spacing: 6
-                        MicroLabel {
-                            text: qsTr("Bandwidth")
-                        }
-                        SegmentedControl {
-                            objectName: "scanBandwidthMode"
-                            accessibleName: qsTr("Bandwidth")
-                            width: parent.width
-                            model: [qsTr("App default"), qsTr("Set")]
-                            currentIndex: screen.bandwidthSet ? 1 : 0
-                            onSelected: function (index) {
-                                screen.bandwidthSet = index === 1;
-                                screen.setDraft("bandwidthKhz", index && !isNaN(bandwidthField.parsedValue()) ? bandwidthField.parsedValue() : -1);
-                            }
-                        }
-                        ReadableText {
-                            width: parent.width
-                            visible: !screen.bandwidthSet
-                            text: qsTr("App default · %1 kHz").arg(prefs.bandwidthKhz)
-                            wrapMode: Text.Wrap
-                            font.family: Theme.sans
-                            font.pixelSize: Theme.fontSize(12)
-                            color: Theme.textSecondary
-                        }
-                        PlexTextField {
-                            id: bandwidthField
-                            function parsedValue() {
-                                return screen.parseIntStrict(text, 1, 2147483647);
-                            }
-                            objectName: "scanTuner_bandwidthKhz"
-                            width: parent.width
-                            visible: screen.bandwidthSet
-                            label: qsTr("Bandwidth")
-                            unit: qsTr("kHz")
-                            mono: true
-                            text: screen.bandwidthText
-                            inputMethodHints: Qt.ImhDigitsOnly
-                            input.validator: RegularExpressionValidator {
-                                regularExpression: /^-?[0-9]*$/
-                            }
-                            error: isNaN(parsedValue()) ? qsTr("Enter a positive bandwidth.") : ""
-                            input.onTextEdited: {
-                                screen.bandwidthText = text;
-                                screen.draft.bandwidthKhz = isNaN(parsedValue()) ? -1 : parsedValue();
-                            }
+                        inheritable: true
+                        comboObjectName: "scanTuner_bandwidthKhz"
+                        noteObjectName: "scanBandwidthNote"
+                        value: screen.bandwidthSet ? Number(screen.bandwidthText) : -1
+                        inheritNote: qsTr("App default · %1 kHz").arg(sessionArgs.effectiveBandwidthKhz("", screen.draft.sourceType || "usb", prefs.bandwidthKhz))
+                        onChosen: function (khz) {
+                            screen.bandwidthSet = khz > 0;
+                            screen.bandwidthText = khz > 0 ? String(khz) : "";
+                            screen.setDraft("bandwidthKhz", khz > 0 ? khz : -1);
                         }
                     }
 

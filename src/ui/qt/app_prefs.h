@@ -253,6 +253,7 @@ class AppPrefs : public QObject {
     bool relaxedCrc() const;
     void setRelaxedCrc(bool on);
 
+    /** @brief Tuner gain: 0 automatic, 1..49 dB manual; stored values past that read and are written as the nearest. */
     int gainDb() const;
     void setGainDb(int db);
 

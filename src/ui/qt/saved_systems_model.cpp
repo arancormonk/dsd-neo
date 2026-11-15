@@ -21,6 +21,7 @@
 #include <QSet>
 #include <QUuid>
 #include <QVariant>
+#include <QtGlobal>
 #include <cmath>
 #include <limits>
 
@@ -609,6 +610,17 @@ map_take_int(const QVariantMap& map, const QString& key, int* target) {
     }
 }
 
+/**
+ * @brief As map_take_int(), for a tuner gain held to what the editor offers: -1 (the app's), 0 (automatic) or
+ * 1..49 dB. Below -1 reads as -1 and above 49 as 49 (past every librtlsdr tuner's top step, so the same step).
+ */
+void
+map_take_gain(const QVariantMap& map, const QString& key, int* target) {
+    if (map.contains(key) && stored_int(map.value(key), target)) {
+        *target = qBound(-1, *target, 49);
+    }
+}
+
 void
 map_take_bool(const QVariantMap& map, const QString& key, bool* target) {
     if (map.contains(key)) {
@@ -706,7 +718,7 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     if (map.contains(QStringLiteral("airspy"))) {
         row.airspy = map.value(QStringLiteral("airspy")).toMap();
     }
-    map_take_int(map, QStringLiteral("gainDb"), &row.gainDb);
+    map_take_gain(map, QStringLiteral("gainDb"), &row.gainDb);
     map_take_string(map, QStringLiteral("ppm"), &row.ppm);
     map_take_string(map, QStringLiteral("hangtime"), &row.hangtime);
     map_take_int(map, QStringLiteral("bandwidthKhz"), &row.bandwidthKhz);
@@ -1304,6 +1316,9 @@ SavedSystemsModel::load() {
         migrated |= stored.value(QStringLiteral("uid")).toString() != row.uid;
         migrated |= stored.contains(QStringLiteral("encKeyType"))
                     && stored.value(QStringLiteral("encKeyType")).typeId() != QMetaType::QString;
+        // A gain rowFromMap() held to the editor's range is saved held, RadioReference rows' too.
+        int storedGain = 0;
+        migrated |= stored_int(stored.value(QStringLiteral("gainDb")), &storedGain) && storedGain != row.gainDb;
         // The P25 Simulcast chip used to carry "-f1 -mq", which pinned Phase 1 only;
         // -mq alone keeps the engine's default decode set, Auto, which includes both
         // Phase 1 and Phase 2.

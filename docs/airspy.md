@@ -121,10 +121,11 @@ core. What this means in practice:
   per second), where an RTL-SDR at 12 kHz is not resampled. At 48 kHz every FSK
   symbol rate is whole, so nothing is resampled.
 - **Qt and Android** offer the TETRA chip on an Airspy, and the add-system wizard
-  shows the bandwidth field for an Airspy (gain and PPM stay hidden, since the
-  Airspy has its own receiver controls). Leave it empty for TETRA, which then
-  runs at 72 kHz. A saved Airspy bandwidth snaps to the nearest one in the list
-  above, and one above 72 kHz runs at 48 kHz.
+  shows the bandwidth choice for an Airspy (gain and PPM stay hidden, since the
+  Airspy has its own receiver controls). Choose App default for TETRA, which then
+  runs at 72 kHz. On an Airspy, a bandwidth saved by an older version that is
+  not one of the choices runs at the nearest one in the list above, and one
+  above 72 kHz runs at 48 kHz.
 
 ## Receiver settings
 

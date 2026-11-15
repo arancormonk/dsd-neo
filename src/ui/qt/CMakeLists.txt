@@ -205,6 +205,8 @@ qt_add_resources(
         qml/RadioSettingsPersistence.qml
         qml/SiteSheet.qml
         qml/SegmentedControl.qml
+        qml/GainEditor.qml
+        qml/BandwidthChoice.qml
         qml/SettingsScreen.qml
         qml/SpectrumScreen.qml
         qml/SignalSearchScreen.qml
@@ -336,4 +338,6 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_main_receiver_notice.qml" # #647
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_monitor_receiver.qml" # #647
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_document_picker.qml" # #829
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_gain_editor.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_settings_tuner_gain.qml"
 )

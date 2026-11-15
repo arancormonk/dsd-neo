@@ -7,6 +7,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -678,10 +679,122 @@ test_soapy_suffixed_frequency_out_of_range(void) {
     return rc;
 }
 
+/* Apply @p spec (rtl:, rtltcp: or soapy:) to seeded opts with an empty log: whether it ran as one, the gain it left,
+   its PPM and the log. */
+static int
+apply_gain_spec(const char* spec, int* out_gain, int* out_ppm) {
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return -1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
+    g_log_text[0] = '\0';
+    int ok = 0;
+    if (strncmp(spec, "soapy:", 6) == 0) {
+        int applied = 0;
+        ok = dsd_normalize_soapy_input_spec(opts, &applied) == 0 && applied == 1
+             && opts->rtlsdr_center_freq == 851000000U;
+    } else {
+        ok = dsd_rtl_input_spec_apply(opts) == 1 && opts->rtlsdr_center_freq == 851000000U;
+    }
+    *out_gain = opts->rtl_gain_value;
+    *out_ppm = opts->rtlsdr_ppm_error;
+    free(opts);
+    return ok ? 0 : -1;
+}
+
+/* A gain whose tenths (the gain times ten, as the tuner is set) do not fit an int is refused like a field that does not
+   parse: the gain set before stays, with a warning naming the value, and the fields after it still apply. Anything
+   that fits is taken as written, 0 and negatives (automatic) included. */
+static int
+test_spec_gain_overflow_refused(void) {
+    static const char* const refused[] = {
+        "rtl:0:851M:2147483647",
+        "rtl:0:851M:214748365",
+        "rtl:0:851M:2147483647:5:24:0:2",
+        "rtltcp:h:1234:851M:2147483647",
+        "rtltcp:h:1234:851M:2147483647:5:24:0:2",
+        "soapy::851M:2147483647",
+        "soapy:851M:214748365",
+        "soapy:driver=rtlsdr:851M:2147483647:5:24:0:2",
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        int gain = 0;
+        int ppm = 0;
+        if (apply_gain_spec(refused[i], &gain, &ppm) != 0) {
+            DSD_FPRINTF(stderr, "%s: did not apply\n", refused[i]);
+            rc = 1;
+            continue;
+        }
+        const int want_ppm = strstr(refused[i], ":5:24:") ? 5 : -7;
+        if (gain != 11 || ppm != want_ppm) {
+            DSD_FPRINTF(stderr, "%s: gain %d ppm %d, want 11 and %d\n", refused[i], gain, ppm, want_ppm);
+            rc = 1;
+        }
+        const char* value = strstr(refused[i], "214748365") ? "214748365" : "2147483647";
+        char want[96];
+        DSD_SNPRINTF(want, sizeof want, "Ignoring gain '%s' (too large); gain left at 11 dB", value);
+        if (!strstr(g_log_text, want)) {
+            DSD_FPRINTF(stderr, "%s: log '%s' lacks '%s'\n", refused[i], g_log_text, want);
+            rc = 1;
+        }
+    }
+
+    static const struct {
+        const char* spec;
+        int want;
+    } kept[] = {
+        {"rtl:0:851M:214748364", 214748364},
+        {"rtltcp:h:1234:851M:214748364", 214748364},
+        {"soapy:851M:214748364", 214748364},
+        {"rtl:0:851M:0", 0},
+        {"rtl:0:851M:-5", -5},
+        {"rtl:0:851M:-2147483648", INT_MIN},
+        {"rtltcp:h:1234:851M:0", 0},
+        {"rtltcp:h:1234:851M:-2147483648", INT_MIN},
+        {"soapy:851M:0", 0},
+        {"soapy:851M:-2147483648", INT_MIN},
+        {"rtl:0:851M:30", 30},
+    };
+
+    for (size_t i = 0; i < sizeof kept / sizeof kept[0]; i++) {
+        int gain = 0;
+        int ppm = 0;
+        if (apply_gain_spec(kept[i].spec, &gain, &ppm) != 0 || gain != kept[i].want) {
+            DSD_FPRINTF(stderr, "%s: gain %d, want %d\n", kept[i].spec, gain, kept[i].want);
+            rc = 1;
+        }
+        if (strstr(g_log_text, "Ignoring gain")) {
+            DSD_FPRINTF(stderr, "%s: unexpected warning '%s'\n", kept[i].spec, g_log_text);
+            rc = 1;
+        }
+    }
+
+    /* Kept at automatic, the warning says so. */
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return 1;
+    }
+    opts->rtl_gain_value = 0;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851M:2147483647");
+    g_log_text[0] = '\0';
+    (void)dsd_rtl_input_spec_apply(opts);
+    if (opts->rtl_gain_value != 0
+        || !strstr(g_log_text, "Ignoring gain '2147483647' (too large); gain left automatic")) {
+        DSD_FPRINTF(stderr, "automatic kept: gain %d log '%s'\n", opts->rtl_gain_value, g_log_text);
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     dsd_neo_log_set_tap(capture_log, NULL);
+    rc |= test_spec_gain_overflow_refused();
     rc |= test_spec_frequency_rounds_to_the_hz();
     rc |= test_spec_squelch_grammar();
     rc |= test_spec_bandwidth_field();

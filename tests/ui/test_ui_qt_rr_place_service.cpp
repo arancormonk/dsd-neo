@@ -12,7 +12,9 @@
  * queued marshalling from the clients' worker threads is pumped against a deadline. */
 
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -22,10 +24,9 @@
 #include <QIODevice>
 #include <QLatin1String>
 #include <QList>
-#include <QMetaObject>
+#include <QMap>
 #include <QMetaProperty>
 #include <QMutex>
-#include <QMutexLocker>
 #include <QObject>
 #include <QSemaphore>
 #include <QSet>
@@ -39,9 +40,9 @@
 #include <QtGlobal>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/radioreference.h>
-#include <functional>
 #include <stdio.h>
 #include <stdlib.h>
+#include <utility>
 #include "../test_support/qt_test_paths.h"
 
 #include "app_prefs.h"

@@ -12,13 +12,36 @@ Supported inputs: a directly attached RTL-SDR or native Airspy R2/Mini over USB-
 `rtl_tcp`, UDP PCM, TCP PCM, and local files. See [native Airspy setup](../docs/airspy.md).
 
 An Airspy decodes every mode an RTL-SDR does, TETRA included, at the same DSP
-bandwidths (4 to 72 kHz). With its sample rate on auto, the app picks the
-Airspy's lowest rate (2.5 MS/s on an R2, 3 MS/s on a Mini), and the decoder
-resamples it to the DSP bandwidth exactly. The add-system wizard shows the
-bandwidth field for an Airspy too; gain and PPM stay hidden, since the Airspy has
-receiver controls of its own. Leave the bandwidth empty for a TETRA system, which
-then runs at the 72 kHz TETRA needs. A saved Airspy bandwidth snaps to the
-nearest one offered, and one above 72 kHz runs at 48 kHz.
+bandwidths. With its sample rate on auto, the app picks the Airspy's lowest rate
+(2.5 MS/s on an R2, 3 MS/s on a Mini), and the decoder resamples it to the DSP
+bandwidth exactly. The add-system wizard shows the bandwidth for an Airspy too;
+gain and PPM stay hidden, since the Airspy has receiver controls of its own.
+
+## Gain, PPM and bandwidth
+
+**Automatic gain at every start:** open Settings, then **Radio defaults**, and
+under **Tuner gain** choose **Automatic**. The receiver then sets its own gain
+for every saved system and scan list whose gain is left on **App default**, and
+every scan list entry left on **Inherit**. A system or list with a gain of its
+own keeps it. Choose **Set** to type a fixed gain from 1 to 49 dB instead. Tuner
+gain is for RTL-SDR and RTL-TCP sources; an Airspy has its own gain controls.
+
+**PPM correction** takes a whole number from -200 to 200. A value outside that
+shows an error and is not saved.
+
+**Bandwidth** is a list of the widths every radio can run: 4, 6, 8, 12, 16, 24,
+48 and 72 kHz. TETRA needs 72 kHz, which **App default** gives a TETRA system. A
+bandwidth saved by an older version, in Settings, a system or a scan list, may
+be a width that is not on the list, such as 25 kHz. It stays as it was and shows
+as its own entry, with a note of what it really runs at: 48 kHz on an RTL-SDR,
+and the nearest width on the list on an Airspy (48 kHz for anything above 72).
+Pick a width from the list to change it.
+
+**Going back to the app's settings:** a saved system and a scan list can each
+set their own gain, PPM, bandwidth and bias tee. Choose **App default** to drop
+one and use the setting from Settings again. A saved system's PPM is a plain
+field: leave it empty for the same. A scan list entry's gain has **Inherit**:
+the entry then uses its saved system's gain, else the list's.
 
 ## Saved encryption keys
 

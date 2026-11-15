@@ -135,6 +135,8 @@ Item {
             }},
             {file: "AirspyControls"},
             {file: "BackupFlow"},
+            // A stored width no radio runs, with its note of what it runs at.
+            {file: "BandwidthChoice", properties: {inheritable: true, inheritNote: "App default · 48 kHz", value: 25}},
             {file: "BackupResultCard", open: function (card) {
                 card.outcome = {kind: "restored", detail: "Settings and saved systems were restored."};
                 card.actionError = "The backup file couldn't be removed.";
@@ -180,6 +182,9 @@ Item {
                 card.source = "RTL-SDR";
             }},
             {file: "FrequencyField"},
+            // Its hint, its App default note and the field's error under Set, all shown in the every-branch pass.
+            {file: "GainEditor", properties: {title: "Gain", inheritable: true, inheritNote: "App default · Automatic",
+                hint: "Automatic adjusts the receiver gain for you.", mode: 2, manualText: "50"}},
             {file: "HistoryDetailSheet", open: function (sheet) {
                 sheet.open({uid: "call-1", name: "Fire dispatch", when: 1767225600, systemName: "County P25", systemUid: "",
                     channel: "", tg: "100", src: "2001", sourceName: "", enc: false, emergency: false, detail: "",
@@ -310,8 +315,8 @@ Item {
                         && listen.checked === (text.text === "Listening");
                 },
                 reason: "\"Listening\" or \"Not tuned\" beside the listening switch, whose on or off state says it; reading the words as well would say it twice."},
-            {file: "WizardScreen.qml", name: /^wizard(Frequency|Gain|Ppm)Caption$/, readBy: fieldBelow,
-                reason: "The field below carries the same words in its name (\"Frequency in MHz\", \"Gain (dB)\", \"PPM correction\")."},
+            {file: "WizardScreen.qml", name: "wizardFrequencyCaption", readBy: fieldBelow,
+                reason: "The field below carries the same words in its name (\"Frequency in MHz\")."},
             {file: "OutlineButton.qml", name: "label", texts: ["Hold TG", "Prev", "Use default", "List value", "Use the default width"],
                 reason: "A short label for a button whose name spells the action out (\"Hold this talkgroup\", \"Previous scan channel\", \"This Channel Uses the Default Squelch\")."},
             {file: "SpectrumScreen.qml", name: "spectrumScaleLabel",

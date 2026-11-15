@@ -230,6 +230,17 @@ stored_hangtime_differs(const QVariant& stored, double next) {
     return !ok || !qFuzzyCompare(seconds, next);
 }
 
+/**
+ * @brief @p db held to the tuner gains Settings edits: 0 (automatic) and 1..49 dB.
+ *
+ * Below 0 is what the engine runs as automatic; above 49 is past every librtlsdr
+ * tuner's top step (49.6 dB at most), so 49 picks the same step.
+ */
+int
+sane_gain_db(int db) {
+    return qBound(0, db, 49);
+}
+
 /** @brief @p mode if it names an appearance, else the default. */
 int
 sane_appearance(int mode) {
@@ -697,15 +708,16 @@ AppPrefs::setRelaxedCrc(bool on) {
 
 int
 AppPrefs::gainDb() const {
-    return stored_int_or(m_settings.value(key_name(kGainDb)), 30);
+    return sane_gain_db(stored_int_or(m_settings.value(key_name(kGainDb)), 30));
 }
 
 void
 AppPrefs::setGainDb(int db) {
-    if (!stored_int_differs(m_settings.value(key_name(kGainDb), 30), db)) {
+    const int next = sane_gain_db(db);
+    if (!stored_int_differs(m_settings.value(key_name(kGainDb), 30), next)) {
         return;
     }
-    m_settings.setValue(key_name(kGainDb), db);
+    m_settings.setValue(key_name(kGainDb), next);
     Q_EMIT gainDbChanged();
 }
 

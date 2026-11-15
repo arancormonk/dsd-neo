@@ -201,9 +201,10 @@ normalized_ppm(const QVariantMap& system, const SessionArgPrefs& prefs) {
     if (ppm.isEmpty()) {
         ppm = QString::number(prefs.ppm);
     }
-    // The wizard's IntValidator accepts an explicit '+' sign that the shape
-    // check would refuse; it means the same thing, so drop it rather than make
-    // "+5" a saved system that can never start.
+    // An explicit '+' sign (an older wizard's IntValidator took one, and the
+    // system and scan list editors still accept it) means the same thing, but
+    // the shape check would refuse it: drop it rather than make "+5" a saved
+    // system that can never start.
     if (ppm.startsWith(QLatin1Char('+'))) {
         ppm.remove(0, 1);
     }

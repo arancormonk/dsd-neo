@@ -30,6 +30,17 @@ install(
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
+# rtl_tcp manual gain steps (librtlsdr's tuner gain tables): portable C with no
+# SDR dependency, folded into the radio library. A target of its own keeps the
+# C++-only warning flags SoapySDR exports to the radio library off this C file,
+# and lets its test build on every platform, radio support or not.
+add_library(dsd-neo_io_rtl_tuner_gains OBJECT radio/rtl_tuner_gains.c)
+target_include_directories(
+    dsd-neo_io_rtl_tuner_gains
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_io_rtl_tuner_gains PRIVATE dsd-neo_warnings)
+
 # Radio (RTL-SDR front-end and streaming)
 if(DSD_HAS_RADIO)
     add_library(dsd-neo_io_radio)
@@ -51,6 +62,7 @@ if(DSD_HAS_RADIO)
             radio/rtl_wideband_spectrum.cpp
             radio/signal_measure.cpp
             radio/soapy_profile.cpp
+            $<TARGET_OBJECTS:dsd-neo_io_rtl_tuner_gains>
     )
     target_include_directories(
         dsd-neo_io_radio

@@ -3489,6 +3489,21 @@ main(void) {
     assert(g_rtl_pending_tuner_gain_is_auto == 0);
     assert(g_rtl_pending_tuner_autogain_is_set == 1);
     assert(g_rtl_pending_tuner_autogain_on == 0);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* A manual gain past what int tenths hold asks for the top step: held at INT_MAX tenths, never wrapped. */
+    opts->rtl_gain_value = INT_MAX;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 453000000, 10, UINT64_C(0x12))
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(g_rtl_pending_tuner_gain_is_set == 1);
+    assert(g_rtl_pending_tuner_gain_tenth_db == INT_MAX);
+    assert(g_rtl_pending_tuner_gain_is_auto == 0);
+    rtl_stream_clear_pending_retune_profile();
+    opts->rtl_gain_value = INT_MAX / 10;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 453000000, 10, UINT64_C(0x13))
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(g_rtl_pending_tuner_gain_tenth_db == (INT_MAX / 10) * 10);
+    assert(g_rtl_pending_tuner_gain_is_auto == 0);
 
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));

@@ -414,15 +414,15 @@ is refused with the reason:
 | A session started with `--tetra-uplink` | Refused: restart without `--tetra-uplink` |
 
 In the Android and Qt app, a saved TETRA system is checked when it starts, as an AM one is. It starts on a USB
-RTL-SDR, rtl_tcp or Airspy radio whose bandwidth is 72 kHz or left empty (an empty field runs TETRA at 72 kHz,
+RTL-SDR, rtl_tcp or Airspy radio whose bandwidth is 72 kHz or App default (App default runs TETRA at 72 kHz,
 whatever the default bandwidth in Settings). At any other bandwidth it is refused with the reason, because it would
 start and never decode. A bandwidth the radio does not offer counts as the bandwidth it runs at: 48 kHz on a USB or
 rtl_tcp radio, and on an Airspy the nearest bandwidth it offers (48 kHz for one above 72).
 
 The add-system wizard checks the same thing before it saves: TETRA at a bandwidth other than 72 kHz cannot continue
-until you set 72 kHz, empty the field, or pick another decode mode, and the reason shows under the decode chips. The
-wizard shows the bandwidth field on an Airspy too, so that fix is always in reach. The bandwidth field's hint shows what
-an empty field runs at (72 for TETRA). The import screen says what a TETRA system needs in its preview and again in the
+until you choose 72 kHz or App default, or pick another decode mode, and the reason shows under the decode chips. The
+wizard shows the bandwidth choice on an Airspy too, so that fix is always in reach. The note under App default shows
+what it runs at (72 for TETRA). The import screen says what a TETRA system needs in its preview and again in the
 review, including that some systems RadioReference lists as TETRA actually run Tetrapol, which dsd-neo cannot decode.
 The terminal wizard says the same in three lines under the site list of a TETRA system: an I/Q radio at a TETRA rate (a
 72 kHz DSP bandwidth on an RTL-SDR, rtl_tcp, SoapySDR or Airspy) or a symbol capture, and the Tetrapol caveat.

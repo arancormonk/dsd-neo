@@ -1072,3 +1072,10 @@ function shownKey(item) {
 function oneLine(text) {
     return String(text).replace(/[\r\n\v\f\u0085\u2028\u2029]+/g, " ")
 }
+
+// What a gain left at App default runs (B3): the app's own tuner gain, where 0
+// is the tuner's automatic gain. The system editor and the scan list editor
+// both show it under App default.
+function gainDefaultNote(gainDb) {
+    return qsTr("App default · %1").arg(gainDb === 0 ? qsTr("Automatic") : qsTr("%1 dB").arg(gainDb));
+}

@@ -14,12 +14,25 @@ UiPanel {
     property var overlayParent: parent
     property bool canMoveUp: true
     property bool canMoveDown: true
+    // RTL gain applies only to an RTL-SDR or rtl_tcp list. On any other
+    // source the gain is hidden, holds nothing and is left as stored.
+    property bool gainOffered: true
     readonly property var protocolIds: ["p25", "dmr", "nxdn48", "nxdn", "nfm", "am"]
     readonly property var modulationIds: ["", "c4fm", "cqpsk", "gfsk"]
     // An nfm or am entry (issue #526) holds on carrier: it has no digital modulation, keys or
     // talkgroups, so the modulation and decryption choices are hidden and never written for it.
     readonly property bool analog: entry.kind === "freq" ? (entry.protocol === "nfm" || entry.protocol === "am")
         : entry.kind === "system" && Util.decodeFlagIsAnalog(savedSystems.getByUid(entry.systemUid).decodeFlag)
+    // The gain choice: 0 Inherit, 1 Automatic, 2 Set. Once chosen it lives in
+    // the editor's draft for this entry, so a Set whose text is refused stays
+    // Set; until then it follows the stored -1 / 0 / n.
+    readonly property int gainMode: {
+        if (inputText.gainMode !== undefined)
+            return inputText.gainMode;
+        var stored = Number(entry.gainDb);
+        return stored > 0 ? 2 : stored === 0 ? 1 : 0;
+    }
+    // The gain field has an error only under Set, while the gain is offered.
     readonly property bool inputError: dwellField.error.length > 0 || holdField.error.length > 0
         || gainField.error.length > 0 || (entry.kind === "freq" && frequencyField.error.length > 0)
 
@@ -29,6 +42,8 @@ UiPanel {
 
     signal changed(string field, var value)
     signal inputEdited(string field, string text, var value)
+    // A gain choice or a keystroke in its field, with the field's text.
+    signal gainEdited(int mode, string text)
     signal move(int delta)
     signal remove
 
@@ -196,23 +211,61 @@ UiPanel {
             currentIndex: Math.max(0, row.modulationIds.indexOf(row.entry.modulation || ""))
             onActivated: row.changed("modulation", row.modulationIds[currentIndex])
         }
-        PlexTextField {
-            id: gainField
-            function parsedValue() {
-                return row.parseInteger(text, 0, 49);
-            }
-            objectName: "scanEntryGain"
+        Column {
             width: parent.width
-            label: qsTr("Gain")
-            unit: qsTr("dB")
-            hint: qsTr("From saved system when empty")
-            mono: true
-            text: row.fieldText("gainDb", Number(row.entry.gainDb) >= 0 ? String(Number(row.entry.gainDb)) : "")
-            error: text.length && isNaN(parsedValue()) ? qsTr("Enter a gain from 0 to 49 dB.") : ""
-            inputMethodHints: Qt.ImhDigitsOnly
-            input.onTextEdited: row.inputEdited("gainDb", text, isNaN(parsedValue()) ? -1 : parsedValue())
-            input.validator: RegularExpressionValidator {
-                regularExpression: /^-?[0-9]*$/
+            spacing: 6
+            visible: row.gainOffered
+
+            MicroLabel {
+                text: qsTr("Gain")
+            }
+            PlexComboBox {
+                objectName: "scanEntryGainMode"
+                width: parent.width
+                Accessible.name: qsTr("Entry gain")
+                model: [qsTr("Inherit"), qsTr("Automatic"), qsTr("Set")]
+                currentIndex: row.gainMode
+                onActivated: function (index) {
+                    if (index !== row.gainMode)
+                        row.gainEdited(index, gainField.text);
+                }
+            }
+            ReadableText {
+                objectName: "scanEntryGainHint"
+                width: parent.width
+                visible: row.gainMode === 0
+                text: row.entry.kind === "system" ? qsTr("Uses the saved system's gain, else the list's") : qsTr("Uses the list's gain")
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(12)
+                color: Theme.textSecondary
+            }
+            PlexTextField {
+                id: gainField
+                function parsedValue() {
+                    return row.parseInteger(text, 1, 49);
+                }
+                objectName: "scanEntryGain"
+                width: parent.width
+                visible: row.gainMode === 2
+                label: qsTr("Gain")
+                unit: qsTr("dB")
+                mono: true
+                text: row.fieldText("gainDb", Number(row.entry.gainDb) > 0 ? String(Number(row.entry.gainDb)) : "")
+                error: row.gainOffered && row.gainMode === 2 && isNaN(parsedValue()) ? qsTr("Enter a gain from 1 to 49 dB.") : ""
+                inputMethodHints: Qt.ImhDigitsOnly
+                input.onTextEdited: row.gainEdited(2, text)
+                input.validator: RegularExpressionValidator {
+                    regularExpression: /^-?[0-9]*$/
+                }
+                // A hidden field keeps no focus or keyboard (see GainEditor);
+                // `visible` follows the hidden gain block too.
+                onVisibleChanged: {
+                    if (!visible && input.activeFocus) {
+                        input.focus = false;
+                        Qt.inputMethod.hide();
+                    }
+                }
             }
         }
     }

@@ -2520,9 +2520,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
     }                                                                                                                  \
     opts->rtlsdr_center_freq = (uint32_t)replay_cfg.center_frequency_hz;                                               \
     opts->rtlsdr_ppm_error = replay_cfg.ppm;                                                                           \
-    if (replay_cfg.tuner_gain_tenth_db > 0) {                                                                          \
-        opts->rtl_gain_value = replay_cfg.tuner_gain_tenth_db / 10;                                                    \
-    }                                                                                                                  \
+    opts->rtl_gain_value = dsd_iq_replay_configured_gain_db(&replay_cfg, opts->rtl_gain_value);                        \
     opts->audio_in_type = AUDIO_IN_RTL;                                                                                \
     if (cli_set_iqreplay_audio_dev(opts, opts->iq_replay_path) != 0) {                                                 \
         LOG_ERROR("--iq-replay path is too long\n");                                                                   \

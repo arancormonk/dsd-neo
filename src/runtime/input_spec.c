@@ -198,6 +198,20 @@ parse_optional_int_at(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, int* out)
     return 1;
 }
 
+/* A spec's gain field, read as @p value: taken into *gain when its tenths (the gain times ten, as the tuner is set) fit
+   an int, else ignored like a field that does not parse, with a warning naming @p token. A gain at or under 0 is
+   automatic and is never multiplied. */
+static void
+spec_take_gain(int* gain, const char* token, int value) {
+    if (value <= INT_MAX / 10) {
+        *gain = value;
+    } else if (*gain > 0) {
+        LOG_WARN("WARNING: Ignoring gain '%s' (too large); gain left at %d dB\n", token, *gain);
+    } else {
+        LOG_WARN("WARNING: Ignoring gain '%s' (too large); gain left automatic\n", token);
+    }
+}
+
 static int
 parse_soapy_optional_front(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, int* gain, int* ppm, int* bw) {
     int iv = 0;
@@ -206,7 +220,7 @@ parse_soapy_optional_front(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, int*
         return -1;
     }
     if (rc > 0) {
-        *gain = iv;
+        spec_take_gain(gain, tok[*cur - 1], iv);
     }
 
     rc = parse_optional_int_at(tok, n, cur, &iv);
@@ -509,7 +523,7 @@ rtl_spec_apply_tuning_tokens(dsd_opts* opts, char** saveptr) {
         return 0;
     }
     if (rtl_spec_parse_int(curr, &parsed) == 0) {
-        opts->rtl_gain_value = parsed;
+        spec_take_gain(&opts->rtl_gain_value, curr, parsed);
     }
     curr = dsd_strtok_r(NULL, ":", saveptr);
     if (!curr) {

@@ -6921,13 +6921,31 @@ struct TcpHandoffOp {
 };
 } // namespace
 
+/* The manual gain step @p dev holds (tenths of a dB), or AUTO_GAIN when its gain is automatic or reads as nothing. */
+static int
+controller_tcp_manual_gain_step(struct rtl_device* dev) {
+    int gain = 0;
+    if (rtl_device_is_auto_gain(dev) != 0 || rtl_device_get_tuner_gain(dev, &gain) != 0) {
+        return AUTO_GAIN;
+    }
+    return gain;
+}
+
 static int
 controller_tcp_handoff_op(void* ctx) {
     auto* op = static_cast<TcpHandoffOp*>(ctx);
+    const int step_before = controller_tcp_manual_gain_step(op->dev);
     const int rc = rtl_device_tcp_publish_handoff(op->dev, op->why, sizeof op->why);
     if (rc == 0) {
-        /* The replay put the server's gain back; the frontends read it from the published copy. */
-        rtl_stream_publish_tuner_gain();
+        /* The replay put the server's gain back; the frontends read it from the published copy. A manual gain went
+         * out as the new server's own step: on another tuner that is another step, which the stream's copy (the auto
+         * squelch's context, a search capture's gain) follows; an automatic gain leaves it as it is. */
+        const int step_after = controller_tcp_manual_gain_step(op->dev);
+        if (step_after != AUTO_GAIN && step_after != step_before) {
+            dongle_note_gain(step_after);
+        } else {
+            rtl_stream_publish_tuner_gain();
+        }
     }
     return rc;
 }
@@ -8118,6 +8136,13 @@ controller_cleanup(struct controller_state* s) {
     dsd_mutex_destroy(&s->retune_done_m);
 }
 
+/* The tenths of a dB a manual gain (@p gain_db above 0, in whole dB) asks the tuner for, held at INT_MAX (the tuner's
+   top step) past what int tenths hold. */
+static int
+stream_gain_tenth_db_from_db(int gain_db) {
+    return gain_db > INT_MAX / 10 ? INT_MAX : gain_db * 10;
+}
+
 /**
  * @brief Seed initial device index, center frequency, gain and UDP port.
  *
@@ -8155,7 +8180,7 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
         DSD_SNPRINTF(udp_control_bindaddr, sizeof udp_control_bindaddr, "%s", "127.0.0.1");
     }
     if (opts->rtl_gain_value > 0) {
-        dongle_note_gain(opts->rtl_gain_value * 10);
+        dongle_note_gain(stream_gain_tenth_db_from_db(opts->rtl_gain_value));
     }
 }
 
@@ -8498,17 +8523,22 @@ stream_open_validate_capture_writer_request(const dsd_opts* opts, RadioSourceKin
     return 0;
 }
 
-/* The tuner gain a capture records. A tuner that reports none (Airspy, a Soapy device without a gain range) records
-   none, never the read's error code as a gain. */
+/* The tuner gain a capture records (B8). Under automatic gain it records the mode and no gain: the getter answers with
+   librtlsdr's last manual gain over USB and 0 over rtl_tcp, neither of them the gain the tuner runs. A tuner that
+   reports none (Airspy, a Soapy device without a gain range), or whose mode is unknown, records none, never the read's
+   error code as a gain. */
 static void
 capture_fill_tuner_gain(dsd_iq_capture_config* cfg) {
+    cfg->tuner_gain_tenth_db = 0;
+    cfg->tuner_gain_unknown = 1;
+    cfg->tuner_gain_auto = 0;
+    const int is_auto = rtl_device_is_auto_gain(rtl_device_handle);
     int tuner_gain = 0;
-    if (rtl_device_get_tuner_gain(rtl_device_handle, &tuner_gain) == 0) {
+    if (is_auto > 0) {
+        cfg->tuner_gain_auto = 1;
+    } else if (is_auto == 0 && rtl_device_get_tuner_gain(rtl_device_handle, &tuner_gain) == 0) {
         cfg->tuner_gain_tenth_db = tuner_gain;
         cfg->tuner_gain_unknown = 0;
-    } else {
-        cfg->tuner_gain_tenth_db = 0;
-        cfg->tuner_gain_unknown = 1;
     }
 }
 
@@ -8981,9 +9011,7 @@ stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, d
         opts->rtlsdr_ppm_error = replay_cfg->ppm;
         requested_ppm_publish_locked();
     }
-    if (replay_cfg->tuner_gain_tenth_db > 0) {
-        opts->rtl_gain_value = replay_cfg->tuner_gain_tenth_db / 10;
-    }
+    opts->rtl_gain_value = dsd_iq_replay_configured_gain_db(replay_cfg, opts->rtl_gain_value);
     /* The recorded bandwidth stays in replay_cfg: it seeds the plan's target, and opts keeps the request. */
     return stream_open_plan_replay_rate(opts, replay_cfg, out_dsp_bw_hz);
 }
@@ -9293,6 +9321,9 @@ stream_open_open_device(RadioSourceKind source_kind, const dsd_opts* opts, const
     return 0;
 }
 
+/* One DSD_NEO_RTL_IF_GAINS stage's gain ("9", "9dB", "9.5", "-91"): an integer up to 90 in magnitude is whole dB, a
+   larger one is already tenths of a dB, and a decimal is dB. 0 with the tenths in *gain_tenth_out, or -1 when the text
+   is not a gain whose tenths, and their magnitude, fit an int. */
 static int
 stream_open_parse_if_gain_tenth_db(const char* gain_text, int* gain_tenth_out) {
     if (!gain_text || !gain_tenth_out) {
@@ -9307,24 +9338,25 @@ stream_open_parse_if_gain_tenth_db(const char* gain_text, int* gain_tenth_out) {
             gbuf[gl - 2] = '\0';
         }
     }
-    double gain_db = 0.0;
-    if (dsd_parse_double_strict(gbuf, -HUGE_VAL, HUGE_VAL, &gain_db) != 0) {
-        gain_db = 0.0;
-    }
     if (strchr(gbuf, '.')) {
+        const double max_db = (double)INT_MAX / 10.0;
+        double gain_db = 0.0;
+        if (dsd_parse_double_strict(gbuf, -max_db, max_db, &gain_db) != 0) {
+            return -1;
+        }
         *gain_tenth_out = (int)lrint(gain_db * 10.0);
         return 0;
     }
     int gi = 0;
-    if (dsd_parse_int_strict(gbuf, 10, INT_MIN, INT_MAX, &gi) != 0) {
-        gi = 0;
+    if (dsd_parse_int_strict(gbuf, 10, -INT_MAX, INT_MAX, &gi) != 0) {
+        return -1;
     }
-    *gain_tenth_out = (abs(gi) > 90) ? gi : (gi * 10);
+    *gain_tenth_out = (gi > 90 || gi < -90) ? gi : (gi * 10);
     return 0;
 }
 
 static void
-stream_open_apply_if_gains_config(const char* gains) {
+stream_open_apply_if_gains_config(struct rtl_device* dev, const char* gains) {
     if (!gains || gains[0] == '\0') {
         return;
     }
@@ -9338,18 +9370,38 @@ stream_open_apply_if_gains_config(const char* gains) {
         }
         *colon = '\0';
         int stage = 0;
-        if (dsd_parse_int_strict(tok, 10, INT_MIN, INT_MAX, &stage) != 0) {
-            stage = 0;
-        }
-        if (stage < 0) {
+        if (dsd_parse_int_strict(tok, 10, 0, INT_MAX, &stage) != 0) {
+            LOG_WARN("WARNING: Ignoring IF gain stage '%s' (expected a stage number from 0)\n", tok);
             continue;
         }
         int gain_tenth = 0;
-        stream_open_parse_if_gain_tenth_db(colon + 1, &gain_tenth);
-        int rc = rtl_device_set_if_gain(rtl_device_handle, stage, gain_tenth);
+        if (stream_open_parse_if_gain_tenth_db(colon + 1, &gain_tenth) != 0) {
+            LOG_WARN("WARNING: Ignoring IF gain '%s' for stage %d (expected dB, as 9 or 9.5, or tenths of a dB above "
+                     "90)\n",
+                     colon + 1, stage);
+            continue;
+        }
+        int rc = rtl_device_set_if_gain(dev, stage, gain_tenth);
         log_unsupported_control_if_needed("IF gain control", rc);
     }
 }
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" int
+rtl_stream_test_parse_if_gain_tenth_db(const char* gain_text, int* out_tenth_db) {
+    return stream_open_parse_if_gain_tenth_db(gain_text, out_tenth_db);
+}
+
+extern "C" void
+rtl_stream_test_apply_if_gains(struct rtl_device* dev, const char* gains) {
+    stream_open_apply_if_gains_config(dev, gains);
+}
+
+extern "C" int
+rtl_stream_test_gain_tenth_db_from_db(int gain_db) {
+    return stream_gain_tenth_db_from_db(gain_db);
+}
+#endif
 
 static void
 stream_open_apply_bias_tee(const dsd_opts* opts) {
@@ -9413,7 +9465,7 @@ stream_open_apply_runtime_controls(const dsd_opts* opts) {
     stream_open_apply_xtal_control(cfg);
     stream_open_apply_testmode(cfg);
     if (cfg->rtl_if_gains_is_set && cfg->rtl_if_gains[0] != '\0') {
-        stream_open_apply_if_gains_config(cfg->rtl_if_gains);
+        stream_open_apply_if_gains_config(rtl_device_handle, cfg->rtl_if_gains);
     }
 }
 
@@ -13354,6 +13406,16 @@ rtl_stream_test_full_output_write_on_stop(rtl_stream_test_full_output_write* out
 extern "C" struct rtl_device*
 rtl_stream_test_device(void) {
     return rtl_device_handle;
+}
+
+extern "C" void
+rtl_stream_test_tuner_gain_copies(int* out_dongle_gain, int* out_squelch_gain) {
+    if (out_dongle_gain) {
+        *out_dongle_gain = dongle.gain;
+    }
+    if (out_squelch_gain) {
+        *out_squelch_gain = g_squelch_tuner_gain.load(std::memory_order_relaxed);
+    }
 }
 
 extern "C" int

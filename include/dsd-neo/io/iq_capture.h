@@ -32,6 +32,9 @@ typedef struct {
     /** 1 when the tuner did not report its gain (an Airspy, a Soapy device without a gain range): written as
         "tuner_gain_known": false, and tuner_gain_tenth_db is then 0, not a reading. */
     int tuner_gain_unknown;
+    /** 1 when the tuner runs its automatic gain: written as "tuner_gain_auto": true with "tuner_gain_known": false
+        and a tuner_gain_tenth_db of 0, whatever the two fields above hold. 0 writes "tuner_gain_auto": false. */
+    int tuner_gain_auto;
     int rtl_dsp_bw_khz;
     uint32_t base_decimation;
     uint32_t post_downsample;

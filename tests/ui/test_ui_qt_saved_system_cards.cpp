@@ -18,16 +18,17 @@
  */
 
 #include <QAbstractItemModel>
-#include <QByteArray>
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QIODevice>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QList>
-#include <QMetaObject>
-#include <QModelIndex>
+#include <QMap>
 #include <QObject>
 #include <QSettings>
 #include <QStandardPaths>
@@ -37,6 +38,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtEnvironmentVariables>
 #include <QtGlobal>
 #include <cmath>
 #include <cstdio>

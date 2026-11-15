@@ -126,6 +126,19 @@ Item {
             compare(testContext.gainCalls(), 0, "the configured gain was not touched");
         }
 
+        // "This channel" edits the row, not the gain the session runs, so the session line under the gain goes.
+        function test_session_gain_note_leaves_this_channel() {
+            var note = findChild(sheet, "radioGainSessionNote");
+            verify(note !== null);
+            onAir(true, squelchField | gainField, squelchField, 0);
+            verify(note.visible, "All channels: the session's gain");
+            findChild(sheet, "radioScope").selected(1);
+            verify(sheet.rowScope);
+            verify(!note.visible, "This channel: no session line");
+            findChild(sheet, "radioScope").selected(0);
+            verify(note.visible);
+        }
+
         function test_row_actions_follow_listed_and_edited() {
             onAir(true, squelchField | gainField, squelchField, squelchField);
             findChild(sheet, "radioScope").selected(1);

@@ -33,8 +33,11 @@ Item {
     Accessible.onPressAction: activate()
     Accessible.onToggleAction: activate()
     function activate() {
-        if (enabled && Navigation.allows(row))
+        if (enabled && Navigation.allows(row)) {
+            // Issue #718: a choice made mid-word keeps the word.
+            Navigation.commitComposing(false);
             toggled(!checked);
+        }
     }
     Keys.onPressed: function (event) {
         if (Navigation.activationPress(event, Window.activeFocusItem))

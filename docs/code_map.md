@@ -3697,7 +3697,15 @@ suite runs under this compiler.
     into another frequency. `dsd_normalize_soapy_input_spec()` reads a K/M/G-suffixed number (any strtod() number
     before the suffix: `+5.8G`, `5.8e0G`) in the frequency place as a frequency, never device args: out of range
     (refused by `dsd_parse_freq_hz()` or under the 1 MHz floor) it logs the token and fails, and engine setup and `--print-config` fail with it; a bare number keeps the opaque-args
-    fallback (`RUNTIME_INPUT_SPEC`). Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`,
+    fallback (`RUNTIME_INPUT_SPEC`). Both read a gain field the same way: one whose tenths of a dB (the gain times ten,
+    as the tuner is set) do not fit an int, above 214748364, is ignored with a warning naming it, like a field that
+    does not parse, and the gain before stays; 0 and negatives (automatic) are taken as written. The two places that
+    turn the configured gain into tenths, the stream's open (`rtl_sdr_fm.cpp`) and a trunk scan's retune gain profile
+    (`trunk_tuning.c`), hold it at `INT_MAX` (the tuner's top step) rather than overflow (`IO_RTL_GAIN_VALUES`,
+    `ENGINE_TRUNK_RETUNE_REGRESSION`). The open reads each `DSD_NEO_RTL_IF_GAINS` stage's gain as whole dB up to 90 in
+    magnitude, tenths beyond, and dB for a decimal; a stage number or gain it cannot read, or whose tenths or their
+    magnitude do not fit an int, skips that stage with a warning instead of programming 0 dB (`IO_RTL_GAIN_VALUES`).
+    Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`,
     `RUNTIME_CONFIG_USER`, and for the tone filter's "no effect" line `ENGINE_RUN_SETUP` (a config file's `-Y` list,
     one without rows included), `APP_COMMAND_QUEUE` (a running session, a channel map imported into a `-Y` scan
     included) and `ENGINE_TRUNK_SCAN`.
@@ -3949,10 +3957,10 @@ suite runs under this compiler.
     bandwidth a system runs at (its own, else 72 for `-fT`, else the app default; normalized by
     `session_args_dsp_bandwidth_khz()`: as the engine reads a USB or rtl_tcp spec, `dsd_analog_rtl_dsp_bw_or_default()`,
     and for an Airspy the nearest selectable bandwidth, 48 for none or above 72, issue #806 D4), the one rule the start
-    check, the wizard gate and its bandwidth placeholder share (`sessionArgs.effectiveBandwidthKhz()`,
+    check, the wizard gate and its App default note share (`sessionArgs.effectiveBandwidthKhz()`,
     `sessionArgs.tetraRateError()`); `session_args_tetra_runs_on()` refuses `-fT` on any radio, an Airspy included,
     off a TETRA rate (`SessionArgsError::TetraRate`, category `tetra-rate`, one text: the 72 kHz bandwidth), and the
-    wizard offers the TETRA chip on every radio, with the bandwidth field shown on an Airspy too. Tests:
+    wizard offers the TETRA chip on every radio, with the bandwidth choice shown on an Airspy too. Tests:
     `RUNTIME_DECODE_MODE`, `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`, `IO_RTL_DEMOD_CONFIG`,
     `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_ROUNDTRIP`, QML `tst_wizard_decode_chip`, `tst_session_initialized`.
   - rdio-scanner export (`src/runtime/rdio_export.c`, `include/dsd-neo/runtime/rdio_export.h`): DirWatch sidecars and,
@@ -8705,26 +8713,42 @@ Key public headers:
     every tuner type a header can name, each same-rate hop's frequency is followed by a rate and each repeated gain
     request is sent, before and after a reconnect, and each hop restarts the watchdog grace; an rtl_tcp device
     answers 0 from both `rtl_device_capture_settings_generation()` and `rtl_device_capture_retune_resets()`).
-  - rtl_tcp connections and reconnects (issue #518 B3, B4, B13, B16, B17; `rtl_device.cpp`). The server sends exactly a
-    12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()` reads those
-    twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS, EOF,
-    INVALID, CANCELLED, TIMEOUT after 10 s); an open whose header fails fails. Each connection is a counted
-    `rtl_tcp_conn` (socket, `generation`, its own `tx_lock`, `lost`); the last reference closes the socket. The
-    cancellation token is the stop latch (`stop_requested`, set first by stop and destroy) or the exit flag, never
-    `run`, so the session's first connect and header read (before any reader) are cancellable too. A command (or a gain
-    change's commands, as one unit) takes a reference to the published connection under `tcp_lock`, sends under its
-    `tx_lock` with `rtl_tcp_send_all()` (waits for room a 50 ms slice at a time, checking cancellation between slices,
-    then sends what fits without blocking (`MSG_DONTWAIT`), partial writes continued, 2 s in all; where a send cannot be
-    asked not to block (Winsock) the socket's 2 s send timeout only bounds one that blocks anyway, and any send that
-    fails or times out ends the connection, since Winsock leaves a timed-out socket indeterminate) and, still under
-    `tx_lock`, records what took in the effective record (D6: the device's values plus `tcp_took`) under `tcp_lock` only
-    while that connection is still the published one; `tcp_lock` is never held while sending. With no published
-    connection, or when the connection was lost or replaced meanwhile, a setter returns `RTL_DEVICE_ENOTCONN` and
-    records nothing; a failed send takes down only the connection it used (unpublished, `lost` set, socket shut down, so
-    its reader stops reading it even while the server still sends). Gain follows the USB register-0x19 policy in
-    commands: manual = 0x08 off (left out under test mode) + 0x03 manual + 0x04 gain; automatic = 0x03 auto + 0x08 as
+  - rtl_tcp connections and reconnects (issue #518 B3, B4, B13, B16, B17; gain steps B6; `rtl_device.cpp`). The server
+    sends exactly a 12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()`
+    reads those twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS,
+    EOF, INVALID, CANCELLED, TIMEOUT after 10 s); an open whose header fails fails. Each connection is a counted
+    `rtl_tcp_conn` (socket, `generation`, its own `tx_lock`, `lost`, and its header's `tuner_type` and `gain_count`, set
+    when it is made, the first connect's and every reconnect candidate's, and never changed); the last reference closes
+    the socket. The cancellation token is the stop latch (`stop_requested`, set first by stop and destroy) or the exit
+    flag, never `run`, so the session's first connect and header read (before any reader) are cancellable too. A command
+    (or a gain change's commands, as one unit) takes a reference to the published connection under `tcp_lock`, sends
+    under its `tx_lock` with `rtl_tcp_send_all()` (waits for room a 50 ms slice at a time, checking cancellation between
+    slices, then sends what fits without blocking (`MSG_DONTWAIT`), partial writes continued, 2 s in all; where a send
+    cannot be asked not to block (Winsock) the socket's 2 s send timeout only bounds one that blocks anyway, and any
+    send that fails or times out ends the connection, since Winsock leaves a timed-out socket indeterminate) and, still
+    under `tx_lock`, records what took in the effective record (D6: the device's values plus `tcp_took`) under
+    `tcp_lock` only while that connection is still the published one; `tcp_lock` is never held while sending. With no
+    published connection, or when the connection was lost or replaced meanwhile, a setter returns `RTL_DEVICE_ENOTCONN`
+    and records nothing; a failed send takes down only the connection it used (unpublished, `lost` set, socket shut
+    down, so its reader stops reading it even while the server still sends). Gain follows the USB register-0x19 policy
+    in commands: manual = 0x08 off (left out under test mode) + 0x03 manual + 0x04 gain; automatic = 0x03 auto + 0x08 as
     configured; test mode (0x07) is asserted after either and wins; turning test mode off sends 0x08 as the gain state
-    wants. The nearest-gain setter is a manual gain change (B16). Before any gain takes the record holds the session's
+    wants. The nearest-gain setter is a manual gain change (B16). A manual gain goes out as the nearest step of the
+    connection's tuner (B6, `rtl_tcp_conn_gain_step()`): the server hands 0x04 to `rtlsdr_set_tuner_gain()` as it is
+    (an R82xx rounds 30 dB up to 32.8, an E4000 refuses it) and acknowledges nothing, so the step comes from librtlsdr's
+    own tables (`rtlsdr_get_tuner_gains()`, copied in `src/io/radio/rtl_tuner_gains.c` with the osmocom commit they
+    came from; `dsd_rtl_tuner_gain_nearest()`, a tie keeping the lower step as the USB path does), keyed by the
+    header's tuner (E4000 14 steps, FC0012 5, FC0013 23, FC2580 1, R820T and R828D the shared 29). A tuner the tables
+    do not know, or a gain count other than that tuner's table size, sends the request raw, as before. The step is
+    picked from the connection the unit goes out on (`rtl_tcp_apply_on_conn()` hands it to the build) and recorded
+    (`gain`, beside `gain_request`, the tenths asked for; both setters) and reported to
+    `rtl_device_set_gain_nearest()`'s caller only once the unit went out on the still-published connection; a failed or
+    superseded send changes neither. A step of 0 dB or less stays a manual gain. A reconnect's replay sends
+    `gain_request` as the new connection's own step (a server back with another tuner gets its nearest step to what was
+    asked, not to the old step) and records that step only once the hand-off is published; the stream's
+    `controller_tcp_handoff_op()` then moves its own copy (`dongle.gain`, the auto squelch's context, a search capture's
+    gain) to a manual step that changed, and leaves it under automatic gain.
+    Before any gain takes the record holds the session's
     default (automatic, digital AGC as configured); a gain or test-mode change that failed part way, or whose
     connection was replaced before commitment, marks it (`gain_unknown`, `testmode_unknown`), and the replay then
     asserts the record's state even if none ever took (as a
@@ -8760,7 +8784,10 @@ Key public headers:
     ("the RTL-SDR is being reset; try again in a moment", "the rtl_tcp server is not connected"); a PPM change, which
     applies later on the controller, is refused up front, including PPM-delta actions. A refused gain or bias-tee
     edit leaves the configuration unchanged. Tests: `IO_RTL_TCP_RECONNECT` (a scripted fake rtl_tcp server
-    on loopback; device level with the test as the controller and stream level through the real controller; ASan/TSan),
+    on loopback; device level with the test as the controller and stream level through the real controller; ASan/TSan;
+    the `tcp_gain_*` cases: steps per header, raw fallback, auto/manual policy and 0 dB manual, failed and superseded
+    sends, a reconnect to another tuner re-snapping the request, a failed replay recording nothing),
+    `IO_RTL_TUNER_GAINS` (the tables and tie rule, portable, every platform),
     `DSP_SYMBOL_RTL_YIELD` (`sticky_yield_across_reconnect`), `APP_COMMAND_QUEUE` (the toasts).
 - Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,
   `include/dsd-neo/io/m17_udp.h`
@@ -8810,6 +8837,27 @@ Key public headers:
     gain writes `"tuner_gain_known": false` with a gain of 0 (`dsd_iq_capture_config::tuner_gain_unknown`); replay
     reads it, and a legacy Airspy sidecar without it, as `dsd_iq_replay_config::tuner_gain_unknown`, and then reports
     no gain. Test: `IO_RTL_REPLAY_EOF_AND_CF32`.
+  - Automatic tuner gain in captures (B7, B8): `capture_fill_tuner_gain()` asks `rtl_device_is_auto_gain()` first, since
+    under automatic gain the getter reports librtlsdr's last manual gain (USB) or 0 (rtl_tcp). Automatic writes
+    `"tuner_gain_auto": true` with `"tuner_gain_known": false` and a gain of 0
+    (`dsd_iq_capture_config::tuner_gain_auto`; the writer, `metadata_write_tuner_gain_fields()`, holds that whatever the
+    other fields say), manual its exact signed tenths with `tuner_gain_auto` `false`, and a failed getter or an unknown
+    mode (< 0) neither. The key is optional on read (`dsd_iq_replay_config::tuner_gain_auto`; missing: 0, the legacy
+    meaning), an automatic sidecar reads as unknown gain too, and an older reader, skipping the key, reads it as unknown
+    gain alone. The replay device takes its mode from its immutable `replay_cfg` (`rtl_device_is_auto_gain()`;
+    `rtl_device_get_tuner_gain()` gives no value), so its no-op gain setters cannot clear it, and
+    `rtl_stream_publish_tuner_gain()` carries it to the frontends' `tuner_gain_is_auto`.
+    `dsd_iq_replay_configured_gain_db()` is the one rule for the whole-dB configured gain (`args.c` for `--iq-replay`,
+    the stream open for its copy): automatic 0, known manual the nearest dB held to 1..49, unknown the current value. A
+    manual gain at or below 0 dB is 1 only where the sidecar states its mode
+    (`dsd_iq_replay_config::tuner_gain_mode_known`, set when the key is present); legacy metadata keeps the current
+    value there, as before, since it recorded an rtl_tcp automatic capture as a known 0. A SoapySDR device's base starts
+    manual and reads automatic only once an automatic request took (`rtl_device_set_gain_soapy()`); a failed request
+    leaves the mode it had, except that a manual request whose mode change took reads manual. `--iq-info` prints
+    `automatic`. Tests: `IO_IQ_METADATA`, `IO_IQ_CAPTURE_WRITER`, `IO_RTL_CAPTURE_WRITES` (`capture_records_gain_mode`,
+    USB plus the replay device's setters; `soapy_capture_records_gain_mode`, a Soapy fake with and without a gain mode
+    or gain range; `soapy_failed_manual_gain_reads_manual`), `IO_RTL_TCP_RECONNECT` (`capture_records_automatic_gain`),
+    `IO_RTL_FRONTEND_TELEMETRY`, `RUNTIME_CLI_PARSE`.
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
     sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is
@@ -13069,6 +13117,81 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     decoder/modulation override. Manual scan lists inherit saved squelch and modulation (an entry's explicit
     modulation wins). `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence
     QML test cover disk reload, restart, validation and temporary scopes.
+  - Qt/Android tuner gain: `qml/GainEditor.qml` is the one gain editor (Settings' Radio defaults, the system editor, the
+    scan list editor). It shows `[Automatic | Set]`, or `[App default | Automatic | Set]` when `inheritable`, with one
+    canonical `mode` in both layouts (0 App default, 1 Automatic, 2 Set). An optional `hint` sits right under the strip
+    whatever is chosen, the `inheritNote` under App default and the 1-49 dB field under Set ("Enter a gain from 1 to 49
+    dB."). `valid` and `storedValue` (-1 / 0 / n, NaN for an invalid Set) read the field as shown, so they always match
+    its error. The caller owns the state: the editor never writes `mode` or `manualText` (the value the caller puts in
+    the field). It reports `modeSelected(mode)`, `draftEdited(text)` on every keystroke and `committed()` once per edit
+    (Return and the focus loss after it are one end; an end with the text unchanged since the last report is none), none
+    of them while the caller sets `syncing`. The caller keeps `manualText` in step with the typing, so that putting a
+    value back is a change. Whenever the field hides (Set left, after the choice has committed a composing word, or the
+    caller hiding the editor, as the scan list does for an Airspy), it commits a word still composing
+    (`Navigation.commitComposing()`) and then gives up the focus and the keyboard, so no key goes to it and the field
+    never keeps less than was typed. The segmented control is named (`accessibleName`, the title by default), and the
+    field reads its label, unit and error. A caller names the parts with `modeObjectName`, `fieldObjectName` and
+    `hintObjectName`. Settings (`settingsGainMode`, `settingsGainDb`, `settingsGainHint`: "For RTL-SDR and RTL-TCP.
+    Automatic adjusts the receiver gain for you.") writes `prefs.gainDb` only with a valid 1..49 committed while Set is
+    chosen. Automatic writes 0, and Set writes the screen's last valid gain (`lastValidManual`: the preference's own
+    while it is set, then each valid commit, else 30), so a refused edit is never written. Set chosen again commits the
+    typed text first: a valid gain is kept, a refused one gives way. A choice commits a composing word before it selects
+    (`SegmentedControl`), and a later commit writes nothing outside Set. A change of the preference from elsewhere (a
+    restore) resyncs the mode and the text at once, except while Set's field has the focus: then it waits until the
+    field lets go, after the field's own commit. Settings commits only a gain typed since the field last showed the
+    preference (`gainEdited`), so a valid edit made meanwhile wins as the user's latest, and a field only focused, never
+    edited, lets the change from elsewhere stand. The scan list editor keeps `scanGainMode`/`scanTuner_gainDb` and its
+    draft (`gainMode`, `gainText`, `draft.gainDb`). Both inheriting editors word App default with
+    `Util.gainDefaultNote(prefs.gainDb)` ("App default · Automatic" / "App default · 30 dB"). The system editor
+    (`WizardScreen`) gives it its own full-width row with App default (`systemGainMode`, `systemGainField`; draft
+    `gainMode`/`gainText`, the text counted in the draft fingerprint only under Set), above the PPM field (named by its
+    own label, no caption) and the bandwidth choice (captioned like every combo), each full width. `openForAdd()` (App
+    default), `openForEdit()` and `openForFound()` (a detection's 0 Automatic, n Set, -1 App default; the Explore
+    handoff App default) set the mode before the clean fingerprint is taken, and `applyRadioReference()` leaves the gain
+    draft and that baseline alone. `gainValid()` and `ppmValid()` (empty or a whole number from -200 to 200, "Enter a
+    correction from -200 to 200 ppm.") count only on `usb` and `rtltcp`, where the two show, and hold the tune and name
+    steps and `commit()`. On any other source they hold nothing, and a refused hidden value is saved as App default (-1,
+    empty PPM). A refused value opens Advanced on its error when an edit or detection loads it and when the tune step is
+    reached (a source changed to an RTL brings a hidden one into view). Save writes -1 / 0 / n. A scan list entry
+    (`ScanEntryRow.qml`) picks its gain from a `PlexComboBox` like its Modulation (`scanEntryGainMode`, "Entry gain":
+    Inherit, Automatic, Set, stored -1 / 0 / n), with the 1-49 dB field (`scanEntryGain`) shown and checked only under
+    Set. The editor's per-entry draft (`entryInputText[uid]`: `gainMode` and the Set text, `setEntryGain()`) keeps the
+    choice apart from the stored value, so an emptied or refused Set stays Set with its error and holds Save, while the
+    entry keeps the last valid gain typed: nothing refused reaches disk. The draft follows its entry through a reorder
+    or another entry's removal. A refused Set left for Inherit or Automatic hides and holds nothing. Under Inherit a
+    line (`scanEntryGainHint`) says where the gain comes from: "Uses the saved system's gain, else the list's" for a
+    saved system, "Uses the list's gain" for a frequency. On an Airspy list the entry's gain hides with the list's
+    (`gainOffered`; the engine applies RTL gain only to RTL-family input), holds nothing and keeps its stored value. The
+    Radio sheet's RTL gain steppers are live only and are never saved to a system. The line under them
+    (`radioGainSessionNote`, "Gain changes here last until you stop listening.") says so. It is hidden for an Airspy and
+    under "This channel", which has its own scope note. Tests: `tst_gain_editor.qml`, `tst_settings_tuner_gain.qml`,
+    `tst_wizard_gain.qml`, `tst_radio_gain_override.qml`, `tst_scan_row_edits.qml`, `tst_scan_list_screen.qml`,
+    `tst_segmented_whole_words.qml`, `tst_a11y_text_reach.qml`.
+  - Qt/Android receiver defaults (PPM and bandwidth): every place that edits them (Settings' Radio defaults, the system
+    editor, the scan list editor) runs what it shows. PPM takes a whole number from -200 to 200, the engine's own clamp
+    (in the system and scan list editors a leading plus too, which an older build's IntValidator took and the start path
+    drops, `normalized_ppm()`; the text is kept as stored), with "Enter a correction from -200 to 200 ppm." outside it:
+    Settings (`settingsPpm`, a `ValueRow` with `minimum`, `maximum` and `rangeError`) writes only a value in range; the
+    system editor's empty field and the scan list's App default stay valid, and out-of-range text holds the step and the
+    save. The bandwidth is `qml/BandwidthChoice.qml`, a `PlexComboBox` of the eight widths both an RTL and an Airspy run
+    (4, 6, 8, 12, 16, 24, 48, 72 kHz), with App default first when `inheritable` (the caller's `value` 0 or less,
+    reported as -1). The caller owns `value` and takes `chosen(khz)`. Under App default it shows the caller's
+    `inheritNote`: the system editor's says what App default runs for its decode mode and source
+    (`sessionArgs.effectiveBandwidthKhz(decodeFlag, sourceType, -1)`: 72 for TETRA, issue #803), the scan list's what
+    the app default runs on its source (`effectiveBandwidthKhz("", sourceType, prefs.bandwidthKhz)`). A stored value
+    that is not one of the eight (an older build took any number) is shown as its own entry ("25 kHz"), after the
+    widths, with "Runs at X kHz on an RTL-SDR, Y kHz on an Airspy." (`effectiveBandwidthKhz("", "usb"|"airspy",
+    value)`); nothing rewrites it until the user picks another width. That entry stays offered after such a pick, so the
+    combo's model does not change under the reader (a new model resets the index and rebuilds every row, see "No
+    changing text in a `ComboBox` model"); `reload()` takes the stored value afresh, and each caller calls it where it
+    loads another value (`openForAdd`/`openForFound`/`openForEdit`, the scan list's `openFor`). A value changed from
+    elsewhere (a Settings restore, a RadioReference import clearing a width TETRA cannot use) reloads by itself. App
+    default stays -1: opening or saving never turns it into a number. Names: Settings `settingsBandwidth` (note
+    `settingsBandwidthNote`), the system editor `systemBandwidthField` (draft `bwText`, empty for App default; note
+    `systemBandwidthNote`), the scan list `scanTuner_bandwidthKhz` (draft
+    `bandwidthSet`/`bandwidthText`/`draft.bandwidthKhz`; note `scanBandwidthNote`). Tests:
+    `tst_settings_receiver_defaults.qml`, `tst_wizard_bandwidth.qml`, `tst_wizard_gain.qml` (PPM),
+    `tst_scan_list_screen.qml`, `tst_wizard_decode_chip.qml`, `tst_airspy_source_ui.qml`, `tst_a11y_text_reach.qml`.
   - Analog channel width (issue #525): the Input menu's `input.nfm_bw` row, right after `input.sql` (`NFM bandwidth...
     [12.5 kHz]`, or `[default]`, on a radio input while the configured -fA preset runs FM or an explicit width is set
     under another preset, `is_nfm_width_editable()`), prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as
@@ -14719,22 +14842,29 @@ Qt Quick frontend (`src/ui/qt`):
   `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`, `GradientButton`,
   `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the text field so
   `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action reads them; an
-  `OutlineButton` or `IconButton` with `finishesEditing: false` only commits the word, as the RadioReference
-  password's Show and "Check account" and the Systems search field's × do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
-  `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear; `Navigation.clearInput()` before it takes
-  the focus away (#831), so a sheet or layer that opens or closes by itself, as the incoming-file sheet does when a file
-  arrives while a field holds a composing word, never leaves a field that saves on `editingFinished` to save it without
-  that word (`tst_incoming_document.qml`). A button gated on a field's committed text puts that term in `inputValid`
-  (visuals dim on it) rather than `enabled`: its default `enabled` is `inputValid || Navigation.composing`, so it is
-  live while a word is composing, and a tap commits first and calls `clicked()` only if `inputValid` then holds;
-  otherwise it is disabled as before (accessibility and keyboard included), and a real guard (busy, permission) stays in
-  `enabled`. Callers: the profile editor's "Use this key" and "Use override", `KeySheet`'s apply, Scan list "Add
-  frequency", RadioReference Find/Open, the wizard's Continue/Save, Tone filter Apply and Explore's Start. Tests:
-  `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`, `tst_modal_sheet_outside_tap.qml`,
-  `tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_csv_import_flow.qml`, `tst_talkgroup_edit_sheet.qml`,
-  `tst_modal_input.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`,
-  `tst_scan_row_edits.qml`, `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`, `tst_radioreference_screen.qml`,
-  `tst_back_modals.qml`, `tst_wizard_encryption.qml`, `tst_main_overlay_layering.qml`, `tst_receiver_choice.qml`).
+  `OutlineButton` or `IconButton` with `finishesEditing: false` only commits the word, as the RadioReference password's
+  Show and "Check account" and the Systems search field's × do) and of `DecodeChip`, `FilterPill`, `SegmentedControl`
+  segments, `DisclosureRow`, `PlexSwitch` and `ToggleRow` (commit only); the press of `PlexComboBox`, `PlexCheckBox` and
+  `PlexToggle`, Qt Controls that take the focus on the press, so the commit runs in a `PointHandler`, which sees the
+  press first and never takes it (commit only; a field that saves as it is typed, as a scan entry's gain does, saved "3"
+  of "33" when a combo took the focus), and `PlexComboBox`'s list as it opens by any other way (a screen reader's
+  press); the Advanced headers of Settings' Radio defaults, the system editor and the scan list editor before they fold
+  (commit and finish editing: folding hides the field being typed in, and a hidden field loses the focus without
+  `editingFinished`); `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear;
+  `Navigation.clearInput()` before it takes the focus away (#831), so a sheet or layer that opens or closes by itself,
+  as the incoming-file sheet does when a file arrives while a field holds a composing word, never leaves a field that
+  saves on `editingFinished` to save it without that word (`tst_incoming_document.qml`). A button gated on a field's
+  committed text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its default `enabled` is
+  `inputValid || Navigation.composing`, so it is live while a word is composing, and a tap commits first and calls
+  `clicked()` only if `inputValid` then holds; otherwise it is disabled as before (accessibility and keyboard included),
+  and a real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this key" and "Use
+  override", `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's Continue/Save, Tone
+  filter Apply and Explore's Start. Tests: `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`,
+  `tst_modal_sheet_outside_tap.qml`, `tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_csv_import_flow.qml`,
+  `tst_talkgroup_edit_sheet.qml`, `tst_modal_input.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
+  `tst_tone_filter_sheet.qml`, `tst_scan_row_edits.qml`, `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`,
+  `tst_radioreference_screen.qml`, `tst_back_modals.qml`, `tst_wizard_encryption.qml`, `tst_main_overlay_layering.qml`,
+  `tst_receiver_choice.qml`, `tst_settings_receiver_defaults.qml`, `tst_wizard_bandwidth.qml`).
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
@@ -15871,6 +16001,15 @@ Qt Quick frontend (`src/ui/qt`):
     `toUInt()` keep the low 32 bits of either and report success. A value past the field's type reads as the field's
     default where nothing checks the field, as an absent key does. Where a check exists, it fails that check: the
     force key, a scan list's port, key IDs, talkgroup overrides and a profile's force.
+  - Tuner gain normalization: the app's gain model is -1 inherit, 0 automatic, 1..49 dB manual. `AppPrefs::gainDb()`
+    (`tuner/gainDb`, no inherit) reads a stored value below 0 as 0 (what the engine runs for it) and above 49 as 49
+    (every librtlsdr tuner tops out at or below 49.6 dB, so the step is the same); unparsable or past-int text reads
+    as 30. `setGainDb()` holds its value to 0..49 and compares with the raw stored value, so writing over damage
+    lands. The stored value stays as it is until that write, and backups export and restore it raw. A saved system's
+    `gainDb` is held to -1..49 where a map becomes a row (`rowFromMap()`: load, add, addAll, update; an update that
+    omits the gain keeps it), and `load()` saves a repaired row, RadioReference sites included, outside
+    `normalizeLoaded()`'s early return. A raw map with 60 handed straight to `scan_list_targets()` is still refused.
+    Tests: `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS`, `UI_QT_BACKUP_MODEL`.
   - Tests: `UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY` (every step crashed in a clean apply and in a rollback; two
     restores in a row), `UI_QT_BACKUP_MODEL` (with `test_recorder_parity()` against the QML fixture's
     `tests/ui/qml_backup_recorder.h`; #831 B4: a held read cancelled, the job file kept past the read's commit with

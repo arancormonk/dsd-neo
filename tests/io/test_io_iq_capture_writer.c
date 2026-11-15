@@ -2553,6 +2553,66 @@ test_old_reader_golden(void) {
     return rc;
 }
 
+/* B8: the writer records the tuner's gain mode beside its gain, as flat scalars an old reader skips. Automatic writes
+   no gain reading, even when it is handed the stale gain librtlsdr still reports under automatic gain. */
+static int
+test_tuner_gain_mode_written(void) {
+    static const struct {
+        const char* name;
+        int auto_gain;
+        int unknown;
+        int tenths;
+        const char* want;
+    } k_cases[] = {
+        {"automatic", 1, 1, 0,
+         "  \"tuner_gain_tenth_db\": 0,\n  \"tuner_gain_known\": false,\n  \"tuner_gain_auto\": true,\n"},
+        {"automatic over a stale gain", 1, 0, 297,
+         "  \"tuner_gain_tenth_db\": 0,\n  \"tuner_gain_known\": false,\n  \"tuner_gain_auto\": true,\n"},
+        {"manual", 0, 0, 297,
+         "  \"tuner_gain_tenth_db\": 297,\n  \"tuner_gain_known\": true,\n  \"tuner_gain_auto\": false,\n"},
+        {"unknown", 0, 1, 0,
+         "  \"tuner_gain_tenth_db\": 0,\n  \"tuner_gain_known\": false,\n  \"tuner_gain_auto\": false,\n"},
+    };
+
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "gain_mode.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "gain_mode.iq.json");
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        dsd_iq_capture_config cfg;
+        fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+        cfg.tuner_gain_auto = k_cases[i].auto_gain;
+        cfg.tuner_gain_unknown = k_cases[i].unknown;
+        cfg.tuner_gain_tenth_db = k_cases[i].tenths;
+        char label[128];
+        char err[256] = {0};
+        dsd_iq_capture_writer* writer = NULL;
+        DSD_SNPRINTF(label, sizeof(label), "gain mode (%s): open", k_cases[i].name);
+        rc |= expect_int(label, dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+        if (!writer) {
+            continue;
+        }
+        const dsd_iq_capture_final_stats stats = {0U, 0U};
+        dsd_iq_capture_close(writer, &stats);
+        uint8_t text[8192];
+        size_t n = 0;
+        DSD_SNPRINTF(label, sizeof(label), "gain mode (%s): sidecar", k_cases[i].name);
+        rc |= expect_int(label, read_file_all(metadata_path, text, sizeof(text) - 1U, &n), 0);
+        text[n] = '\0';
+        DSD_SNPRINTF(label, sizeof(label), "gain mode (%s): written", k_cases[i].name);
+        rc |= expect_true(label, strstr((const char*)text, k_cases[i].want) != NULL);
+        DSD_SNPRINTF(label, sizeof(label), "gain mode (%s): flat", k_cases[i].name);
+        rc |= expect_true(label, sidecar_is_flat((const char*)text));
+    }
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2588,6 +2648,7 @@ main(void) {
     rc |= test_concurrent_submissions_and_seal();
     rc |= test_rate_chain_written_and_checked();
     rc |= test_old_reader_golden();
+    rc |= test_tuner_gain_mode_written();
 #if defined(DSD_TEST_FAULT_FDOPEN)
     rc |= test_open_reports_a_data_file_it_emptied_without_a_stream();
 #endif

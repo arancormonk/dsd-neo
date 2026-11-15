@@ -26,7 +26,8 @@ Item {
             wizard.openForAdd(false);
             wizard.step = 1;
             wizard.advancedOpen = true;
-            var controls = ["systemGainField", "systemPpmField", "systemBiasTee"];
+            wizard.gainMode = 2;
+            var controls = ["systemGainMode", "systemGainField", "systemPpmField", "systemBiasTee"];
             for (var source of ["airspy", "usb", "rtltcp", "airspy"]) {
                 wizard.sourceType = source;
                 for (var name of controls) {
@@ -41,9 +42,11 @@ Item {
         }
 
         // Issue #806: on an Airspy the Advanced pane names only what it shows
-        // (its own gain controls and bias tee, no PPM), and the bandwidth field,
-        // alone in its row, takes the row and its own label without the
-        // caption the three narrow columns share.
+        // (its own gain controls and bias tee, no PPM). The PPM field and the
+        // bandwidth choice each take the whole width, the bandwidth under the
+        // PPM on an RTL, so neither's words or notes are squeezed into half a
+        // phone (B9); each names itself, with no caption over the PPM field.
+        // An RTL's gain has its own row above them.
         function test_wizard_airspy_advanced_pane() {
             screenLoader.source = uiDir + "/WizardScreen.qml";
             var wizard = screenLoader.item;
@@ -52,19 +55,22 @@ Item {
             wizard.step = 1;
             wizard.advancedOpen = true;
             var subtitle = findChild(wizard, "wizardAdvancedSubtitle");
-            var caption = findChild(wizard, "wizardBandwidthCaption");
             var bw = findChild(wizard, "systemBandwidthField");
-            verify(subtitle !== null && caption !== null && bw !== null);
-            var row = bw.parent.parent;
+            var ppm = findChild(wizard, "systemPpmField");
+            verify(subtitle !== null && bw !== null && ppm !== null);
+            compare(findChild(wizard, "wizardBandwidthCaption"), null, "no caption repeats the field's label");
+            compare(findChild(wizard, "wizardPpmCaption"), null, "no caption repeats the field's label");
+            var pane = ppm.parent;
             for (var source of ["airspy", "usb", "rtltcp", "airspy"]) {
                 wizard.sourceType = source;
                 var airspy = source === "airspy";
                 compare(subtitle.text, airspy ? "Gain, bandwidth, bias tee — defaults work" : "Gain, PPM, bandwidth, bias tee — defaults work", source);
-                compare(caption.visible, !airspy, source + ": caption");
-                if (airspy)
-                    compare(bw.width, row.width, source + ": full row");
-                else
-                    verify(bw.width < row.width / 2, source + ": a third of the row");
+                compare(bw.width, pane.width, source + ": the bandwidth takes the row");
+                compare(bw.Accessible.name, "Bandwidth", source);
+                if (!airspy) {
+                    compare(ppm.width, pane.width, source + ": the PPM takes the row");
+                    verify(bw.mapToItem(pane, 0, 0).y >= ppm.mapToItem(pane, 0, 0).y + ppm.height, source + ": the bandwidth under the PPM");
+                }
             }
         }
 

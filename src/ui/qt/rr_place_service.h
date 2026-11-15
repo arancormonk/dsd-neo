@@ -29,7 +29,7 @@
 #include <QSet>
 #include <QString>
 #include <QStringList>
-#include <QVariant>
+#include <QVariant> // IWYU pragma: keep -- the QVariantMap/QVariantList members need it complete.
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>

@@ -224,6 +224,68 @@ Item {
             sendRecordingSwitch(function () { return commands.setAnalogRecordPreroll(ms); });
     }
 
+    // Tuner gain: Automatic (0) or a set 1-49 dB. Only a valid gain is written,
+    // when its edit ends while Set is chosen; Automatic writes 0, and Set writes
+    // the last valid gain, the preference's own while it is set, else 30 (Set
+    // chosen again first commits what was typed, so a valid gain is kept and a
+    // refused one gives way). A change from elsewhere (a restore) shows once
+    // the field being typed in under Set lets go of the focus: what is typed is
+    // never replaced. A valid edit made since the last sync then wins, as the
+    // user's latest; a field only focused, never edited, commits nothing, so
+    // the change from elsewhere stands.
+    property int lastValidManual: 30
+    property bool gainResyncPending: false
+    // Typed into since the field last showed the preference (or a commit).
+    property bool gainEdited: false
+    readonly property int storedGain: prefs.gainDb
+    onStoredGainChanged: {
+        if (settingsGain.mode === 2 && settingsGain.field.input.activeFocus)
+            gainResyncPending = true;
+        else
+            syncGain();
+    }
+    Component.onCompleted: syncGain()
+    function syncGain() {
+        gainResyncPending = false;
+        gainEdited = false;
+        var gain = prefs.gainDb;
+        if (gain >= 1 && gain <= 49)
+            lastValidManual = gain;
+        settingsGain.syncing = true;
+        settingsGain.mode = gain === 0 ? 1 : 2;
+        settingsGain.manualText = gain === 0 ? String(lastValidManual) : String(gain);
+        settingsGain.syncing = false;
+    }
+    function chooseGainMode(mode) {
+        if (mode === 2 && settingsGain.mode === 2)
+            commitGain();
+        settingsGain.mode = mode;
+        gainEdited = false;
+        if (mode === 2)
+            settingsGain.manualText = String(lastValidManual);
+        prefs.gainDb = mode === 2 ? lastValidManual : 0;
+    }
+    function commitGain() {
+        if (!gainEdited || settingsGain.mode !== 2 || !settingsGain.valid)
+            return;
+        gainEdited = false;
+        lastValidManual = settingsGain.storedValue;
+        prefs.gainDb = lastValidManual;
+    }
+    // After the field lets go of the focus, so its own commit goes first.
+    Timer {
+        id: gainResync
+        interval: 0
+        onTriggered: screen.syncGain()
+    }
+    Connections {
+        target: settingsGain.field.input
+        function onActiveFocusChanged() {
+            if (!settingsGain.field.input.activeFocus && screen.gainResyncPending)
+                gainResync.restart();
+        }
+    }
+
     signal openDiagnostics
     signal openImports
     signal openCallRecordings
@@ -246,12 +308,17 @@ Item {
         color: Theme.bg
     }
 
-    // Numeric advanced row: label left, small mono field + unit right.
+    // Numeric advanced row: a mono field for a whole number from `minimum` to
+    // `maximum`; anything else shows `rangeError` and is never reported.
     component ValueRow: Item {
         id: valueRow
         property string title: ""
         property string unit: ""
         property alias text: valueInput.text
+        property alias fieldObjectName: valueInput.objectName
+        property int minimum: -2147483648
+        property int maximum: 2147483647
+        property string rangeError: qsTr("Enter a whole number.")
         property bool showDivider: true
         signal edited(string text)
         width: parent ? parent.width : 0
@@ -265,7 +332,7 @@ Item {
             unit: valueRow.unit
             mono: true
             inputMethodHints: Qt.ImhFormattedNumbersOnly
-            error: /^-?[0-9]+$/.test(text) && Number(text) >= -2147483648 && Number(text) <= 2147483647 ? "" : qsTr("Enter a whole number.")
+            error: /^-?[0-9]+$/.test(text) && Number(text) >= valueRow.minimum && Number(text) <= valueRow.maximum ? "" : valueRow.rangeError
             onEditingFinished: {
                 if (!error.length)
                     valueRow.edited(text);
@@ -851,7 +918,13 @@ Item {
                     }
 
                     GatedTapHandler {
-                        onAllowedTap: screen.advancedOpen = !screen.advancedOpen
+                        // Issue #718: folding hides the field being typed in;
+                        // its composing word is committed and the edit
+                        // finished first, so the row saves the whole value.
+                        onAllowedTap: {
+                            Navigation.commitComposing(true);
+                            screen.advancedOpen = !screen.advancedOpen;
+                        }
                     }
                 }
 
@@ -864,35 +937,59 @@ Item {
                     visible: screen.advancedOpen
                     spacing: 0
 
-                    ValueRow {
-                        title: qsTr("Tuner gain")
-                        unit: "dB"
-                        text: String(prefs.gainDb)
-                        onEdited: function (value) {
-                            var parsed = parseInt(value);
-                            if (!isNaN(parsed))
-                                prefs.gainDb = parsed;
+                    Item {
+                        width: parent.width
+                        height: settingsGain.height + 16
+
+                        GainEditor {
+                            id: settingsGain
+                            x: Theme.cardPadding
+                            y: 8
+                            width: parent.width - 2 * Theme.cardPadding
+                            title: qsTr("Tuner gain")
+                            hint: qsTr("For RTL-SDR and RTL-TCP. Automatic adjusts the receiver gain for you.")
+                            modeObjectName: "settingsGainMode"
+                            fieldObjectName: "settingsGainDb"
+                            hintObjectName: "settingsGainHint"
+                            onModeSelected: function (mode) {
+                                screen.chooseGainMode(mode);
+                            }
+                            onDraftEdited: function (text) {
+                                settingsGain.manualText = text;
+                                screen.gainEdited = true;
+                            }
+                            onCommitted: screen.commitGain()
                         }
                     }
 
+                    // What the engine runs: it holds the correction to +-200.
                     ValueRow {
                         title: qsTr("PPM correction")
+                        fieldObjectName: "settingsPpm"
+                        minimum: -200
+                        maximum: 200
+                        rangeError: qsTr("Enter a correction from -200 to 200 ppm.")
                         text: String(prefs.ppm)
                         onEdited: function (value) {
-                            var parsed = parseInt(value);
-                            if (!isNaN(parsed))
-                                prefs.ppm = parsed;
+                            prefs.ppm = Number(value);
                         }
                     }
 
-                    ValueRow {
-                        title: qsTr("Bandwidth")
-                        unit: "kHz"
-                        text: String(prefs.bandwidthKhz)
-                        onEdited: function (value) {
-                            var parsed = parseInt(value);
-                            if (!isNaN(parsed) && parsed > 0)
-                                prefs.bandwidthKhz = parsed;
+                    Item {
+                        width: parent.width
+                        height: settingsBandwidth.height + 16
+
+                        BandwidthChoice {
+                            id: settingsBandwidth
+                            x: Theme.cardPadding
+                            y: 8
+                            width: parent.width - 2 * Theme.cardPadding
+                            comboObjectName: "settingsBandwidth"
+                            noteObjectName: "settingsBandwidthNote"
+                            value: prefs.bandwidthKhz
+                            onChosen: function (khz) {
+                                prefs.bandwidthKhz = khz;
+                            }
                         }
                     }
 

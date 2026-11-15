@@ -44,6 +44,10 @@
  *   after programming refuses the retune with the device put back; a rollback whose own read-back plans the step's
  *   earlier design again swaps it back, a third rate is designed, and a third rate that cannot be designed stops the
  *   stream.
+ *
+ * Automatic tuner gain (B8): a capture under automatic gain records the mode and no gain, not the stale manual gain
+ * librtlsdr still reports, and a replay of it reports automatic whatever its gain setters are asked. A SoapySDR device
+ * reports automatic only when its driver took the automatic request, and its capture records the same.
  */
 
 #include <assert.h>
@@ -68,6 +72,7 @@
 #include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <memory>
 #include "dsd-neo/core/opts_fwd.h"
+#include "rtl_replay_device.h"
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
 #include "test_env.h"
@@ -1224,6 +1229,218 @@ test_rate_change_seals_capture(void) {
     assert(dsd_test_remove_temp_dir(dir, kFiles) == 0);
 }
 
+/* The tuner gain fields of the capture the stream opens on @p r now, written to @p data_path, read back from
+ * @p meta_path; @p out_text the sidecar's text. */
+dsd_iq_replay_config
+capture_gain_now(rig& r, const char* data_path, const char* meta_path, char* out_text, size_t out_text_size) {
+    DSD_SNPRINTF(r.opts->iq_capture_path, sizeof r.opts->iq_capture_path, "%s", data_path);
+    dsd_iq_capture_writer* writer = rtl_stream_test_capture_session_open_capture(r.opts);
+    assert(writer != nullptr);
+    static const uint8_t samples[4] = {127U, 128U, 129U, 126U};
+    assert(dsd_iq_capture_submit(writer, samples, sizeof samples) == DSD_IQ_OK);
+    rtl_stream_test_capture_session_close_capture(0U);
+    FILE* fp = dsd_fopen_private(meta_path, "rb");
+    assert(fp != nullptr);
+    const size_t n = fread(out_text, 1, out_text_size - 1U, fp);
+    (void)fclose(fp);
+    out_text[n] = '\0';
+    dsd_iq_replay_config meta{};
+    char err[256] = {0};
+    assert(dsd_iq_replay_read_metadata(meta_path, &meta, err, sizeof err) == DSD_IQ_OK);
+    return meta;
+}
+
+/* A replay device opened on @p meta: the mode it reports is its capture's, whatever its gain setters are asked. */
+void
+expect_replay_keeps_gain_mode(const dsd_iq_replay_config& meta, int want_auto, int want_tenths) {
+    input_ring_state ring{};
+    assert(input_ring_init(&ring, 1U << 16) == 0);
+    rtl_device* dev = rtl_device_create_iq_replay(&meta, &ring, nullptr);
+    assert(dev != nullptr);
+    int gain = 12345;
+    for (int pass = 0; pass < 3; pass++) {
+        assert(rtl_device_is_auto_gain(dev) == want_auto);
+        if (want_auto) {
+            assert(rtl_device_get_tuner_gain(dev, &gain) != 0);
+        } else {
+            assert(rtl_device_get_tuner_gain(dev, &gain) == 0 && gain == want_tenths);
+        }
+        /* The stream's start asks for its configured gain, a scan target's profile for another; none changes it. */
+        if (pass == 0) {
+            assert(rtl_device_set_gain(dev, want_auto ? 300 : -100) == 0);
+        } else if (pass == 1) {
+            int selected = 0;
+            assert(rtl_device_set_gain_nearest(dev, 150, &selected) == 0);
+        }
+    }
+    rtl_device_destroy(dev);
+    input_ring_destroy(&ring);
+}
+
+/* B8: a capture records the gain mode the tuner runs. Under automatic gain librtlsdr's getter still reports the last
+ * manual gain (29.7 dB here), which used to be recorded as a known manual gain; now the sidecar says automatic and
+ * records no gain. A manual capture records the gain that took. A replay of each reports its capture's mode, and its
+ * gain setters change nothing. */
+void
+test_capture_records_gain_mode(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char manual_data[DSD_TEST_PATH_MAX];
+    char manual_meta[DSD_TEST_PATH_MAX];
+    char auto_data[DSD_TEST_PATH_MAX];
+    char auto_meta[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_capture_gain") != nullptr);
+    assert(dsd_test_path_join(manual_data, sizeof manual_data, dir, "manual.iq") == 0);
+    assert(dsd_test_path_join(manual_meta, sizeof manual_meta, dir, "manual.iq.json") == 0);
+    assert(dsd_test_path_join(auto_data, sizeof auto_data, dir, "auto.iq") == 0);
+    assert(dsd_test_path_join(auto_meta, sizeof auto_meta, dir, "auto.iq.json") == 0);
+
+    rig r;
+    rig_open(r, kTunerR820T);
+    r.opts->rtlsdr_center_freq = kCenterHz;
+    r.opts->iq_capture_requested = 1;
+    r.opts->iq_capture_format = DSD_IQ_FORMAT_CU8;
+    char text[4096];
+
+    assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 300) == 0);
+    dsd_iq_replay_config manual = capture_gain_now(r, manual_data, manual_meta, text, sizeof text);
+    assert(strstr(text, "\"tuner_gain_auto\": false") != nullptr);
+    assert(manual.tuner_gain_auto == 0 && manual.tuner_gain_unknown == 0 && manual.tuner_gain_tenth_db == 297);
+
+    assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_AUTO, 0) == 0);
+    int stale = 0;
+    assert(rtl_device_get_tuner_gain(r.dev, &stale) == 0 && stale == 297);
+    dsd_iq_replay_config automatic = capture_gain_now(r, auto_data, auto_meta, text, sizeof text);
+    assert(strstr(text, "\"tuner_gain_auto\": true") != nullptr);
+    assert(strstr(text, "\"tuner_gain_known\": false") != nullptr);
+    assert(automatic.tuner_gain_auto == 1 && automatic.tuner_gain_unknown == 1 && automatic.tuner_gain_tenth_db == 0);
+    rig_close(r);
+
+    expect_replay_keeps_gain_mode(manual, 0, 297);
+    expect_replay_keeps_gain_mode(automatic, 1, 0);
+    dsd_iq_replay_config_clear(&manual);
+    dsd_iq_replay_config_clear(&automatic);
+    static const char* const kFiles[] = {"manual.iq", "manual.iq.json", "auto.iq", "auto.iq.json", nullptr};
+    assert(dsd_test_remove_temp_dir(dir, kFiles) == 0);
+}
+
+/* B8 on SoapySDR: the gain mode a Soapy device reports is the one that took. A driver without an automatic gain mode
+ * refuses the automatic request (the stream's default), so it reports a manual gain live, and its capture records the
+ * gain it reads, or no gain when it reports none, never "tuner_gain_auto": true. A driver with the mode records
+ * automatic. */
+void
+test_soapy_capture_records_gain_mode(void) {
+    static const struct {
+        const char* name;
+        int no_gain_mode;
+        int no_gain_range;
+        int want_auto;
+        int want_unknown;
+        int want_tenths;
+    } k_cases[] = {
+        {"gain mode", 0, 0, 1, 1, 0},
+        {"no gain mode", 1, 0, 0, 0, 197},
+        {"no gain mode, no gain range", 1, 1, 0, 1, 0},
+    };
+
+    char dir[DSD_TEST_PATH_MAX];
+    char data_path[DSD_TEST_PATH_MAX];
+    char meta_path[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_soapy_capture_gain") != nullptr);
+    assert(dsd_test_path_join(data_path, sizeof data_path, dir, "soapy.iq") == 0);
+    assert(dsd_test_path_join(meta_path, sizeof meta_path, dir, "soapy.iq.json") == 0);
+    for (const auto& c : k_cases) {
+        rtl_device_test_soapy_gain_fake fake{};
+        fake.driver_key = "generic";
+        fake.gain_db = 19.7;
+        fake.selected_db = 19.7;
+        fake.no_gain_mode = c.no_gain_mode;
+        fake.no_gain_range = c.no_gain_range;
+        fake.cf32_stream = 1;
+        rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+        if (dev == nullptr) {
+            printf("IO_RTL_CAPTURE_WRITES: no SoapySDR in this build; Soapy gain mode case skipped\n");
+            assert(dsd_test_rmdir(dir) == 0);
+            return;
+        }
+        /* Nothing has asked for a gain yet: no mode has taken. */
+        assert(rtl_device_is_auto_gain(dev) == 0);
+        dsd_opts* opts = make_rtl_opts();
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=generic");
+        opts->rtlsdr_center_freq = kCenterHz;
+        opts->iq_capture_requested = 1;
+        opts->iq_capture_format = DSD_IQ_FORMAT_CF32;
+        DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", data_path);
+        rtl_stream_test_capture_result start{};
+        assert(rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &start) == 0);
+        assert(start.rc == 0);
+        /* The stream's default request: automatic gain. */
+        (void)step(RTL_STREAM_TEST_CAPTURE_GAIN_AUTO, 0);
+        assert(rtl_device_is_auto_gain(dev) == c.want_auto);
+        int gain = 12345;
+        int is_auto = -1;
+        const int read_rc = rtl_stream_get_gain(&gain, &is_auto);
+        assert(is_auto == c.want_auto);
+        assert(read_rc == ((c.want_auto || !c.want_unknown) ? 0 : -1));
+        if (!c.want_auto && !c.want_unknown) {
+            assert(gain == c.want_tenths);
+        }
+        dsd_iq_capture_writer* writer = rtl_stream_test_capture_session_open_capture(opts);
+        assert(writer != nullptr);
+        rtl_stream_test_capture_session_close_capture(0U);
+        dsd_iq_replay_config meta{};
+        char err[256] = {0};
+        assert(dsd_iq_replay_read_metadata(meta_path, &meta, err, sizeof err) == DSD_IQ_OK);
+        if (meta.tuner_gain_auto != c.want_auto || meta.tuner_gain_unknown != c.want_unknown
+            || meta.tuner_gain_tenth_db != c.want_tenths) {
+            printf("FAIL: Soapy capture gain (%s): auto %d unknown %d tenths %d\n", c.name, meta.tuner_gain_auto,
+                   meta.tuner_gain_unknown, meta.tuner_gain_tenth_db);
+            assert(0);
+        }
+        dsd_iq_replay_config_clear(&meta);
+        rtl_stream_test_capture_session_end();
+        rtl_device_test_soapy_gain_device_free(dev);
+        free(opts);
+    }
+    static const char* const kFiles[] = {"soapy.iq", "soapy.iq.json", nullptr};
+    assert(dsd_test_remove_temp_dir(dir, kFiles) == 0);
+}
+
+/* A manual gain request on a SoapySDR device leaves automatic gain before it writes the gain. When that write then
+ * fails, the device runs manual, and its mode reads manual; a failed automatic request leaves the mode it had. */
+void
+test_soapy_failed_manual_gain_reads_manual(void) {
+    rtl_device_test_soapy_gain_fake fake{};
+    fake.driver_key = "generic";
+    fake.gain_db = 19.7;
+    fake.selected_db = 29.7;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    if (dev == nullptr) {
+        printf("IO_RTL_CAPTURE_WRITES: no SoapySDR in this build; Soapy failed gain case skipped\n");
+        return;
+    }
+    assert(rtl_device_set_gain(dev, -100) == 0);
+    assert(rtl_device_is_auto_gain(dev) == 1);
+    fake.refuse = 1;
+    assert(rtl_device_set_gain(dev, 300) != 0);
+    assert(rtl_device_is_auto_gain(dev) == 0);
+    /* The nearest-gain setter takes the same path. */
+    fake.refuse = 0;
+    assert(rtl_device_set_gain(dev, -100) == 0);
+    assert(rtl_device_is_auto_gain(dev) == 1);
+    fake.refuse = 1;
+    int selected = -999;
+    assert(rtl_device_set_gain_nearest(dev, 300, &selected) != 0);
+    assert(rtl_device_is_auto_gain(dev) == 0 && selected == -999);
+    /* A failed request that changed no mode leaves the mode it had: here automatic, refused once the driver reports
+     * no gain mode. */
+    fake.refuse = 0;
+    assert(rtl_device_set_gain(dev, -100) == 0);
+    fake.no_gain_mode = 1;
+    assert(rtl_device_set_gain(dev, -100) != 0);
+    assert(rtl_device_is_auto_gain(dev) == 1);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
 } // namespace
 
 int
@@ -1273,6 +1490,9 @@ main(int argc, char** argv) {
         {"rollback_third_rate", test_rollback_designs_third_rate},
         {"rollback_third_rate_fails", test_rollback_third_rate_design_failure_stops},
         {"rate_change_seals_capture", test_rate_change_seals_capture},
+        {"capture_records_gain_mode", test_capture_records_gain_mode},
+        {"soapy_capture_records_gain_mode", test_soapy_capture_records_gain_mode},
+        {"soapy_failed_manual_gain_reads_manual", test_soapy_failed_manual_gain_reads_manual},
     };
 
     /* An argument runs that case alone. */

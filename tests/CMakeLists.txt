@@ -17550,6 +17550,19 @@ target_include_directories(
 )
 add_test(NAME IO_RTL_CAPTURE_PHASE COMMAND dsd-neo_test_io_rtl_capture_phase)
 
+# rtl_tcp manual gain steps from the server header's tuner (B6); portable, so it
+# runs on every platform with or without radio support.
+add_executable(dsd-neo_test_io_rtl_tuner_gains io/test_io_rtl_tuner_gains.c)
+target_include_directories(
+    dsd-neo_test_io_rtl_tuner_gains
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+)
+target_link_libraries(
+    dsd-neo_test_io_rtl_tuner_gains
+    PRIVATE dsd-neo_io_rtl_tuner_gains
+)
+add_test(NAME IO_RTL_TUNER_GAINS COMMAND dsd-neo_test_io_rtl_tuner_gains)
+
 if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_rtl_auto_ppm io/test_io_rtl_auto_ppm.cpp)
     target_include_directories(
@@ -18658,6 +18671,27 @@ if(DSD_HAS_RADIO)
         NAME IO_RTL_CAPTURE_WRITES
         COMMAND dsd-neo_test_io_rtl_capture_writes
     )
+
+    # The gain values the stream's open converts to tenths of a dB: each
+    # DSD_NEO_RTL_IF_GAINS stage's text (refused text skips the stage, never
+    # 0 dB; programmed over the fake dongle) and a manual gain past int tenths.
+    add_executable(
+        dsd-neo_test_io_rtl_gain_values
+        io/test_io_rtl_gain_values.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_gain_values
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_gain_values
+        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_gain_values
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_GAIN_VALUES COMMAND dsd-neo_test_io_rtl_gain_values)
 
     # rtl_tcp connection handling against a scripted fake rtl_tcp server on loopback:
     # the exact header parser, bounded and cancellable connects, header reads and

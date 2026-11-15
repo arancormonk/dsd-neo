@@ -205,7 +205,7 @@ Item {
                         decodeFlag: "-fT",
                         bandwidthKhz: 48
                     },
-                    sentence: "“First” decodes TETRA, which needs a bandwidth of 72 kHz. Set the source's bandwidth to 72 kHz, or leave it empty."
+                    sentence: "“First” decodes TETRA, which needs a bandwidth of 72 kHz. Set the source's bandwidth to 72 kHz, or choose App default."
                 },
                 {
                     // Issue #803 (D-B2): an rtl_tcp radio decodes TETRA only at 72 kHz.
@@ -214,7 +214,7 @@ Item {
                         decodeFlag: "-fT",
                         bandwidthKhz: 48
                     },
-                    sentence: "“First” decodes TETRA, which needs a bandwidth of 72 kHz. Set the source's bandwidth to 72 kHz, or leave it empty."
+                    sentence: "“First” decodes TETRA, which needs a bandwidth of 72 kHz. Set the source's bandwidth to 72 kHz, or choose App default."
                 },
                 {
                     // Issue #580: a restored replay system, here a TETRA one, has no recording yet.

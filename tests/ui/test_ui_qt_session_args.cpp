@@ -14,7 +14,10 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
@@ -36,6 +39,7 @@
 #include "app_prefs.h"
 #include "decoder_host.h"
 #include "document_import_transport.h"
+#include "json_store.h"
 #include "recording_sessions.h"
 
 #include <dsd-neo/core/opts.h>
@@ -1662,6 +1666,38 @@ test_keys() {
     expect("orphan key refused", session_args_build(sys, SessionArgPrefs(), &error).isEmpty());
 }
 
+/* A saved system or a preference stored past the gain range the app edits starts at the nearest gain it can edit: a
+ * system's 60 runs at 49 dB, as does Settings' 60, and Settings' -5 runs automatic. Main started both 60s as 60 dB. */
+void
+test_out_of_range_gains() {
+    expect(
+        "a system store with an out-of-range gain saves",
+        dsd_qt::json_store_save_array(
+            QStringLiteral("saved_systems.json"),
+            QJsonArray{QJsonObject{{"name", "High"}, {"sourceType", "usb"}, {"freqMhz", "851.375"}, {"gainDb", 60}}}));
+    {
+        dsd_qt::SavedSystemsModel systems;
+        SessionArgsError error = SessionArgsError::None;
+        const QStringList args = session_args_build(systems.get(0), SessionArgPrefs(), &error);
+        expect("a system saved at 60 dB starts at 49 dB",
+               error == SessionArgsError::None && input_spec(args) == QStringLiteral("rtl:0:851.375M:49:0:48:0:2"));
+        systems.remove(0);
+    }
+    QSettings stored(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"),
+                     QStringLiteral("dsd-neo-app"));
+    dsd_qt::AppPrefs prefs;
+    stored.setValue(QStringLiteral("tuner/gainDb"), 60);
+    SessionArgsError error = SessionArgsError::None;
+    QStringList args = session_args_build(usb_system(), dsd_qt::session_args_prefs(&prefs), &error);
+    expect("a Settings gain stored as 60 dB starts at 49 dB",
+           error == SessionArgsError::None && input_spec(args) == QStringLiteral("rtl:0:851.375M:49:0:48:0:2"));
+    stored.setValue(QStringLiteral("tuner/gainDb"), -5);
+    args = session_args_build(usb_system(), dsd_qt::session_args_prefs(&prefs), &error);
+    expect("a Settings gain stored below 0 starts automatic",
+           error == SessionArgsError::None && input_spec(args) == QStringLiteral("rtl:0:851.375M:0:0:48:0:2"));
+    stored.remove(QStringLiteral("tuner/gainDb"));
+}
+
 void
 test_retained_key_validation_boundary() {
     dsd_qt::SavedSystemsModel systems;
@@ -2197,6 +2233,7 @@ main(int argc, char** argv) {
     /* AppPrefs persists through QSettings: keep it in the scratch directory. */
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, data.path());
     test_retained_key_validation_boundary();
+    test_out_of_range_gains();
     test_keys();
     test_extra_short_options();
     test_scan_hold_option();
