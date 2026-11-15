@@ -11089,7 +11089,7 @@ if(DSD_HAS_RADIO)
     )
 endif()
 # Issue #743 B7: an empty spec field keeps its place, so the export of `rtl::851.0125M:20:3`
-# carries that frequency, gain and PPM (it read 20 Hz at gain 3). B15: an rtl_tcp port
+# carries the default device and that frequency, gain and PPM (it read 20 Hz at gain 3). B15: an rtl_tcp port
 # that is not one is refused, and so is the export.
 add_test(
     NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_EMPTY_FIELDS
@@ -11101,7 +11101,7 @@ set_tests_properties(
     PROPERTIES
         WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
         PASS_REGULAR_EXPRESSION
-            [=[rtl_freq = "851012500"[^[]*rtl_gain = 20[^[]*rtl_ppm = 3]=]
+            [=[rtl_device = 0[^[]*rtl_freq = "851012500"[^[]*rtl_gain = 20[^[]*rtl_ppm = 3]=]
 )
 add_test(
     NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_BAD_PORT
