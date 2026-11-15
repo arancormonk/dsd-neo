@@ -542,6 +542,50 @@ test_cc_noise_ess_does_not_mint_epoch(void) {
     return rc;
 }
 
+/* A Phase 1 ESS on the control channel (noise, or a frame heard while no assignment is followed) opens no call, so
+ * slot 0 can still hold an ended call or another protocol's. The crypto publication records its key choice only on
+ * the open P25 call: before, the ended P25 call and the open DMR call were both stamped with this frame's key. */
+static int
+test_cc_ess_records_no_key_choice_on_another_call(void) {
+    static const struct {
+        const char* name;
+        int protocol;
+        int ended;
+        int stamped;
+    } cases[] = {
+        {"ended P25 call", DSD_SYNC_P25P1_POS, 1, 0},
+        {"open DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0, 0},
+        {"open P25 call", DSD_SYNC_P25P1_POS, 0, 1},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char tag[96];
+        reset_test_state();
+        p25_sm_get_ctx()->state = P25_SM_ON_CC;
+        const dsd_call_observation observation = {
+            .protocol = cases[i].protocol,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = TEST_TG_ALT,
+            .policy_target_id = TEST_TG_ALT,
+        };
+        (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        if (cases[i].ended) {
+            (void)dsd_call_state_end(&g_state, 0U, 0.0);
+        }
+        (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, 0);
+        dsd_call_snapshot call;
+        DSD_MEMSET(&call, 0, sizeof call);
+        (void)dsd_call_state_get(&g_state, 0U, &call);
+        DSD_SNPRINTF(tag, sizeof tag, "CC ESS after %s: the call keeps its protocol", cases[i].name);
+        rc |= expect(tag, call.protocol == cases[i].protocol);
+        DSD_SNPRINTF(tag, sizeof tag, "CC ESS after %s: key choice recorded on it", cases[i].name);
+        rc |= expect(tag, (int)call.key_selection.valid == cases[i].stamped);
+    }
+    return rc;
+}
+
 /* Follow mode suspends the ledger rather than erasing it: a clear or
  * decryptable classification while the user follows encrypted calls must not
  * release a retained lockout entry, or re-enabling lockout would owe a fresh
@@ -571,6 +615,7 @@ main(void) {
     int rc = 0;
     rc |= test_lockout_ess_repeats_do_not_mint_epochs();
     rc |= test_cc_noise_ess_does_not_mint_epoch();
+    rc |= test_cc_ess_records_no_key_choice_on_another_call();
     rc |= test_pre_identity_ess_uses_assignment_identity();
     rc |= test_lockout_ess_window_slides_with_repeats();
     rc |= test_non_matching_lockout_still_records_epoch();

@@ -287,8 +287,11 @@ p25_crypto_publish_canonical(const dsd_opts* opts, dsd_state* state, int slot, u
     };
     update.enc_observed = p25_crypto_enc_observed(update.algid, update.received);
     (void)dsd_call_state_update_crypto(state, (uint8_t)slot, &update);
+    // The key choice is recorded only on the open P25 call: a resolution that opened none (an ESS on the control
+    // channel) leaves the slot holding an ended call, or another protocol's, and that record is not this frame's.
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0) {
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && DSD_SYNC_IS_P25(call.protocol)) {
         const int available = update.classification == DSD_CALL_CRYPTO_DECRYPTABLE ? 1
                               : update.classification == DSD_CALL_CRYPTO_ENCRYPTED ? 0
                                                                                    : -1;
