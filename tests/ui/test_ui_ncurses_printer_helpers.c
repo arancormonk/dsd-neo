@@ -4700,6 +4700,96 @@ test_scan_timing_row_truncates_to_panel_width(void) {
     g_unicode_stub = 1;
 }
 
+/* The silent-channel skip's status is the phrase itself (issue #834 A7): no trailing field, and every variant fits the
+   phrase column, so the countdown and the budgets keep their columns, for both owners and both stays it is shown on. */
+static void
+test_scan_timing_row_quiet_variants(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_scan_enabled = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell          1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_CHECKING;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Quiet check         1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NO_CHECK;
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_INPUT;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: input     1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_TUNER;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: tuner     1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_RATE;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: rate      1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_MODES;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: modes     1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_WIDTH;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: width     1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_NO_WIDTH;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: width     1.8s/  3.0s  hold 2.0s");
+
+    /* -Y: its hangtime carries the status too. */
+    opts.trunk_scan_enabled = 0;
+    opts.scanner_mode = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, 101.4, 3000U, 0U, 0U);
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_CHECKING;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Quiet check         1.4s/  3.0s");
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NO_CHECK;
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_MODES;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: modes     1.4s/  3.0s");
+
+    /* A stay that explains the visit keeps its own phrase. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_CARRIER, 1U, 101.9, 2000U, 0U, 0U);
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NO_CHECK;
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_TUNER;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier             1.9s/  2.0s");
+}
+
+/* A narrow terminal cuts the row after whole fields, and the phrase is the first field: the status survives every cut
+   that keeps the row at all. ASCII output, the one-cell path a PDCurses build takes, names the "..." marker. */
+static void
+test_scan_timing_row_quiet_variants_cut(void) {
+    g_unicode_stub = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_scan_enabled = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    seed_visit(&state, 20000U, 112.3);
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NO_CHECK;
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_WIDTH;
+    assert_scan_timing_row(&opts, &state,
+                           "| Scan Timing: No check: width     1.8s/  3.0s  Visit:  12.3s/ 20.0s  hold 2.0s");
+    /* The dwell unarmed after a hold's release, and the cap still paused by it: the row outgrows 80 columns. No live
+       countdown either, so the rendered bytes do not hang on the clock the renderer reads for itself. */
+    state.scan_timing.deadline_m = -1.0;
+    seed_visit(&state, 20000U, -1.0);
+    assert_scan_timing_row(
+        &opts, &state, "| Scan Timing: No check: width                  Visit: paused         dwell 3.0s  hold 2.0s");
+
+    g_stub_max_x = 80;
+    reset_printw_capture();
+    ui_render_scan_timing_row(&opts, &state);
+    assert_capture_equals("| Scan Timing: No check: width                  Visit: paused...\n");
+    assert(strlen(g_printw_capture) <= 80U);
+
+    g_stub_max_x = 40;
+    reset_printw_capture();
+    ui_render_scan_timing_row(&opts, &state);
+    assert_capture_equals("| Scan Timing: No check: width...\n");
+    assert(strlen(g_printw_capture) <= 40U);
+
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_CHECKING;
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_NONE;
+    reset_printw_capture();
+    ui_render_scan_timing_row(&opts, &state);
+    assert_capture_equals("| Scan Timing: Quiet check...\n");
+    g_stub_max_x = 80;
+    g_unicode_stub = 1;
+}
+
 #if defined(NCURSES_VERSION)
 static void
 test_scan_timing_row_real_cursor(void) {
@@ -5521,6 +5611,8 @@ main(void) {
     test_scan_timing_row_is_silent_without_a_scan();
     test_scan_timing_row_placement();
     test_scan_timing_row_truncates_to_panel_width();
+    test_scan_timing_row_quiet_variants();
+    test_scan_timing_row_quiet_variants_cut();
 #if defined(NCURSES_VERSION)
     test_scan_timing_row_real_cursor();
 #endif

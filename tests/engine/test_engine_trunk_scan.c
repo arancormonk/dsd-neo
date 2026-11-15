@@ -23147,7 +23147,7 @@ qt_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
         g_qt_notices++;
         DSD_SNPRINTF(g_qt_notice, sizeof g_qt_notice, "%s", text);
     }
-    if (text && strncmp(text, "WARNING: scan: silent-channel skip", 34) == 0) {
+    if (text && strncmp(text, "WARNING: scan: silent channel skip", 34) == 0) {
         g_qt_warns++;
         DSD_SNPRINTF(g_qt_warn, sizeof g_qt_warn, "%s", text);
     }

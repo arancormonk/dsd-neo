@@ -618,6 +618,10 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
     next.scan_visit_ms = view.show_visit != 0U ? static_cast<int>(view.visit_ms) : 0;
     next.scan_visit_live = view.visit_live != 0U;
     next.scan_visit_remaining_ds = static_cast<int>(view.visit_remaining_ms / 100U);
+    /* #834: the phrase above already carries the status; the sentence is the full reason, for a screen reader. */
+    next.scan_quiet.status = view.quiet_status;
+    next.scan_quiet.reason = view.quiet_reason;
+    next.scan_quiet.text = view.quiet_text != nullptr ? tr(view.quiet_text) : QString();
 }
 
 /**

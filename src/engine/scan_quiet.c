@@ -273,24 +273,24 @@ quiet_format_receiver_warn(char* out, size_t out_size, int detail, uint32_t rate
     switch (detail) {
         case SCAN_QUIET_WARN_AUDIO:
             return DSD_SNPRINTF(out, out_size,
-                                "WARNING: scan: silent-channel skip cannot check channels on audio input; it needs a "
+                                "WARNING: scan: silent channel skip cannot check channels on audio input; it needs a "
                                 "radio input (rtl, rtltcp or soapy). Normal scan timing applies.\n");
         case SCAN_QUIET_WARN_REPLAY:
             return DSD_SNPRINTF(out, out_size,
-                                "WARNING: scan: silent-channel skip cannot check channels in an I/Q replay; it needs a "
+                                "WARNING: scan: silent channel skip cannot check channels in an I/Q replay; it needs a "
                                 "live radio input. Normal scan timing applies.\n");
         case SCAN_QUIET_WARN_NO_RADIO:
             return DSD_SNPRINTF(out, out_size,
-                                "WARNING: scan: silent-channel skip cannot check channels: this build has no radio "
+                                "WARNING: scan: silent channel skip cannot check channels: this build has no radio "
                                 "support. Normal scan timing applies.\n");
         case SCAN_QUIET_WARN_AIRSPY:
             return DSD_SNPRINTF(out, out_size,
-                                "WARNING: scan: silent-channel skip cannot check channels on a native Airspy input; "
+                                "WARNING: scan: silent channel skip cannot check channels on a native Airspy input; "
                                 "open the Airspy through SoapySDR (-i soapy:driver=airspy) to have them checked. "
                                 "Normal scan timing applies.\n");
         case SCAN_QUIET_WARN_CENTRED:
             return DSD_SNPRINTF(out, out_size,
-                                "WARNING: scan: silent-channel skip cannot check channels while offset tuning is on or "
+                                "WARNING: scan: silent channel skip cannot check channels while offset tuning is on or "
                                 "DSD_NEO_DISABLE_FS4_SHIFT is set; set DSD_NEO_RTL_OFFSET_TUNING=0, or unset "
                                 "DSD_NEO_DISABLE_FS4_SHIFT, to have them checked. Normal scan timing applies.\n");
         default: break;
@@ -298,7 +298,7 @@ quiet_format_receiver_warn(char* out, size_t out_size, int detail, uint32_t rate
     char rate[24];
     quiet_scaled_text(rate_hz, 1000000U, 6, rate, sizeof rate);
     return DSD_SNPRINTF(out, out_size,
-                        "WARNING: scan: silent-channel skip cannot check channels at %s Msps, a sample rate it was "
+                        "WARNING: scan: silent channel skip cannot check channels at %s Msps, a sample rate it was "
                         "not calibrated for; docs/trunk-scan.md lists the rates it checks. Normal scan timing "
                         "applies.\n",
                         rate);
@@ -353,13 +353,13 @@ static int
 quiet_format_modes_warn(char* out, size_t out_size, uint8_t detail, const char* who, const char* mhz) {
     if (detail & SCAN_QUIET_WARN_ENCODER) {
         return DSD_SNPRINTF(out, out_size,
-                            "WARNING: scan: silent-channel skip cannot check %s %s MHz while the M17 encoder runs; "
+                            "WARNING: scan: silent channel skip cannot check %s %s MHz while the M17 encoder runs; "
                             "turn the encoder off to have it checked. Normal scan timing applies.\n",
                             who, mhz);
     }
     if ((detail & (SCAN_QUIET_WARN_PROVOICE | SCAN_QUIET_WARN_X2TDMA | SCAN_QUIET_WARN_TETRA)) == 0U) {
         return DSD_SNPRINTF(out, out_size,
-                            "WARNING: scan: silent-channel skip cannot check %s %s MHz: none of the decoders in use "
+                            "WARNING: scan: silent channel skip cannot check %s %s MHz: none of the decoders in use "
                             "has a known channel width; give the row a mode (the mode column), or turn on a decoder "
                             "it checks (P25, DMR, NXDN, YSF, M17, dPMR or D-STAR), to have it checked. Normal scan "
                             "timing applies.\n",
@@ -369,7 +369,7 @@ quiet_format_modes_warn(char* out, size_t out_size, uint8_t detail, const char* 
     quiet_modes_text(detail, modes, sizeof modes);
     const int several = (detail & (detail - 1U) & 7U) != 0U;
     return DSD_SNPRINTF(out, out_size,
-                        "WARNING: scan: silent-channel skip cannot check %s %s MHz: %s, among the decoders in use, %s "
+                        "WARNING: scan: silent channel skip cannot check %s %s MHz: %s, among the decoders in use, %s "
                         "no known channel width; give the row a mode (the mode column), or turn %s off, to have it "
                         "checked. Normal scan timing applies.\n",
                         who, mhz, modes, several ? "have" : "has", several ? "them" : "it");
@@ -384,14 +384,14 @@ quiet_format_channel_warn(char* out, size_t out_size, uint8_t reason, uint8_t de
     }
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_NO_WIDTH && (detail & SCAN_QUIET_WARN_MONITOR)) {
         return DSD_SNPRINTF(out, out_size,
-                            "WARNING: scan: silent-channel skip cannot check %s %s MHz: the -8 analog monitor beside "
+                            "WARNING: scan: silent channel skip cannot check %s %s MHz: the -8 analog monitor beside "
                             "its decoder has no NFM width set; set --nfm-bandwidth-hz for the session, or turn -8 off, "
                             "to have it checked. Normal scan timing applies.\n",
                             who, mhz);
     }
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_NO_WIDTH) {
         return DSD_SNPRINTF(out, out_size,
-                            "WARNING: scan: silent-channel skip cannot check %s %s MHz: it has no NFM width set; set "
+                            "WARNING: scan: silent channel skip cannot check %s %s MHz: it has no NFM width set; set "
                             "--nfm-bandwidth-hz for it, or for the session, to have it checked. Normal scan timing "
                             "applies.\n",
                             who, mhz);
@@ -402,7 +402,7 @@ quiet_format_channel_warn(char* out, size_t out_size, uint8_t reason, uint8_t de
     quiet_widths_text(kind, widths, sizeof widths);
     const int am = kind == DSD_ANALOG_DEMOD_AM;
     return DSD_SNPRINTF(out, out_size,
-                        "WARNING: scan: silent-channel skip cannot check %s %s MHz at %s %s kHz, a width it was not "
+                        "WARNING: scan: silent channel skip cannot check %s %s MHz at %s %s kHz, a width it was not "
                         "calibrated for; set --%s-bandwidth-hz to %s to have it checked. Normal scan timing "
                         "applies.\n",
                         who, mhz, am ? "AM" : "NFM", width, am ? "am" : "nfm", widths);
@@ -1177,12 +1177,11 @@ quiet_suspend_ineligible(const dsd_opts* opts, const dsd_engine_scan_owner* owne
 }
 
 /* Whether the started check @p c is refused for its analog width without a capture read (issue #834 A5): the last
-   capture read, on the input in force, in this stream session (a reopen may turn the rotation off) and at the DSP
-   rate this visit runs (so at this visit's capture rate), was
-   rotated and at a validated rate, and the calibration covers no such width of this kind there. At another DSP rate
-   the visit reads its own capture, whose rate outranks its width. The width table does not hang on the visit, so a
-   width-refused target is refused at once on every visit (no Quiet check before its capture comes) until a width,
-   decoder or list edit gives it other facts. */
+   capture read, on the input in force, in this stream session (a reopen may turn the rotation off) and at the DSP rate
+   this visit runs (so at this visit's capture rate), was rotated and at a validated rate, and the calibration covers
+   no such width of this kind there. At another DSP rate the visit reads its own capture, whose rate outranks its
+   width. The width table does not hang on the visit, so a width-refused target is refused at once on every visit (no
+   Quiet check before its capture comes) until a width, decoder or list edit gives it other facts. */
 static int
 quiet_width_refused_ahead(const dsd_opts* opts, const scan_quiet_check* c) {
     if (!(c->classes & QUIET_CLASS_ANALOG) || c->receiver_rate_hz == 0U || c->receiver_dsp_rate_hz != c->dsp_rate_hz

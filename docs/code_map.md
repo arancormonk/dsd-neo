@@ -6315,13 +6315,20 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold
   `dsd_state::scan_timing` into the Scan Timing row — the stay phrase, the remaining/total of the window that is
   running, and which of dwell/hold/hang is worth printing (issue #508), including `Carrier` for an analog row's carrier
-  hold (issue #526). `dsd_app_scan_timing_phrase_width()` is the longest phrase it can set, phase variants included: the
+  hold (issue #526). The silent-channel skip's status (issue #834 A7, `scan_timing_fill_quiet()`) is the phrase itself
+  on the two stays the decoder publishes it on, an idle dwell (the trunk scan's, or -Y's qualify window, where it
+  outranks `Qualify`) and -Y's hangtime: `Quiet check` for CHECKING, `No check: input`, `tuner`, `rate`, `modes` or
+  `width` (WIDTH and NO_WIDTH) for NO_CHECK, with `quiet_status`, `quiet_reason` and `quiet_text`, a full sentence for
+  a screen reader (Qt's `scanQuietStatus`, `scanQuietReason`, `scanQuietText`). A status on any other stay, or one this
+  build does not know, leaves the plain phrase; the view adds nothing the decoder did not publish. Every variant is at
+  most 17 characters, the widest plain phrase, so there is no trailing reason field and every terminal cut keeps it.
+  `dsd_app_scan_timing_phrase_width()` is the longest phrase it can set, phase and quiet variants included: the
   room the terminal keeps for the phrase so what follows it holds its column (issue #669). The decoder owns every
   deadline; these views only difference it against the caller's reading of the
   decode clock's monotonic time, the clock the deadline was stamped on, which is what keeps the terminal row, the Qt
   panel and the Android app from drifting on what "suspended" or "hold" means. Tests: `APP_CONTROL_CALL_VIEW`,
   `APP_CONTROL_SCAN_TIMING_VIEW`, and the terminal goldens in `UI_NCURSES_PRINTER_HELPERS` (the TETRA call block
-  included).
+  included; the quiet variants, with their 80- and 40-column ASCII cuts, in `test_scan_timing_row_quiet_variants*`).
   `include/dsd-neo/app_control/squelch_view.h` and `src/app_control/squelch_view.c` (issue #521) pair the squelch in
   force with the configured default, say whether a scan row overrides it and whether each level is off: the terminal SQL
   field and M17 VOX field (`-60.0 dB (row; default -80.0 dB)`), the DSP panel's `(row)` mark, the shadowed-edit toast,
@@ -14035,8 +14042,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   - Silent channel skip (issue #834): Trunking > Follow > `Silent channel skip [On|Off]` (`follow.skip_silent`, after
     Voice-only scan; Follow at the fifteen-row limit) toggles the session-wide `opts->scan_skip_silent` through
     `DSD_APP_CMD_SCAN_SKIP_SILENT_SET`. `lbl_scan_skip_silent()` and `act_scan_skip_silent()` read the live option,
-    never `dsd_scan_mode_configured_view()`: an entered row's settings never hold it, unlike Voice-only scan. Tests:
-    `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`).
+    never `dsd_scan_mode_configured_view()`: an entered row's settings never hold it, unlike Voice-only scan. Its help
+    names what the Scan Timing row reads (`"Quiet check"`, `"No check: input"` and the other reasons), which
+    `UI_MENU_TREE_AUDIT` (`audit_skip_silent_help()`) holds it to. Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`,
+    `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`).
   - Group list reload (discussion #748): Trunking > Channels & groups > Reload group list (`lists.group_reload`,
     right after `lists.group`, no hotkey since a reload clears temporary TG avoids and call skips) posts
     `DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD` with no path (`act_group_list_reload()`); the decoder resolves the file
@@ -19689,7 +19698,11 @@ named through `qml/SpeechPacer.qml`: its name catches up with the text on screen
 meaningful step (a call starting or ending, a lock or sync change, the reading appearing or disappearing, a scan held or
 released; off a scan, a new frequency). The text on screen stays live, and nothing runs per tick: the pacer reads the
 reading only when its period or a step comes round, and runs only while the reading is shown. `LiveText` is a
-`ReadableText` named that way (`step` says what is heard at once); a group takes a `SpeechPacer` with `group:` set.
+`ReadableText` named that way (`step` says what is heard at once; `spokenText`, its text unless set, is what it is
+named by); a group takes a `SpeechPacer` with `group:` set. The Monitor's scan timing line steps on the stay reason, not
+its phrase, so the silent-channel skip's phrase variants (issue #834) are heard at the line's pace, and its
+`spokenText` adds `MetricsModel::scanQuietText` after the line's words (`tst_a11y_paced_names.qml`
+`test_b2_the_quiet_status_is_no_step`).
 Paced: the Monitor's reading groups (`ReadingFlow`/`ReadingRow`, inline components), hero, scan timing line, call
 durations and "Signal & site" description (steps: `MonitorScreen.speechStep`; the squelch group adds the gate), the
 Spectrum status line and readout (a scan's hop is a step for none of these: `Util.tuneStep()` gives the tuning part of

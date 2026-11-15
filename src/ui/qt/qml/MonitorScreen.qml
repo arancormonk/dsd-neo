@@ -583,8 +583,13 @@ Item {
                     width: parent.width
                     objectName: "scanTimingRow"
                     // The countdowns tick; why the scan stays, and its state, are heard at once.
-                    step: [screen.speechStep, metrics.scanTimingVisible, metrics.scanStayPhrase, metrics.scanDwellState,
+                    // Keyed on the stay itself, not its phrase: the silent-channel skip's
+                    // variants of it (#834) come and go within one stay and are heard at the
+                    // pace of the countdown.
+                    step: [screen.speechStep, metrics.scanTimingVisible, metrics.scanStayReason, metrics.scanDwellState,
                         metrics.scanVisitLive].join("|")
+                    // The line's words, then what a "Quiet check" or "No check: tuner" means.
+                    spokenText: metrics.scanQuietText ? text + ". " + metrics.scanQuietText : text
                     // Kept for the whole rotation, blank between stays (#718): the view
                     // publishes and withdraws it with each followed call, and a line
                     // coming and going would move everything below the header.

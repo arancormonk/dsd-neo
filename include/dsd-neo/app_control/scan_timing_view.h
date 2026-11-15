@@ -61,6 +61,14 @@ typedef struct {
     uint32_t visit_ms;           /**< Effective cap for the row (--scan-max-visit-ms); 0 = off. */
     uint8_t visit_live;          /**< 1 = @c visit_remaining_ms is counting; 0 = suspended/unanchored. */
     uint32_t visit_remaining_ms; /**< max(0, visit deadline - now); 0 unless @c visit_live. */
+    /* The silent-channel skip (issue #834), as the decoder published it for the visit on air. Only an idle dwell or a
+       -Y hangtime carries it, the windows a skip ends early, and there it is the phrase itself ("Quiet check",
+       "No check: tuner"), so it shows wherever the phrase does; every other stay keeps its plain phrase, since what
+       holds the row already explains the visit. */
+    uint8_t quiet_status;   /**< dsd_scan_quiet_status the phrase shows; NONE when the phrase is the plain one. */
+    uint8_t quiet_reason;   /**< dsd_scan_quiet_reason with DSD_SCAN_QUIET_STATUS_NO_CHECK; NONE otherwise. */
+    const char* quiet_text; /**< Static English sentence saying what the variant means, for a screen reader; NULL
+                                 when @c quiet_status is NONE. */
 } dsd_app_scan_timing;
 
 /**
@@ -73,8 +81,8 @@ typedef struct {
 int dsd_app_scan_timing_view(const dsd_opts* opts, const dsd_state* state, double now_m, dsd_app_scan_timing* out);
 
 /**
- * @brief The length of the longest @c phrase the view can set, phase variants included: the room a fixed-width
- * surface keeps for it, so what follows the phrase holds its column when the reason changes (issue #669).
+ * @brief The length of the longest @c phrase the view can set, phase and quiet variants included: the room a
+ * fixed-width surface keeps for it, so what follows the phrase holds its column when the reason changes (issue #669).
  */
 size_t dsd_app_scan_timing_phrase_width(void);
 

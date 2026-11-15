@@ -12431,7 +12431,7 @@ yq_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
         g_yq.notices++;
         DSD_SNPRINTF(g_yq.notice, sizeof g_yq.notice, "%s", text);
     }
-    if (text && strncmp(text, "WARNING: scan: silent-channel skip", 34) == 0) {
+    if (text && strncmp(text, "WARNING: scan: silent channel skip", 34) == 0) {
         g_yq.warns++;
         DSD_SNPRINTF(g_yq.warn, sizeof g_yq.warn, "%s", text);
     }

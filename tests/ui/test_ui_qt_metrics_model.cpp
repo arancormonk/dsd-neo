@@ -2197,6 +2197,48 @@ test_scan_timing() {
     model.refresh(&opts, &state);
     expect("no cap on air leaves nothing to print", model.scanVisitMs() == 0);
 
+    /* #834: the silent-channel skip's status is the phrase itself, with the full reason beside it for a screen
+     * reader, on the scan timing row's own notification. */
+    const int before_quiet = changes;
+    g_stub_scan_timing.phrase = "No check: tuner";
+    g_stub_scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NO_CHECK;
+    g_stub_scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_TUNER;
+    g_stub_scan_timing.quiet_text = "The silent channel skip cannot check channels with this tuner as it is set up.";
+    model.refresh(&opts, &state);
+    expect("no check: the phrase names why", model.scanStayPhrase() == QStringLiteral("No check: tuner"));
+    expect("no check: status and reason", model.scanQuietStatus() == DSD_SCAN_QUIET_STATUS_NO_CHECK
+                                              && model.scanQuietReason() == DSD_SCAN_QUIET_REASON_TUNER);
+    expect("no check: the sentence for a screen reader",
+           model.scanQuietText()
+               == QStringLiteral("The silent channel skip cannot check channels with this tuner as it is set up."));
+    expect("the status notifies the scan timing row", changes > before_quiet);
+    expect("the status notifies no unrelated control", control_changes == controls_settled);
+    const int no_check = changes;
+    g_stub_scan_timing.quiet_text = "Another sentence.";
+    model.refresh(&opts, &state);
+    expect("a new sentence alone notifies the row", changes > no_check);
+    g_stub_scan_timing.phrase = "Quiet check";
+    g_stub_scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_CHECKING;
+    g_stub_scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_NONE;
+    g_stub_scan_timing.quiet_text = "Checking whether this channel is silent.";
+    model.refresh(&opts, &state);
+    expect("checking: status without a reason",
+           model.scanStayPhrase() == QStringLiteral("Quiet check")
+               && model.scanQuietStatus() == DSD_SCAN_QUIET_STATUS_CHECKING
+               && model.scanQuietReason() == DSD_SCAN_QUIET_REASON_NONE
+               && model.property("scanQuietText").toString()
+                      == QStringLiteral("Checking whether this channel is silent."));
+    g_stub_scan_timing.phrase = "Idle dwell";
+    g_stub_scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NONE;
+    g_stub_scan_timing.quiet_text = nullptr;
+    model.refresh(&opts, &state);
+    expect("no status: the plain phrase and no sentence", model.scanStayPhrase() == QStringLiteral("Idle dwell")
+                                                              && model.scanQuietStatus() == 0
+                                                              && model.scanQuietText().isEmpty());
+    g_stub_scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NO_CHECK;
+    g_stub_scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_WIDTH;
+    g_stub_scan_timing.quiet_text = "Width.";
+
     model.clear();
     expect("a stopped session leaves no scan timing behind",
            !model.scanTimingVisible() && model.scanStayReason() == DSD_SCAN_STAY_NONE
@@ -2204,7 +2246,8 @@ test_scan_timing() {
                && model.scanTimerSpanMs() == 0 && model.scanDwellMs() == 0
                && model.scanDwellState() == DSD_APP_SCAN_DWELL_NONE && model.scanHoldMs() == 0
                && model.scanHangMs() == 0 && model.scanVisitMs() == 0 && !model.scanVisitLive()
-               && model.scanVisitRemainingDs() == 0);
+               && model.scanVisitRemainingDs() == 0 && model.scanQuietStatus() == 0 && model.scanQuietReason() == 0
+               && model.scanQuietText().isEmpty());
 
     /* Plain trunking and a plain single system are not rotations: there is no row to
      * stay on, so the view says nothing and the panel shows nothing. */
