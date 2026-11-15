@@ -737,6 +737,18 @@ p25p2_process_facch(dsd_opts* opts, dsd_state* state, int scrambled) {
     }
 }
 
+/* Whether the timeslot being dispatched was an LCCH whose CRC-16 passed: the only burst that keeps its logical channel's
+   multi-fragment assembly going. */
+static int s_ts_lcch_checked = 0;
+
+/* A burst of logical channel @p lch was lost, failed or was no LCCH with a good CRC-16: the multi-fragment message an
+   LCCH on that channel was assembling cannot continue, since its fragments come in consecutive bursts of the channel
+   (TIA-102.BBAD-A §3). The VPDU keeps one assembly per logical channel. */
+static void
+p25p2_lcch_stream_break(dsd_state* state, int lch) {
+    DSD_MEMSET(&state->p25_mac_frag[lch & 1], 0, sizeof(state->p25_mac_frag[0]));
+}
+
 /* A SACCH or LCCH of window timeslot ts_counter (a SACCH's MAC belongs to the other slot). The burst's kind holds for
    its MAC PDU only: p2_is_lcch is set for that PDU and cleared after it, so an LCCH whose decode failed cannot make
    the next burst of the window an LCCH (issue #804). */
@@ -761,6 +773,7 @@ p25p2_process_sacch(dsd_opts* opts, dsd_state* state, int scrambled, p25p2_acch_
         dsd_rtl_stream_metrics_hook_p25p2_err_update(slot, 0, 0, 1, 0, 0);
 #endif
         state->p2_is_lcch = kind == P25P2_ACCH_LCCH;
+        s_ts_lcch_checked = kind == P25P2_ACCH_LCCH && verdict.checksum_ok;
         process_SACCH_MAC_PDU(opts, state, sacch[slot]);
         state->p2_is_lcch = 0;
     } else {
@@ -1394,6 +1407,7 @@ p25p2_retire_timeslots(dsd_opts* opts, dsd_state* state, int first, int count) {
     for (int i = 0; i < count; i++) {
         const int timeslot = ((first + i) % 12 + 12) % 12;
         const int slot = timeslot & 1;
+        p25p2_lcch_stream_break(state, slot);
         dsd_p25p2_playout_burst_done(opts, state, slot, timeslot / 2, DSD_P25P2_BURST_LOST);
         if (slot == 1) {
             dsd_p25p2_playout_pair_done(opts, state);
@@ -1797,7 +1811,11 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, i
     const int slot = state->currentslot;
     if (slot == 0 || slot == 1) {
         dsd_p25p2_playout_burst_done(opts, state, slot, p25p2_pair_index(state), s_ts_kind);
+        if (!s_ts_lcch_checked) {
+            p25p2_lcch_stream_break(state, slot);
+        }
     }
+    s_ts_lcch_checked = 0;
     if (slot == 1) {
         dsd_p25p2_playout_pair_done(opts, state);
         // The pair's frames have played: promote any ESS identity change only now, so its purge cannot reach the
@@ -1859,6 +1877,7 @@ p25p2_process_duid(dsd_opts* opts, dsd_state* state) {
 
     for (ts_counter = 0; ts_counter < 4; ts_counter++) {
         duid_decoded = -2;
+        s_ts_lcch_checked = 0;
         p25p2_duid_collect_and_decode(ts_counter);
 
         p25p2_duid_print_frame_header();
@@ -1892,6 +1911,8 @@ p25p2_frame_forget_carrier(dsd_state* state) {
         return;
     }
     state->p2_is_lcch = 0;
+    // A multi-fragment message's fragments are one carrier's.
+    DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
     // What the playout still holds was decoded on the carrier left; the engine's carrier boundary has drained it.
     dsd_p25p2_playout_reset(state, -1);
     // A scrambling code candidate from the carrier left waits for no confirmation here.
@@ -2146,9 +2167,10 @@ processP2(dsd_opts* opts, dsd_state* state) {
     int contradicted = 0;
     s_window_proven = p25p2_window_position(state, entry_symbol, &retire_first, &retire_count, &broken, &contradicted);
     p25p2_window_set_slot_unproven(!s_window_proven);
-    if (!s_window_proven) {
+    if (!s_window_proven || broken) {
         // A MAC assembly continued from a window whose slot parity is unknown could complete against the wrong
-        // slot: none is kept, and the VPDU drops this window's fragments.
+        // slot: none is kept, and the VPDU drops this window's fragments. A window that broke continuity may follow
+        // bursts nothing retired: the LCCH bursts were not consecutive.
         DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
     }
     const int anchor_start = p25p2_window_anchor_start(state, contradicted);

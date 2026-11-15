@@ -2036,6 +2036,67 @@ init_multifragment_continuation(unsigned long long int* mac, unsigned len) {
     init_length_coded_tdma_segment(mac, 0x10U, len);
 }
 
+/* Writes the Multi-Fragment CRC-16 (TIA-102.BBAD-A §4.7: x^16 + x^12 + x^5 + 1, inverted, MSB first) into the last two
+   data octets of the message @p frags[0..count-1] carry, over every data octet before them. Each fragment's data
+   octets follow its B1/B2/MCO and Length octets, Data Length (the base's third octet) of them in all. */
+static void
+seal_multifragment(unsigned long long int* const* frags, int count) {
+    unsigned long long int* octet[256];
+    const int data_len = (int)(frags[0][3] & 0xFFU);
+    int n = 0;
+    for (int f = 0; f < count; f++) {
+        const int len = (int)(frags[f][2] & 0x3FU);
+        for (int i = 0; i + 2 < len && n < data_len && 3 + i < 24; i++) {
+            octet[n++] = &frags[f][3 + i];
+        }
+    }
+    if (n != data_len || n < 3) {
+        return;
+    }
+    uint16_t crc = 0U;
+    for (int i = 0; i < n - 2; i++) {
+        for (int b = 7; b >= 0; b--) {
+            const unsigned feedback = ((crc >> 15U) & 1U) ^ (unsigned)((*octet[i] >> b) & 1U);
+            crc = (uint16_t)(crc << 1U);
+            if (feedback) {
+                crc ^= 0x1021U;
+            }
+        }
+    }
+    crc ^= 0xFFFFU;
+    *octet[n - 2] = (crc >> 8) & 0xFFU;
+    *octet[n - 1] = crc & 0xFFU;
+}
+
+static void
+seal_two_fragments(unsigned long long int* base, unsigned long long int* cont) {
+    unsigned long long int* frags[2] = {base, cont};
+    seal_multifragment(frags, 2);
+}
+
+/* An LCCH MAC_SIGNAL on logical channel @p lch whose CRC-16 passed: multi-fragment messages are only available on the
+   LCCH (TIA-102.BBAD-A §3), and the assembly is that channel's. */
+static void
+lcch_vpdu(dsd_opts* opts, dsd_state* state, int lch, unsigned long long int* mac) {
+    state->p2_is_lcch = 1;
+    state->currentslot = lch;
+    process_MAC_VPDU(opts, state, 1 /* SACCH layout */, P25_MAC_PDU_SIGNAL, mac);
+}
+
+/* Status Update - Extended LCCH (TIA-102.BBAD-A §3.41, Figures 93-94): Data Length 25, the continuation Length 11. */
+static void
+init_status_update_fragments(unsigned long long int* base, unsigned long long int* cont) {
+    init_multifragment_base(base, 0xD9, 25);
+    base[4] = 0x12;
+    base[5] = 0x34;
+    put_u24_ull(base, 6, 0x010203);
+    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
+    put_u24_ull(base, 16, 0x445566);
+    init_multifragment_continuation(cont, 11);
+    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
+    seal_two_fragments(base, cont);
+}
+
 static int
 run_standard_mac_multifragment_cases(void) {
     static const struct {
@@ -2051,6 +2112,7 @@ run_standard_mac_multifragment_cases(void) {
     static dsd_state state;
     unsigned long long int base[24] = {0};
     unsigned long long int cont[24] = {0};
+    unsigned long long int pad[24] = {0};
     int rc = 0;
 
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -2058,23 +2120,15 @@ run_standard_mac_multifragment_cases(void) {
     DSD_MEMSET(&state, 0, sizeof state);
     init_multifragment_continuation(cont, 10);
     put_u24_ull(cont, 3, 0x010203);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    lcch_vpdu(&opts, &state, 0, cont);
     rc |= expect_true("orphan continuation does not mutate active state", recent_notice(&state, 0U)[0] == '\0');
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0xD9, 24);
-    base[4] = 0x12;
-    base[5] = 0x34;
-    put_u24_ull(base, 6, 0x010203);
-    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
-    put_u24_ull(base, 16, 0x445566);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
+    init_status_update_fragments(base, cont);
+    lcch_vpdu(&opts, &state, 0, base);
     rc |= expect_true("base fragment does not mutate active state", recent_notice(&state, 0U)[0] == '\0');
-
-    init_multifragment_continuation(cont, 10);
-    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    lcch_vpdu(&opts, &state, 0, cont);
     rc |= expect_contains("completed 0xD9 status label", recent_notice(&state, 0U), "STATUS-L");
     rc |= expect_contains("completed 0xD9 target", recent_notice(&state, 0U), "Target: 66051");
     rc |= expect_contains("completed 0xD9 source", recent_notice(&state, 0U), "Source: 4478310");
@@ -2083,69 +2137,42 @@ run_standard_mac_multifragment_cases(void) {
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0xD9, 24);
-    base[4] = 0x12;
-    base[5] = 0x34;
-    put_u24_ull(base, 6, 0x010203);
-    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
-    put_u24_ull(base, 16, 0x445566);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
-
-    init_length_coded_tdma_segment(cont, 0x08U, 6);
-    cont[3] = 0x88;
-    cont[4] = 0x88;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    init_status_update_fragments(base, cont);
+    lcch_vpdu(&opts, &state, 0, base);
+    init_length_coded_tdma_segment(pad, 0x08U, 6);
+    pad[3] = 0x88;
+    pad[4] = 0x88;
+    lcch_vpdu(&opts, &state, 0, pad);
     rc |= expect_eq_long("null avoid zero bias keeps fragment active", state.p25_mac_frag[0].active, 1);
     rc |= expect_eq_long("null avoid zero bias does not append", state.p25_mac_frag[0].collected, 16);
-
-    init_multifragment_continuation(cont, 10);
-    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    lcch_vpdu(&opts, &state, 0, cont);
     rc |= expect_contains("null avoid zero bias allows completion", recent_notice(&state, 0U), "STATUS-L");
     dsd_state_ext_free_all(&state);
 
+    /* The base's PDU ends in null padding after the message; the assembly is logical channel 1's. */
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0xD9, 24);
-    base[4] = 0x12;
-    base[5] = 0x34;
-    put_u24_ull(base, 6, 0x010203);
-    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
-    put_u24_ull(base, 16, 0x445566);
-    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, P25_MAC_PDU_ACTIVE, base);
-    rc |= expect_eq_long("SACCH base ignores null padding active", state.p25_mac_frag[1].active, 1);
-    rc |= expect_eq_long("SACCH base ignores null padding collected", state.p25_mac_frag[1].collected, 16);
-
-    init_multifragment_continuation(cont, 10);
-    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
-    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, P25_MAC_PDU_ACTIVE, cont);
-    rc |= expect_contains("SACCH completed 0xD9 status label", recent_notice(&state, 0U), "STATUS-L");
-    rc |= expect_eq_long("SACCH completed 0xD9 clears active", state.p25_mac_frag[1].active, 0);
+    init_status_update_fragments(base, cont);
+    lcch_vpdu(&opts, &state, 1, base);
+    rc |= expect_eq_long("LCCH base ignores null padding active", state.p25_mac_frag[1].active, 1);
+    rc |= expect_eq_long("LCCH base ignores null padding collected", state.p25_mac_frag[1].collected, 16);
+    rc |= expect_eq_long("LCCH base keeps no other channel's", state.p25_mac_frag[0].active, 0);
+    lcch_vpdu(&opts, &state, 1, cont);
+    rc |= expect_contains("LCCH completed 0xD9 status label", recent_notice(&state, 0U), "STATUS-L");
+    rc |= expect_eq_long("LCCH completed 0xD9 clears active", state.p25_mac_frag[1].active, 0);
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0xD9, 24);
-    base[4] = 0x12;
-    base[5] = 0x34;
-    put_u24_ull(base, 6, 0x010203);
-    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
-    put_u24_ull(base, 16, 0x445566);
-    state.currentslot = 0;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
-    rc |= expect_eq_long("slot0 base active before slot1 continuation", state.p25_mac_frag[0].active, 1);
-    rc |= expect_eq_long("slot0 base collected before slot1 continuation", state.p25_mac_frag[0].collected, 16);
-
-    init_multifragment_continuation(cont, 10);
-    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
-    state.currentslot = 1;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
-    rc |= expect_eq_long("slot1 continuation does not append slot0", state.p25_mac_frag[0].collected, 16);
-    rc |= expect_eq_long("slot1 continuation leaves slot0 active", state.p25_mac_frag[0].active, 1);
-    rc |= expect_eq_long("slot1 continuation has no slot1 active", state.p25_mac_frag[1].active, 0);
-    rc |= expect_true("slot1 continuation does not complete slot0", recent_notice(&state, 0U)[0] == '\0');
-
-    state.currentslot = 0;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
-    rc |= expect_contains("slot0 continuation completes slot0", recent_notice(&state, 0U), "STATUS-L");
+    init_status_update_fragments(base, cont);
+    lcch_vpdu(&opts, &state, 0, base);
+    rc |= expect_eq_long("lch0 base active before lch1 continuation", state.p25_mac_frag[0].active, 1);
+    rc |= expect_eq_long("lch0 base collected before lch1 continuation", state.p25_mac_frag[0].collected, 16);
+    lcch_vpdu(&opts, &state, 1, cont);
+    rc |= expect_eq_long("lch1 continuation does not append lch0", state.p25_mac_frag[0].collected, 16);
+    rc |= expect_eq_long("lch1 continuation leaves lch0 active", state.p25_mac_frag[0].active, 1);
+    rc |= expect_eq_long("lch1 continuation has no lch1 active", state.p25_mac_frag[1].active, 0);
+    rc |= expect_true("lch1 continuation does not complete lch0", recent_notice(&state, 0U)[0] == '\0');
+    lcch_vpdu(&opts, &state, 0, cont);
+    rc |= expect_contains("lch0 continuation completes lch0", recent_notice(&state, 0U), "STATUS-L");
     dsd_state_ext_free_all(&state);
 
     for (size_t i = 0; i < sizeof(complete_cases) / sizeof(complete_cases[0]); i++) {
@@ -2164,31 +2191,40 @@ run_standard_mac_multifragment_cases(void) {
         init_multifragment_continuation(cont, 10);
         put_u24_ull(cont, 3, 0x445566);
         put_fqid_tail_ull(cont, 6, 0x0BCDE, 0x234, 0x778899);
+        seal_two_fragments(base, cont);
 
-        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
-        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+        lcch_vpdu(&opts, &state, 0, base);
+        lcch_vpdu(&opts, &state, 0, cont);
         rc |= expect_contains("completed multi-fragment opcode label", recent_notice(&state, 0U),
                               complete_cases[i].label);
         dsd_state_ext_free_all(&state);
     }
 
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0xD9, 24);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
+    init_multifragment_base(base, 0xD9, 25);
+    lcch_vpdu(&opts, &state, 0, base);
     init_multifragment_continuation(cont, 2); // invalid: no continuation payload after opcode/length bytes
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    lcch_vpdu(&opts, &state, 0, cont);
     rc |= expect_true("invalid continuation clears without active state", recent_notice(&state, 0U)[0] == '\0');
     dsd_state_ext_free_all(&state);
 
+    /* The longest message, Data Length 255: the base's 16 octets, 14 continuations of 16 (Length 18, the LCCH's whole
+       message span) and one of 15 (Length 17). */
+    enum { MAX_FRAGMENTS = 16 };
+
+    static unsigned long long int frag_macs[MAX_FRAGMENTS][24];
+    unsigned long long int* frags[MAX_FRAGMENTS];
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0x71, 255);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
-    for (int i = 0; i < 11; i++) {
-        init_multifragment_continuation(cont, 23);
-        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    init_multifragment_base(frag_macs[0], 0x71, 255);
+    frags[0] = frag_macs[0];
+    for (int f = 1; f < MAX_FRAGMENTS; f++) {
+        init_multifragment_continuation(frag_macs[f], f < MAX_FRAGMENTS - 1 ? 18U : 17U);
+        frags[f] = frag_macs[f];
     }
-    init_multifragment_continuation(cont, 11);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    seal_multifragment(frags, MAX_FRAGMENTS);
+    for (int f = 0; f < MAX_FRAGMENTS; f++) {
+        lcch_vpdu(&opts, &state, 0, frags[f]);
+    }
     rc |= expect_eq_long("max-length multi-fragment clears active", state.p25_mac_frag[0].active, 0);
     rc |= expect_eq_long("max-length multi-fragment clears collected", state.p25_mac_frag[0].collected, 0);
     rc |= expect_contains("max-length multi-fragment completes", recent_notice(&state, 0U), "AUTH-L");

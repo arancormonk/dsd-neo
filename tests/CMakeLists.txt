@@ -11562,6 +11562,48 @@ else()
 endif()
 add_test(NAME P25_P2_SEED_RECOVER COMMAND dsd-neo_test_p25_p2_seed_recover)
 
+# P25 P2 multi-fragment messages: LCCH only, every fragment's CRC-16 and the assembled Multi-Fragment CRC-16, reset on
+# a break in the LCCH's bursts, through the real VPDU and frame decoders
+add_executable(
+    dsd-neo_test_p25_p2_multifrag_crc
+    protocol/p25/test_p25_p2_multifrag_crc.c
+    protocol/p25/p25p2_burst_builder.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_multifrag_crc
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
+)
+# Real XCCH and frame processing reach the core vocoder, which reaches the DMR and NXDN ciphers.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p2_multifrag_crc
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            "-Wl,--end-group"
+            ${DSD_NEO_TEST_MATH_LIB}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_multifrag_crc
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            ${DSD_NEO_TEST_MATH_LIB}
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME P25_P2_MULTIFRAG_CRC COMMAND dsd-neo_test_p25_p2_multifrag_crc)
+
 # P25 P1 trunk SM core
 add_executable(dsd-neo_test_p25_p1_trunk_sm protocol/p25/test_p25_p1_trunk_sm.c)
 target_include_directories(

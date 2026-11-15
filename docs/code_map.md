@@ -10088,6 +10088,21 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   FACCH and SACCH bursts are not dispatched, since a CRC proves a MAC payload, not which slot it belongs to. LCCH
   (DUID 13/4) still is, but both slots' pending MAC assemblies are discarded and the VPDU drops the window's fragment
   segments (`p25p2_window_slot_unproven()`).
+- Multi-fragment MAC messages (TIA-102.BBAD-A §3, §4.7; `p25p2_vpdu.c`, `P25_P2_MULTIFRAG_CRC`). They are only
+  available on the LCCH, so a base (0x71/0xF1, 0xC7, 0xCB, 0xCD, 0xCE, 0xCF, 0xD9, 0xDB, 0xDE, 0xE0) or continuation
+  (0x10) fragment on a FACCH or SACCH is dropped. The assembly is kept per logical channel (`p25_mac_frag[currentslot]`,
+  not the voice slot a SACCH's MAC names), since a single LCCH sends the fragments in consecutive bursts of its channel.
+  Every fragment must come from a MAC PDU whose CRC-16 passed: an LCCH PDU that failed (`-F` lets it through) ends
+  the assembly, whatever it holds. The frame decoder ends a channel's assembly when one of its bursts is not an LCCH
+  whose CRC-16 passed (lost, retired by a missed sync, failed RS or CRC, voice, FACCH, SACCH, data), when a window is
+  unproven or breaks continuity, and when the carrier changes (`p25p2_frame_forget_carrier()`). A complete message
+  decodes only when its Multi-Fragment CRC-16 (its last two data octets, the LCCH CRC-16 polynomial over every data
+  octet before them) checks: otherwise only a raw "CRC-16 failed; not decoded" note prints, and nothing is published,
+  granted or written to a table. Handlers never read the CRC octets as fields (`p25p2_vpdu_frag_has()` counts the
+  octets before them). A dual LCCH, whose fragments alternate between the channels, is not assembled (the per-channel
+  assembly drops it, and the assembled CRC rejects a mix), and multi-fragment messages stay out of the unit activity
+  log: following the LCCH stream needs the I-ISCH LCH-type and OS bits the ISCH decoder does not read, which is TDMA
+  control channel support ([issue #874](https://github.com/arancormonk/dsd-neo/issues/874)).
 - Retune token (`p25p2_retune.c`): `dsd_trunk_tuning_generation()`, `dsd_trunk_tuning_pending_request()` and the
   frame-reset generation `p25_p2_frame_reset()` bumps. `p25p2_process_duid()` snapshots it per window and stops as
   soon as a dispatch, a post-timeslot (whose rekey commit can lock out and return to the CC) or a retirement changes

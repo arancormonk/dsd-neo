@@ -28,6 +28,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -5464,12 +5465,22 @@ p25p2_vpdu_is_null_avoid_zero_bias(int opcode) {
     return opcode == 0x08;
 }
 
+enum {
+    /* The Multi-Fragment CRC-16 closes a multi-fragment message: its last two data octets (TIA-102.BBAD-A §4.7). */
+    P25P2_MULTIFRAG_CRC_OCTETS = 2,
+};
+
+/* The assembly of the LCCH on the current burst's logical channel. Its fragments come in consecutive bursts of that
+   channel (TIA-102.BBAD-A §3), so it is kept per logical channel, not per the voice slot a SACCH's MAC names; the frame
+   decoder ends it when a burst of that channel is lost, fails or is no LCCH (p25p2_frame.c). A dual LCCH, whose
+   fragments alternate between the channels, is not followed: it needs the LCCH stream position the I-ISCH's LCH type
+   bits give, which the ISCH decoder does not read (issue #874). */
 static p25_mac_fragment_state_t*
 p25p2_vpdu_frag_for_ctx(const p25p2_vpdu_ctx* ctx) {
     if (!ctx || !ctx->state) {
         return NULL;
     }
-    return &ctx->state->p25_mac_frag[ctx->slot & 1];
+    return &ctx->state->p25_mac_frag[ctx->state->currentslot & 1];
 }
 
 static void
@@ -5480,10 +5491,17 @@ p25p2_vpdu_frag_clear(p25_mac_fragment_state_t* frag) {
     DSD_MEMSET(frag, 0, sizeof(*frag));
 }
 
+/* The message's octets, from Data Length (index 0) up to its Multi-Fragment CRC-16, which no handler reads as a
+   field. */
+static int
+p25p2_vpdu_frag_payload_octets(const p25_mac_fragment_state_t* frag) {
+    return frag ? (int)frag->collected - P25P2_MULTIFRAG_CRC_OCTETS : 0;
+}
+
 static int
 p25p2_vpdu_frag_u8(const p25p2_vpdu_ctx* ctx, int idx) {
     const p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
-    if (!frag || idx < 0 || idx >= (int)frag->collected) {
+    if (!frag || idx < 0 || idx >= p25p2_vpdu_frag_payload_octets(frag)) {
         return 0;
     }
     return (int)frag->data[idx];
@@ -5521,7 +5539,7 @@ p25p2_vpdu_frag_explicit_channel(const p25p2_vpdu_ctx* ctx, int idx) {
 static int
 p25p2_vpdu_frag_has(const p25p2_vpdu_ctx* ctx, int count) {
     const p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
-    return frag && count >= 0 && (int)frag->collected >= count;
+    return frag && count >= 0 && p25p2_vpdu_frag_payload_octets(frag) >= count;
 }
 
 static void p25p2_vpdu_multifrag_set_active(dsd_state* state, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 2, 3);
@@ -5786,6 +5804,39 @@ p25p2_vpdu_handle_completed_multifragment(p25p2_vpdu_ctx* ctx) {
     }
 }
 
+/* Whether the complete message's Multi-Fragment CRC-16 checks (TIA-102.BBAD-A §4.7): G(x) = x^16 + x^12 + x^5 + 1,
+   inverted, the LCCH MAC PDU's CRC-16 (ComputeCrcCCITT16b()), over every data octet before it. Those are each
+   fragment's PDU Contents less its B1/B2/MCO and Length octets, exactly what the assembly keeps. */
+static int
+p25p2_vpdu_frag_crc_ok(const p25_mac_fragment_state_t* frag) {
+    uint8_t bits[(DSD_P25_MAC_FRAGMENT_MAX_OCTETS - P25P2_MULTIFRAG_CRC_OCTETS) * 8];
+    const int covered = p25p2_vpdu_frag_payload_octets(frag);
+    if (!frag || covered < 1 || (int)frag->collected != (int)frag->data_len) {
+        return 0;
+    }
+    for (int i = 0; i < covered; i++) {
+        for (int b = 0; b < 8; b++) {
+            bits[(i * 8) + b] = (uint8_t)((frag->data[i] >> (7 - b)) & 1U);
+        }
+    }
+    const uint16_t sent = (uint16_t)((frag->data[covered] << 8) | frag->data[covered + 1]);
+    return ComputeCrcCCITT16b(bits, (unsigned int)(covered * 8)) == sent;
+}
+
+/* A message whose last fragment arrived decodes only when its Multi-Fragment CRC-16 checks: otherwise nothing past
+   this note prints, publishes or changes state. The assembly ends either way. */
+static void
+p25p2_vpdu_finish_multifragment(p25p2_vpdu_ctx* ctx, p25_mac_fragment_state_t* frag) {
+    if (p25p2_vpdu_frag_crc_ok(frag)) {
+        p25p2_vpdu_handle_completed_multifragment(ctx);
+    } else {
+        DSD_FPRINTF(stderr,
+                    "\n MAC Multi-Fragment Opcode [%02X] DataLen [%d]: Multi-Fragment CRC-16 failed; not decoded",
+                    (unsigned)frag->opcode, (int)frag->data_len);
+    }
+    p25p2_vpdu_frag_clear(frag);
+}
+
 static int
 p25p2_vpdu_frag_append(p25_mac_fragment_state_t* frag, const unsigned long long int* mac, int start, int len) {
     int count = len - 2;
@@ -5836,8 +5887,7 @@ p25p2_vpdu_consume_multifragment_base(p25p2_vpdu_ctx* ctx, int opcode) {
     DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Base Opcode [%02X] DataLen [%d] Collected [%d]", opcode,
                 (int)frag->data_len, (int)frag->collected);
     if ((int)frag->collected >= (int)frag->data_len) {
-        p25p2_vpdu_handle_completed_multifragment(ctx);
-        p25p2_vpdu_frag_clear(frag);
+        p25p2_vpdu_finish_multifragment(ctx, frag);
     }
     return 1;
 }
@@ -5862,25 +5912,55 @@ p25p2_vpdu_consume_multifragment_continuation(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Continuation Opcode [%02X] DataLen [%d] Collected [%d]",
                 (int)frag->opcode, (int)frag->data_len, (int)frag->collected);
     if ((int)frag->collected >= (int)frag->data_len) {
-        p25p2_vpdu_handle_completed_multifragment(ctx);
-        p25p2_vpdu_frag_clear(frag);
+        p25p2_vpdu_finish_multifragment(ctx, frag);
     }
     return 1;
+}
+
+/* Whether a base or continuation fragment may join an assembly. Multi-fragment messages are only available on the
+   LCCH (TIA-102.BBAD-A §3): a fragment heard on a FACCH or SACCH is dropped. So is one whose MAC PDU failed its CRC-16
+   (-F lets the PDU through; p25p2_vpdu_note_lcch_pdu() has ended the assembly), and one of a superframe whose slot
+   parity is unknown, which could join the other logical channel's assembly. */
+static int
+p25p2_vpdu_fragment_admitted(const p25p2_vpdu_ctx* ctx, int opcode) {
+    const char* why = NULL;
+    if (ctx->state->p2_is_lcch != 1) {
+        why = "not on an LCCH";
+    } else if (!ctx->crc_ok) {
+        why = "CRC failed";
+    } else if (p25p2_window_slot_unproven()) {
+        why = "unaligned superframe";
+    }
+    if (why != NULL) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment [%02X] dropped: %s", opcode, why);
+        return 0;
+    }
+    return 1;
+}
+
+/* An LCCH MAC PDU whose CRC-16 failed (-F lets it through) is a burst of the LCCH's stream that cannot be trusted:
+   whatever it holds, the assembly it would continue ends. */
+static void
+p25p2_vpdu_note_lcch_pdu(const p25p2_vpdu_ctx* ctx) {
+    if (ctx->state->p2_is_lcch != 1 || ctx->crc_ok) {
+        return;
+    }
+    p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
+    if (frag && frag->active) {
+        DSD_FPRINTF(stderr, "\n MAC Multi-Fragment assembly cleared: LCCH CRC failed");
+        p25p2_vpdu_frag_clear(frag);
+    }
 }
 
 static int
 p25p2_vpdu_consume_fragment_segment(p25p2_vpdu_ctx* ctx) {
     int opcode = (int)ctx->mac[1 + ctx->len_a];
-    // A superframe whose slot parity is unknown: an assembly is per slot, so a fragment could join the wrong one.
-    if (p25p2_window_slot_unproven() && (p25p2_vpdu_is_standard_multifragment_base(opcode) || opcode == 0x10)) {
-        DSD_FPRINTF(stderr, "\n MAC multi-fragment [%02X] dropped: unaligned superframe", opcode);
-        return 1;
-    }
-    if (p25p2_vpdu_is_standard_multifragment_base(opcode)) {
-        return p25p2_vpdu_consume_multifragment_base(ctx, opcode);
-    }
-    if (opcode == 0x10) {
-        return p25p2_vpdu_consume_multifragment_continuation(ctx);
+    if (p25p2_vpdu_is_standard_multifragment_base(opcode) || opcode == 0x10) {
+        if (!p25p2_vpdu_fragment_admitted(ctx, opcode)) {
+            return 1;
+        }
+        return opcode == 0x10 ? p25p2_vpdu_consume_multifragment_continuation(ctx)
+                              : p25p2_vpdu_consume_multifragment_base(ctx, opcode);
     }
     if (p25p2_vpdu_is_null_avoid_zero_bias(opcode)) {
         return 1;
@@ -5888,8 +5968,10 @@ p25p2_vpdu_consume_fragment_segment(p25p2_vpdu_ctx* ctx) {
     if (opcode == 0x00 && ctx->iter_idx > 0) {
         return 1;
     }
+    /* Another message in the LCCH's burst: the multi-fragment message is not continued there. A FACCH or SACCH is no
+       burst of the LCCH's stream and leaves its assembly alone. */
     p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
-    if (frag && frag->active) {
+    if (ctx->state->p2_is_lcch == 1 && frag && frag->active) {
         DSD_FPRINTF(stderr, "\n MAC Multi-Fragment assembly cleared by non-fragment opcode [%02X]", opcode);
         p25p2_vpdu_frag_clear(frag);
     }
@@ -6014,6 +6096,7 @@ static void
 p25p2_vpdu_run(p25p2_vpdu_ctx* ctx) {
     p25p2_vpdu_emit_json(ctx);
     p25p2_vpdu_lcch_signal_update(ctx);
+    p25p2_vpdu_note_lcch_pdu(ctx);
     if (!p25p2_vpdu_validate_len_and_warn(ctx)) {
         ctx->end_pdu = 1;
     }
