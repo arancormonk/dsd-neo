@@ -10235,6 +10235,25 @@ target_link_libraries(
     PRIVATE dsd-neo_engine ${LIBS}
 )
 
+# The -Y step's frame-boundary rule over real calls (issue #834 item 3): a test-only host that replays a fixture on a
+# landed -Y row and prints its timeline for tests/y_call_hold_check.py (DECODE_IQ_Y_CALL_HOLD). I/Q replay needs the
+# radio pipeline, and the host's link wraps a GNU-style linker.
+if(DSD_HAS_RADIO AND NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(dsd-neo_test_y_call_hold_replay engine/y_call_hold_replay.c)
+    target_include_directories(
+        dsd-neo_test_y_call_hold_replay
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/engine
+    )
+    target_link_libraries(
+        dsd-neo_test_y_call_hold_replay
+        PRIVATE
+            dsd-neo_engine
+            ${LIBS}
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=dsd_engine_channel_scan_step"
+    )
+endif()
+
 add_executable(
     dsd-neo_test_runtime_decode_mode
     runtime/test_runtime_decode_mode.c
@@ -20452,6 +20471,22 @@ if(DSD_HAS_RADIO)
             DECODE_IQ_RECEIVE_POLICY
             PROPERTIES LABELS "iq-decode" TIMEOUT 180
         )
+        # A -Y row keeps a real call while its frames come and leaves it once the call ends (issue #834 item 3): each
+        # call fixture, with a receiver-noise tail, on a landed -Y row at -t 1 and -t 2, skip-silent off and on.
+        if(TARGET dsd-neo_test_y_call_hold_replay)
+            add_test(
+                NAME DECODE_IQ_Y_CALL_HOLD
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/y_call_hold_check.py --hangtime
+                    1,2 $<TARGET_FILE:dsd-neo_test_y_call_hold_replay>
+                    ${_DSD_NEO_IQ_FIXTURE_DIR}
+            )
+            set_tests_properties(
+                DECODE_IQ_Y_CALL_HOLD
+                PROPERTIES LABELS "iq-decode" TIMEOUT 180
+            )
+        endif()
         # M17 and EDACS decode the same from a PCM file, stdin and TCP (issue #667 D12): stdin and TCP share one
         # buffered reader with bounded waits. POSIX only, for the pipe and the SIGINT that ends an M17-only session.
         if(NOT WIN32)

@@ -1416,6 +1416,19 @@ number of samples must not be a multiple of the front end's total decimation; sp
 capture's rate, as `replay_ab.sh` does (copy i of n shifted floor(i P / n) + i samples, P the samples in one 2400-baud
 symbol, and one sample more where that lands on a multiple of the decimation).
 
+#### Real calls on a -Y row (issue #834)
+
+I/Q replay defers every retune, so a `-Y` scan replayed with `--iq-replay` never lands a step. `DECODE_IQ_Y_CALL_HOLD`
+(`tests/y_call_hold_check.py`; radio builds with a GNU or Clang toolchain, not macOS, since the host links with
+`--wrap`) therefore runs
+`dsd-neo_test_y_call_hold_replay`, a host that notes row zero's landing itself at the first hunt, on the replay's clock.
+Each call fixture, followed by `noise_floor`, is the landed row of a two-row typed map, at `-t 1` and `-t 2`, with
+skip-silent off and on and no visit cap. It fails a frame-boundary step before the call's last sync, and a row still
+held more than the hangtime plus 2 s after it (3.5 s for NXDN, which holds a `-Y` row 2 s past each frame whose own CRC
+passed). The host prints a `YHOLD` line for every sync (PROVEN and PARTIAL notes so far, the hangtime anchor) and every
+step attempt, which is the timeline to read when a case fails. Steps `noCarrier()` takes between a call's frames are the
+hangtime working as set (the off-air `dpmr` capture loses sync for 1.7-3.8 s at a time) and are reported, not failed.
+
 #### Received tone (CTCSS) on the analog monitor
 
 `DECODE_IQ_ANALOG_CTCSS_1000`, `_670`, `_DROP` and `_NOTONE` (issue #522) replay synthetic NFM under `-fA -o null`, so

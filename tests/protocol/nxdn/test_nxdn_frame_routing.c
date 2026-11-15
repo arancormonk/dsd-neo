@@ -1082,6 +1082,74 @@ test_frame_places_the_grid_on_the_next_fsw(void) {
     return rc;
 }
 
+/* Issue #834: on a conventional -Y scan the hold needs the frame's own check, not only the transmission's confirmation.
+   Receiver noise after a call passes the sync word and the LICH parity, and the confirmation lets it through; it must
+   not refresh the hold, so the row leaves once -t has run past the last checked frame's 2 s hold. A call whose frames
+   keep passing checks keeps the hold past -t. Trunked receivers, a trunked -Y scan and a plain conventional receiver
+   keep the transmission's hold. */
+/* The frames are outbound (LICH 0x33, RTCH voice with FACCH), which a trunked receiver also takes. */
+static void
+y_hold_at(time_t t) {
+    dsd_decode_clock_use_test((uint64_t)t * 1000000000ULL);
+}
+
+static int
+y_hold_case(int scanner_mode, int trunk_enable, time_t want_after_noise) {
+    reset_state();
+    g_opts.scanner_mode = scanner_mode;
+    g_opts.trunk_enable = trunk_enable;
+    g_stub_sacch_ok = g_stub_scch_ok = g_stub_cac_ok = 0;
+    g_stub_facch_ok = 1;
+    y_hold_at(2000);
+    int rc = expect_int("checked call frame routed", route_frame(0x33U), 1);
+    g_stub_facch_ok = 0; /* noise: the LICH passes, no check does */
+    y_hold_at(2001);
+    rc |= expect_int("noise frame routed", route_frame(0x33U), 1);
+    rc |= expect_int("noise frame inside the confirmed transmission", nxdn_confirm_is_confirmed(&g_state), 1);
+    rc |= expect_int("hold after the noise frame", (int)g_state.last_cc_sync_time, (int)want_after_noise);
+    return rc;
+}
+
+static int
+test_y_scan_hold_needs_a_checked_frame(void) {
+    int rc = 0;
+
+    reset_state();
+    g_opts.scanner_mode = 1;
+    g_opts.trunk_hangtime = 1;
+    g_stub_sacch_ok = g_stub_scch_ok = g_stub_cac_ok = 0;
+    g_stub_facch_ok = 1;
+    /* A 4 s call whose frames all pass their FACCH CRC: each holds the row 2 s past it, so -t never runs out. */
+    for (time_t t = 1000; t <= 1004; t++) {
+        y_hold_at(t);
+        rc |= expect_int("checked call frame routed", route_frame(0x33U), 1);
+        rc |= expect_int("a checked frame holds the row 2 s", (int)g_state.last_cc_sync_time, (int)t + 2);
+        rc |=
+            expect_int("held past -t", (int)(dsd_decode_time() - g_state.last_cc_sync_time) > g_opts.trunk_hangtime, 0);
+    }
+    const double checked_m = g_state.last_cc_sync_time_m;
+    /* Then receiver noise, one frame a second: the hold stays on the last checked frame. */
+    g_stub_facch_ok = 0;
+    for (time_t t = 1005; t <= 1008; t++) {
+        y_hold_at(t);
+        rc |= expect_int("noise frame routed", route_frame(0x33U), 1);
+        rc |= expect_int("noise leaves the hold", (int)g_state.last_cc_sync_time, 1006);
+        rc |= expect_int(
+            "noise leaves the mono stamp",
+            (g_state.last_cc_sync_time_m - checked_m) < 1e-9 && (checked_m - g_state.last_cc_sync_time_m) < 1e-9, 1);
+    }
+    /* -t (1 s) past the 2 s hold: the hangtime rule is due, and the row leaves. */
+    rc |= expect_int("-t past the hold: due",
+                     (int)(dsd_decode_time() - g_state.last_cc_sync_time) > g_opts.trunk_hangtime, 1);
+
+    rc |= y_hold_case(1, 1, 2003); /* a trunked -Y scan: the transmission's hold, 2 s past the noise frame */
+    rc |= y_hold_case(0, 1, 2001); /* a trunked receiver: the carrier stamp on the noise frame */
+    rc |= y_hold_case(0, 0, 2001); /* a plain conventional receiver: the same */
+
+    y_hold_at(1042);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1102,6 +1170,7 @@ main(void) {
     rc |= test_frame_retuned_by_its_scch_stops();
     rc |= test_type_d_category_outlives_only_a_confirmed_frame();
     rc |= test_frame_places_the_grid_on_the_next_fsw();
+    rc |= test_y_scan_hold_needs_a_checked_frame();
     dsd_decode_clock_use_system();
 
     if (rc == 0) {

@@ -672,8 +672,13 @@ Generated (do not edit/commit):
       boundary (`live_scanner_y_note_frame_content()`) turns a move into the decode time or the hold's end. A landing
       (`dsd_engine_scan_landing_note_row()`, `dsd_engine_scan_landing_forget_y_notes()`) forgets the notes no boundary
       read yet and the hold's end, so the row left neither counts for the next row nor delays its step. A real dPMR,
-      D-STAR, YSF, M17 or NXDN call (whose frames stamp no anchor, or only once confirmed) keeps the row through those
-      checks, encrypted or locked out alike. Off -Y the boundary costs one compare. The NOTICE names the row
+      D-STAR, YSF, M17 or NXDN call (whose frames stamp no anchor, or only checked ones) keeps the row through those
+      checks, encrypted or locked out alike. NXDN on a conventional -Y scan stamps the anchor, with its 2 s scanner
+      hold (#406), only on a frame whose own CRC passed (`nxdn_finish_decoded_frame()`, `nxdn_confirm_frame_proved()`):
+      the transmission's confirmation alone lets every later LICH-passing frame through, receiver noise after the call
+      included, and a hold those refreshed never let the row go. Trunked receivers and plain conventional ones keep the
+      confirmation's stamp, and a run of failed CACs pushes the anchor only off a conventional -Y scan
+      (`nxdn_reset_after_cac_fail()`). Off -Y the boundary costs one compare. The NOTICE names the row
       (`row N`, 1-based) and, as for the trunk scan, logs the decision before the step runs. Tests: `ENGINE_TRUNK_SCAN`
       (`test_scan_quiet_tick_*`: the skip through the pass and its tick with the exact NOTICE, a lost guard, keep timing
       from a READY result for each mutation, a hold and activity, the dwell on the same tick, a tone check
@@ -687,7 +692,10 @@ Generated (do not edit/commit):
       and its failures and supersessions arming nothing (`yq_landing_case()`), busy, held, single-row, heard-voice,
       qualifying and qualifying-busy rows, an avoided row, a walk waiting on its tune, a typed step in flight, an open
       analog carrier, and the end-to-end skip through `dsd_engine_test_live_scanner_run()` for -Y and trunk scan, each
-      against the setting off).
+      against the setting off), `NXDN_FRAME_ROUTING` (`test_y_scan_hold_needs_a_checked_frame()`),
+      `NXDN_DEPERM_PRIMITIVES` (`test_cac_fail_run_on_conventional_scan_keeps_anchor()`), and `DECODE_IQ_Y_CALL_HOLD`
+      (`tests/y_call_hold_check.py` over the `dsd-neo_test_y_call_hold_replay` host: every real call fixture kept while
+      its frames come and left once it ends, at -t 1 and -t 2).
     - Checked content (issue #834 D8): `activity_seq` moves, only while skip-silent is on, when a frame's content
       passes its protocol's CRC/FEC gate (a PROVEN content note, `dsd_frame_sync_hook_content_evidence()`, the engine's
       `dsd_engine_scan_quiet_note_evidence()`: once a frame however many of its checks pass, once a note outside a

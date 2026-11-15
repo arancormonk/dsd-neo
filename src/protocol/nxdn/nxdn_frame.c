@@ -747,7 +747,11 @@ nxdn_finish_decoded_frame(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx
         DSD_FPRINTF(stderr, "\n");
         return;
     }
-    if (nxdn_confirm_is_confirmed(state)) {
+    /* On a conventional -Y scan the hold needs this frame's own check (issue #834): a transmission confirmed once lets
+       every later frame whose LICH parity passes through, receiver noise after the call included, and a hold refreshed
+       by those would never let the row go. Trunked receivers and a plain conventional one keep the transmission's. */
+    const int y_conventional = opts->scanner_mode == 1 && opts->trunk_enable != 1;
+    if (nxdn_confirm_is_confirmed(state) && (!y_conventional || nxdn_confirm_frame_proved(state))) {
         nxdn_mark_carrier_sync_active(state);
         if (opts->scanner_mode == 1) {
             /* Hold the scanner a little past this frame so the gap to the next one does
