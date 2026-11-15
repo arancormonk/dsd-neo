@@ -7,7 +7,10 @@
 # rdio uploads or RadioReference import with nothing failing: on Android nothing
 # on the build host can
 # smoke-test the APK, and on Windows the same regression would only show up in
-# a user's hands. Pin the manifest filters and the preset settings here.
+# a user's hands. Pin the manifest filters and the preset settings here. The
+# Windows presets must also use Ninja with an external compiler environment, so
+# they build with the Visual Studio in use rather than the one a Visual Studio
+# generator names.
 #
 # Usage:
 #   cmake -P cmake/vcpkg_dependency_contract.cmake
@@ -144,6 +147,41 @@ foreach(_adc_i RANGE 0 ${_ADC_PRESET_LAST})
         continue()
     endif()
     list(APPEND _ADC_SEEN_PRESETS "${_adc_preset_name}")
+
+    # A Visual Studio generator names one Visual Studio release and builds with
+    # that release's compiler, whichever Visual Studio opens the folder, so a
+    # newer Visual Studio still compiles with the older one. Ninja, with the
+    # compiler environment left to the IDE or the developer shell ("external"),
+    # builds with the Visual Studio in use, as CI's Windows jobs do.
+    if(_adc_preset_name MATCHES "^win-msvc")
+        string(
+            JSON _adc_generator
+            ERROR_VARIABLE _adc_generator_err
+            GET "${_adc_preset}"
+            generator
+        )
+        if(_adc_generator_err OR NOT _adc_generator STREQUAL "Ninja")
+            _adc_error(
+                "CMakePresets.json: preset ${_adc_preset_name} must use the Ninja generator; a Visual "
+                "Studio generator builds with one Visual Studio release's compiler."
+            )
+        endif()
+        foreach(_adc_field architecture toolset)
+            string(
+                JSON _adc_strategy
+                ERROR_VARIABLE _adc_strategy_err
+                GET "${_adc_preset}"
+                ${_adc_field}
+                strategy
+            )
+            if(_adc_strategy_err OR NOT _adc_strategy STREQUAL "external")
+                _adc_error(
+                    "CMakePresets.json: preset ${_adc_preset_name} must set ${_adc_field}.strategy to "
+                    "external, so the IDE or developer shell supplies the compiler."
+                )
+            endif()
+        endforeach()
+    endif()
 
     string(
         JSON _adc_cache

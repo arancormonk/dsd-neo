@@ -37,6 +37,8 @@ Package hints:
   backend. Their `librtlsdr-dev` may also be older than 2.0.3, which an RTL-SDR Blog V4 needs.
 - macOS (Homebrew): `brew install cmake ninja openssl libsndfile ncurses pulseaudio rtl-sdr airspy soapysdr codec2`.
 - Windows: source builds use the `win-msvc-*` presets in `CMakePresets.json` with vcpkg; set `VCPKG_ROOT` first.
+  The presets build with Ninja and the compiler of the Visual Studio you use: open the folder in Visual Studio, or run
+  `cmake` from a Developer PowerShell or x64 Native Tools prompt.
 - Android: see [Android Cross Builds](#android-cross-builds).
 
 ## Build mbelib-neo
@@ -62,7 +64,9 @@ Then point DSD-neo's configure step at that prefix with `-DCMAKE_PREFIX_PATH="$H
 These recipes are for Linux and macOS. Run them from the repository root. Presets build out of source under
 `build/<preset>/`, and the program lands in `build/<preset>/apps/dsd-cli/dsd-neo`. You can run it from there without
 installing. On Windows, set `VCPKG_ROOT` and use the `win-msvc-*` presets instead (for example
-`cmake --preset win-msvc-release`); vcpkg supplies the libraries and mbelib-neo. Android: see
+`cmake --preset win-msvc-release`) from Visual Studio or a Developer PowerShell; vcpkg supplies the libraries and
+mbelib-neo. A `build/win-msvc-*` folder made before the presets moved to Ninja keeps the old Visual Studio generator,
+and CMake refuses to switch generators in it: delete the folder once. Android: see
 [Android Cross Builds](#android-cross-builds).
 
 Release build (recommended):
@@ -363,11 +367,10 @@ On POSIX systems, staged packaging can use `DESTDIR`:
 DESTDIR="$PWD/pkgroot" cmake --install build/dev-release --prefix /usr
 ```
 
-Multi-config generators (Visual Studio, Xcode; the `win-msvc-*` presets use Visual Studio) also need the
-configuration:
+Multi-config generators (Visual Studio, Xcode) also need the configuration:
 
 ```sh
-cmake --install build/win-msvc-release --config Release --prefix "$HOME/.local"
+cmake --install build/xcode --config Release --prefix "$HOME/.local"
 ```
 
 Uninstall from the same build directory you installed from:

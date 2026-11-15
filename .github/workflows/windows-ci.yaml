@@ -113,9 +113,8 @@ jobs:
         shell: pwsh
         env:
           DSD_COMPILER_LAUNCHER: ${{ steps.sccache.outcome == 'success' && 'sccache' || '' }}
-        # Use Ninja generator (override preset) so CMAKE_*_COMPILER_LAUNCHER works with sccache
         run: |
-          cmake --preset win-msvc-release -G Ninja `
+          cmake --preset win-msvc-release `
             -DDSD_ENABLE_NATIVE=OFF `
             -DCMAKE_C_COMPILER_LAUNCHER="$env:DSD_COMPILER_LAUNCHER" `
             -DCMAKE_CXX_COMPILER_LAUNCHER="$env:DSD_COMPILER_LAUNCHER" `

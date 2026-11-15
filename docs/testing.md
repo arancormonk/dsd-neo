@@ -4377,7 +4377,8 @@ seed)` in `windows-ctest-seed`. Dispatch `windows-ctest-seed` on the branch to
 seed it.
 
 To run the Windows suite locally, configure and build the `win-msvc-debug`
-preset and run `ctest --preset win-msvc-debug`; the test preset puts the vcpkg
+preset (from Visual Studio or a Developer PowerShell) and run
+`ctest --preset win-msvc-debug`; the test preset puts the vcpkg
 debug DLLs on `PATH`. A Debug-CRT assertion or `abort()` in a test is reported on
 stderr rather than in a dialog (`tests/test_support/win_crt_report.c`).
 

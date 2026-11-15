@@ -104,9 +104,8 @@ jobs:
 
       - name: Configure (MSVC Release)
         shell: pwsh
-        # Use Ninja generator (override preset) so CMAKE_*_COMPILER_LAUNCHER works with sccache
         run: |
-          cmake --preset win-msvc-release -G Ninja `
+          cmake --preset win-msvc-release `
             -DDSD_ENABLE_NATIVE=OFF `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
@@ -214,15 +213,15 @@ jobs:
           --overlay-triplets "$env:GITHUB_WORKSPACE\\vcpkg-triplets"
           --x-manifest-root "$env:GITHUB_WORKSPACE"
 
-      # Ninja instead of the preset's Visual Studio generator so sccache can wrap
-      # the compiler. /Z7 (CMP0141 "Embedded") because sccache cannot cache /Zi.
+      # sccache wraps the compiler through the preset's Ninja generator. /Z7
+      # (CMP0141 "Embedded") because sccache cannot cache /Zi.
       # vcpkg's per-executable applocal DLL copy is off: hundreds of test
       # executables share one output directory, and the win-msvc-debug test
       # preset puts the triplet's debug/bin on PATH instead.
       - name: Configure (MSVC Debug)
         shell: pwsh
         run: |
-          cmake --preset win-msvc-debug -G Ninja `
+          cmake --preset win-msvc-debug `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW `
