@@ -2364,6 +2364,14 @@ suite runs under this compiler.
   `dsd_utf16_to_utf8()`, never JNI's modified UTF-8, which writes a supplementary character as two 3-byte surrogates
   and so no longer matches a UTF-8 file's text (issue #644, a `--trunk-scan-hold` id); an unpaired half becomes U+FFFD,
   and an embedded U+0000 refuses the conversion rather than cutting the text short. Tests: `CORE_UTF16`.
+- DMR standard talker alias (`dmr_talker_alias_lc_header()` / `_blocks()` / `_decode()` in `src/core/util/dsd_alias.c`):
+  Data Format 0 is ISO 7-bit, 1 ISO 8-bit (Latin-1), 2 UTF-8 and 3 UTF-16BE (TS 102 361-2 Table 7.25). The header's Data
+  Length counts code units of that format (7-bit characters, octets, UTF-16 units; Table 7.26), never characters, and
+  does not cut the text, since radios send lengths that disagree with it. Malformed UTF-8 (one U+FFFD per maximal
+  ill-formed subpart) and unpaired surrogates become U+FFFD; a character cut where the received blocks stop, while the
+  length says more units follow, is left out until the block that completes it. Every non-control character is stored
+  as UTF-8, whole sequences only (`generic_talker_alias`, the event row). Tests: `DMR_TALKER_ALIAS_UTF8`,
+  `DMR_TALKER_ALIAS_UTF16`, `DMR_TALKER_ALIAS_HEADER_LEN`.
 - Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the
   MFID 0x90 alias (Phase 1 LCW 0x15/0x17, Phase 2 MAC 0x91/0x95) assembles in `dsd_state::p25_apx_alias_rx[slot]`
   (`p25_apx_alias_rx_state_t`), which owns its header copy, block bitmap and record store; it never touches the

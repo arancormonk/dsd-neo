@@ -15280,6 +15280,29 @@ add_test(
     COMMAND dsd-neo_test_dmr_talker_alias_utf16
 )
 
+# DMR talker alias, UTF-8 format: decoded as UTF-8 across the LC PDUs, length in code units, malformed -> U+FFFD
+add_executable(
+    dsd-neo_test_dmr_talker_alias_utf8
+    protocol/dmr/test_dmr_talker_alias_utf8.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_talker_alias_utf8
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_talker_alias_utf8
+    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
+)
+add_test(NAME DMR_TALKER_ALIAS_UTF8 COMMAND dsd-neo_test_dmr_talker_alias_utf8)
+
 # Motorola APX embedded alias, UTF-16 text: same transcoding path as the DMR alias
 add_executable(
     dsd-neo_test_core_apx_embedded_alias_utf16
@@ -19498,6 +19521,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_talker_alias_header_len
     dsd-neo_test_dmr_udp_comp_header
     dsd-neo_test_dmr_talker_alias_utf16
+    dsd-neo_test_dmr_talker_alias_utf8
     dsd-neo_test_dpmr_reference_vectors
     dsd-neo_test_dpmr_voice_bridge
     dsd-neo_test_m17_lsf_parse
