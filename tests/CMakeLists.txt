@@ -1661,6 +1661,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_unit_activity
+  HEADERS_PUBLIC_CORE_UNIT_ACTIVITY
+  dsd-neo/core/unit_activity.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_unit_activity_cxx
+  HEADERS_PUBLIC_CORE_UNIT_ACTIVITY_CXX
+  dsd-neo/core/unit_activity.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_wideband_spectrum
   HEADERS_PUBLIC_CORE_WIDEBAND_SPECTRUM
   dsd-neo/core/wideband_spectrum.h
@@ -6239,6 +6251,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
@@ -6274,6 +6287,51 @@ add_test(
     COMMAND dsd-neo_test_app_control_snapshot_event_history
 )
 
+# The unit activity ring's two snapshot hops (decoder -> published -> consumer): incremental, retried on failure.
+add_executable(
+    dsd-neo_test_app_control_snapshot_unit_activity
+    ui/test_ui_snapshot_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_snapshot_unit_activity
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_snapshot_unit_activity
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_snapshot_unit_activity
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_audio_activity
+        dsd-neo_platform
+        dsd-neo_runtime
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME APP_CONTROL_SNAPSHOT_UNIT_ACTIVITY
+    COMMAND dsd-neo_test_app_control_snapshot_unit_activity
+)
+
 # Issue #708: the History tap, the second reader of the published history, against a racing publisher and the single
 # consumer (run it under the tsan preset too).
 add_executable(
@@ -6286,6 +6344,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_recording.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
@@ -7643,6 +7702,26 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_talkgroup_policy PRIVATE dsd-neo_core)
 add_test(NAME CORE_TALKGROUP_POLICY COMMAND dsd-neo_test_core_talkgroup_policy)
+
+# The unit activity ring (src/core/util/unit_activity.c), built with its allocation and copy-count seams.
+add_executable(
+    dsd-neo_test_core_unit_activity
+    core/test_core_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
+)
+target_include_directories(
+    dsd-neo_test_core_unit_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_core_unit_activity
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_core_unit_activity
+    PRIVATE dsd-neo_runtime dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME CORE_UNIT_ACTIVITY COMMAND dsd-neo_test_core_unit_activity)
 
 add_executable(dsd-neo_test_core_source_alias core/test_core_source_alias.c)
 target_link_libraries(dsd-neo_test_core_source_alias PRIVATE dsd-neo_core)
