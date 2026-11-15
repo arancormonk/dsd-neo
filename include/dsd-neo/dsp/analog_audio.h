@@ -32,7 +32,8 @@ typedef enum {
         an RTL input is this too: the stream's FSK voice lane (rtl_stream_read_lanes()) at the monitor's scale, with the
         trim and a de-emphasis the stream's published gain makes up the same way. */
     DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR = 0,
-    /** RTL FSK discriminator output, normalised to +/-30000 peak: the -8 source monitor under digital decoding. */
+    /** RTL FSK discriminator output, on its fixed scale (fsk_modem.h: 3 kHz deviation reads 15000): the -8 source
+        monitor under digital decoding. */
     DSD_ANALOG_AUDIO_SOURCE_RTL_FSK = 1,
     /** PCM input at int16 scale. */
     DSD_ANALOG_AUDIO_SOURCE_PCM16 = 2,
@@ -72,7 +73,8 @@ typedef enum {
 
 /**
  * @brief The gain that takes @p source's reference signal to DSD_ANALOG_AUDIO_REFERENCE_PEAK before any de-emphasis:
- * RTL monitor 32924 (0.25 at the default `vol` 2), RTL FSK 8231 / 30000 (0.274: the normalised +/-30000 peak), PCM 1.0.
+ * RTL monitor 32924 (0.25 at the default `vol` 2), RTL FSK 8231 / 15000
+ * (0.549: 3 kHz deviation on the discriminator's fixed scale), PCM 1.0.
  *
  * The chain's fixed gain at `-n 50` and the AGC's reference gain are this, times on RTL monitor audio the stream's
  * de-emphasis gain (dsd_rtl_stream_metrics_hook_monitor_deemph_gain()): the FM monitor's de-emphasis takes the 1 kHz

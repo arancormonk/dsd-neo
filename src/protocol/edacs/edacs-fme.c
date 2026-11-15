@@ -423,10 +423,10 @@ edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, float* voice
     uint32_t replay_center_hz = 0U;
     (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
     dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
-    /* EDACS keeps the stream on the digital family, so this is the FSK discriminator output, which the modem
-       scales to a +/-30000 peak: it fits int16 as it is, and the release register reads it. The monitor's volume trim
-       is not applied to it (nor to any FSK direct output, symbol_read_sample_rtl()): doubled, the upper half of the
-       waveform would clip. */
+    /* EDACS keeps the stream on the digital family, so this is the FSK discriminator output, on the modem's fixed
+       scale (fsk_modem.h): the PCM range holds +/-6553 Hz, past EDACS voice's 5 kHz, and noise beyond it saturates;
+       the release register reads it. The monitor's volume trim is not applied to it (nor to any FSK direct output,
+       symbol_read_sample_rtl()): doubled, the upper half of the waveform would clip. */
     *out = clip_float_to_short(rtl_sample);
     /* The voice lane is the RTL monitor's audio (issue #518): float, so the trim scales it as it scales the monitor's
        (symbol_read_sample_rtl()), with nothing to clip, and the chain's RTL monitor source gain sets the level. */
@@ -809,7 +809,7 @@ edacs_analog_input_rate_hz(const dsd_opts* opts) {
 /* The analog voice chain (voice band-pass, legacy filters, then a fixed gain or the AGC) over a triplet's voice, in
    place, in one call, so the AGC places each sample's time exactly for its new-reception rule (issue #518). On an RTL
    input the voice is the stream's voice lane, FM monitor audio at the monitor's scale (rtl_stream_read_lanes()), never
-   the peak-normalised FSK output the release register reads; on audio input it is the samples themselves.
+   the FSK discriminator output the release register reads; on audio input it is the samples themselves.
 
    Each sample learns as the squelch the call runs heard it: with @p sql_flags (2880, the dynamic squelch's) by its own
    gate, else by @p heard (the level squelch's power test, 1 with no squelch). What plays or records the call, its
@@ -1665,7 +1665,7 @@ edacs_analog_voice_source(const dsd_opts* opts) {
     if (!s_fsk_voice_logged) {
         s_fsk_voice_logged = 1;
         LOG_WARN("EDACS: the RTL stream has no separate voice audio (low memory?); analog calls play the FSK audio "
-                 "instead, at a less steady level.\n");
+                 "instead, without de-emphasis.\n");
     }
 #endif
     return DSD_ANALOG_AUDIO_SOURCE_RTL_FSK;

@@ -498,6 +498,8 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(ctx.CCHDataCRC, 1, sizeof(ctx.CCHDataCRC));
 
     const uint32_t carrier_seq = state->carrier_seq;
+    /* Where the frame begins, right behind its FS2 word: a weak streak counts only frames that run on. */
+    const uint32_t frame_symbol = state->symbolcnt;
     dpmr_read_first_cch(opts, state, &ctx);
     dpmr_read_tch_group(opts, state, &ctx, 0);
 
@@ -518,6 +520,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     /* Evidence is noted before anything is published, so the frame that completes a weak
      * streak still publishes itself rather than waiting for the next one. A signal search hears
      * the confirmation at dpmr_confirm_end_frame(), after the publication. */
+    dpmr_confirm_note_frame_start(state, frame_symbol);
     dpmr_confirm_begin_frame(state);
     dpmr_decode_cch_frames(state, &ctx);
     dpmr_note_cch_evidence(state, &ctx);

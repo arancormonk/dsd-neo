@@ -590,10 +590,11 @@ test_cooldown_both_sides(void) {
 }
 
 /* The watch pauses while the request runs (here three limits: no verdict is made) and restarts with nothing accrued:
- * first samples that come half a limit after the reader restarted keep the session running (with the silence before
- * the request still counted they would come a whole limit late). The delay is measured on the realtime clock from just
- * before the restart; a runner that overslept it into the limit makes the attempt say nothing (the silence then rightly
- * trips), and it is repeated. Returns whether it held. */
+ * first samples that come three monitor steps after the reader restarted keep the session running (with the silence
+ * before the request still counted they would come a whole limit late). The delay is short so that a loaded runner,
+ * which can oversleep it by well over 100 ms, still leaves the gap inside the limit. It is measured on the realtime
+ * clock from just before the restart; a runner that overslept it into the limit makes the attempt say nothing (the
+ * silence then rightly trips), and it is repeated. Returns whether it held. */
 bool
 rearm_attempt(void) {
     usb_world_reset(0);
@@ -615,7 +616,7 @@ rearm_attempt(void) {
     uint64_t max_gap_ms = 0U;
     assert(rtl_device_usb_resume_reader(r.dev) == 0);
     rtl_device_usb_recovery_finish(r.dev, 0, why);
-    dsd_sleep_ms(kLimitMs / 2U);
+    dsd_sleep_ms(3U * kPeriodMs);
     deliver_timed(r, 3U * kLimitMs / 10U, 10U, &last_ms, &max_gap_ms);
     if (!gaps_inside_limit(max_gap_ms)) {
         DSD_FPRINTF(stderr, "rearm: the first samples came %llu ms after the restart; repeating\n",

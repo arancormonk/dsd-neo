@@ -158,7 +158,7 @@ struct demod_state {
        slowed the CQPSK chain by about 5 %). */
     alignas(DSD_DEMOD_BUF_ALIGN) float hb_workbuf[DSD_DEMOD_ALIGNED_FLOATS(DSD_DEMOD_WORKBUF_LENGTH)];
     /* The voice lane EDACS plays analog calls from (issue #518): the FSK discriminator's centred output, as the modem
-       computes it ahead of its peak normaliser, at the FM monitor's output scale and through a de-emphasis of its
+       computes it ahead of its fixed scale, at the FM monitor's output scale and through a de-emphasis of its
        own, parallel to result (at the complex rate) and to voice_resamp_outbuf (resampled as resamp_outbuf is). Valid
        only while voice_lane_active. They sit after hb_workbuf so they move none of the buffers before them. */
     alignas(DSD_DEMOD_BUF_ALIGN) float voice_result[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH)];

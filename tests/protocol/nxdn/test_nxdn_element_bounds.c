@@ -907,9 +907,15 @@ test_dst_id_info_complete_event(void) {
     write_bits_u64(bits, 10U, 4U, 6U);
     write_ascii_bits(bits, 16U, "RADIO");
 
+    /* A non-superframe SACCH hands over the message's head behind a 6-bit CRC: on a transmission nothing has confirmed
+       yet it is printed and published nowhere. */
+    NXDN_Elements_Content_decode(opts, state, bits, 26U);
+    int rc = 0;
+    rc |= expect_string("dst-id-unconfirmed-no-event", g_datacall_event, "");
+
+    state->nxdn_confirmed = 1; // the FACCH1 that carried it confirmed the transmission
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
 
-    int rc = 0;
     rc |= expect_string("dst-id-event", g_datacall_event, "NXDN Digital Station ID: RADIO");
     rc |= expect_int("dst-id-src", (int)g_datacall_src, 65520);
     rc |= expect_int("dst-id-dst", (int)g_datacall_dst, 0);
@@ -2251,6 +2257,7 @@ test_type_d_scch_publishes_crypto_fragments(void) {
         .kind = DSD_CALL_KIND_GROUP_VOICE,
     };
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    state->nxdn_confirmed = 1; // the SCCH run confirmed the transmission
 
     DSD_MEMSET(message, 0, sizeof(message));
     write_bits_u64(message, 0U, 3U, 2U);
@@ -2284,6 +2291,192 @@ test_type_d_scch_publishes_crypto_fragments(void) {
     rc |= expect_int("type-d-scch-iv-key", call.kid, key_id);
     rc |= expect_u64("type-d-scch-iv-mi", call.mi, completed_iv);
     rc |= expect_u64("type-d-scch-iv-legacy-mi", state->payload_miN, completed_iv);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* The Type-D messages test_unconfirmed_type_d_scch_acts_on_nothing() and its control drive: an INFO1 call option with a
+ * cipher and key, an INFO1 IV completion, an INFO4 busy repeater message and an INFO4 termination. */
+static void
+decode_type_d_scch_set(dsd_opts* opts, dsd_state* state) {
+    uint8_t message[32];
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 0U, 3U, 2U);
+    write_bits_u64(message, 16U, 2U, 2U);
+    write_bits_u64(message, 18U, 0x2AU, 6U);
+    NXDN_decode_scch(opts, state, message, 1U);
+
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 0U, 3U, 2U);
+    write_bits_u64(message, 8U, 0x12U, 5U);
+    write_bits_u64(message, 18U, 0x2DU, 6U);
+    message[24] = 1U;
+    NXDN_decode_scch(opts, state, message, 1U);
+
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 3U, 6U, 5U);
+    write_bits_u64(message, 8U, 3U, 5U);
+    write_bits_u64(message, 13U, 1400U, 11U);
+    NXDN_decode_scch(opts, state, message, 1U);
+
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 3U, 31U, 5U);
+    write_bits_u64(message, 8U, 3U, 5U);
+    write_bits_u64(message, 13U, 1400U, 11U);
+    NXDN_decode_scch(opts, state, message, 1U);
+}
+
+static int
+recent_activity_entries(const dsd_state* state) {
+    dsd_recent_activity_snapshot recent;
+    if (dsd_recent_activity_copy_snapshot(state, &recent) != 1) {
+        return -1;
+    }
+    int entries = 0;
+    for (size_t i = 0; i < DSD_RECENT_ACTIVITY_COUNT; i++) {
+        entries += recent.entries[i].updated_m_ms != 0U ? 1 : 0;
+    }
+    return entries;
+}
+
+/*
+ * An SCCH passes a 7-bit CRC, which noise clears one time in 128: one that passes on a transmission nothing has
+ * confirmed yet (a false IDAS sync on a P25 carrier, say) is printed and acts on nothing -- no crypto, key, IV, recent
+ * activity or call end. The same messages on a confirmed transmission act (the control at the end).
+ */
+static int
+test_unconfirmed_type_d_scch_acts_on_nothing(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    state->payload_miN = 0x155ULL << 11;
+
+    decode_type_d_scch_set(opts, state);
+
+    int rc = 0;
+    dsd_call_snapshot call;
+    rc |= expect_int("unconfirmed-scch-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("unconfirmed-scch-call-active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_int("unconfirmed-scch-crypto", call.crypto, DSD_CALL_CRYPTO_UNKNOWN);
+    rc |= expect_int("unconfirmed-scch-algid", call.algid, 0);
+    rc |= expect_int("unconfirmed-scch-cipher", state->nxdn_cipher_type, 0);
+    rc |= expect_int("unconfirmed-scch-key", state->nxdn_key, 0);
+    /* Its IV parts are the decoder's working state, kept for the confirmed transmission; the call takes none of it. */
+    rc |= expect_u64("unconfirmed-scch-iv-kept", state->payload_miN, (0x155ULL << 11) | (0x12ULL << 6) | 0x2DULL);
+    rc |= expect_u64("unconfirmed-scch-call-mi", call.mi, 0U);
+    rc |= expect_int("unconfirmed-scch-recent-activity", recent_activity_entries(state), 0);
+
+    state->nxdn_confirmed = 1;
+    decode_type_d_scch_set(opts, state);
+    rc |= expect_int("confirmed-scch-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("confirmed-scch-algid", call.algid, 2);
+    rc |= expect_int("confirmed-scch-key", state->nxdn_key, 0x2A);
+    rc |= expect_int("confirmed-scch-recent-activity", recent_activity_entries(state), 1);
+    rc |= expect_int("confirmed-scch-termination-ends-call", call.phase, DSD_CALL_PHASE_ENDED);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* An IDAS call's IV comes in parts: IV A (an INFO2 naming ID 31), then IV B and C (an INFO1 of the IV type). IV A sent
+ * before the transmission is confirmed is kept, so the IV the call takes once it is confirmed is the whole one, not IV
+ * B and C over a stale IV A. */
+static int
+test_type_d_scch_iv_a_before_confirmation_is_kept(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t message[32];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    state->payload_miN = 0x3FFFFFULL; // a stale IV from before
+    state->nxdn_cipher_type = 2U;
+    state->nxdn_key = 0x2AU;
+
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 0U, 2U, 2U); // INFO2
+    write_bits_u64(message, 13U, 31U, 11U);
+    message[24] = 1U; // IV A = 0x3F
+    NXDN_decode_scch(opts, state, message, 1U);
+
+    state->nxdn_confirmed = 1; // the next frame's checks confirm the transmission
+
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 0U, 3U, 2U); // INFO1, IV type
+    write_bits_u64(message, 8U, 0x12U, 5U);
+    write_bits_u64(message, 18U, 0x2DU, 6U);
+    message[24] = 1U;
+    NXDN_decode_scch(opts, state, message, 1U);
+
+    const uint64_t iv = (0x3FULL << 11) | (0x12ULL << 6) | 0x2DULL;
+    int rc = 0;
+    dsd_call_snapshot call;
+    rc |= expect_u64("iv-a-kept-decoder-iv", state->payload_miN, iv);
+    rc |= expect_int("iv-a-kept-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("iv-a-kept-call-mi", call.mi, iv);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* A confirmed transmission's SCCH still ends and gives crypto to an NXDN call only: another protocol's call on slot 0
+ * (a P25 call, its carrier misread as IDAS) keeps its phase and crypto. */
+static int
+test_type_d_scch_never_touches_another_protocols_call(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1U,
+        .policy_target_id = 1U,
+        .ota_source_id = 3840U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    state->nxdn_confirmed = 1;
+
+    decode_type_d_scch_set(opts, state);
+
+    int rc = 0;
+    dsd_call_snapshot call;
+    rc |= expect_int("p25-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("p25-call-active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_int("p25-call-crypto", call.crypto, DSD_CALL_CRYPTO_UNKNOWN);
+    rc |= expect_int("p25-call-algid", call.algid, 0);
 
     dsd_state_ext_free_all(state);
     free(state);
@@ -2934,6 +3127,42 @@ test_traffic_channel_srv_info_does_not_anchor_control(void) {
     return rc;
 }
 
+/* A CCH_INFO, SITE_INFO or ADJ_SITE_INFO head a non-superframe SACCH hands over behind its 6-bit CRC, on a transmission
+ * nothing has confirmed yet, stamps no control channel sync and anchors no control channel: the sync clock waits for
+ * the transmission's confirmation (issue #398). */
+static int
+test_unconfirmed_site_broadcast_stamps_no_control_sync(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[26];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    opts->trunk_enable = 1;
+    opts->use_rigctl = 1;
+    g_current_rigctl_freq = 855262500L;
+    static const uint8_t k_types[] = {0x18U, 0x1AU, 0x1BU};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(k_types) / sizeof(k_types[0]); i++) {
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        set_message_type(bits, k_types[i]);
+        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    }
+    rc |= expect_int("unconfirmed-site-broadcast-no-cc-sync", state->last_cc_sync_time_m > 0.0 ? 1 : 0, 0);
+    rc |= expect_int("unconfirmed-site-broadcast-no-cc-anchor", (int)state->p25_cc_freq, 0);
+
+    state->nxdn_confirmed = 1;
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("confirmed-site-broadcast-cc-sync", state->last_cc_sync_time_m > 0.0 ? 1 : 0, 1);
+    rc |= expect_int("confirmed-site-broadcast-cc-anchor", (int)state->p25_cc_freq, (int)855262500L);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* The Type-D ADJ_SITE_INFO (NXDN TS 1-E §6.4.3.2, Fig 6.4-40) is a traffic channel's message too: on an RTCH2 it is
  * read in its own layout, and neither refreshes the control-channel sync nor places the control channel at the tuner. */
 static int
@@ -3209,6 +3438,9 @@ main(void) {
     rc |= test_vcall_aes_fallback_needs_a_full_key();
     rc |= test_vcall_iv_keeps_the_vcall_key_choice();
     rc |= test_type_d_scch_publishes_crypto_fragments();
+    rc |= test_unconfirmed_type_d_scch_acts_on_nothing();
+    rc |= test_type_d_scch_iv_a_before_confirmation_is_kept();
+    rc |= test_type_d_scch_never_touches_another_protocols_call();
     rc |= test_type_d_scch_values_are_not_access_codes();
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();
     rc |= test_assignment_group_grant_anchors_tunes_and_loads_scrambler();
@@ -3219,6 +3451,7 @@ main(void) {
     rc |= test_traffic_channel_srv_info_does_not_anchor_control();
     rc |= test_type_d_site_id_message();
     rc |= test_type_d_adj_site_does_not_anchor_control();
+    rc |= test_unconfirmed_site_broadcast_stamps_no_control_sync();
     rc |= test_osm_info2_special_messages_are_not_targets();
     dsd_decode_clock_use_system();
 

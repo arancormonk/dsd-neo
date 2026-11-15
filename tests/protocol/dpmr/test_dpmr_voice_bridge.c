@@ -54,6 +54,10 @@ enum { DPMR_TEST_FIRST_CC_DIBIT = 36 + 144, DPMR_TEST_CC_DIBITS = 12 };
 /* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
    stands erasures in for every symbol after it; -1 for none. */
 static int g_interrupt_at = -1;
+/* The CCH half (0 or 1) whose CRC-7 fails in every frame: its first Hamming block decodes a payload bit the zero CRC
+   does not cover; -1 for none. The decoder runs six blocks per half, half 0's first. */
+static int g_fail_half = -1;
+static int g_hamming_calls;
 
 static void
 reset_capture(void) {
@@ -67,6 +71,8 @@ reset_capture(void) {
     g_dibit_calls = 0;
     g_boundary_at = -1;
     g_channel_code = 0U;
+    g_fail_half = -1;
+    g_hamming_calls = 0;
 }
 
 int
@@ -92,7 +98,11 @@ Hamming_12_8_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCod
     (void)rxBits;
     if (decodedBits != NULL && nbCodewords > 0) {
         DSD_MEMSET(decodedBits, 0, (size_t)nbCodewords * 8U);
+        if (g_fail_half >= 0 && g_hamming_calls % 12 == g_fail_half * 6) {
+            decodedBits[0] = 1;
+        }
     }
+    g_hamming_calls++;
     return true;
 }
 
@@ -868,6 +878,49 @@ test_process_dpmr_voice_cut_by_an_input_interruption_publishes_nothing(void) {
     return rc;
 }
 
+/* Two FS2 frames each with one CCH half passing its CRC-7 (one chance in 128 apiece) confirm a transmission only when
+   the second runs on from the first, its FS2 one frame (384 symbols) later. Under Auto, noise hands 2400/4 hundreds of
+   FS2 matches an hour between other protocols' syncs, and two weak frames seconds apart confirmed a transmission of
+   noise, published a call and decoded its voice. */
+static int
+test_process_dpmr_voice_weak_frames_confirm_only_when_they_run(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.dpmr_color_code = -1;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+
+    reset_capture();
+    g_fail_half = 1;
+    state.symbolcnt = 10000U;
+    rc |= expect_int("weak-first-verdict", processdPMRvoice(&opts, &state), 1);
+    rc |= expect_int("weak-first-unconfirmed", state.dpmr_confirmed, 0);
+
+    /* Seconds later, other protocols' syncs between: no run. */
+    reset_capture();
+    g_fail_half = 1;
+    state.symbolcnt = 10000U + 5000U;
+    rc |= expect_int("weak-apart-verdict", processdPMRvoice(&opts, &state), 1);
+    rc |= expect_int("weak-apart-unconfirmed", state.dpmr_confirmed, 0);
+    rc |= expect_int("weak-apart-plays-nothing", (int)g_mbe_calls, 0);
+    rc |= expect_int("weak-apart-no-call", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+
+    /* The next frame runs on from it, a symbol late: a transmission, which publishes and plays. */
+    reset_capture();
+    g_fail_half = 1;
+    state.symbolcnt = 10000U + 5000U + 385U;
+    rc |= expect_int("weak-run-verdict", processdPMRvoice(&opts, &state), 1);
+    rc |= expect_int("weak-run-confirmed", state.dpmr_confirmed, 1);
+    rc |= expect_int("weak-run-plays", (int)g_mbe_calls, 8);
+    rc |= expect_int("weak-run-call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -878,6 +931,7 @@ main(void) {
     rc |= test_enc_indication_is_the_frames_own();
     rc |= test_deinterleave_transposes_6x12_blocks();
     rc |= test_crc7_and_air_interface_id_helpers();
+    rc |= test_process_dpmr_voice_weak_frames_confirm_only_when_they_run();
     rc |= test_superframe_part_updates_called_and_calling_ids();
     rc |= test_unconfirmed_superframe_part_publishes_nothing();
     rc |= test_id_print_does_not_publish_the_color_code();

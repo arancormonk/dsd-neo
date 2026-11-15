@@ -274,6 +274,7 @@ test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
 
     state.firstframe = 1;
     ctx.mutecurrentslot = 0;
+    ctx.corroborating_syncs = 1;
     x2tdma_process_voice_frames(&opts, &state, &ctx);
     assert(state.firstframe == 0);
     assert(g_mbe_calls == 1);
@@ -285,6 +286,7 @@ test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
     append_zeros(18 + 36);
     state.firstframe = 0;
     ctx.mutecurrentslot = 0;
+    ctx.corroborating_syncs = 1;
     x2tdma_process_voice_frames(&opts, &state, &ctx);
     assert(g_mbe_calls == 3);
     assert(g_play_calls[0] == 3);
@@ -294,6 +296,7 @@ test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
     reset_stubs();
     append_zeros(18 + 36);
     ctx.mutecurrentslot = 1;
+    ctx.corroborating_syncs = 1;
     x2tdma_process_voice_frames(&opts, &state, &ctx);
     assert(g_mbe_calls == 0);
     /* Issue #654: a data or idle timeslot calls no mixer; there is no pending frame to drain. */
@@ -322,6 +325,7 @@ test_slot_iteration_voice_and_data_state(void) {
     prepare_stream_after_slot(X2TDMA_BS_DATA_SYNC, opts.inverted_x2tdma);
     dibit_p = dibits;
 
+    ctx.follows_superframe = 1;
     x2tdma_process_slot_iteration(&opts, &state, &ctx, 0, &dibit_p);
     assert(dibit_p == dibits + 144);
     assert(state.currentslot == 0);
@@ -381,6 +385,15 @@ total_play_calls(void) {
     return g_play_calls[0] + g_play_calls[1];
 }
 
+/* The superframe about to be read follows a whole one on this carrier with no hunt gap, as every superframe of a call
+   after its first does: corroborated from its first burst (x2tdma_superframe_corroborated()). */
+static void
+follow_a_superframe(dsd_state* state) {
+    state->x2tdma_superframe_valid = 1U;
+    state->x2tdma_superframe_carrier_seq = state->carrier_seq;
+    state->x2tdma_superframe_end_symbol = state->symbolcnt - 24U;
+}
+
 /* Issue #654: every mixer call carries the frame the vocoder just synthesized. A superframe whose slots alternate
    between voice and data mixes exactly its voice frames, in every output format: a data slot no longer drains the
    mono buffer a second time. */
@@ -402,6 +415,7 @@ test_superframe_mixes_only_synthesized_frames(void) {
         reset_stubs();
         prepare_voice_superframe(dibits);
         state.dibit_buf_p = dibits + 144;
+        follow_a_superframe(&state);
         processX2TDMAvoice(&opts, &state);
         assert(g_mbe_calls == 18);
         assert(total_play_calls() == g_mbe_calls);
@@ -410,6 +424,7 @@ test_superframe_mixes_only_synthesized_frames(void) {
         reset_stubs();
         prepare_superframe(dibits, mixed);
         state.dibit_buf_p = dibits + 144;
+        follow_a_superframe(&state);
         processX2TDMAvoice(&opts, &state);
         assert(g_mbe_calls == 9);
         assert(total_play_calls() == g_mbe_calls);
@@ -434,6 +449,7 @@ test_voice_slot_not_read_back_whole_decodes_nothing(void) {
     reset_stubs();
     prepare_voice_superframe(dibits);
     state.dibit_buf_p = dibits + 144;
+    follow_a_superframe(&state);
     state.currentslot = 1;
     dsd_state_note_sync_readback(&state, 60);
     processX2TDMAvoice(&opts, &state);
@@ -445,6 +461,7 @@ test_voice_slot_not_read_back_whole_decodes_nothing(void) {
     reset_stubs();
     prepare_voice_superframe(dibits);
     state.dibit_buf_p = dibits + 144;
+    follow_a_superframe(&state);
     dsd_state_note_sync_readback(&state, 54);
     processX2TDMAvoice(&opts, &state);
     assert(g_mbe_calls == 18);
@@ -470,6 +487,7 @@ test_voice_superframe_split_by_a_carrier_boundary_publishes_nothing(void) {
     reset_stubs();
     prepare_voice_superframe(dibits);
     state.dibit_buf_p = dibits + 144;
+    follow_a_superframe(&state);
     processX2TDMAvoice(&opts, &state);
     assert(g_mbe_calls == 18);
     assert(dsd_call_state_get(&state, 0, &call) > 0);
@@ -480,6 +498,7 @@ test_voice_superframe_split_by_a_carrier_boundary_publishes_nothing(void) {
     reset_stubs();
     prepare_voice_superframe(dibits);
     state.dibit_buf_p = dibits + 144;
+    follow_a_superframe(&state);
     /* Inside the sixth slot's second AMBE half: its first frame and its signalling were read before the move. */
     g_boundary_at = 90 + (4 * 234) + 144 + 10;
     processX2TDMAvoice(&opts, &state);
@@ -507,6 +526,7 @@ test_voice_superframe_cut_by_an_input_interruption_publishes_nothing(void) {
     reset_stubs();
     prepare_voice_superframe(dibits);
     state.dibit_buf_p = dibits + 144;
+    follow_a_superframe(&state);
     /* Inside the sixth slot's second AMBE half: its first frame and its signalling were read before the cut. */
     g_interrupt_at = 90 + (4 * 234) + 144 + 10;
     processX2TDMAvoice(&opts, &state);
@@ -657,6 +677,82 @@ test_back_to_back_direct_mode_superframes_mark_two_slot_carrier(void) {
     assert(state.tdma_carrier == 0U);
 }
 
+/* One X2-TDMA sync word is no call. Nothing in a superframe can fail a check, so voice plays and a voice call is
+   observed only once something beyond the sync that started it says X2-TDMA: a later sync word in its place, or a whole
+   superframe before it with no hunt gap. A lone sync word on noise played the superframe behind it, 18 frames, and
+   opened a call. A repeater's other timeslot corroborates after the first burst, which is read past; direct mode,
+   whose other timeslot is silent, plays from its second superframe. Once a superframe proved itself the transmission
+   is corroborated, so a hunt gap later in the call (a missed sync) mutes nothing, until the carrier goes. */
+static void
+test_uncorroborated_superframe_plays_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int dibits[144];
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.pulse_digi_out_channels = 2;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_uncorroborated_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    processX2TDMAvoice(&opts, &state);
+    assert(g_mbe_calls == 0);
+    assert(total_play_calls() == 0);
+    assert(dsd_call_state_get(&state, 0, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+    assert(dsd_call_state_get(&state, 1, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+
+    /* A repeater's superframe heard from its first sync: the other timeslot's sync after the first burst. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_voice_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    processX2TDMAvoice(&opts, &state);
+    assert(g_mbe_calls == 15);
+    assert(total_play_calls() == g_mbe_calls);
+    assert(dsd_call_state_get(&state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+
+    /* Direct mode: the first superframe plays nothing, the one that follows it with no gap plays whole. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    read_ms_superframe(&opts, &state, dibits, 24U);
+    assert(g_mbe_calls == 0);
+    assert(dsd_call_state_get(&state, 0, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+    read_ms_superframe(&opts, &state, dibits, 24U);
+    assert(g_mbe_calls == 18);
+    assert(dsd_call_state_get(&state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    /* The transmission stays corroborated: a superframe after a hunt gap (a missed sync mid-call) plays whole too. */
+    read_ms_superframe(&opts, &state, dibits, 48U);
+    assert(g_mbe_calls == 18);
+    /* Until the carrier goes (noCarrier() forgets it): then a lone superframe proves nothing again. */
+    state.x2tdma_corroborated = 0U;
+    read_ms_superframe(&opts, &state, dibits, 48U);
+    assert(g_mbe_calls == 0);
+    /* Nor does a corroboration on another carrier count. */
+    state.x2tdma_corroborated = 1U;
+    state.x2tdma_corroborated_carrier_seq = state.carrier_seq + 1U;
+    read_ms_superframe(&opts, &state, dibits, 48U);
+    assert(g_mbe_calls == 0);
+
+    /* A repeater call after a hunt gap: its first burst plays, the transmission having proved itself before. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_voice_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    processX2TDMAvoice(&opts, &state);
+    assert(g_mbe_calls == 15 && state.x2tdma_corroborated == 1U);
+    state.symbolcnt += 500U;
+    reset_stubs();
+    prepare_voice_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    processX2TDMAvoice(&opts, &state);
+    assert(g_mbe_calls == 18);
+}
+
 int
 main(void) {
     test_voice_slot_not_read_back_whole_decodes_nothing();
@@ -669,6 +765,7 @@ main(void) {
     test_superframe_mixes_only_synthesized_frames();
     test_corroborated_superframe_marks_two_slot_carrier();
     test_back_to_back_direct_mode_superframes_mark_two_slot_carrier();
+    test_uncorroborated_superframe_plays_nothing();
     printf("X2TDMA_VOICE_HELPERS: OK\n");
     return 0;
 }

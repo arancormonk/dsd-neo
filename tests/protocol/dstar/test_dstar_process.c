@@ -212,12 +212,14 @@ dstar_header_decode_soft(struct dsd_state* state, const float soft_symbols[DSD_D
     return header_decode_soft_result;
 }
 
+/* A superframe read whole: @p voice_frames of its voice frames reached the vocoder and the speaker (all of a confirmed
+ * transmission's, none of another), every symbol was read and the slow data decoded either way. */
 static void
-assert_voice_loop_counts(int header_symbols, int expected_ui_calls) {
+assert_voice_loop_counts(int header_symbols, int expected_ui_calls, int voice_frames) {
     assert(soft_symbol_calls == header_symbols + DSTAR_EXPECTED_VOICE_DIBITS);
     assert(dibit_calls == DSTAR_EXPECTED_SLOW_DIBITS);
-    assert(mbe_frame_calls == DSTAR_VOICE_FRAMES);
-    assert(voice_play_calls == DSTAR_VOICE_FRAMES);
+    assert(mbe_frame_calls == voice_frames);
+    assert(voice_play_calls == voice_frames);
     assert(slow_data_calls == 1);
     assert(ui_calls == expected_ui_calls);
     assert(watchdog_history_calls == DSTAR_VOICE_FRAMES);
@@ -268,13 +270,19 @@ test_voice_process_without_telemetry(void) {
     reset_counters();
 
     /* Unconfirmed on its own: one superframe whose slow data checked nothing is weak
-     * evidence, and weak evidence has to repeat (#421). */
+     * evidence, and weak evidence has to repeat (#421). Its voice plays nothing and opens no call: one sync word on
+     * receiver noise is no call. */
     assert(processDSTAR(&opts, &state) == 0);
 
-    assert_voice_loop_counts(0, 0);
+    assert_voice_loop_counts(0, 0, 0);
     assert(header_decode_soft_calls == 0);
-    assert_ambe_frames_follow_interleave(0);
     assert_slow_data_follows_each_voice_frame(0);
+
+    /* The next superframe confirms the transmission as it starts, and plays. */
+    reset_counters();
+    assert(processDSTAR(&opts, &state) == 1);
+    assert_voice_loop_counts(0, 0, DSTAR_VOICE_FRAMES);
+    assert_ambe_frames_follow_interleave(0);
 }
 
 static void
@@ -287,10 +295,11 @@ test_voice_process_with_telemetry_attached(void) {
     opts.pulse_digi_out_channels = 2;
     reset_counters();
     telemetry_active = 1;
+    state.dstar_confirmed = 1; // a transmission its header confirmed
 
     processDSTAR(&opts, &state);
 
-    assert_voice_loop_counts(0, DSTAR_VOICE_FRAMES);
+    assert_voice_loop_counts(0, DSTAR_VOICE_FRAMES, DSTAR_VOICE_FRAMES);
     assert(header_decode_soft_calls == 0);
 }
 
@@ -310,7 +319,7 @@ test_header_process_captures_header_then_voice(void) {
     assert(header_decode_soft_calls == 1);
     assert(captured_soft_symbols[0] == 0.25F);
     assert(captured_soft_symbols[DSD_DSTAR_HEADER_CODED_BITS - 1] == 165.0F);
-    assert_voice_loop_counts(DSD_DSTAR_HEADER_CODED_BITS, 0);
+    assert_voice_loop_counts(DSD_DSTAR_HEADER_CODED_BITS, 0, DSTAR_VOICE_FRAMES);
     assert_ambe_frames_follow_interleave(DSD_DSTAR_HEADER_CODED_BITS);
     assert_slow_data_follows_each_voice_frame(DSD_DSTAR_HEADER_CODED_BITS);
 }
@@ -332,8 +341,9 @@ test_header_process_reports_the_header_crc_verdict(void) {
     assert(processDSTAR_HD(&opts, &state) == 0);
 
     assert(header_decode_soft_calls == 1);
-    /* The voice frame is consumed regardless: that is the point of reporting the failure. */
-    assert_voice_loop_counts(DSD_DSTAR_HEADER_CODED_BITS, 0);
+    /* The voice frame is consumed regardless: that is the point of reporting the failure. Nothing confirmed it, so
+     * none of it plays. */
+    assert_voice_loop_counts(DSD_DSTAR_HEADER_CODED_BITS, 0, 0);
     header_decode_soft_result = 1;
 }
 
@@ -435,6 +445,7 @@ test_voice_superframe_split_by_a_carrier_boundary_is_dropped(void) {
         opts.floating_point = 1;
         opts.pulse_digi_out_channels = 1;
         reset_counters();
+        state.dstar_confirmed = 1; // a confirmed transmission's superframe, whose voice plays up to the cut
         boundary_at = boundaries[b];
 
         (void)processDSTAR(&opts, &state);
@@ -468,6 +479,7 @@ test_voice_superframe_cut_by_an_input_interruption_is_dropped(void) {
         opts.floating_point = 1;
         opts.pulse_digi_out_channels = 1;
         reset_counters();
+        state.dstar_confirmed = 1; // a confirmed transmission's superframe, whose voice plays up to the cut
         interrupt_at = cuts[c];
 
         (void)processDSTAR(&opts, &state);

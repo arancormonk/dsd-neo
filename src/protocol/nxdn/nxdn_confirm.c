@@ -24,6 +24,41 @@ nxdn_confirm_reset(dsd_state* state) {
     state->nxdn_confirm_frame_evidence = 0;
     state->nxdn_confirm_scch_streak = 0;
     state->nxdn_confirm_frame_scch = 0;
+    state->nxdn_confirm_frame_isolated = 0;
+    state->nxdn_confirm_strong_waits = 0;
+    state->nxdn_confirm_frame_checks = 0;
+    state->nxdn_confirm_strong_pending = 0;
+    state->nxdn_confirm_last_frame_valid = 0;
+}
+
+void
+nxdn_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol, int sync_runs, int sync_corroborated) {
+    if (!state) {
+        return;
+    }
+    const uint32_t since = frame_symbol - state->nxdn_confirm_last_frame_symbol;
+    const int spaced = state->nxdn_confirm_last_frame_valid
+                       && since + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP >= NXDN_CONFIRM_FRAME_SYMBOLS
+                       && since <= NXDN_CONFIRM_FRAME_SYMBOLS + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP;
+    const int runs_on = sync_runs || spaced;
+    state->nxdn_confirm_last_frame_symbol = frame_symbol;
+    state->nxdn_confirm_last_frame_valid = 1;
+    state->nxdn_confirm_frame_isolated = (uint8_t)!runs_on;
+    state->nxdn_confirm_strong_waits = (uint8_t)(!runs_on && !sync_corroborated);
+    if (!runs_on) {
+        state->nxdn_confirm_weak_streak = 0;
+        state->nxdn_confirm_scch_streak = 0;
+        state->nxdn_confirm_strong_pending = 0;
+        return;
+    }
+    if (state->nxdn_confirm_strong_pending) {
+        /* The frame before this one passed a strong check, and this one was read a frame after it: a transmission. A
+           frame the frame sync vouches for on its own run (NXDN96) says nothing of the frame before. */
+        state->nxdn_confirm_strong_pending = 0;
+        if (spaced) {
+            state->nxdn_confirmed = 1;
+        }
+    }
 }
 
 void
@@ -33,6 +68,7 @@ nxdn_confirm_begin_frame(dsd_state* state) {
     }
     state->nxdn_confirm_frame_evidence = 0;
     state->nxdn_confirm_frame_scch = 0;
+    state->nxdn_confirm_frame_checks = 0;
 }
 
 void
@@ -57,6 +93,8 @@ void
 nxdn_confirm_frame_rejected(dsd_state* state) {
     if (state) {
         state->nxdn_confirm_scch_streak = 0;
+        state->nxdn_confirm_frame_isolated = 0;
+        state->nxdn_confirm_strong_waits = 0;
     }
 }
 
@@ -75,6 +113,21 @@ nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence) {
            it is noted as heard, and confirms nothing. */
         state->nxdn_site.foreign_control_m = dsd_decode_now_mono_s();
         return;
+    }
+    if (state->nxdn_confirm_strong_waits) {
+        /* An isolated frame's strong check waits for the next frame to run on from it, and counts as a weak one
+           meanwhile, unless another check of the same frame passed too: two CRCs of one frame are a transmission. */
+        if (state->nxdn_confirm_frame_checks < 0xFFU) {
+            state->nxdn_confirm_frame_checks++;
+        }
+        if (evidence == NXDN_EVIDENCE_STRONG) {
+            state->nxdn_confirm_strong_pending = 1;
+        }
+        const int holds = state->nxdn_confirm_strong_pending && state->nxdn_confirm_frame_checks >= 2U;
+        if (holds) {
+            state->nxdn_confirm_strong_pending = 0;
+        }
+        evidence = holds ? NXDN_EVIDENCE_STRONG : NXDN_EVIDENCE_WEAK;
     }
     if (evidence == NXDN_EVIDENCE_STRONG) {
         state->nxdn_confirm_frame_evidence = (uint8_t)NXDN_EVIDENCE_STRONG;
@@ -100,6 +153,8 @@ nxdn_confirm_end_frame(dsd_state* state) {
     if (!state) {
         return;
     }
+    state->nxdn_confirm_frame_isolated = 0;
+    state->nxdn_confirm_strong_waits = 0;
     if (!state->nxdn_confirm_frame_scch) {
         state->nxdn_confirm_scch_streak = 0;
     }

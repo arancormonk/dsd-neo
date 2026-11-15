@@ -276,7 +276,7 @@ int rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t c
 /**
  * @brief rtl_stream_read_ex2() with the FSK voice lane (issue #518): into @p voice (as many as @p out, or NULL) each
  * sample's voice-lane sample, made from the same discriminator output, resampled the same way and read at the same
- * place, flags included. It is FM monitor audio, not the peak-normalised FSK output: 1 kHz at 3 kHz deviation reads
+ * place, flags included. It is FM monitor audio, not the FSK output on the discriminator's fixed scale: 1 kHz at 3 kHz deviation reads
  * 0.125 peak before its de-emphasis, which rtl_stream_monitor_deemph_gain() makes up while the lane runs. A sample the
  * lane did not run for (rtl_stream_set_voice_lane() off when the demod made it, a stream not on the FSK discriminator)
  * reads 0. @p out and @p flags come out exactly as rtl_stream_read_ex2() writes them, the lane on or off.

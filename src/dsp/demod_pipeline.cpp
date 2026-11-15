@@ -2275,7 +2275,7 @@ squelch_auto_run(struct demod_state* d) {
 
 /* A NOISE setting runs the noise squelch on the FM monitor, or the M17 encoder's, whose channel plan has a band above
    voice; on an AM channel, one too narrow for the band (8 and 10 kHz NFM), or the 9600 bit/s FSK path (whose
-   discriminator output is peak-normalised, not the radians the noise squelch is calibrated on), the tracker runs it as
+   discriminator output is on the modem's fixed scale in hertz, not the radians the noise squelch is calibrated on), the tracker runs it as
    AUTO with the same N. */
 static int
 squelch_noise_wanted(struct demod_state* d) {
@@ -2771,13 +2771,12 @@ voice_lane_track_coefficient(struct demod_state* d) {
 }
 
 /* The voice lane's discriminator over the block's samples into voice_result (issue #518): the phase step per sample
-   less the slow carrier centring, the modem's own computation ahead of its peak normaliser, from where the modem stood
+   less the slow carrier centring, the modem's own computation ahead of its fixed scale, from where the modem stood
    before this block (@p modem, its state then), so the lane is the modem's centred output in every case: a reset, a new
    configuration or the lane turning on mid-stream. Then the FM monitor's output scale for the rate the discriminator
    runs at (DSD_DEMOD_MONITOR_OUTPUT_SCALE) and the lane's de-emphasis. So EDACS analog voice reads at the monitor
-   audio's level, with the level information the normaliser throws away, and its de-emphasis is the one
-   dsd_demod_deemph_compensation() makes up. It runs beside the modem, never inside it, so the modem's loop, which every
-   FSK digital decode runs, stays as it was. */
+   audio's level, and its de-emphasis is the one dsd_demod_deemph_compensation() makes up. It runs beside the modem,
+   never inside it, so the modem's loop, which every FSK digital decode runs, stays as it was. */
 static void
 voice_lane_run(struct demod_state* d, const dsd_fsk_modem_state* modem) {
     const int rate_hz = d->complex_rate > 0 ? d->complex_rate : 48000;

@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -42,6 +43,35 @@ run_frame(dsd_state* state, int evidence) {
         provoice_confirm_note_evidence(state, (provoice_evidence)evidence);
     }
     provoice_confirm_end_frame(state);
+}
+
+/* "In a row" is in time, where frames say where they begin: the second frame's sync one frame after the first's, within
+ * a symbol. Two weak frames further apart are two lone frames, and the first frame after a reset runs on from nothing. */
+static void
+check_weak_frames_must_run(dsd_state* state) {
+    static const struct {
+        uint32_t gap;
+        int confirms;
+    } runs[] = {
+        {PROVOICE_CONFIRM_FRAME_SYMBOLS, 1},
+        {PROVOICE_CONFIRM_FRAME_SYMBOLS - 1U, 1},
+        {PROVOICE_CONFIRM_FRAME_SYMBOLS + 1U, 1},
+        {PROVOICE_CONFIRM_FRAME_SYMBOLS - 2U, 0},
+        {PROVOICE_CONFIRM_FRAME_SYMBOLS + 2U, 0},
+        {2U * PROVOICE_CONFIRM_FRAME_SYMBOLS, 0},
+        {5000U, 0},
+    };
+
+    for (size_t i = 0; i < sizeof(runs) / sizeof(runs[0]); i++) {
+        char label[96];
+        provoice_confirm_reset(state);
+        provoice_confirm_note_frame_start(state, 0xFFFFFF00U);
+        run_frame(state, PROVOICE_EVIDENCE_WEAK);
+        provoice_confirm_note_frame_start(state, 0xFFFFFF00U + runs[i].gap);
+        run_frame(state, PROVOICE_EVIDENCE_WEAK);
+        DSD_SNPRINTF(label, sizeof label, "two weak frames %u symbols apart", (unsigned)runs[i].gap);
+        expect(label, provoice_confirm_is_confirmed(state), runs[i].confirms);
+    }
 }
 
 int
@@ -83,6 +113,8 @@ main(void) {
     expect("a gap breaks the weak streak", provoice_confirm_is_confirmed(state), 0);
     run_frame(state, PROVOICE_EVIDENCE_WEAK);
     expect("the streak resumes from the gap", provoice_confirm_is_confirmed(state), 1);
+
+    check_weak_frames_must_run(state);
 
     /* Reporting the same frame twice is one frame's worth of evidence, not two -- otherwise
      * a single false match would confirm itself. */

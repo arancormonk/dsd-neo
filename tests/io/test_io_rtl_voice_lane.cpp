@@ -5,9 +5,9 @@
 
 /*
  * Issue #518 B10: the FSK voice lane through the real stream. EDACS reads analog calls on the 9600 bit/s FSK
- * discriminator, whose output the modem normalises to a +/-30000 peak whatever the signal: the release register needs
- * that, but the level of the voice is gone from it. The stream now carries a second, calibrated lane beside it (the
- * discriminator ahead of the normaliser, at the FM monitor's scale and through its own de-emphasis), which the demod
+ * discriminator, whose output the modem gives on its fixed scale with no de-emphasis: the release register reads it,
+ * but it is not at the monitor's level. The stream now carries a second, calibrated lane beside it (the
+ * discriminator ahead of that scale, at the FM monitor's scale and through its own de-emphasis), which the demod
  * makes, the output resampler resamples with its own history, and the output ring carries at the same positions as the
  * samples and their squelch flags, while EDACS asks for it (rtl_stream_set_voice_lane()).
  *
@@ -21,18 +21,17 @@
  * stopped part-way with the lane on and resumed at 24 kHz, resampled back to 48 kHz. DSP_FSK_VOICE_LANE covers the
  * lane's de-emphasis following a rate change, and a resampler redesign, inside one demodulator.
  *
- * - The normalised samples and the flags are bit for bit the same whether the lane runs, stops part-way or never runs.
+ * - The FSK samples and the flags are bit for bit the same whether the lane runs, stops part-way or never runs.
  * - Every batch the demod made with the lane off reads silence on it; with it on, the lane carries the tone at the
  *   monitor's level (0.125 peak once the published de-emphasis gain makes up the lane's de-emphasis, which reads 1
  *   while the lane is off), and the tone 20 dB down reads 20 dB down.
- * - With no de-emphasis the lane is the normalised lane times its slowly moving normaliser gain, sample for sample: at
+ * - With no de-emphasis the lane is the FSK lane times one fixed gain, sample for sample: at
  *   the same positions, not one sample either side, through the resampler, the gap and the retunes.
  *
- * Before, the stream had one lane and EDACS played the normalised one, so neither a fixed gain nor the AGC could set a
- * level from it.
+ * Before, the stream had one lane and EDACS played the FSK one, at the FSK scale with no de-emphasis.
  *
  * Given a capture sidecar and a mode (`provoice`, `dmr`, `nxdn48`, `nxdn96`, `dpmr`, `dstar`, `ysf`, `m17`, `p25p1`,
- * `x2tdma`), it instead replays that capture with the lane off and on throughout and checks the normalised samples and
+ * `x2tdma`), it instead replays that capture with the lane off and on throughout and checks the FSK samples and
  * flags are bit for bit the same: the evidence run over the committed FSK fixtures (docs/testing.md).
  */
 
@@ -485,7 +484,7 @@ median(std::vector<double> v) {
 }
 
 /* The share of samples where lane b is lane a times one slowly moving gain: each sample's ratio within 3% of the median
-   ratio around it, @p lag samples apart (0: at the same position). Samples near the normaliser's clip, or too small to
+   ratio around it, @p lag samples apart (0: at the same position). Samples near the PCM range, or too small to
    weigh, are left out. */
 double
 ratio_agreement(const Run& run, long lag) {
@@ -494,7 +493,7 @@ ratio_agreement(const Run& run, long lag) {
     const long n = (long)run.norm.size();
     for (long i = 256; i + 256 < n; i += 3) {
         const float x = run.norm[(size_t)i];
-        /* The tone only: in noise the normaliser's gain jumps at every new peak. */
+        /* The tone only: noise is left out. */
         if (std::fabs(x) < 3000.0f || std::fabs(x) > 28000.0f || (run.flags[(size_t)i] & DSD_SQUELCH_FLAG_CLOSED)) {
             continue;
         }
@@ -542,7 +541,7 @@ check_capture(const Spec& spec, double tau_gain) {
     expect("replay without the lane", replay(spec, kLaneNever, &never) == 0);
     expect("replay with the lane switched", replay(spec, kLaneToggled, &toggled) == 0);
     char label[160];
-    DSD_SNPRINTF(label, sizeof label, "%s: the normalised samples are bit for bit the same with the lane", name);
+    DSD_SNPRINTF(label, sizeof label, "%s: the FSK samples are bit for bit the same with the lane", name);
     expect(label, !never.norm.empty() && same_bits(never.norm, toggled.norm));
     DSD_SNPRINTF(label, sizeof label, "%s: the flags are the same with the lane", name);
     expect(label, never.flags == toggled.flags);
@@ -600,7 +599,7 @@ check_capture(const Spec& spec, double tau_gain) {
     /* A running stream says it can carry the lane, so EDACS plays it; a stopped one, whose ring is gone, says not. */
     DSD_SNPRINTF(label, sizeof label, "%s: the running stream can carry the lane, the stopped one cannot", name);
     expect(label, always.lane_available == 1 && always.lane_after_stop == 0);
-    DSD_SNPRINTF(label, sizeof label, "%s: the normalised samples are the same with the lane on throughout", name);
+    DSD_SNPRINTF(label, sizeof label, "%s: the FSK samples are the same with the lane on throughout", name);
     expect(label, same_bits(never.norm, always.norm) && never.flags == always.flags);
     double ref = 0.0;
     double quiet = 0.0;
@@ -624,7 +623,7 @@ check_capture(const Spec& spec, double tau_gain) {
     }
 }
 
-/* With no de-emphasis the lane is the normalised lane times the normaliser's slowly moving gain, at every position. */
+/* With no de-emphasis the lane is the FSK lane times one fixed gain, at every position. */
 void
 check_alignment(const Spec& spec) {
     const char* name = spec.name;
@@ -638,7 +637,7 @@ check_alignment(const Spec& spec) {
     const double before = ratio_agreement(run, -1);
     const double after = ratio_agreement(run, 1);
     char label[160];
-    DSD_SNPRINTF(label, sizeof label, "%s: the lane sits at the normalised samples' positions", name);
+    DSD_SNPRINTF(label, sizeof label, "%s: the lane sits at the FSK samples' positions", name);
     expect(label, at > 0.97 && before < 0.6 && after < 0.6);
     if (!(at > 0.97 && before < 0.6 && after < 0.6)) {
         DSD_FPRINTF(stderr, "  %s: ratio agreement %.3f at 0, %.3f at -1, %.3f at +1\n", name, at, before, after);
@@ -667,7 +666,7 @@ default_lane_gain(int rate_hz) {
    another rate seals the capture writer), and a run-time bandwidth or mode change re-plans it by stopping the stream
    and resuming the capture from its checkpoint on the new chain (issue #701). The lane stays asked for across that, as
    it does through an EDACS call: the resumed stream runs it from its first block at the new rate (24 kHz, resampled back
-   to 48 kHz), its de-emphasis gain the new rate's, the reference at its level, and the normalised samples and flags
+   to 48 kHz), its de-emphasis gain the new rate's, the reference at its level, and the FSK samples and flags
    the same as with the lane off. */
 void
 check_resumed(void) {
@@ -691,7 +690,7 @@ check_resumed(void) {
            replay_resumed(meta, kLaneAlways, stop_after, &never_stop, &always_stop, &always) == 0);
     expect("resumed at 24 kHz: the stopped streams made the same batches with the lane",
            never.resumed_at == always.resumed_at && never.resumed_at > 0U);
-    expect("resumed at 24 kHz: the normalised samples and flags are the same with the lane",
+    expect("resumed at 24 kHz: the FSK samples and flags are the same with the lane",
            !never.norm.empty() && same_bits(never.norm, always.norm) && never.flags == always.flags);
     expect("resumed at 24 kHz: both streams read", always.resumed_at > 0U && always.resumed_at < always.batches.size());
     const double gain48 = default_lane_gain(48000);
@@ -741,7 +740,7 @@ fixture_identity(const char* meta, const char* mode) {
         lane_samples += std::fabs(v) > 0.0f ? 1U : 0U;
     }
     const int same = same_bits(off.norm, on.norm) && off.flags == on.flags;
-    std::printf("%s %s: %zu samples, normalised and flags %s with the lane on (%zu lane samples)\n", meta, mode,
+    std::printf("%s %s: %zu samples, FSK and flags %s with the lane on (%zu lane samples)\n", meta, mode,
                 off.norm.size(), same ? "bit-identical" : "DIFFER", lane_samples);
     return same && lane_samples > 0U ? 0 : 1;
 }

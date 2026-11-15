@@ -33,6 +33,7 @@ extern "C" {
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -741,6 +742,45 @@ dsd_frame_sync_off_thread_tune_pending(void) {
     return 0;
 }
 
+/* The real P25p1 sync anchor names a C4FM sync word to the symbol grid (a tolerant one once its NID passed) and arms
+   its recording; these frames are read on no grid. */
+void
+dsd_symbol_note_p25p1_sync_anchor(dsd_state* state, const char* sync_dibits, int count) {
+    (void)state;
+    (void)sync_dibits;
+    (void)count;
+}
+
+void
+dsd_symbol_mark_p25p1_sync_anchor(const dsd_state* state, int count, dsd_matched_filter_seam_mark* out) {
+    (void)state;
+    (void)count;
+    out->valid = 0U;
+}
+
+int
+dsd_symbol_note_p25p1_marked_sync_anchor(dsd_state* state, const dsd_matched_filter_seam_mark* mark,
+                                         const char* sync_dibits, int count) {
+    (void)state;
+    (void)mark;
+    (void)sync_dibits;
+    (void)count;
+    return 0;
+}
+
+void
+dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
+    (void)state;
+}
+
+/* A dropped C4FM candidate hands the hunt the symbols it took (the real one is the frame sync's). */
+void
+frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols) {
+    (void)state;
+    (void)symbols;
+    (void)pass_symbols;
+}
+
 void
 dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
     (void)opts;
@@ -765,6 +805,28 @@ mbe_initMbeParms(mbe_parms* cur_mp, mbe_parms* prev_mp, mbe_parms* prev_mp_enhan
 void
 p25_status_accum_reset(dsd_state* state) {
     (void)state;
+}
+
+void
+p25_status_accum_reset_provisional(dsd_state* state) {
+    (void)state;
+}
+
+void
+p25_status_accum_withdraw_gate(dsd_state* state) {
+    (void)state;
+}
+
+void
+p25_status_accum_save(const dsd_state* state, p25_status_accum_snapshot* out) {
+    (void)state;
+    (void)out;
+}
+
+void
+p25_status_accum_restore(dsd_state* state, const p25_status_accum_snapshot* saved) {
+    (void)state;
+    (void)saved;
 }
 
 void

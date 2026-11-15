@@ -183,7 +183,7 @@ int dsd_squelch_noise_has_no_fm(const dsd_opts* opts, const dsd_state* state);
  * @brief Whether the session follows EDACS analog voice calls (issue #625): a selected EDACS session
  * (dsd_edacs_session(), so not Auto merely enabling ProVoice) with trunking on, off the analog family and the M17
  * encoder. On a radio input the auto squelch runs on the 9600 bit/s FSK path EDACS reads (a NOISE setting runs as AUTO
- * there, the FSK discriminator's output being peak-normalised), and EDACS ends an analog call on its gate; on audio
+ * there, the FSK discriminator's output being in hertz on a fixed scale), and EDACS ends an analog call on its gate; on audio
  * input no dynamic squelch runs for it. 0 for NULL @p opts; a NULL @p state counts as no EDACS addressing selected.
  */
 int dsd_squelch_edacs_analog_voice(const dsd_opts* opts, const dsd_state* state);

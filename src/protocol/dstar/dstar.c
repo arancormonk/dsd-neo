@@ -37,6 +37,12 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
      * outright. Weak on its own, so it has to repeat -- see dstar_confirm.h. */
     dstar_confirm_begin_frame(state);
     dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_WEAK);
+    /* Its voice reaches the vocoder, the speaker and the call record only from a confirmed transmission: a header whose
+       CRC passed, or the superframe before this one (dstar_confirm.h). One sync word on its own is no call: under Auto
+       the 4800/2 hunt matched one on receiver noise three times in four hours, and the superframe behind it played
+       noise as a call with no callsigns. A late-entry call loses its first superframe (420 ms), as the hunt's credit
+       already did. */
+    const int plays_voice = dstar_confirm_is_confirmed(state);
 
     /* The superframe belongs to one carrier (issue #575): its slow data decodes only after the last voice frame, so a
        header, text or position message read whole before the carrier boundary moved the carrier count (a replay read
@@ -64,8 +70,10 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
             break;
         }
 
-        processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_DSTAR, NULL, ambe_fr, NULL);
-        dsd_play_synthesized_voice(opts, state);
+        if (plays_voice) {
+            processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_DSTAR, NULL, ambe_fr, NULL);
+            dsd_play_synthesized_voice(opts, state);
+        }
 
         if (j != 20) {
             for (i = 0; i < 24; i++) {

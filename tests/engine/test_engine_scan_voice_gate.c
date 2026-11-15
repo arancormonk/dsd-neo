@@ -667,6 +667,26 @@ test_wide_ids_read_as_unknown(void) {
     g_allowed_radio = 0U;
 }
 
+/* A P25 Phase 1 frame dropped behind a sync word accepted within a tolerance (its NID failed the strict check) synced
+   nothing: the row's first sync, which starts the qualify window, waits for the next real one. */
+static void
+test_dropped_tolerant_p25_frame_is_no_sync(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    fix.state->p25_p1_sync_anchor.frame_dropped = 1U;
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.5);
+    CHECK("dropped candidate starts no qualify window", fix.state->scan_voice_gate_sync_m < 0.0);
+    fix.state->p25_p1_sync_anchor.frame_dropped = 0U;
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 101.0);
+    CHECK("next real sync does", fabs(fix.state->scan_voice_gate_sync_m - 101.0) < 1e-9);
+    fixture_free(&fix);
+}
+
 static void
 test_operator_hold_and_visit_reset(void) {
     gate_fixture fix;
@@ -1863,6 +1883,7 @@ main(void) {
     test_m17_voice_ignores_talkgroup_policy();
     test_wide_ids_read_as_unknown();
     test_source_only_blocked_radio_not_held();
+    test_dropped_tolerant_p25_frame_is_no_sync();
     test_operator_hold_and_visit_reset();
     test_hold_over_an_avoided_row_keeps_nothing();
     test_stale_epoch_cannot_rearm();
