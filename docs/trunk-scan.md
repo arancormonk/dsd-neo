@@ -388,8 +388,10 @@ During scanning:
   control`, `Following call`, `Retune pending`, `Retune retry`, `Manual hold`, `Idle dwell`, and the conventional
   `Voice` / `Voice tail` / `Activity hold` / `Qualify` — with a countdown on whichever window is running and the
   target's effective dwell and hold beside it, `Carrier` while an analog target's carrier holds it, and `Tone check`,
-  with no countdown, while an `nfm-conventional` target's carrier is held muted for the tone filter's check. The phrase
-  table is in [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
+  with no countdown, while an `nfm-conventional` target's carrier is held muted for the tone filter's check. With
+  skip-silent on, `Quiet check` or `No check: <reason>` takes the place of `Idle dwell` on a conventional target
+  ([What the screens and the log show](#what-the-screens-and-the-log-show)). The phrase table is in
+  [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
 - Idle targets rotate after their dwell time. Call following or a conventional activity hold suspends that dwell;
   once the target becomes idle again, a fresh full dwell starts. Time spent following the call or holding activity
   does not use up the next idle dwell. After a conventional activity hold the fresh dwell counts from the hold's end,
@@ -1018,22 +1020,39 @@ turned it on).
   holds a whole slice inside one of those bursts, so the burst timing alone never makes such a channel read silent.
 - The threshold and the rest of the measurement come from a calibration against DSD-neo's own reception: a signal
   1 dB weaker than the weakest one DSD-neo still receives was never read as silent in testing, in any mode, width or
-  supported sample rate, with or without busy neighbours (4,198 signal conditions). Noise alone on a flat noise floor
-  read silent in every test (880 noise conditions, 2.64 million trials). The method and figures are in
+  supported sample rate, with or without busy neighbours (10,316 signal conditions, 30.9 million trials). Every NFM
+  width was tested with both a narrow-band transmitter (one made for 12.5 kHz channels) and a wide-band one (made for
+  25 kHz channels), each with a test tone and with speech-like audio. Noise alone on a flat noise floor read silent in
+  every test (1,136 noise conditions, 3.41 million trials). The method and figures are in
   [Quiet-channel calibration](signal-search.md#quiet-channel-calibration).
 
 ### What a skip costs and logs
 
-- A visit is skipped at most once. The check waits for the first samples from the new frequency (up to 1 second after
-  the tune lands, or after the check starts again later in the visit), then needs about 100 ms of them and up to
-  400 ms for its answer. The scan acts on the answer at its next check: on a silent channel that comes every 300
-  symbols of the sync search (62.5 ms at 4800 symbols/s, 125 ms at 2400 symbols/s). So a skipped visit lasts about as
-  long as the tune and the reading take, not a whole dwell or hangtime.
-- Measured on a synthetic test scene (`tools/bench_scan_skip_silent.py`: 12 silent channels and three that each call
-  for 4 s about every 20 s, over a local rtl_tcp stream), a silent channel's visit took 0.33 s instead of 3.0 s (about
-  0.56 s on real channels with a USB RTL dongle), the scan caught 54 to 69 % of the calls instead of 13 to 17 % (for an
-  untyped list, which cannot hear analog, the share is of the digital calls), and CPU use did not rise (1.2 to 1.9 % of
-  one core either way).
+- A visit is skipped at most once. The check starts as soon as the channel lands, on a `-Y` row as on a trunk-scan
+  target. It waits for the first samples from the new frequency (up to 1 second after the tune lands, or after the check
+  starts again later in the visit), then needs about 100 ms of them and up to 400 ms for its answer. The scan acts on
+  the answer at its next check: on a channel with nothing on it that comes every 300 symbols of the sync search (62.5 ms
+  at 4800 symbols/s, 125 ms at 2400 symbols/s). Noise on some channels keeps looking like the start of a frame (NXDN48
+  and dPMR noise often does); there the scan also checks at the end of each such frame, and a reading it starts there
+  first lets 125 ms of the new channel's samples go by. So a skipped visit lasts about as long as the tune and the
+  reading take, not a whole dwell or hangtime.
+- The skip races the channel's normal wait: a trunk-scan conventional target's idle dwell (`dwell_ms`, 3 s by default;
+  `-t` does not set it), or a `-Y` row's hangtime (`-t`). A dwell or hangtime shorter than the check's own time gains
+  nothing: the visit ends on its dwell before the answer comes, and no skip line is logged. On the rtl_tcp loopback
+  bench below the check took about 0.26 to 0.39 s at the default retune mute, less with a shorter mute, and up to about
+  0.5 s on NXDN48 noise. The other way round, with skip-silent on a longer dwell costs little: a silent channel is still
+  left as soon as the check answers, so the extra time is spent only on channels that read busy or get no check, which
+  is where a call may be starting.
+- Measured on a synthetic test scene over an rtl_tcp loopback (`tools/bench_scan_skip_silent.py`: 12 silent channels and
+  three that each call for 4 s about every 20 s, 240 s per run, with a 3 s dwell or hangtime), every silent DMR, NFM and
+  P25 visit was skipped and no channel was skipped while a call was on it (a call that started during the reading was
+  missed up to once a run, a limit listed below). With the default retune mute a skipped visit took 0.27 to 0.34 s on
+  the rtl_tcp loopback; with a 25 ms mute (`DSD_NEO_RETUNE_MUTE_MS=25`, closer to a USB dongle, but still the rtl_tcp
+  loopback, not real hardware) it took 0.17 to 0.26 s. The scan caught 17 to 27 of the 35 calls with the setting on,
+  against 2 of 34 with it off (`-Y`, default mute). On a second loopback scene whose silent channels are NXDN48 and dPMR
+  channels carrying only noise, 99 to 100 % of those visits were skipped, each in 0.30 to 0.49 s (0 to 65 % before these
+  fixes). CPU use on the first scene was the same as without these changes (2.5 to 3.5 % of one core on a host busy with
+  other work); on the noise scene it rose by up to 0.3 points, because the scan made about twice as many visits.
 - A check that cannot finish (no samples in time, no answer in time, clipped samples) changes nothing: the visit runs
   its normal timing.
 - Each skip logs one line, for example
@@ -1051,14 +1070,19 @@ turned it on).
 - Trunked targets: they are never checked.
 - A held target or row (`Y`, or a target or row you typed the frequency of), a conventional activity hold, a target
   whose tone check is still running, and an open analog carrier, whatever its tone or code.
-- A `-Y` row under `--scan-voice-only` that has synced or heard voice: the sync ends the check (below), and the voice
-  gate decides when it steps. A row that has not synced yet can be skipped as under any other setting.
+- A `-Y` row under `--scan-voice-only` whose voice the voice gate has heard: the voice gate decides when it steps. A row
+  still in its qualify window can be skipped as under any other setting, as long as nothing it received passed its
+  protocol's checks (below).
 - A list with nowhere else to go: one target or row, or every other one avoided, cooling down after a failed retune,
   or skipped at every visit for its width.
 - A row whose step, walk or entry tune is still pending.
-- A visit with a sync or a carrier at any point, counted from the moment the scan starts tuning to the channel: that
-  ends the visit's check, and the visit runs its normal dwell, hangtime or hold. Any carrier counts, whatever its tone
-  or code, even one that ends before its tone check finishes.
+- A visit with a carrier, or with a frame whose content passed its protocol's checks (its CRC or error correction), at
+  any point, counted from the moment the scan starts tuning to the channel: that ends the visit's check, and the visit
+  runs its normal dwell, hangtime or hold. Any carrier counts, whatever its tone or code, even one that ends before its
+  tone check finishes. A sync alone does not count: noise that only looks like the start of a frame (NXDN48 and dPMR
+  noise often does) no longer keeps a silent channel. A frame that passed part of its checks and waits on the rest (a
+  D-STAR voice frame waiting for its header, for example) holds the skip back while it waits; if the check's answer is
+  more than a quarter of a second old by then, the visit keeps its normal timing.
 - A hold, an edit to the list or channel map, a width change, an input switch, a pause or a loaded config throws the
   reading away. Once nothing keeps the channel any more, the check can run again on the same visit.
 - A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API
@@ -1070,28 +1094,76 @@ turned it on).
 
 ### Receivers and settings that get no check
 
-On these the scan keeps its normal timing, as if the setting were off:
+On these the scan keeps its normal timing, as if the setting were off. The Scan Timing row names the reason (in
+brackets below), and the log says how to fix it; see
+[What the screens and the log show](#what-the-screens-and-the-log-show).
 
-- A native Airspy input (`-i airspy`): its samples lack the frequency shift the measurement needs. An Airspy through
-  SoapySDR is checked at 2.5, 3, 6 and 10 MS/s.
+- A native Airspy input (`-i airspy`): its samples lack the frequency shift the measurement needs (`tuner`). An
+  Airspy through SoapySDR is checked at 2.5, 3, 6 and 10 MS/s.
 - An RTL-SDR whose tuner takes offset tuning (an E4000, for example), which DSD-neo turns on by default over USB and
-  which also removes that shift.
+  which also removes that shift (`tuner`).
   Setting `DSD_NEO_RTL_OFFSET_TUNING=0` gives it the check. The common R820T and R828D tuners refuse offset tuning
   and are checked, and so is rtl_tcp unless `DSD_NEO_RTL_OFFSET_TUNING=1` turns offset tuning on there.
-- `DSD_NEO_DISABLE_FS4_SHIFT=1`, which turns that shift off.
-- A sample rate the calibration did not cover. Checked rates are 0.96, 1.024, 1.152, 1.2, 1.28, 1.44, 1.536, 1.6, 1.8,
-  1.92, 2.048 and 2.4 Msps, and an Airspy's 2.5, 3, 6 and 10 MS/s, exactly. An RTL-SDR or rtl_tcp stream runs 1.024,
-  1.152 or 1.536 Msps at every DSP bandwidth; a SoapySDR device picks its own rate and gets no check at any other.
-- Audio inputs (rigctl with TCP, UDP or Pulse audio, files), I/Q replay, and builds without radio support.
-- An analog width the calibration did not cover. Checked NFM widths are 8, 11.25, 12.5, 16, 20 and 25 kHz; checked AM
-  widths are 5, 6, 8, 10, 15 and 20 kHz, exactly. Any other width gets no check, for example NFM 10 or 15 kHz or AM
-  8.333 kHz.
-- An NFM row, target or session with no width set: its default filter is not one fixed width. Set a width (the row's
-  `--nfm-bandwidth-hz`, or the configured `--nfm-bandwidth-hz`) to give it the check. An AM channel with no width set
-  is checked at its 6 kHz default.
+- `DSD_NEO_DISABLE_FS4_SHIFT=1`, which turns that shift off (`tuner`).
+- A sample rate the calibration did not cover (`rate`). Checked rates are 0.96, 1.024, 1.152, 1.2, 1.28, 1.44, 1.536,
+  1.6, 1.8, 1.92, 2.048 and 2.4 Msps, and an Airspy's 2.5, 3, 6 and 10 MS/s, exactly. An RTL-SDR or rtl_tcp stream
+  runs 1.024, 1.152 or 1.536 Msps at every DSP bandwidth; a SoapySDR device picks its own rate and gets no check at
+  any other.
+- Audio inputs (rigctl with TCP, UDP or Pulse audio, files), I/Q replay, and builds without radio support (`input`).
+- An analog width the calibration did not cover (`width`). Checked NFM widths are 8, 10, 11.25, 12, 12.5, 15, 16, 20
+  and 25 kHz; checked AM widths are 5, 6, 8, 8.333 (8333 Hz), 10, 15 and 20 kHz, exactly. Any other width gets no
+  check, for example NFM 13.5 kHz or AM 12.5 kHz.
+- An NFM row, target or session with no width set: its default filter is not one fixed width (`width`). Set a width
+  (the row's `--nfm-bandwidth-hz`, or the configured `--nfm-bandwidth-hz`) to give it the check. An AM channel with no
+  width set is checked at its 6 kHz default. The same goes for the `-8` analog monitor beside a digital decoder: with
+  no NFM width set, the rows and targets it plays on get no check.
 - An untyped `-Y` row under a decoder set that holds ProVoice, X2-TDMA or TETRA, which have no known channel width for
-  the check. Auto (`-fa`, the default) holds ProVoice and X2-TDMA, so untyped rows under Auto are never checked. Type
-  the rows (a `mode` column), or choose decoders without those modes.
+  the check (`modes`). Auto (`-fa`, the default) holds ProVoice and X2-TDMA, so untyped rows under Auto are never
+  checked. Type the rows (a `mode` column), or choose decoders without those modes. An untyped row also gets no check
+  while the M17 encoder runs, or when none of the decoders in use is one the check knows (P25, DMR, NXDN, YSF, M17,
+  dPMR or D-STAR).
+
+### What the screens and the log show
+
+With the setting on, the terminal's Scan Timing row and the Monitor screen's scan timing line in the Qt and Android
+app show where the check stands, in place of `Idle dwell`, the voice gate's `Qualify` or a `-Y` row's `Hangtime`:
+
+- `Quiet check`: the check is running on this channel. If it finds the channel silent, the scan moves on early. If
+  the channel reads busy, the usual phrase comes back and the channel keeps its normal timing.
+- `No check: input`, `No check: tuner`, `No check: rate`, `No check: width` or `No check: modes`: this channel cannot
+  be checked, for the reason named in the list above, and keeps its normal timing. On a `-Y` row it shows only until
+  the row hears a call.
+
+The countdown beside the phrase is the same either way. A trunked target shows neither. In the Qt and Android app a
+screen reader also hears what the phrase means, once each time it changes, for example "Skip silent channels can't
+check channels on this input. Normal scan timing applies."
+
+When a reason first applies, the log gets one line that says what cannot be checked and how to fix it. Each line
+starts with `WARNING: scan: silent channel skip cannot check` and ends with `Normal scan timing applies.` A reason
+that covers the whole receiver is logged once, and again when the input or its sample rate changes; a channel's
+reason is logged once for each channel, and again after that channel, its list or the decoders change. Turning the
+setting off and on logs them again. `<channel>` is a target's label (or its id when it has none), or `row N` for a
+`-Y` row, counted from 1:
+
+- `input`: `... channels on audio input; it needs a radio input (rtl, rtltcp or soapy).`,
+  `... channels in an I/Q replay; it needs a live radio input.`, or
+  `... channels: this build has no radio support.` Use a radio input, live.
+- `tuner`: `... channels on a native Airspy input; open the Airspy through SoapySDR (-i soapy:driver=airspy) to have
+  them checked.`, or `... channels while offset tuning is on or DSD_NEO_DISABLE_FS4_SHIFT is set; set
+  DSD_NEO_RTL_OFFSET_TUNING=0, or unset DSD_NEO_DISABLE_FS4_SHIFT, to have them checked.`
+- `rate`: `... channels at 3.2 Msps, a sample rate it was not calibrated for; docs/trunk-scan.md lists the rates it
+  checks.` The checked rates are in the list above; on SoapySDR choose a device rate among them.
+- `width`: `... <channel> <MHz> MHz at NFM 13.5 kHz, a width it was not calibrated for; set --nfm-bandwidth-hz to
+  8000, 10000, 11250, 12000, 12500, 15000, 16000, 20000 or 25000 to have it checked.` (on AM: `--am-bandwidth-hz` to
+  5000, 6000, 8000, 8333, 10000, 15000 or 20000), `... <channel> <MHz> MHz: it has no NFM width set; set
+  --nfm-bandwidth-hz for it, or for the session, to have it checked.`, or `... <channel> <MHz> MHz: the -8 analog
+  monitor beside its decoder has no NFM width set; set --nfm-bandwidth-hz for the session, or turn -8 off, to have it
+  checked.`
+- `modes`: `... row N <MHz> MHz: ProVoice, among the decoders in use, has no known channel width; give the row a mode
+  (the mode column), or turn it off, to have it checked.` (naming each such decoder in use), `... row N <MHz> MHz
+  while the M17 encoder runs; turn the encoder off to have it checked.`, or `... row N <MHz> MHz: none of the
+  decoders in use has a known channel width; give the row a mode (the mode column), or turn on a decoder it checks
+  (P25, DMR, NXDN, YSF, M17, dPMR or D-STAR), to have it checked.`
 
 ### Limits
 
@@ -1121,6 +1193,16 @@ Turning the setting on accepts these:
 While a trunk scan or `-Y` runs, a sync search that gets no samples at all (a stalled rtl_tcp server, an audio input
 that stops sending) gives up its read after 100 ms on a radio input and 500 ms on audio input. The scan's own timers
 (dwell, visit cap, hangtime, departures) then run as on a silent channel, whether or not skip-silent is on.
+
+Under `-Y`, whether or not skip-silent is on, only frames whose content passed their protocol's checks keep a row past
+its hangtime. Noise that keeps looking like the start of a frame (NXDN48 and dPMR noise often does) used to keep a `-Y`
+row on an empty channel until the visit cap, or for good with no cap. Now the row leaves once `-t` has passed since it
+landed or since its last checked frame, whichever is later. A frame that passed part of its checks and waits on the rest
+holds the row a little longer, for at most 1 second, so a late-joined D-STAR call waiting for its header is not cut.
+ProVoice, X2-TDMA and TETRA frames, which have no such check, keep the row while they keep coming. DMR, P25, ProVoice
+and EDACS syncs restart the hangtime themselves, as before. NXDN on a conventional `-Y` scan holds the row its two extra
+seconds only after a frame whose own check passed: one short check that a noise frame passes by chance does not count,
+and neither does a run of failed control-channel checks.
 
 ## Limitations
 

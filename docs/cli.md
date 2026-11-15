@@ -500,7 +500,8 @@ Windows console runs:
   line was written. A failure that reaches an already committed row through late detail (an alias or
   position decoded after the row committed) updates history and the API feed but appends nothing to
   `-J`; a reacquired transmission that merges into the row appends its `Reacquired:` continuation with
-  the merged row's marker. A DMR embedded talker alias or GPS LC whose checksum failed is never applied.
+  the merged row's marker. A DMR embedded talker alias or GPS LC whose checksum failed is never applied, and a
+  talker alias, position or text is added only to a call of the protocol that sent it.
   A `-L` location file never receives a position decoded from a PDU that would carry either marker
   (see `-L`).
 
@@ -2363,8 +2364,14 @@ channel is delayed.
 
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`. The later of `-T`/`-Y` wins.
 - Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). The
-  later of `-T`/`-Y` wins. For NXDN the hold is refreshed only by frames whose content passed a CRC, so an open squelch
-  on an empty channel no longer parks the scan. `-Y` scans only a channel map you import (`-C`, a config `chan_csv`, or
+  later of `-T`/`-Y` wins. Only frames whose content passed their protocol's checks keep a row past `-t`: noise that
+  keeps matching a sync word (NXDN48 and dPMR noise often does) no longer holds a row on an empty channel, and the row
+  leaves once `-t` has passed since it landed or since its last checked frame. A frame still waiting on part of its
+  checks holds the row up to 1 s more; ProVoice, X2-TDMA and TETRA frames, which have no such check, hold it while they
+  come; DMR, P25, ProVoice and EDACS syncs restart `-t` as before
+  ([details](trunk-scan.md#skipping-silent-channels)). For NXDN the hold is refreshed only by a frame whose own
+  content passed its CRC (a lone short CRC that a noise frame passes by chance does not count), so an open squelch on
+  an empty channel no longer parks the scan. `-Y` scans only a channel map you import (`-C`, a config `chan_csv`, or
   an import during the session). With none, at start or after Clear channel map, it stays on its frequency until one is
   imported: channels a DMR site announces over the air are recorded, but `-Y` never steps to them, and neither the voice
   gate nor `--scan-max-visit-ms` ends a reception on their account. The Scan Timing row reads `No channel map`
@@ -2403,10 +2410,13 @@ channel is delayed.
   waiting out the `-t` hangtime. The check reads the channel's power against the receiver's noise for about 100 ms,
   and a row is skipped at most once a visit. A row carrying a signal DSD-neo can receive normally reads busy and keeps
   its normal timing, and so do a held row, an open analog carrier and a row whose voice the voice gate has heard; weak
-  or very short transmissions can be missed. It is off by default and is one setting for the session, never a row
-  option.
-  Some receivers, widths, sample rates and decoder sets get no check (an untyped row under Auto among them); the list,
-  the log line and the limits are in [Skipping silent channels](trunk-scan.md#skipping-silent-channels).
+  or very short transmissions can be missed. Only frames whose content passed their protocol's checks end the check,
+  so noise that merely matches a sync word does not keep a silent row. It is off by default and is one setting for
+  the session, never a row option.
+  While a row is being checked the Scan Timing row reads `Quiet check` instead of `Hangtime`. Some receivers, widths,
+  sample rates and decoder sets get no check (an untyped row under Auto among them): the row then reads `No check:`
+  and the reason (`input`, `tuner`, `rate`, `width` or `modes`), and the log says once how to fix it. The list, the
+  log lines and the limits are in [Skipping silent channels](trunk-scan.md#skipping-silent-channels).
   Per-visit ceiling: `--scan-max-visit-ms <ms>` (also `--scan-max-visit-ms=<ms>`; `0` disables, otherwise
   `1000..3600000`; default `0`) is the longest one visit to a row may last, with or without `--scan-voice-only`. It is a
   ceiling, not a reason to stay, so it can cut an ongoing call short: that is the point on an open microphone, and why
@@ -2638,7 +2648,8 @@ channel is delayed.
     countdown with a `7.0s` total, while `-t 0` shows `0.00 sec` above a `1.0s` total. These describe the setting
     and the scanner's timing window, respectively. The one-second window for `-t 0` means waiting for the next
     clock-second boundary, not a guaranteed full second of silence after the last sync. NXDN holds the scan two
-    extra seconds after each confirmed frame, so its countdown can initially exceed the displayed total.
+    extra seconds after each frame whose own content passed its CRC, so its countdown can initially exceed the
+    displayed total.
   - P25 Talk Complete, TDU, TDULC, MAC_END_PTT, MAC_IDLE, and MAC_HANGTIME mark a transmission boundary. They close
     that slot's media and start or refresh the traffic-carrier inactivity timer without returning to the control
     channel. A follow-up PTT/ACTIVE on the retained carrier opens a clean call epoch without retuning.

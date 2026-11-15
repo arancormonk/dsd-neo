@@ -2619,9 +2619,13 @@ The editor's Advanced section has **Voice only** and **Skip silent channels**. S
 channels moves on from a conventional target as soon as a quick signal check finds it silent,
 instead of after its idle dwell; weak or very short transmissions can be missed, and trunked
 systems, an open squelch, holds and receivers that cannot measure the channel (a native Airspy
-among them) keep normal timing. Both checkboxes are saved with the list but apply to the whole
-session at its next start: lists that differ cannot scan together ("Different skip-silent
-setting"). An unchecked box stays off even when Extra decoder arguments load a config file
+among them) keep normal timing. While it runs, the Monitor screen's scan timing line reads
+**Quiet check** while a target is being checked, and **No check:** with the reason (input,
+tuner, rate, width or modes) where it cannot be; the log says how to fix it, and a screen
+reader hears what the line means once each time it changes. Both checkboxes are saved with
+the list but apply to the whole session at its next start: lists that differ cannot scan
+together ("Different skip-silent setting"). An unchecked box stays off even when Extra
+decoder arguments load a config file
 (`--config`) that turns its setting on. See [Skipping silent channels](../docs/trunk-scan.md#skipping-silent-channels).
 Per-target squelch is CSV-only: import a target CSV whose `options` carry
 `--squelch-db <dB>` (whole dB from -100 to 0, 0 = off, omitted = inherit). It is not a

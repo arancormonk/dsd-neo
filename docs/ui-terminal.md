@@ -1092,6 +1092,8 @@ last sync. NXDN's additional grace period is described below.
 | `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | next whole second after `-t` |
 | `Carrier` | an analog row's carrier is open (an `nfm` or `am` row, an `nfm-conventional` or `am-conventional` target, or a row of an untyped list scanned under `-fA` or `-fM`): squelch open, whether or not audio plays | `-Y`: the hangtime window; trunk scan: the activity hold; none while the scan keeps traffic the tone filter rejected |
 | `Tone check` | an FM row's carrier (an `nfm` row or `nfm-conventional` target, or a row of an untyped list scanned under `-fA`) while the tone filter is still checking its tone or code, muted, for at most 800 ms (1,600 ms while the list holds a DCS code and a received code is still being confirmed) | none: the check is not activity, and the `-Y` hangtime or the target's hold or idle dwell runs on beneath it unchanged |
+| `Quiet check` | `--scan-skip-silent` is checking whether this conventional row or target is silent; shown in place of `Idle dwell`, `Qualify` or `Hangtime` | the one it replaces |
+| `No check: input`, `tuner`, `rate`, `width` or `modes` | `--scan-skip-silent` is on but cannot check this row or target, for the reason named (on a `-Y` row only until it hears a call); shown in place of `Idle dwell`, `Qualify` or `Hangtime`, and the log says once how to fix it ([details](trunk-scan.md#what-the-screens-and-the-log-show)) | the one it replaces |
 
 Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
 acquisition, so it never reads `Acquiring control`. An analog row (an `nfm` or `am` row or target, or any row of an
@@ -1127,9 +1129,10 @@ the tail and dwell waits add together. See the [scan timing example](trunk-scan.
 The row is not shown in compact view. The countdown is a published deadline differenced against the terminal's own
 clock, so it keeps running while the input is stalled and stops at `0.0s`; the phrase beside it is only as fresh as the
 last snapshot, which is published while samples flow. A narrow terminal cuts the row between whole fields at the edge
-rather than wrapping it. On an NXDN row under `-Y`, the decoder keeps the scan two seconds past each confirmed frame,
-so the `Hangtime` countdown can initially exceed its displayed total. That total is `floor(-t) + 1` seconds, matching the scanner's
-strict whole-second comparison; even `-t 0` waits for the next whole second.
+rather than wrapping it. On an NXDN row under `-Y`, the decoder keeps the scan two seconds past each frame whose own
+content passed its CRC, so the `Hangtime` countdown can initially exceed its displayed total. That total is
+`floor(-t) + 1` seconds, matching the scanner's strict whole-second comparison; even `-t 0` waits for the next whole
+second.
 
 Call Info repeats the answer on its own first line, because compact view hides the Input Output section:
 

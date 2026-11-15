@@ -573,10 +573,10 @@ Generated (do not edit/commit):
       stays: the 300-symbol hook, the 50 ms recheck, one phase step per call, the 400 ms request deadline and READY's
       250 ms age. A check suspended while its visit's landing is still in force (a revision moved, as the hunt's own
       symbol-profile requests did before they stopped moving the change number when they repeat the profile the
-      stream runs, or a note of change; defect B8) owes one republication (`scan_quiet_check::republish_owed`, set by the
-      reconcile or `dsd_engine_scan_quiet_invalidate()`, cleared by any publication or start): the next frame boundary
-      takes it once (`dsd_engine_scan_quiet_take_republish()`), since under syncs that keep the loop running no outer
-      pass or `noCarrier()` comes to publish it. The trunk scan's then owes the per-frame tick a pass
+      stream runs, or a note of change; defect B8) owes one republication (`scan_quiet_check::republish_owed`, set by
+      the reconcile or `dsd_engine_scan_quiet_invalidate()`, cleared by any publication or start): the next frame
+      boundary takes it once (`dsd_engine_scan_quiet_take_republish()`), since under syncs that keep the loop running no
+      outer pass or `noCarrier()` comes to publish it. The trunk scan's then owes the per-frame tick a pass
       (`live_scanner_trunk_quiet_frame_service()`), -Y publishes the row (`live_scanner_y_quiet_frame_yield()` ->
       `dsd_engine_scan_quiet_publish_row()`). Once per suspension, never per frame; nothing with the setting off.
     - REQUESTED: 400 ms (realtime), then cancelled and DONE; a lost, capture-changed or dropped request waits for the
@@ -670,9 +670,9 @@ Generated (do not edit/commit):
       word (NXDN48) would never leave with no visit cap. `live_scanner_y_content_frame_yield()` (after the quiet yield
       in `live_scanner_frame_boundary_yields()`) ends the loop for `noCarrier()` to step only when the pure predicate
       `live_scanner_y_frames_carry_nothing()` holds: -Y owns the step (no trunk scan, a user list, no voice gate owning
-      it, tone gate OFF, no analog carrier, which never reads open while synced), the hangtime rule `noCarrier()` applies
-      is due (`now - last_cc_sync_time > -t`; the DMR, P25 Phase 1 and 2, ProVoice and EDACS hunts stamp that anchor on
-      raw syncs, so those rows keep their old timing), no content a protocol's CRC/FEC gate passed for `-t`
+      it, tone gate OFF, no analog carrier, which never reads open while synced), the hangtime rule `noCarrier()`
+      applies is due (`now - last_cc_sync_time > -t`; the DMR, P25 Phase 1 and 2, ProVoice and EDACS hunts stamp that
+      anchor on raw syncs, so those rows keep their old timing), no content a protocol's CRC/FEC gate passed for `-t`
       (`live_scanner_y_window_start_m()`: the latest of `dsd_state::scan_y_content_m`, the anchor's decode-mono time,
       the end of the latest open verdict's hold, `dsd_state::scan_y_partial_until_m`, and the last frame of a protocol
       with no such gate, `dsd_state::scan_y_unchecked_m`; PARTIAL never counts as content, it only delays the step by
@@ -831,10 +831,12 @@ Generated (do not edit/commit):
       `test_scan_quiet_evidence_*`, and the frame-boundary service on the check's clock seam:
       `test_scan_quiet_frame_boundary_*`, `test_scan_quiet_frame_boundaries_run_every_step`,
       `test_scan_quiet_sync_free_visit_timing`, `test_scan_quiet_trunk_sync_free_publication`,
-      `test_scan_quiet_suspension_owes_one_republication`), `ENGINE_NO_CARRIER_RESET` (`test_live_loop_counts_only_checked_frames`,
+      `test_scan_quiet_suspension_owes_one_republication`), `ENGINE_NO_CARRIER_RESET`
+      (`test_live_loop_counts_only_checked_frames`,
       `test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict`,
-      `test_y_quiet_noise_syncs_still_step`, `test_trunk_quiet_noise_syncs_still_skip`,
-      `test_trunk_quiet_suspended_target_republished`, `test_y_quiet_suspended_row_republished`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_SIGNAL_SEARCH`,
+      `test_y_quiet_noise_syncs_still_step`,
+      `test_trunk_quiet_noise_syncs_still_skip`, `test_trunk_quiet_suspended_target_republished`,
+      `test_y_quiet_suspended_row_republished`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_SIGNAL_SEARCH`,
       `APP_COMMAND_QUEUE`, `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`, `FRAME_SYNC_HISTORY_CARRY`; the content-evidence sites in
       `P25_P1_SYNC_DISPATCH`, `P25_P2_RELIABILITY`, `DMR_CONFIDENCE_GATE`, `DMR_RAS_DETECT`, `NXDN_CONFIRM`,
       `DPMR_CONFIRM`, `M17_CONFIRM`, `DSTAR_CONFIRM` and `YSF_DCH_DECODE`.
@@ -2047,21 +2049,23 @@ suite runs under this compiler.
   it with 0, as a call in the wrong phase does. A slot keeps an ended call, and another protocol's call whose end
   never decoded, until the next call begins there (`-fa`, a `-Y` or trunk scan step between protocols), so the check
   sits in the store rather than in each writer: a DMR PI with another protocol's call open is held for the DMR call
-  the next checked LC opens (`dsd_state::dmr_pi_precall_*`), and an NXDN VCALL_IV or SCCH republish describes no call
-  there. The event rows follow the same rule (`dsd_call_state_update_is_protocols()`, `call_state_internal.h`): an
+  the next checked LC opens (`dsd_state::dmr_pi_precall_*`; it clears the call's inherited mark only when the call that
+  LC replaced was another protocol's, so after a DMR epoch the same transmission's voice opened the values stay
+  carried), and an NXDN VCALL_IV or SCCH republish describes no call there.
+  The event rows follow the same rule (`dsd_call_state_update_is_protocols()`, `call_state_internal.h`): an
   alias, position or text a protocol decoded reaches only its own protocol's call row (`dsd_event_enrich_alias()`,
   `_alias_ex()`, `_gps()`, `_text()`, `dsd_event_set_open_call_detail()` take the writer's protocol), so a P25 Motorola,
   Harris or Tait alias, a DMR talker alias, DMR/P25/NXDN GPS, DMR LIP and UDT NMEA, D-STAR slow data or an NXDN alias
   decoded before its own call opened leaves another protocol's open call alone; the P25 aliases that take their talker
   from the slot's call (Harris, Tait, and the Motorola source match) take it only from a P25 call, so no other
-  protocol's radio learns a P25 alias. Writers still choose the phase themselves where the store's rule is wider than theirs (a key choice record
-  takes an ended call, so P25 `p25_crypto_publish_canonical()` and the DMR autoload record only on the open call). An
-  identity a frame takes from the slot's call by copying that call's own protocol into an observation is outside this
-  check, so those readers keep their own protocol checks (`p25p1_current_call()`, `nxdn_scch_enrich_identity()`,
-  `ysf_enrich_identity()`, the DMR Cap+ seed). A P25 TDULC's link control, read after its end has run, takes an ended
-  call only when that end closed it: the TDULC ended it, or it follows back to back the TDU or TDULC that did
-  (`p25p1_terminator_note_end()`, `dsd_state::p25_p1_terminator_end_*`, `p25_lcw_from_tdulc()`'s `ended_epoch`),
-  never an older call the slot still holds.
+  protocol's radio learns a P25 alias. Writers still choose the phase themselves where the store's rule is wider than
+  theirs (a key choice record takes an ended call, so P25 `p25_crypto_publish_canonical()` and the DMR autoload record
+  only on the open call). An identity a frame takes from the slot's call by copying that call's own protocol into an
+  observation is outside this check, so those readers keep their own protocol checks (`p25p1_current_call()`,
+  `nxdn_scch_enrich_identity()`, `ysf_enrich_identity()`, the DMR Cap+ seed). A P25 TDULC's link control, read after its
+  end has run, takes an ended call only when that end closed it: the TDULC ended it, or it follows back to back the TDU
+  or TDULC that did (`p25p1_terminator_note_end()`, `dsd_state::p25_p1_terminator_end_*`, `p25_lcw_from_tdulc()`'s
+  `ended_epoch`), never an older call the slot still holds.
   Tests: `CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `NXDN_ENC_CLASS`, `P25_P1_TDULC`, `CORE_ALIAS_HANGTIME`,
   `DSTAR_HEADER_UTILS`, `NXDN_ALIAS_DECODE`.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
@@ -8802,9 +8806,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `tests/io/signal_quiet_calibrate.cpp`, a manual build-only driver, chose all three and drives its own detectors with
   explicit parameters; docs/signal-search.md "Quiet-channel calibration"). The domain is exactly the rendered cells:
   `dsd_signal_quiet_rate_supported(rate)` (every class) and `dsd_signal_quiet_analog_supported(kind, width, rate)`
-  (`kind` a `dsd_analog_demod`) match the calibrated capture rates and the Radio sheet's widths of that kind exactly;
-  elsewhere the engine makes no check. Changing
-  the measurement, the sub-windows, either list or a constant means re-running that calibration. It judges
+  (`kind` a `dsd_analog_demod`) match the calibrated capture rates and widths of that kind exactly
+  (`kQuietNfmWidthsHz`: the Radio sheet's NFM steps plus 10, 12 and 15 kHz; `kQuietAmWidthsHz`: its AM steps plus
+  8333 Hz; issue #834 A11, each width validated with both NFM transmitters); elsewhere the engine makes no check.
+  Changing the measurement, the sub-windows, either list or a constant means re-running that calibration. It judges
   `DSD_SIGNAL_QUIET_WINDOWS` (9) back-to-back sub-windows, each the smallest whole number of transforms of at least
   10 ms, in every requested width class (`DSD_SIGNAL_QUIET_CLASS_12K5`, `_6K25`, `_ANALOG` with the request's analog
   width, AM minimum to NFM maximum). The transform puts at least 8 bins across the narrowest class
@@ -12564,8 +12569,10 @@ Private per-protocol modules worth knowing about:
   no carrier reset between them counted as running, and under `-fa` two weak noise frames seconds apart, other
   protocols' syncs between them, confirmed a transmission, published a call and decoded its voice (one in 8 x 30 min
   of noise). Both halves in one frame is one in 16384 and confirms outright. Evidence confirms before the frame
-  publishes its identity, service and colour code; a signal search hears the frame's confirmation from
-  `dpmr_confirm_end_frame()`, after the publication (`DPMR_CONFIRM`,
+  publishes its identity, service and colour code (the console's per-frame `TG=`/`Src=` line, `dpmr_print_ids()`,
+  shows the slot's call only while the transmission is confirmed and that call is an open dPMR one, else the CRC ERR
+  fields); a signal search hears the frame's confirmation from `dpmr_confirm_end_frame()`, after the publication
+  (`DPMR_CONFIRM`,
   `DPMR_VOICE_BRIDGE`). `processdPMRvoice()` returns how many halves passed, `dsd_dispatch_handle_dpmr()`
   maps that to `DSD_FRAME_VERDICT_PROFILE_PROVEN` (for two seconds after the last decode) or `UNPRODUCTIVE`, and the
   engine clears both through the exported `dpmr_confirm_reset()` in `<dsd-neo/protocol/dpmr/dpmr.h>`.
