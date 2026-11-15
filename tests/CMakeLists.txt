@@ -2435,11 +2435,6 @@ target_include_directories(
     dsd-neo_test_nxdn_alias_decode
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-# Kenwood aliases go through the element dispatch, whose channel and text helpers live in the P25 and DMR libraries.
-target_link_libraries(
-    dsd-neo_test_nxdn_alias_decode
-    PRIVATE dsd-neo_proto_nxdn dsd-neo_proto_p25 dsd-neo_proto_dmr
-)
 add_test(NAME NXDN_ALIAS_DECODE COMMAND dsd-neo_test_nxdn_alias_decode)
 
 # NXDN Type-C unit activity rows (REG_RESP, REG_C_RESP, GRP_REG_RESP, REM_CON_REQ / RESP) through a CAC and the
@@ -2454,14 +2449,6 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
 )
-target_link_libraries(
-    dsd-neo_test_nxdn_unit_activity
-    PRIVATE
-        dsd-neo_proto_nxdn
-        dsd-neo_proto_p25
-        dsd-neo_proto_dmr
-        dsd-neo_test_support
-)
 add_test(NAME NXDN_UNIT_ACTIVITY COMMAND dsd-neo_test_nxdn_unit_activity)
 
 # NXDN Kenwood alias learning through the element dispatch: only a complete alias bound to the active call is learned,
@@ -2474,15 +2461,43 @@ target_include_directories(
     dsd-neo_test_nxdn_alias_learn
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(
-    dsd-neo_test_nxdn_alias_learn
-    PRIVATE
-        dsd-neo_proto_nxdn
-        dsd-neo_proto_p25
-        dsd-neo_proto_dmr
-        dsd-neo_test_support
-)
 add_test(NAME NXDN_ALIAS_LEARN COMMAND dsd-neo_test_nxdn_alias_learn)
+
+# These tests go through the NXDN element dispatch, whose channel and text helpers live in the P25 and DMR libraries,
+# and which reaches core GPS decoding, which resolves utf8_to_text back in proto_dmr: the archives depend on each other
+# and need a link group, as P25_P2_VPDU_BOUNDS does.
+foreach(
+    _dsd_nxdn_dmr_target
+    IN
+    ITEMS
+        dsd-neo_test_nxdn_alias_decode
+        dsd-neo_test_nxdn_unit_activity
+        dsd-neo_test_nxdn_alias_learn
+)
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            ${_dsd_nxdn_dmr_target}
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_proto_nxdn
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                "-Wl,--end-group"
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            ${_dsd_nxdn_dmr_target}
+            PRIVATE
+                dsd-neo_proto_nxdn
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                dsd-neo_test_support
+        )
+    endif()
+endforeach()
 
 add_executable(
     dsd-neo_test_nxdn_alias_fallback
@@ -11185,10 +11200,6 @@ target_include_directories(
     dsd-neo_test_p25_tsbk_bridge_boundary
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(
-    dsd-neo_test_p25_tsbk_bridge_boundary
-    PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_test_support
-)
 add_test(
     NAME P25_TSBK_BRIDGE_BOUNDARY
     COMMAND dsd-neo_test_p25_tsbk_bridge_boundary
@@ -11203,10 +11214,6 @@ target_include_directories(
     dsd-neo_test_p25_aff_assignment
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(
-    dsd-neo_test_p25_aff_assignment
-    PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_test_support
-)
 add_test(NAME P25_AFF_ASSIGNMENT COMMAND dsd-neo_test_p25_aff_assignment)
 
 # P25 unit activity rows: every message family through the TSBK, MAC, MBT and link control dispatch
@@ -11217,10 +11224,6 @@ add_executable(
 target_include_directories(
     dsd-neo_test_p25_unit_activity
     PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(
-    dsd-neo_test_p25_unit_activity
-    PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_test_support
 )
 add_test(NAME P25_UNIT_ACTIVITY COMMAND dsd-neo_test_p25_unit_activity)
 
@@ -11233,11 +11236,41 @@ target_include_directories(
     dsd-neo_test_p25_deny_no_release
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(
-    dsd-neo_test_p25_deny_no_release
-    PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_test_support
-)
 add_test(NAME P25_DENY_NO_RELEASE COMMAND dsd-neo_test_p25_deny_no_release)
+
+# These tests drive the real TSBK and MAC handlers, which reach core GPS decoding, and that resolves utf8_to_text back
+# in proto_dmr: the archives depend on each other and need a link group, as P25_P2_VPDU_BOUNDS does.
+foreach(
+    _dsd_p25_dmr_target
+    IN
+    ITEMS
+        dsd-neo_test_p25_tsbk_bridge_boundary
+        dsd-neo_test_p25_aff_assignment
+        dsd-neo_test_p25_unit_activity
+        dsd-neo_test_p25_deny_no_release
+)
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            ${_dsd_p25_dmr_target}
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                "-Wl,--end-group"
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            ${_dsd_p25_dmr_target}
+            PRIVATE
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                dsd-neo_test_support
+        )
+    endif()
+endforeach()
 
 # P25 IDEN variants (TDMA denom + map override)
 add_executable(
