@@ -1054,7 +1054,7 @@ turned it on).
   before these fixes). CPU use on the first scene was the same as without these changes (2.5 to 3.5 % of one core on a
   host busy with other work). On the noise scene it rose by up to about 0.5 points on the rtl_tcp loopback (from
   2.79 to 3.31 % on trunk scan with the 25 ms mute), because the scan made more visits: about twice as many on trunk
-  scan, and five to seven times as many on `-Y`, whose noise rows had been held to the visit cap before.
+  scan, and five to seven times as many on `-Y`, whose NXDN48 noise rows had been held to the visit cap before.
 - A check that cannot finish (no samples in time, no answer in time, clipped samples) changes nothing: the visit runs
   its normal timing.
 - Each skip logs one line, for example

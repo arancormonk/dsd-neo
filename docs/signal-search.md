@@ -995,8 +995,8 @@ at 1.5 kHz deviation) and a 25 kHz channel's (5 kHz, so the tone at 3 kHz deviat
 16 tones from 300 to 3000 Hz weighted towards the low ones as speech is, at a 2.5 or 5 kHz peak deviation, which must
 come out at 12 dB S/N over that band. AM is measured with the carrier on the channel and with it 1 kHz inside the
 channel's edge. Every one of these rows is its own condition in the trials below, each 1 dB under its own threshold. The
-rows the previous calibration kept (one per NFM width: the lower of the two transmitters where it measured both, at
-11.25, 16 and 20 kHz) give the same thresholds as then.
+rows the previous calibration kept (one per NFM width; at 11.25, 16 and 20 kHz it measured both transmitters and kept
+the lower) give the same thresholds as then.
 
 | Mode | Class | Threshold S/N |
 | --- | --- | --- |
