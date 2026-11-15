@@ -91,6 +91,7 @@ target_sources(
         talkgroup_filter_model.cpp
         talkgroup_list_model.cpp
         ui_controller.cpp
+        unit_activity_model.cpp
 )
 
 qt_add_resources(
@@ -165,6 +166,7 @@ qt_add_resources(
         qml/FrequencyField.qml
         qml/GradientButton.qml
         qml/HistoryScreen.qml
+        qml/ActivityScreen.qml
         qml/HomeScreen.qml
         qml/SavedSystemsControls.qml
         qml/ScanListScreen.qml
@@ -340,4 +342,5 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_document_picker.qml" # #829
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_gain_editor.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_settings_tuner_gain.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_activity_screen.qml"
 )

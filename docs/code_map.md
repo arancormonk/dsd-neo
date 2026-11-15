@@ -6249,6 +6249,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     shows each system's names. `scope_epoch` takes no part: no current epoch exists to compare, and the scope alone
     already tells the systems apart. `dsd_app_unit_activity_name_key()` (`dsd_alias_name_key()`) changes whenever a
     name could change; a frontend then reads again from `{instance, 0}` and updates its rows by seq.
+  - Frontends: the Qt Activity screen (`UnitActivityModel`, under UI, Qt).
   - Test: `APP_CONTROL_UNIT_ACTIVITY`.
   - Terminal: the Unit Activity section (`frontend_display.show_unit_activity`, Display -> Sections -> Unit activity,
     `DSD_APP_CMD_UI_SHOW_UNIT_ACTIVITY_TOGGLE`) draws from each frame's snapshot.
@@ -15108,7 +15109,8 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`, `tst_monitor_layout_budget.qml` `test_two_slot_*`),
   `UI_QT_QML_A11Y_CHURN` (`test_d_two_slot_hops_leave_the_monitor_still`).
 - Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's
-  recent calls (`homeRecentList`) and the Talkgroups grid (`talkgroupGrid`) get their models from a `KeepPlace` only
+  recent calls (`homeRecentList`), the Talkgroups grid (`talkgroupGrid`) and the Activity list (`activityList`, keyed by
+  seq through `UnitActivityFilterModel::rowForSeq()`) get their models from a `KeepPlace` only
   while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with
   them under it, and each row built there was announced to accessibility clients. Setting a view's model puts it at its
   start, so `KeepPlace` notes the top row's identity (`rowUid`; a card's `idStart` and `idEnd`, since an exact row and a
@@ -16105,12 +16107,35 @@ Qt Quick frontend (`src/ui/qt`):
   unexpired skips across scan visits; **Clear temporary avoids and call skips — current list** clears them with
   session avoids. Runtime's `dsd_rr_talkgroups_apply_categories()` supplies category names to both RadioReference
   frontends before CSV generation.
+- `unit_activity_model.{h,cpp}`: `UnitActivityModel` holds the session's unit activity log for `qml/ActivityScreen.qml`
+  (the monitor session menu's **Activity** entry, `sessionMenuActivity`, a `sessionDestination` of the session tools
+  shell like History and Settings, with no screen outside a session). `UiController::refreshModels()` feeds it each
+  redraw while the session is live, with the same held snapshot as the other models, through
+  `<dsd-neo/app_control/unit_activity_view.h>` (cursor kept by the model, pages of 64); `clearLiveModels()` drops it at
+  Starting, Idle and Failed. A scan hop keeps it: one log spans the session. Rows are held newest first by seq and a row
+  read again (a merge, a rename) is updated in place with `dataChanged` for the roles that changed, never moved, so a
+  screen reader's order holds; at most `DSD_UNIT_ACTIVITY_CAPACITY` rows, the oldest leaving the bottom. A `lost` read
+  places the one gap row ("Earlier activity was not kept") below the rows read after it; a later loss moves it, so the
+  list never holds two. When `dsd_app_unit_activity_name_key()` changes, the model first reads what is new, then reads
+  every row again from `{instance, 0}` only to rename held rows in place, ignoring that read's `lost` (it reports any
+  eviction, not a new loss) and the rows it no longer holds. A new ring instance (`reset`) replaces every row.
+  `UnitActivityFilterModel` is the screen's filter (`activityView`): one `DSD_UA_FILTER_*` bit or every row, the gap
+  row under every filter. The screen reuses History's shell, `FilterPill` (checkable, `Accessible.checked` on the
+  chosen one) and row grammar: who (name with its ID) and the time with a repeat count, what (the view's headline with
+  the target), where (a reason the headline does not carry, the protocol, the scope); only an inhibit or kill row
+  (`DSD_UA_TONE_WARNING`) takes `Theme.alert`. Each row is one StaticText node whose name and description carry its
+  lines. Tests: `UI_QT_UNIT_ACTIVITY_MODEL` (`test_model_gap_row_once`), `UI_QT_CONTROLLER`
+  (`test_unit_activity_follows_the_session`), `tst_activity_screen.qml`, `tst_a11y_activity.qml`.
 - `p25_network_model.{h,cpp}` copies four bounded lists through the frontend-neutral
   `app_control/p25_network.h` facade using `UiController::tick`'s held snapshot.
   `qml/NetworkSheet.qml` activates refresh only while visible; session edges and
   scan-target changes clear it through `clearLiveModels()`. The C facade sorts
   recent-first, resolves candidate flags from the snapshot's deep-copied extension,
   formats CFVA through P25, and filters expired patches without mutating the snapshot.
+  Affiliation and radio rows carry names: the radio's from `dsd_source_label_lookup()` (the current reception's
+  scope, as the Activity screen names the current system's radios) and the talkgroup's label, cut to whole UTF-8
+  characters; the sheet shows them after the ID (`RID:1234567 (Alice) · TG:77 (Fire Dispatch)`). Test:
+  `APP_CONTROL_P25_NETWORK` (`test_rows_carry_names`).
 - `diagnostics_log.{h,cpp}` owns the process ring, the sole redaction/capture stage,
   and the asynchronous bounded tail writer. `DiagnosticsLogModel` refreshes before
   the redraw consume in `UiController::tick`; it persists across decoder session
@@ -18494,7 +18519,7 @@ item view refills its delegates even while invisible, so:
 - A hidden sheet or screen does not keep a live list model bound. It hands the view its model only while visible:
   `model: sheet.visible ? (metrics.decryptionSlots || []) : []` (KeySheet's slots), `FieldGrid`'s `live: sheet.visible`
   (SiteSheet), `screen.live` (the Talkgroups chips), or `qml/KeepPlace.qml` for a scrolled list that must reopen at
-  the reader's place (History, Home's recent calls, the Talkgroups grid; see "Hidden lists" under UI, Qt), or a
+  the reader's place (History, Home's recent calls, the Talkgroups grid, Activity; see "Hidden lists" under UI, Qt), or a
   `Binding` that keeps the last model while hidden for Repeaters in a scrolled `Column` (the Signal search screen's
   detections and avoids, same section). Opening fills it from the readings as they are then. A sheet whose content
   follows the snapshot can instead refresh only while visible (`NetworkSheet`).
@@ -18717,7 +18742,8 @@ Pause holds it: each refresh rebuilds the rows.
 (`tst_a11y_harness.qml`), then a scan's steady ticks, hops, target names, two-slot hops, calls, hops with the Monitor's
 details open and readings that move every tick against `Main.qml` (`tst_a11y_scan_churn.qml`), closed KeySheet and
 SiteSheet and the open Network sheet across refreshes, reorders, capped arrivals, a shrink, a clear and refill, and hops
-between P25 targets (100 radios and 1 among them) and to targets with no P25 network (`tst_a11y_closed_sheets.qml`), and a hidden Talkgroups screen across two
+between P25 targets (100 radios and 1 among them) and to targets with no P25 network (`tst_a11y_closed_sheets.qml`), the
+Activity screen hidden under a busy log and its rows renamed in place while open (`tst_a11y_activity.qml`), and a hidden Talkgroups screen across two
 targets' tables (`tst_a11y_talkgroups.qml`). `tst_a11y_text_reach.qml` walks every screen and sheet for visible text no
 node reads, against one allowlist with a reason per entry, and `tst_a11y_paced_names.qml` holds moving readings to their
 pace. How the harness works and how to add a case: `docs/testing.md` "Accessibility event counts".

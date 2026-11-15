@@ -617,6 +617,22 @@ export.**, **The export couldn't be written. Try another location.**, or, for a 
 is built when you press **Export…**, so calls that arrive while the picker is open are not in it. See
 [History file](../docs/csv-formats.md#history-file) for the columns. A History export is not part of a backup.
 
+### Activity
+
+During a session, **Activity** in the session menu lists what a trunked system's control channel says about its
+radios, newest first: logins and logouts, talkgroup joins, denied and queued requests, radio commands (inhibit, stun,
+kill and their answers) and status messages. It covers P25 Phase 1 and 2, DMR Tier III, NXDN Type C and TETRA. Each row
+shows the radio (with its name when a list or an over-the-air alias names it on that system), what happened with its
+talkgroup, the reason and the system it was heard on, and the time. A message the system repeats counts up on its row
+(**×3**) instead of adding rows. Inhibit and kill commands are the only rows in colour. The pills at the top show one
+kind at a time: **Logins**, **Talkgroups**, **Refused & queued**, **Radio commands** or **Other**.
+
+A row says what was sent, never more: **Kill sent** means the system sent the command, not that the radio was killed.
+Some of it never reaches a listener: nothing shows while the receiver is on a voice channel, DMR and TETRA radios don't
+announce logging off, and whether a radio carried out a command isn't sent. The list is for the session only: it is
+empty at the next start. It keeps the newest 1,024 events; when more arrived while DSD-neo was in the background than
+it could keep, a row says **Earlier activity was not kept** where they were.
+
 ### Extra decoder arguments the app refuses
 
 DSD-neo decides where call recordings are saved and when they are deleted, so a start is refused, with a message that
@@ -2301,7 +2317,10 @@ sheet with Neighbours, Patches, Affiliations and Radios. Empty sections show
 “(none announced)”. Neighbours show the current control channel `[CC]`, candidate
 `[C]`, frequency, site identity and CFVA status. Each list shows at most 100 recent
 records and refreshes only while the sheet is open. Starting, Idle, Failed and
-trunk-scan target changes clear these live records.
+trunk-scan target changes clear these live records. An Affiliations or Radios row
+names its radio and talkgroup after the ID, `RID:1234567 (Engine 7) · TG:100 (Fire
+Dispatch)`, when a list or an over-the-air alias names them for the system on the air,
+as the Activity screen does.
 
 The Monitor entry is the WP-F2 fallback until WP-F1's SiteSheet is integrated;
 move the entry there with the `siteProtocol === "P25"` guard. There is no Tune

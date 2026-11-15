@@ -2,16 +2,80 @@
 #include <assert.h>
 #include <dsd-neo/app_control/p25_network.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include "../../src/app_control/snapshot_internal.h"
+
+static const dsd_app_p25_affiliation*
+row_of(const dsd_app_p25_affiliation* rows, int n, uint32_t rid) {
+    for (int i = 0; i < n; i++) {
+        if (rows[i].rid == rid) {
+            return &rows[i];
+        }
+    }
+    return NULL;
+}
+
+/* Affiliation and radio rows carry their names: the radio's in the current system's scope (a learned alias of another
+ * system never names it), the talkgroup's label, and only whole characters of a name a list cut mid-character. IDs are
+ * made up (WACN 0xBEE00, SYS 0x123 / 0x456). */
+static void
+test_rows_carry_names(void) {
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    assert(st != NULL);
+    dsd_rxid_reset(st);
+    dsd_rxid_note_p25_network(st, 0xBEE00U, 0x123U);
+    assert(dsd_alias_learn_radio(NULL, st, NULL, 1234567U, "Alice", NULL) == DSD_TG_POLICY_LEARN_ADDED);
+    dsd_tg_policy_entry entry;
+    assert(dsd_tg_policy_make_exact_entry(77U, "A", "Fire Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
+    assert(dsd_tg_policy_append_exact(st, &entry) == 0);
+    p25_aff_register(st, 1234567U);
+    p25_aff_register(st, 7654321U);
+    p25_ga_add(st, 1234567U, 77U);
+    p25_ga_add(st, 7654321U, 78U);
+
+    dsd_app_p25_affiliation a[4];
+    int n = dsd_app_p25_group_affiliations(st, a, 4);
+    assert(n == 2);
+    assert(strcmp(row_of(a, n, 1234567U)->name, "Alice") == 0);
+    assert(strcmp(row_of(a, n, 1234567U)->tg_name, "Fire Dispatch") == 0);
+    assert(row_of(a, n, 7654321U)->name[0] == '\0' && row_of(a, n, 7654321U)->tg_name[0] == '\0');
+    n = dsd_app_p25_affiliated_rids(st, a, 4);
+    assert(n == 2);
+    assert(strcmp(row_of(a, n, 1234567U)->name, "Alice") == 0 && row_of(a, n, 1234567U)->tg_name[0] == '\0');
+    assert(row_of(a, n, 7654321U)->name[0] == '\0');
+
+    /* On another system, radio 1234567 is not the first system's Alice. */
+    dsd_rxid_reset(st);
+    dsd_rxid_note_p25_network(st, 0xBEE00U, 0x456U);
+    n = dsd_app_p25_affiliated_rids(st, a, 4);
+    assert(n == 2 && row_of(a, n, 1234567U)->name[0] == '\0');
+
+    /* A radio list's name cut inside its last character keeps the whole ones. */
+    dsd_source_alias_store* radios = dsd_source_alias_store_create();
+    dsd_source_alias_entry cut = {.id_start = 7654321U, .id_end = 7654321U};
+    DSD_MEMSET(cut.name, 'A', 47);
+    cut.name[47] = (char)0xC3; /* the first byte of a two-byte character, its second cut off */
+    cut.name[48] = '\0';
+    assert(radios != NULL && dsd_source_alias_store_append(radios, &cut) == 0);
+    dsd_source_alias_install(st, radios);
+    n = dsd_app_p25_affiliated_rids(st, a, 4);
+    assert(n == 2 && strlen(row_of(a, n, 7654321U)->name) == 47U);
+    dsd_state_ext_free_all(st);
+    free(st);
+}
 
 int
 main(void) {
@@ -108,5 +172,6 @@ main(void) {
     assert(dsd_app_p25_patches(held, p, DSD_P25_PATCH_MAX) == 1 && p[0].groups[0] == 77 && p[0].radios[0] == 12345);
     assert(dsd_app_p25_patches(&s, p, DSD_P25_PATCH_MAX) == 0);
     dsd_state_ext_free_all(&s);
+    test_rows_carry_names();
     return 0;
 }

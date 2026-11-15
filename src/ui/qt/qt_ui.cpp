@@ -68,6 +68,7 @@
 #include "talkgroup_list_model.h"
 #include "text_order.h"
 #include "ui_controller.h"
+#include "unit_activity_model.h"
 
 namespace dsd_qt {
 
@@ -259,6 +260,17 @@ publish_history_context(QQmlContext* context, CallHistoryModel* history, CallHis
     context->setContextProperty(QStringLiteral("historyView"), historyView);
     context->setContextProperty(QStringLiteral("monitorView"), monitorView);
     context->setContextProperty(QStringLiteral("historyExport"), historyExport);
+}
+
+// The session's unit activity log and the Activity screen's filter over it, fed by the controller's tick.
+static void
+publish_unit_activity(QQmlContext* context, UiController* controller, QObject* owner) {
+    auto* activity = new UnitActivityModel(owner);
+    auto* activityView = new UnitActivityFilterModel(owner);
+    activityView->setSourceModel(activity);
+    controller->setUnitActivity(activity);
+    context->setContextProperty(QStringLiteral("unitActivity"), activity);
+    context->setContextProperty(QStringLiteral("activityView"), activityView);
 }
 
 // Issue #708: the call recording store and status, to QML.
@@ -494,6 +506,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     publish_radio_reference(context, radioReference, systems, &engine);
     publish_history_context(context, history, historyView, monitorView, historyExport);
     publish_recording_context(context, recordings, recordingStatus);
+    publish_unit_activity(context, controller, &engine);
     context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);

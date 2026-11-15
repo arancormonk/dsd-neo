@@ -6091,6 +6091,9 @@ if(DSD_ENABLE_QT_UI)
             # WP-F2: real network fixture, using only the snapshot-copy facade.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/p25_network.c
+            # The Activity screen's production model over the real view.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
             ui/qml_spectrum_stub.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
@@ -25018,6 +25021,7 @@ if(DSD_ENABLE_QT_UI)
         # Issue #697: several lists started as one session, through the real starter.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -25801,6 +25805,27 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_P25_NETWORK_MODEL
         COMMAND dsd-neo_test_ui_qt_p25_network_model
+    )
+    # The Activity screen's model over the unit activity ring and view.
+    add_executable(
+        dsd-neo_test_ui_qt_unit_activity_model
+        ui/test_ui_qt_unit_activity_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_unit_activity_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_unit_activity_model
+        PRIVATE
+            dsd-neo_ui_qt
+            Qt6::Test
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+    )
+    add_test(
+        NAME UI_QT_UNIT_ACTIVITY_MODEL
+        COMMAND dsd-neo_test_ui_qt_unit_activity_model
     )
 endif()
 

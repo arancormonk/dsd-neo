@@ -382,7 +382,7 @@ Item {
             return null;
         }
         function test_tools_back_data() {
-            return [{tag: "history", key: "History"}, {tag: "settings", key: "Settings"}];
+            return [{tag: "history", key: "History"}, {tag: "settings", key: "Settings"}, {tag: "activity", key: "Activity"}];
         }
         function test_tools_back(data) {
             choose(data.key);
@@ -405,6 +405,21 @@ Item {
             compare(app.sessionDestination, "");
             compare(app.currentTab, 0);
             compare(uiController.autoStartBlocked, false);
+        }
+        // Activity is the session's own log: the session's end closes it and
+        // leaves the tab where it was, with no screen of it outside a session.
+        function test_activity_closes_with_the_session() {
+            choose("Activity");
+            compare(app.sessionDestination, "activity");
+            var screen = findChild(app, "sessionActivityScreen");
+            verify(screen.visible);
+            verify(!findChild(screen, "activityTitle").visible, "the tools header names the screen");
+            testContext.setLifecyclePhase(0);
+            compare(app.sessionDestination, "");
+            compare(app.currentTab, 0);
+            verify(!screen.visible);
+            verify(!findChild(app, "sessionTools").visible);
+            testContext.setLifecyclePhase(2);
         }
         function test_service_stop_and_reattach_data() {
             return [{tag: "history", key: "History", tab: 1}, {tag: "settings", key: "Settings", tab: 2}];
@@ -2121,7 +2136,7 @@ Item {
             testContext.setMetric("radioInput", true);
             app.height = 360;
             monitor.openSessionMenu();
-            for (var key of ["Radio", "Spectrum", "Talkgroups", "History", "Settings", "Diagnostics"])
+            for (var key of ["Radio", "Spectrum", "Talkgroups", "Activity", "History", "Settings", "Diagnostics"])
                 verify(findChild(menu, "sessionMenu" + key) !== null);
             app.height = 900;
         }

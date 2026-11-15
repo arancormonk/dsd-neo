@@ -48,9 +48,10 @@ P25NetworkModel::replaceForTarget(const dsd_state* snapshot) {
     }
 }
 
-/* Issue #782: a row carries only what the Network sheet shows. The engine's last-seen times order the rows but are
- * not shown, and kept in the rows they made every refresh a change (each second some row's time moves), which made
- * the sheet rebuild rows a screen reader is told about. */
+/* Issue #782: a row carries only what the Network sheet shows (an affiliation or radio row its names too, so a name
+ * learned later renames it). The engine's last-seen times order the rows but are not shown, and kept in the rows they
+ * made every refresh a change (each second some row's time moves), which made the sheet rebuild rows a screen reader
+ * is told about. */
 void
 P25NetworkModel::refresh(const dsd_state* snapshot) {
     if (!m_active) {
@@ -91,11 +92,14 @@ P25NetworkModel::refresh(const dsd_state* snapshot) {
     dsd_app_p25_affiliation aff[cap];
     count = dsd_app_p25_group_affiliations(snapshot, aff, cap);
     for (int i = 0; i < count; ++i) {
-        affiliationRows.append(QVariantMap{{"rid", aff[i].rid}, {"tg", aff[i].tg}});
+        affiliationRows.append(QVariantMap{{"rid", aff[i].rid},
+                                           {"tg", aff[i].tg},
+                                           {"name", QString::fromUtf8(aff[i].name)},
+                                           {"tgName", QString::fromUtf8(aff[i].tg_name)}});
     }
     count = dsd_app_p25_affiliated_rids(snapshot, aff, cap);
     for (int i = 0; i < count; ++i) {
-        radioRows.append(QVariantMap{{"rid", aff[i].rid}});
+        radioRows.append(QVariantMap{{"rid", aff[i].rid}, {"name", QString::fromUtf8(aff[i].name)}});
     }
     if (m_neighbours != neighbourRows) {
         m_neighbours = neighbourRows;

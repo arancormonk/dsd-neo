@@ -33,11 +33,17 @@ typedef struct {
     uint32_t rid;
     uint16_t tg; /**< Zero for the affiliated-RID view. */
     time_t last_seen;
+    /** The radio's name from the held snapshot's lists in the current reception's scope (dsd_source_label_lookup()),
+     * else "". UTF-8, NUL-terminated, whole characters. */
+    char name[64];
+    /** The talkgroup's label (dsd_tg_policy_lookup_group_label()), else ""; always "" in the affiliated-RID view. */
+    char tg_name[64];
 } dsd_app_p25_affiliation;
 
 /** Copy from a held snapshot; never mutate or retain it. Return rows written,
  * at most capacity. NULL inputs or nonpositive capacity return zero. Lists are
- * recent-first (stable on ties), filtered before truncation. Patches are active
+ * recent-first (stable on ties), filtered before truncation. Affiliation and
+ * radio rows carry the names the snapshot's lists give them, as the Activity screen names the current system's radios. Patches are active
  * supergroups named within DSD_P25_PATCH_TTL_SECONDS of listening to the control channel, most recently refreshed
  * first; their group and radio lists are filled only while a membership message keeps them current (otherwise
  * empty). At most DSD_P25_PATCH_MAX rows. No encryption fields are exposed. */
