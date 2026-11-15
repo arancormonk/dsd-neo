@@ -1890,16 +1890,27 @@ suite runs under this compiler.
   directly with `-b`, or none), so no call keeps another talkgroup's key. Each slot also keeps the talkgroup its own
   call last keyed from (`slot_tg`): a frame of a call no LC has named yet (an identity-less epoch, as a colour code
   change reopens a call) keys from it again, or from talkgroup 0's own key, else from none, never from the other slot's.
-  The slot's terminator and the no-carrier pass forget it. A call whose terminator was missed is still the slot's call,
-  so a new call's frames before its LC key from the old call's talkgroup (the code cannot tell them apart before that
-  LC). The call's LC, its printed key and the encryption lockout are judged by the key its own slot and talkgroup leave
-  (`keyring_dmr_tg_autoload_preview()`, `dmr_flco_call_key_of()`, `dmr_flco_missing_alg_key_can_decrypt()`). A key
-  changed by anything else since is left alone, a scan's saved keys take the key the autoload replaced
-  (`key_scalars_capture()`), the secure wipe clears the autoload's copies, and the no-carrier unload of a keyring's
-  working keys is unchanged (`no_carrier_unload_keys_if_needed()`). Tests: `P25_CRYPTO_STATE`, `NXDN_ELEMENT_BOUNDS`
-  (imported zero keys, the narrow AES fallback, VCALL_IV keeping the VCALL's key), `CORE_MBE_TRANSFORM_CONTEXT`,
-  `DMR_BLOCK_CRYPTO`, `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO` (incomplete AES keys refused on the data and replay
-  paths), `CORE_DMR_VOICE_ALG_GATE` (DMR voice width), `CORE_DMR_TG_KEY_MAP`, `CORE_KEY_SET`, `DMR_SYNTH_BP_KEY`.
+  The slot's terminator, the no-carrier pass and every move off the carrier forget it with the rest of the left
+  calls' DMR privacy (`dmr_forget_call_privacy()`: every carrier boundary but a stream gap, every accepted trunk tune
+  that leaves the carrier through `dsd_engine_tune_leaves_carrier()`, as a voice channel hop with no release, a move
+  or a rest channel change, the release, and a trunk-scan visit after its snapshot restore), so the next carrier's
+  frames before their LC decrypt with no privacy bit and no talkgroup key of the left calls, while a key set directly
+  stays the user's. A call whose terminator was missed on the same carrier is still the slot's call, so a new call's
+  frames before its LC key from the old call's talkgroup (the code cannot tell them apart before that LC). The call's
+  LC, its printed key and the encryption lockout are judged by the key its own slot and talkgroup leave
+  (`keyring_dmr_tg_autoload_preview()`, `dmr_flco_call_key_of()`, `dmr_flco_missing_alg_key_can_decrypt()`). The
+  terminal UI's slot row shows the key its own call keyed from (`slot_key`, `dsd_dmr_slot_call_key()`, since the UI
+  snapshot holds no keyring), or none, and the Loaded lines and the Hytera menu label show the key the user loaded
+  (the key the autoload replaced while its key is the working key), never a talkgroup's, revealed only by
+  `--show-keys` through the redaction helpers. A key changed by anything else since is left alone, a scan's saved keys
+  and a key typed in overlay mode (`dsd_key_apply_direct()`) take the key the autoload replaced
+  (`key_scalars_capture()`), so a typed Basic Privacy key keeps no talkgroup's Hytera key, the secure wipe clears the
+  autoload's copies, and the no-carrier unload of a keyring's working keys is unchanged
+  (`no_carrier_unload_keys_if_needed()`). Tests: `P25_CRYPTO_STATE`, `NXDN_ELEMENT_BOUNDS` (imported zero keys, the
+  narrow AES fallback, VCALL_IV keeping the VCALL's key), `CORE_MBE_TRANSFORM_CONTEXT`, `DMR_BLOCK_CRYPTO`,
+  `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO` (incomplete AES keys refused on the data and replay paths),
+  `CORE_DMR_VOICE_ALG_GATE` (DMR voice width), `CORE_DMR_TG_KEY_MAP`, `CORE_KEY_SET`, `DMR_SYNTH_BP_KEY`,
+  `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `UI_NCURSES_PRINTER_HELPERS`, `UI_MENU_LABELS`.
 - Invariant (audio sinks, `<dsd-neo/core/audio_sink.h>`, `src/core/audio/audio_sink.c`, issue #659): every writer of
   decoded or analog audio applies its own gates and picks the output type, then writes the local device streams only
   through `dsd_audio_sink_write_device()` and the `-o -` descriptor only through `dsd_audio_sink_write_fd()`: the
@@ -11845,7 +11856,11 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      superframe part; the M17 LSF chunks, packet and signature; the YSF text. The evidence and assemblies together are
      `dsd_engine_forget_carrier_decoding()`, which a trunk-scan target switch runs as well. D-STAR slow data, X2-TDMA
      signalling and P25 link control live within one superframe or frame, which the carrier count covers; the Phase 2
-     ESS_A is collected fresh from each 2V burst.
+     ESS_A is collected fresh from each 2V burst. Outside that forget, which a stream gap runs too, the ended calls' DMR
+     privacy goes (`dmr_forget_call_privacy()`: both slots' service options and FID, encryption class, vendor
+     late-entry mode, held PI and inherited mark, heal stash, and the talkgroup each slot's autoload keyed from), so
+     the next carrier's frames before their own LC decrypt with no privacy bit and no talkgroup key of the left calls;
+     a key set directly stays loaded.
   4. With trunking off, `dsd_engine_forget_untrunked_carrier_state()` forgets what the carrier left beyond its codes:
      what the trunking-off no-carrier pass forgets (`no_carrier_reset_non_trunk_fields_if_needed()`: the P25 voice
      frequencies a grant update wrote, which `p25_sm_conventional_frequency()` gives the call it named over the
