@@ -30,9 +30,13 @@ void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrec
  * Decode an LCW carried by a TDULC terminator.
  *
  * Voice-user metadata is retained, but cannot emit a new voice-start event
- * after the terminator has ended the current transmission.
+ * after the terminator has ended the current transmission. The link control
+ * speaks for the open P25 Phase 1 call, or for the ended one whose epoch is
+ * @p ended_epoch: the call this TDULC ended, or the one the TDULC it repeats
+ * ended (0: none). An older ended call the slot still holds is not its call.
  */
-void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
+void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
+                        uint64_t ended_epoch);
 
 #ifdef __cplusplus
 }

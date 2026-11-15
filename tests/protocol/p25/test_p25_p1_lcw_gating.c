@@ -143,7 +143,15 @@ expect_eq_int(const char* tag, int got, int want) {
 }
 
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors);
-void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
+void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
+                        uint64_t ended_epoch);
+
+/* The epoch of the call slot 0 holds: the call a TDULC that ended it speaks for (processTDULC()). */
+static uint64_t
+slot0_call_epoch(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 ? call.epoch : 0U;
+}
 
 static int
 init_retained_p1_call(dsd_opts* opts, dsd_state* state, int tg, int src) {
@@ -503,7 +511,7 @@ test_lcgrgr_from_tdulc_records_without_voice_start(void) {
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     DSD_SNPRINTF(state.generic_talker_alias[0], sizeof state.generic_talker_alias[0], "%s", "OLD ALIAS");
     build_group_voice_user_lcw(lcw, 0x90, 0x40, LCGRGR_SG, LCGRGR_SRC);
-    p25_lcw_from_tdulc(&opts, &state, lcw, 0);
+    p25_lcw_from_tdulc(&opts, &state, lcw, 0, slot0_call_epoch(&state));
 
     p25_sm_ctx_t* sm = p25_sm_get_ctx();
     rc |= expect_eq_int("LCGRGR TDULC no voice start", sm->slots[0].voice_active, 0);
@@ -610,7 +618,7 @@ test_lcw_identities_go_only_to_the_p25_call(void) {
         set_bits_msb(lcw, 8, 8, 0xA4U);
         set_bits_msb(lcw, 16, 8, 0x66U);
         if (gps[i].tdulc) {
-            p25_lcw_from_tdulc(&opts, &st, lcw, 0);
+            p25_lcw_from_tdulc(&opts, &st, lcw, 0, slot0_call_epoch(&st));
         } else {
             p25_lcw(&opts, &st, lcw, 0);
         }
@@ -684,7 +692,7 @@ test_talker_end_takes_its_talkgroup_from_the_call_it_ends(void) {
         set_bits_msb(lcw, 8, 8, 0x90U);
         set_bits_msb(lcw, 48, 24, 0x111U);
         if (cases[i].tdulc) {
-            p25_lcw_from_tdulc(&opts, &st, lcw, 0);
+            p25_lcw_from_tdulc(&opts, &st, lcw, 0, slot0_call_epoch(&st));
         } else {
             p25_lcw(&opts, &st, lcw, 0);
         }

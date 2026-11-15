@@ -2035,7 +2035,10 @@ suite runs under this compiler.
   takes an ended call, so P25 `p25_crypto_publish_canonical()` and the DMR autoload record only on the open call). An
   identity a frame takes from the slot's call by copying that call's own protocol into an observation is outside this
   check, so those readers keep their own protocol checks (`p25p1_current_call()`, `nxdn_scch_enrich_identity()`,
-  `ysf_enrich_identity()`, the DMR Cap+ seed). Tests: `CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `NXDN_ENC_CLASS`.
+  `ysf_enrich_identity()`, the DMR Cap+ seed). A P25 TDULC's link control, read after its end has run, takes an ended
+  call only when it is the one that TDULC ended or that the TDULC it repeats back to back ended (`processTDULC()`,
+  `dsd_state::p25_p1_tdulc_end_*`, `p25_lcw_from_tdulc()`'s `ended_epoch`), never an older call the slot still holds.
+  Tests: `CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `NXDN_ENC_CLASS`, `P25_P1_TDULC`.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
   `received_algid`/`received_kid` say which of a call's ALG ID and key id were decoded from over-the-air signalling
   that passed its check, beside the live `algid`/`kid` every crypto update rewrites. Only an update whose `received`

@@ -113,6 +113,7 @@ typedef struct p25_lcw_ctx {
     uint8_t lc_sf;
     uint8_t allow_voice_start;
     int is_standard_mfid;
+    uint64_t ended_epoch; /* TDULC: the call it ended, or whose end it repeats (0: none) */
 } p25_lcw_ctx;
 
 typedef void (*p25_lcw_handler_fn)(p25_lcw_ctx* ctx);
@@ -968,10 +969,15 @@ p25_lcw_handle_mfid90_opcode_05(p25_lcw_ctx* ctx) {
 
 /* The P25 Phase 1 call this link control speaks for, into @p call: from an LDU1, only the open call, since a new
  * transmission's first LDU1 decodes before its own call opens and the ended one is the previous transmission's; from a
- * TDULC, which ends its call before its link control is read, also the call it just ended. */
+ * TDULC, which ends its call before its link control is read, also the call it ended or whose end it repeats
+ * (p25_lcw_from_tdulc()), never an older ended call the slot still holds. */
 static int
 p25_lcw_call(const p25_lcw_ctx* ctx, dsd_call_snapshot* call) {
-    return ctx->allow_voice_start ? p25p1_current_call(ctx->state, call) : p25p1_open_or_ended_call(ctx->state, call);
+    if (p25p1_current_call(ctx->state, call)) {
+        return 1;
+    }
+    return !ctx->allow_voice_start && ctx->ended_epoch != 0U && p25p1_open_or_ended_call(ctx->state, call)
+           && call->epoch == ctx->ended_epoch;
 }
 
 static void
@@ -1138,7 +1144,7 @@ p25_lcw_handle_unknown_vendor(const p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
-               uint8_t allow_voice_start) {
+               uint8_t allow_voice_start, uint64_t ended_epoch) {
     UNUSED(irrecoverable_errors);
     if (opts == NULL || state == NULL || lcw_bits == NULL) {
         return;
@@ -1157,6 +1163,7 @@ p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irr
     ctx.lc_pf = lcw_bits[0];
     ctx.lc_sf = lcw_bits[1];
     ctx.allow_voice_start = allow_voice_start;
+    ctx.ended_epoch = ended_epoch;
     ctx.is_standard_mfid = (ctx.lc_sf == 1) || ctx.lc_mfid == 0 || ctx.lc_mfid == 1;
 
     if (ctx.lc_pf == 1) {
@@ -1187,10 +1194,11 @@ p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irr
 
 void
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
-    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 1);
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 1, 0U);
 }
 
 void
-p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
-    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 0);
+p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
+                   uint64_t ended_epoch) {
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 0, ended_epoch);
 }

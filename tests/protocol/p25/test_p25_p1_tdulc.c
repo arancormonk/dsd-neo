@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -107,14 +108,19 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
     (void)lc_bits;
 }
 
+/* The Harris GPS reports the link control filed, and the source each was filed under. */
+static int g_harris_reports = 0;
+static uint32_t g_harris_src = 0U;
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
     (void)opts;
     (void)state;
     (void)input;
-    (void)src;
     (void)slot;
+    g_harris_reports++;
+    g_harris_src = src;
 }
 
 void
@@ -404,6 +410,85 @@ test_voice_user_metadata_does_not_restart_call(void) {
     return rc;
 }
 
+/* A TDULC carrying a Harris GPS block 2, its block 1 already held: the link control files the position under the
+   source of the call this terminator speaks for. The TDULC's own clock reading is @p clock, as the symbol grid would
+   have it once the frame's sync and NID were read. Returns the source the report was filed under, or -1 for none. */
+static long
+run_harris_gps_tdulc(dsd_opts* opts, dsd_state* state, uint64_t clock) {
+    static const uint8_t block1_check[16] = {0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0}; /* 0x2AA4 */
+    DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+    DSD_MEMCPY(state->dmr_pdu_sf[0], block1_check, sizeof(block1_check));
+    state->symbol_clock = clock;
+    build_lcw_words(0x2B, 0xA4, 0x00, 0x0000, 0x0000, 0x0000);
+    g_harris_reports = 0;
+    g_harris_src = 0U;
+    processTDULC(opts, state);
+    return g_harris_reports == 1 ? (long)g_harris_src : -1L;
+}
+
+static void
+reset_conventional_fixture(dsd_opts* opts, dsd_state* state) {
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_P25P1_POS;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    g_rs_hard_result = 0;
+    p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
+}
+
+/* A TDULC's link control speaks for the call that TDULC ended, and its repeats, which follow it back to back on the
+   carrier (each data unit's sync starts where the last one ends, TIA-102.BAAA-A 8.2), for that call too. A TDULC that
+   ended no call, its LDUs lost, is a later transmission's terminator: an older call the slot still holds ended is not
+   its call, so its link control names no source of that call. */
+static int
+test_tdulc_link_control_takes_only_the_call_it_ended(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint64_t start = 100000U;
+    int rc = 0;
+
+    reset_conventional_fixture(&opts, &state);
+    rc |= expect_true("gps fixture call", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    rc |= expect_eq_int("the TDULC that ends the call files under its source",
+                        (int)run_harris_gps_tdulc(&opts, &state, start), 0x123456);
+    dsd_call_snapshot call;
+    rc |= expect_true("the TDULC ended the call",
+                      dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect_eq_int("its repeat files under that source too",
+                        (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDULC_DIBITS), 0x123456);
+    rc |= expect_eq_int("and so does the repeat after it",
+                        (int)run_harris_gps_tdulc(&opts, &state, start + 2U * P25P1_TDULC_DIBITS), 0x123456);
+    // Much later, a voiceless transmission whose TDULC alone decoded: the ended call is not its call.
+    rc |= expect_eq_int("a later TDULC files under no source of the older call",
+                        (int)run_harris_gps_tdulc(&opts, &state, start + 50000U), 0);
+    rc |= expect_eq_int("nor does its own repeat",
+                        (int)run_harris_gps_tdulc(&opts, &state, start + 50000U + P25P1_TDULC_DIBITS), 0);
+
+    // A repeat with another data unit between (a TDU) is no repeat of the TDULC that ended the call.
+    reset_conventional_fixture(&opts, &state);
+    rc |= expect_true("gps fixture call 2", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    rc |= expect_eq_int("ending TDULC", (int)run_harris_gps_tdulc(&opts, &state, start), 0x123456);
+    rc |= expect_eq_int("a TDULC after a unit between",
+                        (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDULC_DIBITS + P25P1_TDU_DIBITS), 0);
+
+    // A call another end closed (a sync loss) is not a TDULC's either, even straight after it.
+    reset_conventional_fixture(&opts, &state);
+    rc |= expect_true("gps fixture call 3", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    rc |= expect_true("sync loss ends the call", dsd_call_state_end_ex(&state, 0U, 2.0, DSD_CALL_END_SYNC_LOSS) > 0);
+    rc |= expect_eq_int("a TDULC after a call a sync loss ended", (int)run_harris_gps_tdulc(&opts, &state, start), 0);
+
+    // A new carrier between the TDULC that ended the call and the next one: that one is no repeat of it.
+    reset_conventional_fixture(&opts, &state);
+    rc |= expect_true("gps fixture call 4", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    rc |= expect_eq_int("ending TDULC 4", (int)run_harris_gps_tdulc(&opts, &state, start), 0x123456);
+    state.carrier_seq++;
+    rc |= expect_eq_int("a TDULC on the next carrier",
+                        (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDULC_DIBITS), 0);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -488,6 +573,7 @@ main(void) {
 
     // Case 4: Voice-user metadata in the terminating frame does not restart voice.
     rc |= test_voice_user_metadata_does_not_restart_call();
+    rc |= test_tdulc_link_control_takes_only_the_call_it_ended();
 
     // Case 5: Hard Reed-Solomon failure recovered by soft reliability still dispatches LCW.
     build_lcw_words(0x44, 0x00, 0x00, 0x3456, 0x100A, 0x0000);
