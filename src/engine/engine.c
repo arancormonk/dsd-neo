@@ -3137,8 +3137,7 @@ no_carrier_reset_nxdn_alias_state(dsd_state* state) {
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     state->nxdn_sacch_non_superframe = 1;
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-    state->nxdn_alias_block_number = 0;
-    DSD_MEMSET(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+    DSD_MEMSET(&state->nxdn_alias_prop, 0, sizeof(state->nxdn_alias_prop));
     state->nxdn_alias_arib_total_segments = 0;
     state->nxdn_alias_arib_seen_mask = 0;
     DSD_MEMSET(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));
@@ -3584,8 +3583,7 @@ carrier_boundary_forget_assemblies(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     state->nxdn_part_of_frame = 0;
     state->nxdn_sf = 0;
-    state->nxdn_alias_block_number = 0;
-    DSD_MEMSET(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+    DSD_MEMSET(&state->nxdn_alias_prop, 0, sizeof(state->nxdn_alias_prop));
     state->nxdn_alias_arib_total_segments = 0;
     state->nxdn_alias_arib_seen_mask = 0;
     DSD_MEMSET(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));

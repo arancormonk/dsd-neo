@@ -7,8 +7,10 @@
  * Focused checks for the no-iconv NXDN alias text fallback.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +30,20 @@ dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_
     (void)field;
     (void)value;
     return 0;
+}
+
+// Nor the call layer or the tuner: the Kenwood assembly binds to no call on one carrier.
+int
+dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out) {
+    (void)state;
+    (void)slot;
+    (void)out;
+    return 0;
+}
+
+uint64_t
+dsd_trunk_tuning_generation(void) {
+    return 0U;
 }
 
 static int

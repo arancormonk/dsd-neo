@@ -2406,6 +2406,18 @@ suite runs under this compiler.
   trunk-scan target read "TG <n>" for the hold before). Tests: `APP_CONTROL_CALL_VIEW`
   (`test_ended_hold_keeps_target_name`), `CORE_CALL_ALERT_HISTORY` (`test_commit_caches_target_label`),
   `P25_MOTOROLA_ALIAS` (`test_ended_hold_names_the_group`, `test_held_call_keeps_its_names`).
+- Invariant (Kenwood NXDN talker alias, `src/protocol/nxdn/nxdn_alias_decode.c`,
+  `<dsd-neo/protocol/nxdn/nxdn_alias_decode.h>`): PROP_FORM 0x3F with MFID 0x68 and 0x8204 carries fragment n of a
+  count in octet 4 and four octets of text. Only a count of four is assembled (SDRTrunk and DSD-FME agree on four
+  fragments and on 14 text octets: the last two of fragment 4 are not text); another count is printed raw and ends the
+  assembly in progress. The assembly (`dsd_state::nxdn_alias_prop`, `nxdn_alias_assembly`) stores fragments by number
+  and is bound to the slot, the call epoch (canonical slot 0's current or retained ended call), that call's source and
+  the tuning generation of its first stored fragment; a fragment under another binding, or one that differs from the
+  fragment already held under its number, restarts it, and a repeat keeps it. The alias is published (display and the
+  open call's history row) only by the fragment that completes the assembly (`nxdn_alias_complete()`), so a partial,
+  spliced or conflicting assembly never shows, and the last complete alias stays shown until another completes. The
+  octets are shown as today (printable ASCII, others as spaces; the character set beyond ASCII is not confirmed by a
+  second source). ARIB and DCR aliases are unchanged. Tests: `NXDN_ALIAS_DECODE` (`test_prop_dispatch`).
   Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
   `DMR_TALKER_ALIAS_HEADER_LEN` (store bounds and isolation).
 - API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan

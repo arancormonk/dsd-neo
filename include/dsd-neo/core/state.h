@@ -555,6 +555,26 @@ typedef struct {
     uint8_t bits[P25_APX_ALIAS_STORE_BITS];
 } p25_apx_alias_rx_state_t;
 
+/** Fragments in one Kenwood NXDN talker alias, and the text octets they carry (the last two octets of fragment 4 are
+ * not text). */
+#define NXDN_ALIAS_FRAGMENTS  4
+#define NXDN_ALIAS_TEXT_BYTES 14
+
+/**
+ * The Kenwood NXDN talker alias (PROP_FORM, MFID 0x68, 0x8204) being assembled: four fragments of four octets, stored
+ * by number. It is bound to the slot, call epoch, call source and tuning generation its first stored fragment arrived
+ * in; a fragment under any other binding, a fragment count other than four, or a fragment that differs from the one
+ * already stored under its number restarts it. Only a complete assembly is ever published (nxdn_alias_complete()).
+ */
+typedef struct nxdn_alias_assembly {
+    uint8_t seen_mask; /* bit n - 1 set when fragment n is stored; 0: no assembly */
+    uint8_t slot;
+    uint32_t source; /* ota_source_id of the bound call; 0 when no call was open */
+    uint64_t epoch;  /* call epoch the assembly is bound to; 0 when no call was open */
+    uint64_t tune_generation;
+    uint8_t fragment[NXDN_ALIAS_FRAGMENTS][4];
+} nxdn_alias_assembly;
+
 typedef struct {
     uint8_t mask;
     char last_alias[40];
@@ -2706,8 +2726,7 @@ struct dsd_state {
     uint8_t nxdn_frame_foreign;
     uint8_t nxdn_sacch_frame_segment[4][18]; //part of frame by 18 bits
     uint8_t nxdn_sacch_frame_segcrc[4];
-    uint8_t nxdn_alias_block_number;
-    char nxdn_alias_block_segment[4][4][8];
+    nxdn_alias_assembly nxdn_alias_prop; /* the Kenwood alias being assembled (nxdn_alias_decode_prop()) */
     uint8_t nxdn_alias_arib_total_segments;
     uint8_t nxdn_alias_arib_seen_mask;
     uint8_t nxdn_alias_arib_segments[4][6];

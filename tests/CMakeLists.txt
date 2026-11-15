@@ -2372,7 +2372,11 @@ target_include_directories(
     dsd-neo_test_nxdn_alias_decode
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_nxdn_alias_decode PRIVATE dsd-neo_proto_nxdn)
+# Kenwood aliases go through the element dispatch, whose channel and text helpers live in the P25 and DMR libraries.
+target_link_libraries(
+    dsd-neo_test_nxdn_alias_decode
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_proto_p25 dsd-neo_proto_dmr
+)
 add_test(NAME NXDN_ALIAS_DECODE COMMAND dsd-neo_test_nxdn_alias_decode)
 
 add_executable(
