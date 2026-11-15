@@ -109,7 +109,8 @@ typedef struct {
  *
  * Rows come in revision order: a merged row comes back with its seq and a higher rev, so a reader updates it in place.
  * Pages never skip a row: call again while @p meta more is set. @p meta lost is reported until a read returns a row:
- * that first row moves the cursor past the loss (a @p cap 0 read moves nothing and reports it again). With no log held, nothing is read and @p cursor is unchanged.
+ * that first row moves the cursor past the loss (a @p cap 0 read moves nothing and reports it again). With no log
+ * held, nothing is read and @p cursor is unchanged.
  *
  * @return the number of rows written, or -1 on a NULL @p snapshot, @p cursor or @p meta, a negative @p cap, or a NULL
  *         @p out with a positive @p cap.

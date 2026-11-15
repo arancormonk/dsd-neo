@@ -621,7 +621,7 @@ ends_with(const char* text, const char* tail) {
 static void
 test_target_text_never_cuts_a_part(void) {
     /* A 49-byte label, as long as a list row holds. */
-    static const char k_label49[] = "Northside County Fire Dispatch Main Operations 01";
+    static const char k_label49[] = "Group Alpha Talkgroup Label Long Text Number 0001";
     _Static_assert(sizeof(k_label49) == DSD_SOURCE_ALIAS_NAME_MAX, "the longest label a row holds");
     dsd_state* st = new_state();
     dsd_app_unit_activity_cursor cursor = {0, 0};
@@ -643,7 +643,7 @@ test_target_text_never_cuts_a_part(void) {
     r.group_valid = 1U;
     set_identity(&r.actor, 1234567U, DSD_UA_ID_RADIO);
     row = view_of(st, &cursor, &r);
-    assert(strcmp(row.target_text, "TG 100 Northside County Fire Dispatch Main Operations 01, from 1234567") == 0);
+    assert(strcmp(row.target_text, "TG 100 Group Alpha Talkgroup Label Long Text Number 0001, from 1234567") == 0);
 
     /* Every part at its longest: the label gives way first, every ID stays whole. */
     r = mk(DSD_UA_PROTO_TETRA, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_ACCEPTED, 2003U);
@@ -656,7 +656,7 @@ test_target_text_never_cuts_a_part(void) {
     set_identity(&r.actor, 0xFFFFFFFFU, DSD_UA_ID_INFRASTRUCTURE);
     row = view_of(st, &cursor, &r);
     assert(strcmp(row.target_text,
-                  "TG 100 N\xE2\x80\xA6, Migrating or service restoration migrating location updating, as 4294967295, "
+                  "TG 100 G\xE2\x80\xA6, Migrating or service restoration migrating location updating, as 4294967295, "
                   "to 4294967295, from System 0xFFFFFFFF")
            == 0);
     assert(strlen(row.target_text) < sizeof row.target_text);
