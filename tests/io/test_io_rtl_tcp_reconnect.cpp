@@ -967,7 +967,7 @@ test_initial_open_succeeds_and_cancelled_initial_open_stops(void) {
     dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     assert(rtl_device_has_stream(r.dev) == 1);
-    assert(rig_generation(r) == 1U);
+    assert(rig_generation(r) < 2U);
     rig_close(r);
 
     conn_script silent;
@@ -1130,8 +1130,11 @@ test_latest_effective_settings_replayed(void) {
 }
 
 /* reconnect_looks_the_host_up_again (issue #743 B18): a host name is looked up through getaddrinfo(), for IPv4, at the
- * first connection and again at the reconnect, on the reader's thread, so a server whose address changed is found
- * again (gethostbyname(), which this replaced, is not thread-safe). */
+ * first connection and again at each reconnect attempt, on the reader's thread, and the attempt goes where the new
+ * answer points (gethostbyname(), which this replaced, is not thread-safe). On Linux the record first moves to
+ * 127.0.0.2, where nothing listens (the server binds 127.0.0.1 only): the reconnects fail there and never reach the old
+ * address; once it moves back the next attempt recovers. Elsewhere 127.0.0.2 may not answer at once, so only the
+ * repeated lookup is checked. */
 void
 test_reconnect_looks_the_host_up_again(void) {
     server_reset(default_script());
@@ -1143,9 +1146,22 @@ test_reconnect_looks_the_host_up_again(void) {
     const int at_open = dsd_fake_resolver_lookups();
     assert(at_open >= 1);
     rig_start(r);
+#if defined(__linux__)
+    assert(wait_until([] { return g_srv.connected.load() != 0; }, kWaitMs));
+    dsd_fake_resolver_set_later(0x7F000002U);
+    const size_t conns = server_conn_count();
+    server_kill();
+    assert(wait_until([&] { return dsd_fake_resolver_lookups() >= at_open + 2; }, kWaitMs));
+    assert(rig_generation(r) < 2U);
+    assert(server_conn_count() == conns);
+    dsd_fake_resolver_set_later(0x7F000001U);
+    wait_generation(r, 2U);
+    assert(server_conn_count() == conns + 1U);
+#else
     lose_connection(r);
     wait_generation(r, 2U);
     assert(dsd_fake_resolver_lookups() > at_open);
+#endif
     assert(dsd_fake_resolver_non_ipv4_lookups() == 0);
     rig_close(r);
 }

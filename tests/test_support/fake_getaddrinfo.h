@@ -33,6 +33,10 @@ extern "C" {
  */
 void dsd_fake_resolver_reset(uint32_t first, uint32_t later);
 
+/** @brief Answer every lookup after the first with @p later from now on, the count kept (safe while another thread
+ *         looks the name up). */
+void dsd_fake_resolver_set_later(uint32_t later);
+
 /** @brief Lookups of DSD_FAKE_RESOLVER_HOST since the last reset. */
 int dsd_fake_resolver_lookups(void);
 

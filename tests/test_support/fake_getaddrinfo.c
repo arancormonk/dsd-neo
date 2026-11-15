@@ -12,13 +12,15 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 
-/* Set by the test before anything looks the name up, read by whichever thread does. */
+/* The first answer is set by the test before anything looks the name up; the later one can change while a reader
+   thread looks it up, so it is atomic (an IPv4 address held in an int). */
 static uint32_t g_first_answer = 0x7F000001U;
-static uint32_t g_later_answer = 0x7F000001U;
+static atomic_int g_later_answer;
 static atomic_int g_lookups;
 static atomic_int g_non_ipv4_lookups;
 
@@ -28,12 +30,20 @@ typedef struct {
     struct sockaddr_in addr;
 } fake_answer;
 
+/* freeaddrinfo() frees the pointer getaddrinfo() returned, which is the answer itself. */
+_Static_assert(offsetof(fake_answer, info) == 0, "the addrinfo must start the answer");
+
 void
 dsd_fake_resolver_reset(uint32_t first, uint32_t later) {
     g_first_answer = first;
-    g_later_answer = later;
+    dsd_fake_resolver_set_later(later);
     atomic_store(&g_lookups, 0);
     atomic_store(&g_non_ipv4_lookups, 0);
+}
+
+void
+dsd_fake_resolver_set_later(uint32_t later) {
+    atomic_store(&g_later_answer, (int)later);
 }
 
 int
@@ -65,12 +75,12 @@ getaddrinfo(const char* node, const char* service, const struct addrinfo* hints,
         return EAI_MEMORY;
     }
     answer->addr.sin_family = AF_INET;
-    answer->addr.sin_addr.s_addr = htonl(lookup == 0 ? g_first_answer : g_later_answer);
+    answer->addr.sin_addr.s_addr = htonl(lookup == 0 ? g_first_answer : (uint32_t)atomic_load(&g_later_answer));
     answer->info.ai_family = AF_INET;
     answer->info.ai_socktype = hints ? hints->ai_socktype : 0;
     answer->info.ai_addrlen = (socklen_t)sizeof answer->addr;
     answer->info.ai_addr = (struct sockaddr*)&answer->addr;
-    *res = &answer->info;
+    *res = (struct addrinfo*)(void*)answer;
     return 0;
 }
 
