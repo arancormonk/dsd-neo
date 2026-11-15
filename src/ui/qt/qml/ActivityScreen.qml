@@ -394,9 +394,16 @@ Item {
         objectName: "activityEmptyScroll"
         accessibleName: qsTr("Activity explanation")
 
-        anchors.fill: activityList
         // The filter's rows, not the view's: the view holds none while hidden.
-        visible: activityView.count === 0
+        // The gap row alone is no activity: under a filter it leaves alone, the
+        // message says the rest is hidden, below the gap row.
+        readonly property bool gapShown: activityView.count > 0 && activityView.rowForSeq(0) >= 0
+        anchors.top: activityList.top
+        anchors.topMargin: gapShown ? activityList.contentHeight : 0
+        anchors.left: activityList.left
+        anchors.right: activityList.right
+        anchors.bottom: activityList.bottom
+        visible: activityView.count - (gapShown ? 1 : 0) === 0
         contentWidth: width
         contentHeight: Math.max(height, emptyState.height + 2 * Theme.screenPadding)
         clip: true

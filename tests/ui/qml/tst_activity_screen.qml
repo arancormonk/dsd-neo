@@ -262,23 +262,43 @@ Item {
         // reachable, scrolling when it is taller than that area.
         function test_empty_state_fits_data() {
             return [{tag: "320-x1", width: 320, scale: 1.0}, {tag: "320-x2", width: 320, scale: 2.0},
-                {tag: "411-x2", width: 411, scale: 2.0}, {tag: "320-x2-filtered", width: 320, scale: 2.0, filtered: true}];
+                {tag: "411-x2", width: 411, scale: 2.0}, {tag: "320-x2-filtered", width: 320, scale: 2.0, filtered: true},
+                {tag: "411-x1-gap-filtered", width: 411, scale: 1.0, filtered: true, gap: true},
+                {tag: "320-x2-gap-filtered", width: 320, scale: 2.0, filtered: true, gap: true}];
         }
         function test_empty_state_fits(data) {
             root.width = data.width;
             Ui.Theme.fontScale = data.scale;
             if (data.filtered) {
                 verify(testContext.pushUnitActivity({kind: "registration", subject: 1}));
+                // Back from the background on a busy site: the gap row, then a
+                // filter none of the kept rows is in. The gap row alone is no
+                // activity: the filter's message shows below it.
+                if (data.gap) {
+                    for (var i = 0; i < 1029; ++i)
+                        verify(testContext.pushUnitActivity({kind: "registration", subject: 100000 + i}, false));
+                    testContext.readUnitActivity();
+                }
                 activityView.filter = 8;
             }
-            tryCompare(activityView, "count", 0);
+            tryCompare(activityView, "count", data.gap ? 1 : 0);
             waitForRendering(screen);
             var scroll = item("activityEmptyScroll");
             verify(scroll.visible);
+            if (data.filtered) {
+                compare(item("activityEmptyTitle").text, "No matching activity");
+                compare(item("activityEmptyDetail").text, data.gap ? "1,024 events are hidden by the filter." : "1 event is hidden by the filter.");
+            }
             var header = item("activityHeaderScroll");
             var headerBottom = header.mapToItem(screen, 0, header.height).y;
+            if (data.gap) {
+                tryVerify(function () { return list().itemAtIndex(0) !== null; });
+                var gapRow = list().itemAtIndex(0);
+                verify(gapRow.gap);
+                headerBottom = gapRow.mapToItem(screen, 0, gapRow.height).y;
+            }
             var top = scroll.mapToItem(screen, 0, 0).y;
-            verify(top >= headerBottom - 0.5, "the empty state starts below the pills: " + top + " vs " + headerBottom);
+            verify(top >= headerBottom - 0.5, "the empty state starts below the pills and the gap row: " + top + " vs " + headerBottom);
             verify(top + scroll.height <= screen.height + 0.5, "and ends inside the screen");
             var lines = ["activityEmptyTitle", "activityEmptyDetail"].concat(data.filtered ? ["activityShowAll"] : ["activityEmptyLimits"]);
             for (var name of lines) {
