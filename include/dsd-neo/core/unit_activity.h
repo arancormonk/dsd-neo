@@ -99,6 +99,15 @@ typedef enum {
     DSD_UA_RESULT_UNKNOWN,
 } dsd_ua_result;
 
+/** dsd_unit_activity::stage: the step of a command that has more than one (a TETRA D-DISABLE / D-ENABLE is sent as an
+ * intent, then as its authenticated confirm stage, EN 300 392-7 A.8.35). Both stages are commands: neither says the
+ * radio acted on it. The values are stable. */
+typedef enum {
+    DSD_UA_STAGE_NONE = 0,          /**< The message has no stages. */
+    DSD_UA_STAGE_INTENT = 1,        /**< The command's first (intent) stage. */
+    DSD_UA_STAGE_AUTHENTICATED = 2, /**< The command's authenticated (confirm) stage. */
+} dsd_ua_stage;
+
 /** dsd_ua_identity::subtype. Only RADIO identities are ever named as radios; TEI_PARTIAL (a TETRA equipment identity
  * piece) and UNKNOWN (an address of unknown kind, a TETRA SMI or event label) are never named. The values are
  * stable. */
@@ -171,8 +180,10 @@ typedef struct {
  * - group/group_valid, value/value_valid, value2/value2_valid: payload fields (the message's group, its status value,
  *   command argument, accept type or service type, and a second field such as deny additional info, an NXDN visitor
  *   group or a TETRA assigned flag). Read a value only while its valid flag is set.
- * - reason_code with reason_set (which protocol's reason table): text is resolved at view time.
- * - stage: a step within one command (TETRA intent vs authenticated confirm), 0 when the message has none.
+ * - reason_code with reason_set (a dsd_ua_reason_set, <dsd-neo/core/unit_activity_reason.h>): text is resolved at
+ *   view time.
+ * - stage: a step within one command (a dsd_ua_stage: TETRA intent vs authenticated confirm), 0 when the message has
+ *   none.
  * - slot: the TDMA slot heard on (0/1); freq_hz: the carrier heard on (0 unknown).
  * - scope_epoch: the trunk-scan target generation the row was heard under, or 0; the producer fills it.
  * - name_frozen: the latest pushed name: the subject's name as the producer resolved it at the push that inserted

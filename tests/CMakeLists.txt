@@ -1120,6 +1120,18 @@ dsd_neo_add_public_header_smoke_test(
 )
 # Issue #575: the call history's access-code text, read by the Qt call history.
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_unit_activity_view
+  HEADERS_PUBLIC_APP_CONTROL_UNIT_ACTIVITY_VIEW
+  dsd-neo/app_control/unit_activity_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_unit_activity_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_UNIT_ACTIVITY_VIEW_CXX
+  dsd-neo/app_control/unit_activity_view.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_site_identity_view
   HEADERS_PUBLIC_APP_CONTROL_SITE_IDENTITY_VIEW
   dsd-neo/app_control/site_identity_view.h
@@ -1670,6 +1682,18 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_unit_activity_cxx
   HEADERS_PUBLIC_CORE_UNIT_ACTIVITY_CXX
   dsd-neo/core/unit_activity.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_unit_activity_reason
+  HEADERS_PUBLIC_CORE_UNIT_ACTIVITY_REASON
+  dsd-neo/core/unit_activity_reason.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_unit_activity_reason_cxx
+  HEADERS_PUBLIC_CORE_UNIT_ACTIVITY_REASON_CXX
+  dsd-neo/core/unit_activity_reason.h
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
@@ -3522,6 +3546,26 @@ target_include_directories(
 add_test(
     NAME APP_CONTROL_ACCESS_CODE_VIEW
     COMMAND dsd-neo_test_app_control_access_code_view
+)
+
+# The unit activity log as every frontend shows it: labels, filters, reason, scope and names that follow each row's
+# own system.
+add_executable(
+    dsd-neo_test_app_control_unit_activity
+    ui/test_app_control_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_unit_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_app_control_unit_activity
+    PRIVATE dsd-neo_core dsd-neo_runtime dsd-neo_platform
+)
+add_test(
+    NAME APP_CONTROL_UNIT_ACTIVITY
+    COMMAND dsd-neo_test_app_control_unit_activity
 )
 
 # The system identity received on the carrier being decoded, as every frontend shows it.
@@ -7727,6 +7771,22 @@ target_link_libraries(
         ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME CORE_UNIT_ACTIVITY COMMAND dsd-neo_test_core_unit_activity)
+
+# The unit activity reason tables; the P25 ones against the P25 prints' own tables.
+add_executable(
+    dsd-neo_test_core_unit_activity_reason
+    core/test_core_unit_activity_reason.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
+)
+target_include_directories(
+    dsd-neo_test_core_unit_activity_reason
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25
+)
+add_test(
+    NAME CORE_UNIT_ACTIVITY_REASON
+    COMMAND dsd-neo_test_core_unit_activity_reason
+)
 
 add_executable(dsd-neo_test_core_source_alias core/test_core_source_alias.c)
 target_link_libraries(dsd-neo_test_core_source_alias PRIVATE dsd-neo_core)
