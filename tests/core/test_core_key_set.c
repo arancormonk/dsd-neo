@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -593,9 +594,43 @@ test_scan_keys_and_wipe_leave_no_autoloaded_key(void) {
     return failed;
 }
 
+/* A Basic Privacy key typed while the autoload's key is the working key (the menu's or a command's direct entry,
+   overlay mode) is the user's direct key on the key state the autoload replaced: talkgroup 123's Hytera key (K1, H)
+   does not come along as a direct key, and the autoload no longer holds, so it never takes the typed key out. */
+static int
+test_direct_entry_keeps_no_autoloaded_key(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int failed = 0;
+    seed_autoloaded_key(state, 0ULL);
+    if (dsd_key_apply_direct(state, DSD_KEY_TYPE_BASIC, "44", DSD_KEY_APPLY_OVERLAY) != DSD_KEY_DIRECT_OK) {
+        DSD_FPRINTF(stderr, "direct entry of a Basic Privacy key failed\n");
+        failed = 1;
+    }
+    if (state->K != 44ULL || state->basic_key_present != 1U) {
+        DSD_FPRINTF(stderr, "direct entry did not keep the typed key as the Basic Privacy key\n");
+        failed = 1;
+    }
+    if (state->K1 != 0ULL || state->H != 0ULL || state->hytera_key_segments != 0U) {
+        DSD_FPRINTF(stderr, "direct entry kept the autoloaded talkgroup's Hytera key as a direct key\n");
+        failed = 1;
+    }
+    if (dsd_dmr_tg_autoload_holds(state)) {
+        DSD_FPRINTF(stderr, "the autoload still holds the typed key as its own\n");
+        failed = 1;
+    }
+    free_test_state(state);
+    return failed;
+}
+
 int
 main(void) {
     if (test_scan_keys_and_wipe_leave_no_autoloaded_key() != 0) {
+        return 1;
+    }
+    if (test_direct_entry_keeps_no_autoloaded_key() != 0) {
         return 1;
     }
     if (test_capture_install_roundtrip() != 0) {

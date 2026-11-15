@@ -113,8 +113,9 @@ history_has_alias(const dsd_state* state, const char* needle) {
     return 0;
 }
 
-/* A fresh state whose slot @p slot holds an open call of @p protocol, @p tg / @p src, its epoch opened on the event row:
-   another protocol's call whose end never decoded (-fa, or a -Y step), which slot 0 keeps until the next call begins. */
+/* A fresh state whose slot @p slot holds an open call of @p protocol, @p tg / @p src, its epoch opened on the event
+   row: another protocol's call whose end never decoded (-fa, or a -Y step), which slot 0 keeps until the next call
+   begins. */
 static dsd_state*
 foreign_call_fixture(dsd_opts* opts, int protocol, uint8_t slot, uint64_t tg, uint64_t src) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));

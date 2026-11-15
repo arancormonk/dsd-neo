@@ -860,7 +860,8 @@ dmr_flco_missing_alg_key_can_decrypt(const dmr_flco_ctx* ctx, uint8_t slot, uint
            || keyring_dmr_tg_autoload_key_present(ctx->state, slot, ctx->target);
 }
 
-/* @p replaced_other_protocol: this LC's call replaced another protocol's call on the slot (dmr_flco_publish_voice()). */
+/* @p replaced_other_protocol: this LC's call replaced another protocol's call on the slot
+   (dmr_flco_publish_voice()). */
 static void
 dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot, int replaced_other_protocol) {
     const int encrypted = (ctx->so & 0x40U) != 0U;

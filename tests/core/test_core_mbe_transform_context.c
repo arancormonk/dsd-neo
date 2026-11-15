@@ -4445,11 +4445,11 @@ test_process_mbe_frame_checking_call_keeps_mapped_key(void) {
 
 // A DMR frame the receive policy has not admitted yet (Checking) opens no call, so its slot can still hold an ended
 // call or another protocol's, which keep their talkgroups there after they are over. The talkgroup key autoload keys
-// such a frame from its own call's talkgroup, the open DMR call a checked LC named, and from nothing before that call is
-// known, as an admitted frame of a call no LC has named yet loads no talkgroup's key either. A key another call's
-// talkgroup names would stay loaded into the call's admitted frames: its Basic Privacy would decrypt with that key, and
-// a call that has none would be judged decryptable (dsd_dmr_missing_alg_key_can_decrypt()) and play instead of being
-// muted. The choice is recorded only on that open DMR call.
+// such a frame from its own call's talkgroup, the open DMR call a checked LC named, and from nothing before that call
+// is known, as an admitted frame of a call no LC has named yet keys from no other call's talkgroup. A key another
+// call's talkgroup names would stay loaded into the call's admitted frames: its Basic Privacy would decrypt with that
+// key, and a call that has none would be judged decryptable (dsd_dmr_missing_alg_key_can_decrypt()) and play instead
+// of being muted. The choice is recorded only on that open DMR call.
 static int
 test_process_mbe_frame_checking_autoload_keys_only_from_the_open_dmr_call(void) {
     static const struct {

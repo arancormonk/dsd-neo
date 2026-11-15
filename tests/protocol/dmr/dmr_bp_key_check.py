@@ -72,7 +72,8 @@ def write_signal(path, rate, *parts):
 
 
 def join_on_grid(first, second):
-    """@p first up to a slot-1 period boundary inside its idle tail, then @p second from its first burst: one carrier."""
+    """@p first up to a slot-1 period boundary inside its idle tail, then @p second from its first burst: one
+    carrier."""
     periods = (len(first) // 2 - 2 * GRID_START) // PERIOD // 2 * 2
     return first[: 2 * (GRID_START + periods * PERIOD)] + second[2 * GRID_START:]
 
@@ -138,8 +139,9 @@ def shared_key(binary, generator, root):
                                 f"plaintext frames, recordings {recorded})")
         for name, frame_slot, expected, tg in unkeyed:
             if plaintext(frames, expected, frame_slot) != 0 or tg in recorded:
-                failures.append(f"{case}: {name}, which has no key, decrypts ({plaintext(frames, expected, frame_slot)} "
-                                f"plaintext frames, recordings {recorded})")
+                count = plaintext(frames, expected, frame_slot)
+                failures.append(f"{case}: {name}, which has no key, decrypts ({count} plaintext frames, "
+                                f"recordings {recorded})")
 
     # A frame both calls of a signal carry (the voice source repeats some) names neither: only each call's own count.
     slot1 = ("slot 1 (talkgroup 123)", "1", two_expected["1"] - two_expected["2"], "123")

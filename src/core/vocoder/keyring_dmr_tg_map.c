@@ -359,7 +359,10 @@ keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint8_t slot, uint32
     uint8_t flags[2];
     keyring_dmr_tg_autoload_preview(state, slot, tg, words, flags);
     // dsd_key_basic_present() and dsd_key_hytera_present() of that working key.
-    return flags[0] != 0U || words[0] != 0ULL || flags[1] != 0U || words[1] != 0ULL;
+    const int present = flags[0] != 0U || words[0] != 0ULL || flags[1] != 0U || words[1] != 0ULL;
+    DSD_SECURE_ZERO(words, sizeof(words));
+    DSD_SECURE_ZERO(flags, sizeof(flags));
+    return present;
 }
 
 void
