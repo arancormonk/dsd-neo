@@ -1080,8 +1080,8 @@ fnv1a(const std::string& text) {
     return h;
 }
 
-/* A shaped condition's response over its record, and whether the response is unity around every carrier (a placed
- * waveform's content lies within kSourceRate / 2 of its carrier). */
+/* A shaped condition's response over its record, and whether every carrier's content lies where the response is within
+ * kUnityTolerance of unity (carrier_unshaped()). */
 struct RecordBins {
     qs::Bins bins;
     bool carriers_unshaped = false;
@@ -1245,9 +1245,15 @@ trial_seed(const Condition& c, uint64_t phase, long trial) {
 constexpr double kSourceBandHz = kSourceRate / 2.0; /* a placed waveform's content, either side of its carrier */
 constexpr float kUnityTolerance = 1e-6f;            /* a signal bin this close to 1 leaves the carrier as it is */
 
-/* Whether carrier @p k of @p c sees a response within kUnityTolerance of unity over its whole band. */
+/* Whether carrier @p k of @p c sees a response within kUnityTolerance of unity over all of its content. A placed
+ * waveform's content lies within kSourceBandHz of its carrier, but a DMR MS droop carrier's is not confined there:
+ * add_carrier() applies its droop step at the capture rate, which spreads it across the capture, so it always goes
+ * through the response. */
 bool
 carrier_unshaped(const Condition& c, const Carrier& k, const qs::Bins& bins) {
+    if (k.droop) {
+        return false;
+    }
     const long long n = c.record;
     const double bin = (double)c.rate / (double)n, f = channel_hz(c) + k.offset_hz;
     const long long last = (long long)std::ceil((f + kSourceBandHz) / bin);
@@ -1296,9 +1302,10 @@ add_carriers(const Condition& c, const Scene& s, Rng& rng, bool wanted_only, cf*
 
 /* A shaped condition's record: its transmitters (all but neighbours when @p wanted_only), from its edge to its edge,
  * through the response, with the response's noise when @p noise. The trial is its middle span, from
- * record_trial(). Where the response is unity around every carrier (@p rb), only the noise goes through the response
- * and the carriers are added to the trial as they are: through the response they would differ only where the
- * record's circular wrap rings, which its edges keep out of the trial. Every random draw is the same either way: the
+ * record_trial(). Where the response is within kUnityTolerance of unity over all of every carrier's content (@p rb,
+ * carrier_unshaped()), only the noise goes through the response and the carriers are added to the trial as they are:
+ * through the response they would differ by under 1e-5 dB, and otherwise only where the record's circular wrap rings,
+ * which its edges keep out of the trial. Every random draw is the same either way: the
  * carriers' draws come first (add_carrier() draws the same whatever the length), then the noise's. Returns the first
  * carrier's start, or -1 with no carrier. */
 int64_t
