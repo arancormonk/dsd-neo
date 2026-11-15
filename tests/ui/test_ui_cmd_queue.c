@@ -14628,6 +14628,119 @@ test_replay_config_apply_replans(void) {
     return rc;
 }
 
+/* The [input] a replay session started with: the rtl_tcp one of the config it loaded (issue #743). */
+static void
+init_replay_loaded_input(dsdneoUserConfig* loaded) {
+    DSD_MEMSET(loaded, 0, sizeof *loaded);
+    loaded->has_input = 1;
+    loaded->input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(loaded->rtltcp_host, sizeof loaded->rtltcp_host, "%s", "radio.example");
+    loaded->rtltcp_port = 1235;
+    DSD_SNPRINTF(loaded->rtl_freq, sizeof loaded->rtl_freq, "%s", "851.0125M");
+    loaded->rtl_gain = 12;
+    loaded->rtl_gain_is_set = 1;
+}
+
+/* What a save of the session writes for its [input] is the loaded rtl_tcp one, unchanged. */
+static int
+expect_saves_loaded_input(const char* label, const dsd_opts* opts, const dsd_state* state) {
+    static dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(opts, state, &snap);
+    const int kept = snap.has_input && snap.input_source == DSDCFG_INPUT_RTLTCP
+                     && strcmp(snap.rtltcp_host, "radio.example") == 0 && snap.rtltcp_port == 1235
+                     && strcmp(snap.rtl_freq, "851.0125M") == 0 && snap.rtl_gain == 12 && snap.rtl_bw_khz == 0;
+    if (!kept) {
+        DSD_FPRINTF(stderr, "%s: saves source %d host \"%s\" freq \"%s\" bw %d file \"%s\"\n", label, snap.input_source,
+                    snap.rtltcp_host, snap.rtl_freq, snap.rtl_bw_khz, snap.file_path);
+    }
+    return expect_true(label, kept);
+}
+
+/*
+ * Issue #743 (B1, G4): a replay session saves the [input] of the config it loaded. A config applied during the replay
+ * (an API patch, a Config load) leaves that [input] alone when it has none of its own; one whose [input] stays applied
+ * with the replay still running is the session's [input] from then on; a refused or rolled-back one leaves the loaded
+ * one; one that replaces the replay with a live radio drops it, and the session saves its own input again.
+ */
+static int
+test_replay_config_apply_keeps_the_saved_input(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static dsdneoUserConfig loaded;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig snap;
+    int rc = 0;
+    init_replay_loaded_input(&loaded);
+
+    /* The API's config_apply with only a [mode]: an inputless patch, which re-plans the replay for TETRA. */
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("inputless patch: retained", dsd_user_config_retain_input(&state, &loaded), 0);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_TETRA;
+    rc |= submit_config(&opts, &state, &cfg, "inputless patch");
+    rc |= expect_int("inputless patch: not failed", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_saves_loaded_input("inputless patch: the loaded [input] is saved", &opts, &state);
+    freeState(&state);
+
+    /* An RTL-SDR [input] with a bandwidth and no frequency: the replay keeps running, re-planned, and the session saves
+       that [input] from now on. */
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_bw_khz = 24;
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("committed [input]: retained", dsd_user_config_retain_input(&state, &loaded), 0);
+    rc |= submit_config(&opts, &state, &cfg, "committed [input]");
+    rc |= expect_str("committed [input]: the replay stays the input", opts.audio_in_dev, "iqreplay:capture.iq.json");
+    rc |= expect_int("committed [input]: not failed", dsd_app_command_test_last_failed(), 0);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    rc |= expect_true("committed [input]: the applied [input] is saved",
+                      snap.has_input && snap.input_source == DSDCFG_INPUT_RTL && snap.rtl_bw_khz == 24
+                          && snap.rtltcp_host[0] == '\0' && snap.rtl_freq[0] == '\0');
+    freeState(&state);
+
+    /* The same [input] refused by the planner, then rolled back after its starts fail: the loaded [input] stays. */
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("refused [input]: retained", dsd_user_config_retain_input(&state, &loaded), 0);
+    g_fake_replay.refuse_all = 1;
+    rc |= submit_config(&opts, &state, &cfg, "refused [input]");
+    rc |= expect_int("refused [input]: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_saves_loaded_input("refused [input]: the loaded [input] is saved", &opts, &state);
+    freeState(&state);
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("rolled-back [input]: retained", dsd_user_config_retain_input(&state, &loaded), 0);
+    g_config_rtl_fail_starts = 2;
+    rc |= submit_config(&opts, &state, &cfg, "rolled-back [input]");
+    rc |= expect_int("rolled-back [input]: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_str("rolled-back [input]: the replay runs again", opts.audio_in_dev, "iqreplay:capture.iq.json");
+    rc |= expect_saves_loaded_input("rolled-back [input]: the loaded [input] is saved", &opts, &state);
+    freeState(&state);
+
+    /* An RTL-SDR [input] with a frequency replaces the replay with the live radio: the session saves that radio, and a
+       later save never goes back to the loaded [input]. */
+    cfg.rtl_bw_khz = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851.375M");
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("live [input]: retained", dsd_user_config_retain_input(&state, &loaded), 0);
+    g_fake_replay.active = 0;
+    rc |= submit_config(&opts, &state, &cfg, "live [input]");
+    rc |= expect_int("live [input]: not failed", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_true("live [input]: the live radio replaced the replay",
+                      opts.audio_in_type == AUDIO_IN_RTL && strncmp(opts.audio_in_dev, "rtl:", 4) == 0);
+    rc |= expect_int("live [input]: the loaded [input] is dropped", dsd_user_config_retained_input(&state, &snap), 0);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    rc |= expect_true("live [input]: the live radio is saved",
+                      snap.has_input && snap.input_source == DSDCFG_INPUT_RTL && snap.rtltcp_host[0] == '\0');
+    freeState(&state);
+
+    reset_rx_family_wrap();
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 /* A replay of a 48 kHz capture on the Analog monitor with an NFM width of @p width_hz, its request @p bw_khz explicit
    and the chain it plans running. */
 static void
@@ -30349,6 +30462,7 @@ main(void) {
     rc |= test_replay_mode_change_replans();
     rc |= test_replay_refused_replan_restores_the_profile();
     rc |= test_replay_config_apply_replans();
+    rc |= test_replay_config_apply_keeps_the_saved_input();
     rc |= test_replay_widths_held_to_the_planned_rate();
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();

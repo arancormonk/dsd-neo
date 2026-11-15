@@ -259,6 +259,10 @@ bootstrap_handle_loaded_user_config(dsd_opts* opts, dsd_state* state, const boot
                                     int* user_cfg_loaded, const char* cfg_path) {
     dsd_apply_user_config_to_opts_pre_cli(user_cfg, opts, state);
     *user_cfg_loaded = 1;
+    /* What a session the command line turns into an I/Q replay saves as its [input] (issue #743). */
+    if (dsd_user_config_retain_input(state, user_cfg) != 0) {
+        LOG_WARN("WARNING: Out of memory keeping the config's [input]; an I/Q replay session saves none.\n");
+    }
     if (explicit_profile_selected) {
         state->config_autosave_enabled = 0;
         LOG_INFO("NOTICE: Autosave disabled for profiled config %s to avoid overwriting profile sections.\n", cfg_path);
@@ -800,6 +804,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     DSD_MEMSET(&user_cfg, 0, sizeof user_cfg);
 
     bootstrap_disable_autosave(state);
+    dsd_user_config_forget_retained_input(state);
 
     int boot_rc = bootstrap_load_user_config_if_requested(opts, state, &args, config_env, explicit_profile_selected,
                                                           &user_cfg, &user_cfg_loaded, out_exit_rc);

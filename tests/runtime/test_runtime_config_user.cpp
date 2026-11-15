@@ -1607,6 +1607,138 @@ test_snapshot_names_switched_inputs(void) {
     return rc;
 }
 
+/* The session of an I/Q replay of @p replay_dev, which runs its capture's own centre and gain. */
+static void
+set_iq_replay_session(dsd_opts& opts, const char* replay_dev) {
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.iq_replay_requested = 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", replay_dev);
+    opts.rtlsdr_center_freq = 460125000U;
+    opts.iq_replay_center_freq = 460125000U;
+    opts.rtl_gain_value = 44;
+    opts.input_warn_db = -12.0;
+}
+
+/*
+ * Issue #743 (B1): an I/Q replay has no INI form, so a replay session saves the [input] of the config it loaded as it
+ * loaded it (none of the replay's centre, gain or input threshold), or no [input] when it loaded none. Before, it saved
+ * source = "file" with file_path = "iqreplay:...", which the next start refuses.
+ */
+static int
+test_replay_snapshot_saves_the_loaded_input(void) {
+    static const char* ini = "[input]\n"
+                             "source = \"rtltcp\"\n"
+                             "rtltcp_host = \"radio.example\"\n"
+                             "rtltcp_port = 1235\n"
+                             "rtl_freq = \"851.0125M\"\n"
+                             "rtl_gain = 12\n"
+                             "rtl_bw_khz = 24\n"
+                             "input_warn_db = -30.0\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    static dsdneoUserConfig cfg;
+    const int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: replay [input] config did not load\n");
+        return 1;
+    }
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    set_iq_replay_session(opts, "iqreplay:/captures/site.iq.json");
+    rc |= dsd_user_config_retain_input(&state, &cfg) == 0 ? 0 : 1;
+    static dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        dsd_state_ext_free_all(&state);
+        return 1;
+    }
+    rc |= expect_contains("replay save: the loaded source", rendered, "[input]\nsource = \"rtltcp\"\n");
+    rc |= expect_contains("replay save: the loaded host", rendered, "rtltcp_host = \"radio.example\"\n");
+    rc |= expect_contains("replay save: the loaded port", rendered, "rtltcp_port = 1235\n");
+    rc |= expect_contains("replay save: the loaded frequency, as written", rendered, "rtl_freq = \"851.0125M\"\n");
+    rc |= expect_contains("replay save: the loaded gain, not the replay's", rendered, "rtl_gain = 12\n");
+    rc |= expect_contains("replay save: the loaded bandwidth", rendered, "rtl_bw_khz = 24\n");
+    rc |= expect_contains("replay save: the loaded input threshold", rendered, "input_warn_db = -30.0\n");
+    rc |= expect_absent_quiet("replay save: no replay spec", rendered, "iqreplay");
+    rc |= expect_absent_quiet("replay save: no file input", rendered, "source = \"file\"");
+
+    /* A session that loaded no config (or one without an [input]) saves no [input]. */
+    dsd_user_config_forget_retained_input(&state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.has_input) {
+        DSD_FPRINTF(stderr, "FAIL: replay save with no loaded [input] wrote one (source %d)\n", snap.input_source);
+        rc |= 1;
+    }
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_absent_quiet("replay save without a config: no [input]", rendered, "[input]");
+    rc |= expect_absent_quiet("replay save without a config: no replay spec", rendered, "iqreplay");
+
+    /* A session that is no replay saves its own input, whatever was retained. */
+    reset_opts_and_state(opts, state);
+    rc |= dsd_user_config_retain_input(&state, &cfg) == 0 ? 0 : 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.has_input || snap.input_source != DSDCFG_INPUT_PULSE) {
+        DSD_FPRINTF(stderr, "FAIL: a live session saved source %d, want its own pulse input\n", snap.input_source);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* Issue #743 (B1): --validate-config refuses a file_path that is an I/Q replay spec, which no config can start; a file
+   input named like a network input (the "tcp" an older save wrote) still opens it, and validates. */
+static int
+test_validate_refuses_a_replay_file_path(void) {
+    static const struct {
+        const char* ini;
+        const char* section;
+        const char* key;
+        int errors;
+    } cases[] = {
+        {"[input]\nsource = \"file\"\nfile_path = \"iqreplay:/captures/site.iq.json\"\n", "input", "file_path", 1},
+        {"[profile.replay]\ninput.source = \"file\"\ninput.file_path = \"iqreplay:/captures/site.iq.json\"\n",
+         "profile.replay", "input.file_path", 1},
+        {"[input]\nsource = \"file\"\nfile_path = \"tcp\"\n", "", "", 0},
+        {"[input]\nsource = \"file\"\nfile_path = \"/captures/iqreplay.wav\"\n", "", "", 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(cases[i].ini, path, sizeof path) != 0) {
+            return 1;
+        }
+        dsdcfg_diagnostics_t diags;
+        DSD_MEMSET(&diags, 0, sizeof diags);
+        const int validate_rc = dsd_user_config_validate(path, &diags);
+        (void)remove(path);
+        int named = cases[i].errors == 0;
+        for (int d = 0; d < diags.count && !named; d++) {
+            named = diags.items[d].level == DSDCFG_DIAG_ERROR && strcmp(diags.items[d].section, cases[i].section) == 0
+                    && strcmp(diags.items[d].key, cases[i].key) == 0
+                    && strstr(diags.items[d].message, "--iq-replay <path>") != NULL;
+        }
+        if ((validate_rc != 0) != (cases[i].errors != 0) || diags.error_count != cases[i].errors || !named) {
+            DSD_FPRINTF(stderr, "FAIL: validate case %zu: rc=%d errors=%d (want %d), named=%d\n", i, validate_rc,
+                        diags.error_count, cases[i].errors, named);
+            rc |= 1;
+        }
+        dsdcfg_diags_free(&diags);
+    }
+    return rc;
+}
+
 /* Issue #671: under --trunk-scan the parked target's type sets the live trunking flag, so a save writes the configured
    setting the coordinator publishes; with no target published (no scan, or before the first target), the live flag. */
 static int
@@ -5843,6 +5975,8 @@ main(void) {
     rc |= test_load_and_apply_rtl_digital_resample();
     rc |= test_snapshot_digital_resample_mode();
     rc |= test_snapshot_names_switched_inputs();
+    rc |= test_replay_snapshot_saves_the_loaded_input();
+    rc |= test_validate_refuses_a_replay_file_path();
     rc |= test_snapshot_trunking_reads_the_trunk_scan_configured_value();
     rc |= test_snapshot_scanner_saves_a_paused_scan();
     rc |= test_snapshot_never_saves_a_scan_hold();

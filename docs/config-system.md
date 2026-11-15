@@ -300,6 +300,13 @@ autosave records the input that runs. A switch to an audio input keeps the radio
 own `RTL-SDR` row; it is not saved. A file the switch opened by its `-i` extension rule (`.raw`/`.sym` as symbol
 streams, `.bin` as a capture) is saved by its path, so startup opens it the same way.
 
+An I/Q replay (`--iq-replay`) has no `[input]` form. A session that runs one saves (the exit autosave, Save,
+`--print-config`) the `[input]` of the config it loaded, exactly as loaded, or no `[input]` when it loaded none. A config
+applied during the replay with an `[input]` of its own that leaves the replay running is saved in its place; a config
+without an `[input]`, or one that is not applied, keeps the loaded one. Once the session leaves the replay, it saves the
+input it runs again. `--validate-config` reports a `file_path` that names an I/Q replay (`iqreplay:...`) as an error:
+no config can start one.
+
 ---
 
 ## Precedence Rules

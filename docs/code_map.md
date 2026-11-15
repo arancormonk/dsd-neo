@@ -2457,11 +2457,12 @@ suite runs under this compiler.
   (taken from the io range): 13 is `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and
   the reception it runs for, the talkers both slots remember, and the DMR superframe mixer's one-channel limiter (issue
   #518), and 14 `DSD_STATE_EXT_CORE_UNIT_ACTIVITY`, the session's unit activity ring (below);
-  runtime 6; DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is
+  runtime 6, and 15 (taken from the io range): `DSD_STATE_EXT_RUNTIME_CONFIG_INPUT`, the loaded config's `[input]` an
+  I/Q replay session saves (issue #743); DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is
   `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
-  its tune (issue #644). `CORE_STATE_EXT` pins these five.
+  its tune (issue #644). `CORE_STATE_EXT` pins these six.
 - API note: the unit activity ring (`<dsd-neo/core/unit_activity.h>`, `src/core/util/unit_activity.c`, state
   extension 14) is the session's log of trunking unit events: registrations, deregistrations, talkgroup joins, denies,
   queued and waiting responses, radio commands, status and message reports. Protocol producers push one plain record
@@ -3796,6 +3797,19 @@ suite runs under this compiler.
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
       present as a `[section]` header does (an empty `[analog]` acts), and `dsd_user_config_apply_key()` applies one
       `[section] key = value` through the loader's own mapper (the control API's `config_apply`)
+    - Replay config provenance (issue #743, `src/runtime/config_retained_input.c`): an I/Q replay has no INI form, so
+      `dsd_snapshot_opts_to_user_config()` writes, for a session whose input is a replay
+      (`dsd_opts_input_is_iq_replay()`), the `[input]` block (`has_input` .. `input_warn_db_is_set`) of the config the
+      session loaded, unchanged, or no `[input]` when none was loaded; every save (exit autosave, terminal Save,
+      `--print-config`) goes through it. Bootstrap retains the loaded block (`dsd_user_config_retain_input()`) in state
+      slot 15 (`DSD_STATE_EXT_RUNTIME_CONFIG_INPUT`), freed with the state. A config apply
+      (`ui_cmd_handle_config_apply()`) replaces it only when the config has an `[input]`, stays applied, and leaves the
+      replay running; `dsd_app_drain_cmds()` drops it after any command that left the replay. The UI snapshot copies it
+      (`dsd_user_config_copy_retained_input()`, only when it changed) so the terminal's Save writes it too.
+      `--validate-config` refuses a file input whose `file_path` is a spec kind no config can start
+      (`k_file_path_spec_kinds` in `config_user_validation.cpp`: `iqreplay:`). Tests: `RUNTIME_CONFIG_USER`,
+      `RUNTIME_CLI_PARSE`, `RUNTIME_BOOTSTRAP_PRINT_CONFIG_REPLAY_KEEPS_INPUT`, `ENGINE_CLEANUP_AUDIO`,
+      `APP_COMMAND_QUEUE`, `CORE_STATE_EXT`.
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`); the control API options and
     their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument
     error. A token can read like an option (`--print-config`), so every pass over the raw argv -- bootstrap's

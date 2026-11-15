@@ -21,6 +21,9 @@ _Static_assert(DSD_STATE_EXT_DSP_ANALOG_SINK == 11, "DSP analog sinks own state_
 _Static_assert((int)DSD_STATE_EXT_DSP_ANALOG_SINK < (int)DSD_STATE_EXT_MAX, "slot 11 is inside the table");
 _Static_assert(DSD_STATE_EXT_CORE_VOICE_LEVEL == 13, "the digital voice chain's speech level owns state_ext slot 13");
 _Static_assert((int)DSD_STATE_EXT_CORE_VOICE_LEVEL < (int)DSD_STATE_EXT_MAX, "slot 13 is inside the table");
+_Static_assert(DSD_STATE_EXT_RUNTIME_CONFIG_INPUT == 15,
+               "the [input] a replay session saves owns state_ext slot 15 (issue #743)");
+_Static_assert((int)DSD_STATE_EXT_RUNTIME_CONFIG_INPUT < (int)DSD_STATE_EXT_MAX, "slot 15 is inside the table");
 _Static_assert(DSD_STATE_EXT_APP_SCAN_ENTRY == 16, "app-control's waiting entry owns state_ext slot 16 (issue #644)");
 
 static void

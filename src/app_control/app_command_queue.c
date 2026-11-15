@@ -10202,6 +10202,33 @@ cfg_keep_next_start_startable(dsd_opts* opts, dsd_state* state, const dsdneoUser
     }
 }
 
+/*
+ * The [input] a replay session saves (issue #743): an apply whose own [input] stays applied while the replay keeps
+ * running is the one the session saves from now on. An apply without an [input] leaves the retained one alone, and a
+ * refused or rolled-back one never touched it. One that left the replay drops it with every other departure
+ * (dsd_app_drain_cmds()).
+ */
+static void
+cfg_settle_retained_input(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int kept) {
+    int has_input = 0;
+    DSD_MEMCPY(&has_input, c->data + offsetof(dsdneoUserConfig, has_input), sizeof has_input);
+    if (!kept || !has_input || !dsd_opts_input_is_iq_replay(opts)) {
+        return;
+    }
+    /* The payload bytes carry no alignment: the config is read from an aligned copy. */
+    dsdneoUserConfig* applied = (dsdneoUserConfig*)malloc(sizeof *applied);
+    if (!applied) {
+        LOG_WARN("Config: out of memory keeping the applied [input]; a save keeps the one before.\n");
+        return;
+    }
+    DSD_MEMCPY(applied, c->data, sizeof *applied);
+    if (dsd_user_config_retain_input(state, applied) != 0) {
+        LOG_WARN("Config: out of memory keeping the applied [input]; a save keeps the one before.\n");
+    }
+    DSD_SECURE_ZERO(applied, sizeof *applied);
+    free(applied);
+}
+
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
@@ -10234,6 +10261,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int kept = 0;
     const int skip_silent_was_on = opts->scan_skip_silent != 0;
     const int rc = cfg_apply(opts, state, c, &kept);
+    cfg_settle_retained_input(opts, state, c, kept);
     /* An apply may write the skip-silent setting and whatever else a scan quiet check was measured under (#834). */
     dsd_scan_quiet_setting_changed(state, !skip_silent_was_on && opts->scan_skip_silent);
     if (!kept) {
@@ -11494,6 +11522,15 @@ ui_publish_deferred_snapshots(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* A command that took the session off its I/Q replay leaves its input saveable again: the loaded config's [input] the
+   replay saved goes (issue #743). */
+static void
+ui_forget_saved_input_off_replay(const dsd_opts* opts, dsd_state* state) {
+    if (!dsd_opts_input_is_iq_replay(opts)) {
+        dsd_user_config_forget_retained_input(state);
+    }
+}
+
 int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
@@ -11541,6 +11578,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         }
         int32_t scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
         const int result = apply_cmd(opts, state, &cmd, &scan_list_code);
+        ui_forget_saved_input_off_replay(opts, state);
 #ifdef DSD_NEO_TEST_HOOKS
         g_test_last_result = result;
 #endif

@@ -251,6 +251,74 @@ test_cleanup_autosaves_a_paused_scan(void) {
     return rc;
 }
 
+/*
+ * Issue #743 (B1): the exit autosave of an I/Q replay session writes the [input] of the config it loaded (@p loaded,
+ * NULL for none), not the replay: a replay has no INI form, and the file input it was saved as before made the next
+ * start refuse the config. Reads the saved file back into @p out.
+ */
+static int
+cleanup_autosaves_replay(const dsdneoUserConfig* loaded, dsdneoUserConfig* out) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_cleanup_replay") == NULL
+        || dsd_test_path_join(path, sizeof path, dir, "autosave.ini") != 0) {
+        free_runtime_quietly(opts, state);
+        return 1;
+    }
+    opts->audio_out_type = 9;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->iq_replay_requested = 1;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/captures/site.iq.json");
+    opts->rtl_gain_value = 44;
+    int rc = 0;
+    if (loaded != NULL && dsd_user_config_retain_input(state, loaded) != 0) {
+        rc = 1;
+    }
+    state->config_autosave_enabled = 1;
+    DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", path);
+    dsd_engine_cleanup(opts, state);
+    DSD_MEMSET(out, 0, sizeof *out);
+    rc |= dsd_user_config_load(path, out) != 0;
+    const char* files[] = {"autosave.ini", NULL};
+    (void)dsd_test_remove_temp_dir(dir, files);
+    free_runtime_quietly(opts, state);
+    return rc;
+}
+
+static int
+test_cleanup_autosaves_a_replay_with_the_loaded_input(void) {
+    static dsdneoUserConfig loaded;
+    static dsdneoUserConfig saved;
+    int rc = 0;
+    dsd_user_config_init(&loaded);
+    loaded.has_input = 1;
+    loaded.input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(loaded.rtltcp_host, sizeof loaded.rtltcp_host, "%s", "radio.example");
+    loaded.rtltcp_port = 1235;
+    DSD_SNPRINTF(loaded.rtl_freq, sizeof loaded.rtl_freq, "%s", "851.0125M");
+    loaded.rtl_gain = 12;
+    loaded.rtl_gain_is_set = 1;
+    rc |= cleanup_autosaves_replay(&loaded, &saved);
+    rc |= expect_true("replay-autosave-keeps-the-loaded-source",
+                      saved.has_input && saved.input_source == DSDCFG_INPUT_RTLTCP);
+    rc |= expect_true("replay-autosave-keeps-the-loaded-host-and-port",
+                      strcmp(saved.rtltcp_host, "radio.example") == 0 && saved.rtltcp_port == 1235);
+    rc |= expect_true("replay-autosave-keeps-the-loaded-frequency-and-gain",
+                      strcmp(saved.rtl_freq, "851.0125M") == 0 && saved.rtl_gain == 12);
+    rc |= expect_true("replay-autosave-writes-no-replay-spec", strstr(saved.file_path, "iqreplay") == NULL);
+
+    rc |= cleanup_autosaves_replay(NULL, &saved);
+    rc |= expect_true("replay-autosave-without-a-config-writes-no-input", !saved.has_input);
+    rc |= expect_true("replay-autosave-without-a-config-writes-no-replay-spec",
+                      strstr(saved.file_path, "iqreplay") == NULL);
+    return rc;
+}
+
 static void
 free_test_runtime(dsd_opts* opts, dsd_state* state) {
     if (state != NULL) {
@@ -336,6 +404,9 @@ main(void) {
 
     // Test 6: the exit autosave right after a -Y pause (issue #671, D7).
     rc |= test_cleanup_autosaves_a_paused_scan();
+
+    // Test 7: the exit autosave of an I/Q replay session keeps the loaded config's [input] (issue #743, B1).
+    rc |= test_cleanup_autosaves_a_replay_with_the_loaded_input();
 
     if (rc == 0) {
         printf("ENGINE_CLEANUP_AUDIO: OK\n");

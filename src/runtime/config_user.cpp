@@ -2148,6 +2148,13 @@ snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneo
 
 static void
 snapshot_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    /* An I/Q replay has no INI form: its session saves the [input] of the config it loaded as it was loaded, with none
+       of the replay's own centre or gain, or no [input] at all when it loaded none (issue #743). Written as a file
+       input, it broke the config: the next start refuses a direct iqreplay: input. */
+    if (dsd_opts_input_is_iq_replay(opts)) {
+        (void)dsd_user_config_retained_input(state, cfg);
+        return;
+    }
     if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         cfg->has_input = 1;
         cfg->input_source = DSDCFG_INPUT_AIRSPY;

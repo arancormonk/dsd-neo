@@ -11938,6 +11938,89 @@ test_nfm_bandwidth_quiet_on_iq_replay(void) {
 }
 #endif
 
+#ifdef USE_RADIO
+/* Bootstrap "dsd-neo [--config <ini>] --iq-replay <capture>" (no config when @p ini is NULL), then take what a save of
+   the session writes into @p out. */
+static int
+bootstrap_replay_and_snapshot(const char* ini, const char* metadata_path, dsdneoUserConfig* out) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    char cfg_path[1024] = "";
+    int rc = (ini != NULL && test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) ? 1 : 0;
+    if (rc == 0) {
+        char arg0[] = "dsd-neo";
+        char arg_config[] = "--config";
+        char arg_replay[] = "--iq-replay";
+        char arg_capture[1024];
+        DSD_SNPRINTF(arg_capture, sizeof arg_capture, "%s", metadata_path);
+        char* argv_config[] = {arg0, arg_config, cfg_path, arg_replay, arg_capture, NULL};
+        char* argv_plain[] = {arg0, arg_replay, arg_capture, NULL};
+        const int argc = ini != NULL ? 5 : 3;
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int boot =
+            dsd_runtime_bootstrap(argc, ini != NULL ? argv_config : argv_plain, opts, state, &argc_effective, &exit_rc);
+        if (boot != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0 || !dsd_opts_input_is_iq_replay(opts)) {
+            DSD_FPRINTF(stderr, "replay bootstrap: rc=%d exit=%d input=%s\n", boot, exit_rc, opts->audio_in_dev);
+            rc = 1;
+        }
+        dsd_snapshot_opts_to_user_config(opts, state, out);
+    }
+    if (cfg_path[0] != '\0') {
+        (void)remove(cfg_path);
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+/* Issue #743 (B1): a session the command line turns into an I/Q replay saves (autosave, Save, --print-config) the
+   [input] of the config it loaded, not the replay as a file input the next start refuses; with no config loaded, it
+   saves no [input]. */
+static int
+test_bootstrap_replay_saves_the_loaded_input(void) {
+    char metadata_path[1024];
+    char data_path[1024];
+    if (test_create_temp_iq_fixture(metadata_path, sizeof metadata_path, data_path, sizeof data_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temporary IQ fixture\n");
+        return 1;
+    }
+    static const char* ini = "[input]\n"
+                             "source = \"rtltcp\"\n"
+                             "rtltcp_host = \"radio.example\"\n"
+                             "rtltcp_port = 1235\n"
+                             "rtl_freq = \"851.0125M\"\n"
+                             "rtl_gain = 12\n";
+    static dsdneoUserConfig saved;
+    int rc = bootstrap_replay_and_snapshot(ini, metadata_path, &saved);
+    if (!saved.has_input || saved.input_source != DSDCFG_INPUT_RTLTCP || strcmp(saved.rtltcp_host, "radio.example") != 0
+        || saved.rtltcp_port != 1235 || strcmp(saved.rtl_freq, "851.0125M") != 0 || saved.rtl_gain != 12) {
+        DSD_FPRINTF(stderr, "replay with a config: saves source %d host \"%s\" freq \"%s\" gain %d file \"%s\"\n",
+                    saved.input_source, saved.rtltcp_host, saved.rtl_freq, saved.rtl_gain, saved.file_path);
+        rc = 1;
+    }
+    rc |= bootstrap_replay_and_snapshot(NULL, metadata_path, &saved);
+    if (saved.has_input) {
+        DSD_FPRINTF(stderr, "replay without a config: saves source %d file \"%s\", want no [input]\n",
+                    saved.input_source, saved.file_path);
+        rc = 1;
+    }
+    (void)remove(metadata_path);
+    (void)remove(data_path);
+    return rc;
+}
+#endif
+
 /* [analog] nfm_bandwidth_hz sets the configured width before the CLI runs, and --nfm-bandwidth-hz
  * overrides it; an out-of-range INI value is refused with a warning and leaves the default. */
 static int
@@ -12870,6 +12953,7 @@ main(void) {
     rc |= test_nfm_bandwidth_warns_on_pcm_input();
 #ifdef USE_RADIO
     rc |= test_nfm_bandwidth_quiet_on_iq_replay();
+    rc |= test_bootstrap_replay_saves_the_loaded_input();
 #endif
     rc |= test_bootstrap_analog_config_and_cli_override();
     rc |= test_input_source_tcp_ipv4_roundtrip();

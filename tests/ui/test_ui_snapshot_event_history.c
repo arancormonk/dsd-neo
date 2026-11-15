@@ -365,6 +365,36 @@ test_scan_list_completeness_across_hops(void) {
     free_session_state(st);
 }
 
+/* Issue #743: the terminal's Save writes the config the snapshot pair holds, so the [input] a replay session saves
+   reaches the published and the consumer copies, follows a newer retained one, and goes when the decoder drops it. */
+static void
+test_snapshot_carries_the_retained_input(void) {
+    dsd_state* st = new_session_state();
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig out;
+    dsd_user_config_init(&cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "radio.example");
+    assert(dsd_user_config_retain_input(st, &cfg) == 0);
+    dsd_app_telemetry_publish_snapshot(st);
+    DSD_MEMSET(&out, 0, sizeof out);
+    assert(dsd_user_config_retained_input(dsd_app_get_latest_snapshot(), &out) == 1);
+    assert(out.has_input == 1 && out.input_source == DSDCFG_INPUT_RTLTCP);
+    assert(strcmp(out.rtltcp_host, "radio.example") == 0);
+
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    assert(dsd_user_config_retain_input(st, &cfg) == 0);
+    dsd_app_telemetry_publish_snapshot(st);
+    assert(dsd_user_config_retained_input(dsd_app_get_latest_snapshot(), &out) == 1);
+    assert(out.input_source == DSDCFG_INPUT_RTL);
+
+    dsd_user_config_forget_retained_input(st);
+    dsd_app_telemetry_publish_snapshot(st);
+    assert(dsd_user_config_retained_input(dsd_app_get_latest_snapshot(), &out) == 0);
+    free_session_state(st);
+}
+
 static void
 fill_trunk_scan_entries(dsd_trunk_scan_avoid_entry* entries, size_t count, const char* label) {
     DSD_MEMSET(entries, 0, count * sizeof(entries[0]));
@@ -1039,6 +1069,7 @@ main(void) {
     test_publish_holds_the_tick_guard(state);
     test_publish_puts_off_while_a_tick_holds_the_guard(state);
     test_scan_list_completeness_across_hops();
+    test_snapshot_carries_the_retained_input();
     test_trunk_scan_avoids_gated_copy();
     test_trunk_scan_entry_reasons_gated_copy();
     test_chan_map_gate_keys_on_the_session();

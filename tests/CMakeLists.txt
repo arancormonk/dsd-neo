@@ -11038,6 +11038,40 @@ set_tests_properties(
             [=[rtltcp_port = 1235[^[]*rtl_freq = "851012500"[^[]*rtl_gain = 12[^[]*rtl_ppm = -2[^[]*rtl_bw_khz = 16[^[]*rtl_sql = -50[^[]*rtl_volume = 1]=]
 )
 
+# Issue #743 (B1): --print-config of a session the command line turns into an I/Q replay prints the [input] of the
+# config it loaded, not the replay as a file input (source = "file", file_path = "iqreplay:...") that the next start
+# refuses; autosave and Save write the same snapshot.
+if(DSD_HAS_RADIO)
+    set(_DSD_BOOTSTRAP_REPLAY_CONFIG
+        "${_DSD_BOOTSTRAP_FIXTURE_DIR}/replay_config.ini"
+    )
+    file(
+        WRITE "${_DSD_BOOTSTRAP_REPLAY_CONFIG}"
+        "[input]\n"
+        "source = \"rtltcp\"\n"
+        "rtltcp_host = \"radio.local\"\n"
+        "rtltcp_port = 1235\n"
+        "rtl_freq = \"851.0125M\"\n"
+        "rtl_gain = 12\n"
+    )
+    add_test(
+        NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_REPLAY_KEEPS_INPUT
+        COMMAND
+            $<TARGET_FILE:dsd-neo> --config "replay_config.ini" --iq-replay
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/iq/dmr_voice.iq.json"
+            --print-config
+    )
+    set_tests_properties(
+        RUNTIME_BOOTSTRAP_PRINT_CONFIG_REPLAY_KEEPS_INPUT
+        PROPERTIES
+            ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1"
+            WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+            PASS_REGULAR_EXPRESSION
+                [=[source = "rtltcp"[^[]*rtltcp_host = "radio.local"[^[]*rtltcp_port = 1235[^[]*rtl_freq = "851.0125M"[^[]*rtl_gain = 12]=]
+            FAIL_REGULAR_EXPRESSION "iqreplay|source = \"file\""
+    )
+endif()
+
 add_test(
     NAME RUNTIME_BOOTSTRAP_LIST_PROFILES
     COMMAND $<TARGET_FILE:dsd-neo> --config "profiles.ini" --list-profiles

@@ -538,7 +538,8 @@ typedef enum DSD_ATTR_PACKED {
 } dsdneoUserEdacsAddressing;
 
 typedef struct dsdneoUserConfig {
-    /* [input] */
+    /* [input]: has_input through input_warn_db_is_set, one block a replay session retains whole
+       (dsd_user_config_retain_input()), so every [input] field belongs inside it. */
     int has_input;
     dsdneoUserInputSource input_source;
     char pulse_input[256];
@@ -901,6 +902,51 @@ void dsd_finalize_user_config_file_input_after_cli(const dsdneoUserConfig* cfg, 
  * @param cfg [out] Destination user config snapshot.
  */
 void dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg);
+
+/*
+ * The [input] a session running an I/Q replay saves (issue #743). A replay (--iq-replay) has no INI form, so every save
+ * of such a session (autosave, Save, --print-config) writes the [input] of the config it loaded, unchanged, or no
+ * [input] when it loaded none. Bootstrap retains it after the load; a config apply whose own [input] stays applied
+ * while the replay keeps running replaces it; the session leaving the replay drops it. It lives in a state extension
+ * (DSD_STATE_EXT_RUNTIME_CONFIG_INPUT), freed with the state. Decoder thread only, except the snapshot copy below.
+ */
+
+/**
+ * @brief Retain @p cfg's [input] fields (has_input through input_warn_db_is_set) for a replay session's saves.
+ *
+ * A config without an [input] (or NULL) leaves none retained.
+ *
+ * @param state Decoder state that owns the copy.
+ * @param cfg Config whose [input] is retained.
+ * @return 0 on success, -1 when @p state is NULL or the copy cannot be allocated (the previous copy is kept then).
+ */
+int dsd_user_config_retain_input(dsd_state* state, const dsdneoUserConfig* cfg);
+
+/**
+ * @brief Drop the retained [input], if any.
+ *
+ * @param state Decoder state that owns the copy (may be NULL).
+ */
+void dsd_user_config_forget_retained_input(dsd_state* state);
+
+/**
+ * @brief Copy the retained [input] fields into @p cfg.
+ *
+ * @param state Decoder state (or a snapshot of it) holding the copy.
+ * @param cfg [out] Config whose [input] fields are overwritten; left as it is when none is retained.
+ * @return 1 when an [input] was retained and copied, 0 otherwise.
+ */
+int dsd_user_config_retained_input(const dsd_state* state, dsdneoUserConfig* cfg);
+
+/**
+ * @brief Give the snapshot @p dst the retained [input] of @p src (none when @p src has none).
+ *
+ * Copies only when @p src retained another [input] since the last copy, so a snapshot publish pays a compare.
+ *
+ * @param dst Snapshot state to update.
+ * @param src Decoder state (or the snapshot it was published to).
+ */
+void dsd_user_config_copy_retained_input(dsd_state* dst, const dsd_state* src);
 
 /**
  * @brief Render a user config as INI to the given stream (stdout/stderr/file).

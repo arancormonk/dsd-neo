@@ -731,6 +731,35 @@ validate_composed_am_width(const dsdneoUserConfig* cfg, const char* section, con
     }
 }
 
+/* Inputs a file_path can name but no config can start (issue #743): a file input of one is the input's spec, which the
+   start refuses or opens as something no [input] source describes. Each new spec kind with no INI form joins here. */
+namespace {
+struct file_path_spec_kind {
+    int (*matches)(const char* path);
+    const char* message;
+};
+
+const file_path_spec_kind k_file_path_spec_kinds[] = {
+    {dsd_opts_audio_in_dev_is_iqreplay_spec, "file_path is an I/Q replay (iqreplay:...), which a config cannot start; "
+                                             "replay a capture with --iq-replay <path>"},
+};
+} // namespace
+
+static void
+validate_composed_file_path(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                            dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !cfg->has_input || cfg->input_source != DSDCFG_INPUT_FILE) {
+        return;
+    }
+    const file_path_spec_kind* kind =
+        std::find_if(std::begin(k_file_path_spec_kinds), std::end(k_file_path_spec_kinds),
+                     [cfg](const file_path_spec_kind& candidate) { return candidate.matches(cfg->file_path) != 0; });
+    if (kind != std::end(k_file_path_spec_kinds)) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "input", key ? key : "file_path",
+                         kind->message);
+    }
+}
+
 /* A list policy with nothing to list is refused (issue #527): the loader would apply it as off, which the operator did
    not ask for. A list refused on its own line has said so already. */
 static void
@@ -778,6 +807,7 @@ validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t*
     validate_composed_am_width(cfg, "analog", "am_bandwidth_hz", diags);
     validate_composed_tone_policy(cfg, "analog", "tone_filter", diags);
     validate_composed_receive_names(cfg, "receive", "names", diags);
+    validate_composed_file_path(cfg, "input", "file_path", diags);
 }
 
 static void
@@ -793,6 +823,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     validate_composed_am_width(cfg, section, "analog.am_bandwidth_hz", diags);
     validate_composed_tone_policy(cfg, section, "analog.tone_filter", diags);
     validate_composed_receive_names(cfg, section, "receive.names", diags);
+    validate_composed_file_path(cfg, section, "input.file_path", diags);
 }
 
 static void
