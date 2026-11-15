@@ -1796,8 +1796,8 @@ suite runs under this compiler.
   partial state. Only the DMR soft-metric buffer is optional (its readers take NULL); `write_event_to_log_file()`
   indexes the ring unchecked, so no decoder runs without it. The CLI (`apps/dsd-cli/main.c`) and the Android
   `nativeInit` refuse to start a state with `init_failed` set, and so does `nativeConfigure` when the reset it runs
-  before a later configure (`SessionObjects::prepare_for_configure()`, issue #786 B1) sets it. Test builds fail one checked allocation at a time
-  through `dsd_init_test_alloc_fail_after()` (`CORE_INIT_STATE`).
+  before a later configure (`SessionObjects::prepare_for_configure()`, issue #786 B1) sets it. Test builds fail one
+  checked allocation at a time through `dsd_init_test_alloc_fail_after()` (`CORE_INIT_STATE`).
 - Invariant (dibit reliability coordinates, `<dsd-neo/core/dibit.h>`, `src/core/frames/dsd_dibit.c`): a four-level
   dibit's reliability is measured in the coordinates of the slicer that cut it, and every caller of
   `dmr_compute_reliability()` names that slicer (`dsd_dibit_slicer`): `DSD_DIBIT_SLICER_CQPSK_PHASE` for P25's CQPSK
@@ -3689,13 +3689,13 @@ suite runs under this compiler.
     there). REPLAY is entered only there, at a run's start, on a state fresh from `initState()`, and the engine enforces
     that: `dsd_state::engine_fresh`, set by `initState()` and cleared by the run once it has made the choice, says no
     run has used the state. A replay run on a state an earlier run used (no longer the Android service, which resets its
-    objects before every later configure, issue #786 B1) stays on SYSTEM with one `LOG_WARN`, since the stamps that run left (such as
-    `slco_sfrag_last`) are on the system clock and no rebase reaches them; its decode times are then not the
-    capture's. The system clock only moves forward, so those stamps stay behind now, with one exception: an earlier
-    replay of a capture stamped ahead of the device's clock (recorded elsewhere, or on a clock that is behind) leaves
-    its protocol stamps at the capture's later time, since leaving REPLAY rebases only the init seeds. The clock
-    returns to
-    SYSTEM with the same rebase once the replay no longer feeds the decoder (`dsd_engine_decode_clock_leave_replay()`):
+    objects before every later configure, issue #786 B1) stays on SYSTEM with one `LOG_WARN`, since the stamps that
+    run left (such as `slco_sfrag_last`) are on the system clock and no rebase reaches them; its decode times are then
+    not the capture's. The system clock only moves forward, so those stamps stay behind now, with one exception: an
+    earlier replay of a capture stamped ahead of the device's clock (recorded elsewhere, or on a clock that is behind)
+    leaves its protocol stamps at the capture's later time, since leaving REPLAY rebases only the init seeds. The clock
+    returns to SYSTEM with the same rebase once the replay no longer feeds the decoder
+    (`dsd_engine_decode_clock_leave_replay()`):
     at the end of the run, when app-control stops the stream to restart it (`svc_rtl_stop_locked()`; the replay it
     restarts runs on SYSTEM, which it logs once at that leave when the input is still the replay; a run-time re-plan's
     stop keeps REPLAY instead, as the replay it reopens resumes the media time from the checkpoint's
@@ -16960,9 +16960,9 @@ key on `state_instance` and the event-history identity, which `initState()` rene
 overrides and history attribution are process-owned and untouched; state-extension owners are freed by `freeState()`
 as on `nativeDestroy()`. Tests: `ANDROID_SESSION_OBJECTS` (a run, a failed and an exiting configure, a discard and an
 unrun configure, each followed by another site's: only its LCN rows and map keys, Hold TG and `-F` back to defaults;
-the unrun outputs closed by the reset and by `destroy()`; an injected `initState()` failure and its retry; a replay after
-a live run on the REPLAY decode clock), `ANDROID_ENGINE_STOP_JVM` (`native_lifecycle_contract`: `nativeConfigure()`
-calls `prepare_for_configure()` before its bootstrap).
+the unrun outputs closed by the reset and by `destroy()`; an injected `initState()` failure and its retry; a replay
+after a live run on the REPLAY decode clock), `ANDROID_ENGINE_STOP_JVM` (`native_lifecycle_contract`:
+`nativeConfigure()` calls `prepare_for_configure()` before its bootstrap).
 
 Receiver endings (issue #647): `RunStatus` (`android/run_status.h`) keeps, per run, why it ended (`end_cause`: user,
 detached, receiver failed, lifecycle) and the local receiver it was configured on (`receiver_source`, from the last

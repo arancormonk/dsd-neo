@@ -324,10 +324,11 @@ def native_lifecycle_contract():
     init = re.search(r"DsdNative_nativeInit\(.*?\n\}", jni, re.S)
     if not init or "dsd_android::install_receiver_policy();" not in init.group(0):
         return "android/dsdneo_jni.cpp: nativeInit must call dsd_android::install_receiver_policy()"
-    # #782 gate r2 H3: only a run's dsd_engine_cleanup() closes the files the bootstrap opens (-c, -w, -P, -6), so
-    # every way a configured session ends without nativeRun() closes them: a discard, a failed or exiting configure, the
-    # next configure over one never run (SessionObjects::prepare_for_configure() releases before its reset), and
-    # nativeDestroy() (SessionObjects::destroy() releases before it frees the objects).
+    # #782 gate r2 H3: only a run's dsd_engine_cleanup() closes the files the bootstrap opens (-c, -w, -6; -P opens its
+    # per-call WAVs only at the run's start), so every way a configured session ends without nativeRun() closes them:
+    # a discard, a failed or exiting configure, the next configure over one never run
+    # (SessionObjects::prepare_for_configure() releases before its reset), and nativeDestroy()
+    # (SessionObjects::destroy() releases before it frees the objects).
     release = "g_session.release_outputs();"
     prepare = "g_session.prepare_for_configure()"
     for name, call, why in (

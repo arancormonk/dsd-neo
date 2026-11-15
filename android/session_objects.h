@@ -79,7 +79,7 @@ class SessionObjects {
 
     dsd_opts* opts_ = nullptr;
     dsd_state* state_ = nullptr;
-    /* Set once a configure attempt may have written to the objects; cleared only by a successful create(). */
+    /* Set once a configure attempt may have written to the objects; cleared by create() and destroy(). */
     bool used_ = false;
 };
 
