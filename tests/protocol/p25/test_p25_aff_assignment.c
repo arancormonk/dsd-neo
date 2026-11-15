@@ -378,6 +378,37 @@ test_assoc_table_pressure(void) {
     return rc;
 }
 
+/* A unit registering again on a full table frees its old address first: the new address takes that slot, and no
+   other unit is evicted for it. */
+static int
+test_assoc_full_table_reregistration(void) {
+    fixture f;
+    int rc = 0;
+    if (fixture_open(&f) != 0) {
+        return 1;
+    }
+    const uint64_t t0 = 3000000ULL * 1000000000ULL;
+    dsd_decode_clock_use_test(t0);
+    for (uint32_t i = 0; i < P25_AFF_MAX; i++) {
+        dsd_decode_clock_test_set_ns(t0 + (uint64_t)i * 1000000000ULL);
+        reg_extended(&f, 0, OTHER_WACN, OTHER_SYS, 0x010000U + i, 0x000100U + i);
+    }
+    dsd_decode_clock_test_set_ns(t0 + (uint64_t)P25_AFF_MAX * 1000000000ULL);
+    reg_extended(&f, 0, OTHER_WACN, OTHER_SYS, 0x010005U, 0x000900U);
+    rc |= expect_true("count stays at capacity", f.state->p25_aff_count == P25_AFF_MAX);
+    rc |= expect_true("oldest unit not evicted", aff_has(f.state, 0x000100U));
+    rc |= expect_true("old address given up", !aff_has(f.state, 0x000105U));
+    rc |= expect_true("new address owned", assigned_for(&f, OTHER_WACN, OTHER_SYS, 0x010005U) == 0x000900U);
+    rc |= expect_true("oldest unit keeps its owner", assigned_for(&f, OTHER_WACN, OTHER_SYS, 0x010000U) == 0x000100U);
+    /* The same address registered again keeps its one entry. */
+    reg_extended(&f, 0, OTHER_WACN, OTHER_SYS, 0x010005U, 0x000900U);
+    rc |= expect_true("repeat keeps the entry", assigned_for(&f, OTHER_WACN, OTHER_SYS, 0x010005U) == 0x000900U);
+    rc |= expect_true("repeat keeps the count", f.state->p25_aff_count == P25_AFF_MAX);
+    dsd_decode_clock_use_system();
+    fixture_close(&f);
+    return rc;
+}
+
 /* H1: owners learned on one serving system are that system's; a new system identity drops them. */
 static int
 test_assoc_system_change_invalidates(void) {
@@ -437,6 +468,7 @@ main(void) {
     rc |= test_address_reuse_keeps_new_owner();
     rc |= test_assoc_expiry();
     rc |= test_assoc_table_pressure();
+    rc |= test_assoc_full_table_reregistration();
     rc |= test_assoc_system_change_invalidates();
     rc |= test_assoc_unknown_serving_system();
     if (rc == 0) {

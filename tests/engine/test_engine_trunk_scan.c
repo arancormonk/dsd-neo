@@ -1809,8 +1809,8 @@ expect_target0_p25_state(const dsd_state* state) {
         test_rc = 1;
     }
     test_rc |= expect_p25_patch_freshness(state, 100.0, 10U);
-    /* test_assoc_trunk_scan_restore: who an address was assigned to, and on which serving system, is the target's own
-       and comes back with it. */
+    /* Who an address was assigned to, and on which serving system, is the target's own and comes back with it
+       (test_assoc_trunk_scan_restore() checks the whole table). */
     if (state->p25_aff_assoc[0].home_wacn != 0xBEE01U || state->p25_aff_assoc[0].home_sys != 0x3A5U
         || state->p25_aff_assoc[0].home_id != 43981U || state->p25_aff_assoc[0].serving_wacn != 0xABCDEU
         || state->p25_aff_assoc[0].serving_sys != 0x123U) {
@@ -2002,6 +2002,76 @@ test_coordinator_idle_rotation_and_state_restore(void) {
         test_rc = 1;
     }
     test_rc |= expect_target0_p25_state(&state);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Fill every registration owner slot with values derived from @p tag (a distinct table per target). */
+static void
+seed_aff_owners(dsd_state* state, uint32_t tag) {
+    state->p25_aff_count = P25_AFF_MAX;
+    for (int i = 0; i < P25_AFF_MAX; i++) {
+        state->p25_aff_rid[i] = tag + (uint32_t)i + 1U;
+        state->p25_aff_last_seen[i] = (time_t)(tag + (uint32_t)i);
+        state->p25_aff_assoc[i].home_wacn = 0xBEE00U + (tag & 0xFFU);
+        state->p25_aff_assoc[i].home_sys = (uint16_t)(0x100U + (uint32_t)i);
+        state->p25_aff_assoc[i].home_id = tag + 0x10000U + (uint32_t)i;
+        state->p25_aff_assoc[i].serving_wacn = 0xABC00U + (tag & 0xFFU);
+        state->p25_aff_assoc[i].serving_sys = (uint16_t)(0x200U + (tag & 0xFFU));
+    }
+}
+
+/* B27 / H1: every registration owner (home SUID + serving system per assigned address) is the scan target's own: it
+   leaves with its target, never shows on another, and comes back whole. */
+static int
+test_assoc_trunk_scan_restore(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static p25_aff_assoc_t target0_owners[P25_AFF_MAX];
+    static const p25_aff_assoc_t no_owners[P25_AFF_MAX];
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "assoc restore: scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    seed_aff_owners(&state, 0x1000U);
+    DSD_MEMCPY(target0_owners, state.p25_aff_assoc, sizeof target0_owners);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1
+        || memcmp(state.p25_aff_assoc, no_owners, sizeof no_owners) != 0) {
+        DSD_FPRINTF(stderr, "assoc restore: target 0's registration owners showed on target 1\n");
+        test_rc = 1;
+    }
+    seed_aff_owners(&state, 0x2000U);
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0
+        || memcmp(state.p25_aff_assoc, target0_owners, sizeof target0_owners) != 0) {
+        DSD_FPRINTF(stderr, "assoc restore: target 0's registration owners did not come back whole\n");
+        test_rc = 1;
+    }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -25056,6 +25126,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_assoc_trunk_scan_restore);
     rc |= run_with_default_tune_hook(test_target_patch_clock_survives_other_reception);
     rc |= run_with_default_tune_hook(test_init_reads_the_list_spec);
     rc |= run_with_default_tune_hook(test_lists_load_in_order_and_rotate_over_the_lists_on);

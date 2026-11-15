@@ -8111,18 +8111,22 @@ p25_aff_register_assigned(dsd_state* state, uint32_t assigned, const p25_home_id
     if (!state || assigned == 0U) {
         return;
     }
+    const int owned = p25_aff_home_usable(home) && p25_aff_serving_known(serving_wacn, serving_sys);
+    if (owned) {
+        /* A unit holds one registration on a system: the address it held before is no longer its own. Freed before
+           the new address takes a slot, so a full table reuses that slot rather than evicting another unit. */
+        for (int i = 0; i < P25_AFF_MAX; i++) {
+            if (state->p25_aff_rid[i] != assigned && p25_aff_owned_by(state, i, home, serving_wacn, serving_sys)) {
+                p25_aff_clear_entry(state, i);
+            }
+        }
+    }
     const int idx = p25_aff_touch(state, assigned);
     p25_aff_assoc_t* assoc = &state->p25_aff_assoc[idx];
-    if (!p25_aff_home_usable(home) || !p25_aff_serving_known(serving_wacn, serving_sys)) {
+    if (!owned) {
         /* Nothing says who holds the address now: no owner, never the previous one. */
         DSD_MEMSET(assoc, 0, sizeof(*assoc));
         return;
-    }
-    /* A unit holds one registration on a system: the address it held before is no longer its own. */
-    for (int i = 0; i < P25_AFF_MAX; i++) {
-        if (i != idx && p25_aff_owned_by(state, i, home, serving_wacn, serving_sys)) {
-            p25_aff_clear_entry(state, i);
-        }
     }
     assoc->home_wacn = home->wacn;
     assoc->home_sys = home->sys;
@@ -8167,6 +8171,21 @@ p25_aff_assigned_for_home(const dsd_state* state, const p25_home_id* home, uint3
         }
     }
     return 0;
+}
+
+void
+p25_aff_drop_foreign_owners(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    const uint32_t wacn = (uint32_t)state->p2_wacn;
+    const uint16_t sys = (uint16_t)state->p2_sysid;
+    for (int i = 0; i < P25_AFF_MAX; i++) {
+        p25_aff_assoc_t* assoc = &state->p25_aff_assoc[i];
+        if (assoc->home_id != 0U && (assoc->serving_wacn != wacn || assoc->serving_sys != sys)) {
+            DSD_MEMSET(assoc, 0, sizeof(*assoc));
+        }
+    }
 }
 
 void

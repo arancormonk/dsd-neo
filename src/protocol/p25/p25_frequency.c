@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -477,20 +478,6 @@ p25_drop_foreign_idens(dsd_state* state) {
     return mask;
 }
 
-/* Who was assigned which local address (dsd_state::p25_aff_assoc, p25_aff_register_assigned()) is the serving
-   system's own: a local address (WUID) is assigned at registration and unique only within that system (TIA-102.AABC-D
-   §2.3.27). Owners another system named go; the registered addresses stay. */
-static void
-p25_drop_foreign_aff_owners(dsd_state* state) {
-    for (int i = 0; i < P25_AFF_MAX; i++) {
-        p25_aff_assoc_t* assoc = &state->p25_aff_assoc[i];
-        if (assoc->home_id != 0U
-            && (assoc->serving_wacn != (uint32_t)state->p2_wacn || assoc->serving_sys != (uint16_t)state->p2_sysid)) {
-            DSD_MEMSET(assoc, 0, sizeof(*assoc));
-        }
-    }
-}
-
 int
 p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
     if (!state || (wacn == 0 && sysid == 0)) {
@@ -509,7 +496,8 @@ p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned l
     }
     state->p2_wacn = wacn;
     state->p2_sysid = sysid;
-    p25_drop_foreign_aff_owners(state);
+    /* Registration owners are per system: the old system's go, its registered addresses stay. */
+    p25_aff_drop_foreign_owners(state);
     /* WACN and SYSID are two thirds of the Phase 2 seed, so a proof of the seed they replace does not carry over
        (issue #804): a burst or a checked network status proves the new one, and the NAC it names (issue #802). */
     dsd_state_forget_p2_proof(state);

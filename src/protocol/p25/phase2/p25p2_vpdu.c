@@ -4748,23 +4748,29 @@ p25p2_vpdu_handle_telephone_interconnect_voice_user(p25p2_vpdu_ctx* ctx) {
                                  "TELE Target: %d Timer: %.1fs; ", target, (double)timer / 10.0);
 }
 
+/* A Radio Unit Monitor Command - Abbreviated, from either layout: Target is the unit monitored, Source the unit that
+   monitors (TIA-102.AABC-D §6.2.24.1). */
 static void
-p25p2_vpdu_handle_radio_unit_monitor_abbreviated(p25p2_vpdu_ctx* ctx) {
-    const unsigned long long int* MAC = ctx->mac;
-    dsd_state* state = ctx->state;
-    const int len_a = ctx->len_a;
-    int transmit_time = (int)MAC[3 + len_a];
-    int silent = ((MAC[4 + len_a] & 0x80U) != 0U);
-    int multiplier = (int)(MAC[4 + len_a] & 0x03U);
-    int target = p25p2_vpdu_u24(MAC, 5 + len_a);
-    int source = p25p2_vpdu_u24(MAC, 8 + len_a);
-
+p25p2_vpdu_report_radio_unit_monitor(dsd_state* state, int target, int source, int transmit_time, int multiplier,
+                                     int silent) {
     DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Abbreviated");
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Time [%d] Mult [%d]%s", target, source, transmit_time, multiplier,
                 silent ? " Silent" : "");
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "RUM Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time,
                                  multiplier, silent ? " Silent" : "");
+}
+
+static void
+p25p2_vpdu_handle_radio_unit_monitor_abbreviated(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    const int len_a = ctx->len_a;
+    int transmit_time = (int)MAC[3 + len_a];
+    int silent = ((MAC[4 + len_a] & 0x80U) != 0U);
+    int multiplier = (int)(MAC[4 + len_a] & 0x03U);
+    int target = p25p2_vpdu_u24(MAC, 5 + len_a);
+    int source = p25p2_vpdu_u24(MAC, 8 + len_a);
+    p25p2_vpdu_report_radio_unit_monitor(ctx->state, target, source, transmit_time, multiplier, silent);
 }
 
 /* Phase 1 TSBK 0x1D Radio Unit Monitor Command (TIA-102.AABC-D §6.2.24.1 Fig 6.2.24-1): TX Time octet 2, SM bit 7 and
@@ -4779,13 +4785,7 @@ p25p2_vpdu_handle_radio_unit_monitor_p1(p25p2_vpdu_ctx* ctx) {
     int multiplier = (int)(MAC[3 + len_a] & 0x03U);
     int source = p25p2_vpdu_u24(MAC, 4 + len_a);
     int target = p25p2_vpdu_u24(MAC, 7 + len_a);
-
-    DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Abbreviated");
-    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Time [%d] Mult [%d]%s", target, source, transmit_time, multiplier,
-                silent ? " Silent" : "");
-    p25p2_vpdu_publish_activityf(ctx->state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
-                                 "RUM Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time,
-                                 multiplier, silent ? " Silent" : "");
+    p25p2_vpdu_report_radio_unit_monitor(ctx->state, target, source, transmit_time, multiplier, silent);
 }
 
 static void

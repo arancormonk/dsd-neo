@@ -44,6 +44,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -384,6 +385,12 @@ static int g_bandplan_resolve_calls = 0;
 static int g_bandplan_export_result = -1;
 static int g_bandplan_export_calls = 0;
 static char g_bandplan_export_path[1024];
+
+/* p25_update_system_identity() hands a system change to the registration table (p25_trunk_sm.c, not built here). */
+void
+p25_aff_drop_foreign_owners(dsd_state* state) {
+    (void)state;
+}
 
 int
 dsd_csv_validate_p25_bandplan_file(const char* path, dsd_csv_validation* out) {

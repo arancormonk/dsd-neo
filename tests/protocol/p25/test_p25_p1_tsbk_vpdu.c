@@ -171,21 +171,33 @@ expect_str_has(const char* tag, const char* haystack, const char* needle) {
 void p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len, int trunk_enable,
                                          long p25_cc_freq, int iden, int type, int tdma, long base, int spac);
 void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);
-const char* p25_extended_function_class0_operand_label(uint8_t operand);
-int p25_extended_function_operand_is_ack(uint8_t operand);
+const char* p25_extended_function_class0_label(uint8_t operand);
+
+/* Whether class $00 operand @p operand is labelled exactly @p want (TIA-102.AABC-D §2.3.15 Table 2.3.15-1). */
+static int
+expect_class0_label(const char* tag, uint8_t operand, const char* want) {
+    const char* got = p25_extended_function_class0_label(operand);
+    if (!got || strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: operand %02X labelled '%s' want '%s'\n", tag, operand, got ? got : "(null)", want);
+        return 1;
+    }
+    return 0;
+}
 
 static int
 test_extended_function_command_abbreviated(void) {
     int rc = 0;
 
-    rc |= expect_str_has("extfn label check", p25_extended_function_class0_operand_label(0x00), "Radio Check");
-    rc |= expect_str_has("extfn label inhibit", p25_extended_function_class0_operand_label(0x7F), "Radio Inhibit");
-    rc |= expect_str_has("extfn label detach", p25_extended_function_class0_operand_label(0x7D), "Radio Detach");
-    rc |= expect_str_has("extfn label uninhibit", p25_extended_function_class0_operand_label(0x7E), "Radio Uninhibit");
-    rc |= expect_str_has("extfn label reserved", p25_extended_function_class0_operand_label(0x01), "Reserved");
-    rc |= expect_str_has("extfn ack masks label", p25_extended_function_class0_operand_label(0x80), "Radio Check");
-    rc |= expect_eq("extfn ack bit", p25_extended_function_operand_is_ack(0xFF), 1);
-    rc |= expect_eq("extfn no ack bit", p25_extended_function_operand_is_ack(0x7F), 0);
+    rc |= expect_class0_label("extfn label check", 0x00, "Radio Check");
+    rc |= expect_class0_label("extfn label inhibit", 0x7F, "Radio Inhibit");
+    rc |= expect_class0_label("extfn label detach", 0x7D, "Radio Detach");
+    rc |= expect_class0_label("extfn label uninhibit", 0x7E, "Radio Uninhibit");
+    rc |= expect_class0_label("extfn label reserved", 0x01, "Reserved");
+    rc |= expect_class0_label("extfn ack check", 0x80, "Radio Check Ack");
+    rc |= expect_class0_label("extfn ack detach", 0xFD, "Radio Detach Ack");
+    rc |= expect_class0_label("extfn ack uninhibit", 0xFE, "Radio Uninhibit Ack");
+    rc |= expect_class0_label("extfn ack inhibit", 0xFF, "Radio Inhibit Ack");
+    rc |= expect_class0_label("extfn reserved with ack bit", 0x81, "Reserved");
 
     unsigned char mac[24] = {0};
     mac[0] = 0x01;

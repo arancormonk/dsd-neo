@@ -554,21 +554,23 @@ p25_lcw_handle_format_54(p25_lcw_ctx* ctx) {
 /* Message Update (TIA-102.AABF-D §7.3.19) and Message Update - Source ID Extension Required (§7.3.31, LCO 27): the
    16-bit Message octets 1-2, Target Address octets 3-5, Source Address (Source ID) octets 6-8. */
 static void
+p25_lcw_print_message_update(const uint8_t* bits) {
+    uint16_t message = (uint16_t)convert_bits_into_output(&bits[8], 16);
+    uint32_t target = (uint32_t)convert_bits_into_output(&bits[24], 24);
+    uint32_t source = (uint32_t)convert_bits_into_output(&bits[48], 24);
+    DSD_FPRINTF(stderr, " - MSG %04X TGT %u SRC %u", message, target, source);
+}
+
+static void
 p25_lcw_handle_format_55(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Message Update");
-    uint16_t message = (uint16_t)convert_bits_into_output(&ctx->bits[8], 16);
-    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
-    uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
-    DSD_FPRINTF(stderr, " - MSG %04X TGT %u SRC %u", message, target, source);
+    p25_lcw_print_message_update(&ctx->bits[0]);
 }
 
 static void
 p25_lcw_handle_format_5b(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Message Update %s Source ID Extension Required", dsd_unicode_or_ascii("–", "-"));
-    uint16_t message = (uint16_t)convert_bits_into_output(&ctx->bits[8], 16);
-    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
-    uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
-    DSD_FPRINTF(stderr, " - MSG %04X TGT %u SRC %u", message, target, source);
+    p25_lcw_print_message_update(&ctx->bits[0]);
 }
 
 static void

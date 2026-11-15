@@ -10153,9 +10153,11 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   its header) carries the full SUID. A Unit Deregistration Acknowledge names only the SUID (§6.2.22; BBAD-A Fig 111):
   `p25_aff_deregister_home()` removes the entries still owned by that SUID on this serving system, plus an unowned
   entry whose address is the unit ID when the unit is at home (or no serving system is known). A new owner of an
-  address replaces the old one, a unit registering again under a new address gives up the old one, and a new system
-  identity (`p25_update_system_identity()`) drops owners another system named; eviction, the 15-minute aging and
-  trunk-scan save/restore move the owner with its entry. Registrations are written only from content that passed its
+  address replaces the old one, a unit registering again under a new address gives up the old one (freed first, so a
+  full table reuses its slot rather than evicting another unit), and a new system identity
+  (`p25_update_system_identity()` → `p25_aff_drop_foreign_owners()`) drops owners another system named; every owner
+  rule lives in `p25_trunk_sm.c`. Eviction, the 15-minute aging and trunk-scan save/restore move the owner with its
+  entry. Registrations are written only from content that passed its
   CRC (`p25p2_vpdu_network_table_writable()`). Tests: `P25_AFF_ASSIGNMENT`, `ENGINE_TRUNK_SCAN`, `P25_MBT_DECODE`.
 - Deny and Queued Responses (standard 0x67 / 0x61 and their TSBKs, Motorola MAC 0xA7 / 0xA6 and MFID90 TSBKs 0x07 /
   0x06) answer a unit's request: their Target Address is the unit that asked (TIA-102.AABC-D §6.2.5, §6.2.14) and no

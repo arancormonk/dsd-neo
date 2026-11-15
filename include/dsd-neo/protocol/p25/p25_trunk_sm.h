@@ -1362,6 +1362,14 @@ int p25_aff_deregister_home(dsd_state* state, const p25_home_id* home, uint32_t 
 int p25_aff_assigned_for_home(const dsd_state* state, const p25_home_id* home, uint32_t serving_wacn,
                               uint16_t serving_sys, uint32_t* assigned);
 
+/**
+ * @brief Drop the owners another serving system named (the system identity, p2_wacn / p2_sysid, just changed).
+ *
+ * A local address (WUID) is assigned at registration and unique only within its system (TIA-102.AABC-D §2.3.27), so
+ * an owner learned on another system no longer holds it here. The registered addresses stay.
+ */
+void p25_aff_drop_foreign_owners(dsd_state* state);
+
 /* ============================================================================
  * Group Affiliation (RID ↔ TG) helpers
  * ============================================================================ */
