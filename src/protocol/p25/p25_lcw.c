@@ -966,13 +966,21 @@ p25_lcw_handle_mfid90_opcode_05(p25_lcw_ctx* ctx) {
     }
 }
 
+/* The P25 Phase 1 call this link control speaks for, into @p call: from an LDU1, only the open call, since a new
+ * transmission's first LDU1 decodes before its own call opens and the ended one is the previous transmission's; from a
+ * TDULC, which ends its call before its link control is read, also the call it just ended. */
+static int
+p25_lcw_call(const p25_lcw_ctx* ctx, dsd_call_snapshot* call) {
+    return ctx->allow_voice_start ? p25p1_current_call(ctx->state, call) : p25p1_open_or_ended_call(ctx->state, call);
+}
+
 static void
 p25_lcw_handle_mfid90_opcode_0f(p25_lcw_ctx* ctx) {
     uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Talker EOT; SRC: %d;", src);
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
     dsd_call_snapshot call;
-    const int target = p25p1_open_or_ended_call(ctx->state, &call) ? (int)call.ota_target_id : 0;
+    const int target = p25_lcw_call(ctx, &call) ? (int)call.ota_target_id : 0;
     p25_sm_emit_end_call_at(ctx->opts, ctx->state, 0, target, (int)src, dsd_decode_now_mono_s());
 }
 
@@ -1039,7 +1047,7 @@ p25_lcw_dispatch_mfid_a4(p25_lcw_ctx* ctx) {
         uint16_t check = (uint16_t)convert_bits_into_output(&ctx->state->dmr_pdu_sf[0][0], 16);
         if (check == 0x2AA4) {
             dsd_call_snapshot call;
-            const uint32_t source = p25p1_open_or_ended_call(ctx->state, &call) ? (uint32_t)call.ota_source_id : 0U;
+            const uint32_t source = p25_lcw_call(ctx, &call) ? (uint32_t)call.ota_source_id : 0U;
             nmea_harris(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[0], source, 0);
         } else {
             DSD_FPRINTF(stderr, " Missing GPS Block 1");

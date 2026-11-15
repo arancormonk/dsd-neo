@@ -541,8 +541,9 @@ seed_slot0_call(dsd_opts* opts, dsd_state* state, int protocol, uint64_t target,
 
 /* Link control names a radio or a position for the P25 Phase 1 call it belongs to, never for another protocol's call
    that slot 0 still holds: before, a source extension rewrote an open DMR call's source, and a Harris position was
-   filed under a DMR call's radio. The TDULC ends its call before its link control is read, so a GPS block still
-   speaks for an ended P25 call. */
+   filed under a DMR call's radio. The TDULC ends its call before its link control is read, so a GPS block it carries
+   still speaks for the ended P25 call; an LDU1's speaks only for the open one, since a new transmission's first LDU1
+   decodes before its own call opens and the ended call is the previous one. */
 static int
 test_lcw_identities_go_only_to_the_p25_call(void) {
     static dsd_opts opts;
@@ -580,12 +581,15 @@ test_lcw_identities_go_only_to_the_p25_call(void) {
         const char* name;
         int protocol;
         int ended;
+        int tdulc;
         int want_src;
     } gps[] = {
-        {"open DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0, 0},
-        {"ended DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 1, 0},
-        {"ended P25 call", DSD_SYNC_P25P1_POS, 1, 0x123456},
-        {"open P25 call", DSD_SYNC_P25P1_POS, 0, 0x123456},
+        {"open DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0, 0, 0},
+        {"ended DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 1, 0, 0},
+        {"ended DMR call, TDULC", DSD_SYNC_DMR_BS_VOICE_POS, 1, 1, 0},
+        {"ended P25 call, LDU1", DSD_SYNC_P25P1_POS, 1, 0, 0},
+        {"ended P25 call, TDULC", DSD_SYNC_P25P1_POS, 1, 1, 0x123456},
+        {"open P25 call", DSD_SYNC_P25P1_POS, 0, 0, 0x123456},
     };
 
     for (size_t i = 0; i < sizeof(gps) / sizeof(gps[0]); i++) {
@@ -605,11 +609,89 @@ test_lcw_identities_go_only_to_the_p25_call(void) {
         set_bits_msb(lcw, 0, 8, 0x2BU);
         set_bits_msb(lcw, 8, 8, 0xA4U);
         set_bits_msb(lcw, 16, 8, 0x66U);
-        p25_lcw(&opts, &st, lcw, 0);
+        if (gps[i].tdulc) {
+            p25_lcw_from_tdulc(&opts, &st, lcw, 0);
+        } else {
+            p25_lcw(&opts, &st, lcw, 0);
+        }
         DSD_SNPRINTF(tag, sizeof tag, "Harris GPS after %s: dispatched", gps[i].name);
         rc |= expect_eq_int(tag, g_nmea_harris_calls, 1);
         DSD_SNPRINTF(tag, sizeof tag, "Harris GPS after %s: source", gps[i].name);
         rc |= expect_eq_int(tag, (int)g_nmea_harris_src, gps[i].want_src);
+    }
+    dsd_state_ext_free_all(&st);
+    return rc;
+}
+
+/* A Motorola talker end names its source, not its talkgroup: it takes the talkgroup of the call it ends. From an LDU1
+   that is only the open P25 call, since a new transmission's first LDU1 decodes before its own call opens and slot 0
+   still holds the previous transmission's ended call. Before, that call's talkgroup went with the end, and the state
+   machine recorded it as the ended talkgroup its stale-regrant guard compares later grants with. From a TDULC, which
+   ends its call first, the ended call is the one it ends. */
+static int
+test_talker_end_takes_its_talkgroup_from_the_call_it_ends(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+
+    static const struct {
+        const char* name;
+        int tdulc;
+        int slot_tg;
+    } cases[] = {
+        {"LDU1 after an earlier call", 0, 0x0777},
+        {"TDULC of the assigned call", 1, 0x1234},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char tag[96];
+        dsd_state_ext_free_all(&st);
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&st, 0, sizeof(st));
+        opts.trunk_enable = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        opts.trunk_hangtime = 2.0F;
+        st.p25_cc_freq = 851000000;
+        st.trunk_cc_freq = 851000000;
+        st.p25_iden_fdma[1].base_freq = 851000000 / 5;
+        st.p25_iden_fdma[1].chan_type = 0;
+        st.p25_iden_fdma[1].chan_spac = 100;
+        st.p25_iden_fdma[1].trust = 2;
+        st.p25_iden_fdma[1].populated = 1;
+        st.p25_chan_tdma_explicit[1] = 1;
+        p25_sm_ctx_t* sm = p25_sm_get_ctx();
+        p25_sm_init_ctx(sm, &opts, &st);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(0x100A, 851125000, 0x1234, 0x111, 0);
+        p25_sm_event(sm, &opts, &st, &ev);
+        DSD_SNPRINTF(tag, sizeof tag, "talker end, %s: voice active", cases[i].name);
+        rc |= expect_eq_int(
+            tag, p25_sm_emit_active_call(&opts, &st, 0, 0x1234, 0, 0x111, 1, 0) != 0 && sm->slots[0].voice_active, 1);
+        /* Slot 0 now holds an ended P25 call of the case's talkgroup. */
+        const dsd_call_observation ended = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = (uint64_t)cases[i].slot_tg,
+            .policy_target_id = (uint64_t)cases[i].slot_tg,
+            .ota_source_id = 0x222U,
+        };
+        (void)dsd_call_state_observe(&st, &ended, DSD_CALL_BOUNDARY_BEGIN);
+        (void)dsd_call_state_end(&st, 0U, 0.0);
+        uint8_t lcw[72];
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x0FU);
+        set_bits_msb(lcw, 8, 8, 0x90U);
+        set_bits_msb(lcw, 48, 24, 0x111U);
+        if (cases[i].tdulc) {
+            p25_lcw_from_tdulc(&opts, &st, lcw, 0);
+        } else {
+            p25_lcw(&opts, &st, lcw, 0);
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "talker end, %s: the assigned voice ends", cases[i].name);
+        rc |= expect_eq_int(tag, sm->slots[0].voice_active, 0);
+        DSD_SNPRINTF(tag, sizeof tag, "talker end, %s: the ended talkgroup is the assigned one", cases[i].name);
+        rc |= expect_eq_int(tag, sm->slots[0].last_end_tg, 0x1234);
     }
     dsd_state_ext_free_all(&st);
     return rc;
@@ -800,6 +882,7 @@ main(void) {
     rc |= test_lcgrgr_key0_keeps_clear_gate();
     rc |= test_lcgrgr_from_tdulc_records_without_voice_start();
     rc |= test_lcw_identities_go_only_to_the_p25_call();
+    rc |= test_talker_end_takes_its_talkgroup_from_the_call_it_ends();
 
     dsd_state_ext_free_all(&st);
     return rc;
