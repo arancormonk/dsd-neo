@@ -586,6 +586,26 @@ nxdn_element_handle_site_broadcast(dsd_opts* opts, dsd_state* state, uint8_t mes
     }
 }
 
+/* The ARIB messages, told apart by the F1/F2 extended message type: 1 when @p message_type_ext is one (handled). */
+static int
+nxdn_element_handle_arib(dsd_opts* opts, dsd_state* state, uint8_t message_type_ext, const uint8_t* ElementsContent,
+                         size_t elements_bits) {
+    if (message_type_ext == 0xE7U) {
+        /* Six characters from element 24. */
+        if (nxdn_element_has_bits("ARIB ALIAS", elements_bits, 72U)) {
+            nxdn_alias_decode_arib(opts, state, ElementsContent);
+        }
+        return 1;
+    }
+    if (message_type_ext == 0xE1U || message_type_ext == 0xE8U) {
+        if (nxdn_element_has_bits("ARIB VCALL", elements_bits, NXDN_VCALL_ARIB_MIN_BITS)) {
+            NXDN_decode_VCALL_ARIB(opts, state, ElementsContent);
+        }
+        return 1;
+    }
+    return 0;
+}
+
 void
 NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* ElementsContent, size_t elements_bits) {
     enum { NXDN_ELEMENTS_MIN_MESSAGE_TYPE_BITS = 8U };
@@ -629,18 +649,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* El
         return;
     }
 
-    if (MessageTypeExt == 0xE7U) {
-        /* Six characters from element 24. */
-        if (nxdn_element_has_bits("ARIB ALIAS", elements_bits, 72U)) {
-            nxdn_alias_decode_arib(opts, state, ElementsContent);
-        }
-        return;
-    }
-
-    if (MessageTypeExt == 0xE1U || MessageTypeExt == 0xE8U) {
-        if (nxdn_element_has_bits("ARIB VCALL", elements_bits, NXDN_VCALL_ARIB_MIN_BITS)) {
-            NXDN_decode_VCALL_ARIB(opts, state, ElementsContent);
-        }
+    if (nxdn_element_handle_arib(opts, state, MessageTypeExt, ElementsContent, elements_bits)) {
         return;
     }
 
