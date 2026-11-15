@@ -43,11 +43,14 @@ typedef enum {
 } p25_mac_pdu_type;
 
 /**
- * @brief Process a P25 MAC VPDU block.
+ * @brief Process a native Phase 2 MAC PDU: mac[0] is its MAC header, its messages start at mac[1] and are segmented
+ * with the Phase 2 message lengths.
  *
- * @param type SACCH (1) or FACCH/bridged Phase 1 (0) transport.
- * @param pdu_type Outer Phase 2 MAC PDU type. Bridged Phase 1 callers use
- *                 P25_MAC_PDU_SIGNAL because they have no Phase 2 wrapper.
+ * No octet marks the transport: a mac[0] of 0x07 is a MAC header like any other. A Phase 1 TSBK goes through
+ * process_MAC_VPDU_bridged_p1() instead.
+ *
+ * @param type SACCH (1) or FACCH (0) transport.
+ * @param pdu_type Outer Phase 2 MAC PDU type.
  */
 void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
                       unsigned long long int mac[24]);

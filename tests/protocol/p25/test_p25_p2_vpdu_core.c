@@ -1111,7 +1111,9 @@ failed_crc_process(dsd_opts* opts, dsd_state* state, const unsigned char* mac_by
 }
 
 /* Protection Parameter Update is a Phase 1 TSBK (0x3F): it reaches the handlers only from the TSBK decoder, whose blocks
-   passed their CRC. A failed-CRC SACCH carrying the same octets is no such message. */
+   passed their CRC, so no failed-CRC form of it exists. The crc_ok = 0 case feeds the same octets as a failed-CRC
+   SACCH instead, which shows that a Phase 2 MAC opcode 0x7F is no protection update at all: no handler runs, and the
+   case asserts only that nothing is applied. */
 static void
 protection_update_process(dsd_opts* opts, dsd_state* state, const unsigned char* mac_bytes, int crc_ok) {
     if (!crc_ok) {
@@ -1504,7 +1506,7 @@ run_failed_crc_status_broadcast_cases(void) {
                               state->p25_sys_time_valid == 0 && state->p25_sys_time == 0);
             rc |= expect_true("failed-crc time broadcast sets no offset",
                               state->p25_sys_time_offset_valid == 0 && state->p25_sys_time_offset == 0);
-            rc |= expect_true("failed-crc protection broadcast sets no parameters",
+            rc |= expect_true("failed-crc SACCH 0x7F (no Phase 2 protection update) sets no parameters",
                               state->p25_prot_valid == 0 && state->p25_prot_algid == 0 && state->p25_prot_kid == 0);
             rc |= expect_failed_crc_tables_unchanged("failed-crc status broadcasts", state);
         }

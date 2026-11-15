@@ -64,8 +64,9 @@ fixture_close(fixture* f) {
     free(f->opts);
 }
 
-/* What the TSBK decoder hands over for TSBK octets 0-9 (p25p1_tsbk.c tsbk_build_mac_like_pdu()). Octets past the
-   TSBK hold junk: nothing may read them. */
+/* What the TSBK decoder hands over for TSBK octets 0-9 (p25p1_tsbk.c tsbk_build_mac_like_pdu(); P25_P1_TSBK_HANDLERS
+   test_dispatch_hands_mac_form_to_bridged_entry() pins that form). Octets past the TSBK hold junk here: nothing may
+   read them. */
 static void
 tsbk_mac_form(const uint8_t tsbk[10], unsigned long long int mac[24]) {
     for (int i = 0; i < 24; i++) {
@@ -130,7 +131,9 @@ run_native_sacch(fixture* f, const uint8_t* octets, int count) {
     return run_native_sacch_sync(f, octets, count, DSD_SYNC_P25P2_POS);
 }
 
-/* Messages printed: a handler opens its message with "\n <Name>" and indents its fields one further. */
+/* Messages printed. This relies on the handlers' print convention: a message opens with its title one space in
+   ("\n <Name>") and indents its fields two spaces ("\n  Target [..]"). A future one-space line that is no title would
+   count as a message here. */
 static int
 message_count(const char* out) {
     int count = 0;
@@ -369,11 +372,13 @@ test_0x1e_bridged_no_overread(void) {
     return rc;
 }
 
-/* Other TSBKs without a single-block Phase 1 layout print raw, and TSBK 0x31 (Authentication Demand, multi-block in
-   Phase 1, TIA-102.AABC-D §6.2.30) never enters the Phase 2 multi-fragment assembler its MAC opcode 0x71 names. */
+/* Other TSBKs without a single-block Phase 1 layout print raw: reserved 0x01 and 0x0C, obsolete 0x12 and 0x13 (the
+   TIA-102.AABC-D OSP list), multi-block-only 0x31 and 0x37. None runs the Phase 2 handler of its MAC opcode: 0x01 is
+   no Group Voice Service Request (MAC 0x41), so it adds no group affiliation row, 0x12 / 0x13 no SNDCP request or
+   response, and TSBK 0x31 (Authentication Demand, §6.2.30) never enters the multi-fragment assembler MAC 0x71 names. */
 static int
 test_bridged_without_p1_layout_prints_raw(void) {
-    static const uint8_t opcodes[] = {0x0C, 0x31, 0x37};
+    static const uint8_t opcodes[] = {0x01, 0x0C, 0x12, 0x13, 0x31, 0x37};
     int rc = 0;
     for (size_t o = 0; o < sizeof opcodes; o++) {
         fixture f;
@@ -391,6 +396,10 @@ test_bridged_without_p1_layout_prints_raw(void) {
         rc |= expect_has(tag, "Octets 2-9 [11 22 33 44 55 66 77 88]");
         rc |= expect_lacks(tag, "Multi-Fragment");
         rc |= expect_lacks(tag, "multi-fragment");
+        rc |= expect_lacks(tag, "Group Voice Service Request");
+        rc |= expect_lacks(tag, "SNDCP");
+        rc |= expect_int(tag, f.state->p25_ga_count, 0);
+        rc |= expect_int(tag, f.state->p25_aff_count, 0);
         fixture_close(&f);
     }
     return rc;

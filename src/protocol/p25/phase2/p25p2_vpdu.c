@@ -5933,13 +5933,17 @@ enum {
 };
 
 /* A Phase 1 TSBK opcode with no single-block layout, while its Phase 2 opcode has a handler: that handler would read a
-   Phase 2 layout (and octets past the TSBK) the TSBK does not carry, so its octets print raw instead. TIA-102.AABC-D
-   lists 0x0C as reserved and defines 0x1E (§6.2.34), 0x31 (§6.2.30) and 0x37 (§6.2.26) as multi-block messages
-   only. NULL for every other opcode. */
+   Phase 2 layout (and octets past the TSBK) the TSBK does not carry, and could write its fields to the network tables,
+   so its octets print raw instead. TIA-102.AABC-D's OSP list has 0x01 and 0x0C reserved and 0x12 / 0x13 obsolete, and
+   defines 0x1E (§6.2.34), 0x31 (§6.2.30) and 0x37 (§6.2.26) as multi-block messages only. NULL for every other
+   opcode. */
 static const char*
 p25p2_vpdu_bridged_p1_raw_name(int opcode) {
     switch (opcode) {
+        case 0x41:
         case 0x4C: return "Reserved opcode";
+        case 0x52: return "Group Data Channel Announcement (obsolete)";
+        case 0x53: return "Group Data Channel Announcement - Explicit (obsolete)";
         case 0x5E: return "Radio Unit Monitor Enhanced Command";
         case 0x71: return "Authentication Demand";
         case 0x77: return "Roaming Address Update";

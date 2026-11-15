@@ -10135,8 +10135,9 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   status that zeroed the site), it never starts, continues, ends or clears a multi-fragment assembly, and nothing past
   `MAC[9]` is copied in. Handlers whose Phase 2 layout differs read the Phase 1 one (TIA-102.AABC-D): 0x05 Unit-to-Unit
   Answer Request, 0x15 SNDCP Data Page Request, 0x2D Unit Registration Command, 0x36 Roaming Address Command, and the
-  length-octet responses. Opcodes with no single-block Phase 1 layout (0x0C reserved, 0x1E Radio Unit Monitor Enhanced
-  Command and 0x31 Authentication Demand, both multi-block, 0x37 Roaming Address Update) print octets 2-9 raw.
+  length-octet responses. Opcodes with no single-block Phase 1 layout (0x01 and 0x0C reserved, 0x12 / 0x13 obsolete,
+  0x1E Radio Unit Monitor Enhanced Command and 0x31 Authentication Demand, both multi-block, 0x37 Roaming Address
+  Update) print octets 2-9 raw: no Phase 2 handler runs, so none writes a network table.
   Native lengths follow TIA-102.BBAD-A where sdrtrunk differs: 0x45 / 0xC5 are 8 / 12, 0x4A is 9 (`p25p2_mac_tables.c`).
   Tests: `P25_TSBK_BRIDGE_BOUNDARY`, `P25_MAC_LENGTHS`, `P25_MAC_SEGMENT`.
 - Scrambling code recovery (`p25p2_seed_recover.c`, issue #804). On a carrier whose code is not proven

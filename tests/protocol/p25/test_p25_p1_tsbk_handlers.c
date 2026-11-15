@@ -49,6 +49,7 @@ static int g_grant_count;
 static int g_group_data_grant_count;
 static int g_indiv_data_grant_count;
 static int g_mac_count;
+static unsigned long long g_mac_form[24];
 static int g_last_sg;
 static int g_last_wgid;
 static uint32_t g_last_wuid;
@@ -321,7 +322,9 @@ void
 process_MAC_VPDU_bridged_p1(dsd_opts* opts, dsd_state* state, unsigned long long int mac[24]) {
     (void)opts;
     (void)state;
-    (void)mac;
+    for (int i = 0; i < 24; i++) {
+        g_mac_form[i] = mac[i];
+    }
     g_mac_count++;
 }
 
@@ -1828,6 +1831,39 @@ test_dispatch_gates_mac_and_vendor_handlers(void) {
     return rc;
 }
 
+/* What a standard TSBK hands to the MAC handlers, built and dispatched as processTSBK() does: the abbreviated Phase 2
+   opcode at MAC[1], TSBK octet n at MAC[n] for n = 2..9, and nothing after it (test_p25_tsbk_bridge_boundary.c feeds
+   this form to process_MAC_VPDU_bridged_p1()). */
+static int
+test_dispatch_hands_mac_form_to_bridged_entry(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    tsbk_decode_ctx_t ctx;
+    unsigned long long pdu[24];
+    static const uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0x1F, 0x00, 0x11, 0x22, 0x33, 0x44,
+                                                       0x55, 0x66, 0x77, 0x88, 0xAB, 0xCD};
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    DSD_MEMSET(g_mac_form, 0xFF, sizeof(g_mac_form));
+    DSD_MEMCPY(ctx.tsbk_byte, tsbk, sizeof(tsbk));
+
+    int rc = 0;
+    reset_calls();
+    tsbk_build_mac_like_pdu(ctx.tsbk_byte, pdu);
+    tsbk_dispatch_message(&opts, &state, &ctx, 0, ctx.tsbk_byte[1], 0, pdu);
+    rc |= expect_int("mac form handed once", g_mac_count, 1);
+    rc |= expect_int("mac form opcode", (int)g_mac_form[1], 0x40 | 0x1F);
+    for (int n = 2; n <= 9; n++) {
+        rc |= expect_int("mac form tsbk octet", (int)g_mac_form[n], tsbk[n]);
+    }
+    for (int n = 10; n < 24; n++) {
+        rc |= expect_int("mac form nothing past octet 9", (int)g_mac_form[n], 0);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1848,6 +1884,7 @@ main(void) {
     rc |= test_mfid90_tdma_data_channel_display_only();
     rc |= test_network_status_state_policy();
     rc |= test_dispatch_gates_mac_and_vendor_handlers();
+    rc |= test_dispatch_hands_mac_form_to_bridged_entry();
     dsd_decode_clock_use_system();
     return rc;
 }

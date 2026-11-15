@@ -218,10 +218,11 @@ tsbk_update_fec_counters(const dsd_opts* opts, dsd_state* state, int err) {
 }
 
 /* The TSBK in the MAC form process_MAC_VPDU_bridged_p1() decodes as one message: its opcode as the abbreviated Phase 2
-   opcode at PDU[1] and TSBK octet n at PDU[n] for n = 2..9 (the MFID and the CRC are not carried). */
+   opcode at PDU[1] and TSBK octet n at PDU[n] for n = 2..9 (the MFID and the CRC are not carried). PDU[0] (0x07, the
+   TSBK DUID) only labels the payload print; nothing reads it as a transport marker, and nothing past PDU[9] is read. */
 static void
 tsbk_build_mac_like_pdu(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], unsigned long long int PDU[24]) {
-    PDU[0] = 0x07; // P25p1 TSBK DUID
+    PDU[0] = 0x07;
     PDU[1] = tsbk_byte[0] & 0x3F;
     PDU[2] = tsbk_byte[2];
     PDU[3] = tsbk_byte[3];
@@ -231,9 +232,9 @@ tsbk_build_mac_like_pdu(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], unsigned 
     PDU[7] = tsbk_byte[7];
     PDU[8] = tsbk_byte[8];
     PDU[9] = tsbk_byte[9];
-    PDU[10] = 0; // strip CRC for vPDU search
+    PDU[10] = 0; // the CRC is not part of the message
     PDU[11] = 0;
-    PDU[1] ^= 0x40; // flip to match MAC_PDU flavor (3D -> 7D)
+    PDU[1] ^= 0x40; // abbreviated Phase 2 opcode: B1B2 = 01 (3D -> 7D)
 }
 
 static void
