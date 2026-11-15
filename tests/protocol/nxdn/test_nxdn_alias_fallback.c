@@ -7,6 +7,7 @@
  * Focused checks for the no-iconv NXDN alias text fallback.
  */
 
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
@@ -44,6 +45,19 @@ dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out)
 uint64_t
 dsd_trunk_tuning_generation(void) {
     return 0U;
+}
+
+// Nor the alias learning: with no call bound nothing is learned anyway.
+int
+dsd_alias_learn_radio(const dsd_opts* opts, dsd_state* state, const dsd_alias_scope* scope, uint32_t rid,
+                      const char* utf8_name, const char* metadata) {
+    (void)opts;
+    (void)state;
+    (void)scope;
+    (void)rid;
+    (void)utf8_name;
+    (void)metadata;
+    return 0;
 }
 
 static int

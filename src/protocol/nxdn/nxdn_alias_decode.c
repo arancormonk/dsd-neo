@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -356,6 +357,21 @@ nxdn_alias_decode_shift_jis_like(const uint8_t* in, size_t in_len, char* out, si
     return strlen(out);
 }
 
+/* Learn a completed Kenwood alias as its talker's (dsd_alias_learn_radio(), the reception's scope): only when the whole
+ * assembly was bound to a call with a source and that call is still the ACTIVE one, so an alias heard in another
+ * call's hangtime (bound to the ended call) never names the ended call's talker. It runs once per completed assembly:
+ * a repeated fragment changes nothing. */
+static void
+nxdn_alias_learn(const dsd_opts* opts, dsd_state* state, const nxdn_alias_assembly* a, const char* alias) {
+    dsd_call_snapshot call;
+    if (a->source == 0U || alias[0] == '\0' || dsd_call_state_get(state, a->slot, &call) <= 0
+        || call.phase != DSD_CALL_PHASE_ACTIVE || call.epoch != a->epoch || call.ota_source_id != a->source
+        || dsd_trunk_tuning_generation() != a->tune_generation) {
+        return;
+    }
+    (void)dsd_alias_learn_radio(opts, state, NULL, a->source, alias, "Kenwood");
+}
+
 void
 nxdn_alias_reset(dsd_state* state) {
     if (state == NULL) {
@@ -410,6 +426,7 @@ nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_t* me
     char alias[NXDN_ALIAS_TEXT_BYTES + 1U];
     if (nxdn_alias_complete(a, alias, sizeof(alias))) {
         nxdn_alias_publish(state, alias);
+        nxdn_alias_learn(opts, state, a, alias);
     }
 }
 

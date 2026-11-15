@@ -62,6 +62,7 @@
 #include "nxdn_confirm.h"
 #include "nxdn_crc.h"
 #include "nxdn_internal.h"
+#include "nxdn_unit_activity.h"
 
 typedef void (*nxdn_element_handler_fn)(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                         size_t elements_bits);
@@ -650,6 +651,11 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* El
 
     if (MessageTypeDispatch == 0x3FU) {
         nxdn_element_handle_alias(opts, state, ElementsContent, elements_bits);
+        return;
+    }
+
+    /* Type-C registration and remote-control messages (nxdn_unit_activity.h); a Type-D one is not parsed. */
+    if (nxdn_ua_dispatch(opts, state, MessageTypeDispatch, ElementsContent, elements_bits)) {
         return;
     }
 

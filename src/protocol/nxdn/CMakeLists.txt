@@ -18,6 +18,7 @@ target_sources(
         nxdn_held_call.c
         nxdn_lfsr.c
         nxdn_trunk_diag.c
+        nxdn_unit_activity.c
         nxdn_voice.c
 )
 

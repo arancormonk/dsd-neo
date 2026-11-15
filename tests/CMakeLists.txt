@@ -2427,6 +2427,47 @@ target_link_libraries(
 )
 add_test(NAME NXDN_ALIAS_DECODE COMMAND dsd-neo_test_nxdn_alias_decode)
 
+# NXDN Type-C unit activity rows (REG_RESP, REG_C_RESP, GRP_REG_RESP, REM_CON_REQ / RESP) through a CAC and the
+# element dispatch: lengths, visitor fields, G/U flag, roles, Type-C path only, CRC-checked CACs only
+add_executable(
+    dsd-neo_test_nxdn_unit_activity
+    protocol/nxdn/test_nxdn_unit_activity.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_unit_activity
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_unit_activity
+    PRIVATE
+        dsd-neo_proto_nxdn
+        dsd-neo_proto_p25
+        dsd-neo_proto_dmr
+        dsd-neo_test_support
+)
+add_test(NAME NXDN_UNIT_ACTIVITY COMMAND dsd-neo_test_nxdn_unit_activity)
+
+# NXDN Kenwood alias learning through the element dispatch: only a complete alias bound to the active call is learned,
+# in the reception's scope
+add_executable(
+    dsd-neo_test_nxdn_alias_learn
+    protocol/nxdn/test_nxdn_alias_learn.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_alias_learn
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_alias_learn
+    PRIVATE
+        dsd-neo_proto_nxdn
+        dsd-neo_proto_p25
+        dsd-neo_proto_dmr
+        dsd-neo_test_support
+)
+add_test(NAME NXDN_ALIAS_LEARN COMMAND dsd-neo_test_nxdn_alias_learn)
 
 add_executable(
     dsd-neo_test_nxdn_alias_fallback

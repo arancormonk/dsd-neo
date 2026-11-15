@@ -2428,7 +2428,10 @@ suite runs under this compiler.
   open call's history row) only by the fragment that completes the assembly (`nxdn_alias_complete()`), so a partial,
   spliced or conflicting assembly never shows, and the last complete alias stays shown until another completes. The
   octets are shown as today (printable ASCII, others as spaces; the character set beyond ASCII is not confirmed by a
-  second source). ARIB and DCR aliases are unchanged. Tests: `NXDN_ALIAS_DECODE` (`test_prop_dispatch`).
+  second source). The completed alias is learned (`dsd_alias_learn_radio()`, metadata `Kenwood`, the reception's scope)
+  as the bound call's source's only while that call is still the ACTIVE one with the same epoch, source and tuning
+  generation, so an alias completed in another call's hangtime (bound to the ended call) names nobody. ARIB and DCR
+  aliases are unchanged (shown, not learned). Tests: `NXDN_ALIAS_DECODE` (`test_prop_dispatch`), `NXDN_ALIAS_LEARN`.
 - API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan
   target's `p25_bandplan_csv`, the terminal/Qt imports) lives in `dsd_state` as `p25_bandplan_rows[]` beside the
   IDEN tables it seeds. `src/core/file/p25_bandplan_csv.c` parses and writes the CSV
@@ -2504,6 +2507,17 @@ suite runs under this compiler.
       the gateway as the INFRASTRUCTURE actor, authentication with no actor (the challenge is no identity and not
       keyed). Motorola ARS (an exact ARS message on a checked DMR data PDU, `dmr_ars_note_activity()`): device / user
       registration and deregistration as REPORT rows of the sending radio. Test: `DMR_UNIT_ACTIVITY`.
+    - NXDN (`nxdn_unit_activity.c`, `nxdn_ua_dispatch()`; Type-C only: a CAC, or a composite control channel once
+      Type-C decoded, never Type-D or a traffic channel; a message shorter than its mandatory part adds no row):
+      REG_RESP 0x20, REG_C_RESP 0x22 ("Logout response": no second source confirms a success value) and GRP_REG_RESP
+      0x24 with Cause (MM) as the reason (location accepted with the group failed or refused is a registration
+      accepted, a group join failed / refused); the home Location ID without site code is the subject's home, the
+      visitor unit (H/V set and present) `assigned` and the visitor group `value2`. REM_CON_REQ 0x34: stun / revival /
+      kill / remote monitor (unit only) COMMAND rows, G/U picking unit or group, the source the actor, the Control
+      Parameter in `value2`. REM_CON_RESP 0x35: RESPONSE rows with the source (the controlled unit, TS 1-C Fig
+      15.21-1) as the subject, the destination (the requester) as the recipient and Cause (SS) as the reason (the
+      controller's send success, the target's receive success and the no-response timeout differ only there); no row
+      for a remote monitor answer. Unit IDs FFF0-FFFF are infrastructure. Test: `NXDN_UNIT_ACTIVITY`.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
@@ -2609,8 +2623,8 @@ suite runs under this compiler.
   Tests: `CORE_TALKGROUP_POLICY`, `CORE_TG_POLICY_ALLOC_FAIL`, `APP_COMMAND_QUEUE`, `UI_QT_TALKGROUP_LIST_MODEL`.
 - Invariant (learned alias rows, `<dsd-neo/core/talkgroup_policy.h>`, `<dsd-neo/core/alias_learn.h>`): every
   over-the-air alias publisher learns its row in mode `D` (an encrypted radio is locked out by the encryption ledger,
-  never by its alias row): Motorola, Harris, Tait and the DMR standard talker alias in `dsd_alias.c` through
-  `dsd_alias_learn_radio()`, the P25
+  never by its alias row): Motorola, Harris, Tait and the DMR standard talker alias in `dsd_alias.c` and the NXDN
+  Kenwood alias in `nxdn_alias_decode.c` through `dsd_alias_learn_radio()`, the P25
   Phase 1 LSD soft ID in `p25p1_ldu1.c`/`p25p1_ldu2.c` through `dsd_tg_policy_learn_exact()`. A talkgroup/user row
   for the ID wins, a learned row is replaced only when its normalised name changed, and a repeat changes nothing, so
   the policy generation (and every frontend's snapshot copy keyed on it) stays put while a radio keeps sending the same
