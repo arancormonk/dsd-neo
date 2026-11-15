@@ -182,6 +182,41 @@ rules:
         - /src/third_party/**
     pattern-regex: '\[\s*static\b'
 
+  # An MSVC that leaves C11 atomics off (__STDC_NO_ATOMICS__, e.g. Visual Studio 2022) builds atomic_compat.h's
+  # Interlocked fallback, which CI's newer MSVC never compiles. Code that reaches past that fallback builds everywhere
+  # CI looks and fails only there.
+  - id: dsd-neo.atomics-within-msvc-fallback
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Use only the C atomics <dsd-neo/platform/atomic_compat.h> provides on both branches: atomic_int with
+      atomic_init/load/store/exchange/fetch_add/fetch_sub/compare_exchange_strong, the load/store/fetch_add _explicit
+      forms, ATOMIC_INT_LOCK_FREE, and dsd_atomic_u64 for wider or unsigned values. Include atomic_compat.h rather
+      than <stdatomic.h>, and do not spell _Atomic. Anything else fails to compile on an MSVC without C11 atomics.
+      Extend both branches of atomic_compat.h when more is needed.
+    paths:
+      include:
+        - /android/**/*.c
+        - /android/**/*.h
+        - /apps/**/*.c
+        - /apps/**/*.h
+        - /include/**/*.h
+        - /src/**/*.c
+        - /src/**/*.h
+        - /tests/**/*.c
+        - /tests/**/*.h
+      exclude:
+        - /android/third_party/**
+        - /src/third_party/**
+        - /include/dsd-neo/platform/atomic_compat.h
+    # A plain token match: comments and strings that name a banned form are flagged too, which costs a rewording
+    # and keeps the rule free of a hand-written C lexer.
+    pattern-either:
+      - pattern-regex: '(?<!\w)(?<!->)(?<!\.)(?<!::)atomic_(?!(?:int|init|load|store|exchange|fetch_add|fetch_sub|compare_exchange_strong|load_explicit|store_explicit|fetch_add_explicit|compat)\b)\w+'
+      - pattern-regex: '(?<!\w)(?<!::)ATOMIC_(?!INT_LOCK_FREE\b)\w+'
+      - pattern-regex: '(?<!\w)(?<!::)_Atomic\b'
+      - pattern-regex: 'stdatomic\.h'
+
   - id: dsd-neo.no-automatic-full-decoder-state
     languages: [generic]
     severity: ERROR

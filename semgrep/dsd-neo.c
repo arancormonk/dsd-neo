@@ -143,3 +143,72 @@ c_environment_reads(const char* name, char* out, size_t out_size) {
     size_t d = dsd_env_copy(name, out, out_size);
     consume(a, b, c, d, copy);
 }
+
+// ruleid: dsd-neo.atomics-within-msvc-fallback
+#include <stdatomic.h>
+// ruleid: dsd-neo.atomics-within-msvc-fallback
+#include "stdatomic.h"
+// ok: dsd-neo.atomics-within-msvc-fallback
+#include <dsd-neo/platform/atomic_compat.h>
+
+// ruleid: dsd-neo.atomics-within-msvc-fallback
+static atomic_uint fixture_generation;
+// ruleid: dsd-neo.atomics-within-msvc-fallback
+static atomic_bool fixture_flag;
+// ruleid: dsd-neo.atomics-within-msvc-fallback
+#define FIXTURE_WIDE_ATOMIC     _Atomic(uint32_t)
+// ruleid: dsd-neo.atomics-within-msvc-fallback
+#define FIXTURE_SPELLED_ATOMIC  _Atomic unsigned
+// ruleid: dsd-neo.atomics-within-msvc-fallback
+#define FIXTURE_TYPEDEF_ATOMIC  _Atomic fixture_generation_t
+// ruleid: dsd-neo.atomics-within-msvc-fallback
+#define FIXTURE_ENUM_ATOMIC     _Atomic enum fixture_kind
+// ruleid: dsd-neo.atomics-within-msvc-fallback
+#define FIXTURE_TRAILING_ATOMIC unsigned _Atomic
+// ruleid: dsd-neo.atomics-within-msvc-fallback
+static atomic_int fixture_seeded = ATOMIC_VAR_INIT(0);
+// ok: dsd-neo.atomics-within-msvc-fallback
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "a lock-free mark");
+// ok: dsd-neo.atomics-within-msvc-fallback
+static atomic_int fixture_count;
+// ok: dsd-neo.atomics-within-msvc-fallback
+static dsd_atomic_u64 fixture_stamp;
+
+void
+c_atomics(void) {
+    int expected = 0;
+    // ok: dsd-neo.atomics-within-msvc-fallback
+    atomic_init(&fixture_count, 0);
+    // ok: dsd-neo.atomics-within-msvc-fallback
+    atomic_store(&fixture_count, atomic_load(&fixture_count) + 1);
+    // ok: dsd-neo.atomics-within-msvc-fallback
+    (void)atomic_exchange(&fixture_count, 2);
+    // ok: dsd-neo.atomics-within-msvc-fallback
+    (void)atomic_fetch_add(&fixture_count, 1);
+    // ok: dsd-neo.atomics-within-msvc-fallback
+    (void)atomic_fetch_sub(&fixture_count, 1);
+    // ok: dsd-neo.atomics-within-msvc-fallback
+    (void)atomic_compare_exchange_strong(&fixture_count, &expected, 3);
+    // ok: dsd-neo.atomics-within-msvc-fallback
+    atomic_store_explicit(&fixture_count, atomic_load_explicit(&fixture_count, memory_order_relaxed),
+                          memory_order_relaxed);
+    // ok: dsd-neo.atomics-within-msvc-fallback
+    (void)atomic_fetch_add_explicit(&fixture_count, 1, memory_order_relaxed);
+    // ok: dsd-neo.atomics-within-msvc-fallback
+    dsd_atomic_u64_store_release(&fixture_stamp, dsd_atomic_u64_load_acquire(&fixture_stamp) + 1U);
+    // ruleid: dsd-neo.atomics-within-msvc-fallback
+    (void)atomic_fetch_or(&fixture_count, 1);
+    // ruleid: dsd-neo.atomics-within-msvc-fallback
+    (void)atomic_compare_exchange_weak(&fixture_count, &expected, 4);
+    // ruleid: dsd-neo.atomics-within-msvc-fallback
+    atomic_thread_fence(memory_order_seq_cst);
+    // ruleid: dsd-neo.atomics-within-msvc-fallback
+    (void)atomic_exchange_explicit(&fixture_count, 5, memory_order_relaxed);
+    // ruleid: dsd-neo.atomics-within-msvc-fallback
+    expected = 2 > atomic_fetch_or(&fixture_count, 1);
+    // ruleid: dsd-neo.atomics-within-msvc-fallback
+    expected = expected ? 0 : atomic_fetch_xor(&fixture_count, 1);
+    // A comment that names a banned form is flagged as well.
+    // ruleid: dsd-neo.atomics-within-msvc-fallback
+    (void)expected; // atomic_uint would not build on the fallback
+}

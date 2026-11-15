@@ -22,7 +22,6 @@
 #include <assert.h>
 #include <portaudio.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +30,7 @@
 #include <unistd.h>
 
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/platform/atomic_compat.h"
 #include "dsd-neo/platform/audio.h"
 
 /*============================================================================
