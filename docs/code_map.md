@@ -2518,6 +2518,13 @@ suite runs under this compiler.
       15.21-1) as the subject, the destination (the requester) as the recipient and Cause (SS) as the reason (the
       controller's send success, the target's receive success and the no-response timeout differ only there); no row
       for a remote monitor answer. Unit IDs FFF0-FFFF are infrastructure. Test: `NXDN_UNIT_ACTIVITY`.
+    - TETRA (`tetra_unit_activity.c`; clear or decrypted MM only): LU ACCEPT / REJECT for the MAC-addressed MS (an SMI
+      is UNKNOWN, an event label or no address names nobody, an encrypted short identity adds no row; the address's
+      MCC/MNC is the cell's, never a home), the accept type as the value and the SSI element as `assigned`, the reject
+      cause as the reason and the update type in `value2`; D-DISABLE temporary / permanent and D-ENABLE as STUN / KILL /
+      REVIVE commands at the INTENT or AUTHENTICATED stage, the subscription SSI with its ITSI network as the home, an
+      equipment-only command a TEI_PARTIAL subject (the TEI's low 32 bits, the rest in `value2`). Test:
+      `TETRA_UNIT_ACTIVITY`.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
@@ -12044,9 +12051,11 @@ cell's MCC/MNC; `mle_mm_addr()` in `tetra_mle.c`, for a PDU behind its own discr
 D-NEW-CELL or D-PREPARE-FAIL) and the summary line names the MS by it: only a clear SSI or USSI is a radio
 (`tetra_mm_addr_radio_ssi()`); an SMI is shown as a management identity and an encrypted short identity names nobody.
 The ACCEPT's SSI element is the ASSI or (V)ASSI given to that MS (`assigned=`), and the accept type (table 16.68),
-location update type (table 16.67) and reject cause (table 16.81) are named. D-DISABLE / D-ENABLE print the
-Intent/confirm element as `stage=intent` or `stage=confirm` (EN 300 392-7 table A.68): a command either way, never an
-outcome. Tests: `TETRA_MM_ADDRESS`. Of
+location update type (table 16.67) and reject cause (table 16.81) are named; the accept type and the reject cause in
+the core's words (`dsd_ua_tetra_accept_type_text()`, `dsd_ua_reason_text()`), which the unit activity log shares
+(`tetra_unit_activity.c`, rows for LU ACCEPT / REJECT and D-DISABLE / D-ENABLE; Test: `TETRA_UNIT_ACTIVITY`).
+D-DISABLE / D-ENABLE print the Intent/confirm element as `stage=intent` or `stage=confirm` (EN 300 392-7 table
+A.68): a command either way, never an outcome. Tests: `TETRA_MM_ADDRESS`. Of
 signalling, `tetra_state_t` keeps only what the decoder reads back: the cell's main carrier, band, offset and location
 area with its broadcast security (the extended services broadcast's security information, EN 300 392-7 table A.104, and
 the BS service details' air interface encryption bit, each kept until the next SYSINFO that carries it), the KSG

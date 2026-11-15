@@ -16186,6 +16186,7 @@ set(_dsd_tetra_test_sources
     sds_pdus
     mm_dispatch
     tetra_mm_address
+    tetra_unit_activity
     rcpc_map
     real_air_bit_trace
     sds_reference_mac

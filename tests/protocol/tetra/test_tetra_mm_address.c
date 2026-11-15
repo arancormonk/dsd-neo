@@ -168,13 +168,15 @@ test_accept_names_addressed_ms(void) {
     sdu = (ttb_block){0};
     lu_accept(&sdu, 2, 0);
     send_sdu(&s, TETRA_MAC_ADDR_SSI_EVENT, TEST_MS_SSI, &sdu, log, sizeof log);
-    check_log(log, "[TETRA MM D-LU-ACCEPT] CC=0 type=2 (periodic) ms=SSI(1234567)\n",
+    check_log(log, "[TETRA MM D-LU-ACCEPT] CC=0 type=2 (Periodic location updating) ms=SSI(1234567)\n",
               "an SSI that assigns an event label still names the MS");
 
     sdu = (ttb_block){0};
     lu_accept(&sdu, 5, 0);
     send_sdu(&s, TETRA_MAC_ADDR_USSI, TEST_MS_SSI, &sdu, log, sizeof log);
-    check_log(log, "[TETRA MM D-LU-ACCEPT] CC=0 type=5 (migrating or service restoration migrating) ms=USSI(1234567)",
+    check_log(log,
+              "[TETRA MM D-LU-ACCEPT] CC=0 type=5 (Migrating or service restoration migrating location updating) "
+              "ms=USSI(1234567)",
               "a migrating MS is named by its USSI");
     session_close(&s);
 }
@@ -187,7 +189,8 @@ test_smi_never_a_radio(void) {
     ttb_block sdu = {0};
     lu_accept(&sdu, 0, 0);
     send_sdu(&s, TETRA_MAC_ADDR_SMI, TEST_MS_SSI, &sdu, log, sizeof log);
-    check_log(log, "[TETRA MM D-LU-ACCEPT] CC=0 type=0 (roaming) addr=SMI(1234567) (management identity)",
+    check_log(log,
+              "[TETRA MM D-LU-ACCEPT] CC=0 type=0 (Roaming location updating) addr=SMI(1234567) (management identity)",
               "an SMI-addressed accept shows the SMI as such");
     check_no_log(log, "ms=", "an SMI-addressed accept names no radio");
 
@@ -208,14 +211,14 @@ test_reject_cause_named(void) {
     lu_reject(&sdu, 3, 19);
     send_sdu(&s, TETRA_MAC_ADDR_SSI, TEST_MS_SSI, &sdu, log, sizeof log);
     check_log(log,
-              "[TETRA MM D-LU-REJECT] CC=0 type=3 cause=19 cipher=0 (ITSI attach rejected: authentication failure) "
+              "[TETRA MM D-LU-REJECT] CC=0 type=3 cause=19 cipher=0 (ITSI attach rejected: Authentication failure) "
               "ms=SSI(1234567)",
               "reject cause 19 is an authentication failure");
 
     sdu = (ttb_block){0};
     lu_reject(&sdu, 2, 6);
     send_sdu(&s, TETRA_MAC_ADDR_SSI, TEST_MS_SSI, &sdu, log, sizeof log);
-    check_log(log, "(periodic rejected: congestion)", "reject cause 6 is congestion");
+    check_log(log, "(periodic rejected: Congestion)", "reject cause 6 is congestion");
 
     static const uint32_t reserved[] = {0u, 17u, 22u, 31u};
     for (size_t i = 0; i < sizeof reserved / sizeof reserved[0]; i++) {
@@ -241,7 +244,8 @@ test_new_cell_mm_sdu_named(void) {
     ttb_put(&sdu, 0, 3); /* roaming */
     ttb_put(&sdu, 0, 1); /* O-bit */
     send_sdu(&s, TETRA_MAC_ADDR_SSI, TEST_MS_SSI, &sdu, log, sizeof log);
-    check_log(log, "[TETRA MM D-LU-ACCEPT] CC=0 type=0 (roaming) ms=SSI(1234567)", "D-NEW-CELL's accept names the MS");
+    check_log(log, "[TETRA MM D-LU-ACCEPT] CC=0 type=0 (Roaming location updating) ms=SSI(1234567)",
+              "D-NEW-CELL's accept names the MS");
     session_close(&s);
 }
 

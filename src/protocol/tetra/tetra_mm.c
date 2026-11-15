@@ -11,6 +11,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
@@ -22,6 +23,7 @@
 #include "tetra_log.h"
 #include "tetra_mm_pdu.h"
 #include "tetra_state.h"
+#include "tetra_unit_activity.h"
 
 /* EN 300 392-2 clause 21.4.4.1: downlink main carrier frequency = base frequency + main carrier x 25 kHz + offset.
  * ETSI TS 100 392-15 table 1 gives frequency band values 1 to 9 the base frequency value x 100 MHz. Value 0 means the
@@ -795,6 +797,7 @@ mm_report_enable_disable(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
                 e->intent ? "confirm" : "intent", (unsigned)e->equipment, (unsigned)e->subscription,
                 e->permanent ? " permanent" : "");
     mm_notice_enable_disable(ctx, e, name);
+    tetra_ua_enable_disable(ctx->opts, ctx->state, e);
 }
 
 /* EN 300 392-2 clause 16.9.2: location update and group identity PDUs. */
@@ -825,15 +828,11 @@ mm_decode_lu_accept(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
     return 1;
 }
 
-/* Table 16.68: the location update accept type. */
+/* Table 16.68: the location update accept type, in the core's words the unit activity log shows too. */
 static const char*
 mm_lu_accept_type_name(uint8_t type) {
-    static const char* const names[8] = {
-        "roaming",     "temporary registration",      "periodic",
-        "ITSI attach", "service restoration roaming", "migrating or service restoration migrating",
-        "demand",      "disabled MS updating",
-    };
-    return names[type & 7u];
+    const char* const name = dsd_ua_tetra_accept_type_text(type);
+    return name ? name : "reserved accept type";
 }
 
 /* The PDU has no ISSI of its own (clause 16.4.1 note 5): the MS is the one the MAC addressed. Its SSI element is the
@@ -849,6 +848,7 @@ mm_report_lu_accept(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
     }
     DSD_FPRINTF(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d type=%u (%s) %s%s\n", ctx->cc, (unsigned)a->type,
                 mm_lu_accept_type_name(a->type), addr, assigned);
+    tetra_ua_lu_accept(ctx->opts, ctx->state, &ctx->addr, a);
 }
 
 /* Cipher control and the ciphering parameters it announces (EN 300 392-2 tables 16.12 and 16.13). */
@@ -935,34 +935,11 @@ mm_lu_type_name(uint8_t type) {
     return names[type & 7u];
 }
 
-/* Table 16.81: the reject cause; 0, 17 and 22 to 31 are reserved. */
+/* Table 16.81: the reject cause, in the core's words the unit activity log shows too; 0, 17 and 22 to 31 are
+ * reserved. */
 static const char*
 mm_lu_reject_cause_name(uint8_t cause) {
-    static const char* const names[22] = {
-        NULL,
-        "ITSI/ATSI unknown",
-        "illegal MS",
-        "LA not allowed",
-        "LA unknown",
-        "network failure",
-        "congestion",
-        "forward registration failure",
-        "service not subscribed",
-        "mandatory element error",
-        "message consistency error",
-        "roaming not supported",
-        "migration not supported",
-        "no cipher KSG",
-        "identified cipher KSG not supported",
-        "requested cipher key type not available",
-        "identified cipher key not available",
-        NULL,
-        "ciphering required",
-        "authentication failure",
-        "use of CA cell not permitted",
-        "use of DA cell not permitted",
-    };
-    const char* const name = cause < 22u ? names[cause] : NULL;
+    const char* const name = dsd_ua_reason_text(DSD_UA_REASON_TETRA_LU_REJECT, cause);
     return name ? name : "reserved cause";
 }
 
@@ -977,6 +954,7 @@ mm_report_lu_reject(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
                 (unsigned)rej->type, (unsigned)rej->cause, (unsigned)rej->cipher_control, cipher,
                 mm_lu_type_name(rej->type), mm_lu_reject_cause_name(rej->cause), addr);
     mm_cipher_remember_ksg(ctx, rej->cipher_control, rej->cipher_params);
+    tetra_ua_lu_reject(ctx->opts, ctx->state, &ctx->addr, rej);
 }
 
 /* Table 16.14 D-LOCATION UPDATE PROCEEDING: the (V)ASSI and the MNI are both type 1 elements. */
