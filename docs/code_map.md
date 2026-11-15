@@ -19698,11 +19698,15 @@ named through `qml/SpeechPacer.qml`: its name catches up with the text on screen
 meaningful step (a call starting or ending, a lock or sync change, the reading appearing or disappearing, a scan held or
 released; off a scan, a new frequency). The text on screen stays live, and nothing runs per tick: the pacer reads the
 reading only when its period or a step comes round, and runs only while the reading is shown. `LiveText` is a
-`ReadableText` named that way (`step` says what is heard at once; `spokenText`, its text unless set, is what it is
-named by); a group takes a `SpeechPacer` with `group:` set. The Monitor's scan timing line steps on the stay reason, not
-its phrase, so the silent-channel skip's phrase variants (issue #834) are heard at the line's pace, and its
-`spokenText` adds `MetricsModel::scanQuietText` after the line's words (`tst_a11y_paced_names.qml`
-`test_b2_the_quiet_status_is_no_step`).
+`ReadableText` named that way (`step` says what is heard at once; `speech`, a function the pacer calls at each read,
+gives other words than its text); a group takes a `SpeechPacer` with `group:` set. The Monitor's scan timing line steps
+on the stay reason, not its phrase, so the silent-channel skip's phrase variants (issue #834) are heard at the line's
+pace, and so are the voice gate's variants of one stay (`Qualify`, `Voice tail`): the sync that opens the qualify
+window is already a `speechStep`, and voice ending changes the reason. Its `speech` adds `MetricsModel::scanQuietText`
+after the line's words once, at the first read after the status or reason changes (`quietSaid`), not at every hop's
+rename on a session that cannot check. Not in `Accessible.description` either: Qt's Android bridge sends a node's name
+and description joined as one text on every rename (`descriptionForInterface()` in `androidjniaccessibility.cpp`).
+Test: `tst_a11y_paced_names.qml` `test_b2_the_quiet_status_is_no_step`.
 Paced: the Monitor's reading groups (`ReadingFlow`/`ReadingRow`, inline components), hero, scan timing line, call
 durations and "Signal & site" description (steps: `MonitorScreen.speechStep`; the squelch group adds the gate), the
 Spectrum status line and readout (a scan's hop is a step for none of these: `Util.tuneStep()` gives the tuning part of

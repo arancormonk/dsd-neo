@@ -268,21 +268,41 @@ Item {
         }
 
         // The silent-channel skip's status (#834) is the scan timing line's phrase, but no step: it comes and goes
-        // within one stay, so it is heard at the line's pace, and then in full, the line's words and what they mean.
+        // within one stay, so it is heard at the line's pace. Its sentence follows the line's words once, at the first
+        // rename after the status or its reason changes: on a session that cannot check, every hop renames the line,
+        // and the same 15-word sentence on each would drown the readings.
         function test_b2_the_quiet_status_is_no_step() {
             var timing = item(monitor, "scanTimingRow");
-            var sentence = "The silent channel skip cannot check channels with this tuner as it is set up. Normal scan "
-                + "timing applies.";
+            var tuner = "Skip silent channels can't check channels with this tuner as it is set up. Normal scan timing "
+                + "applies.";
+            var width = "Skip silent channels can't check this channel at its channel width. Normal scan timing applies.";
+            var noCheck = {scanStayReason: 8, scanStayPhrase: "No check: tuner", scanQuietStatus: 2, scanQuietReason: 2,
+                scanQuietText: tuner};
             stepPace();
             set({scanStayReason: 8, scanStayPhrase: "Idle dwell"});
             tryVerify(function () { return nameOf(timing) === timing.text; }, 100, "a new stay is said at once");
-            set({scanStayPhrase: "No check: tuner", scanQuietStatus: 2, scanQuietReason: 2, scanQuietText: sentence});
+            set(noCheck);
             compare(timing.text.indexOf("No check: tuner"), 0, "the line shows the status at once");
             wait(50);
             verify(nameOf(timing).indexOf("No check") < 0, "the status alone waits: " + nameOf(timing));
-            tryVerify(function () { return nameOf(timing) === timing.text + ". " + sentence; }, stepPeriod + 500,
+            tryVerify(function () { return nameOf(timing) === timing.text + ". " + tuner; }, stepPeriod + 500,
                       "then it is said in full: " + nameOf(timing));
-            // Back to the plain phrase on the same stay: named by the line's words alone again.
+            // Hops on a session that cannot check: each stay is said at once, the sentence not again.
+            for (var hop = 0; hop < 3; ++hop) {
+                set({scanStayReason: 1, scanStayPhrase: "Retune pending", scanQuietStatus: 0, scanQuietReason: 0,
+                    scanQuietText: ""});
+                tryVerify(function () { return nameOf(timing) === timing.text; }, 100, "hop " + hop + ": the tune");
+                set(noCheck);
+                tryVerify(function () { return nameOf(timing) === timing.text; }, 100,
+                          "hop " + hop + ": the same status, without its sentence: " + nameOf(timing));
+            }
+            wait(stepPeriod + 200);
+            compare(nameOf(timing), timing.text, "a period on, still without it");
+            // Another reason is said in full, once.
+            set({scanStayPhrase: "No check: width", scanQuietReason: 5, scanQuietText: width});
+            tryVerify(function () { return nameOf(timing) === timing.text + ". " + width; }, stepPeriod + 500,
+                      "another reason is said in full: " + nameOf(timing));
+            // Back to the plain phrase on the same stay: named by the line alone again.
             set({scanStayPhrase: "Idle dwell", scanQuietStatus: 0, scanQuietReason: 0, scanQuietText: ""});
             tryVerify(function () { return nameOf(timing) === timing.text; }, stepPeriod + 500, nameOf(timing));
         }

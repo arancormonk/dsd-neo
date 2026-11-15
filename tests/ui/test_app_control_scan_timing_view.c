@@ -560,19 +560,18 @@ test_quiet_status_is_the_phrase(void) {
         {DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE, "Quiet check",
          "Checking whether this channel is silent. If it is, the scan moves on early."},
         {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT, "No check: input",
-         "The silent channel skip cannot check channels on this input. Normal scan timing applies."},
+         "Skip silent channels can't check channels on this input. Normal scan timing applies."},
         {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_TUNER, "No check: tuner",
-         "The silent channel skip cannot check channels with this tuner as it is set up. Normal scan timing applies."},
+         "Skip silent channels can't check channels with this tuner as it is set up. Normal scan timing applies."},
         {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_RATE, "No check: rate",
-         "The silent channel skip cannot check channels at this sample rate. Normal scan timing applies."},
+         "Skip silent channels can't check channels at this sample rate. Normal scan timing applies."},
         {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_MODES, "No check: modes",
-         "The silent channel skip cannot check this channel with the decoders in use. Give the channel a mode to have "
-         "it checked. Normal scan timing applies."},
+         "Skip silent channels can't check this channel with the decoders in use. Normal scan timing applies."},
         {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH, "No check: width",
-         "The silent channel skip cannot check this channel at its channel width. Normal scan timing applies."},
+         "Skip silent channels can't check this channel at its channel width. Normal scan timing applies."},
         {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_NO_WIDTH, "No check: width",
-         "The silent channel skip cannot check this channel with no NFM channel width set. Set a width to have it "
-         "checked. Normal scan timing applies."},
+         "Skip silent channels can't check this channel with no NFM channel width set. Set a width to have it checked. "
+         "Normal scan timing applies."},
     };
 
     static dsd_opts opts;

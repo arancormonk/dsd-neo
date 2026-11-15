@@ -2203,14 +2203,14 @@ test_scan_timing() {
     g_stub_scan_timing.phrase = "No check: tuner";
     g_stub_scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NO_CHECK;
     g_stub_scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_TUNER;
-    g_stub_scan_timing.quiet_text = "The silent channel skip cannot check channels with this tuner as it is set up.";
+    g_stub_scan_timing.quiet_text = "Skip silent channels can't check channels with this tuner as it is set up.";
     model.refresh(&opts, &state);
     expect("no check: the phrase names why", model.scanStayPhrase() == QStringLiteral("No check: tuner"));
     expect("no check: status and reason", model.scanQuietStatus() == DSD_SCAN_QUIET_STATUS_NO_CHECK
                                               && model.scanQuietReason() == DSD_SCAN_QUIET_REASON_TUNER);
     expect("no check: the sentence for a screen reader",
            model.scanQuietText()
-               == QStringLiteral("The silent channel skip cannot check channels with this tuner as it is set up."));
+               == QStringLiteral("Skip silent channels can't check channels with this tuner as it is set up."));
     expect("the status notifies the scan timing row", changes > before_quiet);
     expect("the status notifies no unrelated control", control_changes == controls_settled);
     const int no_check = changes;

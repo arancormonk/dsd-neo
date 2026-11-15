@@ -65,8 +65,10 @@ _Static_assert((int)(sizeof(k_scan_timing_rows) / sizeof(k_scan_timing_rows[0]))
  * @brief What the silent-channel skip's status renders as on the stay it is shown on (issue #834).
  *
  * The compact reason is the phrase itself, at most 17 characters (the widest plain phrase), so the phrase column and
- * every cut of it hold. The sentence is the full reason for a screen reader; the WARN line in the log says how to fix
- * it. WIDTH and NO_WIDTH share a phrase but not a sentence, since their remedies differ.
+ * every cut of it hold. The sentence is the full reason, read only by the Qt/Android screen reader, so it names the
+ * setting as that UI does ("Skip silent channels"); the WARN line in the log says how to fix it. WIDTH and NO_WIDTH
+ * share a phrase but not a sentence, since their remedies differ. MODES names no remedy: it covers both a decoder set
+ * with no known width and the M17 encoder, whose fixes differ.
  */
 typedef struct {
     const char* phrase;
@@ -79,24 +81,23 @@ static const dsd_scan_quiet_row k_scan_quiet_checking = {
 /* Indexed by dsd_scan_quiet_reason, for DSD_SCAN_QUIET_STATUS_NO_CHECK. */
 static const dsd_scan_quiet_row k_scan_quiet_no_check[] = {
     [DSD_SCAN_QUIET_REASON_NONE] = {NULL, NULL},
-    [DSD_SCAN_QUIET_REASON_INPUT] = {"No check: input",
-                                     "The silent channel skip cannot check channels on this input. Normal scan timing "
-                                     "applies."},
-    [DSD_SCAN_QUIET_REASON_TUNER] = {"No check: tuner",
-                                     "The silent channel skip cannot check channels with this tuner as it is set up. "
-                                     "Normal scan timing applies."},
-    [DSD_SCAN_QUIET_REASON_RATE] = {"No check: rate",
-                                    "The silent channel skip cannot check channels at this sample rate. Normal scan "
-                                    "timing applies."},
-    [DSD_SCAN_QUIET_REASON_MODES] = {"No check: modes",
-                                     "The silent channel skip cannot check this channel with the decoders in use. Give "
-                                     "the channel a mode to have it checked. Normal scan timing applies."},
-    [DSD_SCAN_QUIET_REASON_WIDTH] = {"No check: width",
-                                     "The silent channel skip cannot check this channel at its channel width. Normal "
-                                     "scan timing applies."},
+    [DSD_SCAN_QUIET_REASON_INPUT] =
+        {"No check: input", "Skip silent channels can't check channels on this input. Normal scan timing applies."},
+    [DSD_SCAN_QUIET_REASON_TUNER] =
+        {"No check: tuner",
+         "Skip silent channels can't check channels with this tuner as it is set up. Normal scan timing applies."},
+    [DSD_SCAN_QUIET_REASON_RATE] =
+        {"No check: rate",
+         "Skip silent channels can't check channels at this sample rate. Normal scan timing applies."},
+    [DSD_SCAN_QUIET_REASON_MODES] =
+        {"No check: modes",
+         "Skip silent channels can't check this channel with the decoders in use. Normal scan timing applies."},
+    [DSD_SCAN_QUIET_REASON_WIDTH] =
+        {"No check: width",
+         "Skip silent channels can't check this channel at its channel width. Normal scan timing applies."},
     [DSD_SCAN_QUIET_REASON_NO_WIDTH] = {"No check: width",
-                                        "The silent channel skip cannot check this channel with no NFM channel width "
-                                        "set. Set a width to have it checked. Normal scan timing applies."},
+                                        "Skip silent channels can't check this channel with no NFM channel width set. "
+                                        "Set a width to have it checked. Normal scan timing applies."},
 };
 
 /* A reason the decoder can publish but this table cannot render would show the plain phrase and hide why. */
