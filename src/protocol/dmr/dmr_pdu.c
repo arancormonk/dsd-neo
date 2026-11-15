@@ -825,7 +825,7 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
             DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "ARS SRC: %d; DST: %d; ", src24,
                          dst24);
             dmr_ars_print_message(state, payload, payload_len);
-            dmr_ars_note_activity(opts, state, payload, payload_len, src24);
+            dmr_ars_note_activity(opts, state, slot, payload, payload_len, src24);
             return 1;
         }
         case 4007: decode_ip_pdu_handle_udp_tms(opts, state, slot, src24, dst24, payload_len, payload); return 1;

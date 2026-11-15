@@ -13,8 +13,10 @@
  * Identities and the network are made up.
  */
 
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -171,6 +173,9 @@ lu_reject(ttb_block* b, uint32_t update_type, uint32_t cause) {
 
 /* D-DISABLE (Table A.31) or D-ENABLE (A.32): Intent/confirm, disabling type (disable only), then the equipment part
  * (a 60-bit TEI) and the subscription part (MCC 10, MNC 14, SSI 24) when set. */
+static uint32_t g_home_mcc = TEST_HOME_MCC;
+static uint32_t g_home_mnc = TEST_HOME_MNC;
+
 static void
 enable_disable(ttb_block* b, int enable, uint32_t confirm, uint32_t permanent, uint64_t tei, uint32_t ssi) {
     ttb_put(b, TETRA_MLE_PD_MM, 3);
@@ -186,8 +191,8 @@ enable_disable(ttb_block* b, int enable, uint32_t confirm, uint32_t permanent, u
     }
     ttb_put(b, ssi != 0u, 1);
     if (ssi != 0u) {
-        ttb_put(b, TEST_HOME_MCC, 10);
-        ttb_put(b, TEST_HOME_MNC, 14);
+        ttb_put(b, g_home_mcc, 10);
+        ttb_put(b, g_home_mnc, 14);
         ttb_put(b, ssi, 24);
     }
     ttb_put(b, 0, 1); /* O-bit */
@@ -246,14 +251,12 @@ test_smi_and_missing_addresses(void) {
               "an SMI is an identity of unknown kind, never a radio");
         check(r.name_frozen[0] == '\0', "an SMI is never named");
     }
-    /* No MAC PDU: no subject at all. */
+    /* No MAC PDU: no MS to keep apart from another's, so no row (two such rows would merge). */
     sdu = (ttb_block){0};
     lu_accept(&sdu, 6, 0);
     char log[2048];
     tetra_test_mle_logged(sdu.bits, sdu.n, 0, s.opts, s.state, log, sizeof log);
-    if (one_row(s.state, &r, "no MAC address")) {
-        check(!r.subject.valid, "no address names nobody");
-    }
+    expect_no_row(s.state, "no MAC address");
     /* An encrypted short identity no key decrypted: no row. */
     tetra_mac_sdu ctx = {0};
     ctx.addr.type = TETRA_MAC_ADDR_SSI;
@@ -353,12 +356,52 @@ test_enable_disable(void) {
     session_close(&s);
 }
 
+/* Names at push (dsd_unit_activity_freeze_name()) in a cell of MCC 123 / MNC 456: the addressed SSI by its name, a
+   USSI never (a migrating MS's home-network number), a disable subject only while its ITSI network is the cell's. */
+static void
+test_naming(void) {
+    session s = session_open();
+    dsd_unit_activity r;
+    dsd_rxid_note_tetra_cell(s.state, TEST_MCC, TEST_MNC, 1U);
+    (void)dsd_alias_learn_radio(NULL, s.state, NULL, TEST_MS_SSI, "PATROL 1", NULL);
+    ttb_block sdu = {0};
+    lu_accept(&sdu, 3, 0);
+    send_sdu(&s, TETRA_MAC_ADDR_SSI, TEST_MS_SSI, &sdu);
+    if (one_row(s.state, &r, "named SSI")) {
+        check(strcmp(r.name_frozen, "PATROL 1") == 0, "the addressed SSI is named");
+    }
+    sdu = (ttb_block){0};
+    lu_accept(&sdu, 5, 0);
+    send_sdu(&s, TETRA_MAC_ADDR_USSI, TEST_MS_SSI, &sdu);
+    if (one_row(s.state, &r, "USSI")) {
+        check(r.name_frozen[0] == '\0', "a USSI is never named from the local lists");
+    }
+    sdu = (ttb_block){0};
+    enable_disable(&sdu, 0, 0u, 0u, 0u, TEST_MS_SSI);
+    send_sdu(&s, TETRA_MAC_ADDR_SSI, TEST_MS_SSI, &sdu);
+    if (one_row(s.state, &r, "disable of a visiting subscription")) {
+        check(r.name_frozen[0] == '\0', "a subscription of another network is not named by its number");
+    }
+    g_home_mcc = TEST_MCC;
+    g_home_mnc = TEST_MNC;
+    sdu = (ttb_block){0};
+    enable_disable(&sdu, 0, 0u, 0u, 0u, TEST_MS_SSI);
+    send_sdu(&s, TETRA_MAC_ADDR_SSI, TEST_MS_SSI, &sdu);
+    if (one_row(s.state, &r, "disable at home")) {
+        check(strcmp(r.name_frozen, "PATROL 1") == 0, "a subscription of the cell's network is named");
+    }
+    g_home_mcc = TEST_HOME_MCC;
+    g_home_mnc = TEST_HOME_MNC;
+    session_close(&s);
+}
+
 int
 main(void) {
     test_lu_accept();
     test_smi_and_missing_addresses();
     test_lu_reject();
     test_enable_disable();
+    test_naming();
     if (g_failures != 0) {
         printf("FAIL  tetra_unit_activity: %d check(s) failed\n", g_failures);
         return 1;

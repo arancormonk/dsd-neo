@@ -2376,10 +2376,13 @@ suite runs under this compiler.
   was the ACTIVE one with that epoch and source on that tuning generation. A header of another format, length, text or
   binding restarts it; a block under another binding, or one that differs from the block held, ends it until the next
   header; a failed checksum (`dmr_talker_alias_lc_invalidate()`) clears it. The alias is learned once per assembly, as
-  the call source's alias of the reception's scope, when the header's Data Length in code units is covered by the
-  header and the blocks that arrived and the decode reaches that far (a block that completes the set out of order waits
-  for the next cycle's last block); a length the header and three blocks cannot hold, an empty alias and one with a
-  U+FFFD are never learned. The learned text is the decoded text, not cut at the length (as shown). Tests:
+  the call source's alias of the reception's scope, only when the header and every block up to the one decoded
+  arrived and the text visibly ended inside them: a padding unit (all zeros or all ones, never a space) follows its
+  last character, or all three blocks are there. The Data Length does not say where the text ends (radios understate
+  it, and a name learned short would be kept by the group file); it only has to be a length the format can hold. So a
+  radio that pads with spaces, or whose alias exactly fills the header and fewer than three blocks, is shown but never
+  learned (a decided limit). A block that completes the set out of order waits for the next cycle's decode; an empty
+  alias and one with a U+FFFD are never learned. Tests:
   `DMR_TALKER_ALIAS_UTF8`, `DMR_TALKER_ALIAS_UTF16`, `DMR_TALKER_ALIAS_HEADER_LEN`, `DMR_ALIAS_LEARN`.
 - Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the
   MFID 0x90 alias (Phase 1 LCW 0x15/0x17, Phase 2 MAC 0x91/0x95) assembles in `dsd_state::p25_apx_alias_rx[slot]`
@@ -2493,9 +2496,13 @@ suite runs under this compiler.
     names the TETRA location update accept types (`dsd_ua_tetra_accept_type_text()`, Table 16.68; NULL above 7), the
     value of a TETRA location registration row. Test: `CORE_UNIT_ACTIVITY_REASON` (every 8-bit P25 code against
     the prints' former table, kept in the test).
-  - Protocol producers (`src/protocol/<name>/<name>_unit_activity.c`): one row per checked message, the subject's
-    current name resolved at push (a home that is not the reception's names nothing), `freq_hz` the tuned frequency,
-    `scope_epoch` 0 (nothing exposes a trunk-scan generation).
+  - Protocol producers (`src/protocol/<name>/<name>_unit_activity.c`): one row per checked message, `freq_hz` the
+    tuned frequency, `scope_epoch` 0 (nothing exposes a trunk-scan generation). Every producer names the row through
+    the one core rule, `dsd_unit_activity_freeze_name()`: the assigned identity when it is a RADIO, else the subject
+    RADIO only while `dsd_unit_activity_identity_at_home()` (no home, or the home is the current reception's scope;
+    the scope kinds are static-asserted equal to the alias scope's), looked up in the current scope; groups,
+    infrastructure, TEI pieces and UNKNOWN identities are never named. Test: `DMR_UNIT_ACTIVITY` (`test_naming`),
+    `NXDN_UNIT_ACTIVITY` (`test_naming`), `TETRA_UNIT_ACTIVITY` (`test_naming`).
     - DMR (`dmr_unit_activity.c`; standard FID 0x00 CSBKs that passed their own CRC, never one `-F` accepted as RAS):
       C_ACKD 0x62 from REGI is REGISTRATION / ACK / ACKNOWLEDGED with no reason (a deregistration is answered alike, TS
       102 361-4 clause 6.4.6), 0x2A / 0x2B from REGI REGISTRATION refused / denied, 0x65 from REGI GROUP_AFFILIATION
@@ -2509,7 +2516,8 @@ suite runs under this compiler.
       registration and deregistration as REPORT rows of the sending radio. Test: `DMR_UNIT_ACTIVITY`.
     - NXDN (`nxdn_unit_activity.c`, `nxdn_ua_dispatch()`; Type-C only: a CAC, or a composite control channel once
       Type-C decoded, never Type-D or a traffic channel; a message shorter than its mandatory part adds no row):
-      REG_RESP 0x20, REG_C_RESP 0x22 ("Logout response": no second source confirms a success value) and GRP_REG_RESP
+      REG_RESP 0x20, REG_C_RESP 0x22 ("Logout response"; no second source confirms which cause a successful clear
+      carries, so a success is result UNKNOWN, the cause kept as the reason) and GRP_REG_RESP
       0x24 with Cause (MM) as the reason (location accepted with the group failed or refused is a registration
       accepted, a group join failed / refused); the home Location ID without site code is the subject's home, the
       visitor unit (H/V set and present) `assigned` and the visitor group `value2`. REM_CON_REQ 0x34: stun / revival /
@@ -2519,7 +2527,8 @@ suite runs under this compiler.
       controller's send success, the target's receive success and the no-response timeout differ only there); no row
       for a remote monitor answer. Unit IDs FFF0-FFFF are infrastructure. Test: `NXDN_UNIT_ACTIVITY`.
     - TETRA (`tetra_unit_activity.c`; clear or decrypted MM only): LU ACCEPT / REJECT for the MAC-addressed MS (an SMI
-      is UNKNOWN, an event label or no address names nobody, an encrypted short identity adds no row; the address's
+      is UNKNOWN; an event label, no address or an encrypted short identity adds no row, since rows of different MSs
+      would merge; a USSI, a migrating MS's home-network SSI, is never named from the local lists; the address's
       MCC/MNC is the cell's, never a home), the accept type as the value and the SSI element as `assigned`, the reject
       cause as the reason and the update type in `value2`; D-DISABLE temporary / permanent and D-ENABLE as STUN / KILL /
       REVIVE commands at the INTENT or AUTHENTICATED stage, the subscription SSI with its ITSI network as the home, an

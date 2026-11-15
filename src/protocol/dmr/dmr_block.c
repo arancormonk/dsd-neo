@@ -1351,7 +1351,7 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         // ARS records are length prefixed; a fixed dump window would run past the record
         // into the block trailer and render it as random-looking text.
         dmr_ars_print_message(ctx->state, ctx->state->dmr_pdu_sf[ctx->slot] + 7, len);
-        dmr_ars_note_activity(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[ctx->slot] + 7, len, msrc);
+        dmr_ars_note_activity(ctx->opts, ctx->state, ctx->slot, ctx->state->dmr_pdu_sf[ctx->slot] + 7, len, msrc);
     } else if (mnis_type == 0x01) {
         // `len` already counts only the octets available at +7, so nothing further comes off it.
         // Upstream subtracted the CRC32 bit-reordering loop's `offset` here, which is a constant

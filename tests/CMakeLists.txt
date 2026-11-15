@@ -338,6 +338,20 @@ target_link_libraries(
     PUBLIC $<LINK_ONLY:dsd-neo_runtime>
 )
 
+# No-op DMR unit activity producers and the core reason tables, for tests that compile the DMR CSBK or data decoders
+# (dmr_csbk.c, dmr_ars.c) without the core ring; DMR_UNIT_ACTIVITY links the real producers. The targets that need it
+# are listed once, after they are defined (_dsd_dmr_decoder_stub_targets).
+add_library(
+    dsd-neo_test_dmr_decoder_stubs
+    STATIC
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_unit_activity_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_decoder_stubs
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+
 # Links dsd-neo_runtime without its usage requirements, so a test can compile
 # decoder sources with its own feature macros: a SoapySDR-only or Airspy-only
 # build's USE_RADIO without USE_RTLSDR, whatever backends this configure found.
@@ -13173,8 +13187,6 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
-    test_support/dmr_unit_activity_stub.c
-    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -13225,8 +13237,6 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
-    test_support/dmr_unit_activity_stub.c
-    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -13272,8 +13282,6 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
-    test_support/dmr_unit_activity_stub.c
-    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -13323,8 +13331,6 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
-    test_support/dmr_unit_activity_stub.c
-    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -14953,7 +14959,6 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_relaxed_header_ip
     protocol/dmr/test_dmr_relaxed_header_ip.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_block.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_block_crypto.c
@@ -14984,7 +14989,6 @@ add_executable(
     dsd-neo_test_dmr_lrrp_time_fallback
     protocol/dmr/test_dmr_lrrp_time_fallback.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15017,7 +15021,6 @@ add_executable(
     dsd-neo_test_dmr_lrrp_time_valid
     protocol/dmr/test_dmr_lrrp_time_valid.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15047,7 +15050,6 @@ add_executable(
     dsd-neo_test_dmr_lrrp_token_alignment
     protocol/dmr/test_dmr_lrrp_token_alignment.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15079,7 +15081,6 @@ add_executable(
     dsd-neo_test_dmr_lrrp_response_token_lengths
     protocol/dmr/test_dmr_lrrp_response_token_lengths.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15111,7 +15112,6 @@ add_executable(
     dsd-neo_test_dmr_lrrp_resync_prefix
     protocol/dmr/test_dmr_lrrp_resync_prefix.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15143,7 +15143,6 @@ add_executable(
     dsd-neo_test_dmr_lrrp_position_token_precedence
     protocol/dmr/test_dmr_lrrp_position_token_precedence.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15176,7 +15175,6 @@ add_executable(
     dsd-neo_test_dmr_lrrp_crc_gating
     protocol/dmr/test_dmr_lrrp_crc_gating.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15206,7 +15204,6 @@ add_executable(
     dsd-neo_test_dmr_lrrp_empty_payload_type
     protocol/dmr/test_dmr_lrrp_empty_payload_type.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15239,7 +15236,6 @@ add_executable(
     dsd-neo_test_dmr_lrrp_wrapped_document
     protocol/dmr/test_dmr_lrrp_wrapped_document.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15272,7 +15268,6 @@ add_executable(
     dsd-neo_test_dmr_pdu_utf16_text
     protocol/dmr/test_dmr_pdu_utf16_text.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15302,7 +15297,6 @@ add_executable(
     dsd-neo_test_dmr_tms_utf16le
     protocol/dmr/test_dmr_tms_utf16le.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15328,7 +15322,6 @@ add_test(NAME DMR_TMS_UTF16LE COMMAND dsd-neo_test_dmr_tms_utf16le)
 add_executable(
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
     protocol/dmr/test_dmr_lrrp_ip_udp_lengths.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15360,7 +15353,6 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_lrrp_event_crc_gating
     protocol/dmr/test_dmr_lrrp_event_crc_gating.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15392,7 +15384,6 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_udp_comp_header
     protocol/dmr/test_dmr_udp_comp_header.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15437,7 +15428,6 @@ add_executable(
     dsd-neo_test_dmr_locn_time_fallback
     protocol/dmr/test_dmr_locn_time_fallback.c
     test_support/data_event_gps_shim.c
-    test_support/dmr_unit_activity_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -26764,3 +26754,33 @@ add_test(
     NAME RUNTIME_RECEIVE_POLICY
     COMMAND dsd-neo_test_runtime_receive_policy
 )
+
+# Tests that compile the DMR CSBK or data decoders directly link the no-op unit activity producers.
+set(_dsd_dmr_decoder_stub_targets
+    dsd-neo_test_dmr_t3_cmove
+    dsd-neo_test_dmr_t3_force_release
+    dsd-neo_test_dmr_t3_move_release
+    dsd-neo_test_dmr_t3_ann_wd_tscc
+    dsd-neo_test_dmr_relaxed_header_ip
+    dsd-neo_test_dmr_lrrp_time_fallback
+    dsd-neo_test_dmr_lrrp_time_valid
+    dsd-neo_test_dmr_lrrp_token_alignment
+    dsd-neo_test_dmr_lrrp_response_token_lengths
+    dsd-neo_test_dmr_lrrp_resync_prefix
+    dsd-neo_test_dmr_lrrp_position_token_precedence
+    dsd-neo_test_dmr_lrrp_crc_gating
+    dsd-neo_test_dmr_lrrp_empty_payload_type
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    dsd-neo_test_dmr_pdu_utf16_text
+    dsd-neo_test_dmr_tms_utf16le
+    dsd-neo_test_dmr_lrrp_ip_udp_lengths
+    dsd-neo_test_dmr_lrrp_event_crc_gating
+    dsd-neo_test_dmr_udp_comp_header
+    dsd-neo_test_dmr_locn_time_fallback
+)
+foreach(_dsd_dmr_stub_target IN LISTS _dsd_dmr_decoder_stub_targets)
+    target_link_libraries(
+        "${_dsd_dmr_stub_target}"
+        PRIVATE dsd-neo_test_dmr_decoder_stubs
+    )
+endforeach()

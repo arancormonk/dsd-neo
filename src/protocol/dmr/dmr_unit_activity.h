@@ -50,11 +50,11 @@ void dmr_ua_c_ackd(const dsd_opts* opts, dsd_state* state, const dmr_ua_ackd_fie
 void dmr_ua_c_ahoy(const dsd_opts* opts, dsd_state* state, int kind, uint8_t group, uint32_t target, uint32_t source);
 
 /**
- * @brief Log an ARS message (MOTOTRBO ARS spec 3.4) of @p pdu_type sent by radio @p source: a device or user
+ * @brief Log an ARS message (MOTOTRBO ARS spec 3.4) of @p pdu_type sent by radio @p source on @p slot: a device or user
  * registration as a registration report, a device or user deregistration as a deregistration report. Other types add
  * no row.
  */
-void dmr_ua_ars(const dsd_opts* opts, dsd_state* state, uint8_t pdu_type, uint32_t source);
+void dmr_ua_ars(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t pdu_type, uint32_t source);
 
 #ifdef __cplusplus
 }

@@ -12,8 +12,10 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/unit_activity.h>
@@ -275,9 +277,15 @@ test_reg_c_and_group(dsd_opts* opts, dsd_state* state) {
     run_cac(opts, state, e);
     if (one_row(state, &r, "reg_c_resp")) {
         expect_true(r.kind == DSD_UA_DEREGISTRATION && r.role == DSD_UA_ROLE_RESPONSE, "reg_c_resp is a response");
+        expect_true(r.result == DSD_UA_RESULT_UNKNOWN, "an unconfirmed clear success is not stored as accepted");
         expect_identity(&r.subject, 1004U, DSD_UA_ID_RADIO, "reg_c_resp subject");
         expect_true(r.subject.home_valid && r.subject.home_b == 77U, "reg_c_resp home");
         expect_true(r.reason_set == DSD_UA_REASON_NXDN_MM && r.reason_code == 0x01U, "reg_c_resp cause");
+    }
+    build_reg_c_resp(e, 1004U, 0x08U);
+    run_cac(opts, state, e);
+    if (one_row(state, &r, "reg_c_resp refused")) {
+        expect_true(r.result == DSD_UA_RESULT_REFUSED, "a refused clear is refused");
     }
     build_grp_reg_resp(e, 0U, 1005U, 300U, 0x01U, 0U);
     run_cac(opts, state, e);
@@ -417,6 +425,44 @@ test_channel_gates(dsd_opts* opts, dsd_state* state) {
     (void)one_row(state, &r, "composite channel after Type-C");
 }
 
+/* Names at push (dsd_unit_activity_freeze_name()): a radio at home by its own ID, a visitor by its Visitor Unit ID, a
+   roaming radio's home ID never (it may be another local radio's). The reception is Local system 77 (category 2 in
+   the received identity's numbering, the location ID's category bits 01). */
+static void
+test_naming(dsd_opts* opts) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    if (st == NULL) {
+        abort();
+    }
+    g_instance = 0;
+    g_rev = 0;
+    uint8_t e[CAC_ELEMENTS];
+    dsd_unit_activity r;
+    dsd_rxid_note_nxdn_location(st, 2U, 77U, 3U);
+    (void)dsd_alias_learn_radio(NULL, st, NULL, 1001U, "HOME UNIT", NULL);
+    (void)dsd_alias_learn_radio(NULL, st, NULL, 3001U, "VISITOR", NULL);
+    build_reg_resp(e, 0U, 1001U, 200U, 0x01U, 0U, 0U);
+    run_cac(opts, st, e);
+    if (one_row(st, &r, "home radio")) {
+        expect_true(strcmp(r.name_frozen, "HOME UNIT") == 0, "a radio at home is named by its own ID");
+    }
+    build_reg_resp(e, 1U, 1001U, 200U, 0x01U, 3001U, 400U);
+    run_cac(opts, st, e);
+    if (one_row(st, &r, "visitor")) {
+        expect_true(strcmp(r.name_frozen, "VISITOR") == 0, "a visitor is named by its assigned Visitor Unit ID");
+    }
+    /* The subscriber's home is system 78, not the reception's 77: its home ID is not named. */
+    build_reg_resp(e, 0U, 1001U, 200U, 0x01U, 0U, 0U);
+    put_bits(e, 15, 78U, 17);
+    run_cac(opts, st, e);
+    if (one_row(st, &r, "roaming radio")) {
+        expect_true(r.subject.home_valid && r.subject.home_b == 78U, "home system 78");
+        expect_true(r.name_frozen[0] == '\0', "a radio away from home is not named by its home ID");
+    }
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -428,6 +474,7 @@ main(void) {
     test_rem_con_req(opts, state);
     test_rem_con_resp(opts, state);
     test_channel_gates(opts, state);
+    test_naming(opts);
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);

@@ -15,12 +15,10 @@
 
 #include "nxdn_unit_activity.h"
 
-#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
@@ -29,7 +27,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 /* Mandatory lengths in elements, and with the optional visitor fields. */
 enum {
@@ -181,29 +178,11 @@ nxdn_ua_row(const dsd_opts* opts, uint8_t kind, uint8_t role) {
     return row;
 }
 
-/* The name the receiver knows the subject by now: its visitor (assigned) ID's, else its own while it is at home or has
-   no home (a roaming radio's home ID would name another local radio). */
+/* The subject's name as the receiver knows it now (the core's one naming rule: a visitor by its assigned Visitor Unit
+   ID, a radio by its own ID only at home), and the push. */
 static void
 nxdn_ua_push(dsd_state* state, dsd_unit_activity* row) {
-    const dsd_ua_identity* named = NULL;
-    if (row->assigned.valid && row->assigned.subtype == DSD_UA_ID_RADIO) {
-        named = &row->assigned;
-    } else if (row->subject.valid && row->subject.subtype == DSD_UA_ID_RADIO) {
-        dsd_alias_scope here;
-        (void)dsd_alias_scope_current(state, &here);
-        if (!row->subject.home_valid
-            || (here.valid && here.kind == row->subject.home_kind && here.a == row->subject.home_a
-                && here.b == row->subject.home_b)) {
-            named = &row->subject;
-        }
-    }
-    char mode[8];
-    char name[DSD_SOURCE_ALIAS_NAME_MAX];
-    if (named != NULL && dsd_source_label_lookup_scoped(state, NULL, named->id, mode, sizeof mode, name, sizeof name)) {
-        /* The push cuts a name that fills the field at a character boundary. */
-        const size_t len = strlen(name);
-        DSD_MEMCPY(row->name_frozen, name, len < sizeof row->name_frozen ? len + 1U : sizeof row->name_frozen);
-    }
+    dsd_unit_activity_freeze_name(state, row);
     (void)dsd_unit_activity_push(state, row);
 }
 
@@ -256,9 +235,12 @@ nxdn_ua_reg_c_resp(const dsd_opts* opts, dsd_state* state, const uint8_t* elemen
     }
     const uint32_t unit = nxdn_ua_octets(elements, 4U, 2U);
     const uint8_t cause = (uint8_t)(nxdn_ua_octets(elements, 6U, 1U) & 0x7FU);
-    /* The standard names no "clear accepted" value: the row stays a logout response whatever the cause. */
+    /* The standard names no "clear accepted" value (0x01 reads "Registration is accepted"), and no second source says
+       which cause a successful clear carries: a success stays UNKNOWN, a refusal or failure is what its class says,
+       and the row is a logout response whatever the cause. */
     dsd_unit_activity row = nxdn_ua_row(opts, DSD_UA_DEREGISTRATION, DSD_UA_ROLE_RESPONSE);
-    row.result = nxdn_ua_mm_result(cause, 0);
+    const uint8_t result = nxdn_ua_mm_result(cause, 0);
+    row.result = result == DSD_UA_RESULT_ACCEPTED ? (uint8_t)DSD_UA_RESULT_UNKNOWN : result;
     row.subject = nxdn_ua_unit(unit);
     nxdn_ua_set_home(&row.subject, elements);
     row.reason_set = DSD_UA_REASON_NXDN_MM;

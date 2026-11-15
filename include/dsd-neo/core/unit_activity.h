@@ -288,6 +288,28 @@ int dsd_unit_activity_read(const dsd_state* state, uint64_t instance, uint64_t a
  */
 int dsd_unit_activity_copy_snapshot(dsd_state* dst, const dsd_state* src);
 
+/**
+ * @brief 1 when identity @p id is at home in the reception @p state decodes now: it is valid and has no home of its own
+ * (dsd_ua_identity::home_valid 0), or its home system is the current reception's scope (dsd_alias_scope_current(),
+ * whose kinds and a / b are those of dsd_ua_scope_kind, static-asserted in unit_activity.c). 0 for a NULL argument, an
+ * invalid identity, or a home elsewhere (a roaming radio: its number may be another local radio's).
+ */
+int dsd_unit_activity_identity_at_home(const dsd_state* state, const dsd_ua_identity* id);
+
+/**
+ * @brief Fill @p row's name_frozen with the name the receiver knows its subject by now, for producers to call just
+ * before dsd_unit_activity_push() (P25, DMR, NXDN and TETRA use this one rule, so the frozen names agree with the
+ * view's live ones).
+ *
+ * The identity named is the row's assigned identity when it is a valid RADIO (the local ID a visiting radio was given),
+ * else the subject when it is a valid RADIO at home (dsd_unit_activity_identity_at_home()). Its name is the current
+ * reception's (dsd_source_label_lookup_scoped() with the current scope: a learned alias of another system never names
+ * it). Groups, infrastructure, TEI pieces and identities of unknown kind are never named. A producer that knows a
+ * subject number belongs to another network without a home to say so (a TETRA USSI) does not call this. name_frozen is
+ * left as it is when nothing is named; a name longer than the field is cut by the push at a character boundary.
+ */
+void dsd_unit_activity_freeze_name(const dsd_state* state, dsd_unit_activity* row);
+
 #ifdef DSD_NEO_TEST_HOOKS
 /** Fail ring allocations after @p successful_allocations more succeed; -1 disables the seam. */
 void dsd_unit_activity_test_alloc_fail_after(long successful_allocations);

@@ -14,7 +14,9 @@
 #include <assert.h>
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/embedded_alias.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
@@ -22,6 +24,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -122,43 +125,81 @@ free_state(dsd_state* state) {
     free(state);
 }
 
-/* A header and one block: Data Length 8 octets needs block 1 (the header holds six). */
+/* The text ended inside what arrived: padding (zeros) after it. A full header waits for block 1. */
 static void
 test_learn_complete(dsd_opts* opts) {
     dsd_state* st = new_state();
     seed_active_call(st, 0U, 1234567U);
     send_header(opts, st, 0U, 1U, 8U, "ENGINE");
-    expect_learned(st, 1234567U, NULL, "header alone does not cover 8 octets");
+    expect_learned(st, 1234567U, NULL, "a full header has not visibly ended");
     send_block(opts, st, 0U, 0U, " 7");
-    expect_learned(st, 1234567U, "ENGINE 7", "header + block 1 learned");
-    /* The other slot's call is untouched. */
+    expect_learned(st, 1234567U, "ENGINE 7", "header + padded block 1 learned");
     expect_learned(st, 7654321U, NULL, "nothing else learned");
     free_state(st);
 }
 
-/* A length the header covers alone: learned with the header (and the text is not cut at the length, as shown). */
+/* Padding inside the header: learned with the header alone. */
 static void
 test_learn_header_only(dsd_opts* opts) {
     dsd_state* st = new_state();
     seed_active_call(st, 1U, 2345678U);
+    send_header(opts, st, 1U, 1U, 4U, "DISP");
+    expect_learned(st, 2345678U, "DISP", "a padded header is a whole alias");
+    free_state(st);
+
+    /* Six characters filling the header, no padding and no block: shown but not learned (it may go on). */
+    st = new_state();
+    seed_active_call(st, 1U, 2345679U);
     send_header(opts, st, 1U, 1U, 6U, "DISPAT");
-    expect_learned(st, 2345678U, "DISPAT", "a six-octet alias is the header's");
+    expect_learned(st, 2345679U, NULL, "a header with no visible end");
     free_state(st);
 }
 
-/* Data Length 20 octets needs blocks 1 and 2. A missing block never publishes; a block that completes the set out of
-   order waits for the decode that covers the whole length (the next cycle's last block). */
+/* A radio that understates its Data Length (the KE8NAX sample sends 2): the alias is learned whole once its end shows,
+   never cut at the header. */
+static void
+test_understated_length(dsd_opts* opts) {
+    dsd_state* st = new_state();
+    seed_active_call(st, 0U, 3434343U);
+    send_header(opts, st, 0U, 1U, 2U, "KE8NAX");
+    expect_learned(st, 3434343U, NULL, "KE8NAX not learned at the header");
+    send_block(opts, st, 0U, 0U, " JOHN");
+    expect_learned(st, 3434343U, "KE8NAX JOHN", "the whole alias learned");
+    free_state(st);
+
+    /* A space is part of a name, never its end. */
+    st = new_state();
+    seed_active_call(st, 0U, 3434344U);
+    send_header(opts, st, 0U, 1U, 2U, "ALPHA ");
+    expect_learned(st, 3434344U, NULL, "a trailing space is no end");
+    send_block(opts, st, 0U, 0U, "BRAVO");
+    expect_learned(st, 3434344U, "ALPHA BRAVO", "learned past the space");
+    free_state(st);
+}
+
+/* A missing block never publishes; a block that completes the set out of order waits for the decode that reaches the
+   padding (the next cycle's block 2). All three blocks there: learned even with no padding. */
 static void
 test_missing_and_out_of_order(dsd_opts* opts) {
     dsd_state* st = new_state();
     seed_active_call(st, 0U, 3456789U);
-    send_header(opts, st, 0U, 1U, 20U, "ALPHA ");
-    send_block(opts, st, 0U, 1U, "UNIT 77");
+    send_header(opts, st, 0U, 1U, 19U, "ALPHA ");
+    send_block(opts, st, 0U, 1U, "UNIT 7");
     expect_learned(st, 3456789U, NULL, "block 1 missing: not learned");
     send_block(opts, st, 0U, 0U, "BRAVO 1");
-    expect_learned(st, 3456789U, NULL, "block 1 decode does not cover 20 octets");
-    send_block(opts, st, 0U, 1U, "UNIT 77");
-    expect_learned(st, 3456789U, "ALPHA BRAVO 1UNIT 77", "complete set learned");
+    expect_learned(st, 3456789U, NULL, "block 1's decode has not reached the end");
+    send_block(opts, st, 0U, 1U, "UNIT 7");
+    expect_learned(st, 3456789U, "ALPHA BRAVO 1UNIT 7", "complete set learned");
+    free_state(st);
+
+    st = new_state();
+    seed_active_call(st, 0U, 3456790U);
+    send_header(opts, st, 0U, 1U, 27U, "ABCDEF");
+    send_block(opts, st, 0U, 0U, "GHIJKLM");
+    send_block(opts, st, 0U, 1U, "NOPQRST");
+    expect_learned(st, 3456790U, NULL, "a full block 2 has not visibly ended");
+    send_block(opts, st, 0U, 2U, "UVWXYZ0");
+    expect_learned(st, 3456790U, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0", "all three blocks: the longest alias");
     free_state(st);
 }
 
@@ -187,7 +228,7 @@ test_binding_breaks(dsd_opts* opts) {
     send_header(opts, st, 0U, 1U, 20U, "CONFLI");
     send_block(opts, st, 0U, 0U, "AAAAAAA");
     send_block(opts, st, 0U, 0U, "BBBBBBB");
-    send_block(opts, st, 0U, 1U, "CCCCCCC");
+    send_block(opts, st, 0U, 1U, "CCC");
     expect_learned(st, 4444444U, NULL, "a contradicting block ends the assembly");
     free_state(st);
 
@@ -204,23 +245,19 @@ test_binding_breaks(dsd_opts* opts) {
 static void
 test_not_learned(dsd_opts* opts) {
     dsd_state* st = new_state();
-    send_header(opts, st, 0U, 1U, 6U, "NOCALL");
+    send_header(opts, st, 0U, 1U, 4U, "NONE");
     expect_learned(st, 0U, NULL, "no call: nothing learned");
     free_state(st);
 
     st = new_state();
     seed_active_call(st, 0U, 6666666U);
-    send_header(opts, st, 0U, 1U, 6U, "      ");
+    send_header(opts, st, 0U, 1U, 4U, "    ");
     expect_learned(st, 6666666U, NULL, "an empty alias");
     free_state(st);
 
     st = new_state();
     seed_active_call(st, 0U, 7777777U);
-    const uint8_t bad[] = {'J', 'O', 0xC3U, 'X', 'Y', 'Z'};
-    char text[7];
-    DSD_MEMCPY(text, bad, sizeof bad);
-    text[6] = '\0';
-    send_header(opts, st, 0U, 2U, 6U, text);
+    send_header(opts, st, 0U, 2U, 5U, "JO\xC3XY");
     expect_learned(st, 7777777U, NULL, "a malformed UTF-8 alias");
     free_state(st);
 
@@ -239,11 +276,7 @@ static void
 test_learn_utf8(dsd_opts* opts) {
     dsd_state* st = new_state();
     seed_active_call(st, 0U, 1212121U);
-    const uint8_t text[] = {'J', 'o', 's', 0xC3U, 0xA9U, ' '};
-    char hdr[7];
-    DSD_MEMCPY(hdr, text, sizeof text);
-    hdr[6] = '\0';
-    send_header(opts, st, 0U, 2U, 5U, hdr);
+    send_header(opts, st, 0U, 2U, 5U, "Jos\xC3\xA9");
     expect_learned(st, 1212121U, "Jos\xC3\xA9", "UTF-8 alias learned as UTF-8");
     free_state(st);
 }
@@ -272,17 +305,97 @@ test_learn_scope(dsd_opts* opts) {
     free_state(st);
 }
 
+/* ---- Through dmr_flco(), where the embedded LC checksum gate lives ---- */
+
+static void
+put_lc_bits(uint8_t* bits, size_t offset, uint32_t value, size_t count) {
+    for (size_t b = 0; b < count; b++) {
+        bits[offset + b] = (uint8_t)((value >> (count - 1U - b)) & 1U);
+    }
+}
+
+/* An LC through dmr_flco() inside the CRC scope the burst handler gives it: failed when its check failed. */
+static void
+send_lc(dsd_opts* opts, dsd_state* st, uint8_t bits[96], int crc_ok, uint8_t type) {
+    const uint8_t saved = st->event_crc_invalid[0];
+    st->event_crc_invalid[0] = (uint8_t)(saved | (crc_ok ? 0U : DSD_CRC_FAILED));
+    uint32_t errors = 0;
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_alias_learn_flco") == 0);
+    dmr_flco(opts, st, bits, crc_ok ? 1U : 0U, &errors, type);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    st->event_crc_invalid[0] = saved;
+}
+
+/* A voice LC (target 2002, source @p source) opens the call; then an ISO 8-bit alias header (length 8, "ENGINE") and
+   block 1 (" 7", padded), each passed or failed by its checksum. */
+static void
+run_flco_alias(dsd_opts* opts, dsd_state* st, uint32_t source, int header_ok, int block_ok) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    put_lc_bits(bits, 24, 2002U, 24);
+    put_lc_bits(bits, 48, source, 24);
+    send_lc(opts, st, bits, 1, 1);
+    DSD_MEMSET(bits, 0, sizeof bits);
+    put_lc_bits(bits, 2, 0x04U, 6);
+    put_lc_bits(bits, 16, 1U, 2);
+    put_lc_bits(bits, 18, 8U, 5);
+    for (size_t i = 0; i < 6U; i++) {
+        put_lc_bits(bits, 24U + (i * 8U), (uint8_t)"ENGINE"[i], 8);
+    }
+    send_lc(opts, st, bits, header_ok, 3);
+    DSD_MEMSET(bits, 0, sizeof bits);
+    put_lc_bits(bits, 2, 0x05U, 6);
+    put_lc_bits(bits, 16, ' ', 8);
+    put_lc_bits(bits, 24, '7', 8);
+    send_lc(opts, st, bits, block_ok, 3);
+}
+
+static void
+test_learn_through_flco(dsd_opts* opts) {
+    Event_History_I* history = calloc(2U, sizeof *history);
+    assert(history != NULL);
+
+    static const struct {
+        int header_ok;
+        int block_ok;
+        const char* want;
+        const char* tag;
+    } cases[] = {
+        {1, 1, "ENGINE 7", "checked header and block learned through dmr_flco()"},
+        {0, 1, NULL, "a header whose checksum failed is never learned"},
+        {1, 0, NULL, "a block whose checksum failed is never learned"},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_state* st = new_state();
+        DSD_MEMSET(history, 0, 2U * sizeof *history);
+        init_event_history(&history[0], 0, 255);
+        init_event_history(&history[1], 0, 255);
+        st->event_history_s = history;
+        st->currentslot = 0;
+        st->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        run_flco_alias(opts, st, 1001U + (uint32_t)i, cases[i].header_ok, cases[i].block_ok);
+        expect_learned(st, 1001U + (uint32_t)i, cases[i].want, cases[i].tag);
+        st->event_history_s = NULL;
+        free_state(st);
+    }
+    free(history);
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
     assert(opts != NULL);
     test_learn_complete(opts);
     test_learn_header_only(opts);
+    test_understated_length(opts);
     test_missing_and_out_of_order(opts);
     test_binding_breaks(opts);
     test_not_learned(opts);
     test_learn_utf8(opts);
     test_learn_scope(opts);
+    test_learn_through_flco(opts);
     free(opts);
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DMR_ALIAS_LEARN: %d failure(s)\n", g_failures);

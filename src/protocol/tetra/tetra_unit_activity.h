@@ -9,10 +9,11 @@
  * (EN 300 392-2 clause 16.9.2), and D-DISABLE / D-ENABLE (EN 300 392-7 annex A).
  *
  * The MM dispatch calls these for a complete PDU, which the MAC hands on only when it was clear or a key decrypted it.
- * A location update names its MS by the MAC address it came with (tetra_mm_addr): only a clear SSI or USSI is a radio;
- * an SMI is a management identity of unknown kind (never named as a radio), an event label or a missing address names
- * nobody, and an encrypted short identity adds no row. The address's MCC / MNC are the cell's network, never the
- * radio's home.
+ * A location update names its MS by the MAC address it came with (tetra_mm_addr): only a clear SSI or USSI is a radio
+ * (a USSI, a migrating MS's home-network SSI, is never named from the local lists); an SMI is a management identity of
+ * unknown kind (never named as a radio). An event label, a missing address or an encrypted short identity adds no row,
+ * since rows of different MSs would merge into one. The address's MCC / MNC are the cell's network, never the radio's
+ * home.
  */
 
 #ifndef DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_UNIT_ACTIVITY_H_

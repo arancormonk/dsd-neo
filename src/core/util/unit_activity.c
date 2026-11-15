@@ -15,6 +15,7 @@
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -540,4 +541,43 @@ dsd_unit_activity_copy_snapshot(dsd_state* dst, const dsd_state* src) {
     d->oldest = s->oldest;
     d->newest = s->newest;
     return 0;
+}
+
+/* ---- Naming at push (producers) ---- */
+
+int
+dsd_unit_activity_identity_at_home(const dsd_state* state, const dsd_ua_identity* id) {
+    if (state == NULL || id == NULL || !id->valid) {
+        return 0;
+    }
+    if (!id->home_valid) {
+        return 1;
+    }
+    dsd_alias_scope here;
+    (void)dsd_alias_scope_current(state, &here);
+    /* dsd_ua_scope_kind and dsd_alias_scope_kind agree value for value (the static asserts above). */
+    return here.valid && here.kind == id->home_kind && here.a == id->home_a && here.b == id->home_b;
+}
+
+void
+dsd_unit_activity_freeze_name(const dsd_state* state, dsd_unit_activity* row) {
+    if (state == NULL || row == NULL) {
+        return;
+    }
+    const dsd_ua_identity* named = NULL;
+    if (row->assigned.valid && row->assigned.subtype == DSD_UA_ID_RADIO) {
+        named = &row->assigned;
+    } else if (row->subject.valid && row->subject.subtype == DSD_UA_ID_RADIO
+               && dsd_unit_activity_identity_at_home(state, &row->subject)) {
+        named = &row->subject;
+    }
+    char mode[8];
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
+    if (named == NULL
+        || !dsd_source_label_lookup_scoped(state, NULL, named->id, mode, sizeof mode, name, sizeof name)) {
+        return;
+    }
+    /* A name that fills the field is copied unterminated; the push cuts it at a character boundary. */
+    const size_t len = strlen(name);
+    DSD_MEMCPY(row->name_frozen, name, len < sizeof row->name_frozen ? len + 1U : sizeof row->name_frozen);
 }

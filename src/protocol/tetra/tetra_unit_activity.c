@@ -14,16 +14,13 @@
 
 #include "tetra_unit_activity.h"
 
-#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
 
 #include <stdint.h>
-#include <string.h>
 
 static dsd_unit_activity
 tetra_ua_row(const dsd_opts* opts, uint8_t kind, uint8_t role, uint8_t result) {
@@ -49,45 +46,35 @@ tetra_ua_radio(uint32_t ssi) {
     return out;
 }
 
-/* The MS an LU PDU concerns: 1 with @p out filled (a clear SSI / USSI is a radio, an SMI an identity of unknown kind,
-   an event label or no address nobody), 0 for an encrypted short identity, which adds no row. */
+/* The MS an LU PDU concerns: 1 with @p out filled (a clear SSI or USSI is a radio, @p foreign set for a USSI; an SMI an
+   identity of unknown kind), 0 when the PDU names no MS a row can keep apart from another's: an encrypted short
+   identity, an event label or no address (rows of different MSs would merge into one). */
 static int
-tetra_ua_addressed(const tetra_mm_addr* addr, dsd_ua_identity* out) {
+tetra_ua_addressed(const tetra_mm_addr* addr, dsd_ua_identity* out, int* foreign) {
     DSD_MEMSET(out, 0, sizeof *out);
-    if (addr == NULL || !addr->valid) {
-        return 1;
-    }
-    if (addr->encrypted) {
+    *foreign = 0;
+    if (addr == NULL || !addr->valid || addr->encrypted) {
         return 0;
     }
     uint32_t ssi = 0;
     if (tetra_mm_addr_radio_ssi(addr, &ssi)) {
         *out = tetra_ua_radio(ssi);
+        *foreign = addr->type == TETRA_MM_ADDR_USSI;
     } else if (addr->type == TETRA_MM_ADDR_SMI && addr->ssi != 0U) {
         out->id = addr->ssi;
         out->subtype = DSD_UA_ID_UNKNOWN;
         out->valid = 1;
     }
-    return 1;
+    return out->valid;
 }
 
-/* The subject radio's name as the receiver knows it now, while it is at home or has no home of its own (a visiting
-   radio's ITSI number would name another radio of this network), and the push. */
+/* The subject's name as the receiver knows it now (the core's one naming rule), and the push. A USSI is the SSI a
+   migrating MS has in its home network, which the row cannot name as a home: the local lists never name it, though its
+   assigned identity may be named. */
 static void
-tetra_ua_push(dsd_state* state, dsd_unit_activity* row) {
-    const dsd_ua_identity* s = &row->subject;
-    if (s->valid && s->subtype == DSD_UA_ID_RADIO) {
-        dsd_alias_scope here;
-        (void)dsd_alias_scope_current(state, &here);
-        const int at_home =
-            !s->home_valid || (here.valid && here.kind == s->home_kind && here.a == s->home_a && here.b == s->home_b);
-        char mode[8];
-        char name[DSD_SOURCE_ALIAS_NAME_MAX];
-        if (at_home && dsd_source_label_lookup_scoped(state, NULL, s->id, mode, sizeof mode, name, sizeof name)) {
-            /* The push cuts a name that fills the field at a character boundary. */
-            const size_t len = strlen(name);
-            DSD_MEMCPY(row->name_frozen, name, len < sizeof row->name_frozen ? len + 1U : sizeof row->name_frozen);
-        }
+tetra_ua_push(dsd_state* state, dsd_unit_activity* row, int foreign_subject) {
+    if (!foreign_subject || row->assigned.valid) {
+        dsd_unit_activity_freeze_name(state, row);
     }
     (void)dsd_unit_activity_push(state, row);
 }
@@ -96,7 +83,8 @@ void
 tetra_ua_lu_accept(const dsd_opts* opts, dsd_state* state, const tetra_mm_addr* addr,
                    const tetra_mm_lu_accept_t* accept) {
     dsd_ua_identity subject;
-    if (state == NULL || accept == NULL || !tetra_ua_addressed(addr, &subject)) {
+    int foreign = 0;
+    if (state == NULL || accept == NULL || !tetra_ua_addressed(addr, &subject, &foreign)) {
         return;
     }
     dsd_unit_activity row =
@@ -107,14 +95,15 @@ tetra_ua_lu_accept(const dsd_opts* opts, dsd_state* state, const tetra_mm_addr* 
     if (accept->ssi_valid) {
         row.assigned = tetra_ua_radio(accept->ssi);
     }
-    tetra_ua_push(state, &row);
+    tetra_ua_push(state, &row, foreign);
 }
 
 void
 tetra_ua_lu_reject(const dsd_opts* opts, dsd_state* state, const tetra_mm_addr* addr,
                    const tetra_mm_lu_reject_t* reject) {
     dsd_ua_identity subject;
-    if (state == NULL || reject == NULL || !tetra_ua_addressed(addr, &subject)) {
+    int foreign = 0;
+    if (state == NULL || reject == NULL || !tetra_ua_addressed(addr, &subject, &foreign)) {
         return;
     }
     dsd_unit_activity row =
@@ -125,7 +114,7 @@ tetra_ua_lu_reject(const dsd_opts* opts, dsd_state* state, const tetra_mm_addr* 
     /* The location update type (Table 16.67) is not the accept type the value of this kind shows. */
     row.value2 = reject->type;
     row.value2_valid = 1;
-    tetra_ua_push(state, &row);
+    tetra_ua_push(state, &row, foreign);
 }
 
 void
@@ -157,5 +146,5 @@ tetra_ua_enable_disable(const dsd_opts* opts, dsd_state* state, const tetra_mm_e
     } else {
         return; /* neither a subscription nor a terminal: nothing is commanded */
     }
-    tetra_ua_push(state, &row);
+    tetra_ua_push(state, &row, 0);
 }

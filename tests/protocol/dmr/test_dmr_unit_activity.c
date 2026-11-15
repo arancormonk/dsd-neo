@@ -11,6 +11,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -405,6 +406,14 @@ test_ars_rows(dsd_opts* opts, dsd_state* state) {
     }
     run_ars(opts, state, ack, sizeof ack, 1234U);
     expect_no_row(state, "ars ack");
+    /* A user registration of the same radio is another report than its device registration. */
+    static const uint8_t user_reg[] = {0x00U, 0x10U, 0xF5U, 0x00U, 0x02U, 0x31U, 0x31U, 0x09U, '9',
+                                       '9',   '9',   '9',   '9',   '9',   '9',   '9',   '9',   0x00U};
+    run_ars(opts, state, user_reg, sizeof user_reg, 1234U);
+    if (one_row(state, &r, "ars user registration row")) {
+        expect_kind(&r, DSD_UA_REGISTRATION, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA, "ars user registration");
+        expect_true(r.value2_valid && r.value2 == 5U, "a user registration is its own row");
+    }
     /* A data PDU whose CRC failed (accepted under -F) logs nothing. */
     state->event_crc_invalid[0] = 1U;
     run_ars(opts, state, dereg, sizeof dereg, 2345U);
@@ -415,6 +424,27 @@ test_ars_rows(dsd_opts* opts, dsd_state* state) {
     run_ars(opts, state, dereg, sizeof dereg, 3456U);
     expect_no_row(state, "ars on P25");
     state->lastsynctype = saved;
+}
+
+/* The row names its subject radio as the current reception names it (dsd_unit_activity_freeze_name()); a gateway, a
+   talkgroup subject and a radio no list names stay unnamed. */
+static void
+test_naming(dsd_opts* opts, dsd_state* state) {
+    dsd_unit_activity r;
+    (void)dsd_alias_learn_radio(NULL, state, NULL, 2468024U, "ENGINE 7", NULL);
+    (void)dsd_alias_learn_radio(NULL, state, NULL, 300U, "NOT A GROUP NAME", NULL);
+    run_ackd(opts, state, 0x00U, 0x62U, 2468024U, REGI);
+    if (one_row(state, &r, "named registration")) {
+        expect_true(strcmp(r.name_frozen, "ENGINE 7") == 0, "the subject radio is named at push");
+    }
+    run_ackd(opts, state, 0x40U, 0x27U, 300U, PEER);
+    if (one_row(state, &r, "group-addressed deny")) {
+        expect_true(r.name_frozen[0] == '\0', "a talkgroup subject is never named as a radio");
+    }
+    run_ahoy(opts, state, 0x00U, 0U, 0U, 13U, 1357913U, STUNI);
+    if (one_row(state, &r, "unnamed radio")) {
+        expect_true(r.name_frozen[0] == '\0', "a radio no list names stays unnamed, the gateway is not named");
+    }
 }
 
 int
@@ -436,6 +466,7 @@ main(void) {
     test_fid_and_crc_gates(opts, state);
     test_repeat_merges(opts, state);
     test_ars_rows(opts, state);
+    test_naming(opts, state);
 
     dsd_state_ext_free_all(state);
     free(state->event_history_s);

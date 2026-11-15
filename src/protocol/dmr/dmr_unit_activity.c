@@ -13,16 +13,13 @@
 
 #include "dmr_unit_activity.h"
 
-#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
 
 #include <stdint.h>
-#include <string.h>
 #include "dmr_reason.h"
 
 enum {
@@ -81,18 +78,10 @@ dmr_ua_row(const dsd_opts* opts, const dsd_state* state, uint8_t kind, uint8_t r
     return row;
 }
 
-/* The subject radio's name as the receiver knows it now (name_frozen), and the push. */
+/* The subject's name as the receiver knows it now (the core's one naming rule), and the push. */
 static void
 dmr_ua_push(dsd_state* state, dsd_unit_activity* row) {
-    if (row->subject.valid && row->subject.subtype == DSD_UA_ID_RADIO) {
-        char mode[8];
-        char name[DSD_SOURCE_ALIAS_NAME_MAX];
-        if (dsd_source_label_lookup_scoped(state, NULL, row->subject.id, mode, sizeof mode, name, sizeof name)) {
-            /* The push cuts a name that fills the field at a character boundary. */
-            const size_t len = strlen(name);
-            DSD_MEMCPY(row->name_frozen, name, len < sizeof row->name_frozen ? len + 1U : sizeof row->name_frozen);
-        }
-    }
+    dsd_unit_activity_freeze_name(state, row);
     (void)dsd_unit_activity_push(state, row);
 }
 
@@ -202,7 +191,7 @@ dmr_ua_c_ahoy(const dsd_opts* opts, dsd_state* state, int kind, uint8_t group, u
 }
 
 void
-dmr_ua_ars(const dsd_opts* opts, dsd_state* state, uint8_t pdu_type, uint32_t source) {
+dmr_ua_ars(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t pdu_type, uint32_t source) {
     if (state == NULL || source == 0U) {
         return;
     }
@@ -215,6 +204,7 @@ dmr_ua_ars(const dsd_opts* opts, dsd_state* state, uint8_t pdu_type, uint32_t so
         default: return;
     }
     dsd_unit_activity row = dmr_ua_row(opts, state, kind, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA);
+    row.slot = (uint8_t)(slot & 1U);
     row.subject = dmr_ua_identity(source, 0U);
     /* A device and a user registration of one radio are two reports. */
     row.value2 = pdu_type;

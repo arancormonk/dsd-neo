@@ -31,9 +31,10 @@ dmr_ua_c_ahoy(const dsd_opts* opts, dsd_state* state, int kind, uint8_t group, u
 }
 
 void
-dmr_ua_ars(const dsd_opts* opts, dsd_state* state, uint8_t pdu_type, uint32_t source) {
+dmr_ua_ars(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t pdu_type, uint32_t source) {
     (void)opts;
     (void)state;
+    (void)slot;
     (void)pdu_type;
     (void)source;
 }
