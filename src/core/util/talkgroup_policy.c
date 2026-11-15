@@ -2700,9 +2700,9 @@ dsd_tg_policy_scope_parse(const char* cell, dsd_alias_scope* out) {
     *first = '\0';
     *second = '\0';
     uint8_t kind = DSD_ALIAS_SCOPE_NONE;
-    for (uint8_t k = DSD_ALIAS_SCOPE_P25; k <= DSD_ALIAS_SCOPE_LAST; k++) {
+    for (int k = DSD_ALIAS_SCOPE_P25; k <= DSD_ALIAS_SCOPE_LAST; k++) {
         if (tg_policy_ascii_casecmp(buf, tg_policy_scope_kind_names[k]) == 0) {
-            kind = k;
+            kind = (uint8_t)k;
         }
     }
     uint32_t a = 0U;

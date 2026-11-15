@@ -283,7 +283,7 @@ group_apply_tags_field(const group_policy_header* header, size_t field_count, ch
 static size_t
 group_first_unmodelled_column(const group_policy_header* header) {
     if (header->policy_active) {
-        return 3U + header->prefix_len;
+        return (size_t)3U + (size_t)header->prefix_len;
     }
     return header->basic_tags ? 4U : 3U;
 }
@@ -294,13 +294,16 @@ group_first_unmodelled_column(const group_policy_header* header) {
  * mode, the `DE` lockout included) the cell is reported and ignored, so a hand-typed cell never turns a talkgroup row
  * or a lockout into a radio's alias. Without a cell (or on a range or pattern row) the row loads
  * as an imported row, as before. */
+/* The cells one group file row is split into, at most. */
+enum { GROUP_ROW_FIELDS_MAX = 32 };
+
 static void
 group_apply_scope_field(const group_policy_header* header, const csv_row_origin* at, size_t field_count, char** fields,
                         dsd_tg_policy_entry* entry) {
     if (entry->kind != DSD_TG_POLICY_ROW_EXACT) {
         return;
     }
-    for (size_t i = group_first_unmodelled_column(header); i < field_count; i++) {
+    for (size_t i = group_first_unmodelled_column(header); i < field_count && i < GROUP_ROW_FIELDS_MAX; i++) {
         const char* cell = trim_ws(fields[i]);
         dsd_alias_scope scope;
         const int parsed = dsd_tg_policy_scope_parse(cell, &scope);
@@ -381,7 +384,7 @@ static int
 group_import_row(group_import_pass* pass, unsigned int row_count, char* buffer, size_t* dropped_policy_alloc_rows) {
     const csv_row_origin at = {"Group", pass->filename, row_count, pass->quiet};
     const group_policy_header* header = &pass->header;
-    char* fields[32];
+    char* fields[GROUP_ROW_FIELDS_MAX];
     size_t field_count = 0;
     uint32_t id_start = 0;
     uint32_t id_end = 0;
