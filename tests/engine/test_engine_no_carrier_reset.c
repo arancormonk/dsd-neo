@@ -12299,6 +12299,7 @@ test_live_scan_over_silent_inputs(void) {
  */
 static struct {
     int active;
+    int real_widths;   /* judge the analog width with the shipped admission table rather than accept every width */
     int quiet;         /* the answer: quiet (1) or busy (0) */
     uint32_t gen_base; /* the stream generation is gen_base + the tunes made */
     int requests;
@@ -12410,7 +12411,7 @@ __wrap_dsd_signal_quiet_rate_supported(uint32_t rate_hz) {
 
 int
 __wrap_dsd_signal_quiet_analog_supported(int kind, uint32_t width_hz, uint32_t rate_hz) {
-    if (!g_yq.active) {
+    if (!g_yq.active || g_yq.real_widths) {
         return __real_dsd_signal_quiet_analog_supported(kind, width_hz, rate_hz);
     }
     return width_hz != 0U && rate_hz != 0U;
@@ -12650,6 +12651,40 @@ yq_landing_case(int which) {
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y landing case %d\n", which);
+    }
+    return rc;
+}
+
+/* -Y on an RTL capture (1.536 Msps, the shipped admission table): a typed row with the -8 monitor at an NFM width the
+   calibration validated on its own (10, 12 and 15 kHz) is measured, one between the validated widths is not and gets
+   no check (issue #834). */
+static int
+test_y_quiet_validated_nfm_width(int nfm_hz, int checked) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    g_yq.real_widths = 1;
+    g_yq_monitor_nfm_hz = nfm_hz;
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 471012500L + (long int)nfm_hz * 1000L;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, base_hz) == 0);
+    if (checked) {
+        rc |= expect_true("the width is checked in both classes",
+                          g_yq.requests == 1
+                              && g_yq.last.classes == (DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_ANALOG)
+                              && g_yq.last.analog_width_hz == (uint32_t)nfm_hz);
+    } else {
+        noCarrier(opts, state);
+        noCarrier(opts, state);
+        rc |= expect_true("a width between the validated ones: no check", g_yq.requests == 0 && g_rtl_tune_calls == 0);
+    }
+    g_yq_monitor_nfm_hz = -1;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y validated NFM width %d\n", nfm_hz);
     }
     return rc;
 }
@@ -13604,6 +13639,10 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_typed_row_judges_the_monitor(12500);
     rc |= test_y_quiet_typed_row_judges_the_monitor(0);
+    rc |= test_y_quiet_validated_nfm_width(10000, 1);
+    rc |= test_y_quiet_validated_nfm_width(12000, 1);
+    rc |= test_y_quiet_validated_nfm_width(15000, 1);
+    rc |= test_y_quiet_validated_nfm_width(13500, 0);
     rc |= test_y_quiet_sync_while_suspended_ends_the_check(1);
     rc |= test_y_quiet_sync_while_suspended_ends_the_check(0);
     rc |= test_y_quiet_restart_late_in_the_visit_measures();

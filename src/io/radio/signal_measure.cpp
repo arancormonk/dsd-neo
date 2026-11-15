@@ -1407,11 +1407,20 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
    the RTL rate planner's (1.024, 1.152, 1.536 Msps for every selectable DSP bandwidth, rtl_sdr_fm.cpp
    rtl_downsample_passes_for_rate_in()), an Airspy's (2.5, 3, 6, 10 MS/s), and the common RTL-SDR rates a SoapySDR
    device may be given. Widths, per kind: the Radio sheet's NFM steps and its AM steps (src/ui/qt/qml/Util.js), each
-   rendered as that kind only. */
+   rendered as that kind only, and four widths a scan can be given that the sheet does not step through, each
+   validated on its own: NFM 10, 12 and 15 kHz and AM 8.333 kHz. On the RTL tap's geometry (the default one, at the
+   rate list above, 3000 validation trials, threshold 5.0 dB) their lowest valid select/validation ratios, against
+   that threshold, are:
+     NFM 10 kHz  narrow 9.02/8.93 dB, wide 6.06/6.13 dB, voice 13.15/13.17 dB (narrow) and 8.08/8.11 dB (wide);
+     NFM 12 kHz  narrow 8.48/8.40 dB, wide 5.92/5.91 dB, voice 12.62/12.59 dB (narrow) and 7.53/7.59 dB (wide);
+     NFM 15 kHz  narrow 8.11/8.10 dB, wide 6.04/6.04 dB, voice 11.76/11.74 dB (narrow) and 7.22/7.26 dB (wide);
+     AM 8.333 kHz  on channel 18.21/18.17 dB, carrier at the edge 16.67/16.72 dB;
+   with no quiet verdict on any active trial, noise N95 of 1.21-1.59 dB and no false busy on noise alone. A width
+   between two admitted ones is not admitted. */
 static const uint32_t kQuietRatesHz[] = {960000,  1024000, 1152000, 1200000, 1280000, 1440000, 1536000, 1600000,
                                          1800000, 1920000, 2048000, 2400000, 2500000, 3000000, 6000000, 10000000};
-static const uint32_t kQuietNfmWidthsHz[] = {8000, 11250, 12500, 16000, 20000, 25000};
-static const uint32_t kQuietAmWidthsHz[] = {5000, 6000, 8000, 10000, 15000, 20000};
+static const uint32_t kQuietNfmWidthsHz[] = {8000, 10000, 11250, 12000, 12500, 15000, 16000, 20000, 25000};
+static const uint32_t kQuietAmWidthsHz[] = {5000, 6000, 8000, 8333, 10000, 15000, 20000};
 
 struct dsd_signal_quiet_detector {
     /* Keep aligned buffers first so records never require interior alignment padding. */
