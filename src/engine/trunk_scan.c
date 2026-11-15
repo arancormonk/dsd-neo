@@ -2519,15 +2519,13 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;
     state->nxdn_last_ran = (unsigned int)-1;
     state->nxdn_last_ran_stand_in = 0;
-    // A new visit is a new reception: the old call's vendor evidence cannot suppress this visit's SB/MI decoding.
-    // Keep it in the raw snapshot only for rollback to a carrier that a failed switch never left (issue #657).
-    DSD_MEMSET(state->dmr_le_vendor, 0, sizeof(state->dmr_le_vendor));
-    // Nor can a PI the old reception held for a call its lost voice LC header would have opened.
-    DSD_MEMSET(state->dmr_pi_precall_rx, 0, sizeof(state->dmr_pi_precall_rx));
-    DSD_MEMSET(state->dmr_pi_precall_algid, 0, sizeof(state->dmr_pi_precall_algid));
-    DSD_MEMSET(state->dmr_pi_precall_kid, 0, sizeof(state->dmr_pi_precall_kid));
-    DSD_MEMSET(state->dmr_pi_precall_m, 0, sizeof(state->dmr_pi_precall_m));
-    DSD_MEMSET(state->dmr_crypto_inherited, 0, sizeof(state->dmr_crypto_inherited));
+    // A new visit is a new reception: the old call's vendor evidence cannot suppress this visit's SB/MI decoding, nor
+    // can a PI the old reception held for a call its lost voice LC header would have opened, and its service options
+    // say nothing of how this visit's calls are encrypted: a stale privacy bit would decrypt this carrier's frames
+    // before their own LC with a key set directly. Nor does a slot's next call key from the talkgroups the target's or
+    // the left target's calls keyed from. The raw snapshot keeps the service options and vendor evidence only for
+    // rollback to a carrier that a failed switch never left (issue #657).
+    dmr_forget_call_privacy(state);
     state->trunk_chan_map_seq = trunk_scan_next_chan_map_seq(coord, state->trunk_chan_map_seq);
     rt->snapshot.site.trunk_chan_map_seq = state->trunk_chan_map_seq;
 }

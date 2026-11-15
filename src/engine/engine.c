@@ -17,7 +17,6 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
-#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -3097,22 +3096,11 @@ static void
 no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     state->dmr_ms_mode = 0;
     // The DMR heal stash mirrors the payload crypto being cleared below; a stash that outlived
-    // this reset could only ever be misapplied to whatever decodes next.
-    state->dmr_heal_valid[0] = 0;
-    state->dmr_heal_valid[1] = 0;
-    // The live service options and the classification they establish describe the carrier
-    // that just went away; a stale privacy bit would mute the opening bursts of whatever
-    // decodes next until its first LC arrives.
-    state->dmr_so = 0;
-    state->dmr_soR = 0;
-    state->dmr_fid = 0;
-    state->dmr_fidR = 0;
-    dmr_enc_class_reset(state, 0);
-    dmr_enc_class_reset(state, 1);
-    dmr_le_vendor_reset(state, 0);
-    dmr_le_vendor_reset(state, 1);
-    dmr_pi_precall_reset(state, 0);
-    dmr_pi_precall_reset(state, 1);
+    // this reset could only ever be misapplied to whatever decodes next. The live service options
+    // and the classification they establish describe the carrier that just went away; a stale
+    // privacy bit would mute the opening bursts of whatever decodes next until its first LC
+    // arrives. Nor does a slot's next call key from the talkgroups of the calls on it.
+    dmr_forget_call_privacy(state);
     state->payload_mi = 0;
     state->payload_miR = 0;
     state->payload_mfid = 0;
@@ -3238,9 +3226,6 @@ no_carrier_unload_keys_if_needed(dsd_state* state) {
 
 static void
 no_carrier_reset_dmr_misc_state(dsd_state* state) {
-    // The carrier is gone, with every call on it: no slot's next call keys from their talkgroups.
-    keyring_dmr_tg_autoload_forget_slot(state, 0U);
-    keyring_dmr_tg_autoload_forget_slot(state, 1U);
     state->nxdn_cipher_type = 0;
     nxdn_cipher_class_reset(state);
     DSD_MEMSET(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
@@ -3777,6 +3762,10 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     dsd_event_flush_orphan_recordings(opts, state);
     dsd_engine_forget_carrier_codes(state);
     dsd_engine_forget_carrier_decoding(opts, state);
+    /* Nor did the left calls say how the next carrier's are encrypted: its frames before their own LC decrypt with no
+       privacy bit and no talkgroup key of theirs, a key set directly staying the user's. Not in the forget above,
+       which a stream gap runs too: a call it reopens on the same carrier keys as before. */
+    dmr_forget_call_privacy(state);
     /* The digital voice level starts the next carrier's reception at its start gain (issue #518). Not in the forget
        above, which a stream gap runs too: that is the same carrier, whose transmissions decide. */
     dsd_voice_level_reset(state, -1);

@@ -229,26 +229,17 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_enc_class_reset(dsd_state* state, uint8_t slot) {
-    (void)state;
-    (void)slot;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_le_vendor_reset(dsd_state* state, uint8_t slot) {
-    state->dmr_le_vendor[slot != 0U ? 1U : 0U] = 0U;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_pi_precall_reset(dsd_state* state, uint8_t slot) {
-    const uint8_t idx = slot != 0U ? 1U : 0U;
-    state->dmr_pi_precall_rx[idx] = 0U;
-    state->dmr_pi_precall_algid[idx] = 0U;
-    state->dmr_pi_precall_kid[idx] = 0U;
-    state->dmr_pi_precall_m[idx] = 0.0;
-    state->dmr_crypto_inherited[idx] = 0U;
+dmr_forget_call_privacy(dsd_state* state) {
+    state->dmr_so = state->dmr_soR = 0U;
+    state->dmr_fid = state->dmr_fidR = 0U;
+    for (int idx = 0; idx < 2; idx++) {
+        state->dmr_le_vendor[idx] = 0U;
+        state->dmr_pi_precall_rx[idx] = 0U;
+        state->dmr_pi_precall_algid[idx] = 0U;
+        state->dmr_pi_precall_kid[idx] = 0U;
+        state->dmr_pi_precall_m[idx] = 0.0;
+        state->dmr_crypto_inherited[idx] = 0U;
+    }
 }
 
 void

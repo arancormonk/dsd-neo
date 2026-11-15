@@ -70,6 +70,14 @@ int dmr_le_key_inferred_algid(const dsd_state* state, uint8_t slot);
 /** Forget the slot's held pre-call PI crypto (dsd_state::dmr_pi_precall_rx) and its inherited-crypto mark
  * (dmr_crypto_inherited): the transmission they were for is over or gone. Decryption state is not touched. */
 void dmr_pi_precall_reset(dsd_state* state, uint8_t slot);
+/** The receiver left the carrier whose calls both slots carried: forget what said how those calls were encrypted, so
+ * the next carrier's frames before their own LC decrypt with nothing the left calls set. Both slots' service options
+ * and FID (dmr_so, dmr_fid and their R twins), encryption class, vendor late-entry mode, held pre-call PI and
+ * inherited crypto mark, the heal stash, and the talkgroup each slot's autoload last keyed from
+ * (keyring_dmr_tg_autoload_forget_slot()). The working keys stay: a key set directly is the user's, and an autoloaded
+ * one gives way at the next call's first keyed frame. The payload ALG, KID and MI are the caller's: P25 and NXDN share
+ * them. */
+void dmr_forget_call_privacy(dsd_state* state);
 /** Forget only the held pre-call PI: it transferred, or a newer PI replaced it. */
 void dmr_pi_precall_drop_hold(dsd_state* state, uint8_t slot);
 /** Record the live ALG ID and key id just published into the slot's current call epoch (dmr_live_pub_*). */

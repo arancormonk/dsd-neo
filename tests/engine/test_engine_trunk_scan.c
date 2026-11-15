@@ -3353,13 +3353,21 @@ test_dmr_service_options_state_isolated_per_target(void) {
     test_rc |= expect_dmr_service_options("fresh target", &state, 0U, 0U, 0U, 0U);
 
     seed_dmr_service_options(&state, 0x22U, 0x02U, 0x33U, 0x03U);
+    state.dmr_tg_autoload.slot_tg[0] = 123U;
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "dmr service option scan did not rotate back to first target\n");
         test_rc = 1;
     }
-    test_rc |= expect_dmr_service_options("restored target", &state, 0x10U, 0x40U, 0x68U, 0x41U);
+    // The service options belong to the reception that ended when this target was left: a stale privacy bit would
+    // decrypt the revisit's frames before their own LC with a key set directly. Nor does a slot key from the talkgroup
+    // its last call keyed from.
+    test_rc |= expect_dmr_service_options("restored target", &state, 0U, 0U, 0U, 0U);
+    if (state.dmr_tg_autoload.slot_tg[0] != 0U) {
+        DSD_FPRINTF(stderr, "a target visit kept the talkgroup the left target's call keyed from\n");
+        test_rc = 1;
+    }
     // Vendor late-entry evidence belongs to the reception that ended when this target was left. Returning must not
     // resurrect a stale Hytera MI gate or Kirisun SB gate from that target's metadata snapshot (issue #657).
     if (state.dmr_le_vendor[0] != DMR_LE_VENDOR_NONE || state.dmr_le_vendor[1] != DMR_LE_VENDOR_NONE) {
@@ -27322,6 +27330,23 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     state->nxdn_part_of_frame = 0;
     state->dmr_le_vendor[0] = DMR_LE_VENDOR_NONE;
     state->dmr_le_vendor[1] = DMR_LE_VENDOR_NONE;
+}
+
+/* From protocol/dmr/dmr_enc_class.c, which this fixture does not link: the fields a target visit's restore must not
+   bring back (the service options, the vendor and pre-call PI evidence) and the slots' autoload talkgroups. */
+void
+dmr_forget_call_privacy(dsd_state* state) {
+    state->dmr_so = state->dmr_soR = 0U;
+    state->dmr_fid = state->dmr_fidR = 0U;
+    for (int idx = 0; idx < 2; idx++) {
+        state->dmr_le_vendor[idx] = DMR_LE_VENDOR_NONE;
+        state->dmr_pi_precall_rx[idx] = 0U;
+        state->dmr_pi_precall_algid[idx] = 0U;
+        state->dmr_pi_precall_kid[idx] = 0U;
+        state->dmr_pi_precall_m[idx] = 0.0;
+        state->dmr_crypto_inherited[idx] = 0U;
+        state->dmr_tg_autoload.slot_tg[idx] = 0U;
+    }
 }
 
 /* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS.

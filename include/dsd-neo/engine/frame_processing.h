@@ -93,7 +93,9 @@ typedef enum {
  *     with the evidence that vouched for its transmissions: every confirmation gate restarts, as the no-carrier pass
  *     restarts them, so the next carrier proves itself again; and with every multi-frame assembly that can publish an
  *     identity or a code (an NXDN SACCH superframe, a DMR short LC or talker alias, an M17 LSF...), which the next
- *     carrier's next piece could otherwise complete.
+ *     carrier's next piece could otherwise complete. So does how the ended DMR calls were encrypted
+ *     (dmr_forget_call_privacy()), so the next carrier's frames before their own LC decrypt with no privacy bit and no
+ *     talkgroup key of theirs; a key set directly stays loaded.
  *  4. With trunking off, what the trunking-off no-carrier pass forgets of it goes too
  *     (dsd_engine_forget_untrunked_carrier_state()).
  *  5. state->carrier_seq moves, so a decoder that buffered the left carrier's bursts drops them.

@@ -23,6 +23,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
@@ -122,6 +123,25 @@ dmr_pi_precall_reset(dsd_state* state, uint8_t slot) {
     state->dmr_crypto_inherited[idx] = 0U;
     state->dmr_crypto_inherited_algid[idx] = 0;
     state->dmr_crypto_inherited_keyid[idx] = 0;
+}
+
+void
+dmr_forget_call_privacy(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->dmr_so = 0;
+    state->dmr_soR = 0;
+    state->dmr_fid = 0;
+    state->dmr_fidR = 0;
+    state->dmr_heal_valid[0] = 0;
+    state->dmr_heal_valid[1] = 0;
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        dmr_enc_class_reset(state, slot);
+        dmr_le_vendor_reset(state, slot);
+        dmr_pi_precall_reset(state, slot);
+        keyring_dmr_tg_autoload_forget_slot(state, slot);
+    }
 }
 
 int

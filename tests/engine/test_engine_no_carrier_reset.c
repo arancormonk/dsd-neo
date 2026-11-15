@@ -13,6 +13,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
@@ -2888,6 +2889,171 @@ test_fixed_tuning_legacy_legs_send_the_peer_nothing(void) {
         g_rigctl_setfreq_ok = 0;
         free_test_runtime(opts, state);
     }
+    return rc;
+}
+
+/* A Basic Privacy call in progress on slot 1, talkgroup 123, keyed from the keys file's key for it (0x33) over the
+   operator's own key @p operator_key (a -b key, or 0: none): its privacy bit and FID set on both slots, as the left
+   carrier's LCs set them. */
+static void
+seed_dmr_basic_privacy_call(dsd_state* state, unsigned long long operator_key) {
+    state->keyloader = 1;
+    state->rkey_array[123] = 0x33ULL;
+    state->rkey_array_loaded[123] = 1U;
+    state->K = operator_key;
+    state->basic_key_present = operator_key != 0ULL ? 1U : 0U;
+    uint32_t keyed_from = 0U;
+    (void)keyring_dmr_tg_autoload_apply(state, 0U, 123U, &keyed_from);
+    state->dmr_so = state->dmr_soR = 0x40U;
+    state->dmr_fid = state->dmr_fidR = 0x10U;
+    dmr_enc_class_force(state, 0U, 1);
+}
+
+/* After a carrier boundary, the next carrier's frames before their own LC decrypt with nothing the left call set: no
+   privacy bit, FID or encryption class, and a frame of a call no LC has named yet keys from no talkgroup the left call
+   keyed from, the operator's own key staying loaded. */
+static int
+expect_dmr_privacy_forgotten(const char* tag, dsd_state* state, unsigned long long operator_key) {
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "%s: no privacy bit or FID is left", tag);
+    int rc = expect_true(what, state->dmr_so == 0U && state->dmr_soR == 0U && state->dmr_fid == 0U
+                                   && state->dmr_fidR == 0U && state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE);
+    uint32_t keyed_from = 0U;
+    const int keyed = keyring_dmr_tg_autoload_apply(state, 0U, 0U, &keyed_from);
+    DSD_SNPRINTF(what, sizeof what, "%s: an unnamed call keys from no left talkgroup (K=%llu, want %llu)", tag,
+                 state->K, operator_key);
+    rc |= expect_true(what, !keyed && state->K == operator_key);
+    return rc;
+}
+
+/* Every carrier boundary but a stream gap forgets the left calls' DMR privacy: a user tune, a -Y step, a source
+   change, an input switch and a replay retune. A stream gap stays on the carrier: a call it reopens keys as before. */
+static int
+test_carrier_boundary_forgets_dmr_call_privacy(void) {
+    static const struct {
+        dsd_carrier_boundary_kind kind;
+        const char* name;
+    } kinds[] = {
+        {DSD_CARRIER_BOUNDARY_TUNE, "a user tune"},
+        {DSD_CARRIER_BOUNDARY_SCAN_STEP, "a scan step"},
+        {DSD_CARRIER_BOUNDARY_SOURCE, "a source change"},
+        {DSD_CARRIER_BOUNDARY_INPUT_SWITCH, "an input switch"},
+        {DSD_CARRIER_BOUNDARY_REPLAY_RETUNE, "a replay retune"},
+    };
+
+    int rc = 0;
+    for (int with_direct = 0; with_direct < 2; with_direct++) {
+        const unsigned long long operator_key = with_direct ? 70ULL : 0ULL;
+        for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+            dsd_opts* opts = NULL;
+            dsd_state* state = NULL;
+            if (init_test_runtime(&opts, &state) != 0) {
+                return 1;
+            }
+            seed_dmr_basic_privacy_call(state, operator_key);
+            dsd_engine_carrier_boundary(opts, state, kinds[k].kind, 0);
+            rc |= expect_dmr_privacy_forgotten(kinds[k].name, state, operator_key);
+            free_test_runtime(opts, state);
+        }
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        seed_dmr_basic_privacy_call(state, operator_key);
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+        uint32_t keyed_from = 0U;
+        const int keyed = keyring_dmr_tg_autoload_apply(state, 0U, 0U, &keyed_from);
+        rc |= expect_true("a stream gap keeps the call's privacy bit and its talkgroup's key",
+                          state->dmr_so == 0x40U && keyed && keyed_from == 123U && state->K == 0x33ULL);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* The frequency entry itself (svc_rtl_set_freq(): the tune, then the carrier boundary of a user tune) forgets the left
+   call's DMR privacy. */
+static int
+test_frequency_entry_forgets_dmr_call_privacy(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    seed_dmr_basic_privacy_call(state, 70ULL);
+    int rc = expect_true("the entry tunes", svc_rtl_set_freq(opts, state, 985012500U) == 0);
+    rc |= expect_dmr_privacy_forgotten("a frequency entry", state, 70ULL);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A -Y walk's tune that lands on the scan's row is a scan step's boundary (dsd_engine_scan_untyped_poll()): the next
+   row's frames before their own LC decrypt with nothing the left row's call set. */
+static int
+test_scan_walk_landing_forgets_dmr_call_privacy(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 986012500, 987012500) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    rc |= expect_true("lands row 0", land_untyped_row(opts, state, 0));
+    seed_dmr_basic_privacy_call(state, 0ULL);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("walks into a timeout",
+                      dsd_engine_channel_scan_walk_row(opts, state, 1, 1) == DSD_SCAN_WALK_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("the walk lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    /* The rows' key sets decide the working key here; the slot keys from no talkgroup the left call keyed from. */
+    rc |= expect_true("a -Y walk's landing: no privacy bit or FID is left",
+                      state->dmr_so == 0U && state->dmr_soR == 0U && state->dmr_fid == 0U && state->dmr_fidR == 0U
+                          && state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE);
+    rc |= expect_true("a -Y walk's landing: the slot keeps no left talkgroup", state->dmr_tg_autoload.slot_tg[0] == 0U);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A trunked follow that leaves the carrier (a voice channel followed from another without a release, a move) forgets
+   the left calls' DMR privacy, as a release does; a grant on the carrier the receiver is on keeps it. */
+static int
+test_trunk_follow_forgets_dmr_call_privacy(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_trunk_tuning_requests_reset();
+    opts->trunk_enable = opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_NULL;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    const long vc1 = 943187500L;
+    const long vc2 = 943212500L;
+    int rc = expect_true("the first follow",
+                         dsd_engine_trunk_tune_to_freq_request(opts, state, vc1, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    seed_dmr_basic_privacy_call(state, 70ULL);
+    rc |= expect_true("a grant on the same carrier",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, vc1, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("keeps the call's privacy bit", state->dmr_so == 0x40U && state->dmr_fid == 0x10U);
+    rc |= expect_true("the next voice channel, with no release",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, vc2, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_dmr_privacy_forgotten("a voice channel hop", state, 70ULL);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
     return rc;
 }
 
@@ -15720,6 +15886,10 @@ main(void) {
     rc |= test_direct_cc_return_closes_an_orphaned_recording();
     rc |= test_trunk_cc_return_closes_an_orphaned_recording();
     rc |= test_trunk_follow_closes_only_orphaned_recordings();
+    rc |= test_carrier_boundary_forgets_dmr_call_privacy();
+    rc |= test_frequency_entry_forgets_dmr_call_privacy();
+    rc |= test_scan_walk_landing_forgets_dmr_call_privacy();
+    rc |= test_trunk_follow_forgets_dmr_call_privacy();
     rc |= test_typed_scan_partial_move_is_a_carrier_boundary();
     rc |= test_typed_scan_async_move_is_a_carrier_boundary();
     rc |= test_typed_step_completes_across_a_learned_channel();

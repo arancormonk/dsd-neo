@@ -173,10 +173,12 @@ uint32_t keyring_dmr_tg_key_cell(uint32_t tg);
  * talkgroup is taken out again and the key state that autoload replaced comes back (a key set directly, or none): it
  * is not this call's. A call no LC has named yet (@p tg 0, an identity-less epoch, as a colour code change reopens a
  * call) keys from the talkgroup the slot's own call last keyed from, or, when that is not known, from talkgroup 0's
- * own key if one is set, else from none (the key state the autoload replaced): never from the other slot's. A terminator on the slot, or the no-carrier pass, forgets it
- * (keyring_dmr_tg_autoload_forget_slot()), so a new call keys from no earlier call's talkgroup; one whose terminator
- * was missed is still the slot's call and keys from its talkgroup until the new call's LC names its own (the code
- * cannot tell them apart before that). A key changed since by anything else (a key command, the no-carrier unload) is
+ * own key if one is set, else from none (the key state the autoload replaced): never from the other slot's. A
+ * terminator on the slot, the no-carrier pass, a carrier boundary other than a stream gap, a trunked follow that leaves
+ * the carrier and a trunk-scan visit forget it (keyring_dmr_tg_autoload_forget_slot(), dmr_forget_call_privacy()), so
+ * a new call keys from no earlier call's talkgroup; one whose terminator was missed on the same carrier is still the
+ * slot's call and keys from its talkgroup until the new call's LC names its own (the code cannot tell them apart
+ * before that). A key changed since by anything else (a key command, the no-carrier unload) is
  * left alone. Returns 1 when a talkgroup's key was loaded, that talkgroup into @p keyed_from, 0 otherwise.
  */
 int keyring_dmr_tg_autoload_apply(dsd_state* state, uint8_t slot, uint32_t tg, uint32_t* keyed_from);
@@ -193,7 +195,8 @@ void keyring_dmr_tg_autoload_preview(const dsd_state* state, uint8_t slot, uint3
 /** Whether keyring_dmr_tg_autoload_preview() leaves a Basic Privacy or Hytera key. */
 int keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint8_t slot, uint32_t tg);
 
-/** Forget the talkgroup slot @p slot's call keyed from (its call ended at a terminator). */
+/** Forget the talkgroup slot @p slot's call keyed from and that key (its call ended at a terminator, or the receiver
+ * left the carrier). */
 void keyring_dmr_tg_autoload_forget_slot(dsd_state* state, uint8_t slot);
 
 #ifdef __cplusplus

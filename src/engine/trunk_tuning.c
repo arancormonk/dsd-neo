@@ -278,22 +278,11 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     dmr_reset_blocks(opts, state);
 
     // The DMR heal stash mirrors the payload crypto being cleared below; hopping back to the
-    // control channel leaves nothing the stash could legitimately be restored onto.
-    state->dmr_heal_valid[0] = 0;
-    state->dmr_heal_valid[1] = 0;
-    // The live service options and the classification they establish belong to the channel
-    // being left; a stale privacy bit here would mute the opening bursts of the next tuned
-    // call until its first LC decodes.
-    state->dmr_so = 0;
-    state->dmr_soR = 0;
-    state->dmr_fid = 0;
-    state->dmr_fidR = 0;
-    dmr_enc_class_reset(state, 0);
-    dmr_enc_class_reset(state, 1);
-    dmr_le_vendor_reset(state, 0);
-    dmr_le_vendor_reset(state, 1);
-    dmr_pi_precall_reset(state, 0);
-    dmr_pi_precall_reset(state, 1);
+    // control channel leaves nothing the stash could legitimately be restored onto. The live
+    // service options and the classification they establish belong to the channel being left;
+    // a stale privacy bit here would mute the opening bursts of the next tuned call until its
+    // first LC decodes. Nor does the next call key from the left calls' talkgroups.
+    dmr_forget_call_privacy(state);
     state->payload_algid = 0;
     state->payload_algidR = 0;
     state->payload_keyid = 0;
@@ -1127,15 +1116,20 @@ dsd_engine_receiver_hz(const dsd_opts* opts, const dsd_state* state) {
 
 /* After an accepted tune from @p from_hz (dsd_engine_receiver_hz() before it) to @p freq: when the tune moved the
    receiver off its carrier, the per-call audio no call owns closes, so the next carrier's never joins it (issue #809
-   B4), and the P25 patch table's listening clock breaks continuity, so the time away from the control channel, however
-   short, never counts as listening to it. Only that: a call the move carries over as one (a TETRA reallocation) is
-   active, and its recording closes at its own commit; the patch table is the system's, which a trunk move keeps. A tune
-   to the carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and closes nothing. */
+   B4), the P25 patch table's listening clock breaks continuity, so the time away from the control channel, however
+   short, never counts as listening to it, and the DMR calls' privacy state goes. Only that: a call the move carries
+   over as one (a TETRA reallocation) is active, and its recording closes at its own commit; the patch table is the
+   system's, which a trunk move keeps. A tune to the carrier the receiver is on (a grant on a DMR composite control
+   channel) moves nothing and closes nothing. */
 static void
 dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq) {
     if ((long int)from_hz != freq) {
         dsd_event_flush_orphan_recordings(opts, state);
         dsd_p25_patch_listen_break(state);
+        /* Nor did the DMR calls left behind say how the next carrier's are encrypted (a voice channel followed from
+           another without a release, a move, a rest channel change): its frames before their own LC decrypt with no
+           privacy bit of theirs and no talkgroup key of theirs, a key set directly staying the user's. */
+        dmr_forget_call_privacy(state);
     }
 }
 
