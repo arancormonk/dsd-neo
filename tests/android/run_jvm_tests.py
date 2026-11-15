@@ -16,6 +16,11 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 APP_SOURCES = Path("android/package/src/io/github/arancormonk/dsdneo")
 
+# The compiler and the tests run in short-lived JVMs. C1 alone and the serial collector do their work in about a third of
+# the CPU time of the default C2 and G1 threads, and CPU is what a loaded host runs out of: two cold Kotlin compiles of
+# the usb suite outlasted CTest's 90 s beside a full parallel build.
+JVM_OPTIONS = ("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC")
+
 # A double-quoted literal on one line, and the escapes the golden records use (C and Kotlin agree on these).
 STRING_LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 ESCAPES = {"t": "\t", "n": "\n", "r": "\r", "\\": "\\", '"': '"'}
@@ -1770,16 +1775,19 @@ def run_build(name, build, java, kotlinc, cached):
     with tempfile.TemporaryDirectory(prefix=f"dsd-{name}-tests-") as directory:
         output = Path(directory) / "tests.jar"
         if kotlinc:
-            compiler = [kotlinc, "-include-runtime"]
+            compiler = [kotlinc, *(f"-J{option}" for option in JVM_OPTIONS), "-include-runtime"]
             runtime = str(output)
         else:
             classpath = os.pathsep.join(map(str, cached))
-            compiler = [java, "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler", "-no-stdlib", "-no-reflect", "-classpath", classpath]
+            compiler = [
+                java, *JVM_OPTIONS, "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
+                "-no-stdlib", "-no-reflect", "-classpath", classpath,
+            ]
             runtime = os.pathsep.join((str(output), classpath))
         subprocess.run([*compiler, *map(str, files), "-d", str(output)], check=True)
         for test in build.tests:
             # Top-level functions in Foo.kt compile into the class FooKt.
-            subprocess.run([java, "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"], check=True, timeout=30)
+            subprocess.run([java, *JVM_OPTIONS, "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"], check=True, timeout=30)
 
 
 def run_suite(name, suite, java, kotlinc, cached):

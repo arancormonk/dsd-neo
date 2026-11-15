@@ -25943,7 +25943,8 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/android/test_r8.py
     )
     # Production Android Kotlin on the JVM, one CTest per suite of run_jvm_tests.py. Each compiles Kotlin, which is
-    # memory-hungry, so they never run at once.
+    # memory-hungry, so they never run at once. The time is CPU spent in cold compiler JVMs, a few seconds a compile on
+    # an idle host but over 40 s beside a full parallel build, so the timeout leaves room for two compiles at that pace.
     add_test(
         NAME ANDROID_LOCATION_JVM
         COMMAND
@@ -26097,7 +26098,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_FILE_BROWSER_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
-            TIMEOUT 90
+            TIMEOUT 300
             RESOURCE_LOCK android_kotlin_jvm
     )
     # The two longest suites: beside parallel QML suites engine_stop ran past 90 s (47 s alone) and location took 61 s.
