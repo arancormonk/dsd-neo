@@ -5,7 +5,9 @@
  * is, throttle its publish rate, drop the frame on clear() so a consumer never
  * labels bins with a stale center frequency, refuse a buffer too short to hold
  * a whole frame, and serialise frames so a consumer can tell a new one from a
- * re-read.
+ * re-read. Blocks shorter than the FFT (an I/Q replay's 256 pairs at 48 kHz)
+ * add up to the frame one whole block would make, never a zero-padded one, and
+ * a clear, a gap or a new centre starts that history over.
  */
 
 // LLVM 22/GCC 16 misclassifies these runtime test oracles as compile-time assertions.
@@ -149,17 +151,159 @@ test_clear_invalidates_frame(void) {
     assert(center == kCenterHz);
 }
 
-void
-test_short_block_is_skipped(void) {
-    /* Fewer complex pairs than the FFT size must not publish a padded frame. */
-    rtl_wideband_spectrum_clear();
-    const std::vector<float> iq = make_tone(kToneOffsetHz, kCaptureRateHz, 128);
-    publish_block(iq, kCenterHz);
+/* A short block is a quarter of the FFT, as an I/Q replay's 5.33 ms block is at 48 kHz. */
+constexpr int kShortPairs = DSD_WIDEBAND_SPECTRUM_BINS / 4;
 
-    std::vector<float> bins(2048, 0.0f);
+/* Offer pairs [first, first + kShortPairs) of @p iq as one block, past the throttle or not. */
+void
+feed_short_block(const std::vector<float>& iq, int first, uint32_t center_hz, bool past_throttle) {
+    if (past_throttle) {
+        rtl_wideband_spectrum_test_reset_throttle();
+    }
+    rtl_wideband_spectrum_maybe_update(&iq[static_cast<size_t>(first) * 2], kShortPairs * 2, kCaptureRateHz, center_hz);
+}
+
+/* The published frame's bin count, its bins in @p bins and its serial in @p serial. */
+int
+read_frame(std::vector<float>* bins, uint32_t* center, uint32_t* serial) {
+    bins->assign(DSD_WIDEBAND_SPECTRUM_BINS, 0.0f);
+    return rtl_stream_wideband_spectrum_get(bins->data(), static_cast<int>(bins->size()), center, nullptr, serial);
+}
+
+bool
+frames_match(const std::vector<float>& a, const std::vector<float>& b) {
+    for (size_t i = 0; i < a.size(); i++) {
+        if (fabsf(a[i] - b[i]) > 1e-4f) {
+            return false;
+        }
+    }
+    return a.size() == b.size();
+}
+
+/* The frame one whole DSD_WIDEBAND_SPECTRUM_BINS-pair block of @p iq makes right after a clear. */
+std::vector<float>
+whole_block_frame(const std::vector<float>& iq) {
+    rtl_wideband_spectrum_clear();
+    rtl_wideband_spectrum_test_reset_throttle();
+    rtl_wideband_spectrum_maybe_update(iq.data(), DSD_WIDEBAND_SPECTRUM_BINS * 2, kCaptureRateHz, kCenterHz);
+    std::vector<float> bins;
     uint32_t center = 0;
-    uint32_t span = 0;
-    assert(rtl_stream_wideband_spectrum_get(bins.data(), static_cast<int>(bins.size()), &center, &span, nullptr) == 0);
+    assert(read_frame(&bins, &center, nullptr) == DSD_WIDEBAND_SPECTRUM_BINS);
+    assert(center == kCenterHz);
+    return bins;
+}
+
+/*
+ * Blocks shorter than the FFT used to be skipped, so a replay under 192 kHz
+ * left the Spectrum screen blank. Now four quarter blocks make the frame the
+ * whole block of the same pairs makes, and until the fourth arrives nothing is
+ * published: no frame padded out with zeros.
+ */
+void
+test_short_blocks_add_up_to_one_frame(void) {
+    const std::vector<float> iq = make_tone(kToneOffsetHz, kCaptureRateHz, kPairs);
+    const std::vector<float> whole = whole_block_frame(iq);
+
+    rtl_wideband_spectrum_clear();
+    std::vector<float> bins;
+    uint32_t center = 0;
+    for (int b = 0; b < 3; b++) {
+        feed_short_block(iq, b * kShortPairs, kCenterHz, true);
+        assert(read_frame(&bins, &center, nullptr) == 0);
+    }
+    feed_short_block(iq, 3 * kShortPairs, kCenterHz, true);
+    assert(read_frame(&bins, &center, nullptr) == DSD_WIDEBAND_SPECTRUM_BINS);
+    assert(center == kCenterHz);
+    assert(frames_match(bins, whole));
+
+    /* The tone stands where it is, as in a whole block's frame. */
+    const int n = DSD_WIDEBAND_SPECTRUM_BINS;
+    const int expected = (n / 2) + static_cast<int>(lrint(kToneOffsetHz / kCaptureRateHz * n));
+    const int peak = argmax_bin(bins.data(), n);
+    assert(peak >= expected - 1 && peak <= expected + 1);
+}
+
+/* A block the throttle holds back still joins the history: the next frame
+ * needs its pairs. */
+void
+test_throttled_short_blocks_fill_the_window(void) {
+    const std::vector<float> iq = make_tone(kToneOffsetHz, kCaptureRateHz, kPairs);
+    const std::vector<float> whole = whole_block_frame(iq);
+
+    /* whole_block_frame() just published, so the first three are throttled. */
+    rtl_wideband_spectrum_clear();
+    for (int b = 0; b < 3; b++) {
+        feed_short_block(iq, b * kShortPairs, kCenterHz, false);
+    }
+    feed_short_block(iq, 3 * kShortPairs, kCenterHz, true);
+    std::vector<float> bins;
+    assert(read_frame(&bins, nullptr, nullptr) == DSD_WIDEBAND_SPECTRUM_BINS);
+    assert(frames_match(bins, whole));
+}
+
+/* A clear drops the pairs before it: the first frame after it waits for a
+ * whole window of pairs offered after it. */
+void
+test_clear_restarts_the_history(void) {
+    const std::vector<float> iq = make_tone(kToneOffsetHz, kCaptureRateHz, kPairs);
+    const std::vector<float> whole = whole_block_frame(iq);
+
+    for (int b = 0; b < 3; b++) {
+        feed_short_block(iq, b * kShortPairs, kCenterHz, true);
+    }
+    rtl_wideband_spectrum_clear();
+    std::vector<float> bins;
+    for (int b = 0; b < 3; b++) {
+        feed_short_block(iq, b * kShortPairs, kCenterHz, true);
+        assert(read_frame(&bins, nullptr, nullptr) == 0);
+    }
+    feed_short_block(iq, 3 * kShortPairs, kCenterHz, true);
+    assert(read_frame(&bins, nullptr, nullptr) == DSD_WIDEBAND_SPECTRUM_BINS);
+    assert(frames_match(bins, whole));
+}
+
+/* A gap, or a block at a new centre, starts the history over too, but leaves
+ * the frame already published: a new frame waits for a whole window of pairs
+ * from after the break. */
+void
+test_a_gap_or_a_new_centre_restarts_the_history(void) {
+    const std::vector<float> iq = make_tone(kToneOffsetHz, kCaptureRateHz, kPairs);
+    (void)whole_block_frame(iq);
+    for (int b = 0; b < 3; b++) {
+        feed_short_block(iq, b * kShortPairs, kCenterHz, true);
+    }
+    std::vector<float> bins;
+    uint32_t center = 0;
+    uint32_t serial = 0;
+    assert(read_frame(&bins, &center, &serial) == DSD_WIDEBAND_SPECTRUM_BINS);
+    const uint32_t before = serial;
+
+    rtl_wideband_spectrum_note_gap();
+    for (int b = 0; b < 3; b++) {
+        feed_short_block(iq, b * kShortPairs, kCenterHz, true);
+        assert(read_frame(&bins, &center, &serial) == DSD_WIDEBAND_SPECTRUM_BINS);
+        assert(serial == before);
+    }
+    feed_short_block(iq, 3 * kShortPairs, kCenterHz, true);
+    assert(read_frame(&bins, &center, &serial) == DSD_WIDEBAND_SPECTRUM_BINS);
+    assert(serial != before);
+    const uint32_t after_gap = serial;
+
+    /* Three blocks here, then the centre moves: they are not the new band's. */
+    const uint32_t moved_hz = kCenterHz + 1000000u;
+    for (int b = 0; b < 3; b++) {
+        feed_short_block(iq, b * kShortPairs, kCenterHz, false);
+    }
+    for (int b = 0; b < 3; b++) {
+        feed_short_block(iq, b * kShortPairs, moved_hz, true);
+        assert(read_frame(&bins, &center, &serial) == DSD_WIDEBAND_SPECTRUM_BINS);
+        assert(serial == after_gap);
+        assert(center == kCenterHz);
+    }
+    feed_short_block(iq, 3 * kShortPairs, moved_hz, true);
+    assert(read_frame(&bins, &center, &serial) == DSD_WIDEBAND_SPECTRUM_BINS);
+    assert(serial != after_gap);
+    assert(center == moved_hz);
 }
 
 void
@@ -277,7 +421,10 @@ main(void) {
     test_tone_orientation();
     test_publish_throttle();
     test_clear_invalidates_frame();
-    test_short_block_is_skipped();
+    test_short_blocks_add_up_to_one_frame();
+    test_throttled_short_blocks_fill_the_window();
+    test_clear_restarts_the_history();
+    test_a_gap_or_a_new_centre_restarts_the_history();
     test_disable_drops_frame();
     test_a_short_buffer_is_refused();
     test_the_serial_marks_new_frames_only();

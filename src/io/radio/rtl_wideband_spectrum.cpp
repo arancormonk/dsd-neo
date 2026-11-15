@@ -29,9 +29,11 @@
  */
 
 #include <atomic>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/wideband_spectrum.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "rtl_fft_cache.h"
@@ -80,12 +82,29 @@ std::atomic<uint32_t> g_wb_pub_serial{0};
 std::atomic<int> g_wb_test_tear{0};
 #endif
 
+/* Bumped by note_gap(): the input broke off, so the history below must not
+ * join the pairs before the break to the pairs after it. Any thread. */
+std::atomic<uint32_t> g_wb_gap_gen{0};
+
 /* Demod-thread-private state (never touched by readers). */
 uint64_t g_wb_last_publish_ns = 0;
 float g_wb_ema[kWbSpecN];
 int g_wb_ema_valid = 0;
 uint32_t g_wb_seen_clear_gen = 0;
 uint32_t g_wb_next_serial = 1;
+
+/* The most recent kWbSpecN pairs the tap was offered, across blocks, so a
+ * stream whose blocks are shorter than the FFT still fills a whole analysis
+ * window: an I/Q replay's block is 5.33 ms, 256 pairs at 48 kHz. A ring whose
+ * oldest pair sits at g_wb_hist_head once it is full. It holds one unbroken
+ * stretch of input at one rate and centre; a clear, a gap, or a new rate or
+ * centre starts it over, so a frame never joins two stretches. */
+alignas(16) float g_wb_hist[2 * kWbSpecN];
+int g_wb_hist_head = 0;
+int g_wb_hist_pairs = 0;
+uint32_t g_wb_hist_rate_hz = 0;
+uint32_t g_wb_hist_center_hz = 0;
+uint32_t g_wb_seen_gap_gen = 0;
 
 dsd_io::FftSetupCache g_wb_fft_setup;
 dsd_io::HannWindowCache<kWbSpecN> g_wb_hann;
@@ -113,6 +132,61 @@ wb_fold_into_ema(const float* z, int n) {
     g_wb_ema_valid = 1;
 }
 
+/**
+ * @brief Start the history over when it does not run on into this block.
+ *
+ * A clear also restarts the EMA, as it always has; a gap or a new rate or
+ * centre leaves the EMA to the clear that goes with a retune.
+ *
+ * @return The clear generation the block's frame belongs to.
+ */
+uint32_t
+wb_sync_history(uint32_t capture_rate_hz, uint32_t center_freq_hz) {
+    const uint32_t gen = g_wb_clear_gen.load(std::memory_order_acquire);
+    const uint32_t gap = g_wb_gap_gen.load(std::memory_order_relaxed);
+    bool restart =
+        (gap != g_wb_seen_gap_gen) || (capture_rate_hz != g_wb_hist_rate_hz) || (center_freq_hz != g_wb_hist_center_hz);
+    if (gen != g_wb_seen_clear_gen) {
+        g_wb_seen_clear_gen = gen;
+        g_wb_ema_valid = 0;
+        restart = true;
+    }
+    if (restart) {
+        g_wb_seen_gap_gen = gap;
+        g_wb_hist_rate_hz = capture_rate_hz;
+        g_wb_hist_center_hz = center_freq_hz;
+        g_wb_hist_head = 0;
+        g_wb_hist_pairs = 0;
+    }
+    return gen;
+}
+
+/** @brief Keep the last kWbSpecN pairs of @p pairs (at most) in the history. */
+void
+wb_history_append(const float* iq_interleaved, int pairs) {
+    const int keep = (pairs < kWbSpecN) ? pairs : kWbSpecN;
+    const float* src = iq_interleaved + (static_cast<size_t>(pairs - keep) << 1);
+    const int room = kWbSpecN - g_wb_hist_head;
+    const int first = (keep < room) ? keep : room;
+    DSD_MEMCPY(&g_wb_hist[static_cast<size_t>(g_wb_hist_head) << 1], src,
+               (static_cast<size_t>(first) << 1) * sizeof(float));
+    if (keep > first) {
+        DSD_MEMCPY(g_wb_hist, src + (static_cast<size_t>(first) << 1),
+                   (static_cast<size_t>(keep - first) << 1) * sizeof(float));
+    }
+    g_wb_hist_head = (g_wb_hist_head + keep) % kWbSpecN;
+    g_wb_hist_pairs = (g_wb_hist_pairs + keep < kWbSpecN) ? (g_wb_hist_pairs + keep) : kWbSpecN;
+}
+
+/** @brief Copy the full history into @p out, oldest pair first. */
+void
+wb_history_unroll(float* out) {
+    const size_t older = static_cast<size_t>(kWbSpecN - g_wb_hist_head) << 1;
+    const size_t newer = static_cast<size_t>(g_wb_hist_head) << 1;
+    DSD_MEMCPY(out, &g_wb_hist[newer], older * sizeof(float));
+    DSD_MEMCPY(out + older, g_wb_hist, newer * sizeof(float));
+}
+
 void
 wb_publish(const float* db, uint32_t center_hz, uint32_t span_hz, uint32_t gen, uint32_t serial) {
     const uint32_t s = g_wb_seq.load(std::memory_order_relaxed);
@@ -134,9 +208,10 @@ wb_publish(const float* db, uint32_t center_hz, uint32_t span_hz, uint32_t gen, 
 /**
  * @brief Fold one capture-rate I/Q block into the published wideband spectrum.
  *
- * See rtl_wideband_spectrum.h. Skips blocks shorter than the FFT size rather
- * than zero-padding them, so the published span always reflects a full analysis
- * window.
+ * See rtl_wideband_spectrum.h. A block shorter than the FFT size joins the
+ * pairs before it in the history; until the history holds a full analysis
+ * window nothing is published, never a zero-padded frame, so the published span
+ * always reflects a full window.
  */
 void
 rtl_wideband_spectrum_maybe_update(const float* iq_interleaved, int len_interleaved, uint32_t capture_rate_hz,
@@ -148,21 +223,19 @@ rtl_wideband_spectrum_maybe_update(const float* iq_interleaved, int len_interlea
         return;
     }
 
+    /* Every block goes into the history, a throttled one too: the next frame may
+     * need its tail. */
+    const int n = kWbSpecN;
+    const int pairs = len_interleaved >> 1;
+    const uint32_t gen = wb_sync_history(capture_rate_hz, center_freq_hz);
+    wb_history_append(iq_interleaved, pairs);
+
     const uint64_t now_ns = dsd_realtime_mono_ns();
     if (g_wb_last_publish_ns != 0 && (now_ns - g_wb_last_publish_ns) < kWbSpecMinPeriodNs) {
         return;
     }
-
-    const int n = kWbSpecN;
-    const int pairs = len_interleaved >> 1;
-    if (pairs < n) {
+    if (g_wb_hist_pairs < n) {
         return;
-    }
-
-    const uint32_t gen = g_wb_clear_gen.load(std::memory_order_acquire);
-    if (gen != g_wb_seen_clear_gen) {
-        g_wb_seen_clear_gen = gen;
-        g_wb_ema_valid = 0;
     }
 
     const float* hann = g_wb_hann.get(n);
@@ -170,10 +243,18 @@ rtl_wideband_spectrum_maybe_update(const float* iq_interleaved, int len_interlea
         return;
     }
 
-    /* Analyse the most recent n pairs of the block. */
+    /* Analyse the most recent n pairs: the block's own when it has them, else
+     * the history it completed. */
     alignas(16) static float z[2 * kWbSpecN];
-    const int start = pairs - n;
-    dsd_io::iq_window_dc_removed(iq_interleaved, start, n, hann, dsd_io::iq_block_mean(iq_interleaved, start, n), z);
+    alignas(16) static float window_in[2 * kWbSpecN];
+    const float* in = iq_interleaved;
+    int start = pairs - n;
+    if (start < 0) {
+        wb_history_unroll(window_in);
+        in = window_in;
+        start = 0;
+    }
+    dsd_io::iq_window_dc_removed(in, start, n, hann, dsd_io::iq_block_mean(in, start, n), z);
     if (!g_wb_fft_setup.forward(n, z)) {
         return;
     }
@@ -189,6 +270,12 @@ rtl_wideband_spectrum_maybe_update(const float* iq_interleaved, int len_interlea
 void
 rtl_wideband_spectrum_clear(void) {
     wb_bump_clear_gen();
+}
+
+/** @brief Break the history at a gap in the input; see rtl_wideband_spectrum.h. */
+void
+rtl_wideband_spectrum_note_gap(void) {
+    g_wb_gap_gen.fetch_add(1, std::memory_order_relaxed);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS

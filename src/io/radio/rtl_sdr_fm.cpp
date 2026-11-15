@@ -2935,6 +2935,8 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     if (s == &demod) {
         g_demod_fed_since_reset.store(0, std::memory_order_relaxed);
         g_demod_gap_reset_owed.store(0, std::memory_order_relaxed);
+        /* Whatever starts the filters over (a retune, a stream or input gap) breaks the wideband tap's history too. */
+        rtl_wideband_spectrum_note_gap();
     }
     /* The combined carrier estimate (the TETRA mixer's part included) is what every decision below acts on. */
     const float fll_freq_before = dsd_fll_band_edge_total_freq(&s->fll_band_edge_state);
@@ -4783,6 +4785,8 @@ demod_mark_replay_drained_on_exit(void) {
 static void
 demod_discard_iteration_input(DemodInputSpan* span) {
     demod_input_span_commit_reserved(span);
+    /* The wideband tap never sees these samples: its next frame must not join the blocks on either side. */
+    rtl_wideband_spectrum_note_gap();
     if (!span || !span->replay || !g_stream) {
         return;
     }
@@ -5553,6 +5557,7 @@ demod_drop_signal_search_block(struct demod_state* d, DemodInputSpan* span, int 
     }
     d->ted_state.ul_lookahead_live = 0;
     demod_note_replay_flush_owed(d, replay_active);
+    rtl_wideband_spectrum_note_gap();
     demod_input_span_release_direct(d, span);
     demod_leave_processing_block(&controller);
     return 1;
