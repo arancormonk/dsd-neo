@@ -1004,6 +1004,19 @@ test_distance_measured_once_per_fix() {
     set_fix(f.prefs, 10.1, 20.0);
     settle();
     check("a new fix measures every positioned site again", f.cards->distanceCount() == 7);
+    const auto metroDistance = [&f]() {
+        return f.at(f.cards->rowForKey(f.systems->groupKey(0)), SavedSystemCards::DistanceKmRole).toDouble();
+    };
+    const double eastKm = metroDistance();
+    check("Metro is measured from its east site, 33.18 km", std::fabs(eastKm - 33.18) < 0.01);
+    check("avoid the east site", f.systems->setAvoidSite(0, true));
+    settle();
+    check("avoided: Metro is its west site's distance, nothing measured",
+          std::fabs(metroDistance() - 55.92) < 0.01 && f.cards->distanceCount() == 7);
+    check("open the east site again", f.systems->setAvoidSite(0, false));
+    settle();
+    check("open again: the east site is measured again, alone",
+          std::fabs(metroDistance() - eastKm) < 1e-9 && f.cards->distanceCount() == 8);
 }
 
 /* Only the fix the user asked for is a user-asked change. */

@@ -15364,11 +15364,10 @@ Qt Quick frontend (`src/ui/qt`):
   and current providers compete for accuracy up to the 20-second deadline. GPS participates with fine foreground
   permission; approximate permission remains usable. The new JNI entry point is retained in `proguard-rules.pro`.
   `SiteChooserSheet` orders eligible saved siblings by distance (each measured once per revision or fix into its
-  `rowModel`, which `rows`, `nearest`, `uncertainNearest` and each row's label read), names the nearest site,
-  exposes missing positions and saved-fix/accuracy limitations, and gates the nearest action during a lookup.
-  While Running that action emits
-  the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again. Location
-  completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
+  `rowModel`, which `rows`, `nearest`, `uncertainNearest` and each row's label read), names the nearest site, exposes
+  missing positions and saved-fix/accuracy limitations, and gates the nearest action during a lookup. While Running that
+  action emits the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again.
+  Location completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
   Places: the model keeps the system's `Trs.sState`/`Trs.sCounty` ids in `systemDetails` (`stateIds`, `countyIds`) and
   each site's `TrsSite.siteCtid`; every importable plan, a per-site batch's plans and `performImport()`'s result (and
@@ -15596,10 +15595,9 @@ Qt Quick frontend (`src/ui/qt`):
   `SavedSystemsModel::groupKey(row)` reads that key from the row's fields (no field map built); `siblingRows()`,
   `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by it. Every site distance is
   `site_distance_km()`: the geodesic on the WGS84 ellipsoid (a = 6378137 m, f = 1/298.257223563) by Vincenty's inverse,
-  converged on an absolute λ step under 1e-12 rad within 200 iterations (so a meridian never divides by a zero
-  longitude difference), and the spherical haversine (R = 6371.0088 km) only where that fails (near-antipodal points).
-  The sphere is off by up to 0.56 % depending on direction, enough to rank two sites the wrong way round.
-  A group's title is
+  converged on an absolute λ step under 1e-12 rad within 200 iterations (so a meridian never divides by a zero longitude
+  difference), and the spherical haversine (R = 6371.0088 km) only where that fails (near-antipodal points). The sphere
+  is off by up to 0.56 % depending on direction, enough to rank two sites the wrong way round. A group's title is
   `site_group_title()` of its lead: the name without an exact trailing " — " + its `siteName` (the name a per-site
   import generated), else the name; a custom name lives on the lead row and moves with it. A row's `place` (role
   `place`) is the RadioReference geography an import captured: `{states: [{stid, name?}], counties: [{ctid, stid?,
@@ -15661,35 +15659,36 @@ Qt Quick frontend (`src/ui/qt`):
   `locationChanged` (the timer stops while a phone sleeps); that read then queues one `locationChanged` for every
   other reader (the location line, the site chooser), never inside the read itself. Each member's distance is measured
   once per fix: `m_rowDistances` keeps it by UID, emptied when the fix changes, and a rebuild for any other change
-  reuses it while the site's position is unchanged (`distanceCount()` counts the measurements, for tests).
-  Search (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a
-  number and a following MHz/kHz is one term); a term matches a folded substring of the card's text (members' names
-  and site names, place state and county names, and the protocol label, supplied by `protocolLabels` from `Util.js`)
-  or a frequency of any member (a bare number of three digits or more reads as MHz; a member's own `freqMhz` is read
-  by `session_args_freq_hz()`, the tuner's reading, so every spelling that tunes is found). A row whose frequency or place an
-  edit cleared ranks as unplaced and without coordinates. Rebuilds are coalesced into one `QTimer::singleShot(0)`
-  pass; a query change only refilters and a sort change only re-sorts. Without a screen reader the diff against the
-  old list emits removes, one-row moves (the longest increasing run stays), inserts and one `dataChanged` per card with
-  the roles that changed, so a delegate survives a sort and keeps the keyboard. With `screenReaderActive` the rows are
-  positional (`applyPositional()`): row i shows the i-th card, so a reorder or a filter is one `dataChanged` per row
-  whose card changed (its roles), never a reset, a move or a remove. A shorter list keeps the rows past its end, held:
-  `rowCount()` is `shownCount` plus the held rows, each keeping the card it last showed, `held` true (only that role
-  changes as a row is held); a longer list takes them back first, and a row is inserted only past the most rows there
-  ever were. Under Qt 6.11.3's Android bridge each delegate made or destroyed made Android's main thread walk the list
-  again (`childIdListForAccessibleObject`), so the reset this replaced hung the app for minutes at 300 cards. Turning
-  the screen reader off removes the held rows. A reorder nobody asked for is held while `holdReorders` is set (Home
-  visible on Systems): the cards shown keep their rows and a new one goes after its new-order predecessor, until the
-  hold ends or the user asks for a change (query, sort, the first fix newer than the stored one after
-  `markLocationRequested()`; an expiry meanwhile keeps the mark), so TalkBack's swipe order always matches the screen;
-  the count is read once. A held order can show a section in two runs, so `sectionStart` marks only a section's first
-  card in the shown order. `receiverLabel` is the receiver ("USB", "RTL-TCP host:port", "Airspy SERIAL") of a card
-  whose title another shown card has (one system on two receivers), else empty; TCP, UDP and file cards name their
-  source in the meta already and get none. Home shows it on a line of its own under the source line, which then leaves
-  RTL-TCP's marker out. `rebuilt()` follows every rebuild, changed or not, after its row signals and
-  `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's bridge). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard, frequency and key-configured reads,
-  titles against a real pin, each order and its ties, place and distance labels, search, signals, screen-reader
-  holds and the location mark, one section start in a held order, a fix that lapses with no signal, coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles, `rebuilt()` after
-  the rows, and a 500-row timing check with and without a screen reader).
+  reuses it while the site's position is unchanged (`distanceCount()` counts the measurements, for tests). Search
+  (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a number and a following MHz/kHz is
+  one term); a term matches a folded substring of the card's text (members' names and site names, place state and county
+  names, and the protocol label, supplied by `protocolLabels` from `Util.js`) or a frequency of any member (a bare
+  number of three digits or more reads as MHz; a member's own `freqMhz` is read by `session_args_freq_hz()`, the tuner's
+  reading, so every spelling that tunes is found). A row whose frequency or place an edit cleared ranks as unplaced and
+  without coordinates. Rebuilds are coalesced into one `QTimer::singleShot(0)` pass; a query change only refilters and a
+  sort change only re-sorts. Without a screen reader the diff against the old list emits removes, one-row moves (the
+  longest increasing run stays), inserts and one `dataChanged` per card with the roles that changed, so a delegate
+  survives a sort and keeps the keyboard. With `screenReaderActive` the rows are positional (`applyPositional()`): row i
+  shows the i-th card, so a reorder or a filter is one `dataChanged` per row whose card changed (its roles), never a
+  reset, a move or a remove. A shorter list keeps the rows past its end, held: `rowCount()` is `shownCount` plus the
+  held rows, each keeping the card it last showed, `held` true (only that role changes as a row is held); a longer list
+  takes them back first, and a row is inserted only past the most rows there ever were. Under Qt 6.11.3's Android bridge
+  each delegate made or destroyed made Android's main thread walk the list again (`childIdListForAccessibleObject`), so
+  the reset this replaced hung the app for minutes at 300 cards. Turning the screen reader off removes the held rows. A
+  reorder nobody asked for is held while `holdReorders` is set (Home visible on Systems): the cards shown keep their
+  rows and a new one goes after its new-order predecessor, until the hold ends or the user asks for a change (query,
+  sort, the first fix newer than the stored one after `markLocationRequested()`; an expiry meanwhile keeps the mark), so
+  TalkBack's swipe order always matches the screen; the count is read once. A held order can show a section in two runs,
+  so `sectionStart` marks only a section's first card in the shown order. `receiverLabel` is the receiver ("USB",
+  "RTL-TCP host:port", "Airspy SERIAL") of a card whose title another shown card has (one system on two receivers), else
+  empty; TCP, UDP and file cards name their source in the meta already and get none. Home shows it on a line of its own
+  under the source line, which then leaves RTL-TCP's marker out. `rebuilt()` follows every rebuild, changed or not,
+  after its row signals and `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's
+  bridge). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard, frequency and
+  key-configured reads, titles against a real pin, each order and its ties, place and distance labels, search, signals,
+  screen-reader holds and the location mark, one section start in a held order, a fix that lapses with no signal,
+  coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles,
+  `rebuilt()` after the rows, and a 500-row timing check with and without a screen reader).
 - `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
   match: `text_fold()` (case and accents folded, by code point), `text_compare_names()` (natural order: leading
   punctuation skipped, digit runs by value, a shorter digit run first on a tie, then the raw text, so different
