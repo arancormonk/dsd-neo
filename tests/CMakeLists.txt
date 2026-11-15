@@ -12952,6 +12952,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
@@ -13001,6 +13002,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
@@ -13045,6 +13047,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
@@ -13093,6 +13096,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
@@ -14597,6 +14601,19 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
 )
 add_test(NAME DMR_MASS_REGISTRATION COMMAND dsd-neo_test_dmr_mass_registration)
+
+# DMR CSBK decode fixes through dmr_cspdu(): NACK_Rsp order and reasons, FID-gated standard opcodes, C_AHOY
+# classification
+add_executable(dsd-neo_test_dmr_csbk_fixes protocol/dmr/test_dmr_csbk_fixes.c)
+target_include_directories(
+    dsd-neo_test_dmr_csbk_fixes
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_csbk_fixes
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_CSBK_FIXES COMMAND dsd-neo_test_dmr_csbk_fixes)
 
 add_executable(dsd-neo_test_dmr_r34_noise protocol/dmr/test_dmr_r34_noise.c)
 target_include_directories(

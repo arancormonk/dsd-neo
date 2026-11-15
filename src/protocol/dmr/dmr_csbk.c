@@ -51,6 +51,7 @@
 #include <time.h>
 #include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
+#include "dmr_reason.h"
 #include "dmr_tiii_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -718,8 +719,8 @@ dmr_cspdu_pf0_handle_ackvit(int csbk_o) {
 }
 
 static void
-dmr_cspdu_pf0_handle_acks(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
-    if (csbk_fid == 0x10 || !(csbk_o == 32 || csbk_o == 33 || csbk_o == 34 || csbk_o == 35)) {
+dmr_cspdu_pf0_handle_acks(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o) {
+    if (!(csbk_o == 32 || csbk_o == 33 || csbk_o == 34 || csbk_o == 35)) {
         return;
     }
 
@@ -740,7 +741,13 @@ dmr_cspdu_pf0_handle_acks(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, i
     uint32_t ack_target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
     uint32_t ack_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
-    DSD_FPRINTF(stderr, "Response: %02X; Reason: %02X; ", response_info, reason_code);
+    // The Tier III reason table (TS 102 361-4 Tables 7.42-7.45), not the Tier II NACK_Rsp one.
+    const char* reason_text = dmr_tier3_reason_text(reason_code);
+    if (reason_text != NULL) {
+        DSD_FPRINTF(stderr, "Response: %02X; Reason: %02X (%s); ", response_info, reason_code, reason_text);
+    } else {
+        DSD_FPRINTF(stderr, "Response: %02X; Reason: %02X; ", response_info, reason_code);
+    }
     if (ack_res1) {
         DSD_FPRINTF(stderr, " Res: %d", ack_res1);
     }
@@ -767,6 +774,28 @@ dmr_cspdu_pf0_print_tier2_target_source(const char* label, uint8_t cs_pdu_bits[]
     DSD_FPRINTF(stderr, "Target [%d] - Source [%d] ", target, source);
 }
 
+// NACK_Rsp (TS 102 361-2 clause 7.1.2.4, Table 7.6): unlike UU_V_Req and UU_Ans_Rsp, the source address (bits 32-55,
+// the Additional Information Field) comes before the target (56-79). Its Reason Code uses the Tier II table (7.13).
+static void
+dmr_cspdu_pf0_handle_nack_rsp(const uint8_t cs_pdu_bits[]) {
+    const uint8_t source_type = cs_pdu_bits[17];
+    const uint8_t service_type = (uint8_t)convert_bits_into_output(&cs_pdu_bits[18], 6);
+    const uint8_t reason = (uint8_t)convert_bits_into_output(&cs_pdu_bits[24], 8);
+    const uint32_t source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    const uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
+    const char* reason_text = dmr_tier2_nack_reason_text(reason);
+
+    DSD_FPRINTF(stderr, "\n");
+    DSD_FPRINTF(stderr, " Negative Acknowledgement Response (NACK_Rsp) - Source [%" PRIu32 "] - Target [%" PRIu32 "] ",
+                source, target);
+    DSD_FPRINTF(stderr, "- Source Type: %s; Service: %02X; ", source_type ? "MS" : "BS", service_type);
+    if (reason_text != NULL) {
+        DSD_FPRINTF(stderr, "Reason: %02X (%s); ", reason, reason_text);
+    } else {
+        DSD_FPRINTF(stderr, "Reason: %02X; ", reason);
+    }
+}
+
 static void
 dmr_cspdu_pf0_handle_tier2_simple(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o) {
     if (csbk_o == 4) {
@@ -784,7 +813,7 @@ dmr_cspdu_pf0_handle_tier2_simple(dsd_opts* opts, dsd_state* state, uint8_t cs_p
         return;
     }
     if (csbk_o == 38) {
-        dmr_cspdu_pf0_print_tier2_target_source(" Negative Acknowledgement Response (NACK_Rsp) - ", cs_pdu_bits);
+        dmr_cspdu_pf0_handle_nack_rsp(cs_pdu_bits);
         return;
     }
     if (csbk_o == 56 && state->synctype == DSD_SYNC_DMR_MS_DATA) {
@@ -793,80 +822,72 @@ dmr_cspdu_pf0_handle_tier2_simple(dsd_opts* opts, dsd_state* state, uint8_t cs_p
     UNUSED2(opts, state);
 }
 
-static void
-dmr_cspdu_pf0_ahoy_service_text(uint8_t svc_kind, const char** print_text, const char** append_text) {
-    static const struct {
-        uint8_t kind;
-        const char* print;
-        const char* append;
-    } map[] = {
-        {0, "Voice Call ", "Voice Call; "},
-        {1, "Voice Call ", "Voice Call; "},
-        {2, "Packet Data Call ", "Packet Data Call; "},
-        {3, "Packet Data Call ", "Packet Data Call; "},
-        {4, "UDT Short Data Call ", "UDT Short Data Call; "},
-        {5, "UDT Short Data Call ", "UDT Short Data Call; "},
-        {6, "UDT Short Data Polling Service ", "UDT Short Data Polling Service; "},
-        {7, "Status Transport Service ", "Status Transport Service; "},
-        {8, "Call Diversion Service ", "Call Diversion Service; "},
-        {9, "Call Answer Service ", "Call Answer Service; "},
-        {10, "Full Duplex Voice Call ", "Full Duplex Voice Call; "},
-        {11, "Full Duplex Packet Data Call ", "Full Duplex Packet Data Call; "},
-        {12, "Reserved ", "Reserved; "},
-        {13, "Supplimentary Service (Stun/Revive/Kill/Auth): ", "Supplimentary Service (Stun/Revive/Kill/Auth); "},
-        {14, "Registration/Authentication ", "Registration/Authentication; "},
-        {15, "Cancel Call Service ", "Cancel Call Service; "},
+static const char*
+dmr_cspdu_pf0_ahoy_service_text(uint8_t svc_kind) {
+    // Service_Kind (TS 102 361-4 Table 7.49).
+    static const char* const k_text[16] = {
+        "Voice Call ",
+        "Voice Call ",
+        "Packet Data Call ",
+        "Packet Data Call ",
+        "UDT Short Data Call ",
+        "UDT Short Data Call ",
+        "UDT Short Data Polling Service ",
+        "Status Transport Service ",
+        "Call Diversion Service ",
+        "Call Answer Service ",
+        "Full Duplex Voice Call ",
+        "Full Duplex Packet Data Call ",
+        "Reserved ",
+        "Supplementary Service: ",
+        "Registration/Authentication/Radio Check: ",
+        "Cancel Call Service ",
     };
+    return k_text[svc_kind & 0x0FU];
+}
 
-    *print_text = NULL;
-    *append_text = NULL;
-    for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
-        if (map[i].kind == svc_kind) {
-            *print_text = map[i].print;
-            *append_text = map[i].append;
-            return;
-        }
+// What a kind 13 / 14 C_AHOY asks: a command or poll sent to the target, never its outcome.
+static const char*
+dmr_cspdu_pf0_ahoy_kind_text(int kind) {
+    switch (kind) {
+        case DMR_AHOY_STUN: return "Stun Command; ";
+        case DMR_AHOY_REVIVE: return "Revive Command; ";
+        case DMR_AHOY_KILL: return "Kill Command; ";
+        case DMR_AHOY_RADIO_CHECK: return "Radio Check; ";
+        case DMR_AHOY_AUTHENTICATION: return "Authentication Challenge; ";
+        case DMR_AHOY_SUBSCRIPTION_REQ: return "Talkgroup Subscription List Request; ";
+        default: return NULL;
     }
 }
 
 static void
-dmr_cspdu_pf0_handle_c_ahoy(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
-    UNUSED(state);
+dmr_cspdu_pf0_handle_c_ahoy(uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
     if (csbk_o != 28) {
         return;
     }
 
-    uint16_t svc_opt = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 7);
-    uint8_t svc_flag = cs_pdu_bits[23];
-    uint8_t als_flag = cs_pdu_bits[24];
-    uint8_t ahoy_gi = cs_pdu_bits[25];
-    uint8_t ahoy_bf = (uint8_t)convert_bits_into_output(&cs_pdu_bits[26], 2);
-    uint8_t svc_kind = (uint8_t)convert_bits_into_output(&cs_pdu_bits[28], 4);
-    uint32_t ahoy_target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
-    uint32_t ahoy_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
-    char ahoy_str[200];
-    const char* svc_print = NULL;
-    const char* svc_append = NULL;
+    dmr_ahoy_fields f;
+    dmr_ahoy_fields_from_bits(cs_pdu_bits, &f);
+    const uint16_t svc_opt = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 7);
+    const int kind = dmr_ahoy_classify(&f);
+    const char* kind_text = dmr_cspdu_pf0_ahoy_kind_text(kind);
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " C_AHOY - ");
-    UNUSED3(ahoy_bf, svc_flag, als_flag);
-    DSD_MEMSET(ahoy_str, 0, sizeof(ahoy_str));
-    DSD_SNPRINTF(ahoy_str, sizeof(ahoy_str), "AHOY TGT: %d; SRC: %d; ", ahoy_target, ahoy_source);
-
-    DSD_FPRINTF(stderr, ahoy_gi == 0 ? "Private " : "Group ");
-    dsd_append(ahoy_str, sizeof ahoy_str, ahoy_gi == 0 ? "Private; " : "Group; ");
+    DSD_FPRINTF(stderr, f.group == 0 ? "Private " : "Group ");
     DSD_FPRINTF(stderr, "FID: %02X SVC: %02X ", csbk_fid, svc_opt);
-    dmr_cspdu_pf0_ahoy_service_text(svc_kind, &svc_print, &svc_append);
-    if (svc_print != NULL) {
-        DSD_FPRINTF(stderr, "%s", svc_print);
+    DSD_FPRINTF(stderr, "%s", dmr_cspdu_pf0_ahoy_service_text(f.service_kind));
+    if (kind_text != NULL) {
+        DSD_FPRINTF(stderr, "%s", kind_text);
     }
-
-    DSD_FPRINTF(stderr, "Target: %d; Source: %d; ", ahoy_target, ahoy_source);
-    if (svc_append != NULL) {
-        dsd_append(ahoy_str, sizeof ahoy_str, svc_append);
+    if (kind == DMR_AHOY_AUTHENTICATION) {
+        // The source field carries the 24-bit challenge (Table 6.17), not an address.
+        DSD_FPRINTF(stderr, "Target: %" PRIu32 "; Challenge: %06" PRIX32 "; ", f.target, f.source);
+        dmr_gateway_identifier(0, f.target);
+        return;
     }
-    dmr_gateway_identifier(ahoy_source, ahoy_target);
+    DSD_FPRINTF(stderr, "Target: %" PRIu32 "; Source: %" PRIu32 "; ", f.target, f.source);
+    dmr_gateway_identifier(f.source, f.target);
 }
 
 static void
@@ -1644,6 +1665,47 @@ dmr_cspdu_pf0_handle_c_bcast(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     dmr_cspdu_pf0_c_bcast_print_payload(opts, &f);
 }
 
+// Opcodes whose meaning only the standard feature set (FID 0x00) gives (every one of their tables says "FID shall be set
+// to 0000 0000"): vendors reuse the numbers for their own PDUs (TS 102 361-2 / -4).
+static int
+dmr_cspdu_pf0_is_standard_only(int csbk_o) {
+    switch (csbk_o) {
+        case 4:  // UU_V_Req
+        case 5:  // UU_Ans_Rsp
+        case 7:  // CT_CSBK
+        case 28: // C_AHOY
+        case 30: // C_ACKVIT
+        case 31: // C_RAND
+        case 32: // C_ACKD
+        case 33: // C_ACKU
+        case 34: // P_ACKD
+        case 35: // P_ACKU
+        case 38: // NACK_Rsp
+        case 42: // P_MAINT
+            return 1;
+        default: return 0;
+    }
+}
+
+// The standard-only handlers run for FID 0x00. Under another FID the opcode is the manufacturer's: shown as such unless
+// a vendor handler below decodes it.
+static void
+dmr_cspdu_pf0_handle_standard_only(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
+    if (csbk_fid != 0) {
+        if (dmr_cspdu_pf0_is_standard_only(csbk_o)) {
+            DSD_FPRINTF(stderr, "\n");
+            DSD_FPRINTF(stderr, " Manufacturer CSBK: FID %02X; Opcode %02X;", csbk_fid, csbk_o);
+        }
+        return;
+    }
+    dmr_cspdu_pf0_handle_c_ahoy(cs_pdu_bits, csbk_o, csbk_fid);
+    dmr_cspdu_pf0_handle_p_maint(state, cs_pdu_bits, csbk_o);
+    dmr_cspdu_pf0_handle_ackvit(csbk_o);
+    dmr_cspdu_pf0_handle_acks(state, cs_pdu_bits, csbk_o);
+    dmr_cspdu_pf0_handle_c_rand(csbk_o);
+    dmr_cspdu_pf0_handle_tier2_simple(opts, state, cs_pdu_bits, csbk_o);
+}
+
 static void
 dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_pf, int csbk_o,
                      int csbk_fid) {
@@ -1671,13 +1733,7 @@ dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
 
         dmr_cspdu_pf0_handle_c_bcast(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
 
-        dmr_cspdu_pf0_handle_c_ahoy(state, cs_pdu_bits, csbk_o, csbk_fid);
-
-        dmr_cspdu_pf0_handle_p_maint(state, cs_pdu_bits, csbk_o);
-        dmr_cspdu_pf0_handle_ackvit(csbk_o);
-        dmr_cspdu_pf0_handle_acks(state, cs_pdu_bits, csbk_o, csbk_fid);
-        dmr_cspdu_pf0_handle_c_rand(csbk_o);
-        dmr_cspdu_pf0_handle_tier2_simple(opts, state, cs_pdu_bits, csbk_o);
+        dmr_cspdu_pf0_handle_standard_only(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
 
         dmr_cspdu_pf0_handle_preamble(opts, state, cs_pdu_bits, csbk_o);
         //end tier 2 csbks

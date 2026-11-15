@@ -11315,6 +11315,20 @@ Private per-protocol modules worth knowing about:
   `dmr_cspdu_cap_plus_slot_lsn()`), not the record's, so a slot whose identity expired with its call while the
   companion kept the carrier busy (no record left) takes the group a status names for its next call. Tests:
   `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`.
+- DMR reasons and C_AHOY meaning (`src/protocol/dmr/dmr_reason.{c,h}`). The Tier II NACK_Rsp Reason Code (TS 102
+  361-2 Table 7.13) and the Tier III C_ACKD / C_ACKU / P_ACKD / P_ACKU Reason (TS 102 361-4 Tables 7.42-7.45, plus
+  MS_Duplex_Not_Supported 0x16 from the clause 7.2.8.2 text) are separate tables, as they give 0x21 different meanings:
+  `dmr_tier2_nack_reason_text()`, `dmr_tier3_reason_text()` (NULL for an undefined value: print it raw) and
+  `dmr_tier3_reason_class_of()` (NACK / ACK / QACK / WACK). `dmr_ahoy_classify()` reads a Service_Kind 13 / 14 C_AHOY
+  by its whole field combination (Tables 6.11, 6.17, 6.19, 6.23, 6.27): STUNI with flag 0 / 1 is stun / revive and
+  KILLI with flag 0 kill, each to one radio; TSI with flag 0 a radio check (radio or talkgroup); flag 0 with a
+  000000-FFFCDF value in the source field an authentication challenge to one radio, the value never an identity; TATTSI
+  with flag 1 the talkgroup subscription list request; any other combination UNRECOGNISED. Each names the command or
+  poll the TSCC sent, never its outcome (the radio's answer is inbound). NACK_Rsp carries its source before its target
+  (Table 7.6). Standard-only CSBK opcodes (UU_V_Req, UU_Ans_Rsp, CT_CSBK, C_AHOY, C_ACKVIT, C_RAND, C_ACKD, C_ACKU,
+  P_ACKD, P_ACKU, NACK_Rsp, P_MAINT) decode only under FID 0x00 (`dmr_cspdu_pf0_handle_standard_only()`); under another
+  FID they print as `Manufacturer CSBK` unless a vendor handler decodes them. Grants, moves, C_ALOHA (Capacity Max
+  recognition included), P_CLEAR, P_PROTECT, C_BCAST and preambles still run for any FID. Tests: `DMR_CSBK_FIXES`.
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
   stays at the CSBK/status layer, which alone knows each grant's classification (Tier III data grants rewritten to
   group, Connect Plus private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,
