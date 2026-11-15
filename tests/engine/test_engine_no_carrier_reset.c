@@ -12724,11 +12724,11 @@ test_y_quiet_timing_says_why(void) {
                                  SCAN_QUIET_WARN_PROVOICE | SCAN_QUIET_WARN_X2TDMA, 0U, NULL, 0, (uint32_t)untyped_hz,
                                  0, 0U);
     rc |= expect_true("another decoder set: logged again", g_yq.warns == 2 && strcmp(g_yq.warn, want) == 0);
-    /* A sync on the row (a call): its hangtime runs from the sync and says nothing of the check. */
-    dsd_engine_scan_quiet_note_frame_sync(state);
-    dsd_engine_scan_quiet_frame_end(state);
+    /* An X2-TDMA call on the row: processFrame() notes each frame it dispatches (scan_y_unchecked_seq, which
+       ENGINE_PROTOCOL_DISPATCH pins); the call explains the visit, so nothing is said of the check. */
+    state->scan_y_unchecked_seq++;
     yq_timing_tick(opts, state);
-    rc |= yq_expect_quiet(state, "a row that synced", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
+    rc |= yq_expect_quiet(state, "an X2-TDMA call on the row", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
                           DSD_SCAN_QUIET_REASON_NONE);
     opts->frame_x2tdma = 0;
     opts->frame_provoice = 0;
@@ -12771,10 +12771,20 @@ yq_cause_case(int which) {
     rc |= yq_expect_quiet(state, "an unsynced row it cannot check", DSD_SCAN_STAY_HANGTIME,
                           DSD_SCAN_QUIET_STATUS_NO_CHECK, k_reason[which]);
     rc |= expect_true("one WARN line, nothing requested", g_yq.warns == 1 && g_yq.requests == 0);
-    dsd_engine_scan_quiet_note_frame_sync(state);
-    dsd_engine_scan_quiet_frame_end(state);
+    /* Raw syncs with no content (NXDN48 noise passes its sync word several times a second), and the hangtime anchor
+       stamped again by the scan itself (a hold released): no call, so the status stays. */
+    for (int sync = 0; sync < 5; sync++) {
+        dsd_engine_scan_quiet_note_frame_sync(state);
+        dsd_engine_scan_quiet_frame_end(state);
+    }
+    state->last_cc_sync_time += 1;
     yq_timing_tick(opts, state);
-    rc |= yq_expect_quiet(state, "the row synced", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
+    rc |= yq_expect_quiet(state, "raw syncs and a re-armed anchor", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, k_reason[which]);
+    /* A decoded call: content its protocol's CRC/FEC gate passed. */
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a decoded call", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
                           DSD_SCAN_QUIET_REASON_NONE);
     opts->audio_in_type = AUDIO_IN_RTL;
     g_yq_monitor_nfm_hz = -1;
@@ -12806,6 +12816,11 @@ test_y_quiet_refused_row_restarts_after_an_edit(void) {
     rc |= expect_true("the edit owes one republication",
                       dsd_engine_scan_quiet_take_republish(opts, state, 2) == 1
                           && dsd_engine_scan_quiet_take_republish(opts, state, 2) == 0);
+    /* Taken but not republished: back to the width published, then the edit again, owes again. */
+    opts->analog_nfm_bandwidth_hz = 13500;
+    rc |= expect_true("back as published: nothing owed", dsd_engine_scan_quiet_take_republish(opts, state, 2) == 0);
+    opts->analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_true("the same edit again owes again", dsd_engine_scan_quiet_take_republish(opts, state, 2) == 1);
     dsd_engine_scan_quiet_publish_row(opts, state);
     rc |= expect_true("the same visit is measured at the new width", scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED
                                                                          && g_yq.requests == 1

@@ -492,13 +492,17 @@ quiet_input_detail(const dsd_opts* opts) {
 #endif
 }
 
-/* Whether the -Y row on air heard a sync on this visit (issue #834 A4): its hangtime then runs from the sync, a call
-   explains the visit, and no no-check status is shown on it. A check under way is still shown (D8: a sync no longer
-   ends it). */
+/* Whether the -Y row on air carried a call on this visit (issue #834 A4, "unsynced HANGTIME"): content a protocol's
+   CRC/FEC gate passed, or a frame of a protocol with no such gate (X2-TDMA, ProVoice, TETRA), since its landing. A
+   call explains the visit, so no no-check status is shown on it; a check under way still is (D8). A raw sync, which
+   NXDN48 and dPMR pass on noise several times a second, is no call, and neither is the scan's own re-arm of the
+   hangtime anchor (a landing, a hold released). */
 static int
 quiet_y_visit_synced(const dsd_state* state) {
     const dsd_engine_scan_owner* owner = quiet_owner_const(state);
-    return owner && owner->landing.by == DSD_ENGINE_SCAN_LANDING_ROW && owner->sync_seq != owner->landing.sync_seq;
+    return owner && owner->landing.by == DSD_ENGINE_SCAN_LANDING_ROW
+           && (state->scan_y_content_seq != owner->landing.y_content_seq
+               || state->scan_y_unchecked_seq != owner->landing.y_unchecked_seq);
 }
 
 /* NO_CHECK for @p reason on @p report, when its stay shows the status: not on a -Y visit that synced. */
@@ -596,6 +600,11 @@ typedef struct {
     int receiver_input;
     uint32_t receiver_device;
     uint32_t receiver_rate_hz;
+    /* The DSP rate the visit it was read on ran at (a list's DSP bandwidth sets the capture rate), and the stream
+       session it was read in (rtl_stream_session_generation(): the offset tuning, centred I/Q and shift settings that
+       decide the rotation are set when a stream opens, never per tune). */
+    uint32_t receiver_dsp_rate_hz;
+    uint32_t receiver_session;
     /* The revisions a no-check suspension was last found moved at (dsd_engine_scan_quiet_take_republish()), so a frame
        boundary owes one republication per change. */
     scan_quiet_revisions republish_seen;
@@ -794,6 +803,8 @@ quiet_capture_refusal(const dsd_opts* opts, scan_quiet_check* c, const dsd_signa
     c->receiver_input = opts->audio_in_type;
     c->receiver_device = quiet_device_hash(opts);
     c->receiver_rate_hz = cap->rate_hz;
+    c->receiver_dsp_rate_hz = c->dsp_rate_hz;
+    c->receiver_session = rtl_stream_session_generation();
     if (receiver != (uint8_t)DSD_SCAN_QUIET_REASON_NONE) {
         return receiver;
     }
@@ -1061,6 +1072,7 @@ quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_
     c->dsp_rate_hz = e->dsp_rate_hz;
     c->frequency_hz = e->frequency_hz;
     c->revisions = e->revisions;
+    c->republish_seen = e->revisions;
     c->generation_before = landed ? owner->landing.generation_before_tune : owner->tune_generation_before;
     c->origin_set = landed;
     c->origin_ms = restart ? now_ms : (landed ? owner->landing.landed_realtime_ms : 0U);
@@ -1156,6 +1168,7 @@ quiet_suspend_ineligible(const dsd_opts* opts, const dsd_engine_scan_owner* owne
     c->analog_width_hz = e->analog_width_hz;
     /* What a frame boundary compares to owe its republication once something it depends on moves. */
     c->revisions = e->revisions;
+    c->republish_seen = e->revisions;
     if (!scan_quiet_session_supported(opts)) {
         c->reason = (uint8_t)DSD_SCAN_QUIET_REASON_INPUT;
     } else if (e->key.owner == owner_kind) {
@@ -1164,12 +1177,14 @@ quiet_suspend_ineligible(const dsd_opts* opts, const dsd_engine_scan_owner* owne
 }
 
 /* Whether the started check @p c is refused for its analog width without a capture read (issue #834 A5): the last
-   capture read, on the input in force, was rotated and at a validated rate, and the calibration covers no such width
-   of this kind there. The width table does not hang on the visit, so a width-refused target is refused at once on
-   every visit (no Quiet check before its capture comes) until a width, decoder or list edit gives it other facts. */
+   capture read, on the input in force and at the DSP rate this visit runs (so at this visit's capture rate), was
+   rotated and at a validated rate, and the calibration covers no such width of this kind there. At another DSP rate
+   the visit reads its own capture, whose rate outranks its width. The width table does not hang on the visit, so a
+   width-refused target is refused at once on every visit (no Quiet check before its capture comes) until a width,
+   decoder or list edit gives it other facts. */
 static int
 quiet_width_refused_ahead(const dsd_opts* opts, const scan_quiet_check* c) {
-    if (!(c->classes & QUIET_CLASS_ANALOG) || c->receiver_rate_hz == 0U
+    if (!(c->classes & QUIET_CLASS_ANALOG) || c->receiver_rate_hz == 0U || c->receiver_dsp_rate_hz != c->dsp_rate_hz
         || c->receiver_reason != (uint8_t)DSD_SCAN_QUIET_REASON_NONE || c->receiver_input != opts->audio_in_type
         || c->receiver_device != quiet_device_hash(opts) || !dsd_signal_quiet_rate_supported(c->receiver_rate_hz)) {
         return 0;
@@ -1277,7 +1292,11 @@ quiet_no_check_facts_moved(const dsd_opts* opts, const dsd_state* state, scan_qu
     }
     scan_quiet_revisions now_rev;
     scan_quiet_revisions_read(opts, state, &now_rev);
-    if (quiet_revisions_equal(&now_rev, &c->revisions) || quiet_revisions_equal(&now_rev, &c->republish_seen)) {
+    if (quiet_revisions_equal(&now_rev, &c->revisions)) {
+        c->republish_seen = c->revisions; /* back to what was published: a change after this owes again */
+        return 0;
+    }
+    if (quiet_revisions_equal(&now_rev, &c->republish_seen)) {
         return 0;
     }
     c->republish_seen = now_rev;
@@ -1387,7 +1406,8 @@ scan_quiet_key_get(const dsd_state* state) {
    fact: a list's DSP bandwidth sets the capture rate a visit runs at, so RATE is a visit's own, read on its capture. */
 static uint8_t
 quiet_receiver_reason_now(const dsd_opts* opts, const scan_quiet_check* c) {
-    if (c->receiver_reason != (uint8_t)DSD_SCAN_QUIET_REASON_TUNER || c->receiver_input != opts->audio_in_type
+    if (c->receiver_reason != (uint8_t)DSD_SCAN_QUIET_REASON_TUNER
+        || c->receiver_session != rtl_stream_session_generation() || c->receiver_input != opts->audio_in_type
         || c->receiver_device != quiet_device_hash(opts)) {
         return (uint8_t)DSD_SCAN_QUIET_REASON_NONE;
     }
@@ -1768,7 +1788,6 @@ void
 dsd_engine_scan_quiet_note_frame_sync(dsd_state* state) {
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
     if (owner) {
-        owner->sync_seq++;
         owner->frame_pending = 1U;
         owner->frame_evidence = 0U;
         owner->frame_hold_ms = 0U;

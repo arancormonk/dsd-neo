@@ -22835,6 +22835,8 @@ typedef struct {
     uint32_t change_seq; /* rtl_stream_receive_change_seq(): the requests that may change the receive chain */
     int rate_ok;
     int analog_ok;
+    uint32_t refused_rate_hz; /* one capture rate the calibration did not validate, 0 for none */
+    uint32_t session;         /* rtl_stream_session_generation(): the stream opens and stops */
 } quiet_fake_tap;
 
 static quiet_fake_tap g_tap;
@@ -22913,7 +22915,12 @@ rtl_stream_receive_change_seq(void) {
 
 int
 dsd_signal_quiet_rate_supported(uint32_t rate_hz) {
-    return g_tap.rate_ok && rate_hz != 0U;
+    return g_tap.rate_ok && rate_hz != 0U && rate_hz != g_tap.refused_rate_hz;
+}
+
+uint32_t
+rtl_stream_session_generation(void) {
+    return g_tap.session;
 }
 
 /* The stream's width rule (io/radio/rtl_demod_config.cpp, which this fixture does not link), as it is: an explicit
@@ -22993,6 +23000,9 @@ static int g_qt_monitor_nfm_hz = -1;
 /* Whether quiet_rig_init() runs the rig on the real realtime clock (the portable cases) rather than the fake one. */
 static int g_qt_real_clock = 0;
 
+/* A second target list quiet_rig_init() loads beside the first ("" for none). */
+static char g_qt_second_list[DSD_TEST_PATH_MAX];
+
 static int
 quiet_rig_init(dsd_opts* opts, dsd_state* state, const char* path) {
     reset_scan_opts_state(opts, state);
@@ -23003,6 +23013,10 @@ quiet_rig_init(dsd_opts* opts, dsd_state* state, const char* path) {
     }
     DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
     opts->trunk_scan_list_count = 1;
+    if (g_qt_second_list[0] != '\0') {
+        DSD_SNPRINTF(opts->trunk_scan_lists[1].path, sizeof opts->trunk_scan_lists[1].path, "%s", g_qt_second_list);
+        opts->trunk_scan_list_count = 2;
+    }
     opts->scan_skip_silent = 1;
     DSD_MEMSET(&g_tap, 0, sizeof g_tap);
     g_tap.rate_ok = 1;
@@ -26363,6 +26377,19 @@ test_scan_quiet_trunk_says_why_a_visit_is_not_checked(void) {
     qt_pass(&opts, &state);
     rc |= qt_expect_warn("off and on: logged again", 4, DSD_SCAN_QUIET_REASON_TUNER, SCAN_QUIET_WARN_CENTRED, 0U, NULL,
                          0U, 0, 0U);
+    /* The width target, still under the centred verdict; then the stream opens again (its shift and offset tuning are
+       set anew there), and the verdict no longer stands for a visit that reads no capture of its own. */
+    qt_next_target(&opts, &state, k_qt_hz_b, 0);
+    qt_decode_at(140U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_quiet(&state, "the centred verdict in this stream session", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_TUNER);
+    g_tap.session++;
+    qt_decode_at(150U);
+    qt_pass(&opts, &state);
+    rc |=
+        qt_expect_quiet(&state, "a new stream session", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_NO_WIDTH);
+    rc |= qt_expect_warn("its own reason, logged", 5, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "nun", k_qt_hz_b, 0, 0U);
     quiet_rig_finish(&opts, &state, dir, path);
     return rc;
 }
@@ -26543,6 +26570,54 @@ test_scan_quiet_trunk_channel_lines_once_per_key(void) {
     qt_decode_at(at);
     qt_pass(&opts, &state);
     rc |= qt_expect_warn("a list reload: logged again", 7, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "u1", hz[0], 0, 0U);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* Two lists at different DSP rates (issue #834 A5 precedence): list 1's target reads a validated capture; list 2's runs
+   another DSP rate, whose capture rate the calibration did not validate. Its NFM target at a width it does not cover is
+   not refused for its width ahead of its own capture: the capture's rate outranks the width, so it reads rate. */
+static int
+test_scan_quiet_width_ahead_keeps_rate_precedence(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char second[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header, "d,dmr-conventional,452000000,,2000,1000,,\n",
+                                          path, sizeof path)
+               != 0
+        || dsd_test_path_join(second, sizeof second, dir, "second.csv") != 0
+        || write_text_file(second, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                                   "w,nfm-conventional,453000000,,2000,1000,,--nfm-bandwidth-hz 13500\n")
+               != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(g_qt_second_list, sizeof g_qt_second_list, "%s", second);
+    const int failed = quiet_rig_init(&opts, &state, path);
+    g_qt_second_list[0] = '\0';
+    if (failed != 0) {
+        return 1;
+    }
+    qt_warns_watch();
+    g_tap.analog_ok = 0;
+    qt_decode_at(10U);
+    qt_pass(&opts, &state);
+    int rc = qt_expect("list 1's target is measured", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    /* List 2: another DSP rate, and a capture rate the calibration did not validate. */
+    g_scan_dsp_rate_hz = 24000;
+    g_tap.refused_rate_hz = 2400000U;
+    const int reads = g_tap.capture_reads;
+    qt_next_target(&opts, &state, k_qt_hz_b, 384000);
+    g_tap.capture.rate_hz = 2400000U;
+    qt_decode_at(20U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_quiet(&state, "list 2's width target at an uncalibrated rate", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_RATE);
+    rc |= qt_expect("it read its own capture", g_tap.capture_reads > reads);
+    rc |= qt_expect_warn("the rate line", 1, DSD_SCAN_QUIET_REASON_RATE, 0, 2400000U, NULL, 0U, 0, 0U);
+    (void)remove(second);
     quiet_rig_finish(&opts, &state, dir, path);
     return rc;
 }
@@ -26768,6 +26843,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_says_why_a_visit_is_not_checked);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_publishes_each_cause);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_channel_lines_once_per_key);
+    rc |= run_with_default_tune_hook(test_scan_quiet_width_ahead_keeps_rate_precedence);
 #endif
 #ifdef USE_RADIO
     rc |= test_scan_quiet_evidence_notes_bookkeeping();

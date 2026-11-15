@@ -547,12 +547,14 @@ Generated (do not edit/commit):
       while the stream keeps the output generation it refused (any change of rate, shift or receive profile moves it)
       starts nothing and reads no capture (`quiet_refusal_holds()`, one compare); the hunt and frame services answer
       NONE for it at once. A width refusal needs no capture of its own: a start whose analog width the calibration does
-      not cover at the last capture's rate (that capture rotated, at a validated rate, on the input in force) is refused
-      at once (`quiet_width_refused_ahead()`), so a width-refused target says so from the first moment of every visit. A
+      not cover at the last capture's rate (that capture rotated, at a validated rate, on the input in force, read on
+      a visit at this visit's DSP rate, so at its capture rate) is refused at once (`quiet_width_refused_ahead()`), so a
+      width-refused target says so from the first moment of every visit; at another DSP rate the visit reads its own
+      capture, whose rate outranks its width. A
       visit SUSPENDED with a reason whose revisions moved since its publication (a width or row edit) owes the frame
       boundary one republication per change (`dsd_engine_scan_quiet_take_republish()`,
-      `scan_quiet_check::republish_seen`), so it starts again on the same visit under syncs that keep the frame loop
-      running. A request the tap refuses (a Signal search holds it) is DONE.
+      `scan_quiet_check::republish_seen`, which a publication, and a return to the revisions published, set back), so
+      it starts again on the same visit under syncs that keep the frame loop running. A request the tap refuses (a Signal search holds it) is DONE.
     - Frame-boundary service (issue #834 D8, `dsd_engine_scan_quiet_frame_service()`): a sync its protocol's gate
       rejects no longer ends the check, so a channel whose noise keeps passing a sync word (NXDN48, dPMR) restarts
       short hunts that rarely reach the hunt's 300-symbol service, and the trunk scan's per-frame ticks publish only
@@ -722,15 +724,21 @@ Generated (do not edit/commit):
       (`scan_quiet_stay_shows_status()`: IDLE_DWELL, which -Y's voice gate also publishes while a row qualifies, and
       -Y's HANGTIME; a raw sync no longer ends the check (D8), so a -Y row's hangtime or qualify window shows CHECKING
       whether or not it has synced, and a check ended by checked content or a carrier is DONE, so NONE). NO_CHECK on
-      -Y only while the row has heard no sync this visit (A4's unsynced hangtime: `dsd_engine_scan_owner::sync_seq`,
-      moved by every sync the frame sync returns, against `dsd_engine_scan_landing::sync_seq`), since under the legacy
-      rule HANGTIME is the stay a call publishes from start to end; never for a trunked target. CHECKING covers every phase of a check under way: WAIT_CAPTURE (its capture wait, the frame-boundary
+      -Y only while the row has carried no call this visit (A4's unsynced hangtime: `dsd_state::scan_y_content_seq`,
+      checked content, and `scan_y_unchecked_seq`, an X2-TDMA, ProVoice or TETRA frame dispatched, against the values
+      the landing recorded, `dsd_engine_scan_landing::y_content_seq`, `y_unchecked_seq`), since under the legacy rule
+      HANGTIME is the stay a call publishes from start to end. A raw sync, which NXDN48 and dPMR pass on noise, is no
+      call, and neither is the hangtime anchor: the scan stamps it itself at a landing and when a hold is released, and
+      X2-TDMA never stamps it. Never for a trunked target. CHECKING covers every phase of a check under way: WAIT_CAPTURE (its capture wait, the frame-boundary
       settle and a retry's wait), REQUESTED, and READY, a quiet result held for a frame's pending verdict or past a
       lost tick guard included. NO_CHECK: the session's reason first (INPUT: the session refuses the input, in a
       radio-off build every input; then TUNER, RATE from the visit's own capture; a TUNER verdict the last capture read
-      gave, `scan_quiet_check::receiver_reason`, kept with the input kind and a hash of the input spec it was read on,
-      also stands for a visit still waiting for its own capture or one that never reads one, since the input and its
-      shift settings decide it for every visit; RATE does not, since a list's DSP bandwidth sets each visit's rate),
+      gave, `scan_quiet_check::receiver_reason`, kept with the input kind, a hash of the input spec and the stream
+      session (`rtl_stream_session_generation()`) it was read in, also stands for a visit still waiting for its own
+      capture or one that never reads one: the rotation comes from offset tuning, centred I/Q and the shift
+      (`capture_fs4_shift_active()`), which the stream sets when it opens, offset tuning and direct sampling included,
+      and never per tune, so a list mixing direct-sampled and tuner rows has one rotation for the session; RATE does not
+      carry over, since a list's DSP bandwidth sets each visit's rate),
       then the channel's
       (MODES: an untyped -Y row under a set with ProVoice, X2-TDMA, TETRA, the M17 encoder or no mode of a class; WIDTH
       at the capture; NO_WIDTH: an NFM channel or -8 monitor with no width), which the owners hand over with their facts
@@ -753,7 +761,8 @@ Generated (do not edit/commit):
       `test_scan_quiet_trunk_publishes_each_cause`, `test_scan_quiet_trunk_channel_lines_once_per_key`,
       `test_scan_quiet_input_has_no_check`, which also runs radio-off), `ENGINE_NO_CARRIER_RESET`
       (`test_y_quiet_timing_says_why`, `yq_cause_case()`: each cause unsynced, then NONE once the row synced,
-      `test_y_quiet_refused_row_restarts_after_an_edit`, `test_y_quiet_warn_widths_are_the_admitted_ones`).
+      `test_y_quiet_refused_row_restarts_after_an_edit`, `test_y_quiet_warn_widths_are_the_admitted_ones`),
+      `ENGINE_TRUNK_SCAN` `test_scan_quiet_width_ahead_keeps_rate_precedence` (two lists at different DSP rates).
     - Checked content (issue #834 D8): `activity_seq` moves, only while skip-silent is on, when a frame's content
       passes its protocol's CRC/FEC gate (a PROVEN content note, `dsd_frame_sync_hook_content_evidence()`, the engine's
       `dsd_engine_scan_quiet_note_evidence()`: once a frame however many of its checks pass, once a note outside a

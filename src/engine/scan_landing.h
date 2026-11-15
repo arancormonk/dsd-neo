@@ -105,7 +105,6 @@ dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_la
     landing.activity_seq = owner->tune_activity_seq;
     landing.tune_decode_m = owner->tune_decode_m;
     landing.tune_seq = owner->tune_seq;
-    landing.sync_seq = owner->sync_seq;
     owner->landing = landing;
 }
 
@@ -138,7 +137,9 @@ dsd_engine_scan_landing_note_row(dsd_state* state, int row, long freq_hz, uint64
                                                  .map_seq = state->trunk_chan_map_seq,
                                                  .list_rev = state->lcn_list_rev,
                                                  .index = row,
-                                                 .tune_request = request};
+                                                 .tune_request = request,
+                                                 .y_content_seq = state->scan_y_content_seq,
+                                                 .y_unchecked_seq = state->scan_y_unchecked_seq};
         dsd_engine_scan_landing_install(owner, landing);
     }
 }

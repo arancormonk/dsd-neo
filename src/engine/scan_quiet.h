@@ -195,9 +195,11 @@ int scan_quiet_stay_shows_status(uint8_t stay_reason);
 
 /** Fill @p report's quiet_status and quiet_reason for the visit on air @p ref (issue #834 B1), on the decoder thread,
  * from what the check knows of it: NONE with the setting off, for a trunked target, for a stay not shown, and for a
- * check of another visit or one that ended; NO_CHECK with its reason, the receiver's first (an input with no check, in a
- * radio-off build too; a centred capture or an uncalibrated rate the last capture showed), then the channel's
- * (decoders, width); CHECKING while the check waits for its capture, settles, measures or holds a quiet result. A
+ * check of another visit or one that ended; NO_CHECK with its reason, the receiver's first (an input with no check,
+ * in a radio-off build too; the visit's own capture centred or at an uncalibrated rate, or a centred capture the
+ * last read showed in this stream session), then the channel's (decoders, width), and on -Y only while the row has
+ * carried no call this visit; CHECKING while the check waits for its capture, settles, measures or holds a quiet
+ * result. A
  * reason the visit has is logged as a WARN line once per key, whatever the stay: the receiver's once per (input,
  * device, rate, reason), the channel's once per (list, row or target, kind, width, decoder set and -8 monitor width,
  * reason); the keys are compared before anything is formatted, and turning the setting on again logs them anew. */
@@ -325,9 +327,10 @@ int dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state);
 /** Whether @p owner_kind's check owes a frame boundary its republication (issue #834 B8): it was suspended (a revision
  * changed, such as a receive request the stream numbered, or a note of change) while its visit's landing was still in
  * force, or it is SUSPENDED with a reason it cannot be checked and a revision it was published with has moved since
- * (a width or row edit; once per change, B1), so it starts again on the same visit. Under syncs that keep the synced-frames loop running no outer pass or noCarrier() comes to publish it again,
- * so the frame boundary does, once: 1 at most once per suspension, which this clears; a publication or a new start
- * clears it too. 0 with the setting off (one load), for another owner, or for a check not suspended. */
+ * (a width or row edit; once per change, B1), so it starts again on the same visit. Under syncs that keep the
+ * synced-frames loop running no outer pass or noCarrier() comes to publish it again, so the frame boundary does, once:
+ * 1 at most once per suspension or change, which this clears; a publication or a new start clears it too. 0 with the
+ * setting off (one load), for another owner, or for a check not suspended. */
 int dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state, int owner_kind);
 /** Something a check depends on changed (dsd_engine_scan_quiet_note_change(), now): a check under way is cancelled
  * (its request ticket-matched) and SUSPENDED until republished. A DONE check stays DONE for its visit. */
