@@ -10965,6 +10965,21 @@ target_link_libraries(
 )
 add_test(NAME P25_AFF_ASSIGNMENT COMMAND dsd-neo_test_p25_aff_assignment)
 
+# P25 Deny / Queued responses are shown, never acted on: no carrier is released over one
+add_executable(
+    dsd-neo_test_p25_deny_no_release
+    protocol/p25/test_p25_deny_no_release.c
+)
+target_include_directories(
+    dsd-neo_test_p25_deny_no_release
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_deny_no_release
+    PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME P25_DENY_NO_RELEASE COMMAND dsd-neo_test_p25_deny_no_release)
+
 # P25 IDEN variants (TDMA denom + map override)
 add_executable(
     dsd-neo_test_p25_iden_variants

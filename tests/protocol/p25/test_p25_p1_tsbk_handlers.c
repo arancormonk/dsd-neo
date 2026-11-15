@@ -83,6 +83,7 @@ static int g_soft_llr_list_count;
 static int g_crc_call_count;
 static int g_crc_accept_call;
 static int g_candidate_count;
+static int g_release_count;
 
 enum { TEST_TSBK_BYTES_PER_BLOCK = 12 };
 
@@ -252,6 +253,7 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
     (void)opts;
     (void)state;
     (void)reason;
+    g_release_count++;
 }
 
 int
@@ -1622,6 +1624,47 @@ test_mfid90_queued_and_deny_callbacks(void) {
     return rc;
 }
 
+/* A Motorola Deny / Queued Response TSBK (MFID 0x90) heard on the followed voice channel, through the TSBK dispatcher:
+   it answers some unit's request and names no assignment, so nothing is released, whether the carrier is busy or idle
+   and whatever unit it names. */
+static int
+test_deny_never_releases_mfid90_p1(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    tsbk_decode_ctx_t ctx;
+    unsigned long long pdu[24];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+
+    int rc = 0;
+    static const uint8_t opcodes[] = {0x06 /* queued */, 0x07 /* deny */};
+    static const uint32_t targets[] = {100U, 4321U, 0x123456U};
+    for (int o = 0; o < 2; o++) {
+        for (int t = 0; t < 3; t++) {
+            DSD_MEMSET(&ctx, 0, sizeof(ctx));
+            ctx.tsbk_byte[0] = opcodes[o];
+            ctx.tsbk_byte[1] = 0x90;
+            ctx.tsbk_byte[2] = 0x80;
+            ctx.tsbk_byte[3] = 0x30;
+            ctx.tsbk_byte[6] = 0x64;
+            ctx.tsbk_byte[7] = (uint8_t)(targets[t] >> 16);
+            ctx.tsbk_byte[8] = (uint8_t)(targets[t] >> 8);
+            ctx.tsbk_byte[9] = (uint8_t)targets[t];
+            reset_calls();
+            g_release_count = 0;
+            tsbk_dispatch_message(&opts, &state, &ctx, 0, 0x90, 0, pdu);
+            rc |= expect_int("mfid90 response releases nothing", g_release_count, 0);
+        }
+    }
+    rc |= expect_int("mfid90 denies counted", (int)state.p25_sm_deny_count, 3);
+    rc |= expect_int("mfid90 queued counted", (int)state.p25_sm_queued_count, 3);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_mfid90_ack_display_only(void) {
     static dsd_opts opts;
@@ -1882,6 +1925,7 @@ main(void) {
     rc |= test_mfid90_grant_seeds_trunk_state();
     rc |= test_mfid90_grant_update_trunk_dispatch();
     rc |= test_mfid90_queued_and_deny_callbacks();
+    rc |= test_deny_never_releases_mfid90_p1();
     rc |= test_mfid90_ack_display_only();
     rc |= test_mfid90_tdma_data_channel_display_only();
     rc |= test_network_status_state_policy();

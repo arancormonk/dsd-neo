@@ -1097,21 +1097,21 @@ p25p2_vpdu_other_slot_audio_with_history(const dsd_state* state, int slot, doubl
     return state->p25_p2_audio_allowed[other_slot] || recent_mac || recent_voice;
 }
 
-// Whether either logical slot still looks occupied: gated audio,
-// MAC activity inside the hold window, or recent voice on the carrier. A
-// Deny/Queued response heard in a voice channel's signaling answers some
-// unit's request; releasing the carrier over one while a call -- or the
-// hangtime gap the SM promises to bridge -- still occupies a slot tears down
-// audible traffic, so the voice hold is stretched to the trunking hangtime.
-static int
-p25p2_vpdu_carrier_occupied_for_response(const dsd_opts* opts, const dsd_state* state) {
-    double mac_hold = p25p2_vpdu_cfg_mac_hold_s(0.75);
-    double voice_hold = p25p2_vpdu_cfg_voice_hold_s(0.75);
-    if (opts != NULL && (double)opts->trunk_hangtime > voice_hold) {
-        voice_hold = (double)opts->trunk_hangtime;
+/* A Deny or Queued Response answers some unit's request (TIA-102.AABC-D §6.2.5 / §6.2.14: its Target Address is the
+   unit that asked, never the talkgroup a grant names), and no field ties it to the assignment being followed. It is
+   counted and shown, never acted on: the carrier stays, and the acquisition watchdog ends an assignment that never
+   carries voice. A response whose MAC CRC failed (kept under -F) is not counted. */
+static void
+p25p2_vpdu_count_response(const p25p2_vpdu_ctx* ctx, int is_deny) {
+    dsd_state* state = ctx->state;
+    if (!ctx->opts || !ctx->crc_ok) {
+        return;
     }
-    return p25p2_vpdu_other_slot_audio_with_history(state, 0, mac_hold, voice_hold)
-           || p25p2_vpdu_other_slot_audio_with_history(state, 1, mac_hold, voice_hold);
+    if (is_deny) {
+        state->p25_sm_deny_count++;
+    } else {
+        state->p25_sm_queued_count++;
+    }
 }
 
 static int
@@ -4476,7 +4476,6 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_57(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -4516,19 +4515,7 @@ p25p2_vpdu_iter_block_57(p25p2_vpdu_ctx* ctx) {
                                          target_addr, reason_str);
         }
 
-        // Notify the trunking state machine. An occupied carrier keeps its
-        // calls; the acquisition watchdog owns cleaning up a granted-then-
-        // denied assignment that never produces voice.
-        if (opts) {
-            if (is_deny) {
-                state->p25_sm_deny_count++;
-            } else {
-                state->p25_sm_queued_count++;
-            }
-            if (!p25p2_vpdu_carrier_occupied_for_response(opts, state)) {
-                p25_sm_release(p25_sm_get_ctx(), opts, state, is_deny ? "deny-rsp" : "queued-rsp");
-            }
-        }
+        p25p2_vpdu_count_response(ctx, is_deny);
     }
 
     if (len_b < 0) {
@@ -5061,7 +5048,6 @@ p25p2_vpdu_iter_block_58(p25p2_vpdu_ctx* ctx) {
 
 static void
 p25p2_vpdu_handle_motorola_queued_deny(p25p2_vpdu_ctx* ctx, int is_deny) {
-    dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
     const unsigned long long int* MAC = ctx->mac;
     const int len_a = ctx->len_a;
@@ -5087,17 +5073,7 @@ p25p2_vpdu_handle_motorola_queued_deny(p25p2_vpdu_ctx* ctx, int is_deny) {
     }
     DSD_FPRINTF(stderr, " Target [%d]", target_addr);
 
-    // Same occupancy rule as the standard Deny/Queued handler above.
-    if (opts) {
-        if (is_deny) {
-            state->p25_sm_deny_count++;
-        } else {
-            state->p25_sm_queued_count++;
-        }
-        if (!p25p2_vpdu_carrier_occupied_for_response(opts, state)) {
-            p25_sm_release(p25_sm_get_ctx(), opts, state, is_deny ? "deny-rsp" : "queued-rsp");
-        }
-    }
+    p25p2_vpdu_count_response(ctx, is_deny);
 }
 
 static void

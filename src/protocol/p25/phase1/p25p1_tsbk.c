@@ -493,7 +493,7 @@ tsbk_handle_mfid90_traffic_channel_id(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLO
 }
 
 static void
-tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+tsbk_handle_mfid90_queued_deny(const dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
                                int is_deny) {
     int has_additional = ((tsbk_byte[2] & 0x80) != 0);
     int svc_type = tsbk_byte[2] & 0x3F;
@@ -519,13 +519,14 @@ tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t t
     }
     DSD_FPRINTF(stderr, " Target [%d]\n", target_addr);
 
+    /* Counted and shown only: the response answers some unit's request and names no assignment, so the carrier being
+       followed stays (the acquisition watchdog ends one that never carries voice), as on the standard Deny/Queued
+       path (p25p2_vpdu.c). */
     if (opts) {
         if (is_deny) {
             state->p25_sm_deny_count++;
-            p25_sm_release(p25_sm_get_ctx(), opts, state, "deny-rsp");
         } else {
             state->p25_sm_queued_count++;
-            p25_sm_release(p25_sm_get_ctx(), opts, state, "queued-rsp");
         }
     }
 }
@@ -681,7 +682,7 @@ tsbk_handle_mfid90_regroup_grants(dsd_opts* opts, dsd_state* state, const uint8_
 }
 
 static int
-tsbk_handle_mfid90_responses(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+tsbk_handle_mfid90_responses(const dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
                              int opcode) {
     switch (opcode) {
         case 0x06: tsbk_handle_mfid90_queued_deny(opts, state, tsbk_byte, /*is_deny*/ 0); break;

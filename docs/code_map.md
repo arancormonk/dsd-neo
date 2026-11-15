@@ -10157,6 +10157,12 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   identity (`p25_update_system_identity()`) drops owners another system named; eviction, the 15-minute aging and
   trunk-scan save/restore move the owner with its entry. Registrations are written only from content that passed its
   CRC (`p25p2_vpdu_network_table_writable()`). Tests: `P25_AFF_ASSIGNMENT`, `ENGINE_TRUNK_SCAN`, `P25_MBT_DECODE`.
+- Deny and Queued Responses (standard 0x67 / 0x61 and their TSBKs, Motorola MAC 0xA7 / 0xA6 and MFID90 TSBKs 0x07 /
+  0x06) answer a unit's request: their Target Address is the unit that asked (TIA-102.AABC-D §6.2.5, §6.2.14) and no
+  field ties one to the assignment being followed, so a response is printed, published to Recent Activity and counted
+  (`p25_sm_deny_count` / `p25_sm_queued_count`, not for a MAC whose CRC failed under `-F`), never acted on: no path
+  calls `p25_sm_release()` over one, busy carrier or idle, and the acquisition watchdog ends an assignment that never
+  carries voice. Tests: `P25_DENY_NO_RELEASE`, `P25_QUEUED_DENY_RESPONSE`, `P25_P1_TSBK_HANDLERS`.
 - Unit message fields. A Status field's first octet is the User Status and its second the Unit Status
   (TIA-102.AABC-D §2.3.29) on every form: 0x58 / TSBK 0x18, 0xD8, the 0xD9 multi-fragment, the MBT and the inbound
   TSBKs. Extended Function class $00 labels name the acknowledgement operands ($80 / $FD-$FF, §2.3.15 Table 2.3.15-1)
