@@ -11,7 +11,6 @@
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/unit_activity_reason.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

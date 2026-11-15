@@ -4,6 +4,7 @@
 #ifndef DSD_NEO_SRC_CORE_UTIL_TALKGROUP_POLICY_INTERNAL_H_
 #define DSD_NEO_SRC_CORE_UTIL_TALKGROUP_POLICY_INTERNAL_H_
 
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <stddef.h>

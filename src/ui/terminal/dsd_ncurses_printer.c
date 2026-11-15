@@ -36,6 +36,7 @@
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/app_control/tetra_view.h>
+#include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/edacs_session.h>

@@ -21,7 +21,6 @@
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <dsd-neo/runtime/decode_clock.h>

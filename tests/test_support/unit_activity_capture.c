@@ -14,8 +14,6 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/unit_activity.h>
 
-#include <stdint.h>
-
 static dsd_unit_activity g_last;
 static int g_count;
 

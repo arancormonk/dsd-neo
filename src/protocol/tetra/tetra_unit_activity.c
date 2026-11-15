@@ -15,11 +15,13 @@
 #include "tetra_unit_activity.h"
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 static dsd_unit_activity

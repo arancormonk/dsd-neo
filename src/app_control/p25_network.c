@@ -9,7 +9,6 @@
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
-#include <stddef.h>
 #include <string.h>
 
 /* Stable insertion into a small index list keeps equal timestamps deterministic. */

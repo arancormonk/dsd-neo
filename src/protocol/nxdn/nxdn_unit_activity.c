@@ -17,9 +17,11 @@
 
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>

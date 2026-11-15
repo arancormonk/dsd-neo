@@ -9,6 +9,7 @@
 
 #include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/unit_activity.h>
 

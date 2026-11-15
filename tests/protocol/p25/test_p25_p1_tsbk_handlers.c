@@ -18,6 +18,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/unit_activity.h>
+#include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_activity.h>

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: ISC
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>

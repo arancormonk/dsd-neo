@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include "dmr_ars.h"
 #include "dmr_unit_activity.h"
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 

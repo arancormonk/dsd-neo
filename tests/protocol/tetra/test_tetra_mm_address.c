@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_support.h"
 #include "tetra_calls.h"
 #include "tetra_mm_pdu.h"
 #include "tetra_state.h"
