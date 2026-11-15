@@ -65,8 +65,10 @@ scan_quiet_revisions_read(const dsd_opts* opts, const dsd_state* state, scan_qui
     out->y_edits_epoch = dsd_engine_channel_scan_quiet_edits_epoch(state);
     out->pcm_input_generation = opts->pcm_input_generation;
 #ifdef USE_RADIO
-    /* A receive-profile or width request still in flight changes what the channel is received as. */
-    out->receive_request_seq = rtl_stream_receive_request_seq();
+    /* A receive-profile or width request still in flight changes what the channel is received as; one that repeats the
+       profile the stream runs (the hunt re-asking for its own) changes nothing and moves no change number (issue #834
+       B8). */
+    out->receive_change_seq = rtl_stream_receive_change_seq();
 #endif
     out->nfm_width_hz = opts->analog_nfm_bandwidth_hz;
     out->am_width_hz = opts->analog_am_bandwidth_hz;
@@ -214,7 +216,7 @@ quiet_revisions_equal(const scan_quiet_revisions* a, const scan_quiet_revisions*
            && a->quiet_inv_seq == b->quiet_inv_seq && a->lcn_scan_session == b->lcn_scan_session
            && a->trunk_scan_lists_seq == b->trunk_scan_lists_seq && a->trunk_edit_seq == b->trunk_edit_seq
            && a->y_edits_epoch == b->y_edits_epoch && a->pcm_input_generation == b->pcm_input_generation
-           && a->receive_request_seq == b->receive_request_seq && a->nfm_width_hz == b->nfm_width_hz
+           && a->receive_change_seq == b->receive_change_seq && a->nfm_width_hz == b->nfm_width_hz
            && a->am_width_hz == b->am_width_hz;
 }
 

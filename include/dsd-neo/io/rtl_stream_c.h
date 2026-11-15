@@ -641,6 +641,17 @@ enum rtl_stream_rx_request_outcome {
 uint32_t rtl_stream_receive_request_seq(void);
 
 /**
+ * @brief A counter that moves with every queued receive request that may change the receive chain (issue #834).
+ *
+ * It moves where rtl_stream_receive_request_seq() does, except for a symbol profile request that repeats what the
+ * stream will run once its queue drains (the demod-only request still queued, else the published profile): such a
+ * request is still numbered, queued and applied exactly as any other, but leaves this counter alone, so a reader that
+ * snapshots it (the scan quiet check) is not told the channel changed when the hunt re-asks for the profile it already
+ * runs. Any doubt counts as a change. Read it on the decoder thread, as rtl_stream_receive_request_seq().
+ */
+uint32_t rtl_stream_receive_change_seq(void);
+
+/**
  * @brief What became of the receive request numbered @p seq (RTL_STREAM_RX_REQUEST_*).
  *
  * While a request is pending, what the stream publishes (the CQPSK state rtl_stream_get_cqpsk_status() reports, the

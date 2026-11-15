@@ -558,8 +558,8 @@ Generated (do not edit/commit):
       frame boundary past its settle); it ends DONE only once no qualifying capture is left. Main's schedule otherwise
       stays: the 300-symbol hook, the 50 ms recheck, one phase step per call, the 400 ms request deadline and READY's
       250 ms age. A check suspended while its visit's landing is still in force (a revision moved, as the hunt's own
-      symbol-profile requests move `rtl_stream_receive_request_seq()` even when they leave the receive chain as it
-      is, or a note of change; defect B8) owes one republication (`scan_quiet_check::republish_owed`, set by the
+      symbol-profile requests did before they stopped moving the change number when they repeat the profile the
+      stream runs, or a note of change; defect B8) owes one republication (`scan_quiet_check::republish_owed`, set by the
       reconcile or `dsd_engine_scan_quiet_invalidate()`, cleared by any publication or start): the next frame boundary
       takes it once (`dsd_engine_scan_quiet_take_republish()`), since under syncs that keep the loop running no outer
       pass or `noCarrier()` comes to publish it. The trunk scan's then owes the per-frame tick a pass
@@ -573,7 +573,7 @@ Generated (do not edit/commit):
     - Reconcile, at every hook call and engine service: a changed visit or revision snapshot (`scan_quiet_revisions`:
       `trunk_chan_map_seq`, `lcn_list_rev`, `lcn_scan_session`, `trunk_scan_lists_seq`, the coordinator's `edit_seq`, -Y
       `edits_epoch`, `lcn_avoid_rev`, `trunk_scan_avoid_rev`, `pcm_input_generation`,
-      `rtl_stream_receive_request_seq()`, the configured NFM and AM widths, `quiet_inv_seq`) cancels and suspends;
+      `rtl_stream_receive_change_seq()`, the configured NFM and AM widths, `quiet_inv_seq`) cancels and suspends;
       activity anywhere in the visit (checked content or a carrier, below) cancels and ends it, whatever phase the
       check is in: the visit's activity baseline (`activity_seq` and the decode time) is taken when its tune is issued
       (`dsd_engine_scan_landing_note_tune()`, kept on the owner as `tune_activity_seq`, `tune_decode_m`) and carried by
@@ -723,7 +723,7 @@ Generated (do not edit/commit):
     - RF power is never activity: the check writes no hold, activity stamp, `idle_since_m`, `last_cc_sync_time`,
       history, event or location output, and reports nothing to the trunk scan. Radio-off builds compile it as a no-op
       service. Tests: `ENGINE_TRUNK_SCAN` (`test_scan_quiet_*`: a fake tap, link fakes of `rtl_signal_quiet_*`,
-      `rtl_signal_capture_get()` and `rtl_stream_receive_request_seq()`, on a fake realtime clock, a link wrap of
+      `rtl_signal_capture_get()` and `rtl_stream_receive_change_seq()`, on a fake realtime clock, a link wrap of
       `dsd_realtime_mono_ms()`, separate from the TEST decode clock; the D8 regressions run on the real realtime clock
       with no link wrap, so they build everywhere: `test_scan_quiet_rejected_sync_keeps_the_check`,
       `test_scan_quiet_y_noise_frames_still_step`, `test_scan_quiet_pending_verdict_holds_every_skip_point`,
@@ -9927,7 +9927,16 @@ Notes:
     publishes a kind and width only on the monitor), so a request refused at once is read against what the family runs
     as a refusal where it lands is (issue #578). Each numbered request also notes
     the CQPSK state it leaves the stream on (an analog family request turns it off, a demod profile sets or leaves it),
-    which `rtl_stream_requested_cqpsk()` answers with while any request is unsettled.
+    which `rtl_stream_requested_cqpsk()` answers with while any request is unsettled. A second counter,
+    `rtl_stream_receive_change_seq()` (issue #834 B8), moves with each numbered request except a symbol profile that
+    repeats what the stream will run once its queue drains (`rtl_stream_demod_request_repeats_locked()`: the same values
+    as the demod-only request still queued, else, with nothing queued or unsettled, the published FSK profile, judged
+    conservatively): the frame-sync hunt re-asks for the profile it runs about once a visit, and the scan quiet check,
+    which snapshots this counter, must not read that as a changed channel. Such a request is still numbered, queued and
+    applied exactly as before, since the retune's family retirement (`rtl_stream_retire_requests_before_family()`,
+    `rtl_stream_retire_analog_request_before_symbols()`, which keep the queue only for a request numbered after the
+    attach) and the app's refusal bookkeeping (`symbol_profile.c`, which reads the number right after its own request)
+    need every queued request numbered.
     That, not the output generation (which the clear for a request moves before the publish, and a retune moves without
     taking a request), is what tells the decoder the published CQPSK state includes its request. Each also notes the
     receive family it leaves the stream on (a family request names it, a demod profile leaves it, and a retune's family

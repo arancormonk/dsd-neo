@@ -449,6 +449,82 @@ test_fa_start_switches_to_digital_through_the_stream(void) {
 }
 
 static int
+receive_requests_settled(void) {
+    return rtl_stream_receive_request_outcome(rtl_stream_receive_request_seq()) != RTL_STREAM_RX_REQUEST_PENDING;
+}
+
+static int
+nxdn48_profile_settled(void) {
+    int rate = 0;
+    int levels = 0;
+    int profile = -1;
+    (void)rtl_stream_get_symbol_profile_full(&rate, &levels, &profile);
+    return receive_requests_settled() && rate == 2400 && levels == 4 && profile == RTL_STREAM_CHANNEL_PROFILE_6K25;
+}
+
+/* Issue #834 B8: every queued receive request is numbered, but only one that may change the receive chain moves the
+ * change number (rtl_stream_receive_change_seq()), which the scan quiet check snapshots. The frame-sync hunt re-asks for
+ * the symbol profile the stream runs about once a visit: that repeat, of the published profile or of the one still
+ * queued, is numbered, queued and applied as before and leaves the change number alone. A new profile, a TED override
+ * and a family request each move it. */
+static int
+test_repeated_symbol_profile_moves_no_change_number(void) {
+    const ReplayRate rate48k = {1536000U, 32U, 1U, 48000U};
+    char metadata_path[DSD_TEST_PATH_MAX];
+    const std::vector<uint8_t> payload(393216U, 127U);
+    if (make_replay_fixture_with(rate48k, "dsdneo_analog_open_repeat_profile", payload, 0, metadata_path,
+                                 sizeof(metadata_path))
+        != 0) {
+        return 1;
+    }
+    std::unique_ptr<dsd_opts> opts = std::make_unique<dsd_opts>();
+    prepare_analog_replay_opts(opts.get(), metadata_path, 0);
+    opts->iq_replay_loop = 1;
+    RtlSdrContext* ctx = NULL;
+    if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: repeated profile: could not start the replay\n");
+        if (ctx) {
+            rtl_stream_destroy(ctx);
+        }
+        return 1;
+    }
+    (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    (void)rtl_stream_request_demod_profile(0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_12K5, 10, 0);
+    int rc = expect_int("DMR profile lands", read_until(ctx, digital_dmr_profile_published), 0);
+    rc |= expect_int("and settles", read_until(ctx, receive_requests_settled), 0);
+    const uint32_t req0 = rtl_stream_receive_request_seq();
+    const uint32_t chg0 = rtl_stream_receive_change_seq();
+
+    (void)rtl_stream_request_demod_profile(0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_12K5, 10, 0);
+    rc |=
+        expect_int("a repeat of the published profile is numbered", (int)(rtl_stream_receive_request_seq() - req0), 1);
+    rc |= expect_int("and moves no change number", (int)(rtl_stream_receive_change_seq() - chg0), 0);
+    rc |= expect_int("it settles", read_until(ctx, receive_requests_settled), 0);
+    rc |= expect_int("the DMR profile still runs", digital_dmr_profile_published(), 1);
+
+    (void)rtl_stream_request_demod_profile(0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, 0);
+    rc |= expect_int("a new profile moves the change number", (int)(rtl_stream_receive_change_seq() - chg0), 1);
+    (void)rtl_stream_request_demod_profile(0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, 0);
+    rc |= expect_int("a repeat of the queued one is numbered", (int)(rtl_stream_receive_request_seq() - req0), 3);
+    rc |= expect_int("and moves no change number", (int)(rtl_stream_receive_change_seq() - chg0), 1);
+    rc |= expect_int("the NXDN48 profile lands and settles", read_until(ctx, nxdn48_profile_settled), 0);
+    (void)rtl_stream_request_demod_profile(0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, 0);
+    rc |= expect_int("a repeat once it runs moves no change number", (int)(rtl_stream_receive_change_seq() - chg0), 1);
+    rc |= expect_int("repeats settle", read_until(ctx, receive_requests_settled), 0);
+
+    (void)rtl_stream_request_demod_profile(0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, 1);
+    rc |= expect_int("a TED override moves it", (int)(rtl_stream_receive_change_seq() - chg0), 2);
+    rc |= expect_int("override settles", read_until(ctx, receive_requests_settled), 0);
+    (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+    rc |= expect_int("a family request moves it", (int)(rtl_stream_receive_change_seq() - chg0), 3);
+    rc |= expect_int("every request numbered", (int)(rtl_stream_receive_request_seq() - req0), 6);
+
+    (void)rtl_stream_stop(ctx);
+    (void)rtl_stream_destroy(ctx);
+    return rc;
+}
+
+static int
 encoder_squelch_active(void) {
     rtl_stream_squelch_status st;
     DSD_MEMSET(&st, 0, sizeof st);
@@ -574,6 +650,7 @@ main(void) {
     rc |= test_forced_rate_monitor_audio_is_resampled_once();
     rc |= test_fa_start_switches_to_digital_through_the_stream();
     rc |= test_fz_start_keeps_the_encoder_front_end();
+    rc |= test_repeated_symbol_profile_moves_no_change_number();
     rc |= remove_fixture_dirs();
 
     if (rc == 0) {

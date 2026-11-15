@@ -22832,6 +22832,7 @@ typedef struct {
     int cancels;
     uint32_t last_cancel;
     uint32_t receive_seq;
+    uint32_t change_seq; /* rtl_stream_receive_change_seq(): the requests that may change the receive chain */
     int rate_ok;
     int analog_ok;
 } quiet_fake_tap;
@@ -22903,6 +22904,11 @@ rtl_signal_quiet_cancel(uint32_t ticket) {
 uint32_t
 rtl_stream_receive_request_seq(void) {
     return g_tap.receive_seq;
+}
+
+uint32_t
+rtl_stream_receive_change_seq(void) {
+    return g_tap.change_seq;
 }
 
 int
@@ -23850,7 +23856,8 @@ test_scan_quiet_suspension_owes_one_republication(void) {
     quiet_publish(&opts, &state);
     int rc = qt_expect("measuring", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
     rc |= qt_expect("nothing owed while measuring", dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
-    g_tap.receive_seq++; /* a receive request the stream numbered */
+    g_tap.receive_seq++; /* a receive request the stream numbered, which may change the receive chain */
+    g_tap.change_seq++;
     rc |=
         qt_expect("the revision suspends", dsd_engine_scan_quiet_frame_service(&opts, &state, T) == DSD_SCAN_QUIET_NONE
                                                && scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED);
@@ -23870,6 +23877,7 @@ test_scan_quiet_suspension_owes_one_republication(void) {
                     scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED
                         && dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 1);
     g_tap.receive_seq++;
+    g_tap.change_seq++;
     quiet_publish(&opts, &state); /* restarts, then the revision moves under it */
     (void)dsd_engine_scan_quiet_frame_service(&opts, &state, T);
     quiet_publish(&opts, &state);
@@ -23879,6 +23887,37 @@ test_scan_quiet_suspension_owes_one_republication(void) {
     rc |= qt_expect("suspended because the landing went: nothing owed",
                     scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED
                         && dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* issue #834 B8: a symbol profile request that repeats what the stream runs (the hunt re-asking for its own profile) is
+   numbered as every request but leaves the change number alone, so the landed check measuring the channel is not
+   suspended by it and goes on to its result; one that may change the receive chain moves the change number and still
+   suspends it. */
+static int
+test_scan_quiet_repeated_profile_request_keeps_the_check(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    quiet_publish(&opts, &state);
+    int rc = qt_expect("measuring", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    g_tap.receive_seq++; /* numbered, the change number left alone */
+    rc |= qt_expect("a repeated profile request keeps the check measuring",
+                    dsd_engine_scan_quiet_frame_service(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.cancels == 0);
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("and its quiet result is handed back",
+                    quiet_service_after(&opts, &state, 10U) == DSD_SCAN_QUIET_HAND_BACK);
+    g_tap.receive_seq++;
+    g_tap.change_seq++;
+    rc |= qt_expect("a request that may change the chain suspends it",
+                    dsd_engine_scan_quiet_frame_service(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == DSD_SCAN_QUIET_NONE
+                        && scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED);
     quiet_rig_finish(&opts, &state, dir, path);
     return rc;
 }
@@ -24400,7 +24439,8 @@ static void
 qt_mut_receive_request(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    g_tap.receive_seq++;
+    g_tap.receive_seq++; /* a request that may change the receive chain moves both numbers */
+    g_tap.change_seq++;
 }
 
 static void
@@ -26263,6 +26303,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_setting_off);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_sync_free_publication);
     rc |= run_with_default_tune_hook(test_scan_quiet_suspension_owes_one_republication);
+    rc |= run_with_default_tune_hook(test_scan_quiet_repeated_profile_request_keeps_the_check);
 #else
     rc |= test_scan_quiet_radio_off_is_a_no_op();
 #endif

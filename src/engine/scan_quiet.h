@@ -100,7 +100,7 @@ typedef struct {
     uint32_t trunk_edit_seq;
     uint32_t y_edits_epoch;
     uint32_t pcm_input_generation;
-    uint32_t receive_request_seq;
+    uint32_t receive_change_seq;
     int nfm_width_hz;
     int am_width_hz;
 } scan_quiet_revisions;
