@@ -93,6 +93,7 @@
 #include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <iterator>
 #include <memory>
@@ -4181,7 +4182,7 @@ class Setup : public QObject {
      * @p row: `kind` ("registration", "deregistration", "affiliation", "deny", "queued", "inhibit", "kill", "status";
      * default registration), `subject` (a radio ID, or a talkgroup with `groupSubject`), `group`, `name` (the name
      * its producer stored), `reason` (a P25 deny or queued reason code). The log is heard on a made-up P25 system
-     * (WACN 0xBEE00, SYS 0x123). Returns false when the push was refused.
+     * (WACN 0xBEE00, SYS 0x123) at one fixed decode-clock time. Returns false when the push was refused.
      */
     Q_INVOKABLE bool
     pushUnitActivity(const QVariantMap& row, bool read = true) {
@@ -4207,7 +4208,17 @@ class Setup : public QObject {
         }
         const QByteArray name = row.value(QStringLiteral("name")).toString().toUtf8();
         DSD_SNPRINTF(r.name_frozen, sizeof r.name_frozen, "%s", name.constData());
-        if (dsd_unit_activity_push(state, &r) < 0) {
+        /* Stamped at one fixed decode-clock reading, so a repeat always merges (the ring's 2 s window) however slow
+         * the run, and every row shows the same time; the clock goes back to the real one at once. */
+        const bool systemClock = dsd_decode_clock_source() == DSD_DECODE_CLOCK_SYSTEM;
+        if (systemClock) {
+            dsd_decode_clock_use_test(UINT64_C(1700000000000000000));
+        }
+        const int pushed = dsd_unit_activity_push(state, &r);
+        if (systemClock) {
+            dsd_decode_clock_use_system();
+        }
+        if (pushed < 0) {
             return false;
         }
         if (read) {

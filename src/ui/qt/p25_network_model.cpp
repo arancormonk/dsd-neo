@@ -7,6 +7,7 @@
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <utility>
+#include <vector>
 #include "p25_network_model.h"
 
 namespace dsd_qt {
@@ -89,15 +90,16 @@ P25NetworkModel::refresh(const dsd_state* snapshot) {
         patchRows.append(
             QVariantMap{{"sgid", r.sgid}, {"isPatch", bool(r.is_patch)}, {"groups", groups}, {"radios", units}});
     }
-    dsd_app_p25_affiliation aff[cap];
-    count = dsd_app_p25_group_affiliations(snapshot, aff, cap);
+    // On the heap: each row carries two names (about 150 bytes).
+    std::vector<dsd_app_p25_affiliation> aff(cap);
+    count = dsd_app_p25_group_affiliations(snapshot, aff.data(), cap);
     for (int i = 0; i < count; ++i) {
         affiliationRows.append(QVariantMap{{"rid", aff[i].rid},
                                            {"tg", aff[i].tg},
                                            {"name", QString::fromUtf8(aff[i].name)},
                                            {"tgName", QString::fromUtf8(aff[i].tg_name)}});
     }
-    count = dsd_app_p25_affiliated_rids(snapshot, aff, cap);
+    count = dsd_app_p25_affiliated_rids(snapshot, aff.data(), cap);
     for (int i = 0; i < count; ++i) {
         radioRows.append(QVariantMap{{"rid", aff[i].rid}, {"name", QString::fromUtf8(aff[i].name)}});
     }

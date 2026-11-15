@@ -17,14 +17,6 @@ namespace {
 /* View rows read per call: a page of a few tens of KiB, read until the view has no more. */
 constexpr int kPage = 64;
 
-constexpr int kRoles[] = {
-    UnitActivityModel::SeqRole,      UnitActivityModel::GapRole,       UnitActivityModel::TimeTextRole,
-    UnitActivityModel::HeadlineRole, UnitActivityModel::KindLabelRole, UnitActivityModel::FiltersRole,
-    UnitActivityModel::NameRole,     UnitActivityModel::SubjectRole,   UnitActivityModel::TargetRole,
-    UnitActivityModel::ReasonRole,   UnitActivityModel::ScopeRole,     UnitActivityModel::RepeatRole,
-    UnitActivityModel::ProtocolRole, UnitActivityModel::WarningRole,
-};
-
 QString
 time_text(qint64 wall_seconds) {
     return wall_seconds > 0 ? QDateTime::fromSecsSinceEpoch(wall_seconds).toString(QStringLiteral("HH:mm:ss"))
@@ -172,7 +164,8 @@ UnitActivityModel::clear() {
     m_nameKey = 0;
 }
 
-/* The one gap row, below the rows newer than @p after: moved there when it stands elsewhere. */
+/* The one gap row, below the rows newer than @p after. A later loss moves it there, and the rows still below the old
+ * gap go with it: rows were lost between them and the rows above the new gap too, and one gap could not say so. */
 void
 UnitActivityModel::placeGap(quint64 after) {
     const int held = rowForSeq(0);
@@ -180,9 +173,11 @@ UnitActivityModel::placeGap(quint64 after) {
         return;
     }
     if (held >= 0) {
-        beginRemoveRows(QModelIndex(), held, held);
-        m_rows.remove(held);
+        const int last = static_cast<int>(m_rows.size()) - 1;
+        beginRemoveRows(QModelIndex(), held, last);
+        m_rows.remove(held, last - held + 1);
         endRemoveRows();
+        setCount(m_count - (last - held));
     }
     Row gap;
     gap.gap = true;
@@ -193,6 +188,31 @@ UnitActivityModel::placeGap(quint64 after) {
     endInsertRows();
 }
 
+/* The roles whose values differ between @p held and @p next, two reads of one row (its seq and gap never change).
+ * Compared field by field: no text is formatted for a row that did not change. */
+QList<int>
+UnitActivityModel::changedRoles(const Row& held, const Row& next) {
+    QList<int> changed;
+    const auto note = [&changed](bool differs, int role) {
+        if (differs) {
+            changed.append(role);
+        }
+    };
+    note(held.wallSeconds != next.wallSeconds, TimeTextRole);
+    note(held.headline != next.headline, HeadlineRole);
+    note(held.kindLabel != next.kindLabel, KindLabelRole);
+    note(held.filters != next.filters, FiltersRole);
+    note(held.name != next.name, NameRole);
+    note(held.subject != next.subject, SubjectRole);
+    note(held.target != next.target, TargetRole);
+    note(held.reason != next.reason, ReasonRole);
+    note(held.scope != next.scope, ScopeRole);
+    note(held.repeat != next.repeat, RepeatRole);
+    note(held.protocol != next.protocol, ProtocolRole);
+    note(held.warning != next.warning, WarningRole);
+    return changed;
+}
+
 /* Update the held row of @p in's seq in place; else, with @p insertNew, add it where its seq goes. A row older than
  * every held one is not added to a full list: the trim would drop it again at once. */
 void
@@ -200,12 +220,7 @@ UnitActivityModel::upsert(const dsd_app_unit_activity_row& in, bool insertNew) {
     Row row = rowFrom(in);
     const int at = positionFor(orderKey(row));
     if (at < m_rows.size() && !m_rows.at(at).gap && m_rows.at(at).seq == row.seq) {
-        QList<int> changed;
-        for (int role : kRoles) {
-            if (value(m_rows.at(at), role) != value(row, role)) {
-                changed.append(role);
-            }
-        }
+        const QList<int> changed = changedRoles(m_rows.at(at), row);
         if (!changed.isEmpty()) {
             m_rows[at] = std::move(row);
             const QModelIndex idx = index(at, 0);

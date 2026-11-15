@@ -98,7 +98,6 @@ Item {
             verify(testContext.pushUnitActivity({kind: "registration", subject: 7654321}));
             tryCompare(view, "count", 2);
             tryVerify(function () { return view.itemAtIndex(1) !== null; });
-            // No wait for a frame here: the merge below must land inside the ring's 2 s window.
             var row = view.itemAtIndex(1);
             rowBuildSpy.target = view.contentItem;
             rowBuildSpy.clear();

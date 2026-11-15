@@ -31,6 +31,24 @@ Item {
         color: Theme.bg
     }
 
+    // Whether every row puts its time under the name rather than at its end:
+    // one rule for the whole list, so rows keep one shape, decided by whether
+    // an eight-digit ID and the widest time ("×99 00:00:00") fit on one line.
+    TextMetrics {
+        id: idMeasure
+        font.family: Theme.sans
+        font.pixelSize: Math.round(Theme.fontSize(16))
+        font.weight: Font.DemiBold
+        text: "00000000"
+    }
+    TextMetrics {
+        id: stampMeasure
+        font.family: Theme.mono
+        font.pixelSize: Math.round(Theme.fontSize(12))
+        text: "×99 00:00:00"
+    }
+    readonly property bool stackTime: activityList.width - 36 < idMeasure.advanceWidth + 12 + stampMeasure.advanceWidth
+
     // As History: the list keeps at least this share of the screen, and the
     // header scrolls inside the rest when a large text size makes it taller.
     readonly property real listMinHeight: Math.ceil(height * 0.4)
@@ -96,10 +114,13 @@ Item {
                         caret: false
                         text: modelData.text
                         active: activityView.filter === modelData.bit
-                        // Each pill is a choice that is on or off: said as
-                        // checked, not only drawn in the accent colour.
+                        // One of six, as Listen's tabs: a radio button that
+                        // says it is checked, not only drawn in the accent
+                        // colour, and not "selected" as well.
+                        Accessible.role: Accessible.RadioButton
                         Accessible.checkable: true
                         Accessible.checked: active
+                        Accessible.selected: false
                         onClicked: activityView.filter = modelData.bit
                     }
                 }
@@ -119,11 +140,14 @@ Item {
         color: Theme.divider
     }
 
-    // The pill that takes the focus scrolls into the header's view.
+    // The pill that takes the focus scrolls into the header's view, and Show
+    // all into the empty state's.
     function revealHeaderFocus() {
         var window = screen.Window.window;
-        if (window && visible)
-            Theme.revealFocus(headerScroll, chrome, window.activeFocusItem);
+        if (!window || !visible)
+            return;
+        Theme.revealFocus(headerScroll, chrome, window.activeFocusItem);
+        Theme.revealFocus(emptyScroll, emptyState, window.activeFocusItem);
     }
     Connections {
         target: screen.Window.window
@@ -171,7 +195,7 @@ Item {
             readonly property string where: [reasonInHeadline ? "" : model.reason, model.protocol, model.scope].filter(function (part) {
                 return part.length > 0;
             }).join(" · ")
-            readonly property string gapDetail: qsTr("The log keeps the newest %1 events.").arg(Util.countText(1024))
+            readonly property string gapDetail: qsTr("The log keeps the newest %1 events.").arg(Util.countText(unitActivity.capacity))
 
             width: ListView.view ? ListView.view.width : 0
             implicitHeight: Math.max(Theme.rowHeight, (gap ? gapLabels.implicitHeight : labels.implicitHeight) + 24)
@@ -200,17 +224,18 @@ Item {
 
                 // Who, with the time of the first message (and, for one heard
                 // again, how many) at its end: the lines under it keep the
-                // row's whole width, which a large text size needs. When both
-                // do not fit on one line the time takes its own line under the
-                // name rather than cutting it short.
+                // row's whole width, which a large text size needs. Where an
+                // ID and the time do not fit on one line (screen.stackTime)
+                // every row puts its time under the name.
                 Item {
                     id: whoLine
-                    readonly property bool stacked: whoText.implicitWidth + 12 + stamp.implicitWidth > width
+                    readonly property bool stacked: screen.stackTime
                     width: parent.width
                     height: stacked ? whoText.height + 3 + stamp.height : whoText.height
 
                     // Plain text, one line: a name is what the air or a list
-                    // delivered, and must never be read as markup.
+                    // delivered, and must never be read as markup. A long one
+                    // is cut in its middle, so the ID at its end stays whole.
                     Text {
                         id: whoText
                         objectName: "activityRowWho"
@@ -221,7 +246,7 @@ Item {
                         font.pixelSize: Theme.fontSize(16)
                         font.weight: Font.DemiBold
                         color: Theme.textPrimary
-                        elide: Text.ElideRight
+                        elide: Text.ElideMiddle
                     }
 
                     Row {
@@ -266,12 +291,15 @@ Item {
                     color: model.warning ? Theme.alert : Theme.textSecondary
                 }
 
+                // Two lines at most, so a large text size still shows the system.
                 Text {
                     objectName: "activityRowWhere"
                     width: parent.width
                     visible: text.length > 0
                     text: Util.oneLine(row.where)
                     textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    maximumLineCount: 2
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(12)
                     color: Theme.textSubdued
@@ -358,71 +386,86 @@ Item {
     }
 
     // A sibling of the list, not a child: ListView reparents declared
-    // children into its contentItem.
-    Column {
-        objectName: "activityEmptyState"
-        anchors.centerIn: activityList
-        width: activityList.width - 2 * Theme.screenPadding
-        // The filter's rows, not the view's: the view holds none while
-        // hidden. The gap row alone is no activity.
-        readonly property int shownRows: activityView.count - (activityView.count > 0 && activityView.rowForSeq(0) >= 0 ? 1 : 0)
-        visible: shownRows === 0
-        spacing: 8
+    // children into its contentItem. It takes the list's own area and never
+    // more: centred while it fits, and from the top, scrolling, when a large
+    // text size makes it taller than the list (it ran over the filter pills).
+    PlexFlickable {
+        id: emptyScroll
+        objectName: "activityEmptyScroll"
+        accessibleName: qsTr("Activity explanation")
 
-        // An empty filter and an empty log are different situations: the
-        // first must say the rows are hidden, not missing.
-        readonly property bool filtered: unitActivity.count > 0
-        readonly property string hiddenText: unitActivity.count === 1 ? qsTr("1 event is hidden by the filter.") : qsTr("%1 events are hidden by the filter.").arg(Util.countText(unitActivity.count))
+        anchors.fill: activityList
+        // The filter's rows, not the view's: the view holds none while hidden.
+        visible: activityView.count === 0
+        contentWidth: width
+        contentHeight: Math.max(height, emptyState.height + 2 * Theme.screenPadding)
+        clip: true
+        interactive: emptyState.height + 2 * Theme.screenPadding > height
+        boundsBehavior: Flickable.StopAtBounds
 
-        ReadableText {
-            objectName: "activityEmptyTitle"
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            text: parent.filtered ? qsTr("No matching activity") : qsTr("No activity yet")
-            wrapMode: Text.Wrap
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(16)
-            font.weight: Font.DemiBold
-            color: Theme.textSecondary
-        }
+        Column {
+            id: emptyState
+            objectName: "activityEmptyState"
+            x: Theme.screenPadding
+            y: Math.max(Theme.screenPadding, (emptyScroll.height - height) / 2)
+            width: emptyScroll.width - 2 * Theme.screenPadding
+            spacing: 8
 
-        // What shows here, and what a listener never hears.
-        ReadableText {
-            objectName: "activityEmptyDetail"
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            text: parent.filtered ? parent.hiddenText : qsTr("Logins, talkgroup joins, denials and radio commands from a P25, DMR Tier III, NXDN or TETRA control channel show here as they're heard.")
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(13)
-            color: Theme.textSubdued
-            wrapMode: Text.Wrap
-        }
+            // An empty filter and an empty log are different situations: the
+            // first must say the rows are hidden, not missing.
+            readonly property bool filtered: unitActivity.count > 0
+            readonly property string hiddenText: unitActivity.count === 1 ? qsTr("1 event is hidden by the filter.") : qsTr("%1 events are hidden by the filter.").arg(Util.countText(unitActivity.count))
 
-        ReadableText {
-            objectName: "activityEmptyLimits"
-            width: parent.width
-            visible: !parent.filtered
-            horizontalAlignment: Text.AlignHCenter
-            text: qsTr("Some of it never reaches a listener: nothing shows while tuned to a voice channel, DMR and TETRA radios don't announce logging off, and whether a radio carried out a command isn't sent.")
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(13)
-            color: Theme.textSubdued
-            wrapMode: Text.Wrap
-        }
+            ReadableText {
+                objectName: "activityEmptyTitle"
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: parent.filtered ? qsTr("No matching activity") : qsTr("No activity yet")
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(16)
+                font.weight: Font.DemiBold
+                color: Theme.textSecondary
+            }
 
-        Item {
-            width: 1
-            height: 6
-            visible: parent.filtered
-        }
+            // What shows here, and what a listener never hears.
+            ReadableText {
+                objectName: "activityEmptyDetail"
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: parent.filtered ? parent.hiddenText : qsTr("Logins, talkgroup joins, denials and radio commands from a P25, DMR Tier III, NXDN or TETRA control channel show here as they're heard.")
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                color: Theme.textSubdued
+                wrapMode: Text.Wrap
+            }
 
-        OutlineButton {
-            objectName: "activityShowAll"
-            anchors.horizontalCenter: parent.horizontalCenter
-            visible: parent.filtered
-            width: Math.min(parent.width, 220)
-            text: qsTr("Show all")
-            onClicked: activityView.filter = 0
+            ReadableText {
+                objectName: "activityEmptyLimits"
+                width: parent.width
+                visible: !parent.filtered
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("Some of it never reaches a listener: nothing shows while tuned to a voice channel, DMR and TETRA radios don't announce logging off, and whether a radio carried out a command isn't sent.")
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                color: Theme.textSubdued
+                wrapMode: Text.Wrap
+            }
+
+            Item {
+                width: 1
+                height: 6
+                visible: parent.filtered
+            }
+
+            OutlineButton {
+                objectName: "activityShowAll"
+                anchors.horizontalCenter: parent.horizontalCenter
+                visible: parent.filtered
+                width: Math.min(parent.width, 220)
+                text: qsTr("Show all")
+                onClicked: activityView.filter = 0
+            }
         }
     }
 }

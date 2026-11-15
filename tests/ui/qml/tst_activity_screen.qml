@@ -128,7 +128,6 @@ Item {
             verify(testContext.pushUnitActivity({kind: "registration", subject: 1234567}));
             verify(testContext.pushUnitActivity({kind: "registration", subject: 7654321}));
             tryCompare(list(), "count", 2);
-            // No wait for a frame: the message heard again must land inside the ring's 2 s merge window.
             tryVerify(function () { return rowItem(1) !== null; });
             var older = rowItem(1);
             var y = older.y;
@@ -256,6 +255,44 @@ Item {
             waitForRendering(view);
             compare(view.indexAt(view.width / 2, view.contentY + 2), 0);
             compare(view.itemAtIndex(0).rowSeq, unitActivity.count);
+        }
+
+        // The empty state stays in the list's own area at any width and text
+        // size: below the filter pills, never over them, and every line of it
+        // reachable, scrolling when it is taller than that area.
+        function test_empty_state_fits_data() {
+            return [{tag: "320-x1", width: 320, scale: 1.0}, {tag: "320-x2", width: 320, scale: 2.0},
+                {tag: "411-x2", width: 411, scale: 2.0}, {tag: "320-x2-filtered", width: 320, scale: 2.0, filtered: true}];
+        }
+        function test_empty_state_fits(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            if (data.filtered) {
+                verify(testContext.pushUnitActivity({kind: "registration", subject: 1}));
+                activityView.filter = 8;
+            }
+            tryCompare(activityView, "count", 0);
+            waitForRendering(screen);
+            var scroll = item("activityEmptyScroll");
+            verify(scroll.visible);
+            var header = item("activityHeaderScroll");
+            var headerBottom = header.mapToItem(screen, 0, header.height).y;
+            var top = scroll.mapToItem(screen, 0, 0).y;
+            verify(top >= headerBottom - 0.5, "the empty state starts below the pills: " + top + " vs " + headerBottom);
+            verify(top + scroll.height <= screen.height + 0.5, "and ends inside the screen");
+            var lines = ["activityEmptyTitle", "activityEmptyDetail"].concat(data.filtered ? ["activityShowAll"] : ["activityEmptyLimits"]);
+            for (var name of lines) {
+                var line = item(name);
+                verify(line.visible, name);
+                var p = line.mapToItem(scroll.contentItem, 0, 0);
+                verify(p.x >= -0.5 && p.x + line.width <= scroll.width + 0.5, name + " inside the width");
+                verify(p.y >= -0.5 && p.y + line.height <= scroll.contentHeight + 0.5, name + " inside the scrolled area");
+            }
+            if (scroll.contentHeight > scroll.height + 0.5)
+                verify(scroll.interactive, "a taller empty state scrolls");
+            else
+                verify(!scroll.interactive);
+            activityView.filter = 0;
         }
 
         // At 320 px and twice the text size the pills wrap inside the screen and

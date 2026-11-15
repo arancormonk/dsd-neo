@@ -271,6 +271,42 @@ test_model_gap_row_once() {
     CHECK(newest_first(model));
 }
 
+/* The ring evicts by revision, so an old row the system kept repeating survives a wrap: it stays below the gap, its
+ * place by seq, updated where it is. A later loss moves the gap and drops what was below it: one gap, never a hidden
+ * second loss between two rows. */
+void
+test_gap_with_rows_below() {
+    State st = new_state();
+    dsd_decode_clock_use_test(kT0Ns); /* frozen: a repeat inside the lookback always merges */
+    tune_p25(st.get(), kSysA);
+    dsd_qt::UnitActivityModel model;
+    push(st.get(), registration(1U)); /* seq 1, repeated through the wrap below */
+    model.refresh(st.get());
+    const uint32_t away = DSD_UNIT_ACTIVITY_CAPACITY + 5U;
+    for (uint32_t i = 0; i < away; ++i) {
+        push(st.get(), registration(100000U + i));
+        if (i % 8U == 7U) {
+            push(st.get(), registration(1U));
+        }
+    }
+    model.refresh(st.get());
+    const int cap = dsd_qt::UnitActivityModel::kCapacity;
+    CHECK(gap_rows(model) == 1 && model.count() == cap);
+    const int gapAt = model.rowForSeq(0);
+    CHECK(gapAt == model.rowCount() - 2); /* in the middle: the kept row below it */
+    CHECK(model.rowForSeq(1) == model.rowCount() - 1);
+    CHECK(role(model, model.rowCount() - 1, dsd_qt::UnitActivityModel::RepeatRole).toInt() > 1);
+    CHECK(newest_first(model));
+
+    for (uint32_t i = 0; i < away; ++i) {
+        push(st.get(), registration(200000U + i));
+    }
+    model.refresh(st.get());
+    CHECK(gap_rows(model) == 1 && model.count() == cap);
+    CHECK(model.rowForSeq(0) == model.rowCount() - 1 && model.rowForSeq(1) == -1);
+    CHECK(newest_first(model));
+}
+
 /* Read in time, a long session keeps the ring's size: the oldest rows leave the bottom and no gap is shown. */
 void
 test_capacity_without_loss() {
@@ -426,6 +462,7 @@ main(int argc, char** argv) {
     test_rows_newest_first();
     test_merge_updates_in_place();
     test_model_gap_row_once();
+    test_gap_with_rows_below();
     test_capacity_without_loss();
     test_reset_on_new_log_and_stop();
     test_names_rename_in_place();

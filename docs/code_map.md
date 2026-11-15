@@ -16115,15 +16115,21 @@ Qt Quick frontend (`src/ui/qt`):
   Starting, Idle and Failed. A scan hop keeps it: one log spans the session. Rows are held newest first by seq and a row
   read again (a merge, a rename) is updated in place with `dataChanged` for the roles that changed, never moved, so a
   screen reader's order holds; at most `DSD_UNIT_ACTIVITY_CAPACITY` rows, the oldest leaving the bottom. A `lost` read
-  places the one gap row ("Earlier activity was not kept") below the rows read after it; a later loss moves it, so the
-  list never holds two. When `dsd_app_unit_activity_name_key()` changes, the model first reads what is new, then reads
+  places the one gap row ("Earlier activity was not kept") below the rows read after it; a later loss moves it and drops
+  the rows still below it (rows were lost there too), so the list never holds two. A row read again is compared field
+  by field, so a hop's re-read formats no text for unchanged rows. `capacity` (CONSTANT) gives QML the ring's size. When `dsd_app_unit_activity_name_key()` changes, the model first reads what is new, then reads
   every row again from `{instance, 0}` only to rename held rows in place, ignoring that read's `lost` (it reports any
   eviction, not a new loss) and the rows it no longer holds. A new ring instance (`reset`) replaces every row.
   `UnitActivityFilterModel` is the screen's filter (`activityView`): one `DSD_UA_FILTER_*` bit or every row, the gap
-  row under every filter. The screen reuses History's shell, `FilterPill` (checkable, `Accessible.checked` on the
-  chosen one) and row grammar: who (name with its ID) and the time with a repeat count, what (the view's headline with
-  the target), where (a reason the headline does not carry, the protocol, the scope); only an inhibit or kill row
-  (`DSD_UA_TONE_WARNING`) takes `Theme.alert`. Each row is one StaticText node whose name and description carry its
+  row under every filter. The screen reuses History's shell, `FilterPill` (one of six, so `Accessible.RadioButton`,
+  checkable, `Accessible.checked` on the chosen one and no separate `selected`, as Listen's tabs) in a wrapping `Flow`
+  (every pill reachable by a swipe; a horizontal strip builds no off-screen chip) and History's row grammar: who (name
+  with its ID, elided in the middle so the ID stays whole) and the time with a repeat count, what (the view's headline
+  with the target, two lines), where (a reason the headline does not carry, the protocol, the scope, two lines); where
+  an eight-digit ID and the widest time do not fit on one line, every row puts its time under the name (one rule per
+  list). Only an inhibit or kill row (`DSD_UA_TONE_WARNING`) takes `Theme.alert`. The empty state lives in its own
+  `PlexFlickable` over the list's area: centred while it fits, scrolling from the top when a large text size makes it
+  taller, never over the pills. Each row is one StaticText node whose name and description carry its
   lines. Tests: `UI_QT_UNIT_ACTIVITY_MODEL` (`test_model_gap_row_once`), `UI_QT_CONTROLLER`
   (`test_unit_activity_follows_the_session`), `tst_activity_screen.qml`, `tst_a11y_activity.qml`.
 - `p25_network_model.{h,cpp}` copies four bounded lists through the frontend-neutral

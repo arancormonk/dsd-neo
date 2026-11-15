@@ -41,13 +41,16 @@ namespace dsd_qt {
  * reader's order holds: rows only arrive at the top and leave at the bottom. At most kCapacity rows are held (the
  * ring's own size), the oldest leaving first. When the ring dropped rows before the app read them (the app was in the
  * background on a busy site), one gap row ("Earlier activity was not kept") stands where they were, below the rows
- * read after it; a later loss moves that one gap row there, so the list never shows two. Names follow
- * dsd_app_unit_activity_name_key(): when it changes, the held rows are read again and renamed in place.
+ * read after it; a later loss moves that one gap row there and drops the rows still below it, so the list never shows
+ * two. Names follow dsd_app_unit_activity_name_key(): when it changes, the held rows are read again and renamed in
+ * place.
  */
 class UnitActivityModel : public QAbstractListModel {
     Q_OBJECT
     /** Rows of the log held (the gap row not counted). */
     Q_PROPERTY(int count READ count NOTIFY countChanged)
+    /** The most rows held: the ring's size (DSD_UNIT_ACTIVITY_CAPACITY). */
+    Q_PROPERTY(int capacity READ capacity CONSTANT)
 
   public:
     enum Role {
@@ -81,6 +84,11 @@ class UnitActivityModel : public QAbstractListModel {
         return m_count;
     }
 
+    static int
+    capacity() {
+        return kCapacity;
+    }
+
     /** @brief Read what @p snapshot's log holds after the rows read before; nothing for a NULL @p snapshot. */
     void refresh(const dsd_state* snapshot);
     /** @brief Drop every row and start over at the next log (a session that stopped or is starting). */
@@ -105,6 +113,7 @@ class UnitActivityModel : public QAbstractListModel {
 
     static Row rowFrom(const dsd_app_unit_activity_row& in);
     static QVariant value(const Row& row, int role);
+    static QList<int> changedRoles(const Row& held, const Row& next);
     /* Twice the seq, or twice the gap's boundary plus one: rows are held in descending order of this. */
     static quint64 orderKey(const Row& row);
     int positionFor(quint64 key) const;
