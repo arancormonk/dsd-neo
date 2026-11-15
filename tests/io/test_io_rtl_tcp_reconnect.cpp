@@ -967,7 +967,7 @@ test_initial_open_succeeds_and_cancelled_initial_open_stops(void) {
     dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     assert(rtl_device_has_stream(r.dev) == 1);
-    assert(rig_generation(r) < 2U);
+    assert(rig_generation(r) == 1U);
     rig_close(r);
 
     conn_script silent;
@@ -1152,7 +1152,7 @@ test_reconnect_looks_the_host_up_again(void) {
     const size_t conns = server_conn_count();
     server_kill();
     assert(wait_until([&] { return dsd_fake_resolver_lookups() >= at_open + 2; }, kWaitMs));
-    assert(rig_generation(r) < 2U);
+    assert(rig_generation(r) == 0U);
     assert(server_conn_count() == conns);
     dsd_fake_resolver_set_later(0x7F000001U);
     wait_generation(r, 2U);
