@@ -543,8 +543,9 @@ test_cc_noise_ess_does_not_mint_epoch(void) {
 }
 
 /* A Phase 1 ESS on the control channel (noise, or a frame heard while no assignment is followed) opens no call, so
- * slot 0 can still hold an ended call or another protocol's. The crypto publication records its key choice only on
- * the open P25 call: before, the ended P25 call and the open DMR call were both stamped with this frame's key. */
+ * slot 0 can still hold an ended call or another protocol's. The crypto publication describes only the open P25
+ * call: before, the ended P25 call and the open DMR call were both stamped with this frame's key choice, and the open
+ * DMR call took the frame's ALG ID, key ID and encrypted classification, which can mute it or lock it out. */
 static int
 test_cc_ess_records_no_key_choice_on_another_call(void) {
     static const struct {
@@ -582,6 +583,8 @@ test_cc_ess_records_no_key_choice_on_another_call(void) {
         rc |= expect(tag, call.protocol == cases[i].protocol);
         DSD_SNPRINTF(tag, sizeof tag, "CC ESS after %s: key choice recorded on it", cases[i].name);
         rc |= expect(tag, (int)call.key_selection.valid == cases[i].stamped);
+        DSD_SNPRINTF(tag, sizeof tag, "CC ESS after %s: the frame's crypto described it", cases[i].name);
+        rc |= expect(tag, (call.algid == TEST_ALGID && call.kid == TEST_KEYID) == (cases[i].stamped != 0));
     }
     return rc;
 }
