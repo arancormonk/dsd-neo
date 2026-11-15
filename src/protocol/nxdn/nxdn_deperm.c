@@ -578,11 +578,16 @@ nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
 static int cac_fail = 0;
 
 static void
-nxdn_reset_after_cac_fail(dsd_state* state) {
+nxdn_reset_after_cac_fail(const dsd_opts* opts, dsd_state* state) {
     state->synctype = DSD_SYNC_P25P1_POS;
     state->lastsynctype = DSD_SYNC_NONE;
     state->carrier = 0;
-    state->last_cc_sync_time = dsd_decode_time() + 2;
+    /* Only a control channel carries a CAC, so the push holds a trunked receiver on its control channel through a run
+       of failed ones. A conventional -Y row has no control channel to hold: CACs that all failed their CRC are noise
+       there, and pushing the clock the -Y step reads would keep the scan on the row (issue #834). */
+    if (!(opts->scanner_mode == 1 && opts->trunk_enable != 1)) {
+        state->last_cc_sync_time = dsd_decode_time() + 2;
+    }
     cac_fail = 0;
 
     state->center = 0.0f;
@@ -627,7 +632,7 @@ nxdn_reset_after_cac_fail(dsd_state* state) {
 }
 
 static void
-nxdn_update_cac_fail_state(dsd_state* state, uint16_t crc) {
+nxdn_update_cac_fail_state(const dsd_opts* opts, dsd_state* state, uint16_t crc) {
     if (crc != 0) {
         nxdn_print_crc_error_colored();
         cac_fail++;
@@ -636,7 +641,7 @@ nxdn_update_cac_fail_state(dsd_state* state, uint16_t crc) {
     }
 
     if (cac_fail > 10) {
-        nxdn_reset_after_cac_fail(state);
+        nxdn_reset_after_cac_fail(opts, state);
     }
 }
 
@@ -691,7 +696,7 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " CAC");
     DSD_FPRINTF(stderr, "%s", KNRM);
-    nxdn_update_cac_fail_state(state, crc);
+    nxdn_update_cac_fail_state(opts, state, crc);
 
     if (crc == 0) {
         NXDN_Elements_Content_decode(opts, state, cac_message_buffer, sizeof(cac_message_buffer));

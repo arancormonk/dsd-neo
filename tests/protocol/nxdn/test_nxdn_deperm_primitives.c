@@ -807,6 +807,42 @@ test_cac_crc_failure_reset(void) {
     return rc;
 }
 
+/* A run of failed CACs on a conventional -Y row leaves the clock the -Y step reads alone (issue #834): they are noise
+   there, and pushing it would keep the scan on the row. A trunked receiver keeps the push that holds it on its control
+   channel, and a plain conventional one keeps it as before. */
+static int
+cac_fail_run_moves_anchor(int scanner_mode, int trunk_enable) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t m_data[22] = {0};
+    uint8_t trellis[176];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(trellis, 0, sizeof(trellis));
+    opts.scanner_mode = scanner_mode;
+    opts.trunk_enable = trunk_enable;
+    state.last_cc_sync_time = 1;
+    for (int i = 0; i < 11; i++) {
+        nxdn_handle_cac(&opts, &state, trellis, m_data, 1U);
+    }
+    const int reset = state.lastsynctype == DSD_SYNC_NONE && state.carrier == 0 && state.symbolcnt == 0U;
+    if (!reset) {
+        return -1;
+    }
+    return state.last_cc_sync_time != 1;
+}
+
+static int
+test_cac_fail_run_on_conventional_scan_keeps_anchor(void) {
+    int rc = 0;
+    rc |= expect_int("cac-fail-y-scan-keeps-the-anchor", cac_fail_run_moves_anchor(1, 0), 0);
+    rc |= expect_int("cac-fail-trunked-pushes-the-anchor", cac_fail_run_moves_anchor(0, 1), 1);
+    rc |= expect_int("cac-fail-trunked-y-pushes-the-anchor", cac_fail_run_moves_anchor(1, 1), 1);
+    rc |= expect_int("cac-fail-conventional-pushes-the-anchor", cac_fail_run_moves_anchor(0, 0), 1);
+    return rc;
+}
+
 static int
 test_pich_tch_dcr_csm_alias_state(void) {
     static const uint8_t csm_digits[9] = {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U};
@@ -1251,6 +1287,7 @@ main(void) {
     rc |= test_sacch2_release_ends_an_nxdn_call_only();
     rc |= test_ran_after_dcr_stand_in_is_an_access_code();
     rc |= test_cac_crc_failure_reset();
+    rc |= test_cac_fail_run_on_conventional_scan_keeps_anchor();
     rc |= test_pich_tch_dcr_csm_alias_state();
     rc |= test_facch1_crc_gates_element_decode();
     rc |= test_facch1_copy_that_confirms_publishes();
