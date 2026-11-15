@@ -2015,7 +2015,7 @@ seed_aff_owners(dsd_state* state, uint32_t tag) {
     state->p25_aff_count = P25_AFF_MAX;
     for (int i = 0; i < P25_AFF_MAX; i++) {
         state->p25_aff_rid[i] = tag + (uint32_t)i + 1U;
-        state->p25_aff_last_seen[i] = (time_t)(tag + (uint32_t)i);
+        state->p25_aff_last_seen[i] = (time_t)tag + (time_t)i;
         state->p25_aff_assoc[i].home_wacn = 0xBEE00U + (tag & 0xFFU);
         state->p25_aff_assoc[i].home_sys = (uint16_t)(0x100U + (uint32_t)i);
         state->p25_aff_assoc[i].home_id = tag + 0x10000U + (uint32_t)i;

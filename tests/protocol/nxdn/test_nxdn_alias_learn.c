@@ -65,7 +65,7 @@ send_fragment(dsd_opts* opts, dsd_state* state, uint8_t number, uint8_t total, c
 static void
 send_alias(dsd_opts* opts, dsd_state* state, const char* sixteen) {
     for (uint8_t n = 1U; n <= 4U; n++) {
-        send_fragment(opts, state, n, 4U, sixteen + ((n - 1U) * 4U));
+        send_fragment(opts, state, n, 4U, sixteen + ((size_t)(n - 1U) * 4U));
     }
 }
 

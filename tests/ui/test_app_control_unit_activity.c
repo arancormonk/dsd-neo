@@ -120,7 +120,9 @@ find_seq(const dsd_app_unit_activity_row* rows, int n, uint64_t seq) {
             return &rows[i];
         }
     }
-    return NULL;
+    /* A missing row fails the test here, so no caller reads through a null row. */
+    DSD_FPRINTF(stderr, "no row with seq %llu\n", (unsigned long long)seq);
+    abort();
 }
 
 /* ---- Labels ---- */
@@ -280,13 +282,13 @@ test_labels_never_claim_outcome(void) {
     dsd_state* st = new_state();
     dsd_app_unit_activity_cursor cursor = {0, 0};
     uint32_t subject = 1U;
-    for (uint8_t p = DSD_UA_PROTO_P25P1; p <= DSD_UA_PROTO_TETRA; p++) {
-        for (uint8_t k = DSD_UA_REGISTRATION; k <= DSD_UA_AUTHENTICATION; k++) {
-            for (uint8_t role = DSD_UA_ROLE_COMMAND; role <= DSD_UA_ROLE_REPORT; role++) {
-                for (uint8_t res = DSD_UA_RESULT_NA; res <= DSD_UA_RESULT_UNKNOWN; res++) {
-                    for (uint8_t stage = DSD_UA_STAGE_NONE; stage <= DSD_UA_STAGE_AUTHENTICATED; stage++) {
-                        dsd_unit_activity r = mk(p, k, role, res, subject++);
-                        r.stage = stage;
+    for (int p = DSD_UA_PROTO_P25P1; p <= DSD_UA_PROTO_TETRA; p++) {
+        for (int k = DSD_UA_REGISTRATION; k <= DSD_UA_AUTHENTICATION; k++) {
+            for (int role = DSD_UA_ROLE_COMMAND; role <= DSD_UA_ROLE_REPORT; role++) {
+                for (int res = DSD_UA_RESULT_NA; res <= DSD_UA_RESULT_UNKNOWN; res++) {
+                    for (int stage = DSD_UA_STAGE_NONE; stage <= DSD_UA_STAGE_AUTHENTICATED; stage++) {
+                        dsd_unit_activity r = mk((uint8_t)p, (uint8_t)k, (uint8_t)role, (uint8_t)res, subject++);
+                        r.stage = (uint8_t)stage;
                         const dsd_app_unit_activity_row row = view_of(st, &cursor, &r);
                         assert(row.kind_label[0] != '\0');
                         assert(strcmp(row.kind_label, "Unit activity") != 0);
@@ -366,8 +368,9 @@ test_warning_tone(void) {
     dsd_state* st = new_state();
     dsd_app_unit_activity_cursor cursor = {0, 0};
     uint32_t subject = 3000U;
-    for (uint8_t k = DSD_UA_REGISTRATION; k <= DSD_UA_AUTHENTICATION; k++) {
-        const dsd_unit_activity r = mk(DSD_UA_PROTO_TETRA, k, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA, subject++);
+    for (int k = DSD_UA_REGISTRATION; k <= DSD_UA_AUTHENTICATION; k++) {
+        const dsd_unit_activity r =
+            mk(DSD_UA_PROTO_TETRA, (uint8_t)k, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA, subject++);
         const dsd_app_unit_activity_row row = view_of(st, &cursor, &r);
         const int warn = k == DSD_UA_INHIBIT || k == DSD_UA_KILL;
         assert(row.tone == (warn ? DSD_UA_TONE_WARNING : DSD_UA_TONE_NORMAL));
@@ -470,7 +473,8 @@ test_scope_and_protocol_text(void) {
                                  4000U + (uint32_t)i);
         r.scope = cases[i].scope;
         const dsd_app_unit_activity_row row = view_of(st, &cursor, &r);
-        if (strcmp(row.scope_text, cases[i].scope_text) != 0 || strcmp(row.protocol_text, cases[i].protocol_text)) {
+        if (strcmp(row.scope_text, cases[i].scope_text) != 0
+            || strcmp(row.protocol_text, cases[i].protocol_text) != 0) {
             DSD_FPRINTF(stderr, "case %zu: '%s' / '%s'\n", i, row.scope_text, row.protocol_text);
             assert(0);
         }
@@ -764,7 +768,8 @@ test_pagination_and_merge(void) {
         assert(meta.reset == (page == 0 ? 1U : 0U));
         assert(meta.lost == 0U);
         for (int i = 0; i < n; i++) {
-            assert(out[i].seq == seq++);
+            assert(out[i].seq == seq);
+            seq++;
             assert(out[i].repeat == 1U);
         }
     }
