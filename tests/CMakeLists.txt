@@ -5002,6 +5002,26 @@ if(DSD_ENABLE_QT_UI)
     dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_site_groups)
     add_test(NAME UI_QT_SITE_GROUPS COMMAND dsd-neo_test_ui_qt_site_groups)
 
+    # #786 site roaming: the decision core and the call wait cap on a scripted clock.
+    add_executable(
+        dsd-neo_test_ui_qt_site_roaming
+        ui/test_ui_qt_site_roaming.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_site_roaming
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(dsd-neo_test_ui_qt_site_roaming PRIVATE Qt6::Core)
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_site_roaming
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_site_roaming PROPERTIES AUTOMOC ON)
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_site_roaming)
+    add_test(NAME UI_QT_SITE_ROAMING COMMAND dsd-neo_test_ui_qt_site_roaming)
+
     # What MetricsModel makes of a decoder snapshot: the readings screens gate
     # on. The sync hold in particular -- a lock that outlives the decoder finding
     # anything reads as "it is working" while nothing is being decoded, which is

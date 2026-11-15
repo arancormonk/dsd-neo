@@ -62,6 +62,7 @@ target_sources(
         replay_store.cpp
         restart_closer.cpp # Issue #830
         site_groups.cpp # WP-D4
+        site_roaming.cpp # Issue #786
         saved_system_cards.cpp
         saved_systems_model.cpp
         scan_avoid_list_model.cpp
