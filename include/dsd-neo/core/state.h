@@ -2245,15 +2245,15 @@ struct dsd_state {
     time_t p25_p2_last_end_ptt[2];
     // P25p1 recent TDU/TDULC transmission-boundary timestamp
     double p25_p1_last_tdu_m;
-    /* The P25 Phase 1 call the last TDULC ended (processTDULC()), 0 for none, and where on the stream a repeat of that
-       TDULC would stand: its repeats follow it back to back, each data unit's sync starting where the last one ends
-       (TIA-102.BAAA-A 8.2). The symbol clock that repeat would reach its link control at, with the clock's epoch and
-       the carrier it was read on. A TDULC's link control speaks for the call it ended, and a repeat's for the call the
-       TDULC before it ended; decoder-thread private. */
-    uint64_t p25_p1_tdulc_end_epoch;
-    uint64_t p25_p1_tdulc_end_next_clock;
-    uint32_t p25_p1_tdulc_end_clock_epoch;
-    uint32_t p25_p1_tdulc_end_carrier_seq;
+    /* The P25 Phase 1 call the last terminator (a TDU or TDULC) ended (p25p1_terminator_note_end()), 0 for none, and
+       where on the stream the next terminator of the same end would stand: the terminators of one end follow each
+       other back to back, each data unit's sync starting where the last one ends (TIA-102.BAAA-A 8.2). The symbol
+       clock that terminator would reach its link control at, with the clock's epoch and the carrier it was read on. A
+       TDULC's link control speaks for the call its end closed; decoder-thread private. */
+    uint64_t p25_p1_terminator_end_epoch;
+    uint64_t p25_p1_terminator_end_next_clock;
+    uint32_t p25_p1_terminator_end_clock_epoch;
+    uint32_t p25_p1_terminator_end_carrier_seq;
 
     // P25 Phase 2 RS(63,35) metrics (hexbits, t=14)
     unsigned int p25_p2_rs_facch_ok;

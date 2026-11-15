@@ -60,6 +60,7 @@ install_trunk_tuning_hooks(void) {
 }
 
 void processTDULC(dsd_opts* opts, dsd_state* state);
+void processTDU(dsd_opts* opts, dsd_state* state);
 
 static int g_rs_hard_result = 0;
 static int g_rs_soft_result = 1;
@@ -465,12 +466,37 @@ test_tdulc_link_control_takes_only_the_call_it_ended(void) {
     rc |= expect_eq_int("nor does its own repeat",
                         (int)run_harris_gps_tdulc(&opts, &state, start + 50000U + P25P1_TDULC_DIBITS), 0);
 
-    // A repeat with another data unit between (a TDU) is no repeat of the TDULC that ended the call.
+    // A data unit the decoder never read between them (a TDU or LDU lost to a fade): no repeat of the TDULC that ended
+    // the call.
     reset_conventional_fixture(&opts, &state);
     rc |= expect_true("gps fixture call 2", seed_active_call(&state, 0x1234, 0x123456, 0x00));
     rc |= expect_eq_int("ending TDULC", (int)run_harris_gps_tdulc(&opts, &state, start), 0x123456);
-    rc |= expect_eq_int("a TDULC after a unit between",
+    rc |= expect_eq_int("a TDULC after a unit the decoder never read",
                         (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDULC_DIBITS + P25P1_TDU_DIBITS), 0);
+
+    // A TDU that ended the call, then the same transmission's TDULCs back to back: the end is one, so its link
+    // control is the call's. So is a TDULC after a TDU that followed the TDULC ending the call.
+    reset_conventional_fixture(&opts, &state);
+    rc |= expect_true("gps fixture call 5", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    state.symbol_clock = start;
+    processTDU(&opts, &state);
+    rc |= expect_true("the TDU ended the call",
+                      dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect_eq_int("the TDULC after the TDU that ended the call files under its source",
+                        (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDU_DIBITS), 0x123456);
+    rc |= expect_eq_int("and its repeat",
+                        (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDU_DIBITS + P25P1_TDULC_DIBITS),
+                        0x123456);
+    state.symbol_clock = start + P25P1_TDU_DIBITS + 2U * P25P1_TDULC_DIBITS;
+    processTDU(&opts, &state);
+    rc |= expect_eq_int(
+        "a TDULC after a TDU between the call's TDULCs",
+        (int)run_harris_gps_tdulc(&opts, &state, start + 2U * P25P1_TDU_DIBITS + 2U * P25P1_TDULC_DIBITS), 0x123456);
+    // A TDU much later, then a TDULC: a later transmission's end, which ended no call.
+    state.symbol_clock = start + 90000U;
+    processTDU(&opts, &state);
+    rc |= expect_eq_int("a TDULC after a later TDU that ended no call",
+                        (int)run_harris_gps_tdulc(&opts, &state, start + 90000U + P25P1_TDU_DIBITS), 0);
 
     // A call another end closed (a sync loss) is not a TDULC's either, even straight after it.
     reset_conventional_fixture(&opts, &state);

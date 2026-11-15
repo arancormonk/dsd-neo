@@ -2052,8 +2052,9 @@ suite runs under this compiler.
   identity a frame takes from the slot's call by copying that call's own protocol into an observation is outside this
   check, so those readers keep their own protocol checks (`p25p1_current_call()`, `nxdn_scch_enrich_identity()`,
   `ysf_enrich_identity()`, the DMR Cap+ seed). A P25 TDULC's link control, read after its end has run, takes an ended
-  call only when it is the one that TDULC ended or that the TDULC it repeats back to back ended (`processTDULC()`,
-  `dsd_state::p25_p1_tdulc_end_*`, `p25_lcw_from_tdulc()`'s `ended_epoch`), never an older call the slot still holds.
+  call only when that end closed it: the TDULC ended it, or it follows back to back the TDU or TDULC that did
+  (`p25p1_terminator_note_end()`, `dsd_state::p25_p1_terminator_end_*`, `p25_lcw_from_tdulc()`'s `ended_epoch`),
+  never an older call the slot still holds.
   Tests: `CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `NXDN_ENC_CLASS`, `P25_P1_TDULC`, `CORE_ALIAS_HANGTIME`,
   `DSTAR_HEADER_UTILS`, `NXDN_ALIAS_DECODE`.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
@@ -19698,15 +19699,11 @@ named through `qml/SpeechPacer.qml`: its name catches up with the text on screen
 meaningful step (a call starting or ending, a lock or sync change, the reading appearing or disappearing, a scan held or
 released; off a scan, a new frequency). The text on screen stays live, and nothing runs per tick: the pacer reads the
 reading only when its period or a step comes round, and runs only while the reading is shown. `LiveText` is a
-`ReadableText` named that way (`step` says what is heard at once; `speech`, a function the pacer calls at each read,
-gives other words than its text); a group takes a `SpeechPacer` with `group:` set. The Monitor's scan timing line steps
-on the stay reason, not its phrase, so the silent-channel skip's phrase variants (issue #834) are heard at the line's
-pace, and so are the voice gate's variants of one stay (`Qualify`, `Voice tail`): the sync that opens the qualify
-window is already a `speechStep`, and voice ending changes the reason. Its `speech` adds `MetricsModel::scanQuietText`
-after the line's words once, at the first read after the status or reason changes (`quietSaid`), not at every hop's
-rename on a session that cannot check. Not in `Accessible.description` either: Qt's Android bridge sends a node's name
-and description joined as one text on every rename (`descriptionForInterface()` in `androidjniaccessibility.cpp`).
-Test: `tst_a11y_paced_names.qml` `test_b2_the_quiet_status_is_no_step`.
+`ReadableText` named that way (`step` says what is heard at once; `spokenText`, its text unless set, is what it is
+named by); a group takes a `SpeechPacer` with `group:` set. The Monitor's scan timing line steps on the stay reason, not
+its phrase, so the silent-channel skip's phrase variants (issue #834) are heard at the line's pace, and its
+`spokenText` adds `MetricsModel::scanQuietText` after the line's words (`tst_a11y_paced_names.qml`
+`test_b2_the_quiet_status_is_no_step`).
 Paced: the Monitor's reading groups (`ReadingFlow`/`ReadingRow`, inline components), hero, scan timing line, call
 durations and "Signal & site" description (steps: `MonitorScreen.speechStep`; the squelch group adds the gate), the
 Spectrum status line and readout (a scan's hop is a step for none of these: `Util.tuneStep()` gives the tuning part of

@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -15,6 +16,8 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25p1_current_call.h"
+#include "p25p1_terminator_end.h"
 
 void
 processTDU(dsd_opts* opts, dsd_state* state) {
@@ -26,6 +29,11 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu
     state->currentslot = 0;
+    /* Where this TDU stands, its sync and NID behind it, and the call open before its end: a TDULC that follows it
+       back to back is the same end's (p25p1_terminator_note_end()). */
+    const uint64_t unit_clock = state->symbol_clock;
+    dsd_call_snapshot open_call;
+    const uint64_t open_epoch = p25p1_current_call(state, &open_call) ? open_call.epoch : 0U;
 
     int status_count;
 
@@ -67,6 +75,7 @@ processTDU(dsd_opts* opts, dsd_state* state) {
 
     // SM event: TDU (P1 terminator)
     p25_sm_emit_tdu(opts, state);
+    (void)p25p1_terminator_note_end(state, open_epoch, unit_clock, P25P1_TDU_DIBITS);
     p25_crypto_reset_slot(state, 0);
 
     // Clear call flags for single-carrier channel

@@ -39,6 +39,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25p1_current_call.h"
+#include "p25p1_terminator_end.h"
 
 static int
 soft_abs_i16(int16_t v) {
@@ -284,42 +285,6 @@ tdulc_print_lcw_payload(const dsd_opts* opts, const uint8_t LCW_bytes[9]) {
     DSD_FPRINTF(stderr, "%s\n", KNRM);
 }
 
-/* How far a TDULC may stand from where the one before it ended and still be its repeat (dsd_state::
-   p25_p1_tdulc_end_next_clock): the symbol grid's slips move a sync word by a symbol or two, while any data unit between
-   the two, the shortest being a TDU (P25P1_TDU_DIBITS), or a unit the decoder lost, moves it by far more. */
-#define P25P1_TDULC_REPEAT_SLIP_DIBITS 12U
-
-/* Whether the TDULC whose link control is read at @p clock follows the TDULC that last ended a call back to back, on
-   the stream that one was read on. */
-static int
-tdulc_repeats_the_last_end(const dsd_state* state, uint64_t clock) {
-    if (state->p25_p1_tdulc_end_epoch == 0U || state->p25_p1_tdulc_end_clock_epoch != state->symbol_clock_epoch
-        || state->p25_p1_tdulc_end_carrier_seq != state->carrier_seq) {
-        return 0;
-    }
-    const uint64_t want = state->p25_p1_tdulc_end_next_clock;
-    return clock + P25P1_TDULC_REPEAT_SLIP_DIBITS >= want && clock <= want + P25P1_TDULC_REPEAT_SLIP_DIBITS;
-}
-
-/* The epoch of the call this TDULC speaks for once its end has run (p25_sm_emit_tdu()), 0 for none: the call it ended,
-   @p open_epoch, which was open before it, or, when it ended none, the call the TDULC it repeats ended. Records the end
-   for the next TDULC, which @p clock (where this one's link control was read) places. */
-static uint64_t
-tdulc_note_ended_call(dsd_state* state, uint64_t open_epoch, uint64_t clock) {
-    dsd_call_snapshot call;
-    const int ended = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED
-                      && DSD_SYNC_IS_P25P1(call.protocol);
-    const uint64_t speaks_for = open_epoch != 0U                           ? open_epoch
-                                : tdulc_repeats_the_last_end(state, clock) ? state->p25_p1_tdulc_end_epoch
-                                                                           : 0U;
-    const uint64_t epoch = ended && call.epoch == speaks_for ? speaks_for : 0U;
-    state->p25_p1_tdulc_end_epoch = epoch;
-    state->p25_p1_tdulc_end_next_clock = clock + (uint64_t)P25P1_TDULC_DIBITS;
-    state->p25_p1_tdulc_end_clock_epoch = state->symbol_clock_epoch;
-    state->p25_p1_tdulc_end_carrier_seq = state->carrier_seq;
-    return epoch;
-}
-
 void
 processTDULC(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_tdulc++;
@@ -331,7 +296,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     dsd_call_snapshot open_call;
     const uint64_t open_epoch = p25p1_current_call(state, &open_call) ? open_call.epoch : 0U;
     p25_sm_emit_tdu(opts, state);
-    const uint64_t ended_epoch = tdulc_note_ended_call(state, open_epoch, lc_clock);
+    const uint64_t ended_epoch = p25p1_terminator_note_end(state, open_epoch, lc_clock, P25P1_TDULC_DIBITS);
 
     state->dmr_so = 0;
 
