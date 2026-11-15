@@ -283,17 +283,39 @@ ua_name_copy(char* out, size_t out_sz, const char* in, size_t in_sz) {
 }
 
 static int
+ua_scope_kind_valid(uint8_t kind) {
+    return kind >= DSD_UA_SCOPE_P25 && kind <= DSD_UA_SCOPE_P25_NAC;
+}
+
+/* A valid identity names its subtype, and a valid home its system kind; an invalid one is zeroed, whatever it holds. */
+static int
+ua_identity_enums_valid(const dsd_ua_identity* id) {
+    if (!id->valid) {
+        return 1;
+    }
+    return id->subtype >= DSD_UA_ID_RADIO && id->subtype <= DSD_UA_ID_UNKNOWN
+           && (!id->home_valid || ua_scope_kind_valid(id->home_kind));
+}
+
+static int
 ua_enums_valid(const dsd_unit_activity* row) {
     return row->protocol >= DSD_UA_PROTO_P25P1 && row->protocol <= DSD_UA_PROTO_TETRA
            && row->kind >= DSD_UA_REGISTRATION && row->kind <= DSD_UA_AUTHENTICATION && row->role >= DSD_UA_ROLE_COMMAND
            && row->role <= DSD_UA_ROLE_REPORT && row->result <= DSD_UA_RESULT_UNKNOWN;
 }
 
+static int
+ua_row_enums_valid(const dsd_unit_activity* row) {
+    return ua_enums_valid(row) && ua_identity_enums_valid(&row->subject) && ua_identity_enums_valid(&row->actor)
+           && ua_identity_enums_valid(&row->assigned) && ua_identity_enums_valid(&row->recipient)
+           && (!row->scope.valid || ua_scope_kind_valid(row->scope.kind));
+}
+
 /* The row as the ring keeps it, in zeroed @p out (no padding byte left set): invalid parts zeroed, the name
  * terminated, the scope from rx_id when the producer gave none. Stamps are left for the push. */
 static int
 ua_normalize(const dsd_state* state, const dsd_unit_activity* in, dsd_unit_activity* out) {
-    if (!ua_enums_valid(in)) {
+    if (!ua_row_enums_valid(in)) {
         return -1;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
@@ -392,6 +414,7 @@ ua_merge(dsd_unit_activity_ring* r, uint16_t i, const dsd_unit_activity* rec, ui
         held->repeat++;
     }
     held->last_ms = now_ms;
+    /* name_frozen is the latest pushed name: a merge that resolved one replaces the held one. */
     if (rec->name_frozen[0] != '\0') {
         DSD_MEMCPY(held->name_frozen, rec->name_frozen, sizeof(held->name_frozen));
     }

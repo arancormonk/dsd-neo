@@ -643,6 +643,54 @@ test_rejects_bad_rows_and_args(void) {
     row = base_row();
     row.result = (uint8_t)(DSD_UA_RESULT_UNKNOWN + 1);
     assert(dsd_unit_activity_push(st, &row) == -1);
+    /* A valid identity, home or scope needs a value of its enum. */
+    row = base_row();
+    row.subject.subtype = 0U;
+    assert(dsd_unit_activity_push(st, &row) == -1);
+    row = base_row();
+    row.subject.subtype = (uint8_t)(DSD_UA_ID_UNKNOWN + 1);
+    assert(dsd_unit_activity_push(st, &row) == -1);
+    row = base_row();
+    row.assigned.subtype = 9U;
+    assert(dsd_unit_activity_push(st, &row) == -1);
+    row = base_row();
+    row.subject.home_kind = DSD_UA_SCOPE_NONE;
+    assert(dsd_unit_activity_push(st, &row) == -1);
+    row = base_row();
+    row.subject.home_kind = (uint8_t)(DSD_UA_SCOPE_P25_NAC + 1);
+    assert(dsd_unit_activity_push(st, &row) == -1);
+    row = base_row();
+    row.actor.valid = 1U;
+    row.actor.subtype = DSD_UA_ID_INFRASTRUCTURE;
+    row.actor.home_valid = 1U;
+    row.actor.home_kind = 7U;
+    assert(dsd_unit_activity_push(st, &row) == -1);
+    row = base_row();
+    row.recipient.valid = 1U;
+    row.recipient.subtype = 0U;
+    assert(dsd_unit_activity_push(st, &row) == -1);
+    row = base_row();
+    row.scope.kind = DSD_UA_SCOPE_NONE;
+    assert(dsd_unit_activity_push(st, &row) == -1);
+    row = base_row();
+    row.scope.kind = 7U;
+    assert(dsd_unit_activity_push(st, &row) == -1);
+    assert(dsd_state_ext_get(st, DSD_STATE_EXT_CORE_UNIT_ACTIVITY) == NULL); /* still nothing allocated */
+    /* Out-of-enum values in parts that are not valid are zeroed, not refused. */
+    row = base_row();
+    row.subject.home_valid = 0U;
+    row.subject.home_kind = 7U;
+    row.actor.subtype = 9U;
+    row.scope.valid = 0U;
+    row.scope.kind = 7U;
+    assert(dsd_unit_activity_push(st, &row) == 1);
+    dsd_unit_activity held;
+    dsd_unit_activity_read_meta held_meta;
+    assert(dsd_unit_activity_read(st, 0U, 0U, &held, 1, &held_meta) == 1);
+    assert(held.subject.home_kind == 0U && held.actor.subtype == 0U && held.scope.kind == 0U);
+    assert(dsd_state_ext_set(st, DSD_STATE_EXT_CORE_UNIT_ACTIVITY, NULL, NULL) == 0);
+
+    row = base_row();
     assert(dsd_unit_activity_push(NULL, &row) == -1);
     assert(dsd_unit_activity_push(st, NULL) == -1);
     assert(dsd_state_ext_get(st, DSD_STATE_EXT_CORE_UNIT_ACTIVITY) == NULL); /* nothing allocated */

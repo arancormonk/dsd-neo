@@ -524,6 +524,15 @@ dsd_app_snapshot_test_get_event_history_copy_counts(dsd_app_snapshot_event_histo
     *counts = g_eh_copy_counts;
     dsd_mutex_unlock(&g_mu);
 }
+
+int
+dsd_app_snapshot_test_consumer_needs_retry(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    const int retry = g_consume_needs_retry;
+    dsd_mutex_unlock(&g_mu);
+    return retry;
+}
 #endif
 
 /* Whether the ring the decoder holds is another ring than the one the published copy came from. A restarted decoder's

@@ -175,8 +175,10 @@ typedef struct {
  * - stage: a step within one command (TETRA intent vs authenticated confirm), 0 when the message has none.
  * - slot: the TDMA slot heard on (0/1); freq_hz: the carrier heard on (0 unknown).
  * - scope_epoch: the trunk-scan target generation the row was heard under, or 0; the producer fills it.
- * - name_frozen: the subject's name as resolved by the producer at push (UTF-8, NUL-terminated; push cuts it at a
- *   character boundary when it fills the field). Rows of another scope than the current one show it.
+ * - name_frozen: the latest pushed name: the subject's name as the producer resolved it at the push that inserted
+ *   the row, replaced by each merge that pushes a non-empty one (UTF-8, NUL-terminated; push cuts it at a character
+ *   boundary when it fills the field). It is "frozen" only against later alias changes: nothing rewrites it but a
+ *   push. Rows of another scope than the current one show it.
  */
 typedef struct dsd_unit_activity {
     uint64_t seq, rev;
@@ -229,17 +231,19 @@ typedef struct dsd_unit_activity_read_meta {
 /**
  * Add @p row to the log of @p state (decoder thread), creating the ring at the first push.
  *
- * The record is normalised first: the fields of an invalid identity, scope or value are zeroed, name_frozen is
- * terminated, and a row whose scope is not valid takes the reception scope from dsd_state::rx_id (see dsd_ua_scope).
+ * The record is checked and normalised first: a valid identity needs a dsd_ua_id_subtype, a valid home and a valid
+ * scope a dsd_ua_scope_kind other than NONE; the fields of an invalid identity, home, scope or value are zeroed,
+ * name_frozen is terminated, and a row whose scope is not valid takes the reception scope from dsd_state::rx_id (see dsd_ua_scope).
  * seq, rev, first_ms, last_ms, wall_s and repeat are stamped here; what @p row holds in them is ignored.
  *
  * Merge key: every field but seq, rev, first_ms, last_ms, wall_s, repeat, slot and name_frozen (protocol, kind,
  * role, result, stage, reason set and code, the four identities with their home systems, group, value, value2 and
  * their valid flags, scope, scope_epoch and freq_hz). A merge keeps the row's slot and takes the pushed name when it
- * is not empty.
+ * is not empty, so name_frozen holds the latest pushed name.
  *
  * Returns 1 when a new row was inserted, 0 when the push merged into a row, -1 on a NULL argument, a protocol, kind,
- * role or result outside its enum, or an allocation failure (nothing is logged).
+ * role or result outside its enum, a valid identity, home or scope whose subtype or kind is outside its enum, or an
+ * allocation failure (nothing is logged).
  */
 int dsd_unit_activity_push(dsd_state* state, const dsd_unit_activity* row);
 

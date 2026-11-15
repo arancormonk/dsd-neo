@@ -190,8 +190,10 @@ test_published_failure_keeps_consumer_copy(dsd_state* st, reader* rd) {
     publish(st);
     dsd_unit_activity_test_alloc_fail_after(-1);
     assert(reader_poll(rd) == 0 && rd->held == 1U && rd->instance == instance && rd->rev == rev);
+    assert(dsd_app_snapshot_test_consumer_needs_retry() == 1);
     publish(st);
     assert(reader_poll(rd) == 1 && rd->reset == 0U && rd->lost == 0U && rd->rids[rd->count - 1] == 7U);
+    assert(dsd_app_snapshot_test_consumer_needs_retry() == 0);
 }
 
 /* The consumer's copy fails: the reader reads nothing new and keeps its cursor; the next read retries without a new
@@ -210,8 +212,13 @@ test_consumer_copy_failure_is_retried(dsd_state* st, reader* rd) {
     dsd_unit_activity_test_alloc_fail_after(1); /* the published copy allocates, the consumer's fails */
     publish(st);
     assert(reader_poll(rd) == 0 && rd->held == 0U && rd->instance == instance && rd->rev == rev);
+    assert(dsd_app_snapshot_test_consumer_needs_retry() == 1);
     dsd_unit_activity_test_alloc_fail_after(-1);
     assert(reader_poll(rd) == 1 && rd->reset == 0U && rd->lost == 0U && rd->rids[rd->count - 1] == 8U);
+    /* The recovering read leaves the consumer whole: later reads stop copying again. */
+    assert(dsd_app_snapshot_test_consumer_needs_retry() == 0);
+    assert(reader_poll(rd) == 0 && rd->held == 1U);
+    assert(dsd_app_snapshot_test_consumer_needs_retry() == 0);
 }
 
 /* A new decoder session's ring is another instance: copied whole, and read as a reset from its start. */

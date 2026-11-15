@@ -76,6 +76,9 @@ typedef struct {
 
 void dsd_app_snapshot_test_reset_event_history_copy_counts(void);
 void dsd_app_snapshot_test_get_event_history_copy_counts(dsd_app_snapshot_event_history_copy_counts* counts);
+/* 1 while the consumer copy holds a store that is not whole, so the next dsd_app_get_latest_snapshot() copies again
+ * without a new publication. */
+int dsd_app_snapshot_test_consumer_needs_retry(void);
 #endif
 
 #ifdef __cplusplus

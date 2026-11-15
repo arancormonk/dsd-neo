@@ -2430,14 +2430,45 @@ suite runs under this compiler.
   direction the export uses. Every core CSV importer shares its token helpers through the module-private
   `src/core/file/csv_parse_internal.h`; the channel map's key column accepts decimal, `0x` hex and `<iden>-<chan>`
   spellings there.
-- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 (taken
-  from the io range): `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and the reception
-  it runs for, the talkers both slots remember, and the DMR superframe mixer's one-channel limiter (issue #518);
+- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 and 14
+  (taken from the io range): 13 is `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and
+  the reception it runs for, the talkers both slots remember, and the DMR superframe mixer's one-channel limiter (issue
+  #518), and 14 `DSD_STATE_EXT_CORE_UNIT_ACTIVITY`, the session's unit activity ring (below);
   runtime 6; DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is
   `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
   its tune (issue #644). `CORE_STATE_EXT` pins these five.
+- API note: the unit activity ring (`<dsd-neo/core/unit_activity.h>`, `src/core/util/unit_activity.c`, state
+  extension 14) is the session's log of trunking unit events: registrations, deregistrations, talkgroup joins, denies,
+  queued and waiting responses, radio commands, status and message reports. Protocol producers push one plain record
+  (`dsd_unit_activity`, at most 192 B, static-asserted) per decoded message that passed its CRC/FEC gate (never content
+  `-F` relaxed); the ring stores numbers only, and the app-control view resolves labels, reason text, scope text and
+  names.
+  - Push (decoder thread; the first push creates the ring and draws its instance): normalises the record (an invalid
+    identity, home, scope or value is zeroed; a valid identity, home or scope needs an in-enum subtype or kind, as
+    protocol, kind, role and result do, or the push is refused), takes the reception scope from `rx_id` when the
+    producer gave none (`dsd_ua_scope`: the learned-alias scope's kind, a and b, plus the site in `c` with
+    `DSD_UA_SCOPE_SITE_KNOWN` and the NXDN category), and stamps `seq`, `rev`, `first_ms`/`last_ms` (decode mono ms) and
+    `wall_s` (the floored decode wall reading, the history rows' convention). `name_frozen` is the latest pushed name:
+    the producer resolves it, a merge that pushes a non-empty one replaces it, and nothing else rewrites it.
+  - Dedup: a push merges into one of the 16 most recently revised rows when every field but the stamps, `repeat`,
+    `slot` and the name is equal (protocol, kind, role, result, stage, reason, the four identities with their homes,
+    group, value, value2, scope, `scope_epoch`, `freq_hz`), the decode clock has not gone back past the row's
+    `last_ms`, and less than 2 s passed since its `first_ms` (an anchored window). A merge bumps `repeat` (saturating),
+    `last_ms` and `rev`.
+  - Delivery: every insert or merge stamps the next ring revision; `dsd_unit_activity_read()` returns rows after a
+    cursor in revision order (never seq order), so a capped read never skips a merged row. A full ring evicts its least
+    recently revised row, so every row held is newer than every row evicted: a reader whose cursor is below the highest
+    evicted revision gets `lost` once, and another instance gets `reset`.
+  - Snapshots: `ui_snapshot_copy_render_state()` copies the ring at both hops (published, consumer) with
+    `dsd_unit_activity_copy_snapshot()` into each snapshot's own ring, allocated at its first copy and reused: an
+    unchanged revision returns at once, the same instance copies only the rows revised since (plus 4 KiB of links), an
+    instance change copies every row. A failed allocation keeps what the copy held and marks it not whole, so a
+    reader's cursor stays and the hop retries (the consumer's at its next read).
+  - Budget: 1024 rows of 192 B plus 4 KiB of links, about 196 KiB per ring; three rings (live, published, consumer),
+    about 588 KiB. The ring is not part of a trunk-scan target's saved state: one log spans the session, so it adds
+    nothing per target. Tests: `CORE_UNIT_ACTIVITY`, `APP_CONTROL_SNAPSHOT_UNIT_ACTIVITY`.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
