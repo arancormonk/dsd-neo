@@ -539,7 +539,8 @@ typedef enum DSD_ATTR_PACKED {
 
 typedef struct dsdneoUserConfig {
     /* [input]: has_input through input_warn_db_is_set, one block a replay session retains whole
-       (dsd_user_config_retain_input()), so every [input] field belongs inside it. */
+       (dsd_user_config_retain_input()), so every [input] field belongs inside it, and in the merge table of
+       src/runtime/config_retained_input.c. */
     int has_input;
     dsdneoUserInputSource input_source;
     char pulse_input[256];
@@ -906,21 +907,46 @@ void dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* sta
 /*
  * The [input] a session running an I/Q replay saves (issue #743). A replay (--iq-replay) has no INI form, so every save
  * of such a session (autosave, Save, --print-config) writes the [input] of the config it loaded, unchanged, or no
- * [input] when it loaded none. Bootstrap retains it after the load; a config apply whose own [input] stays applied
- * while the replay keeps running replaces it; the session leaving the replay drops it. It lives in a state extension
- * (DSD_STATE_EXT_RUNTIME_CONFIG_INPUT), freed with the state. Decoder thread only, except the snapshot copy below.
+ * [input] when it loaded none. Bootstrap retains it after the load; a config file loaded during the replay whose own
+ * [input] stays applied with the replay still running replaces it, and a config patch (the control API's config_apply)
+ * merges the keys it sets into it; a radio row that returns the session to a replay retains the input it left; the
+ * session leaving the replay drops it. It lives in a state extension (DSD_STATE_EXT_RUNTIME_CONFIG_INPUT), freed with
+ * the state. Decoder thread only, except the snapshot copy below.
  */
 
 /**
  * @brief Retain @p cfg's [input] fields (has_input through input_warn_db_is_set) for a replay session's saves.
  *
- * A config without an [input] (or NULL) leaves none retained.
+ * A config without an [input] (or NULL) leaves none retained. An [input] no config can start (a file input whose
+ * file_path dsd_user_config_file_path_is_input_spec() names) is not retained: the copy held stays.
  *
  * @param state Decoder state that owns the copy.
  * @param cfg Config whose [input] is retained.
  * @return 0 on success, -1 when @p state is NULL or the copy cannot be allocated (the previous copy is kept then).
  */
 int dsd_user_config_retain_input(dsd_state* state, const dsdneoUserConfig* cfg);
+
+/**
+ * @brief Merge the [input] keys @p patch sets into the retained [input] (retained whole when none is held).
+ *
+ * A key counts as set when its value differs from dsd_user_config_init()'s, or, for a key with an `_is_set` flag
+ * (rtl_gain, rtl_ppm, the squelch keys, soapy_bandwidth_hz, input_warn_db), when its flag is set; a key written with
+ * its default value is not told apart from an absent one. The source and the endpoint keys stay as held unless the
+ * patch names them. A merge that would leave an [input] no config can start keeps the copy held.
+ *
+ * @param state Decoder state that owns the copy.
+ * @param patch Config whose [input] keys are merged (has_input set).
+ * @return 0 on success (nothing to merge included), -1 when @p state is NULL or an allocation fails (copy unchanged).
+ */
+int dsd_user_config_merge_retained_input(dsd_state* state, const dsdneoUserConfig* patch);
+
+/**
+ * @brief Return 1 when @p path, as a file input's file_path, names an input spec no config can start (an I/Q replay,
+ * `iqreplay:...`), 0 otherwise and for NULL. --validate-config reports such a file_path as an error.
+ *
+ * @param path A file_path value.
+ */
+int dsd_user_config_file_path_is_input_spec(const char* path);
 
 /**
  * @brief Drop the retained [input], if any.

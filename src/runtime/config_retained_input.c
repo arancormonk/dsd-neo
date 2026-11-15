@@ -9,6 +9,7 @@
  * refuses. See <dsd-neo/runtime/config.h> for who sets, replaces and drops it.
  */
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -16,6 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "dsd-neo/core/state_fwd.h"
 
@@ -52,6 +54,14 @@ retained_input_slot(dsd_state* state) {
     return kept;
 }
 
+/* An [input] no config can start: a file input whose file_path is an input spec (an I/Q replay). A config saved by
+   the bug this copy fixes has one; retaining it would write it back. */
+static int
+input_is_unstartable(const dsdneoUserConfig* cfg) {
+    return cfg->has_input && cfg->input_source == DSDCFG_INPUT_FILE
+           && dsd_user_config_file_path_is_input_spec(cfg->file_path);
+}
+
 int
 dsd_user_config_retain_input(dsd_state* state, const dsdneoUserConfig* cfg) {
     if (state == NULL) {
@@ -61,6 +71,9 @@ dsd_user_config_retain_input(dsd_state* state, const dsdneoUserConfig* cfg) {
         dsd_user_config_forget_retained_input(state);
         return 0;
     }
+    if (input_is_unstartable(cfg)) {
+        return 0;
+    }
     retained_input* kept = retained_input_slot(state);
     if (kept == NULL) {
         return -1;
@@ -68,6 +81,128 @@ dsd_user_config_retain_input(dsd_state* state, const dsdneoUserConfig* cfg) {
     DSD_MEMCPY(kept->input, (const unsigned char*)cfg + RETAINED_INPUT_BEGIN, sizeof kept->input);
     kept->revision = dsd_atomic_u64_fetch_add_relaxed(&g_retained_input_revision, 1U) + 1U;
     return 0;
+}
+
+/* One [input] key of the merge: its field, and the field of its `_is_set` flag (0 for none: has_input, at offset 0, is
+   no key's flag). A flagged key counts as set when its flag is; any other when it differs from the default. */
+typedef struct {
+    size_t offset;
+    size_t size;
+    size_t flag_offset;
+} input_key;
+
+#define INPUT_KEY(field) {offsetof(dsdneoUserConfig, field), sizeof(((dsdneoUserConfig*)0)->field), 0U}
+#define INPUT_FLAGGED_KEY(field, flag)                                                                                 \
+    {offsetof(dsdneoUserConfig, field), sizeof(((dsdneoUserConfig*)0)->field), offsetof(dsdneoUserConfig, flag)}
+
+/* Every [input] field but has_input, the flags (merged with their keys) and airspy (merged whole, below). */
+static const input_key k_input_keys[] = {
+    INPUT_KEY(input_source),
+    INPUT_KEY(pulse_input),
+    INPUT_KEY(rtl_device),
+    INPUT_KEY(rtl_freq),
+    INPUT_FLAGGED_KEY(rtl_gain, rtl_gain_is_set),
+    INPUT_FLAGGED_KEY(rtl_ppm, rtl_ppm_is_set),
+    INPUT_KEY(rtl_bw_khz),
+    INPUT_FLAGGED_KEY(rtl_sql, rtl_sql_is_set),
+    INPUT_FLAGGED_KEY(rtl_sql_mode, rtl_sql_is_set),
+    INPUT_FLAGGED_KEY(rtl_sql_margin_db, rtl_sql_is_set),
+    INPUT_KEY(rtl_volume),
+    INPUT_KEY(rtl_auto_ppm),
+    INPUT_KEY(rtltcp_host),
+    INPUT_KEY(rtltcp_port),
+    INPUT_KEY(airspy_invalid),
+    INPUT_KEY(soapy_args),
+    INPUT_KEY(soapy_profile),
+    INPUT_KEY(soapy_stream_format),
+    INPUT_KEY(soapy_antenna),
+    INPUT_KEY(soapy_clock),
+    INPUT_KEY(soapy_settings),
+    INPUT_KEY(soapy_gains),
+    INPUT_FLAGGED_KEY(soapy_bandwidth_hz, soapy_bandwidth_hz_is_set),
+    INPUT_KEY(digital_resample),
+    INPUT_KEY(file_path),
+    INPUT_KEY(file_sample_rate),
+    INPUT_KEY(tcp_host),
+    INPUT_KEY(tcp_port),
+    INPUT_KEY(udp_addr),
+    INPUT_KEY(udp_port),
+    INPUT_FLAGGED_KEY(input_warn_db, input_warn_db_is_set),
+};
+
+static int
+input_key_is_set(const input_key* key, const unsigned char* patch, const unsigned char* defaults) {
+    if (key->flag_offset != 0U) {
+        int flag = 0;
+        DSD_MEMCPY(&flag, patch + key->flag_offset, sizeof flag);
+        return flag != 0;
+    }
+    return memcmp(patch + key->offset, defaults + key->offset, key->size) != 0;
+}
+
+/* Field by field: the struct has padding after the serial. */
+static int
+airspy_config_differs(const dsd_airspy_config* a, const dsd_airspy_config* b) {
+    return memcmp(a->serial, b->serial, sizeof a->serial) != 0 || a->sample_rate != b->sample_rate
+           || a->gain_mode != b->gain_mode || a->sensitivity_gain != b->sensitivity_gain
+           || a->linearity_gain != b->linearity_gain || a->lna_gain != b->lna_gain || a->mixer_gain != b->mixer_gain
+           || a->vga_gain != b->vga_gain || a->lna_agc != b->lna_agc || a->mixer_agc != b->mixer_agc
+           || a->bias_tee != b->bias_tee;
+}
+
+/* The Airspy keys travel as one struct: set when it differs from both the defaults and an all-zero one (a payload
+   built from zero rather than from dsd_user_config_init()). */
+static int
+airspy_keys_are_set(const dsdneoUserConfig* patch, const dsdneoUserConfig* defaults) {
+    static const dsd_airspy_config k_zero_airspy = {0};
+    return airspy_config_differs(&patch->airspy, &defaults->airspy)
+           && airspy_config_differs(&patch->airspy, &k_zero_airspy);
+}
+
+/* @p merged (holding the retained [input]) takes every key @p patch sets. */
+static void
+merge_input_keys(dsdneoUserConfig* merged, const dsdneoUserConfig* patch, const dsdneoUserConfig* defaults) {
+    unsigned char* to = (unsigned char*)merged;
+    const unsigned char* from = (const unsigned char*)patch;
+    for (size_t i = 0; i < sizeof k_input_keys / sizeof k_input_keys[0]; i++) {
+        const input_key* key = &k_input_keys[i];
+        if (!input_key_is_set(key, from, (const unsigned char*)defaults)) {
+            continue;
+        }
+        DSD_MEMCPY(to + key->offset, from + key->offset, key->size);
+        if (key->flag_offset != 0U) {
+            DSD_MEMCPY(to + key->flag_offset, from + key->flag_offset, sizeof(int));
+        }
+    }
+    if (airspy_keys_are_set(patch, defaults)) {
+        merged->airspy = patch->airspy;
+    }
+    merged->has_input = 1;
+}
+
+int
+dsd_user_config_merge_retained_input(dsd_state* state, const dsdneoUserConfig* patch) {
+    if (state == NULL) {
+        return -1;
+    }
+    if (patch == NULL || !patch->has_input) {
+        return 0;
+    }
+    if (retained_input_of(state) == NULL) {
+        return dsd_user_config_retain_input(state, patch);
+    }
+    /* [0] the merge, from the retained [input]; [1] the defaults a patch is built on. */
+    dsdneoUserConfig* scratch = (dsdneoUserConfig*)calloc(2, sizeof *scratch);
+    if (scratch == NULL) {
+        return -1;
+    }
+    dsd_user_config_init(&scratch[1]);
+    (void)dsd_user_config_retained_input(state, &scratch[0]);
+    merge_input_keys(&scratch[0], patch, &scratch[1]);
+    const int rc = dsd_user_config_retain_input(state, &scratch[0]);
+    DSD_SECURE_ZERO(scratch, 2U * sizeof *scratch);
+    free(scratch);
+    return rc;
 }
 
 void

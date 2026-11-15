@@ -302,11 +302,13 @@ streams, `.bin` as a capture) is saved by its path, so startup opens it the same
 
 An I/Q replay (`--iq-replay`) has no `[input]` form. A session that runs one saves (the exit autosave, Save,
 `--print-config`) the `[input]` of the config it loaded, exactly as loaded, or no `[input]` when it loaded none. A config
-applied during the replay with an `[input]` of its own that leaves the replay running is saved in its place; a config
-without an `[input]`, or one that is not applied, keeps the loaded one. Once the session leaves the replay, it saves the
-input it runs again. `--validate-config` reports a `file_path` that names an I/Q replay (`iqreplay:...`) as an error:
-no config can start one. A bare `-i tcp` or `-i udp` is saved as the `tcp` or `udp` source it opens (the session's
-endpoint, `localhost:7355` or `127.0.0.1:7355` by default).
+file loaded during the replay (Config > Load) whose `[input]` leaves the replay running is saved in its place. A config
+patch (the API's `config_apply`) changes only the `[input]` keys it names: one that sets `input_warn_db` alone keeps the
+saved source and its endpoint. A config without an `[input]`, or one that is not applied, keeps the saved one. Once the
+session leaves the replay, it saves the input it runs again; the RTL-SDR row that returns it to the replay keeps saving
+the input it left. An `[input]` no config can start (a file input whose `file_path` is an `iqreplay:...` spec) is never
+kept for a save, and `--validate-config` reports such a `file_path` as an error. A bare `-i tcp` or `-i udp` is saved
+as the `tcp` or `udp` source it opens (the session's endpoint, `localhost:7355` or `127.0.0.1:7355` by default).
 
 ---
 

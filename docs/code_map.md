@@ -3803,13 +3803,18 @@ suite runs under this compiler.
       session loaded, unchanged, or no `[input]` when none was loaded; every save (exit autosave, terminal Save,
       `--print-config`) goes through it. Bootstrap retains the loaded block (`dsd_user_config_retain_input()`) in state
       slot 15 (`DSD_STATE_EXT_RUNTIME_CONFIG_INPUT`), freed with the state. A config apply
-      (`ui_cmd_handle_config_apply()`) replaces it only when the config has an `[input]`, stays applied, and leaves the
-      replay running; `dsd_app_drain_cmds()` drops it after any command that left the replay. The UI snapshot copies it
+      (`cfg_settle_retained_input()`) changes it only when the config has an `[input]`, stays applied, and leaves the
+      replay running: a loaded file's payload replaces it, a plain patch merges the keys it sets
+      (`dsd_user_config_merge_retained_input()`: set = differs from `dsd_user_config_init()`, or its `_is_set` flag), so
+      a sourceless patch keeps the source and endpoint. An `[input]` that is a file input of a non-file spec
+      (`dsd_user_config_file_path_is_input_spec()`) is never retained. The RTL-SDR row that returns a PCM session to the
+      replay it left retains the snapshot of the input it leaves (`ui_input_left_for_replay()`);
+      `dsd_app_drain_cmds()` drops the copy after any command that left the replay. The UI snapshot copies it
       (`dsd_user_config_copy_retained_input()`, only when it changed) so the terminal's Save writes it too.
       `--validate-config` refuses a file input whose `file_path` is a spec kind no config can start
       (`k_file_path_spec_kinds` in `config_user_validation.cpp`: `iqreplay:`). A bare `tcp` or `udp` input snapshots
-      as its `tcp`/`udp` source with the session's endpoint; `-` and `m17udp:` stay file inputs. Tests: `RUNTIME_CONFIG_USER`,
-      `RUNTIME_CLI_PARSE`, `RUNTIME_BOOTSTRAP_PRINT_CONFIG_REPLAY_KEEPS_INPUT`, `ENGINE_CLEANUP_AUDIO`,
+      as its `tcp`/`udp` source with the session's endpoint; `-` and `m17udp:` stay file inputs. Tests:
+      `RUNTIME_CONFIG_USER`, `RUNTIME_CLI_PARSE`, `RUNTIME_BOOTSTRAP_PRINT_CONFIG_REPLAY_KEEPS_INPUT`, `ENGINE_CLEANUP_AUDIO`,
       `APP_COMMAND_QUEUE`, `CORE_STATE_EXT`.
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`); the control API options and
     their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument

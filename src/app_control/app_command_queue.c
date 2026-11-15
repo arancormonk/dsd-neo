@@ -1888,6 +1888,42 @@ ui_radio_row_took_over(dsd_opts* opts, dsd_state* state, int pcm_timing_rate_hz)
     dsd_engine_note_input_replaced(state);
 }
 
+/*
+ * The input a radio row leaves for an I/Q replay (issue #743): the RTL-SDR row reopens the replay a switch to PCM left
+ * (svc_rtl_row_destination()), and the replay session saves the input it ran until then, the last one a save could
+ * describe, so leaving the replay and coming back never drops the [input] from the save. NULL when the row opens no
+ * replay, the session already runs one, or the copy cannot be allocated.
+ */
+static dsdneoUserConfig*
+ui_input_left_for_replay(const dsd_opts* opts, const dsd_state* state, int cmd_id) {
+    if (cmd_id != DSD_APP_CMD_RTL_ENABLE_INPUT || dsd_opts_input_is_iq_replay(opts)) {
+        return NULL;
+    }
+    char destination[sizeof opts->audio_in_dev];
+    svc_rtl_row_destination(opts, destination, sizeof destination);
+    if (!dsd_opts_audio_in_dev_is_iqreplay_spec(destination)) {
+        return NULL;
+    }
+    dsdneoUserConfig* left = (dsdneoUserConfig*)malloc(sizeof *left);
+    if (left) {
+        dsd_snapshot_opts_to_user_config(opts, state, left);
+    }
+    return left;
+}
+
+/* The replay the row opened saves @p left (ui_input_left_for_replay()); a start that failed put the input back. */
+static void
+ui_keep_input_left_for_replay(const dsd_opts* opts, dsd_state* state, dsdneoUserConfig* left) {
+    if (!left) {
+        return;
+    }
+    if (dsd_opts_input_is_iq_replay(opts) && dsd_user_config_retain_input(state, left) != 0) {
+        LOG_WARN("Input: out of memory keeping the input before the replay; a save writes no [input].\n");
+    }
+    DSD_SECURE_ZERO(left, sizeof *left);
+    free(left);
+}
+
 /* Input > Switch source > RTL-SDR or Airspy. The watchdog reads the input, and may retune it, while it holds the P25 SM
    tick guard, so the switch holds that guard from the copy of the input it would put back, through its rewrite of the
    input and its start, and, when the start fails, on through putting back the input that ran and starting it again
@@ -1912,6 +1948,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     int refused = 0;
     int capture_stopped = 0;
     int output_failed = 0;
+    dsdneoUserConfig* left_for_replay = ui_input_left_for_replay(opts, state, c->id);
     p25_sm_tick_guard_enter();
     ui_radio_input before;
     ui_capture_radio_input(opts, state, &before);
@@ -1929,6 +1966,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
         output_failed = ui_input_switched(opts, state) != 0;
     }
     p25_sm_tick_guard_leave();
+    ui_keep_input_left_for_replay(opts, state, left_for_replay);
 
     int result = ui_cmd_apply_status_from_service_rc(rc);
     if (rc == 0) {
@@ -10203,10 +10241,13 @@ cfg_keep_next_start_startable(dsd_opts* opts, dsd_state* state, const dsdneoUser
 }
 
 /*
- * The [input] a replay session saves (issue #743): an apply whose own [input] stays applied while the replay keeps
- * running is the one the session saves from now on. An apply without an [input] leaves the retained one alone, and a
- * refused or rolled-back one never touched it. One that left the replay drops it with every other departure
- * (dsd_app_drain_cmds()).
+ * The [input] a replay session saves (issue #743), after an apply whose own [input] stays applied while the replay
+ * keeps running: a loaded file's [input] is a whole section, which the session saves from now on; a patch (the control
+ * API's config_apply, a payload built from dsd_user_config_init() and the keys given) merges only the keys it sets,
+ * so one that names no source (an input_warn_db alone) keeps the source and endpoint the session saves. An apply
+ * without an [input] leaves the retained one alone, a refused or rolled-back one never touched it, and an [input] no
+ * config can start (a file input of an iqreplay: spec) is never retained. One that left the replay drops it with every
+ * other departure (dsd_app_drain_cmds()).
  */
 static void
 cfg_settle_retained_input(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int kept) {
@@ -10222,7 +10263,11 @@ cfg_settle_retained_input(const dsd_opts* opts, dsd_state* state, const struct d
         return;
     }
     DSD_MEMCPY(applied, c->data, sizeof *applied);
-    if (dsd_user_config_retain_input(state, applied) != 0) {
+    /* Only a load's payload has the fields after the config (cfg_adopt_loaded_autosave()). */
+    const int loaded_file = c->n >= sizeof(dsd_app_config_load_payload);
+    const int retain_rc = loaded_file ? dsd_user_config_retain_input(state, applied)
+                                      : dsd_user_config_merge_retained_input(state, applied);
+    if (retain_rc != 0) {
         LOG_WARN("Config: out of memory keeping the applied [input]; a save keeps the one before.\n");
     }
     DSD_SECURE_ZERO(applied, sizeof *applied);

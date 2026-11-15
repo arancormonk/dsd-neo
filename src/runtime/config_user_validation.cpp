@@ -745,6 +745,17 @@ const file_path_spec_kind k_file_path_spec_kinds[] = {
 };
 } // namespace
 
+int
+dsd_user_config_file_path_is_input_spec(const char* path) {
+    if (path == nullptr) {
+        return 0;
+    }
+    return std::any_of(std::begin(k_file_path_spec_kinds), std::end(k_file_path_spec_kinds),
+                       [path](const file_path_spec_kind& kind) { return kind.matches(path) != 0; })
+               ? 1
+               : 0;
+}
+
 static void
 validate_composed_file_path(const dsdneoUserConfig* cfg, const char* section, const char* key,
                             dsdcfg_diagnostics_t* diags) {

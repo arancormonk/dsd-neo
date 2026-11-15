@@ -14658,9 +14658,10 @@ expect_saves_loaded_input(const char* label, const dsd_opts* opts, const dsd_sta
 
 /*
  * Issue #743 (B1, G4): a replay session saves the [input] of the config it loaded. A config applied during the replay
- * (an API patch, a Config load) leaves that [input] alone when it has none of its own; one whose [input] stays applied
- * with the replay still running is the session's [input] from then on; a refused or rolled-back one leaves the loaded
- * one; one that replaces the replay with a live radio drops it, and the session saves its own input again.
+ * (an API patch, a Config load) leaves that [input] alone when it has none of its own. When its [input] stays applied
+ * with the replay still running, a loaded file's [input] is the session's from then on, and a patch merges the keys
+ * it sets (one naming no source keeps the loaded source and endpoint). A refused or rolled-back one leaves the loaded
+ * [input]; one that replaces the replay with a live radio drops it, and the session saves its own input again.
  */
 static int
 test_replay_config_apply_keeps_the_saved_input(void) {
@@ -14684,8 +14685,25 @@ test_replay_config_apply_keeps_the_saved_input(void) {
     rc |= expect_saves_loaded_input("inputless patch: the loaded [input] is saved", &opts, &state);
     freeState(&state);
 
-    /* An RTL-SDR [input] with a bandwidth and no frequency: the replay keeps running, re-planned, and the session saves
-       that [input] from now on. */
+    /* The API's config_apply with an [input] of input_warn_db alone (a payload built as submit_config() builds one):
+       the replay keeps running, and the session saves the loaded source and endpoint with the new threshold. */
+    dsd_user_config_init(&cfg);
+    cfg.has_input = 1;
+    cfg.input_warn_db = -20.0;
+    cfg.input_warn_db_is_set = 1;
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("sourceless patch: retained", dsd_user_config_retain_input(&state, &loaded), 0);
+    rc |= submit_config(&opts, &state, &cfg, "sourceless patch");
+    rc |= expect_str("sourceless patch: the replay stays the input", opts.audio_in_dev, "iqreplay:capture.iq.json");
+    rc |= expect_int("sourceless patch: not failed", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_saves_loaded_input("sourceless patch: the loaded source and endpoint are saved", &opts, &state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    rc |= expect_true("sourceless patch: the new threshold is saved",
+                      snap.input_warn_db_is_set && fabs(snap.input_warn_db - (-20.0)) < 1e-9);
+    freeState(&state);
+
+    /* A patch naming an RTL-SDR source with a bandwidth and no frequency: the replay keeps running, re-planned, and the
+       session saves the loaded [input] with the keys the patch set. */
     DSD_MEMSET(&cfg, 0, sizeof cfg);
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_RTL;
@@ -14696,7 +14714,23 @@ test_replay_config_apply_keeps_the_saved_input(void) {
     rc |= expect_str("committed [input]: the replay stays the input", opts.audio_in_dev, "iqreplay:capture.iq.json");
     rc |= expect_int("committed [input]: not failed", dsd_app_command_test_last_failed(), 0);
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
-    rc |= expect_true("committed [input]: the applied [input] is saved",
+    rc |= expect_true("committed [input]: the patched keys merge into the loaded [input]",
+                      snap.has_input && snap.input_source == DSDCFG_INPUT_RTL && snap.rtl_bw_khz == 24
+                          && strcmp(snap.rtl_freq, "851.0125M") == 0 && snap.rtl_gain == 12
+                          && strcmp(snap.rtltcp_host, "radio.example") == 0);
+    freeState(&state);
+
+    /* The same [input] as a loaded file's (Config > Load): a whole section, which the session saves as it is. */
+    static dsd_app_config_load_payload load;
+    DSD_MEMSET(&load, 0, sizeof load);
+    load.config = cfg;
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("loaded [input]: retained", dsd_user_config_retain_input(&state, &loaded), 0);
+    rc |= expect_true("loaded [input]: queued", dsd_app_command_load_config(&load) > 0);
+    rc |= expect_int("loaded [input]: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("loaded [input]: the replay stays the input", opts.audio_in_dev, "iqreplay:capture.iq.json");
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    rc |= expect_true("loaded [input]: the loaded file's [input] is saved",
                       snap.has_input && snap.input_source == DSDCFG_INPUT_RTL && snap.rtl_bw_khz == 24
                           && snap.rtltcp_host[0] == '\0' && snap.rtl_freq[0] == '\0');
     freeState(&state);
@@ -14736,6 +14770,52 @@ test_replay_config_apply_keeps_the_saved_input(void) {
                       snap.has_input && snap.input_source == DSDCFG_INPUT_RTL && snap.rtltcp_host[0] == '\0');
     freeState(&state);
 
+    reset_rx_family_wrap();
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * Issue #743: an input switch off a replay (Input > Switch source > Pulse) leaves the input saveable again, so the
+ * loaded [input] the replay saved goes; the RTL-SDR row that then returns the session to the replay (it reopens the
+ * replay the switch left) saves the input the session ran until then, so the save never loses its [input].
+ */
+static int
+test_replay_input_switches_keep_a_saved_input(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static dsdneoUserConfig loaded;
+    static dsdneoUserConfig snap;
+    int rc = 0;
+    init_replay_loaded_input(&loaded);
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("leave for pulse: retained", dsd_user_config_retain_input(&state, &loaded), 0);
+    arm_open_audio_input_stub(1, 0);
+    rc |= expect_int("leave for pulse: queued", post_empty(DSD_APP_CMD_INPUT_SET_PULSE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("leave for pulse: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    arm_open_audio_input_stub(0, 0);
+    rc |= expect_int("leave for pulse: on Pulse", opts.audio_in_type, AUDIO_IN_PULSE);
+    rc |=
+        expect_int("leave for pulse: the loaded [input] is dropped", dsd_user_config_retained_input(&state, &snap), 0);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    rc |= expect_true("leave for pulse: the session saves Pulse",
+                      snap.has_input && snap.input_source == DSDCFG_INPUT_PULSE);
+
+    /* Back to the replay through the RTL-SDR row, which reopens the replay spec the switch kept. */
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "iqreplay:capture.iq.json");
+    state.rtl_ctx = NULL;
+    g_config_rtl_open_ok = 1;
+    rc |= expect_int("back to the replay: queued", post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("back to the replay: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    g_config_rtl_open_ok = 0;
+    rc |= expect_true("back to the replay: the replay runs", dsd_opts_input_is_iq_replay(&opts));
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    rc |= expect_true("back to the replay: the Pulse input it left is saved",
+                      snap.has_input && snap.input_source == DSDCFG_INPUT_PULSE);
+    state.rtl_ctx = NULL;
+    freeState(&state);
     reset_rx_family_wrap();
     dsd_decode_clock_use_system();
     return rc;
@@ -30463,6 +30543,7 @@ main(void) {
     rc |= test_replay_refused_replan_restores_the_profile();
     rc |= test_replay_config_apply_replans();
     rc |= test_replay_config_apply_keeps_the_saved_input();
+    rc |= test_replay_input_switches_keep_a_saved_input();
     rc |= test_replay_widths_held_to_the_planned_rate();
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();

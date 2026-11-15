@@ -1740,6 +1740,7 @@ test_replay_snapshot_saves_the_loaded_input(void) {
         rc |= 1;
     }
     if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        dsd_state_ext_free_all(&state);
         return 1;
     }
     rc |= expect_absent_quiet("replay save without a config: no [input]", rendered, "[input]");
@@ -1755,6 +1756,97 @@ test_replay_snapshot_saves_the_loaded_input(void) {
         rc |= 1;
     }
     dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* The retained [input] as a config, for the merge rows below. */
+static const dsdneoUserConfig*
+retained_of(const dsd_state* state) {
+    static dsdneoUserConfig out;
+    dsd_user_config_init(&out);
+    (void)dsd_user_config_retained_input(state, &out);
+    return &out;
+}
+
+/*
+ * Issue #743 (G4): a config patch applied during a replay (the control API's config_apply, built from
+ * dsd_user_config_init() and the keys given) merges the [input] keys it sets into the retained [input]: one naming no
+ * source keeps the source and endpoint; a flagged key merges by its flag, explicit 0 included; a patch naming a source
+ * changes it. An [input] no config can start (a file input of an iqreplay: spec, as the B1 bug saved) is never
+ * retained, whole or merged: the copy held stays, and bootstrap retains none.
+ */
+static int
+test_retained_input_merges_a_patch(void) {
+    static dsd_state state;
+    static dsdneoUserConfig loaded;
+    static dsdneoUserConfig patch;
+    static dsd_state empty_state;
+    int rc = 0;
+    dsd_user_config_init(&loaded);
+    loaded.has_input = 1;
+    loaded.input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(loaded.rtltcp_host, sizeof loaded.rtltcp_host, "%s", "radio.example");
+    loaded.rtltcp_port = 1235;
+    DSD_SNPRINTF(loaded.rtl_freq, sizeof loaded.rtl_freq, "%s", "851.0125M");
+    loaded.rtl_gain = 12;
+    loaded.rtl_gain_is_set = 1;
+    rc |= dsd_user_config_retain_input(&state, &loaded) == 0 ? 0 : 1;
+
+    dsd_user_config_init(&patch);
+    patch.has_input = 1;
+    patch.input_warn_db = -20.0;
+    patch.input_warn_db_is_set = 1;
+    patch.rtl_gain = 0; /* explicit AGC */
+    patch.rtl_gain_is_set = 1;
+    rc |= dsd_user_config_merge_retained_input(&state, &patch) == 0 ? 0 : 1;
+    const dsdneoUserConfig* kept = retained_of(&state);
+    if (kept->input_source != DSDCFG_INPUT_RTLTCP || strcmp(kept->rtltcp_host, "radio.example") != 0
+        || kept->rtltcp_port != 1235 || strcmp(kept->rtl_freq, "851.0125M") != 0 || !kept->input_warn_db_is_set
+        || fabs(kept->input_warn_db - (-20.0)) > 1e-9 || !kept->rtl_gain_is_set || kept->rtl_gain != 0) {
+        DSD_FPRINTF(stderr, "FAIL: sourceless patch: source %d host \"%s\" freq \"%s\" warn %.1f/%d gain %d/%d\n",
+                    kept->input_source, kept->rtltcp_host, kept->rtl_freq, kept->input_warn_db,
+                    kept->input_warn_db_is_set, kept->rtl_gain, kept->rtl_gain_is_set);
+        rc |= 1;
+    }
+
+    dsd_user_config_init(&patch);
+    patch.has_input = 1;
+    patch.input_source = DSDCFG_INPUT_RTL;
+    patch.rtl_bw_khz = 24;
+    rc |= dsd_user_config_merge_retained_input(&state, &patch) == 0 ? 0 : 1;
+    kept = retained_of(&state);
+    if (kept->input_source != DSDCFG_INPUT_RTL || kept->rtl_bw_khz != 24 || strcmp(kept->rtl_freq, "851.0125M") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: source patch: source %d bw %d freq \"%s\"\n", kept->input_source, kept->rtl_bw_khz,
+                    kept->rtl_freq);
+        rc |= 1;
+    }
+
+    /* A broken B1 [input] is retained neither merged nor whole; with none held, nothing is retained. */
+    dsd_user_config_init(&patch);
+    patch.has_input = 1;
+    patch.input_source = DSDCFG_INPUT_FILE;
+    DSD_SNPRINTF(patch.file_path, sizeof patch.file_path, "%s", "iqreplay:/captures/site.iq.json");
+    rc |= dsd_user_config_merge_retained_input(&state, &patch) == 0 ? 0 : 1;
+    rc |= dsd_user_config_retain_input(&state, &patch) == 0 ? 0 : 1;
+    kept = retained_of(&state);
+    if (kept->input_source != DSDCFG_INPUT_RTL || kept->file_path[0] != '\0') {
+        DSD_FPRINTF(stderr, "FAIL: broken file [input] retained: source %d file \"%s\"\n", kept->input_source,
+                    kept->file_path);
+        rc |= 1;
+    }
+    rc |= dsd_user_config_retain_input(&empty_state, &patch) == 0 ? 0 : 1;
+    if (dsd_user_config_retained_input(&empty_state, &patch) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a broken file [input] was retained with none held\n");
+        rc |= 1;
+    }
+    if (dsd_user_config_file_path_is_input_spec("iqreplay:/x.iq.json") != 1
+        || dsd_user_config_file_path_is_input_spec("/captures/iqreplay.wav") != 0
+        || dsd_user_config_file_path_is_input_spec(NULL) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: dsd_user_config_file_path_is_input_spec()\n");
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(&empty_state);
     return rc;
 }
 
@@ -6039,6 +6131,7 @@ main(void) {
     rc |= test_snapshot_names_switched_inputs();
     rc |= test_snapshot_bare_network_inputs_save_as_their_source();
     rc |= test_replay_snapshot_saves_the_loaded_input();
+    rc |= test_retained_input_merges_a_patch();
     rc |= test_validate_refuses_a_replay_file_path();
     rc |= test_snapshot_trunking_reads_the_trunk_scan_configured_value();
     rc |= test_snapshot_scanner_saves_a_paused_scan();
