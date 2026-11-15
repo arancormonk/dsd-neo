@@ -800,7 +800,7 @@ p25p2_vpdu_active_source(const dsd_state* state, uint8_t slot) {
 
 static void
 p25p2_vpdu_update_playback_if_match(const dsd_opts* opts, dsd_state* state, int group, long int freq) {
-    if (opts->trunk_enable != 0) {
+    if (!opts || opts->trunk_enable != 0) {
         return;
     }
     if (p25p2_vpdu_active_target_matches(state, (uint64_t)(uint32_t)group)) {
@@ -6136,7 +6136,13 @@ p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx) {
 
 static int
 p25p2_vpdu_select_segment(p25p2_vpdu_ctx* ctx, int index) {
-    if (!ctx || !ctx->mac_res || index < 0 || index >= ctx->mac_res->segment_count) {
+    if (!ctx || !ctx->mac_res) {
+        return 0;
+    }
+    // The segments the result holds: never more than its array, whatever the count says.
+    const int count =
+        ctx->mac_res->segment_count < P25P2_MAC_MAX_SEGMENTS ? ctx->mac_res->segment_count : P25P2_MAC_MAX_SEGMENTS;
+    if (index < 0 || index >= count) {
         return 0;
     }
     // A segment offset must address a real octet; handlers add fixed field offsets to it.
@@ -6145,7 +6151,7 @@ p25p2_vpdu_select_segment(p25p2_vpdu_ctx* ctx, int index) {
     }
     ctx->len_a = ctx->mac_res->segments[index].offset;
     ctx->len_b = ctx->mac_res->segments[index].length;
-    ctx->len_c = (index + 1 < ctx->mac_res->segment_count) ? ctx->mac_res->segments[index + 1].length : 0;
+    ctx->len_c = (index + 1 < count) ? ctx->mac_res->segments[index + 1].length : 0;
     return ctx->len_b > 0;
 }
 
