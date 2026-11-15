@@ -820,6 +820,18 @@ dmr_flco_crypto_carried(const dmr_flco_ctx* ctx, uint8_t slot, uint8_t algid, ui
     return carried;
 }
 
+/* Whether the call this LC names can be decrypted with no ALG ID (Basic Privacy, Hytera, a scalar key). Where the
+   talkgroup key autoload will key its voice (no forced key, no ALG ID), that is the key the autoload leaves for this
+   call's own talkgroup, not the working key another call's talkgroup loaded (keyring_dmr_tg_autoload_key_present()):
+   its voice has not run yet. */
+static int
+dmr_flco_missing_alg_key_can_decrypt(const dmr_flco_ctx* ctx, uint8_t slot, uint8_t live_algid) {
+    if (ctx->state->M != 0 || live_algid != 0U) {
+        return dsd_dmr_missing_alg_key_can_decrypt(ctx->state, slot);
+    }
+    return dsd_key_scalar_present(ctx->state, slot) || keyring_dmr_tg_autoload_key_present(ctx->state, ctx->target);
+}
+
 /* @p replaced_other_protocol: this LC's call replaced another protocol's call on the slot (dmr_flco_publish_voice()). */
 static void
 dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot, int replaced_other_protocol) {
@@ -833,7 +845,7 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot, int replaced_othe
     // Classify under the ALG the voice path will decrypt with; the published `.algid` stays OTA.
     const int class_algid = dsd_dmr_classify_algid(ctx->state, (int)slot, (int)ctx->so);
     const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx, class_algid);
-    const int has_key = class_algid == 0 ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, slot)
+    const int has_key = class_algid == 0 ? dmr_flco_missing_alg_key_can_decrypt(ctx, slot, algid)
                                          : dsd_dmr_voice_kid_can_decrypt(ctx->state, slot, class_algid, &key);
     // The LC carries no ALG ID or key id: they are received only when a checked PI header carried them. One that
     // arrived before any DMR call was active on the slot (its voice LC header lost; the slot empty, or holding another
@@ -1282,7 +1294,8 @@ dmr_flco_slot_can_decrypt(const dmr_flco_ctx* ctx) {
     // Same classification ALG as dmr_flco_publish_crypto(): the two must not disagree.
     const int algid = dsd_dmr_classify_algid(ctx->state, (int)ctx->slot, (int)ctx->so);
     if (algid == 0) {
-        return dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot);
+        const int live_algid = ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR;
+        return dmr_flco_missing_alg_key_can_decrypt(ctx, ctx->slot, (uint8_t)live_algid);
     }
 
     const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx, algid);

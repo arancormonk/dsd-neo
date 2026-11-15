@@ -162,6 +162,28 @@ void keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id);
 int keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* call, dsd_key_material_need need,
                              int signaled_kid, int* out_mapped);
 
+/** The keyring cell the DMR talkgroup key autoload reads for talkgroup @p tg (an ID past 16 bits is hashed to 16, as
+ * the -k importer stores it). */
+uint32_t keyring_dmr_tg_key_cell(uint32_t tg);
+
+/**
+ * The DMR talkgroup key autoload for a frame of a call on talkgroup @p tg (the legacy destination keyring, -k/-K):
+ * loads the key the keyring holds for @p tg as the Basic Privacy and Hytera working key (K, K1, H). The working key is
+ * one value both slots share, so when @p tg has no key, a key an earlier autoload loaded for another call's
+ * talkgroup is taken out again and the key state that autoload replaced comes back (a key set directly, or none): it
+ * is not this call's. A call no LC has named yet (@p tg 0, an identity-less epoch) leaves the working key as it is:
+ * it may be the call the key was loaded for, reopened. A key changed since by anything else (a key command, the
+ * no-carrier unload) is left alone. Returns 1 when @p tg's key was loaded, 0 otherwise.
+ */
+int keyring_dmr_tg_autoload_apply(dsd_state* state, uint32_t tg);
+
+/**
+ * Whether a Basic Privacy or Hytera key is the working key once the autoload has run for a frame of a call on
+ * talkgroup @p tg (keyring_dmr_tg_autoload_apply()), without running it: for judging a call from its LC before its
+ * voice keys it.
+ */
+int keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint32_t tg);
+
 #ifdef __cplusplus
 }
 #endif

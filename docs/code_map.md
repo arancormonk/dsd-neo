@@ -1878,14 +1878,21 @@ suite runs under this compiler.
   Every other loader that reads `rkey_array` by key ID decides presence the same way, requires the ALG's width for
   AES, and falls back to the direct key only when nothing usable was imported, judging that one by
   `dsd_key_scalar_present()` (R/RR) or `dsd_key_direct_words_complete()` (K1..K4, its recorded word count): the DMR
-  Basic Privacy talkgroup autoload in `dsd_mbe.c` (which also sets `basic_key_present`, and keys a frame only from
-  the slot's open DMR call's talkgroup, `mbe_dmr_autoload_call()`: a frame the receive policy has not admitted opens
-  no call, and the ended or other protocol's call its slot may hold names another call's talkgroup), the DMR data
-  block crypto (`dmr_block_crypto.c`), the P25 Phase 1 PDU decrypt (`p25p1_pdu_data.c`) and the SDRTrunk JSON replay keystreams and
-  talkgroup-keyed lookup (`dsd_file.c`). Tests: `P25_CRYPTO_STATE`, `NXDN_ELEMENT_BOUNDS` (imported zero keys, the
-  narrow AES fallback, VCALL_IV keeping the VCALL's key), `CORE_MBE_TRANSFORM_CONTEXT`, `DMR_BLOCK_CRYPTO`,
-  `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO` (incomplete AES keys refused on the data and replay paths),
-  `CORE_DMR_VOICE_ALG_GATE` (DMR voice width), `CORE_DMR_TG_KEY_MAP`.
+  Basic Privacy talkgroup autoload in `dsd_mbe.c` (`keyring_dmr_tg_autoload_apply()`, which also sets
+  `basic_key_present`; it keys a frame only from the slot's open DMR call's talkgroup, `mbe_dmr_autoload_call()`: a
+  frame the receive policy has not admitted opens no call, and the ended or other protocol's call its slot may hold
+  names another call's talkgroup), the DMR data block crypto (`dmr_block_crypto.c`), the P25 Phase 1 PDU decrypt
+  (`p25p1_pdu_data.c`) and the SDRTrunk JSON replay keystreams and talkgroup-keyed lookup (`dsd_file.c`). The
+  autoload's key is the one working Basic Privacy and Hytera key both slots share (`K`, `K1`..`K4`, `H`), so it keeps
+  what it replaced (`dsd_state::dmr_tg_autoload`): a frame of a call whose talkgroup has no key puts that back (a key
+  set directly with `-b`, or none), so no call keeps another talkgroup's key, and the call's LC is judged by the key
+  its own talkgroup leaves (`keyring_dmr_tg_autoload_key_present()`, `dmr_flco_missing_alg_key_can_decrypt()`, for
+  the label and the encryption lockout alike). A key changed by anything else since is left alone, and the
+  no-carrier unload of a keyring's working keys is unchanged (`no_carrier_unload_keys_if_needed()`). Tests:
+  `P25_CRYPTO_STATE`, `NXDN_ELEMENT_BOUNDS` (imported zero keys, the narrow AES fallback, VCALL_IV keeping the VCALL's
+  key), `CORE_MBE_TRANSFORM_CONTEXT`, `DMR_BLOCK_CRYPTO`, `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO` (incomplete AES keys
+  refused on the data and replay paths), `CORE_DMR_VOICE_ALG_GATE` (DMR voice width), `CORE_DMR_TG_KEY_MAP`,
+  `DMR_SYNTH_BP_KEY`.
 - Invariant (audio sinks, `<dsd-neo/core/audio_sink.h>`, `src/core/audio/audio_sink.c`, issue #659): every writer of
   decoded or analog audio applies its own gates and picks the output type, then writes the local device streams only
   through `dsd_audio_sink_write_device()` and the `-o -` descriptor only through `dsd_audio_sink_write_fd()`: the
@@ -19699,11 +19706,15 @@ named through `qml/SpeechPacer.qml`: its name catches up with the text on screen
 meaningful step (a call starting or ending, a lock or sync change, the reading appearing or disappearing, a scan held or
 released; off a scan, a new frequency). The text on screen stays live, and nothing runs per tick: the pacer reads the
 reading only when its period or a step comes round, and runs only while the reading is shown. `LiveText` is a
-`ReadableText` named that way (`step` says what is heard at once; `spokenText`, its text unless set, is what it is
-named by); a group takes a `SpeechPacer` with `group:` set. The Monitor's scan timing line steps on the stay reason, not
-its phrase, so the silent-channel skip's phrase variants (issue #834) are heard at the line's pace, and its
-`spokenText` adds `MetricsModel::scanQuietText` after the line's words (`tst_a11y_paced_names.qml`
-`test_b2_the_quiet_status_is_no_step`).
+`ReadableText` named that way (`step` says what is heard at once; `speech`, a function the pacer calls at each read,
+gives other words than its text); a group takes a `SpeechPacer` with `group:` set. The Monitor's scan timing line steps
+on the stay reason, not its phrase, so the silent-channel skip's phrase variants (issue #834) are heard at the line's
+pace, and so are the voice gate's variants of one stay (`Qualify`, `Voice tail`): the sync that opens the qualify
+window is already a `speechStep`, and voice ending changes the reason. Its `speech` adds `MetricsModel::scanQuietText`
+after the line's words once, at the first read after the status or reason changes (`quietSaid`), not at every hop's
+rename on a session that cannot check. Not in `Accessible.description` either: Qt's Android bridge sends a node's name
+and description joined as one text on every rename (`descriptionForInterface()` in `androidjniaccessibility.cpp`).
+Test: `tst_a11y_paced_names.qml` `test_b2_the_quiet_status_is_no_step`.
 Paced: the Monitor's reading groups (`ReadingFlow`/`ReadingRow`, inline components), hero, scan timing line, call
 durations and "Signal & site" description (steps: `MonitorScreen.speechStep`; the squelch group adds the gate), the
 Spectrum status line and readout (a scan's hop is a step for none of these: `Util.tuneStep()` gives the tuning part of

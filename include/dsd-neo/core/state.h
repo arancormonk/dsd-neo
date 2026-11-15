@@ -1318,6 +1318,19 @@ struct dsd_state {
     uint8_t scalar_key_present[2];
     uint8_t basic_key_present;
     unsigned long long int H;
+
+    /* The DMR talkgroup key autoload's working key (keyring_dmr_tg_autoload_apply()): the K, K1..K4, H,
+       basic_key_present and hytera_key_segments it replaced (a key set directly, or none), restored for a call whose
+       talkgroup has no key, and the ones it installed, so a key changed since by anything else is left alone. Both
+       slots share the one working key. Decoder-thread private. */
+    struct {
+        unsigned long long int baseline[6];
+        unsigned long long int installed[6];
+        uint8_t baseline_flags[2];
+        uint8_t installed_flags[2];
+        uint8_t active;
+    } dmr_tg_autoload;
+
     unsigned long long int HYTL;
     unsigned long long int HYTR;
     long int bit_counterL;

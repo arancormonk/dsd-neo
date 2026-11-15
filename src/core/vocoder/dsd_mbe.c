@@ -1141,22 +1141,6 @@ mbe_apply_vendor_overlays(dsd_state* state, char ambe_d[49]) {
     mbe_apply_vendor_static_scramblers(state, ambe_d);
 }
 
-static uint32_t
-mbe_hash_tg_for_key(uint32_t tg) {
-    uint32_t hash = tg & 0xFFFFFF;
-    if (hash <= 0xFFFF) {
-        return hash;
-    }
-
-    uint8_t hash_bits[24];
-    DSD_MEMSET(hash_bits, 0, sizeof(hash_bits));
-    for (int i = 0; i < 24; i++) {
-        hash_bits[i] = ((hash << i) & 0x800000) >> 23;
-    }
-    hash = dsd_crc_ccitt16_bits(hash_bits, 24U);
-    return hash & 0xFFFF;
-}
-
 static int
 mbe_slot_straight_ks_armed(const dsd_state* state) {
     return state->straight_ks == 1 && state->straight_mod > 0;
@@ -1302,13 +1286,7 @@ mbeslot_left_autoload_keys(dsd_state* state) {
             return;
         }
         uint32_t target = call.ota_target_id <= UINT32_MAX ? (uint32_t)call.ota_target_id : 0U;
-        uint32_t hash = mbe_hash_tg_for_key(target);
-        if (keyring_kid_scalar_present(state, (int)hash)) {                // an imported zero is a key too
-            state->K = state->rkey_array[hash] & 0xFF;                     //doesn't exceed 255
-            state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF; //doesn't exceed 40-bit limit
-            state->K2 = state->K3 = state->K4 = 0ULL;
-            state->basic_key_present = 1U;
-            state->hytera_key_segments = 1U;
+        if (keyring_dmr_tg_autoload_apply(state, target)) {
             (void)dsd_call_state_note_key_selection(state, 0, DSD_SYNC_DMR_BS_VOICE_POS, call.epoch,
                                                     DSD_CALL_KEY_DESTINATION, call.kid, (int)target, 1, 0);
         }
@@ -1323,13 +1301,7 @@ mbeslot_right_autoload_keys(dsd_state* state) {
             return;
         }
         uint32_t target = call.ota_target_id <= UINT32_MAX ? (uint32_t)call.ota_target_id : 0U;
-        uint32_t hash = mbe_hash_tg_for_key(target);
-        if (keyring_kid_scalar_present(state, (int)hash)) { // an imported zero is a key too
-            state->K = state->rkey_array[hash] & 0xFF;
-            state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF;
-            state->K2 = state->K3 = state->K4 = 0ULL;
-            state->basic_key_present = 1U;
-            state->hytera_key_segments = 1U;
+        if (keyring_dmr_tg_autoload_apply(state, target)) {
             (void)dsd_call_state_note_key_selection(state, 1, DSD_SYNC_DMR_BS_VOICE_POS, call.epoch,
                                                     DSD_CALL_KEY_DESTINATION, call.kid, (int)target, 1, 0);
         }

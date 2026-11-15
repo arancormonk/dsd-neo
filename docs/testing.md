@@ -2154,7 +2154,11 @@ synthesis after them).
 Basic Privacy call on talkgroup 456 starts on a colour code `--dcc-allow 2` refuses and changes to 2 after its first
 superframe, so its first frames are not admitted and come before its LC. Its own key decrypts it (its frames carry the
 plaintext, and play), no key mutes it, and a key for the ended call's talkgroup is not its key: it stays muted, where
-the frames before its LC once loaded that key and the call then played, decrypted with it.
+the frames before its LC once loaded that key and the call then played, decrypted with it. The same case decodes two
+Basic Privacy calls under one key, once on both slots (talkgroups 123 and 124) and once back to back on slot 1
+(123, then 456, joined on the generator's burst grid so the carrier never drops), with a key for talkgroup 123 only:
+the call whose talkgroup has no key is muted and never recorded, where the key loaded for 123 once decrypted it
+too. With `-b` and no keys file, every call of both signals decrypts.
 
 The expectation file gives, for every transmitted voice frame, the 49 bits a correct decoder prints: the plaintext
 (for an encrypted call the plaintext that decrypts from the ciphertext actually sent, whose four late-entry bits carry

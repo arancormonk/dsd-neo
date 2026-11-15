@@ -28,6 +28,7 @@
 #include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -4532,6 +4533,122 @@ test_process_mbe_frame_checking_autoload_keys_only_from_the_open_dmr_call(void) 
     return rc;
 }
 
+/* A DMR group voice LC on slot @p slot: FID @p fid, service options @p so, talkgroup @p tg, source @p src. */
+static void
+run_dmr_voice_lc(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t fid, uint8_t so, uint32_t tg, uint32_t src) {
+    uint8_t bits[80];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    for (int i = 0; i < 8; i++) {
+        bits[8 + i] = (uint8_t)((fid >> (7 - i)) & 1U);
+        bits[16 + i] = (uint8_t)((so >> (7 - i)) & 1U);
+    }
+    for (int i = 0; i < 24; i++) {
+        bits[24 + i] = (uint8_t)((tg >> (23 - i)) & 1U);
+        bits[48 + i] = (uint8_t)((src >> (23 - i)) & 1U);
+    }
+    uint32_t irr = 0;
+    state->currentslot = slot;
+    dmr_flco(opts, state, bits, 1U, &irr, 3U);
+}
+
+/* One admitted DMR voice frame on @p slot, through the whole vocoder (the talkgroup key autoload included). */
+static void
+run_dmr_voice_frame(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    char imbe_fr[8][23] = {{0}};
+    char ambe_fr[4][24] = {{0}};
+    char imbe7100_fr[7][24] = {{0}};
+    ambe_fr[0][6] = 1;
+    ambe_fr[2][18] = 1;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->currentslot = slot;
+    processMbeFrame(opts, state, owner_of(state->synctype), imbe_fr, ambe_fr, imbe7100_fr);
+}
+
+/* The talkgroup key autoload keys each call from its own talkgroup's key, on both slots and call after call on one
+   slot: the working Basic Privacy key is one value both slots share, so a key loaded for one call's talkgroup must
+   not stay loaded into a call whose talkgroup has none, where it would decrypt that call's Basic Privacy with the
+   wrong key and judge it decryptable. A key set directly (-b) is not the autoload's: a call whose talkgroup has no key
+   keys from it again, and with no talkgroup keys every call keys from it. */
+static int
+test_process_mbe_frame_autoload_keys_each_call_from_its_own_talkgroup(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    int rc = 0;
+
+    for (int direct = 0; direct < 2; direct++) {
+        char tag[128];
+        const char* name = direct ? "with a -b key" : "keys from the talkgroup table only";
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        pass_through_voice_chain(&opts);
+        opts.floating_point = 1;
+        opts.audio_gain = 1.0f;
+        opts.audio_gainR = 1.0f;
+        init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+        const unsigned long long baseline = direct ? 70ULL : 0ULL;
+        if (direct) {
+            state.K = 70ULL;
+            state.basic_key_present = 1U;
+        }
+        state.keyloader = 1;
+        state.rkey_array[123] = 0x33ULL;
+        state.rkey_array_loaded[123] = 1U;
+        /* Two Basic Privacy calls at once: slot 1 on talkgroup 123 (keyed), slot 2 on 124 (no key of its own). */
+        run_dmr_voice_lc(&opts, &state, 0U, 0x10U, 0x40U, 123U, 1001U);
+        run_dmr_voice_lc(&opts, &state, 1U, 0x10U, 0x40U, 124U, 1002U);
+        run_dmr_voice_frame(&opts, &state, 0U);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s: slot 1 keys from talkgroup 123", name);
+        rc |= expect_eq_int(tag, (int)state.K, 0x33);
+        run_dmr_voice_frame(&opts, &state, 1U);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s: slot 2 takes no key of talkgroup 123", name);
+        rc |= expect_eq_int(tag, (int)state.K, (int)baseline);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s: slot 2 is decryptable only with the -b key", name);
+        rc |= expect_eq_int(tag, dsd_dmr_missing_alg_key_can_decrypt(&state, 1), direct);
+        /* Its LC arriving while slot 1 has its key loaded: slot 2's call is not decryptable on that key. */
+        run_dmr_voice_frame(&opts, &state, 0U);
+        run_dmr_voice_lc(&opts, &state, 1U, 0x10U, 0x40U, 124U, 1002U);
+        dsd_call_snapshot call;
+        DSD_MEMSET(&call, 0, sizeof(call));
+        (void)dsd_call_state_get(&state, 1U, &call);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s: slot 2's call is published decryptable", name);
+        rc |= expect_eq_int(tag, call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE, direct);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s: slot 2's call may play", name);
+        rc |= expect_eq_int(tag, call.audio_permitted, direct);
+        /* Call after call on slot 1: the next call, on talkgroup 456, has no key either. */
+        (void)dsd_call_state_end(&state, 0U, 0.0);
+        run_dmr_voice_lc(&opts, &state, 0U, 0x10U, 0x40U, 456U, 1003U);
+        run_dmr_voice_frame(&opts, &state, 0U);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s: the next call on slot 1 takes no key of talkgroup 123", name);
+        rc |= expect_eq_int(tag, (int)state.K, (int)baseline);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s: a Basic Privacy key is present for it", name);
+        rc |= expect_eq_int(tag, dsd_key_basic_present(&state), direct);
+        dsd_state_ext_free_all(&state);
+    }
+
+    /* A -b key and no talkgroup keys: every call keys from it, as before. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
+    opts.floating_point = 1;
+    opts.audio_gain = 1.0f;
+    opts.audio_gainR = 1.0f;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.K = 70ULL;
+    state.basic_key_present = 1U;
+    run_dmr_voice_lc(&opts, &state, 0U, 0x10U, 0x40U, 123U, 1001U);
+    run_dmr_voice_lc(&opts, &state, 1U, 0x10U, 0x40U, 124U, 1002U);
+    run_dmr_voice_frame(&opts, &state, 0U);
+    run_dmr_voice_frame(&opts, &state, 1U);
+    rc |= expect_eq_int("-b key alone: every call keys from it", (int)state.K, 70);
+    rc |= expect_eq_int("-b key alone: slot 2 is decryptable", dsd_dmr_missing_alg_key_can_decrypt(&state, 1), 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_process_mbe_frame_hard_p25p2_right_stages_audio(void) {
     int rc = 0;
@@ -7314,6 +7431,7 @@ main(void) {
     rc |= test_process_mbe_frame_activation_gate_and_wide_kid();
     rc |= test_process_mbe_frame_checking_call_keeps_mapped_key();
     rc |= test_process_mbe_frame_checking_autoload_keys_only_from_the_open_dmr_call();
+    rc |= test_process_mbe_frame_autoload_keys_each_call_from_its_own_talkgroup();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();
     rc |= test_play_mbe_files_processes_imbe_ambe_and_dstar_records();
     rc |= test_play_mbe_files_does_not_carry_call_identity_across_files();

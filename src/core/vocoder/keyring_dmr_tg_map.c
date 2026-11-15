@@ -12,9 +12,11 @@
  * touches rkey_array directly and classification and activation cannot disagree.
  */
 
+#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_material.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -22,6 +24,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 void
 keyring_dmr_tg_map_reset(dsd_state* state) {
@@ -233,4 +236,106 @@ keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapsho
                                         signaled_kid);
     }
     return signaled_kid;
+}
+
+uint32_t
+keyring_dmr_tg_key_cell(uint32_t tg) {
+    uint32_t hash = tg & 0xFFFFFF;
+    if (hash <= 0xFFFF) {
+        return hash;
+    }
+
+    uint8_t hash_bits[24];
+    DSD_MEMSET(hash_bits, 0, sizeof(hash_bits));
+    for (int i = 0; i < 24; i++) {
+        hash_bits[i] = ((hash << i) & 0x800000) >> 23;
+    }
+    hash = dsd_crc_ccitt16_bits(hash_bits, 24U);
+    return hash & 0xFFFF;
+}
+
+/* The Basic Privacy and Hytera working key: K, K1..K4 and H, then basic_key_present and hytera_key_segments. */
+static void
+keyring_dmr_working_key_get(const dsd_state* state, unsigned long long int words[6], uint8_t flags[2]) {
+    words[0] = state->K;
+    words[1] = state->K1;
+    words[2] = state->K2;
+    words[3] = state->K3;
+    words[4] = state->K4;
+    words[5] = state->H;
+    flags[0] = state->basic_key_present;
+    flags[1] = state->hytera_key_segments;
+}
+
+static void
+keyring_dmr_working_key_set(dsd_state* state, const unsigned long long int words[6], const uint8_t flags[2]) {
+    state->K = words[0];
+    state->K1 = words[1];
+    state->K2 = words[2];
+    state->K3 = words[3];
+    state->K4 = words[4];
+    state->H = words[5];
+    state->basic_key_present = flags[0];
+    state->hytera_key_segments = flags[1];
+}
+
+/* Whether the working key is still the one the last autoload installed. */
+static int
+keyring_dmr_tg_autoload_holds(const dsd_state* state) {
+    if (!state->dmr_tg_autoload.active) {
+        return 0;
+    }
+    unsigned long long int words[6];
+    uint8_t flags[2];
+    keyring_dmr_working_key_get(state, words, flags);
+    return memcmp(words, state->dmr_tg_autoload.installed, sizeof(words)) == 0
+           && memcmp(flags, state->dmr_tg_autoload.installed_flags, sizeof(flags)) == 0;
+}
+
+int
+keyring_dmr_tg_autoload_apply(dsd_state* state, uint32_t tg) {
+    if (state == NULL) {
+        return 0;
+    }
+    const uint32_t cell = keyring_dmr_tg_key_cell(tg);
+    const int holds = keyring_dmr_tg_autoload_holds(state);
+    if (!keyring_kid_scalar_present(state, (int)cell)) { // an imported zero is a key too
+        // A call no LC has named yet (an identity-less epoch, talkgroup 0) may be the call the working key was loaded
+        // for, reopened: its frames leave the key as it is until its talkgroup is known.
+        if (tg == 0U) {
+            return 0;
+        }
+        if (holds) {
+            keyring_dmr_working_key_set(state, state->dmr_tg_autoload.baseline, state->dmr_tg_autoload.baseline_flags);
+        }
+        state->dmr_tg_autoload.active = 0U;
+        return 0;
+    }
+    if (!holds) {
+        keyring_dmr_working_key_get(state, state->dmr_tg_autoload.baseline, state->dmr_tg_autoload.baseline_flags);
+    }
+    state->K = state->rkey_array[cell] & 0xFF;                     // doesn't exceed 255
+    state->K1 = state->H = state->rkey_array[cell] & 0xFFFFFFFFFF; // doesn't exceed the 40-bit limit
+    state->K2 = state->K3 = state->K4 = 0ULL;
+    state->basic_key_present = 1U;
+    state->hytera_key_segments = 1U;
+    keyring_dmr_working_key_get(state, state->dmr_tg_autoload.installed, state->dmr_tg_autoload.installed_flags);
+    state->dmr_tg_autoload.active = 1U;
+    return 1;
+}
+
+int
+keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint32_t tg) {
+    if (state == NULL) {
+        return 0;
+    }
+    if (keyring_kid_scalar_present(state, (int)keyring_dmr_tg_key_cell(tg))) {
+        return 1;
+    }
+    if (tg != 0U && keyring_dmr_tg_autoload_holds(state)) {
+        const unsigned long long int* words = state->dmr_tg_autoload.baseline;
+        const uint8_t* flags = state->dmr_tg_autoload.baseline_flags;
+        return flags[0] != 0U || words[0] != 0ULL || flags[1] != 0U || words[1] != 0ULL;
+    }
+    return dsd_key_basic_present(state) || dsd_key_hytera_present(state);
 }
