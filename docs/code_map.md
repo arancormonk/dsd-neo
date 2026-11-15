@@ -10169,6 +10169,12 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   on 0x64, 0xE4, 0xE5 and Motorola 0x84 alike (`p25_extended_function_class0_label()`). Link control (TIA-102.AABF-D
   §7.3): 0x50 Group Affiliation Query prints its target and source and adds no affiliation (it carries no group), 0x55
   is Message Update and 0x5B its Source ID Extension form (Message, Target, Source), and 0x6B (LCO 43) is reserved.
+- Phase 2 Network Status Broadcast and the control channel's access method. An accepted broadcast notes a TDMA system
+  (`p25_sys_is_tdma`) wherever it is heard, but marks the control channel TDMA (`p25_cc_is_tdma`) only when heard on
+  an LCCH (`p2_is_lcch`): on a voice channel's SACCH or FACCH it names the control channel, which may be FDMA (a site
+  with an FDMA control channel may carry TDMA traffic channels, TIA-102.BBAC-A §2), as
+  `p25_sm_seed_cc_modulation_from_current_sync()` already rules. Test:
+  `P25_P2_VPDU_GRANTS` (`test_nsb_on_voice_channel_keeps_fdma_cc`).
 - Scrambling code recovery (`p25p2_seed_recover.c`, issue #804). On a carrier whose code is not proven
   (`p2_cc_verified == 0`), not hand-set (`p2_hardset == 0`) and not trunked (`trunk_enable == 0`), `processP2()` hands
   each window to `p25p2_seed_recover_window()` after `p25p2_window_position()` and before the descrambler, with

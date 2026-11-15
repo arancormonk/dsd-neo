@@ -891,10 +891,68 @@ test_grant_retune_stops_later_segments(void) {
     return rc;
 }
 
+/* A Network Status Broadcast names the control channel, not how it is accessed. Heard on a Phase 2 voice channel's
+   SACCH or FACCH it may name an FDMA control channel (a mixed FDMA control / TDMA voice site): the control channel
+   this session knows as FDMA stays FDMA, while the system is noted as carrying TDMA. Only an LCCH makes it TDMA. */
+static int
+test_nsb_on_voice_channel_keeps_fdma_cc(void) {
+    int rc = 0;
+    for (int form = 0; form < 2; form++) {
+        for (int type = 0; type < 2; type++) {
+            static dsd_opts opts;
+            static dsd_state state;
+            unsigned long long int MAC[24] = {0};
+            DSD_MEMSET(&opts, 0, sizeof opts);
+            DSD_MEMSET(&state, 0, sizeof state);
+            p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
+            seed_fdma_iden(&state, 1, 1, 170200000, 100);
+            /* Voice-tuned on a Phase 2 voice channel; the control channel at 851.125 MHz was learned from Phase 1. */
+            opts.trunk_enable = 1;
+            opts.trunk_is_tuned = 1;
+            state.p25_cc_freq = 851125000;
+            state.trunk_cc_freq = 851125000;
+            state.p25_cc_is_tdma = 0;
+            state.synctype = DSD_SYNC_P25P2_POS;
+
+            if (form == 0) {
+                MAC[1] = 0x7B; // Network Status Broadcast - Abbreviated
+                MAC[2] = 0x01; // LRA
+                MAC[3] = 0xBE;
+                MAC[4] = 0xE0;
+                MAC[5] = 0x01; // WACN 0xBEE00, SYSID high nibble 0x1
+                MAC[6] = 0x23; // SYSID low byte
+                MAC[7] = 0x10;
+                MAC[8] = 0x0A; // channel 0x100A -> 851.125 MHz, the known control channel
+                MAC[11] = 0x55;
+            } else {
+                MAC[1] = 0xFB; // Network Status Broadcast - Extended
+                MAC[2] = 0x01;
+                MAC[3] = 0xBE;
+                MAC[4] = 0xE0;
+                MAC[5] = 0x01;
+                MAC[6] = 0x23;
+                MAC[7] = 0x10;
+                MAC[8] = 0x0A; // CHAN-T
+                MAC[9] = 0x10;
+                MAC[10] = 0x0B; // CHAN-R
+                MAC[13] = 0x55;
+            }
+            process_MAC_VPDU(&opts, &state, type, P25_MAC_PDU_SIGNAL, MAC);
+            rc |= expect_true("voice channel nsb keeps the fdma cc", state.p25_cc_is_tdma == 0);
+            rc |= expect_true("voice channel nsb notes a tdma system", state.p25_sys_is_tdma == 1);
+            rc |= expect_eq_long("voice channel nsb keeps the cc", state.p25_cc_freq, 851125000);
+            rc |= expect_eq_long("voice channel nsb system", (long)state.p2_wacn, 0xBEE00);
+            dsd_state_ext_free_all(&state);
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     install_trunk_tuning_hooks();
+    rc |= test_nsb_on_voice_channel_keeps_fdma_cc();
 
     // Common IDEN: iden=1, type=1 (FDMA), spac=12.5k, base=851.000 MHz
     // Note: base/spacing units match process_channel_to_freq expectations:
@@ -2267,8 +2325,9 @@ main(void) {
         rc |= expect_eq_long("p2 unknown-iden nsb-ext clears pending", state.p25_pending_announcement_count, 0);
     }
 
-    // Case M: accepted P2 abbreviated NSB promotes the current CC to TDMA,
-    // stores system identity, seeds LCN0, and confirms matching IDEN provenance.
+    // Case M: accepted P2 abbreviated NSB on an LCCH (a TDMA control channel)
+    // promotes the current CC to TDMA, stores system identity, seeds LCN0,
+    // and confirms matching IDEN provenance.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -2297,7 +2356,8 @@ main(void) {
         MAC[10] = 0x00;
         MAC[11] = 0x55; // NAC
 
-        process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+        state.p2_is_lcch = 1;
+        process_MAC_VPDU(&opts, &state, 1 /* SACCH: LCCH */, P25_MAC_PDU_SIGNAL, MAC);
         rc |= expect_true("p2 accepted nsb marks system tdma", state.p25_sys_is_tdma == 1);
         rc |= expect_true("p2 accepted nsb marks cc tdma", state.p25_cc_is_tdma == 1);
         rc |= expect_eq_long("p2 accepted nsb p25 cc", state.p25_cc_freq, 851125000);
@@ -2346,8 +2406,8 @@ main(void) {
         rc |= expect_eq_long("p2 rejected voice nsb preserves lra valid", state.p25_site_lra_valid, 1);
     }
 
-    // Case N: accepted P2 extended NSB resolves both T/R channels and updates
-    // TDMA CC identity through the same state-machine notification path.
+    // Case N: accepted P2 extended NSB on an LCCH resolves both T/R channels and
+    // updates TDMA CC identity through the same state-machine notification path.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -2374,7 +2434,8 @@ main(void) {
         MAC[12] = 0x00;
         MAC[13] = 0x56; // NAC
 
-        process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+        state.p2_is_lcch = 1;
+        process_MAC_VPDU(&opts, &state, 1 /* SACCH: LCCH */, P25_MAC_PDU_SIGNAL, MAC);
         rc |= expect_true("p2 accepted nsb-ext marks system tdma", state.p25_sys_is_tdma == 1);
         rc |= expect_true("p2 accepted nsb-ext marks cc tdma", state.p25_cc_is_tdma == 1);
         rc |= expect_eq_long("p2 accepted nsb-ext p25 cc", state.p25_cc_freq, 851125000);

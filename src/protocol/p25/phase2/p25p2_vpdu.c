@@ -3816,7 +3816,12 @@ p25p2_vpdu_accept_nsb_cc(const dsd_opts* opts, dsd_state* state, int lwacn, int 
     const long neigh[1] = {state->p25_cc_freq};
     p25_cc_record_neighbor_frequencies(opts, state, neigh, 1);
     p25p2_vpdu_note_nsb_system_tdma(state);
-    state->p25_cc_is_tdma = 1; // TDMA control channel (QPSK, 6000 sym/s)
+    /* The broadcast names the control channel, not its access method: one heard on a TDMA voice channel's SACCH or
+       FACCH may name an FDMA control channel (a site with an FDMA control channel may carry TDMA traffic channels,
+       TIA-102.BBAC-A §2). Only an LCCH, a TDMA control channel itself, proves it (as p25_trunk_sm.c's CC seed). */
+    if (state->p2_is_lcch == 1) {
+        state->p25_cc_is_tdma = 1; // TDMA control channel (QPSK, 6000 sym/s)
+    }
 
     // Only update system identity and potentially reset IDEN tables when values
     // are sane (non-zero) and we have a valid frequency mapping.
