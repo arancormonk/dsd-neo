@@ -53,8 +53,7 @@ alias_learn_name_len(const char* name, size_t cap) {
  * An imported row for the source wins, a repeat of the learned name changes nothing, and a renamed radio's alias
  * replaces the learned one of its scope (dsd_tg_policy_learn_exact()). Only a first-learned row is appended to the
  * group file: the file is append-only and its first row for an ID and scope is the one a reload keeps, so a rename
- * stays session-only. A row learned with no scope is never appended: it would load as an imported row naming the
- * radio on every system.
+ * stays session-only. A row learned with no scope is appended as a plain row, as every learned row was before scopes.
  */
 int
 dsd_alias_learn_radio(const dsd_opts* opts, dsd_state* state, const dsd_alias_scope* scope, uint32_t rid,
@@ -70,14 +69,14 @@ dsd_alias_learn_radio(const dsd_opts* opts, dsd_state* state, const dsd_alias_sc
     if (dsd_tg_policy_make_exact_entry(rid, "D", name, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &entry) != 0) {
         return DSD_TG_POLICY_LEARN_FAILED;
     }
-    if (scope && scope->valid && scope->kind > DSD_ALIAS_SCOPE_NONE && scope->kind <= DSD_ALIAS_SCOPE_TETRA) {
+    if (scope && scope->valid && scope->kind > DSD_ALIAS_SCOPE_NONE && scope->kind <= DSD_ALIAS_SCOPE_LAST) {
         entry.scope = *scope;
     } else {
         (void)dsd_alias_scope_current(state, &entry.scope);
     }
     const dsd_tg_policy_learn_result learned = dsd_tg_policy_learn_exact(state, &entry);
     // The append refuses an incomplete list's file (dsd_tg_policy_incomplete()) and keeps the list's baseline in step.
-    if (learned == DSD_TG_POLICY_LEARN_ADDED && entry.scope.valid) {
+    if (learned == DSD_TG_POLICY_LEARN_ADDED) {
         (void)dsd_tg_policy_append_group_file_row(opts, state, &entry, metadata);
     }
     return (int)learned;

@@ -7,6 +7,7 @@
  * @brief Source aliases (the radio ID list): the immutable row store, its lookups and its snapshot copy. Rows are
  * exact IDs, ranges or digit patterns, with optional policy. See docs/csv-formats.md, "Source ID List CSV".
  */
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/id_pattern.h>
@@ -467,7 +468,7 @@ dsd_source_alias_copy_snapshot(dsd_state* dst, const dsd_state* src) {
 }
 
 /* The DMR part of dsd_alias_scope_from_rxid(): the trunking system's network number (Tier III, Connect Plus) or, for
- * Capacity Plus, which sends none, its site number. */
+ * Capacity Plus, which sends none, its site number with the colour code. */
 static int
 alias_scope_dmr(const dsd_received_identity* rx, dsd_alias_scope* out) {
     const uint32_t trunk = rx->dmr_trunk;
@@ -477,8 +478,10 @@ alias_scope_dmr(const dsd_received_identity* rx, dsd_alias_scope* out) {
         out->b = rx->dmr_net;
         return 1;
     }
-    if (trunk == DSD_RXID_DMR_TRUNK_CAPACITY_PLUS && (rx->valid & DSD_RXID_DMR_SITE)) {
-        out->a = trunk << 8;
+    // dsd-neo's own received site identity, not a protocol rule: the site number and the carrier's colour code.
+    if (trunk == DSD_RXID_DMR_TRUNK_CAPACITY_PLUS && (rx->valid & DSD_RXID_DMR_SITE) && (rx->valid & DSD_RXID_ACCESS)
+        && rx->access_kind == DSD_ACCESS_CODE_COLOR_CODE) {
+        out->a = (trunk << 8) | (uint32_t)(rx->access & 0xFFU);
         out->b = rx->dmr_site;
         return 1;
     }
@@ -501,17 +504,29 @@ alias_scope_nxdn(const dsd_received_identity* rx, dsd_alias_scope* out) {
     return 0;
 }
 
+/* The P25 part: the WACN and SYSID of a network status, else (a conventional channel, or a trunked one before its
+ * network status) the NAC of a checked NID. */
+static int
+alias_scope_p25(const dsd_received_identity* rx, dsd_alias_scope* out) {
+    if (rx->valid & DSD_RXID_P25_WACN) {
+        out->kind = DSD_ALIAS_SCOPE_P25;
+        out->a = rx->p25_wacn;
+        out->b = rx->p25_sysid;
+        return 1;
+    }
+    if ((rx->valid & DSD_RXID_ACCESS) && rx->access_kind == DSD_ACCESS_CODE_NAC) {
+        out->kind = DSD_ALIAS_SCOPE_P25_NAC;
+        out->a = rx->access;
+        out->b = 0U;
+        return 1;
+    }
+    return 0;
+}
+
 static int
 alias_scope_fill(const dsd_received_identity* rx, dsd_alias_scope* out) {
     switch (rx->family) {
-        case DSD_RXID_FAMILY_P25:
-            if (!(rx->valid & DSD_RXID_P25_WACN)) {
-                return 0;
-            }
-            out->kind = DSD_ALIAS_SCOPE_P25;
-            out->a = rx->p25_wacn;
-            out->b = rx->p25_sysid;
-            return 1;
+        case DSD_RXID_FAMILY_P25: return alias_scope_p25(rx, out);
         case DSD_RXID_FAMILY_DMR: out->kind = DSD_ALIAS_SCOPE_DMR; return alias_scope_dmr(rx, out);
         case DSD_RXID_FAMILY_NXDN: out->kind = DSD_ALIAS_SCOPE_NXDN; return alias_scope_nxdn(rx, out);
         case DSD_RXID_FAMILY_TETRA:

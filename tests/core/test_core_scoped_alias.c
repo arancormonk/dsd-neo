@@ -11,6 +11,7 @@
  * leaves it.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
@@ -261,6 +262,13 @@ tune_system(dsd_state* st, uint32_t wacn, uint16_t sysid) {
     }
 }
 
+/* A conventional P25 channel: no network status, only the NAC of its checked NIDs. */
+static void
+tune_conventional(dsd_state* st, uint16_t nac) {
+    dsd_rxid_reset(st);
+    dsd_rxid_note_access(st, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, nac);
+}
+
 static void
 begin_call(fixture* f, int protocol, uint32_t tg, uint32_t src) {
     const dsd_call_observation observation = {
@@ -468,24 +476,60 @@ test_scope_comes_from_reception(void) {
     fixture_close(&f);
 }
 
-/* A reception that has not named its system learns the alias for the session only, in a scope of its own (no
- * scope): it names the radio while there is no scope, on no system, and is never appended. */
+/* A reception that names neither its system nor an access code keeps the behaviour from before scopes: the alias is
+ * learned without a scope, names the radio on every system (behind a system's own learned row), and is appended as a
+ * plain row, which the next start loads as an imported row naming the radio everywhere. */
 static void
-test_unscoped_learn_kept_in_memory(void) {
+test_unknown_reception_like_main(void) {
     fixture f;
     fixture_open(&f, 1);
     write_file(f.group_path, "id,mode,name\n100,A,Dispatch\n");
     expect_true("group file loads", dsd_tg_policy_reload_group_file(f.opts, f.st) == 0);
     tune_system(f.st, 0U, 0U);
     hear_motorola(&f, 300U, RID, "Nowhere", 0x1U);
-    expect_true("unscoped alias names the radio without a scope", radio_name_is(f.st, RID, "Nowhere"));
-    expect_true("unscoped alias is not appended", file_count(f.group_path, "Nowhere") == 0);
+    expect_true("unscoped alias names the radio", radio_name_is(f.st, RID, "Nowhere"));
+    expect_true("unscoped alias appended as a plain row",
+                file_count(f.group_path, "42,D,Nowhere,") == 1 && file_count(f.group_path, "scope=") == 0);
     tune_system(f.st, WACN_A, SYS_A);
-    expect_true("unscoped alias names no system's radio", radio_name_is(f.st, RID, NULL));
+    expect_true("unscoped alias names A's radio too, as before", radio_name_is(f.st, RID, "Nowhere"));
     hear_motorola(&f, 300U, RID, "Alice", 0x2U);
-    expect_true("A learns its own row beside it", radio_name_is(f.st, RID, "Alice"));
+    expect_true("A's own learned row comes first on A", radio_name_is(f.st, RID, "Alice"));
+    expect_true("A's row appended with its scope",
+                file_count(f.group_path, "42,D,Alice,") == 1 && file_count(f.group_path, "scope=p25:BEE00:123\n") == 1);
+    tune_system(f.st, WACN_B, SYS_B);
+    expect_true("B, with no row of its own, falls back to it", radio_name_is(f.st, RID, "Nowhere"));
     tune_system(f.st, 0U, 0U);
-    expect_true("the unscoped row is untouched", radio_name_is(f.st, RID, "Nowhere"));
+    hear_motorola(&f, 300U, RID, "Nowhere Two", 0x3U);
+    expect_true("an unscoped rename replaces the unscoped row", radio_name_is(f.st, RID, "Nowhere Two"));
+    expect_true("an unscoped rename stays session-only", file_count(f.group_path, "Nowhere Two") == 0);
+
+    fixture_restart(&f);
+    expect_true("restart reloads the file", dsd_tg_policy_reload_group_file(f.opts, f.st) == 0);
+    tune_system(f.st, WACN_A, SYS_A);
+    expect_true("the plain row loads as an imported row and wins, as on main", radio_name_is(f.st, RID, "Nowhere"));
+    fixture_close(&f);
+}
+
+/* A conventional P25 channel sends no network status: the NAC of its checked NIDs scopes the alias. */
+static void
+test_conventional_nac_scope(void) {
+    fixture f;
+    fixture_open(&f, 1);
+    tune_conventional(f.st, 0x293U);
+    hear_motorola(&f, 300U, RID, "Conv One", 0x1U);
+    expect_true("NAC-scoped alias learned", radio_name_is(f.st, RID, "Conv One"));
+    expect_true("NAC-scoped row appended with its scope", file_count(f.group_path, "42,D,Conv One,") == 1
+                                                              && file_count(f.group_path, "scope=p25nac:293:0\n") == 1);
+    tune_conventional(f.st, 0x5A1U);
+    expect_true("another NAC does not show it", radio_name_is(f.st, RID, NULL));
+    tune_system(f.st, WACN_A, SYS_A);
+    expect_true("a trunked system does not show it", radio_name_is(f.st, RID, NULL));
+    fixture_restart(&f);
+    expect_true("restart reloads the file", dsd_tg_policy_reload_group_file(f.opts, f.st) == 0);
+    tune_conventional(f.st, 0x293U);
+    expect_true("after a restart the NAC row is still scoped", radio_name_is(f.st, RID, "Conv One"));
+    tune_conventional(f.st, 0x5A1U);
+    expect_true("after a restart another NAC still does not show it", radio_name_is(f.st, RID, NULL));
     fixture_close(&f);
 }
 
@@ -522,7 +566,7 @@ test_learn_api(void) {
     tune_system(f.st, 0U, 0U);
     expect_true("unscoped learn added",
                 dsd_alias_learn_radio(f.opts, f.st, &none, 44U, "Dave", NULL) == DSD_TG_POLICY_LEARN_ADDED);
-    expect_true("unscoped learn not appended", file_count(f.group_path, "Dave") == 0);
+    expect_true("unscoped learn appended as a plain row", file_count(f.group_path, "44,D,Dave\n") == 1);
 
     /* 47 'x' then a 3-byte character: the row keeps 49 bytes, so the character is dropped whole. */
     char long_name[64];
@@ -597,7 +641,10 @@ test_scope_from_rxid(void) {
     dsd_alias_scope s;
     expect_true("empty record: no scope", dsd_alias_scope_current(st, &s) == 0 && !s.valid && s.kind == 0U);
     dsd_rxid_note_p25_site(st, 0x123U, 1U, 2U);
-    expect_true("P25 SYSID without WACN: no scope", dsd_alias_scope_current(st, &s) == 0);
+    expect_true("P25 SYSID without WACN or NAC: no scope", dsd_alias_scope_current(st, &s) == 0);
+    dsd_rxid_note_access(st, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    expect_true("P25 NAC without WACN", dsd_alias_scope_current(st, &s) == 1 && s.kind == DSD_ALIAS_SCOPE_P25_NAC
+                                            && s.a == 0x293U && s.b == 0U);
     dsd_rxid_note_p25_network(st, 0xBEE00U, 0x123U);
     expect_true("P25 WACN/SYSID", dsd_alias_scope_current(st, &s) == 1 && s.kind == DSD_ALIAS_SCOPE_P25
                                       && s.a == 0xBEE00U && s.b == 0x123U && s.valid == 1U);
@@ -608,8 +655,12 @@ test_scope_from_rxid(void) {
                                             && s.a == ((DSD_RXID_DMR_TRUNK_TIER3 << 8) | 1U) && s.b == 12U);
     dsd_rxid_reset(st);
     dsd_rxid_note_dmr_site(st, DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, "Cap+");
-    expect_true("DMR Capacity Plus site",
-                dsd_alias_scope_current(st, &s) == 1 && s.a == (DSD_RXID_DMR_TRUNK_CAPACITY_PLUS << 8) && s.b == 2U);
+    expect_true("DMR Capacity Plus site without a colour code: no scope", dsd_alias_scope_current(st, &s) == 0);
+    dsd_rxid_note_access(st, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_site(st, DSD_RXID_DMR_TRUNK_CAPACITY_PLUS, 0, 0U, 2U, 0U, "Cap+");
+    expect_true("DMR Capacity Plus site and colour code", dsd_alias_scope_current(st, &s) == 1
+                                                              && s.a == ((DSD_RXID_DMR_TRUNK_CAPACITY_PLUS << 8) | 1U)
+                                                              && s.b == 2U);
     dsd_rxid_reset(st);
     dsd_rxid_note_dmr_xpt_free_lcn(st, 3U);
     expect_true("DMR XPT: no scope", dsd_alias_scope_current(st, &s) == 0);
@@ -669,7 +720,8 @@ main(void) {
     test_scoped_alias_reload();
     test_user_rows_keep_precedence();
     test_scope_comes_from_reception();
-    test_unscoped_learn_kept_in_memory();
+    test_unknown_reception_like_main();
+    test_conventional_nac_scope();
     test_learn_api();
     test_name_key();
     test_scope_from_rxid();

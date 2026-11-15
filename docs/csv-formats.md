@@ -974,12 +974,14 @@ ID written in decimal without leading zeros:
   that number is a talkgroup you want.
 - Learned aliases are kept with the system they were heard on. Two systems can give the same radio ID to different
   radios, so a learned alias names its radio only on the system the receiver was decoding when it heard the alias:
-  the P25 WACN and System ID, the DMR Tier III or Connect Plus network (Capacity Plus, which sends no network number:
-  its site), the NXDN system code, the TETRA MCC and MNC. That system comes from what the receiver decoded on the
+  the P25 WACN and System ID (on a conventional P25 channel, which sends no network status, its NAC), the DMR Tier
+  III or Connect Plus network (Capacity Plus, which sends no network number: its site number and colour code), the
+  NXDN system code, the TETRA MCC and MNC. Two conventional channels on the same NAC, or two Capacity Plus systems
+  with the same site number and colour code, share their learned aliases. That system comes from what the receiver decoded on the
   channel, never from the alias message itself (a Tait alias carries only a NAC). A first-learned alias is appended
   with a `scope` cell after its metadata cell, for example
   `1234567,D,Engine 7,FQS:BEE00.123.12D687(1234567) Moto,scope=p25:BEE00:123`: `scope=`, the kind (`p25`, `dmr`,
-  `nxdn` or `tetra`) and two hexadecimal numbers (P25: WACN and System ID). A file the append creates gets the header
+  `nxdn`, `tetra` or `p25nac`) and two hexadecimal numbers (P25: WACN and System ID; `p25nac`: the NAC and 0). A file the append creates gets the header
   `id,mode,name,metadata,scope`. On the next start such a row loads as a learned alias of that system: it names the
   radio only there, and a later alias of that system renames it for the session. A rewrite of the file keeps the cell
   after the modelled columns (the header then ends in `scope`). The cell is read wherever it sits past the columns
@@ -987,9 +989,9 @@ ID written in decimal without leading zeros:
 - A mode `D` row without a `scope` cell (one you typed, or one an older version appended) names the radio on every
   system and wins over learned aliases, as before; so does a talkgroup row for the same number. Delete such a row, or
   give it a `scope` cell, if the number is another radio on another system.
-- An alias heard before the receiver decoded the system (right after a trunk-scan switch, or on a conventional P25
-  channel, which sends no network status) names the radio only while no system is known, and is not appended. A
-  rewrite of the whole file after a talkgroup edit still writes it, as a row without a `scope` cell.
+- An alias heard before the receiver decoded the system or an access code keeps the behaviour from before: it names
+  the radio on every system (after a system's own learned alias), and it is appended as a plain row without a `scope`
+  cell, which the next start loads as an imported row.
 
 Preemption needs the system to announce the other call **on the channel being received**. What each protocol
 provides:

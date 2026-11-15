@@ -19,7 +19,6 @@
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -280,9 +279,6 @@ fixture_open(fixture* f) {
     temp_path(f->log_path, sizeof f->log_path, "p25_alias_log");
     DSD_SNPRINTF(f->opts->group_in_file, sizeof f->opts->group_in_file, "%s", f->group_path);
     DSD_SNPRINTF(f->opts->event_out_file, sizeof f->opts->event_out_file, "%s", f->log_path);
-    /* A trunked system's checked network status names the reception's system: a learned alias is kept in that scope
-     * and only then appended to the group file (<dsd-neo/core/alias_learn.h>). */
-    dsd_rxid_note_p25_network(f->st, 0xBEE00U, 0x4C9U);
 }
 
 static void

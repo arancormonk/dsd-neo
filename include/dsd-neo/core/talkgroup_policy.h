@@ -190,9 +190,9 @@ int dsd_tg_policy_add_range_entry(dsd_state* state, const dsd_tg_policy_entry* e
 int dsd_tg_policy_add_pattern_entry(dsd_state* state, const dsd_tg_policy_entry* entry);
 /** Row lookup for any ID: the first exact row (a talkgroup row before a learned alias), else the narrowest range (last
  * row wins ties), else the most specific pattern (dsd_id_pattern_more_specific(), last row wins ties). Learned alias
- * rows take part only as exact rows, and only in the current reception's scope (dsd_alias_scope_current()); an
- * imported alias row (mode D without a scope) comes before a learned one. Returns -1 for NULL @p out, 0 otherwise
- * (match NONE when nothing matched). */
+ * rows take part only as exact rows: an imported alias row (mode D without a scope), else the learned row of the
+ * current reception's scope (dsd_alias_scope_current()), else one learned with no scope. Returns -1 for NULL @p out,
+ * 0 otherwise (match NONE when nothing matched). */
 int dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_lookup* out);
 /** Talkgroup lookup: the row that decides talkgroup @p tg in group evaluation. As dsd_tg_policy_lookup_id(), but a
  * learned alias row (a radio) never matches. Returns -1 for NULL @p out, 0 otherwise. */
@@ -202,8 +202,8 @@ size_t dsd_tg_policy_pattern_count(const dsd_state* state);
 int dsd_tg_policy_has_entries(const dsd_state* state);
 /** Exact-row label for any ID: the first exact row (a talkgroup row before a learned alias) with its mode and name.
  * The radio-side fallback of dsd_source_label_lookup(); a talkgroup is labelled by
- * dsd_tg_policy_lookup_group_label(). A learned alias row labels only in the current reception's scope, after any
- * imported alias row. Returns 1 when an exact row matched (its name may be empty). */
+ * dsd_tg_policy_lookup_group_label(). Alias rows in the order dsd_tg_policy_lookup_id() reads them. Returns 1 when an
+ * exact row matched (its name may be empty). */
 int dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
                                size_t name_sz);
 /** dsd_tg_policy_lookup_label() for a reception of @p scope (NULL: the current one) instead of the current one. */
@@ -305,7 +305,7 @@ typedef enum {
  *
  * The scope is `entry->scope`, or, when that is not valid, the current reception's (dsd_alias_scope_current()), so a
  * decoder that builds its entry with dsd_tg_policy_make_exact_entry() (the P25 Phase 1 LSD soft ID) learns in the
- * reception's scope; with no reception scope either the row is learned without one (a scope of its own).
+ * reception's scope; with no reception scope either the row is learned without one, as before scopes.
  * Compares before it writes: a talkgroup or user row for the ID, or an imported alias row (mode D without a scope),
  * is kept; the learned row of that scope is
  * replaced only when its normalised name or mode (D vs DE) changed, so a repeated alias leaves the table and its

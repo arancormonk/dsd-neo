@@ -363,7 +363,7 @@ tg_policy_copy_entry_normalized(dsd_tg_policy_entry* dst, const dsd_tg_policy_en
     }
     // Only a learned alias row has a scope, and an invalid scope is all zero, so scopes compare by their fields.
     if (src->kind == DSD_TG_POLICY_ROW_EXACT && src->source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS && src->scope.valid
-        && src->scope.kind > DSD_ALIAS_SCOPE_NONE && src->scope.kind <= DSD_ALIAS_SCOPE_TETRA) {
+        && src->scope.kind > DSD_ALIAS_SCOPE_NONE && src->scope.kind <= DSD_ALIAS_SCOPE_LAST) {
         dst->scope.kind = src->scope.kind;
         dst->scope.a = src->scope.a;
         dst->scope.b = src->scope.b;
@@ -602,17 +602,20 @@ tg_policy_find_bounds_idx_kind(const dsd_tg_policy_context* ctx, uint32_t id_sta
 }
 
 /* The exact rows for one ID a lookup or a learn weighs: the first talkgroup/user row, the first imported alias row (a
- * mode-D row typed or loaded without a scope: it names the radio everywhere), and the first learned alias row of
- * @p scope (NULL: of any scope). -1 for none; the scan stops at the user row, which decides alone. */
+ * mode-D row typed or loaded without a scope: it names the radio everywhere), the first learned alias row of @p scope
+ * (NULL: of any scope), and the first learned row heard with no scope (which, as every learned row did before scopes,
+ * names the radio everywhere, behind the scope's own row). -1 for none; the scan stops at the user row, which decides
+ * alone. */
 typedef struct {
     int user;
     int imported_alias;
     int learned_alias;
+    int unscoped_alias;
 } tg_policy_exact_rows;
 
 static tg_policy_exact_rows
 tg_policy_find_exact_rows(const dsd_tg_policy_context* ctx, uint32_t id, const dsd_alias_scope* scope) {
-    tg_policy_exact_rows rows = {-1, -1, -1};
+    tg_policy_exact_rows rows = {-1, -1, -1, -1};
     if (!ctx) {
         return rows;
     }
@@ -632,15 +635,21 @@ tg_policy_find_exact_rows(const dsd_tg_policy_context* ctx, uint32_t id, const d
             }
         } else if (rows.learned_alias < 0 && (!scope || dsd_alias_scope_equal(&e->scope, scope))) {
             rows.learned_alias = (int)i;
+        } else if (rows.unscoped_alias < 0 && !e->scope.valid) {
+            rows.unscoped_alias = (int)i;
         }
     }
     return rows;
 }
 
-/* The alias row that names the radio: an imported one before a learned one of the scope. -1 for none. */
+/* The alias row that names the radio: an imported one, else the scope's learned one, else one learned with no scope.
+ * -1 for none. */
 static int
 tg_policy_exact_rows_alias(const tg_policy_exact_rows* rows) {
-    return rows->imported_alias >= 0 ? rows->imported_alias : rows->learned_alias;
+    if (rows->imported_alias >= 0) {
+        return rows->imported_alias;
+    }
+    return rows->learned_alias >= 0 ? rows->learned_alias : rows->unscoped_alias;
 }
 
 /* The row an edit by bounds addresses: the first non-alias row, else (@p take_alias) an exact alias row to take over. */
@@ -2635,7 +2644,7 @@ tg_policy_probe_group_file(const char* path, tg_policy_group_file_probe* out) {
     return failed ? -1 : 0;
 }
 
-static const char* const tg_policy_scope_kind_names[] = {"", "p25", "dmr", "nxdn", "tetra"};
+static const char* const tg_policy_scope_kind_names[] = {"", "p25", "dmr", "nxdn", "tetra", "p25nac"};
 
 int
 dsd_tg_policy_scope_format(const dsd_alias_scope* scope, char* out, size_t out_sz) {
@@ -2643,7 +2652,7 @@ dsd_tg_policy_scope_format(const dsd_alias_scope* scope, char* out, size_t out_s
         return 0;
     }
     out[0] = '\0';
-    if (!scope || !scope->valid || scope->kind == DSD_ALIAS_SCOPE_NONE || scope->kind > DSD_ALIAS_SCOPE_TETRA) {
+    if (!scope || !scope->valid || scope->kind == DSD_ALIAS_SCOPE_NONE || scope->kind > DSD_ALIAS_SCOPE_LAST) {
         return 0;
     }
     const int n = DSD_SNPRINTF(out, out_sz, "%s%s:%" PRIX32 ":%" PRIX32, DSD_TG_POLICY_SCOPE_PREFIX,
@@ -2691,7 +2700,7 @@ dsd_tg_policy_scope_parse(const char* cell, dsd_alias_scope* out) {
     *first = '\0';
     *second = '\0';
     uint8_t kind = DSD_ALIAS_SCOPE_NONE;
-    for (uint8_t k = DSD_ALIAS_SCOPE_P25; k <= DSD_ALIAS_SCOPE_TETRA; k++) {
+    for (uint8_t k = DSD_ALIAS_SCOPE_P25; k <= DSD_ALIAS_SCOPE_LAST; k++) {
         if (tg_policy_ascii_casecmp(buf, tg_policy_scope_kind_names[k]) == 0) {
             kind = k;
         }

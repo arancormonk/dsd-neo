@@ -17,21 +17,24 @@
  * learned row, as before.
  *
  * The scope of a reception, from the received identity record (<dsd-neo/core/received_identity.h>):
- * - P25: WACN and SYSID of a checked network status (DSD_RXID_P25_WACN): a = WACN, b = SYSID.
+ * - P25: WACN and SYSID of a checked network status (DSD_RXID_P25_WACN): a = WACN, b = SYSID. Without them (a
+ *   conventional channel, or a trunked one before its network status), the NAC of a checked NID (kind P25_NAC):
+ *   a = NAC, b = 0. Two conventional systems on one NAC (the 0x293 default is common) share their aliases: a limit.
  * - DMR: a = (dsd_rxid_dmr_trunk << 8) | Tier III model; b = the raw network number for Tier III and Connect Plus
- *   (DSD_RXID_DMR_NET), the site number for Capacity Plus (DSD_RXID_DMR_SITE; it sends no network number). Hytera
- *   XPT and Tier II send no system number: no scope.
+ *   (DSD_RXID_DMR_NET). Capacity Plus sends no network number: dsd-neo's own received site identity stands in, the
+ *   site number with the carrier's colour code (DSD_RXID_DMR_SITE and DSD_RXID_ACCESS; a = (trunk << 8) | colour
+ *   code), so two Capacity Plus systems with the same site number and colour code share their aliases (a limit, not a
+ *   protocol rule). Hytera XPT and Tier II send no system number: no scope.
  * - NXDN: a Type-C location ID: a = 0x100 | category, b = system code; a Type-D SRV_INFO system ID: a = 0x200,
  *   b = the 19-bit system ID. An IDAS site ID alone names no system: no scope.
  * - TETRA: a = MCC, b = MNC (DSD_RXID_TETRA_NET).
- * - Anything else (a carrier that has not sent its system yet, conventional P25 without a network status, EDACS,
- *   dPMR, M17): no scope (valid 0, every field 0).
+ * - Anything else (a carrier that has not sent its system or access code yet, EDACS, dPMR, M17): no scope (valid 0,
+ *   every field 0).
  *
- * A row learned with no scope is kept for the session and names its radio only while the reception has no scope
- * either; it is never appended to the group file, because a row without a scope would come back as an imported row
- * naming the radio on every system (a later rewrite of the whole file, after a talkgroup edit, still writes it as a
- * plain row, as before). A scoped row is appended with its scope as a `scope=` cell (docs/csv-formats.md), which the
- * importer reads back into a learned, scoped row, and a rewrite keeps that cell.
+ * A row learned with no scope behaves as every learned row did before scopes: it names its radio on every system
+ * (behind the reception scope's own learned row), and its first learn is appended to the group file as a plain row,
+ * which the next start loads as an imported row. A scoped row is appended with its scope as a `scope=` cell
+ * (docs/csv-formats.md), which the importer reads back into a learned, scoped row, and a rewrite keeps that cell.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_ALIAS_LEARN_H_
@@ -56,12 +59,14 @@ typedef enum {
     DSD_ALIAS_SCOPE_DMR = 2,
     DSD_ALIAS_SCOPE_NXDN = 3,
     DSD_ALIAS_SCOPE_TETRA = 4,
+    DSD_ALIAS_SCOPE_P25_NAC = 5, /**< P25 without a network status: the NAC alone. */
+    DSD_ALIAS_SCOPE_LAST = DSD_ALIAS_SCOPE_P25_NAC,
 } dsd_alias_scope_kind;
 
 /** The system a learned alias belongs to (see the file comment for a and b per kind). An invalid scope (valid 0) has
  * every field 0, so two scopes compare by their fields. */
 typedef struct {
-    uint8_t kind; /* NONE/P25/DMR/NXDN/TETRA */
+    uint8_t kind; /* NONE/P25/DMR/NXDN/TETRA (and P25_NAC) */
     uint32_t a, b;
     uint8_t valid;
 } dsd_alias_scope;
@@ -81,11 +86,11 @@ int dsd_alias_scope_equal(const dsd_alias_scope* x, const dsd_alias_scope* y);
  * @p scope is the reception's (NULL or an invalid scope: dsd_alias_scope_current(); decoders pass NULL, never a
  * scope read from the alias message's own metadata). A user or imported row for the ID wins, a repeat of the learned
  * name in the same scope changes nothing (the policy generation stays), a renamed radio's alias replaces its scope's
- * learned row, and another scope's row is never touched (dsd_tg_policy_learn_exact()). Only a first-learned row of a
- * valid scope is
- * appended to opts->group_in_file (NULL @p opts appends nothing), with @p metadata (free text, may be NULL) and the
- * scope; the file is append-only and its first row for an ID and scope is the one a reload keeps, so a rename stays
- * session-only. A name longer than a row holds is cut at a UTF-8 character boundary.
+ * learned row, and another scope's row is never touched (dsd_tg_policy_learn_exact()). Only a first-learned row is
+ * appended to opts->group_in_file (NULL @p opts appends nothing), with @p metadata (free text, may be NULL) and, for a
+ * valid scope, the scope cell (a row with no scope is appended as a plain row, as before scopes); the file is
+ * append-only and its first row for an ID and scope is the one a reload keeps, so a rename stays session-only. A name
+ * longer than a row holds is cut at a UTF-8 character boundary.
  *
  * @return a dsd_tg_policy_learn_result (<dsd-neo/core/talkgroup_policy.h>): FAILED for NULL @p state or
  *         @p utf8_name, radio 0, or a row that could not be stored.
