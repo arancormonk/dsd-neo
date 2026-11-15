@@ -11,6 +11,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/spec_fields.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
 #include <limits.h>
@@ -377,8 +378,8 @@ dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied) {
 }
 
 /* RTL-SDR and rtl_tcp specs ------------------------------------------------------------------------------------------
- * The parsing the engine used when the input opened, kept as it was (a number with trailing text keeps its leading
- * digits, as strtol() reads it), now shared with --print-config. */
+ * The parsing the engine used when the input opened, shared with --print-config. A tuning number with trailing text
+ * keeps its leading digits, as strtol() reads it; the rtl_tcp port is read strictly (issue #743 B15). */
 
 static int
 rtl_spec_parse_int(const char* token, int* out) {
@@ -507,51 +508,74 @@ rtl_spec_apply_bias_token(dsd_opts* opts, const char* token) {
     opts->rtl_bias_tee = on;
 }
 
-/* The tuning fields after the device or endpoint, in order. Returns 1 when all six were there (bias tokens may
-   follow), 0 when the spec stopped early. */
-static int
-rtl_spec_apply_tuning_tokens(dsd_opts* opts, char** saveptr) {
-    const char* curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    opts->rtlsdr_center_freq = rtl_spec_parse_freq(curr);
+/* The most fields an rtl or rtltcp spec is read to: the kind, the device or the endpoint, six tuning fields and bias
+   tokens. */
+#define RTL_SPEC_FIELDS_MAX 64
 
+/* Field @p index when the spec has it and it is not empty; NULL when the spec leaves that place at its default. */
+static const char*
+rtl_spec_field(char* const* fields, int count, int index) {
+    return (index < count && fields[index][0] != '\0') ? fields[index] : NULL;
+}
+
+/* 1 with field @p index read into @p out as rtl_spec_parse_int() reads it; 0 when the spec leaves the field out or it
+   does not parse, which leaves its option. */
+static int
+rtl_spec_int_field(char* const* fields, int count, int index, int* out) {
+    const char* field = rtl_spec_field(fields, count, index);
+    return field && rtl_spec_parse_int(field, out) == 0;
+}
+
+/* The tuning fields from @p first on, in order (frequency, gain, PPM, DSP bandwidth, squelch, volume), then the bias
+   tokens. An empty or missing field leaves its option, the DSP bandwidth its source too. */
+static void
+rtl_spec_apply_tuning_fields(dsd_opts* opts, char* const* fields, int count, int first) {
+    const char* field = rtl_spec_field(fields, count, first);
+    if (field) {
+        opts->rtlsdr_center_freq = rtl_spec_parse_freq(field);
+    }
     int parsed = 0;
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
+    if (rtl_spec_int_field(fields, count, first + 1, &parsed)) {
+        spec_take_gain(&opts->rtl_gain_value, fields[first + 1], parsed);
     }
-    if (rtl_spec_parse_int(curr, &parsed) == 0) {
-        spec_take_gain(&opts->rtl_gain_value, curr, parsed);
-    }
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    if (rtl_spec_parse_int(curr, &parsed) == 0) {
+    if (rtl_spec_int_field(fields, count, first + 2, &parsed)) {
         opts->rtlsdr_ppm_error = parsed;
     }
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    dsd_opts_set_rtl_dsp_bw(opts, dsd_rtl_spec_bw_khz_or_default(curr), DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
+    field = rtl_spec_field(fields, count, first + 3);
+    if (field) {
+        dsd_opts_set_rtl_dsp_bw(opts, dsd_rtl_spec_bw_khz_or_default(field), DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     }
     /* The squelch grammar (off, a level, auto[+N], noise[+N]); a field that is not a squelch says nothing about it, and
        --squelch wins over the spec. */
-    (void)dsd_squelch_spec_field_apply(opts, curr);
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
+    field = rtl_spec_field(fields, count, first + 4);
+    if (field) {
+        (void)dsd_squelch_spec_field_apply(opts, field);
     }
-    if (rtl_spec_parse_int(curr, &parsed) == 0) {
+    if (rtl_spec_int_field(fields, count, first + 5, &parsed)) {
         opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(parsed);
     }
-    return 1;
+    for (int i = first + 6; i < count; i++) {
+        if (fields[i][0] != '\0') {
+            rtl_spec_apply_bias_token(opts, fields[i]);
+        }
+    }
+}
+
+/* The endpoint of an rtltcp spec. The port is read before anything is set, so a spec it refuses changes nothing. */
+static int
+rtl_spec_apply_endpoint(dsd_opts* opts, char* const* fields, int count) {
+    int port = opts->rtltcp_portno;
+    const char* field = rtl_spec_field(fields, count, 2);
+    if (field && dsd_spec_parse_port(field, 1, &port) != 0) {
+        LOG_ERROR("Invalid port \"%s\" in %s (expected 1..%d)\n", field, opts->audio_in_dev, DSD_SPEC_PORT_MAX);
+        return -1;
+    }
+    field = rtl_spec_field(fields, count, 1);
+    if (field) {
+        DSD_SNPRINTF(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", field);
+    }
+    opts->rtltcp_portno = port;
+    return 0;
 }
 
 int
@@ -563,34 +587,59 @@ dsd_rtl_input_spec_apply(dsd_opts* opts) {
     if (!rtltcp && !dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)) {
         return 0;
     }
-    /* The 1023 characters the engine has always read a spec to (dsd_engine_setup_rtl_spec_bw_khz() too). */
-    char inbuf[1024];
-    DSD_SNPRINTF(inbuf, sizeof inbuf, "%s", opts->audio_in_dev);
-    char* saveptr = NULL;
-    if (dsd_strtok_r(inbuf, ":", &saveptr) == NULL) {
-        return 1;
+    char buf[sizeof opts->audio_in_dev];
+    char* fields[RTL_SPEC_FIELDS_MAX];
+    int count = dsd_spec_split_fields(opts->audio_in_dev, buf, sizeof buf, fields, RTL_SPEC_FIELDS_MAX);
+    if (count < 0) {
+        return -1;
     }
-    const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-    if (!curr) {
+    if (count > RTL_SPEC_FIELDS_MAX) {
+        count = RTL_SPEC_FIELDS_MAX;
+    }
+    if (rtltcp) {
+        if (rtl_spec_apply_endpoint(opts, fields, count) != 0) {
+            return -1;
+        }
+        rtl_spec_apply_tuning_fields(opts, fields, count, 3);
         return 1;
     }
     int parsed = 0;
-    if (rtltcp) {
-        DSD_SNPRINTF(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", curr);
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (!curr) {
-            return 1;
-        }
-        if (rtl_spec_parse_int(curr, &parsed) == 0) {
-            opts->rtltcp_portno = parsed;
-        }
-    } else if (rtl_spec_parse_int(curr, &parsed) == 0) {
+    if (rtl_spec_int_field(fields, count, 1, &parsed)) {
         opts->rtl_dev_index = parsed;
     }
-    if (rtl_spec_apply_tuning_tokens(opts, &saveptr)) {
-        while ((curr = dsd_strtok_r(NULL, ":", &saveptr)) != NULL) {
-            rtl_spec_apply_bias_token(opts, curr);
-        }
-    }
+    rtl_spec_apply_tuning_fields(opts, fields, count, 2);
     return 1;
+}
+
+/* The longest spec an endpoint is read from: -i holds 2047 characters. */
+#define ENDPOINT_SPEC_MAX 2048
+
+int
+dsd_endpoint_spec_read(const char* spec, int min_port, char* host, size_t host_size, int* port) {
+    if (!spec || !host || host_size == 0U || !port) {
+        return -1;
+    }
+    char buf[ENDPOINT_SPEC_MAX];
+    char* fields[3];
+    const int count = dsd_spec_split_fields(spec, buf, sizeof buf, fields, 3);
+    if (count < 0) {
+        LOG_ERROR("Invalid spec (longer than %d characters)\n", ENDPOINT_SPEC_MAX - 1);
+        return -1;
+    }
+    const char* host_field = count > 1 ? fields[1] : "";
+    const char* port_field = count > 2 ? fields[2] : "";
+    int parsed = *port;
+    if (port_field[0] != '\0' && dsd_spec_parse_port(port_field, min_port, &parsed) != 0) {
+        LOG_ERROR("Invalid port \"%s\" in %s (expected %d..%d)\n", port_field, spec, min_port, DSD_SPEC_PORT_MAX);
+        return -1;
+    }
+    if (strlen(host_field) >= host_size) {
+        LOG_ERROR("Invalid host in %s (longer than %zu characters)\n", spec, host_size - 1U);
+        return -1;
+    }
+    if (host_field[0] != '\0') {
+        DSD_SNPRINTF(host, host_size, "%s", host_field);
+    }
+    *port = parsed;
+    return 0;
 }

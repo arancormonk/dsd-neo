@@ -3742,6 +3742,15 @@ suite runs under this compiler.
     between refusals is pinned by the test. `dsd_freq_hz_mhz_text()` is the one MHz spelling (`%u.%06u`, exact and
     locale-free; the caller picks the placeholder for 0): the terminal `FRQ:` field and `Frequency...` label, every tune
     toast, the `-Y` avoid toast and the analog event row. Tests: `RUNTIME_FREQ_PARSE`, fuzz `runtime_freq_parse`.
+  - Spec fields (`include/dsd-neo/runtime/spec_fields.h`, issue #743 B7/B15). `dsd_spec_split_fields()` splits a
+    colon-separated `-i`/`-o` spec at every ':' and keeps empty fields, so an empty field holds its place and means
+    that field's default (`rtl::851M` is the default device at 851 MHz; strtok read the frequency as the device and
+    every later field one place early). Every network and RTL-family spec reads its fields through it: the `rtl:`/
+    `rtltcp:` reader, `dsd_endpoint_spec_read()` (`runtime/input_spec.h`, the host and port of `tcp:`, `udp:` and
+    `m17udp:` on `-i` and `-o`), the engine's DSP-bandwidth peek and the config snapshot. `dsd_spec_parse_port()` is the
+    one port grammar: digits only, a minimum the caller picks (1, or 0 for the `udp:` input where 0 is the default
+    7355) up to 65535. A refused port fails the spec with a message quoting the field and the range, before anything
+    changes or opens (`RUNTIME_INPUT_SPEC`, `ENGINE_RUN_SETUP`, `RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_BAD_PORT`).
   - Control-channel candidates (`include/dsd-neo/runtime/trunk_cc_candidates.h`, a `dsd_state` extension), walked by
     the P25 and DMR hunts and the manual `L` candidate leg.
     - `dsd_trunk_cc_candidates_next()` hands out the next eligible entry and counts it in `used`. Finding none leaves
@@ -4035,8 +4044,10 @@ suite runs under this compiler.
     `dsd_user_config_radio_input_spec()` returns the radio input spec (`rtl`, `rtltcp`, `soapy` or
     `airspy`) an `[input]` builds without applying it, so a live config apply can tell whether it reopens the device and
     what then sets the rate. `dsd_rtl_input_spec_apply()` (`runtime/input_spec.h`) reads an `rtl:`/`rtltcp:` spec's
-    device or endpoint, tuning and `bias` tokens into the options: the engine reads the spec with it when the input
-    opens, and `--print-config` before that, so the export carries the spec's tuning rather than the option defaults.
+    device or endpoint, tuning and `bias` tokens into the options, each field in its place (an empty one leaves its
+    option): the engine reads the spec with it when the input opens, and `--print-config` before that, so the export
+    carries the spec's tuning rather than the option defaults. An rtl_tcp port that is not 1..65535 refuses the spec
+    (-1, nothing changed), which fails the start and the export.
     The INI loader refuses an `rtl_freq` of 64 bytes or more (warned; the key keeps what it had) instead of cutting it
     into another frequency. `dsd_normalize_soapy_input_spec()` reads a K/M/G-suffixed number (any strtod() number
     before the suffix: `+5.8G`, `5.8e0G`) in the frequency place as a frequency, never device args: out of range

@@ -940,6 +940,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_spec_fields
+  HEADERS_PUBLIC_RUNTIME_SPEC_FIELDS
+  dsd-neo/runtime/spec_fields.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_path_policy
   HEADERS_PUBLIC_RUNTIME_PATH_POLICY
   dsd-neo/runtime/path_policy.h
@@ -11082,6 +11088,32 @@ if(DSD_HAS_RADIO)
             FAIL_REGULAR_EXPRESSION "iqreplay|source = \"file\""
     )
 endif()
+# Issue #743 B7: an empty spec field keeps its place, so the export of `rtl::851.0125M:20:3`
+# carries that frequency, gain and PPM (it read 20 Hz at gain 3). B15: an rtl_tcp port
+# that is not one is refused, and so is the export.
+add_test(
+    NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_EMPTY_FIELDS
+    COMMAND
+        $<TARGET_FILE:dsd-neo> --no-config -i rtl::851.0125M:20:3 --print-config
+)
+set_tests_properties(
+    RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_EMPTY_FIELDS
+    PROPERTIES
+        WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+        PASS_REGULAR_EXPRESSION
+            [=[rtl_freq = "851012500"[^[]*rtl_gain = 20[^[]*rtl_ppm = 3]=]
+)
+add_test(
+    NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_BAD_PORT
+    COMMAND
+        ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+        DSD_NEO_CLI_SMOKE_MODE=print-config-rtltcp-bad-port -P
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+)
+set_tests_properties(
+    RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_BAD_PORT
+    PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+)
 
 add_test(
     NAME RUNTIME_BOOTSTRAP_LIST_PROFILES

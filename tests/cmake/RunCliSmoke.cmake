@@ -38,6 +38,19 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "missing-argument")
     set(_want_rc 1)
     set(_want_stdout_regex "Usage: dsd-neo \\[options\\]")
     set(_want_stderr_regex "Option -o requires an argument")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-rtltcp-bad-port")
+    # Issue #743 B15: an rtl_tcp port that is not one fails --print-config, which
+    # reads the spec as the engine will, with the field named; nothing is exported.
+    set(_args
+        "--no-config"
+        "-i"
+        "rtltcp:radio.local:12x:851M"
+        "--print-config"
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "\"12x\".*65535")
+    set(_forbid_output_regex "rtltcp_port")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused")
     # Issue #525: an explicit NFM width the rtl_tcp input's 24 kHz DSP
     # bandwidth cannot filter is refused before the device opens, with the

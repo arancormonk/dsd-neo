@@ -39,6 +39,7 @@
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/spec_fields.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
 #include <limits.h>
@@ -334,22 +335,15 @@ copy_token_string(char* dst, size_t dst_size, const char* src) {
     dst[dst_size - 1] = '\0';
 }
 
+/* The spec's first @p max_tokens fields, each in its place, empty ones included, as the engine reads them
+   (dsd_spec_split_fields()); 0 when @p in does not fit @p scratch. */
 static size_t
 split_colon_tokens(char* scratch, size_t scratch_size, const char* in, char** out_tokens, size_t max_tokens) {
-    if (!scratch || scratch_size == 0 || !in || !out_tokens || max_tokens == 0) {
+    const int count = dsd_spec_split_fields(in, scratch, scratch_size, out_tokens, max_tokens);
+    if (count < 0) {
         return 0;
     }
-
-    DSD_SNPRINTF(scratch, scratch_size, "%.*s", (int)(scratch_size - 1), in);
-    scratch[scratch_size - 1] = '\0';
-
-    size_t count = 0;
-    char* save = NULL;
-    for (char* tok = dsd_strtok_r(scratch, ":", &save); tok && count < max_tokens;
-         tok = dsd_strtok_r(NULL, ":", &save)) {
-        out_tokens[count++] = tok;
-    }
-    return count;
+    return (size_t)count < max_tokens ? (size_t)count : max_tokens;
 }
 
 static void
@@ -365,9 +359,10 @@ snapshot_parse_optional_int_token(char* const* tokens, size_t token_count, size_
     }
 }
 
+/* An empty field leaves @p dst: the spec leaves that place at its default. */
 static void
 snapshot_copy_optional_token(char* const* tokens, size_t token_count, size_t index, char* dst, size_t dst_size) {
-    if (tokens && index < token_count) {
+    if (tokens && index < token_count && tokens[index][0] != '\0') {
         copy_token_string(dst, dst_size, tokens[index]);
     }
 }
@@ -575,30 +570,40 @@ snapshot_apply_live_soapy_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 }
 
 static void
-snapshot_parse_rtl_device_spec(const char* audio_in_dev, dsdneoUserConfig* cfg) {
-    if (!audio_in_dev || !cfg) {
+snapshot_parse_rtl_device_spec(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    if (!opts || !cfg) {
         return;
     }
 
-    char buf[1024];
+    char buf[sizeof opts->audio_in_dev];
     char* tok[9] = {0};
-    size_t n = split_colon_tokens(buf, sizeof buf, audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
-    snapshot_parse_optional_int_token(tok, n, 1, &cfg->rtl_device, NULL);
+    size_t n = split_colon_tokens(buf, sizeof buf, opts->audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
+    /* An empty device field is the device the session opens, its default. */
+    if (n > 1 && tok[1][0] == '\0') {
+        cfg->rtl_device = opts->rtl_dev_index;
+    } else {
+        snapshot_parse_optional_int_token(tok, n, 1, &cfg->rtl_device, NULL);
+    }
     snapshot_copy_optional_token(tok, n, 2, cfg->rtl_freq, sizeof cfg->rtl_freq);
     snapshot_parse_rtl_tuning_tokens(tok, n, 3, cfg);
 }
 
 static void
-snapshot_parse_rtltcp_device_spec(const char* audio_in_dev, dsdneoUserConfig* cfg) {
-    if (!audio_in_dev || !cfg) {
+snapshot_parse_rtltcp_device_spec(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    if (!opts || !cfg) {
         return;
     }
 
-    char buf[1024];
+    char buf[sizeof opts->audio_in_dev];
     char* tok[10] = {0};
-    size_t n = split_colon_tokens(buf, sizeof buf, audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
+    size_t n = split_colon_tokens(buf, sizeof buf, opts->audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
+    /* An empty host or port field is the one the session connects to, its default. */
+    copy_token_string(cfg->rtltcp_host, sizeof cfg->rtltcp_host, opts->rtltcp_hostname);
     snapshot_copy_optional_token(tok, n, 1, cfg->rtltcp_host, sizeof cfg->rtltcp_host);
-    snapshot_parse_optional_int_token(tok, n, 2, &cfg->rtltcp_port, NULL);
+    cfg->rtltcp_port = opts->rtltcp_portno;
+    if (n > 2 && tok[2][0] != '\0') {
+        snapshot_parse_optional_int_token(tok, n, 2, &cfg->rtltcp_port, NULL);
+    }
     snapshot_copy_optional_token(tok, n, 3, cfg->rtl_freq, sizeof cfg->rtl_freq);
     snapshot_parse_rtl_tuning_tokens(tok, n, 4, cfg);
 }
@@ -615,23 +620,31 @@ snapshot_parse_soapy_device_spec(const char* audio_in_dev, dsdneoUserConfig* cfg
     }
 }
 
+/* The host and port of a `tcp:` or `udp:` spec; an empty or missing field is @p default_host or @p default_port, the
+   session's, as the engine reads it. */
 static void
-snapshot_parse_host_port_spec(const char* audio_in_dev, char* host, size_t host_size, int* port) {
+snapshot_parse_host_port_spec(const char* audio_in_dev, const char* default_host, int default_port, char* host,
+                              size_t host_size, int* port) {
     if (!audio_in_dev || !host || host_size == 0 || !port) {
         return;
     }
 
-    char buf[512];
+    char buf[2048];
     char* tok[4] = {0};
     size_t n = split_colon_tokens(buf, sizeof buf, audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
-    if (n > 1) {
-        copy_token_string(host, host_size, tok[1]);
-    }
-    if (n > 2) {
+    copy_token_string(host, host_size, n > 1 && tok[1][0] != '\0' ? tok[1] : default_host);
+    *port = default_port;
+    if (n > 2 && tok[2][0] != '\0') {
         if (dsd_parse_int_strict(tok[2], 10, INT_MIN, INT_MAX, port) != 0) {
             *port = 0;
         }
     }
+}
+
+/* The address a `udp:` input with an empty bind field binds: the one the engine set, else its default. */
+static const char*
+snapshot_udp_bind_default(const dsd_opts* opts) {
+    return opts->udp_in_bindaddr[0] != '\0' ? opts->udp_in_bindaddr : "127.0.0.1";
 }
 
 static void
@@ -2105,7 +2118,8 @@ snapshot_tcp_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUs
                      opts->tcp_hostname[0] ? opts->tcp_hostname : "localhost");
         cfg->tcp_port = opts->tcp_portno > 0 ? opts->tcp_portno : 7355;
     } else {
-        snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->tcp_host, sizeof cfg->tcp_host, &cfg->tcp_port);
+        snapshot_parse_host_port_spec(opts->audio_in_dev, opts->tcp_hostname, opts->tcp_portno, cfg->tcp_host,
+                                      sizeof cfg->tcp_host, &cfg->tcp_port);
     }
     snapshot_pcm_squelch_values(opts, state, cfg);
 }
@@ -2119,7 +2133,8 @@ snapshot_udp_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUs
                      opts->udp_in_bindaddr[0] ? opts->udp_in_bindaddr : "127.0.0.1");
         cfg->udp_port = opts->udp_in_portno > 0 ? opts->udp_in_portno : 7355;
     } else {
-        snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->udp_addr, sizeof cfg->udp_addr, &cfg->udp_port);
+        snapshot_parse_host_port_spec(opts->audio_in_dev, snapshot_udp_bind_default(opts), opts->udp_in_portno,
+                                      cfg->udp_addr, sizeof cfg->udp_addr, &cfg->udp_port);
     }
     snapshot_pcm_squelch_values(opts, state, cfg);
 }
@@ -2130,11 +2145,11 @@ snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneo
     /* A bare "rtl" or "rtltcp" too: the RTL-SDR row names its device "rtl" when no radio ran (issue #634). */
     if (dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)) {
         cfg->input_source = DSDCFG_INPUT_RTL;
-        snapshot_parse_rtl_device_spec(opts->audio_in_dev, cfg);
+        snapshot_parse_rtl_device_spec(opts, cfg);
         snapshot_apply_live_rtl_values(opts, state, cfg);
     } else if (dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)) {
         cfg->input_source = DSDCFG_INPUT_RTLTCP;
-        snapshot_parse_rtltcp_device_spec(opts->audio_in_dev, cfg);
+        snapshot_parse_rtltcp_device_spec(opts, cfg);
         snapshot_apply_live_rtl_values(opts, state, cfg);
     } else if ((strcmp(opts->audio_in_dev, "soapy") == 0) || (strncmp(opts->audio_in_dev, "soapy:", 6) == 0)) {
         cfg->input_source = DSDCFG_INPUT_SOAPY;

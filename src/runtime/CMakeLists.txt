@@ -32,6 +32,7 @@ target_sources(
         analog_tones.c
         receive_policy.c
         input_spec.c
+        spec_fields.c
         airspy_config.c
         input_level.c
         input_failure.c

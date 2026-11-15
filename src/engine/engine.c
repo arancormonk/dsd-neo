@@ -104,6 +104,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/spec_fields.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -589,52 +590,16 @@ dsd_engine_signal_handler(int sgnl) {
     dsd_exitflag_store(1);
 }
 
-static void
-dsd_engine_setup_copy_spec(char* dst, size_t dst_size, const char* src) {
-    if (!dst || dst_size == 0 || !src) {
-        return;
-    }
-    DSD_SNPRINTF(dst, dst_size, "%s", src);
-    dst[dst_size - 1] = '\0';
-}
-
-static int
-dsd_engine_setup_parse_int_token(const char* token, int* out) {
-    int parsed = 0;
-    if (!token) {
-        return -1;
-    }
-    if (dsd_parse_int_arg(token, &parsed) != 0) {
-        return -1;
-    }
-    *out = parsed;
-    return 0;
-}
-
 static int
 dsd_engine_setup_parse_m17_udp_input(dsd_opts* opts) {
     if (!dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) {
         return 0;
     }
-    LOG_INFO("NOTICE: M17 UDP IP Frame Input: ");
-    char* saveptr = NULL;
-    char inbuf[1024];
-    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), opts->audio_in_dev);
-    if (dsd_strtok_r(inbuf, ":", &saveptr) != NULL) {
-        const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            DSD_STRNCPY(opts->m17_hostname, curr, 1023);
-        }
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            int parsed = 0;
-            if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-                opts->m17_portno = parsed;
-            }
-        }
+    if (dsd_endpoint_spec_read(opts->audio_in_dev, 1, opts->m17_hostname, sizeof opts->m17_hostname, &opts->m17_portno)
+        != 0) {
+        return -1;
     }
-    LOG_INFO("NOTICE: %s:", opts->m17_hostname);
-    LOG_INFO("NOTICE: %d \n", opts->m17_portno);
+    LOG_INFO("NOTICE: M17 UDP IP Frame Input: %s:%d\n", opts->m17_hostname, opts->m17_portno);
     return 0;
 }
 
@@ -643,23 +608,11 @@ dsd_engine_setup_parse_udp_input(dsd_opts* opts) {
     if (!dsd_opts_audio_in_dev_is_udp_spec(opts->audio_in_dev)) {
         return 0;
     }
-    LOG_INFO("NOTICE: UDP Direct Input: ");
-    char* saveptr = NULL;
-    char inbuf[1024];
-    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), opts->audio_in_dev);
-    if (dsd_strtok_r(inbuf, ":", &saveptr) != NULL) {
-        const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            DSD_STRNCPY(opts->udp_in_bindaddr, curr, 1023);
-            opts->udp_in_bindaddr[1023] = '\0';
-        }
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            int parsed = 0;
-            if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-                opts->udp_in_portno = parsed;
-            }
-        }
+    /* Port 0 is the default 7355, as it always was for a UDP input. */
+    if (dsd_endpoint_spec_read(opts->audio_in_dev, 0, opts->udp_in_bindaddr, sizeof opts->udp_in_bindaddr,
+                               &opts->udp_in_portno)
+        != 0) {
+        return -1;
     }
     if (opts->udp_in_portno == 0) {
         opts->udp_in_portno = 7355;
@@ -667,7 +620,7 @@ dsd_engine_setup_parse_udp_input(dsd_opts* opts) {
     if (opts->udp_in_bindaddr[0] == '\0') {
         DSD_SNPRINTF(opts->udp_in_bindaddr, sizeof(opts->udp_in_bindaddr), "%s", "127.0.0.1");
     }
-    LOG_INFO("NOTICE: %s:%d\n", opts->udp_in_bindaddr, opts->udp_in_portno);
+    LOG_INFO("NOTICE: UDP Direct Input: %s:%d\n", opts->udp_in_bindaddr, opts->udp_in_portno);
     return 0;
 }
 
@@ -676,25 +629,11 @@ dsd_engine_setup_parse_m17_udp_output(dsd_opts* opts) {
     if (strncmp(opts->audio_out_dev, "m17udp", 6) != 0) {
         return 0;
     }
-    LOG_INFO("NOTICE: M17 UDP IP Frame Output: ");
-    char* saveptr = NULL;
-    char outbuf[1024];
-    dsd_engine_setup_copy_spec(outbuf, sizeof(outbuf), opts->audio_out_dev);
-    if (dsd_strtok_r(outbuf, ":", &saveptr) != NULL) {
-        const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            DSD_STRNCPY(opts->m17_hostname, curr, 1023);
-        }
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            int parsed = 0;
-            if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-                opts->m17_portno = parsed;
-            }
-        }
+    if (dsd_endpoint_spec_read(opts->audio_out_dev, 1, opts->m17_hostname, sizeof opts->m17_hostname, &opts->m17_portno)
+        != 0) {
+        return -1;
     }
-    LOG_INFO("NOTICE: %s:", opts->m17_hostname);
-    LOG_INFO("NOTICE: %d \n", opts->m17_portno);
+    LOG_INFO("NOTICE: M17 UDP IP Frame Output: %s:%d\n", opts->m17_hostname, opts->m17_portno);
     opts->m17_use_ip = 1;
     opts->audio_out_type = 9;
     return 0;
@@ -705,24 +644,15 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
     if (!dsd_opts_audio_in_dev_is_tcp_spec(opts->audio_in_dev)) {
         return 0;
     }
-    LOG_INFO("NOTICE: TCP Direct Link: ");
-    char* saveptr = NULL;
-    char inbuf[1024];
-    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), opts->audio_in_dev);
-
-    if (dsd_strtok_r(inbuf, ":", &saveptr) != NULL) {
-        const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            DSD_STRNCPY(opts->tcp_hostname, curr, 1023);
-            DSD_MEMCPY(opts->rigctlhostname, opts->tcp_hostname, sizeof(opts->rigctlhostname));
-        }
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            int parsed = 0;
-            if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-                opts->tcp_portno = parsed;
-            }
-        }
+    char host[sizeof opts->tcp_hostname];
+    host[0] = '\0';
+    if (dsd_endpoint_spec_read(opts->audio_in_dev, 1, host, sizeof host, &opts->tcp_portno) != 0) {
+        return -1;
+    }
+    /* A host the spec names is rigctl's too; the default host leaves rigctl's as it is. */
+    if (host[0] != '\0') {
+        DSD_SNPRINTF(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", host);
+        DSD_MEMCPY(opts->rigctlhostname, opts->tcp_hostname, sizeof(opts->rigctlhostname));
     }
 
     while (1) {
@@ -730,8 +660,7 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
             dsd_request_shutdown(opts, state);
             return 1;
         }
-        LOG_INFO("NOTICE: %s:", opts->tcp_hostname);
-        LOG_INFO("NOTICE: %d \n", opts->tcp_portno);
+        LOG_INFO("NOTICE: TCP Direct Link: %s:%d\n", opts->tcp_hostname, opts->tcp_portno);
         opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
         if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
             /* The input's reconnect goes back to the address this connection went to (issue #634). */
@@ -787,25 +716,23 @@ dsd_engine_setup_enable_iq_replay_if_selected(dsd_opts* opts) {
     opts->iq_replay_active = 1;
 }
 
-static void
+static int
 dsd_engine_setup_parse_rtltcp_input(dsd_opts* opts) {
     if (!dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)) {
-        return;
+        return 0;
     }
-    LOG_INFO("NOTICE: RTL_TCP Input: ");
-    (void)dsd_rtl_input_spec_apply(opts);
+    if (dsd_rtl_input_spec_apply(opts) < 0) {
+        return -1;
+    }
 
     if (opts->rtltcp_portno == 0) {
         opts->rtltcp_portno = 1234;
     }
-    LOG_INFO("NOTICE: %s:%d", opts->rtltcp_hostname, opts->rtltcp_portno);
-    if (opts->rtl_bias_tee) {
-        LOG_INFO("NOTICE:  (bias=on)\n");
-    } else {
-        LOG_INFO("NOTICE: \n");
-    }
+    LOG_INFO("NOTICE: RTL_TCP Input: %s:%d%s\n", opts->rtltcp_hostname, opts->rtltcp_portno,
+             opts->rtl_bias_tee ? " (bias=on)" : "");
     opts->rtltcp_enabled = 1;
     opts->audio_in_type = AUDIO_IN_RTL;
+    return 0;
 }
 
 /* The squelch for a startup notice: a level as dsd_squelch_format() writes it, or auto+NdB, noise+NdB. */
@@ -832,12 +759,7 @@ dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
     if (strncmp(opts->audio_in_dev, "soapy:", 6) == 0) {
         soapy_args = opts->audio_in_dev + 6;
     }
-    LOG_INFO("NOTICE: SoapySDR Input");
-    if (soapy_args[0] != '\0') {
-        LOG_INFO("NOTICE: : %s\n", soapy_args);
-    } else {
-        LOG_INFO("NOTICE: : default device args\n");
-    }
+    LOG_INFO("NOTICE: SoapySDR Input: %s\n", soapy_args[0] != '\0' ? soapy_args : "default device args");
     if (tuning_applied) {
         char sql[24];
         dsd_engine_squelch_notice_text(opts, sql, sizeof sql);
@@ -876,7 +798,7 @@ dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char*
         DSD_SNPRINTF(vendor, 256, "%s", "USB");
         DSD_SNPRINTF(product, 256, "%s", "RTL-SDR");
         DSD_SNPRINTF(serial, 256, "%s", "");
-        LOG_INFO("NOTICE: Using a pre-opened USB descriptor; skipping device enumeration.\n");
+        LOG_INFO("NOTICE: RTL Input: Using a pre-opened USB descriptor; skipping device enumeration.\n");
         return 1;
     }
 
@@ -898,7 +820,7 @@ dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char*
         return device_count;
     }
 
-    LOG_INFO("NOTICE: Found %d device(s):\n", device_count);
+    LOG_INFO("NOTICE: RTL Input: Found %d device(s):\n", device_count);
     for (int i = 0; i < device_count; i++) {
 #if defined(_MSC_VER) && defined(_WIN32)
         __try {
@@ -924,8 +846,9 @@ static int
 dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* vendor, char* product, char* serial) {
     UNUSED(state);
 #ifdef USE_RTLSDR
-    LOG_INFO("NOTICE: RTL Input: ");
-    (void)dsd_rtl_input_spec_apply(opts);
+    if (dsd_rtl_input_spec_apply(opts) < 0) {
+        return -1;
+    }
 
     int device_count = dsd_engine_setup_enumerate_rtl_devices(opts, vendor, product, serial);
     if (device_count <= 0) {
@@ -993,26 +916,12 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
     if (strncmp(opts->audio_out_dev, "udp", 3) != 0) {
         return 0;
     }
-    LOG_INFO("NOTICE: UDP Blaster Output: ");
-    char* saveptr = NULL;
-    char outbuf[1024];
-    dsd_engine_setup_copy_spec(outbuf, sizeof(outbuf), opts->audio_out_dev);
-    if (dsd_strtok_r(outbuf, ":", &saveptr) != NULL) {
-        const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            DSD_STRNCPY(opts->udp_hostname, curr, 1023);
-        }
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            int parsed = 0;
-            if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-                opts->udp_portno = parsed;
-            }
-        }
+    if (dsd_endpoint_spec_read(opts->audio_out_dev, 1, opts->udp_hostname, sizeof opts->udp_hostname, &opts->udp_portno)
+        != 0) {
+        return -1;
     }
 
-    LOG_INFO("NOTICE: %s:", opts->udp_hostname);
-    LOG_INFO("NOTICE: %d \n", opts->udp_portno);
+    LOG_INFO("NOTICE: UDP Blaster Output: %s:%d\n", opts->udp_hostname, opts->udp_portno);
     int err = udp_socket_connect(opts, state);
     if (err < 0) {
         LOG_ERROR("Error Configuring UDP Socket for UDP Blaster Audio :( \n");
@@ -1032,9 +941,7 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
         opts->udp_sockfdA = DSD_INVALID_SOCKET;
         opts->monitor_input_audio = 0;
     } else {
-        LOG_INFO("NOTICE: UDP Blaster Output (Analog): ");
-        LOG_INFO("NOTICE: %s:", opts->udp_hostname);
-        LOG_INFO("NOTICE: %d \n", opts->udp_portno + 2);
+        LOG_INFO("NOTICE: UDP Blaster Output (Analog): %s:%d\n", opts->udp_hostname, opts->udp_portno + 2);
     }
     (void)dsd_edacs_session_trunked_monitor_off(opts, state);
     return 0;
@@ -1095,19 +1002,15 @@ dsd_engine_setup_open_audio_paths(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
-/* The DSP bandwidth an RTL-SDR spec ("rtl:dev:freq:gain:ppm:bw:...") sets, read the way dsd_rtl_input_spec_apply()
- * reads its sixth field, but without looking for a device; @p fallback (the bandwidth the options already hold) when
- * the spec leaves the field out. */
+/* The DSP bandwidth the RTL-SDR spec in @p opts ("rtl:dev:freq:gain:ppm:bw:...") sets, read the way
+ * dsd_rtl_input_spec_apply() reads its sixth field, but without looking for a device; the bandwidth the options already
+ * hold when the spec leaves the field out or empty. */
 static int
-dsd_engine_setup_rtl_spec_bw_khz(const char* spec, int fallback) {
-    char inbuf[1024];
-    char* saveptr = NULL;
-    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), spec);
-    const char* curr = dsd_strtok_r(inbuf, ":", &saveptr);
-    for (int field = 1; curr && field <= 5; field++) {
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-    }
-    return curr ? dsd_rtl_spec_bw_khz_or_default(curr) : fallback;
+dsd_engine_setup_rtl_spec_bw_khz(const dsd_opts* opts) {
+    char buf[sizeof opts->audio_in_dev];
+    char* fields[6];
+    const int count = dsd_spec_split_fields(opts->audio_in_dev, buf, sizeof buf, fields, 6);
+    return (count >= 6 && fields[5][0] != '\0') ? dsd_rtl_spec_bw_khz_or_default(fields[5]) : opts->rtl_dsp_bw_khz;
 }
 
 /*
@@ -1133,8 +1036,7 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
         return 0;
     }
     const int rtl_spec = dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev);
-    const int bw_khz =
-        rtl_spec ? dsd_engine_setup_rtl_spec_bw_khz(opts->audio_in_dev, opts->rtl_dsp_bw_khz) : opts->rtl_dsp_bw_khz;
+    const int bw_khz = rtl_spec ? dsd_engine_setup_rtl_spec_bw_khz(opts) : opts->rtl_dsp_bw_khz;
     const int live_radio = rtl_spec || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
                            || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
                            || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev);
@@ -1194,6 +1096,25 @@ dsd_engine_setup_check_noise_squelch(const dsd_opts* opts, const dsd_state* stat
     return 0;
 }
 
+/* The UDP specs, read before anything opens: an M17 frame input, a PCM input, an M17 frame output. -1 when one is
+   refused. */
+static int
+dsd_engine_setup_parse_udp_specs(dsd_opts* opts) {
+    if (dsd_engine_setup_parse_m17_udp_input(opts) != 0 || dsd_engine_setup_parse_udp_input(opts) != 0) {
+        return -1;
+    }
+    return dsd_engine_setup_parse_m17_udp_output(opts);
+}
+
+/* An rtl_tcp, SoapySDR or Airspy spec read into the options it sets. -1 when one is refused. */
+static int
+dsd_engine_setup_parse_radio_specs(dsd_opts* opts) {
+    if (dsd_engine_setup_parse_rtltcp_input(opts) != 0 || dsd_engine_setup_parse_soapy_input(opts) != 0) {
+        return -1;
+    }
+    return dsd_normalize_airspy_input_spec(opts) != 0 ? -1 : 0;
+}
+
 static int
 dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -1205,9 +1126,9 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     opts->iq_replay_active = dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev) ? 1 : 0;
-    (void)dsd_engine_setup_parse_m17_udp_input(opts);
-    (void)dsd_engine_setup_parse_udp_input(opts);
-    (void)dsd_engine_setup_parse_m17_udp_output(opts);
+    if (dsd_engine_setup_parse_udp_specs(opts) != 0) {
+        return -1;
+    }
     const int tcp_setup_result = dsd_engine_setup_parse_tcp_input(opts, state);
     if (tcp_setup_result < 0) {
         return -1;
@@ -1217,11 +1138,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     }
     dsd_engine_setup_connect_rigctl_if_enabled(opts);
     dsd_engine_setup_enable_iq_replay_if_selected(opts);
-    dsd_engine_setup_parse_rtltcp_input(opts);
-    if (dsd_engine_setup_parse_soapy_input(opts) != 0) {
-        return -1;
-    }
-    if (dsd_normalize_airspy_input_spec(opts) != 0) {
+    if (dsd_engine_setup_parse_radio_specs(opts) != 0) {
         return -1;
     }
     if (dsd_engine_setup_check_analog_width(opts) != 0) {

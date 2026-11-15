@@ -678,6 +678,23 @@ cli_parse_long_option(const char* option_name, const char* in, int base, long* o
     return 0;
 }
 
+/* -U: a rigctl port from 1 to 65535, or 0 for the SDR++ default 4532. A port past 65535 was narrowed to 16 bits and
+   connected elsewhere (105660 reached 40124), and a negative one read as the default (issue #743 B15). */
+static int
+cli_parse_rigctl_port(const char* value, dsd_opts* opts, int* out_exit_rc) {
+    long port = 0;
+    if (!cli_parse_long_option("-U", value, 10, &port, out_exit_rc)) {
+        return 0;
+    }
+    if (port < 0 || port > 65535) {
+        LOG_ERROR("Invalid -U value \"%s\" (expected port 1..65535, or 0 for the default 4532)\n", value);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    opts->rigctlportno = port == 0 ? 4532 : (int)port;
+    return 1;
+}
+
 /* @p value clamped to @p lo..@p hi while still a long, then narrowed: a value past int's range clamps to the nearer
    bound instead of wrapping to an unrelated one in the range (issue #756). */
 static int
@@ -3362,9 +3379,8 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
         case 'U':                                                                                                      \
             /* Enable rigctl/TCP and set port */                                                                       \
             opts->use_rigctl = 1;                                                                                      \
-            DSD_CLI_PARSE_LONG_OR_RETURN("-U", optarg, 10, opts->rigctlportno);                                        \
-            if (opts->rigctlportno <= 0) {                                                                             \
-                opts->rigctlportno = 4532; /* SDR++ default */                                                         \
+            if (!cli_parse_rigctl_port(optarg, opts, out_exit_rc)) {                                                   \
+                return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             break;                                                                                                     \
         case 'B':                                                                                                      \

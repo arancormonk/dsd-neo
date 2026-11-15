@@ -494,8 +494,11 @@ bootstrap_handle_print_config(const bootstrap_cli_args* args, dsd_opts* opts, co
     }
     /* An RTL-SDR or rtl_tcp spec sets its tuning when the input opens, which --print-config comes before: read it now,
        as the engine will, or the export reports the option defaults instead of the spec's gain, frequency and the rest
-       (issue #518 follow-up). */
-    (void)dsd_rtl_input_spec_apply(opts);
+       (issue #518 follow-up). A port it refuses fails the export, as it would fail the start. */
+    if (dsd_rtl_input_spec_apply(opts) < 0) {
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return DSD_BOOTSTRAP_ERROR;
+    }
     dsdneoUserConfig eff;
     dsd_snapshot_opts_to_user_config(opts, state, &eff);
     dsd_user_config_render_ini(&eff, stdout);

@@ -113,8 +113,14 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (bare `tcp` connects to `localhost:7355`; sample rate uses `-s`, default 48000)
   For a LAN host, use the IPv4 address of the computer running the TCP audio producer, and make sure that producer is
   listening on that LAN interface, not just on `localhost`.
-- UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355)
+- UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355; port `0` is the default too)
 - M17 UDP/IP frame input: `-i m17udp[:bind_addr:port]` (defaults `127.0.0.1:17000`; use `0.0.0.0` only when LAN access is intended; use with `-fU`)
+- Empty fields: the `rtl`, `rtltcp`, `tcp`, `udp` and `m17udp` specs read their fields by place, so an empty field
+  keeps its place and uses the default for that field. `-i rtl::851.0125M:20:3` opens the default device at 851.0125 MHz with gain 20 and PPM 3,
+  `-i rtltcp:192.0.2.10::851.375M` connects to port 1234, and `-i udp::7356` listens on `127.0.0.1` port 7356.
+- Ports: a port field must be a whole number from 1 to 65535 (`udp` input also takes `0` for its default). Anything
+  else, such as `12x` or `70000`, stops startup with an error that names the field. The same holds for `-U`, where
+  `0` means the default 4532.
 - stdin (raw PCM16LE mono): `-i -` (sample rate uses `-s`)
 - A TCP or stdin source that goes quiet keeps its input, in every mode. TCP audio stays connected however long its
   sender is silent (a squelched network audio source). Only a connection that closes or fails is lost: decoding then
@@ -2549,7 +2555,7 @@ channel is delayed.
     encryption without a `--tetra-key` for the carrier the call is on: an 80-bit key covers every carrier, a TEA1
     reduced key its own) is locked out instead of followed, and a followed call that turns out so is left.
 - Hold talkgroup: `-I <dec>`
-- rigctl over TCP: `-U <port>` (SDR++ default 4532)
+- rigctl over TCP: `-U <port>` (SDR++ default 4532; `0` is the default too, and a port over 65535 is an error)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode), the FM passband the peer is asked for wherever it
   does not demodulate the analog monitor: on digital modes, and on an RTL-family input, where the peer only follows the
   frequency and is asked for `-B` alone. On audio input, where the peer demodulates, the analog monitor asks for its own

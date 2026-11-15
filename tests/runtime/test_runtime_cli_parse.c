@@ -7835,6 +7835,47 @@ am_cli_free(am_cli_run* run) {
     free(run->state);
 }
 
+/* Issue #743 B15: -U takes a rigctl port from 1 to 65535, or 0 for the default 4532, and refuses anything else with
+   a message naming the option; 105660 used to be narrowed to 16 bits and connect to 40124. */
+static int
+test_rigctl_port_range(void) {
+    int test_rc = 0;
+    static const char* const refused[] = {"105660", "65536", "-1", "-4532"};
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        const char* const args[] = {"dsd-neo", "-U", refused[i], NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc != DSD_PARSE_ERROR || run.exit_rc != 1 || !strstr(run.err, "-U") || !strstr(run.err, refused[i])
+            || !strstr(run.err, "65535")) {
+            DSD_FPRINTF(stderr, "-U %s: rc=%d exit_rc=%d\n%s\n", refused[i], run.rc, run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+
+    static const struct {
+        const char* value;
+        int port;
+    } accepted[] = {{"0", 4532}, {"1", 1}, {"4532", 4532}, {"65535", 65535}};
+
+    for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
+        const char* const args[] = {"dsd-neo", "-U", accepted[i].value, NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc != DSD_PARSE_CONTINUE || run.opts->use_rigctl != 1 || run.opts->rigctlportno != accepted[i].port) {
+            DSD_FPRINTF(stderr, "-U %s: rc=%d port=%d\n%s\n", accepted[i].value, run.rc, run.opts->rigctlportno,
+                        run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
 /* -fM is the AM preset on every IQ radio input: the analog monitor with the AM detector. */
 static int
 test_f_am_preset_on_iq_inputs(void) {
@@ -12875,6 +12916,7 @@ main(void) {
     rc |= test_frontend_native_alias_selects_equivalent_headless_frontend();
     rc |= test_compatibility_short_options_use_current_facilities();
     rc |= test_numeric_options_reject_trailing_junk();
+    rc |= test_rigctl_port_range();
     rc |= test_H_loads_aes256_key_for_both_slots();
     rc |= test_H_zero_key_arms_dmr_decryption();
     rc |= test_H_loading_is_silent_with_or_without_show_keys();
