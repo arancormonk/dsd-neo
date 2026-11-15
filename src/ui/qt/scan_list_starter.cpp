@@ -822,9 +822,15 @@ ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize, const QSt
         return fail(settingsError);
     }
     const QString path = prepared.value("targetsCsvPath").toString();
-    if (path.isEmpty() || !m_targetFileLookup || !m_targetFileLookup(path) || !QFileInfo(path).isFile()) {
+    // None chosen yet: never picked, an import that was refused, or cleared when its library file was removed.
+    if (path.isEmpty()) {
+        return fail(
+            QStringLiteral("Choose a target CSV for this list: import one, or select one you imported before."));
+    }
+    // A named file the library no longer has as a target CSV: why is not known here, only that it can't be used.
+    if (!m_targetFileLookup || !m_targetFileLookup(path) || !QFileInfo(path).isFile()) {
         return fail(QStringLiteral(
-            "The target CSV is missing or was removed. Edit this list and select an imported target CSV."));
+            "The selected target CSV is unavailable. Import it again or select another imported target CSV."));
     }
     if (!fallbackFilesValid(prepared)) {
         return fail(QStringLiteral("The list's fallback talkgroup or source-alias CSV is missing or invalid."));

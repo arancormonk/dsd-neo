@@ -193,18 +193,18 @@ Item {
         var width = statusText.width - 1;
         if (width <= 0)
             return 2;
-        var widest = [qsTr("Pass %1").arg("8888"), "…", qsTr("%1–%2 MHz").arg("8888.888888").arg("8888.888888"),
-                      qsTr("channel %1 of %2").arg("888888").arg("888888")].join(" · ");
+        var widest = [qsTr("Pass %1").arg("8888"), "…", Util.fill(qsTr("%1–%2 MHz"), ["8888.888888", "8888.888888"]),
+                      Util.fill(qsTr("channel %1 of %2"), ["888888", "888888"])].join(" · ");
         return wrappedLines(widest, width) <= 2 ? 2 : 3;
     }
     readonly property string statusLine: {
         var font = statusMetrics.font;
         var pass = qsTr("Pass %1").arg(status.pass || 1);
-        var channel = qsTr("channel %1 of %2").arg((status.channel || 0) + 1).arg(status.count || 0);
+        var channel = Util.fill(qsTr("channel %1 of %2"), [(status.channel || 0) + 1, status.count || 0]);
         var name = status.rangeName || "";
         if (name.length === 0)
             return [pass, channel].join(" · ");
-        var bounds = qsTr("%1–%2 MHz").arg(status.rangeStartMHz || "").arg(status.rangeEndMHz || "");
+        var bounds = Util.fill(qsTr("%1–%2 MHz"), [status.rangeStartMHz || "", status.rangeEndMHz || ""]);
         var compose = function (n) { return [pass, n, bounds, channel].join(" · "); };
         var width = statusText.width - 1;
         var lines = statusLines;
@@ -378,12 +378,12 @@ Item {
         if (kind === "detections") {
             if (saved.length > 0)
                 return count === 1 ? qsTr("Exported 1 detection to Download/DSD-neo as %1.").arg(saved)
-                    : qsTr("Exported %1 detections to Download/DSD-neo as %2.").arg(Util.countText(count)).arg(saved);
+                    : Util.fill(qsTr("Exported %1 detections to Download/DSD-neo as %2."), [Util.countText(count), saved]);
             return count === 1 ? qsTr("Exported 1 detection.") : qsTr("Exported %1 detections.").arg(Util.countText(count));
         }
         if (saved.length > 0)
             return count === 1 ? qsTr("Exported 1 avoid to Download/DSD-neo as %1.").arg(saved)
-                : qsTr("Exported %1 avoids to Download/DSD-neo as %2.").arg(Util.countText(count)).arg(saved);
+                : Util.fill(qsTr("Exported %1 avoids to Download/DSD-neo as %2."), [Util.countText(count), saved]);
         return count === 1 ? qsTr("Exported 1 avoid.") : qsTr("Exported %1 avoids.").arg(Util.countText(count));
     }
     function setExportMessage(kind, text, error) {
@@ -783,7 +783,7 @@ Item {
                             // advanceWidth() is a call, which a binding does not
                             // track: reading the font re-measures on a scale change.
                             var font = strengthMetrics.font;
-                            return strengthMetrics.advanceWidth(qsTr("Now %1 · detected %2 dBFS").arg("-100.0").arg("-100.0")) <= textWidth ? 1 : 2;
+                            return strengthMetrics.advanceWidth(Util.fill(qsTr("Now %1 · detected %2 dBFS"), ["-100.0", "-100.0"])) <= textWidth ? 1 : 2;
                         }
                         height: lines * Math.ceil(strengthMetrics.lineSpacing)
                         // Marks each fresh live measurement: the level of a steady
@@ -820,7 +820,7 @@ Item {
                             width: strengthSlot.textWidth
                             // Both levels, nothing else: the range is in the status
                             // line and in the accessible description.
-                            text: !screen.receiving ? "" : screen.status.livePowerValid ? (strengthSlot.lines > 1 ? qsTr("Now %1 dBFS\ndetected %2 dBFS") : qsTr("Now %1 · detected %2 dBFS")).arg(Util.fixed(screen.status.livePower, 1)).arg(Util.fixed(screen.hit.power || 0, 1)) : Util.fixed(screen.hit.power || 0, 1) + qsTr(" dBFS")
+                            text: !screen.receiving ? "" : screen.status.livePowerValid ? Util.fill(strengthSlot.lines > 1 ? qsTr("Now %1 dBFS\ndetected %2 dBFS") : qsTr("Now %1 · detected %2 dBFS"), [Util.fixed(screen.status.livePower, 1), Util.fixed(screen.hit.power || 0, 1)]) : Util.fixed(screen.hit.power || 0, 1) + qsTr(" dBFS")
                             color: Theme.textSecondary
                             font.family: Theme.mono
                             font.pixelSize: Theme.fontSize(14)

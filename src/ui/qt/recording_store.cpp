@@ -1975,7 +1975,7 @@ RecordingStore::newFolderLocked(const QString& kind, const QString& uid, const Q
             continue;
         }
         for (int n = 1; n <= kMaxFolderCandidates; n++) {
-            const QString dirName = n == 1 ? base : QStringLiteral("%1 %2").arg(base).arg(n);
+            const QString dirName = n == 1 ? base : QStringLiteral("%1 %2").arg(base, QString::number(n));
             const QString path = clean_absolute(m_roots.at(i) + QLatin1Char('/') + dirName);
             const QFileInfo info(path);
             if (info.exists() || info.isSymLink()) {

@@ -97,7 +97,7 @@ Item {
         };
         var first = format(folder.first);
         var last = format(folder.last);
-        return first === last ? first : qsTr("%1 – %2").arg(first).arg(last);
+        return first === last ? first : Util.fill(qsTr("%1 – %2"), [first, last]);
     }
     function folderText(folder) {
         var counted = folder.count === 1 ? qsTr("1 recording") : qsTr("%1 recordings").arg(Util.countText(folder.count));
@@ -167,7 +167,7 @@ Item {
         var stamp = Qt.formatDate(new Date(savedSystems.realtimeNowMs()), "yyyy-MM-dd");
         say("", false);
         var owner = folder ? Util.fileNameText(folder.name) : "";
-        exportPicker.suggestedName = (owner.length > 0 ? qsTr("Call recordings %1 %2").arg(owner).arg(stamp) : qsTr("Call recordings %1").arg(stamp)) + ".zip";
+        exportPicker.suggestedName = (owner.length > 0 ? Util.fill(qsTr("Call recordings %1 %2"), [owner, stamp]) : qsTr("Call recordings %1").arg(stamp)) + ".zip";
         exportPicker.open();
     }
     function exportPicked(reference) {
@@ -208,7 +208,7 @@ Item {
             if (saved.length > 0 && count === 1)
                 done = qsTr("Exported 1 recording to Download/DSD-neo as %1.").arg(saved);
             else if (saved.length > 0)
-                done = qsTr("Exported %1 recordings to Download/DSD-neo as %2.").arg(Util.countText(count)).arg(saved);
+                done = Util.fill(qsTr("Exported %1 recordings to Download/DSD-neo as %2."), [Util.countText(count), saved]);
             else
                 done = count === 1 ? qsTr("Exported 1 recording.") : qsTr("Exported %1 recordings.").arg(Util.countText(count));
             if (missing > 0)
@@ -367,7 +367,7 @@ Item {
                         objectName: "callRecordingsExportText"
                         step: String(decoderHost.recordingTransferActive)
                         width: parent.width
-                        text: decoderHost.recordingTransferTotalBytes > 0 ? qsTr("Exporting… %1 of %2").arg(Util.sizeText(decoderHost.recordingTransferBytes)).arg(Util.sizeText(decoderHost.recordingTransferTotalBytes)) : qsTr("Exporting…")
+                        text: decoderHost.recordingTransferTotalBytes > 0 ? Util.fill(qsTr("Exporting… %1 of %2"), [Util.sizeText(decoderHost.recordingTransferBytes), Util.sizeText(decoderHost.recordingTransferTotalBytes)]) : qsTr("Exporting…")
                         wrapMode: Text.Wrap
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(15)

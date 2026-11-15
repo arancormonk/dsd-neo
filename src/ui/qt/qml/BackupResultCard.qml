@@ -25,7 +25,7 @@ UiPanel {
     readonly property string title: kind === "applied" ? qsTr("Backup restored") : kind === "failed" ? qsTr("Restore not applied. Nothing was changed.") : !kind.length ? "" : reason.length ? reason : kind === "deferred" ? qsTr("The restore couldn't run yet.") : qsTr("The restore couldn't finish.")
     readonly property string detail: {
         if (kind === "applied") {
-            var lines = [qsTr("This phone now has the backup's saved systems (%1), scan lists (%2), imported files (%3), decryption profiles (%4), search ranges and settings.").arg(count(outcome.systems)).arg(count(outcome.scanLists)).arg(count(outcome.libraryFiles)).arg(count(outcome.profiles))];
+            var lines = [Util.fill(qsTr("This phone now has the backup's saved systems (%1), scan lists (%2), imported files (%3), decryption profiles (%4), search ranges and settings."), [count(outcome.systems), count(outcome.scanLists), count(outcome.libraryFiles), count(outcome.profiles)])];
             var replays = count(outcome.recordingsToChoose);
             if (replays === 1)
                 lines.push(qsTr("1 replay system needs its recording chosen again."));

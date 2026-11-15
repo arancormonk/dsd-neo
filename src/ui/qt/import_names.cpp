@@ -104,8 +104,10 @@ unique_import_destination(const QDir& dir, const QString& fileName, const QSet<Q
     const QString base = info.completeBaseName();
     const QString suffix = info.suffix();
     for (int i = 2; i <= 999; i++) {
-        const QString candidate = suffix.isEmpty() ? QStringLiteral("%1 (%2)").arg(base).arg(i)
-                                                   : QStringLiteral("%1 (%2).%3").arg(base).arg(i).arg(suffix);
+        // One pass: a name holding "%1" must not be filled in again by the next arg().
+        const QString number = QString::number(i);
+        const QString candidate = suffix.isEmpty() ? QStringLiteral("%1 (%2)").arg(base, number)
+                                                   : QStringLiteral("%1 (%2).%3").arg(base, number, suffix);
         if (!taken(candidate)) {
             return dir.filePath(candidate);
         }

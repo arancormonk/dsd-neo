@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import "Util.js" as Util
 
 // The running scan's lists (issue #697), opened from Session options while the
 // session scans more than one: one row per list, switched on or off for this
@@ -44,7 +45,7 @@ ModalSheet {
     function announceRefusal(name, reason) {
         if (!sheet.visible || reason.length === 0)
             return;
-        sheet.announced = qsTr("%1: %2").arg(name).arg(reason);
+        sheet.announced = Util.fill(qsTr("%1: %2"), [name, reason]);
         sheet.announcements++;
         if (typeof Accessible.announce === "function")
             Accessible.announce(sheet.announced);
@@ -68,7 +69,7 @@ ModalSheet {
     ReadableText {
         objectName: "scanListsStatus"
         width: parent.width
-        text: sheet.paused ? qsTr("Resume the scan to change lists.") : !sheet.lists ? "" : qsTr("%1 of %2 on · %3").arg(sheet.lists.listsOn).arg(sheet.count).arg(sheet.countText(sheet.lists.targetsOn))
+        text: sheet.paused ? qsTr("Resume the scan to change lists.") : !sheet.lists ? "" : Util.fill(qsTr("%1 of %2 on · %3"), [sheet.lists.listsOn, sheet.count, sheet.countText(sheet.lists.targetsOn)])
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         color: Theme.textSecondary

@@ -1250,7 +1250,7 @@ Item {
                                     // A conventional repeater has no meaningful
                                     // site number — the value is a DMR-ID-like
                                     // identifier — so it is named, not numbered.
-                                    text: radioReference.conventional ? siteRow.modelData.site.descr : qsTr("Site %1 · %2").arg(siteRow.modelData.site.siteNumber).arg(siteRow.modelData.site.descr)
+                                    text: radioReference.conventional ? siteRow.modelData.site.descr : Util.fill(qsTr("Site %1 · %2"), [siteRow.modelData.site.siteNumber, siteRow.modelData.site.descr])
                                     // RadioReference's own words, this line and the next.
                                     textFormat: Text.PlainText
                                     font.family: Theme.sans

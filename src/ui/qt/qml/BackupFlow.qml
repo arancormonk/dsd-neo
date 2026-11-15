@@ -493,8 +493,8 @@ Item {
         var day = count(summary.createdAt) > 0 ? Qt.formatDate(new Date(count(summary.createdAt) * 1000), "MMM d, yyyy") : "";
         // Without a leading "v", as Settings shows this build's version.
         var version = String(summary.app || "").replace(/^v/, "");
-        var source = day.length && version.length ? qsTr("the backup from %1 (DSD-neo %2)").arg(day).arg(version) : day.length ? qsTr("the backup from %1").arg(day) : version.length ? qsTr("the backup (DSD-neo %1)").arg(version) : qsTr("the backup");
-        var question = qsTr("Replace this phone's saved systems (%1), scan lists (%2), imported files (%3), decryption profiles (%4), search ranges and settings with %5? Call history and replay recordings on this phone are kept. Call recordings are kept up to the backup's Storage limit; oldest recordings are removed first.").arg(count(summary.systems)).arg(count(summary.scanLists)).arg(count(summary.libraryFiles)).arg(count(summary.profiles)).arg(source);
+        var source = day.length && version.length ? Util.fill(qsTr("the backup from %1 (DSD-neo %2)"), [day, version]) : day.length ? qsTr("the backup from %1").arg(day) : version.length ? qsTr("the backup (DSD-neo %1)").arg(version) : qsTr("the backup");
+        var question = Util.fill(qsTr("Replace this phone's saved systems (%1), scan lists (%2), imported files (%3), decryption profiles (%4), search ranges and settings with %5? Call history and replay recordings on this phone are kept. Call recordings are kept up to the backup's Storage limit; oldest recordings are removed first."), [count(summary.systems), count(summary.scanLists), count(summary.libraryFiles), count(summary.profiles), source]);
         var notes = [];
         var replays = count(summary.recordingsToChoose);
         if (replays === 1)

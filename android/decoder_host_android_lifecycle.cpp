@@ -109,7 +109,7 @@ DecoderHostAndroid::localDeviceStatus() const {
                       "under-powered — try a powered hub.")
                 .arg(m_usb.name);
         }
-        return tr("Android could not open or claim %1 (code %2).").arg(m_usb.name).arg(m_device_error);
+        return tr("Android could not open or claim %1 (code %2).").arg(m_usb.name, QString::number(m_device_error));
     }
     return m_usb.text;
 }

@@ -1410,6 +1410,11 @@ test_airspy_bandwidth(void) {
     sys["port"] = 1234;
     expect("RTL-TCP bandwidth retains its existing spec",
            input_spec(session_args_build(sys, prefs, nullptr)) == "rtltcp:localhost:1234:851.375M:30:0:25:0:2");
+    // A host is spliced in once: text in it that looks like a placeholder is not filled in again.
+    sys["host"] = "relay%1";
+    expect("RTL-TCP host kept as written",
+           input_spec(session_args_build(sys, prefs, nullptr)) == "rtltcp:relay%1:1234:851.375M:30:0:25:0:2");
+    sys["host"] = "localhost";
     /* 72 kHz reaches the RTL spec as it is: the engine runs TETRA there. */
     prefs.bandwidthKhz = 72;
     expect("RTL-TCP carries 72 kHz",

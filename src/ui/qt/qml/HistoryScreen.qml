@@ -132,12 +132,12 @@ Item {
         var shown = Util.countText(count);
         if (count < total) {
             if (saved.length > 0)
-                return qsTr("Exported %1 of %2 entries to Download/DSD-neo as %3.").arg(shown).arg(Util.countText(total)).arg(saved);
-            return qsTr("Exported %1 of %2 entries. The search and filters left out the rest.").arg(shown).arg(Util.countText(total));
+                return Util.fill(qsTr("Exported %1 of %2 entries to Download/DSD-neo as %3."), [shown, Util.countText(total), saved]);
+            return Util.fill(qsTr("Exported %1 of %2 entries. The search and filters left out the rest."), [shown, Util.countText(total)]);
         }
         if (saved.length > 0)
             return count === 1 ? qsTr("Exported 1 entry to Download/DSD-neo as %1.").arg(saved)
-                : qsTr("Exported %1 entries to Download/DSD-neo as %2.").arg(shown).arg(saved);
+                : Util.fill(qsTr("Exported %1 entries to Download/DSD-neo as %2."), [shown, saved]);
         return count === 1 ? qsTr("Exported 1 entry.") : qsTr("Exported %1 entries.").arg(shown);
     }
     function setExportMessage(text, error) {

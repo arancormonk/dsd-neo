@@ -1376,7 +1376,7 @@ Item {
                                 objectName: "homeSiteChooserButton"
                                 readonly property bool shown: card.hasSites
                                 // Says its label too ("2 sites"), which a screen reader otherwise never hears.
-                                accessibleName: entry.held || !shown ? "" : qsTr("Choose sites for %1, %2").arg(card.name).arg(text)
+                                accessibleName: entry.held || !shown ? "" : Util.fill(qsTr("Choose sites for %1, %2"), [card.name, text])
                                 Accessible.focusable: navigationAllowed && visible && shown && !entry.held
                                 Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                                 width: implicitWidth
@@ -1577,7 +1577,7 @@ Item {
                         Accessible.role: Accessible.Button
                         // No name while out of the tree, as ReadableText: a frequency
                         // changed in Explore's setup, Home hidden, renames nothing.
-                        Accessible.name: !navigationAllowed || !visible ? "" : exploreCard.configured ? qsTr("Explore the band, start on %1 from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Explore the band, set up a radio to tune around and find what is on the air")
+                        Accessible.name: !navigationAllowed || !visible ? "" : exploreCard.configured ? Util.fill(qsTr("Explore the band, start on %1 from %2 MHz"), [exploreCard.sourceLabel, prefs.exploreFreqMhz]) : qsTr("Explore the band, set up a radio to tune around and find what is on the air")
                         Accessible.focusable: navigationAllowed && visible
                         Accessible.ignored: !navigationAllowed || !visible
                         Accessible.onPressAction: activate()
@@ -1626,7 +1626,7 @@ Item {
                                 width: parent.width
                                 objectName: "homeExploreSubtitle"
                                 Accessible.ignored: true
-                                text: exploreCard.configured ? qsTr("%1 · from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Tune around and find what is on the air")
+                                text: exploreCard.configured ? Util.fill(qsTr("%1 · from %2 MHz"), [exploreCard.sourceLabel, prefs.exploreFreqMhz]) : qsTr("Tune around and find what is on the air")
                                 font.family: exploreCard.configured ? Theme.mono : Theme.sans
                                 font.pixelSize: Theme.fontSize(exploreCard.configured ? 12 : 13)
                                 color: Theme.textSubdued
@@ -1911,7 +1911,7 @@ Item {
             systemUid = system.uid;
             var grouped = savedSystems.siblingRows(row).length > 1;
             title = grouped
-                ? qsTr("Remove site %1 of %2?").arg(system.siteName || system.name).arg(system.name)
+                ? Util.fill(qsTr("Remove site %1 of %2?"), [system.siteName || system.name, system.name])
                 : qsTr("Remove %1?").arg(system.name);
             message = grouped
                 ? qsTr("This deletes the saved site and its settings. Other sites remain. Imported files stay in the library.")
@@ -1939,7 +1939,7 @@ Item {
         function openFor(system, grouped) {
             title = grouped ? qsTr("Site removal failed") : qsTr("System removal failed");
             message = grouped
-                ? qsTr("Could not remove site %1 of %2. It is still saved. Try again.").arg(system.siteName || system.name).arg(system.name)
+                ? Util.fill(qsTr("Could not remove site %1 of %2. It is still saved. Try again."), [system.siteName || system.name, system.name])
                 : qsTr("Could not remove %1. It is still saved. Try again.").arg(system.name);
             open();
         }

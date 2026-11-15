@@ -408,7 +408,9 @@ Android. The companion selection flow copies referenced files into a private bun
 and rewrites the stored paths. A target CSV additionally includes its channel maps,
 band plans, scoped policy/mapping files, and dependencies inside channel maps.
 A CSV picked with Android's picker has no folder DSD-neo can look in, so the sheet asks
-for each file it names. A CSV picked in DSD-neo's file browser does: the files it names
+for each file it names, saying how many the CSV needs. A file that is not on the device
+yet (a band plan exported on a computer, say) is copied there first, then the CSV is
+imported again. A CSV picked in DSD-neo's file browser does: the files it names
 are found beside it, but only by a relative name and only inside the CSV's folder or a
 folder below it. An absolute path, a `../` that leaves the folder, or a link that points
 out of it is asked for on the sheet instead, so a CSV cannot pull in any file the app can
@@ -2523,7 +2525,10 @@ talkgroups or radio IDs file clears it from the list, which keeps running withou
 it. Deleting a list keeps shared assets. A removal that cannot save those changes
 or finish removing the file says so and keeps the file's row in the library;
 remove it again to finish. Validation reports the failing row/field without
-displaying key values.
+displaying key values. When the import refuses a target CSV, the reason stays
+under the Entries choice until another target CSV is chosen, the list switches
+to saved systems & frequencies, or the editor closes; Validate and Save then say
+the list has no target CSV yet.
 
 Listen's **Scan lists** tab combines saved systems and bare P25/DMR/NXDN frequencies
 into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,

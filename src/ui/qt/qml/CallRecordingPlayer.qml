@@ -110,10 +110,10 @@ Column {
         }
     }
     readonly property real spokenPositionMs: positionSpeech.spoken.length > 0 ? Number(positionSpeech.spoken) : 0
-    readonly property string spokenTimeText: qsTr("%1 of %2").arg(timeTextAt(spokenPositionMs)).arg(lengthText)
+    readonly property string spokenTimeText: Util.fill(qsTr("%1 of %2"), [timeTextAt(spokenPositionMs), lengthText])
 
     function partLabel(index) {
-        return qsTr("Part %1 · %2").arg(index + 1).arg(Util.playbackLengthText(parts[index].durationMs));
+        return Util.fill(qsTr("Part %1 · %2"), [index + 1, Util.playbackLengthText(parts[index].durationMs)]);
     }
     // A short state, beside the time.
     function statusText() {
@@ -417,7 +417,7 @@ Column {
                 id: recordingTimeText
                 objectName: "recordingTime"
                 width: parent.width
-                text: qsTr("%1 / %2").arg(player.positionText).arg(player.lengthText)
+                text: Util.fill(qsTr("%1 / %2"), [player.positionText, player.lengthText])
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(15)
                 color: Theme.textPrimary

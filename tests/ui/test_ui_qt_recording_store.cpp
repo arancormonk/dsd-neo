@@ -769,6 +769,14 @@ test_folders_follow_their_owner(void) {
            c == roots.external + QStringLiteral("/Nameless (99999999) 2"));
     s.store.endSession();
 
+    // A name holding "%1" keeps it: the folder's number is filled in once, not into the name.
+    QDir().mkpath(roots.external + QStringLiteral("/Rate%1 (99999998)"));
+    const QString percent =
+        s.store.beginSession(QStringLiteral("scan"), QStringLiteral("99999998-bbbb"), QStringLiteral("Rate%1"));
+    expect("a name with a placeholder is kept as written",
+           percent == roots.external + QStringLiteral("/Rate%1 (99999998) 2"));
+    s.store.endSession();
+
     const QString d =
         s.store.beginSession(QStringLiteral("scan"), QStringLiteral("77777777-bbbb"), QStringLiteral(" ..."));
     expect("an empty name falls back to the kind", d == roots.external + QStringLiteral("/Scan list (77777777)"));

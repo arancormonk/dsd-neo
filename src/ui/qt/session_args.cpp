@@ -268,8 +268,8 @@ append_input_args(QStringList& args, const QVariantMap& system, const QString& s
         // whitespace from the soft keyboard or a paste must be trimmed here —
         // "10.0.2.2 " resolves to nothing and the start fails opaquely.
         QString spec = QStringLiteral("rtltcp:%1:%2")
-                           .arg(system.value(QStringLiteral("host")).toString().trimmed())
-                           .arg(stored_int_or(system.value(QStringLiteral("port")), 0))
+                           .arg(system.value(QStringLiteral("host")).toString().trimmed(),
+                                QString::number(stored_int_or(system.value(QStringLiteral("port")), 0)))
                        + tail;
         if (bias) {
             spec += QLatin1String(":bias");
@@ -281,8 +281,8 @@ append_input_args(QStringList& args, const QVariantMap& system, const QString& s
     } else if (sourceType == QLatin1String("tcp")) {
         args << QStringLiteral("-i")
              << QStringLiteral("tcp:%1:%2")
-                    .arg(system.value(QStringLiteral("host")).toString().trimmed())
-                    .arg(stored_int_or(system.value(QStringLiteral("port")), 0));
+                    .arg(system.value(QStringLiteral("host")).toString().trimmed(),
+                         QString::number(stored_int_or(system.value(QStringLiteral("port")), 0)));
     } else {
         args << QStringLiteral("-i") << system.value(QStringLiteral("filePath")).toString();
     }

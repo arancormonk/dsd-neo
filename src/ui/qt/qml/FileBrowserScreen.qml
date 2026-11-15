@@ -30,6 +30,10 @@ Item {
     property var unsavedDraft: function () {
         return "";
     }
+    // The same for the scan-list editor: "add", "edit" or "".
+    property var unsavedScanList: function () {
+        return "";
+    }
 
     readonly property var request: FileBrowser.request
     readonly property bool shown: request !== null
@@ -816,6 +820,11 @@ Item {
             lines.push(qsTr("The system you're adding is dropped."));
         else if (draft === "edit")
             lines.push(qsTr("Your changes to this system are dropped."));
+        var scanList = unsavedScanList();
+        if (scanList === "add")
+            lines.push(qsTr("The scan list you're adding is dropped."));
+        else if (scanList === "edit")
+            lines.push(qsTr("Your changes to this scan list are dropped."));
         if (backup.restorePending === true)
             lines.push(qsTr("Your backup is restored when DSD-neo opens again."));
         lines.push(qsTr("Then open DSD-neo again."));
