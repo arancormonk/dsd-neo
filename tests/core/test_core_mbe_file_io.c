@@ -4266,10 +4266,10 @@ test_play_mbe_files_start_each_file_at_the_start_gain(void) {
     playMbeFiles(&opts, &state, 2, argv);
     (void)remove(path);
     agc = dsd_voice_level_agc(&state, 0);
-    rc |= expect_int("file start: the file started over at the start gain, nothing learned",
+    rc |= expect_int("file start: the file opened a new reception at the opening gain, nothing learned",
                      agc != NULL && agc->learned.commits == 0 && agc->frames == ((uint64_t)TEACH / 160U) + 3U
-                         && fabsf(dsd_speech_agc_gain_db(agc) - DSD_VOICE_LEVEL_START_GAIN_DB) < 1e-4f
-                         && fabsf(state.aout_gain - DSD_VOICE_LEVEL_START_GAIN_DB) < 1e-4f,
+                         && fabsf(dsd_speech_agc_gain_db(agc) - DSD_VOICE_LEVEL_OPEN_GAIN_DB) < 1e-4f
+                         && fabsf(state.aout_gain - DSD_VOICE_LEVEL_OPEN_GAIN_DB) < 1e-4f,
                      1);
     dsd_state_ext_free_all(&state);
     return rc;

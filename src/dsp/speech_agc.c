@@ -75,6 +75,33 @@
 #define AGC_STEP_UP_DB           0.12f
 #define AGC_STEP_DOWN_DB         0.20f
 
+/* The acquisition stage (digital voice, dsd_speech_agc_set_acquisition()), measured on live trunked digital traffic and
+   the acceptance corpus; the guard and the burst fallback act until the estimate is established (AGC_EST_CUMULATIVE
+   commits), the startup law on every step. A gain step aims at P + (W - P) n^2 / (n^2 + c), a weight that follows the
+   estimate's measured reliability (against the gain a reception needed: sd 5.0 dB after one run, 3.3 after 10 commits,
+   2.1 after 20) against the spread of talkers' needs around a fixed start (sd 7 dB): 0.60 at the first commit, 0.81 at
+   10, 0.94 at 20. The first AGC_START_STEPS steps go straight to that aim, later ones toward it at the slow rate. The
+   guard pulls the gain down after the first frame that plays over the cap, so an opening gain that was too high plays
+   loud for a frame or two. A burst is AGC_ACQ_HIGH_FRAMES frames in a row within AGC_ACQ_HIGH_DB of the third loudest
+   frame at or over AGC_ACQ_PEAK_ABS_DBFS, completed by a frame AGC_ACQ_LOW_DB under it or by digital silence (a frame
+   under the absolute floor). Syllables rise and fall like that; steady noise, tones and a step out of silence do not,
+   and reading the third loudest frame ignores two stray ones. Once a burst has completed, the gain rises
+   AGC_ACQ_RISE_DB a frame until that frame plays at the burst floor, which brought the far-field talkers that never
+   complete a voiced run up to their level. The loudest frame the cap reads is held while frames come within
+   AGC_ACQ_HIGH_DB of it and for AGC_ACQ_HOLD_FRAMES frames of sound after the last one, then eases AGC_ACQ_RISE_DB a
+   frame, and until the first commit the gain returns AGC_ACQ_RISE_DB a frame to the gain the reception opened at: a pop
+   or a bump early in a transmission is not the talker's level, and a loudest frame kept for the whole reception held
+   1.1% of the live speech frames more than 6 dB under their need (0.3% with the hold). */
+#define AGC_ACQ_WEIGHT_C         24.0f
+#define AGC_ACQ_CAP_DBFS         (-12.0f)
+#define AGC_ACQ_BURST_FLOOR_DBFS (-17.0f)
+#define AGC_ACQ_PEAK_ABS_DBFS    (-70.0f)
+#define AGC_ACQ_HIGH_DB          6.0f
+#define AGC_ACQ_LOW_DB           12.0f
+#define AGC_ACQ_HIGH_FRAMES      3
+#define AGC_ACQ_RISE_DB          1.0f
+#define AGC_ACQ_HOLD_FRAMES      10
+
 /* The attenuator: down 6 dB/s while nothing committed for 1 s and the frame would play over -32 dBFS; back to 0 on a
    frame passing both cues, or one this far under the level that drove it down (the carrier quieting). The floor is deep
    enough that hot hiss after a quiet talker, with the gain near the top of its range, still eases to -32 dBFS; on
@@ -87,6 +114,8 @@
 #define AGC_ATT_NOISE_ALPHA      0.1f
 
 #define AGC_LIM_RELEASE_DB_PER_S 50.0f
+/* A boundary's target within this fraction of the one a pending ramp heads for is the same target (agc_boundary_ramp). */
+#define AGC_RAMP_SAME_REL        1e-6f
 #define AGC_SINCE_COMMIT_MAX     (1 << 20)
 /* Counters saturate here; a run length wraps by a multiple of the run ring, which keeps every test on it. */
 #define AGC_COUNT_MAX            (1 << 30)
@@ -224,6 +253,7 @@ dsd_speech_agc_reset(dsd_speech_agc* agc) {
     agc->tone_cap = agc_db2lin(agc->start_gain_db);
     DSD_MEMSET(&agc->learned, 0, sizeof agc->learned);
     agc->learned.gain_db = agc->start_gain_db;
+    agc->learned.open_db = agc->learned.gain_db;
     agc->learned.since_commit = AGC_SINCE_COMMIT_MAX;
     agc->learned.noise_floor_db = agc->abs_floor_db;
     agc_clear_signal(agc);
@@ -253,6 +283,13 @@ dsd_speech_agc_set_noise_veto(dsd_speech_agc* agc, int on) {
 }
 
 void
+dsd_speech_agc_set_acquisition(dsd_speech_agc* agc, int on) {
+    if (agc_ready(agc)) {
+        agc->acquisition = on != 0;
+    }
+}
+
+void
 dsd_speech_agc_set_fixed(dsd_speech_agc* agc, float gain) {
     if (!agc_ready(agc)) {
         return;
@@ -275,6 +312,7 @@ dsd_speech_agc_set_fixed(dsd_speech_agc* agc, float gain) {
     const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
     const float g_db = 20.0f * log10f(agc->fixed_gain);
     agc->learned.gain_db = agc_clamp(g_db, lo, hi);
+    agc->learned.open_db = agc->learned.gain_db; /* the gain the acquisition stage returns to */
     agc->learned.atten_db = 0.0f;
     agc->g_target = agc_db2lin(agc->learned.gain_db);
     agc->g_cur = agc->g_target;
@@ -476,6 +514,53 @@ agc_estimate(dsd_speech_agc* agc, float level_db) {
     d->level_db = 10.0f * log10f(d->power + 1e-30f);
 }
 
+/* The acquisition stage's burst floor: the gain that plays the reception's third loudest frame at
+   AGC_ACQ_BURST_FLOOR_DBFS. Needs the three levels held. */
+static float
+agc_acq_burst_floor(const dsd_speech_agc_learned* d, float lo, float hi) {
+    return agc_clamp(AGC_ACQ_BURST_FLOOR_DBFS - d->peak_db[DSD_SPEECH_AGC_PEAKS - 1], lo, hi);
+}
+
+/* The acquisition stage's cap: the gain that plays the held loudest frame (agc_acq_hold()) at AGC_ACQ_CAP_DBFS. */
+static float
+agc_acq_cap(const dsd_speech_agc_learned* d, float lo, float hi) {
+    return agc_clamp(AGC_ACQ_CAP_DBFS - d->loudest_db, lo, hi);
+}
+
+/* A gain step with the acquisition stage on: on every step the aim weighs the settled aim @p want against the prior P
+   by the frames committed so far, within the burst floor and the loudest frame's cap until the estimate is
+   established; the first AGC_START_STEPS steps go straight to it, later ones move toward it at AGC_STEP_UP_DB /
+   AGC_STEP_DOWN_DB. The loudest frame and the bursts are as the frames before this one left them. */
+static void
+agc_acq_gain_step(dsd_speech_agc* agc, float want, float lo, float hi) {
+    dsd_speech_agc_learned* d = &agc->learned;
+    if (d->steps == 0) {
+        d->prior_db = d->gain_db;
+    }
+    const float n2 = (float)d->commits * (float)d->commits;
+    float aim = d->prior_db + (want - d->prior_db) * (n2 / (n2 + AGC_ACQ_WEIGHT_C));
+    if (d->commits < AGC_EST_CUMULATIVE) {
+        if (d->bursts >= 1 && d->peaks == DSD_SPEECH_AGC_PEAKS) {
+            const float floor_db = agc_acq_burst_floor(d, lo, hi);
+            aim = aim > floor_db ? aim : floor_db;
+        }
+        if (d->loudest_known) {
+            const float cap = agc_acq_cap(d, lo, hi);
+            aim = aim < cap ? aim : cap;
+        }
+    }
+    const int start = d->steps < AGC_START_STEPS;
+    if (d->steps < AGC_COUNT_MAX) {
+        d->steps++;
+    }
+    if (start) {
+        d->gain_db = aim;
+    } else {
+        d->gain_db += agc_clamp(aim - d->gain_db, -AGC_STEP_DOWN_DB, AGC_STEP_UP_DB);
+    }
+    agc->gain_dirty = 1;
+}
+
 /* One gain step per committing frame, toward the target within the controller's range. */
 static void
 agc_gain_step(dsd_speech_agc* agc) {
@@ -484,6 +569,10 @@ agc_gain_step(dsd_speech_agc* agc) {
     const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
     const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
     want = agc_clamp(want, lo, hi);
+    if (agc->acquisition) {
+        agc_acq_gain_step(agc, want, lo, hi);
+        return;
+    }
     const int start = d->steps < AGC_START_STEPS;
     if (d->steps < AGC_COUNT_MAX) {
         d->steps++;
@@ -649,6 +738,154 @@ agc_run_add(dsd_speech_agc* agc, float level_db, float lag_ms) {
     return 0;
 }
 
+/* A frame level at or over AGC_ACQ_PEAK_ABS_DBFS into the reception's loudest levels (descending; the quietest of them
+   falls out). */
+static void
+agc_acq_peak_insert(dsd_speech_agc_learned* d, float level_db) {
+    float v = level_db;
+    for (int i = 0; i < DSD_SPEECH_AGC_PEAKS; i++) {
+        if (i >= d->peaks) {
+            d->peak_db[i] = v;
+            d->peaks = i + 1;
+            return;
+        }
+        if (v > d->peak_db[i]) {
+            const float held = d->peak_db[i];
+            d->peak_db[i] = v;
+            v = held;
+        }
+    }
+}
+
+/* The burst watch for one frame at or above the absolute floor: high frames stand within AGC_ACQ_HIGH_DB of the third
+   loudest level, low ones AGC_ACQ_LOW_DB or more under it. A frame under AGC_ACQ_PEAK_ABS_DBFS never enters the three
+   loudest but is judged against the third loudest like any other; a frame under the absolute floor is always low
+   (agc_acq_burst_silence()). A run of high frames arms a burst and a low frame completes it; a frame between the two
+   breaks the run only while no burst is armed. Returns 0 while fewer than three levels are held. */
+static int
+agc_acq_burst_watch(dsd_speech_agc_learned* d, float level_db) {
+    if (level_db >= AGC_ACQ_PEAK_ABS_DBFS) {
+        agc_acq_peak_insert(d, level_db);
+    }
+    if (d->peaks < DSD_SPEECH_AGC_PEAKS) {
+        return 0;
+    }
+    const float third = d->peak_db[DSD_SPEECH_AGC_PEAKS - 1];
+    if (level_db >= third - AGC_ACQ_HIGH_DB) {
+        if (d->high_run < AGC_COUNT_MAX) {
+            d->high_run++;
+        }
+        if (d->high_run >= AGC_ACQ_HIGH_FRAMES) {
+            d->burst_armed = 1;
+        }
+        return 1;
+    }
+    const int low = level_db <= third - AGC_ACQ_LOW_DB;
+    if (d->burst_armed && low) {
+        d->burst_armed = 0;
+        if (d->bursts < AGC_COUNT_MAX) {
+            d->bursts++;
+        }
+    }
+    if (low || !d->burst_armed) {
+        d->high_run = 0;
+    }
+    return 1;
+}
+
+/* The burst watch for an eligible frame under the absolute floor (digital silence): once three levels are held it is a
+   low frame, and nothing else. It completes an armed burst, so a burst that ends in silence completes as one that ends
+   in quiet noise does, and it ends a run of high frames, so blips between silences never add up to one. It enters no
+   loudest level, leaves the held loudest frame and its age alone (silence keeps the hold) and moves no gain: the
+   fallback's rise waits for a frame of sound. Only silence is always low: taking every frame under
+   AGC_ACQ_PEAK_ABS_DBFS as low would, with a third loudest level near it, complete bursts on near-silent material
+   and lift it by up to 30 dB. */
+static void
+agc_acq_burst_silence(dsd_speech_agc_learned* d) {
+    if (d->peaks < DSD_SPEECH_AGC_PEAKS) {
+        return;
+    }
+    if (d->burst_armed) {
+        d->burst_armed = 0;
+        if (d->bursts < AGC_COUNT_MAX) {
+            d->bursts++;
+        }
+    }
+    d->high_run = 0;
+}
+
+/* The held loudest frame for one frame: a frame within AGC_ACQ_HIGH_DB of it renews the hold; more than
+   AGC_ACQ_HOLD_FRAMES frames after the last such one it eases AGC_ACQ_RISE_DB a frame, so it comes to rest within
+   AGC_ACQ_HIGH_DB over the sound that follows; a louder frame takes it at once. */
+static void
+agc_acq_hold(dsd_speech_agc_learned* d, float level_db) {
+    if (d->loudest_known) {
+        if (level_db >= d->loudest_db - AGC_ACQ_HIGH_DB) {
+            d->loudest_age = 0;
+        } else if (d->loudest_age < AGC_COUNT_MAX) {
+            d->loudest_age++;
+        }
+        if (d->loudest_age > AGC_ACQ_HOLD_FRAMES) {
+            d->loudest_db -= AGC_ACQ_RISE_DB;
+        }
+    }
+    if (!d->loudest_known || level_db > d->loudest_db) {
+        d->loudest_db = level_db;
+        d->loudest_known = 1;
+        d->loudest_age = 0;
+    }
+}
+
+/* While nothing has committed, a frame that does not play over the cap lets the gain return AGC_ACQ_RISE_DB toward
+   the gain the reception opened at, within the held loudest frame's cap: a cut the guard made for a pop comes undone
+   once the pop's hold has eased. */
+static void
+agc_acq_return(dsd_speech_agc* agc, float level_db, float lo, float hi) {
+    dsd_speech_agc_learned* d = &agc->learned;
+    if (d->commits == 0 && level_db + d->gain_db <= AGC_ACQ_CAP_DBFS) {
+        float to = d->open_db;
+        const float cap = agc_acq_cap(d, lo, hi);
+        to = to < cap ? to : cap;
+        if (d->gain_db < to) {
+            const float x = to - d->gain_db;
+            d->gain_db += x < AGC_ACQ_RISE_DB ? x : AGC_ACQ_RISE_DB;
+            agc->gain_dirty = 1;
+        }
+    }
+}
+
+/* The acquisition stage for one eligible frame at or above the absolute floor, after its commit logic, in this order:
+   the held loudest frame, the return to the opening gain (until the first commit) and, until the estimate is
+   established, the guard (a frame that would play over the cap takes the gain to where it plays at the cap) and the
+   burst fallback (once a burst has completed, the gain rises toward the burst floor, never past the cap). */
+static void
+agc_acquire(dsd_speech_agc* agc, float level_db) {
+    dsd_speech_agc_learned* d = &agc->learned;
+    const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    agc_acq_hold(d, level_db);
+    agc_acq_return(agc, level_db, lo, hi);
+    const int early = d->commits < AGC_EST_CUMULATIVE;
+    if (early && level_db + d->gain_db > AGC_ACQ_CAP_DBFS) {
+        const float capped = agc_clamp(AGC_ACQ_CAP_DBFS - level_db, lo, hi);
+        if (capped < d->gain_db) {
+            d->gain_db = capped;
+            agc->gain_dirty = 1;
+        }
+    }
+    if (!agc_acq_burst_watch(d, level_db) || !early || d->bursts < 1) {
+        return;
+    }
+    const float floor_db = agc_acq_burst_floor(d, lo, hi);
+    const float cap = agc_acq_cap(d, lo, hi);
+    const float to = floor_db < cap ? floor_db : cap;
+    if (d->gain_db < to) {
+        const float x = to - d->gain_db;
+        d->gain_db += x < AGC_ACQ_RISE_DB ? x : AGC_ACQ_RISE_DB;
+        agc->gain_dirty = 1;
+    }
+}
+
 /* The attenuator for one eligible frame. */
 static void
 agc_attenuate(dsd_speech_agc* agc, float level_db, int speech) {
@@ -665,6 +902,30 @@ agc_attenuate(dsd_speech_agc* agc, float level_db, int speech) {
             d->atten_db = AGC_ATT_FLOOR_DB;
         }
         agc->gain_dirty = 1;
+    }
+}
+
+/* The gain ramp at a frame boundary. A boundary that moves the target, or finds no ramp pending, starts a ramp from
+   the current gain to the target over the next frame. A ramp dsd_speech_agc_open_at() started partway through the
+   frame just finished keeps its step and runs to its own end unless the target moved; every other ramp started at a
+   boundary and is used up by exactly one frame. The gain marked as touched is not the target moved: the attenuator
+   marks every frame that passes both cues and every quieted frame, and a gain step marks a step that left the gain
+   where it was, so the target is recomputed and compared with the one the ramp heads for. One recomputed from
+   unchanged dB values is the same bits; a target that moved by less than a millionth is reached by the ramp's last
+   sample anyway. */
+static void
+agc_boundary_ramp(dsd_speech_agc* agc) {
+    if (agc->gain_dirty) {
+        const float target = agc_db2lin(agc->learned.gain_db + agc->learned.atten_db);
+        if (fabsf(target - agc->g_target) > AGC_RAMP_SAME_REL * agc->g_target) {
+            agc->ramp_left = 0; /* the target moved: ramp to it over this frame */
+        }
+        agc->g_target = target;
+        agc->gain_dirty = 0;
+    }
+    if (agc->ramp_left == 0) {
+        agc->g_step = (agc->g_target - agc->g_cur) / (float)agc->frame_len;
+        agc->ramp_left = agc->frame_len;
     }
 }
 
@@ -686,8 +947,14 @@ agc_frame_done(dsd_speech_agc* agc) {
             agc_gain_step(agc);
             d->since_commit = -1; /* the count below makes it 0 */
         }
+        if (agc->acquisition) {
+            agc_acquire(agc, level_db);
+        }
     } else {
         d->stale_frames = 0; /* silence or closed audio breaks a stale-floor run */
+        if (elig && agc->acquisition) {
+            agc_acq_burst_silence(d);
+        }
     }
     if (!speech) {
         d->run_len = 0;
@@ -698,12 +965,7 @@ agc_frame_done(dsd_speech_agc* agc) {
     if (elig) {
         agc_attenuate(agc, level_db, speech);
     }
-    if (agc->gain_dirty) {
-        agc->g_target = agc_db2lin(d->gain_db + d->atten_db);
-        agc->gain_dirty = 0;
-    }
-    agc->g_step = (agc->g_target - agc->g_cur) / (float)agc->frame_len;
-    agc->ramp_left = agc->frame_len;
+    agc_boundary_ramp(agc);
     DSD_MEMMOVE(agc->history, agc->history + agc->decim_pos, sizeof(float) * (size_t)agc->lag_hi);
     agc->decim_pos = 0;
     agc->frame_pos = 0;
@@ -837,6 +1099,41 @@ dsd_speech_agc_gate_opened(dsd_speech_agc* agc) {
     if (agc_ready(agc)) {
         agc_cp_push(agc);
     }
+}
+
+void
+dsd_speech_agc_open_at(dsd_speech_agc* agc, float gain_db, int ramp) {
+    if (!agc_ready(agc) || !isfinite(gain_db) || agc->learned.commits != 0) {
+        return;
+    }
+    const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    agc->learned.gain_db = agc_clamp(gain_db, lo, hi);
+    agc->learned.open_db = agc->learned.gain_db;
+    agc->g_target = agc_db2lin(agc->learned.gain_db + agc->learned.atten_db);
+    if (ramp) {
+        agc->g_step = (agc->g_target - agc->g_cur) / (float)agc->frame_len;
+        agc->ramp_left = agc->frame_len;
+    } else {
+        agc->g_cur = agc->g_target;
+        agc->g_step = 0.0f;
+        agc->ramp_left = 0;
+        agc->g_last = agc->g_cur;
+    }
+    agc->gain_dirty = 0;
+    /* As leaving fixed mode: a close never restores the gain from before it. */
+    agc_cp_restart(agc);
+}
+
+int
+dsd_speech_agc_settled_gain_db(const dsd_speech_agc* agc, float* gain_db) {
+    if (!agc_ready(agc) || gain_db == NULL || agc->learned.commits < AGC_EST_CUMULATIVE) {
+        return 0;
+    }
+    const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    *gain_db = agc_clamp(agc->target_db - agc->learned.level_db, lo, hi);
+    return 1;
 }
 
 float

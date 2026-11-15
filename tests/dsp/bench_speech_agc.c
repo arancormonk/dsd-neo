@@ -9,8 +9,9 @@
  *
  * Times dsd_speech_agc_process() on synthetic speech (talkers with real pauses over a -50 dBFS hiss) at 8, 22.05 and
  * 48 kHz, and on open-squelch hiss at 48 kHz, which runs the pitch cue on every frame; at 48 kHz also with the
- * coloured-noise veto the analog chain runs. Each case runs whole frames per call and single samples per call, from a
- * reset each repeat, and prints the fastest and the median ns per sample.
+ * coloured-noise veto the analog chain runs, and at 8 kHz also with the acquisition stage digital voice runs. Each case
+ * runs whole frames per call and single samples per call, from a reset each repeat, and prints the fastest and the
+ * median ns per sample.
  * Build and run it as docs/dsp-benchmarking.md does the others:
  *   cmake --preset perf-bench
  *   cmake --build --preset perf-bench --target dsd-neo_bench_speech_agc
@@ -35,10 +36,22 @@ typedef struct {
     int rate_hz;
     int hiss; /* open-squelch hiss alone, else speech */
     int veto; /* the coloured-noise veto, as the analog chain runs it */
+    int acq;  /* the acquisition stage, as the digital voice chain runs it */
 } bench_case;
 
-static const bench_case k_cases[] = {{8000, 0, 0},  {22050, 0, 0}, {48000, 0, 0},
-                                     {48000, 0, 1}, {48000, 1, 0}, {48000, 1, 1}};
+static const bench_case k_cases[] = {
+    {8000, 0, 0, 0},  {8000, 0, 0, 1},  {22050, 0, 0, 0}, {48000, 0, 0, 0},
+    {48000, 0, 1, 0}, {48000, 1, 0, 0}, {48000, 1, 1, 0},
+};
+
+/* The case's instance options, for the report. */
+static const char*
+bench_options(const bench_case* c) {
+    if (c->veto) {
+        return "veto";
+    }
+    return c->acq ? "acq" : "";
+}
 
 static int
 bench_fill(float* x, size_t n, int rate_hz, int hiss) {
@@ -97,6 +110,7 @@ bench_run(const bench_case* c, int seconds, int repeat) {
     if (x != NULL && w != NULL && agc != NULL && bench_fill(x, n, c->rate_hz, c->hiss) == 0
         && dsd_speech_agc_init(agc, c->rate_hz, 0.0f, DSD_SPEECH_AGC_TARGET_DBFS, DSD_SPEECH_AGC_CEILING_DBFS) == 0) {
         dsd_speech_agc_set_noise_veto(agc, c->veto);
+        dsd_speech_agc_set_acquisition(agc, c->acq);
         const size_t chunks[2] = {(size_t)agc->frame_len, 1U};
         for (size_t k = 0; k < 2; k++) {
             double ns[BENCH_REPEAT_MAX];
@@ -105,8 +119,7 @@ bench_run(const bench_case* c, int seconds, int repeat) {
             }
             qsort(ns, (size_t)repeat, sizeof ns[0], cmp_double);
             DSD_FPRINTF(stdout, "speech_agc %5d Hz %-6s %-4s %4zu samples/call: best %6.2f ns/sample, median %6.2f\n",
-                        c->rate_hz, c->hiss ? "hiss" : "speech", c->veto ? "veto" : "", chunks[k], ns[0],
-                        ns[repeat / 2]);
+                        c->rate_hz, c->hiss ? "hiss" : "speech", bench_options(c), chunks[k], ns[0], ns[repeat / 2]);
         }
         rc = 0;
     }

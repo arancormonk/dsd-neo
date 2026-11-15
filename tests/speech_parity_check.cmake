@@ -9,7 +9,11 @@
 # each file through the voice chain (8 kHz mono on stdout). Analog: the committed speech_*_synth I/Q fixtures carry the
 # same talker (tools/build_iq_fixtures.py), replayed at the default auto gain (48 kHz mono on stdout).
 #
-# Expected -D inputs: DSD_BIN, TOOL_BIN, WORK_DIR. Optional: FIXTURE_DIR (adds the analog renditions).
+# With QUIET, the digital renditions carry the tool's quiet talker instead (a 2.5 s transmission 20 dB under the talker,
+# in a rough voice), and the tool's `quiet` check holds each from 0.5 s after its first speech to its end within 4 dB of
+# -20 dBFS: the default auto gain has to reach a quiet talker within a short transmission. FIXTURE_DIR is then not used.
+#
+# Expected -D inputs: DSD_BIN, TOOL_BIN, WORK_DIR. Optional: FIXTURE_DIR (adds the analog renditions), QUIET.
 foreach(_var DSD_BIN TOOL_BIN WORK_DIR)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "speech_parity_check: missing -D${_var}")
@@ -47,16 +51,22 @@ function(_parity_run what out)
 endfunction()
 
 set(_renditions)
+set(_talker)
+set(_check established)
+if(QUIET)
+    set(_talker --quiet)
+    set(_check quiet)
+endif()
 foreach(_codec imbe:imb ambe2450:amb ambe2400:dmb)
     string(REPLACE ":" ";" _pair "${_codec}")
     list(GET _pair 0 _name)
     list(GET _pair 1 _ext)
-    _parity_run("encode ${_name}" "encode_${_name}.log" "${TOOL_BIN}" encode ${_name} "talker.${_ext}")
+    _parity_run("encode ${_name}" "encode_${_name}.log" "${TOOL_BIN}" encode ${_talker} ${_name} "talker.${_ext}")
     _parity_run("play talker.${_ext}" "${_name}.raw" "${DSD_BIN}" --frontend none -o - -r "talker.${_ext}")
     list(APPEND _renditions "${_name}:${_name}.raw:8000:1:0")
 endforeach()
 
-if(DEFINED FIXTURE_DIR)
+if(DEFINED FIXTURE_DIR AND NOT QUIET)
     # The carrier keys this long before the talker starts (SPEECH_SYNTH_LEAD_S in tools/build_iq_fixtures.py).
     set(_lead_s 0.25)
     # name, fixture, mode
@@ -88,7 +98,7 @@ if(DEFINED FIXTURE_DIR)
 endif()
 
 execute_process(
-    COMMAND "${TOOL_BIN}" established ${_renditions}
+    COMMAND "${TOOL_BIN}" ${_check} ${_renditions}
     WORKING_DIRECTORY "${WORK_DIR}"
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _out

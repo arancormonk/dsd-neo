@@ -3,8 +3,10 @@
 # Runs one DECODE_IQ_SPEECH_LEVEL_* case (issue #518): replays an I/Q fixture through dsd-neo with its voice on stdout
 # (-o -) and measures the whole output's active speech level (ITU-T P.56, tests/core/speech_parity_tool.c `level`).
 # The level must lie inside [MIN, MAX]. With REFERENCE, the fixture is replayed a second time with those arguments too
-# (the fixed reference gain, -g 1), and the first run's level must have moved from that one toward -20 dBFS. As
-# iq_decode_check.cmake does, each run must exit 0 and raise no sanitizer report.
+# (the fixed reference gain, -g 1), and the first run's level must be nearer -20 dBFS than that one, or lie no more than
+# 3 dB under and 6 dB over -20 dBFS (a short excerpt of a loud talker plays over the target until the gain has its
+# measure), and in either case within 10 dB of it (the tool's `level --toward`). As iq_decode_check.cmake does, each run
+# must exit 0 and raise no sanitizer report.
 #
 # With GATED (a DECODE_IQ_ANALOG_GATED_NOISE_* case), the fixture is narrowband FM with no speech in it: it is replayed
 # at the default auto gain and at -n 50, and the tool's `gated-nfm` check reads the speech AGC's state from them (no
