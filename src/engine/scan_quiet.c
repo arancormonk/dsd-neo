@@ -1177,7 +1177,8 @@ quiet_suspend_ineligible(const dsd_opts* opts, const dsd_engine_scan_owner* owne
 }
 
 /* Whether the started check @p c is refused for its analog width without a capture read (issue #834 A5): the last
-   capture read, on the input in force and at the DSP rate this visit runs (so at this visit's capture rate), was
+   capture read, on the input in force, in this stream session (a reopen may turn the rotation off) and at the DSP
+   rate this visit runs (so at this visit's capture rate), was
    rotated and at a validated rate, and the calibration covers no such width of this kind there. At another DSP rate
    the visit reads its own capture, whose rate outranks its width. The width table does not hang on the visit, so a
    width-refused target is refused at once on every visit (no Quiet check before its capture comes) until a width,
@@ -1185,6 +1186,7 @@ quiet_suspend_ineligible(const dsd_opts* opts, const dsd_engine_scan_owner* owne
 static int
 quiet_width_refused_ahead(const dsd_opts* opts, const scan_quiet_check* c) {
     if (!(c->classes & QUIET_CLASS_ANALOG) || c->receiver_rate_hz == 0U || c->receiver_dsp_rate_hz != c->dsp_rate_hz
+        || c->receiver_session != rtl_stream_session_generation()
         || c->receiver_reason != (uint8_t)DSD_SCAN_QUIET_REASON_NONE || c->receiver_input != opts->audio_in_type
         || c->receiver_device != quiet_device_hash(opts) || !dsd_signal_quiet_rate_supported(c->receiver_rate_hz)) {
         return 0;

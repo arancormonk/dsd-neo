@@ -26622,6 +26622,47 @@ test_scan_quiet_width_ahead_keeps_rate_precedence(void) {
     return rc;
 }
 
+/* A width target refused ahead of its capture, then the stream opens again with its rotation off (offset tuning or
+   centred I/Q on, the same input spec): the old rotated verdict is another session's, so the visit reads its own
+   capture and says tuner, which outranks its width. */
+static int
+test_scan_quiet_width_ahead_needs_the_stream_session(void) {
+    static const char k_targets[] = "w,nfm-conventional,452000000,,2000,1000,,--nfm-bandwidth-hz 13500\n"
+                                    "d,dmr-conventional,453000000,,2000,1000,,\n";
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (qt_warn_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_targets) != 0) {
+        return 1;
+    }
+    qt_warns_watch();
+    g_tap.analog_ok = 0;
+    qt_decode_at(10U);
+    qt_pass(&opts, &state);
+    int rc =
+        qt_expect_quiet(&state, "refused at its capture", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH);
+    qt_next_target(&opts, &state, k_qt_hz_b, 384000);
+    int reads = g_tap.capture_reads;
+    qt_next_target(&opts, &state, k_qt_hz_a, 384000);
+    qt_decode_at(20U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect("the next visit is refused ahead", g_tap.capture_reads == reads);
+    rc |= qt_expect_quiet(&state, "refused ahead", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH);
+    /* The stream opens again with its rotation off. */
+    qt_next_target(&opts, &state, k_qt_hz_b, 0);
+    g_tap.session++;
+    reads = g_tap.capture_reads;
+    qt_next_target(&opts, &state, k_qt_hz_a, 0);
+    qt_decode_at(30U);
+    qt_pass(&opts, &state);
+    rc |= qt_expect("another session: it reads its own capture", g_tap.capture_reads > reads);
+    rc |= qt_expect_quiet(&state, "a reopened stream with no rotation", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_TUNER);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
 #endif
 
 static int
@@ -26844,6 +26885,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_publishes_each_cause);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_channel_lines_once_per_key);
     rc |= run_with_default_tune_hook(test_scan_quiet_width_ahead_keeps_rate_precedence);
+    rc |= run_with_default_tune_hook(test_scan_quiet_width_ahead_needs_the_stream_session);
 #endif
 #ifdef USE_RADIO
     rc |= test_scan_quiet_evidence_notes_bookkeeping();
