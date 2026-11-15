@@ -1607,6 +1607,68 @@ test_snapshot_names_switched_inputs(void) {
     return rc;
 }
 
+/* Issue #743: a bare "tcp" or "udp" (-i tcp, -i udp) saves as the tcp or udp source it opens, the session's endpoint or
+   the default one, not as a file named "tcp"; a saved and reloaded one opens that same endpoint. "-" (stdin) and
+   "m17udp:" have no [input] source of their own and stay file inputs that reload as themselves. */
+static int
+test_snapshot_bare_network_inputs_save_as_their_source(void) {
+    static const struct {
+        const char* dev;
+        const char* tcp_host;
+        int tcp_port;
+        const char* udp_addr;
+        int udp_port;
+        int source;
+        const char* reopens;
+    } cases[] = {
+        {"tcp", "", 0, "", 0, DSDCFG_INPUT_TCP, "tcp:localhost:7355"},
+        {"tcp", "audio.example", 7400, "", 0, DSDCFG_INPUT_TCP, "tcp:audio.example:7400"},
+        {"udp", "", 0, "", 0, DSDCFG_INPUT_UDP, "udp:127.0.0.1:7355"},
+        {"udp", "", 0, "0.0.0.0", 7360, DSDCFG_INPUT_UDP, "udp:0.0.0.0:7360"},
+        {"-", "", 0, "", 0, DSDCFG_INPUT_FILE, "-"},
+        {"m17udp:127.0.0.1:17000", "", 0, "", 0, DSDCFG_INPUT_FILE, "m17udp:127.0.0.1:17000"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_opts_and_state(opts, state);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", cases[i].dev);
+        DSD_SNPRINTF(opts.tcp_hostname, sizeof opts.tcp_hostname, "%s", cases[i].tcp_host);
+        opts.tcp_portno = cases[i].tcp_port;
+        DSD_SNPRINTF(opts.udp_in_bindaddr, sizeof opts.udp_in_bindaddr, "%s", cases[i].udp_addr);
+        opts.udp_in_portno = cases[i].udp_port;
+        static dsdneoUserConfig snap;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        if (!snap.has_input || snap.input_source != cases[i].source) {
+            DSD_FPRINTF(stderr, "FAIL: bare input %s saved as source %d, want %d\n", cases[i].dev, snap.input_source,
+                        cases[i].source);
+            rc |= 1;
+            continue;
+        }
+        char path[DSD_TEST_PATH_MAX];
+        static dsdneoUserConfig loaded;
+        char rendered[8192];
+        if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0
+            || write_temp_config(rendered, path, sizeof path) != 0) {
+            return 1;
+        }
+        const int load_rc = dsd_user_config_load(path, &loaded);
+        (void)remove(path);
+        reset_opts_and_state(opts, state);
+        if (load_rc == 0) {
+            dsd_apply_user_config_to_opts(&loaded, &opts, &state);
+        }
+        if (load_rc != 0 || strcmp(opts.audio_in_dev, cases[i].reopens) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: bare input %s reloads as \"%s\", want \"%s\"\n", cases[i].dev, opts.audio_in_dev,
+                        cases[i].reopens);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
 /* The session of an I/Q replay of @p replay_dev, which runs its capture's own centre and gain. */
 static void
 set_iq_replay_session(dsd_opts& opts, const char* replay_dev) {
@@ -5975,6 +6037,7 @@ main(void) {
     rc |= test_load_and_apply_rtl_digital_resample();
     rc |= test_snapshot_digital_resample_mode();
     rc |= test_snapshot_names_switched_inputs();
+    rc |= test_snapshot_bare_network_inputs_save_as_their_source();
     rc |= test_replay_snapshot_saves_the_loaded_input();
     rc |= test_validate_refuses_a_replay_file_path();
     rc |= test_snapshot_trunking_reads_the_trunk_scan_configured_value();

@@ -3807,7 +3807,8 @@ suite runs under this compiler.
       replay running; `dsd_app_drain_cmds()` drops it after any command that left the replay. The UI snapshot copies it
       (`dsd_user_config_copy_retained_input()`, only when it changed) so the terminal's Save writes it too.
       `--validate-config` refuses a file input whose `file_path` is a spec kind no config can start
-      (`k_file_path_spec_kinds` in `config_user_validation.cpp`: `iqreplay:`). Tests: `RUNTIME_CONFIG_USER`,
+      (`k_file_path_spec_kinds` in `config_user_validation.cpp`: `iqreplay:`). A bare `tcp` or `udp` input snapshots
+      as its `tcp`/`udp` source with the session's endpoint; `-` and `m17udp:` stay file inputs. Tests: `RUNTIME_CONFIG_USER`,
       `RUNTIME_CLI_PARSE`, `RUNTIME_BOOTSTRAP_PRINT_CONFIG_REPLAY_KEEPS_INPUT`, `ENGINE_CLEANUP_AUDIO`,
       `APP_COMMAND_QUEUE`, `CORE_STATE_EXT`.
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`); the control API options and

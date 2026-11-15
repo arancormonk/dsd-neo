@@ -305,7 +305,8 @@ An I/Q replay (`--iq-replay`) has no `[input]` form. A session that runs one sav
 applied during the replay with an `[input]` of its own that leaves the replay running is saved in its place; a config
 without an `[input]`, or one that is not applied, keeps the loaded one. Once the session leaves the replay, it saves the
 input it runs again. `--validate-config` reports a `file_path` that names an I/Q replay (`iqreplay:...`) as an error:
-no config can start one.
+no config can start one. A bare `-i tcp` or `-i udp` is saved as the `tcp` or `udp` source it opens (the session's
+endpoint, `localhost:7355` or `127.0.0.1:7355` by default).
 
 ---
 

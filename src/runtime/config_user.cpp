@@ -2095,6 +2095,35 @@ dsd_finalize_user_config_file_input_after_cli(const dsdneoUserConfig* cfg, dsd_o
     }
 }
 
+/* A bare "tcp" connects to the session's TCP endpoint, localhost:7355 unless something moved it, so it saves as that
+   tcp source rather than as a file named "tcp" (issue #743). */
+static void
+snapshot_tcp_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    cfg->input_source = DSDCFG_INPUT_TCP;
+    if (strcmp(opts->audio_in_dev, "tcp") == 0) {
+        DSD_SNPRINTF(cfg->tcp_host, sizeof cfg->tcp_host, "%s",
+                     opts->tcp_hostname[0] ? opts->tcp_hostname : "localhost");
+        cfg->tcp_port = opts->tcp_portno > 0 ? opts->tcp_portno : 7355;
+    } else {
+        snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->tcp_host, sizeof cfg->tcp_host, &cfg->tcp_port);
+    }
+    snapshot_pcm_squelch_values(opts, state, cfg);
+}
+
+/* A bare "udp" binds the session's UDP address, 127.0.0.1:7355 unless something moved it: saved as that udp source. */
+static void
+snapshot_udp_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    cfg->input_source = DSDCFG_INPUT_UDP;
+    if (strcmp(opts->audio_in_dev, "udp") == 0) {
+        DSD_SNPRINTF(cfg->udp_addr, sizeof cfg->udp_addr, "%s",
+                     opts->udp_in_bindaddr[0] ? opts->udp_in_bindaddr : "127.0.0.1");
+        cfg->udp_port = opts->udp_in_portno > 0 ? opts->udp_in_portno : 7355;
+    } else {
+        snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->udp_addr, sizeof cfg->udp_addr, &cfg->udp_port);
+    }
+    snapshot_pcm_squelch_values(opts, state, cfg);
+}
+
 static void
 snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     cfg->has_input = 1;
@@ -2112,14 +2141,10 @@ snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneo
         snapshot_parse_soapy_device_spec(opts->audio_in_dev, cfg);
         snapshot_apply_live_rtl_values(opts, state, cfg);
         snapshot_apply_live_soapy_values(opts, cfg);
-    } else if (strncmp(opts->audio_in_dev, "tcp:", 4) == 0) {
-        cfg->input_source = DSDCFG_INPUT_TCP;
-        snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->tcp_host, sizeof cfg->tcp_host, &cfg->tcp_port);
-        snapshot_pcm_squelch_values(opts, state, cfg);
-    } else if (strncmp(opts->audio_in_dev, "udp:", 4) == 0) {
-        cfg->input_source = DSDCFG_INPUT_UDP;
-        snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->udp_addr, sizeof cfg->udp_addr, &cfg->udp_port);
-        snapshot_pcm_squelch_values(opts, state, cfg);
+    } else if (dsd_opts_audio_in_dev_is_tcp_spec(opts->audio_in_dev)) {
+        snapshot_tcp_input_config(opts, state, cfg);
+    } else if (dsd_opts_audio_in_dev_is_udp_spec(opts->audio_in_dev)) {
+        snapshot_udp_input_config(opts, state, cfg);
     } else if (strncmp(opts->audio_in_dev, "pulse", 5) == 0) {
         cfg->input_source = DSDCFG_INPUT_PULSE;
         const char* dev = NULL;
