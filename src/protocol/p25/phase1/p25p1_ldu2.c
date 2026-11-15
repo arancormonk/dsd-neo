@@ -51,6 +51,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25p1_current_call.h"
 
 static void
 build_ldu2_rs_reliability(const P25P1SoftDibit* soft_dibits, uint8_t data_reliab[16], uint8_t parity_reliab[8]) {
@@ -429,7 +430,7 @@ ldu2_maybe_finalize_lsd_alias(dsd_state* state) {
 
     char str[16];
     dsd_call_snapshot call;
-    const int has_call = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    const int has_call = p25p1_current_call(state, &call);
     int tsrc = has_call && call.ota_source_id <= UINT32_MAX ? (int)call.ota_source_id : 0;
     int str_pos = 0;
     DSD_MEMSET(str, 0, sizeof(str));
@@ -478,11 +479,8 @@ ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, const Ldu2Frame* frame)
     if (frame->irrecoverable_errors != 0) {
         return;
     }
-    dsd_call_snapshot call;
-    const int target =
-        dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= INT_MAX ? (int)call.ota_target_id : 0;
-    (void)p25_crypto_resolve_checked(opts, state, DSD_P25_CRYPTO_PHASE1, 0, frame->algidhex, frame->kidhex, mi, target,
-                                     frame->hard_checked);
+    (void)p25_crypto_resolve_checked(opts, state, DSD_P25_CRYPTO_PHASE1, 0, frame->algidhex, frame->kidhex, mi,
+                                     p25p1_current_call_target(state), frame->hard_checked);
 }
 
 void

@@ -62,6 +62,8 @@ p25p1_llr_reliability(const int16_t* llr, int bit_count) {
 static int g_resolve_entry_algid;
 static int g_resolve_entry_keyid;
 static uint64_t g_resolve_entry_mi;
+/* The talkgroup the last resolution was given. */
+static int g_resolve_talkgroup = -1;
 static int g_resolve_entry_identity_pending;
 static p25_sm_ctx_t g_sm_ctx;
 
@@ -89,7 +91,7 @@ p25_crypto_resolve_checked(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phas
     (void)opts;
     (void)phase;
     (void)slot;
-    (void)talkgroup;
+    g_resolve_talkgroup = talkgroup;
     g_resolve_entry_algid = state->payload_algid;
     g_resolve_entry_keyid = state->payload_keyid;
     g_resolve_entry_mi = state->payload_miP;
@@ -764,6 +766,65 @@ test_hdu_nondefinitive_metadata_preserves_prior_tuple(void) {
     return rc;
 }
 
+/* Slot 0 holding a call of @p protocol for @p target / @p source, still open or already ended. */
+static void
+seed_slot0_call(dsd_state* state, int protocol, uint64_t target, uint64_t source, int ended) {
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    if (ended) {
+        (void)dsd_call_state_end(state, 0U, 0.0);
+    }
+}
+
+/* What slot 0 holds before a Phase 1 frame, and the talkgroup the frame may take from it. Before the fix every case
+   handed its encryption resolution the slot's talkgroup: an ended call's, and another protocol's. On a -Y list with a
+   TETRA and a P25 channel, under encrypted lockout, a decryptable P25 call heard after an encrypted TETRA group call
+   so released that TETRA group's lockout entry (p25_enc_lockout_target() falls back to this talkgroup on an
+   unassigned slot, and handle_enc() releases the entry of a call it can decrypt). */
+static const struct {
+    const char* name;
+    int protocol;
+    int ended;
+    int want_talkgroup;
+} k_slot0_cases[] = {
+    {"ended TETRA call", DSD_SYNC_TETRA_NDB_POS, 1, 0},
+    {"open DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0, 0},
+    {"ended P25 call", DSD_SYNC_P25P1_POS, 1, 0},
+    {"open P25 call", DSD_SYNC_P25P1_POS, 0, 100},
+};
+
+/* The header takes a talkgroup only from the open P25 Phase 1 call on slot 0. */
+static int
+test_hdu_talkgroup_comes_from_the_open_p25_call_only(void) {
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(k_slot0_cases) / sizeof(k_slot0_cases[0]); i++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        reset_hook_counters();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.trunk_tune_enc_calls = 0;
+        state.aes_key_loaded[0] = 1;
+        state.aes_key_segments[0] = 4U;
+        seed_slot0_call(&state, k_slot0_cases[i].protocol, 100U, 5555U, k_slot0_cases[i].ended);
+        g_resolve_talkgroup = -1;
+
+        hdu_maybe_enc_lockout(&opts, &state, 0x84, 0x0101, 0x1122334455667788ULL, 1);
+
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof(tag), "HDU talkgroup after %s", k_slot0_cases[i].name);
+        rc |= expect_int(tag, g_resolve_talkgroup, k_slot0_cases[i].want_talkgroup);
+    }
+    return rc;
+}
+
 static int
 test_hdu_encrypted_trunk_lockout_state(void) {
     int rc = 0;
@@ -937,6 +998,7 @@ main(void) {
     rc |= test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state();
     rc |= test_hdu_nondefinitive_metadata_preserves_prior_tuple();
     rc |= test_hdu_encrypted_trunk_lockout_state();
+    rc |= test_hdu_talkgroup_comes_from_the_open_p25_call_only();
     rc |= test_hdu_split_by_a_carrier_boundary_publishes_nothing();
     rc |= test_hdu_cut_by_an_input_interruption_publishes_nothing();
     dsd_decode_clock_use_system();
