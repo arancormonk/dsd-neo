@@ -193,7 +193,7 @@ test_voice_tune_verdict(void) {
     update.observed_m = 100.6;
     open_voice(f.st, 520, 31, 101.0);
     rc |= expect_true("tune: a clear call on the other member", voice_counts(f.opts, f.st));
-    (void)dsd_call_state_update_crypto(f.st, 0U, &update);
+    (void)dsd_call_state_update_crypto(f.st, 0U, DSD_SYNC_P25P1_POS, &update);
     rc |= expect_true("tune: encrypted with encrypted tuning off", !voice_counts(f.opts, f.st));
     f.opts->trunk_tune_enc_calls = 1;
     rc |= expect_true("tune: encrypted with encrypted tuning on", voice_counts(f.opts, f.st));

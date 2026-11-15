@@ -787,7 +787,7 @@ test_encode_matches_expected_record_field_order(void) {
     crypto.algid = 0xAAU;
     crypto.kid = 0x1234U;
     crypto.observed_m = dsd_decode_now_mono_s();
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) > 0);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) > 0);
 
     dsd_decode_clock_test_set_ns(t0_ns + 1500000000ULL);
     dsd_app_notification_publish_state(state);

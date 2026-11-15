@@ -154,7 +154,8 @@ dsd_call_state_protocol_family(int protocol) {
 }
 
 int
-dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
+dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, int protocol, const dsd_call_crypto_update* update) {
+    (void)protocol;
     if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || update == NULL) {
         return -1;
     }
@@ -174,8 +175,9 @@ dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_cryp
 }
 
 int
-dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
-    return dsd_call_state_update_crypto(state, slot, update);
+dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, int protocol,
+                                      const dsd_call_crypto_update* update) {
+    return dsd_call_state_update_crypto(state, slot, protocol, update);
 }
 
 int
@@ -358,10 +360,12 @@ dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_
 }
 
 int
-dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
-                                  int signaled_id, int effective_id, int available, int fallback) {
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                                  dsd_call_key_source source, int signaled_id, int effective_id, int available,
+                                  int fallback) {
     (void)state;
     (void)slot;
+    (void)protocol;
     (void)epoch;
     (void)source;
     (void)signaled_id;

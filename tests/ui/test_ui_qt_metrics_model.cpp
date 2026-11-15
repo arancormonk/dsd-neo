@@ -1699,17 +1699,18 @@ test_decryption_metadata() {
         crypto.algid = 0x84;
         crypto.kid = 2 + slot;
         crypto.observed_m = 4.0;
-        dsd_call_state_update_crypto(&state, slot, &crypto);
+        dsd_call_state_update_crypto(&state, slot, DSD_SYNC_P25P2_POS, &crypto);
         dsd_call_snapshot before = {}, after = {};
         dsd_call_state_get(&state, slot, &before);
         expect("resolver note accepted",
-               dsd_call_state_note_key_selection(&state, slot, before.epoch, DSD_CALL_KEY_SIGNALED, crypto.kid,
-                                                 crypto.kid, 1, 0)
+               dsd_call_state_note_key_selection(&state, slot, DSD_SYNC_P25P2_POS, before.epoch, DSD_CALL_KEY_SIGNALED,
+                                                 crypto.kid, crypto.kid, 1, 0)
                    == 1);
         dsd_call_state_get(&state, slot, &after);
         expect("selection does not extend activity", before.updated_m == after.updated_m);
         expect("wrong call epoch rejected",
-               dsd_call_state_note_key_selection(&state, slot, before.epoch + 100, DSD_CALL_KEY_SIGNALED, 99, 99, 1, 0)
+               dsd_call_state_note_key_selection(&state, slot, DSD_SYNC_P25P2_POS, before.epoch + 100,
+                                                 DSD_CALL_KEY_SIGNALED, 99, 99, 1, 0)
                    == 0);
     }
     model.refresh(&opts, &state);

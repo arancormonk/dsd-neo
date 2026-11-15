@@ -324,7 +324,8 @@ m17_note_key_selection(dsd_state* state, dsd_call_crypto_state classification) {
         const int available = classification == DSD_CALL_CRYPTO_DECRYPTABLE         ? 1
                               : classification >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING ? 0
                                                                                     : -1;
-        (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DIRECT, call.kid, -1, available, 0);
+        (void)dsd_call_state_note_key_selection(state, 0, DSD_SYNC_M17_LSF_POS, call.epoch, DSD_CALL_KEY_DIRECT,
+                                                call.kid, -1, available, 0);
     }
 }
 
@@ -369,7 +370,7 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
         .received = (uint8_t)DSD_CALL_CRYPTO_RX_ALG,
         .enc_observed = res->et == 0U ? DSD_CALL_ENC_OBSERVED_CLEAR : DSD_CALL_ENC_OBSERVED_ENCRYPTED,
     };
-    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_M17_LSF_POS, &crypto);
     m17_note_key_selection(state, crypto.classification);
     if (opts) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
@@ -2191,7 +2192,7 @@ m17_sync_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t dst,
         .classification = DSD_CALL_CRYPTO_CLEAR,
         .audio_permitted = 1U,
     };
-    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_M17_LSF_POS, &crypto);
     m17_note_key_selection(state, crypto.classification);
     (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
     state->m17_can = can;

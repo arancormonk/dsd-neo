@@ -191,6 +191,35 @@ test_precall_pi_on_both_slots(dsd_opts* opts) {
     free_state(state);
 }
 
+/* A checked PI while the slot still holds another protocol's open call (its end never decoded: -fa moving to a DMR
+   carrier, a -Y step): the PI describes no DMR call, so that call keeps its own crypto and nothing notes it, and the PI
+   is held for the DMR call the next checked LC opens there, as after a lost voice LC header. */
+static void
+test_pi_leaves_another_protocols_call_alone(dsd_opts* opts) {
+    dsd_state* state = fresh_state();
+    const dsd_call_observation nxdn = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 77U,
+        .policy_target_id = 77U,
+        .ota_source_id = 88U,
+    };
+    assert(dsd_call_state_observe(state, &nxdn, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    run_pi(opts, state, 0U, 0x21U, 0x05U);
+    const dsd_call_snapshot other = call_on(state, 0U);
+    assert(DSD_SYNC_IS_NXDN(other.protocol) && other.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(other.crypto == DSD_CALL_CRYPTO_UNKNOWN && other.algid == 0U && other.kid == 0U && other.mi == 0U);
+    assert(other.crypto_received == 0U && other.audio_permitted == 0U);
+    assert(notes[0] == 0);
+    assert(state->dmr_pi_precall_rx[0] == RX_BOTH);
+    run_lc(opts, state, 0U, 3U, 0x40U, 1001U, 2002U);
+    const dsd_call_snapshot call = call_on(state, 0U);
+    assert(DSD_SYNC_IS_DMR(call.protocol) && call.ota_target_id == 1001U);
+    assert(received_is(&call, RX_BOTH, 0x21U, 0x05U));
+    free_state(state);
+}
+
 /* A forced or inferred ALG ID is published as the call's ALG ID, as before, but never as received. */
 static void
 test_forced_and_inferred_algid_not_received(dsd_opts* opts) {
@@ -694,6 +723,7 @@ main(void) {
     dsd_signal_search_call_set(capture_call);
     test_identity_then_pi(opts);
     test_precall_pi_on_both_slots(opts);
+    test_pi_leaves_another_protocols_call_alone(opts);
     test_forced_and_inferred_algid_not_received(opts);
     test_unverified_pi_not_received(opts);
     test_reacquired_call_keeps_received(opts);

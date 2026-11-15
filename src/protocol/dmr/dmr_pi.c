@@ -287,7 +287,7 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received) {
         .audio_permitted = (uint8_t)has_key,
         .received = received,
     };
-    if (dsd_call_state_update_crypto(state, slot, &update) > 0) {
+    if (dsd_call_state_update_crypto(state, slot, DSD_SYNC_DMR_BS_VOICE_POS, &update) > 0) {
         dmr_note_published_live_crypto(state, slot, algid, kid);
         dmr_pi_precall_drop_hold(state, slot);
         dsd_event_sync_slot(opts, state, slot);

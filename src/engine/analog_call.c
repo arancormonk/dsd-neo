@@ -826,7 +826,7 @@ analog_call_note_media(dsd_opts* opts, dsd_state* state, double now_m) {
         .audio_permitted = 1,
         .observed_m = now_m,
     };
-    (void)dsd_call_state_update_crypto(state, 0, &crypto);
+    (void)dsd_call_state_update_crypto(state, 0, DSD_SYNC_ANALOG, &crypto);
     (void)dsd_call_state_update_media(state, 0, 1, now_m);
     dsd_event_sync_slot(opts, state, 0);
 }

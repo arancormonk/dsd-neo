@@ -438,7 +438,12 @@ update_test_crypto(dsd_state* state, uint8_t slot, dsd_call_crypto_state classif
         .observed_m = g_observed_m,
     };
     g_observed_m += 0.1;
-    return dsd_call_state_update_crypto(state, slot, &update);
+    // Written as the slot call's own protocol's: these cases are about what an update does, not whose call it is.
+    dsd_call_snapshot call;
+    const int protocol = dsd_call_state_get(state, slot, &call) > 0 && call.protocol != DSD_SYNC_NONE
+                             ? call.protocol
+                             : DSD_SYNC_P25P1_POS;
+    return dsd_call_state_update_crypto(state, slot, protocol, &update);
 }
 
 static int
@@ -2174,7 +2179,7 @@ test_m17_dstar_dpmr_current_strings(void) {
         .classification = DSD_CALL_CRYPTO_ENCRYPTED,
         .audio_permitted = 0U,
     };
-    (void)dsd_call_state_update_crypto(&state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DPMR_FS2_POS, &crypto);
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_str_eq("dpmr sysid", item->sysid_string, "DPMR_CC_9");
@@ -2214,7 +2219,7 @@ test_nxdn_current_includes_channel_encryption_and_policy_labels(void) {
         .kid = 0x2AU,
         .audio_permitted = 0U,
     };
-    (void)dsd_call_state_update_crypto(&state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_NXDN_POS, &crypto);
     if (append_policy_label(&state, 51002U, "D", "Dispatch") != 0
         || append_policy_label(&state, 41001U, "A", "Unit 41001") != 0) {
         DSD_FPRINTF(stderr, "failed to append NXDN policy labels\n");
@@ -2425,7 +2430,7 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
     crypto.classification = DSD_CALL_CRYPTO_CLEAR;
     crypto.audio_permitted = 1U;
     crypto.observed_m = 1.1;
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     int rc = 0;
@@ -2440,7 +2445,7 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
     crypto.kid = 0x2222U;
     crypto.audio_permitted = 0U;
     crypto.observed_m = 1.2;
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     current = &event_history[0].Event_History_Items[0];
     rc |= expect_int("crypto refinement stays current", (int)event_history[0].Event_History_Items[1].target_id, 0);
@@ -8608,9 +8613,9 @@ test_crc_invalid_voice_delayed_and_reacquired(void) {
     // Even an otherwise identical carrier repeat must not hide a newly failed CRC.
     const dsd_call_crypto_update crypto = {
         .classification = DSD_CALL_CRYPTO_ENCRYPTED, .algid = 0x24, .kid = 7, .mi = 0x12345678};
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
     state.event_crc_invalid[0] = 1;
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
     state.event_crc_invalid[0] = 0;
     assert(end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
@@ -8727,11 +8732,11 @@ test_crc_ras_marker_and_escalation(void) {
     // must land on a RAS-only call and escalate the row.
     const dsd_call_crypto_update crypto = {
         .classification = DSD_CALL_CRYPTO_ENCRYPTED, .algid = 0x24, .kid = 7, .mi = 0x12345678};
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
     state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
     state.event_crc_invalid[0] = DSD_CRC_FAILED;
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
     state.event_crc_invalid[0] = 0U;
     assert(dsd_call_state_get(&state, 0U, &call) == 1);
     rc |= expect_int("failure lands on a RAS call", call.crc_invalid, both);

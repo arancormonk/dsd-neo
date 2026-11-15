@@ -19,8 +19,10 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
+#include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -405,6 +407,63 @@ test_received_crypto_is_the_current_vcalls(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* An SCCH INFO1 (outbound) naming cipher @p cipher with key id @p key_id. */
+static void
+build_scch_info1(uint8_t message[32], uint8_t cipher, uint8_t key_id) {
+    DSD_MEMSET(message, 0, 32U);
+    write_bits(message, 0U, 0x3U, 2U); /* SF: INFO1 */
+    write_bits(message, 16U, cipher, 2U);
+    write_bits(message, 18U, key_id, 6U);
+}
+
+/* The NXDN call's crypto republishes (a VCALL_IV, an SCCH INFO1) while the slot still holds another protocol's open call,
+   its end never decoded (-fa or a -Y step reaching an NXDN carrier before any VCALL there decoded): they describe no
+   NXDN call, so that call keeps its own crypto. On the NXDN call itself they still apply. */
+static void
+test_republish_leaves_another_protocols_call_alone(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[96];
+    uint8_t message[32];
+    dsd_call_snapshot call;
+
+    reset_fixture(&opts, &state, history);
+    opts.trunk_enable = 0;
+    const dsd_call_observation dmr = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 77U,
+        .policy_target_id = 77U,
+        .ota_source_id = 88U,
+    };
+    assert(dsd_call_state_observe(&state, &dmr, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    state.nxdn_cipher_type = 2U; /* a cipher the NXDN path holds from before */
+    state.nxdn_key = 5U;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits(bits, 2U, 0x03U, 6U); /* VCALL_IV */
+    write_bits(bits, 8U, 0x1122334455667788ULL, 64U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && DSD_SYNC_IS_DMR(call.protocol));
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.crypto == DSD_CALL_CRYPTO_UNKNOWN);
+    assert(call.algid == 0U && call.kid == 0U && call.mi == 0U && call.audio_permitted == 0U);
+    build_scch_info1(message, 2U, 6U);
+    NXDN_decode_scch(&opts, &state, message, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && DSD_SYNC_IS_DMR(call.protocol));
+    assert(call.crypto == DSD_CALL_CRYPTO_UNKNOWN && call.algid == 0U && call.kid == 0U && call.mi == 0U);
+
+    // The NXDN call's own VCALL opens it; its INFO1 then republishes onto it.
+    build_vcall(bits, 2U, 5U, 100U, 1234U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && DSD_SYNC_IS_NXDN(call.protocol));
+    assert(call.algid == 2U && call.kid == 5U);
+    build_scch_info1(message, 2U, 6U);
+    NXDN_decode_scch(&opts, &state, message, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && DSD_SYNC_IS_NXDN(call.protocol) && call.kid == 6U);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     test_observe_tentative_then_corroborated();
@@ -416,6 +475,7 @@ main(void) {
     test_vcall_cipher_received_once_corroborated();
     test_forced_cipher_is_not_received();
     test_received_crypto_is_the_current_vcalls();
+    test_republish_leaves_another_protocols_call_alone();
     printf("NXDN enc class: OK\n");
     return 0;
 }

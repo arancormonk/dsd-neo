@@ -331,7 +331,7 @@ open_voice_epoch_slot(gate_fixture* fix, uint8_t slot, double t, double span, ds
         DSD_MEMSET(&update, 0, sizeof(update));
         update.classification = crypto;
         update.observed_m = t;
-        (void)dsd_call_state_update_crypto(fix->state, slot, &update);
+        (void)dsd_call_state_update_crypto(fix->state, slot, DSD_SYNC_P25P1_NEG, &update);
     }
     (void)dsd_call_state_update_media(fix->state, slot, 1, t);
     (void)dsd_call_state_update_media(fix->state, slot, 1, t + span);
@@ -529,7 +529,7 @@ test_non_media_updates_do_not_extend_hold(void) {
     DSD_MEMSET(&crypto, 0, sizeof(crypto));
     crypto.classification = DSD_CALL_CRYPTO_CLEAR;
     crypto.observed_m = 102.0;
-    (void)dsd_call_state_update_crypto(fix.state, 0, &crypto);
+    (void)dsd_call_state_update_crypto(fix.state, 0, DSD_SYNC_P25P1_NEG, &crypto);
     (void)dsd_call_state_end_ex(fix.state, 0, 103.0, DSD_CALL_END_TERMINATOR);
     const dsd_scan_voice_probe_result media = probe_voice(&fix);
     CHECK("ended call is not active", media.active_media_m < 0.0);
@@ -1898,7 +1898,7 @@ test_receive_admission_bounds_acquisition(void) {
     };
     (void)dsd_call_state_observe(fix.state, &obs, DSD_CALL_BOUNDARY_BEGIN);
     const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
-    (void)dsd_call_state_update_crypto(fix.state, 0, &crypto);
+    (void)dsd_call_state_update_crypto(fix.state, 0, DSD_SYNC_DMR_BS_VOICE_POS, &crypto);
     (void)dsd_call_state_update_media(fix.state, 0, 1, 101.0);
     (void)dsd_call_state_update_media(fix.state, 0, 1, 101.25);
     fix.state->currentslot = 1;
@@ -1945,7 +1945,7 @@ test_receive_admission_bounds_acquisition(void) {
     dsd_call_observation voice2 = obs;
     voice2.observed_m = 120.0;
     (void)dsd_call_state_observe(fix.state, &voice2, DSD_CALL_BOUNDARY_BEGIN);
-    (void)dsd_call_state_update_crypto(fix.state, 0, &crypto);
+    (void)dsd_call_state_update_crypto(fix.state, 0, DSD_SYNC_DMR_BS_VOICE_POS, &crypto);
     (void)dsd_call_state_update_media(fix.state, 0, 1, 120.0);
     (void)dsd_call_state_update_media(fix.state, 0, 1, 120.5);
     fix.state->dmr_color_code = 16;

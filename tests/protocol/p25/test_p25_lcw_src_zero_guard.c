@@ -518,7 +518,8 @@ main(void) {
             .audio_permitted = 0U,
             .observed_m = 2.0,
         };
-        rc |= expect_true("Fmt0x50_seed_crypto", dsd_call_state_update_crypto(&st, 0U, &crypto) > 0);
+        rc |=
+            expect_true("Fmt0x50_seed_crypto", dsd_call_state_update_crypto(&st, 0U, DSD_SYNC_P25P1_POS, &crypto) > 0);
         dsd_call_snapshot before;
         dsd_call_snapshot after;
         rc |= expect_true("Fmt0x50_get_before", get_active_call(&st, &before));

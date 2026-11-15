@@ -2020,6 +2020,20 @@ suite runs under this compiler.
   replaces the retained copy, so the missing parts drop out of later comparisons until they are noted again (a decided
   limit). Identity learned after a call's last observation, when its end captured nothing, compares as compatible (a
   decided limit). History's `ended_rx_id` is not involved.
+- API note (whose call an update describes): every call-state update that writes a call's crypto or identity text
+  names the protocol whose signalling it comes from (`dsd_call_state_update_crypto()`, `_update_retained_crypto()`,
+  `_note_key_selection()`, `_forget_crypto_values()`, `_enrich_text()`), and the store applies it only to a call of
+  that protocol (`dsd_call_state_protocol_family()`, with P25 Phase 1 and Phase 2 one protocol: a Phase 2 voice
+  channel's call can be opened from a Phase 1 grant). Another protocol's call, or one that names no protocol, refuses
+  it with 0, as a call in the wrong phase does. A slot keeps an ended call, and another protocol's call whose end
+  never decoded, until the next call begins there (`-fa`, a `-Y` or trunk scan step between protocols), so the check
+  sits in the store rather than in each writer: a DMR PI with another protocol's call open is held for the DMR call
+  the next checked LC opens (`dsd_state::dmr_pi_precall_*`), and an NXDN VCALL_IV or SCCH republish describes no call
+  there. Writers still choose the phase themselves where the store's rule is wider than theirs (a key choice record
+  takes an ended call, so P25 `p25_crypto_publish_canonical()` and the DMR autoload record only on the open call). An
+  identity a frame takes from the slot's call by copying that call's own protocol into an observation is outside this
+  check, so those readers keep their own protocol checks (`p25p1_current_call()`, `nxdn_scch_enrich_identity()`,
+  `ysf_enrich_identity()`, the DMR Cap+ seed). Tests: `CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `NXDN_ENC_CLASS`.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
   `received_algid`/`received_kid` say which of a call's ALG ID and key id were decoded from over-the-air signalling
   that passed its check, beside the live `algid`/`kid` every crypto update rewrites. Only an update whose `received`

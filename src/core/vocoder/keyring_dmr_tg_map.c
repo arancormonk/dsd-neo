@@ -196,11 +196,11 @@ keyring_note_selection(dsd_state* state, int slot, const dsd_call_snapshot* call
         && keyring_dmr_tg_map_kid(state, (uint32_t)call->ota_target_id, &mapped_kid) && need != DSD_KEY_NEED_NONE) {
         fallback = keyring_unapplied_row_fallback(state, mapped_kid);
     }
-    if (state->keyloader == 1 && call->phase == DSD_CALL_PHASE_ACTIVE
-        && (DSD_SYNC_IS_DMR(call->protocol) || call->protocol == DSD_SYNC_NONE)) {
+    if (state->keyloader == 1 && call->phase == DSD_CALL_PHASE_ACTIVE) {
         (void)dsd_call_state_note_key_selection(
-            state, (uint8_t)slot, call->epoch, mapped ? DSD_CALL_KEY_TALKGROUP : DSD_CALL_KEY_SIGNALED, signaled_kid,
-            kid, need == DSD_KEY_NEED_NONE ? -1 : keyring_kid_satisfies_need(state, kid, need), fallback);
+            state, (uint8_t)slot, DSD_SYNC_DMR_BS_VOICE_POS, call->epoch,
+            mapped ? DSD_CALL_KEY_TALKGROUP : DSD_CALL_KEY_SIGNALED, signaled_kid, kid,
+            need == DSD_KEY_NEED_NONE ? -1 : keyring_kid_satisfies_need(state, kid, need), fallback);
     }
 }
 

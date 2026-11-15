@@ -852,7 +852,7 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
                         : ota_cipher == 1U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED
                                            : DSD_CALL_ENC_OBSERVED_NONE,
     };
-    if (dsd_call_state_update_crypto(state, 0U, &crypto) > 0) {
+    if (dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto) > 0) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 }

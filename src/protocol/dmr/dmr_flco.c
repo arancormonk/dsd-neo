@@ -835,11 +835,17 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot) {
     const int has_key = class_algid == 0 ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, slot)
                                          : dsd_dmr_voice_kid_can_decrypt(ctx->state, slot, class_algid, &key);
     // The LC carries no ALG ID or key id: they are received only when a checked PI header carried them. One that
-    // arrived before any call was active on the slot (its voice LC header lost) transfers into the call this LC
-    // opens, for the fields the live values still hold -- a forced or inferred value written since is not what the PI
-    // carried. Once in the call they stay with it; a later LC adds nothing.
+    // arrived before any DMR call was active on the slot (its voice LC header lost; the slot empty, or holding another
+    // protocol's call) transfers into the call this LC opens, for the fields the live values still hold -- a forced or
+    // inferred value written since is not what the PI carried. Once in the call they stay with it; a later LC adds
+    // nothing.
     const uint8_t received = dmr_flco_precall_received(ctx, slot, algid, kid);
     dmr_pi_precall_drop_hold(ctx->state, slot);
+    // A held PI's values are this call's own, as dmr_pi() says of a PI it publishes, never ones a call it replaced left
+    // behind (another protocol's call there ended when this LC opened its own).
+    if (received != 0U) {
+        ctx->state->dmr_crypto_inherited[slot] = 0U;
+    }
     // Live values a replaced call left behind (its terminator missed) are still what the voice path decrypts with,
     // but they are not this call's: published as carried, the call keeps its own (none, until its PI or the voice
     // path's forced or inferred choice supplies them). Once the live values change they are this call's, and so are
@@ -859,7 +865,7 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot) {
            established classification must not make the next call, whose LC says clear, encrypted. */
         .enc_observed = (ctx->lc_so & 0x40U) != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR,
     };
-    if (dsd_call_state_update_crypto(ctx->state, slot, &crypto) > 0) {
+    if (dsd_call_state_update_crypto(ctx->state, slot, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) > 0) {
         dmr_note_published_live_crypto(ctx->state, slot, algid, kid);
     }
 }
@@ -967,7 +973,7 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         // Where the canonical layer kept the epoch (it names an identity-less one after this call), the record still
         // holds what the replaced transmission published into it: none of that is this call's.
         if (have_after && after.epoch == before.epoch) {
-            (void)dsd_call_state_forget_crypto_values(ctx->state, slot);
+            (void)dsd_call_state_forget_crypto_values(ctx->state, slot, DSD_SYNC_DMR_BS_VOICE_POS);
         }
         // The slot's live ALG ID, key id and MI are still the replaced call's. Decryption keeps them, exactly as it
         // always has; publication marks them as that call's, so the new call never shows them as its own.

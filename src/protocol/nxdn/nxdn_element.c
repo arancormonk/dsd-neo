@@ -3077,7 +3077,7 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
         .contradicted = contradicted,
         .enc_observed = enc_observed,
     };
-    if (dsd_call_state_update_crypto(state, 0U, &update) > 0) {
+    if (dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &update) > 0) {
         dsd_call_snapshot call;
         if (dsd_call_state_get(state, 0, &call) > 0) {
             dsd_call_key_source source = DSD_CALL_KEY_DIRECT;
@@ -3088,7 +3088,7 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
                 source = choice.source;
                 selected = choice.key_id;
             }
-            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, source, key_id, selected,
+            (void)dsd_call_state_note_key_selection(state, 0, DSD_SYNC_NXDN_POS, call.epoch, source, key_id, selected,
                                                     cipher_type ? has_key : -1, 0);
         }
         dsd_event_sync_slot(opts, state, 0U);
@@ -3671,7 +3671,7 @@ nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_
             .mi = call.mi,
             .audio_permitted = call.audio_permitted,
         };
-        (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+        (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto);
         if (call.media_active != 0U) {
             (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
         }

@@ -439,15 +439,15 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
             dsd_key_scalar_present(state, 0) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
         crypto.audio_permitted = dsd_key_scalar_present(state, 0);
     }
-    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DPMR_FS2_POS, &crypto);
     {
         dsd_call_snapshot call;
         if (dsd_call_state_get(state, 0, &call) > 0) {
             const int available = crypto.classification == DSD_CALL_CRYPTO_DECRYPTABLE ? 1
                                   : crypto.classification == DSD_CALL_CRYPTO_ENCRYPTED ? 0
                                                                                        : -1;
-            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DIRECT, call.kid, -1, available,
-                                                    0);
+            (void)dsd_call_state_note_key_selection(state, 0, DSD_SYNC_DPMR_FS2_POS, call.epoch, DSD_CALL_KEY_DIRECT,
+                                                    call.kid, -1, available, 0);
         }
     }
     dsd_event_sync_slot(opts, state, 0U);

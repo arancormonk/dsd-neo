@@ -1304,8 +1304,8 @@ mbeslot_left_autoload_keys(dsd_state* state) {
             state->basic_key_present = 1U;
             state->hytera_key_segments = 1U;
             if (have_call && mbe_dmr_call_open(&call)) {
-                (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
-                                                        (int)target, 1, 0);
+                (void)dsd_call_state_note_key_selection(state, 0, DSD_SYNC_DMR_BS_VOICE_POS, call.epoch,
+                                                        DSD_CALL_KEY_DESTINATION, call.kid, (int)target, 1, 0);
             }
         }
     }
@@ -1325,8 +1325,8 @@ mbeslot_right_autoload_keys(dsd_state* state) {
             state->basic_key_present = 1U;
             state->hytera_key_segments = 1U;
             if (have_call && mbe_dmr_call_open(&call)) {
-                (void)dsd_call_state_note_key_selection(state, 1, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
-                                                        (int)target, 1, 0);
+                (void)dsd_call_state_note_key_selection(state, 1, DSD_SYNC_DMR_BS_VOICE_POS, call.epoch,
+                                                        DSD_CALL_KEY_DESTINATION, call.kid, (int)target, 1, 0);
             }
         }
     }

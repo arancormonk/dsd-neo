@@ -178,7 +178,7 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
                                      g_handler_observes == 1 ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE);
         /* The header's crypto publication, which moves the revision again as the real one does. */
         const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
-        (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+        (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DMR_BS_DATA_POS, &crypto);
     }
     if (g_handler_writes_fix) {
         DSD_SNPRINTF(state->dmr_lrrp_gps[state->currentslot & 1], sizeof state->dmr_lrrp_gps[0], "%s", "lrrp-fix");

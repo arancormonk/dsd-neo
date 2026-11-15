@@ -767,9 +767,24 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     return begins_epoch;
 }
 
+/* The protocol that owns a call's crypto and identity updates: the store's family, with P25 Phase 1 and Phase 2 one
+   (a Phase 2 voice channel's call can be opened from a Phase 1 control channel's grant). */
 static int
-call_state_crypto_target_accepts(const dsd_call_snapshot* snapshot, int include_ended) {
-    if (snapshot->epoch == 0U) {
+call_state_update_owner(int protocol) {
+    return dsd_call_state_protocol_family(DSD_SYNC_IS_P25(protocol) ? DSD_SYNC_P25P1_POS : protocol);
+}
+
+/* Whether a crypto or identity update from @p protocol's signalling may describe @p snapshot: a call of that protocol.
+   A call that names no protocol is no protocol's. */
+static int
+call_state_update_is_protocols(const dsd_call_snapshot* snapshot, int protocol) {
+    return snapshot->protocol != DSD_SYNC_NONE
+           && call_state_update_owner(snapshot->protocol) == call_state_update_owner(protocol);
+}
+
+static int
+call_state_crypto_target_accepts(const dsd_call_snapshot* snapshot, int protocol, int include_ended) {
+    if (snapshot->epoch == 0U || !call_state_update_is_protocols(snapshot, protocol)) {
         return 0;
     }
     if (snapshot->phase == DSD_CALL_PHASE_ACTIVE) {
@@ -852,8 +867,9 @@ call_state_apply_received_crypto(dsd_call_snapshot* snapshot, const dsd_call_cry
 }
 
 static int
-call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update, int include_ended) {
-    if (!state || !update || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+call_state_update_crypto(dsd_state* state, uint8_t slot, int protocol, const dsd_call_crypto_update* update,
+                         int include_ended) {
+    if (!state || !update || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
         return -1;
     }
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
@@ -862,7 +878,7 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
-    if (!call_state_crypto_target_accepts(snapshot, include_ended)) {
+    if (!call_state_crypto_target_accepts(snapshot, protocol, include_ended)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
@@ -910,10 +926,12 @@ key_selection_equal(const dsd_call_key_selection* a, const dsd_call_key_selectio
 }
 
 int
-dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
-                                  int signaled_id, int effective_id, int available, int fallback) {
-    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || !epoch || (unsigned int)source > DSD_CALL_KEY_DEFAULT
-        || available < -1 || available > 1 || fallback < 0 || fallback > DSD_CALL_KEY_FALLBACK_UNKNOWN_ALGORITHM) {
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                                  dsd_call_key_source source, int signaled_id, int effective_id, int available,
+                                  int fallback) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE || !epoch
+        || (unsigned int)source > DSD_CALL_KEY_DEFAULT || available < -1 || available > 1 || fallback < 0
+        || fallback > DSD_CALL_KEY_FALLBACK_UNKNOWN_ALGORITHM) {
         return -1;
     }
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
@@ -933,7 +951,7 @@ dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch
     selection.profile_ref[sizeof(selection.profile_ref) - 1U] = '\0';
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* call = &ext->calls.slots[slot];
-    if (call->epoch != epoch || call->phase == DSD_CALL_PHASE_IDLE) {
+    if (call->epoch != epoch || call->phase == DSD_CALL_PHASE_IDLE || !call_state_update_is_protocols(call, protocol)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
@@ -947,9 +965,17 @@ dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch
     return 1;
 }
 
+/* Whether @p snapshot holds no crypto values a replaced transmission could have published into it. */
+static int
+call_state_crypto_values_empty(const dsd_call_snapshot* snapshot) {
+    return snapshot->algid == 0U && snapshot->kid == 0U && snapshot->mi == 0U && snapshot->crypto_received == 0U
+           && snapshot->received_algid == 0U && snapshot->received_kid == 0U && snapshot->crypto_restored == 0U
+           && snapshot->enc_received == 0U;
+}
+
 int
-dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot) {
-    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot, int protocol) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
         return -1;
     }
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
@@ -959,9 +985,7 @@ dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot) {
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
     if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
-        || (snapshot->algid == 0U && snapshot->kid == 0U && snapshot->mi == 0U && snapshot->crypto_received == 0U
-            && snapshot->received_algid == 0U && snapshot->received_kid == 0U && snapshot->crypto_restored == 0U
-            && snapshot->enc_received == 0U)) {
+        || !call_state_update_is_protocols(snapshot, protocol) || call_state_crypto_values_empty(snapshot)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
@@ -980,13 +1004,14 @@ dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot) {
 }
 
 int
-dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
-    return call_state_update_crypto(state, slot, update, 0);
+dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, int protocol, const dsd_call_crypto_update* update) {
+    return call_state_update_crypto(state, slot, protocol, update, 0);
 }
 
 int
-dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
-    return call_state_update_crypto(state, slot, update, 1);
+dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, int protocol,
+                                      const dsd_call_crypto_update* update) {
+    return call_state_update_crypto(state, slot, protocol, update, 1);
 }
 
 int
@@ -1250,10 +1275,10 @@ dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snaps
 }
 
 int
-dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* source_text,
+dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* source_text,
                            const char* target_text, const char* route0_text, const char* route1_text,
                            double observed_m) {
-    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE || epoch == 0U) {
         return -1;
     }
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
@@ -1262,7 +1287,8 @@ dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
-    if (snapshot->phase != DSD_CALL_PHASE_ACTIVE || snapshot->epoch != epoch) {
+    if (snapshot->phase != DSD_CALL_PHASE_ACTIVE || snapshot->epoch != epoch
+        || !call_state_update_is_protocols(snapshot, protocol)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }

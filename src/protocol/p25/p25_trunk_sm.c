@@ -3210,13 +3210,8 @@ p25_call_publish_crypto_update(const dsd_opts* opts, dsd_state* state, int slot,
     if (!state || slot < 0 || slot > 1) {
         return;
     }
-    // Only a P25 call is described: a frame heard while no assignment is followed can leave the slot holding another
-    // protocol's call, and the call-state store checks only the phase. Which P25 call (open, or a retained ended one)
-    // stays the store's choice.
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || !DSD_SYNC_IS_P25(call.protocol)) {
-        return;
-    }
+    // Only a P25 call is described (the store refuses another protocol's: a frame heard while no assignment is followed
+    // can leave the slot holding one); which P25 call, open or a retained ended one, is the store's choice.
     // Live values a replaced conventional call left behind are still what decryption uses, but not this call's.
     const int carried = p25_crypto_live_is_inherited(state, slot);
     dsd_call_crypto_update update = {
@@ -3233,9 +3228,9 @@ p25_call_publish_crypto_update(const dsd_opts* opts, dsd_state* state, int slot,
         update.enc_observed = DSD_CALL_ENC_OBSERVED_ENCRYPTED;
     }
     if (include_ended) {
-        (void)dsd_call_state_update_retained_crypto(state, (uint8_t)slot, &update);
+        (void)dsd_call_state_update_retained_crypto(state, (uint8_t)slot, DSD_SYNC_P25P1_POS, &update);
     } else {
-        (void)dsd_call_state_update_crypto(state, (uint8_t)slot, &update);
+        (void)dsd_call_state_update_crypto(state, (uint8_t)slot, DSD_SYNC_P25P1_POS, &update);
     }
 }
 

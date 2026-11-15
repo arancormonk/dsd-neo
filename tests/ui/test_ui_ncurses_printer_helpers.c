@@ -3669,7 +3669,7 @@ test_patch_and_slot_helpers(void) {
         .kid = 22U,
         .mi = 0x5555666677778888ULL,
     };
-    assert(dsd_call_state_update_crypto(&state, 1U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 1U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
 
     ui_slot_view right = ui_build_slot_view(&(dsd_opts){0}, &state, 1);
     assert(right.slot_no == 2);
@@ -3743,7 +3743,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     crypto.mi = 0x1122334455667788ULL;
     crypto.audio_permitted = 0U;
     crypto.observed_m = 1.1;
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
 
     ui_slot_view slot = ui_build_slot_view(&no_opts, state, 0);
     assert(slot.canonical_p25 == 1);
@@ -3945,7 +3945,7 @@ test_slot_header_burst_column_is_fixed(void) {
     crypto.algid = 0x84U;
     crypto.kid = 0x2468U;
     crypto.observed_m = 1.5;
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
     capture_slot_header_line(state, 0);
     assert_capture_contains("Group Encrypted");
     assert(capture_burst_separator_offset() == baseline_offset);
@@ -4930,7 +4930,7 @@ test_tetra_call_block(void) {
     DSD_MEMSET(&crypto, 0, sizeof crypto);
     crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
     crypto.observed_m = 10.1;
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) > 0);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_TETRA_NDB_POS, &crypto) > 0);
     assert(ui_format_tetra_call_lines(state, 10.5, &lines) == 2);
     assert_tetra_call_line0(&lines, "CALL   - TGT: [        ] SRC: [        ] Voice Encrypted");
     assert_tetra_call_line1(&lines, "       | ");

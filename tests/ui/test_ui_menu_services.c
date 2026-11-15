@@ -3385,10 +3385,12 @@ main(void) {
 }
 
 int
-dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
-                                  int signaled_id, int effective_id, int available, int fallback) {
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                                  dsd_call_key_source source, int signaled_id, int effective_id, int available,
+                                  int fallback) {
     (void)state;
     (void)slot;
+    (void)protocol;
     (void)epoch;
     (void)source;
     (void)signaled_id;

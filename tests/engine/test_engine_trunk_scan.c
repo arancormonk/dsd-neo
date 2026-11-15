@@ -4955,7 +4955,7 @@ seed_voice_gate_media_epoch(dsd_state* state, double begin_m, double media_m, ds
         DSD_MEMSET(&update, 0, sizeof(update));
         update.classification = crypto;
         update.observed_m = begin_m;
-        (void)dsd_call_state_update_crypto(state, 0U, &update);
+        (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &update);
     }
     if (dsd_call_state_update_media(state, 0U, 1, begin_m) != 1
         || dsd_call_state_update_media(state, 0U, 1, media_m) != 1) {

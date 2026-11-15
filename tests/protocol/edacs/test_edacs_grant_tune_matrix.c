@@ -1096,7 +1096,7 @@ edacs_setup_eot_fixture(void) {
         .has_service_metadata = 1U,
     };
     (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
-    (void)dsd_call_state_update_crypto(&g_state, 0U,
+    (void)dsd_call_state_update_crypto(&g_state, 0U, DSD_SYNC_PROVOICE_POS,
                                        &(dsd_call_crypto_update){
                                            .classification = DSD_CALL_CRYPTO_ENCRYPTED,
                                            .algid = 0x84,
