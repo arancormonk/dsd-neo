@@ -2449,8 +2449,9 @@ suite runs under this compiler.
     identity, home, scope or value is zeroed; a valid identity, home or scope needs an in-enum subtype or kind, as
     protocol, kind, role and result do, or the push is refused), takes the reception scope from `rx_id` when the
     producer gave none (`dsd_ua_scope`: the learned-alias scope's kind, a and b from the one mapping both share,
-    `dsd_alias_scope_from_rxid()`, plus the site in `c` with `DSD_UA_SCOPE_SITE_KNOWN` and the NXDN category), and stamps `seq`, `rev`, `first_ms`/`last_ms` (decode mono ms) and
-    `wall_s` (the floored decode wall reading, the history rows' convention). `name_frozen` is the latest pushed name:
+    `dsd_alias_scope_from_rxid()`, plus the site in `c` with `DSD_UA_SCOPE_SITE_KNOWN` and the NXDN category), and
+    stamps `seq`, `rev`, `first_ms`/`last_ms` (decode mono ms) and `wall_s` (the floored decode wall reading, the
+    history rows' convention). `name_frozen` is the latest pushed name:
     the producer resolves it, a merge that pushes a non-empty one replaces it, and nothing else rewrites it.
   - Dedup: a push merges into one of the 16 most recently revised rows when every field but the stamps, `repeat`,
     `slot` and the name is equal (protocol, kind, role, result, stage, reason, the four identities with their homes,
@@ -2476,8 +2477,10 @@ suite runs under this compiler.
     Tier II NACK_Rsp (TS 102 361-2 Table 7.13, kept apart: 0x21 differs), NXDN Cause (MM) and Cause (SS) (TS 1-A Tables
     6.5-27 / 6.5-29) and the TETRA location update reject cause (EN 300 392-2 Table 16.81). `dsd_ua_reason_text()`
     returns NULL for a value its table does not define (P25 reads its ranges, "Reserved" / "User/System Defined", as
-    its prints did), so a print shows the raw value then. One table serves the log and the prints. Test:
-    `CORE_UNIT_ACTIVITY_REASON` (every 8-bit P25 code against `p25_response_reason.c`).
+    its prints did), so a print shows the raw value then. One table serves the log and the prints. The same header
+    names the TETRA location update accept types (`dsd_ua_tetra_accept_type_text()`, Table 16.68; NULL above 7), the
+    value of a TETRA location registration row. Test: `CORE_UNIT_ACTIVITY_REASON` (every 8-bit P25 code against
+    `p25_response_reason.c`).
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
@@ -6158,33 +6161,40 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the record rides the snapshot).
 - Unit activity: `include/dsd-neo/app_control/unit_activity_view.h` and `src/app_control/unit_activity_view.c` read
   a snapshot's unit activity ring (Core) for every frontend (the Qt Activity screen, the terminal panel), so both say
-  the same thing. `dsd_app_unit_activity_rows()` reads pages after a cursor `{instance, rev}` in revision order (call
-  again while `meta.more`; `meta.reset` when the cursor belonged to another ring, `meta.lost` once when unread rows were
-  evicted) and resolves each record into a `dsd_app_unit_activity_row`: `seq` (update a merged row in place), `rev`,
-  `wall_s`, `repeat`, `filters` (`DSD_UA_FILTER_LOGINS` / `TALKGROUPS` / `REFUSED` / `COMMANDS` / `OTHER`; a refused,
-  denied or failed result adds `REFUSED`, so a denied registration is in Logins and Refused; waiting rows count as
-  refused and queued), `tone` (warning for inhibit and kill, TETRA permanent disable included), and the texts:
-  `kind_label` from one first-match rule table by kind, role, result, protocol and stage. Labels say what was heard,
-  never an outcome: "Inhibit sent" / "Inhibit acknowledged", "Kill sent", "Disable command" / "Authenticated disable
-  command" / "Permanent disable command" / "Enable command" (TETRA), "Remote-control response" (any response to a
-  stun, revive or kill: NXDN REM_CON_RESP comes before execution), "Registration acknowledged" (DMR 0x62: login or
-  logout), "Logout response" (NXDN REG_C_RESP, whose success value is unconfirmed), "Talkgroup subscription response"
-  (DMR 0x65, its acceptance mask in the target text: "all rejected" when zero), "Waiting for further signalling";
-  a deny or queued row reads "Denied" / "Queued" with its `reason_text` ("<table text> (0xNN)", or "Reason 0xNN"
-  when the table names none). `subject_text` is the subject's ID ("1234567", "TG 100", "System 0x...", "Equipment
-  0x...", "Address n"); a status or message report's subject is its reporting unit. `target_text` joins the group
-  (with its label), the value (status, message, service type, DMR mask, TETRA accept type), the assigned identity
-  ("as n"), the recipient ("to n") and the requester or gateway ("from System 0xFFFECF": a gateway is never the
-  subject). `scope_text` names the row's system ("WACN BEE00 SYS 123 RFSS 1 SITE 2", "NAC 293", "Net 17 Site 5",
-  Capacity Plus "Site 4 CC 3", "SYS 77 SITE 6", "MCC 901 MNC 9999 LA 12"). Names: only RADIO and GROUP subjects are
-  named. While the row's scope is the snapshot's current one (`dsd_alias_scope_equal()` on the learned-alias scope),
-  the name comes from the snapshot's lists in that scope (`dsd_source_label_lookup_scoped()`, the assigned ID first,
-  then the subject unless its home is another system; a group's label); a row of another system shows `name_frozen`, because the current lists (a
-  trunk-scan target's own) say nothing about another system's radio. So a later alias renames only rows of its own
-  system, and A -> B -> A shows each system's names. `scope_epoch` takes no part: no current epoch exists to compare,
-  and the scope alone already tells the systems apart. `dsd_app_unit_activity_name_key()` (`dsd_alias_name_key()`)
-  changes whenever a name could change; a frontend then reads again from `{instance, 0}` and updates its rows by seq.
-  Every text is UTF-8 cut at a character boundary, controls as spaces. Test: `APP_CONTROL_UNIT_ACTIVITY`.
+  the same thing.
+  - Reading: `dsd_app_unit_activity_rows()` reads after a cursor `{instance, rev}` in revision order (call again while
+    `meta.more`; `meta.reset` when the cursor belonged to another ring; `meta.lost` until a read returns a row past the
+    rows evicted unread). Each record becomes a `dsd_app_unit_activity_row`: `seq` (update a merged row in place),
+    `rev`, `wall_s`, `repeat`, `filters`, `tone` and the texts.
+  - Filters: `DSD_UA_FILTER_LOGINS` / `TALKGROUPS` / `REFUSED` / `COMMANDS` / `OTHER` by kind; a refused, denied or
+    failed result adds `REFUSED`, so a denied registration is in Logins and Refused; waiting rows count as refused and
+    queued. `tone` is a warning for inhibit and kill (TETRA permanent disable included).
+  - Labels: `kind_label` comes from one first-match rule table by kind, role, result, protocol and stage. Labels say
+    what was heard, never an outcome: "Inhibit sent" / "Inhibit acknowledged", "Kill sent", TETRA "Disable command" /
+    "Authenticated disable command" / "Permanent disable command" / "Enable command", "Remote-control response" (any
+    response to a stun, revive or kill: NXDN REM_CON_RESP comes before execution), "Registration acknowledged" (DMR
+    0x62: login or logout), "Logout response" (NXDN REG_C_RESP, whose success value is unconfirmed), "Talkgroup
+    subscription response" (DMR 0x65, its acceptance mask in the target text, "all rejected" when zero), "Waiting for
+    further signalling". `reason_text` is "<table text> (0xNN)", or "Reason 0xNN" when the table names none.
+    `dsd_app_unit_activity_headline()` is the one line every frontend shows: the label, plus ": <reason>" on a deny
+    or queued row ("Denied: Target Unit Not Valid (0x20)").
+  - Texts: `subject_text` is the subject's ID ("1234567", "TG 100", "System 0x...", "Equipment 0x...", "Address n");
+    a status or message report's subject is its reporting unit. `target_text` (128 bytes) joins the group with its
+    label, the value (status, message, service type, DMR mask, TETRA accept type), the assigned identity ("as n"), the
+    recipient ("to n") and the requester or gateway ("from System 0xFFFECF": a gateway is never the subject). Each part
+    is whole: a long group label is shortened first (ending "…"), then a part that still does not fit is left out with
+    those after it and the text ends ", …", so an ID is never cut. `scope_text` names the row's system ("WACN BEE00
+    SYS 123 RFSS 1 SITE 2", "NAC 293", "Net 17 Site 5", Capacity Plus "Site 4 CC 3", "SYS 77 SITE 6", "MCC 901 MNC
+    9999 LA 12"). Every text is well-formed UTF-8 cut at a character boundary, C0 and C1 controls as spaces.
+  - Names: only RADIO and GROUP subjects are named. While the row's scope is the snapshot's current one
+    (`dsd_alias_scope_equal()` on the learned-alias scope), the name comes from the snapshot's lists in that scope
+    (`dsd_source_label_lookup_scoped()`: the assigned ID first, then the subject unless its home is another system; a
+    group's label); a row of another system shows `name_frozen`, because the current lists (a trunk-scan target's own)
+    say nothing about another system's radio. So a later alias renames only rows of its own system, and A -> B -> A
+    shows each system's names. `scope_epoch` takes no part: no current epoch exists to compare, and the scope alone
+    already tells the systems apart. `dsd_app_unit_activity_name_key()` (`dsd_alias_name_key()`) changes whenever a
+    name could change; a frontend then reads again from `{instance, 0}` and updates its rows by seq.
+  - Test: `APP_CONTROL_UNIT_ACTIVITY`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;

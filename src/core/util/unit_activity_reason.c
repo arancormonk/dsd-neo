@@ -240,3 +240,19 @@ dsd_ua_reason_text(uint8_t reason_set, uint16_t code) {
         default: return NULL;
     }
 }
+
+const char*
+dsd_ua_tetra_accept_type_text(uint32_t type) {
+    /* EN 300 392-2 V3.8.1 Table 16.68. */
+    static const char* const names[8] = {
+        "Roaming location updating",
+        "Temporary registration",
+        "Periodic location updating",
+        "ITSI attach",
+        "Service restoration roaming location updating",
+        "Migrating or service restoration migrating location updating",
+        "Demand location updating",
+        "Disabled MS updating",
+    };
+    return type < 8U ? names[type] : NULL;
+}

@@ -201,6 +201,32 @@ static const label_case k_labels[] = {
     {DSD_UA_PROTO_P25P2, DSD_UA_ANSWER_REQUEST, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA, 0, "Answer request"},
     {DSD_UA_PROTO_P25P1, DSD_UA_AUTHENTICATION, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA, 0, "Authentication"},
     {DSD_UA_PROTO_DMR, DSD_UA_AUTHENTICATION, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA, 0, "Authentication"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_AUTHENTICATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_NA, 0, "Authentication response"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_CALL_ALERT, DSD_UA_ROLE_ACK, DSD_UA_RESULT_ACKNOWLEDGED, 0, "Call alert acknowledged"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_DEREGISTRATION, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA, 0, "Deregistration requested"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_DETACH, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_NA, 0, "Detach response"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_INHIBIT, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_NA, 0, "Inhibit response"},
+    {DSD_UA_PROTO_DMR, DSD_UA_KILL, DSD_UA_ROLE_ACK, DSD_UA_RESULT_ACKNOWLEDGED, 0, "Kill acknowledged"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_ACK, DSD_UA_RESULT_ACKNOWLEDGED, 0,
+     "Location registration acknowledged"},
+    {DSD_UA_PROTO_TETRA, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA, 0,
+     "Location registration reported"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA, 0,
+     "Location registration requested"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_UNKNOWN, 0,
+     "Location registration response"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_MESSAGE, DSD_UA_ROLE_ACK, DSD_UA_RESULT_ACKNOWLEDGED, 0, "Message acknowledged"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_RADIO_MONITOR, DSD_UA_ROLE_ACK, DSD_UA_RESULT_ACKNOWLEDGED, 0, "Monitor acknowledged"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_RADIO_CHECK, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_NA, 0, "Radio check response"},
+    {DSD_UA_PROTO_DMR, DSD_UA_REVIVE, DSD_UA_ROLE_ACK, DSD_UA_RESULT_ACKNOWLEDGED, 0, "Revive acknowledged"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_STATUS, DSD_UA_ROLE_ACK, DSD_UA_RESULT_ACKNOWLEDGED, 0, "Status acknowledged"},
+    {DSD_UA_PROTO_DMR, DSD_UA_STUN, DSD_UA_ROLE_ACK, DSD_UA_RESULT_ACKNOWLEDGED, 0, "Stun acknowledged"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_GROUP_AFFILIATION, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA, 0, "Talkgroup affiliation"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_GROUP_AFFILIATION, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA, 0,
+     "Talkgroup affiliation requested"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_GROUP_AFFILIATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_NA, 0,
+     "Talkgroup join response"},
+    {DSD_UA_PROTO_P25P1, DSD_UA_UNINHIBIT, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_NA, 0, "Uninhibit response"},
 };
 
 static void
@@ -232,7 +258,19 @@ label_has(const char* label, const char* word) {
     return strstr(lower, word) != NULL;
 }
 
-/* Every combination of protocol, kind, role, result and stage has a label of its own kind, and no command,
+/* 1 when test_every_kind_role_result_label() asserts @p label exactly. */
+static int
+label_is_asserted(const char* label) {
+    for (size_t i = 0; i < sizeof(k_labels) / sizeof(k_labels[0]); i++) {
+        if (strcmp(k_labels[i].label, label) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Every combination of protocol, kind, role, result and stage has a label of its own kind that the exact-label test
+ * covers (so a new rule label needs its case), and no command,
  * acknowledgement or response label says the radio was killed, stunned, disabled or inhibited. */
 static void
 test_labels_never_claim_outcome(void) {
@@ -251,6 +289,10 @@ test_labels_never_claim_outcome(void) {
                         const dsd_app_unit_activity_row row = view_of(st, &cursor, &r);
                         assert(row.kind_label[0] != '\0');
                         assert(strcmp(row.kind_label, "Unit activity") != 0);
+                        if (!label_is_asserted(row.kind_label)) {
+                            DSD_FPRINTF(stderr, "label '%s' has no exact case in k_labels\n", row.kind_label);
+                            assert(0);
+                        }
                         assert(row.filters != 0U);
                         assert(strcmp(row.protocol_text, "") != 0);
                         if (role == DSD_UA_ROLE_REPORT) {
@@ -540,6 +582,145 @@ test_name_text_is_clean(void) {
     DSD_MEMCPY(r.name_frozen, "Ab\xE2\x82", 4); /* a three-byte character cut after two */
     row = view_of(st, &cursor, &r);
     assert(strcmp(row.subject_name, "Ab") == 0);
+    /* Not UTF-8 (an overlong '/', a surrogate, a code point above U+10FFFF) is dropped; a C1 control is a space. */
+    r.subject.id = 11U;
+    DSD_MEMSET(r.name_frozen, 0, sizeof r.name_frozen);
+    DSD_MEMCPY(r.name_frozen,
+               "a\xC0\xAF"
+               "b\xED\xA0\x80"
+               "c\xF4\x90\x80\x80"
+               "d\xC2\x85"
+               "e",
+               17);
+    row = view_of(st, &cursor, &r);
+    assert(strcmp(row.subject_name, "abcd e") == 0);
+    free_state(st);
+}
+
+/* ---- Target text that would not fit ---- */
+
+static int
+add_group_label(dsd_state* st, uint32_t tg, const char* name) {
+    dsd_tg_policy_entry entry;
+    if (dsd_tg_policy_make_exact_entry(tg, "A", name, DSD_TG_POLICY_SOURCE_IMPORTED, &entry) != 0) {
+        return -1;
+    }
+    return dsd_tg_policy_upsert_exact(st, &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+}
+
+static int
+ends_with(const char* text, const char* tail) {
+    const size_t n = strlen(text);
+    const size_t m = strlen(tail);
+    return n >= m && strcmp(text + n - m, tail) == 0;
+}
+
+/* target_text never cuts an ID or a value: the longest TETRA accept type keeps its assigned SSI, a long talkgroup
+ * label is shortened (with "…") before an identity is touched, and when even that is not enough a whole part is left
+ * out and the text ends ", …". */
+static void
+test_target_text_never_cuts_a_part(void) {
+    /* A 49-byte label, as long as a list row holds. */
+    static const char k_label49[] = "Northside County Fire Dispatch Main Operations 01";
+    _Static_assert(sizeof(k_label49) == DSD_SOURCE_ALIAS_NAME_MAX, "the longest label a row holds");
+    dsd_state* st = new_state();
+    dsd_app_unit_activity_cursor cursor = {0, 0};
+    assert(add_group_label(st, 100U, k_label49) == 0);
+    assert(add_group_label(st, 4294967295U, k_label49) == 0);
+
+    /* TETRA accept type 5 (the longest, 60 bytes) with an assigned SSI. */
+    dsd_unit_activity r =
+        mk(DSD_UA_PROTO_TETRA, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_ACCEPTED, 2001U);
+    r.value = 5U;
+    r.value_valid = 1U;
+    set_identity(&r.assigned, 1234567U, DSD_UA_ID_RADIO);
+    dsd_app_unit_activity_row row = view_of(st, &cursor, &r);
+    assert(strcmp(row.target_text, "Migrating or service restoration migrating location updating, as 1234567") == 0);
+
+    /* A long label with a requester: both whole. */
+    r = mk(DSD_UA_PROTO_P25P1, DSD_UA_GROUP_AFFILIATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_ACCEPTED, 2002U);
+    r.group = 100U;
+    r.group_valid = 1U;
+    set_identity(&r.actor, 1234567U, DSD_UA_ID_RADIO);
+    row = view_of(st, &cursor, &r);
+    assert(strcmp(row.target_text, "TG 100 Northside County Fire Dispatch Main Operations 01, from 1234567") == 0);
+
+    /* Every part at its longest: the label gives way first, every ID stays whole. */
+    r = mk(DSD_UA_PROTO_TETRA, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_ACCEPTED, 2003U);
+    r.group = 100U;
+    r.group_valid = 1U;
+    r.value = 5U;
+    r.value_valid = 1U;
+    set_identity(&r.assigned, 4294967295U, DSD_UA_ID_RADIO);
+    set_identity(&r.recipient, 4294967295U, DSD_UA_ID_RADIO);
+    set_identity(&r.actor, 0xFFFFFFFFU, DSD_UA_ID_INFRASTRUCTURE);
+    row = view_of(st, &cursor, &r);
+    assert(strcmp(row.target_text,
+                  "TG 100 N\xE2\x80\xA6, Migrating or service restoration migrating location updating, as 4294967295, "
+                  "to 4294967295, from System 0xFFFFFFFF")
+           == 0);
+    assert(strlen(row.target_text) < sizeof row.target_text);
+
+    /* With the longest talkgroup number too, not even the shortened label fits: the label goes, then the last part,
+     * and the text says so. */
+    r.group = 4294967295U;
+    row = view_of(st, &cursor, &r);
+    assert(strcmp(row.target_text,
+                  "TG 4294967295, Migrating or service restoration migrating location updating, as 4294967295, "
+                  "to 4294967295, \xE2\x80\xA6")
+           == 0);
+    assert(ends_with(row.target_text, ", \xE2\x80\xA6"));
+
+    /* An accept type the 3-bit field cannot hold is shown raw, never as a real type. */
+    r = mk(DSD_UA_PROTO_TETRA, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_ACCEPTED, 2004U);
+    r.value = 13U;
+    r.value_valid = 1U;
+    row = view_of(st, &cursor, &r);
+    assert(strcmp(row.target_text, "accept type 13") == 0);
+    free_state(st);
+}
+
+/* ---- Headline ---- */
+
+static void
+test_headline(void) {
+    dsd_state* st = new_state();
+    dsd_app_unit_activity_cursor cursor = {0, 0};
+    char headline[DSD_APP_UNIT_ACTIVITY_HEADLINE_SIZE];
+
+    dsd_unit_activity r = mk(DSD_UA_PROTO_P25P1, DSD_UA_DENY, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_DENIED, 1U);
+    r.reason_set = DSD_UA_REASON_P25_DENY;
+    r.reason_code = 0x20U;
+    dsd_app_unit_activity_row row = view_of(st, &cursor, &r);
+    dsd_app_unit_activity_headline(&row, headline, sizeof headline);
+    assert(strcmp(headline, "Denied: Target Unit Not Valid (0x20)") == 0);
+
+    r = mk(DSD_UA_PROTO_P25P1, DSD_UA_QUEUED, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_QUEUED, 2U);
+    row = view_of(st, &cursor, &r); /* no reason */
+    dsd_app_unit_activity_headline(&row, headline, sizeof headline);
+    assert(strcmp(headline, "Queued") == 0);
+
+    /* Another kind keeps its reason on its own line. */
+    r = mk(DSD_UA_PROTO_DMR, DSD_UA_REGISTRATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_REFUSED, 3U);
+    r.reason_set = DSD_UA_REASON_DMR_TIER3;
+    r.reason_code = 0x2AU;
+    row = view_of(st, &cursor, &r);
+    dsd_app_unit_activity_headline(&row, headline, sizeof headline);
+    assert(strcmp(headline, "Registration refused") == 0);
+
+    /* The longest label and reason fit the documented size. */
+    r = mk(DSD_UA_PROTO_DMR, DSD_UA_DENY, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_DENIED, 4U);
+    r.reason_set = DSD_UA_REASON_DMR_TIER3;
+    r.reason_code = 0x65U;
+    row = view_of(st, &cursor, &r);
+    dsd_app_unit_activity_headline(&row, headline, sizeof headline);
+    assert(strcmp(headline, "Denied: Registration with talkgroup subscription / attachment (0x65)") == 0);
+    /* Cut at a character boundary, never past cap. */
+    dsd_app_unit_activity_headline(&row, headline, 9U);
+    assert(strcmp(headline, "Denied: ") == 0);
+    dsd_app_unit_activity_headline(NULL, headline, sizeof headline);
+    assert(headline[0] == '\0');
+    dsd_app_unit_activity_headline(&row, NULL, 4U);
     free_state(st);
 }
 
@@ -629,6 +810,49 @@ test_reader_lost_after_wrap(void) {
     /* Told once. */
     assert(read_all(st, &cursor, rows, 4, &meta) == 0);
     assert(meta.lost == 0U);
+    free(rows);
+    free_state(st);
+}
+
+/* One read larger than the view's internal page (16 records): rows stay in order across the seam, the cursor ends on
+ * the last one, and a loss is reported for the read that crossed it. */
+static void
+test_read_across_pages(void) {
+    dsd_state* st = new_state();
+    dsd_decode_clock_use_test(T0_NS);
+    for (uint32_t i = 0; i < 40U; i++) {
+        const dsd_unit_activity r =
+            mk(DSD_UA_PROTO_DMR, DSD_UA_REGISTRATION, DSD_UA_ROLE_ACK, DSD_UA_RESULT_ACKNOWLEDGED, 500U + i);
+        assert(dsd_unit_activity_push(st, &r) == 1);
+    }
+    dsd_app_unit_activity_row* rows =
+        (dsd_app_unit_activity_row*)calloc(DSD_UNIT_ACTIVITY_CAPACITY, sizeof(dsd_app_unit_activity_row));
+    assert(rows != NULL);
+    dsd_app_unit_activity_cursor cursor = {0, 0};
+    dsd_app_unit_activity_meta meta;
+    assert(dsd_app_unit_activity_rows(st, &cursor, rows, 64, &meta) == 40);
+    assert(meta.reset == 1U && meta.lost == 0U && meta.more == 0U);
+    for (int i = 0; i < 40; i++) {
+        assert(rows[i].seq == (uint64_t)i + 1U);
+        assert(strcmp(rows[i].subject_text, "") != 0);
+    }
+    assert(cursor.rev == 40U);
+
+    /* Wrap past the cursor, then read it all in one call of 37 pages' worth. */
+    for (uint32_t i = 0; i < DSD_UNIT_ACTIVITY_CAPACITY + 20U; i++) {
+        const dsd_unit_activity r =
+            mk(DSD_UA_PROTO_DMR, DSD_UA_REGISTRATION, DSD_UA_ROLE_ACK, DSD_UA_RESULT_ACKNOWLEDGED, 9000U + i);
+        assert(dsd_unit_activity_push(st, &r) == 1);
+    }
+    const int n = dsd_app_unit_activity_rows(st, &cursor, rows, DSD_UNIT_ACTIVITY_CAPACITY, &meta);
+    assert(n == DSD_UNIT_ACTIVITY_CAPACITY);
+    assert(meta.lost == 1U && meta.reset == 0U && meta.more == 0U);
+    for (int i = 1; i < n; i++) {
+        assert(rows[i].seq == rows[i - 1].seq + 1U);
+    }
+    assert(rows[n - 1].seq == 40U + DSD_UNIT_ACTIVITY_CAPACITY + 20U);
+    assert(cursor.rev == rows[n - 1].rev);
+    assert(dsd_app_unit_activity_rows(st, &cursor, rows, 4, &meta) == 0 && meta.lost == 0U);
     free(rows);
     free_state(st);
 }
@@ -805,6 +1029,9 @@ main(void) {
     test_name_text_is_clean();
     test_pagination_and_merge();
     test_reader_lost_after_wrap();
+    test_read_across_pages();
+    test_target_text_never_cuts_a_part();
+    test_headline();
     test_bad_arguments();
     test_names_follow_row_scope();
     test_late_alias_renames_same_scope_only();

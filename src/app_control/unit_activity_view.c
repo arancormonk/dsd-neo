@@ -18,6 +18,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
+#include <dsd-neo/core/utf16.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -36,40 +37,44 @@ enum {
 
 /* ---- Text ---- */
 
-/* The length of the UTF-8 sequence @p s starts (at most @p avail bytes), or 0 when it is not a complete, valid one. */
+/* The length of the UTF-8 sequence @p s starts (at most @p avail bytes), or 0 when it is not a complete, well-formed
+ * one (RFC 3629: no overlong form, no surrogate, nothing above U+10FFFF). */
 static size_t
 ua_utf8_sequence(const unsigned char* s, size_t avail) {
-    size_t len = 0U;
-    if (s[0] < 0x80U) {
-        return 1U;
-    }
-    if (s[0] >= 0xC2U && s[0] <= 0xDFU) {
-        len = 2U;
-    } else if (s[0] >= 0xE0U && s[0] <= 0xEFU) {
-        len = 3U;
-    } else if (s[0] >= 0xF0U && s[0] <= 0xF4U) {
-        len = 4U;
-    } else {
-        return 0U;
-    }
-    if (len > avail) {
+    unsigned char lo = 0U;
+    unsigned char hi = 0U;
+    const size_t len = dsd_utf8_lead(s[0], &lo, &hi);
+    if (len == 0U || len > avail) {
         return 0U;
     }
     for (size_t i = 1U; i < len; i++) {
-        if ((s[i] & 0xC0U) != 0x80U) {
+        const unsigned char min = i == 1U ? lo : 0x80U;
+        const unsigned char max = i == 1U ? hi : 0xBFU;
+        if (s[i] < min || s[i] > max) {
             return 0U;
         }
     }
     return len;
 }
 
+/* 1 when the sequence of @p len bytes at @p s is a C0 or C1 control character or DEL. */
+static int
+ua_is_control(const unsigned char* s, size_t len) {
+    if (len == 1U) {
+        return s[0] < 0x20U || s[0] == 0x7FU;
+    }
+    return len == 2U && s[0] == 0xC2U && s[1] <= 0x9FU; /* U+0080..U+009F */
+}
+
 /* Append @p src to @p dst (capacity @p cap, holding a string): whole UTF-8 characters only, cut at the last one that
- * fits, with each control character as a space and each byte that starts no valid character dropped. */
-static void
+ * fits, with each control character as a space and each byte that starts no well-formed character dropped. Returns
+ * 1 when all of @p src went in, 0 when it was cut. */
+static int
 ua_text_append(char* dst, size_t cap, const char* src) {
     size_t out = strlen(dst);
     const unsigned char* s = (const unsigned char*)src;
     size_t left = strlen(src);
+    int whole = 1;
     while (left > 0U) {
         const size_t len = ua_utf8_sequence(s, left);
         if (len == 0U) {
@@ -78,10 +83,11 @@ ua_text_append(char* dst, size_t cap, const char* src) {
             continue;
         }
         if (out + len >= cap) {
+            whole = 0;
             break;
         }
-        if (len == 1U) {
-            dst[out++] = (s[0] < 0x20U || s[0] == 0x7FU) ? ' ' : (char)s[0];
+        if (ua_is_control(s, len)) {
+            dst[out++] = ' ';
         } else {
             DSD_MEMCPY(dst + out, s, len);
             out += len;
@@ -90,24 +96,13 @@ ua_text_append(char* dst, size_t cap, const char* src) {
         left -= len;
     }
     dst[out] = '\0';
+    return whole;
 }
 
 static void
 ua_text_set(char* dst, size_t cap, const char* src) {
     dst[0] = '\0';
-    ua_text_append(dst, cap, src);
-}
-
-/* Append one ", "-separated part. */
-static void
-ua_text_part(char* dst, size_t cap, const char* part) {
-    if (part[0] == '\0') {
-        return;
-    }
-    if (dst[0] != '\0') {
-        ua_text_append(dst, cap, ", ");
-    }
-    ua_text_append(dst, cap, part);
+    (void)ua_text_append(dst, cap, src);
 }
 
 /* ---- Labels ---- */
@@ -116,6 +111,10 @@ typedef struct {
     uint8_t kind, role, result, protocol, stage;
     const char* label;
 } ua_label_rule;
+
+/* The labels a headline adds the reason to (dsd_app_unit_activity_headline()). */
+static const char k_label_denied[] = "Denied";
+static const char k_label_queued[] = "Queued";
 
 /* First match wins: protocol- and stage-specific rules before the general ones, a kind's catch-all last. Commands and
  * acknowledgements say the command was sent or acknowledged, never that it took effect. */
@@ -171,8 +170,8 @@ static const ua_label_rule k_label_rules[] = {
      "Talkgroup join response"},
     {DSD_UA_GROUP_AFFILIATION, UA_ANY_ROLE, UA_ANY_RESULT, UA_ANY_PROTO, UA_ANY_STAGE, "Talkgroup affiliation"},
 
-    {DSD_UA_DENY, UA_ANY_ROLE, UA_ANY_RESULT, UA_ANY_PROTO, UA_ANY_STAGE, "Denied"},
-    {DSD_UA_QUEUED, UA_ANY_ROLE, UA_ANY_RESULT, UA_ANY_PROTO, UA_ANY_STAGE, "Queued"},
+    {DSD_UA_DENY, UA_ANY_ROLE, UA_ANY_RESULT, UA_ANY_PROTO, UA_ANY_STAGE, k_label_denied},
+    {DSD_UA_QUEUED, UA_ANY_ROLE, UA_ANY_RESULT, UA_ANY_PROTO, UA_ANY_STAGE, k_label_queued},
     {DSD_UA_WAITING, UA_ANY_ROLE, UA_ANY_RESULT, UA_ANY_PROTO, UA_ANY_STAGE, "Waiting for further signalling"},
 
     {DSD_UA_RADIO_CHECK, DSD_UA_ROLE_ACK, UA_ANY_RESULT, UA_ANY_PROTO, UA_ANY_STAGE, "Radio check acknowledged"},
@@ -363,37 +362,8 @@ ua_subject_name(const ua_naming* n, const dsd_unit_activity* r, char* out, size_
     ua_text_set(out, cap, found ? name : r->name_frozen);
 }
 
-static void
-ua_group_part(const ua_naming* n, const dsd_unit_activity* r, char* out, size_t cap) {
-    char label[DSD_SOURCE_ALIAS_NAME_MAX + 16];
-    char text[96];
-    out[0] = '\0';
-    if (!r->group_valid) {
-        return;
-    }
-    if (n->live && dsd_tg_policy_lookup_group_label(n->snapshot, r->group, NULL, 0U, label, sizeof label)) {
-        DSD_SNPRINTF(text, sizeof text, "TG %u %s", (unsigned)r->group, label);
-    } else {
-        DSD_SNPRINTF(text, sizeof text, "TG %u", (unsigned)r->group);
-    }
-    ua_text_set(out, cap, text);
-}
-
-/* TETRA EN 300 392-2 Table 16.68: the location update accept type. */
-static const char*
-ua_tetra_accept_type(uint32_t type) {
-    static const char* const names[8] = {
-        "Roaming location updating",
-        "Temporary registration",
-        "Periodic location updating",
-        "ITSI attach",
-        "Service restoration roaming location updating",
-        "Migrating or service restoration migrating location updating",
-        "Demand location updating",
-        "Disabled MS updating",
-    };
-    return names[type & 7U];
-}
+/* The "…" a shortened text ends with. */
+static const char k_ellipsis[] = "\xE2\x80\xA6";
 
 static void
 ua_value_part(const dsd_unit_activity* r, char* out, size_t cap) {
@@ -403,7 +373,12 @@ ua_value_part(const dsd_unit_activity* r, char* out, size_t cap) {
     }
     const unsigned v = (unsigned)r->value;
     if (r->protocol == DSD_UA_PROTO_TETRA && r->kind == DSD_UA_LOCATION_REGISTRATION) {
-        DSD_SNPRINTF(out, cap, "%s", ua_tetra_accept_type(v));
+        const char* type = dsd_ua_tetra_accept_type_text(r->value);
+        if (type) {
+            DSD_SNPRINTF(out, cap, "%s", type);
+        } else {
+            DSD_SNPRINTF(out, cap, "accept type %u", v);
+        }
     } else if (r->protocol == DSD_UA_PROTO_DMR && r->kind == DSD_UA_GROUP_AFFILIATION) {
         if (v == 0U) {
             DSD_SNPRINTF(out, cap, "%s", "all rejected");
@@ -433,20 +408,98 @@ ua_identity_part(const char* lead, const dsd_ua_identity* id, char* out, size_t 
     }
 }
 
+/* The parts of a target text after its group, in display order. */
+enum { UA_TARGET_VALUE, UA_TARGET_AS, UA_TARGET_TO, UA_TARGET_FROM, UA_TARGET_PARTS };
+
+enum { UA_TARGET_PART_SIZE = 80 };
+
+/* Shorten @p label in place so that it takes at most @p room bytes: whole, or cut at a character boundary and ended
+ * with "…", or (when not even one character and the "…" fit) nothing. */
+static void
+ua_label_fit(char* label, size_t room) {
+    if (strlen(label) <= room) {
+        return;
+    }
+    if (room < sizeof(k_ellipsis)) {
+        label[0] = '\0';
+        return;
+    }
+    char cut[DSD_SOURCE_ALIAS_NAME_MAX + 16];
+    const size_t keep = room - (sizeof(k_ellipsis) - 1U);
+    ua_text_set(cut, keep + 1U < sizeof cut ? keep + 1U : sizeof cut, label);
+    size_t len = strlen(cut);
+    while (len > 0U && cut[len - 1U] == ' ') {
+        cut[--len] = '\0';
+    }
+    DSD_SNPRINTF(label, room + 1U, "%s%s", cut, len > 0U ? k_ellipsis : "");
+}
+
+/* Append @p part after a ", " when the text already holds one, only when it fits whole in @p limit bytes (the
+ * terminator included). Returns 0 (nothing appended) when it does not. */
+static int
+ua_join_whole(char* out, size_t limit, const char* part) {
+    const size_t sep = out[0] != '\0' ? 2U : 0U;
+    if (strlen(out) + sep + strlen(part) >= limit) {
+        return 0;
+    }
+    if (sep) {
+        (void)ua_text_append(out, limit, ", ");
+    }
+    (void)ua_text_append(out, limit, part);
+    return 1;
+}
+
+/* The row's talkgroup with, when the row's system is current, its label shortened to what the rest leaves room for. */
+static void
+ua_group_text(const ua_naming* n, const dsd_unit_activity* r, size_t room, char* out, size_t cap) {
+    char label[DSD_SOURCE_ALIAS_NAME_MAX + 16];
+    out[0] = '\0';
+    if (!r->group_valid) {
+        return;
+    }
+    DSD_SNPRINTF(out, cap, "TG %u", (unsigned)r->group);
+    const size_t used = strlen(out) + 1U; /* the number and the space before the label */
+    if (!n->live || room <= used
+        || !dsd_tg_policy_lookup_group_label(n->snapshot, r->group, NULL, 0U, label, sizeof label)) {
+        return;
+    }
+    ua_label_fit(label, room - used);
+    if (label[0] != '\0') {
+        (void)ua_text_append(out, cap, " ");
+        (void)ua_text_append(out, cap, label);
+    }
+}
+
+/* Every part goes in whole or not at all: a group label is shortened first ("…"), then a part that still does not fit
+ * and those after it are left out and the text ends with ", …". An ID is never cut. */
 static void
 ua_target_text(const ua_naming* n, const dsd_unit_activity* r, char* out, size_t cap) {
-    char part[96];
+    char parts[UA_TARGET_PARTS][UA_TARGET_PART_SIZE];
+    char group[UA_TARGET_PART_SIZE];
+    ua_value_part(r, parts[UA_TARGET_VALUE], sizeof parts[0]);
+    ua_identity_part("as", &r->assigned, parts[UA_TARGET_AS], sizeof parts[0]);
+    ua_identity_part("to", &r->recipient, parts[UA_TARGET_TO], sizeof parts[0]);
+    ua_identity_part("from", &r->actor, parts[UA_TARGET_FROM], sizeof parts[0]);
+    size_t rest = 0U; /* the parts after the group, each with its ", " */
+    for (int i = 0; i < UA_TARGET_PARTS; i++) {
+        rest += parts[i][0] != '\0' ? strlen(parts[i]) + 2U : 0U;
+    }
+    const size_t room = cap - 1U > rest ? cap - 1U - rest : 0U;
+    ua_group_text(n, r, room, group, sizeof group);
+    int last = -1;
+    for (int i = 0; i < UA_TARGET_PARTS; i++) {
+        last = parts[i][0] != '\0' ? i : last;
+    }
     out[0] = '\0';
-    ua_group_part(n, r, part, sizeof part);
-    ua_text_part(out, cap, part);
-    ua_value_part(r, part, sizeof part);
-    ua_text_part(out, cap, part);
-    ua_identity_part("as", &r->assigned, part, sizeof part);
-    ua_text_part(out, cap, part);
-    ua_identity_part("to", &r->recipient, part, sizeof part);
-    ua_text_part(out, cap, part);
-    ua_identity_part("from", &r->actor, part, sizeof part);
-    ua_text_part(out, cap, part);
+    (void)ua_join_whole(out, cap, group);
+    /* Room for ", …" is kept while a later part could still be left out. */
+    const size_t reserve = 2U + sizeof(k_ellipsis) - 1U;
+    for (int i = 0; i <= last; i++) {
+        if (parts[i][0] != '\0' && !ua_join_whole(out, i < last ? cap - reserve : cap, parts[i])) {
+            (void)ua_join_whole(out, cap, k_ellipsis);
+            return;
+        }
+    }
 }
 
 static void
@@ -588,4 +641,22 @@ dsd_app_unit_activity_rows(const dsd_state* snapshot, dsd_app_unit_activity_curs
 uint64_t
 dsd_app_unit_activity_name_key(const dsd_state* snapshot) {
     return dsd_alias_name_key(snapshot);
+}
+
+void
+dsd_app_unit_activity_headline(const dsd_app_unit_activity_row* row, char* out, size_t cap) {
+    if (!out || cap == 0U) {
+        return;
+    }
+    out[0] = '\0';
+    if (!row) {
+        return;
+    }
+    (void)ua_text_append(out, cap, row->kind_label);
+    const int with_reason =
+        strcmp(row->kind_label, k_label_denied) == 0 || strcmp(row->kind_label, k_label_queued) == 0;
+    if (with_reason && row->reason_text[0] != '\0') {
+        (void)ua_text_append(out, cap, ": ");
+        (void)ua_text_append(out, cap, row->reason_text);
+    }
 }

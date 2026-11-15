@@ -78,6 +78,26 @@ test_tetra(void) {
 }
 
 static void
+test_tetra_accept_type(void) {
+    static const char* const want[8] = {
+        "Roaming location updating",
+        "Temporary registration",
+        "Periodic location updating",
+        "ITSI attach",
+        "Service restoration roaming location updating",
+        "Migrating or service restoration migrating location updating",
+        "Demand location updating",
+        "Disabled MS updating",
+    };
+    for (uint32_t t = 0; t < 8U; t++) {
+        const char* got = dsd_ua_tetra_accept_type_text(t);
+        assert(got && strcmp(got, want[t]) == 0);
+    }
+    assert(dsd_ua_tetra_accept_type_text(8U) == NULL);
+    assert(dsd_ua_tetra_accept_type_text(13U) == NULL);
+}
+
+static void
 test_no_table(void) {
     assert(dsd_ua_reason_text(DSD_UA_REASON_NONE, 0x20U) == NULL);
     assert(dsd_ua_reason_text(99U, 0x20U) == NULL);
@@ -89,6 +109,7 @@ main(void) {
     test_dmr();
     test_nxdn();
     test_tetra();
+    test_tetra_accept_type();
     test_no_table();
     printf("CORE_UNIT_ACTIVITY_REASON: OK\n");
     return 0;

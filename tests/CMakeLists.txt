@@ -1118,7 +1118,6 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/call_view.h
   CXX
 )
-# Issue #575: the call history's access-code text, read by the Qt call history.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_unit_activity_view
   HEADERS_PUBLIC_APP_CONTROL_UNIT_ACTIVITY_VIEW
@@ -1131,6 +1130,7 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/unit_activity_view.h
   CXX
 )
+# Issue #575: the call history's access-code text, read by the Qt call history.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_site_identity_view
   HEADERS_PUBLIC_APP_CONTROL_SITE_IDENTITY_VIEW
