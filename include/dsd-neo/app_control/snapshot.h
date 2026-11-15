@@ -23,8 +23,8 @@
  * consumer thread. Both return NULL until the first publish.
  *
  * Staleness: stopping the frontend runtime clears the hooks but not the published
- * snapshots — the last values keep being returned. Never infer running/stopped
- * state from snapshot contents.
+ * snapshots — the last values keep being returned, all but their key material,
+ * which the stop wipes. Never infer running/stopped state from snapshot contents.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SNAPSHOT_H_

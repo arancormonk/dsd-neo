@@ -26,6 +26,10 @@ extern "C" {
 
 void dsd_app_install_telemetry_hooks(void);
 void dsd_app_telemetry_publish_snapshot(const dsd_state* state);
+/* The session ended (dsd_app_frontend_runtime_stop()): the state snapshots outlive it (snapshot.h), their key copies do
+ * not. Wipes the published copy's key material now (DSD_SECURE_ZERO) and the consumer's at its next read, which then
+ * copies the published state again; a later publish fills both anew. */
+void dsd_app_snapshot_wipe_keys(void);
 void dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts);
 
 /* Whether a publication found the P25 SM tick guard busy and was put off (1), until the next publish of the same

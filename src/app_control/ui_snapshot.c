@@ -79,6 +79,8 @@ static const ui_snapshot_marks k_live_marks = {
 /* The consumer copy holds a store that is not whole: the next read copies again even with no new publication, so a
  * consumer-side allocation that failed recovers without waiting for the decoder to publish. */
 static int g_consume_needs_retry = 0;
+/* The session ended (dsd_app_snapshot_wipe_keys()): the consumer's next read wipes the key copies its buffer holds. */
+static int g_consume_wipe_keys = 0;
 
 #ifdef DSD_NEO_TEST_HOOKS
 static dsd_app_snapshot_event_history_copy_counts g_eh_copy_counts;
@@ -490,6 +492,30 @@ ui_snapshot_copy_render_state(dsd_state* dst, ui_snapshot_marks* marks, const ds
         (src->scan_avoids_complete && marks->lcn_valid && marks->trunk_scan_avoids.valid) ? 1U : 0U;
 }
 
+/* The key material the copied ranges carry: the scalar and AES keys (as dsd_key_state_secure_wipe() wipes them on the
+ * live state, the keyring and the TETRA air keys aside, which no range copies), the talkgroup autoload's copies of them
+ * and the CSI key. */
+static void
+ui_snapshot_wipe_key_copies(dsd_state* snap) {
+    DSD_SECURE_ZERO(snap->scalar_key_present, sizeof snap->scalar_key_present);
+    snap->basic_key_present = 0;
+    DSD_SECURE_ZERO(&snap->K, sizeof snap->K);
+    DSD_SECURE_ZERO(&snap->K1, sizeof snap->K1);
+    DSD_SECURE_ZERO(&snap->K2, sizeof snap->K2);
+    DSD_SECURE_ZERO(&snap->K3, sizeof snap->K3);
+    DSD_SECURE_ZERO(&snap->K4, sizeof snap->K4);
+    DSD_SECURE_ZERO(&snap->R, sizeof snap->R);
+    DSD_SECURE_ZERO(&snap->RR, sizeof snap->RR);
+    DSD_SECURE_ZERO(&snap->H, sizeof snap->H);
+    DSD_SECURE_ZERO(&snap->dmr_tg_autoload, sizeof snap->dmr_tg_autoload);
+    DSD_SECURE_ZERO(snap->A1, sizeof snap->A1);
+    DSD_SECURE_ZERO(snap->A2, sizeof snap->A2);
+    DSD_SECURE_ZERO(snap->A3, sizeof snap->A3);
+    DSD_SECURE_ZERO(snap->A4, sizeof snap->A4);
+    DSD_SECURE_ZERO(snap->aes_key, sizeof snap->aes_key);
+    DSD_SECURE_ZERO(snap->csi_ee_key, sizeof snap->csi_ee_key);
+}
+
 static void
 ensure_mu_init(void) {
     if (atomic_load(&g_mu_state) == 2) {
@@ -610,10 +636,26 @@ dsd_app_telemetry_snapshot_pending(void) {
     return atomic_load(&g_pub_pending);
 }
 
+void
+dsd_app_snapshot_wipe_keys(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    ui_snapshot_wipe_key_copies(&g_pub);
+    /* The consumer's buffer is read without the lock on its own thread (snapshot.h), so that thread wipes it, at its
+       next read, which then copies the published state again. */
+    g_consume_wipe_keys = 1;
+    g_consume_needs_retry = 1;
+    dsd_mutex_unlock(&g_mu);
+}
+
 const dsd_state*
 dsd_app_get_latest_snapshot(void) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
+    if (g_consume_wipe_keys) {
+        ui_snapshot_wipe_key_copies(&g_consume);
+        g_consume_wipe_keys = 0;
+    }
     if (!g_have) {
         dsd_mutex_unlock(&g_mu);
         return NULL;

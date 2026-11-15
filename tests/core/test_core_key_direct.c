@@ -18,6 +18,7 @@
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
 #include <mbelib-neo/mbelib.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -153,6 +154,78 @@ bootstrap_snapshot_secrets(void) {
     DSD_SECURE_ZERO(key, sizeof key);
     DSD_SECURE_ZERO(&state, sizeof state);
     DSD_SECURE_ZERO(&opts, sizeof opts);
+}
+
+/* Every key copy a state snapshot carries: the scalar and AES keys, the talkgroup autoload's copies of them and its
+   slot keys, the CSI key, and the scalar key presence. */
+#define SNAPSHOT_KEY(field) {offsetof(dsd_state, field), sizeof(((dsd_state*)0)->field)}
+
+static const struct {
+    size_t offset;
+    size_t size;
+} k_snapshot_keys[] = {
+    SNAPSHOT_KEY(K),
+    SNAPSHOT_KEY(K1),
+    SNAPSHOT_KEY(K2),
+    SNAPSHOT_KEY(K3),
+    SNAPSHOT_KEY(K4),
+    SNAPSHOT_KEY(R),
+    SNAPSHOT_KEY(RR),
+    SNAPSHOT_KEY(H),
+    SNAPSHOT_KEY(dmr_tg_autoload),
+    SNAPSHOT_KEY(A1),
+    SNAPSHOT_KEY(A2),
+    SNAPSHOT_KEY(A3),
+    SNAPSHOT_KEY(A4),
+    SNAPSHOT_KEY(aes_key),
+    SNAPSHOT_KEY(csi_ee_key),
+    SNAPSHOT_KEY(scalar_key_present),
+    SNAPSHOT_KEY(basic_key_present),
+};
+
+#undef SNAPSHOT_KEY
+
+static void
+snapshot_keys_fill(dsd_state* state, uint8_t value) {
+    for (size_t i = 0; i < sizeof k_snapshot_keys / sizeof k_snapshot_keys[0]; ++i) {
+        DSD_MEMSET((uint8_t*)state + k_snapshot_keys[i].offset, value, k_snapshot_keys[i].size);
+    }
+}
+
+static int
+snapshot_keys_are(const dsd_state* state, uint8_t value) {
+    for (size_t i = 0; i < sizeof k_snapshot_keys / sizeof k_snapshot_keys[0]; ++i) {
+        const uint8_t* at = (const uint8_t*)state + k_snapshot_keys[i].offset;
+        for (size_t b = 0; b < k_snapshot_keys[i].size; ++b) {
+            if (at[b] != value) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* The state snapshot outlives its session (snapshot.h): the frontend keeps reading the last one after a stop, and on
+   Android until the next session publishes. Its key copies (the scalar and AES keys, the talkgroup autoload's copies
+   of them and its slot keys, the CSI key) do not: the stop wipes the published copy and the consumer's, whatever else
+   stays. */
+static void
+stopped_session_snapshot_keeps_no_key(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    snapshot_keys_fill(&state, 0x5AU);
+    state.payload_algid = 0x21;
+    dsd_app_frontend_runtime_start(&opts, &state);
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot_keys_are(snapshot, 0x5AU), "a running session's snapshot has its keys");
+    dsd_app_frontend_runtime_stop();
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot_keys_are(snapshot, 0U), "a stopped session's snapshot keeps no key");
+    check(snapshot && snapshot->payload_algid == 0x21, "a stopped session's snapshot keeps the rest");
+    snapshot_keys_fill(&state, 0U);
+    freeState(&state);
 }
 
 /* Known stream bytes: RC4 with a nine-byte zero key after drop 256;
@@ -631,6 +704,7 @@ test_retained_decryption_request(void) {
 int
 main(void) {
     bootstrap_snapshot_secrets();
+    stopped_session_snapshot_keeps_no_key();
     zero_key_voice();
     presence_follows_material();
     test_tetra_air_keys();
