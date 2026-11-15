@@ -65,6 +65,17 @@ void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_ty
 void process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
                           unsigned long long int mac[24], int crc_ok);
 
+/**
+ * @brief Decode one CRC-valid Phase 1 TSBK through the MAC message handlers.
+ *
+ * @p mac holds the TSBK in the MAC form p25p1_tsbk.c builds: 0x07 at mac[0], the TSBK opcode as its abbreviated
+ * Phase 2 opcode (0x40 | opcode) at mac[1], and TSBK octets 2-9 at mac[2..9] (the MFID and the CRC are not
+ * carried). That is one 9-octet message: it is never split into several MAC messages, never joins a multi-fragment
+ * assembly, and nothing past mac[9] is read. Handlers whose Phase 2 layout differs read the Phase 1 one
+ * (TIA-102.AABC-D), or print the octets raw where Phase 1 has no single-block layout.
+ */
+void process_MAC_VPDU_bridged_p1(dsd_opts* opts, dsd_state* state, unsigned long long int mac[24]);
+
 #ifdef __cplusplus
 }
 #endif

@@ -180,7 +180,7 @@ expect_identity_calls(const char* tag, const dsd_state* state) {
 
 static int
 expect_file_contains(const char* tag, const char* path, const char* needle) {
-    FILE* f = fopen(path, "rb");
+    FILE* f = path ? fopen(path, "rb") : NULL;
     if (!f) {
         DSD_FPRINTF(stderr, "%s: failed to open capture %s\n", tag, path ? path : "(null)");
         return 1;
@@ -510,6 +510,10 @@ expect_metadata_only_state(const char* tag, const dsd_opts* opts, const dsd_stat
     return rc;
 }
 
+/* 1 while run_sccb_tsbk_candidate_case() runs: the case's octets are a Phase 1 TSBK in MAC form, decoded as the TSBK
+   decoder hands it over (process_MAC_VPDU_bridged_p1()), not a FACCH MAC PDU. */
+static int g_sccb_case_is_tsbk;
+
 static int
 run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int current_site, long* out_freqs,
                         int out_cap, int* out_rfss, int* out_site, int* out_lcn_count, long* out_lcn_freqs,
@@ -536,7 +540,11 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
         MAC[i] = mac_bytes[i];
     }
 
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    if (g_sccb_case_is_tsbk) {
+        process_MAC_VPDU_bridged_p1(&opts, state, MAC);
+    } else {
+        process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    }
 
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
     int count = (cc != NULL) ? cc->count : 0;
@@ -559,6 +567,17 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
     }
     dsd_state_ext_free_all(state);
     free(state);
+    return count;
+}
+
+static int
+run_sccb_tsbk_candidate_case(const unsigned char* mac_bytes, int current_rfss, int current_site, long* out_freqs,
+                             int out_cap, int* out_rfss, int* out_site, int* out_lcn_count, long* out_lcn_freqs,
+                             int out_lcn_cap) {
+    g_sccb_case_is_tsbk = 1;
+    int count = run_sccb_candidate_case(mac_bytes, current_rfss, current_site, out_freqs, out_cap, out_rfss, out_site,
+                                        out_lcn_count, out_lcn_freqs, out_lcn_cap);
+    g_sccb_case_is_tsbk = 0;
     return count;
 }
 
@@ -622,7 +641,7 @@ run_bridged_sccb_zero_channel_b_case(void) {
     MAC[8] = 0x00;
     MAC[9] = 0x00;
 
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, state, MAC);
 
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
     const int count = (cc != NULL) ? cc->count : 0;
@@ -733,7 +752,7 @@ run_sccb_explicit_scan_list_case(int imported, int seeded_count, const char* tag
     MAC[7] = 0x05;
     MAC[8] = 0x01; /* service class */
 
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, state, MAC);
 
     DSD_SNPRINTF(label, sizeof label, "%s_count_not_lowered", tag);
     rc |= expect_true(label, state->lcn_freq_count >= seeded_count);
@@ -908,7 +927,7 @@ run_p1_bridged_adjacent_unknown_sysid_case(void) {
     MAC[7] = 0x10;
     MAC[8] = 0x0A; /* CHAN-T 0x100A */
     MAC[9] = 0x01;
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, state, MAC);
 
     const long want = 851000000L + 10L * 100L * 125L;
     rc |= expect_eq_long("p1_bridge_adjacent_neighbor_count", state->p25_nb_count, 1);
@@ -1089,6 +1108,21 @@ failed_crc_process(dsd_opts* opts, dsd_state* state, const unsigned char* mac_by
         MAC[i] = mac_bytes[i];
     }
     process_MAC_VPDU_crc(opts, state, 1 /* SACCH */, P25_MAC_PDU_SIGNAL, MAC, crc_ok);
+}
+
+/* Protection Parameter Update is a Phase 1 TSBK (0x3F): it reaches the handlers only from the TSBK decoder, whose blocks
+   passed their CRC. A failed-CRC SACCH carrying the same octets is no such message. */
+static void
+protection_update_process(dsd_opts* opts, dsd_state* state, const unsigned char* mac_bytes, int crc_ok) {
+    if (!crc_ok) {
+        failed_crc_process(opts, state, mac_bytes, crc_ok);
+        return;
+    }
+    unsigned long long int tsbk[24] = {0};
+    for (int i = 0; i < 24; i++) {
+        tsbk[i] = mac_bytes[i];
+    }
+    process_MAC_VPDU_bridged_p1(opts, state, tsbk);
 }
 
 /* System A as failed_crc_seed_state() built it, untouched. */
@@ -1453,7 +1487,7 @@ run_failed_crc_status_broadcast_cases(void) {
         }
         failed_crc_process(&opts, state, services, crc_ok);
         failed_crc_process(&opts, state, time_date, crc_ok);
-        failed_crc_process(&opts, state, protection, crc_ok);
+        protection_update_process(&opts, state, protection, crc_ok);
         if (crc_ok) {
             rc |= expect_true("checked service broadcast applies",
                               state->p25_sys_services_valid == 1 && state->p25_sys_services_available == 0x123456U);
@@ -1611,7 +1645,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[3] = 0x43;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
     rc |= expect_contains("p1 bridged 0x18 status target", recent_notice(&state, 0U), "STATUS Target: 703710");
     rc |= expect_contains("p1 bridged 0x18 status source", recent_notice(&state, 0U), "Source: 74565");
     rc |= expect_contains("p1 bridged 0x18 status codes", recent_notice(&state, 0U), "Unit: 21 User: 43");
@@ -1623,7 +1657,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0x5A;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
     rc |= expect_contains("p1 bridged 0x1A query target", recent_notice(&state, 0U), "Status Query Target: 703710");
     rc |= expect_contains("p1 bridged 0x1A query source", recent_notice(&state, 0U), "Source: 74565");
     dsd_state_ext_free_all(&state);
@@ -1636,7 +1670,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[3] = 0xEF;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
     rc |= expect_contains("p1 bridged 0x1C message target", recent_notice(&state, 0U), "MSG Target: 703710");
     rc |= expect_contains("p1 bridged 0x1C message source", recent_notice(&state, 0U), "Source: 74565");
     rc |= expect_contains("p1 bridged 0x1C message body", recent_notice(&state, 0U), "Message: BEEF");
@@ -1648,7 +1682,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0x5F;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
     rc |= expect_contains("p1 bridged 0x1F alert target", recent_notice(&state, 0U), "Call Alert Target: 703710");
     rc |= expect_contains("p1 bridged 0x1F alert source", recent_notice(&state, 0U), "Source: 74565");
     dsd_state_ext_free_all(&state);
@@ -1659,7 +1693,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0x6A;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
     rc |= expect_contains("p1 bridged 0x2A affiliation target", recent_notice(&state, 0U),
                           "Group Affiliation Query Target: 703710");
     rc |= expect_contains("p1 bridged 0x2A affiliation source", recent_notice(&state, 0U), "Source: 74565");
@@ -2258,7 +2292,7 @@ run_cases(void) {
         mac[7] = 0x05;
         mac[8] = 0x01; // service class
 
-        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
+        int count = run_sccb_tsbk_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
         rc |= expect_eq_long("p1_bridge_sccb_explicit_count", count, 1);
         rc |= expect_eq_long("p1_bridge_sccb_explicit_downlink", freqs[0], 851000000 + 10 * 100 * 125);
     }
@@ -2279,7 +2313,7 @@ run_cases(void) {
         mac[8] = 0x05;
         mac[9] = 0x00; // SSC B zero is still a valid bridged P1 channel B
 
-        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
+        int count = run_sccb_tsbk_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
         rc |= expect_eq_long("p1_bridge_sccb_implicit_zero_ssc_count", count, 2);
         rc |= expect_eq_long("p1_bridge_sccb_implicit_zero_ssc_ch1", freqs[0], 851000000 + 10 * 100 * 125);
         rc |= expect_eq_long("p1_bridge_sccb_implicit_zero_ssc_ch2", freqs[1], 851000000 + 5 * 100 * 125);
@@ -2330,7 +2364,7 @@ run_cases(void) {
         mac[7] = 0x05;
         mac[8] = 0x01;
 
-        int count = run_sccb_candidate_case(mac, 0x63, 0x63, freqs, 4, NULL, NULL, &lcn_count, NULL, 0);
+        int count = run_sccb_tsbk_candidate_case(mac, 0x63, 0x63, freqs, 4, NULL, NULL, &lcn_count, NULL, 0);
         rc |= expect_eq_long("p1_bridge_sccb_foreign_site_count", count, 0);
         rc |= expect_eq_long("p1_bridge_sccb_foreign_lcn_count", lcn_count, 0);
     }

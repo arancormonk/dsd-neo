@@ -59,10 +59,16 @@ void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int 
 /** As p25_test_process_mac_vpdu_ex(), with an explicit outer MAC PDU type (p25_mac_pdu_type). */
 void p25_test_process_mac_vpdu_typed(int type, int pdu_type, const unsigned char* mac_bytes, int mac_len, int is_lcch,
                                      int currentslot);
+/** Decode a Phase 1 TSBK in MAC form (process_MAC_VPDU_bridged_p1()) under a fresh Phase 1 state. */
+void p25_test_process_p1_tsbk(const unsigned char* mac_bytes, int mac_len);
+/** Decode a Phase 1 TSBK in MAC form (process_MAC_VPDU_bridged_p1()) over a seeded P1 trunking state. */
 void p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len, int trunk_enable,
                                          long p25_cc_freq, int iden, int type, int tdma, long base, int spac);
 void p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, int trunk_enable, long p25_cc_freq,
                                       const p25_test_iden_config* iden_cfg, long* out_vc0, int* out_tuned);
+/** As p25_test_invoke_mac_vpdu_capture(), for a Phase 1 TSBK in MAC form (process_MAC_VPDU_bridged_p1()). */
+void p25_test_invoke_p1_tsbk_capture(const unsigned char* mac_bytes, int mac_len, int trunk_enable, long p25_cc_freq,
+                                     const p25_test_iden_config* iden_cfg, long* out_vc0, int* out_tuned);
 void p25_test_invoke_mac_vpdu_channel_cache(const unsigned char* mac_bytes, int mac_len,
                                             const p25_test_iden_config* iden_cfg, int channel_a, int channel_b,
                                             long* out_freq_a, long* out_freq_b);

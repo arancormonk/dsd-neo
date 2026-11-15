@@ -402,7 +402,30 @@ p25_test_process_mac_vpdu_typed(int type, int pdu_type, const unsigned char* mac
     p25_test_free_state(state);
 }
 
-// Invoke MAC VPDU with a pre-seeded trunking state for tests that need
+// Decode a Phase 1 TSBK in MAC form (process_MAC_VPDU_bridged_p1()) under a fresh state.
+void
+p25_test_process_p1_tsbk(const unsigned char* mac_bytes, int mac_len) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        p25_test_free_state(state);
+        return;
+    }
+    state->synctype = DSD_SYNC_P25P1_POS;
+
+    unsigned long long int MAC[24] = {0};
+    int n = mac_len < 24 ? mac_len : 24;
+    for (int i = 0; i < n; i++) {
+        MAC[i] = mac_bytes[i];
+    }
+    process_MAC_VPDU_bridged_p1(opts, state, MAC);
+    free(opts);
+    p25_test_free_state(state);
+}
+
+// Decode a Phase 1 TSBK in MAC form (process_MAC_VPDU_bridged_p1(), as the TSBK
+// decoder hands it over) with a pre-seeded trunking state for tests that need
 // valid channel→frequency mapping and/or trunking grant gating.
 // - trunk_enable: enable trunking decisions (1 to allow grants)
 // - p25_cc_freq: non-zero to satisfy grant tuning guard
@@ -445,15 +468,15 @@ p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len,
     unsigned long long int MAC[24] = {0};
     p25_test_copy_mac_bytes(MAC, mac_bytes, mac_len);
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
-    process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(opts, state, MAC);
     free(opts);
     p25_test_free_state(state);
 }
 
-// Invoke MAC VPDU and capture tuned flag and VC frequency for assertions.
-void
-p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, int trunk_enable, long p25_cc_freq,
-                                 const p25_test_iden_config* iden_cfg, long* out_vc0, int* out_tuned) {
+// Invoke MAC VPDU (a Phase 1 TSBK in MAC form when @p bridged_p1) and capture tuned flag and VC frequency.
+static void
+p25_test_invoke_capture(int bridged_p1, const unsigned char* mac_bytes, int mac_len, int trunk_enable, long p25_cc_freq,
+                        const p25_test_iden_config* iden_cfg, long* out_vc0, int* out_tuned) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
@@ -506,7 +529,11 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     for (int i = 0; i < n; i++) {
         MAC[i] = mac_bytes[i];
     }
-    process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_ACTIVE, MAC);
+    if (bridged_p1) {
+        process_MAC_VPDU_bridged_p1(opts, state, MAC);
+    } else {
+        process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_ACTIVE, MAC);
+    }
 
     if (out_vc0) {
         *out_vc0 = state->p25_vc_freq[0];
@@ -516,6 +543,20 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     }
     free(opts);
     p25_test_free_state(state);
+}
+
+// Invoke MAC VPDU and capture tuned flag and VC frequency for assertions.
+void
+p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, int trunk_enable, long p25_cc_freq,
+                                 const p25_test_iden_config* iden_cfg, long* out_vc0, int* out_tuned) {
+    p25_test_invoke_capture(0, mac_bytes, mac_len, trunk_enable, p25_cc_freq, iden_cfg, out_vc0, out_tuned);
+}
+
+// As p25_test_invoke_mac_vpdu_capture(), for a Phase 1 TSBK in MAC form.
+void
+p25_test_invoke_p1_tsbk_capture(const unsigned char* mac_bytes, int mac_len, int trunk_enable, long p25_cc_freq,
+                                const p25_test_iden_config* iden_cfg, long* out_vc0, int* out_tuned) {
+    p25_test_invoke_capture(1, mac_bytes, mac_len, trunk_enable, p25_cc_freq, iden_cfg, out_vc0, out_tuned);
 }
 
 void

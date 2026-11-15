@@ -1723,7 +1723,7 @@ main(void) {
         MAC[8] = 0x0B;
         MAC[9] = 0x0C; // target address
 
-        process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+        process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
         rc |= expect_eq_long("0x6B accepted aff count", state.p25_aff_count, 1);
         rc |= expect_eq_long("0x6B accepted ga count", state.p25_ga_count, 1);
         rc |= expect_eq_long("0x6B accepted TA", state.p25_aff_rid[0], 0x0A0B0C);
@@ -1748,7 +1748,7 @@ main(void) {
         MAC[8] = 0x0B;
         MAC[9] = 0x0C;
 
-        process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+        process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
         rc |= expect_eq_long("0x6B rejected aff count", state.p25_aff_count, 0);
         rc |= expect_eq_long("0x6B rejected ga count", state.p25_ga_count, 0);
     }
@@ -2779,7 +2779,7 @@ main(void) {
         MAC[8] = 0x04;
         MAC[9] = 0x05; // target
 
-        process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+        process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
         rc |= expect_true("0x48 telephone no unsupported tune", opts.trunk_is_tuned == 0);
         rc |= expect_eq_long("0x48 telephone no vc", state.p25_vc_freq[0], 0);
         rc |= expect_contains("0x48 telephone active", recent_notice(&state, 0U), "Active Tele Ch: 100A");

@@ -217,6 +217,8 @@ tsbk_update_fec_counters(const dsd_opts* opts, dsd_state* state, int err) {
     }
 }
 
+/* The TSBK in the MAC form process_MAC_VPDU_bridged_p1() decodes as one message: its opcode as the abbreviated Phase 2
+   opcode at PDU[1] and TSBK octet n at PDU[n] for n = 2..9 (the MFID and the CRC are not carried). */
 static void
 tsbk_build_mac_like_pdu(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], unsigned long long int PDU[24]) {
     PDU[0] = 0x07; // P25p1 TSBK DUID
@@ -1083,7 +1085,7 @@ tsbk_dispatch_message(dsd_opts* opts, dsd_state* state, const tsbk_decode_ctx_t*
             return;
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
-        process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_SIGNAL, PDU);
+        process_MAC_VPDU_bridged_p1(opts, state, PDU);
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }

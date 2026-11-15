@@ -10126,6 +10126,19 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   Group Regroup Add/Delete (0x81/0x89) count their length octet as the whole message: SG at octets 4-5, then
   `(len - 5) / 2` work groups; a length under 5 or past the span changes nothing, and an Add with no member creates no
   patch.
+- Bridged Phase 1 TSBK (`process_MAC_VPDU_bridged_p1()` in `<dsd-neo/protocol/p25/p25_vpdu.h>`). `p25p1_tsbk.c` hands
+  each CRC-valid standard TSBK to the MAC handlers in MAC form: opcode `0x40 | op` at `MAC[1]`, TSBK octet n at
+  `MAC[n]` for n = 2..9. That entry point sets `p25p2_vpdu_ctx::bridged_p1`, and `p25p2_vpdu_is_bridged_p1(ctx)` is
+  the only transport test a handler makes: never `MAC[0]`, `MAC[len_a]` or the sync type, which a native header or a
+  previous message's last octet can match. A bridged TSBK is one 9-octet message: it is not segmented with the Phase 2
+  length table (which split a short opcode's trailing octets off as a second message: a Call Alert's source made an RFSS
+  status that zeroed the site), it never starts, continues, ends or clears a multi-fragment assembly, and nothing past
+  `MAC[9]` is copied in. Handlers whose Phase 2 layout differs read the Phase 1 one (TIA-102.AABC-D): 0x05 Unit-to-Unit
+  Answer Request, 0x15 SNDCP Data Page Request, 0x2D Unit Registration Command, 0x36 Roaming Address Command, and the
+  length-octet responses. Opcodes with no single-block Phase 1 layout (0x0C reserved, 0x1E Radio Unit Monitor Enhanced
+  Command and 0x31 Authentication Demand, both multi-block, 0x37 Roaming Address Update) print octets 2-9 raw.
+  Native lengths follow TIA-102.BBAD-A where sdrtrunk differs: 0x45 / 0xC5 are 8 / 12, 0x4A is 9 (`p25p2_mac_tables.c`).
+  Tests: `P25_TSBK_BRIDGE_BOUNDARY`, `P25_MAC_LENGTHS`, `P25_MAC_SEGMENT`.
 - Scrambling code recovery (`p25p2_seed_recover.c`, issue #804). On a carrier whose code is not proven
   (`p2_cc_verified == 0`), not hand-set (`p2_hardset == 0`) and not trunked (`trunk_enable == 0`), `processP2()` hands
   each window to `p25p2_seed_recover_window()` after `p25p2_window_position()` and before the descrambler, with

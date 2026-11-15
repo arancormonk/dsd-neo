@@ -600,6 +600,8 @@ typedef struct {
     int end_pdu;
     int iter_idx;
     int crc_ok; /* 0: a MAC_SIGNAL -F let through with a failed CRC (process_MAC_VPDU_crc()) */
+    /* 1: one Phase 1 TSBK in MAC form; process_MAC_VPDU_bridged_p1() alone sets it. */
+    int bridged_p1;
 } p25p2_vpdu_ctx;
 
 static void p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx);
@@ -874,9 +876,12 @@ p25p2_vpdu_u24(const unsigned long long int* mac, int idx) {
     return (int)((mac[idx] << 16) | (mac[idx + 1] << 8) | mac[idx + 2]);
 }
 
+/* The message is a Phase 1 TSBK the TSBK decoder handed over (process_MAC_VPDU_bridged_p1()), not a Phase 2 MAC
+   message: TSBK octet n sits at MAC[n], and a handler reads the Phase 1 layout. The transport says so, never the
+   octets: a native MAC header or a previous message's last octet can be 0x07 as well. */
 static int
 p25p2_vpdu_is_bridged_p1(const p25p2_vpdu_ctx* ctx) {
-    return (ctx != NULL && ctx->len_a == 0 && ctx->mac[0] == 0x07);
+    return ctx != NULL && ctx->bridged_p1 != 0;
 }
 
 static int
@@ -1464,7 +1469,7 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x48 || MAC[1 + len_a] == 0x49 || MAC[1 + len_a] == 0xC8 || MAC[1 + len_a] == 0xC9) {
-        int k = (MAC[len_a] == 0x07) ? 0 : 1;
+        int k = p25p2_vpdu_is_bridged_p1(ctx) ? 0 : 1;
         int svc = MAC[2 + len_a + k];
         int channel = (MAC[3 + len_a + k] << 8) | MAC[4 + len_a + k];
         int timer = (MAC[5 + len_a + k] << 8) | MAC[6 + len_a + k];
@@ -1970,7 +1975,6 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_12(p25p2_vpdu_ctx* ctx) {
-    const dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
     struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
@@ -2007,8 +2011,8 @@ p25p2_vpdu_iter_block_12(p25p2_vpdu_ctx* ctx) {
         int dso = MAC[2 + len_a];
         int dac = (MAC[3 + len_a] << 8) | MAC[4 + len_a];
         int target = (MAC[5 + len_a] << 16) | (MAC[6 + len_a] << 8) | MAC[7 + len_a];
-        //P25p1 TSBK is shifted slightly on these two values
-        if (DSD_SYNC_IS_P25P1(state->synctype)) {
+        // Phase 1 TSBK 0x15 has two reserved octets before these two (TIA-102.AABC-D §5.2.6)
+        if (p25p2_vpdu_is_bridged_p1(ctx)) {
             dac = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
             target = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
         }
@@ -3068,7 +3072,7 @@ p25p2_vpdu_iter_block_34(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x79) {
-        int bridged_p1 = (MAC[len_a] == 0x07);
+        int bridged_p1 = p25p2_vpdu_is_bridged_p1(ctx);
         int rfssid = MAC[2 + len_a];
         int siteid = MAC[3 + len_a];
         int channel1 = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
@@ -3363,7 +3367,7 @@ p25p2_vpdu_iter_block_38(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1 + len_a] == 0xEC && MAC[0] != 0x07) {
+    if (MAC[1 + len_a] == 0xEC && !p25p2_vpdu_is_bridged_p1(ctx)) {
         int res = (MAC[3 + len_a] >> 2) & 0x3F;
         int RV = (MAC[2 + len_a] >> 0) & 0x3;
         int src = (MAC[8 + len_a] << 16) | (MAC[9 + len_a] << 8) | MAC[10 + len_a];
@@ -3408,7 +3412,7 @@ p25p2_vpdu_handle_location_registration_response(const p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
     const int len_a = ctx->len_a;
     int k = 1; // vPDU offset
-    if (MAC[len_a] == 0x07) {
+    if (p25p2_vpdu_is_bridged_p1(ctx)) {
         k = 0; // TSBK offset
     }
 
@@ -3465,7 +3469,7 @@ p25p2_vpdu_iter_block_39(p25p2_vpdu_ctx* ctx) {
     				[00][00][00][00][00][00][00][00][00][00][00][00]
     			*/
         int k = 1; //vPDU is one octet higher than TSBK
-        if (MAC[len_a] == 0x07) {
+        if (p25p2_vpdu_is_bridged_p1(ctx)) {
             k = 0;
         }
         int res = (MAC[2 + len_a + k] >> 6) & 0x3;
@@ -3517,14 +3521,14 @@ p25p2_vpdu_iter_block_40(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1 + len_a] == 0x6D && MAC[0 + len_a] != 0x07) {
-        int k = 2; //vPDU is two octets higher than TSBK
-        if (MAC[len_a] == 0x07) {
-            k = 0;
-        }
-        int src = (MAC[2 + len_a + k] << 16) | (MAC[3 + len_a + k] << 8) | MAC[4 + len_a + k];
-        int tgt = (MAC[5 + len_a + k] << 16) | (MAC[6 + len_a + k] << 8) | MAC[7 + len_a + k];
-        DSD_FPRINTF(stderr, "\n Unit Registration - SRC: %d; TGT: %d;", src, tgt);
+    if (MAC[1 + len_a] == 0x6D) {
+        /* Unit Registration Command. Phase 2 (TIA-102.BBAD-A §3.32 Fig 81, length 7): Target ID octets 2-4,
+           Source Address octets 5-7. Phase 1 TSBK 0x2D (TIA-102.AABC-D §6.2.20): octets 2-3 reserved, Target ID 4-6,
+           Source Address 7-9. */
+        const int k = p25p2_vpdu_is_bridged_p1(ctx) ? 2 : 0;
+        int tgt = p25p2_vpdu_u24(MAC, 2 + len_a + k);
+        int src = p25p2_vpdu_u24(MAC, 5 + len_a + k);
+        DSD_FPRINTF(stderr, "\n Unit Registration Command - TGT: %d; SRC: %d;", tgt, src);
     }
 
     if (len_b < 0) {
@@ -3977,7 +3981,7 @@ p25p2_vpdu_iter_block_49(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1 + len_a] == 0x7C || (MAC[1 + len_a] == 0x7E && MAC[len_a] == 0x07)) {
+    if (MAC[1 + len_a] == 0x7C || (MAC[1 + len_a] == 0x7E && p25p2_vpdu_is_bridged_p1(ctx))) {
         /*
          * Preserve the current conflict split: bridged P1 TSBK 0x3E (MAC
          * 0x7E) is adjacency/uncoordinated band plan, while bridged 0x3F
@@ -3986,7 +3990,7 @@ p25p2_vpdu_iter_block_49(p25p2_vpdu_ctx* ctx) {
          * AABC-E text or captures. Bridged P1 0x3C/0x3E adjacency carries
          * CFVA/reserved here, not SYSID.
          */
-        int bridged_p1_adj = (MAC[len_a] == 0x07 && (MAC[1 + len_a] == 0x7C || MAC[1 + len_a] == 0x7E));
+        int bridged_p1_adj = p25p2_vpdu_is_bridged_p1(ctx);
         int uncoordinated = (MAC[1 + len_a] == 0x7E);
         int lra = MAC[2 + len_a];
         int cfva = MAC[3 + len_a] >> 4;
@@ -4191,7 +4195,7 @@ p25p2_vpdu_iter_block_52(p25p2_vpdu_ctx* ctx) {
 
     if (MAC[1 + len_a] == 0x68) {
         int k = 1; // vPDU offset
-        if (MAC[len_a] == 0x07) {
+        if (p25p2_vpdu_is_bridged_p1(ctx)) {
             k = 0; // TSBK offset
         }
         int lg = (MAC[2 + len_a + k] >> 7) & 0x1;
@@ -4328,7 +4332,7 @@ p25p2_vpdu_iter_block_55(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1 + len_a] == 0x7F && MAC[len_a] == 0x07) {
+    if (MAC[1 + len_a] == 0x7F && p25p2_vpdu_is_bridged_p1(ctx)) {
         int algid = (int)MAC[4 + len_a];
         int kid = (int)((MAC[5 + len_a] << 8) | MAC[6 + len_a]);
         int target = (int)((MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a]);
@@ -4380,9 +4384,8 @@ typedef struct {
 } p25p2_vpdu_time_fields;
 
 static void
-p25p2_vpdu_parse_time(const unsigned long long int* MAC, int len_a, p25p2_vpdu_time_fields* f) {
+p25p2_vpdu_parse_time(const unsigned long long int* MAC, int len_a, int bridged_p1, p25p2_vpdu_time_fields* f) {
     DSD_MEMSET(f, 0, sizeof(*f));
-    const int bridged_p1 = (MAC[len_a] == 0x07);
     f->vd = (int)p25_mac_get_bits(MAC, len_a, 8, 1);
     f->vt = (int)p25_mac_get_bits(MAC, len_a, 9, 1);
     f->vl = (int)p25_mac_get_bits(MAC, len_a, 10, 1);
@@ -4443,7 +4446,7 @@ p25p2_vpdu_iter_block_56(p25p2_vpdu_ctx* ctx) {
 
     if (MAC[1 + len_a] == 0x75) {
         p25p2_vpdu_time_fields f;
-        p25p2_vpdu_parse_time(MAC, len_a, &f);
+        p25p2_vpdu_parse_time(MAC, len_a, p25p2_vpdu_is_bridged_p1(ctx), &f);
         p25p2_vpdu_print_time(&f);
 
         const int offset_minutes = p25p2_vpdu_lto_offset_minutes(f.vl, f.lto_sign, f.lto_mag);
@@ -4567,7 +4570,14 @@ p25p2_vpdu_handle_unit_to_unit_answer_request(const p25p2_vpdu_ctx* ctx, int opc
     int target = p25p2_vpdu_u24(MAC, 3 + len_a);
 
     DSD_FPRINTF(stderr, "\n Unit-to-Unit Answer Request");
-    if (opcode == 0xC5) {
+    if (p25p2_vpdu_is_bridged_p1(ctx)) {
+        /* Phase 1 TSBK 0x05 (TIA-102.AABC-D §4.2.4.1 Fig 4.2.4-1): Service Options octet 2, octet 3 reserved, Target
+           Address octets 4-6, Source ID octets 7-9. Phase 2 0x45 has no reserved octet (TIA-102.BBAD-A §3.10 Fig 36). */
+        int source = p25p2_vpdu_u24(MAC, 7 + len_a);
+        target = p25p2_vpdu_u24(MAC, 4 + len_a);
+        DSD_FPRINTF(stderr, " - Abbreviated");
+        DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Source [%d]", svc, target, source);
+    } else if (opcode == 0xC5) {
         int src_wacn = p25p2_vpdu_fqid_wacn(MAC, 6 + len_a);
         int src_sys = p25p2_vpdu_fqid_sysid(MAC, 6 + len_a);
         int source = p25p2_vpdu_u24(MAC, 10 + len_a);
@@ -4595,7 +4605,9 @@ p25p2_vpdu_handle_telephone_interconnect_answer_request(const p25p2_vpdu_ctx* ct
     }
     digits[d] = '\0';
 
-    int target = (int)((MAC[7 + len_a] >> 4) & 0x0F);
+    /* Ten BCD digits in octets 2-6 and a 24-bit Target Address in octets 7-9, on Phase 2 0x4A (TIA-102.BBAD-A
+       §3.12 Fig 42, length 9) and Phase 1 TSBK 0x0A (TIA-102.AABC-D §4.2.7 Fig 4.2.7-1) alike. */
+    int target = p25p2_vpdu_u24(MAC, 7 + len_a);
     DSD_FPRINTF(stderr, "\n Telephone Interconnect Answer Request");
     DSD_FPRINTF(stderr, "\n  Target [%d] Digits [%s]", target, digits);
 }
@@ -4696,11 +4708,15 @@ p25p2_vpdu_handle_ack_response_fne_abbreviated(p25p2_vpdu_ctx* ctx) {
 static void
 p25p2_vpdu_handle_roaming_address_command(const p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
+    /* Phase 2 0x76 carries a length octet at octet 2 and its fields one octet later (TIA-102.BBAD-A §3.50 Fig 113)
+       than Phase 1 TSBK 0x36 (TIA-102.AABC-D §6.2.25: Stack Operation octet 2, WACN and System ID octets 3-6, Target
+       ID octets 7-9). */
     const int len_a = ctx->len_a;
-    int stack_op = (int)MAC[3 + len_a];
-    int target_wacn = p25p2_vpdu_fqid_wacn(MAC, 4 + len_a);
-    int target_sys = p25p2_vpdu_fqid_sysid(MAC, 4 + len_a);
-    int target = p25p2_vpdu_u24(MAC, 8 + len_a);
+    const int k = p25p2_vpdu_is_bridged_p1(ctx) ? 0 : 1;
+    int stack_op = (int)MAC[2 + len_a + k];
+    int target_wacn = p25p2_vpdu_fqid_wacn(MAC, 3 + len_a + k);
+    int target_sys = p25p2_vpdu_fqid_sysid(MAC, 3 + len_a + k);
+    int target = p25p2_vpdu_u24(MAC, 7 + len_a + k);
 
     DSD_FPRINTF(stderr, "\n Roaming Address Command");
     DSD_FPRINTF(stderr, "\n  StackOp [%02X] Target [%05X:%03X.%d]", stack_op, target_wacn, target_sys, target);
@@ -5911,6 +5927,83 @@ p25p2_vpdu_print_payload(const dsd_opts* opts, const unsigned long long int mac[
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
+enum {
+    /* A Phase 1 TSBK in MAC form is one message of 9 octets, MAC[1..9]: the opcode and TSBK octets 2-9. */
+    P25P2_VPDU_BRIDGED_P1_LEN = 9,
+};
+
+/* A Phase 1 TSBK opcode with no single-block layout, while its Phase 2 opcode has a handler: that handler would read a
+   Phase 2 layout (and octets past the TSBK) the TSBK does not carry, so its octets print raw instead. TIA-102.AABC-D
+   lists 0x0C as reserved and defines 0x1E (§6.2.34), 0x31 (§6.2.30) and 0x37 (§6.2.26) as multi-block messages
+   only. NULL for every other opcode. */
+static const char*
+p25p2_vpdu_bridged_p1_raw_name(int opcode) {
+    switch (opcode) {
+        case 0x4C: return "Reserved opcode";
+        case 0x5E: return "Radio Unit Monitor Enhanced Command";
+        case 0x71: return "Authentication Demand";
+        case 0x77: return "Roaming Address Update";
+        default: return NULL;
+    }
+}
+
+static int
+p25p2_vpdu_print_bridged_p1_raw(const p25p2_vpdu_ctx* ctx) {
+    const int opcode = (int)ctx->mac[1];
+    const char* name = p25p2_vpdu_bridged_p1_raw_name(opcode);
+    if (name == NULL) {
+        return 0;
+    }
+    DSD_FPRINTF(stderr, "\n Phase 1 TSBK %02X %s - not decoded\n  Octets 2-9 [", opcode & 0x3F, name);
+    for (int bi = 2; bi <= P25P2_VPDU_BRIDGED_P1_LEN; bi++) {
+        DSD_FPRINTF(stderr, "%s%02llX", bi > 2 ? " " : "", ctx->mac[bi]);
+    }
+    DSD_FPRINTF(stderr, "]");
+    return 1;
+}
+
+static void
+p25p2_vpdu_dispatch_segment(p25p2_vpdu_ctx* ctx) {
+    if (p25p2_vpdu_is_bridged_p1(ctx)) {
+        /* One TSBK is never a piece of a Phase 2 multi-fragment message: it neither starts, continues, ends nor
+           clears an assembly. */
+        if (!p25p2_vpdu_print_bridged_p1_raw(ctx)) {
+            p25p2_vpdu_dispatch_blocks(ctx);
+        }
+        return;
+    }
+    if (!p25p2_vpdu_consume_fragment_segment(ctx)) {
+        p25p2_vpdu_dispatch_blocks(ctx);
+    }
+}
+
+static void
+p25p2_vpdu_run(p25p2_vpdu_ctx* ctx) {
+    p25p2_vpdu_emit_json(ctx);
+    p25p2_vpdu_lcch_signal_update(ctx);
+    if (!p25p2_vpdu_validate_len_and_warn(ctx)) {
+        ctx->end_pdu = 1;
+    }
+
+    const p25p2_retune_token token = p25p2_retune_token_now();
+    for (int segment_idx = 0; !ctx->end_pdu && segment_idx < ctx->mac_res->segment_count; segment_idx++) {
+        ctx->skip_rest = 0;
+        ctx->iter_idx = segment_idx;
+        if (!p25p2_vpdu_select_segment(ctx, segment_idx)) {
+            break;
+        }
+        p25p2_vpdu_dispatch_segment(ctx);
+        // A segment that retuned (a grant, a return to the control channel) left this channel: the PDU's later
+        // segments describe the one left, so none of them may act on the new assignment (issue #651).
+        if (p25p2_retune_token_changed(&token)) {
+            break;
+        }
+    }
+
+    ctx->state->p2_is_lcch = 0;
+    p25p2_vpdu_print_payload(ctx->opts, ctx->mac);
+}
+
 void
 process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
                  unsigned long long int mac[24]) {
@@ -5955,33 +6048,48 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
         .end_pdu = 0,
         .iter_idx = 0,
         .crc_ok = crc_ok != 0,
+        .bridged_p1 = 0,
     };
+    p25p2_vpdu_run(&ctx);
+}
 
-    p25p2_vpdu_emit_json(&ctx);
-    p25p2_vpdu_lcch_signal_update(&ctx);
-    if (!p25p2_vpdu_validate_len_and_warn(&ctx)) {
-        ctx.end_pdu = 1;
+void
+process_MAC_VPDU_bridged_p1(dsd_opts* opts, dsd_state* state, unsigned long long int mac[24]) {
+    /* The TSBK's octets and nothing else: a handler reading past them finds zeros, never stale or foreign octets. */
+    unsigned long long int mac_octets[P25P2_MAC_STAGING_OCTETS] = {0};
+    for (int bi = 0; bi <= P25P2_VPDU_BRIDGED_P1_LEN; bi++) {
+        mac_octets[bi] = mac[bi] & 0xFFu;
     }
 
-    const p25p2_retune_token token = p25p2_retune_token_now();
-    for (int segment_idx = 0; !ctx.end_pdu && segment_idx < mac_res.segment_count; segment_idx++) {
-        ctx.skip_rest = 0;
-        ctx.iter_idx = segment_idx;
-        if (!p25p2_vpdu_select_segment(&ctx, segment_idx)) {
-            break;
-        }
-        if (!p25p2_vpdu_consume_fragment_segment(&ctx)) {
-            p25p2_vpdu_dispatch_blocks(&ctx);
-        }
-        // A segment that retuned (a grant, a return to the control channel) left this channel: the PDU's later
-        // segments describe the one left, so none of them may act on the new assignment (issue #651).
-        if (p25p2_retune_token_changed(&token)) {
-            break;
-        }
-    }
+    /* One message, MAC[1..9]: a TSBK is a single bounded structure (TIA-102.AABC-D), so the Phase 2 length table,
+       which would split a short opcode's trailing octets off as a second message, does not apply. */
+    struct p25p2_mac_result mac_res;
+    DSD_MEMSET(&mac_res, 0, sizeof(mac_res));
+    mac_res.type = 0;
+    mac_res.span = P25P2_VPDU_BRIDGED_P1_LEN;
+    mac_res.opcode = (uint8_t)mac_octets[1];
+    mac_res.segment_count = 1;
+    mac_res.segments[0].offset = 0;
+    mac_res.segments[0].length = P25P2_VPDU_BRIDGED_P1_LEN;
 
-    state->p2_is_lcch = 0;
-    p25p2_vpdu_print_payload(opts, MAC);
+    p25p2_vpdu_ctx ctx = {
+        .opts = opts,
+        .state = state,
+        .type = 0,
+        .pdu_type = P25_MAC_PDU_SIGNAL,
+        .mac = mac_octets,
+        .mac_res = &mac_res,
+        .len_a = 0,
+        .len_b = P25P2_VPDU_BRIDGED_P1_LEN,
+        .len_c = 0,
+        .slot = state->currentslot,
+        .skip_rest = 0,
+        .end_pdu = 0,
+        .iter_idx = 0,
+        .crc_ok = 1, /* the TSBK decoder dispatches only blocks that passed their CRC (p25p1_tsbk.c) */
+        .bridged_p1 = 1,
+    };
+    p25p2_vpdu_run(&ctx);
 }
 
 // Local bounded append helper (reused pattern across modules)

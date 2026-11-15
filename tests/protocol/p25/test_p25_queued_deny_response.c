@@ -157,7 +157,7 @@ test_que_rsp_field_extraction_known_payload(void) {
     // SVC=0x15, Reason=0x20, Addl=0x123456, Target=0xABCDEF (11259375)
     build_que_deny_mac(MAC, 0, 0x15, 0x20, 0x123456, 0xABCDEF);
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &st, MAC);
 
     int rc = 0;
     if (st.p25_sm_queued_count != 1 || st.p25_sm_deny_count != 0) {
