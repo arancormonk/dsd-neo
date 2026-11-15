@@ -1128,8 +1128,10 @@ dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_h
         dsd_p25_patch_listen_break(state);
         /* Nor did the DMR calls left behind say how the next carrier's are encrypted (a voice channel followed from
            another without a release, a move, a rest channel change): its frames before their own LC decrypt with no
-           privacy bit of theirs and no talkgroup key of theirs, a key set directly staying the user's. */
-        dmr_forget_call_privacy(state);
+           privacy bit of theirs and no talkgroup key of theirs, a key set directly staying the user's. The FID stays
+           for the DMR machine, which ends those calls after this tune, their final rows rendering by it, and forgets
+           it then with the ALG, key ID and MI (dmr_trunk_sm.c). */
+        dmr_forget_call_decryption(state);
     }
 }
 

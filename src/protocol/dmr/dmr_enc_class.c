@@ -130,10 +130,18 @@ dmr_forget_call_privacy(dsd_state* state) {
     if (!state) {
         return;
     }
-    state->dmr_so = 0;
-    state->dmr_soR = 0;
+    dmr_forget_call_decryption(state);
     state->dmr_fid = 0;
     state->dmr_fidR = 0;
+}
+
+void
+dmr_forget_call_decryption(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->dmr_so = 0;
+    state->dmr_soR = 0;
     state->dmr_heal_valid[0] = 0;
     state->dmr_heal_valid[1] = 0;
     for (uint8_t slot = 0U; slot < 2U; slot++) {

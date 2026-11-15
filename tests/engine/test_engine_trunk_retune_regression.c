@@ -230,8 +230,13 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_forget_call_privacy(dsd_state* state) {
-    state->dmr_so = state->dmr_soR = 0U;
+    dmr_forget_call_decryption(state);
     state->dmr_fid = state->dmr_fidR = 0U;
+}
+
+void
+dmr_forget_call_decryption(dsd_state* state) {
+    state->dmr_so = state->dmr_soR = 0U;
     for (int idx = 0; idx < 2; idx++) {
         state->dmr_le_vendor[idx] = 0U;
         state->dmr_pi_precall_rx[idx] = 0U;

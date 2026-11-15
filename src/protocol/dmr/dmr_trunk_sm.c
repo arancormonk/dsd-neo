@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -23,6 +24,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -974,6 +976,29 @@ dmr_sm_end_left_calls(dsd_opts* opts, dsd_state* state) {
             dsd_event_sync_slot(opts, state, (uint8_t)slot);
         }
     }
+}
+
+/* A follow, a move or a status follow took the receiver off the carrier whose calls the slots carried: those calls end
+   first, so their final rows keep the FID their vendor annotations render by, and then nothing of theirs says how the
+   next carrier's calls are encrypted. As the release does (dsd_engine_release_tuned_call_state()): their privacy
+   (dmr_forget_call_privacy(), FID included), their ALG, key ID and MI, and each slot's MI chain. Otherwise a rigctl
+   tune, which keeps the symbol timeline, would step the left call's MI on and decrypt the next carrier's frames before
+   their own PI or LC with it. Only the DMR machine reaches this, so P25 and NXDN never meet these shared fields
+   here. */
+static void
+dmr_sm_leave_carrier(dsd_opts* opts, dsd_state* state) {
+    dmr_sm_end_left_calls(opts, state);
+    dmr_forget_call_privacy(state);
+    state->payload_algid = 0;
+    state->payload_algidR = 0;
+    state->payload_keyid = 0;
+    state->payload_keyidR = 0;
+    state->payload_mi = 0;
+    state->payload_miR = 0;
+    state->payload_miP = 0;
+    state->payload_miN = 0;
+    dmr_vcrypt_forget(state, 0U);
+    dmr_vcrypt_forget(state, 1U);
 }
 
 static void
@@ -2185,7 +2210,7 @@ dmr_sm_follow_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const d
        them may stay active beside the call followed now. A grant for the carrier the receiver is on (a composite
        control channel's own payload) leaves nothing: its calls, the granted one included, go on as they were. */
     if (leaves) {
-        dmr_sm_end_left_calls(opts, state);
+        dmr_sm_leave_carrier(opts, state);
     }
     dmr_sm_take_grant(ctx, state, ev, freq, leaves, now_m);
     dmr_sm_slots_take_carrier(ctx, freq, leaves);
@@ -2366,7 +2391,7 @@ dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dm
     /* The carrier left behind keeps no active call, as for any follow (dmr_sm_follow_grant()): the moved call's epoch
        there ends, and its first voice on the new carrier publishes it again in an epoch of its own, which the moved
        identity binds to (one awaiting a call after the ended epoch), as a same-carrier move does on its new slot. */
-    dmr_sm_end_left_calls(opts, state);
+    dmr_sm_leave_carrier(opts, state);
     dmr_sm_vc_identity_from_slot(ctx, &moved);
     ctx->vc_freq_hz = freq;
     ctx->vc_lpcn = ev->lpcn;
@@ -2863,7 +2888,7 @@ dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int sl
        receiver is on (the rest channel it parks on) keeps that carrier's calls and their identities. */
     const int leaves = dmr_sm_follow_leaves(receiver_hz, freq_hz);
     if (leaves) {
-        dmr_sm_end_left_calls(opts, state);
+        dmr_sm_leave_carrier(opts, state);
     }
     /* As handle_grant() after its tune: the call's voice deadlines and its return are the machine's. Its identity is
        the channel status's, which the Capacity Plus seed publishes. */

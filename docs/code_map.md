@@ -1893,7 +1893,9 @@ suite runs under this compiler.
   The slot's terminator, the no-carrier pass and every move off the carrier forget it with the rest of the left
   calls' DMR privacy (`dmr_forget_call_privacy()`: every carrier boundary but a stream gap, every accepted trunk tune
   that leaves the carrier through `dsd_engine_tune_leaves_carrier()`, as a voice channel hop with no release, a move
-  or a rest channel change, the release, and a trunk-scan visit after its snapshot restore), so the next carrier's
+  or a rest channel change, where the tune keeps the FID for the DMR machine to forget once the left calls' rows are
+  final (`dmr_forget_call_decryption()`, `dmr_sm_leave_carrier()`), the release, and a trunk-scan visit after its
+  snapshot restore), so the next carrier's
   frames before their LC decrypt with no privacy bit and no talkgroup key of the left calls, while a key set directly
   stays the user's. A call whose terminator was missed on the same carrier is still the slot's call, so a new call's
   frames before its LC key from the old call's talkgroup (the code cannot tell them apart before that LC). The call's
@@ -12333,11 +12335,19 @@ Private per-protocol modules worth knowing about:
     receiver's frequency read before the tune, `dmr_sm_receiver_frequency()`: the followed carrier, else the one it
     listens on; unknown counts as leaving) ends every slot's canonical call (EXPLICIT, synchronized,
     `dmr_sm_end_left_calls()`, as a release without a control channel does), so a displaced call never stays active
-    beside the followed one. A follow of the carrier the receiver is already on (a grant for the composite control
-    channel's own payload, a Cap+ status naming the rest channel it parks on, an XPT entry where it parks) adopts it in
-    place: no call there ends, the slots keep that carrier's records (identity, binding, follow time) and voice timers,
-    the grant names its slot only when the slot's record does not already name its call, its identity is not
-    published into a call on the air that already names one, and no block state is reset.
+    beside the followed one. Then, as the release does, nothing of the left calls' crypto stays
+    (`dmr_sm_leave_carrier()`): their privacy with the FID (`dmr_forget_call_privacy()`), both slots' ALG, key ID and
+    MI (`payload_*`, `payload_miP`/`miN`) and MI chain (`dmr_vcrypt_forget()`), so the next carrier's frames before
+    their own PI or LC are judged as on a first landing; a rigctl tune keeps the symbol timeline, so a trusted chain
+    would otherwise step the left call's MI on and decrypt them with it. The tune itself forgets only what decrypts
+    (`dmr_forget_call_decryption()` in `dsd_engine_tune_leaves_carrier()`), so the left calls' final rows, rendered at
+    their end after it, keep the vendor annotations their FID names (`TXI;`, `PRIORITY;`). Test:
+    `ENGINE_NO_CARRIER_RESET` (`test_dmr_trunk_hop_leaves_no_call_crypto()`). A follow of the carrier the receiver is
+    already on (a grant for the composite control channel's own payload, a Cap+ status naming the rest channel it parks
+    on, an XPT entry where it parks) adopts it in place: no call there ends, the slots keep that carrier's records
+    (identity, binding, follow time) and voice timers, the grant names its slot only when the slot's record does not
+    already name its call, its identity is not published into a call on the air that already names one, and no block
+    state is reset.
   - Ledger. A follow clears the ledger and notes the followed call (`dmr_sm_policy_note_follow()`); a preemption
     commits its cooldown (`dsd_tg_policy_commit_preemption()`) once the new carrier's tune was accepted, a Hold
     takeover commits none, and a deferred or failed tune changes nothing; every release clears the ledger

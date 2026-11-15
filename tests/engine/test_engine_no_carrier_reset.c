@@ -27,8 +27,10 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/core/wav_journal.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/speech_agc.h>
@@ -69,6 +71,7 @@
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <limits.h>
 #include <math.h>
+#include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -81,6 +84,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 #include "analog_call_test_support.h"
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -3027,6 +3031,234 @@ test_scan_walk_landing_forgets_dmr_call_privacy(void) {
     return rc;
 }
 
+/* The DMR trunk machine's three ways off a voice channel with no release: a grant for another channel, a C_MOVE of the
+   followed call, and a Capacity Plus status follow (dmr_cspdu_cap_plus_3e_follow()'s tune, then the machine's note). */
+typedef enum {
+    DMR_HOP_GRANT = 0,
+    DMR_HOP_MOVE,
+    DMR_HOP_STATUS_FOLLOW,
+} dmr_hop_kind;
+
+#define DMR_HOP_CC   451000000L
+#define DMR_HOP_VC1  452012500L
+#define DMR_HOP_VC2  452037500L
+#define DMR_HOP_LCN1 0x0010U
+#define DMR_HOP_LCN2 0x0011U
+
+static void
+dmr_hop_clock_at(double seconds) {
+    dsd_decode_clock_use_test(1000000ULL * 1000000000ULL + (uint64_t)(seconds * 1e9));
+}
+
+static void
+dmr_hop_put_bits(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
+    for (size_t i = 0; i < nbits; i++) {
+        bits[start + i] = (uint8_t)((value >> ((nbits - 1U) - i)) & 1U);
+    }
+}
+
+/* A CRC-valid Tier III TV_GRANT (opcode 49) or C_MOVE (57) for slot 1 of @p lpcn. */
+static void
+dmr_hop_csbk(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t lpcn, uint32_t tg, uint32_t src) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    DSD_MEMSET(bytes, 0, sizeof bytes);
+    bytes[0] = opcode;
+    dmr_hop_put_bits(bits, 16U, lpcn, 12U);
+    dmr_hop_put_bits(bits, 32U, tg, 24U);
+    dmr_hop_put_bits(bits, 56U, src, 24U);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+}
+
+/* An active voice frame, so its crypto is never skipped as silence (dmr_ambe49_should_skip_crypto()). */
+static int
+dmr_hop_active_frame(char frame[4][24]) {
+    char ambe_d[49];
+    mbe_process_result decoded;
+    for (int seed = 1; seed < 96; ++seed) {
+        DSD_MEMSET(frame, 0, 4 * 24);
+        frame[(seed + 0) % 4][(seed * 5 + 3) % 24] = 1;
+        frame[(seed + 1) % 4][(seed * 7 + 11) % 24] = 1;
+        frame[(seed + 2) % 4][(seed * 13 + 17) % 24] = 1;
+        frame[(seed + 3) % 4][(seed * 19 + 23) % 24] = 1;
+        if (mbe_decodeAmbe3600x2450Frame((const char (*)[24])frame, ambe_d, &decoded) >= 0
+            && !dmr_ambe49_should_skip_crypto(ambe_d)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* @p frame decoded as the next carrier's first voice on slot 1, with an MBE recording attached: the 49 bits recorded
+   (and played). 1 when it was recorded. */
+static int
+dmr_hop_record_frame(dsd_opts* opts, dsd_state* state, char frame[4][24], char recorded[49]) {
+    FILE* recording = tmpfile();
+    if (recording == NULL) {
+        return 0;
+    }
+    opts->floating_point = 1;
+    opts->dmr_stereo = 1;
+    opts->errorbars = 0;
+    opts->mbe_out_f = recording;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->currentslot = 0;
+    processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DMR, NULL, frame, NULL);
+    int ok = fseek(recording, 0, SEEK_SET) == 0;
+    opts->mbe_in_f = recording;
+    ok = ok && readAmbe2450Data(opts, state, recorded) == 0;
+    opts->mbe_in_f = opts->mbe_out_f = NULL;
+    (void)fclose(recording);
+    return ok;
+}
+
+/* The row the left call (talkgroup 101) committed carries its Motorola annotations. */
+static int
+dmr_hop_left_row_keeps_its_tags(const dsd_state* state) {
+    for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[i];
+        if (row->target_id == 101U && strstr(row->event_string, "TXI;") && strstr(row->event_string, "PRIORITY;")) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Follows the slot 1 call on talkgroup 101 to VC1 and makes it an encrypted Motorola call (FID 0x10, privacy bit, TXI
+   and priority service options) with ALG 0x21, key ID 5 and the MI its superframes stepped to, the -1 key loaded, its
+   MI chain trusted; then leaves VC1 for VC2 by @p kind. */
+static int
+dmr_hop_follow_then_leave(dsd_opts* opts, dsd_state* state, dmr_hop_kind kind) {
+    opts->trunk_enable = opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_NULL;
+    opts->setmod_bw = 0;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    opts->trunk_hangtime = 0.0f;
+    opts->rtlsdr_center_freq = (uint32_t)DMR_HOP_CC;
+    state->trunk_cc_freq = DMR_HOP_CC;
+    state->trunk_chan_map[DMR_HOP_LCN1] = DMR_HOP_VC1;
+    state->trunk_chan_map[DMR_HOP_LCN2] = DMR_HOP_VC2;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    g_rigctl_setfreq_ok = 1;
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    dmr_hop_clock_at(0.0);
+    dmr_sm_init(opts, state);
+    dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN1, 101U, 1001U);
+    int rc = expect_true("the machine follows the grant to VC1", state->trunk_vc_freq[0] == DMR_HOP_VC1);
+
+    dmr_hop_clock_at(1.0);
+    state->dmr_confidence_voice_open[0] = 1;
+    state->dmr_confidence_voice_m[0] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, 0);
+    const dsd_call_observation lc = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 101U,
+        .policy_target_id = 101U,
+        .ota_source_id = 1001U,
+        .service_options = 0x73U,
+        .has_service_metadata = 1U,
+        .observed_m = dsd_decode_now_mono_s(),
+    };
+    rc |= expect_true("the call's voice LC", dsd_call_state_observe(state, &lc, DSD_CALL_BOUNDARY_CONTINUE) >= 0);
+    state->dmr_fid = 0x10U;
+    state->dmr_so = 0x73U;
+    state->payload_algid = 0x21;
+    state->payload_keyid = 0x05;
+    state->payload_mi = 0xA1B2C3D4ULL;
+    state->payload_miP = 0x1122334455667788ULL;
+    state->payload_miN = 0x8877665544332211ULL;
+    state->R = 0x0102030405ULL;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 1U;
+    state->dmr_vc_ref_state[0] = DMR_VC_REF_VALID;
+    state->dmr_vc_untrusted[0] = 0U;
+    state->dropL = 256;
+    state->DMRvcL = 0;
+
+    dmr_hop_clock_at(1.5);
+    if (kind == DMR_HOP_GRANT) {
+        dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN2, 202U, 2002U);
+    } else if (kind == DMR_HOP_MOVE) {
+        dmr_hop_csbk(opts, state, 57U, DMR_HOP_LCN2, 101U, 1001U);
+    } else {
+        const long receiver = dmr_sm_receiver_frequency(opts);
+        rc |= expect_true("the status follow's tune",
+                          dsd_trunk_tuning_hook_tune_to_freq(opts, state, DMR_HOP_VC2, 0, NULL)
+                              == DSD_TRUNK_TUNE_RESULT_OK);
+        dmr_sm_note_status_follow(opts, state, DMR_HOP_VC2, 0, receiver);
+    }
+    rc |= expect_true("the machine leaves VC1 for VC2", state->trunk_vc_freq[0] == DMR_HOP_VC2);
+    return rc;
+}
+
+static void
+dmr_hop_done(dsd_opts* opts, dsd_state* state) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    dmr_sm_init(opts, state);
+    dsd_decode_clock_use_system();
+    g_rigctl_setfreq_ok = 0;
+}
+
+/* After a voice channel hop with no release, the next carrier's frames before their own PI or LC decrypt with nothing
+   of the left call's: no ALG, key ID or MI, and no MI chain the left call's superframes stepped (a rigctl tune keeps
+   the symbol timeline, so a trusted chain would step on and decrypt with it). A clear call's first frame there is
+   played and recorded as it came, not run through the left call's keystream. The left call's history row, which its
+   end renders after the tune, keeps the annotations its FID names. The key loaded with -1 stays the user's. */
+static int
+test_dmr_trunk_hop_leaves_no_call_crypto(void) {
+    static const char* const names[] = {"a grant for another channel", "a C_MOVE", "a status follow"};
+    char frame[4][24];
+    int rc = expect_true("an active voice frame", dmr_hop_active_frame(frame) == 0);
+    char reference[49] = {0};
+    {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= expect_true("the frame on a fresh decoder is recorded",
+                          dmr_hop_record_frame(opts, state, frame, reference));
+        free_test_runtime(opts, state);
+    }
+    for (int kind = DMR_HOP_GRANT; kind <= DMR_HOP_STATUS_FOLLOW; kind++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        char what[160];
+        rc |= dmr_hop_follow_then_leave(opts, state, (dmr_hop_kind)kind);
+        DSD_SNPRINTF(what, sizeof what, "%s: the left call's row keeps TXI and PRIORITY", names[kind]);
+        rc |= expect_true(what, dmr_hop_left_row_keeps_its_tags(state));
+        DSD_SNPRINTF(what, sizeof what, "%s: no ALG, key ID or MI is left (ALG %02X KID %02X MI %llX)", names[kind],
+                     (unsigned)state->payload_algid, (unsigned)state->payload_keyid, state->payload_mi);
+        rc |= expect_true(what, state->payload_algid == 0 && state->payload_algidR == 0 && state->payload_keyid == 0
+                                    && state->payload_keyidR == 0 && state->payload_mi == 0ULL
+                                    && state->payload_miR == 0ULL && state->payload_miP == 0ULL
+                                    && state->payload_miN == 0ULL);
+        DSD_SNPRINTF(what, sizeof what, "%s: no MI chain is trusted", names[kind]);
+        rc |= expect_true(what, state->dmr_vc_ref_state[0] == DMR_VC_REF_NONE
+                                    && state->dmr_vc_ref_state[1] == DMR_VC_REF_NONE && state->dmr_vc_untrusted[0] == 1U
+                                    && state->dmr_vc_untrusted[1] == 1U);
+        DSD_SNPRINTF(what, sizeof what, "%s: no privacy bit or FID is left, the -1 key stays", names[kind]);
+        rc |= expect_true(what, state->dmr_so == 0U && state->dmr_fid == 0U && state->R == 0x0102030405ULL);
+        char recorded[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "%s: the next carrier's clear frame is recorded as it came", names[kind]);
+        rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded)
+                                    && memcmp(recorded, reference, sizeof recorded) == 0);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* A trunked follow that leaves the carrier (a voice channel followed from another without a release, a move) forgets
    the left calls' DMR privacy, as a release does; a grant on the carrier the receiver is on keeps it. */
 static int
@@ -3051,9 +3283,17 @@ test_trunk_follow_forgets_dmr_call_privacy(void) {
     rc |= expect_true("keeps the call's privacy bit", state->dmr_so == 0x40U && state->dmr_fid == 0x10U);
     rc |= expect_true("the next voice channel, with no release",
                       dsd_engine_trunk_tune_to_freq_request(opts, state, vc2, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
-    rc |= expect_dmr_privacy_forgotten("a voice channel hop", state, 70ULL);
+    /* The tune forgets what decrypts. The FID stays for the DMR machine that made the tune: it ends the left calls
+       after it, their rows rendering by that FID, and forgets it then (test_dmr_trunk_hop_leaves_no_call_crypto()). */
+    rc |= expect_true("a voice channel hop: no privacy bit is left, the FID stays for the machine",
+                      state->dmr_so == 0U && state->dmr_soR == 0U && state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE
+                          && state->dmr_fid == 0x10U && state->dmr_fidR == 0x10U);
+    uint32_t keyed_from = 0U;
+    rc |= expect_true("a voice channel hop: an unnamed call keys from no left talkgroup",
+                      !keyring_dmr_tg_autoload_apply(state, 0U, 0U, &keyed_from) && state->K == 70ULL);
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
+    rc |= test_dmr_trunk_hop_leaves_no_call_crypto();
     return rc;
 }
 
