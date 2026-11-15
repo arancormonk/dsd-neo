@@ -2624,9 +2624,11 @@ dmr_cspdu_con_plus_tune_data(dsd_opts* opts, dsd_state* state, uint8_t lcn, uint
         || !dmr_csbk_receive_carrier_allowed(opts, freq)) {
         return 1;
     }
+    const long receiver = dmr_sm_receiver_frequency(opts);
     if (!dsd_trunk_tune_result_is_ok(dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL))) {
         return 0;
     }
+    dmr_sm_note_carrier_tune(state, receiver, freq);
     state->is_con_plus = 1;
     dmr_reset_blocks(opts, state);
     return 1;

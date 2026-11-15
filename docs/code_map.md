@@ -12348,8 +12348,13 @@ Private per-protocol modules worth knowing about:
     their own PI or LC are judged as on a first landing; a rigctl tune keeps the symbol timeline, so a trusted chain
     would otherwise step the left call's MI on and decrypt them with it. The tune itself forgets only what decrypts
     (`dmr_forget_call_decryption()` in `dsd_engine_tune_leaves_carrier()`), so the left calls' final rows, rendered at
-    their end after it, keep the vendor annotations their FID names (`TXI;`, `PRIORITY;`). Test:
-    `ENGINE_NO_CARRIER_RESET` (`test_dmr_trunk_hop_leaves_no_call_crypto()`). A follow of the carrier the receiver is
+    their end after it, keep the vendor annotations their FID names (`TXI;`, `PRIORITY;`). DMR's other tunes that leave
+    a carrier forget the same ALG, key ID, MI and MI chain once the tune is accepted (`dmr_sm_note_carrier_tune()`,
+    given the receiver's frequency before the tune): the Capacity Plus rest move (`dmr_slco_tune_and_reset()`), the
+    Connect Plus data tune, a control channel probe and a settle tune (these two read it from the machine's own
+    attribution, `dmr_sm_attributed_receiver()`, so the hunt adds no rigctl round trip). The tune already forgot their
+    privacy bit, and they keep the FID. Tests: `ENGINE_NO_CARRIER_RESET` (`test_dmr_trunk_hop_leaves_no_call_crypto()`,
+    `test_dmr_rest_move_leaves_no_call_crypto()`). A follow of the carrier the receiver is
     already on (a grant for the composite control channel's own payload, a Cap+ status naming the rest channel it parks
     on, an XPT entry where it parks) adopts it in place: no call there ends, the slots keep that carrier's records
     (identity, binding, follow time) and voice timers, the grant names its slot only when the slot's record does not

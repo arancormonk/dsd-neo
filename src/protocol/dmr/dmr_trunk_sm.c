@@ -509,6 +509,20 @@ dmr_sm_ctx_receiver_frequency(dmr_sm_ctx_t* ctx, const dsd_opts* opts) {
     return dmr_cc_current_frequency(opts, ctx);
 }
 
+/* Where the machine last put the receiver, without asking the tuner (0: unknown): the carrier it follows, else the one
+   a tune of this generation put it on, else the RTL centre. For a probe or settle, which runs on the hunt's cadence
+   and must not add a rigctl round trip; read before its tune. */
+static long
+dmr_sm_attributed_receiver(const dmr_sm_ctx_t* ctx, const dsd_opts* opts) {
+    if (ctx->state == DMR_SM_TUNED && ctx->vc_freq_hz > 0) {
+        return ctx->vc_freq_hz;
+    }
+    if (ctx->cc_rx_freq_hz > 0 && ctx->cc_rx_generation == dsd_trunk_tuning_generation()) {
+        return ctx->cc_rx_freq_hz;
+    }
+    return (opts->use_rigctl != 1 && opts->audio_in_type == AUDIO_IN_RTL) ? (long)opts->rtlsdr_center_freq : 0;
+}
+
 /* Whether a follow to @p freq_hz leaves the carrier the receiver was on before its tune (@p receiver_hz; unknown counts
    as leaving). */
 static int
@@ -623,6 +637,7 @@ dmr_sm_settle_step(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double n
         if (dsd_trunk_tuning_request_status(newest, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
             return 1;
         }
+        const long receiver = dmr_sm_attributed_receiver(ctx, opts);
         const long freq = dmr_cc_tuner_frequency(opts, ctx);
         const long alias_before = state->trunk_cc_freq;
         uint64_t request_id = 0U;
@@ -631,6 +646,7 @@ dmr_sm_settle_step(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double n
                                                  : DSD_TRUNK_TUNE_RESULT_FAILED;
         state->trunk_cc_freq = alias_before;
         if (dsd_trunk_tune_result_is_ok(result)) {
+            dmr_sm_note_carrier_tune(state, receiver, freq);
             ctx->cc_probe_freq_hz = freq; // its attribution goes with the settle
             ctx->cc_tune_request_id = request_id;
             ctx->cc_tune_deadline_m = now_m + DMR_CC_TUNE_TIMEOUT_S;
@@ -914,6 +930,7 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         return;
     }
     const long anchor = state->trunk_cc_freq;
+    const long receiver = dmr_sm_attributed_receiver(ctx, opts);
     uint64_t request_id = 0U;
     const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, 0, &request_id);
     /* The shared tune helper stages a CC frequency for legacy callers. DMR
@@ -929,6 +946,7 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         sm_recovery_log(opts, "cc-probe-deferred-or-failed");
         return;
     }
+    dmr_sm_note_carrier_tune(state, receiver, freq);
     ctx->cc_probe_freq_hz = freq;
     ctx->cc_acquiring = 1;
     ctx->cc_acquire_start_m = dsd_decode_now_mono_s();
@@ -978,17 +996,12 @@ dmr_sm_end_left_calls(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-/* A follow, a move or a status follow took the receiver off the carrier whose calls the slots carried: those calls end
-   first, so their final rows keep the FID their vendor annotations render by, and then nothing of theirs says how the
-   next carrier's calls are encrypted. As the release does (dsd_engine_release_tuned_call_state()): their privacy
-   (dmr_forget_call_privacy(), FID included), their ALG, key ID and MI, and each slot's MI chain. Otherwise a rigctl
+/* What a DMR tune that left a carrier forgets of the left calls' decryption, as the release does
+   (dsd_engine_release_tuned_call_state()): both slots' ALG, key ID and MI, and each slot's MI chain. Otherwise a rigctl
    tune, which keeps the symbol timeline, would step the left call's MI on and decrypt the next carrier's frames before
-   their own PI or LC with it. Only the DMR machine reaches this, so P25 and NXDN never meet these shared fields
-   here. */
+   their own PI or LC with it. Only DMR's own tunes reach this, so P25 and NXDN never meet these shared fields here. */
 static void
-dmr_sm_leave_carrier(dsd_opts* opts, dsd_state* state) {
-    dmr_sm_end_left_calls(opts, state);
-    dmr_forget_call_privacy(state);
+dmr_sm_forget_left_crypto(dsd_state* state) {
     state->payload_algid = 0;
     state->payload_algidR = 0;
     state->payload_keyid = 0;
@@ -999,6 +1012,24 @@ dmr_sm_leave_carrier(dsd_opts* opts, dsd_state* state) {
     state->payload_miN = 0;
     dmr_vcrypt_forget(state, 0U);
     dmr_vcrypt_forget(state, 1U);
+}
+
+/* A follow, a move or a status follow took the receiver off the carrier whose calls the slots carried: those calls end
+   first, so their final rows keep the FID their vendor annotations render by, and then nothing of theirs says how the
+   next carrier's calls are encrypted: their privacy (dmr_forget_call_privacy(), FID included), then their ALG, key ID
+   and MI and each slot's MI chain (dmr_sm_forget_left_crypto()). */
+static void
+dmr_sm_leave_carrier(dsd_opts* opts, dsd_state* state) {
+    dmr_sm_end_left_calls(opts, state);
+    dmr_forget_call_privacy(state);
+    dmr_sm_forget_left_crypto(state);
+}
+
+void
+dmr_sm_note_carrier_tune(dsd_state* state, long receiver_hz, long freq_hz) {
+    if (state && dmr_sm_follow_leaves(receiver_hz, freq_hz)) {
+        dmr_sm_forget_left_crypto(state);
+    }
 }
 
 static void

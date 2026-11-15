@@ -48,6 +48,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -3037,6 +3038,7 @@ typedef enum {
     DMR_HOP_GRANT = 0,
     DMR_HOP_MOVE,
     DMR_HOP_STATUS_FOLLOW,
+    DMR_HOP_REST_MOVE,
 } dmr_hop_kind;
 
 #define DMR_HOP_CC   451000000L
@@ -3044,6 +3046,8 @@ typedef enum {
 #define DMR_HOP_VC2  452037500L
 #define DMR_HOP_LCN1 0x0010U
 #define DMR_HOP_LCN2 0x0011U
+#define DMR_HOP_REST 452062500L
+#define DMR_HOP_LSN  3U
 
 static void
 dmr_hop_clock_at(double seconds) {
@@ -3125,6 +3129,70 @@ dmr_hop_left_row_keeps_its_tags(const dsd_state* state) {
     return 0;
 }
 
+/* One Hamming(17,12,3) word of a short LC (ETSI TS 102 361-1 B.3.10). */
+static void
+dmr_hop_slc_word(uint8_t out[17], const uint8_t payload[12]) {
+    for (int i = 0; i < 12; i++) {
+        out[i] = payload[i] & 1U;
+    }
+    out[12] = out[0] ^ out[1] ^ out[2] ^ out[3] ^ out[6] ^ out[7] ^ out[9];
+    out[13] = out[0] ^ out[1] ^ out[2] ^ out[3] ^ out[4] ^ out[7] ^ out[8] ^ out[10];
+    out[14] = out[1] ^ out[2] ^ out[3] ^ out[4] ^ out[5] ^ out[8] ^ out[9] ^ out[11];
+    out[15] = out[0] ^ out[1] ^ out[4] ^ out[5] ^ out[7] ^ out[10];
+    out[16] = out[0] ^ out[1] ^ out[2] ^ out[5] ^ out[6] ^ out[8] ^ out[11];
+}
+
+/* A Capacity Plus SLCO (0xF, site 1) naming rest LSN @p lsn, CRC-8 checked, in the four CACH fragments that carry it,
+   each fed to dmr_cach() as a burst's CACH would be. 1 when the short LC was built. */
+static int
+dmr_hop_cap_plus_rest_slco(dsd_opts* opts, dsd_state* state, uint8_t lsn) {
+    static const uint8_t tact[4][7] = {
+        {0, 0, 0, 0, 0, 0, 0}, {0, 0, 0, 1, 0, 1, 1}, {0, 0, 1, 0, 1, 1, 0}, {0, 0, 1, 1, 1, 0, 1}};
+    static const uint8_t lcss[4] = {1U, 3U, 3U, 2U};
+    uint8_t slco[36];
+    DSD_MEMSET(slco, 0, sizeof slco);
+    dmr_hop_put_bits(slco, 0U, 0xFU, 4U);
+    dmr_hop_put_bits(slco, 16U, lsn, 4U);
+    dmr_hop_put_bits(slco, 22U, 1U, 3U);
+    int crc_ok = 0;
+    for (uint32_t nonce = 0U; nonce <= 0xFFU && !crc_ok; nonce++) {
+        dmr_hop_put_bits(slco, 28U, nonce, 8U);
+        crc_ok = crc8(slco, 36U) == 0U;
+    }
+    uint8_t expanded[68];
+    uint8_t raw[68];
+    DSD_MEMSET(expanded, 0, sizeof expanded);
+    for (int word = 0; word < 3; word++) {
+        dmr_hop_slc_word(&expanded[word * 17], &slco[word * 12]);
+    }
+    for (int i = 0; i < 67; i++) {
+        raw[(i * 4) % 67] = expanded[i];
+    }
+    raw[67] = expanded[67];
+    for (int fragment = 0; fragment < 4; fragment++) {
+        uint8_t cach[25];
+        DSD_MEMSET(cach, 0, sizeof cach);
+        DSD_MEMCPY(cach, tact[lcss[fragment]], 7U);
+        DSD_MEMCPY(&cach[7], &raw[fragment * 17], 17U);
+        (void)dmr_cach(opts, state, cach);
+    }
+    return crc_ok;
+}
+
+/* The Capacity Plus rest move dmr_slco() makes to look for the held talkgroup (202, not on either slot) on the rest
+   channel a busy site announces: a control channel tune, which no DMR machine follow or release surrounds. */
+static int
+dmr_hop_rest_move(dsd_opts* opts, dsd_state* state) {
+    state->trunk_chan_map[DMR_HOP_LSN] = DMR_HOP_REST;
+    state->tg_hold = 202U;
+    state->dmrburstL = state->dmrburstR = 16;
+    int rc = expect_true("a Capacity Plus SLCO naming the rest channel",
+                         dmr_hop_cap_plus_rest_slco(opts, state, DMR_HOP_LSN));
+    rc |= expect_true("the rest move tunes the rest channel",
+                      g_rigctl_setfreq_freq == DMR_HOP_REST && state->trunk_cc_freq == DMR_HOP_REST);
+    return rc;
+}
+
 /* Follows the slot 1 call on talkgroup 101 to VC1 and makes it an encrypted Motorola call (FID 0x10, privacy bit, TXI
    and priority service options) with ALG 0x21, key ID 5 and the MI its superframes stepped to, the -1 key loaded, its
    MI chain trusted; then leaves VC1 for VC2 by @p kind. */
@@ -3186,6 +3254,8 @@ dmr_hop_follow_then_leave(dsd_opts* opts, dsd_state* state, dmr_hop_kind kind) {
         dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN2, 202U, 2002U);
     } else if (kind == DMR_HOP_MOVE) {
         dmr_hop_csbk(opts, state, 57U, DMR_HOP_LCN2, 101U, 1001U);
+    } else if (kind == DMR_HOP_REST_MOVE) {
+        return rc | dmr_hop_rest_move(opts, state);
     } else {
         const long receiver = dmr_sm_receiver_frequency(opts);
         rc |= expect_true("the status follow's tune",
@@ -3259,6 +3329,47 @@ test_dmr_trunk_hop_leaves_no_call_crypto(void) {
     return rc;
 }
 
+/* The Capacity Plus rest move off a voice channel (the SLCO's control channel tune, with no release) leaves the left
+   call's decryption behind as a follow does: no ALG, key ID or MI, no MI chain its superframes stepped and no privacy
+   bit, so the rest channel's frames before their own PI or LC are not run through the left call's keystream. A clear
+   frame there is recorded as it came. The key loaded with -1 stays the user's. */
+static int
+test_dmr_rest_move_leaves_no_call_crypto(void) {
+    char frame[4][24];
+    int rc = expect_true("an active voice frame", dmr_hop_active_frame(frame) == 0);
+    char reference[49] = {0};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= expect_true("the frame on a fresh decoder is recorded", dmr_hop_record_frame(opts, state, frame, reference));
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_REST_MOVE);
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "a rest move: no ALG, key ID or MI is left (ALG %02X KID %02X MI %llX)",
+                 (unsigned)state->payload_algid, (unsigned)state->payload_keyid, state->payload_mi);
+    rc |= expect_true(what, state->payload_algid == 0 && state->payload_algidR == 0 && state->payload_keyid == 0
+                                && state->payload_keyidR == 0 && state->payload_mi == 0ULL && state->payload_miR == 0ULL
+                                && state->payload_miP == 0ULL && state->payload_miN == 0ULL);
+    rc |= expect_true("a rest move: no MI chain is trusted",
+                      state->dmr_vc_ref_state[0] == DMR_VC_REF_NONE && state->dmr_vc_ref_state[1] == DMR_VC_REF_NONE
+                          && state->dmr_vc_untrusted[0] == 1U && state->dmr_vc_untrusted[1] == 1U);
+    rc |= expect_true("a rest move: no privacy bit is left, the -1 key stays",
+                      state->dmr_so == 0U && state->dmr_soR == 0U && state->R == 0x0102030405ULL);
+    state->tg_hold = 0U; // the hold would mute the slot's call on talkgroup 101, whose frame this stands in for
+    char recorded[49] = {0};
+    rc |= expect_true("a rest move: the rest channel's clear frame is recorded as it came",
+                      dmr_hop_record_frame(opts, state, frame, recorded)
+                          && memcmp(recorded, reference, sizeof recorded) == 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* A trunked follow that leaves the carrier (a voice channel followed from another without a release, a move) forgets
    the left calls' DMR privacy, as a release does; a grant on the carrier the receiver is on keeps it. */
 static int
@@ -3294,6 +3405,7 @@ test_trunk_follow_forgets_dmr_call_privacy(void) {
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
     rc |= test_dmr_trunk_hop_leaves_no_call_crypto();
+    rc |= test_dmr_rest_move_leaves_no_call_crypto();
     return rc;
 }
 

@@ -1936,11 +1936,15 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
         return;
     }
     uint64_t request_id = 0U;
+    const long receiver = dmr_sm_receiver_frequency(opts);
     dsd_trunk_tune_result tune_result =
         dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0, &request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
     }
+    /* The rest channel may carry voice (a Capacity Plus rest channel is a repeater): the left calls' ALG, key ID and MI
+       decrypt none of its frames. */
+    dmr_sm_note_carrier_tune(state, receiver, state->trunk_cc_freq);
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
