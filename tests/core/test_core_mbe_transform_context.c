@@ -4442,17 +4442,20 @@ test_process_mbe_frame_checking_call_keeps_mapped_key(void) {
     return rc;
 }
 
-// A DMR frame the receive policy has not admitted yet (Checking) still loads the key its slot's talkgroup names, as the
-// talkgroup key autoload always has: that key keeps the vocoder state the admitted frames continue from. It records
-// that choice only on the open DMR call. An ended call, or another protocol's, keeps its identities in the slot after
-// it is over, and its record must not be stamped with a key a later transmission's frame chose.
+// A DMR frame the receive policy has not admitted yet (Checking) opens no call, so its slot can still hold an ended
+// call or another protocol's, which keep their talkgroups there after they are over. The talkgroup key autoload keys
+// such a frame from its own call's talkgroup, the open DMR call a checked LC named, and from nothing before that call is
+// known, as an admitted frame of a call no LC has named yet loads no talkgroup's key either. A key another call's
+// talkgroup names would stay loaded into the call's admitted frames: its Basic Privacy would decrypt with that key, and
+// a call that has none would be judged decryptable (dsd_dmr_missing_alg_key_can_decrypt()) and play instead of being
+// muted. The choice is recorded only on that open DMR call.
 static int
-test_process_mbe_frame_checking_autoload_stamps_only_the_open_dmr_call(void) {
+test_process_mbe_frame_checking_autoload_keys_only_from_the_open_dmr_call(void) {
     static const struct {
         const char* name;
         int protocol;
         int ended;
-        int stamped;
+        int keyed;
     } cases[] = {
         {"ended dmr call", DSD_SYNC_DMR_BS_VOICE_POS, 1, 0},
         {"ended tetra call", DSD_SYNC_TETRA_NDB_POS, 1, 0},
@@ -4505,17 +4508,22 @@ test_process_mbe_frame_checking_autoload_stamps_only_the_open_dmr_call(void) {
 
         processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
-        DSD_SNPRINTF(tag, sizeof(tag), "slot %u %s: the autoload still loads the talkgroup's key", (unsigned)slot + 1U,
+        DSD_SNPRINTF(tag, sizeof(tag), "slot %u %s: the talkgroup's key is loaded", (unsigned)slot + 1U, cases[i].name);
+        rc |= expect_eq_int(tag, (int)state.K, cases[i].keyed ? 0x55 : 0);
+        DSD_SNPRINTF(tag, sizeof(tag), "slot %u %s: a Basic Privacy key is present", (unsigned)slot + 1U,
                      cases[i].name);
-        rc |= expect_eq_int(tag, (int)state.K, 0x55);
+        rc |= expect_eq_int(tag, (int)state.basic_key_present, cases[i].keyed);
+        DSD_SNPRINTF(tag, sizeof(tag), "slot %u %s: a call with no ALG ID is decryptable", (unsigned)slot + 1U,
+                     cases[i].name);
+        rc |= expect_eq_int(tag, dsd_dmr_missing_alg_key_can_decrypt(&state, slot), cases[i].keyed);
         dsd_call_snapshot snapshot;
         DSD_MEMSET(&snapshot, 0, sizeof(snapshot));
         (void)dsd_call_state_get(&state, slot, &snapshot);
         DSD_SNPRINTF(tag, sizeof(tag), "slot %u %s: the call record is stamped", (unsigned)slot + 1U, cases[i].name);
-        rc |= expect_eq_int(tag, (int)snapshot.key_selection.valid, cases[i].stamped);
+        rc |= expect_eq_int(tag, (int)snapshot.key_selection.valid, cases[i].keyed);
         DSD_SNPRINTF(tag, sizeof(tag), "slot %u %s: the call keeps its protocol", (unsigned)slot + 1U, cases[i].name);
         rc |= expect_eq_int(tag, snapshot.protocol, cases[i].protocol);
-        if (cases[i].stamped) {
+        if (cases[i].keyed) {
             rc |= expect_eq_int("open dmr call: the stamp names the talkgroup key", snapshot.key_selection.effective_id,
                                 123);
         }
@@ -7305,7 +7313,7 @@ main(void) {
     rc |= test_process_mbe_frame_dmr_aes_stream_advances_slot_state();
     rc |= test_process_mbe_frame_activation_gate_and_wide_kid();
     rc |= test_process_mbe_frame_checking_call_keeps_mapped_key();
-    rc |= test_process_mbe_frame_checking_autoload_stamps_only_the_open_dmr_call();
+    rc |= test_process_mbe_frame_checking_autoload_keys_only_from_the_open_dmr_call();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();
     rc |= test_play_mbe_files_processes_imbe_ambe_and_dstar_records();
     rc |= test_play_mbe_files_does_not_carry_call_identity_across_files();

@@ -1868,8 +1868,10 @@ suite runs under this compiler.
   Every other loader that reads `rkey_array` by key ID decides presence the same way, requires the ALG's width for
   AES, and falls back to the direct key only when nothing usable was imported, judging that one by
   `dsd_key_scalar_present()` (R/RR) or `dsd_key_direct_words_complete()` (K1..K4, its recorded word count): the DMR
-  Basic Privacy talkgroup autoload in `dsd_mbe.c` (which also sets `basic_key_present`), the DMR data block crypto
-  (`dmr_block_crypto.c`), the P25 Phase 1 PDU decrypt (`p25p1_pdu_data.c`) and the SDRTrunk JSON replay keystreams and
+  Basic Privacy talkgroup autoload in `dsd_mbe.c` (which also sets `basic_key_present`, and keys a frame only from
+  the slot's open DMR call's talkgroup, `mbe_dmr_autoload_call()`: a frame the receive policy has not admitted opens
+  no call, and the ended or other protocol's call its slot may hold names another call's talkgroup), the DMR data
+  block crypto (`dmr_block_crypto.c`), the P25 Phase 1 PDU decrypt (`p25p1_pdu_data.c`) and the SDRTrunk JSON replay keystreams and
   talkgroup-keyed lookup (`dsd_file.c`). Tests: `P25_CRYPTO_STATE`, `NXDN_ELEMENT_BOUNDS` (imported zero keys, the
   narrow AES fallback, VCALL_IV keeping the VCALL's key), `CORE_MBE_TRANSFORM_CONTEXT`, `DMR_BLOCK_CRYPTO`,
   `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO` (incomplete AES keys refused on the data and replay paths),
