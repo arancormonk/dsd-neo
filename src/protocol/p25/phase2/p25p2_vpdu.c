@@ -788,11 +788,13 @@ p25p2_vpdu_active_target_matches(const dsd_state* state, uint64_t target) {
     return 0;
 }
 
+/* The source of the open P25 call on @p slot, the radio a vendor GPS PDU speaks for; 0 when the slot holds none. An
+ * ended call, or another protocol's, keeps its identities in the slot after it is over. */
 static uint32_t
 p25p2_vpdu_active_source(const dsd_state* state, uint8_t slot) {
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, slot & 1U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || call.ota_source_id > UINT32_MAX) {
+        || !DSD_SYNC_IS_P25(call.protocol) || call.ota_source_id > UINT32_MAX) {
         return 0U;
     }
     return (uint32_t)call.ota_source_id;

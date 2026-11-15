@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -30,6 +31,8 @@
 
 // Strong stub to capture VC tuning attempts from the SM path
 static int g_tunes = 0;
+static int g_nmea_harris_calls;
+static uint32_t g_nmea_harris_src;
 static int g_returns = 0;
 
 dsd_trunk_tune_result
@@ -117,8 +120,9 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)opts;
     (void)state;
     (void)input;
-    (void)src;
     (void)slot;
+    g_nmea_harris_calls++;
+    g_nmea_harris_src = src;
 }
 
 static void
@@ -512,6 +516,105 @@ test_lcgrgr_from_tdulc_records_without_voice_start(void) {
     return rc;
 }
 
+/* Slot 0 holding a call of @p protocol, still open or already ended, on a reset receiver. */
+static int
+seed_slot0_call(dsd_opts* opts, dsd_state* state, int protocol, uint64_t target, uint64_t source, int ended) {
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .observed_m = 1.0,
+    };
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) <= 0) {
+        return 0;
+    }
+    return !ended || dsd_call_state_end(state, 0U, 0.0) > 0;
+}
+
+/* Link control names a radio or a position for the P25 Phase 1 call it belongs to, never for another protocol's call
+   that slot 0 still holds: before, a source extension rewrote an open DMR call's source, and a Harris position was
+   filed under a DMR call's radio. The TDULC ends its call before its link control is read, so a GPS block still
+   speaks for an ended P25 call. */
+static int
+test_lcw_identities_go_only_to_the_p25_call(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    static const struct {
+        const char* name;
+        unsigned format;
+        unsigned mfid;
+    } suids[] = {{"source extension", 0x49U, 0x00U}, {"Tait FQ-SUID", 0x01U, 0xD8U}};
+
+    for (size_t i = 0; i < sizeof(suids) / sizeof(suids[0]); i++) {
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: DMR call seeded", suids[i].name);
+        rc |= expect_eq_int(tag, seed_slot0_call(&opts, &st, DSD_SYNC_DMR_BS_VOICE_POS, 0x1111U, 111U, 0), 1);
+        uint8_t lcw[72];
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, suids[i].format);
+        set_bits_msb(lcw, 8, 8, suids[i].mfid);
+        set_bits_msb(lcw, 16, 20, 0xABCDEU);
+        set_bits_msb(lcw, 36, 12, 0x123U);
+        set_bits_msb(lcw, 48, 24, 0x456789U);
+        p25_lcw(&opts, &st, lcw, 0);
+        dsd_call_snapshot call;
+        DSD_MEMSET(&call, 0, sizeof call);
+        (void)dsd_call_state_get(&st, 0U, &call);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the DMR call keeps its source", suids[i].name);
+        rc |= expect_eq_int(tag, (int)call.ota_source_id, 111);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the DMR call stays DMR's", suids[i].name);
+        rc |= expect_eq_int(tag, call.protocol, DSD_SYNC_DMR_BS_VOICE_POS);
+    }
+
+    static const struct {
+        const char* name;
+        int protocol;
+        int ended;
+        int want_src;
+    } gps[] = {
+        {"open DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0, 0},
+        {"ended DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 1, 0},
+        {"ended P25 call", DSD_SYNC_P25P1_POS, 1, 0x123456},
+        {"open P25 call", DSD_SYNC_P25P1_POS, 0, 0x123456},
+    };
+
+    for (size_t i = 0; i < sizeof(gps) / sizeof(gps[0]); i++) {
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof tag, "Harris GPS after %s: seeded", gps[i].name);
+        rc |= expect_eq_int(tag, seed_slot0_call(&opts, &st, gps[i].protocol, 0x3456U, 0x123456U, gps[i].ended), 1);
+        g_nmea_harris_calls = 0;
+        g_nmea_harris_src = 0xFFFFFFFFU;
+        uint8_t lcw[72];
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x2AU);
+        set_bits_msb(lcw, 8, 8, 0xA4U);
+        set_bits_msb(lcw, 16, 8, 0x5AU);
+        set_bits_msb(lcw, 40, 8, 0xC3U);
+        p25_lcw(&opts, &st, lcw, 0);
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x2BU);
+        set_bits_msb(lcw, 8, 8, 0xA4U);
+        set_bits_msb(lcw, 16, 8, 0x66U);
+        p25_lcw(&opts, &st, lcw, 0);
+        DSD_SNPRINTF(tag, sizeof tag, "Harris GPS after %s: dispatched", gps[i].name);
+        rc |= expect_eq_int(tag, g_nmea_harris_calls, 1);
+        DSD_SNPRINTF(tag, sizeof tag, "Harris GPS after %s: source", gps[i].name);
+        rc |= expect_eq_int(tag, (int)g_nmea_harris_src, gps[i].want_src);
+    }
+    dsd_state_ext_free_all(&st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -696,6 +799,7 @@ main(void) {
     rc |= test_group_voice_user_parity(0x90);
     rc |= test_lcgrgr_key0_keeps_clear_gate();
     rc |= test_lcgrgr_from_tdulc_records_without_voice_start();
+    rc |= test_lcw_identities_go_only_to_the_p25_call();
 
     dsd_state_ext_free_all(&st);
     return rc;

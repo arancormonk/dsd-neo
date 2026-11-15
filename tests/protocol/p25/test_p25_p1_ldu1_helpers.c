@@ -686,6 +686,40 @@ test_ldu1_lsd_correction_respects_encryption(void) {
     return rc;
 }
 
+/* The LDU1 LSD soft ID goes to the open P25 Phase 1 call's radio only: before, an alias finishing while another
+   protocol's call was open was learned for that call's source and added to its event row (as in the LDU2). */
+static int
+test_ldu1_softid_alias_skips_another_protocols_call(void) {
+    static dsd_state state;
+    ldu1_decode_ctx_t ctx;
+    int rc = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    reset_hook_counters();
+    state.dmr_alias_format[0] = 0x02;
+    state.dmr_alias_block_len[0] = 2;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 5555U,
+    };
+    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    state.payload_algid = 0x80;
+    ctx.lsd_hex1 = 0x41;
+    ctx.lsd_hex2 = 0x42;
+    ctx.lsd1_okay = 1;
+    ctx.lsd2_okay = 1;
+
+    p25p1_ldu1_handle_softid(&state, &ctx);
+    rc |= expect_int("softid with a DMR call open learns nothing", g_policy_learn_calls, 0);
+    rc |= expect_int("softid with a DMR call open makes no policy", g_policy_make_calls, 0);
+    return rc;
+}
+
 static int
 test_ldu1_softid_alias_state(void) {
     static dsd_opts opts;
@@ -897,6 +931,7 @@ main(void) {
     rc |= test_ldu1_collect_lsd_stores_soft_bits_and_counters();
     rc |= test_ldu1_lsd_correction_respects_encryption();
     rc |= test_ldu1_softid_alias_state();
+    rc |= test_ldu1_softid_alias_skips_another_protocols_call();
     rc |= test_ldu1_split_by_a_carrier_boundary_publishes_no_link_control();
     rc |= test_ldu1_cut_by_an_input_interruption_plays_and_publishes_nothing_after_the_cut();
     dsd_decode_clock_use_system();

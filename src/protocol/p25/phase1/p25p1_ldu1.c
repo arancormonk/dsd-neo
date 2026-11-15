@@ -48,6 +48,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25p1_current_call.h"
 
 #ifdef SOFTID
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -409,7 +410,7 @@ p25p1_ldu1_softid_finalize_alias(dsd_state* state, int k) {
 
     char str[16];
     dsd_call_snapshot call;
-    const int has_call = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    const int has_call = p25p1_current_call(state, &call);
     int tsrc = has_call && call.ota_source_id <= UINT32_MAX ? (int)call.ota_source_id : 0;
     k = 0;
     for (int i = 0; i < 16; i++) {
