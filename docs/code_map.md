@@ -3755,7 +3755,8 @@ suite runs under this compiler.
       start), RTL demod `demod_thread_fn` (`rtl_demod`), controller `controller_thread_retune_loop`
       (`rtl_controller`), USB reader `dongle_thread_fn` where the librtlsdr/libusb callbacks run (`rtl_usb`), rtl_tcp
       reader `tcp_thread_fn` (`rtl_tcp`), Soapy reader `soapy_thread_fn` (`soapy`), I/Q replay feeder
-      `replay_thread_fn` (`iq_replay`), P25 watchdog (`p25_watchdog`). No apply (no float work of dsd-neo's): the
+      `replay_thread_fn` (`iq_replay`), network I/Q reader `iq_net_thread_main` (`iq_net`, `iq_net_reader.c`), P25
+      watchdog (`p25_watchdog`). No apply (no float work of dsd-neo's): the
       Airspy and replay progress monitors, UDP PCM input (int16), the audio output pumps, the I/Q capture writer, UDP
       control, the API, RadioReference, rdio upload, terminal UI, Signal search store and Qt/Android worker threads.
       The mode covers dsd-neo-owned computation only: libairspy converts and filters on its own consumer thread before
@@ -8505,6 +8506,7 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     `iq_rate_chain.c`), and the live rate plan; no SDR dependency
   - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, SoapySDR, and native Airspy backends; provides
     constellation/eye/spectrum snapshots, optional bias-tee (RTL path), and auto-PPM hooks
+    - `dsd-neo_io_iq_net` (OBJECT, folded in) — the network I/Q input core: spec, wire formats, socket reader
     - Built when `DSD_HAS_RADIO` is true (RTL, Soapy, or Airspy available, or the pipeline explicitly forced on); otherwise provided as an INTERFACE stub target
   - `dsd-neo_io_audio` — network audio/input backends: UDP PCM16LE input, TCP PCM16LE input, UDP audio output helpers,
     and M17 UDP helpers
@@ -9333,6 +9335,46 @@ Key public headers:
     (`svc_rtl_bandwidth_fits_analog_width()`) and a switch to Analog or AM (`ui_check_mode_receive_profile()`). A
     replay's analog-width refusals name the DSP bandwidths that fit, and TETRA's capture advice only a refused re-plan.
     Tests: `APP_COMMAND_QUEUE` (`test_replay_*`), `RUNTIME_CONFIG_APPLY`.
+- Network I/Q input core (issue #743): `include/dsd-neo/io/iq_net.h`, `src/io/radio/iq_net_{spec,format,rate,reader}.c`
+  (private `iq_net_internal.h`), object target `dsd-neo_io_iq_net` folded into `dsd-neo_io_radio`; radio builds
+  only (the header's declarations sit under `USE_RADIO`). It knows nothing of the input ring, resampler or decoder.
+  - Spec: `dsd_iq_net_spec_parse()` reads `iqtcp:HOST:PORT:RATE:FORMAT[:FREQ]` / `iqudp:BIND:PORT:RATE:FORMAT[:FREQ]`
+    with its own splitter that keeps empty fields, fields checked in order so the message names the first bad one
+    (and the expected shape); PORT 1..65535, RATE whole Hz with k/M (>= 8000), FREQ Hz with k/M/G rounded half up
+    (uint32, 0 or empty = unknown), plain decimal only. `dsd_iq_net_spec_format()` writes the canonical text (plain Hz,
+    FREQ left out at 0) that parses back to the same struct. A reader takes UDP port 0 through the API (tests read
+    the bound port back with `dsd_iq_net_reader_local_port()`); the parser and the text never do.
+  - Wire formats: a net-local enum (`dsd_iq_net_format`), so the replay's `dsd_iq_sample_format` and converters gain
+    nothing. `dsd_iq_net_convert()`: cu8 through `widen_u8_to_f32_bias127()`, cs8 x/128, cs16 x/32768, cs32 x/2^31
+    (the WAV s32 rule), integers assembled from their little-endian bytes; cf32 through `bound_cf32_to_f32()`, the
+    same call `rtl_cf32_copy_bounded()` makes without rotation (non-finite and |x| >= 2^60 become +0, over full scale
+    passes; host-order floats, as every supported host is little-endian). `IO_IQ_NET` pins the cf32 output against
+    `bound_cf32_to_f32()` itself. Clip levels (`dsd_iq_net_format_clip_level()`): cs8 127/128, cu8 0.996, else 0.999.
+  - Reader (`dsd_iq_net_reader_*`): `_create()` allocates every buffer (64 KiB receive, 32768-pair output; nothing
+    per read); `_open()` runs on the caller's thread (TCP: resolve, then `dsd_socket_connect_bounded()` 10 s,
+    keepalive, SO_RCVBUF 4 MiB before the connect; UDP: bind with SO_REUSEADDR, SO_EXCLUSIVEADDRUSE on Windows,
+    SO_RCVBUF, 200 ms receive timeout) and reports a `dsd_input_failure_kind` plus message, logging nothing; `_start()`
+    makes the `iq_net` thread (FP mode applied first), or a caller runs `_run()` on its own thread. Every wait is a
+    200 ms `dsd_socket_wait()` slice. Callbacks run on the reader thread with no reader lock held; a RECONNECT or
+    RESUME event comes before the first sample after it, which is where the stream boundary belongs. TCP: the carry
+    of a partial sample survives a stall and is discarded at a reconnect; a loss reconnects forever, resolving again
+    at every attempt, the first at once and then 0.2 s x attempt (cap 2 s) in 20 ms slices; a connection that ends
+    before it delivers a sample does not reset the attempt count, so a server that accepts and closes is backed off.
+    UDP: datagrams must hold whole samples (others dropped whole, one warning per run naming the packet size, and a
+    KNOWN_LOSS event when from the locked sender); empty datagrams are ignored and are no sign of life; the first
+    valid sender is locked and others dropped with one notice; a stall releases the lock: the same sender then
+    resumes (RESUME), another is a RECONNECT. Stall = no valid sample for 2 s on the injectable clock
+    (`dsd_iq_net_reader_config.clock_ms`, NULL = `dsd_realtime_mono_ms()`); waits and backoff always run on real time.
+  - Socket handle: published under the leaf `sock_lock` (never held across a wait, recv, connect, backoff or callback);
+    a stop latches the flag and shuts down only the published socket; the reader unpublishes before it closes.
+  - Availability (`dsd_iq_net_state`, one atomic): STOPPED, CONNECTING, WAITING (up, nothing written since it came
+    up or since the last boundary), STREAMING (the consumer called `dsd_iq_net_reader_note_written()`), STALLED. Only
+    STREAMING is available. Counters are `dsd_atomic_u64`s copied by `dsd_iq_net_reader_get_counters()`.
+  - Rate telemetry (`iq_net_rate.c`): 5 s warm-up, then 10 s windows of valid samples on the injectable clock; a window
+    with a stall, boundary, known loss or consumer drop (`dsd_iq_net_reader_note_drop()`) is discarded and breaks a
+    streak; three consecutive windows strictly below 0.9x or strictly above 1.1x the rate, on the same side, warn once
+    per connection (re-armed at a reconnect; a resume warms up again without re-arming).
+  - Tests: `IO_IQ_NET` (C, loopback, every platform with radio support).
 
 Notes:
 

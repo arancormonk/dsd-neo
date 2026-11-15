@@ -43,6 +43,32 @@ target_link_libraries(dsd-neo_io_rtl_tuner_gains PRIVATE dsd-neo_warnings)
 
 # Radio (RTL-SDR front-end and streaming)
 if(DSD_HAS_RADIO)
+    # Raw I/Q over the network (iqtcp:/iqudp:): the spec, the wire formats and
+    # the socket reader, in C and folded into the radio library. A target of its
+    # own keeps the C++-only warning flags SoapySDR exports to the radio library
+    # off these files, and lets its test link the module alone.
+    add_library(
+        dsd-neo_io_iq_net
+        OBJECT
+        radio/iq_net_format.c
+        radio/iq_net_rate.c
+        radio/iq_net_reader.c
+        radio/iq_net_spec.c
+    )
+    target_include_directories(
+        dsd-neo_io_iq_net
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_io_iq_net
+        PRIVATE
+            dsd-neo_dsp
+            dsd-neo_feature_radio
+            dsd-neo_platform
+            dsd-neo_runtime
+            dsd-neo_warnings
+    )
+
     add_library(dsd-neo_io_radio)
     target_sources(
         dsd-neo_io_radio
@@ -63,6 +89,7 @@ if(DSD_HAS_RADIO)
             radio/signal_measure.cpp
             radio/soapy_profile.cpp
             $<TARGET_OBJECTS:dsd-neo_io_rtl_tuner_gains>
+            $<TARGET_OBJECTS:dsd-neo_io_iq_net>
     )
     target_include_directories(
         dsd-neo_io_radio

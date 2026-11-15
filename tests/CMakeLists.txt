@@ -18311,6 +18311,21 @@ target_link_libraries(
 add_test(NAME IO_RTL_TUNER_GAINS COMMAND dsd-neo_test_io_rtl_tuner_gains)
 
 if(DSD_HAS_RADIO)
+    # Raw I/Q over the network (#743): spec, wire formats, rate telemetry and
+    # the socket reader on loopback; plain C, so it runs on every platform.
+    add_executable(dsd-neo_test_io_iq_net io/test_io_iq_net.c)
+    target_include_directories(
+        dsd-neo_test_io_iq_net
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_iq_net
+        PRIVATE dsd-neo_io_iq_net dsd-neo_runtime dsd-neo_dsp dsd-neo_platform
+    )
+    add_test(NAME IO_IQ_NET COMMAND dsd-neo_test_io_iq_net)
+endif()
+
+if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_rtl_auto_ppm io/test_io_rtl_auto_ppm.cpp)
     target_include_directories(
         dsd-neo_test_io_rtl_auto_ppm
