@@ -311,7 +311,6 @@ dpmr_shown_call(const dsd_state* state, dsd_call_snapshot* call) {
 void
 dpmr_print_ids(const dsd_state* state) {
     dsd_call_snapshot call;
-    DSD_MEMSET(&call, 0, sizeof(call));
     if (!dpmr_shown_call(state, &call)) {
         DSD_MEMSET(&call, 0, sizeof(call));
     }

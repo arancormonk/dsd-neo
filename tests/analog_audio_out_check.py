@@ -22,11 +22,18 @@ METRIC = re.compile(r"^ANALOG METRIC: .* rms_dbfs=(-?[0-9]+\.[0-9]+) ", re.MULTI
 AUDIO_OUT = re.compile(r"^ANALOG AUDIO OUT: rate_hz=([0-9]+) samples=([0-9]+)$", re.MULTILINE)
 
 
+def require(condition, message):
+    """Fail the check with @p message unless @p condition holds (explicit, so python -O cannot strip it)."""
+    if not condition:
+        raise SystemExit(f"FAIL: {message}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary")
     parser.add_argument("fixture")
     parser.add_argument("mode", help="the host's decoder and bound options, one shell-quoted string")
+    parser.add_argument("not_expected", help="a regex the run's output must not match")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="dsd-analog-audio-out-") as temporary:
         path = Path(temporary) / "audio.f32"
@@ -34,18 +41,23 @@ def main():
                    "--analog-audio-out", str(path), "--iq-replay", str(Path(args.fixture).resolve()), "-o", "null"]
         result = subprocess.run(command, capture_output=True, timeout=110, check=False)
         err = result.stderr.decode("utf-8", "replace") + result.stdout.decode("utf-8", "replace")
-        assert result.returncode == 0, err
-        assert not SANITIZER.search(err), err
-        assert "ANALOG AUDIO OK" in err, err
+        require(result.returncode == 0, f"the host exited {result.returncode}\n{err}")
+        require(not SANITIZER.search(err), f"sanitizer report\n{err}")
+        forbidden = re.search(args.not_expected, err)
+        require(forbidden is None, f"forbidden output /{args.not_expected}/ matched\n{err}")
+        require("ANALOG AUDIO OK" in err, f"no ANALOG AUDIO OK\n{err}")
         metric = METRIC.search(err)
         out = AUDIO_OUT.search(err)
-        assert metric and out, err
+        require(metric and out, f"no ANALOG METRIC rms_dbfs or ANALOG AUDIO OUT line\n{err}")
         samples = int(out.group(2))
         data = path.read_bytes()
         audio = array("f")
-        assert samples > 0 and len(data) == samples * audio.itemsize, (samples, len(data))
+        require(samples > 0 and len(data) == samples * audio.itemsize,
+                f"{len(data)} bytes in the file for {samples} samples of {audio.itemsize} bytes")
         audio.frombytes(data)
-        rms_dbfs = 10.0 * math.log10(math.fsum(x * x for x in audio) / samples)
+        energy = math.fsum(x * x for x in audio)
+        require(energy > 0.0, "the file holds only silence")
+        rms_dbfs = 10.0 * math.log10(energy / samples)
         want = float(metric.group(1))
         print(f"file: {samples} samples at {out.group(1)} Hz, RMS {rms_dbfs:.4f} dBFS; metric line {want:.2f} dBFS")
         if abs(rms_dbfs - want) > RMS_TOLERANCE_DB:

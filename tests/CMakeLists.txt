@@ -24375,7 +24375,8 @@ if(DSD_HAS_RADIO)
     )
     # The same file read back: one float32 per delivered sample, whose RMS is the ANALOG
     # METRIC line's rms_dbfs within 0.01 dB, so a scale, format or stale-slice error in
-    # the writer fails where the sample count alone would pass.
+    # the writer fails where the sample count alone would pass. The run must stay off the
+    # CQPSK path, as its sibling's must.
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(
@@ -24385,7 +24386,7 @@ if(DSD_HAS_RADIO)
                 ${CMAKE_CURRENT_SOURCE_DIR}/analog_audio_out_check.py
                 $<TARGET_FILE:dsd-neo_test_analog_replay>
                 ${PROJECT_SOURCE_DIR}/tests/fixtures/iq/nfm_tone_synth.iq.json
-                "${_analog_nfm_tone_fixed50}"
+                "${_analog_nfm_tone_fixed50}" "${_analog_off_path}"
         )
         set_tests_properties(
             DECODE_IQ_ANALOG_AUDIO_OUT_LEVEL
