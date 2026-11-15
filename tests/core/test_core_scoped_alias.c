@@ -718,18 +718,25 @@ test_malformed_scope_cell(void) {
 
     /* A hand-typed scope cell on a talkgroup row never makes it a radio's alias. */
     fixture_open(&f, 1);
-    write_file(f.group_path, "id,mode,name\n100,A,Dispatch,,scope=p25:BEE00:123\n101,B,Quiet,scope=p25:BEE00:123\n");
+    write_file(f.group_path, "id,mode,name\n100,A,Dispatch,,scope=p25:BEE00:123\n101,B,Quiet,scope=p25:BEE00:123\n"
+                             "102,DE,Locked,,scope=p25:BEE00:123\n");
     expect_true("file with scoped talkgroup rows loads", dsd_tg_policy_reload_group_file(f.opts, f.st) == 0);
     int talkgroup_rows = 0;
     for (size_t i = 0; dsd_tg_policy_entry_at(f.st, i, &row); i++) {
         talkgroup_rows += row.source == DSD_TG_POLICY_SOURCE_IMPORTED && !row.scope.valid;
     }
-    expect_true("scope cells on talkgroup rows are ignored", talkgroup_rows == 2);
+    expect_true("scope cells on talkgroup and lockout rows are ignored", talkgroup_rows == 3);
     tune_system(f.st, WACN_A, SYS_A);
     char tg_name[64] = {0};
     expect_true("the talkgroup row still decides and labels its talkgroup",
                 dsd_tg_policy_lookup_group_label(f.st, 100U, NULL, 0, tg_name, sizeof tg_name)
                     && strcmp(tg_name, "Dispatch") == 0);
+    dsd_tg_policy_decision locked;
+    f.opts->trunk_tune_group_calls = 1;
+    expect_true("a DE row with a scope cell stays a lockout",
+                dsd_tg_policy_evaluate_group_call(f.opts, f.st, 102U, 7U, 0, 0, &locked) == 0
+                    && locked.match == DSD_TG_POLICY_MATCH_EXACT && locked.tune_allowed == 0
+                    && (locked.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0);
     fixture_close(&f);
 }
 

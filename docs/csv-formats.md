@@ -998,8 +998,8 @@ ID written in decimal without leading zeros:
 - On the next start such a row loads as a learned alias of that system: it names the radio only there, and a later alias
   of that system renames it for the session. A rewrite of the file keeps the cell after the modelled columns (the header
   then ends in `scope`). The cell is read wherever it sits past the columns the header models, and only on an exact row
-  in mode `D` (or `DE`, which older versions wrote for an encrypted radio). A cell that does not parse, or one on a row
-  of another mode (a talkgroup row), is reported and the row loads without it.
+  in mode `D`. A cell that does not parse, or one on a row of another mode (a talkgroup row, or a `B`/`DE` lockout), is
+  reported and the row loads without it.
 - A mode `D` row without a `scope` cell (one you typed, or one an older version appended) names the radio on every
   system and wins over learned aliases, as before; so does a talkgroup row for the same number. Delete such a row, or
   give it a `scope` cell, if the number is another radio on another system.

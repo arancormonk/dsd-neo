@@ -2718,11 +2718,12 @@ dsd_tg_policy_scope_parse(const char* cell, dsd_alias_scope* out) {
     return 1;
 }
 
-/* Whether a rewrite or an append writes @p entry's scope: a learned exact row with a valid scope. */
+/* Whether a rewrite or an append writes @p entry's scope: a learned exact mode-D row with a valid scope, the only form
+ * the importer reads a scope cell on (a learned DE row, which only older versions wrote, is written plain). */
 static int
 tg_policy_entry_scoped(const dsd_tg_policy_entry* entry) {
     return entry->kind == DSD_TG_POLICY_ROW_EXACT && entry->source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS
-           && entry->scope.valid;
+           && entry->scope.valid && strcmp(entry->mode, "D") == 0;
 }
 
 static int
