@@ -167,22 +167,34 @@ int keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* ca
 uint32_t keyring_dmr_tg_key_cell(uint32_t tg);
 
 /**
- * The DMR talkgroup key autoload for a frame of a call on talkgroup @p tg (the legacy destination keyring, -k/-K):
- * loads the key the keyring holds for @p tg as the Basic Privacy and Hytera working key (K, K1, H). The working key is
- * one value both slots share, so when @p tg has no key, a key an earlier autoload loaded for another call's
+ * The DMR talkgroup key autoload for a frame of slot @p slot's call on talkgroup @p tg (the legacy destination keyring,
+ * -k/-K): loads the key the keyring holds for @p tg as the Basic Privacy and Hytera working key (K, K1, H). The working
+ * key is one value both slots share, so when @p tg has no key, a key an earlier autoload loaded for another call's
  * talkgroup is taken out again and the key state that autoload replaced comes back (a key set directly, or none): it
- * is not this call's. A call no LC has named yet (@p tg 0, an identity-less epoch) leaves the working key as it is:
- * it may be the call the key was loaded for, reopened. A key changed since by anything else (a key command, the
- * no-carrier unload) is left alone. Returns 1 when @p tg's key was loaded, 0 otherwise.
+ * is not this call's. A call no LC has named yet (@p tg 0, an identity-less epoch, as a colour code change reopens a
+ * call) keys from the talkgroup the slot's own call last keyed from, or, when that is not known, from talkgroup 0's
+ * own key if one is set, else from none (the key state the autoload replaced): never from the other slot's. A terminator on the slot, or the no-carrier pass, forgets it
+ * (keyring_dmr_tg_autoload_forget_slot()), so a new call keys from no earlier call's talkgroup; one whose terminator
+ * was missed is still the slot's call and keys from its talkgroup until the new call's LC names its own (the code
+ * cannot tell them apart before that). A key changed since by anything else (a key command, the no-carrier unload) is
+ * left alone. Returns 1 when a talkgroup's key was loaded, that talkgroup into @p keyed_from, 0 otherwise.
  */
-int keyring_dmr_tg_autoload_apply(dsd_state* state, uint32_t tg);
+int keyring_dmr_tg_autoload_apply(dsd_state* state, uint8_t slot, uint32_t tg, uint32_t* keyed_from);
 
 /**
- * Whether a Basic Privacy or Hytera key is the working key once the autoload has run for a frame of a call on
- * talkgroup @p tg (keyring_dmr_tg_autoload_apply()), without running it: for judging a call from its LC before its
- * voice keys it.
+ * The Basic Privacy and Hytera working key (K, K1, K2, K3, K4, H, then basic_key_present and hytera_key_segments) a
+ * frame of slot @p slot's call on talkgroup @p tg is keyed with once the autoload has run for it
+ * (keyring_dmr_tg_autoload_apply()), without running it: for judging and showing a call from its LC before its voice
+ * keys it.
  */
-int keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint32_t tg);
+void keyring_dmr_tg_autoload_preview(const dsd_state* state, uint8_t slot, uint32_t tg, unsigned long long int words[6],
+                                     uint8_t flags[2]);
+
+/** Whether keyring_dmr_tg_autoload_preview() leaves a Basic Privacy or Hytera key. */
+int keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint8_t slot, uint32_t tg);
+
+/** Forget the talkgroup slot @p slot's call keyed from (its call ended at a terminator). */
+void keyring_dmr_tg_autoload_forget_slot(dsd_state* state, uint8_t slot);
 
 #ifdef __cplusplus
 }

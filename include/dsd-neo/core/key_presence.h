@@ -4,6 +4,7 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,6 +62,36 @@ dsd_key_direct_words_complete(const dsd_state* state, unsigned int words) {
 static inline int
 dsd_key_dmr_forced_clear(const dsd_state* state) {
     return state && (state->baofeng_ap == 1 || state->csi_ee == 1 || state->ken_sc == 1);
+}
+
+// Whether the DMR talkgroup key autoload's key is still the working key: the Basic Privacy and Hytera key (K, K1..K4, H,
+// basic_key_present, hytera_key_segments) is the one it installed (dsd_state::dmr_tg_autoload), changed by nothing else
+// since (a key command, the no-carrier unload).
+static inline int
+dsd_dmr_tg_autoload_holds(const dsd_state* state) {
+    if (!state || !state->dmr_tg_autoload.active) {
+        return 0;
+    }
+    const unsigned long long int* in = state->dmr_tg_autoload.installed;
+    const uint8_t* flags = state->dmr_tg_autoload.installed_flags;
+    return state->K == in[0] && state->K1 == in[1] && state->K2 == in[2] && state->K3 == in[3] && state->K4 == in[4]
+           && state->H == in[5] && state->basic_key_present == flags[0] && state->hytera_key_segments == flags[1];
+}
+
+// The operator's own Basic Privacy and Hytera key while the autoload's key is the working key: the key state the
+// autoload replaced (a key set directly, or none), into @p words (K, K1..K4, H) and @p flags (basic_key_present,
+// hytera_key_segments); returns 0 and fills nothing when the working key is not the autoload's.
+static inline int
+dsd_dmr_tg_autoload_baseline(const dsd_state* state, unsigned long long int words[6], uint8_t flags[2]) {
+    if (!dsd_dmr_tg_autoload_holds(state)) {
+        return 0;
+    }
+    for (int i = 0; i < 6; i++) {
+        words[i] = state->dmr_tg_autoload.baseline[i];
+    }
+    flags[0] = state->dmr_tg_autoload.baseline_flags[0];
+    flags[1] = state->dmr_tg_autoload.baseline_flags[1];
+    return 1;
 }
 
 #ifdef __cplusplus

@@ -126,20 +126,47 @@ dmr_flco_show_keys(const dmr_flco_ctx* ctx) {
     return (ctx != NULL && ctx->opts != NULL) ? ctx->opts->show_keys : 0;
 }
 
+/* The Basic Privacy and Hytera key a call is decrypted with: K, K1, K2, K3, K4, H, then basic_key_present and
+   hytera_key_segments. */
+typedef struct {
+    unsigned long long int words[6];
+    uint8_t flags[2];
+} dmr_flco_call_key;
+
+/* The key the LC's call on its slot is keyed with. Where the talkgroup key autoload keys its voice (no forced key, no
+   ALG ID), that is the key its own talkgroup leaves (keyring_dmr_tg_autoload_preview()), never the working key another
+   talkgroup's call loaded; otherwise the working key. */
+static void
+dmr_flco_call_key_of(const dmr_flco_ctx* ctx, dmr_flco_call_key* key) {
+    const dsd_state* state = ctx->state;
+    const int live_algid = ctx->slot == 0U ? state->payload_algid : state->payload_algidR;
+    if (state->M == 0 && live_algid == 0 && ctx->slot < DSD_CALL_STATE_SLOT_COUNT) {
+        keyring_dmr_tg_autoload_preview(state, ctx->slot, ctx->target, key->words, key->flags);
+        return;
+    }
+    key->words[0] = state->K;
+    key->words[1] = state->K1;
+    key->words[2] = state->K2;
+    key->words[3] = state->K3;
+    key->words[4] = state->K4;
+    key->words[5] = state->H;
+    key->flags[0] = state->basic_key_present;
+    key->flags[1] = state->hytera_key_segments;
+}
+
 static unsigned int
-dmr_flco_hytera_key_segment_count(const dmr_flco_ctx* ctx) {
-    const dsd_state* state = (ctx != NULL) ? ctx->state : NULL;
-    if (state == NULL
-        || (!dsd_key_hytera_present(state) && state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL)) {
+dmr_flco_hytera_key_segment_count(const dmr_flco_call_key* key) {
+    const int hytera_present = key->flags[1] != 0U || key->words[1] != 0ULL;
+    if (!hytera_present && key->words[2] == 0ULL && key->words[3] == 0ULL && key->words[4] == 0ULL) {
         return 0U;
     }
-    if (state->hytera_key_segments == 1U || state->hytera_key_segments == 2U || state->hytera_key_segments == 4U) {
-        return state->hytera_key_segments;
+    if (key->flags[1] == 1U || key->flags[1] == 2U || key->flags[1] == 4U) {
+        return key->flags[1];
     }
-    if (state->K3 != 0ULL || state->K4 != 0ULL) {
+    if (key->words[3] != 0ULL || key->words[4] != 0ULL) {
         return 4U;
     }
-    if (state->K2 != 0ULL) {
+    if (key->words[2] != 0ULL) {
         return 2U;
     }
     return 1U;
@@ -147,14 +174,14 @@ dmr_flco_hytera_key_segment_count(const dmr_flco_ctx* ctx) {
 
 static const char*
 dmr_flco_format_hytera_basic_key(char* key_text, size_t key_text_size, const dmr_flco_ctx* ctx,
-                                 unsigned int segment_count) {
+                                 const dmr_flco_call_key* key, unsigned int segment_count) {
     if (segment_count == 2U || segment_count == 4U) {
-        const unsigned long long segments[4] = {ctx->state->K1, ctx->state->K2, ctx->state->K3, ctx->state->K4};
+        const unsigned long long segments[4] = {key->words[1], key->words[2], key->words[3], key->words[4]};
         return dsd_secret_format_u64_segments(key_text, key_text_size, dmr_flco_show_keys(ctx), segments,
                                               segment_count);
     }
-    return dsd_secret_format_hex(key_text, key_text_size, dmr_flco_show_keys(ctx), ctx->state->K1 & 0xFFFFFFFFFFULL,
-                                 10U, 0);
+    return dsd_secret_format_hex(key_text, key_text_size, dmr_flco_show_keys(ctx), key->words[1] & 0xFFFFFFFFFFULL, 10U,
+                                 0);
 }
 
 static void
@@ -829,7 +856,8 @@ dmr_flco_missing_alg_key_can_decrypt(const dmr_flco_ctx* ctx, uint8_t slot, uint
     if (ctx->state->M != 0 || live_algid != 0U) {
         return dsd_dmr_missing_alg_key_can_decrypt(ctx->state, slot);
     }
-    return dsd_key_scalar_present(ctx->state, slot) || keyring_dmr_tg_autoload_key_present(ctx->state, ctx->target);
+    return dsd_key_scalar_present(ctx->state, slot)
+           || keyring_dmr_tg_autoload_key_present(ctx->state, slot, ctx->target);
 }
 
 /* @p replaced_other_protocol: this LC's call replaced another protocol's call on the slot (dmr_flco_publish_voice()). */
@@ -1168,6 +1196,8 @@ dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
         ctx->state->dmr_heal_valid[idx] = 0U;
     }
     dmr_flco_reset_slot_crypto(ctx, idx);
+    // The call ended: the slot's next call keys from no talkgroup of this one's (keyring_dmr_tg_autoload_apply()).
+    keyring_dmr_tg_autoload_forget_slot(ctx->state, idx);
     if (lc_readable) {
         dmr_flco_reset_slot_metadata(ctx, idx);
     }
@@ -1439,52 +1469,33 @@ dmr_flco_print_tg_label(const dmr_flco_ctx* ctx) {
     }
 }
 
+/* The Basic Privacy or Hytera key of the LC's call, the one it is decrypted with (dmr_flco_call_key_of()). */
 static void
-dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx) {
-    if (dsd_key_basic_present(ctx->state) && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 0
-        && ctx->state->payload_algid == 0) {
+dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx, const dmr_flco_call_key* key) {
+    const int live_algid = ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR;
+    if ((key->flags[0] != 0U || key->words[0] != 0ULL) && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot <= 1U
+        && live_algid == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[16];
         DSD_FPRINTF(stderr, "Key %s ",
-                    dsd_secret_format_decimal(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->K, 0U));
-        DSD_FPRINTF(stderr, "%s ", KNRM);
-    }
-    if (dsd_key_basic_present(ctx->state) && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 1
-        && ctx->state->payload_algidR == 0) {
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        char key_text[16];
-        DSD_FPRINTF(stderr, "Key %s ",
-                    dsd_secret_format_decimal(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->K, 0U));
+                    dsd_secret_format_decimal(key_text, sizeof key_text, dmr_flco_show_keys(ctx), key->words[0], 0U));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
 
 static void
-dmr_flco_print_hytera_basic_key_slot0(const dmr_flco_ctx* ctx) {
-    if (dsd_key_hytera_present(ctx->state) && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 0
-        && ctx->state->payload_algid == 0) {
-        const unsigned int segment_count = dmr_flco_hytera_key_segment_count(ctx);
+dmr_flco_print_hytera_basic_key(const dmr_flco_ctx* ctx, const dmr_flco_call_key* key) {
+    const int live_algid = ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR;
+    if ((key->flags[1] != 0U || key->words[1] != 0ULL) && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot <= 1U
+        && live_algid == 0) {
+        const unsigned int segment_count = dmr_flco_hytera_key_segment_count(key);
         if (segment_count >= 2U) {
             DSD_FPRINTF(stderr, "\n ");
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[68];
-        DSD_FPRINTF(stderr, "Key %s ", dmr_flco_format_hytera_basic_key(key_text, sizeof key_text, ctx, segment_count));
-        DSD_FPRINTF(stderr, "%s ", KNRM);
-    }
-}
-
-static void
-dmr_flco_print_hytera_basic_key_slot1(const dmr_flco_ctx* ctx) {
-    if (dsd_key_hytera_present(ctx->state) && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 1
-        && ctx->state->payload_algidR == 0) {
-        const unsigned int segment_count = dmr_flco_hytera_key_segment_count(ctx);
-        if (segment_count >= 2U) {
-            DSD_FPRINTF(stderr, "\n ");
-        }
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        char key_text[68];
-        DSD_FPRINTF(stderr, "Key %s ", dmr_flco_format_hytera_basic_key(key_text, sizeof key_text, ctx, segment_count));
+        DSD_FPRINTF(stderr, "Key %s ",
+                    dmr_flco_format_hytera_basic_key(key_text, sizeof key_text, ctx, key, segment_count));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
@@ -1509,9 +1520,11 @@ dmr_flco_print_alg21_keys(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_loaded_keys(const dmr_flco_ctx* ctx) {
-    dmr_flco_print_dmr_basic_keys(ctx);
-    dmr_flco_print_hytera_basic_key_slot0(ctx);
-    dmr_flco_print_hytera_basic_key_slot1(ctx);
+    dmr_flco_call_key key;
+    dmr_flco_call_key_of(ctx, &key);
+    dmr_flco_print_dmr_basic_keys(ctx, &key);
+    dmr_flco_print_hytera_basic_key(ctx, &key);
+    DSD_SECURE_ZERO(&key, sizeof(key));
     dmr_flco_print_alg21_keys(ctx);
 }
 

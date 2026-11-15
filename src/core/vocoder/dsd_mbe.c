@@ -1286,9 +1286,10 @@ mbeslot_left_autoload_keys(dsd_state* state) {
             return;
         }
         uint32_t target = call.ota_target_id <= UINT32_MAX ? (uint32_t)call.ota_target_id : 0U;
-        if (keyring_dmr_tg_autoload_apply(state, target)) {
+        uint32_t keyed_from = 0U;
+        if (keyring_dmr_tg_autoload_apply(state, 0U, target, &keyed_from)) {
             (void)dsd_call_state_note_key_selection(state, 0, DSD_SYNC_DMR_BS_VOICE_POS, call.epoch,
-                                                    DSD_CALL_KEY_DESTINATION, call.kid, (int)target, 1, 0);
+                                                    DSD_CALL_KEY_DESTINATION, call.kid, (int)keyed_from, 1, 0);
         }
     }
 }
@@ -1301,9 +1302,10 @@ mbeslot_right_autoload_keys(dsd_state* state) {
             return;
         }
         uint32_t target = call.ota_target_id <= UINT32_MAX ? (uint32_t)call.ota_target_id : 0U;
-        if (keyring_dmr_tg_autoload_apply(state, target)) {
+        uint32_t keyed_from = 0U;
+        if (keyring_dmr_tg_autoload_apply(state, 1U, target, &keyed_from)) {
             (void)dsd_call_state_note_key_selection(state, 1, DSD_SYNC_DMR_BS_VOICE_POS, call.epoch,
-                                                    DSD_CALL_KEY_DESTINATION, call.kid, (int)target, 1, 0);
+                                                    DSD_CALL_KEY_DESTINATION, call.kid, (int)keyed_from, 1, 0);
         }
     }
 }

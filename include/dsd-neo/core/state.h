@@ -1322,13 +1322,17 @@ struct dsd_state {
     /* The DMR talkgroup key autoload's working key (keyring_dmr_tg_autoload_apply()): the K, K1..K4, H,
        basic_key_present and hytera_key_segments it replaced (a key set directly, or none), restored for a call whose
        talkgroup has no key, and the ones it installed, so a key changed since by anything else is left alone. Both
-       slots share the one working key. Decoder-thread private. */
+       slots share the one working key, so each slot keeps the talkgroup whose key its own call last keyed from
+       (slot_tg, 0: none), which a frame of a call no LC has named yet keys from again; the slot's terminator and the
+       no-carrier pass forget it. Key material: wiped with the keys (dsd_key_state_secure_wipe()). Decoder-thread
+       private. */
     struct {
         unsigned long long int baseline[6];
         unsigned long long int installed[6];
         uint8_t baseline_flags[2];
         uint8_t installed_flags[2];
         uint8_t active;
+        uint32_t slot_tg[2];
     } dmr_tg_autoload;
 
     unsigned long long int HYTL;

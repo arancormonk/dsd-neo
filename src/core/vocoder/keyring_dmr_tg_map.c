@@ -24,7 +24,6 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 void
 keyring_dmr_tg_map_reset(dsd_state* state) {
@@ -279,63 +278,89 @@ keyring_dmr_working_key_set(dsd_state* state, const unsigned long long int words
     state->hytera_key_segments = flags[1];
 }
 
-/* Whether the working key is still the one the last autoload installed. */
+/* The talkgroup a frame of slot @p slot's call on @p tg keys from, into @p source: its own, or for a call no LC has
+   named yet the one the slot's call last keyed from (talkgroup 0's own cell when it keyed from none, as an unnamed
+   call always has). Returns 0 when that talkgroup has no key. */
 static int
-keyring_dmr_tg_autoload_holds(const dsd_state* state) {
-    if (!state->dmr_tg_autoload.active) {
-        return 0;
-    }
-    unsigned long long int words[6];
-    uint8_t flags[2];
-    keyring_dmr_working_key_get(state, words, flags);
-    return memcmp(words, state->dmr_tg_autoload.installed, sizeof(words)) == 0
-           && memcmp(flags, state->dmr_tg_autoload.installed_flags, sizeof(flags)) == 0;
+keyring_dmr_tg_autoload_source(const dsd_state* state, uint8_t slot, uint32_t tg, uint32_t* source) {
+    *source = tg != 0U ? tg : state->dmr_tg_autoload.slot_tg[slot & 1U];
+    return keyring_kid_scalar_present(state, (int)keyring_dmr_tg_key_cell(*source)); // an imported zero is a key too
+}
+
+/* The working key the keyring's key for talkgroup @p source makes. */
+static void
+keyring_dmr_tg_autoload_key_of(const dsd_state* state, uint32_t source, unsigned long long int words[6],
+                               uint8_t flags[2]) {
+    const unsigned long long int value = state->rkey_array[keyring_dmr_tg_key_cell(source)];
+    words[0] = value & 0xFF;         // doesn't exceed 255
+    words[1] = value & 0xFFFFFFFFFF; // doesn't exceed the 40-bit limit
+    words[2] = words[3] = words[4] = 0ULL;
+    words[5] = words[1];
+    flags[0] = 1U;
+    flags[1] = 1U;
 }
 
 int
-keyring_dmr_tg_autoload_apply(dsd_state* state, uint32_t tg) {
-    if (state == NULL) {
+keyring_dmr_tg_autoload_apply(dsd_state* state, uint8_t slot, uint32_t tg, uint32_t* keyed_from) {
+    if (state == NULL || keyed_from == NULL) {
         return 0;
     }
-    const uint32_t cell = keyring_dmr_tg_key_cell(tg);
-    const int holds = keyring_dmr_tg_autoload_holds(state);
-    if (!keyring_kid_scalar_present(state, (int)cell)) { // an imported zero is a key too
-        // A call no LC has named yet (an identity-less epoch, talkgroup 0) may be the call the working key was loaded
-        // for, reopened: its frames leave the key as it is until its talkgroup is known.
-        if (tg == 0U) {
-            return 0;
-        }
+    const uint8_t idx = slot & 1U;
+    uint32_t source = 0U;
+    const int found = keyring_dmr_tg_autoload_source(state, idx, tg, &source);
+    const int holds = dsd_dmr_tg_autoload_holds(state);
+    *keyed_from = source;
+    if (!found) {
+        state->dmr_tg_autoload.slot_tg[idx] = 0U;
         if (holds) {
             keyring_dmr_working_key_set(state, state->dmr_tg_autoload.baseline, state->dmr_tg_autoload.baseline_flags);
         }
         state->dmr_tg_autoload.active = 0U;
         return 0;
     }
+    state->dmr_tg_autoload.slot_tg[idx] = source;
     if (!holds) {
         keyring_dmr_working_key_get(state, state->dmr_tg_autoload.baseline, state->dmr_tg_autoload.baseline_flags);
     }
-    state->K = state->rkey_array[cell] & 0xFF;                     // doesn't exceed 255
-    state->K1 = state->H = state->rkey_array[cell] & 0xFFFFFFFFFF; // doesn't exceed the 40-bit limit
-    state->K2 = state->K3 = state->K4 = 0ULL;
-    state->basic_key_present = 1U;
-    state->hytera_key_segments = 1U;
-    keyring_dmr_working_key_get(state, state->dmr_tg_autoload.installed, state->dmr_tg_autoload.installed_flags);
+    keyring_dmr_tg_autoload_key_of(state, source, state->dmr_tg_autoload.installed,
+                                   state->dmr_tg_autoload.installed_flags);
+    keyring_dmr_working_key_set(state, state->dmr_tg_autoload.installed, state->dmr_tg_autoload.installed_flags);
     state->dmr_tg_autoload.active = 1U;
     return 1;
 }
 
+void
+keyring_dmr_tg_autoload_preview(const dsd_state* state, uint8_t slot, uint32_t tg, unsigned long long int words[6],
+                                uint8_t flags[2]) {
+    if (state == NULL) {
+        return;
+    }
+    uint32_t source = 0U;
+    if (keyring_dmr_tg_autoload_source(state, slot & 1U, tg, &source)) {
+        keyring_dmr_tg_autoload_key_of(state, source, words, flags);
+    } else if (dsd_dmr_tg_autoload_holds(state)) {
+        DSD_MEMCPY(words, state->dmr_tg_autoload.baseline, sizeof(state->dmr_tg_autoload.baseline));
+        DSD_MEMCPY(flags, state->dmr_tg_autoload.baseline_flags, sizeof(state->dmr_tg_autoload.baseline_flags));
+    } else {
+        keyring_dmr_working_key_get(state, words, flags);
+    }
+}
+
 int
-keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint32_t tg) {
+keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint8_t slot, uint32_t tg) {
     if (state == NULL) {
         return 0;
     }
-    if (keyring_kid_scalar_present(state, (int)keyring_dmr_tg_key_cell(tg))) {
-        return 1;
+    unsigned long long int words[6];
+    uint8_t flags[2];
+    keyring_dmr_tg_autoload_preview(state, slot, tg, words, flags);
+    // dsd_key_basic_present() and dsd_key_hytera_present() of that working key.
+    return flags[0] != 0U || words[0] != 0ULL || flags[1] != 0U || words[1] != 0ULL;
+}
+
+void
+keyring_dmr_tg_autoload_forget_slot(dsd_state* state, uint8_t slot) {
+    if (state != NULL) {
+        state->dmr_tg_autoload.slot_tg[slot & 1U] = 0U;
     }
-    if (tg != 0U && keyring_dmr_tg_autoload_holds(state)) {
-        const unsigned long long int* words = state->dmr_tg_autoload.baseline;
-        const uint8_t* flags = state->dmr_tg_autoload.baseline_flags;
-        return flags[0] != 0U || words[0] != 0ULL || flags[1] != 0U || words[1] != 0ULL;
-    }
-    return dsd_key_basic_present(state) || dsd_key_hytera_present(state);
 }

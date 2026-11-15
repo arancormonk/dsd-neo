@@ -17,6 +17,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -3237,6 +3238,9 @@ no_carrier_unload_keys_if_needed(dsd_state* state) {
 
 static void
 no_carrier_reset_dmr_misc_state(dsd_state* state) {
+    // The carrier is gone, with every call on it: no slot's next call keys from their talkgroups.
+    keyring_dmr_tg_autoload_forget_slot(state, 0U);
+    keyring_dmr_tg_autoload_forget_slot(state, 1U);
     state->nxdn_cipher_type = 0;
     nxdn_cipher_class_reset(state);
     DSD_MEMSET(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));

@@ -4649,6 +4649,126 @@ test_process_mbe_frame_autoload_keys_each_call_from_its_own_talkgroup(void) {
     return rc;
 }
 
+/* Slot @p slot's call reopened with no talkgroup known yet (an identity-less epoch, as the voice opens after a colour
+   code change ends the call): the call ends and an admitted voice frame's observation begins the next. */
+static void
+reopen_identityless(dsd_state* state, uint8_t slot) {
+    (void)dsd_call_state_end(state, slot, 0.0);
+    const dsd_call_observation voice = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = slot,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+/* A frame of a call no LC has named yet keys from the talkgroup its own slot's call last keyed from: slot 1's keyed
+   call reopened keeps its key whatever slot 2 did since, and slot 2's call, whose talkgroup has none, takes no other
+   slot's key. A terminator on the slot forgets that talkgroup. */
+static int
+test_process_mbe_frame_identityless_frame_keys_from_its_own_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
+    opts.floating_point = 1;
+    opts.audio_gain = 1.0f;
+    opts.audio_gainR = 1.0f;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.keyloader = 1;
+    state.rkey_array[123] = 0x33ULL;
+    state.rkey_array_loaded[123] = 1U;
+    run_dmr_voice_lc(&opts, &state, 0U, 0x10U, 0x40U, 123U, 1001U);
+    run_dmr_voice_lc(&opts, &state, 1U, 0x10U, 0x40U, 124U, 1002U);
+    run_dmr_voice_frame(&opts, &state, 0U);
+    run_dmr_voice_frame(&opts, &state, 1U);
+    rc |= expect_eq_int("slot 2's talkgroup has no key", (int)state.K, 0);
+    reopen_identityless(&state, 0U);
+    reopen_identityless(&state, 1U);
+    run_dmr_voice_frame(&opts, &state, 0U);
+    rc |= expect_eq_int("slot 1 reopened keys from its own talkgroup", (int)state.K, 0x33);
+    /* Slot 1's LC names its call again while slot 2's is still unnamed. */
+    run_dmr_voice_lc(&opts, &state, 0U, 0x10U, 0x40U, 123U, 1001U);
+    run_dmr_voice_frame(&opts, &state, 0U);
+    run_dmr_voice_frame(&opts, &state, 1U);
+    rc |= expect_eq_int("slot 2 reopened takes no key of slot 1's talkgroup", (int)state.K, 0);
+    rc |= expect_eq_int("slot 2 reopened is not decryptable", dsd_dmr_missing_alg_key_can_decrypt(&state, 1), 0);
+    run_dmr_voice_frame(&opts, &state, 0U);
+    rc |= expect_eq_int("slot 1 again", (int)state.K, 0x33);
+    /* Slot 1's terminator: its next call, its talkgroup not known yet, keys from none of the last call's. */
+    uint8_t bits[80];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    uint32_t irr = 0;
+    state.currentslot = 0;
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    reopen_identityless(&state, 0U);
+    state.dmr_so = 0x40U;
+    state.dmr_fid = 0x10U;
+    run_dmr_voice_frame(&opts, &state, 0U);
+    rc |= expect_eq_int("after slot 1's terminator its next call takes no key", (int)state.K, 0);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* The LC's printed key, with --show-keys, of a Basic Privacy call on slot @p slot and talkgroup @p tg, into @p out. */
+static void
+lc_key_line(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t tg, char* out, size_t out_size) {
+    dsd_test_capture_stderr cap;
+    out[0] = '\0';
+    fflush(stderr);
+    if (dsd_test_capture_stderr_begin(&cap, "dsdneo_lc_key") != 0) {
+        return;
+    }
+    run_dmr_voice_lc(opts, state, slot, 0x10U, 0x40U, tg, 1000U + tg);
+    fflush(stderr);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, out_size);
+}
+
+/* The LC line shows the key the call is decrypted with: its own talkgroup's (or none), never the working key another
+   talkgroup's call loaded, even with --show-keys, and a keyed talkgroup's key from its first LC on. */
+static int
+test_lc_line_shows_the_calls_own_key(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    static char text[8192];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
+    opts.floating_point = 1;
+    opts.audio_gain = 1.0f;
+    opts.audio_gainR = 1.0f;
+    opts.show_keys = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.keyloader = 1;
+    state.rkey_array[123] = 51ULL;
+    state.rkey_array_loaded[123] = 1U;
+    lc_key_line(&opts, &state, 0U, 123U, text, sizeof(text));
+    rc |= expect_eq_int("a keyed talkgroup's first LC shows its key", strstr(text, "Key 51") != NULL, 1);
+    run_dmr_voice_frame(&opts, &state, 0U);
+    rc |= expect_eq_int("slot 1's voice loaded its key", (int)state.K, 51);
+    lc_key_line(&opts, &state, 1U, 124U, text, sizeof(text));
+    rc |= expect_eq_int("talkgroup 124's LC shows no key", strstr(text, "Key ") != NULL, 0);
+    rc |= expect_eq_int("talkgroup 124's LC never shows talkgroup 123's key", strstr(text, "51") != NULL, 0);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_process_mbe_frame_hard_p25p2_right_stages_audio(void) {
     int rc = 0;
@@ -7432,6 +7552,8 @@ main(void) {
     rc |= test_process_mbe_frame_checking_call_keeps_mapped_key();
     rc |= test_process_mbe_frame_checking_autoload_keys_only_from_the_open_dmr_call();
     rc |= test_process_mbe_frame_autoload_keys_each_call_from_its_own_talkgroup();
+    rc |= test_process_mbe_frame_identityless_frame_keys_from_its_own_slot();
+    rc |= test_lc_line_shows_the_calls_own_key();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();
     rc |= test_play_mbe_files_processes_imbe_ambe_and_dstar_records();
     rc |= test_play_mbe_files_does_not_carry_call_identity_across_files();

@@ -15,6 +15,10 @@ it, decrypt a call the user holds no key for, and judge it decryptable.
   stays muted (no recording), however the frames of the two interleave.
 - back to back: two Basic Privacy calls on slot 1, talkgroup 123 then 456, both key 33, a key for 123 only, joined
   on the burst grid with no carrier drop between them: the second stays muted.
+- a colour-code change on the carrier: the two-slot signal changes from colour code 2 to 3 at superframe 6, which ends
+  both calls, and each slot's voice reopens a call no LC has named yet. Each keys from its own slot's talkgroup: slot 2
+  (no key) stays muted even with its embedded LC lost for two superframes while slot 1's LC reloads 123's key, and
+  slot 1 decodes exactly the frames it decodes with the key set directly.
 - a key set directly (-b 33), with no keys file, decrypts every call of both signals, as before. (With a keys file
   as well, the no-carrier pass unloads the working key, the -b key with it, as before.)
 """
@@ -29,6 +33,9 @@ from pathlib import Path
 CALL_A = ("-t", "4", "--cc", "2", "--alg", "rc4", "--tg", "123", "--src", "1230", "--voice-t0", "9")
 CALL_B = ("-t", "6", "--cc", "3", "--cc-change", "1:2", "--alg", "bp", "--bp-key", "70", "--tg", "456", "--src",
           "4001", "--no-hdr", "--lead", "0")
+CC_CHANGE = ("-t", "8", "--cc", "2", "--cc-change", "6:3", "--alg", "bp", "--bp-key", "33", "--tg", "123", "--src",
+             "1001", "--s2", "voice")
+LOST_LC = ("--corrupt", "2:6:3:noise", "--corrupt", "2:7:3:noise")
 TWO_SLOTS = ("-t", "6", "--cc", "2", "--alg", "bp", "--bp-key", "33", "--tg", "123", "--src", "1001", "--s2", "voice")
 FIRST = ("-t", "5", "--cc", "2", "--alg", "bp", "--bp-key", "33", "--tg", "123", "--src", "1001")
 SECOND = ("-t", "5", "--cc", "2", "--alg", "bp", "--bp-key", "33", "--tg", "456", "--src", "4001", "--lead", "0",
@@ -151,6 +158,24 @@ def shared_key(binary, generator, root):
     return failures
 
 
+def colour_code_change(binary, generator, root):
+    failures = []
+    table = keys_file(root, "cc-table", [(123, 33)])
+    for case, extra in (("cc-change", ()), ("cc-change-lost-lc", LOST_LC)):
+        rate, frames_in, expected = generate(generator, root, case, (*CC_CHANGE, *extra))
+        write_signal(root / f"{case}.wav", rate, frames_in)
+        own = {slot: expected[slot] - expected[other] for slot, other in (("1", "2"), ("2", "1"))}
+        frames, recorded = decode(binary, root, f"{case}-table", f"{case}.wav", table)
+        direct, _ = decode(binary, root, f"{case}-direct", f"{case}.wav", ["-b", "33"])
+        if plaintext(frames, own["2"], "2") != 0 or "124" in recorded:
+            failures.append(f"{case}: slot 2 (talkgroup 124), which has no key, decrypts "
+                            f"({plaintext(frames, own['2'], '2')} plaintext frames, recordings {recorded})")
+        if plaintext(frames, own["1"], "1") != plaintext(direct, own["1"], "1") or "123" not in recorded:
+            failures.append(f"{case}: slot 1 (talkgroup 123) decrypts {plaintext(frames, own['1'], '1')} frames with "
+                            f"its talkgroup's key, {plaintext(direct, own['1'], '1')} with the key set directly")
+    return failures
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary")
@@ -160,6 +185,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="dsd-dmr-bp-key-") as temporary:
         root = Path(temporary)
         failures = early_frames(binary, generator, root) + shared_key(binary, generator, root)
+        failures += colour_code_change(binary, generator, root)
         assert not failures, "\n".join(failures)
 
 
