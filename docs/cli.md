@@ -115,9 +115,10 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   listening on that LAN interface, not just on `localhost`.
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355; port `0` is the default too)
 - M17 UDP/IP frame input: `-i m17udp[:bind_addr:port]` (defaults `127.0.0.1:17000`; use `0.0.0.0` only when LAN access is intended; use with `-fU`)
-- Empty fields: the `rtl`, `rtltcp`, `tcp`, `udp` and `m17udp` specs read their fields by place, so an empty field
-  keeps its place and uses the default for that field. `-i rtl::851.0125M:20:3` opens the default device at 851.0125 MHz with gain 20 and PPM 3,
-  `-i rtltcp:192.0.2.10::851.375M` connects to port 1234, and `-i udp::7356` listens on `127.0.0.1` port 7356.
+- Empty fields: the `rtl`, `rtltcp`, `tcp`, `udp` and `m17udp` specs read their fields by place, so an empty field keeps
+  its place and uses the default for that field. `-i rtl::851.0125M:20:3` opens the default device at 851.0125 MHz with
+  gain 20 and PPM 3, `-i rtltcp:192.0.2.10::851.375M` connects to port 1234, and `-i udp::7356` listens on `127.0.0.1`
+  port 7356.
 - Ports: a port field must be a whole number from 1 to 65535 (`udp` input also takes `0` for its default). Anything
   else, such as `12x` or `70000`, stops startup with an error that names the field. The same holds for `-U`, where
   `0` means the default 4532.
@@ -126,14 +127,15 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   sender is silent (a squelched network audio source). Only a connection that closes or fails is lost: decoding then
   tries one reconnect after a short backoff and, if that fails, falls back to Pulse input (the session ends when Pulse
   cannot open); an M17-only session (`-fz`) keeps trying until it reconnects or you stop it. An EDACS analog call and
-  the M17 stream encoder (`-fZ`) close the input and end the session, as before. A sender that goes away without closing the connection (its machine lost power, or the network dropped) counts
-  as a failed connection about 35 seconds after its last data, when TCP keepalive gets no answer (longer on a system
-  that does not let a program set the keepalive timing). While stdin or TCP sends nothing, the decoder still ends an
-  analog call on time, applies menu commands and runs its timers, as on UDP. An EDACS analog call, on TCP or UDP, hears
-  a quiet spell of half a second or more as silence and ends as it does on a quiet channel; a shorter stall is waited
-  out. The M17 encoder waits for audio. Ctrl-C ends a silent stdin or TCP wait at once. A source that stops in the
-  middle of a digital frame is waited for, as before. On Windows only a pipe (`rtl_fm ... | dsd-neo -i -`) is waited on
-  this way: console stdin and a redirected file block in their read until data comes.
+  the M17 stream encoder (`-fZ`) close the input and end the session, as before. A sender that goes away without closing
+  the connection (its machine lost power, or the network dropped) counts as a failed connection about 35 seconds after
+  its last data, when TCP keepalive gets no answer (longer on a system that does not let a program set the keepalive
+  timing). While stdin or TCP sends nothing, the decoder still ends an analog call on time, applies menu commands and
+  runs its timers, as on UDP. An EDACS analog call, on TCP or UDP, hears a quiet spell of half a second or more as
+  silence and ends as it does on a quiet channel; a shorter stall is waited out. The M17 encoder waits for audio. Ctrl-C
+  ends a silent stdin or TCP wait at once. A source that stops in the middle of a digital frame is waited for, as
+  before. On Windows only a pipe (`rtl_fm ... | dsd-neo -i -`) is waited on this way: console stdin and a redirected
+  file block in their read until data comes.
 
 - Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical). A WAV file's header rate holds for that file only:
   an input switch away from it (Input > Switch source in the terminal UI) opens the next file, UDP or TCP input at the
