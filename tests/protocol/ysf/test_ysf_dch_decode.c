@@ -1663,8 +1663,11 @@ test_process_ysf_vd_type2_captures_each_block(void) {
     dsd_state_ext_free_all(&state);
 }
 
-/* A FICH that failed lays the payload out from the last one that passed, possibly an earlier transmission's: nothing
-   is captured until a FICH verifies this transmission, its own frame included, and then the fallback frames are. */
+/* A FICH that failed lays the payload out from the last one that passed, which is this transmission's only once one of
+   its own FICHs verified. Before that the layout is an earlier transmission's: a YSF sync word matched on noise after a
+   V/D2 call played that call's layout as five frames of voice, and opened a call. Such a frame lays out, plays, captures
+   and publishes nothing, and the hunt reads on through it; once a FICH verifies this transmission, its own frame
+   included, the fallback frames play and are captured. */
 static void
 test_process_ysf_capture_waits_for_a_verified_fich(void) {
     static dsd_opts opts;
@@ -1682,12 +1685,17 @@ test_process_ysf_capture_waits_for_a_verified_fich(void) {
     processYSF(&opts, &state);
     state.ysf_fich_confirmed = 0;
 
+    assert(dsd_call_state_end(&state, 0U, 0.0) == 1);
+
     capture_dir_begin(&opts, "dsdneo_ysf_fich_capture");
     reset_ysf_stream();
     append_vd_type2_frame(1);
-    processYSF(&opts, &state);
-    assert(g_mbe_call_count == 5);
+    assert(processYSF(&opts, &state) == 0);
+    assert(g_mbe_call_count == 0);
+    assert(g_dibit_stream_pos == 100U);
     assert(capture_dir_count(NULL, 0) == 0);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
 
     reset_ysf_stream();
     append_vd_type2_frame(0);

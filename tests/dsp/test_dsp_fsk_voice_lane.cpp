@@ -6,20 +6,20 @@
 /*
  * DSP_FSK_VOICE_LANE: the FSK discriminator's voice lane, which EDACS plays analog calls from (issue #518 B10).
  *
- * The normalised lane the release register reads peaks at +/-30000 whatever the signal, so it carries no level: a
- * downstream gain cannot tell a quiet talker from hiss. The voice lane is the same discriminator output ahead of that
- * normaliser, at the FM monitor's output scale and through its own de-emphasis. Through full_demod():
+ * The FSK lane the release register reads is the discriminator on its fixed scale, with no de-emphasis. The voice lane
+ * is the same discriminator output ahead of that scale, at the FM monitor's output scale and through its own
+ * de-emphasis. Through full_demod():
  *
  * - 1 kHz at 3 kHz deviation reads 0.125 peak once dsd_demod_deemph_compensation() makes up the lane's de-emphasis, at
  *   24, 48 and 72 kHz and with no, 50, 75 and 750 us de-emphasis; the compensation is the monitor's for the same
  *   coefficient and rate, and 1 with the lane off.
- * - The normalised samples are bit for bit the same with the lane on or off.
+ * - The FSK samples are bit for bit the same with the lane on or off.
  * - A block the level squelch closes is silence on both lanes, and the lane resumes when it opens; such a block, the
  *   lane's first or the first at a new rate, already compensates the lane's de-emphasis at that rate.
  * - The lane's coefficient follows a change of rate.
  * - With the carrier off centre the lane is centred, and a lane switched on mid-stream is, sample for sample, the lane
  *   of a demodulator that ran it all along, across a squelched block and a reconfiguration at a new rate.
- * - Through the output resampler, the lane makes exactly as many samples as the normalised lane at the same places:
+ * - Through the output resampler, the lane makes exactly as many samples as the FSK lane at the same places:
  *   fed the same input, it makes the same samples, block for block, whatever the block sizes, and after a reset.
  *
  * A passing run prints only its OK line.
@@ -202,7 +202,7 @@ same_bits(const float* a, const float* b, int n) {
 }
 
 void
-test_normalised_lane_unchanged(void) {
+test_fsk_lane_unchanged(void) {
     demod_state* off = new_fsk_demod(48000, 0, 75);
     demod_state* on = new_fsk_demod(48000, 1, 75);
     if (!off || !on) {
@@ -219,7 +219,7 @@ test_normalised_lane_unchanged(void) {
         run_block(off, a);
         run_block(on, b);
         if (off->result_len != on->result_len || !same_bits(off->result, on->result, off->result_len)) {
-            fail("the normalised samples change with the voice lane");
+            fail("the FSK samples change with the voice lane");
             break;
         }
     }
@@ -452,7 +452,7 @@ test_lane_follows_the_modem_centring(void) {
 int
 main(void) {
     test_level_at_rates_and_deemphasis();
-    test_normalised_lane_unchanged();
+    test_fsk_lane_unchanged();
     test_squelched_block_is_silence();
     test_squelched_block_publishes_the_lane_gain();
     test_coefficient_follows_rate();

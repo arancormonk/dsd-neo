@@ -21,9 +21,11 @@
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/protocol/p25/p25p1_nid_verdict.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <mbelib-neo/mbelib.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -247,33 +249,41 @@ p25p1_handle_nid_decode_failure(const dsd_opts* opts, dsd_state* state, uint8_t*
     state->debug_header_critical_errors++;
 }
 
-/* How the frame sync accepted the frame's sync word (dsd_frame_sync_p25p1_tolerant_nac()): @c nac is the anchor's NAC
-   when within the tolerance, -1 when exact. */
+/* How the frame sync accepted the frame's sync word (dsd_frame_sync_p25p1_sync_kind()): @c anchor_nac is the anchor's
+   NAC for an anchored word, -1 otherwise; @c errors what the word was off by (bits on CQPSK, signs on C4FM). */
 typedef struct {
-    int nac;
-    unsigned int bit_errors;
+    dsd_p25p1_sync_kind kind;
+    int anchor_nac;
+    unsigned int errors;
 } p25p1_sync_acceptance;
 
-/* The frame behind a sync word the hunt accepted within its tolerance decodes only when its NID passes the strict check
+/* The frame behind a sync word the hunt accepted within a tolerance decodes only when its NID is strict
+   (p25p1_nid_verdict_strict()), and behind an anchored word names the anchor's NAC too
    (p25p1_nid_verdict_passes_tolerant_sync()). One that does not may be no frame at all: it is dropped before anything
    takes its NID's NAC, and counts nowhere, as a sync the exact hunt never accepted would. */
 static int
-p25p1_tolerant_sync_dropped(const dsd_opts* opts, const p25p1_sync_acceptance* sync, const p25p1_nid_verdict* verdict) {
-    if (sync->nac < 0) {
+p25p1_tolerant_sync_dropped(const dsd_opts* opts, const dsd_state* state, const p25p1_sync_acceptance* sync,
+                            const p25p1_nid_verdict* verdict) {
+    if (sync->kind == DSD_P25P1_SYNC_EXACT) {
         return 0;
     }
-    if (!p25p1_nid_verdict_passes_tolerant_sync(verdict, sync->nac)) {
+    const int passes = sync->kind == DSD_P25P1_SYNC_ANCHORED
+                           ? p25p1_nid_verdict_passes_tolerant_sync(verdict, sync->anchor_nac)
+                           : p25p1_nid_verdict_strict(verdict);
+    const char* kind = sync->kind == DSD_P25P1_SYNC_ACQUISITION ? "acquisition" : "tolerant";
+    const char* unit = state->rf_mod == 0 ? "sign" : "bit";
+    if (!passes) {
         if (opts->verbose > 1 && verdict->disposition == P25P1_NID_REJECTED) {
-            DSD_FPRINTF(stderr, " [tolerant sync, %u bit errors, dropped: NID failed]\n", sync->bit_errors);
+            DSD_FPRINTF(stderr, " [%s sync, %u %s errors, dropped: NID failed]\n", kind, sync->errors, unit);
         } else if (opts->verbose > 1) {
-            DSD_FPRINTF(stderr, " [tolerant sync, %u bit errors, dropped: NAC %03X, %d corrections, parity %s%s]\n",
-                        sync->bit_errors, (unsigned int)verdict->nac, verdict->corrections,
+            DSD_FPRINTF(stderr, " [%s sync, %u %s errors, dropped: NAC %03X, %d corrections, parity %s%s]\n", kind,
+                        sync->errors, unit, (unsigned int)verdict->nac, verdict->corrections,
                         verdict->parity_agreed ? "agreed" : "disagreed", verdict->nac_borrowed ? ", borrowed" : "");
         }
         return 1;
     }
     if (opts->verbose > 1) {
-        DSD_FPRINTF(stderr, " [tolerant sync, %u bit errors]", sync->bit_errors);
+        DSD_FPRINTF(stderr, " [%s sync, %u %s errors]", kind, sync->errors, unit);
     }
     return 0;
 }
@@ -298,9 +308,12 @@ p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state, const p25p1_sync_acc
     /* The previous frame's NAC is not this one's: only this frame's NID, once decoded, names it. */
     state->p25_frame_nac_valid = 0U;
     p25p1_read_nid_fields(opts, state, &duid, bch_code, bch_reliab, &parity, &parity_reliab);
-    /* An input interruption cut the NID (a Signal search left the frame): the rest of it is erasures the reader stood
-       in, which the BCH can take for the all-zero codeword (NAC 0, an HDU). Nothing of it decodes, and the NAC the
-       carrier's NIDs established says nothing of what follows the cut. */
+    /* An input that ended while the NID was read cut it as an interruption does. */
+    dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
+    /* An input interruption cut the NID (a Signal search left the frame, the input ended): the rest of it is erasures
+       the reader stood in, which the BCH can take for the all-zero codeword (NAC 0, an HDU) or, a few dibits short,
+       for the NID that was being sent. Nothing of it decodes, and the NAC the carrier's NIDs established says nothing
+       of what follows the cut. */
     if (state->input_interrupted) {
         dsd_state_forget_p25p1_carrier_nac(state);
         return P25P1_DUID_INVALID;
@@ -312,9 +325,15 @@ p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state, const p25p1_sync_acc
        the next NID. */
     const p25p1_nid_verdict verdict = p25p1_nid_verdict_classify(state, &decoded);
     *out_verdict = verdict;
-    if (p25p1_tolerant_sync_dropped(opts, sync, &verdict)) {
+    if (p25p1_tolerant_sync_dropped(opts, state, sync, &verdict)) {
         *out_dropped = 1;
         return P25P1_DUID_INVALID;
+    }
+    /* processFrame() leaves the received identity to a tolerant word's NID: past the strict check the frame is P25's.
+       So does the frame sync its measurement of the word against the symbol grid (C4FM). */
+    if (sync->kind != DSD_P25P1_SYNC_EXACT) {
+        dsd_rxid_note_sync(state, state->synctype);
+        dsd_frame_sync_p25p1_candidate_validated(state);
     }
     p25p1_nid_verdict_commit(state, &verdict);
     if (verdict.disposition == P25P1_NID_ACCEPTED) {
@@ -510,29 +529,43 @@ dsd_dispatch_matches_p25p1(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype);
 }
 
+/* Each data unit's length on air, the rows the frame sync's anchors read where the next unit's sync starts from
+   (dsd_frame_sync_p25p1_frame_decoded()): a fixed length, or 0 for one its decoder reads (dsd_state::p25_p1_unit_dibits:
+   a TSDU's from a last block that passed its CRC, none when the trailing-null rule or a failed block ended it; a PDU's
+   from a header that passed its CRC). */
+static const struct {
+    uint8_t duid;
+    uint16_t dibits;
+} k_p25p1_unit_lengths[] = {
+    {P25P1_DUID_HDU, P25P1_HDU_DIBITS},
+    {P25P1_DUID_LDU1, P25P1_LDU_DIBITS},
+    {P25P1_DUID_LDU2, P25P1_LDU_DIBITS},
+    {P25P1_DUID_TDU, P25P1_TDU_DIBITS},
+    {P25P1_DUID_TDULC, P25P1_TDULC_DIBITS},
+    {P25P1_DUID_TSBK, 0U},
+    {P25P1_DUID_MPDU, 0U},
+};
+
 /* The length on air of the data unit just decoded, by its DUID, or as its decoder read it (a TSDU's and a PDU's block
    counts); 0 when not known. */
 static uint32_t
 p25p1_decoded_unit_dibits(const dsd_state* state, uint8_t duid) {
-    switch (duid) {
-        case P25P1_DUID_HDU: return P25P1_HDU_DIBITS;
-        case P25P1_DUID_LDU1:
-        case P25P1_DUID_LDU2: return P25P1_LDU_DIBITS;
-        case P25P1_DUID_TDU: return P25P1_TDU_DIBITS;
-        case P25P1_DUID_TDULC: return P25P1_TDULC_DIBITS;
-        case P25P1_DUID_TSBK:
-        case P25P1_DUID_MPDU: return state->p25_p1_unit_dibits;
-        default: return 0U;
+    for (size_t i = 0; i < sizeof(k_p25p1_unit_lengths) / sizeof(k_p25p1_unit_lengths[0]); i++) {
+        if (k_p25p1_unit_lengths[i].duid == duid) {
+            return k_p25p1_unit_lengths[i].dibits != 0U ? k_p25p1_unit_lengths[i].dibits : state->p25_p1_unit_dibits;
+        }
     }
+    return 0U;
 }
 
 /* Tell the frame sync what the frame was: one that validated (p25p1_nid_verdict_validates()) and was read whole
-   anchors the next data unit's sync where it ends (dsd_p25p1_sync_anchor). When it was also a TSDU with a TSBK that
-   passed its CRC (@p tsbk_crc_passed), it proves the carrier P25 to the CQPSK timing loop for @p tune_generation, the
-   tune it was synced on (dsd_rtl_stream_metrics_hook_note_p25_proven()), while the stream is still the one its sync
-   was found on. Voice and data frames never do: on a simulcast voice dwell the loop's slower post-lock gain lags the
-   timing swing of the sites' beat, and a dwell is too short for the symbol slips it saves on a control channel to pay
-   for that (docs/code_map.md, the Gardner gain rule). */
+   anchors the next data unit's sync where it ends (dsd_p25p1_sync_anchor) and, on the C4FM chain, has the symbol
+   grid record that sync word to place itself on. When it was also a TSDU with a TSBK that passed its CRC
+   (@p tsbk_crc_passed), it proves the carrier P25 to the CQPSK timing loop for @p tune_generation, the tune it was
+   synced on (dsd_rtl_stream_metrics_hook_note_p25_proven()), while the stream is still the one its sync was found
+   on. Voice and data frames never do: on a simulcast voice dwell the loop's slower post-lock gain lags the timing
+   swing of the sites' beat, and a dwell is too short for the symbol slips it saves on a control channel to pay for
+   that (docs/code_map.md, the Gardner gain rule). */
 static void
 p25p1_note_frame_decoded(dsd_state* state, uint8_t duid, const p25p1_nid_verdict* verdict, uint64_t tune_generation,
                          int tsbk_crc_passed) {
@@ -544,9 +577,38 @@ p25p1_note_frame_decoded(dsd_state* state, uint8_t duid, const p25p1_nid_verdict
        proof given for a block read before it would look current on the carrier reached; nor does a flush. The proof
        stands only on the stream the frame's sync was accepted on, read before the report spends that context. */
     const int stream_held = dsd_frame_sync_p25p1_frame_context_holds(state);
-    dsd_frame_sync_p25p1_frame_decoded(state, verdict->nac, validated ? p25p1_decoded_unit_dibits(state, duid) : 0U);
+    (void)dsd_frame_sync_p25p1_frame_decoded(state, verdict->nac,
+                                             validated ? p25p1_decoded_unit_dibits(state, duid) : 0U);
     if (validated && tsbk_crc_passed && stream_held) {
         dsd_rtl_stream_metrics_hook_note_p25_proven(tune_generation);
+    }
+}
+
+/* The status accumulator at the data unit's start. Behind a tolerant word the unit is provisional until its NID passes
+   the strict check: the advisory AFC gate the last unit published (which auto-PPM reads on the radio thread) stands
+   meanwhile, and what stood is saved in @p out_before for p25p1_status_settle(). */
+static void
+p25p1_status_begin(dsd_state* state, const p25p1_sync_acceptance* sync, p25_status_accum_snapshot* out_before) {
+    if (sync->kind == DSD_P25P1_SYNC_EXACT) {
+        p25_status_accum_reset(state);
+        return;
+    }
+    p25_status_accum_save(state, out_before);
+    p25_status_accum_reset_provisional(state);
+}
+
+/* A provisional unit's NID spoke: a drop (or a cut, @p lost) puts the accumulator and the gate back as they were; a
+   pass withdraws the gate as an exact unit's start does. */
+static void
+p25p1_status_settle(dsd_state* state, const p25p1_sync_acceptance* sync, int lost,
+                    const p25_status_accum_snapshot* before) {
+    if (sync->kind == DSD_P25P1_SYNC_EXACT) {
+        return;
+    }
+    if (lost) {
+        p25_status_accum_restore(state, before);
+    } else {
+        p25_status_accum_withdraw_gate(state);
     }
 }
 
@@ -554,23 +616,32 @@ dsd_frame_verdict
 dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     /* The tune the frame was synced on: its handler may tune away (a grant) before the frame is reported. */
     const uint64_t tune_generation = dsd_trunk_tuning_generation();
-    p25_status_accum_reset(state);
     p25p1_sync_acceptance sync;
-    sync.nac = dsd_frame_sync_p25p1_tolerant_nac(state, &sync.bit_errors);
+    sync.kind = dsd_frame_sync_p25p1_sync_kind(state, &sync.anchor_nac, &sync.errors);
+    p25_status_accum_snapshot status_before;
+    p25p1_status_begin(state, &sync, &status_before);
     p25p1_nid_verdict verdict;
     DSD_MEMSET(&verdict, 0, sizeof(verdict));
     int dropped = 0;
     uint8_t duid = p25p1_decode_nid_and_duid(opts, state, &sync, &verdict, &dropped);
+    p25p1_status_settle(state, &sync, dropped || state->input_interrupted, &status_before);
     /* A NID an input interruption cut decoded nothing: no data unit follows it, and it is no evidence about the
        demodulator or the profile (processFrame() withholds the verdict). */
     if (state->input_interrupted) {
-        dsd_frame_sync_p25p1_frame_decoded(state, -1, 0U);
+        /* Behind a tolerant word the strict check never spoke: the frame synced nothing, and what its accept changed
+           goes back (a command yield, a Signal search, a stream gap or the input's end all cut it). */
+        if (sync.kind != DSD_P25P1_SYNC_EXACT) {
+            dsd_frame_sync_p25p1_candidate_cut(state);
+        }
+        (void)dsd_frame_sync_p25p1_frame_decoded(state, -1, 0U);
         return DSD_FRAME_VERDICT_WITHHELD;
     }
     /* A tolerant sync whose NID failed the strict check: no frame, so no evidence about the demodulator or the profile
-       either, not even inside a window of NIDs that decoded, and the hunt resumes past the NID it read. */
+       either, not even inside a window of NIDs that decoded. What its accept changed goes back, and the hunt resumes
+       from the symbols the word and its NID took (on the C4FM chain). */
     if (dropped) {
-        dsd_frame_sync_p25p1_frame_decoded(state, -1, 0U);
+        dsd_frame_sync_p25p1_candidate_rejected(state);
+        (void)dsd_frame_sync_p25p1_frame_decoded(state, -1, 0U);
         return DSD_FRAME_VERDICT_UNPRODUCTIVE;
     }
     /* A decoded NID is the one place that knows which demodulator actually carried a P25p1

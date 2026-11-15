@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <cmath>
 #include <cstdio>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/rtl_stream.h>
@@ -38,13 +39,16 @@ struct StubState {
     uint32_t last_tune_hz;
     uint64_t last_tune_request_id;
     size_t last_read_count;
-    /* The addresses the last read passed, kept as numbers: the test only compares them, and a caller's buffer may be
-       on its stack. */
-    uintptr_t last_voice;
-    uintptr_t last_flags;
+    /* Whether the last read passed a voice buffer and flags. The stub marks the first entry of each it got (kVoiceMark,
+       kFlagsMark), which shows the read reached the caller's own buffers without keeping their addresses. */
+    int last_voice_given;
+    int last_flags_given;
 };
 
 static StubState g_stub;
+
+constexpr float kVoiceMark = 0.625f;
+constexpr uint8_t kFlagsMark = 0xA5U;
 
 static void
 reset_stubs(void) {
@@ -80,17 +84,6 @@ expect_ptr_eq(const char* label, const void* got, const void* want) {
 }
 
 static int
-expect_addr_eq(const char* label, uintptr_t got, const void* want) {
-    const uintptr_t want_addr = reinterpret_cast<uintptr_t>(want);
-    if (got != want_addr) {
-        DSD_FPRINTF(stderr, "%s: got=0x%llx want=0x%llx\n", label, (unsigned long long)got,
-                    (unsigned long long)want_addr);
-        return 1;
-    }
-    return 0;
-}
-
-static int
 expect_ptr_ne(const char* label, const void* got, const void* not_want) {
     if (got == not_want) {
         DSD_FPRINTF(stderr, "%s: unexpected pointer=%p\n", label, got);
@@ -119,8 +112,14 @@ dsd_rtl_stream_read_ex(float* out, float* voice, uint8_t* flags, size_t count, d
     (void)out;
     (void)state;
     g_stub.read_calls++;
-    g_stub.last_voice = reinterpret_cast<uintptr_t>(voice);
-    g_stub.last_flags = reinterpret_cast<uintptr_t>(flags);
+    g_stub.last_voice_given = voice != nullptr;
+    g_stub.last_flags_given = flags != nullptr;
+    if (voice != nullptr && count > 0U) {
+        voice[0] = kVoiceMark;
+    }
+    if (flags != nullptr && count > 0U) {
+        flags[0] = kFlagsMark;
+    }
     g_stub.last_want_no_stream = want_no_stream;
     g_stub.last_open_opts = opts;
     g_stub.last_live_opts = live_opts;
@@ -320,12 +319,14 @@ test_read_carries_yield_and_no_stream(void) {
     float voice[4] = {};
     g_stub.read_rc = 2;
     rc |= expect_int_eq("the voice-lane read succeeds", stream.read(samples, voice, flags, 4U, got, 1), 0);
-    rc |= expect_addr_eq("the voice-lane read passes the voice buffer", g_stub.last_voice, voice);
-    rc |= expect_addr_eq("the voice-lane read passes the flags", g_stub.last_flags, flags);
+    rc |= expect_int_eq("the voice-lane read passes a voice buffer", g_stub.last_voice_given, 1);
+    rc |= expect_int_eq("the voice-lane read passes its own voice buffer", std::fabs(voice[0] - kVoiceMark) < 1e-6f, 1);
+    rc |= expect_int_eq("the voice-lane read passes flags", g_stub.last_flags_given, 1);
+    rc |= expect_int_eq("the voice-lane read passes its own flags", flags[0], kFlagsMark);
     rc |= expect_int_eq("the voice-lane read passes the ask", g_stub.last_want_no_stream, 1);
     rc |= expect_int_eq("the voice-lane read returns got count", got, 2);
     rc |= expect_int_eq("a flagged read succeeds", stream.read(samples, flags, 4U, got, 0), 0);
-    rc |= expect_addr_eq("a flagged read passes no voice buffer", g_stub.last_voice, nullptr);
+    rc |= expect_int_eq("a flagged read passes no voice buffer", g_stub.last_voice_given, 0);
     return rc;
 }
 

@@ -42,6 +42,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <limits.h>
@@ -1995,10 +1996,11 @@ p25p2_judge_tolerant_window(const dsd_state* state, uint32_t entry_symbol, int s
    of it takes effect (no ISCH, position, playout, descrambling, burst or continuity), as when the exact hunt misses a
    sync: the next window's continuity retires its timeslots as lost. */
 static void
-p25p2_reject_tolerant_window(const dsd_opts* opts, dsd_state* state, p25p2_window_verdict verdict, int entry_stereo) {
+p25p2_reject_tolerant_window(dsd_opts* opts, dsd_state* state, p25p2_window_verdict verdict, int entry_stereo) {
     state->dmr_stereo = entry_stereo;
     unsigned int bit_errors = 0U;
     (void)dsd_frame_sync_p25p2_tolerant_start(state, &bit_errors);
+    dsd_frame_sync_p25p2_window_dropped(opts, state);
     dsd_frame_sync_p25p2_window_decoded(state, 0, -1);
     DSD_FPRINTF(stderr, " P25p2 ~sync rejected");
     if (opts->verbose > 1) {
@@ -2028,9 +2030,11 @@ p25p2_window_anchor_start(const dsd_state* state, int contradicted) {
 /* Read the window behind a P25p2 sync into p2bit/p2llr. Returns 0 when a carrier boundary or an input interruption cut
    it: then none of its bursts dispatches, dmr_stereo is 0, the frame sync is told so (the window's context is spent,
    the anchor cleared), and a carrier boundary also forgets what the slots gathered on the carrier left
-   (p25p2_frame_forget_carrier()). The same whichever sync opened the window: a tolerant one's verdict is not reached. */
+   (p25p2_frame_forget_carrier()). The same whichever sync opened the window: a tolerant one's verdict is not reached.
+   Behind a @p tolerant sync the input's end cuts the window too (dsd_state_note_input_end()): the verdict would judge
+   the reader's stand-ins past it. An exact window's bursts read before the end decode, each past its own FEC. */
 static int
-p25p2_collect_window(dsd_opts* opts, dsd_state* state) {
+p25p2_collect_window(dsd_opts* opts, dsd_state* state, int tolerant) {
     /* A superframe belongs to one carrier (issue #575). What the slots gathered over superframes of a carrier the
        receiver has since left goes before this one is collected; a superframe the carrier boundary split while it was
        collected (a replay read adopting a recorded retune) is dropped whole, as on a sync loss: its bursts read before
@@ -2046,16 +2050,22 @@ p25p2_collect_window(dsd_opts* opts, dsd_state* state) {
     if (state->carrier_seq != carrier_seq) {
         p25p2_frame_forget_carrier(state);
         state->dmr_stereo = 0;
+        dsd_frame_sync_p25p2_window_dropped(opts, state);
         dsd_frame_sync_p25p2_window_decoded(state, 0, -1);
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }
-    /* An input interruption cut the window (a Signal search left it, or a live read gave up on a stalled input): the
-       rest is erasures the reader stood in, so none of its bursts dispatches, as when a sync loss misses a window. The
+    /* An input interruption cut the window (a Signal search left it, a live read gave up on a stalled input, or the
+       input ended behind a tolerant sync): the rest is erasures the reader stood in, so none of its bursts dispatches,
+       as when a sync loss misses a window. The
        receiver is still on the carrier, so what the slots gathered, and the frames the playout holds, stay; the next
        window finds this one missing from its continuity. */
+    if (tolerant) {
+        dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
+    }
     if (state->input_interrupted) {
         state->dmr_stereo = 0;
+        dsd_frame_sync_p25p2_window_dropped(opts, state);
         dsd_frame_sync_p25p2_window_decoded(state, 0, -1);
         DSD_FPRINTF(stderr, "\n");
         return 0;
@@ -2113,7 +2123,7 @@ processP2(dsd_opts* opts, dsd_state* state) {
     const int entry_stereo = state->dmr_stereo;
     const int tolerant_start = dsd_frame_sync_p25p2_tolerant_start(state, NULL);
     state->dmr_stereo = 1;
-    if (!p25p2_collect_window(opts, state)) {
+    if (!p25p2_collect_window(opts, state, tolerant_start >= 0)) {
         return P25P2_WINDOW_DISPATCHED;
     }
     if (!p25p2_admit_window(opts, state, entry_symbol, tolerant_start, entry_stereo)) {

@@ -21,6 +21,8 @@ dpmr_confirm_reset(dsd_state* state) {
     state->dpmr_confirmed = 0;
     state->dpmr_confirm_weak_streak = 0;
     state->dpmr_confirm_frame_evidence = 0;
+    state->dpmr_confirm_last_frame_valid = 0;
+    state->dpmr_confirm_last_frame_symbol = 0;
     /* The scrambling a verified half signalled is the transmission's too: the next one proves its own. */
     dpmr_scrambling_reset(state);
 }
@@ -29,6 +31,22 @@ void
 dpmr_scrambling_reset(dsd_state* state) {
     if (state != NULL) {
         state->dpmr_scrambled = 0U;
+    }
+}
+
+void
+dpmr_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol) {
+    if (!state) {
+        return;
+    }
+    const uint32_t since = frame_symbol - state->dpmr_confirm_last_frame_symbol;
+    const int runs_on = state->dpmr_confirm_last_frame_valid
+                        && since + DPMR_CONFIRM_FRAME_SYMBOLS_SLIP >= DPMR_CONFIRM_FRAME_SYMBOLS
+                        && since <= DPMR_CONFIRM_FRAME_SYMBOLS + DPMR_CONFIRM_FRAME_SYMBOLS_SLIP;
+    state->dpmr_confirm_last_frame_symbol = frame_symbol;
+    state->dpmr_confirm_last_frame_valid = 1;
+    if (!runs_on) {
+        state->dpmr_confirm_weak_streak = 0;
     }
 }
 

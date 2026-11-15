@@ -613,7 +613,15 @@ Generated (do not edit/commit):
       analog carrier, and the end-to-end skip through `dsd_engine_test_live_scanner_run()` for -Y and trunk scan, each
       against the setting off).
     - `sync_seq` moves whenever the live loop's frame sync returns a sync (`live_scanner_frame_sync()`, YSF and D-STAR
-      included, which stamp no `last_cc_sync_time_m`) and whenever a monitor block found the carrier itself, whatever
+      included, which stamp no `last_cc_sync_time_m`; a provisional P25 sync, a word accepted within a tolerance whose
+      frame waits on its strict NID or window verdict, `p25_p1_sync_candidate`/`p25_p2_sync_candidate` held when the
+      sync returns and accepted by that call, its accept counters `tolerant_syncs` + `acquisition_syncs` (both phases)
+      moved, `dsd_engine_scan_quiet_sync_accepts()`, so a candidate an earlier call left held behind a withheld frame
+      defers no exact sync after it, is deferred on the owner with the verdict counters, `tolerant_frames` + `acquisition_frames` +
+      `tolerant_windows`, by `dsd_engine_scan_quiet_note_frame_sync()`, and moves it only when a counter moved by the
+      time its frame was processed, `dsd_engine_scan_quiet_settle_sync()` right after `processFrame()`; a withheld or
+      undispatched frame drops the deferral, `dsd_engine_scan_quiet_drop_sync()`, so a noise near-miss whose NID fails
+      never ends a silent channel's check) and whenever a monitor block found the carrier itself, whatever
       its tone verdict (`dsd_engine_analog_call_block()`, `found_carrier`: a carrier that ends while its tone check is
       pending counts); `quiet_inv_seq` moves where a check's facts change with
       no counter of their own (`dsd_engine_scan_quiet_note_change()`): the trunk scan's hold set or released, pause,
@@ -635,7 +643,8 @@ Generated (do not edit/commit):
       service. Tests: `ENGINE_TRUNK_SCAN` (`test_scan_quiet_*`: a fake tap, link fakes of `rtl_signal_quiet_*`,
       `rtl_signal_capture_get()` and `rtl_stream_receive_request_seq()`, on a fake realtime clock, a link wrap of
       `dsd_realtime_mono_ms()`, separate from the TEST decode clock), `ENGINE_NO_CARRIER_RESET`
-      (`test_live_loop_syncs_move_the_quiet_sync_sequence`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`,
+      (`test_live_loop_syncs_move_the_quiet_sync_sequence`,
+      `test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`,
       `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`, `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`, `FRAME_SYNC_HISTORY_CARRY`.
 - Build files: `src/engine/CMakeLists.txt`
 
@@ -1335,7 +1344,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   scanner row that moved the receiver yet ends unlanded is one, `channel_scan_note_unlanded_move()`) and every
   acquisition reset; so a P25 release's retune, or a direct return, in the exit's own no-sync hooks keeps nothing. Its
   first read checks the clock, epoch, carrier count, generation, drops and pending off-thread tunes again, for a flush
-  an RTL reader finds only when it reads; a failed check drops the levels with the dibits. A matcher that reads only its
+  an RTL reader finds only when it reads; a failed check drops the levels with the dibits, and the pass position a
+  dropped P25p1 candidate's carry brought, so the call hunts a whole pass of the new stream. A matcher that reads only its
   window or reads its frame forward from the sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17, ProVoice, EDACS) then
   matches a frame that straddles the exit; before, a TETRA control uplink burst that began fewer than 20 symbols before
   it was lost. An NXDN96 FSW straddling the exit is read on its carried levels, so it counts as clear only when its 20
@@ -1343,7 +1353,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   window with fewer than ten levels as not clear (only a test's sign-only window keeps the sign match). DMR and X2-TDMA
   decode their burst back from the rolling dibit buffers (`dmr_payload_p`, `dibit_buf_p`), which the no-carrier reset
   clears, so they match only on a 24-symbol window the call read itself (`frame_sync_match_window_own()`), as before the
-  carry. Every clear of the rolling buffers (initState, noCarrier, an NXDN reset) and every wrap puts a buffer's pointer
+  carry, or one a dropped P25p1 candidate's carry brought (`dsd_frame_sync_history_carry::own_symbols`: the hunt wrote
+  its word's dibits there and the NID read its NID's; a no-sync exit's carry brings none, since the no-carrier reset
+  after the exit clears them), counted no further back than the buffers hold dibits written since their last clear or
+  wrap (`dsd_state_rolling_dibits()` at the next call's start); a broken first read drops it with the history. Every clear of the rolling buffers (initState, noCarrier, an NXDN reset) and every wrap puts a buffer's pointer
   at `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the clear's zeros or a wrap's stale dibits, which pass
   Golay and Hamming as codewords; `dsd_state_rolling_dibits()` counts what was written since. A DMR or X2-TDMA sync is
   still accepted, and each accept notes how many of the oldest read-back dibits are not the stream's
@@ -1365,7 +1378,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   noCarrier resets (the NXDN96 hits and lock, the M17 preamble run, candidate, polarity and join hits, `lastsynctype`,
   the ProVoice and M17 confirms), after which a matcher needs more evidence, not less. A sync, an input interruption, a
   signal-search yield and shutdown drop it too. Test: `FRAME_SYNC_HISTORY_CARRY` (NXDN96 FSWs, a DMR and an X2-TDMA sync
-  straddling the exit, and DMR and X2-TDMA syncs short of their read-back after a clear, among them).
+  straddling the exit, DMR and X2-TDMA syncs short of their read-back after a clear, and a carried pass a first-read
+  flush restarts whole, among them).
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary
   (issue #634). Conventional rows also discard learned P25 modulation; trunk targets retain their own learned
@@ -2776,7 +2790,9 @@ suite runs under this compiler.
   superframe's EEEI/AIEI (encrypted is undecryptable: X2 has no decryption), with the call's transmission
   (`dsd_call_snapshot_transmission()`) it was read in. The indicators arrive in the second burst, after the first
   burst's three frames: those take the previous superframe's value of the same transmission (a fade the call state
-  heals keeps it), and are unknown in a transmission's first superframe. An unknown frame is never decodable, and it
+  heals keeps it), and are unknown in a transmission's first superframe. The superframe a call opens on keeps the
+  value of one read before any call was open with no hunt gap between them (direct mode, whose first superframe
+  nothing corroborates, so the call opens on its second). An unknown frame is never decodable, and it
   plays, records and is captured only where clear and encrypted frames both would (`mbe_x2_frame_audible()`: the
   encrypted-audio mute off and reverse mute off). A clear <-> encrypted change inside a call applies from the second
   burst (at most three frames, 60 ms, once per change). The mixers read X2's verdict from `mbe_slot_muted`, as DMR's
@@ -6013,6 +6029,25 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   recovery, CQPSK helpers
   (matched/RRC), and SIMD helpers; exposes runtime-tunable parameters consumed by the UI
 - Build files: `src/dsp/CMakeLists.txt`
+- FSK discriminator output (`<dsd-neo/dsp/fsk_modem.h>`, `fsk_modem.c`): every FSK protocol on an RTL-family, Soapy,
+  Airspy or I/Q replay input reads the discriminator's instantaneous frequency off the carrier, slowly centred, on a
+  fixed scale of `DSD_FSK_DISCRIMINATOR_COUNTS_PER_HZ` (5) counts a hertz at any complex rate; the PCM range (+/-32767)
+  holds +/-6553 Hz, which every protocol's peaks clear (M17's root raised cosine and YSF's 2.7 kHz under 5 kHz, EDACS
+  voice at most 5 kHz), and the output is not clipped there: railed at it, noise read as runs of outer symbols, and the
+  AUTO hunt lost noisy P25 voice frames and the P25 chain comparison read a CQPSK control channel through the
+  discriminator with ten times the TSBK failures. The int16 consumers (EDACS analog voice, the -8 source monitor, the -6
+  raw WAV) saturate as they convert. P25's outer level reads 9000. There is no gain stage: a peak normaliser to +/-30000
+  used to restart at every carrier (the modem resets across a squelched stretch) and climb back over about 0.4 s after
+  noise, so the sync word that opens a transmission read at up to twice its frame's level, or a fraction of it, and the
+  warm start set the slicer there. The slicer's starting levels on a new FSK stream (`dsd_symbol.c`
+  `symbol_reset_rtl_fsk_discriminator_slicer()`) put the outer level at the 6 kHz reference, above every protocol's
+  peaks: the hunt's timing loop takes no crossing whose sample lies above it, and at 3 kHz a P25 call at 10 dB lost its
+  first HDU and LDU1 to crossings noise had lifted past it; a P25p1 word the hunt accepts on GFSK warm-starts its frame
+  as on C4FM (`frame_sync_accept_p25p1()`), since nothing else sets levels there. The analog audio chain takes 3 kHz
+  deviation (15000) as the RTL FSK source's reference (`dsd_analog_audio_source_gain()`). Tests: `DSP_FSK_MODEM` (counts
+  per hertz at 24-96 kHz, past the PCM range unclipped, a level independent of loud noise or a reset before it),
+  `DECODE_IQ_P25P1_C4FM_NO_HDU_F1` / `_FA` (two generated no-HDU calls after the carrier was off: all IMBE frames read;
+  under `-f1` every frame outside the calls' first LDUs with no correction, under `-fa` none with more than two).
 - Sample statistics in `<dsd-neo/dsp/simd_stats.h>` dispatch to AVX2, SSE2, NEON or scalar implementations.
   `dsd_simd_extrema_avg2()` supplies the two-lowest/two-highest averages for the core symbol slicer's window,
   counting duplicate samples. Non-finite values and signed-zero ties use the original ordered comparisons.
@@ -6089,7 +6124,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   its own placed, the hunt may accept a sync word a few bits off (6 of 48, 4 of 40) at the one position the next
   frame's or window's sync must take on the RTL CQPSK 4-level path (`frame_sync_cqpsk_4level_enabled()`; 4800/4 for
   Phase 1, 6000/4 for Phase 2), under the dibit map and polarity the anchor's exact sync matched, scored by Gray-coded
-  bit distance (`frame_sync_p25_sync_bit_distance()`). Both share the sync-time context (`dsd_p25_sync_context`:
+  bit distance (`frame_sync_p25_sync_bit_distance()`); Phase 1 also on the C4FM chain's 4800/4 hunt, 6 of 24 signs
+  (`dsd_p25p1_sync_sign_distance()`, every input and build), and there anywhere with no anchor 1 of 24
+  (`frame_sync_try_acquisition_p25p1()`; Protocols, P25 Phase 1, the C4FM items). Both share the sync-time context (`dsd_p25_sync_context`:
   symbol clock and epoch, input generation, carrier count, accepted tuning generation, sync history drops, SPS profile,
   modulation, map, polarity), captured at every accept of their protocol and checked where the word is scored and when
   the frame or window reports itself; a pending off-thread tune is checked by the frame sync where it captures and
@@ -6127,8 +6164,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   every other case 3 or more). A word starting past the span is not covered (the same map's own shift comes within the
   tolerance there). The Phase 1 anchor and its validation are in Protocols (P25 Phase 1); the Phase 2 window verdict
   in Protocols (P25 Phase 2 voice dispatch). Diagnostics, never reset: `tolerant_syncs`, `tolerant_frames` (P1) and
-  `tolerant_windows` (P2, windows whose verdict passed). Tests: `FRAME_SYNC_P25_ANCHOR`, `FRAME_SYNC_P25P2_ANCHOR`
-  (distance and shifted bound, the expected position only, thresholds, late exact words win, map and polarity, every
+  `tolerant_windows` (P2, windows whose verdict passed). On the C4FM chain the Phase 1 sync and report also place the
+  symbol grid on each unit's word (the sync anchor entry below). Tests: `FRAME_SYNC_P25_ANCHOR`,
+  `FRAME_SYNC_P25P2_ANCHOR` (distance and shifted bound, the expected position only, thresholds, late exact words win, map and polarity, every
   invalidation, installation, the withheld accept effects, C4FM and symbol files); through the whole receive chain,
   `DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC`, `DECODE_IQ_P25P2_CC_NOISY` and `DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_*`
   (`docs/testing.md`).
@@ -6167,18 +6205,82 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   cannot place the word, a word named with no recording armed (read on a grid the hunt timed) and a reset), holds the
   grid for it: `symbol_process_live_samples()` takes no crossing slip while such a recording runs
   (`dsd_symbol_anchor_holds_grid()`), so the word is read and measured on the grid the frame left and the measurement
-  corrects that grid alone, as on a DMR BS call. The hold belongs to the protocol whose frame armed it (NXDN, YSF or
-  DMR, from `lastsynctype` at the arm): once `lastsynctype` names any other (the hunt accepted another protocol's sync,
-  P25's included, or noCarrier forgot the last), it ends for the rest of the recording, so no other protocol's frame
+  corrects that grid alone, as on a DMR BS call. The hold belongs to the protocol whose frame armed it (NXDN, YSF, DMR
+  or P25 Phase 1, from `lastsynctype` at the arm): once `lastsynctype` names any other (the hunt accepted another
+  protocol's sync, or noCarrier forgot the last), it ends for the rest of the recording, so no other protocol's frame
   is read on a held grid. The first frame after acquisition, and
   any grid no word placed, stay the crossing loop's: held at the acquisition's phase, a YSF frame sync read inner
   symbols at the wrong sign and was missed. The decoder names the word the hunt accepted at its frame's entry: NXDN
   the FSW from its second symbol and YSF the frame sync from its second (the recording starts on the word's first
   sample, and the measurement needs a sample of margin before the first centre), DMR MS the 24 dibits below
-  `dmr_payload_p`. An M17 preamble's `dsd_symbol_hold_sync_anchor()` lets the crossing loop back on. P25 never arms the
-  anchor. Tests: `DSP_SYMBOL_ANCHOR` (the hold rules, words with inner symbols), `SYMBOL_MATCHED_FILTER_SEAM`
-  (hunt-hold), `NXDN_FRAME_ROUTING`, `DMR_MS_DATA`, `DMR_SYNTH_MS_CLEAR_VOICE`, `DECODE_IQ_YSF_SYNTH`,
+  `dmr_payload_p`. An M17 preamble's `dsd_symbol_hold_sync_anchor()` lets the crossing loop back on. Tests:
+  `DSP_SYMBOL_ANCHOR` (the hold rules, words with inner symbols), `SYMBOL_MATCHED_FILTER_SEAM` (hunt-hold),
+  `NXDN_FRAME_ROUTING`, `DMR_MS_DATA`, `DMR_SYNTH_MS_CLEAR_VOICE`, `DECODE_IQ_YSF_SYNTH`,
   `DECODE_IQ_NXDN96_SYNTH_SYMBOLS`, `DECODE_IQ_NXDN48_SYNTH_SYMBOLS`.
+  P25 Phase 1 on C4FM (`rf_mod` 0) is the fourth hunt-read caller. The P25 word ends in alternating outer symbols whose
+  crossings, acted on a symbol late, left every frame the hunt read about a sample past its symbols (a whole sample on
+  clean generated frames, 0.5-1.0 samples on real captures), and the frame was read open loop there. The frame sync
+  names each exact word as it accepts it (`frame_sync_p25p1_anchor_note_sync()`, `frame_sync_p25p1_anchor.c`) from its
+  second symbol, 23 symbols (named whole, the recording that starts on its first symbol never measures). The report of
+  the frame behind it arms the recording of the next unit's word (`dsd_frame_sync_p25p1_frame_decoded()`, which
+  returns a `dsd_p25p1_grid_verdict`), by one table of rows (`k_p25p1_grid_rows`; the units' lengths are the
+  dispatcher's `k_p25p1_unit_lengths`): it arms on C4FM when the frame validated (`p25p1_nid_verdict_validates()`, not
+  cut by an input interruption) with a length on air known (HDU, LDU1/2, TDU, TDULC; a TSDU whose last block passed
+  its CRC; a PDU whose header passed its CRC), the frame's sync-time context still holds (no tune in the handler, a
+  grant, release or RESET included; no carrier boundary, flush, input change, profile or modulation change, pending
+  off-thread tune) and its decoders stopped at the unit's end or inside its null pad (at most 35 dibits short, as a
+  TSDU leaves its pad to the hunt). A TSDU the trailing-null rule or a failed block ended, a PDU whose reader stopped
+  short of or past what its header names, a failed, held or borrowed NID and a cut read arm nothing, and the crossing
+  loop keeps the grid as before; a terminator followed by silence lapses after 64 symbols. A word within a tolerance
+  (anchored, or hunt-wide on C4FM) names nothing to a recording, and changes nothing about the grid until its NID
+  passes the strict check: read with no recording armed, it is then measured on the seam's raw history (below). P25's
+  word may be the first one measured after
+  acquisition, a lapse or a reset, read while the crossing loop still walks the grid: it is measured against the grid
+  without those slips (each symbol's shift, the samples it took against its span, is recorded), ending at its last
+  centre, where the frame's grid goes on; the spans a fractional rate alternates stay as they were. Only the P25 frame
+  sync asks for that (`dsd_symbol_note_p25p1_sync_anchor()`); NXDN's, YSF's, DMR's and M17's words
+  (`dsd_symbol_note_sync_anchor()`) keep their recorded centres, whatever `lastsynctype` a P25 frame left.
+  The word that acquires a transmission (and the first after a lapse or a reset) is read with no recording armed, so
+  `dsd_symbol_note_p25p1_sync_anchor()` measures it on the matched-filter seam's raw history instead
+  (`dsd_matched_filter_seam::raw`, which keeps every raw sample the grid took): the hunt records nothing and pays
+  nothing for it (noise-only `-f1` replay: no measurable instruction change). The word's last centre sits
+  `symbolCenter` samples into its span, and a filter's group delay further back in the raw stream when the hunt read
+  through one; the word is measured on the nominal grid ending there, from its second symbol to its next-to-last (the
+  last, the fifth of a run of one level, holds no crossing, and leaving it out leaves the samples past the last centre
+  that the smoothing reads), through a boxcar a symbol wide, odd and symmetric so it moves no centre: the raw stream
+  carries the discriminator's noise up to half the sample rate. It needs the grid to have taken every sample of the word
+  live, one each, at one span (`dsd_matched_filter_seam::steady_clock`, the symbol clock of the last change of span or
+  end of a hand-back; a filter switch alone keeps the content position and does not count; a fractional rate
+  alternates its span and declines), and the move needs the word at least three quarters of a sample off
+  (`ANCHOR_HUNT_DEAD_ZONE`, an offset dead zone, not a fit check: at half a sample, noisy 48 kHz acquisitions moved
+  some grids the wrong way, and the fit's residual and correlation did not tell those apart). The move is queued for the next symbol and marked as measured on
+  raw samples (`dsd_symbol_anchor_slip_from_raw()`): the P25 matched filter switching on behind the word does not take
+  it back as it does a move measured on the anchor's own samples, since the seam keeps the content position. It places
+  no grid for a hold, so the second unit's word is read on the crossing loop's grid as before. A word the hunt accepted
+  within a tolerance (a hunt-wide one-sign word above all, which is how a transmission is often acquired: the word just
+  after a key-up ramp can come out a sign off, by rounding alone in optimized builds) may be no word at all, so the
+  accept only notes where it lies (`dsd_symbol_mark_p25p1_sync_anchor()` into `dsd_p25p1_sync_anchor::frame_word`, a
+  `dsd_matched_filter_seam_mark`: the seam's write index and count, the symbol clock, the word's last centre and span;
+  nothing else is written), under the same conditions as the exact word's measurement. Only when the dispatcher keeps
+  the frame (`dsd_frame_sync_p25p1_candidate_validated()`, once the strict NID passed, on the stream the word was
+  accepted on) is the word measured (`dsd_symbol_note_p25p1_marked_sync_anchor()`), on the same samples and so with the
+  same result as an exact word's, behind the samples the seam took since: the NID is read at have_sync, where nothing
+  moves the grid, so the offset still stands, and the move lands after the NID, before the unit's data. It measures
+  nothing when the seam may no longer hold the word as it was marked: when the word's samples, a span and two for each
+  symbol since and a filter's delay would not fit in the ring's 2048 samples (behind the 33-symbol NID they fit at
+  96 kHz with room to spare), when the count held did not grow with the write index (a seam forgotten at a stream
+  flush), at another span, or with a recording armed. A dropped frame never measures it, so the rollback leaves the
+  grid and the anchor as the hunt left them. Only the P25 note reads the seam; the other callers' words named with no
+  recording armed still measure nothing. The first unit of a transmission is then read within half a sample of its
+  symbols at 24, 48, 72 and 96 kHz when the acquiring word sat three quarters of a sample off or more, and on the
+  hunt's grid otherwise and at a fractional rate; from the second
+  unit the grid sits within half a sample at 24, 48, 50, 72 and 96 kHz. Tests: `DSP_SYMBOL_ANCHOR` (P25's own hold, the measurement at
+  whole and fractional rates and with clock drift, the second-symbol naming, the walking grid, the hunt word on the
+  seam, its gate and declines, the marked word measured behind the NID and its declines), `DSP_SYMBOL_P25_C4FM_GRID`
+  (through `getSymbol()` and the real crossing loop, with and without the matched filter; an acquiring word a sign off
+  kept reads every unit as the exact one, dropped as the hunt left it), `P25_P1_SYNC_DISPATCH` (the naming, the marking
+  and every arming row), `P25_P1_TOLERANT_NID` (measured only past the strict NID), `FRAME_SYNC_P25P1_C4FM_TOLERANCE`
+  (a dropped candidate leaves the anchor and the seam as they were).
 - Slicer warm start (`<dsd-neo/dsp/sync_calibration.h>`, `sync_calibration.c`): an accepted sync sets `min`/`max`,
   `center`, `umid`/`lmid` (5/8 of the way to each rail), `maxref`/`minref` and the rolling min/max buffers from the
   word just read. `dsd_sync_warm_start_thresholds_outer_only()` averages the word's positive and negative symbols,
@@ -6189,6 +6291,21 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (issue #834): their words carry inner symbols, which the outer-only start averaged into the rails (NXDN's at 2.6 of
   3, YSF's centre a quarter of an outer level off) and which then read clean inner symbols as outer. Tests:
   `SYNC_CALIBRATION`, `FRAME_SYNC_INTERNAL_HELPERS`.
+- Slicer levels inside a C4FM frame (`dsd_symbol.c` `symbol_apply_sync_clip()`, `dsd_dibit.c` `use_symbol()`). While a
+  frame is read (`have_sync`) on `rf_mod` 0 every sample is clipped to [`min`, `max`], for every protocol: it shields
+  the levels from one-sided FM disturbances (a transmitter whose frequency a mains-rate pulse pulls one way). Most C4FM
+  protocols read the frame on the levels their sync's warm start set and run no in-frame tracker, so the clip cannot
+  move them. P25 Phase 1 on C4FM runs the tracker (`dsd_simd_extrema_avg2()` of the last `ssize` symbols into an
+  `msize` window) only with the default windows (128 symbols, 1024 levels; the warm start fills all 1024, so `max`
+  barely moves within a unit), or when its sync set no levels (`dsd_state::p25_p1_c4fm_sync_levels` 0: the warm start
+  off or degenerate; `frame_sync_p25p1_c4fm_warm_start()` sets it at every P25p1 accept). With smaller windows (the
+  `-f1` preset's 36/15, which `-fa` keeps when it follows `-f1`) the frame holds its sync's levels. A tracker there
+  feeds on symbols the clip has capped at `max`, so `max` can only fall: a clean unit loses a fifth of its outer level
+  within a few hundred symbols and the HDU that opens a call half, inner symbols read as outer and the HDU fails its
+  FEC. Tests: `DSP_SYMBOL_P25_C4FM_LEVELS` (outer level and inner/outer boundary within an eighth of the levels sent
+  over a 3-block TSDU, an LDU and a long PDU at the `-f1` and the default sizes, both polarities at `-f1`; the warm
+  start off still tracks), `DECODE_IQ_P25P1_C4FM_VOICE_HDU_F1` (the voice fixture under `-f1` prints an HDU and no
+  `HDU FEC ERR`).
 - `dsd_state::symbol_clock`/`symbol_clock_epoch` (issue #729): a 64-bit count of every symbol the grid produced that no
   protocol resets (NXDN resets `symbolcnt`), and an epoch DSP bumps on an RTL stream flush or profile change (any reset
   of the RTL symbol cache, also one the profile refresh meets ahead of a take), a symbol-capture replay starting over
@@ -6673,7 +6790,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `DSP_SYMBOL_RTL_YIELD`, `ENGINE_NO_CARRIER_RESET`, `IO_RTL_RETUNE_PREPARE`, `IO_RTL_REPLAY_EOF_AND_CF32`.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
-  index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how
+  index, and between frames the only thing tracking the sampling instant across a call — and the sync anchor
+  (`symbol_anchor.c`, above), which DMR BS, NXDN, YSF, DMR MS, M17 and P25 Phase 1 on C4FM name their sync words to and
+  which keeps the crossing loop off the word a hunt-read recording holds. Issue #444 documents how
   sensitive that is; the comment above `symbol_adjust_timing_nxdn()` records the five ways of damping it that were
   A/B'd on real captures and measured worse, so change it only with `tools/replay_ab.sh` evidence
   (`docs/testing.md`). The CQPSK path does not use any of this: it has a real timing loop in `costas.cpp`.
@@ -6814,8 +6933,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   on auto logs that once per rate. The source gain takes
   each source's reference signal to -12 dBFS peak: RTL monitor audio after the `vol` trim (0.25 at the default 2:
   1 kHz at 3 kHz deviation after the 1/pi output scale, or AM at 50%) by 32924, the RTL FSK discriminator output
-  (+/-30000: the -8 source monitor under digital decoding, told by `rtl_symbol_cache_output_kind`, which, like the
-  symbol path, reads it with no `vol` trim) by 8231/30000, PCM by 1. EDACS analog voice on RTL is RTL monitor audio:
+  (3 kHz deviation at 15000 on its fixed scale: the -8 source monitor under digital decoding, told by `rtl_symbol_cache_output_kind`, which, like the
+  symbol path, reads it with no `vol` trim) by 8231/15000, PCM by 1. EDACS analog voice on RTL is RTL monitor audio:
   the stream's FSK voice lane after the `vol` trim (IO, "The FSK voice lane"). The chain's gain is the source
   gain, and on RTL monitor audio from an RTL input times the stream's de-emphasis gain
   (`dsd_rtl_stream_metrics_hook_monitor_deemph_gain()`, issue #518 B8/B9: the FM de-emphasis takes the 1 kHz reference
@@ -7047,7 +7166,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   and `squelch_noise_run()` flags each output right after `dsd_fm_demod()`, before the post-decimator, de-emphasis and
   audio filters, which then carry the flags as the tracker's. On an AM channel, one with no plan (8 and 10 kHz NFM,
   low DSP rates, an unfiltered channel at 16 kHz or less), or the 9600 bit/s FSK path EDACS reads (its discriminator's
-  output is peak-normalised, not radians), `squelch_auto_wanted()` runs the tracker instead, N as its margin. Its plan follows the same `dsd_demod_squelch_plan_key` as the tracker's, which carries the cascade's pass
+  output is slowly centred on the carrier and scaled to counts, not the radians the plan is calibrated on), `squelch_auto_wanted()` runs the tracker instead, N as its margin. Its plan follows the same `dsd_demod_squelch_plan_key` as the tracker's, which carries the cascade's pass
   count (designed only when NOISE needs it), and it keeps its own context record (`demod_state::noise_context`), so a
   spell under NOISE never stores the tracker's floor under another channel; a new context or
   `dsd_demod_reset_filter_state()` starts it over, closed. The IO layer's status adds which squelch ran and its quieting
@@ -7231,7 +7350,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   four-level reading takes the window's level ring, which a symbol capture fills with its dibits' levels
   (`dsd_symbol_level_from_dibit()`), so it applies there too; only a window holding fewer than ten levels (the unit
   tests' sign-only windows) skips it, and the sign match then counts as clear. A LICH failure prints its sync under
-  `-Z`. NXDN48 on 2400/4 keeps two hits at any distance. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  `-Z`. NXDN48 on 2400/4 keeps two hits at any distance; whether the accepting hit had one of its polarity a frame
+  before it (`dsd_state::nxdn48_accept_corroborated`, which the NXDN confirm gate reads) is dropped with the join
+  histories. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
   (`test_nxdn96_follows_the_receiver_sync_rules`, `test_nxdn96_lock_follows_the_lich`,
   `test_nxdn96_acquires_on_the_four_level_fsw`), `FRAME_SYNC_DMR_WAV_RATE`, `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`,
   `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_NXDN96_MID_FRAME_JOIN` (`nxdn96_after_retune`) and its
@@ -7252,6 +7373,37 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `test_order_flag_cleared_on_evidence`, `test_proven_2400_4_hold_spans_the_search_order`), `FRAME_SYNC_POLICY`,
   `DECODE_IQ_SEARCH_SCHEDULE_*` (the whole chain from a 4800/4 C4FM start, landing 0, 350 and 700 ms into each
   capture, `tests/engine/search_schedule_replay.c`; dPMR within 1.9 s pins the one-pass dwell).
+- P25p1 word hint on the binary profiles (`frame_sync_p25p1_word_hint_due()`, `frame_sync_p25p1_word_hint()` in
+  `dsd_frame_sync.c`). A C4FM P25p1 carrier keyed while the unlocked hunt dwells elsewhere waited out that dwell and the
+  rotation behind it before the hunt was back on 4800/4 (a public C4FM recording keyed during the 2400/4 dwell first
+  decoded 4.86 s after its first frame, 2.59 s of it the 9600/2, 6000/4 and 4800/2 dwells). On 4800/2 (4800/4's timing)
+  the sign-sliced window holds the carrier's 24-symbol sync word as is, and on 9600/2 (twice the rate) on the last of
+  each symbol's two readings, the window's slide by a symbol reading the other (asking both missed it at its
+  transitions); the exact word of either polarity there, and another of its polarity within one P25p1 frame
+  (`DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS` C4FM symbols) after it (`dsd_state::p25p1_word_hint_*`, dropped with the sync
+  join histories at a carrier change, a trunk retune or a reset of the symbol count), steps the hunt to 4800/4 at once,
+  a step for the caller's window like a CQPSK trial's handback (the window is rebuilt in place, no no-sync hooks run,
+  4800/4 starts its own dwell), under the P25 SM tick guard on an RTL session as a dwell expiry's step is. That dwell
+  is owed the part of the rotation the step skipped on top of its own (`frame_sync_p25p1_word_hint_step()`,
+  `dsd_state::p25p1_word_hint_dwell_extra`): the rest of the binary profile's dwell and the dwells of the profiles
+  between it and 4800/4, each in 4800/4 symbols at its own rate, so the hint moves 4800/4 earlier and never the
+  profiles after it. Without it a word read on a transmission's last frames stepped the hunt as the carrier dropped,
+  4800/4's dwell ran out on the gap, and a carrier keyed again in it met 2400/4 (the committed `p25p1_c4fm_vc` fixture
+  repeated with 8 dB of noise under `-fa` lost a call in three). The extra goes with any profile change, the dwell's
+  expiry or restart, a frame that proves the profile (so a decoded call's end is covered as any other's) and the sync
+  join histories. Only the
+  unlocked rotation with P25p1 on takes it: not under a `-m` lock, a trunked voice channel the engine tuned, a Signal
+  search order, a P25 control-channel probe or a running trunk scan, nor on a squelched window; a `-Y` typed row runs
+  one protocol family, never P25p1 and a binary one both. One word is a 2^-24 event per symbol, polarity and reading,
+  and on 12 realizations of the four real NXDN and DMR scan captures (about four hours) a one-word rule moved the hunt
+  twice, each time changing what the capture went on to decode; with the second word the logs are identical to the build
+  without the hint, and no hint fires on the noise floor or the NXDN48 and dPMR fixtures. The public recording's first
+  frame now comes 2.70 s late (4.86 s before; 2.52 s with one word), and five carriers of a public Phase 2 system lose
+  133 frames at key-up (376 before). 6000/4 and 2400/4 have no such reading, so a carrier keyed in the 2400/4 dwell
+  still waits that dwell out (the committed `p25p1_c4fm_vc` fixture, whose carrier keys at 1.1 s as the 4800/4 dwell
+  ends, still decodes no P25 frame under `-fa`). Tests: `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`
+  (`test_a_p25p1_word_on_a_binary_profile_steps_to_4800_4`, `test_a_p25p1_word_hint_is_the_unlocked_rotations_alone`,
+  `test_a_p25p1_word_hint_keeps_the_rotation_after_4800_4`), `DECODE_IQ_C4FM_KEYUP_ON_PROFILE_*`.
 - P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The modulation votes
   (`frame_sync_maybe_auto_switch_modulation()`, every 24 symbols) can put a P25p1 signal on CQPSK but do not keep it
   there. Their thresholds are asymmetric (`frame_sync_decide_mod_switch()`): two QPSK votes enter CQPSK (from the SNR
@@ -9035,13 +9187,13 @@ Notes:
     `dsd_rtl_stream_io_hook_read_ex()` hand them to the decoder; a host that installs only `read` gets them all open.
     Tests: `IO_RTL_SQUELCH_PLUMBING`, `ENGINE_IO_HOOKS_INSTALL`.
   - The FSK voice lane (issue #518 B10). EDACS plays analog calls on the 9600 bit/s FSK discriminator, whose output the
-    modem normalises to a +/-30000 peak (the release register needs it), which throws the voice's level away. While
+    modem gives on its fixed scale with no de-emphasis (the release register reads it), not at the monitor's level. While
     the decoder asks for it (`rtl_stream_set_voice_lane()`, through the runtime hook `set_voice_lane`: EDACS before an
     analog call's tune, off when the call ends or its tune is refused; process-wide, `g_voice_lane_requested`, taken
     by the demod thread before each block in `demod_take_voice_lane_setting()`, which starts the lane's de-emphasis
     and resampler history from silence when it turns on), an FSK block also makes a calibrated lane
     (`full_demod_handle_fsk_output()`): the centred discriminator output as the modem computes it ahead of its
-    normaliser, run beside the modem from the modem's own state before the block (`voice_lane_run()`: its previous
+    fixed scale, run beside the modem from the modem's own state before the block (`voice_lane_run()`: its previous
     sample and carrier centring, so a reset, a new configuration or a mid-stream lane-on leave the lane equal to the
     modem; the modem's loop, which every FSK digital decode runs, is untouched), at the FM monitor's output scale for
     the complex rate (`DSD_DEMOD_MONITOR_OUTPUT_SCALE`, `DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ`), through its own
@@ -9781,7 +9933,16 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   one has no effect at all: no ISCH, position, playout break or retirement, seed recovery, descrambling, dispatch, MAC
   fragment wipe or channel activity, `s_prev_window` untouched (so the next exact window retires its four timeslots as
   lost, as after a missed sync), `dmr_stereo` back as it was, the anchor and the window context spent, one stderr line
-  ` P25p2 ~sync rejected` (`opts->verbose > 1`, the default, adds the bit errors and the verdict). `processP2()` returns `P25P2_WINDOW_REJECTED`
+  ` P25p2 ~sync rejected` (`opts->verbose > 1`, the default, adds the bit errors and the verdict). What the tolerant
+  accept changed goes back (`dsd_frame_sync_p25p2_window_dropped()`, before the report, on the stream the sync was
+  accepted on; `dsd_p25p2_sync_candidate`: the lock's carrier flag, offset and slicer extremes, the references
+  processFrame() derives, `lastsynctype`, the `synctype` the engine recorded, `dsd_opts::inverted_p2`, the CQPSK map;
+  `FRAME_SYNC_P25P2_ANCHOR`), and so
+  does it when a carrier boundary or an input interruption cuts the window before its verdict (the input's end counts
+  as one behind a tolerant sync, `dsd_state_note_input_end()`: the verdict would judge the reader's stand-ins; an exact
+  window's bursts read before the end still decode, each past its own FEC); its identity note
+  changes nothing (the anchor needs a placed P2 window on the stream, whose sync named the P25 family
+  already, and any other protocol's accept spends it). `processP2()` returns `P25P2_WINDOW_REJECTED`
   for it; `dsd_dispatch_handle_p25p2()` maps that to `DSD_FRAME_VERDICT_UNPRODUCTIVE` (the SPS hunt pays for it as for
   a missed sync: the handler ran and validated nothing, which is not WITHHELD's engine policy decline) and every other
   window to PRODUCTIVE, as before. A window a carrier boundary or an input interruption cut while it was collected never
@@ -9892,8 +10053,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (the `(unsigned)-1` resets need not, since no reader takes -1): 1 for those two, 0 for the RAN fields (CAC,
   FACCH2/UDCH, SACCH, and the site information message's site code), so `dsd_access_code_current()` gives an IDAS or DCR
   call no access code, and a RAN decoded afterwards reads again. The flag marks the value rather than the carrier:
-  `nxdn_location_category` "Type-D", which labels the terminal's "IDAS - Area", is set by any SCCH that passes its CRC,
-  noise included, and kept across carriers with trunking on, so it could hide a real RAN; and no state marks a DCR
+  `nxdn_location_category` "Type-D", which labels the terminal's "IDAS - Area", is set by any SCCH that passes its CRC
+  for the rest of its frame, noise included, outlives that frame only once the transmission is confirmed (below), and is
+  kept across carriers with trunking on, so it could hide a real RAN; and no state marks a DCR
   carrier (`nxdn_dcr_sf_message_type` drops to 0xFF on every SACCH2 CRC failure and survives the carrier boundary). The
   live displays follow the mark too: outside IDAS, whose area keeps its own label, the terminal's NXDN line prints
   `RAN: --` and the Qt site sheet shows no RAN for a stand-in, which there is DCR's 7 (`ui_render_nxdn_site_line()`,
@@ -10200,10 +10362,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     SPS profile, modulation, dibit map and polarity), its NAC, and the expected position (sync clock plus the unit's
     length). Beside it, the context of the frame being decoded, captured when the frame sync accepted its sync
     (`frame_sync_p25p1_anchor_note_sync()`, from `frame_sync_accept_p25p1()`; none while an off-thread tune is
-    pending), whether that sync was tolerant (`frame_tolerant`, `frame_nac`), its bit errors (`sync_bit_errors`, 0 for
-    exact) and two never-reset diagnostics, `tolerant_syncs` (counted at the accept) and `tolerant_frames` (counted
-    when the dispatcher reports a tolerant frame that passed the strict check). The frame sync owns every field: the
-    dispatcher reads the tolerant NAC and the bit errors through `dsd_frame_sync_p25p1_tolerant_nac()` and reports the
+    pending), how that sync was accepted (`frame_kind`, `dsd_p25p1_sync_kind`: exact, anchored, or acquisition, the
+    C4FM hunt-wide kind below; an anchored one's `frame_nac`), what its word was off by (`sync_bit_errors`: bits on
+    CQPSK, signs on C4FM, 0 for exact) and never-reset diagnostics, `tolerant_syncs` (counted at the accept) and
+    `tolerant_frames` (counted when the dispatcher reports a tolerant frame that passed the strict check). The frame
+    sync owns every field: the dispatcher reads the kind, the anchor's NAC and the errors through
+    `dsd_frame_sync_p25p1_sync_kind()` (the kind is carried as itself, never as a NAC of -1) and reports the
     frame through `dsd_frame_sync_p25p1_frame_decoded()`.
   - Installation: the dispatcher reports every Phase 1 frame (`dsd_frame_sync_p25p1_frame_decoded()`). One that
     validated (`p25p1_nid_verdict_validates()`: accepted by the NAC rule above, unborrowed, at most 11 corrections
@@ -10227,12 +10391,14 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     any matcher that runs there, starting 1-13 symbols after the expected position, is refused
     (`frame_sync_window_ends_in_exact_head()`, `DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS`; DSP above). The bound covers
     that range only; nothing farther is scored.
-  - Strict NID (`p25p1_nid_verdict_passes_tolerant_sync()`, in `p25p1_decode_nid_and_duid()` before
-    `p25p1_nid_verdict_commit()` and `p25p1_handle_nid_decode_success()`): behind a tolerant word the frame decodes
-    only when the NID validates, its parity agrees (NID_OK), it needed at most 4 corrections
-    (`P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS`) and it names the anchor's NAC. Anything else drops the frame: nothing
+  - Strict NID (`p25p1_nid_verdict_strict()`, and for an anchored word `p25p1_nid_verdict_passes_tolerant_sync()`, in
+    `p25p1_decode_nid_and_duid()` before `p25p1_nid_verdict_commit()` and `p25p1_handle_nid_decode_success()`): behind
+    a tolerant word the frame decodes only when the NID validates (unborrowed, a usable NAC, a defined DUID), its parity
+    agrees (NID_OK, no parity override), it needed at most 4 corrections, BCH and soft flips together
+    (`P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS`, so no soft recovery past the BCH radius), and, behind an anchored word,
+    it names the anchor's NAC. Anything else drops the frame: nothing
     is committed or published (NAC, received identity, seed, counters; `opts->verbose > 1`, the default, prints
-    `[tolerant sync, n bit errors, dropped: ...]` with what the NID was), the dispatcher returns `DSD_FRAME_VERDICT_UNPRODUCTIVE` (no PROFILE_PROVEN, not even inside a NID
+    `[tolerant sync, n bit errors, dropped: ...]`, `sign errors` on C4FM, with what the NID was), the dispatcher returns `DSD_FRAME_VERDICT_UNPRODUCTIVE` (no PROFILE_PROVEN, not even inside a NID
     evidence window, so no SPS-hunt credit), no validated-modulation stamp feeds the chain comparison or the modulation
     hold, and the hunt resumes past the NID it read. A misaligned NID after a slipped word needs this: a word 3 bits
     off one symbol late behind a `1` is 6 bits off at the expected position, and the NID read one symbol off decodes
@@ -10257,12 +10423,140 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     errors is lost as before: its own errors can bring the expected-position window within the tolerance (3 bits off
     one symbol late reads 6 there), and that false candidate then fails the strict check and consumes the word's sync
     and NID; a clean slipped word is never pre-empted (the bound above). A unit missed whole leaves the next one
-    exact-only. Phase 1
-    CQPSK on the RTL path only (C4FM, symbol files and PCM inputs are exact-only). Tests: `FRAME_SYNC_P25_ANCHOR`,
+    exact-only. Tests: `FRAME_SYNC_P25_ANCHOR`,
     `P25_P1_TOLERANT_NID`, `P25_P1_TOLERANT_SYNC` (a real-shaped stream through the real frame sync, dibit chain,
     dispatcher and NID decoder), `P25_P1_TSBK_SEQUENCE` and `P25_P1_MDPU_HELPERS` (lengths), `ENGINE_NO_CARRIER_RESET`,
     `ENGINE_TRUNK_SCAN`, `DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC` (a noisy simulcast replay: CRC-passed TSBKs an exact
     match loses) and `DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_*` (no P25 sync after the carrier ends).
+  - C4FM: the same anchor scores the expected-position window on the C4FM chain's 4800/4 hunt, by sign distance
+    (`dsd_p25p1_sync_sign_distance()`: that hunt slices nothing but each symbol's sign, and every symbol of the word is
+    an outer one, so a sign error is one bit), within `DSD_P25P1_C4FM_ANCHORED_MAX_SIGN_ERRORS` (6 of 24) under the
+    anchor's polarity; the shifted-word bound and the exact-word guard are the CQPSK ones (the word shifted 1-13 symbols
+    is at least 7 signs off). It runs on every C4FM input (live radio, `--iq-replay`, discriminator PCM from files,
+    Pulse, UDP or TCP, and symbol captures, which the hunt reads as C4FM signs) and in every build: the try is no longer
+    inside `USE_RADIO` (the CQPSK branch still needs the RTL path). The strict NID is the same. A candidate is held
+    (`dsd_p25p1_sync_candidate`, `frame_sync_p25p1_candidate_hold()` in the tolerant tries, before they set the dibit
+    map): the NID is read on the threshold warm start from the word's own 24 symbols, taken as the window ends (a
+    calibration on trial), and the accept writes what it writes for an exact word: `frame_sync_set_basic_lock()`'s
+    levels and offset, the carrier flag, `lastsynctype`, the P25p1 frame span (`p25_p1_c4fm_frame_valid`, which stands
+    NXDN96 and M17 down for 900 symbols), the DMR slot 2 fields (`dmrburstR`, `payload_algidR`, `dmr_stereo`, which
+    under `-fa` a DMR carrier's slot 2 holds), `ftype`, the dibit map, the warm start's `jitter` reset (a pending
+    crossing) and its `p25_p1_c4fm_sync_levels` flag (whether the word set the levels, which under `-f1` decides
+    whether the frames after it hold them). `processFrame()`'s `maxref`/`minref` and the NID read's `p25_frame_nac_valid` clear come after the hold.
+    When the strict check drops the frame, `dsd_frame_sync_p25p1_candidate_rejected()` (before the report) puts every
+    one of them back, level windows included, while the frame's sync-time context still holds; a validated frame keeps
+    them. Three engine effects wait for the NID instead: `processFrame()` notes the received identity's protocol
+    (`dsd_rxid_note_sync()`, which under `-fa` would clear a DMR, NXDN or YSF carrier's identity) only behind an exact
+    word, and the P25p1 dispatcher notes it once a tolerant word's NID passed; a dropped frame
+    (`dsd_p25p1_sync_anchor::frame_dropped`, `dsd_state_p25p1_frame_dropped()`, until the next accepted sync) starts no
+    `-Y` voice gate qualify window (`scan_voice_gate_sync_m`); and a tolerant word is activity to a scan quiet check
+    (the owner's `sync_seq`) only once its NID passed (`dsd_engine_scan_quiet_settle_sync()`; a tolerant P25p2 window
+    the same, once its verdict passed). So a dropped candidate leaves nothing behind but the
+    symbols it read and its console lines. The hold is where any further slicer state the C4FM accept writes belongs.
+    The word changes nothing about the symbol grid at the accept (the sync anchor entry in DSP): it is only marked in
+    the matched-filter seam's raw history, and measured there once its NID passed, when it was read with no recording
+    armed (the word that acquires a transmission, the first after a lapse), so the frame behind it is read on its
+    symbols as behind an exact word; one read into a recording names nothing to it (the recording has moved onto the
+    NID by then), and the next exact word places the grid. A dropped candidate is never measured. Steal recovery: a
+    dropped candidate also hands the next `getFrameSync()` the word's and the NID's 57 symbols as a carried history
+    (`frame_sync_history_carry_symbols()`, the C4FM hunt's sign slicing of the soft history, the levels with them),
+    so a real sync word that starts inside them and ends after the
+    NID (a P25p1 word a slip put there, an NXDN96 FSW, a YSF, M17, DMR or X2-TDMA word) is matched where it ends;
+    before, the hunt started blind and needed 24 symbols of its own. DMR and X2-TDMA decode their bursts back from the
+    rolling dibit buffers, so they match only windows whose dibits those buffers hold as the stream's
+    (`frame_sync_match_window_own()`): the hunt wrote the word's dibits there and the NID read (`getDibitSoft()`) the
+    NID's, one a symbol, so the carry counts all 57 as the buffers' (`dsd_frame_sync_history_carry::own_symbols`), and
+    the next call no more than the buffers hold written since their last clear: a `noCarrier()` between the drop and the
+    next call (a scan visit ending the reception) leaves none, and such a word is lost as one across a no-sync exit is,
+    never decoded from a cleared buffer. Decided limits: a dropped candidate's symbols are not read again, so these real words are lost,
+    as behind any accepted false sync: (1) one whose head is the candidate's own tail, the other polarity's P25p1 word
+    included (its first five symbols are the word's last five, so the first 19 symbols of a word one sign off followed
+    by the inverted word is a candidate no guard can tell from a real word one sign off; with that symbol right the
+    exact matcher takes the same window); (2) one that starts after the candidate's window and ends inside the 33
+    symbols its NID read; (3) another protocol's word, or the other polarity's, starting 14-23 symbols into the window,
+    whose head the exact-word guard does not read (`frame_sync_window_ends_in_exact_head()` reads heads of words
+    starting 1-13 symbols on; reading every overlap refused a quarter of real one-sign-off words under `-fa`); and on
+    Phase 2, the exact word inside a rejected tolerant window's 700 dibits (the P2 tolerance's decided limits). The symbols the hunt
+    did not count (the window's last, which the accept returned on, and the NID's) are charged to the profile's hunt
+    budget (`sps_hunt_counter`) and the carried history resumes the pass where the candidate interrupted it
+    (`dsd_frame_sync_history_carry::pass_symbols`, 0 after a no-sync exit; a break the next call's first read finds
+    drops it with the history, and that call hunts a whole pass), so the dwell and the no-sync exits fall on
+    the symbol they would have without the candidate: a candidate on noise moves nothing that a later acquisition
+    depends on (under unlocked `-f1` on RTL input the C4FM/CQPSK probe alternates per dwell). Tests:
+    `FRAME_SYNC_P25P1_C4FM_TOLERANCE` (accept at 6 signs and refuse at 7 both polarities; put back and kept; NXDN96 and
+    M17 matched after a dropped candidate; a DMR BS and an X2-TDMA data sync starting 12 symbols after a dropped
+    candidate's word, ending 3 past its NID, matched from the carry with their read-back the stream's, and lost after a
+    buffer clear; tolerant words after one- and two-block TSDUs through `getFrameSync()`; later
+    P25p1 and YSF words not swallowed; the limits (1) and (2) as expected losses, both kinds, both polarities; no-sync
+    exits and the hunt budget unmoved by a dropped candidate),
+    `P25_P1_TOLERANT_NID` (the dispatcher's drop puts back, charges and carries, and leaves a DMR identity),
+    `ENGINE_PROTOCOL_DISPATCH` (no identity note behind a tolerant word), `ENGINE_SCAN_VOICE_GATE` (a dropped frame
+    starts no qualify window). The CQPSK chain's tolerant word is held and put back the same way (on the RTL path the
+    next symbol replaces the levels anyway; the lock, `lastsynctype`, the frame span the CQPSK accept closes, the slot 2
+    fields, `ftype`, the map and the frame NAC are what the hold keeps there); its hunt starts over behind a dropped
+    word, as behind any frame (the carry is the C4FM hunt's sign history). The identity and voice gate rules hold for it
+    too. The status accumulator and the advisory AFC gate it publishes (`p25_ss_*`, `p25_afc_gate_valid`/`_allow`, which
+    auto-PPM reads on the radio thread under `p25_afc_status_gate_enable`) stand through a provisional NID on either
+    chain: `dsd_dispatch_handle_p25p1()` saves them (`p25_status_accum_save()`), starts the unit's accumulator without
+    withdrawing the gate (`p25_status_accum_reset_provisional()`), withdraws it once the NID passes
+    (`p25_status_accum_withdraw_gate()`, as an exact unit's start does) and puts everything back when the NID fails or
+    is cut (`p25_status_accum_restore()`), so auto-PPM never trains on a subscriber the gate excludes because a word
+    that was no frame was read. An input interruption that cuts the NID (a queued command's yield, a Signal search, a
+    stream gap, the input's end: a stop, every input that ends the run and a file, TCP or symbol input that falls back
+    to Pulse count as cut once the NID is read, `dsd_state_note_input_end()`, since the stand-ins past the end can pass
+    the strict BCH a few dibits short) drops the frame as a failed NID does, behind an exact word too, its verdict
+    withheld: marked dropped, so no `-Y`
+    voice gate qualify window starts on it, and its accept put back on the stream it was accepted on
+    (`dsd_frame_sync_p25p1_candidate_cut()`), with no carried history (what the read handed out after the cut stood in
+    for symbols the input did not deliver; `P25_P1_TOLERANT_NID`). What else runs between a tolerant accept and its verdict is put back, waits for the
+    pass, or changes nothing: the processFrame() references (held), the `synctype` the engine records from the
+    hunt's return (held: the symbol reader's C4FM window and the dibit slicer read it, so a stale P25 one would read a
+    YSF carrier on P25's wider left edge, and noCarrier() and the trunk return logic would take the carrier for P25), the rolling dibit buffers and the soft history (they
+    keep the NID read's symbols, which the C4FM hunt goes on from as a history and DMR and X2-TDMA never match on), the
+    identity note (deferred to the pass), the anchors spent by the accept (by design: one window an anchor), the
+    diagnostics `tolerant_syncs`/`acquisition_syncs` (counted at the accept by design), the engine's slicer-threshold
+    refresh (it re-derives centre and mid thresholds from the extremes with the formula the hold restores them under),
+    `last_dibit`, `sbuf` (display and a level ring the hunt refills), the NID verdict (classified pure, committed only
+    past the drop). Decided limit: the NID is read as a frame is (`have_sync`: the C4FM synced clip, no crossing move, no
+    auto-centre, and the matched filter `lastsynctype` selects, the P25 one); the samples are read once, so the history
+    the hunt goes on from carries that read. The hold puts back the pending crossing and `lastsynctype`, so the next
+    read goes back to the hunt's filter (the seam keeps the content position across both switches); a filter switch
+    resets the symbol anchor's recording, so a recording another protocol's frame armed for its next word (DMR, NXDN,
+    YSF, M17 under `-fa`) is lost to a dropped P25 word between them, and that protocol's next frame arms it again.
+    Reading the NID on the hunt's filter instead would read a real acquisition word's NID unfiltered. Tests:
+    `P25_P1_TOLERANT_NID` (a rejected candidate of either kind on either chain leaves the decoder's lock, levels, frame
+    fields, identity, NAC, NID counters, status accumulator and AFC gate exactly as before, and the gate the NID reads
+    find is the one published before; a passing NID withdraws it).
+  - C4FM hunt-wide (`frame_sync_try_acquisition_p25p1()`, after the anchor's try): with no anchor waiting (a waiting one
+    scores its own position and its first window spends it), anywhere on the C4FM chain's 4800/4 hunt, a window within
+    `DSD_P25P1_ACQUISITION_MAX_SIGN_ERRORS` (1 of 24) sign of either polarity's word is an acquisition candidate
+    (`DSD_P25P1_SYNC_ACQUISITION`): a carrier's first frame, or the first after a fade or a lost frame. It passes the
+    exact-word guard (1-13 symbols) and, for its own polarity's word, every later overlap
+    (`DSD_P25P1_ACQUISITION_NO_STEAL_SHIFTS` 23: the window's last 1-10 symbols must not be the word's first; the word's
+    own tail is 1-5 signs from its head, so only a word whose one sign error is its last symbol is refused), so
+    `P25P1_SYNC[:23] + P25P1_SYNC` is refused and the real word 23 symbols on is matched. Its frame decodes only behind
+    a strict NID (`p25p1_nid_verdict_strict()`, whatever usable NAC it names: no anchor names one), and it is held, put
+    back, charged and carried as an anchored candidate is. Diagnostics `acquisition_syncs`, `acquisition_frames`; the
+    console marks `[acquisition sync, n sign errors]`. Cost: one pass over the window per 4800/4 C4FM hunt symbol no
+    exact matcher took, which stops once both polarities are 2 signs off (a few symbols on noise). False-sync budget,
+    fixed before it was measured: 8 seeds of 30 min of filtered receiver noise under `-f1` and under `-fa` (8 h), 1 h of
+    generated traffic then noise, and a mixed-protocol stream, one realization each. Limits and results: candidates at
+    most 1.5 times the independent-sign model (25 of 2^24 windows a polarity, 51/h on a 4800/4 hunt; limit 77/h): 25.5/h
+    under `-f1` (102 in 4 h), 1.75/h under `-fa` (7 in 4 h, which spends little of its hunt on 4800/4 C4FM); strict-NID
+    passes on noise 0 in 8 h (109 candidates; 95 % upper bound 0.37/h); false publications 0 (event logs unchanged on
+    noise, traffic and the mixed stream); real frames displaced against the anchored-only build 0, on the committed C4FM
+    fixtures, their noisy derivatives, synthetic streams and the public recordings (4 realizations each, `-f1` and
+    `-fa`), and on the traffic under `-f1` (truth frames whose sync was accepted: 5 more, none fewer). Under `-fa` the
+    traffic read 48 frames more, though the start of one control channel segment (38 frames) was met later: the hunt
+    stayed on the segment before it longer and its profile rotation came back later, which any decoding gain under `-fa`
+    can do (a decided limit). On the committed DMR, NXDN, YSF, dPMR and M17 fixtures under `-fa` (another protocol's
+    word 14-23 symbols behind a candidate, which no guard covers) the hunt-wide build reads the same frames as the
+    anchored-only one (25 fixtures, 4 realizations each: decode logs identical). Not claimed past that: a candidate on
+    noise whose NID lands within 4 corrections of a codeword with clean parity, a usable NAC and a defined DUID (about 1
+    in 10^9 random NIDs) would decode, and its payload's own FEC/CRC would judge it. Tests:
+    `FRAME_SYNC_P25P1_C4FM_TOLERANCE` (one sign accepted at every position but the last and two refused, both
+    polarities, C4FM 4800/4 with Phase 1 only; the 23-symbol steal; cold acquisition from uncalibrated levels kept and
+    put back), `P25_P1_TOLERANT_NID` (the strict NID behind it).
 - A TSDU ends at its last block (`processTSBK()`, `src/protocol/p25/phase1/p25p1_tsbk.c`): a block that passed its CRC
   reads on when its last-block flag is clear and ends the TSDU when it is set. A block that failed its CRC says nothing
   either way, and read on behind its flag a one-block TSDU took the next frame's sync and NID for a second and third
@@ -10923,9 +11217,41 @@ Private per-protocol modules worth knowing about:
   entry point exported in `<dsd-neo/protocol/nxdn/nxdn.h>`. `NXDN_Elements_Content_decode()` carries no CRC verdict of
   its own: the channel decoders in `nxdn_deperm.c` and `NXDN_SACCH_Full_decode()` hand it CRC-verified content only, so
   the gate lives in those callers, with `nxdn_confirm_is_confirmed()` as the frame-level check at the sites that publish
-  a call or refresh a scan hold. Evidence confirms at once, before the RAN and call it unlocks are published; a signal
-  search hears a frame's confirmation once, from `nxdn_confirm_end_frame()`, after they are (`NXDN_CONFIRM`,
-  `NXDN_DEPERM_PRIMITIVES`), which also stamps `dsd_state::nxdn_confirm_lock_m` for the NXDN control-channel hunt.
+  a call or refresh a scan hold. Content behind a short CRC acts on nothing until the transmission is confirmed: an SCCH
+  (7-bit CRC, `nxdn_scch_info::acts`) is printed, but its recent-activity entries, idle-repeater clears and expiry, its
+  termination's call end, its busy message's control channel and tune, and its call option's cipher, key and crypto
+  publication wait for the confirmation, which the next frame's SCCH gives (a real IDAS message repeats; one acts a
+  frame, 80 ms, later). Its IV parts (IV A in an INFO2 naming ID 31, IV B and C in an INFO1) are the decoder's working
+  IV (`payload_miN`), kept either way and cleared with it at no carrier and when a tuned call is released, so IV A
+  sent before the confirmation still completes the IV the call takes once it is
+  (`test_type_d_scch_iv_a_before_confirmation_is_kept`). The "Type-D" category it names stays with its own frame only,
+  the frame's FACCH1 reading it
+  (`nxdn_decode_frame_channels()`); a single-frame DCR SACCH2's scrambler and crypto, and a non-superframe SACCH's
+  release (`nxdn_message_type()`), Station ID event and control channel sync (`nxdn_element_mark_control_sync()`), the
+  same. NXDN end signalling (a release, a DISC, a VCALL's release, a Type-D termination, a DCR release) ends the call on
+  slot 0 only when it is an NXDN call, and NXDN crypto updates only an NXDN call (`nxdn_end_live_call()`,
+  `nxdn_live_call_is_nxdn()`): an NXDN sync read on another protocol's carrier (a false IDAS sync on a P25 carrier
+  under `-fa`) never ends or encrypts that protocol's call (`NXDN_ELEMENT_BOUNDS`, `NXDN_GRANT_TUNE_MATRIX` and its
+  real-call-state twin, `NXDN_CRC32_BITS`, `NXDN_DEPERM_PRIMITIVES`, `NXDN_FRAME_ROUTING`). "Frames running" is
+  measured where the frame sync cannot vouch for it (`nxdn_confirm_note_frame_start()`, from `nxdn_frame()`): NXDN48's
+  accept takes two sign hits at any distance, so under `-fa` noise and other protocols' carriers hand 2400/4 thousands
+  of frame bodies an hour, and two short checks frames apart, or one FACCH1 CRC-12 (it decodes twice, about one noise
+  frame in 2000), confirmed transmissions of receiver noise, played them and published NXDN "TGT 0 SRC 0" calls (12 in
+  8 x 30 min of `-fa` noise on c1bd84c1e, with the D-STAR case below). An NXDN48 frame runs on only from a frame read
+  `NXDN_CONFIRM_FRAME_SYMBOLS` (192, within one) before it; an isolated one starts the weak and SCCH streaks over, and
+  its strong check holds at once only when its sync word followed another of its polarity one frame before it
+  (`dsd_state::nxdn48_accept_corroborated`, `frame_sync_nxdn48_note_hit()`) or another check of the frame passed too
+  (a header frame's SACCH beside its FACCH1 VCALL), else it confirms when the next frame runs on from it. A frame's
+  second FACCH1 copy, which repeats the first, is decoded again only when it is the check that confirms the
+  transmission after the first copy's content was decoded unconfirmed (`nxdn_deperm_facch_soft()`): that copy's call
+  then publishes, where the repeat suppression lost the call setup of an isolated frame whose SACCH failed; a repeat
+  of a copy decoded confirmed is not decoded again (`NXDN_DEPERM_PRIMITIVES`). NXDN96, whose
+  accept needs a hit one frame before, runs on as before. On the four real NXDN/DMR scan captures under `-fa` and
+  `-fi` the logs and event files are unchanged, and the 8-seed noise set publishes nothing (`NXDN_CONFIRM`,
+  `NXDN_FRAME_ROUTING`, `FRAME_SYNC_INTERNAL_HELPERS`). Evidence confirms at once, before the RAN and call it unlocks
+  are published; a signal search hears a frame's confirmation once, from `nxdn_confirm_end_frame()`, after they are
+  (`NXDN_CONFIRM`, `NXDN_DEPERM_PRIMITIVES`), which also stamps `dsd_state::nxdn_confirm_lock_m` for the NXDN
+  control-channel hunt.
 - `src/protocol/m17/m17_confirm.{c,h}` — the same module for M17, whose sync chain opens on a preamble that is only an
   alternating symbol run. Frame handlers report `(own check || confirmed)`, `dispatch_m17.c` reports it on an EOT, and
   `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain. The EOT also puts the
@@ -10933,19 +11259,45 @@ Private per-protocol modules worth knowing about:
   is seven outer symbols of one sign to one of the other, and the next transmission's hunt sliced and timed its
   preamble against the skewed centre it left (issue #834).
 - `src/protocol/dstar/dstar_confirm.{c,h}` and `src/protocol/provoice/provoice_confirm.{c,h}` — the same shape again,
-  answering only the SPS hunt rather than gating audio (issue #421). Neither protocol has a per-frame check: a D-STAR
+  answering the SPS hunt (issue #421); D-STAR's also gates voice: a superframe's AMBE frames reach the vocoder, the
+  speaker, the MBE capture and the call record only when the transmission is confirmed as the superframe starts (its
+  header's CRC, or the superframe before it), so a single sync word the 4800/2 hunt matches on receiver noise under
+  `-fa` no longer plays a superframe of noise as a call with no callsigns, at the cost of a late-entry or failed-header
+  call's first superframe (420 ms; `DSTAR_PROCESS`, `DECODE_IQ_MBE_CAPTURE_DSTAR`). ProVoice's gates voice the same
+  way: a frame's IMBE pairs reach the vocoder, the speaker, the recordings and the call record only once a frame ran
+  on from the one before it, its sync one frame (`PROVOICE_CONFIRM_FRAME_SYMBOLS`, 768, within one) after the last
+  frame's (`provoice_confirm_note_frame_start()`, the dPMR and NXDN48 rule), so a lone sync word on noise plays
+  nothing, at the cost of a transmission's first frame (four IMBE frames, 80 ms; the committed `provoice` capture,
+  whose frames run on 768 symbols apart, records 156 of its 160; `PROVOICE_PROCESS`, `PROVOICE_CONFIRM`). Neither
+  protocol has a per-frame check: a D-STAR
   superframe costs 1992 symbols and a ProVoice frame 736, and the AMBE/IMBE error counts they leave in
   `dsd_state::errs`/`errs2` are soft corrections, not verdicts. D-STAR confirms on a CRC-16/X.25 — the RF header via
   `processDSTAR_HD()`, or the header rebroadcast in `dstar_slow_data.c` — and both confirm on a second frame arriving
   behind its own exact sync word before the carrier drops. `processDSTAR()` and `processProVoice()` return the answer,
   the dispatch handlers map it to `dsd_frame_verdict`, and the engine clears it with the carrier through the exported
   `dstar_confirm_reset()`/`provoice_confirm_reset()`.
+- YSF has no confirm module: its verdict is the FICH's (`dsd_state::ysf_fich_confirmed`, set as soon as a FICH
+  verifies, cleared with the carrier). A frame whose FICH fails is laid out as the last verified one only after a FICH
+  of this transmission verified (`ysf_parse_fich()`); before that it lays out, plays and publishes nothing and the hunt
+  reads on through it, since the last layout may be an earlier transmission's: a sync word matched on noise after a
+  V/D2 call played that call's layout as five frames of voice and opened a call (`YSF_DCH_DECODE`).
+- X2-TDMA has no confirm module either, and nothing in a superframe can fail a check. Its corroboration is the
+  superframe's (`x2tdma_superframe_corroborated()` in `x2tdma_voice.c`): a later X2-TDMA sync word in its place (the
+  other timeslot's, read after each burst) or a whole superframe before it on the carrier with no hunt gap, the same
+  evidence that marks the carrier two-slot (`tdma_carrier`). A superframe that proves itself corroborates the
+  transmission (`dsd_state::x2tdma_corroborated`, with its carrier count), which `noCarrier()`, the carrier boundary
+  and `dsd_frame_sync_reset_acquisition()` forget. Voice plays, and a voice sync observes a call, only from a
+  corroborated transmission; before, one sync word matched on noise played the 18 frames behind it and opened a call.
+  A repeater call loses its first burst (60 ms), a direct-mode call its first superframe (360 ms); a hunt gap later
+  in the call costs nothing (`X2TDMA_VOICE_HELPERS`; `X2TDMA_DIRECT_MODE` drives direct-mode superframes, chained by
+  the 24-symbol gap and across a hunt gap, through the real frame sync from a float symbol file).
 - `src/protocol/provoice/provoice_frame.{c,h}` — the ProVoice frame-pair deinterleaver. It fills each IMBE 7100x4400
   frame with `dsd_vocoder_soft_bit` cells, a hard bit and the confidence in it, and `provoice.c` hands them to
   `processMbeFrameSoft()` (issue #588). The confidence is `dsd_two_level_symbol_reliability()`
   (`<dsd-neo/core/dibit.h>`) of the symbol `getDibitAndSoftSymbol()` returned: its distance from `center` over half
   the spacing of `min` and `max`, which for ProVoice are the class means the sync warm start set and stay fixed
-  through the frame (the threshold tracker runs only for `rf_mod` 1 and P25 Phase 1). A legacy symbol capture stores
+  through the frame (the threshold tracker runs only for `rf_mod` 1 and, with the default windows, P25 Phase 1 on
+  C4FM; see the slicer warm start entry). A legacy symbol capture stores
   only the decided bit and replays it as an ideal four-level amplitude, so its symbols get 255, a hard decision's
   weight; the soft capture format replays the measured symbol. The shared two-level slicer stores no soft metric, so
   `getDibitSoft()` does not apply to ProVoice, EDACS or D-STAR symbols. Cells the
@@ -10976,9 +11328,14 @@ Private per-protocol modules worth knowing about:
   check is the CCH CRC-7, which was there all along: it covers the 41 payload bits behind all six Hamming(12,8)
   blocks, so a passing half means the half decoded. What it replaced was `dpmr_ids_are_strong()`, which accepted a
   CCH whose two leading Hamming blocks merely reported correctable — 13 of 16 syndromes are, so it passed 44% of
-  noise superframes. One half passing is one chance in 128 and has to repeat; both halves in one frame is one in
-  16384 and confirms outright. Evidence confirms before the frame publishes its identity, service and colour code; a
-  signal search hears the frame's confirmation from `dpmr_confirm_end_frame()`, after the publication (`DPMR_CONFIRM`,
+  noise superframes. One half passing is one chance in 128 and has to repeat, on a frame that runs on: its FS2 one
+  frame (`DPMR_CONFIRM_FRAME_SYMBOLS`, 384, within one) after the last frame's (`dpmr_confirm_note_frame_start()`,
+  from `processdPMRvoice()`), so an isolated weak frame starts the streak over. Without that, any two dPMR frames with
+  no carrier reset between them counted as running, and under `-fa` two weak noise frames seconds apart, other
+  protocols' syncs between them, confirmed a transmission, published a call and decoded its voice (one in 8 x 30 min
+  of noise). Both halves in one frame is one in 16384 and confirms outright. Evidence confirms before the frame
+  publishes its identity, service and colour code; a signal search hears the frame's confirmation from
+  `dpmr_confirm_end_frame()`, after the publication (`DPMR_CONFIRM`,
   `DPMR_VOICE_BRIDGE`). `processdPMRvoice()` returns how many halves passed, `dsd_dispatch_handle_dpmr()`
   maps that to `DSD_FRAME_VERDICT_PROFILE_PROVEN` (for two seconds after the last decode) or `UNPRODUCTIVE`, and the
   engine clears both through the exported `dpmr_confirm_reset()` in `<dsd-neo/protocol/dpmr/dpmr.h>`.

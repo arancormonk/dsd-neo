@@ -86,9 +86,16 @@ provoice_play_voice(dsd_opts* opts, dsd_state* state) {
     playSynthesizedVoiceMS(opts, state);
 }
 
+/* A pair reaches the vocoder, the speaker, the recordings and the call record only from a confirmed transmission
+   (provoice_confirm.h): this frame ran on from the one before it, one frame later. One sync word is no call: matched once on noise, it played
+   the frame behind it as speech. A transmission's first frame (four IMBE frames, 80 ms) is read past, as the hunt's
+   credit already was. */
 static void
 provoice_decode_imbe_pair(dsd_opts* opts, dsd_state* state, dsd_provoice_imbe_frame frame1,
                           dsd_provoice_imbe_frame frame2) {
+    if (!provoice_confirm_is_confirmed(state)) {
+        return;
+    }
     processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_PROVOICE, NULL, NULL, frame1);
     provoice_play_voice(opts, state);
     processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_PROVOICE, NULL, NULL, frame2);
@@ -111,6 +118,7 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
     /* Nothing in the frame below can fail a check, so the evidence is that this one arrived
      * behind its own exact 32-symbol sync word. Weak on its own; two in a row confirm the
      * transmission -- see provoice_confirm.h. */
+    provoice_confirm_note_frame_start(state, state->symbolcnt);
     provoice_confirm_begin_frame(state);
     provoice_confirm_note_evidence(state, PROVOICE_EVIDENCE_WEAK);
 

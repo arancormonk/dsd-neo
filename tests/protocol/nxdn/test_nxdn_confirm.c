@@ -74,6 +74,105 @@ run_frame_proved(dsd_state* state, int evidence) {
     return nxdn_confirm_frame_proved(state);
 }
 
+/** @brief One frame beginning at symbol @p at, accepted on a run of the frame sync's own when @p sync_runs. */
+static void
+run_frame_at(dsd_state* state, uint32_t at, int sync_runs, int evidence) {
+    nxdn_confirm_note_frame_start(state, at, sync_runs, 0);
+    run_frame(state, evidence);
+}
+
+/* Where the frame sync does not vouch for a run (NXDN48), a frame runs on only from a frame read one frame
+ * (NXDN_CONFIRM_FRAME_SYMBOLS, within the slip) before it: two short checks frames apart prove nothing, and a strong
+ * check in an isolated frame waits for the next frame to run on from it. */
+static void
+test_frames_run_only_at_frame_spacing(dsd_state* state) {
+    nxdn_confirm_reset(state);
+    run_frame_at(state, 1000U, 0, NXDN_EVIDENCE_WEAK);
+    run_frame_at(state, 1384U, 0, NXDN_EVIDENCE_WEAK);
+    expect("weak checks two frames apart confirm nothing", nxdn_confirm_is_confirmed(state), 0);
+    run_frame_at(state, 1384U + NXDN_CONFIRM_FRAME_SYMBOLS + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP, 0, NXDN_EVIDENCE_WEAK);
+    expect("weak checks of frames that run confirm", nxdn_confirm_is_confirmed(state), 1);
+
+    nxdn_confirm_reset(state);
+    run_frame_at(state, 5000U, 0, NXDN_EVIDENCE_STRONG);
+    expect("an isolated strong check waits", nxdn_confirm_is_confirmed(state), 0);
+    expect("an isolated strong check proves no frame", nxdn_confirm_frame_proved(state), 0);
+    run_frame_at(state, 5000U + NXDN_CONFIRM_FRAME_SYMBOLS - NXDN_CONFIRM_FRAME_SYMBOLS_SLIP, 0, 0);
+    expect("the next frame running on confirms it", nxdn_confirm_is_confirmed(state), 1);
+    expect("the frame that confirmed it by running proves nothing itself", nxdn_confirm_frame_proved(state), 0);
+
+    nxdn_confirm_reset(state);
+    run_frame_at(state, 9000U, 0, NXDN_EVIDENCE_STRONG);
+    run_frame_at(state, 9000U + NXDN_CONFIRM_FRAME_SYMBOLS + 2U, 0, 0);
+    expect("a frame past the slip drops the waiting check", nxdn_confirm_is_confirmed(state), 0);
+    run_frame_at(state, 9000U + (2U * NXDN_CONFIRM_FRAME_SYMBOLS) + 2U, 0, 0);
+    expect("and a dropped check stays dropped", nxdn_confirm_is_confirmed(state), 0);
+
+    /* Two checks of one isolated frame, a strong one among them, are a transmission whichever comes first; two short
+     * ones are still one frame's worth. */
+    static const nxdn_evidence k_pairs[3][2] = {
+        {NXDN_EVIDENCE_WEAK, NXDN_EVIDENCE_STRONG},
+        {NXDN_EVIDENCE_STRONG, NXDN_EVIDENCE_WEAK},
+        {NXDN_EVIDENCE_WEAK, NXDN_EVIDENCE_WEAK},
+    };
+    for (int p = 0; p < 3; p++) {
+        nxdn_confirm_reset(state);
+        nxdn_confirm_note_frame_start(state, 8000U, 0, 0);
+        nxdn_confirm_begin_frame(state);
+        nxdn_confirm_note_evidence(state, k_pairs[p][0]);
+        nxdn_confirm_note_evidence(state, k_pairs[p][1]);
+        expect(p < 2 ? "two checks of one frame, one strong, confirm" : "two short checks of one frame do not",
+               nxdn_confirm_is_confirmed(state), p < 2 ? 1 : 0);
+        nxdn_confirm_end_frame(state);
+    }
+
+    /* A waiting strong check is the frame before's: only a frame read a frame after it confirms it, never one the frame
+     * sync vouches for on its own run (an NXDN96 frame after a step from 2400/4). */
+    nxdn_confirm_reset(state);
+    run_frame_at(state, 11000U, 0, NXDN_EVIDENCE_STRONG);
+    run_frame_at(state, 11700U, 1, 0);
+    expect("an nxdn96 frame does not confirm an nxdn48 frame's waiting check", nxdn_confirm_is_confirmed(state), 0);
+
+    nxdn_confirm_reset(state);
+    run_frame_at(state, 3000U, 0, NXDN_EVIDENCE_STRONG);
+    run_frame_at(state, 3192U, 0, NXDN_EVIDENCE_STRONG);
+    expect("a strong check in a frame that runs confirms at once", nxdn_confirm_is_confirmed(state), 1);
+
+    /* The SCCH run, too, is of frames that run. */
+    nxdn_confirm_reset(state);
+    nxdn_confirm_note_frame_start(state, 7000U, 0, 0);
+    nxdn_confirm_begin_frame(state);
+    nxdn_confirm_note_scch(state);
+    nxdn_confirm_end_frame(state);
+    nxdn_confirm_note_frame_start(state, 7500U, 0, 0);
+    nxdn_confirm_begin_frame(state);
+    nxdn_confirm_note_scch(state);
+    expect("SCCHs frames apart are no run", nxdn_confirm_scch_confirmed(state), 0);
+    nxdn_confirm_end_frame(state);
+
+    /* An isolated frame whose sync word followed another one frame before it (NXDN48's corroborated accept, a call's
+     * first frame read): its strong check holds at once, though its weak one starts the streak over. */
+    nxdn_confirm_reset(state);
+    run_frame_at(state, 2000U, 0, NXDN_EVIDENCE_WEAK);
+    nxdn_confirm_note_frame_start(state, 2500U, 0, 1);
+    run_frame(state, NXDN_EVIDENCE_WEAK);
+    expect("a corroborated sync word runs no weak streak on", nxdn_confirm_is_confirmed(state), 0);
+    nxdn_confirm_note_frame_start(state, 6000U, 0, 1);
+    run_frame(state, NXDN_EVIDENCE_STRONG);
+    expect("a corroborated sync word's strong check holds at once", nxdn_confirm_is_confirmed(state), 1);
+
+    /* A frame the frame sync accepted on a run of its own (NXDN96) runs on whatever came before it. */
+    nxdn_confirm_reset(state);
+    run_frame_at(state, 100U, 1, NXDN_EVIDENCE_STRONG);
+    expect("a strong check behind a run the sync vouched for confirms at once", nxdn_confirm_is_confirmed(state), 1);
+
+    /* A reset forgets where the last frame was: the next one runs on from nothing. */
+    nxdn_confirm_reset(state);
+    run_frame_at(state, 100U + NXDN_CONFIRM_FRAME_SYMBOLS, 0, NXDN_EVIDENCE_STRONG);
+    expect("after a reset the first frame is isolated", nxdn_confirm_is_confirmed(state), 0);
+    nxdn_confirm_reset(state);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -228,8 +327,11 @@ main(void) {
     expect("a completed tune ends the SCCH run", nxdn_confirm_scch_confirmed(state), 0);
     nxdn_confirm_end_frame(state);
 
+    test_frames_run_only_at_frame_spacing(state);
+
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     nxdn_confirm_reset(NULL);
+    nxdn_confirm_note_frame_start(NULL, 0U, 0, 0);
     nxdn_confirm_begin_frame(NULL);
     nxdn_confirm_note_evidence(NULL, NXDN_EVIDENCE_STRONG);
     nxdn_confirm_end_frame(NULL);

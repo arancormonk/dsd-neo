@@ -22,6 +22,16 @@
  * SCCH are not -- one in 64 noise frames passes a CRC-6 -- so they have to repeat: two
  * frames running, which a real transmission does continuously and noise does not.
  *
+ * "Running" is measured where the frame sync cannot vouch for it (nxdn_confirm_note_frame_start()). NXDN48's accept
+ * takes two sync hits at any distance, so on 2400/4 under Auto, where noise and other protocols' carriers give it
+ * thousands of frames an hour, two short checks frames apart, and even one CRC-12 (a FACCH1 decodes twice, so about one
+ * noise frame in 2000 passes), confirmed transmissions of nothing and played them. There a frame runs on only from a
+ * frame read exactly one frame (NXDN_CONFIRM_FRAME_SYMBOLS) before it, and an isolated frame starts the streaks over.
+ * Its strong check confirms at once when its sync word had another one frame before it, as a transmission's first
+ * frame read usually has, or when another check of the same frame passed too (a header frame's SACCH beside the FACCH1
+ * VCALL a call opens on); otherwise only once the next frame runs on from it, one frame later. Both are odds, not
+ * proofs: on noise they hold perhaps once in 2^16 to 2^18 frames, where one CRC-12 held once in 2000.
+ *
  * Sibling of src/protocol/dmr/dmr_confidence.{c,h}, which does the same job for DMR.
  */
 
@@ -29,6 +39,7 @@
 #define DSD_NEO_PROTOCOL_NXDN_NXDN_CONFIRM_H
 
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,10 +52,30 @@ typedef enum {
 } nxdn_evidence;
 
 /** @brief Frames of weak evidence in a row that together confirm a transmission. */
-#define NXDN_CONFIRM_WEAK_OBSERVES 2U
+#define NXDN_CONFIRM_WEAK_OBSERVES      2U
+
+/** @brief Symbols from one frame's start to the next's in a transmission (an 80 ms NXDN48 frame at 2400 sym/s, a 40 ms
+ * NXDN96 one at 4800), and the slip either way a run allows. */
+#define NXDN_CONFIRM_FRAME_SYMBOLS      192U
+#define NXDN_CONFIRM_FRAME_SYMBOLS_SLIP 1U
 
 /** @brief Forget everything learned about the current transmission. */
 void nxdn_confirm_reset(dsd_state* state);
+
+/**
+ * @brief Say where a frame whose body is about to be read begins, before nxdn_confirm_begin_frame().
+ *
+ * @p frame_symbol is dsd_state::symbolcnt at the same point of every frame. A frame the frame sync accepted on a run of
+ * its own (@p sync_runs: NXDN96, whose accept needs a hit one frame before) runs on whatever came before it; any other
+ * runs on only from a frame read NXDN_CONFIRM_FRAME_SYMBOLS (within the slip) before it. A frame that does not starts
+ * the weak and SCCH streaks over and drops a waiting strong check, and a strong check it passes itself waits for the
+ * next frame (nxdn_confirm_note_evidence()) unless its sync word followed another one frame before it
+ * (@p sync_corroborated: dsd_state::nxdn48_accept_corroborated) or another check of the frame passed too. A strong
+ * check the frame before left waiting is confirmed only by a frame read one frame after it: the spacing itself, not
+ * a run the frame sync vouches for (an NXDN96 frame after a step from 2400/4). Without this call a frame runs on (the
+ * unit tests' frames, one after another).
+ */
+void nxdn_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol, int sync_runs, int sync_corroborated);
 
 /** @brief Start a frame's evidence accounting; call once before decoding its channels. */
 void nxdn_confirm_begin_frame(dsd_state* state);
@@ -52,8 +83,9 @@ void nxdn_confirm_begin_frame(dsd_state* state);
 /**
  * @brief Report a check this frame passed.
  *
- * Strong evidence confirms immediately. Weak evidence counts once per frame however many
- * short CRCs pass, and confirms on the NXDN_CONFIRM_WEAK_OBSERVES'th frame in a row. A check of
+ * Strong evidence confirms immediately, unless the frame is isolated (nxdn_confirm_note_frame_start()): it then counts
+ * as weak evidence and waits for the next frame, or for another check of its own frame. Weak evidence counts once per
+ * frame however many short CRCs pass, and confirms on the NXDN_CONFIRM_WEAK_OBSERVES'th frame in a row. A check of
  * another channel's control traffic (dsd_state::nxdn_frame_foreign) confirms nothing: it stamps
  * when that traffic was last heard (dsd_nxdn_foreign_control_last_m()).
  */

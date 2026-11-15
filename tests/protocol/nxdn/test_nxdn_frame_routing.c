@@ -106,6 +106,10 @@ static int g_stub_cac_resets_sync;
 /* The SCCH's message retunes the receiver (a busy repeater message followed, a preemption): the tune's result, or
    -1 for no tune. */
 static int g_stub_scch_tune = -1;
+/* The SCCH names the Type-D layout, as nxdn_scch_prepare_type_d() does for every SCCH that passes its CRC. */
+static int g_stub_scch_names_type_d;
+/* The location category the FACCH1 decoder read. */
+static char g_facch_category[32];
 
 static dsd_trunk_tune_result
 stub_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
@@ -150,6 +154,8 @@ reset_state(void) {
     g_stub_facch_ok = 1;
     g_stub_cac_resets_sync = 0;
     g_stub_scch_tune = -1;
+    g_stub_scch_names_type_d = 0;
+    g_facch_category[0] = '\0';
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
     g_dibit_stream_pos = 0U;
@@ -283,6 +289,9 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     (void)reliab;
     nxdn_stub_note_crc(state, g_stub_scch_ok, NXDN_EVIDENCE_WEAK);
     g_scch_calls++;
+    if (g_stub_scch_ok && g_stub_scch_names_type_d) {
+        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+    }
     if (g_stub_scch_tune >= 0) {
         dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq});
         (void)dsd_trunk_tuning_hook_tune_to_freq(opts, state, 938512500L, 0, NULL);
@@ -310,6 +319,7 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     nxdn_stub_note_crc(state, g_stub_facch_ok, NXDN_EVIDENCE_STRONG);
     g_facch_calls++;
     g_facch_frame_channel = state->nxdn_frame_channel;
+    DSD_SNPRINTF(g_facch_category, sizeof(g_facch_category), "%s", state->nxdn_location_category);
     g_facch_part_mask |= 1 << part;
     g_last_facch_bit = bits[0];
     g_last_facch_reliab = reliab[0];
@@ -708,6 +718,80 @@ test_short_crc_confirms_only_when_repeated(void) {
     return rc;
 }
 
+/* An NXDN48 frame beginning at symbol @p at (dsd_state::symbolcnt; frames of a transmission begin 192 apart), its
+   channels reporting what the stubs say. */
+static int
+route_nxdn48_frame_at(uint8_t lich, uint32_t at) {
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_48;
+    g_state.symbolcnt = at;
+    return route_frame(lich);
+}
+
+/*
+ * NXDN48's accept takes two sync hits at any distance, so under Auto noise and other protocols' carriers hand it frames
+ * by the thousand an hour; their checks prove a transmission only when its frames run, each read one frame (192
+ * symbols) after the last. Two short CRCs frames apart, or one CRC-12 in a frame on its own, confirmed transmissions of
+ * receiver noise and played them. A strong check in an isolated frame confirms once the next frame runs on from it.
+ */
+static int
+test_nxdn48_checks_confirm_only_frames_that_run(void) {
+    int rc = 0;
+
+    reset_state();
+    g_stub_facch_ok = 0;
+    g_stub_sacch_ok = 1;
+    rc |= expect_int("weak frame routed", route_nxdn48_frame_at(0x32U, 10000U), 1);
+    rc |= expect_int("weak frame two frames on routed", route_nxdn48_frame_at(0x32U, 10384U), 1);
+    rc |= expect_int("weak checks frames apart confirm nothing", nxdn_confirm_is_confirmed(&g_state), 0);
+    rc |= expect_int("weak checks frames apart play nothing", g_voice_calls, 0);
+    rc |= expect_int("weak frame one frame on routed", route_nxdn48_frame_at(0x32U, 10576U), 1);
+    rc |= expect_int("weak checks of frames that run confirm", nxdn_confirm_is_confirmed(&g_state), 1);
+    rc |= expect_int("and play", g_voice_calls, 1);
+
+    reset_state();
+    g_stub_facch_ok = 1;
+    rc |= expect_int("isolated strong frame routed", route_nxdn48_frame_at(0x32U, 20000U), 1);
+    rc |= expect_int("an isolated strong check waits", nxdn_confirm_is_confirmed(&g_state), 0);
+    rc |= expect_int("an isolated strong check plays nothing", g_voice_calls, 0);
+    g_stub_facch_ok = 0;
+    rc |= expect_int("next frame routed", route_nxdn48_frame_at(0x32U, 20193U), 1);
+    rc |= expect_int("the next frame running on confirms it", nxdn_confirm_is_confirmed(&g_state), 1);
+    rc |= expect_int("and plays", g_voice_calls, 1);
+
+    reset_state();
+    g_stub_facch_ok = 1;
+    rc |= expect_int("lone strong frame routed", route_nxdn48_frame_at(0x32U, 30000U), 1);
+    g_stub_facch_ok = 0;
+    rc |= expect_int("frame two frames on routed", route_nxdn48_frame_at(0x32U, 30384U), 1);
+    rc |= expect_int("a lone strong check confirms nothing", nxdn_confirm_is_confirmed(&g_state), 0);
+    rc |= expect_int("a lone strong check plays nothing", g_voice_calls, 0);
+
+    /* A strong check beside another of the same frame (a header frame's SACCH and its FACCH1 VCALL) holds at once. */
+    reset_state();
+    g_stub_facch_ok = 1;
+    g_stub_sacch_ok = 1;
+    rc |= expect_int("strong frame with a second check routed", route_nxdn48_frame_at(0x32U, 33000U), 1);
+    rc |= expect_int("two checks of one frame confirm at once", nxdn_confirm_is_confirmed(&g_state), 1);
+    rc |= expect_int("and play", g_voice_calls, 1);
+
+    /* An accept whose sync word followed another one frame before it (a call's first frame read): its strong check, the
+       header VCALL the call opens on, holds at once. */
+    reset_state();
+    g_stub_facch_ok = 1;
+    g_state.nxdn48_accept_corroborated = 1U;
+    rc |= expect_int("corroborated strong frame routed", route_nxdn48_frame_at(0x32U, 35000U), 1);
+    rc |= expect_int("a corroborated strong check confirms at once", nxdn_confirm_is_confirmed(&g_state), 1);
+    rc |= expect_int("and plays", g_voice_calls, 1);
+
+    /* NXDN96's accept needs a hit one frame before: its strong checks confirm at once, as before. */
+    reset_state();
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_96;
+    g_state.symbolcnt = 40000U;
+    rc |= expect_int("nxdn96 strong frame routed", route_frame(0x32U), 1);
+    rc |= expect_int("an nxdn96 strong check confirms at once", nxdn_confirm_is_confirmed(&g_state), 1);
+    return rc;
+}
+
 /* Issue #575: the carrier boundary moved the carrier count while the frame was read (a replay read adopting a recorded
    retune). Everything after the LICH decodes only once all 174 dibits are in, so a SACCH segment read whole before the
    move, possibly the one completing a superframe, would decode after the boundary ended that carrier's calls: the frame
@@ -938,6 +1022,37 @@ test_frame_retuned_by_its_scch_stops(void) {
     return rc;
 }
 
+/* The Type-D layout an SCCH names is the frame's: its FACCH1 reads it whatever the frame proves, but it outlives the
+   frame only on a confirmed transmission. One SCCH's 7-bit CRC passes noise one time in 128, and a category left by a
+   false IDAS sync on another protocol's carrier would read the next Type-C VCALL with Type-D's 11-bit IDs. */
+static int
+test_type_d_category_outlives_only_a_confirmed_frame(void) {
+    static const struct {
+        int facch_ok;
+        const char* kept;
+        const char* label;
+    } k_cases[] = {
+        {0, " ", "unconfirmed frame"},
+        {1, "Type-D", "confirmed frame"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        reset_state();
+        DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", " ");
+        g_stub_scch_ok = 1;
+        g_stub_scch_names_type_d = 1;
+        g_stub_facch_ok = k_cases[i].facch_ok;
+        char label[96];
+        (void)route_frame(0x73U);
+        DSD_SNPRINTF(label, sizeof label, "%s: FACCH1 read the Type-D layout", k_cases[i].label);
+        rc |= expect_string(label, g_facch_category, "Type-D");
+        DSD_SNPRINTF(label, sizeof label, "%s: category after the frame", k_cases[i].label);
+        rc |= expect_string(label, g_state.nxdn_location_category, k_cases[i].kept);
+    }
+    return rc;
+}
+
 /* Issue #834: every frame names the FSW the hunt accepted it on (from its second symbol, at the polarity it was
    accepted at), and a frame read whole arms the recording for the next frame's FSW where it ends, so the hunt reads
    that FSW on the grid this frame was read on; one a LICH refused, read 8 dibits in, arms nothing. */
@@ -979,11 +1094,13 @@ main(void) {
     rc |= test_lfsr_and_scanner_state();
     rc |= test_unconfirmed_frame_is_inert();
     rc |= test_short_crc_confirms_only_when_repeated();
+    rc |= test_nxdn48_checks_confirm_only_frames_that_run();
     rc |= test_frame_split_by_a_carrier_boundary_is_dropped();
     rc |= test_frame_cut_by_an_input_interruption_is_dropped();
     rc |= test_frame_channel_follows_the_lich();
     rc |= test_composite_control_channel_lich();
     rc |= test_frame_retuned_by_its_scch_stops();
+    rc |= test_type_d_category_outlives_only_a_confirmed_frame();
     rc |= test_frame_places_the_grid_on_the_next_fsw();
     dsd_decode_clock_use_system();
 

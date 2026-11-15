@@ -63,6 +63,8 @@ static const char* g_marker = "";
 static int g_marker_gap = 0;
 static int g_stream_pos = 0;
 static long g_symbols_emitted = 0;
+/* Markers the stream carries before it is filler alone, as a carrier that drops; 0 for no end. */
+static int g_marker_count = 0;
 
 static void
 stream_reset(const char* marker, int gap) {
@@ -77,7 +79,7 @@ stream_next_dibit(void) {
     const int marker_len = (int)strlen(g_marker);
     const int period = g_marker_gap + marker_len;
     char dibit = '1';
-    if (period > 0) {
+    if (period > 0 && (g_marker_count == 0 || g_stream_pos / period < g_marker_count)) {
         const int phase = g_stream_pos % period;
         if (phase >= g_marker_gap) {
             dibit = g_marker[phase - g_marker_gap];
@@ -98,6 +100,13 @@ static long g_reads = 0;
    stream's own (discussion #717). */
 static int g_symbol_clock_rate = 0;
 static const uint64_t k_symbol_clock_t0_ns = 1000000000000ULL;
+/* The profile the hunt started on, and the symbols the source had emitted when a read first found the hunt on another:
+   a step inside getFrameSync() that does not return (a hint) shows here. -1 / 0: not watched, or no step yet. */
+static int g_watch_idx = -1;
+static long g_idx_left_at = 0;
+/* The symbols emitted at which a read drops the sync join histories, as a carrier change or a trunk retune does
+   (dsd_state_forget_sync_join_histories()); 0 never. */
+static long g_forget_histories_at = 0;
 
 float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-internal-linkage)
@@ -105,6 +114,12 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     (void)have_sync;
 
     g_reads++;
+    if (g_watch_idx >= 0 && g_idx_left_at == 0 && state->sps_hunt_idx != g_watch_idx) {
+        g_idx_left_at = g_symbols_emitted;
+    }
+    if (g_forget_histories_at > 0 && g_symbols_emitted == g_forget_histories_at) {
+        dsd_state_forget_sync_join_histories(state);
+    }
     if (g_interrupt_at_read > 0 && g_reads == g_interrupt_at_read) {
         state->input_interrupted = 1;
         return 0.0f;
@@ -193,6 +208,7 @@ typedef struct {
     int syncs_seen;
     int final_idx;
     int final_sps; /* samplesPerSymbol after the step: what the profile change reprogrammed timing to */
+    long left_at;  /* symbols emitted when a read first found the hunt off its start profile (0: never) */
 } HuntResult;
 
 /* The engine's shape: getFrameSync() in a loop, each sync handed to a handler that
@@ -201,7 +217,7 @@ static HuntResult
 drive_hunt(const HuntCase* tc) {
     static dsd_opts opts;
     static dsd_state state;
-    HuntResult result = {0, 0, 0, 0, 0};
+    HuntResult result = {0, 0, 0, 0, 0, 0};
 
     init_hunt_opts_state(&opts, &state, tc->mod_cli_lock);
     if (tc->configure) {
@@ -212,6 +228,8 @@ drive_hunt(const HuntCase* tc) {
         return result;
     }
     const int start_idx = state.sps_hunt_idx;
+    g_watch_idx = start_idx;
+    g_idx_left_at = 0;
     stream_reset(tc->marker, tc->marker_gap);
     dsd_frame_sync_reset_mod_state();
 
@@ -245,6 +263,8 @@ drive_hunt(const HuntCase* tc) {
 
     result.final_idx = state.sps_hunt_idx;
     result.final_sps = state.samplesPerSymbol;
+    result.left_at = g_idx_left_at;
+    g_watch_idx = -1;
     free_state_buffers(&state);
     if (result.stepped != tc->expect_step) {
         DSD_FPRINTF(stderr, "%s: gap %d, handler %d -> stepped=%d after %ld symbols (%d syncs)\n", tc->label,
@@ -769,6 +789,7 @@ static int g_hook_order = 0;
 static int g_vc_no_sync_order = 0;
 static int g_release_order = 0;
 static int g_no_carrier_order = 0;
+static long g_no_carrier_at = 0; // symbols emitted at the first no-carrier pass since the order was reset
 
 static void
 fake_p25_sm_vc_no_sync(dsd_opts* opts, const dsd_state* state) {
@@ -789,6 +810,9 @@ fake_no_carrier(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_no_carrier_order = ++g_hook_order;
+    if (g_no_carrier_at == 0) {
+        g_no_carrier_at = g_symbols_emitted;
+    }
 }
 
 /* #392: a sync the engine declined to dispatch consumes nothing, so the credit path refuses
@@ -1071,6 +1095,319 @@ test_an_interrupted_read_returns_at_once_and_counts_nothing(void) {
     state.input_interrupted = 0;
 }
 
+/*
+ * A keyed C4FM P25p1 carrier read from a binary profile (frame_sync_p25p1_word_hint_due()): its sync word on D-STAR's
+ * 4800/2 (4800/4's timing), or read on each symbol's first or second reading on ProVoice's 9600/2 (twice the rate),
+ * twice within a P25p1 frame, moves the unlocked hunt to 4800/4 at once, where it waited out the dwell and the rotation
+ * behind it (9600/2 -> 6000/4 -> 4800/2 -> 4800/4, about 2.6 s). Not a no-sync exit: no no-carrier pass runs for it.
+ * Only the unlocked rotation with P25p1 on takes it, only the exact word, and only a second one within the frame.
+ */
+static char g_p25_word_doubled[49];
+static char g_p25_word_delayed[49];
+static char g_p25_word_near_miss[25];
+/* A word of each polarity in turn, 524 symbols apart: a pair of one polarity is 1048 apart, more than a frame. */
+static char g_p25_words_alternating[24 + 500 + 24 + 1];
+static int g_probe_in_flight;
+
+static int
+fake_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_probe_in_flight;
+}
+
+static void
+build_p25_word_markers(void) {
+    for (size_t i = 0; i < 24U; i++) {
+        g_p25_word_doubled[2U * i] = P25P1_SYNC[i];
+        g_p25_word_doubled[(2U * i) + 1U] = P25P1_SYNC[i];
+        /* Each symbol's first reading on the other side, as a 9600/2 grid that sits on the transitions reads it. */
+        g_p25_word_delayed[2U * i] = i > 0U ? P25P1_SYNC[i - 1U] : '1';
+        g_p25_word_delayed[(2U * i) + 1U] = P25P1_SYNC[i];
+    }
+    g_p25_word_doubled[48] = '\0';
+    g_p25_word_delayed[48] = '\0';
+    DSD_MEMCPY(g_p25_word_near_miss, INV_P25P1_SYNC, sizeof(g_p25_word_near_miss));
+    g_p25_word_near_miss[11] = g_p25_word_near_miss[11] == '1' ? '3' : '1';
+    DSD_MEMSET(g_p25_words_alternating, '1', sizeof(g_p25_words_alternating) - 1U);
+    DSD_MEMCPY(g_p25_words_alternating, P25P1_SYNC, 24U);
+    DSD_MEMCPY(g_p25_words_alternating + 24 + 500, INV_P25P1_SYNC, 24U);
+    g_p25_words_alternating[sizeof(g_p25_words_alternating) - 1U] = '\0';
+}
+
+static void
+configure_on_4800_2(dsd_opts* opts, dsd_state* state) {
+    frame_sync_apply_sps_hunt_profile(opts, state, DSD_FRAME_SYNC_SPS_PROFILE_4800_2, 0);
+}
+
+static void
+configure_on_9600_2(dsd_opts* opts, dsd_state* state) {
+    frame_sync_apply_sps_hunt_profile(opts, state, DSD_FRAME_SYNC_SPS_PROFILE_9600_2, 0);
+}
+
+static void
+configure_on_9600_2_p25p1_off(dsd_opts* opts, dsd_state* state) {
+    opts->frame_p25p1 = 0;
+    configure_on_9600_2(opts, state);
+}
+
+static void
+configure_on_9600_2_search_order(dsd_opts* opts, dsd_state* state) {
+    configure_on_9600_2(opts, state);
+    state->sps_hunt_search_order = 1U; // a Signal search probe's order, sampled as the profile was adopted
+}
+
+static void
+configure_on_9600_2_trunk_scan(dsd_opts* opts, dsd_state* state) {
+    opts->trunk_scan_enabled = 1;
+    configure_on_9600_2(opts, state);
+}
+
+/* A word one polarity took on 4800/2 a frame's span before 9600/2's first word: neither the profile nor (in the second
+   variant) the polarity is the next word's, so that word pairs with nothing. */
+static void
+configure_on_9600_2_after_4800_2_word(dsd_opts* opts, dsd_state* state) {
+    configure_on_9600_2(opts, state);
+    state->p25p1_word_hint_seen = 1U;
+    state->p25p1_word_hint_type = DSD_SYNC_P25P1_POS;
+    state->p25p1_word_hint_profile = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state->p25p1_word_hint_symbol = state->symbolcnt + 100U;
+}
+
+static void
+configure_on_9600_2_after_inverted_word(dsd_opts* opts, dsd_state* state) {
+    configure_on_9600_2(opts, state);
+    state->p25p1_word_hint_seen = 1U;
+    state->p25p1_word_hint_type = DSD_SYNC_P25P1_NEG;
+    state->p25p1_word_hint_profile = DSD_FRAME_SYNC_SPS_PROFILE_9600_2;
+    state->p25p1_word_hint_symbol = state->symbolcnt + 100U;
+}
+
+static void
+configure_on_9600_2_tuned_vc(dsd_opts* opts, dsd_state* state) {
+    configure_on_9600_2(opts, state);
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+}
+
+/* The C4FM word read on a binary profile: the hunt is on 4800/4 within a symbol of the end of the @p nth word, the
+ * second of a pair a P25p1 frame apart at most, with no no-sync exit in between. */
+static void
+expect_p25_word_hint_at(const char* label, const char* marker, void (*configure)(dsd_opts*, dsd_state*), long nth) {
+    g_hook_order = 0;
+    g_no_carrier_order = 0;
+    g_no_carrier_at = 0;
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.no_carrier = fake_no_carrier});
+    const int gap = 300;
+    const HuntCase tc = {
+        .label = label,
+        .marker = marker,
+        .marker_gap = gap,
+        .symbol_budget = 40000,
+        .expect_step = 1,
+        .configure = configure,
+    };
+    const HuntResult r = drive_hunt(&tc);
+    dsd_frame_sync_hooks_set(NULL);
+
+    /* The doubled word reads whole on its first readings a symbol before its end. */
+    const long word_end = nth * (gap + (long)strlen(marker));
+    if (r.final_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4 || r.left_at < word_end - 1 || r.left_at > word_end) {
+        DSD_FPRINTF(stderr, "FAIL %s: left for profile %d after %ld symbols (want 4800/4 after %ld)\n", label,
+                    r.final_idx, r.left_at, word_end);
+    }
+    assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(r.final_sps == HUNT_SPS_4800);
+    assert(r.left_at >= word_end - 1 && r.left_at <= word_end);
+    /* A step, not a no-sync exit: no no-carrier pass came before it. */
+    assert(g_no_carrier_order == 0 || g_no_carrier_at > r.left_at);
+}
+
+static void
+expect_p25_word_hint(const char* label, const char* marker, void (*configure)(dsd_opts*, dsd_state*)) {
+    expect_p25_word_hint_at(label, marker, configure, 2L);
+}
+
+/* Nothing moves the hunt before its dwell is spent: the words, @p gap apart, are not taken here. */
+static void
+expect_no_p25_word_hint(const char* label, const char* marker, int gap, void (*configure)(dsd_opts*, dsd_state*),
+                        int mod_cli_lock) {
+    const HuntCase tc = {
+        .label = label,
+        .marker = marker,
+        .marker_gap = gap,
+        .symbol_budget = 40000,
+        .expect_step = 1,
+        .mod_cli_lock = mod_cli_lock,
+        .configure = configure,
+    };
+    const HuntResult r = drive_hunt(&tc);
+    const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+    if (r.symbols_at_step < dwell_symbols) {
+        DSD_FPRINTF(stderr, "FAIL %s: stepped to profile %d after %ld symbols, inside the dwell\n", label, r.final_idx,
+                    r.symbols_at_step);
+    }
+    assert(r.symbols_at_step >= dwell_symbols);
+}
+
+static void
+test_a_p25p1_word_on_a_binary_profile_steps_to_4800_4(void) {
+    build_p25_word_markers();
+    expect_p25_word_hint("P25p1 word on 4800/2", P25P1_SYNC, configure_on_4800_2);
+    expect_p25_word_hint("inverted P25p1 word on 4800/2", INV_P25P1_SYNC, configure_on_4800_2);
+    expect_p25_word_hint("P25p1 word doubled on 9600/2", g_p25_word_doubled, configure_on_9600_2);
+    expect_p25_word_hint("P25p1 word on its second readings on 9600/2", g_p25_word_delayed, configure_on_9600_2);
+    /* The word before is another profile's, or of the other polarity: the first word here pairs with nothing. */
+    expect_p25_word_hint("first word after a 4800/2 word", g_p25_word_doubled, configure_on_9600_2_after_4800_2_word);
+    expect_p25_word_hint("first word after an inverted word", g_p25_word_doubled,
+                         configure_on_9600_2_after_inverted_word);
+    /* A carrier change between two words drops the first (dsd_state_forget_sync_join_histories()): the second pairs
+       with nothing, the third with the second. */
+    g_forget_histories_at = 500;
+    expect_p25_word_hint_at("words across a carrier change", g_p25_word_doubled, configure_on_9600_2, 3L);
+    g_forget_histories_at = 0;
+}
+
+/*
+ * A word hint on a transmission's last frames: the carrier drops as the hunt steps to 4800/4. The 4800/4 dwell the step
+ * opened holds as long as the rotation without the hint would have stayed off the profiles after 4800/4: the rest of
+ * the binary profile's dwell and the dwells between it and 4800/4, each counted at its own symbol rate in 4800/4 symbols,
+ * on top of its own. Before, 4800/4's own dwell ran out on the dead air and 2400/4 came round early, where a carrier
+ * keyed again in the gap waited out the 2400/4 dwell (the committed p25p1_c4fm_vc fixture repeated with noise under
+ * -fa lost a call in three). A frame that proves 4800/4 restarts its dwell as any proof does, the extra with it.
+ */
+typedef struct {
+    long reached_4800_4; /* symbols emitted when the hunt was first found on 4800/4 */
+    long left_4800_4;    /* ... and when it was first found off 4800/4 after that (0: never) */
+    int next_idx;
+} HintDwellResult;
+
+static HintDwellResult
+drive_word_hint_dwell(const char* marker, int markers, void (*configure)(dsd_opts*, dsd_state*), int proven_syncs) {
+    static dsd_opts opts;
+    static dsd_state state;
+    HintDwellResult result = {0, 0, -1};
+    init_hunt_opts_state(&opts, &state, 0);
+    configure(&opts, &state);
+    const int buffers = init_state_buffers(&state);
+    assert(buffers);
+    stream_reset(marker, 300);
+    g_marker_count = markers;
+    g_watch_idx = state.sps_hunt_idx;
+    g_idx_left_at = 0;
+    dsd_frame_sync_reset_mod_state();
+    int syncs = 0;
+    while (g_symbols_emitted < 60000 && result.left_4800_4 == 0) {
+        const int sync = getFrameSync(&opts, &state);
+        if (sync != DSD_SYNC_NONE) {
+            syncs++;
+            for (int i = 0; i < 100; i++) {
+                (void)getSymbol(&opts, &state, 1);
+            }
+            state.sps_hunt_last_frame_verdict =
+                syncs <= proven_syncs ? DSD_FRAME_VERDICT_PROFILE_PROVEN : DSD_FRAME_VERDICT_UNPRODUCTIVE;
+        }
+        /* The step to 4800/4 comes inside getFrameSync(), which goes on hunting: the next read shows it. The step off
+           4800/4 is a dwell's expiry, a no-sync return. */
+        if (result.reached_4800_4 == 0 && g_idx_left_at > 0
+            && state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+            result.reached_4800_4 = g_idx_left_at;
+        }
+        if (result.reached_4800_4 > 0 && state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+            result.left_4800_4 = g_symbols_emitted;
+            result.next_idx = state.sps_hunt_idx;
+        }
+    }
+    g_marker_count = 0;
+    g_watch_idx = -1;
+    free_state_buffers(&state);
+    return result;
+}
+
+/* Symbols @p symbols of a profile at @p rate_hz take, in 4800/4 symbols. */
+static long
+in_4800_4_symbols(long symbols, long rate_hz) {
+    return symbols * 4800L / rate_hz;
+}
+
+static void
+expect_word_hint_dwell(const char* label, const char* marker, void (*configure)(dsd_opts*, dsd_state*), long rate_hz,
+                       long between) {
+    const long dwell = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+    const HintDwellResult r = drive_word_hint_dwell(marker, 2, configure, 0);
+    /* The step comes with the second word, which the binary profile's search read whole (no sync returned on it). */
+    const long word_end = 2L * (300L + (long)strlen(marker));
+    const long want = word_end + dwell + in_4800_4_symbols(dwell - word_end, rate_hz) + between;
+    if (r.reached_4800_4 < word_end - 1 || r.reached_4800_4 > word_end + 1
+        || r.next_idx != DSD_FRAME_SYNC_SPS_PROFILE_2400_4 || r.left_4800_4 < want - 2 || r.left_4800_4 > want + 2) {
+        DSD_FPRINTF(stderr, "FAIL %s: on 4800/4 at %ld, left for profile %d at %ld (want 2400/4 at %ld)\n", label,
+                    r.reached_4800_4, r.next_idx, r.left_4800_4, want);
+    }
+    assert(r.reached_4800_4 >= word_end - 1 && r.reached_4800_4 <= word_end + 1);
+    assert(r.next_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(r.left_4800_4 >= want - 2 && r.left_4800_4 <= want + 2);
+}
+
+static void
+test_a_p25p1_word_hint_keeps_the_rotation_after_4800_4(void) {
+    build_p25_word_markers();
+    const long dwell = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+    /* From 4800/2 the rotation goes on to 4800/4 at once; from 9600/2 it passes 6000/4 and 4800/2 first. */
+    expect_word_hint_dwell("last two frames on 4800/2", P25P1_SYNC, configure_on_4800_2, 4800L, 0L);
+    expect_word_hint_dwell("last two frames on 9600/2", g_p25_word_doubled, configure_on_9600_2, 9600L,
+                           in_4800_4_symbols(dwell, 6000L) + dwell);
+
+    /* A third word, read on 4800/4 as a sync whose frame proves the profile: the dwell starts over from that frame,
+       with no extra left. */
+    const HintDwellResult r = drive_word_hint_dwell(P25P1_SYNC, 3, configure_on_4800_2, 1);
+    const long proof_end = (3L * (300L + 24L)) + 100L;
+    if (r.next_idx != DSD_FRAME_SYNC_SPS_PROFILE_2400_4 || r.left_4800_4 < proof_end + dwell - 2
+        || r.left_4800_4 > proof_end + dwell + 2) {
+        DSD_FPRINTF(stderr, "FAIL proven after a hint: left for profile %d at %ld (want 2400/4 at %ld)\n", r.next_idx,
+                    r.left_4800_4, proof_end + dwell);
+    }
+    assert(r.next_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(r.left_4800_4 >= proof_end + dwell - 2 && r.left_4800_4 <= proof_end + dwell + 2);
+}
+
+static void
+test_a_p25p1_word_hint_is_the_unlocked_rotations_alone(void) {
+    build_p25_word_markers();
+    /* One symbol off the word is no word. */
+    expect_no_p25_word_hint("near-miss word on 4800/2", g_p25_word_near_miss, 300, configure_on_4800_2, 0);
+    /* Words of the other polarity are no pair, however near. */
+    expect_no_p25_word_hint("words of each polarity in turn on 4800/2", g_p25_words_alternating, 500,
+                            configure_on_4800_2, 0);
+    /* A word at 9600/2's own rate is not a C4FM carrier's. */
+    expect_no_p25_word_hint("undoubled word on 9600/2", P25P1_SYNC, 300, configure_on_9600_2, 0);
+    /* Words more than a P25p1 frame apart are each alone: one word is a 2^-24 event on any signal. */
+    expect_no_p25_word_hint("words frames apart on 4800/2", P25P1_SYNC, 1000, configure_on_4800_2, 0);
+    expect_no_p25_word_hint("doubled words frames apart on 9600/2", g_p25_word_doubled, 1800, configure_on_9600_2, 0);
+    expect_no_p25_word_hint("-m lock on 4800/2", P25P1_SYNC, 300, configure_on_4800_2, 1);
+    expect_no_p25_word_hint("P25p1 off on 9600/2", g_p25_word_doubled, 300, configure_on_9600_2_p25p1_off, 0);
+    expect_no_p25_word_hint("Signal search order on 9600/2", g_p25_word_doubled, 300, configure_on_9600_2_search_order,
+                            0);
+    expect_no_p25_word_hint("trunk scan on 9600/2", g_p25_word_doubled, 300, configure_on_9600_2_trunk_scan, 0);
+
+    g_probe_in_flight = 1;
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.p25_probe_in_flight = fake_p25_probe_in_flight});
+    expect_no_p25_word_hint("P25 probe on 9600/2", g_p25_word_doubled, 300, configure_on_9600_2, 0);
+    dsd_frame_sync_hooks_set(NULL);
+    g_probe_in_flight = 0;
+
+    /* A trunked voice channel the engine tuned holds its profile whatever the word says. */
+    const HuntCase tuned = {
+        .label = "tuned voice channel on 9600/2",
+        .marker = g_p25_word_doubled,
+        .marker_gap = 300,
+        .symbol_budget = 20000,
+        .expect_step = 0,
+        .configure = configure_on_9600_2_tuned_vc,
+    };
+    const HuntResult r = drive_hunt(&tuned);
+    assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_9600_2);
+}
+
 int
 main(void) {
     test_an_interrupted_read_returns_at_once_and_counts_nothing();
@@ -1095,6 +1432,9 @@ main(void) {
     test_withheld_syncs_do_not_hold_a_wrong_profile();
     test_a_tuned_voice_channel_holds_its_profile();
     test_budget_exit_runs_the_no_sync_hooks();
+    test_a_p25p1_word_on_a_binary_profile_steps_to_4800_4();
+    test_a_p25p1_word_hint_is_the_unlocked_rotations_alone();
+    test_a_p25p1_word_hint_keeps_the_rotation_after_4800_4();
     return 0;
 }
 

@@ -5,6 +5,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "provoice_confirm.h"
 #include "provoice_frame.h"
 
 #include <assert.h>
@@ -137,9 +138,16 @@ test_process_voice_integer_playback(void) {
     state.edacs_tuned_lcn = 4;
     reset_counters();
 
-    /* Unconfirmed on its own: one frame proves only that its own sync word matched (#421). */
+    /* Unconfirmed on its own: one frame proves only that its own sync word matched (#421), so it plays nothing. */
     assert(processProVoice(&opts, &state) == 0);
+    assert(dibit_calls == PROVOICE_EXPECTED_TOTAL_DIBITS);
+    assert(mbe_calls == 0);
+    assert(play_ms_calls == 0);
 
+    /* The frame that runs on from it, one frame later, confirms the transmission and plays. */
+    reset_counters();
+    state.symbolcnt += PROVOICE_CONFIRM_FRAME_SYMBOLS;
+    assert(processProVoice(&opts, &state) == 1);
     assert(dibit_calls == PROVOICE_EXPECTED_TOTAL_DIBITS);
     assert(mbe_calls == 4);
     assert(play_ms_calls == 4);
@@ -159,9 +167,10 @@ test_process_voice_float_playback(void) {
     state.ea_mode = 0;
     state.edacs_site_id = 9;
     state.edacs_tuned_lcn = 6;
+    state.provoice_confirmed = 1;
     reset_counters();
 
-    assert(processProVoice(&opts, &state) == 0);
+    assert(processProVoice(&opts, &state) == 1);
 
     assert(dibit_calls == PROVOICE_EXPECTED_TOTAL_DIBITS);
     assert(mbe_calls == 4);
@@ -184,17 +193,50 @@ test_voice_process_confirms_on_the_second_frame(void) {
     assert(state.provoice_confirm_weak_streak == 1);
 
     reset_counters();
+    state.symbolcnt += PROVOICE_CONFIRM_FRAME_SYMBOLS;
     assert(processProVoice(&opts, &state) == 1);
     assert(state.provoice_confirmed == 1);
 
-    /* Sticky: a confirmed transmission stays productive. */
+    /* Sticky: a confirmed transmission stays productive, a missed frame included. */
     reset_counters();
+    state.symbolcnt += 2U * PROVOICE_CONFIRM_FRAME_SYMBOLS;
     assert(processProVoice(&opts, &state) == 1);
 
     /* And it clears with the carrier. */
     provoice_confirm_reset(&state);
     assert(state.provoice_confirmed == 0);
     assert(state.provoice_confirm_weak_streak == 0);
+}
+
+/* One ProVoice sync word on noise is no call. Nothing in a frame can fail a check, so only a frame that runs on from
+   the one before it confirms the transmission (#421), and until then nothing reaches the vocoder, the speaker or the
+   call record: a frame matched once on noise used to play its four IMBE frames. After the carrier goes the streak
+   starts over, so the next lone frame plays nothing either, and neither does one read seconds after it. */
+static void
+test_unconfirmed_frames_play_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+
+    reset_counters();
+    assert(processProVoice(&opts, &state) == 0);
+    assert(mbe_calls == 0);
+    assert(play_ms_calls == 0);
+
+    /* The carrier went: the next frame starts a transmission of its own. */
+    provoice_confirm_reset(&state);
+    reset_counters();
+    assert(processProVoice(&opts, &state) == 0);
+    assert(mbe_calls == 0);
+    assert(play_ms_calls == 0);
+
+    /* Two frames whose syncs are not one frame apart (other syncs, or none, between them) are two lone frames. */
+    reset_counters();
+    state.symbolcnt += 5000U;
+    assert(processProVoice(&opts, &state) == 0);
+    assert(mbe_calls == 0);
 }
 
 /* Each IMBE pair plays as soon as it is read. A Signal search that leaves the frame (its visit ended, or a command came),
@@ -221,6 +263,7 @@ test_voice_frame_cut_by_an_input_interruption_plays_nothing_after_the_cut(void) 
         DSD_MEMSET(&opts, 0, sizeof(opts));
         DSD_MEMSET(&state, 0, sizeof(state));
         opts.floating_point = 1;
+        state.provoice_confirmed = 1;
         reset_counters();
         interrupt_at = cuts[c];
 
@@ -238,6 +281,7 @@ main(void) {
     test_process_voice_integer_playback();
     test_process_voice_float_playback();
     test_voice_process_confirms_on_the_second_frame();
+    test_unconfirmed_frames_play_nothing();
     test_voice_frame_cut_by_an_input_interruption_plays_nothing_after_the_cut();
     printf("PROVOICE_PROCESS: OK\n");
     return 0;

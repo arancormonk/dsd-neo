@@ -529,7 +529,7 @@ test_analog_block_follows_family_switch(dsd_opts* opts, dsd_state* state, void* 
     assert(g_first_analog_block_samples == 960U);
     assert(g_first_analog_block_min >= 1000);
     assert(g_first_analog_block_max <= 1003);
-    /* ... and the gain stage takes it as FSK discriminator output (+/-30000), not monitor audio: scaled as monitor
+    /* ... and the gain stage takes it as FSK discriminator output (its fixed scale), not monitor audio: scaled as monitor
        audio, the -8 source monitor clipped every sample (issue #518). */
     assert(g_chain_last_source == DSD_ANALOG_AUDIO_SOURCE_RTL_FSK);
     assert(g_cleanup_calls == 0);
@@ -1351,7 +1351,7 @@ run_raw_wav_level(dsd_opts* opts, dsd_state* state, void* rtl_context, const raw
  * and converted from 24 kHz. The converter starts from silence: with 16 taps a phase when upsampling
  * (rate_converter_taps_per_phase()) every tap holds the level from the 16th input, frame 30, on, and before that its
  * filter's step response rings either side of zero and overshoots the level by 12.6 % (4632), bounded here at 25 %:
- * the scale is applied once, to the converted samples. The FSK discriminator output, normalised to +/-30000 already, is
+ * the scale is applied once, to the converted samples. The FSK discriminator output, on its fixed scale already, is
  * written exactly as it is at the sink rate, and converted unscaled from 24 kHz.
  */
 static void

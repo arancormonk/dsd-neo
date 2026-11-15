@@ -597,6 +597,13 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info, uint8_t* l
         return;
     }
 
+    /* A failed FICH lays the frame out as the last one that verified, which is this transmission's only once one of its
+       own FICHs verified (ysf_fich_confirmed, cleared with the carrier): before that it is an earlier transmission's
+       layout, or none, and a sync word matched on noise after a V/D call played that call's layout as voice and opened
+       a call. Such a frame lays nothing out, and the hunt reads on through it. */
+    if (state->ysf_fich_confirmed == 0) {
+        return;
+    }
     info->dt = *last_dt;
     info->fi = *last_fi;
 }

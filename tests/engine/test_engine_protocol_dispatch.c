@@ -9,6 +9,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/p25p1_sync_anchor.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -230,6 +231,21 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
     return record_handler(TEST_HANDLER_DPMR);
 }
 
+/* How the frame sync accepted the P25p1 word the frame behind it has (the real one is the frame sync's). */
+static dsd_p25p1_sync_kind g_p25p1_sync_kind = DSD_P25P1_SYNC_EXACT;
+
+dsd_p25p1_sync_kind
+dsd_frame_sync_p25p1_sync_kind(const dsd_state* state, int* out_anchor_nac, unsigned int* out_errors) {
+    (void)state;
+    if (out_anchor_nac != NULL) {
+        *out_anchor_nac = -1;
+    }
+    if (out_errors != NULL) {
+        *out_errors = 0U;
+    }
+    return g_p25p1_sync_kind;
+}
+
 int
 dsd_dispatch_matches_p25p1(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype);
@@ -371,6 +387,35 @@ check_received_identity_follows_the_protocol(void) {
     free(opts);
 }
 
+/* A P25p1 word accepted within a tolerance (anchored or hunt-wide) may be no word at all: it leaves the DMR carrier's
+   identity standing, for the P25p1 dispatcher to replace once the frame's NID passes its strict check. An exact one
+   replaces it as before. */
+static void
+check_tolerant_p25p1_word_leaves_the_identity(void) {
+    static const dsd_p25p1_sync_kind kinds[] = {DSD_P25P1_SYNC_ANCHORED, DSD_P25P1_SYNC_ACQUISITION,
+                                                DSD_P25P1_SYNC_EXACT};
+    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts != NULL);
+        assert(state != NULL);
+        dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 3U);
+        state->synctype = DSD_SYNC_P25P1_POS;
+        g_p25p1_sync_kind = kinds[i];
+        g_called_handler = TEST_HANDLER_NONE;
+        processFrame(opts, state);
+        assert(g_called_handler == TEST_HANDLER_P25P1);
+        if (kinds[i] == DSD_P25P1_SYNC_EXACT) {
+            assert(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE && state->rx_id.valid == 0U);
+        } else {
+            assert(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_DMR && state->rx_id.valid == DSD_RXID_ACCESS);
+        }
+        g_p25p1_sync_kind = DSD_P25P1_SYNC_EXACT;
+        free(state);
+        free(opts);
+    }
+}
+
 /* An accepted retune made between frames (the P25 watchdog's return to the control channel, on its thread) only
    requests the access code's drop: processFrame() applies it before the frame notes anything, so the code the carrier
    it reached sends is kept and is that carrier's first, not a change that drops the system. One the frame makes itself
@@ -479,6 +524,7 @@ check_trunk_tune_inside_the_frame_keeps_the_next_burst(void) {
 int
 main(void) {
     check_received_identity_follows_the_protocol();
+    check_tolerant_p25p1_word_leaves_the_identity();
     check_trunk_tune_drop_applied_around_the_frame();
     check_trunk_tune_drop_resets_dmr_ras();
     check_trunk_tune_inside_the_frame_keeps_the_next_burst();

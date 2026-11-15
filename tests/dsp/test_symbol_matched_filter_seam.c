@@ -569,6 +569,46 @@ test_hunt_recording_holds_a_placed_grid(const char* wav_path) {
     grid_close(&g);
 }
 
+/* The raw history behind the grid, as the sync anchor reads a P25 word the hunt read with no recording armed
+   (symbol_anchor.c): sample n back from the newest is the content the grid read n - 1 samples before its last, one
+   group delay on, across a filter switching on and a switch to a shorter filter alike, since the samples a switch-on
+   consumes are recorded and a hand-back's are not recorded twice. So only a change of span and the end of a hand-back
+   stamp steady_clock, not a filter switch alone. */
+static int
+raw_history_maps_the_grid(const grid* g, int samples) {
+    const dsd_matched_filter_seam* seam = &g->state->matched_filter;
+    const int last = g->position - 1 + seam->delay; /* the raw sample the grid took last */
+    for (int back = 1; back <= samples && back <= seam->raw_count; back++) {
+        int idx = seam->raw_head - back;
+        while (idx < 0) {
+            idx += DSD_MATCHED_FILTER_HISTORY;
+        }
+        if (fabsf(seam->raw[idx] - (float)g_raw[last - back + 1]) > 0.5f) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void
+test_raw_history_maps_the_grid_across_a_switch(const char* wav_path) {
+    static dsd_opts opts;
+    static dsd_state state;
+    grid g;
+    grid_open(&g, &opts, &state, wav_path);
+    assert(run_phase(&g, DSD_SYNC_NONE, DSD_SPS_FILTER_NONE, "raw history") == 0);
+    assert(raw_history_maps_the_grid(&g, PHASE_SYMS * SPS));
+    const uint64_t steady = state.matched_filter.steady_clock;
+    assert(run_symbols(&g, DSD_SYNC_P25P1_POS, DSD_SPS_FILTER_P25, 4, "raw history") == 0);
+    assert(state.matched_filter.steady_clock == steady); /* a switch-on alone */
+    assert(raw_history_maps_the_grid(&g, (PHASE_SYMS + 4) * SPS));
+    assert(run_phase(&g, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SPS_FILTER_DMR, "raw history") == 0);
+    assert(state.matched_filter.replay == 0);
+    assert(state.matched_filter.steady_clock > steady); /* the hand-back ended */
+    assert(raw_history_maps_the_grid(&g, (PHASE_SYMS + 4 + PHASE_SYMS) * SPS));
+    grid_close(&g);
+}
+
 typedef struct {
     const char* name;
     void (*run)(const char* wav_path);
@@ -586,6 +626,7 @@ static const seam_case kCases[] = {
     {"m17", test_m17_filter_switches_at_the_lsf_and_back},
     {"m17-move", test_m17_switch_on_takes_the_measured_move},
     {"hunt-hold", test_hunt_recording_holds_a_placed_grid},
+    {"raw-history", test_raw_history_maps_the_grid_across_a_switch},
 };
 
 /* An optional argument names one case to run alone, for watching it fail. */

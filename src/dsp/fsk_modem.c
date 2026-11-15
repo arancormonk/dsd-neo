@@ -7,8 +7,7 @@
 #include <math.h>
 #include "dsd-neo/core/safe_api.h"
 
-#define DSD_FSK_DISCRIMINATOR_TARGET   30000.0f
-#define DSD_FSK_DISCRIMINATOR_MIN_PEAK 1.0e-7f
+#define DSD_FSK_TWO_PI 6.28318530717958647692
 
 static int
 clamp_levels(int levels) {
@@ -34,6 +33,12 @@ phase_delta_small_angle_or_atan2(float im, float re) {
     return atan2f(im, re);
 }
 
+/* A phase step of one radian per sample is fs / (2 pi) Hz. */
+static float
+discriminator_scale(int sample_rate_hz) {
+    return (float)((double)DSD_FSK_DISCRIMINATOR_COUNTS_PER_HZ * (double)sample_rate_hz / DSD_FSK_TWO_PI);
+}
+
 static dsd_fsk_modem_config
 normalized_config(const dsd_fsk_modem_config* cfg) {
     dsd_fsk_modem_config out;
@@ -56,6 +61,7 @@ dsd_fsk_modem_reset(dsd_fsk_modem_state* st) {
     dsd_fsk_modem_config cfg = st->cfg;
     DSD_MEMSET(st, 0, sizeof(*st));
     st->cfg = normalized_config(&cfg);
+    st->scale = discriminator_scale(st->cfg.sample_rate_hz);
 }
 
 void
@@ -67,6 +73,7 @@ dsd_fsk_modem_configure(dsd_fsk_modem_state* st, const dsd_fsk_modem_config* cfg
     int changed = (st->cfg.sample_rate_hz != next.sample_rate_hz || st->cfg.symbol_rate_hz != next.symbol_rate_hz
                    || st->cfg.levels != next.levels || st->cfg.channel_profile != next.channel_profile);
     st->cfg = next;
+    st->scale = discriminator_scale(st->cfg.sample_rate_hz);
     if (changed) {
         dsd_fsk_modem_reset(st);
     }
@@ -79,6 +86,7 @@ dsd_fsk_modem_init(dsd_fsk_modem_state* st, const dsd_fsk_modem_config* cfg) {
     }
     DSD_MEMSET(st, 0, sizeof(*st));
     st->cfg = normalized_config(cfg);
+    st->scale = discriminator_scale(st->cfg.sample_rate_hz);
 }
 
 void
@@ -100,36 +108,6 @@ update_centered_frequency(float* dc_io, float freq) {
      * long same-symbol runs from being mistaken for CFO. */
     *dc_io += 0.00025f * (freq - *dc_io);
     return freq - *dc_io;
-}
-
-static float
-clip_pcm_float(float sample) {
-    if (sample > 32767.0f) {
-        return 32767.0f;
-    }
-    if (sample < -32768.0f) {
-        return -32768.0f;
-    }
-    return sample;
-}
-
-static float
-scale_discriminator_sample(dsd_fsk_modem_state* st, float centered) {
-    float mag = fabsf(centered);
-    if (mag > DSD_FSK_DISCRIMINATOR_MIN_PEAK) {
-        if (st->discriminator_peak_est <= DSD_FSK_DISCRIMINATOR_MIN_PEAK) {
-            st->discriminator_peak_est = mag;
-        } else if (mag > st->discriminator_peak_est) {
-            st->discriminator_peak_est += 0.125f * (mag - st->discriminator_peak_est);
-        } else {
-            st->discriminator_peak_est += 0.00005f * (mag - st->discriminator_peak_est);
-        }
-    }
-    float peak = st->discriminator_peak_est;
-    if (peak <= DSD_FSK_DISCRIMINATOR_MIN_PEAK) {
-        peak = 1.0f;
-    }
-    return clip_pcm_float(centered * (DSD_FSK_DISCRIMINATOR_TARGET / peak));
 }
 
 int
@@ -155,7 +133,11 @@ dsd_fsk_modem_discriminator_process(dsd_fsk_modem_state* st, const float* iq_int
 
         float freq = discriminator_frequency(cur_i, cur_q, st->prev_i, st->prev_q);
         float centered = update_centered_frequency(&st->dc_est, freq);
-        out_samples[out_count++] = scale_discriminator_sample(st, centered);
+        /* Not clipped: a sample beyond the PCM range is noise or another carrier's edge, and railed at +/-32767 it read
+           as a run of outer symbols. The AUTO hunt then lost frames of noisy P25 voice, and the P25 chain comparison
+           read a CQPSK control channel through the discriminator with ten times the TSBK failures. The consumers
+           that need int16 (EDACS analog voice, the -8 source monitor, the -6 raw WAV) saturate as they convert. */
+        out_samples[out_count++] = centered * st->scale;
         st->prev_i = cur_i;
         st->prev_q = cur_q;
     }

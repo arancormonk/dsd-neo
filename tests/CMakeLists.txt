@@ -2327,6 +2327,20 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_test(NAME X2TDMA_VOICE_CRYPTO COMMAND dsd-neo_test_x2tdma_voice_crypto)
 endif()
 
+# X2-TDMA direct-mode voice through the real frame sync: superframes chained by the 24-symbol gap, and a hunt gap
+# mid-call (protocol/x2tdma/x2tdma_direct_mode_check.py).
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME X2TDMA_DIRECT_MODE
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/protocol/x2tdma/x2tdma_direct_mode_check.py
+            $<TARGET_FILE:dsd-neo>
+    )
+    set_tests_properties(X2TDMA_DIRECT_MODE PROPERTIES TIMEOUT 120)
+endif()
+
 add_executable(
     dsd-neo_test_nxdn_trunk_diag
     protocol/nxdn/test_nxdn_trunk_diag.c
@@ -7950,10 +7964,88 @@ add_test(
     COMMAND dsd-neo_test_symbol_matched_filter_seam
 )
 
+# The symbol grid on a P25 Phase 1 C4FM carrier, through getSymbol() and the hunt's crossing loop: each unit's sync word
+# places the grid for the unit behind it, at whole and fractional rates, either polarity, with clock drift
+add_executable(
+    dsd-neo_test_symbol_p25_c4fm_grid
+    dsp/test_symbol_p25_c4fm_grid.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+target_include_directories(
+    dsd-neo_test_symbol_p25_c4fm_grid
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${LIBSNDFILE_INCLUDE_DIR}
+)
+target_compile_definitions(
+    dsd-neo_test_symbol_p25_c4fm_grid
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_symbol_p25_c4fm_grid
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME DSP_SYMBOL_P25_C4FM_GRID
+    COMMAND dsd-neo_test_symbol_p25_c4fm_grid
+)
+
+# The slicer levels a P25 Phase 1 C4FM unit is read with, through getSymbol(), the synced clip, use_symbol() and the
+# sync warm start: within a bound of the levels sent over a 3-block TSDU, an LDU and a long PDU at the -f1 sizes
+add_executable(
+    dsd-neo_test_symbol_p25_c4fm_levels
+    dsp/test_symbol_p25_c4fm_levels.c
+    ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    test_support/frame_sync_dsp_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_symbol_p25_c4fm_levels
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_symbol_p25_c4fm_levels
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${LIBSNDFILE_INCLUDE_DIR}
+)
+target_compile_definitions(
+    dsd-neo_test_symbol_p25_c4fm_levels
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_symbol_p25_c4fm_levels
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME DSP_SYMBOL_P25_C4FM_LEVELS
+    COMMAND dsd-neo_test_symbol_p25_c4fm_levels
+)
+
 add_executable(dsd-neo_test_dsp_symbol_anchor dsp/test_symbol_anchor.c)
 target_include_directories(
     dsd-neo_test_dsp_symbol_anchor
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_compile_definitions(
+    dsd-neo_test_dsp_symbol_anchor
+    PRIVATE DSD_NEO_TEST_HOOKS
 )
 target_link_libraries(
     dsd-neo_test_dsp_symbol_anchor
@@ -11367,6 +11459,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_nid_verdict.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/exitflag.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
 )
 target_link_libraries(
@@ -11432,6 +11525,7 @@ add_executable(
     dsd-neo_test_p25_p1_tolerant_nid
     protocol/p25/test_p25_p1_tolerant_nid.cpp
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25_status_symbol.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25_sync_context.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_anchor.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
@@ -16149,6 +16243,39 @@ target_link_libraries(
 )
 add_test(NAME FRAME_SYNC_P25_ANCHOR COMMAND dsd-neo_test_frame_sync_p25_anchor)
 
+# P25 Phase 1 sync words a few symbol signs off on the C4FM chain: anchored and hunt-wide candidates, held until their
+# NID validates, and the hunt going on from the symbols a dropped one took.
+add_executable(
+    dsd-neo_test_frame_sync_p25p1_c4fm_tolerance
+    dsp/test_frame_sync_p25p1_c4fm_tolerance.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_p25p1_c4fm_tolerance
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_p25p1_c4fm_tolerance
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_p25p1_c4fm_tolerance
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_P25P1_C4FM_TOLERANCE
+    COMMAND dsd-neo_test_frame_sync_p25p1_c4fm_tolerance
+)
+
 # The frame sync withdraws the P25 proof the CQPSK timing loop's post-lock gain follows at every acquisition restart,
 # symbol profile change and modulation move, and keeps it while a carrier decodes P25.
 add_executable(
@@ -19306,6 +19433,95 @@ if(DSD_HAS_RADIO)
         -f1
         "Group Voice Channel User"
     )
+    # The voice capture's HDUs under -f1: an HDU is read and none fails its FEC. With the -f1 windows a P25 Phase 1
+    # C4FM unit is read on the levels its sync set; a tracker there takes max down to about half the outer level across
+    # the HDU that opens a call, every symbol clipped to it. The reject helper only supplies the forbidden pattern.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_P25P1_C4FM_VOICE_HDU_F1
+        p25p1_c4fm_vc
+        -f1
+        "P25p1.* HDU"
+        "HDU FEC ERR"
+    )
+    set_tests_properties(
+        DECODE_IQ_P25P1_C4FM_VOICE_HDU_F1
+        PROPERTIES LABELS "iq-decode"
+    )
+    # Two short real-air C4FM control channels from GopherTrunk's test data (CF32_CAPTURES in
+    # tools/build_iq_fixtures.py), whose eye is asymmetric: the outer levels sit about 3.3 and 2.8 times the inner ones
+    # instead of 3. Every TSBK that passes its CRC prints its message's title on a line of its own, one space in; the
+    # site identity comes from those blocks and the NAC from each frame's NID. A control channel carries no voice, so a
+    # header or voice frame would be noise taken for one. The floors sit about 10% under what this build decodes, the
+    # same under -f1 and -fa: s9 41 titles, 14 NACs and the identity 8 times under either; city 57, 20 and 18 under -f1
+    # (54, 19 and 18 under -fa). They are floors, not counts: a block or two of these short captures decodes only just.
+    function(
+        dsd_neo_add_gt_c4fm_cc_tests
+        suffix
+        fixture
+        min_tsbk
+        min_nac
+        min_identity
+    )
+        foreach(_mode -f1 -fa)
+            set(_name DECODE_IQ_P25P1_C4FM_CC_GT_${suffix})
+            if(_mode STREQUAL "-fa")
+                string(APPEND _name _AUTO)
+            endif()
+            add_test(
+                NAME ${_name}
+                COMMAND
+                    ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                    "-DMODE=${_mode}"
+                    "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                    "-DEXPECTED=\n [A-Z]" -DMIN_MATCHES=${min_tsbk}
+                    "-DEXPECTED2=NAC/CC: 164;" -DMIN_MATCHES2=${min_nac}
+                    "-DEXPECTED3=WACN: BEE00; SYS: 164;"
+                    -DMIN_MATCHES3=${min_identity}
+                    "-DNOT_EXPECTED= HDU| LDU[12]" -P
+                    "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+            )
+            set_tests_properties(
+                ${_name}
+                PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
+        endforeach()
+    endfunction()
+    dsd_neo_add_gt_c4fm_cc_tests(S9 p25p1_c4fm_cc_gt_s9 37 12 7)
+    dsd_neo_add_gt_c4fm_cc_tests(CITY p25p1_c4fm_cc_gt_city 48 17 16)
+    # Two clean P25 Phase 1 C4FM calls with no HDU, each after the carrier was off (p25p1_c4fm_no_hdu_synth). Under -f1
+    # every IMBE frame of all twelve LDUs is read without a correction, the calls' first LDUs too: the grid is placed on
+    # the word that acquires each call (DSP_SYMBOL_P25_C4FM_GRID). The word just after the key-up ramp can come out one
+    # sign off by rounding alone (the optimized builds read the first call's that way, Debug builds exactly); the
+    # hunt-wide tolerance accepts it, and once its NID passed it is measured on the same samples an exact word is, so
+    # every build reads the same. Read on the grid the hunt left, a sample late, that LDU took up to five corrections a
+    # frame. The FSK discriminator's level normaliser restarted at each carrier and put the call's first symbols at up to
+    # twice the frame's level; the sync word's levels then read the first LDU's outer symbols as inner, up to 13
+    # corrections a frame. Under -fa the hunt's rotation can miss the first call's first LDU1 (Debug builds do), so at
+    # least 99 frames, none with more than two corrections (five take one in every build); a P25 word the hunt accepted
+    # on GFSK set no levels, and that frame was read on the hunt's starting ones.
+    add_test(
+        NAME DECODE_IQ_P25P1_C4FM_NO_HDU_F1
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-f1 -Z"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p1_c4fm_no_hdu_synth.iq.json"
+            "-DEXPECTED=IMBE [0-9A-F]+ err = " -DMIN_MATCHES=108
+            "-DEXPECTED2=IMBE [0-9A-F]+ err = \\[0\\] \\[0\\]"
+            -DMIN_MATCHES2=108
+            "-DNOT_EXPECTED=err = \\[[0-9A-F]+\\] \\[([1-9A-F]|[0-9A-F][0-9A-F]+)\\]"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_P25P1_C4FM_NO_HDU_F1
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_C4FM_NO_HDU_FA
+        p25p1_c4fm_no_hdu_synth
+        "-fa -Z"
+        "IMBE [0-9A-F]+ err = "
+        "err = \\[[0-9A-F]+\\] \\[([3-9A-F]|[0-9A-F][0-9A-F]+)\\]"
+        99
+    )
     # The CQPSK fixtures run the front end's CQPSK chain throughout only with -mq. A -m lock
     # holds on either side of the preset, so "-f1 -mq" and "-mq -f1" (which ran a C4FM lock
     # until the presets learned to keep an earlier lock) each read about 9,590 CQPSK symbols
@@ -19679,7 +19895,9 @@ if(DSD_HAS_RADIO)
     )
     target_include_directories(
         dsd-neo_test_search_schedule_replay
-        PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+            ${PROJECT_SOURCE_DIR}/src/dsp
     )
     target_link_libraries(
         dsd-neo_test_search_schedule_replay
@@ -19725,6 +19943,25 @@ if(DSD_HAS_RADIO)
     # A -mq lock (Settings > Extra decoder arguments) keeps CQPSK on 4800/4; the unlocked hunt reads this capture too.
     dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC_LOCKED p25p1_cqpsk_cc P25 0 3000 -fa -mq)
     dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC p25p1_cqpsk_cc P25 0 3000 -fa)
+    # A C4FM P25p1 carrier keyed while the ordinary Auto rotation dwells on a binary profile: its sync word read there
+    # twice within a frame moves the hunt straight to 4800/4 (frame_sync_p25p1_word_hint_due()), 206-256 ms in, where it
+    # waited out the dwell and the rotation behind it (from 9600/2: its rest, 6000/4 and 4800/2, 2.63-2.68 s; from
+    # 4800/2, its dwell, 1.18-1.23 s).
+    foreach(_start 2 4)
+        foreach(_offset 0 350 700)
+            add_test(
+                NAME DECODE_IQ_C4FM_KEYUP_ON_PROFILE_${_start}_${_offset}
+                COMMAND
+                    dsd-neo_test_search_schedule_replay p25p1_c4fm_cc ${_offset}
+                    500 --ordinary --start-profile ${_start} --expect P25
+                    --expect-profile 0 -- -fa
+            )
+            set_tests_properties(
+                DECODE_IQ_C4FM_KEYUP_ON_PROFILE_${_start}_${_offset}
+                PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
+        endforeach()
+    endforeach()
     # A fixture the list does not hold names no scratch file, and the run ends on the refusal with nothing removed that
     # it did not name.
     add_test(
@@ -21376,14 +21613,17 @@ if(DSD_HAS_RADIO)
         "Color Code=02"
         FILES 0
     )
+    # Voice plays and is captured only from a confirmed transmission. The capture's two RF headers fail their CRC, so
+    # the superframes behind them confirm nothing and are withheld; the third superframe runs on from the second and
+    # opens the one capture, with the 84 frames of the four superframes from there.
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_DSTAR
         dstar
         -fd
         "SRC: KB7WUK"
         EXT .dmb
-        MIN_FILES 1
-        MIN_FRAMES 100
+        FILES 1
+        MIN_FRAMES 84
     )
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_NXDN48
@@ -21713,8 +21953,10 @@ if(DSD_HAS_RADIO)
             PROPERTIES LABELS "iq-decode;voice-chain" TIMEOUT 240
         )
     endfunction()
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_DSTAR dstar -fd 1 -18.63 -16.63 "-g 1")
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_YSF ysf -fy 1 -22.12 -20.12 "-g 1")
+    # The D-STAR output opens on a talker 2.7 dB over the target, so the AGC's start reads past the toward rule over the
+    # 1.66 s of speech: the case pins the auto level alone (docs/testing.md).
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_DSTAR dstar -fd 1 -17.27 -15.27)
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_YSF ysf -fy 1 -20.27 -18.27 "-g 1")
     # M17 voice is Codec2: the case needs it built in, as DECODE_IQ_M17_VOICE_OUTPUT does.
     if(DSD_HAS_CODEC2)
         dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_M17 m17 -fz 1 -18.82 -16.82 "-g 1")
@@ -21729,14 +21971,14 @@ if(DSD_HAS_RADIO)
         "-g 1"
     )
     dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_NXDN96 nxdn96 -fn 1 -19.68 -17.68 "-g 1")
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_PROVOICE provoice -fp 1 -18.55 -16.55 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_PROVOICE provoice -fp 1 -21.24 -19.24 "-g 1")
     dsd_neo_add_iq_speech_level_test(
         DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM
         p25p1_c4fm_vc
         -f1
         1
-        -23.73
-        -21.73
+        -29.11
+        -27.11
         "-g 1"
     )
     dsd_neo_add_iq_speech_level_test(
@@ -23193,15 +23435,18 @@ if(DSD_HAS_RADIO)
         "${_analog_off_path}"
     )
     # The -8 source monitor under digital decoding plays the FSK discriminator output,
-    # which is normalised to +/-30000. The fixed gain used to scale it as RTL monitor
-    # audio (12000x at -n 50) and clipped every sample (141440 clipped, -0.03 dBFS RMS);
-    # with the gain of its own source it plays at -23.4 dBFS RMS and -9.9 dBFS peak,
-    # unclipped and audible throughout, held to +/-3 dB so a gain that drops it out of
-    # hearing fails too.
+    # on its fixed scale (3 kHz deviation at 15000). The fixed gain used to scale it as RTL
+    # monitor audio (12000x at -n 50) and clipped every sample (141440 clipped, -0.03 dBFS
+    # RMS); with the gain of its own source it plays unclipped and audible throughout. The
+    # capture opens with a second of noise, which the discriminator now passes at its own
+    # level, above the C4FM carrier's, as an FM receiver's open squelch does (the peak
+    # normaliser it replaced pulled noise down to the signal's peak: -23.4 dBFS RMS, -9.9
+    # dBFS peak): -14.9 dBFS RMS and -0.9 dBFS peak, held to +/-3 dB RMS so a gain that
+    # drops it out of hearing fails too.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_SOURCE_MONITOR_FIXED
         p25p1_c4fm_vc
-        "-fs -8 -n 50 --analog-min-captured-ms 2900 --analog-min-audible-ms 2900 --analog-min-rms-dbfs -26 --analog-max-rms-dbfs -20 --analog-max-peak-dbfs -6 --analog-max-clip 0"
+        "-fs -8 -n 50 --analog-min-captured-ms 2900 --analog-min-audible-ms 2900 --analog-min-rms-dbfs -18 --analog-max-rms-dbfs -12 --analog-max-peak-dbfs -0.5 --analog-max-clip 0"
     )
     # A carrier within a few hertz of 0 Hz votes for CQPSK, and the modulation
     # auto-switch used to follow that vote under -fA and move the front end to the

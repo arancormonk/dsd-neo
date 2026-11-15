@@ -236,7 +236,8 @@ typedef struct {
  * fewer than its window's symbols into the call was never matched. The levels go with the dibits under the same
  * rules, so a window read on its levels (the NXDN96 FSW) is read whole. DMR and X2-TDMA decode their burst back from
  * the rolling dibit buffers, which the no-carrier reset clears, so they match only on a window the call read itself,
- * as before. Every other exit, a sync above all, drops it. Written and read by the frame sync alone
+ * as before, or one a dropped P25p1 candidate's carry brought while the buffers still hold it (own_symbols). Every
+ * other exit, a sync above all, drops it. Written and read by the frame sync alone
  * (src/dsp/dsd_frame_sync.c), and dropped by dsd_state_forget_sync_join_histories(); decoder-thread private. */
 typedef struct {
     char dibits[DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS]; /* the history ring, '0'..'3' */
@@ -252,6 +253,16 @@ typedef struct {
     uint64_t tune_generation; /* dsd_trunk_tuning_generation() when the history began */
     int sps_hunt_idx;
     int rf_mod;
+    /* Where in its matchless pass the next call starts (getFrameSync()'s pass position): 0 after a no-sync exit, which
+       ends a pass; after a dropped P25p1 candidate the pass the candidate interrupted, with its symbols, so the hunt's
+       no-sync timing runs as if the candidate had never been taken. A break the next call's first read finds drops it
+       with the history: that call starts a pass of its own. */
+    int pass_symbols;
+    /* How many of the last carried dibits the rolling dibit buffers hold as the stream's (dibit_buf, dmr_payload_buf,
+       which DMR and X2-TDMA decode a burst back from): 0 after a no-sync exit, whose no-carrier reset clears them;
+       after a dropped P25p1 candidate all of them, the word's written by the hunt and the NID's by its read. The next
+       call counts no more than the buffers hold written since their last clear. */
+    int own_symbols;
     /* Bumped by every drop (dsd_state_forget_sync_join_histories()); a call that saw it move keeps nothing. The P25
        Phase 1 carrier NAC (dsd_p25p1_carrier_nac) reads it too, as the same stream boundary. */
     uint32_t drops;
@@ -292,10 +303,23 @@ typedef struct dsd_p25_sync_context {
     uint8_t inverted; /* 1 for the inverted word (DSD_SYNC_P25P1_NEG, DSD_SYNC_P25P2_NEG) */
 } dsd_p25_sync_context;
 
+/* Where a sync word the hunt read lies in the matched-filter seam's raw history (dsd_matched_filter_seam::raw), taken
+ * as the word was accepted so that it can be measured once more samples have come in (dsd_symbol_mark_p25p1_sync_anchor()
+ * in <dsd-neo/dsp/symbol_anchor.h>). Decoder-thread private. */
+typedef struct dsd_matched_filter_seam_mark {
+    uint64_t symbol_clock; /* dsd_state::symbol_clock as the word's window ended */
+    int raw_head;          /* dsd_matched_filter_seam::raw_head and raw_count then */
+    int raw_count;
+    int last_back; /* samples behind the newest then of the word's last measured centre, a filter's group delay in */
+    int sps;       /* the span the grid read the word at */
+    uint8_t valid;
+} dsd_matched_filter_seam_mark;
+
 /* The P25 Phase 1 sync anchor: where the data unit after the last validated one starts (src/dsp/
  * frame_sync_p25p1_anchor.c). On a continuous outbound carrier every data unit is padded to whole 36-dibit segments
  * and the next one's sync starts where it ends (TIA-102.BAAA-A 8.2), so the hunt, which matches sync words exactly,
- * may there accept one within DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bit errors, on the RTL CQPSK 4800/4 path only.
+ * may there accept one within DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bit errors on the RTL CQPSK 4800/4 path, or
+ * DSD_P25P1_C4FM_ANCHORED_MAX_SIGN_ERRORS sign errors on the C4FM chain's 4800/4 hunt.
  * Installed when a frame validates (its NID decoded unborrowed, within the BCH radius, naming a usable NAC and a
  * defined DUID, accepted by the NAC rule), from the sync-time context the frame sync captured when it accepted that
  * frame's sync, and only when the stream is still that one. Spent by the first window the hunt reaches at or past the
@@ -310,15 +334,86 @@ typedef struct {
     uint8_t valid;
     /* The sync of the frame being decoded, as the frame sync accepted it, until its dispatcher reports the frame. */
     dsd_p25_sync_context frame;
-    uint16_t frame_nac;      /* a tolerant sync's: the NAC its frame's NID must name, the anchor's */
-    uint8_t frame_valid;     /* captured, with no off-thread tune pending */
-    uint8_t frame_tolerant;  /* accepted within the tolerance: stands until the frame is reported, whatever else goes */
-    uint8_t sync_bit_errors; /* bits its sync word was off by: 0 for an exact (normal, inverted, rotated) match */
-    /* Diagnostics, never reset: tolerant syncs the frame sync accepted, and those whose NID passed the dispatcher's
-       strict check (counted when the dispatcher reports the frame). */
+    uint16_t frame_nac;  /* an anchored sync's: the NAC its frame's NID must name, the anchor's */
+    uint8_t frame_valid; /* captured, with no off-thread tune pending */
+    /* How the sync was accepted (dsd_p25p1_sync_kind): stands until the frame is reported, whatever else goes. */
+    uint8_t frame_kind;
+    /* What its sync word was off by: bits on the CQPSK chain, signs on the C4FM chain, 0 for an exact match. */
+    uint8_t sync_bit_errors;
+    /* A word within a tolerance on the C4FM chain, read with no recording armed: where it lies in the seam's raw
+       history, measured only once its NID passed (dsd_frame_sync_p25p1_candidate_validated()). */
+    dsd_matched_filter_seam_mark frame_word;
+    /* Diagnostics, never reset: tolerant syncs the frame sync accepted (at the anchor, and hunt-wide on C4FM), and
+       those whose NID passed the dispatcher's strict check (counted when the dispatcher reports the frame). */
     uint32_t tolerant_syncs;
     uint32_t tolerant_frames;
+    uint32_t acquisition_syncs;
+    uint32_t acquisition_frames;
+    /* The last P25p1 frame reported was dropped behind a tolerant word (dsd_frame_sync_p25p1_candidate_rejected()),
+       until the next accepted sync of any protocol: it synced nothing the engine may count
+       (dsd_state_p25p1_frame_dropped()). */
+    uint8_t frame_dropped;
 } dsd_p25p1_sync_anchor;
+
+/* What a P25 Phase 1 sync word the hunt accepted within a tolerance (on either chain) changed before its NID could say
+ * whether it was a word at all, as it stood before the accept (frame_sync_accept_p25p1()): the slicer levels its lock
+ * and warm start rewrote (the NID is read on them, a calibration on trial), whether the warm start set them (which
+ * decides whether the frame holds them) and the crossing it dropped, the carrier flag, offset and lastsynctype, the
+ * P25p1 frame span that stands NXDN96 and M17 down, the DMR slot 2 burst, ALG ID and stereo state and the frame type
+ * label the accept writes, the CQPSK dibit map the try set, the frame NAC the NID read cleared, and the sync type the
+ * engine then records (dsd_state::synctype, which the symbol reader's C4FM window and the dibit slicer read). Put back
+ * when the dispatcher drops the frame on the stream it was accepted on (dsd_frame_sync_p25p1_candidate_rejected()); a
+ * frame that validates keeps what the accept wrote. The hunt's pass position at the accept goes with it, for the hunt
+ * to go on from. Written and read by the frame sync; decoder-thread private. */
+typedef struct {
+    float max;
+    float min;
+    float center;
+    float umid;
+    float lmid;
+    float maxref;
+    float minref;
+    float maxbuf[1024]; /* dsd_state::maxbuf, minbuf, midx: the windows the warm start fills */
+    float minbuf[1024];
+    int midx;
+    int jitter;
+    int carrier;
+    int offset;
+    int lastsynctype;
+    int synctype; /* dsd_state::synctype: the engine's last sync, which it overwrites with the candidate's */
+    unsigned int dmrburstR;
+    int payload_algidR;
+    short int dmr_stereo;
+    char ftype[16];
+    uint32_t c4fm_frame_symbolcnt;
+    int pass_symbols; /* the hunt's pass position at the word's last symbol (dsd_frame_sync_history_carry) */
+    uint8_t c4fm_frame_valid;
+    uint8_t c4fm_sync_levels; /* dsd_state::p25_p1_c4fm_sync_levels */
+    uint8_t p25_cqpsk_dibit_map_idx;
+    uint8_t p25_frame_nac_valid;
+    uint8_t valid; /* held for the frame being decoded */
+} dsd_p25p1_sync_candidate;
+
+/* What a P25 Phase 2 sync word the hunt accepted within a tolerance changed before the window's verdict could say
+ * whether it was a window at all, as it stood before the accept (frame_sync_accept_p25p2()): the lock's carrier flag,
+ * offset and slicer extremes, the references processFrame() derives from them, lastsynctype, the polarity it wrote
+ * (dsd_opts::inverted_p2), the CQPSK dibit map the try set and the sync type the engine then records
+ * (dsd_state::synctype). Put back when processP2() rejects the window on the stream it was accepted on
+ * (dsd_frame_sync_p25p2_window_dropped()); a window that passes keeps what the accept wrote. Written and read by the
+ * frame sync; decoder-thread private. */
+typedef struct {
+    float max;
+    float min;
+    float maxref;
+    float minref;
+    int carrier;
+    int offset;
+    int lastsynctype;
+    int synctype; /* dsd_state::synctype: the engine's last sync, which it overwrites with the window's */
+    int inverted_p2;
+    uint8_t p25_cqpsk_dibit_map_idx;
+    uint8_t valid;
+} dsd_p25p2_sync_candidate;
 
 /* The P25 Phase 2 sync anchor: where the window after the last one a received I-ISCH placed starts (src/dsp/
  * frame_sync_p25p2_anchor.c). processP2() reads four timeslots after each 20-dibit sync, and on a continuous carrier the
@@ -710,6 +805,12 @@ typedef struct {
     int raw_head;                          /**< Next write index into `raw`. */
     int raw_count;                         /**< Samples held, saturating at the ring size. */
     int replay;                            /**< Samples still to be re-read from `raw` before live input. */
+    /** dsd_state::symbol_clock of the symbol in which the grid last changed how it reads `raw`: a change of `sps`, or
+        the end of a hand-back. Every symbol after it took its samples from `raw` live, one each, in order, at one
+        span, which is what lets the sync anchor measure a word the hunt read there (src/dsp/symbol_anchor.c). A switch
+        of `kind` alone does not count: the samples the switch-on consumes are recorded, and the seam keeps the content
+        position, so the grid stays one span a symbol in content and `delay` maps it onto `raw`. */
+    uint64_t steady_clock;
 } dsd_matched_filter_seam;
 
 typedef struct {
@@ -1546,6 +1647,13 @@ struct dsd_state {
      * by S1 wrong LICHs in a row, and at a carrier boundary inside an NXDN frame. The decoder thread's: a retune made
      * off it leaves the clear to the frame sync (dsd_frame_sync_apply_off_thread_tunes()). */
     dsd_nxdn96_sync nxdn96_sync;
+    /* NXDN48's accept (two sign hits at any distance, src/dsp/dsd_frame_sync.c): where its last hit was
+     * (dsd_state::symbolcnt) and of which polarity (the sync type, 0 none), and whether the hit an accept took had one
+     * of its polarity one frame before it, as a transmission's frames do: the frame's checks may then confirm it at
+     * once (nxdn_confirm_note_frame_start()). */
+    uint32_t nxdn48_hit_symbol;
+    int nxdn48_hit_type;
+    uint8_t nxdn48_accept_corroborated;
     /* The same idea one profile up, where 4800/4 carries P25p1, DMR, NXDN96, YSF and M17 at once.
      * P25p1's sync is one of two exact 24-symbol patterns, so it fires on noise about once per
      * 8.4 million windows; NXDN96's takes five variants per polarity over ten sign-sliced symbols
@@ -1563,6 +1671,10 @@ struct dsd_state {
      * symbolcnt rollover mid-frame stays exact. */
     uint32_t p25_p1_c4fm_frame_symbolcnt;
     uint8_t p25_p1_c4fm_frame_valid;
+    /* Whether the C4FM P25p1 sync last accepted set the slicer levels from its word (the warm start ran and returned
+     * DSD_WARM_START_OK): with small tracker windows use_symbol() then holds those levels through the frame. Set by
+     * every P25p1 accept (frame_sync_p25p1_c4fm_warm_start()). */
+    uint8_t p25_p1_c4fm_sync_levels;
     /* Which SPS profile a protocol last passed a content check on, when, and whether any has
      * been recorded at all. The two spans above cover a frame another protocol is in the middle
      * of; this one covers the transmission a protocol has been decoding, which is the case
@@ -1701,12 +1813,26 @@ struct dsd_state {
      * nxdn_confirm_scch_streak: consecutive frames carrying a CRC-good SCCH, whatever else they carried; the Type-D
      * site test of the control-channel hunt reads it (nxdn_confirm_note_scch()).
      * nxdn_confirm_frame_scch: this frame carried one.
-     * nxdn_confirm_scch_generation: the trunk tuning generation the run counts in; a completed tune restarts it. */
+     * nxdn_confirm_scch_generation: the trunk tuning generation the run counts in; a completed tune restarts it.
+     * nxdn_confirm_frame_isolated: this frame does not run on from a frame read one frame before it
+     * (nxdn_confirm_note_frame_start()), so it starts the streaks over.
+     * nxdn_confirm_strong_waits: nor did its sync word follow another one frame before it, so its strong check waits,
+     * unless another check of the frame passed too (nxdn_confirm_frame_checks counts them).
+     * nxdn_confirm_strong_pending: the last frame read, an isolated one, passed a strong check, which confirms the
+     * transmission if the next frame runs on from it.
+     * nxdn_confirm_last_frame_valid / nxdn_confirm_last_frame_symbol: where the last frame read began
+     * (dsd_state::symbolcnt), the run's measure. */
     uint8_t nxdn_confirmed;
     uint8_t nxdn_confirm_weak_streak;
     uint8_t nxdn_confirm_frame_evidence;
     uint8_t nxdn_confirm_scch_streak;
     uint8_t nxdn_confirm_frame_scch;
+    uint8_t nxdn_confirm_frame_isolated;
+    uint8_t nxdn_confirm_strong_waits;
+    uint8_t nxdn_confirm_frame_checks;
+    uint8_t nxdn_confirm_strong_pending;
+    uint8_t nxdn_confirm_last_frame_valid;
+    uint32_t nxdn_confirm_last_frame_symbol;
     uint64_t nxdn_confirm_scch_generation;
 
     NxdnElementsContent_t NxdnElementsContent;
@@ -1887,10 +2013,14 @@ struct dsd_state {
      * See issue #407.
      * dpmr_confirmed: this transmission has produced a CRC-verified CCH.
      * dpmr_confirm_weak_streak: consecutive frames carrying one passing half only.
-     * dpmr_confirm_frame_evidence: strongest dpmr_evidence seen since begin_frame(). */
+     * dpmr_confirm_frame_evidence: strongest dpmr_evidence seen since begin_frame().
+     * dpmr_confirm_last_frame_symbol/_valid: symbolcnt where the last FS2 frame began
+     * (dpmr_confirm_note_frame_start()), so a weak streak counts only frames that run on. */
     uint8_t dpmr_confirmed;
     uint8_t dpmr_confirm_weak_streak;
     uint8_t dpmr_confirm_frame_evidence;
+    uint8_t dpmr_confirm_last_frame_valid;
+    uint32_t dpmr_confirm_last_frame_symbol;
     /* The scrambling the current dPMR transmission's last CRC-verified CCH half signalled (issue #655): 0 none yet,
        1 clear, 2 scrambled (Version 3). A half whose CRC-7 failed takes it; a transmission boundary forgets it. */
     uint8_t dpmr_scrambled;
@@ -2099,6 +2229,18 @@ struct dsd_state {
      * fixed-rate 4800/4-level profile. Ignored whenever opts->mod_cli_lock is set. */
     int p25_p1_validated_rf_mod;
     uint32_t p25_p1_validated_symbolcnt;
+    /* The C4FM P25p1 sync word the unlocked hunt last read from a binary profile (frame_sync_p25p1_word_hint_due()),
+     * when one is held (_seen): where (dsd_state::symbolcnt), its sync type and the profile it was read on. A second
+     * one of the same polarity within a P25p1 frame of it moves the hunt to 4800/4. */
+    uint32_t p25p1_word_hint_symbol;
+    int p25p1_word_hint_type;
+    int p25p1_word_hint_profile;
+    uint8_t p25p1_word_hint_seen;
+    /* The 4800/4 symbols a word hint's step skipped of the rotation (the rest of the binary profile's dwell and the
+     * dwells between it and 4800/4), which the 4800/4 dwell it opened is owed on top of its own, so the profiles after
+     * 4800/4 come round no earlier than without the hint. Dropped with any change of profile, a dwell's expiry or
+     * restart, a proof of the profile, and with the sync join histories; 0 on every other dwell. */
+    int p25p1_word_hint_dwell_extra;
 
     /* That the signal on the current SPS profile is P25p1 at all, and when it last proved it:
      * a decoded 63-bit NID BCH, whatever the DUID turned out to be. A separate stamp from the
@@ -2130,6 +2272,9 @@ struct dsd_state {
     dsd_p25p1_carrier_nac p25_p1_carrier_nac;
     /* Where the P25p1 data unit after the last validated one starts, and the sync of the frame being decoded. */
     dsd_p25p1_sync_anchor p25_p1_sync_anchor;
+    dsd_p25p1_sync_candidate p25_p1_sync_candidate;
+    /* What a tolerant P25p2 accept changed, held until the window's verdict (dsd_p25p2_sync_candidate). */
+    dsd_p25p2_sync_candidate p25_p2_sync_candidate;
     /* Where the P25p2 window after the last one an I-ISCH placed starts, and the sync of the window being decoded. */
     dsd_p25p2_sync_anchor p25_p2_sync_anchor;
     /* The length in dibits of the P25p1 data unit being decoded as its decoder read it, for a TSDU (its block count, by
@@ -2424,6 +2569,10 @@ struct dsd_state {
     uint8_t x2tdma_superframe_valid;
     uint32_t x2tdma_superframe_carrier_seq;
     uint32_t x2tdma_superframe_end_symbol;
+    /* The timeslots (bit 0 the first, bit 1 the second) whose encryption verdict that superframe learned with no call
+       open (direct mode's uncorroborated first superframe): the superframe chained to it keeps that verdict for its
+       first burst on the same timeslot when it opens the call there (x2tdma_note_slot_crypto()). */
+    uint8_t x2tdma_superframe_pre_call_crypto;
     /* Per timeslot: the encryption the timeslot's X2-TDMA voice frames are judged by (DSD_X2TDMA_CRYPTO_*), set by
        processX2TDMAvoice() before each burst's frames, and the call's transmission (dsd_call_snapshot_transmission())
        it was read in. A superframe signals its encryption in its second burst, after the first burst's three frames:
@@ -2431,6 +2580,11 @@ struct dsd_state {
        The vocoder mutes, records, captures and learns from the frames by it (mbe_frame_judge()). */
     uint8_t x2tdma_slot_crypto[2];
     uint64_t x2tdma_slot_crypto_transmission[2];
+    /* An X2-TDMA voice superframe of the current transmission proved itself (processX2TDMAvoice()), on the carrier
+       count x2tdma_corroborated_carrier_seq: its voice plays from every superframe after it, a hunt gap between them
+       included. A sync loss (noCarrier()), an acquisition reset and the carrier boundary forget it. */
+    uint8_t x2tdma_corroborated;
+    uint32_t x2tdma_corroborated_carrier_seq;
     int input_fallback_pending;
 
     //dmr trunking stuff
@@ -2452,6 +2606,10 @@ struct dsd_state {
     uint8_t provoice_confirmed;
     uint8_t provoice_confirm_weak_streak;
     uint8_t provoice_confirm_frame_evidence;
+    /* Where the last frame began (provoice_confirm_note_frame_start()): a frame runs on only from one read a frame
+       before it. */
+    uint8_t provoice_confirm_last_frame_valid;
+    uint32_t provoice_confirm_last_frame_symbol;
 
     unsigned short esk_mask;
     uint32_t edacs_sys_id;
@@ -3018,6 +3176,15 @@ static inline void
 dsd_state_forget_p25p1_sync_anchor(dsd_state* state) {
     state->p25_p1_sync_anchor.valid = 0U;
     state->p25_p1_sync_anchor.frame_valid = 0U;
+    state->p25_p1_sync_candidate.valid = 0U;
+}
+
+/* Whether the last P25 Phase 1 frame was dropped behind a sync word accepted within a tolerance, until the next
+   accepted sync of any protocol (dsd_p25p1_sync_anchor::frame_dropped): it synced nothing, so a scanner counts no sync
+   for it (the -Y voice gate's first sync on a row). */
+static inline int
+dsd_state_p25p1_frame_dropped(const dsd_state* state) {
+    return state != NULL && state->p25_p1_sync_anchor.frame_dropped != 0U;
 }
 
 /* The P25 Phase 2 sync anchor goes, with the sync context of a window being decoded: the next window's sync is matched
@@ -3038,15 +3205,33 @@ dsd_state_raise_input_interrupt(dsd_state* state, int reason) {
     }
 }
 
+/* The input ended while a frame was read: the session is stopping (@p exit_requested, which every input that ends with
+   the run asks for: a symbol capture, a PCM or WAV file, stdin, UDP, an I/Q replay or an RTL read that failed), or a
+   file, TCP or symbol input ended and the session goes on with Pulse (input_fallback_pending). Past the end the reader
+   stood in silence or erasures, which a strict FEC check can take for a codeword, so the read counts as cut, as an
+   interruption cuts it (DSD_INTERRUPT_NONE, which the engine loop clears at its next pass). For a decoder that judges
+   what it read before anything of it takes effect: the P25 Phase 1 NID, a P25 Phase 2 window. */
+static inline void
+dsd_state_note_input_end(dsd_state* state, int exit_requested) {
+    if (exit_requested || state->input_fallback_pending) {
+        dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_NONE);
+    }
+}
+
 /* The receiver leaves a carrier: symbols read from here on are the next carrier's. A change between symbol reads (an
    input switch, a menu tune) leaves every later symbol whole; one that runs while getSymbol() reads a symbol's samples
    (an I/Q replay retune) splits that symbol, which counts as the carrier left's. The sync join histories are the
-   carrier left's evidence too: an NXDN96 lock or FSW, or an M17 word, does not pair with the next carrier's
-   (dsd_state_forget_sync_join_histories(), which a trunk retune runs too). */
+   carrier left's evidence too: an NXDN96 lock or FSW, an NXDN48 hit, a P25p1 word the hunt read on a binary profile,
+   or an M17 word, does not pair with the next carrier's, and the dwell a word hint owed 4800/4 is the left carrier's
+   rotation (dsd_state_forget_sync_join_histories(), which a trunk retune runs too). */
 static inline void
 dsd_state_forget_sync_join_histories(dsd_state* state) {
     dsd_nxdn96_sync_clear(&state->nxdn96_sync);
     dsd_sync_hit_history_clear(&state->m17_join_hits);
+    state->nxdn48_hit_type = 0;
+    state->nxdn48_accept_corroborated = 0U;
+    state->p25p1_word_hint_seen = 0U;
+    state->p25p1_word_hint_dwell_extra = 0;
     /* The frame sync's own history from its last no-sync exit is the carrier left's too, and so is the history of a
        call in progress, which may not be kept when that call ends (dsd_frame_sync_history_carry::drops). */
     state->frame_sync_carry.valid = 0U;

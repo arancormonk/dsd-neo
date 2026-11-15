@@ -615,8 +615,9 @@ reach the decoder at 0.125 (FM after the 1/pi output scale above, AM from the
 detector's 0.25 gain), 0.25 after the default `vol` of 2, and take a gain of
 32924. FM comes in lower by its de-emphasis at 1 kHz (0.87 dB at 75 us,
 13.65 dB at 750 us), and the gain stage makes that up with the gain the stream
-publishes (issue #518 B8/B9). The FSK discriminator output a digital front end delivers (+/-30000,
-read by the `-8` source monitor and EDACS analog voice) takes 8231/30000 instead:
+publishes (issue #518 B8/B9). The FSK discriminator output a digital front end delivers (on its fixed
+scale, 3 kHz deviation at 15000; read by the `-8` source monitor and EDACS
+analog voice) takes 8231/15000 instead:
 scaled as monitor audio it used to clip every sample. The default `-n 0` is the
 speech AGC (`<dsd-neo/dsp/speech_agc.h>`), which aims speech at -20 dBFS active
 level (P.56), the level `-g 0` aims digital voice at. The FM and AM tone fixtures
