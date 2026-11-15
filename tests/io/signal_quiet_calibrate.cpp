@@ -137,6 +137,9 @@ const BuiltinMode kModes[] = {
 };
 constexpr const char* kNeighbourRow = "p25p1"; /* a C4FM transmitter on the adjacent channel */
 constexpr const char* kOffsetCarrierRow = "am_20k";
+/* The tags of the two digital classes' noise-only conditions (Builder::noise_requests()). */
+constexpr const char* kNoiseTag12k5 = "12k5";
+constexpr const char* kNoiseTag6k25 = "6k25";
 
 std::vector<Mode>
 builtin_modes() {
@@ -364,6 +367,14 @@ load_modes(const std::string& path, std::vector<Mode>* modes) {
     }
     modes->insert(modes->end(), loaded.begin(), loaded.end());
     for (auto it = modes->begin(); it != modes->end(); ++it) {
+        /* An analog mode under a digital class's noise tag would be folded into that class's noise-only conditions, at
+         * no analog width. */
+        if (it->analog && (it->tag == kNoiseTag12k5 || it->tag == kNoiseTag6k25)) {
+            DSD_FPRINTF(stderr,
+                        "%s: analog mode %s uses tag %s, which names the digital class's noise-only conditions\n",
+                        path.c_str(), it->name.c_str(), it->tag.c_str());
+            return false;
+        }
         if (std::any_of(std::next(it), modes->end(), [&](const Mode& m) { return m.name == it->name; })) {
             DSD_FPRINTF(stderr, "%s: mode %s is named twice\n", path.c_str(), it->name.c_str());
             return false;
@@ -755,8 +766,8 @@ struct Builder {
     /* The noise-only requests: both digital classes and each analog mode's width (once per tag). */
     std::vector<Request>
     noise_requests() const {
-        std::vector<Request> requests = {{DSD_SIGNAL_QUIET_CLASS_12K5, 0, "12k5"},
-                                         {DSD_SIGNAL_QUIET_CLASS_6K25, 0, "6k25"}};
+        std::vector<Request> requests = {{DSD_SIGNAL_QUIET_CLASS_12K5, 0, kNoiseTag12k5},
+                                         {DSD_SIGNAL_QUIET_CLASS_6K25, 0, kNoiseTag6k25}};
         for (const Mode& m : modes) {
             const bool known =
                 std::any_of(requests.begin(), requests.end(), [&](const Request& r) { return r.tag == m.tag; });
