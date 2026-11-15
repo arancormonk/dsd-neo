@@ -11,7 +11,11 @@ ModalSheet {
     property string groupUid: ""
     property string currentSiteUid: ""
     property int sessionState: decoderHost.sessionState
-    readonly property var rows: (revision, orderedRows())
+    // The group's sites in the order shown, each with its distance from the
+    // fix measured once here (-1 without a fix or a position); every
+    // binding below reads it from here.
+    readonly property var rowModel: (revision, measuredRows())
+    readonly property var rows: rowModel.map(function (entry) { return entry.row; })
     property int revision: 0
     property double locationId: 0
     property bool locationUpdated: false
@@ -26,9 +30,11 @@ ModalSheet {
     property string avoidFailedUid: ""
     property bool avoidFailedWanted: false
     readonly property int groupRow: (revision, savedSystems.rowForUid(groupUid))
-    readonly property int nearest: (revision, prefs.lastFixAt > 0 ? savedSystems.nearestRow(groupRow, prefs.lastLat, prefs.lastLon) : -1)
+    // Open sites sort first and measured ones before the rest, so the first
+    // row, when open and measured, is the nearest.
+    readonly property int nearest: rowModel.length > 0 && !rowModel[0].avoid && rowModel[0].distance >= 0 ? rowModel[0].row : -1
     readonly property var nearestSite: (revision, savedSystems.get(nearest))
-    readonly property real nearestDistance: (revision, nearest >= 0 ? savedSystems.distanceKm(nearest, prefs.lastLat, prefs.lastLon) : -1)
+    readonly property real nearestDistance: nearest >= 0 ? rowModel[0].distance : -1
     readonly property bool listeningToNearest: sessionState === 2 && !!nearestSite.uid && nearestSite.uid === currentSiteUid
     readonly property string accuracyText: {
         var meters = prefs.lastAccuracyM;
@@ -43,11 +49,10 @@ ModalSheet {
     readonly property bool uncertainNearest: {
         if (nearest < 0 || prefs.lastAccuracyM <= 0)
             return false;
-        for (var row of rows) {
-            if (row === nearest || savedSystems.get(row).avoidSite)
+        for (var entry of rowModel) {
+            if (entry.row === nearest || entry.avoid)
                 continue;
-            var distance = savedSystems.distanceKm(row, prefs.lastLat, prefs.lastLon);
-            if (distance >= 0 && distance - nearestDistance <= 2 * prefs.lastAccuracyM / 1000)
+            if (entry.distance >= 0 && entry.distance - nearestDistance <= 2 * prefs.lastAccuracyM / 1000)
                 return true;
         }
         return false;
@@ -75,21 +80,30 @@ ModalSheet {
     // site gone, or the control no longer offered, the first site's, else
     // Update.
     property var keyboardPlace: null
-    function orderedRows() {
+    function measuredRows() {
         var siblings = savedSystems.siblingRows(groupRow);
-        if (prefs.lastFixAt <= 0)
-            return siblings;
+        var measured = prefs.lastFixAt > 0;
         var lat = prefs.lastLat;
         var lon = prefs.lastLon;
-        return siblings.map(function (row) {
-            return {row: row, avoid: !!savedSystems.get(row).avoidSite, distance: savedSystems.distanceKm(row, lat, lon)};
-        }).sort(function (a, b) {
+        var entries = siblings.map(function (row) {
+            return {row: row, avoid: !!savedSystems.get(row).avoidSite, distance: measured ? savedSystems.distanceKm(row, lat, lon) : -1};
+        });
+        if (!measured)
+            return entries;
+        return entries.sort(function (a, b) {
             if (a.avoid !== b.avoid)
                 return a.avoid ? 1 : -1;
             if ((a.distance < 0) !== (b.distance < 0))
                 return a.distance < 0 ? 1 : -1;
             return a.distance - b.distance || a.row - b.row;
-        }).map(function (entry) { return entry.row; });
+        });
+    }
+    function distanceOf(row) {
+        for (var entry of rowModel) {
+            if (entry.row === row)
+                return entry.distance;
+        }
+        return -1;
     }
     function refresh() {
         revision++;
@@ -406,7 +420,7 @@ ModalSheet {
             width: parent.width
             spacing: 6
             property var site: (sheet.revision, savedSystems.get(modelData))
-            property real distance: (sheet.revision, prefs.lastFixAt > 0 ? savedSystems.distanceKm(modelData, prefs.lastLat, prefs.lastLon) : -1)
+            readonly property real distance: sheet.distanceOf(modelData)
             readonly property string distanceText: Util.fmtDistanceKm(distance, prefs.metricUnits)
             readonly property string title: (site.siteName || site.name) + (distanceText.length > 0 ? " · " + distanceText : "")
             ReadableText {

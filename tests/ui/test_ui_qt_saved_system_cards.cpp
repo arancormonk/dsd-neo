@@ -968,6 +968,44 @@ add_distance_rows(Fixture& f) {
                       -93.6)});
 }
 
+/* Each site's distance is measured once per fix: a rebuild for another change (a rename) reuses it, a moved site is
+   measured again on its own, and a new fix measures every site again. */
+void
+test_distance_measured_once_per_fix() {
+    Fixture f;
+    f.add({positioned(site(QStringLiteral("Metro — East"), 100, 1, QStringLiteral("851.0"), QStringLiteral("East")),
+                      10.2, 20.0),
+           positioned(site(QStringLiteral("Metro — West"), 100, 2, QStringLiteral("852.0"), QStringLiteral("West")),
+                      10.0, 20.5),
+           positioned(site(QStringLiteral("County — S"), 200, 1, QStringLiteral("853.0"), QStringLiteral("S")), 10.6,
+                      20.0),
+           plain(QStringLiteral("No position"), QStringLiteral("854.0"))});
+    f.cards->setLocationSupported(true);
+    f.prefs.setSystemsSort(QStringLiteral("nearest"));
+    settle();
+    check("no fix: nothing measured", f.cards->distanceCount() == 0);
+    set_fix(f.prefs, 10.0, 20.0);
+    settle();
+    check("a fix measures each positioned site once", f.cards->distanceCount() == 3);
+    const double metroKm = f.at(0, SavedSystemCards::DistanceKmRole).toDouble();
+    check("Metro is nearest, at its east site",
+          f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Metro") && std::fabs(metroKm - 22.12) < 0.01);
+    const int rebuilds = f.cards->rebuildCount();
+    check("rename the county site", f.systems->update(2, {{QStringLiteral("name"), QStringLiteral("County — North")}}));
+    settle();
+    check("a rename rebuilds from the measured distances",
+          f.cards->rebuildCount() > rebuilds && f.cards->distanceCount() == 3
+              && std::fabs(f.at(0, SavedSystemCards::DistanceKmRole).toDouble() - metroKm) < 1e-9);
+    check("move the east site", f.systems->update(0, {{QStringLiteral("siteLat"), 10.4}}));
+    settle();
+    check("a moved site is measured again, alone",
+          f.cards->distanceCount() == 4
+              && std::fabs(f.at(0, SavedSystemCards::DistanceKmRole).toDouble() - metroKm) > 1.0);
+    set_fix(f.prefs, 10.1, 20.0);
+    settle();
+    check("a new fix measures every positioned site again", f.cards->distanceCount() == 7);
+}
+
 /* Only the fix the user asked for is a user-asked change. */
 void
 test_location_request_mark() {
@@ -1401,6 +1439,7 @@ main(int argc, char** argv) {
     test_held_order_starts_each_section_once();
     test_place_other_sections_by_name();
     test_tie_breaks_by_key();
+    test_distance_measured_once_per_fix();
     test_location_request_mark();
     test_location_mark_spent_with_other_changes();
     test_location_request_cleared();

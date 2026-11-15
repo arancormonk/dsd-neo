@@ -48,15 +48,15 @@ Item {
             prefs.setLocationFix(41, -91, Date.now(), 100)
             north = findChild(sheet, "siteChoice0")
             south = findChild(sheet, "siteChoice1")
-            compare(north.text, "North · 69.1 mi")
+            compare(north.text, "North · 69.0 mi")
             compare(south.text, "South · 0.0 mi")
             compare(sheet.nearest, 1)
             prefs.metricUnits = true
-            compare(north.text, "North · 111.2 km")
+            compare(north.text, "North · 111.1 km")
             compare(south.text, "South · 0.0 km")
             compare(sheet.nearest, 1)
             prefs.metricUnits = false
-            compare(north.text, "North · 69.1 mi")
+            compare(north.text, "North · 69.0 mi")
 
             savedSystems.update(0, {hasSitePos: false})
             north = findChild(sheet, "siteChoice0")
@@ -65,6 +65,24 @@ Item {
             south = findChild(sheet, "siteChoice1")
             compare(south.text, "South")
             compare(sheet.nearest, -1)
+        }
+        // The ellipsoid, not the sphere, ranks the sites: from (0, 30) the
+        // sphere puts (0, 30.896) first, 99.631 km against 100.076 km; on
+        // WGS84 (0.9, 30) is nearer, 99.517 km against 99.742 km.
+        function test_wgs84_orders_the_nearer_site() {
+            savedSystems.update(0, {siteLat: 0, siteLon: 30.896})
+            savedSystems.update(1, {siteLat: 0.9, siteLon: 30})
+            prefs.metricUnits = true
+            prefs.setLocationFix(0, 30, Date.now(), 10)
+            compare(sheet.rows.join(","), "1,0")
+            compare(sheet.nearest, 1)
+            compare(sheet.rowModel[0].row, 1)
+            verify(Math.abs(sheet.rowModel[0].distance - 99.516930425) < 1e-6)
+            verify(Math.abs(sheet.rowModel[1].distance - 99.742263751) < 1e-6)
+            compare(sheet.nearestDistance, sheet.rowModel[0].distance)
+            compare(findChild(sheet, "siteChoice1").text, "South · 99.5 km")
+            compare(findChild(sheet, "siteChoice0").text, "North · 99.7 km")
+            verify(findChild(sheet, "nearestSiteSummary").text.indexOf("South") >= 0)
         }
         function test_distance_format_data() {
             return [

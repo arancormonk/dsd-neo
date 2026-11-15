@@ -184,6 +184,7 @@ distance. Avoided sites appear last; sites without coordinates are explained and
 Distances appear in miles by default. Enable **Settings → Units → Use metric units** to display kilometers.
 The preference updates distances and location accuracy immediately. The chooser labels a saved fix and
 shows its reported accuracy; when that accuracy could change the nearest-site ordering, it says so.
+Distances are measured on the WGS84 ellipsoid, the model GPS uses.
 Missing `(0, 0)` coordinates and nonfinite or out-of-range values never participate in distance calculations.
 The avoid switch is saved locally. Re-import older saved sites to pick up corrected position metadata.
 

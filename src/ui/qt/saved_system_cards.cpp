@@ -568,6 +568,7 @@ SavedSystemCards::rebuild() {
      * queued, after this rebuild. */
     if (fix.valid != m_fix.valid || fix.at != m_fix.at || !same_position(fix.lat, fix.lon, m_fix.lat, m_fix.lon)) {
         m_cardsDirty = true; // the distances were measured from another fix, or none
+        m_rowDistances.clear();
     }
     m_fix = fix;
     if (m_cardsDirty) {
@@ -655,7 +656,8 @@ SavedSystemCards::readFix() const {
 
 void
 SavedSystemCards::collectCards(const Fix& fix) {
-    const QList<Member> members = readMembers();
+    QList<Member> members = readMembers();
+    measureMembers(members, fix);
     QHash<QString, int> cardOf;
     QList<QList<const Member*>> groups;
     for (const Member& member : members) {
@@ -730,6 +732,30 @@ SavedSystemCards::memberText(const Member& member, QHash<QString, RowText>& next
     text.hz = system_search_hz(member.freqMhz);
     next.insert(member.uid, text);
     return text;
+}
+
+void
+SavedSystemCards::measureMembers(QList<Member>& members, const Fix& fix) {
+    QHash<QString, RowDistance> next;
+    for (Member& member : members) {
+        if (!fix.valid || member.avoidSite || !member.hasSitePos) {
+            continue;
+        }
+        const auto cached = m_rowDistances.constFind(member.uid);
+        RowDistance distance;
+        if (cached != m_rowDistances.cend()
+            && same_position(cached->siteLat, cached->siteLon, member.siteLat, member.siteLon)) {
+            distance = *cached;
+        } else {
+            distance.siteLat = member.siteLat;
+            distance.siteLon = member.siteLon;
+            distance.km = site_distance_km(fix.lat, fix.lon, member.siteLat, member.siteLon);
+            ++m_distanceCount;
+        }
+        member.distanceKm = distance.km;
+        next.insert(member.uid, distance);
+    }
+    m_rowDistances = std::move(next);
 }
 
 SavedSystemCards::Card
@@ -812,8 +838,7 @@ SavedSystemCards::locateCard(Card& card, const QList<const Member*>& group, cons
             continue;
         }
         playable = true;
-        const double distance =
-            member->hasSitePos ? site_distance_km(fix.lat, fix.lon, member->siteLat, member->siteLon) : -1;
+        const double distance = member->distanceKm;
         if (distance >= 0 && (!positioned || distance < nearest)) {
             nearest = distance;
             positioned = true;

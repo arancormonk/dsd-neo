@@ -21,7 +21,10 @@ class SiteInteractionGuard : public QObject {
 };
 
 bool site_position_valid(double lat, double lon);
-// Negative means unavailable. All distances are kilometers.
+/*
+ * The geodesic distance on the WGS84 ellipsoid (Vincenty's inverse), or the spherical great-circle distance where
+ * Vincenty does not converge (near-antipodal points only). Negative means unavailable. All distances are kilometers.
+ */
 double site_distance_km(double lat, double lon, double siteLat, double siteLon);
 /*
  * The receiver a saved system or scan list runs on, as its argv names it: the source, then the device the source opens

@@ -128,6 +128,67 @@ check_keys_and_titles() {
           "title: never cut to nothing");
 }
 
+/*
+ * Reference geodesic distances on WGS84 (GeographicLib, Karney's algorithm), generated once and pinned here, in km.
+ * Each is the distance from the first point to the second.
+ */
+struct GeodesicCase {
+    const char* label;
+    double lat;
+    double lon;
+    double siteLat;
+    double siteLon;
+    double km;
+};
+
+constexpr double kMillimeterKm = 1e-6;
+
+constexpr GeodesicCase kGeodesicCases[] = {
+    {"WGS84 meridian", 10, 20, 11, 20, 110.611186562},
+    {"WGS84 equator", 0, 20, 0, 21, 111.319490793},
+    {"WGS84 coincident", 10, 20, 10, 20, 0},
+    {"WGS84 at the pole", 90, 0, 89, 20, 111.693864914},
+    {"WGS84 over the pole", 89.5, 20, 89.5, -160, 111.693950897},
+    {"WGS84 near the pole", 89.2, 20, 89.6, 110, 99.901427378},
+    {"WGS84 near the south pole", -90, 20, -89.5, -100, 55.846975448},
+    {"WGS84 across the dateline", 10, 179.6, 10.2, -179.7, 79.849410112},
+    {"WGS84 from the dateline", 10, 180, 10, -179.5, 54.819676789},
+    {"WGS84 reversal east", 0, 30, 0, 30.896, 99.742263751},
+    {"WGS84 reversal north", 0, 30, 0.9, 30, 99.516930425},
+    // Near-antipodal, but it converges (after 182 iterations): still the ellipsoid, not the fallback.
+    {"WGS84 near-antipodal converging", 0, 10, 0.5, -170.5, 19936.288578965},
+};
+
+void
+check_geodesy() {
+    using dsd_qt::site_distance_km;
+    for (const GeodesicCase& c : kGeodesicCases) {
+        check(std::abs(site_distance_km(c.lat, c.lon, c.siteLat, c.siteLon) - c.km) <= kMillimeterKm, c.label);
+        check(std::abs(site_distance_km(c.siteLat, c.siteLon, c.lat, c.lon) - c.km) <= kMillimeterKm, c.label);
+    }
+    /* Vincenty does not converge here: the spherical distance (R = 6371.0088 km) stands in, within the sphere's error
+     * of the geodesic (GeographicLib: 19944.127420750 km; exactly antipodal: 20003.931458625 km). */
+    const double nearAntipodal = site_distance_km(0, 10, 0.5, -170.3);
+    check(std::abs(nearAntipodal - 19950.277343497) <= kMillimeterKm
+              && std::abs(nearAntipodal - 19944.127420750) <= 19944.127420750 * 0.006,
+          "near-antipodal falls back to the sphere");
+    const double antipodal = site_distance_km(10, 20, -10, -160);
+    check(std::abs(antipodal - 20015.114307777) <= kMillimeterKm
+              && std::abs(antipodal - 20003.931458625) <= 20003.931458625 * 0.006,
+          "exactly antipodal falls back to the sphere");
+    /* The sphere ranks (0, 30.896) first from (0, 30), at 99.631 km against 100.076 km; on the ellipsoid (0.9, 30) is
+     * nearer. */
+    const QVariantList indices{0, 1};
+    const QList<QVariantMap> sites{
+        {{"siteLat", 0.0}, {"siteLon", 30.896}, {"hasSitePos", true}},
+        {{"siteLat", 0.9}, {"siteLon", 30.0}, {"hasSitePos", true}},
+    };
+    check(dsd_qt::site_nearest_among(
+              indices, [&sites](int index) { return sites.at(index); }, 0, 30)
+              == 1,
+          "WGS84 orders the nearer site first");
+}
+
 } // namespace
 
 int
@@ -139,7 +200,7 @@ main(int argc, char** argv) {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dir).removeRecursively();
     using namespace dsd_qt;
-    check(std::abs(site_distance_km(41, -91, 42, -91) - 111.195) < .01, "haversine km");
+    check_geodesy();
     check(site_distance_km(0, 0, 42, -91) < 0, "missing coordinate sentinel");
     check(site_distance_km(91, 0, 42, -91) < 0, "latitude range");
     check(site_distance_km(41, std::numeric_limits<double>::quiet_NaN(), 42, -91) < 0, "finite coordinates");

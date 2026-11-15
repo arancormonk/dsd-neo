@@ -15363,8 +15363,10 @@ Qt Quick frontend (`src/ui/qt`):
   for coordinates only: fixes must be at most 30 seconds old, a cache must also be within 100 m to finish immediately,
   and current providers compete for accuracy up to the 20-second deadline. GPS participates with fine foreground
   permission; approximate permission remains usable. The new JNI entry point is retained in `proguard-rules.pro`.
-  `SiteChooserSheet` orders eligible saved siblings by distance, names the nearest site, exposes missing positions
-  and saved-fix/accuracy limitations, and gates the nearest action during a lookup. While Running that action emits
+  `SiteChooserSheet` orders eligible saved siblings by distance (each measured once per revision or fix into its
+  `rowModel`, which `rows`, `nearest`, `uncertainNearest` and each row's label read), names the nearest site,
+  exposes missing positions and saved-fix/accuracy limitations, and gates the nearest action during a lookup.
+  While Running that action emits
   the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again. Location
   completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
@@ -15592,7 +15594,12 @@ Qt Quick frontend (`src/ui/qt`):
   then an Airspy's serial, an rtl_tcp or TCP host without case or blanks and its port, a UDP port or a file path;
   `session_args.cpp` joins scan lists on the same identity), so a system saved for two receivers is two groups.
   `SavedSystemsModel::groupKey(row)` reads that key from the row's fields (no field map built); `siblingRows()`,
-  `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by it. A group's title is
+  `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by it. Every site distance is
+  `site_distance_km()`: the geodesic on the WGS84 ellipsoid (a = 6378137 m, f = 1/298.257223563) by Vincenty's inverse,
+  converged on an absolute λ step under 1e-12 rad within 200 iterations (so a meridian never divides by a zero
+  longitude difference), and the spherical haversine (R = 6371.0088 km) only where that fails (near-antipodal points).
+  The sphere is off by up to 0.56 % depending on direction, enough to rank two sites the wrong way round.
+  A group's title is
   `site_group_title()` of its lead: the name without an exact trailing " — " + its `siteName` (the name a per-site
   import generated), else the name; a custom name lives on the lead row and moves with it. A row's `place` (role
   `place`) is the RadioReference geography an import captured: `{states: [{stid, name?}], counties: [{ctid, stid?,
@@ -15646,13 +15653,16 @@ Qt Quick frontend (`src/ui/qt`):
   `AppPrefs::systemsSort`; `effectiveSort` is the one applied): `name` (natural order from `text_order`), `recent`
   (latest `lastHeard` first, never-listened after by name), `added` (lead row's position, the default), `place`
   (sections: single states by state name, "Several states", "No place"; within a state one county by county name, then
-  several counties, then none, then name) and `nearest` (haversine distance to the nearest non-avoided site that has
+  several counties, then none, then name) and `nearest` (`site_distance_km()` to the nearest non-avoided site that has
   coordinates, then "All sites avoided", then "No coordinates", each by name). Every order ends on `key`. `nearest`
   needs `setLocationSupported(true)` and an unexpired fix; without them `effectiveSort` is `name` and the stored
   preference is untouched. Every rebuild compares the fix with the one the distances were measured from, because
   AppPrefs drops a fix 24 wall-clock hours on at its first read, before its monotonic expiry timer sends
   `locationChanged` (the timer stops while a phone sleeps); that read then queues one `locationChanged` for every
-  other reader (the location line, the site chooser), never inside the read itself. Search (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a
+  other reader (the location line, the site chooser), never inside the read itself. Each member's distance is measured
+  once per fix: `m_rowDistances` keeps it by UID, emptied when the fix changes, and a rebuild for any other change
+  reuses it while the site's position is unchanged (`distanceCount()` counts the measurements, for tests).
+  Search (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a
   number and a following MHz/kHz is one term); a term matches a folded substring of the card's text (members' names
   and site names, place state and county names, and the protocol label, supplied by `protocolLabels` from `Util.js`)
   or a frequency of any member (a bare number of three digits or more reads as MHz; a member's own `freqMhz` is read
