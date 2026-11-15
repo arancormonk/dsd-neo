@@ -27,7 +27,7 @@ namespace dsd_qt {
 constexpr std::int64_t kDwellMs = 20000;
 /** @brief The fewest qualifying measurements a switch needs. */
 constexpr int kMinDwellSamples = 3;
-/** @brief A fix older than this pauses roaming. */
+/** @brief A fix older than this pauses roaming, as does one stamped after the evaluation time. */
 constexpr std::int64_t kMaxFixAgeMs = 60000;
 /** @brief A fix with a larger accuracy radius, or none, pauses roaming. */
 constexpr double kMaxAccuracyM = 1000;
@@ -74,6 +74,8 @@ enum class SiteRoamingPause {
     NoRankableSite,
     /** The nearest rankable site is farther than the maximum distance. */
     OutOfRange,
+    /** The maximum distance or the margin is not a finite number above zero. */
+    InvalidSettings,
 };
 
 struct SiteRoamingVerdict {
@@ -111,7 +113,8 @@ class SiteRoamingCore {
      *                     that is not listed is treated like an avoided or unpositioned one (a switch needs no margin).
      * @param current_uid  The site running now.
      * @param measurement  The latest measurement, or null when there is none.
-     * @param settings     Maximum distance and margin, in km. A change clears the evidence.
+     * @param settings     Maximum distance and margin, in km, each finite and above zero (else InvalidSettings).
+     *                     A change clears the evidence.
      */
     SiteRoamingVerdict evaluate(std::int64_t now_ms, const std::vector<SiteRoamingCandidate>& candidates,
                                 const std::string& current_uid, const SiteRoamingMeasurement* measurement,

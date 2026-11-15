@@ -26,7 +26,8 @@ fix_unusable(std::int64_t now_ms, const SiteRoamingMeasurement* m, SiteRoamingPa
         *reason = SiteRoamingPause::NoFix;
         return true;
     }
-    if (now_ms - m->fix_at_ms > kMaxFixAgeMs) {
+    // A fix stamped after now is on another clock: its age cannot be judged, so it is never fresh.
+    if (m->fix_at_ms > now_ms || now_ms - m->fix_at_ms > kMaxFixAgeMs) {
         *reason = SiteRoamingPause::StaleFix;
         return true;
     }
@@ -35,6 +36,11 @@ fix_unusable(std::int64_t now_ms, const SiteRoamingMeasurement* m, SiteRoamingPa
         return true;
     }
     return false;
+}
+
+bool
+settings_valid(const SiteRoamingSettings& s) {
+    return std::isfinite(s.max_km) && s.max_km > 0 && std::isfinite(s.margin_km) && s.margin_km > 0;
 }
 
 // The nearest eligible candidate (the first in row order on a tie), -1 when none; its distance in @p best_km.
@@ -88,6 +94,10 @@ SiteRoamingCore::evaluate(std::int64_t now_ms, const std::vector<SiteRoamingCand
                           const SiteRoamingSettings& settings) {
     // Seen once, whatever the verdict: a fix that paused roaming never counts later either.
     const bool fresh = measurement != nullptr && consumeNew(measurement->id);
+    // Invalid settings are never stored, so the change detector only ever compares finite values.
+    if (!settings_valid(settings)) {
+        return cleared(paused(SiteRoamingPause::InvalidSettings));
+    }
     noteSettings(settings);
     SiteRoamingPause reason = SiteRoamingPause::NoFix;
     if (fix_unusable(now_ms, measurement, &reason)) {

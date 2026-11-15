@@ -7,8 +7,10 @@
  * generous; where a case needs a distance near the margin it measures it with site_distance_km itself, so the cases
  * hold for any accurate distance formula.
  */
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 #include "site_groups.h"
@@ -528,6 +530,52 @@ check_settings_revoke() {
           "settings: a new maximum revokes a Switch");
 }
 
+/* A fix stamped after the evaluation time (another clock) is never fresh: it pauses and clears the evidence. */
+void
+check_future_fix() {
+    const Sites sites{siteA(), siteB()};
+    SiteRoamingCore core;
+    feed_near_b(core, sites, {0, 10000});
+    const SiteRoamingMeasurement ahead = nearB(20001);
+    check(paused(core.evaluate(20000, sites, "A", &ahead, kSettings), SiteRoamingPause::StaleFix)
+              && core.evidence().count == 0,
+          "future: a fix 1 ms ahead pauses and clears the evidence");
+    // A fix time converted from the wrong clock; its stamp is the provider's own.
+    SiteRoamingMeasurement far_ahead = nearB(25000);
+    far_ahead.fix_at_ms = 10000000;
+    for (std::int64_t now = 30000; now <= 200000; now += 10000) {
+        check(paused(core.evaluate(now, sites, "A", &far_ahead, kSettings), SiteRoamingPause::StaleFix),
+              "future: a fix far ahead never counts as fresh");
+    }
+    check(is(feed_near_b(core, sites, {210000}), Kind::Candidate, "B") && core.evidence().count == 1,
+          "future: a fix on the right clock starts over");
+}
+
+/* A maximum or margin that is not finite and above zero pauses, clears the evidence and is never stored, so a later
+ * change between valid settings still revokes. */
+void
+check_invalid_settings() {
+    const Sites sites{siteA(), siteB()};
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    const std::vector<SiteRoamingSettings> invalid{{nan, 2},   {inf, 2},   {0, 2},   {-100, 2},
+                                                   {100, nan}, {100, inf}, {100, 0}, {100, -2}};
+    for (std::size_t i = 0; i < invalid.size(); ++i) {
+        SiteRoamingCore core;
+        feed_near_b(core, sites, {0, 10000});
+        const SiteRoamingMeasurement m = nearB(20000);
+        check(paused(core.evaluate(20000, sites, "A", &m, invalid[i]), SiteRoamingPause::InvalidSettings)
+                  && core.evidence().count == 0,
+              "settings: an invalid maximum or margin pauses and clears the evidence");
+        check(is(feed_near_b(core, sites, {30000, 40000}), Kind::Candidate, "B") && core.evidence().count == 2,
+              "settings: valid settings build evidence again");
+        const SiteRoamingMeasurement last = nearB(40000);
+        check(is(core.evaluate(41000, sites, "A", &last, SiteRoamingSettings{100, 5}), Kind::Following, "A")
+                  && core.evidence().count == 0,
+              "settings: a change after an invalid interlude still revokes");
+    }
+}
+
 /* The call wait: Clear while no call is followed, Waiting from the first busy observation, Expired after 90 s of it;
  * a free observation or reset() starts it over. */
 void
@@ -563,6 +611,8 @@ main() {
     check_accuracy_widens_margin();
     check_ties();
     check_settings_revoke();
+    check_future_fix();
+    check_invalid_settings();
     check_call_wait();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
