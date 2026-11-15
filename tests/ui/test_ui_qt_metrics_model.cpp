@@ -1369,6 +1369,39 @@ test_call_busy_follows_the_voice_channel() {
     freeState(&state);
 }
 
+/* Issue #786: the open-call requirement is XPT's alone. On any other trunked DMR system a followed voice channel stays
+   busy after its call line ends, through the hangtime, until the release clears trunk_is_tuned. */
+static void
+test_call_busy_ended_call_keeps_a_non_xpt_follow() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    DSD_SNPRINTF(state.dmr_branding_sub, sizeof state.dmr_branding_sub, "%s", "");
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    dsd_qt::MetricsModel model;
+
+    dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_DMR_BS_VOICE_POS, 0U, 4242U, 77U);
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.observed_m = dsd_decode_now_mono_s();
+    expect("a non-XPT DMR call opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    model.refresh(&opts, &state);
+    expect("a followed non-XPT call is busy", model.slot1CallState() == DSD_APP_CALL_LINE_ACTIVE && model.callBusy());
+
+    expect("the non-XPT call ends", dsd_call_state_end(&state, 0U, dsd_decode_now_mono_s()) == 1);
+    model.refresh(&opts, &state);
+    expect("a followed non-XPT channel stays busy with its line ended",
+           model.slot1CallState() == DSD_APP_CALL_LINE_ENDED && model.slot2CallState() != DSD_APP_CALL_LINE_ACTIVE
+               && model.callBusy());
+
+    opts.trunk_is_tuned = 0;
+    model.refresh(&opts, &state);
+    expect("the release ends busy", !model.callBusy());
+    freeState(&state);
+}
+
 /* The Monitor site identity and the Spectrum carrier identity read the received identity record through the shared
    view: only what this carrier sent, never the Phase 2 seed or decoder state another carrier left, with no latch of
    their own. The record keeps the last heard values (dimmed: siteConfirmed and carrierIdentityLive false) until a
@@ -3072,6 +3105,7 @@ main(int argc, char** argv) {
     test_lead_slot_change_alone_notifies();
     test_two_slot_carrier_mirrors_the_decoder();
     test_call_busy_follows_the_voice_channel();
+    test_call_busy_ended_call_keeps_a_non_xpt_follow();
     test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 0);
     test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 1);
     test_quality_without_identity(DSD_SYNC_NXDN_POS, 0);
