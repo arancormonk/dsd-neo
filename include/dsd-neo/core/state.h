@@ -2035,6 +2035,10 @@ struct dsd_state {
     uint8_t dmr_enc_class[2];         /* applied classification: 0 none, 1 clear, 2 encrypted */
     uint8_t dmr_enc_class_est[2];     /* classification corroborated (strong LC or matching repeat) */
     uint8_t dmr_enc_class_pending[2]; /* quarantined contradicting candidate (0 none, 1 clear, 2 enc) */
+    /* The receiver moved off a carrier or released its call, and the slot's call has not said yet whether it is
+     * encrypted (dmr_enc_class_hold()): its voice is held, as an X2-TDMA call's opening frames are, until its own LC or
+     * PI header says (dmr_enc_class_release_hold()). 0 at a session's first landing. */
+    uint8_t dmr_enc_class_held[2];
 
     /* Per-slot, per-call DMR vendor late-entry mode (DMR_LE_VENDOR_* in <dsd-neo/protocol/dmr/dmr.h>, 0 none), set
      * from verified Kirisun/Hytera Enhanced signalling. The user's late-entry setting stays in opts->dmr_le, which

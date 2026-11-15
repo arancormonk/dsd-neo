@@ -3764,8 +3764,10 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     dsd_engine_forget_carrier_decoding(opts, state);
     /* Nor did the left calls say how the next carrier's are encrypted: its frames before their own LC decrypt with no
        privacy bit and no talkgroup key of theirs, a key set directly staying the user's. Not in the forget above,
-       which a stream gap runs too: a call it reopens on the same carrier keys as before. */
+       which a stream gap runs too: a call it reopens on the same carrier keys as before. Until each slot's call there
+       says whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()). */
     dmr_forget_call_privacy(state);
+    dmr_enc_class_hold(state);
     /* The digital voice level starts the next carrier's reception at its start gain (issue #518). Not in the forget
        above, which a stream gap runs too: that is the same carrier, whose transmissions decide. */
     dsd_voice_level_reset(state, -1);

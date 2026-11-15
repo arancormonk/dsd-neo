@@ -2073,8 +2073,19 @@ mbe_dmr_slot_crypto_class(const dsd_state* state, int slot, const mbe_frame_ctx_
 typedef struct {
     int admitted;               // dsd_receive_current_allows()
     dsd_voice_crypto_class cls; // DMR's slot class, NXDN's and dPMR's cipher class, X2-TDMA's; CLEAR for the others
-    int crypto_unknown;         // the owner has not said yet (an X2-TDMA call's opening frames): not decodable
+    int crypto_unknown;         // the owner has not said yet (an X2-TDMA call's opening frames, a DMR call's held ones)
 } mbe_frame_judgement;
+
+// A DMR slot's frame judged clear only because nothing has said otherwise, on a slot whose call has not said yet
+// whether it is encrypted since the receiver moved or released its call (dsd_state::dmr_enc_class_held): its
+// encryption is unknown, as an X2-TDMA call's opening frames are, until its LC or PI header says. A key forced onto
+// every frame (dsd_key_dmr_forced_clear()) keys it as before.
+static void
+mbe_dmr_slot_judge(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx, mbe_frame_judgement* j) {
+    j->cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx);
+    j->crypto_unknown =
+        j->cls == DSD_VOICE_CRYPTO_CLEAR && state->dmr_enc_class_held[slot] != 0U && !dsd_key_dmr_forced_clear(state);
+}
 
 // X2-TDMA's encryption on the slot, as processX2TDMAvoice() set it for the burst being decoded. X2 has no
 // decryption: an encrypted frame is undecryptable.
@@ -2085,10 +2096,10 @@ mbe_x2_slot_judge(const dsd_state* state, int slot, mbe_frame_judgement* j) {
     j->cls = crypto == DSD_X2TDMA_CRYPTO_ENCRYPTED ? DSD_VOICE_CRYPTO_UNDECRYPTABLE : DSD_VOICE_CRYPTO_CLEAR;
 }
 
-// Whether an X2-TDMA frame plays under the user's options. One whose encryption is not known yet plays only where it
-// would play either way, clear or encrypted: with the encrypted-audio mute off and reverse mute off.
+// Whether a DMR or X2-TDMA frame plays under the user's options. One whose encryption is not known yet plays only where
+// it would play either way, clear or encrypted: with the encrypted-audio mute off and reverse mute off.
 static int
-mbe_x2_frame_audible(const dsd_opts* opts, int slot, const mbe_frame_judgement* j) {
+mbe_slot_frame_audible(const dsd_opts* opts, int slot, const mbe_frame_judgement* j) {
     if (j->crypto_unknown) {
         return dsd_voice_crypto_class_audible(opts, slot, DSD_VOICE_CRYPTO_CLEAR)
                && dsd_voice_crypto_class_audible(opts, slot, DSD_VOICE_CRYPTO_UNDECRYPTABLE);
@@ -2100,7 +2111,7 @@ static mbe_frame_judgement
 mbe_frame_judge(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
     mbe_frame_judgement j = {dsd_receive_current_allows(opts, state, slot) != 0, DSD_VOICE_CRYPTO_CLEAR, 0};
     switch (frame_ctx->protocol) {
-        case DSD_VOICE_PROTOCOL_DMR: j.cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx); break;
+        case DSD_VOICE_PROTOCOL_DMR: mbe_dmr_slot_judge(state, slot, frame_ctx, &j); break;
         case DSD_VOICE_PROTOCOL_NXDN:
         case DSD_VOICE_PROTOCOL_DPMR: j.cls = dsd_nxdn_voice_crypto_class(state); break;
         case DSD_VOICE_PROTOCOL_X2TDMA: mbe_x2_slot_judge(state, slot, &j); break;
@@ -2146,8 +2157,8 @@ mbe_frame_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, con
         return 1;
     }
     switch (frame_ctx->protocol) {
-        case DSD_VOICE_PROTOCOL_DMR: return !dsd_voice_crypto_class_audible(opts, slot, j->cls);
-        case DSD_VOICE_PROTOCOL_X2TDMA: return !mbe_x2_frame_audible(opts, slot, j);
+        case DSD_VOICE_PROTOCOL_DMR:
+        case DSD_VOICE_PROTOCOL_X2TDMA: return !mbe_slot_frame_audible(opts, slot, j);
         case DSD_VOICE_PROTOCOL_P25P1: return !p25_crypto_audio_output_permitted(opts, state, 0);
         case DSD_VOICE_PROTOCOL_P25P2:
             return state->p25_p2_audio_allowed[slot] == 0 || !p25_crypto_audio_output_permitted(opts, state, slot);

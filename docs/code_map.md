@@ -3281,6 +3281,16 @@ suite runs under this compiler.
   keystream clears them. A loaded key for that ALG ID, a keyed transform applied to the frame (Basic or Hytera
   Privacy, forced with `-4` too, `-S`, a mapped Vertex keystream), or forced clear (`dsd_key_dmr_forced_clear()`)
   settles its decryptability in the frame classification; no mixer applies a forced-privacy unmute override.
+  After the receiver moves off a carrier or releases its call (`dmr_enc_class_hold()`: every carrier boundary but a
+  stream gap, every accepted trunk tune that leaves the carrier, the release, a trunk-scan visit), each slot's
+  encryption is unknown until its call's own voice LC (`dmr_enc_class_observe()`) or PI header (`dmr_pi()`) says:
+  a DMR frame judged clear only because nothing has said otherwise is unknown there (`mbe_dmr_slot_judge()`,
+  `dsd_state::dmr_enc_class_held`), with X2-TDMA's rule below. A key forced onto every frame
+  (`dsd_key_dmr_forced_clear()`) keys it as before. Neither a session's first landing nor a no-carrier pass or a
+  terminator on the carrier holds anything, so those frames play as before. A call whose voice LC header comes first
+  loses nothing; one joined mid-call is held until the first embedded LC its superframes complete (at most 12 frames,
+  240 ms, over a sweep of every join phase). Test: `ENGINE_NO_CARRIER_RESET`
+  (`test_dmr_voice_held_until_the_call_says()`).
   P25 Phase 1 and Phase 2 use `p25_crypto_audio_output_permitted()`; Phase 2 also needs its decode gate. NXDN and
   dPMR use `nxdn_cipher_type` and the key the vocoder applies
   (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). X2-TDMA is judged per timeslot and
@@ -3291,7 +3301,7 @@ suite runs under this compiler.
   heals keeps it), and are unknown in a transmission's first superframe. The superframe a call opens on keeps the
   value of one read before any call was open with no hunt gap between them (direct mode, whose first superframe
   nothing corroborates, so the call opens on its second). An unknown frame is never decodable, and it
-  plays, records and is captured only where clear and encrypted frames both would (`mbe_x2_frame_audible()`: the
+  plays, records and is captured only where clear and encrypted frames both would (`mbe_slot_frame_audible()`: the
   encrypted-audio mute off and reverse mute off). A clear <-> encrypted change inside a call applies from the second
   burst (at most three frames, 60 ms, once per change). The mixers read X2's verdict from `mbe_slot_muted`, as DMR's
   (test: `X2TDMA_VOICE_CRYPTO`). YSF, D-STAR and ProVoice classify no encryption. The
@@ -12347,21 +12357,22 @@ Private per-protocol modules worth knowing about:
     beside the followed one. Then, as the release does, nothing of the left calls' crypto stays
     (`dmr_sm_leave_carrier()`): their privacy with the FID (`dmr_forget_call_privacy()`), both slots' ALG, key ID and
     MI (`payload_*`, `payload_miP`/`miN`) and MI chain (`dmr_vcrypt_forget()`), so the next carrier's frames before
-    their own PI or LC are judged as on a first landing; a rigctl tune keeps the symbol timeline, so a trusted chain
-    would otherwise step the left call's MI on and decrypt them with it. The tune itself forgets only what decrypts
-    (`dmr_forget_call_decryption()` in `dsd_engine_tune_leaves_carrier()`), so the left calls' final rows, rendered at
-    their end after it, keep the vendor annotations their FID names (`TXI;`, `PRIORITY;`). DMR's other tunes that leave
-    a carrier forget the same ALG, key ID, MI and MI chain once the tune is accepted (`dmr_sm_note_carrier_tune()`,
-    given the receiver's frequency before the tune): the Capacity Plus rest move (`dmr_slco_tune_and_reset()`), the
-    Connect Plus data tune, a control channel probe and a settle tune (these two read it from the machine's own
-    attribution, `dmr_sm_attributed_receiver()`, so the hunt adds no rigctl round trip). The tune already forgot their
-    privacy bit, and they keep the FID. Tests: `ENGINE_NO_CARRIER_RESET` (`test_dmr_trunk_hop_leaves_no_call_crypto()`,
-    `test_dmr_rest_move_leaves_no_call_crypto()`). A follow of the carrier the receiver is
-    already on (a grant for the composite control channel's own payload, a Cap+ status naming the rest channel it parks
-    on, an XPT entry where it parks) adopts it in place: no call there ends, the slots keep that carrier's records
-    (identity, binding, follow time) and voice timers, the grant names its slot only when the slot's record does not
-    already name its call, its identity is not published into a call on the air that already names one, and no block
-    state is reset.
+    their own PI or LC decrypt with none of it, and are held until that PI or LC says whether the call is encrypted
+    (`dmr_enc_class_hold()`, see the encrypted-audio verdict); a rigctl tune keeps the symbol timeline, so a trusted
+    chain would otherwise step the left call's MI on and decrypt them with it. The tune itself forgets only what
+    decrypts (`dmr_forget_call_decryption()` in `dsd_engine_tune_leaves_carrier()`), so the left calls' final rows,
+    rendered at their end after it, keep the vendor annotations their FID names (`TXI;`, `PRIORITY;`). DMR's other tunes
+    that leave a carrier forget the same ALG, key ID, MI and MI chain once the tune is accepted
+    (`dmr_sm_note_carrier_tune()`, given the receiver's frequency before the tune): the Capacity Plus rest move
+    (`dmr_slco_tune_and_reset()`), the Connect Plus data tune, a control channel probe and a settle tune (these two read
+    it from the machine's own attribution, `dmr_sm_attributed_receiver()`, so the hunt adds no rigctl round trip). The
+    tune already forgot their privacy bit, and they keep the FID. Tests: `ENGINE_NO_CARRIER_RESET`
+    (`test_dmr_trunk_hop_leaves_no_call_crypto()`, `test_dmr_rest_move_leaves_no_call_crypto()`). A follow of the
+    carrier the receiver is already on (a grant for the composite control channel's own payload, a Cap+ status naming
+    the rest channel it parks on, an XPT entry where it parks) adopts it in place: no call there ends, the slots keep
+    that carrier's records (identity, binding, follow time) and voice timers, the grant names its slot only when the
+    slot's record does not already name its call, its identity is not published into a call on the air that already
+    names one, and no block state is reset.
   - Ledger. A follow clears the ledger and notes the followed call (`dmr_sm_policy_note_follow()`); a preemption
     commits its cooldown (`dsd_tg_policy_commit_preemption()`) once the new carrier's tune was accepted, a Hold
     takeover commits none, and a deferred or failed tune changes nothing; every release clears the ledger

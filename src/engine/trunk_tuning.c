@@ -281,8 +281,10 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     // control channel leaves nothing the stash could legitimately be restored onto. The live
     // service options and the classification they establish belong to the channel being left;
     // a stale privacy bit here would mute the opening bursts of the next tuned call until its
-    // first LC decodes. Nor does the next call key from the left calls' talkgroups.
+    // first LC decodes. Nor does the next call key from the left calls' talkgroups. Until each slot's next call says
+    // whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()).
     dmr_forget_call_privacy(state);
+    dmr_enc_class_hold(state);
     state->payload_algid = 0;
     state->payload_algidR = 0;
     state->payload_keyid = 0;
@@ -1130,8 +1132,10 @@ dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_h
            another without a release, a move, a rest channel change): its frames before their own LC decrypt with no
            privacy bit of theirs and no talkgroup key of theirs, a key set directly staying the user's. The FID stays
            for the DMR machine, which ends those calls after this tune, their final rows rendering by it, and forgets
-           it then with the ALG, key ID and MI (dmr_trunk_sm.c). */
+           it then with the ALG, key ID and MI (dmr_trunk_sm.c). Until each slot's call there says whether it is
+           encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()). */
         dmr_forget_call_decryption(state);
+        dmr_enc_class_hold(state);
     }
 }
 

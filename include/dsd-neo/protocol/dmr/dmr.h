@@ -48,6 +48,14 @@ unsigned int dmr_enc_class_observe(dsd_state* state, uint8_t slot, unsigned int 
 void dmr_enc_class_force(dsd_state* state, uint8_t slot, int encrypted);
 void dmr_enc_class_reset(dsd_state* state, uint8_t slot);
 int dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot);
+/** The receiver moved off a carrier (a hop, a move, a rest channel, a probe, a scan step, a user tune) or released its
+ * call: until each slot's call says whether it is encrypted, by its own LC (dmr_enc_class_observe()) or PI header,
+ * its voice is held (dsd_state::dmr_enc_class_held), so the next carrier's frames before that are neither played nor
+ * recorded as audio. Not at a no-carrier pass or a stream gap, which stay on the carrier, nor at a session's first
+ * landing. */
+void dmr_enc_class_hold(dsd_state* state);
+/** The slot's call said whether it is encrypted (an LC or a PI header the decoder took): its voice is held no more. */
+void dmr_enc_class_release_hold(dsd_state* state, uint8_t slot);
 int dmr_enc_class_established_clear(const dsd_state* state, uint8_t slot);
 
 /* Vendor late-entry modes, per slot and per call (issue #657). Values stored in dsd_state.dmr_le_vendor[]. A

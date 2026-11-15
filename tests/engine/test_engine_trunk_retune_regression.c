@@ -248,6 +248,11 @@ dmr_forget_call_decryption(dsd_state* state) {
 }
 
 void
+dmr_enc_class_hold(dsd_state* state) {
+    state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 1U;
+}
+
+void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_frame_sync_reset_mod_state(void) {
     g_frame_sync_reset_calls++;

@@ -3276,11 +3276,37 @@ dmr_hop_done(dsd_opts* opts, dsd_state* state) {
     g_rigctl_setfreq_ok = 0;
 }
 
+/* A CRC-checked voice LC header on slot 1 for a group call on talkgroup @p tg: FID @p fid, service options @p so. */
+static void
+dmr_hop_voice_lc(dsd_opts* opts, dsd_state* state, uint8_t fid, uint8_t so, uint32_t tg) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    dmr_hop_put_bits(bits, 8U, fid, 8U);
+    dmr_hop_put_bits(bits, 16U, so, 8U);
+    dmr_hop_put_bits(bits, 24U, tg, 24U);
+    dmr_hop_put_bits(bits, 48U, 3003U, 24U);
+    uint32_t errors = 0U;
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_flco(opts, state, bits, 1U, &errors, 1U);
+}
+
+/* A CRC-checked DMRA PI header on slot 1: RC4 (ALG 0x21), key ID 5, MI 0x11223344, for talkgroup 303. */
+static void
+dmr_hop_pi_header(dsd_opts* opts, dsd_state* state) {
+    uint8_t pi[10] = {0x21U, 0x10U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_pi(opts, state, pi, 1U, 0U);
+}
+
 /* After a voice channel hop with no release, the next carrier's frames before their own PI or LC decrypt with nothing
    of the left call's: no ALG, key ID or MI, and no MI chain the left call's superframes stepped (a rigctl tune keeps
-   the symbol timeline, so a trusted chain would step on and decrypt with it). A clear call's first frame there is
-   played and recorded as it came, not run through the left call's keystream. The left call's history row, which its
-   end renders after the tune, keeps the annotations its FID names. The key loaded with -1 stays the user's. */
+   the symbol timeline, so a trusted chain would step on and decrypt with it). Until the call there says whether it is
+   encrypted, its frames are held: neither played nor recorded (test_dmr_voice_held_until_the_call_says()). Once its
+   voice LC header says clear, its frame is played and recorded as it came, not run through the left call's keystream.
+   The left call's history row, which its end renders after the tune, keeps the annotations its FID names. The key
+   loaded with -1 stays the user's. */
 static int
 test_dmr_trunk_hop_leaves_no_call_crypto(void) {
     static const char* const names[] = {"a grant for another channel", "a C_MOVE", "a status follow"};
@@ -3320,7 +3346,10 @@ test_dmr_trunk_hop_leaves_no_call_crypto(void) {
         DSD_SNPRINTF(what, sizeof what, "%s: no privacy bit or FID is left, the -1 key stays", names[kind]);
         rc |= expect_true(what, state->dmr_so == 0U && state->dmr_fid == 0U && state->R == 0x0102030405ULL);
         char recorded[49] = {0};
-        DSD_SNPRINTF(what, sizeof what, "%s: the next carrier's clear frame is recorded as it came", names[kind]);
+        DSD_SNPRINTF(what, sizeof what, "%s: a frame before the call's LC or PI header is held", names[kind]);
+        rc |= expect_true(what, !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        dmr_hop_voice_lc(opts, state, 0x00U, 0x00U, 303U);
+        DSD_SNPRINTF(what, sizeof what, "%s: once its LC says clear, its frame is recorded as it came", names[kind]);
         rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded)
                                     && memcmp(recorded, reference, sizeof recorded) == 0);
         dmr_hop_done(opts, state);
@@ -3331,8 +3360,9 @@ test_dmr_trunk_hop_leaves_no_call_crypto(void) {
 
 /* The Capacity Plus rest move off a voice channel (the SLCO's control channel tune, with no release) leaves the left
    call's decryption behind as a follow does: no ALG, key ID or MI, no MI chain its superframes stepped and no privacy
-   bit, so the rest channel's frames before their own PI or LC are not run through the left call's keystream. A clear
-   frame there is recorded as it came. The key loaded with -1 stays the user's. */
+   bit, so the rest channel's frames before their own PI or LC are not run through the left call's keystream. They are
+   held until the call says whether it is encrypted; once its LC says clear, its frame is recorded as it came. The key
+   loaded with -1 stays the user's. */
 static int
 test_dmr_rest_move_leaves_no_call_crypto(void) {
     char frame[4][24];
@@ -3362,11 +3392,140 @@ test_dmr_rest_move_leaves_no_call_crypto(void) {
                       state->dmr_so == 0U && state->dmr_soR == 0U && state->R == 0x0102030405ULL);
     state->tg_hold = 0U; // the hold would mute the slot's call on talkgroup 101, whose frame this stands in for
     char recorded[49] = {0};
-    rc |= expect_true("a rest move: the rest channel's clear frame is recorded as it came",
+    rc |= expect_true("a rest move: a frame before the call's LC or PI header is held",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+    dmr_hop_voice_lc(opts, state, 0x00U, 0x00U, 303U);
+    rc |= expect_true("a rest move: once its LC says clear, the rest channel's frame is recorded as it came",
                       dmr_hop_record_frame(opts, state, frame, recorded)
                           && memcmp(recorded, reference, sizeof recorded) == 0);
     dmr_hop_done(opts, state);
     free_test_runtime(opts, state);
+    return rc;
+}
+
+/* How the call on the carrier the receiver moved to says whether it is encrypted, and the keys loaded for it. */
+typedef enum {
+    DMR_HELD_CLEAR_HEADER_FIRST = 0, /* a normal grant: the voice LC header (clear) before any voice */
+    DMR_HELD_CLEAR_LATE,             /* joined mid-call: voice first, then an LC saying clear */
+    DMR_HELD_BP_LATE,                /* voice first, then an LC saying Basic Privacy, with a -b key */
+    DMR_HELD_PI_KEYED,               /* voice first, then a PI header naming RC4, with that -1 key loaded */
+    DMR_HELD_PI_NO_KEY,              /* voice first, then a PI header naming RC4, no key */
+} dmr_held_case;
+
+static void
+dmr_held_keys(dsd_state* state, dmr_held_case c) {
+    state->R = c == DMR_HELD_PI_KEYED ? 0x0102030405ULL : 0ULL;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = c == DMR_HELD_PI_KEYED ? 1U : 0U;
+    state->K = c == DMR_HELD_BP_LATE ? 70ULL : 0ULL;
+    state->basic_key_present = c == DMR_HELD_BP_LATE ? 1U : 0U;
+}
+
+static void
+dmr_held_announce(dsd_opts* opts, dsd_state* state, dmr_held_case c) {
+    if (c == DMR_HELD_PI_KEYED || c == DMR_HELD_PI_NO_KEY) {
+        dmr_hop_pi_header(opts, state);
+    } else if (c == DMR_HELD_BP_LATE) {
+        dmr_hop_voice_lc(opts, state, 0x10U, 0x40U, 303U);
+    } else {
+        dmr_hop_voice_lc(opts, state, 0x00U, 0x00U, 303U);
+    }
+}
+
+/* A fresh decoder (a session's first landing) hearing the case's call: the frame after the call says, in @p after (1
+   when recorded). A frame before it plays as on any first landing, unheld (1 in @p before_recorded), as it came
+   (@p before). */
+static int
+dmr_held_reference(dmr_held_case c, char frame[4][24], int* before_recorded, char before[49], char after[49]) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 0;
+    }
+    dmr_held_keys(state, c);
+    if (c == DMR_HELD_CLEAR_HEADER_FIRST) {
+        dmr_held_announce(opts, state, c);
+        *before_recorded = 1;
+    } else {
+        *before_recorded = dmr_hop_record_frame(opts, state, frame, before);
+        dmr_held_announce(opts, state, c);
+    }
+    const int recorded = dmr_hop_record_frame(opts, state, frame, after);
+    free_test_runtime(opts, state);
+    return recorded;
+}
+
+/* The receiver leaves for another carrier by a voice channel hop with no release (@p release 0), or releases its call
+   (1); then the case's call. Its frames before its own LC or PI header says whether it is encrypted are held: neither
+   played nor recorded. From then on the normal rules apply, as on a fresh decoder that heard the same: a clear call
+   plays, Basic Privacy decrypts with the -b key, an RC4 call decrypts with its key and stays muted without one. */
+static int
+dmr_held_case_run(dmr_held_case c, int release, char frame[4][24]) {
+    static const char* const names[] = {"voice LC header first", "clear, joined mid-call", "Basic Privacy with -b",
+                                        "PI header, keyed", "PI header, no key"};
+    const char* how = release ? "after a release" : "after a hop";
+    char what[192];
+    int before_ref = 0;
+    char as_it_came[49] = {0};
+    char reference[49] = {0};
+    const int reference_recorded = dmr_held_reference(c, frame, &before_ref, as_it_came, reference);
+    DSD_SNPRINTF(what, sizeof what, "%s: a fresh decoder plays the frame before the call says", names[c]);
+    int rc = expect_true(what, before_ref);
+    if (c == DMR_HELD_BP_LATE || c == DMR_HELD_PI_KEYED) {
+        DSD_SNPRINTF(what, sizeof what, "%s: a fresh decoder decrypts the frame after it", names[c]);
+        rc |= expect_true(what, memcmp(reference, as_it_came, sizeof reference) != 0);
+    }
+    DSD_SNPRINTF(what, sizeof what, "%s: a fresh decoder %s the frame after it", names[c],
+                 c == DMR_HELD_PI_NO_KEY ? "mutes" : "plays");
+    rc |= expect_true(what, reference_recorded == (c != DMR_HELD_PI_NO_KEY));
+
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (release) {
+        state->payload_algid = 0x21;
+        state->dmr_so = 0x40U;
+        dsd_engine_release_tuned_call_state(opts, state);
+    } else {
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    }
+    dmr_held_keys(state, c);
+    char recorded[49] = {0};
+    if (c == DMR_HELD_CLEAR_HEADER_FIRST) {
+        dmr_held_announce(opts, state, c);
+    } else {
+        DSD_SNPRINTF(what, sizeof what, "%s %s: a frame before the call says is held, not recorded", names[c], how);
+        rc |= expect_true(what, !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        dmr_held_announce(opts, state, c);
+    }
+    const int after = dmr_hop_record_frame(opts, state, frame, recorded);
+    if (c == DMR_HELD_PI_NO_KEY) {
+        DSD_SNPRINTF(what, sizeof what, "%s %s: with no key the call stays muted", names[c], how);
+        rc |= expect_true(what, !after && state->mbe_slot_muted[0] == 1U);
+    } else {
+        DSD_SNPRINTF(what, sizeof what, "%s %s: once the call says, its frame plays as on a fresh decoder", names[c],
+                     how);
+        rc |= expect_true(what, after && memcmp(recorded, reference, sizeof recorded) == 0);
+    }
+    if (!release) {
+        dmr_hop_done(opts, state);
+    }
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* After the receiver moves off a carrier or releases its call, each slot's encryption is unknown until its call's own
+   LC or PI header says, and its voice is held till then; a session's first landing is not. */
+static int
+test_dmr_voice_held_until_the_call_says(void) {
+    char frame[4][24];
+    int rc = expect_true("an active voice frame", dmr_hop_active_frame(frame) == 0);
+    for (int release = 0; release <= 1; release++) {
+        for (int c = DMR_HELD_CLEAR_HEADER_FIRST; c <= DMR_HELD_PI_NO_KEY; c++) {
+            rc |= dmr_held_case_run((dmr_held_case)c, release, frame);
+        }
+    }
     return rc;
 }
 
@@ -3406,6 +3565,7 @@ test_trunk_follow_forgets_dmr_call_privacy(void) {
     free_test_runtime(opts, state);
     rc |= test_dmr_trunk_hop_leaves_no_call_crypto();
     rc |= test_dmr_rest_move_leaves_no_call_crypto();
+    rc |= test_dmr_voice_held_until_the_call_says();
     return rc;
 }
 

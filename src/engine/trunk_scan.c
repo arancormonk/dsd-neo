@@ -2524,8 +2524,10 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     // say nothing of how this visit's calls are encrypted: a stale privacy bit would decrypt this carrier's frames
     // before their own LC with a key set directly. Nor does a slot's next call key from the talkgroups the target's or
     // the left target's calls keyed from. The raw snapshot keeps the service options and vendor evidence only for
-    // rollback to a carrier that a failed switch never left (issue #657).
+    // rollback to a carrier that a failed switch never left (issue #657). Until each slot's call there says whether it
+    // is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()).
     dmr_forget_call_privacy(state);
+    dmr_enc_class_hold(state);
     state->trunk_chan_map_seq = trunk_scan_next_chan_map_seq(coord, state->trunk_chan_map_seq);
     rt->snapshot.site.trunk_chan_map_seq = state->trunk_chan_map_seq;
 }

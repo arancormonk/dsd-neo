@@ -27349,6 +27349,12 @@ dmr_forget_call_privacy(dsd_state* state) {
     }
 }
 
+/* From the same source: a target visit holds each slot's voice until its call says whether it is encrypted. */
+void
+dmr_enc_class_hold(dsd_state* state) {
+    state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 1U;
+}
+
 /* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS.
    The received-tone reset is mirrored from the real function (issue #522), so a switch that
    stopped calling it, or restored a target's tone after it, shows up here. */

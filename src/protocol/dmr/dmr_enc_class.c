@@ -43,6 +43,7 @@ unsigned int
 dmr_enc_class_observe(dsd_state* state, uint8_t slot, unsigned int so, int strong) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
     const uint8_t obs = (so & 0x40U) != 0U ? DMR_ENC_CLASS_ENC : DMR_ENC_CLASS_CLEAR;
+    dmr_enc_class_release_hold(state, slot);
 
     if (strong) {
         state->dmr_enc_class[idx] = obs;
@@ -84,11 +85,28 @@ dmr_enc_class_observe(dsd_state* state, uint8_t slot, unsigned int so, int stron
 void
 dmr_enc_class_force(dsd_state* state, uint8_t slot, int encrypted) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
+    dmr_enc_class_release_hold(state, slot);
     state->dmr_enc_class[idx] = encrypted ? DMR_ENC_CLASS_ENC : DMR_ENC_CLASS_CLEAR;
     state->dmr_enc_class_est[idx] = 1U;
     state->dmr_enc_class_pending[idx] = DMR_ENC_CLASS_NONE;
 }
 
+void
+dmr_enc_class_hold(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->dmr_enc_class_held[0] = 1U;
+    state->dmr_enc_class_held[1] = 1U;
+}
+
+void
+dmr_enc_class_release_hold(dsd_state* state, uint8_t slot) {
+    state->dmr_enc_class_held[dmr_enc_class_slot_index(slot)] = 0U;
+}
+
+/* The slot's classification only: a hold stays until the slot's call says (a terminator or a no-carrier pass on the
+   carrier the receiver moved to says nothing of the next call there). */
 void
 dmr_enc_class_reset(dsd_state* state, uint8_t slot) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
