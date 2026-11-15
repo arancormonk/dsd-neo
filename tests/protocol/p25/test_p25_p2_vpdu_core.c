@@ -2350,12 +2350,66 @@ test_ext_forms_ack_label(void) {
     return rc;
 }
 
+/* TSBK 0x1D Radio Unit Monitor Command (TIA-102.AABC-D §6.2.24.1): TX Time octet 2, SM bit 7 and TX Multiplier bits
+   1-0 of octet 3, Source Address 4-6, Target Address 7-9. It is current in Phase 1; only its Phase 2 opcode 0x5D is
+   obsolete. */
+static int
+test_tsbk_0x1d_rum_fields(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[0] = 0x07;
+    MAC[1] = 0x5D;
+    MAC[2] = 0x05;
+    MAC[3] = 0x82;
+    put_u24_ull(MAC, 4, 0x000064);
+    put_u24_ull(MAC, 7, 0x0000C8);
+    rc |= expect_true("0x1D decoded", decode_capturing(&opts, &state, MAC, 1) == 0);
+    rc |= expect_contains("0x1D fields", g_vpdu_out, "Target [200] Source [100] Time [5] Mult [2] Silent");
+    rc |= expect_lacks("0x1D not obsolete", g_vpdu_out, "Obsolete");
+    rc |= expect_contains("0x1D notice", recent_notice(&state, 0U), "RUM Target: 200 Source: 100 Time: 5 Mult: 2");
+    dsd_state_ext_free_all(&state);
+
+    /* The Phase 2 0x5D stays the obsolete form. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x5D;
+    rc |= expect_true("0x5D decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("0x5D obsolete", g_vpdu_out, "Radio Unit Monitor Command - Obsolete");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* TSBK 0x2E Authentication Command (TIA-102.AABC-D §6.2.3): octet 2 reserved, target SUID octets 3-9. */
+static int
+test_tsbk_0x2e_auth_cmd(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[0] = 0x07;
+    MAC[1] = 0x6E;
+    put_fqid_tail_ull(MAC, 3, 0xBEE00, 0x123, 0x00ABCD);
+    rc |= expect_true("0x2E decoded", decode_capturing(&opts, &state, MAC, 1) == 0);
+    rc |= expect_contains("0x2E label", g_vpdu_out, "Authentication Command (obsolete)");
+    rc |= expect_contains("0x2E target", g_vpdu_out, "Target [BEE00:123.43981]");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 run_cases(void) {
     int rc = 0;
 
     rc |= test_status_user_then_unit();
     rc |= test_ext_forms_ack_label();
+    rc |= test_tsbk_0x1d_rum_fields();
+    rc |= test_tsbk_0x2e_auth_cmd();
 
     // Case 1: SACCH, PTT opcode (0x01) with basic header → JSON emits summary "PTT"
     {

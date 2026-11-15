@@ -4775,6 +4775,54 @@ p25p2_vpdu_handle_radio_unit_monitor_abbreviated(p25p2_vpdu_ctx* ctx) {
                                  multiplier, silent ? " Silent" : "");
 }
 
+/* Phase 1 TSBK 0x1D Radio Unit Monitor Command (TIA-102.AABC-D §6.2.24.1 Fig 6.2.24-1): TX Time octet 2, SM bit 7 and
+   TX Multiplier bits 1-0 of octet 3, Source Address octets 4-6 (the unit that monitors), Target Address octets 7-9
+   (the unit monitored). Its Phase 2 opcode 0x5D is the obsolete form (TIA-102.BBAD-A Fig 82). */
+static void
+p25p2_vpdu_handle_radio_unit_monitor_p1(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    const int len_a = ctx->len_a;
+    int transmit_time = (int)MAC[2 + len_a];
+    int silent = ((MAC[3 + len_a] & 0x80U) != 0U);
+    int multiplier = (int)(MAC[3 + len_a] & 0x03U);
+    int source = p25p2_vpdu_u24(MAC, 4 + len_a);
+    int target = p25p2_vpdu_u24(MAC, 7 + len_a);
+
+    DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Abbreviated");
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Time [%d] Mult [%d]%s", target, source, transmit_time, multiplier,
+                silent ? " Silent" : "");
+    p25p2_vpdu_publish_activityf(ctx->state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
+                                 "RUM Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time,
+                                 multiplier, silent ? " Silent" : "");
+}
+
+static void
+p25p2_vpdu_handle_radio_unit_monitor_obsolete(p25p2_vpdu_ctx* ctx) {
+    if (p25p2_vpdu_is_bridged_p1(ctx)) {
+        p25p2_vpdu_handle_radio_unit_monitor_p1(ctx);
+        return;
+    }
+    DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Obsolete");
+}
+
+/* Phase 1 TSBK 0x2E Authentication Command (TIA-102.AABC-D §6.2.3 Fig 6.2.3-1, obsolete there): octet 2 reserved, the
+   target's SUID in octets 3-9 (WACN, System ID, Target ID). It asks the target to start authenticating; Phase 2 has no
+   message on its MAC opcode 0x6E. */
+static void
+p25p2_vpdu_handle_authentication_command_p1(const p25p2_vpdu_ctx* ctx) {
+    if (!p25p2_vpdu_is_bridged_p1(ctx)) {
+        return;
+    }
+    const unsigned long long int* MAC = ctx->mac;
+    const int len_a = ctx->len_a;
+    int target_wacn = p25p2_vpdu_fqid_wacn(MAC, 3 + len_a);
+    int target_sys = p25p2_vpdu_fqid_sysid(MAC, 3 + len_a);
+    int target = p25p2_vpdu_u24(MAC, 7 + len_a);
+
+    DSD_FPRINTF(stderr, "\n Authentication Command (obsolete)");
+    DSD_FPRINTF(stderr, "\n  Target [%05X:%03X.%d]", target_wacn, target_sys, target);
+}
+
 static void
 p25p2_vpdu_handle_radio_unit_monitor_enhanced_abbreviated(p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
@@ -4961,7 +5009,7 @@ p25p2_vpdu_dispatch_block_58_primary(p25p2_vpdu_ctx* ctx, int opcode) {
         case 0x4A: p25p2_vpdu_handle_telephone_interconnect_answer_request(ctx); break;
         case 0x4C: p25p2_vpdu_handle_radio_unit_monitor_abbreviated(ctx); break;
         case 0x58: p25p2_vpdu_handle_status_update_abbreviated(ctx); break;
-        case 0x5D: DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Obsolete"); break;
+        case 0x5D: p25p2_vpdu_handle_radio_unit_monitor_obsolete(ctx); break;
         case 0x5E: p25p2_vpdu_handle_radio_unit_monitor_enhanced_abbreviated(ctx); break;
         default: return 0;
     }
@@ -4976,6 +5024,7 @@ p25p2_vpdu_dispatch_block_58_secondary(p25p2_vpdu_ctx* ctx, int opcode) {
         case 0x6A: p25p2_vpdu_handle_query_alert_affiliation_abbreviated(ctx, opcode); break;
         case 0x5C: p25p2_vpdu_handle_message_update_abbreviated(ctx); break;
         case 0x60: p25p2_vpdu_handle_ack_response_fne_abbreviated(ctx); break;
+        case 0x6E: p25p2_vpdu_handle_authentication_command_p1(ctx); break;
         case 0x76: p25p2_vpdu_handle_roaming_address_command(ctx); break;
         case 0x77: p25p2_vpdu_handle_roaming_address_update(ctx); break;
         default: return 0;

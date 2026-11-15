@@ -10139,6 +10139,9 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   0x1E Radio Unit Monitor Enhanced Command and 0x31 Authentication Demand, both multi-block, 0x37 Roaming Address
   Update) print octets 2-9 raw: no Phase 2 handler runs, so none writes a network table.
   Native lengths follow TIA-102.BBAD-A where sdrtrunk differs: 0x45 / 0xC5 are 8 / 12, 0x4A is 9 (`p25p2_mac_tables.c`).
+  TSBK 0x1D Radio Unit Monitor Command reads its Phase 1 layout (TX Time, SM, TX Multiplier, Source, Target; its Phase 2
+  opcode 0x5D is the obsolete form and prints as such), and TSBK 0x2E Authentication Command (obsolete in AABC-D, no
+  Phase 2 message on 0x6E) prints its target SUID.
   Tests: `P25_TSBK_BRIDGE_BOUNDARY`, `P25_MAC_LENGTHS`, `P25_MAC_SEGMENT`.
 - Unit registrations (`p25_aff_*` in `<dsd-neo/protocol/p25/p25_trunk_sm.h>`, `dsd_state::p25_aff_rid` /
   `p25_aff_assoc`). An accepted Unit Registration Response names the unit's home SUID (WACN, System ID, Source ID) and
