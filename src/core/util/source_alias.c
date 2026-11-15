@@ -7,8 +7,10 @@
  * @brief Source aliases (the radio ID list): the immutable row store, its lookups and its snapshot copy. Rows are
  * exact IDs, ranges or digit patterns, with optional policy. See docs/csv-formats.md, "Source ID List CSV".
  */
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/id_pattern.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -365,6 +367,12 @@ alias_row_names_mode(const dsd_source_alias_entry* winner) {
 
 int
 dsd_source_label_lookup(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name, size_t name_sz) {
+    return dsd_source_label_lookup_scoped(state, NULL, id, mode, mode_sz, name, name_sz);
+}
+
+int
+dsd_source_label_lookup_scoped(const dsd_state* state, const dsd_alias_scope* scope, uint32_t id, char* mode,
+                               size_t mode_sz, char* name, size_t name_sz) {
     label_out_clear(mode, mode_sz);
     label_out_clear(name, name_sz);
     const dsd_source_alias_store* s = alias_get(state);
@@ -377,7 +385,8 @@ dsd_source_label_lookup(const dsd_state* state, uint32_t id, char* mode, size_t 
     /* The group list's exact row supplies whatever the radio list did not: the name, the mode, or both. */
     char group_mode[sizeof(winner->mode)] = {0};
     char group_name[DSD_SOURCE_ALIAS_NAME_MAX] = {0};
-    (void)dsd_tg_policy_lookup_label(state, id, group_mode, sizeof(group_mode), group_name, sizeof(group_name));
+    (void)dsd_tg_policy_lookup_label_scoped(state, scope, id, group_mode, sizeof(group_mode), group_name,
+                                            sizeof(group_name));
     const char* label = named ? named->name : group_name;
     if (label[0] == '\0') {
         return 0; /* no name, no label: an unnamed row's mode is never shown on its own */
@@ -455,4 +464,125 @@ dsd_source_alias_copy_snapshot(dsd_state* dst, const dsd_state* src) {
     clone->snapshot_source_id = s->store_id;
     dsd_source_alias_install(dst, clone);
     return 0;
+}
+
+/* The DMR part of dsd_alias_scope_from_rxid(): the trunking system's network number (Tier III, Connect Plus) or, for
+ * Capacity Plus, which sends none, its site number. */
+static int
+alias_scope_dmr(const dsd_received_identity* rx, dsd_alias_scope* out) {
+    const uint32_t trunk = rx->dmr_trunk;
+    if ((trunk == DSD_RXID_DMR_TRUNK_TIER3 || trunk == DSD_RXID_DMR_TRUNK_CONNECT_PLUS)
+        && (rx->valid & DSD_RXID_DMR_NET)) {
+        out->a = (trunk << 8) | (trunk == DSD_RXID_DMR_TRUNK_TIER3 ? (uint32_t)(rx->dmr_t3_model & 0x3U) : 0U);
+        out->b = rx->dmr_net;
+        return 1;
+    }
+    if (trunk == DSD_RXID_DMR_TRUNK_CAPACITY_PLUS && (rx->valid & DSD_RXID_DMR_SITE)) {
+        out->a = trunk << 8;
+        out->b = rx->dmr_site;
+        return 1;
+    }
+    return 0;
+}
+
+/* The NXDN part: a Type-C location's category and system code, or a Type-D SRV_INFO system ID. */
+static int
+alias_scope_nxdn(const dsd_received_identity* rx, dsd_alias_scope* out) {
+    if (rx->valid & DSD_RXID_NXDN_LOCATION) {
+        out->a = 0x100U | rx->nxdn_category;
+        out->b = rx->nxdn_sys;
+        return 1;
+    }
+    if (rx->valid & DSD_RXID_NXDN_TYPED_SYSTEM) {
+        out->a = 0x200U;
+        out->b = rx->nxdn_typed_sys;
+        return 1;
+    }
+    return 0;
+}
+
+static int
+alias_scope_fill(const dsd_received_identity* rx, dsd_alias_scope* out) {
+    switch (rx->family) {
+        case DSD_RXID_FAMILY_P25:
+            if (!(rx->valid & DSD_RXID_P25_WACN)) {
+                return 0;
+            }
+            out->kind = DSD_ALIAS_SCOPE_P25;
+            out->a = rx->p25_wacn;
+            out->b = rx->p25_sysid;
+            return 1;
+        case DSD_RXID_FAMILY_DMR: out->kind = DSD_ALIAS_SCOPE_DMR; return alias_scope_dmr(rx, out);
+        case DSD_RXID_FAMILY_NXDN: out->kind = DSD_ALIAS_SCOPE_NXDN; return alias_scope_nxdn(rx, out);
+        case DSD_RXID_FAMILY_TETRA:
+            if (!(rx->valid & DSD_RXID_TETRA_NET)) {
+                return 0;
+            }
+            out->kind = DSD_ALIAS_SCOPE_TETRA;
+            out->a = rx->tetra_mcc;
+            out->b = rx->tetra_mnc;
+            return 1;
+        default: return 0;
+    }
+}
+
+int
+dsd_alias_scope_from_rxid(const struct dsd_received_identity* rx, dsd_alias_scope* out) {
+    if (!out) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!rx || !alias_scope_fill(rx, out)) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+        return 0;
+    }
+    out->valid = 1U;
+    return 1;
+}
+
+int
+dsd_alias_scope_current(const dsd_state* state, dsd_alias_scope* out) {
+    return dsd_alias_scope_from_rxid(state ? &state->rx_id : NULL, out);
+}
+
+int
+dsd_alias_scope_equal(const dsd_alias_scope* x, const dsd_alias_scope* y) {
+    const int x_valid = x && x->valid;
+    const int y_valid = y && y->valid;
+    if (!x_valid || !y_valid) {
+        return x_valid == y_valid;
+    }
+    return x->kind == y->kind && x->a == y->a && x->b == y->b;
+}
+
+static uint64_t
+alias_key_fold(uint64_t hash, uint64_t value) {
+    for (int i = 0; i < 8; i++) {
+        hash ^= (uint8_t)(value >> (8 * i));
+        hash *= DSD_FNV1A64_PRIME;
+    }
+    return hash;
+}
+
+uint64_t
+dsd_alias_name_key(const dsd_state* state) {
+    if (!state) {
+        return 0U;
+    }
+    uint64_t context = 0U;
+    unsigned int generation = 0U;
+    dsd_tg_policy_table_version(state, &context, &generation);
+    const dsd_source_alias_store* s = alias_get(state);
+    // A frontend copy names the live store it was copied from, so live and copy agree.
+    const uint64_t radio_list = s ? (s->snapshot_source_id ? s->snapshot_source_id : s->store_id) : 0U;
+    dsd_alias_scope scope;
+    (void)dsd_alias_scope_current(state, &scope);
+    uint64_t name_hash = DSD_FNV1A64_OFFSET_BASIS;
+    name_hash = alias_key_fold(name_hash, context);
+    name_hash = alias_key_fold(name_hash, generation);
+    name_hash = alias_key_fold(name_hash, radio_list);
+    name_hash = alias_key_fold(name_hash, s ? s->generation : 0U);
+    name_hash = alias_key_fold(name_hash, ((uint64_t)scope.kind << 8) | scope.valid);
+    name_hash = alias_key_fold(name_hash, ((uint64_t)scope.a << 32) | scope.b);
+    return name_hash ? name_hash : 1U;
 }

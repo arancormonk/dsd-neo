@@ -278,6 +278,42 @@ group_apply_tags_field(const group_policy_header* header, size_t field_count, ch
     }
 }
 
+/* The first column a group header does not model: past `id,mode,name`, its tags column, or its policy prefix. */
+static size_t
+group_first_unmodelled_column(const group_policy_header* header) {
+    if (header->policy_active) {
+        return 3U + header->prefix_len;
+    }
+    return header->basic_tags ? 4U : 3U;
+}
+
+/* A learned alias row dsd-neo wrote with its scope (a `scope=` cell past the modelled columns,
+ * <dsd-neo/core/alias_learn.h>) loads as the learned row it was: scoped, and replaceable by a later alias of that
+ * scope. Without one (or on a range or pattern row) the row loads as an imported row, as before. */
+static void
+group_apply_scope_field(const group_policy_header* header, const csv_row_origin* at, size_t field_count, char** fields,
+                        dsd_tg_policy_entry* entry) {
+    if (entry->kind != DSD_TG_POLICY_ROW_EXACT) {
+        return;
+    }
+    for (size_t i = group_first_unmodelled_column(header); i < field_count; i++) {
+        const char* cell = trim_ws(fields[i]);
+        dsd_alias_scope scope;
+        const int parsed = dsd_tg_policy_scope_parse(cell, &scope);
+        if (parsed == 0) {
+            continue;
+        }
+        if (parsed > 0) {
+            entry->scope = scope;
+            entry->source = DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS;
+        } else if (!at->quiet) {
+            LOG_WARN("WARNING: Group file '%s' row %u has invalid scope '%s'; loaded without it.\n", at->filename,
+                     at->row, cell);
+        }
+        return;
+    }
+}
+
 /* What one pass over a group file found so far. stats (may be NULL) is the dry-run validator's tally. With neither a
  * state nor a store the pass only hashes the rows it would store (hash_only); a quiet pass logs no row diagnostics
  * (the file's rows were reported when it was loaded), nor a file it cannot open (a check before a rewrite finds a
@@ -370,6 +406,7 @@ group_import_row(group_import_pass* pass, unsigned int row_count, char* buffer, 
     group_entry_init(&entry, id_start, id_end, kind, &pattern, mode_field, name_field, row_count, &mode_blocking);
     group_apply_policy_fields(header, &at, field_count, fields, &entry, mode_blocking);
     group_apply_tags_field(header, field_count, fields, &entry);
+    group_apply_scope_field(header, &at, field_count, fields, &entry);
     return group_commit_entry(pass, &entry, row_count, dropped_policy_alloc_rows);
 }
 

@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/embedded_alias.h>
@@ -30,27 +31,56 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/* The length of @p name cut to fit @p cap bytes with its NUL, at a UTF-8 character boundary: a continuation byte
+ * never starts the cut-off tail. */
+static size_t
+alias_learn_name_len(const char* name, size_t cap) {
+    size_t len = strlen(name);
+    if (len < cap) {
+        return len;
+    }
+    len = cap - 1U;
+    while (len > 0U && (((unsigned char)name[len]) & 0xC0U) == 0x80U) {
+        len--;
+    }
+    return len;
+}
+
 /**
- * @brief Learn an over-the-air alias as the source's policy row, and give a new row its group file line.
+ * Learn an over-the-air alias as the source's policy row of the reception's scope, and give a new scoped row its
+ * group file line (<dsd-neo/core/alias_learn.h>).
  *
  * An imported row for the source wins, a repeat of the learned name changes nothing, and a renamed radio's alias
- * replaces the learned one (dsd_tg_policy_learn_exact()). Only a first-learned row is appended to the group file: the
- * file is append-only and its first row for an ID is the one a reload keeps, so a rename stays session-only.
+ * replaces the learned one of its scope (dsd_tg_policy_learn_exact()). Only a first-learned row is appended to the
+ * group file: the file is append-only and its first row for an ID and scope is the one a reload keeps, so a rename
+ * stays session-only. A row learned with no scope is never appended: it would load as an imported row naming the
+ * radio on every system.
  */
-static void
-policy_learn_alias(const dsd_opts* opts, dsd_state* state, uint32_t id, const char* mode, const char* name,
-                   const char* metadata) {
+int
+dsd_alias_learn_radio(const dsd_opts* opts, dsd_state* state, const dsd_alias_scope* scope, uint32_t rid,
+                      const char* utf8_name, const char* metadata) {
     dsd_tg_policy_entry entry;
-    if (!state || id == 0 || !mode || !name) {
-        return;
+    char name[sizeof(entry.name)];
+    if (!state || rid == 0 || !utf8_name) {
+        return DSD_TG_POLICY_LEARN_FAILED;
     }
-    if (dsd_tg_policy_make_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &entry) != 0) {
-        return;
+    const size_t len = alias_learn_name_len(utf8_name, sizeof name);
+    DSD_MEMCPY(name, utf8_name, len);
+    name[len] = '\0';
+    if (dsd_tg_policy_make_exact_entry(rid, "D", name, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &entry) != 0) {
+        return DSD_TG_POLICY_LEARN_FAILED;
     }
+    if (scope && scope->valid && scope->kind > DSD_ALIAS_SCOPE_NONE && scope->kind <= DSD_ALIAS_SCOPE_TETRA) {
+        entry.scope = *scope;
+    } else {
+        (void)dsd_alias_scope_current(state, &entry.scope);
+    }
+    const dsd_tg_policy_learn_result learned = dsd_tg_policy_learn_exact(state, &entry);
     // The append refuses an incomplete list's file (dsd_tg_policy_incomplete()) and keeps the list's baseline in step.
-    if (dsd_tg_policy_learn_exact(state, &entry) == DSD_TG_POLICY_LEARN_ADDED) {
+    if (learned == DSD_TG_POLICY_LEARN_ADDED && entry.scope.valid) {
         (void)dsd_tg_policy_append_group_file_row(opts, state, &entry, metadata);
     }
+    return (int)learned;
 }
 
 static void
@@ -620,7 +650,7 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
     if (current_call_match) {
         char metadata[128];
         DSD_SNPRINTF(metadata, sizeof(metadata), "FQS:%05X.%03X.%06X(%d),Moto", wacn, sys, rid, rid);
-        policy_learn_alias(opts, state, rid, "D", str, metadata);
+        (void)dsd_alias_learn_radio(opts, state, NULL, rid, str, metadata);
         char alias[500];
         DSD_SNPRINTF(alias, sizeof(alias), "%s; %s", str, fqs);
         (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, call.epoch, alias);
@@ -953,7 +983,7 @@ l3h_alias_append_policy_row(const dsd_opts* opts, dsd_state* state, uint32_t tsr
     char metadata[160];
     DSD_SNPRINTF(metadata, sizeof(metadata), "TG:%d,SYS:%03llX,RFSS:%lld,SITE:%lld,Harris", ttg, state->p2_sysid,
                  state->p2_rfssid, state->p2_siteid);
-    policy_learn_alias(opts, state, tsrc, "D", alias, metadata);
+    (void)dsd_alias_learn_radio(opts, state, NULL, tsrc, alias, metadata);
 }
 
 static int
@@ -1043,7 +1073,7 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
     if (rid != 0U) {
         char metadata[64];
         DSD_SNPRINTF(metadata, sizeof(metadata), "%03X,Tait", nac);
-        policy_learn_alias(opts, state, rid, "D", (const char*)alias, metadata);
+        (void)dsd_alias_learn_radio(opts, state, NULL, rid, (const char*)alias, metadata);
         (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, call.epoch, (const char*)alias);
     }
 }

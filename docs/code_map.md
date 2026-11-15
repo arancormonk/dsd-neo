@@ -2541,15 +2541,35 @@ suite runs under this compiler.
   capture or a row at that index whose kind or key changed, so a duplicate, a zero-start range or a pattern row is
   the one edited; a token with index -1 keeps the old bounds-only meaning (first talkgroup row with those bounds).
   Tests: `CORE_TALKGROUP_POLICY`, `CORE_TG_POLICY_ALLOC_FAIL`, `APP_COMMAND_QUEUE`, `UI_QT_TALKGROUP_LIST_MODEL`.
-- Invariant (learned alias rows, `<dsd-neo/core/talkgroup_policy.h>`): every over-the-air alias publisher (Motorola,
-  Harris and Tait in `dsd_alias.c`, the P25 Phase 1 LSD soft ID in `p25p1_ldu1.c`/`p25p1_ldu2.c`) learns its row
-  through `dsd_tg_policy_learn_exact()`, always in mode `D` (an encrypted radio is locked out by the encryption ledger,
-  never by its alias row): a talkgroup/user row for the ID wins, a learned row is replaced only when its normalised
-  name changed, and a repeat changes nothing, so the policy generation (and every frontend's snapshot copy keyed on it)
-  stays put while a radio keeps sending the same alias. `DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY` follows the same
-  compare. Only a first-learned row is appended to the group file, which is append-only and whose first row for an ID
-  is the one a reload keeps: a renamed radio's new alias holds for the session, and after a restart the file's earlier
-  name loads as an imported row and wins (documented limit). Tests: `CORE_TALKGROUP_POLICY`, `P25_MOTOROLA_ALIAS`.
+- Invariant (learned alias rows, `<dsd-neo/core/talkgroup_policy.h>`, `<dsd-neo/core/alias_learn.h>`): every
+  over-the-air alias publisher learns its row in mode `D` (an encrypted radio is locked out by the encryption ledger,
+  never by its alias row): Motorola, Harris and Tait in `dsd_alias.c` through `dsd_alias_learn_radio()`, the P25
+  Phase 1 LSD soft ID in `p25p1_ldu1.c`/`p25p1_ldu2.c` through `dsd_tg_policy_learn_exact()`. A talkgroup/user row
+  for the ID wins, a learned row is replaced only when its normalised name changed, and a repeat changes nothing, so
+  the policy generation (and every frontend's snapshot copy keyed on it) stays put while a radio keeps sending the same
+  alias. `DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY` follows the same compare. Only a first-learned row is appended to
+  the group file, which is append-only and whose first row for an ID and scope is the one a reload keeps: a renamed
+  radio's new alias holds for the session. Tests: `CORE_TALKGROUP_POLICY`, `P25_MOTOROLA_ALIAS`, `CORE_SCOPED_ALIAS`.
+- Invariant (scoped learned aliases, issue B28, `<dsd-neo/core/alias_learn.h>`): a learned row
+  (`DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS`) carries `dsd_tg_policy_entry::scope`, the system of the reception it was heard
+  on: `dsd_alias_scope_current()` reads `dsd_state::rx_id` (P25 WACN/SYSID, DMR Tier III/Connect Plus network or
+  Capacity Plus site, NXDN Type-C system code or Type-D system ID, TETRA MCC/MNC), never the alias message's own
+  metadata; `dsd_tg_policy_learn_exact()` takes it for an entry without one. Exact lookups by state
+  (`dsd_tg_policy_lookup_id()`, `_lookup_label()`, private-call endpoints, `dsd_source_label_lookup()`) take the
+  current scope; `dsd_tg_policy_lookup_label_scoped()` and `dsd_source_label_lookup_scoped()` take one. Precedence for
+  one ID: a talkgroup/user row, then an imported alias row (mode `D` without a scope: typed, or appended by an older
+  version), then the learned row of the lookup's scope; an invalid scope is a scope of its own, so a row learned before
+  the carrier named its system names the radio only while none is known. The trunk-scan targets without their own
+  `-G` list share the baseline list (`dsd_scan_groups_enter()` installs it), so scoping happens in the rows, not by
+  list. Persistence: the append writes a valid scope as a `scope=<kind>:<a hex>:<b hex>` cell after the metadata cell
+  (`dsd_tg_policy_scope_format()`, `talkgroup_policy_internal.h`); the importer (`group_apply_scope_field()`,
+  `dsd_import.c`) scans the cells past the modelled columns, and a parsed cell makes the exact row a scoped learned row
+  again; the rows hash folds the scope, and the rewrite keeps the cell (header `...,scope`). A row learned with no
+  scope is not appended (`dsd_alias_learn_radio()`), though a whole-file rewrite still writes it as a plain row (a
+  limit). The active-call priority refresh has no reception and reads a learned row of any scope (every learned row has
+  priority 0). `dsd_alias_name_key()` hashes the group list's context identity and generation, the radio list's
+  identity and generation and the current scope: a frontend re-resolves retained names when it changes. Tests:
+  `CORE_SCOPED_ALIAS`.
 - Invariant (the group file stands for the list, discussion #748, `<dsd-neo/core/talkgroup_policy.h>`): dsd-neo writes
   its group file back (a rewrite on every saved edit, an export, an appended alias row), so a list that is not what
   the file holds must never be written over it.

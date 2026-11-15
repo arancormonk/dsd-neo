@@ -744,7 +744,8 @@ Notes:
 - The first line is treated as header text and is required.
 - Basic/default behavior uses the first 3 columns. A fourth header field named `tag`, `tags`, or `category`
   (case-insensitive, surrounding whitespace ignored) retains that column as a category; other extra columns,
-  including `metadata`, are ignored. Categories are trimmed and capped at 49 bytes, like names.
+  including `metadata`, are ignored, except a learned alias's `scope=` cell (see the learned aliases note below).
+  Categories are trimmed and capped at 49 bytes, like names.
 - `mode` is matched literally by features that consult it:
   - `A` usually means allow/normal.
   - `B` and `DE` are treated as locked out.
@@ -827,7 +828,7 @@ Important behavior:
 - When a group file is configured, edits atomically rewrite that file in table order, preserving ranges, patterns
   (in their normalized form) and modeled fields. Existing extended policy headers remain extended; otherwise the
   output is `id,mode,name,tags` when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are
-  discarded. Android rewrites its app-private imported copy, not the original document.
+  discarded; a learned alias's `scope` cell is kept, in a last `scope` column. Android rewrites its app-private imported copy, not the original document.
 - A basic group-file header is promoted to the extended policy header when any canonical row has
   `priority != 0`, `preempt` enabled, or audio/record/stream flags that differ from the mode defaults,
   so those settings survive saving and reloading even to a new file.
@@ -971,6 +972,24 @@ ID written in decimal without leading zeros:
   They still name that radio as a source or as a private call's target. Lists exported by
   older versions may hold an encrypted radio's alias as a `DE` row, which reads as a talkgroup lockout: delete it if
   that number is a talkgroup you want.
+- Learned aliases are kept with the system they were heard on. Two systems can give the same radio ID to different
+  radios, so a learned alias names its radio only on the system the receiver was decoding when it heard the alias:
+  the P25 WACN and System ID, the DMR Tier III or Connect Plus network (Capacity Plus, which sends no network number:
+  its site), the NXDN system code, the TETRA MCC and MNC. That system comes from what the receiver decoded on the
+  channel, never from the alias message itself (a Tait alias carries only a NAC). A first-learned alias is appended
+  with a `scope` cell after its metadata cell, for example
+  `1234567,D,Engine 7,FQS:BEE00.123.12D687(1234567) Moto,scope=p25:BEE00:123`: `scope=`, the kind (`p25`, `dmr`,
+  `nxdn` or `tetra`) and two hexadecimal numbers (P25: WACN and System ID). A file the append creates gets the header
+  `id,mode,name,metadata,scope`. On the next start such a row loads as a learned alias of that system: it names the
+  radio only there, and a later alias of that system renames it for the session. A rewrite of the file keeps the cell
+  after the modelled columns (the header then ends in `scope`). The cell is read wherever it sits past the columns
+  the header models; one that does not parse is reported and the row loads without it.
+- A mode `D` row without a `scope` cell (one you typed, or one an older version appended) names the radio on every
+  system and wins over learned aliases, as before; so does a talkgroup row for the same number. Delete such a row, or
+  give it a `scope` cell, if the number is another radio on another system.
+- An alias heard before the receiver decoded the system (right after a trunk-scan switch, or on a conventional P25
+  channel, which sends no network status) names the radio only while no system is known, and is not appended. A
+  rewrite of the whole file after a talkgroup edit still writes it, as a row without a `scope` cell.
 
 Preemption needs the system to announce the other call **on the channel being received**. What each protocol
 provides:

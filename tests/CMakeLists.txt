@@ -1565,6 +1565,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_alias_learn
+  HEADERS_PUBLIC_CORE_ALIAS_LEARN
+  dsd-neo/core/alias_learn.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_alias_learn_cxx
+  HEADERS_PUBLIC_CORE_ALIAS_LEARN_CXX
+  dsd-neo/core/alias_learn.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_received_identity
   HEADERS_PUBLIC_CORE_RECEIVED_IDENTITY
   dsd-neo/core/received_identity.h
@@ -15455,6 +15467,37 @@ else()
     )
 endif()
 add_test(NAME P25_MOTOROLA_ALIAS COMMAND dsd-neo_test_p25_motorola_alias)
+
+# Learned aliases kept with the system they were heard on (B28), through the real P25 link control and MAC decoders
+add_executable(dsd-neo_test_core_scoped_alias core/test_core_scoped_alias.c)
+target_include_directories(
+    dsd-neo_test_core_scoped_alias
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_core_scoped_alias
+        PRIVATE
+            dsd-neo_app_control
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_core_scoped_alias
+        PRIVATE
+            dsd-neo_app_control
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME CORE_SCOPED_ALIAS COMMAND dsd-neo_test_core_scoped_alias)
 
 # P25 SM core behaviors (monotonic/backoff/cc-hunt)
 add_executable(dsd-neo_test_p25_sm_core protocol/p25/test_p25_sm_core.c)
