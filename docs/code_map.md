@@ -10045,6 +10045,13 @@ control within the CC grace walks its channel map with the ordinary hunts.
   data (`edacs_lcn_names_channel()`); main published LCNs 26-30 as grants on a 0 Hz channel. This rests on the
   decoder's own reserved-LCN handling; EDACS gets no unit-event semantics (no public spec). Tests:
   `EDACS_GRANT_TUNE_MATRIX` (`edacs_run_status_lcn_cases`).
+- YSF call mode 1 ("radio ID", `src/protocol/ysf/ysf.c`): the CSD1 destination field is printed as a 5-character
+  destination radio ID and a 5-character source radio ID, but the call's target text keeps all 10 characters. The
+  split is not changed: the two independent decoders checked disagree (DSDcc `processCSD1()` reads destination and
+  source radio IDs from octets 0-4 and 5-9 in that mode and no source callsign; MMDVMHost `CYSFPayload` reads the
+  10-octet destination and the source callsign at octets 10-19 whatever the call mode and treats mode 1 as a group
+  call to "ALL"), dsd-neo's reading descends from DSDcc, and no primary YSF text is on hand. Unresolved until a
+  primary source or a capture settles it.
 - NXDN (`src/protocol/nxdn/nxdn_cc_hunt.c`, `<dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>`, context in state-ext slot 28
   `DSD_STATE_EXT_PROTO_NXDN_CC_HUNT`): NXDN has no trunk state machine and no other control-channel hunt, so this one
   runs at session start and after a control channel is lost. Eligibility is
