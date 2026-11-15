@@ -64,9 +64,9 @@ dsd_key_dmr_forced_clear(const dsd_state* state) {
     return state && (state->baofeng_ap == 1 || state->csi_ee == 1 || state->ken_sc == 1);
 }
 
-// Whether the DMR talkgroup key autoload's key is still the working key: the Basic Privacy and Hytera key (K, K1..K4, H,
-// basic_key_present, hytera_key_segments) is the one it installed (dsd_state::dmr_tg_autoload), changed by nothing else
-// since (a key command, the no-carrier unload).
+// Whether the DMR talkgroup key autoload's key is still the working key: the Basic Privacy and Hytera key (K, K1..K4,
+// H, basic_key_present, hytera_key_segments) is the one it installed (dsd_state::dmr_tg_autoload), changed by nothing
+// else since (a key command, the no-carrier unload).
 static inline int
 dsd_dmr_tg_autoload_holds(const dsd_state* state) {
     if (!state || !state->dmr_tg_autoload.active) {
@@ -92,6 +92,43 @@ dsd_dmr_tg_autoload_baseline(const dsd_state* state, unsigned long long int word
     flags[0] = state->dmr_tg_autoload.baseline_flags[0];
     flags[1] = state->dmr_tg_autoload.baseline_flags[1];
     return 1;
+}
+
+// The DMR Basic Privacy and Hytera key slot @p slot's call on talkgroup @p tg (0 for a call no LC has named yet) is
+// decrypted with, as a frontend shows it from its snapshot, which holds no keyring: with a forced key or an ALG ID on
+// the slot, the working key; else the key the slot's own call last keyed from (dsd_state::dmr_tg_autoload slot_key)
+// while @p tg is that call's talkgroup or not known yet; else the key the autoload replaced while its key is the
+// working key, else the working key. Never another slot's talkgroup key. Into @p words and @p flags as
+// dsd_dmr_tg_autoload_baseline() fills them.
+static inline void
+dsd_dmr_slot_call_key(const dsd_state* state, uint8_t slot, uint32_t tg, unsigned long long int words[6],
+                      uint8_t flags[2]) {
+    if (!state) {
+        return;
+    }
+    const uint8_t idx = slot & 1U;
+    const int live_algid = idx == 0U ? state->payload_algid : state->payload_algidR;
+    const uint8_t* keyed_flags = state->dmr_tg_autoload.slot_key_flags[idx];
+    const int keyed = keyed_flags[0] != 0U || keyed_flags[1] != 0U;
+    if (state->M == 0 && live_algid == 0 && keyed && (tg == 0U || tg == state->dmr_tg_autoload.slot_tg[idx])) {
+        for (int i = 0; i < 6; i++) {
+            words[i] = state->dmr_tg_autoload.slot_key[idx][i];
+        }
+        flags[0] = keyed_flags[0];
+        flags[1] = keyed_flags[1];
+        return;
+    }
+    if (state->M == 0 && live_algid == 0 && dsd_dmr_tg_autoload_baseline(state, words, flags)) {
+        return;
+    }
+    words[0] = state->K;
+    words[1] = state->K1;
+    words[2] = state->K2;
+    words[3] = state->K3;
+    words[4] = state->K4;
+    words[5] = state->H;
+    flags[0] = state->basic_key_present;
+    flags[1] = state->hytera_key_segments;
 }
 
 #ifdef __cplusplus

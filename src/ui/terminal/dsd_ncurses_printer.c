@@ -1150,25 +1150,25 @@ ui_render_trunking_and_edacs_toggles(const dsd_opts* opts, dsd_state* state) {
 }
 
 static const char*
-ui_format_hytera_key(char* key_text, size_t key_text_size, const dsd_state* state, int show_keys,
+ui_format_hytera_key(char* key_text, size_t key_text_size, const ui_dmr_key* key, int show_keys,
                      unsigned int segment_count) {
-    const unsigned long long segments[4] = {state->K1, state->K2, state->K3, state->K4};
+    const unsigned long long* segments = &key->words[1];
     if (segment_count == 2U || segment_count == 4U) {
         return dsd_secret_format_u64_segments(key_text, key_text_size, show_keys, segments, segment_count);
     }
-    return dsd_secret_format_hex(key_text, key_text_size, show_keys, state->K1 & 0xFFFFFFFFFFULL, 10U, 0);
+    return dsd_secret_format_hex(key_text, key_text_size, show_keys, key->words[1] & 0xFFFFFFFFFFULL, 10U, 0);
 }
 
 static void
-ui_render_hytera_loaded_key_status(const dsd_state* state, int show_keys) {
-    unsigned int segment_count = ui_hytera_key_segment_count(state);
+ui_render_hytera_loaded_key_status(const ui_dmr_key* key, int show_keys) {
+    unsigned int segment_count = ui_dmr_key_hytera_segment_count(key);
     if (segment_count == 0U) {
         return;
     }
 
     char key_text[68];
     const char* label = (segment_count == 1U) ? "Hytera BP Key Loaded (not forced)" : "Hytera Key Loaded (not forced)";
-    printw("| %s: %s \n", label, ui_format_hytera_key(key_text, sizeof key_text, state, show_keys, segment_count));
+    printw("| %s: %s \n", label, ui_format_hytera_key(key_text, sizeof key_text, key, show_keys, segment_count));
 }
 
 static void
@@ -1183,13 +1183,16 @@ ui_render_forced_key_status_dmr(const dsd_state* state, int show_keys) {
         printw("| Forcing Key Priority -- Moto BP Key: %s \n",
                dsd_secret_format_decimal(key_text, sizeof key_text, show_keys, state->K, 3U));
     }
-    unsigned int hytera_segment_count = ui_hytera_key_segment_count(state);
+    ui_dmr_key key;
+    ui_dmr_key_working(state, &key);
+    unsigned int hytera_segment_count = ui_dmr_key_hytera_segment_count(&key);
     if (hytera_segment_count != 0U) {
         char key_text[68];
         const char* label = (hytera_segment_count == 1U) ? "Hytera BP Key" : "Hytera Key";
         printw("| Forcing Key Priority -- %s: %s \n", label,
-               ui_format_hytera_key(key_text, sizeof key_text, state, show_keys, hytera_segment_count));
+               ui_format_hytera_key(key_text, sizeof key_text, &key, show_keys, hytera_segment_count));
     }
+    ui_dmr_key_clear(&key);
     if (state->K != 0 && hytera_segment_count != 0U) {
         printw("| Warning! Multiple DMR Key Types Loaded! \n"); //warning may not be required
     }
@@ -1218,14 +1221,14 @@ ui_render_forced_key_status_tyt(const dsd_state* state, int show_keys) {
  * key menu and the keyring store 64-bit RC4/DES keys in R (slot 1) and RR (slot 2).
  */
 static void
-ui_render_loaded_scalar_keys(const dsd_state* state, int show_keys) {
+ui_render_loaded_scalar_keys(const dsd_state* state, const ui_dmr_key* loaded, int show_keys) {
     if (state->M != 0 || state->tyt_bp != 0) {
         return;
     }
-    if (state->K != 0) {
+    if (loaded->words[0] != 0) {
         char key_text[16];
         printw("| Moto BP Key Loaded (not forced): %s \n",
-               dsd_secret_format_decimal(key_text, sizeof(key_text), show_keys, state->K, 3U));
+               dsd_secret_format_decimal(key_text, sizeof(key_text), show_keys, loaded->words[0], 3U));
     }
     const int scrambler = state->R != 0 && state->R <= 0x7FFFULL && state->RR != state->R;
     if (scrambler) {
@@ -1251,10 +1254,15 @@ ui_render_forced_key_status(const dsd_state* state, int show_keys) {
         return;
     }
 
-    ui_render_loaded_scalar_keys(state, show_keys);
-    if (state->M != 1 && state->tyt_bp == 0 && ui_hytera_key_segment_count(state) != 0U) {
-        ui_render_hytera_loaded_key_status(state, show_keys);
+    /* The loaded keys are the user's: a talkgroup's key the autoload put in the working key is its call's, shown on
+       that call's slot row. */
+    ui_dmr_key loaded;
+    ui_dmr_key_loaded(state, &loaded);
+    ui_render_loaded_scalar_keys(state, &loaded, show_keys);
+    if (state->M != 1 && state->tyt_bp == 0) {
+        ui_render_hytera_loaded_key_status(&loaded, show_keys);
     }
+    ui_dmr_key_clear(&loaded);
     if (state->M == 1) {
         ui_render_forced_key_status_dmr(state, show_keys);
     }
@@ -3945,39 +3953,43 @@ ui_slot_has_basic_privacy(const ui_slot_view* slot) {
     return slot->burst == 16 && slot->payload_algid == 0 && (slot->dmr_so & 0x40);
 }
 
-static int
-ui_slot_has_motorola_basic_privacy(const dsd_state* state, const ui_slot_view* slot) {
-    return ui_slot_has_basic_privacy(slot) && state->K > 0 && slot->dmr_fid == 0x10;
-}
-
-static int
-ui_slot_has_hytera_basic_privacy(const dsd_state* state, const ui_slot_view* slot) {
-    return ui_slot_has_basic_privacy(slot) && state->H > 0 && slot->dmr_fid == 0x68;
+/* The key the slot's own call is decrypted with (dsd_dmr_slot_call_key()): the one its open DMR call keyed from, never
+   the working key another slot's call loaded. */
+static void
+ui_slot_call_key(const dsd_state* state, const ui_slot_view* slot, ui_dmr_key* key) {
+    const dsd_call_snapshot* call = &slot->call;
+    const int open_dmr = call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_DMR(call->protocol);
+    const uint32_t tg = (open_dmr && call->ota_target_id <= UINT32_MAX) ? (uint32_t)call->ota_target_id : 0U;
+    dsd_dmr_slot_call_key(state, (uint8_t)((slot->slot_no - 1) & 1), tg, key->words, key->flags);
 }
 
 static void
 ui_render_slot_basic_privacy(const dsd_opts* opts, const dsd_state* state, const ui_slot_view* slot) {
-    if (ui_slot_has_basic_privacy(slot)) {
-        attron(COLOR_PAIR(5));
-        printw(" **BP** ");
-        attroff(COLOR_PAIR(5));
-        attron(COLOR_PAIR(3));
+    if (!ui_slot_has_basic_privacy(slot)) {
+        return;
     }
-    if (ui_slot_has_motorola_basic_privacy(state, slot)) {
+    attron(COLOR_PAIR(5));
+    printw(" **BP** ");
+    attroff(COLOR_PAIR(5));
+    attron(COLOR_PAIR(3));
+    ui_dmr_key key;
+    ui_slot_call_key(state, slot, &key);
+    if (key.words[0] > 0 && slot->dmr_fid == 0x10) {
         attron(COLOR_PAIR(1));
         char key_text[16];
-        printw("BP Key: %s ", dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->K, 3U));
+        printw("BP Key: %s ", dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, key.words[0], 3U));
         attroff(COLOR_PAIR(1));
         attron(COLOR_PAIR(3));
     }
-    if (ui_slot_has_hytera_basic_privacy(state, slot)) {
+    if (key.words[5] > 0 && slot->dmr_fid == 0x68) {
         attron(COLOR_PAIR(1));
         char key_text[17];
         printw("Hytera BP Key: %s ",
-               dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->H, 10U, 0));
+               dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, key.words[5], 10U, 0));
         attroff(COLOR_PAIR(1));
         attron(COLOR_PAIR(3));
     }
+    ui_dmr_key_clear(&key);
 }
 
 static void

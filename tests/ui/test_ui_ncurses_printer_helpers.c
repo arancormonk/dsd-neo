@@ -3411,30 +3411,133 @@ test_loaded_scalar_key_status(void) {
     free(state);
 }
 
+/* Whether the capture holds @p needle, as @p want says it must (1) or must not (0); prints @p what when it does not. */
+static int
+capture_check(const char* what, const char* needle, int want) {
+    const int got = strstr(g_printw_capture, needle) != NULL;
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", what, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* Slot @p slot's open DMR group call on talkgroup @p tg, Basic Privacy under FID 0x10 (a Motorola LC). */
+static void
+open_dmr_basic_privacy_call(dsd_state* state, uint8_t slot, uint64_t tg) {
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    observation.slot = slot;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = tg;
+    observation.policy_target_id = tg;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    if (slot == 0U) {
+        state->dmrburstL = 16;
+        state->dmr_so = 0x40U;
+        state->dmr_fid = 0x10U;
+    } else {
+        state->dmrburstR = 16;
+        state->dmr_soR = 0x40U;
+        state->dmr_fidR = 0x10U;
+    }
+}
+
+/* Slot 1's call keyed from talkgroup 123's key (51), the working key both slots share: what
+   keyring_dmr_tg_autoload_apply() leaves, over the operator's own key @p operator_key (0: none). */
+static void
+seed_slot1_autoloaded_key(dsd_state* state, unsigned long long operator_key) {
+    const unsigned long long key[6] = {51ULL, 51ULL, 0ULL, 0ULL, 0ULL, 51ULL};
+    for (int i = 0; i < 6; i++) {
+        state->dmr_tg_autoload.installed[i] = key[i];
+        state->dmr_tg_autoload.slot_key[0][i] = key[i];
+        state->dmr_tg_autoload.baseline[i] = 0ULL;
+    }
+    state->dmr_tg_autoload.baseline[0] = operator_key;
+    state->dmr_tg_autoload.baseline_flags[0] = operator_key != 0ULL ? 1U : 0U;
+    state->dmr_tg_autoload.baseline_flags[1] = 0U;
+    state->dmr_tg_autoload.installed_flags[0] = state->dmr_tg_autoload.installed_flags[1] = 1U;
+    state->dmr_tg_autoload.slot_key_flags[0][0] = state->dmr_tg_autoload.slot_key_flags[0][1] = 1U;
+    state->dmr_tg_autoload.slot_tg[0] = 123U;
+    state->dmr_tg_autoload.active = 1U;
+    state->K = 51ULL;
+    state->K1 = state->H = 51ULL;
+    state->basic_key_present = 1U;
+    state->hytera_key_segments = 1U;
+}
+
+/* A slot row's BP Key is its own call's key, or none, never the working key another slot's talkgroup put there, and
+   --show-keys alone reveals it. The Loaded lines show the keys the user loaded, not a talkgroup's. */
+static void
+test_slot_row_shows_its_own_calls_key(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    int rc = 0;
+    for (int with_direct = 0; with_direct < 2; with_direct++) {
+        dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+        assert(state != NULL);
+        open_dmr_basic_privacy_call(state, 0U, 123U);
+        open_dmr_basic_privacy_call(state, 1U, 124U);
+        seed_slot1_autoloaded_key(state, with_direct ? 70ULL : 0ULL);
+
+        opts.show_keys = 1;
+        ui_slot_view slot1 = ui_build_slot_view(&opts, state, 0);
+        reset_printw_capture();
+        ui_render_slot_basic_privacy(&opts, state, &slot1);
+        rc |= capture_check("slot 1 (talkgroup 123) shows its key", "BP Key: 051", 1);
+        ui_slot_view slot2 = ui_build_slot_view(&opts, state, 1);
+        reset_printw_capture();
+        ui_render_slot_basic_privacy(&opts, state, &slot2);
+        rc |= capture_check("slot 2 (talkgroup 124) never shows talkgroup 123's key", "051", 0);
+        rc |= capture_check(with_direct ? "slot 2 shows the key set directly" : "slot 2, which has no key, shows none",
+                            with_direct ? "BP Key: 070" : "BP Key", with_direct);
+        opts.show_keys = 0;
+        reset_printw_capture();
+        ui_render_slot_basic_privacy(&opts, state, &slot1);
+        rc |= capture_check("without --show-keys slot 1's key is redacted", "BP Key: [redacted]", 1);
+        rc |= capture_check("without --show-keys slot 1's key value is hidden", "051", 0);
+
+        reset_printw_capture();
+        ui_render_forced_key_status(state, 1);
+        rc |= capture_check("the Loaded lines never show talkgroup 123's key", "051", 0);
+        rc |= capture_check("the Loaded lines show no Hytera key the user never loaded", "Hytera", 0);
+        rc |= capture_check(with_direct ? "the Loaded lines show the key set directly" : "no key is loaded",
+                            with_direct ? "Moto BP Key Loaded (not forced): 070" : "Moto BP Key Loaded", with_direct);
+        free(state);
+    }
+    assert(rc == 0);
+}
+
 static void
 test_hytera_key_format_helper(void) {
     static dsd_state state;
     char key_text[96];
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(key_text, 0, sizeof(key_text));
+    ui_dmr_key key;
 
     state.K1 = 0x123456789AULL;
-    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 1U), "123456789A") == 0);
-    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 0, 1U), DSD_SECRET_REDACTED) == 0);
+    ui_dmr_key_working(&state, &key);
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &key, 1, 1U), "123456789A") == 0);
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &key, 0, 1U), DSD_SECRET_REDACTED) == 0);
 
     state.K1 = 0x1111222233334444ULL;
     state.K2 = 0x5555666677778888ULL;
-    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 2U), "1111222233334444 5555666677778888")
+    ui_dmr_key_working(&state, &key);
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &key, 1, 2U), "1111222233334444 5555666677778888")
            == 0);
 
     state.K3 = 0x9999AAAABBBBCCCCULL;
     state.K4 = 0xDDDDEEEEFFFF0001ULL;
-    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 4U),
+    ui_dmr_key_working(&state, &key);
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &key, 1, 4U),
                   "1111222233334444 5555666677778888 9999AAAABBBBCCCC DDDDEEEEFFFF0001")
            == 0);
 
     state.K1 = 0xABCDEF123456ULL;
-    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 3U), "CDEF123456") == 0);
+    ui_dmr_key_working(&state, &key);
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &key, 1, 3U), "CDEF123456") == 0);
 }
 
 static void
@@ -5623,6 +5726,7 @@ main(void) {
     test_history_viewport_helpers();
     test_hytera_key_format_helper();
     test_loaded_scalar_key_status();
+    test_slot_row_shows_its_own_calls_key();
     test_edacs_tree_update_helpers();
     test_sync_tree_follows_scan_class();
     test_history_merged_slot_tags();

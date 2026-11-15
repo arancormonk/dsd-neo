@@ -701,6 +701,23 @@ test_encryption_labels(void) {
     state.K4 = 0x44U;
     rc |= expect_str("hytera 256 bit", lbl_key_hytera(&ctx, b, sizeof(b)), "Hytera privacy key (hex)... [256-bit]");
 
+    /* A talkgroup's key the autoload put in the working key is its call's, not a key the user loaded. */
+    const unsigned long long autoloaded[6] = {0x33ULL, 0x33ULL, 0ULL, 0ULL, 0ULL, 0x33ULL};
+    state.K = 0x33U;
+    state.K1 = state.H = 0x33U;
+    state.K2 = state.K3 = state.K4 = 0U;
+    state.basic_key_present = 1U;
+    state.hytera_key_segments = 1U;
+    for (int i = 0; i < 6; i++) {
+        state.dmr_tg_autoload.installed[i] = autoloaded[i];
+        state.dmr_tg_autoload.baseline[i] = 0ULL;
+    }
+    state.dmr_tg_autoload.installed_flags[0] = state.dmr_tg_autoload.installed_flags[1] = 1U;
+    state.dmr_tg_autoload.baseline_flags[0] = state.dmr_tg_autoload.baseline_flags[1] = 0U;
+    state.dmr_tg_autoload.active = 1U;
+    rc |= expect_str("hytera autoloaded", lbl_key_hytera(&ctx, b, sizeof(b)), "Hytera privacy key (hex)...");
+    DSD_MEMSET(&state.dmr_tg_autoload, 0, sizeof(state.dmr_tg_autoload));
+
     return rc;
 }
 

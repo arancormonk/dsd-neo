@@ -311,7 +311,7 @@ keyring_dmr_tg_autoload_apply(dsd_state* state, uint8_t slot, uint32_t tg, uint3
     const int holds = dsd_dmr_tg_autoload_holds(state);
     *keyed_from = source;
     if (!found) {
-        state->dmr_tg_autoload.slot_tg[idx] = 0U;
+        keyring_dmr_tg_autoload_forget_slot(state, idx);
         if (holds) {
             keyring_dmr_working_key_set(state, state->dmr_tg_autoload.baseline, state->dmr_tg_autoload.baseline_flags);
         }
@@ -325,6 +325,10 @@ keyring_dmr_tg_autoload_apply(dsd_state* state, uint8_t slot, uint32_t tg, uint3
     keyring_dmr_tg_autoload_key_of(state, source, state->dmr_tg_autoload.installed,
                                    state->dmr_tg_autoload.installed_flags);
     keyring_dmr_working_key_set(state, state->dmr_tg_autoload.installed, state->dmr_tg_autoload.installed_flags);
+    DSD_MEMCPY(state->dmr_tg_autoload.slot_key[idx], state->dmr_tg_autoload.installed,
+               sizeof(state->dmr_tg_autoload.slot_key[idx]));
+    DSD_MEMCPY(state->dmr_tg_autoload.slot_key_flags[idx], state->dmr_tg_autoload.installed_flags,
+               sizeof(state->dmr_tg_autoload.slot_key_flags[idx]));
     state->dmr_tg_autoload.active = 1U;
     return 1;
 }
@@ -361,6 +365,9 @@ keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint8_t slot, uint32
 void
 keyring_dmr_tg_autoload_forget_slot(dsd_state* state, uint8_t slot) {
     if (state != NULL) {
-        state->dmr_tg_autoload.slot_tg[slot & 1U] = 0U;
+        const uint8_t idx = slot & 1U;
+        state->dmr_tg_autoload.slot_tg[idx] = 0U;
+        DSD_SECURE_ZERO(state->dmr_tg_autoload.slot_key[idx], sizeof(state->dmr_tg_autoload.slot_key[idx]));
+        DSD_SECURE_ZERO(state->dmr_tg_autoload.slot_key_flags[idx], sizeof(state->dmr_tg_autoload.slot_key_flags[idx]));
     }
 }

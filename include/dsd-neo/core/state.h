@@ -1323,9 +1323,11 @@ struct dsd_state {
        basic_key_present and hytera_key_segments it replaced (a key set directly, or none), restored for a call whose
        talkgroup has no key, and the ones it installed, so a key changed since by anything else is left alone. Both
        slots share the one working key, so each slot keeps the talkgroup whose key its own call last keyed from
-       (slot_tg, 0: none), which a frame of a call no LC has named yet keys from again; the slot's terminator and the
-       no-carrier pass forget it. Key material: wiped with the keys (dsd_key_state_secure_wipe()). Decoder-thread
-       private. */
+       (slot_tg, 0: none), which a frame of a call no LC has named yet keys from again, and that key (slot_key and
+       slot_key_flags, laid out as baseline; flags all 0: the slot's call keyed from no talkgroup), which a frontend
+       shows on the slot's row from its snapshot, which holds no keyring (dsd_dmr_slot_call_key()). The slot's
+       terminator, the no-carrier pass and every carrier boundary but a stream gap forget both. Key material: wiped
+       with the keys (dsd_key_state_secure_wipe()). Written on the decoder thread only. */
     struct {
         unsigned long long int baseline[6];
         unsigned long long int installed[6];
@@ -1333,6 +1335,8 @@ struct dsd_state {
         uint8_t installed_flags[2];
         uint8_t active;
         uint32_t slot_tg[2];
+        unsigned long long int slot_key[2][6];
+        uint8_t slot_key_flags[2][2];
     } dmr_tg_autoload;
 
     unsigned long long int HYTL;
