@@ -90,7 +90,7 @@ Rectangle {
         if (validationRevealPending)
             importRevealPending = false;
         // Also handle repeated failures whose text and geometry do not change.
-        Qt.callLater(screen.revealValidation);
+        validationRevealTimer.restart();
     }
     // The import problem's reveal runs after layout, from a timer the screen
     // owns: openFor() and a close stop it with the screen's other state.
@@ -98,6 +98,19 @@ Rectangle {
         id: importRevealTimer
         interval: 0
         onTriggered: screen.revealValidation()
+    }
+    // The other reveals wait for layout the same way, on timers the screen
+    // owns rather than Qt.callLater(): a call still queued when the screen
+    // goes (Main torn down) would otherwise run on it after its context ended.
+    Timer {
+        id: validationRevealTimer
+        interval: 0
+        onTriggered: screen.revealValidation()
+    }
+    Timer {
+        id: focusRevealTimer
+        interval: 0
+        onTriggered: screen.revealFocus()
     }
     Connections {
         target: screen.Window.window
@@ -107,7 +120,7 @@ Rectangle {
                 screen.importRevealPending = false;
             }
             if (screen.visible)
-                Qt.callLater(screen.revealFocus);
+                focusRevealTimer.restart();
         }
     }
 
@@ -571,8 +584,8 @@ Rectangle {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.bottomMargin: Math.max(0, screen.height - Theme.keyboardTop(screen))
-        onHeightChanged: Qt.callLater(screen.revealFocus)
-        onContentHeightChanged: Qt.callLater(screen.revealFocus)
+        onHeightChanged: focusRevealTimer.restart()
+        onContentHeightChanged: focusRevealTimer.restart()
         // The user's own scroll ends any reveal still waiting, of either line.
         onMovementStarted: {
             screen.validationRevealPending = false;
@@ -588,7 +601,7 @@ Rectangle {
             x: (parent.width - width) / 2
             width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
-            onPositioningComplete: Qt.callLater(screen.revealValidation)
+            onPositioningComplete: validationRevealTimer.restart()
 
             MicroLabel {
                 text: qsTr("Name")
@@ -961,7 +974,7 @@ Rectangle {
                         easing.type: Easing.OutCubic
                         onRunningChanged: {
                             if (!running)
-                                Qt.callLater(screen.revealValidation);
+                                validationRevealTimer.restart();
                         }
                     }
                 }
@@ -1052,7 +1065,7 @@ Rectangle {
                     anchors.rightMargin: Theme.cardPadding
                     spacing: 10
                     visible: screen.advancedOpen
-                    onPositioningComplete: Qt.callLater(screen.revealValidation)
+                    onPositioningComplete: validationRevealTimer.restart()
 
                     ReadableText {
                         width: parent.width
@@ -1299,8 +1312,8 @@ Rectangle {
                 color: Theme.textPrimary
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)
-                onYChanged: Qt.callLater(screen.revealValidation)
-                onHeightChanged: Qt.callLater(screen.revealValidation)
+                onYChanged: validationRevealTimer.restart()
+                onHeightChanged: validationRevealTimer.restart()
             }
             Row {
                 width: parent.width
