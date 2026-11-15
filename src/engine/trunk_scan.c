@@ -11,6 +11,8 @@
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/scan_profile.h>
@@ -101,7 +103,6 @@ typedef struct {
        channel map, and its site broadcasts (pending announcements, secondary control channels, protection, services,
        LRA, network active). */
     dsd_p25_site_snapshot site;
-    int trunk_recovery_protocol;
     time_t p25_sys_time;
     long p25_cc_eval_freq;
     double p25_cc_eval_start_m;
@@ -121,7 +122,8 @@ typedef struct {
     long int p25_conventional_grant_freq[2];
     uint32_t p25_conventional_grant_target[2];
     long int trunk_vc_freq[2];
-    time_t p25_patch_last_update[8];
+    /* The target's patch table, with its listening clock, stamps, recency and owner. */
+    dsd_p25_patch_snapshot p25_patches;
     long int trunk_lcn_freq[DSD_TRUNK_LCN_EMBEDDED];
     long int* trunk_lcn_freq_ext;
     size_t trunk_lcn_freq_ext_count;
@@ -133,6 +135,7 @@ typedef struct {
     dsd_enc_lockout_entry enc_lockout_entries[DSD_ENC_LOCKOUT_MAX];
     time_t p25_aff_last_seen[256];
     time_t p25_ga_last_seen[512];
+    int trunk_recovery_protocol;
     unsigned int dmr_color_code;
     int p25_vc_cqpsk_pref;
     int p25_vc_cqpsk_override;
@@ -144,7 +147,6 @@ typedef struct {
     int samplesPerSymbol;
     int symbolCenter;
     int rf_mod;
-    int p25_patch_count;
     int p25_aff_count;
     int p25_ga_count;
     int p25_nb_count;
@@ -168,29 +170,18 @@ typedef struct {
     char dmr_site_parms[200];
     char dmr_branding[20];
     char dmr_branding_sub[80];
-    uint32_t p25_patch_wuid[8][8];
     uint32_t p25_aff_rid[256];
     uint32_t p25_ga_rid[512];
     uint16_t p25_prot_kid;
     int16_t p25_sys_time_offset;
-    uint16_t p25_patch_sgid[8];
-    uint16_t p25_patch_key[8];
-    uint16_t p25_patch_wgid[8][8];
     uint16_t p25_ga_tg[512];
-    uint8_t p2_cc_verified; /* p2_cc proven on the target's carrier (issue #575) */
     int p2_proven_nac;      /* the NAC the latest Phase 2 proof there named (issue #802) */
+    uint8_t p2_cc_verified; /* p2_cc proven on the target's carrier (issue #575) */
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
     uint8_t p25_sys_time_valid;
     uint8_t p25_sys_time_offset_valid;
     uint8_t p25_cc_cache_loaded;
-    uint8_t p25_patch_is_patch[8];
-    uint8_t p25_patch_active[8];
-    uint8_t p25_patch_wgid_count[8];
-    uint8_t p25_patch_wuid_count[8];
-    uint8_t p25_patch_alg[8];
-    uint8_t p25_patch_ssn[8];
-    uint8_t p25_patch_key_valid[8];
     uint8_t dmr_confidence_locked;
     dsd_call_context_snapshot call_context;
     Event_History event_current[DSD_CALL_STATE_SLOT_COUNT];
@@ -203,7 +194,6 @@ typedef struct {
     uint8_t dmr_confidence_mismatch_count;
     double dmr_confidence_voice_m[2];
     uint8_t dmr_lcn_trust[0x1000];
-    uint16_t nxdn_grant_chan;
     long int nxdn_grant_freq;
     dsd_nxdn_follow_route nxdn_follow;
     dsd_nxdn_call_identity nxdn_call;
@@ -211,6 +201,7 @@ typedef struct {
     uint32_t nxdn_idas_system_id;
     uint8_t nxdn_last_ran_stand_in;
     uint8_t nxdn_idas_site_code;
+    uint16_t nxdn_grant_chan; /* nxdn_grant_freq's channel: here it fills the gap before the next 32-bit field */
     uint32_t nxdn_location_sys_code;
     uint16_t nxdn_location_site_code;
     char nxdn_location_category[14];
@@ -2220,40 +2211,6 @@ trunk_scan_restore_p25_metadata_snapshot(dsd_state* state, const dsd_trunk_scan_
 }
 
 static void
-trunk_scan_save_p25_patch_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
-    snapshot->p25_patch_count = state->p25_patch_count;
-    DSD_MEMCPY(snapshot->p25_patch_sgid, state->p25_patch_sgid, sizeof(snapshot->p25_patch_sgid));
-    DSD_MEMCPY(snapshot->p25_patch_is_patch, state->p25_patch_is_patch, sizeof(snapshot->p25_patch_is_patch));
-    DSD_MEMCPY(snapshot->p25_patch_active, state->p25_patch_active, sizeof(snapshot->p25_patch_active));
-    DSD_MEMCPY(snapshot->p25_patch_last_update, state->p25_patch_last_update, sizeof(snapshot->p25_patch_last_update));
-    DSD_MEMCPY(snapshot->p25_patch_wgid_count, state->p25_patch_wgid_count, sizeof(snapshot->p25_patch_wgid_count));
-    DSD_MEMCPY(snapshot->p25_patch_wgid, state->p25_patch_wgid, sizeof(snapshot->p25_patch_wgid));
-    DSD_MEMCPY(snapshot->p25_patch_wuid_count, state->p25_patch_wuid_count, sizeof(snapshot->p25_patch_wuid_count));
-    DSD_MEMCPY(snapshot->p25_patch_wuid, state->p25_patch_wuid, sizeof(snapshot->p25_patch_wuid));
-    DSD_MEMCPY(snapshot->p25_patch_key, state->p25_patch_key, sizeof(snapshot->p25_patch_key));
-    DSD_MEMCPY(snapshot->p25_patch_alg, state->p25_patch_alg, sizeof(snapshot->p25_patch_alg));
-    DSD_MEMCPY(snapshot->p25_patch_ssn, state->p25_patch_ssn, sizeof(snapshot->p25_patch_ssn));
-    DSD_MEMCPY(snapshot->p25_patch_key_valid, state->p25_patch_key_valid, sizeof(snapshot->p25_patch_key_valid));
-}
-
-static void
-trunk_scan_restore_p25_patch_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
-    state->p25_patch_count = snapshot->p25_patch_count;
-    DSD_MEMCPY(state->p25_patch_sgid, snapshot->p25_patch_sgid, sizeof(state->p25_patch_sgid));
-    DSD_MEMCPY(state->p25_patch_is_patch, snapshot->p25_patch_is_patch, sizeof(state->p25_patch_is_patch));
-    DSD_MEMCPY(state->p25_patch_active, snapshot->p25_patch_active, sizeof(state->p25_patch_active));
-    DSD_MEMCPY(state->p25_patch_last_update, snapshot->p25_patch_last_update, sizeof(state->p25_patch_last_update));
-    DSD_MEMCPY(state->p25_patch_wgid_count, snapshot->p25_patch_wgid_count, sizeof(state->p25_patch_wgid_count));
-    DSD_MEMCPY(state->p25_patch_wgid, snapshot->p25_patch_wgid, sizeof(state->p25_patch_wgid));
-    DSD_MEMCPY(state->p25_patch_wuid_count, snapshot->p25_patch_wuid_count, sizeof(state->p25_patch_wuid_count));
-    DSD_MEMCPY(state->p25_patch_wuid, snapshot->p25_patch_wuid, sizeof(state->p25_patch_wuid));
-    DSD_MEMCPY(state->p25_patch_key, snapshot->p25_patch_key, sizeof(state->p25_patch_key));
-    DSD_MEMCPY(state->p25_patch_alg, snapshot->p25_patch_alg, sizeof(state->p25_patch_alg));
-    DSD_MEMCPY(state->p25_patch_ssn, snapshot->p25_patch_ssn, sizeof(state->p25_patch_ssn));
-    DSD_MEMCPY(state->p25_patch_key_valid, snapshot->p25_patch_key_valid, sizeof(state->p25_patch_key_valid));
-}
-
-static void
 trunk_scan_save_p25_catalog_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
     snapshot->p25_aff_count = state->p25_aff_count;
     DSD_MEMCPY(snapshot->p25_aff_rid, state->p25_aff_rid, sizeof(snapshot->p25_aff_rid));
@@ -2490,7 +2447,7 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     }
     trunk_scan_save_p25_identity_snapshot(state, snapshot);
     trunk_scan_save_p25_metadata_snapshot(state, snapshot);
-    trunk_scan_save_p25_patch_snapshot(state, snapshot);
+    dsd_p25_patch_snapshot_save(state, &snapshot->p25_patches);
     trunk_scan_save_p25_catalog_snapshot(state, snapshot);
     trunk_scan_save_p25_eval_snapshot(state, snapshot);
     trunk_scan_save_dmr_snapshot(state, snapshot);
@@ -2509,7 +2466,9 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     dsd_state_trunk_lcn_replace_begin(state);
     trunk_scan_restore_p25_identity_snapshot(state, snapshot);
     trunk_scan_restore_p25_metadata_snapshot(state, snapshot);
-    trunk_scan_restore_p25_patch_snapshot(state, snapshot);
+    /* Breaks listening continuity: the clock's previous reading belongs to the carrier the scan just left, so the
+       restored clock runs again only from the next control-channel PDU heard here. */
+    dsd_p25_patch_snapshot_restore(state, &snapshot->p25_patches);
     trunk_scan_restore_p25_catalog_snapshot(state, snapshot);
     trunk_scan_restore_p25_eval_snapshot(state, snapshot);
     trunk_scan_restore_dmr_snapshot(state, snapshot);
@@ -4229,7 +4188,7 @@ trunk_scan_visit_suspended(const dsd_opts* opts, const dsd_state* state, const d
     if (coord->hold_active) {
         return 1;
     }
-    if (!dsd_scan_tg_hold_call_active(state)) {
+    if (!dsd_scan_tg_hold_call_active(opts, state)) {
         return 0;
     }
     return !trunk_scan_target_is_trunked(rt->target.type) || opts->trunk_is_tuned == 1;
@@ -5924,6 +5883,27 @@ trunk_scan_type_in_conventional_family(dsd_trunk_scan_target_type type, trunk_sc
     return 0;
 }
 
+/* Whether policy lets the reported call hold its target. A P25 group call on a live patch's supergroup is judged by the
+ * patch resolver's admission (the supergroup, then each current member), so a listened member carrying the patch holds
+ * it; every other call by its own target. */
+static int
+trunk_scan_activity_tune_allowed(trunk_scan_conventional_family family, const dsd_opts* opts, const dsd_state* state,
+                                 uint32_t target, uint32_t source, int is_private, int encrypted, int data_call) {
+    dsd_tg_policy_decision decision;
+    int rc = 0;
+    if (is_private) {
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call, &decision);
+    } else if (family == TRUNK_SCAN_CONVENTIONAL_FAMILY_P25 && dsd_p25_patch_sg_live(state, target)) {
+        dsd_p25_patch_resolution patch;
+        rc = dsd_p25_patch_resolve(opts, state, target, source, encrypted, data_call, DSD_P25_PATCH_RESOLVE_ADMIT, NULL,
+                                   NULL, &patch);
+        decision = patch.decision;
+    } else {
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call, &decision);
+    }
+    return rc == 0 && decision.tune_allowed;
+}
+
 /* Shared body for every conventional target type: the hold decision is protocol-independent,
  * so the per-protocol entry points below differ only in which family may claim the hold. The receive policy judges the
  * reporting call's own protocol and slot (issue #637): only traffic it admits holds the target. */
@@ -5949,14 +5929,7 @@ trunk_scan_conventional_activity(trunk_scan_conventional_family family, const ds
         return;
     }
 
-    dsd_tg_policy_decision decision;
-    int rc = 0;
-    if (is_private) {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call, &decision);
-    } else {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call, &decision);
-    }
-    if (rc == 0 && decision.tune_allowed) {
+    if (trunk_scan_activity_tune_allowed(family, opts, state, target, source, is_private, encrypted, data_call)) {
         rt->last_allowed_activity_m = trunk_scan_now_m();
         trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_ACTIVITY_HOLD);
     }

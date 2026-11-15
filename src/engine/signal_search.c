@@ -8,6 +8,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
@@ -118,6 +119,10 @@ typedef struct {
     search_call call;
     /* The session's own P25 site as Start found it, put back whole after every departure (issue #804). */
     dsd_p25_site_snapshot session_site;
+    /* The session's P25 patch table as Start found it (with its owner, listening clock and sequence counter): every
+       departure's boundary empties the table, so each visit starts with none, and only the return to the session puts
+       this one back (search_return_site()). */
+    dsd_p25_patch_snapshot session_patches;
     /* The P25 Phase 2 scrambling codes the session learned, from content that passed its CRC/FEC check, most recently
        confirmed first: code recovery tries them on each digital visit (issue #804). Pause and Resume keep them. */
     uint64_t p2_codes[SEARCH_P2_CODES];
@@ -447,6 +452,15 @@ search_restore_site(search_coord* c, dsd_state* state) {
     }
 }
 
+/* The search returns to the session (a Stop or failure whose boundary closed the reception, or the teardown of a decoder
+   session that ended during a visit): its P25 site, and its patch table, which no visit gets back: a voice-only visit
+   to another system naming the same supergroup number would otherwise inherit the session's members or KEY=0. */
+static void
+search_return_site(search_coord* c, dsd_state* state) {
+    search_restore_site(c, state);
+    dsd_p25_patch_snapshot_restore(state, &c->session_patches);
+}
+
 static int
 search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t target, int visit, int analog) {
     search_cancel_measurements(c);
@@ -704,6 +718,7 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
         opts->dmr_stereo = 1;
     }
     search_start_profile(opts, state);
+    dsd_p25_patch_snapshot_save(state, &c->session_patches);
     /* A session site saved without its channel map would empty the map at every departure: no search then. */
     if (dsd_p25_site_snapshot_save(state, &c->session_site) || dsd_scan_mode_begin(opts, state)
         || dsd_engine_scan_own(state, 1, c, search_coord_free)) {
@@ -1851,7 +1866,7 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
        and a call still active is labelled with the code proven on its own carrier, never the session's. The engine's
        teardown puts the session's back after them (dsd_engine_signal_search_release_site(), issue #804). */
     if (c->reception_ended) {
-        search_restore_site(c, state);
+        search_return_site(c, state);
     } else {
         c->site_owed = 1;
     }
@@ -1876,7 +1891,7 @@ dsd_engine_signal_search_release_site(dsd_state* state) {
         return;
     }
     c->site_owed = 0;
-    search_restore_site(c, state);
+    search_return_site(c, state);
     /* The visit's proof was its carrier's; the final no-carrier pass has cleared it, and the session's code was never
        proven here. */
     dsd_state_forget_p2_proof(state);

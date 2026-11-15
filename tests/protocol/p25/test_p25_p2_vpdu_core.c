@@ -1184,6 +1184,67 @@ build_failed_crc_iden(unsigned char* mac, unsigned char opcode, int iden) {
     }
 }
 
+/* A CRC-good network status in MAC form naming @p wacn / @p sysid (NAC 293, channel 0x1010): abbreviated (0x7B) or
+   extended (0xFB). */
+static void
+build_nsb(unsigned char* mac, unsigned char opcode, uint32_t wacn, uint16_t sysid) {
+    DSD_MEMSET(mac, 0, 24);
+    mac[1] = opcode;
+    mac[2] = 0x09; // LRA
+    mac[3] = (unsigned char)((wacn >> 12) & 0xFFU);
+    mac[4] = (unsigned char)((wacn >> 4) & 0xFFU);
+    mac[5] = (unsigned char)(((wacn & 0xFU) << 4) | ((sysid >> 8) & 0xFU));
+    mac[6] = (unsigned char)(sysid & 0xFFU);
+    mac[7] = 0x10; // CHAN-T 0x1010
+    mac[8] = 0x10;
+    const int nac_at = opcode == 0xFB ? 12 : 10;
+    if (opcode == 0xFB) {
+        mac[9] = 0x10; // CHAN-R
+        mac[10] = 0x10;
+    }
+    mac[nac_at] = 0x02; // NAC 293
+    mac[nac_at + 1] = 0x93;
+}
+
+/* The patch table belongs to the system a CRC-good Phase 2 network status names, whatever the seed: with a hand-set
+   one (p2_hardset), which the broadcast does not replace, system A becomes the owner and keeps the table, A again keeps
+   it, and system B empties it. */
+static int
+run_nsb_patch_owner_cases(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    char label[96];
+    unsigned char mac[24];
+    static const unsigned char opcodes[] = {0x7B, 0xFB};
+    for (size_t i = 0; i < sizeof opcodes; i++) {
+        dsd_state* state = failed_crc_seed_state(&opts, 0);
+        if (!state) {
+            return 1;
+        }
+        state->p2_hardset = 1;
+        p25_patch_add_wgid(state, 1400, 1401);
+        build_nsb(mac, opcodes[i], 0xA1001U, 0x101U);
+        failed_crc_process(&opts, state, mac, 1);
+        DSD_SNPRINTF(label, sizeof label, "nsb %02X: system A becomes the owner", opcodes[i]);
+        rc |= expect_true(label, state->p25_patch_owner_known == 1 && state->p25_patch_owner_wacn == 0xA1001U
+                                     && state->p25_patch_owner_sysid == 0x101U);
+        DSD_SNPRINTF(label, sizeof label, "nsb %02X: system A keeps the table", opcodes[i]);
+        rc |= expect_true(label, state->p25_patch_count == 1 && state->p25_patch_wgid_count[0] == 1);
+        failed_crc_process(&opts, state, mac, 1);
+        DSD_SNPRINTF(label, sizeof label, "nsb %02X: system A again keeps the members", opcodes[i]);
+        rc |= expect_true(label, state->p25_patch_count == 1 && state->p25_patch_wgid[0][0] == 1401);
+        build_nsb(mac, opcodes[i], 0xA1001U, 0x102U);
+        failed_crc_process(&opts, state, mac, 1);
+        DSD_SNPRINTF(label, sizeof label, "nsb %02X: system B empties the table", opcodes[i]);
+        rc |= expect_true(label, state->p25_patch_count == 0 && state->p25_patch_active[0] == 0
+                                     && state->p25_patch_owner_sysid == 0x102U);
+        DSD_SNPRINTF(label, sizeof label, "nsb %02X: the hand-set seed stays", opcodes[i]);
+        rc |= expect_true(label, state->p2_wacn == 0xABCDE && state->p2_sysid == 0x123);
+        failed_crc_free_state(state);
+    }
+    return rc;
+}
+
 static int
 run_failed_crc_system_broadcast_cases(void) {
     int rc = 0;
@@ -2327,6 +2388,7 @@ run_cases(void) {
     rc |= run_deferred_adjacent_wacn_resolution_case();
     rc |= run_sccb_full_cache_preservation_case();
     rc |= run_failed_crc_system_broadcast_cases();
+    rc |= run_nsb_patch_owner_cases();
     rc |= run_failed_crc_sccb_case();
     rc |= run_failed_crc_status_broadcast_cases();
 

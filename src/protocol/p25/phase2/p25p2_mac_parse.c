@@ -22,9 +22,12 @@ p25p2_signed_offset_units(int sign_bit, int raw_offset) {
     return sign_bit ? raw_offset : -raw_offset;
 }
 
-static int
-p25p2_mac_capacity(int type) {
-    return (type == 1) ? 19 : 16;
+int
+p25p2_mac_span(int type, int is_lcch) {
+    if (type == 1) {
+        return is_lcch ? P25P2_MAC_SPAN_LCCH : P25P2_MAC_SPAN_SACCH;
+    }
+    return P25P2_MAC_SPAN_FACCH;
 }
 
 static int
@@ -182,8 +185,7 @@ p25p2_mac_resolve_segment_len(int type, const unsigned long long mac[24], int of
 }
 
 static int
-p25p2_mac_parse_segments(int type, const unsigned long long mac[24], struct p25p2_mac_result* out) {
-    const int capacity = p25p2_mac_capacity(type);
+p25p2_mac_parse_segments(int type, int capacity, const unsigned long long mac[24], struct p25p2_mac_result* out) {
     int offset = 0;
 
     for (int seg = 0; seg < P25P2_MAC_MAX_SEGMENTS && offset < capacity; seg++) {
@@ -211,7 +213,12 @@ p25p2_mac_parse_segments(int type, const unsigned long long mac[24], struct p25p
 
 int
 p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_result* out) {
-    if (out == NULL || mac == NULL) {
+    return p25p2_mac_parse_span(type, p25p2_mac_span(type, 0), mac, out);
+}
+
+int
+p25p2_mac_parse_span(int type, int span, const unsigned long long mac[24], struct p25p2_mac_result* out) {
+    if (out == NULL || mac == NULL || span < 1 || span >= 24) {
         return -1;
     }
 
@@ -220,11 +227,12 @@ p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_res
         out->segments[i].length = 0;
     }
     out->type = type;
+    out->span = span;
     out->mfid = (uint8_t)mac[2];
     out->opcode = (uint8_t)mac[1];
     out->segment_count = 0;
 
-    (void)p25p2_mac_parse_segments(type, mac, out);
+    (void)p25p2_mac_parse_segments(type, span, mac, out);
 
     return 0;
 }

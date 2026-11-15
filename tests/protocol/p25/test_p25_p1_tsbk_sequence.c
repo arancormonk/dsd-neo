@@ -8,6 +8,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/trellis34.h>
@@ -23,6 +24,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -31,6 +33,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_mfid90_utils.h"
+#include "p25_patch_test_clock.h"
 
 /* Built the way a SoapySDR-only or Airspy-only build compiles the decoder: the radio stream's BER counters must not
    depend on librtlsdr being present. */
@@ -431,59 +434,6 @@ p25_mfid90_base_station_id_decode(const uint8_t tsbk_byte[12], char* cwid, size_
 }
 
 void
-p25_patch_add_wgid(dsd_state* state, int sg, int wgid) {
-    (void)state;
-    (void)sg;
-    (void)wgid;
-}
-
-void
-p25_patch_add_wuid(dsd_state* state, int sg, uint32_t wuid) {
-    (void)state;
-    (void)sg;
-    (void)wuid;
-}
-
-void
-p25_patch_remove_wgid(dsd_state* state, int sg, int wgid) {
-    (void)state;
-    (void)sg;
-    (void)wgid;
-}
-
-void
-p25_patch_clear_sg(dsd_state* state, int sg) {
-    (void)state;
-    (void)sg;
-}
-
-int
-p25_patch_prepare_grg_update(dsd_state* state, int sg, int is_patch, int active, int ssn) {
-    (void)state;
-    (void)sg;
-    (void)is_patch;
-    (void)ssn;
-    return active ? 1 : 0;
-}
-
-void
-p25_patch_set_kas(dsd_state* state, int sg, int kas, int algid, int ssn) {
-    (void)state;
-    (void)sg;
-    (void)kas;
-    (void)algid;
-    (void)ssn;
-}
-
-void
-p25_patch_update(dsd_state* state, int sg, int is_patch, int active) {
-    (void)state;
-    (void)sg;
-    (void)is_patch;
-    (void)active;
-}
-
-void
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
@@ -743,6 +693,313 @@ test_failed_block_trailing_nulls(void) {
     return rc;
 }
 
+/* One MFID90 TSBK (last block, CRC sealed), read through processTSBK() on @p state as it stands. */
+static int
+run_mfid90_tsbk(dsd_opts* opts, dsd_state* state, uint8_t opcode, int sg, int ga1, int ga2, int ga3) {
+    uint8_t bytes[12] = {0};
+    bytes[0] = (uint8_t)(0x80U | (opcode & 0x3FU));
+    bytes[1] = 0x90;
+    const int ids[4] = {sg, ga1, ga2, ga3};
+    for (int i = 0; i < 4; i++) {
+        bytes[2 + (2 * i)] = (uint8_t)((ids[i] >> 8) & 0xFF);
+        bytes[3 + (2 * i)] = (uint8_t)(ids[i] & 0xFF);
+    }
+    if (!seal_tsbk_crc(bytes)) {
+        return 0;
+    }
+    uint8_t dibits[98];
+    encode_tsbk_dibits(bytes, dibits);
+    build_stream_of(dibits);
+    reset_decode_counters();
+    return processTSBK(opts, state);
+}
+
+static int
+tsbk_patch_idx(const dsd_state* state, int sg) {
+    for (int i = 0; i < state->p25_patch_count && i < DSD_P25_PATCH_MAX; i++) {
+        if (state->p25_patch_sgid[i] == (uint16_t)sg) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* MFID90 Group Regroup Add (0x00) / Delete (0x01) TSBKs through the production TSBK path into the real patch table:
+   the SG listed as a member is ignored, the trailing SG-only refresh does not keep members current while a repeated
+   Add does, and a Delete listing the SG ends the patch. */
+static int
+test_mfid90_regroup_tsbk(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    rc |= expect_eq_int("regroup add crc", run_mfid90_tsbk(&opts, &state, 0x00, 1400, 1401, 1400, 1402), 1);
+    const int idx = tsbk_patch_idx(&state, 1400);
+    if (idx < 0) {
+        DSD_FPRINTF(stderr, "regroup add created no patch\n");
+        return 1;
+    }
+    rc |= expect_eq_int("regroup add stores the real members", state.p25_patch_wgid_count[idx], 2);
+    rc |= expect_eq_int("regroup add first member", state.p25_patch_wgid[idx][0], 1401);
+    rc |= expect_eq_int("regroup add second member", state.p25_patch_wgid[idx][1], 1402);
+
+    p25_patch_test_listen_for(&state, 10.0);
+    p25_patch_update(&state, 1400, 1, 1); // a grant naming the SG
+    p25_patch_test_listen_for(&state, 11.0);
+    rc |= expect_eq_int("sg-only refresh lets members age", dsd_p25_patch_members_current(&state, idx), 0);
+
+    rc |= expect_eq_int("repeated add crc", run_mfid90_tsbk(&opts, &state, 0x00, 1400, 1401, 0, 0), 1);
+    p25_patch_test_listen_for(&state, 15.0);
+    rc |= expect_eq_int("repeated add keeps members current", dsd_p25_patch_members_current(&state, idx), 1);
+    rc |= expect_eq_int("repeated add replaces the expired list", state.p25_patch_wgid_count[idx], 1);
+
+    rc |= expect_eq_int("regroup delete crc", run_mfid90_tsbk(&opts, &state, 0x01, 1400, 1400, 0, 0), 1);
+    rc |= expect_eq_int("delete listing the SG ends the patch", state.p25_patch_active[idx], 0);
+    rc |= expect_eq_int("delete listing the SG clears members", state.p25_patch_wgid_count[idx], 0);
+    return rc;
+}
+
+/* One MFID90 TSBK of @p opcode with @p payload in octets 2..9 (last block, CRC sealed), read through processTSBK() on
+   @p state as it stands: @p corrupt breaks the block's CRC after sealing. */
+static int
+run_mfid90_payload_tsbk(dsd_opts* opts, dsd_state* state, uint8_t opcode, const uint8_t payload[8], int corrupt) {
+    uint8_t bytes[12] = {0};
+    bytes[0] = (uint8_t)(0x80U | (opcode & 0x3FU));
+    bytes[1] = 0x90;
+    DSD_MEMCPY(bytes + 2, payload, 8);
+    if (!seal_tsbk_crc(bytes)) {
+        return -1;
+    }
+    uint8_t dibits[98];
+    encode_tsbk_dibits(bytes, dibits);
+    build_stream_of(dibits);
+    if (corrupt) {
+        for (int i = 20; i < 80; i++) {
+            g_stream[i] = (uint8_t)(3 - g_stream[i]);
+        }
+    }
+    reset_decode_counters();
+    return processTSBK(opts, state);
+}
+
+/* MFID90 Group Regroup Channel Grant (0x02): SVC, CHAN, SG, SRC. */
+static int
+run_mfid90_regroup_grant(dsd_opts* opts, dsd_state* state, int sg, int corrupt) {
+    const uint8_t payload[8] = {0x00, 0x00, 0x01, (uint8_t)((sg >> 8) & 0xFF), (uint8_t)(sg & 0xFF), 0x00, 0x01, 0x02};
+    return run_mfid90_payload_tsbk(opts, state, 0x02, payload, corrupt);
+}
+
+/* MFID90 Group Regroup Channel Grant Update (0x03): CH1, SG1, CH2, SG2. */
+static int
+run_mfid90_regroup_grant_update(dsd_opts* opts, dsd_state* state, int ch1, int sg1, int ch2, int sg2) {
+    const uint8_t payload[8] = {
+        (uint8_t)((ch1 >> 8) & 0xFF), (uint8_t)(ch1 & 0xFF), (uint8_t)((sg1 >> 8) & 0xFF), (uint8_t)(sg1 & 0xFF),
+        (uint8_t)((ch2 >> 8) & 0xFF), (uint8_t)(ch2 & 0xFF), (uint8_t)((sg2 >> 8) & 0xFF), (uint8_t)(sg2 & 0xFF)};
+    return run_mfid90_payload_tsbk(opts, state, 0x03, payload, 0);
+}
+
+static int
+expect_near(const char* tag, double got, double want) {
+    if (fabs(got - want) > 1e-6) {
+        DSD_FPRINTF(stderr, "%s: got %.9f want %.9f\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* A Phase 1 MFID90 regroup grant (0x02) and grant update (0x03) name the supergroup, as the Phase 2 supergroup voice
+   messages do: each refreshes its seen stamp on the listening clock and never its members stamp. The update names the
+   second supergroup only with a second channel. SG 0 creates no entry. */
+static int
+test_mfid90_regroup_grants_refresh_seen(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_opts_set_relaxed_crc(&opts, 1); // -F: the grant paths still need their CRC
+
+    rc |= expect_eq_int("grant test add crc", run_mfid90_tsbk(&opts, &state, 0x00, 1400, 1401, 0, 0), 1);
+    const int idx = tsbk_patch_idx(&state, 1400);
+    if (idx < 0) {
+        DSD_FPRINTF(stderr, "grant test: add created no patch\n");
+        return 1;
+    }
+    const double members_at_add = state.p25_patch_members_listen_s[idx];
+
+    p25_patch_test_listen_for(&state, 10.0);
+    rc |= expect_eq_int("regroup grant crc", run_mfid90_regroup_grant(&opts, &state, 1400, 0), 1);
+    rc |= expect_near("regroup grant refreshes the seen stamp", state.p25_patch_seen_listen_s[idx],
+                      state.p25_patch_listen_s);
+    rc |= expect_near("regroup grant leaves the members stamp", state.p25_patch_members_listen_s[idx], members_at_add);
+
+    p25_patch_test_listen_for(&state, 5.0);
+    rc |=
+        expect_eq_int("regroup grant update crc", run_mfid90_regroup_grant_update(&opts, &state, 1, 1400, 2, 1410), 1);
+    rc |= expect_near("grant update refreshes SG1's seen stamp", state.p25_patch_seen_listen_s[idx],
+                      state.p25_patch_listen_s);
+    rc |= expect_near("grant update leaves SG1's members stamp", state.p25_patch_members_listen_s[idx], members_at_add);
+    const int idx2 = tsbk_patch_idx(&state, 1410);
+    rc |= expect_eq_int("grant update names SG2", idx2 >= 0, 1);
+    if (idx2 >= 0) {
+        rc |=
+            expect_near("grant update stamps SG2 seen", state.p25_patch_seen_listen_s[idx2], state.p25_patch_listen_s);
+        rc |=
+            expect_eq_int("grant update gives SG2 no current members", dsd_p25_patch_members_current(&state, idx2), 0);
+    }
+
+    const int count = state.p25_patch_count;
+    rc |= expect_eq_int("grant update without CH2 crc",
+                        run_mfid90_regroup_grant_update(&opts, &state, 1, 1400, 0, 1420), 1);
+    rc |= expect_eq_int("grant update without CH2 names no SG2", tsbk_patch_idx(&state, 1420), -1);
+    rc |= expect_eq_int("SG 0 grant crc", run_mfid90_regroup_grant(&opts, &state, 0, 0), 1);
+    rc |= expect_eq_int("SG 0 grant update crc", run_mfid90_regroup_grant_update(&opts, &state, 1, 0, 2, 0), 1);
+    rc |= expect_eq_int("SG 0 creates no entry", state.p25_patch_count, count);
+    rc |= expect_eq_int("SG 0 leaves no zero entry", tsbk_patch_idx(&state, 0), -1);
+    return rc;
+}
+
+/* A Phase 1 regroup grant for a new supergroup never pushes a live patch out of a full table of them: it writes no row. */
+static int
+test_mfid90_regroup_grant_full_live_table(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        (void)run_mfid90_tsbk(&opts, &state, 0x00, 1400 + (2 * i), 1401 + (2 * i), 0, 0);
+    }
+    rc |= expect_eq_int("full live table seeded", state.p25_patch_count, DSD_P25_PATCH_MAX);
+    rc |= expect_eq_int("full live table grant crc", run_mfid90_regroup_grant(&opts, &state, 1500, 0), 1);
+    rc |= expect_eq_int("full live table grant writes no row", tsbk_patch_idx(&state, 1500), -1);
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        const int idx = tsbk_patch_idx(&state, 1400 + (2 * i));
+        rc |= expect_eq_int("full live table grant keeps every live patch",
+                            idx >= 0 && dsd_p25_patch_has_current_wgid(&state, idx, (uint16_t)(1401 + (2 * i))), 1);
+    }
+    return rc;
+}
+
+/* Preservation: under -F a regroup grant whose CRC failed is never dispatched (tsbk_dispatch_message() needs the CRC
+   whatever the option), so it names no supergroup. */
+static int
+test_mfid90_failed_regroup_grant_writes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_opts_set_relaxed_crc(&opts, 1);
+    rc |= expect_eq_int("broken regroup grant fails its crc", run_mfid90_regroup_grant(&opts, &state, 1430, 1), 0);
+    rc |= expect_eq_int("broken regroup grant creates no entry", state.p25_patch_count, 0);
+    rc |= expect_eq_int("broken regroup grant names no SG", tsbk_patch_idx(&state, 1430), -1);
+    return rc;
+}
+
+/* One standard Network Status Broadcast TSBK naming @p wacn / @p sysid (last block, CRC sealed), read through
+   processTSBK() on @p state as it stands. */
+static int
+run_network_status_tsbk(dsd_opts* opts, dsd_state* state, uint32_t wacn, uint16_t sysid) {
+    uint8_t bytes[12] = {0};
+    bytes[0] = 0xBB; // last block, opcode 0x3B
+    bytes[2] = 0x00; // LRA
+    bytes[3] = (uint8_t)((wacn >> 12) & 0xFFU);
+    bytes[4] = (uint8_t)((wacn >> 4) & 0xFFU);
+    bytes[5] = (uint8_t)(((wacn & 0xFU) << 4) | ((sysid >> 8) & 0xFU));
+    bytes[6] = (uint8_t)(sysid & 0xFFU);
+    bytes[7] = 0x00; // channel 0x0001
+    bytes[8] = 0x01;
+    if (!seal_tsbk_crc(bytes)) {
+        return 0;
+    }
+    uint8_t dibits[98];
+    encode_tsbk_dibits(bytes, dibits);
+    build_stream_of(dibits);
+    reset_decode_counters();
+    g_channel_freq = 0;
+    return processTSBK(opts, state);
+}
+
+/* A CRC-good TSBK is control-channel listening: each one advances the patch listening clock by its gap on the decode
+   clock; a block whose CRC failed notes nothing. */
+static int
+test_cc_tsbk_advances_listening(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint64_t k_t0_ns = 5000000000ULL;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+    for (int i = 0; i < 3; i++) {
+        dsd_decode_clock_test_set_ns(k_t0_ns + ((uint64_t)i * 100000000ULL));
+        rc |=
+            expect_eq_int("listening tsbk passes its crc", run_network_status_tsbk(&opts, &state, 0xA1001U, 0x101U), 1);
+    }
+    rc |= expect_near("three tsbks 100 ms apart listen 0.2 s", state.p25_patch_listen_s, 0.2);
+    rc |= expect_near("the last tsbk is the previous reading", state.p25_patch_listen_last_m, 5.2);
+
+    // The same block with its CRC broken is no control-channel PDU.
+    dsd_decode_clock_test_set_ns(k_t0_ns + 300000000ULL);
+    build_network_status_stream();
+    for (int i = 20; i < 80; i++) {
+        g_stream[i] = (uint8_t)(3 - g_stream[i]);
+    }
+    reset_decode_counters();
+    rc |= expect_eq_int("broken tsbk fails its crc", processTSBK(&opts, &state), 0);
+    rc |= expect_near("a failed tsbk adds nothing", state.p25_patch_listen_s, 0.2);
+    rc |= expect_near("a failed tsbk is no reading", state.p25_patch_listen_last_m, 5.2);
+    dsd_decode_clock_test_set_ns(1000000000ULL);
+    return rc;
+}
+
+/* The patch table belongs to the system whose network status names it: an unknown owner adopts the first one and
+   keeps the table, the same system keeps it, another system empties it. Whatever the descrambler seed: a hand-set one
+   (p2_hardset), which keeps the network status from changing the decoder's WACN/SYSID, does not keep another system's
+   patches. */
+static int
+test_network_status_owns_patches(int hardset) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (hardset) {
+        state.p2_hardset = 1;
+        state.p2_wacn = 0xC3003ULL;
+        state.p2_sysid = 0x103ULL;
+        state.p2_cc = 0x293ULL;
+    }
+    p25_patch_add_wgid(&state, 1400, 1401);
+    int rc = 0;
+    const char* tag = hardset ? "hand-set seed" : "learned seed";
+    if (run_network_status_tsbk(&opts, &state, 0xA1001U, 0x101U) != 1) {
+        DSD_FPRINTF(stderr, "%s: system A tsbk failed its crc\n", tag);
+        return 1;
+    }
+    rc |= expect_eq_int("first system becomes the owner",
+                        state.p25_patch_owner_known == 1 && state.p25_patch_owner_wacn == 0xA1001U
+                            && state.p25_patch_owner_sysid == 0x101U,
+                        1);
+    rc |= expect_eq_int("first system keeps the table", tsbk_patch_idx(&state, 1400) >= 0, 1);
+    (void)run_network_status_tsbk(&opts, &state, 0xA1001U, 0x101U);
+    rc |= expect_eq_int("same system keeps the table", tsbk_patch_idx(&state, 1400) >= 0, 1);
+    rc |= expect_eq_int("same system keeps the members", state.p25_patch_wgid_count[0], 1);
+    (void)run_network_status_tsbk(&opts, &state, 0xA1001U, 0x102U);
+    rc |= expect_eq_int("another system empties the table", state.p25_patch_count, 0);
+    rc |= expect_eq_int("another system leaves no patch", tsbk_patch_idx(&state, 1400), -1);
+    rc |= expect_eq_int("another system becomes the owner",
+                        state.p25_patch_owner_known == 1 && state.p25_patch_owner_sysid == 0x102U, 1);
+    if (hardset) {
+        rc |= expect_eq_int("the hand-set seed stays", (int)state.p2_sysid, 0x103);
+    }
+    if (rc) {
+        DSD_FPRINTF(stderr, "  (%s)\n", tag);
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_decode_clock_use_test(1000000000ULL);
@@ -941,8 +1198,15 @@ main(void) {
         rc |= expect_eq_int("cut tsdu has no length", (int)state.p25_p1_unit_dibits, 0);
     }
     g_interrupt_at = -1;
+    rc |= test_mfid90_regroup_tsbk();
+    rc |= test_mfid90_regroup_grants_refresh_seen();
+    rc |= test_mfid90_regroup_grant_full_live_table();
+    rc |= test_mfid90_failed_regroup_grant_writes_nothing();
     rc |= test_failed_block_trailing_nulls();
     rc |= test_network_status_code();
+    rc |= test_cc_tsbk_advances_listening();
+    rc |= test_network_status_owns_patches(0);
+    rc |= test_network_status_owns_patches(1);
     dsd_signal_search_site_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_decode_clock_use_system();

@@ -9,8 +9,17 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 
 #include <stdint.h>
+
+/*
+ * The talkgroup part of the media gates' audio verdict on @p decision: a matching Hold that overrides the talkgroup
+ * policy (never a session avoid or call skip), or the talkgroup part's audio without an allow-list denial. The gates
+ * play a call when this and the radio part (`radio_audio_allowed`) allow it; the P25 patch resolver
+ * (<dsd-neo/core/p25_patch_policy.h>) ranks and admits members for media on it. 0 for NULL.
+ */
+int dsd_audio_policy_tg_allows_audio(const dsd_tg_policy_decision* decision);
 
 /*
  * The rdio-scanner export verdict for the recording of @p call (issue #773 D7): 1 when the talkgroup and radio policy
@@ -21,8 +30,9 @@
  * (dsd_tg_policy_apply_ota_final_blocks()), then the radio part. A Hold lifts what it lifts for recording -- an
  * allow-list miss, and a stream flag only derived off (a B/DE or audio=off row) -- but never an explicit stream=off on
  * an audible talkgroup row, nor a radio row's stream=off. @p policy_target, when non-zero, is the talkgroup a group
- * call is judged on; 0 resolves it as the gates do: a P25 call's patch member while that membership is current (it
- * needs an active call), else the call's policy target, else its over-the-air target. @p judged_target receives the
+ * call is judged on; 0 resolves it as the gates do: an active P25 call's keep-or-resolve target
+ * (dsd_p25_patch_media_resolve(): its stored target while it may play, else the patch resolver's answer
+ * for media), else the call's policy target, else its over-the-air target. @p judged_target receives the
  * talkgroup the call was judged on (a private call's over-the-air target), 0 when it was not judged.
  *
  * Recordings the talkgroup policy never gates are not judged and export: conventional analog calls, M17, and calls

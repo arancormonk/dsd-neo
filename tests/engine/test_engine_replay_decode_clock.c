@@ -16,8 +16,8 @@
  *   grant check and the NXDN recent-context check take from last_vc_sync_time are not negative.
  * - A `-mq --p25-sm-log` replay without `-T`: the P25 SM log's initial event=init record carries the capture's time.
  * - A 1970-anchored fixture: decode time starts at the 2000-01-01Z floor, clear of the "0 = never" sentinels, so a P25
- *   patch stamped in the first second expires after its TTL and the DMR single-fragment SLCO print is throttled to
- *   one per second from the first second on.
+ *   patch stamped in the first second expires after its TTL of listening read on the decode clock, and the DMR
+ *   single-fragment SLCO print is throttled to one per second from the first second on.
  * - Once the run ends, the decode clock is the system's again, with the init stamps rebased onto it.
  * - A second run on the state the first one used, as the Android service makes when a start races the previous run's
  *   stopSelfLatest(), stays on the system clock and says so once: a stamp the earlier run left on the system clock
@@ -124,7 +124,7 @@ count_text(const char* text, const char* needle) {
 }
 
 /* The first-second checks of a 1970-anchored capture, at media time 0: a patch stamped now still applies, and has
-   expired once its 20 s TTL has passed; two single-fragment SLCOs in the first second print one line, a third a second
+   expired once 21 s of control-channel listening, read on the decode clock, have passed; two single-fragment SLCOs in the first second print one line, a third a second
    later prints the second. */
 static void
 check_floor_decisions(dsd_opts* opts, dsd_state* state) {
@@ -162,7 +162,13 @@ check_floor_decisions(dsd_opts* opts, dsd_state* state) {
     }
     check_time("1970 anchor: the SLCO throttle stamp", state->slco_sfrag_last[0], kFloorS + 1);
 
-    dsd_decode_clock_set_media_ns(21ULL * NS_PER_S);
+    // The patch ages on the listening clock: 21 s of CRC-good control-channel blocks every 100 ms, read on the decode
+    // clock.
+    p25_sm_note_validated_cc(opts, state);
+    for (uint64_t tenth = 11U; tenth <= 220U; tenth++) {
+        dsd_decode_clock_set_media_ns(tenth * (NS_PER_S / 10U));
+        p25_sm_note_validated_cc(opts, state);
+    }
     check("1970 anchor: the first-second patch has expired 21 s on", !p25_patch_tg_key_is_clear(state, wgid));
 }
 

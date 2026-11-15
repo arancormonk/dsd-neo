@@ -48,6 +48,11 @@ int dsd_tg_policy_rows_hash_line(uint64_t* hash, const dsd_tg_policy_group_heade
  * to the end, -1 not (@p report, which may be NULL, says why: not_found or unreadable). */
 int dsd_tg_policy_rows_hash_file(const char* path, uint64_t* hash, dsd_tg_policy_load_report* report);
 
+/* Merge a supergroup's final reasons @p final (dsd_tg_policy_ota_final_reasons()) into a member's decision, as
+ * dsd_tg_policy_apply_ota_final_blocks() does: tuning is denied, and media too unless the encryption lockout is the only
+ * reason. Nothing for NULL or no reason. */
+void dsd_tg_policy_merge_ota_final(dsd_tg_policy_decision* decision, uint32_t final);
+
 /* Mode rules shared by the group list and the radio list's policy columns. Mode `B` or `DE` blocks: no tuning and
  * every medium off. */
 int dsd_tg_policy_mode_blocks(const char* mode);

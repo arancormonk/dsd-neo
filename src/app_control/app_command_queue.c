@@ -36,6 +36,8 @@
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
@@ -1466,14 +1468,40 @@ ui_rxid_guard_leave(int taken) {
 /* A tune the user asked for while trunking keeps the decoder's trunking state (it is not a carrier boundary), but the
    identity received before it is no longer this carrier's (D4: any user move clears it): the record starts over, after
    the calls the move ended took theirs, and what the frame sync holds buffered from the channel left heads no frame.
-   Under the tick guard, which the caller holds when @p guard_held. */
+   The P25 patch table follows ui_manual_move_patches() (@p same_system). Under the tick guard, which the caller holds
+   when @p guard_held. */
+static void ui_manual_move_patches(dsd_state* state, int same_system);
+
 static void
-ui_user_move_forgets_identity(dsd_state* state, int guard_held) {
+ui_user_move_forgets_identity(dsd_state* state, int guard_held, int same_system) {
     const int taken = ui_rxid_guard_enter(guard_held);
     dsd_rxid_reset(state);
     dmr_ras_reset(state);
+    ui_manual_move_patches(state, same_system);
     dsd_state_note_carrier_change(state);
     ui_rxid_guard_leave(taken);
+}
+
+/* Whether a manual move to @p freq lands on the control channel of the P25 system the patch table belongs to (its
+   p25_cc_freq, read before the move): a same-system move. */
+static int
+ui_move_is_same_p25_system(const dsd_state* state, long freq) {
+    return freq > 0 && state->p25_cc_freq > 0 && freq == state->p25_cc_freq;
+}
+
+/* A manual move that runs no carrier boundary and the P25 patch table: a return to (or a selection of) the control
+   channel of the table's own system (@p same_system: the Return-to-CC, the Lockout and Skip returns, a selection of
+   that control channel) keeps the table and only breaks its listening clock's continuity, as a trunk move does; a
+   move to any other carrier (a channel or candidate cycle, a selection of another control channel, a return to a
+   control channel that is not the P25 system's) names no system, so the table goes as a user tune's carrier boundary
+   empties it (dsd_engine_carrier_boundary()). The caller holds the P25 SM tick guard. */
+static void
+ui_manual_move_patches(dsd_state* state, int same_system) {
+    if (same_system) {
+        dsd_p25_patch_listen_break(state);
+    } else {
+        dsd_p25_patch_clear_all(state);
+    }
 }
 
 /* The operator moved the receiver off its session (issue #671): an accepted frequency entry or tap-to-tune, never a P25
@@ -2007,6 +2035,7 @@ ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
         ui_set_toast(state, 4, "Above 2147.483647 MHz, the trunking limit");
         return UI_CMD_APPLY_FAILED;
     }
+    const int same_system = ui_move_is_same_p25_system(state, (long)hz); // before the selection stores it
     const dsd_trunk_tune_result result = p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
     /* The selection stores and tunes this frequency as it is, so it names the one selected whatever the result. */
     char mhz[16];
@@ -2015,7 +2044,8 @@ ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
         /* A new channel (issue #671): the selection dropped the modulation votes; the tone heard on the old one goes
            as the frequency entry's other branch drops it. */
         dsd_analog_rx_reset(state);
-        ui_user_move_forgets_identity(state, g_apply_cmd_guard_held); /* the selection ended the calls left */
+        /* the selection ended the calls left */
+        ui_user_move_forgets_identity(state, g_apply_cmd_guard_held, same_system);
         ui_set_toast(state, 3, "%s: P25 control channel -> %s MHz",
                      result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", mhz);
         return UI_CMD_APPLY_COMPLETED;
@@ -3735,6 +3765,7 @@ run_manual_retune_guarded(dsd_opts* opts, dsd_state* state, manual_retune_step_f
 static int
 apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
     const long freq = current_cc_freq(state);
+    const int same_system = ui_move_is_same_p25_system(state, freq);
     const long tetra_home = tetra_sm_return_cc_hz(state);
     const int sym_rate = cc_symbol_rate(opts, state, 0);
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -3743,7 +3774,7 @@ apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live)
         return UI_CMD_APPLY_FAILED;
     }
     reset_call_tracking(opts, state, 1);
-    ui_user_move_forgets_identity(state, p25_live);
+    ui_user_move_forgets_identity(state, p25_live, same_system);
     mark_cc_sync(state, 1);
     set_cc_symbol_timing(opts, state, sym_rate);
     if (p25_live) {
@@ -3782,12 +3813,21 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
     uint64_t request_id = 0U;
     const int sym_rate = cc_symbol_rate(opts, state, 1);
     const long tetra_home = tetra_sm_return_cc_hz(state);
+    int same_system = 0;
     if (opts->trunk_enable == 1) {
         cc_freq = current_cc_freq(state);
+        same_system = ui_move_is_same_p25_system(state, cc_freq);
         if (cc_freq != 0
             && !request_manual_tune(opts, state, cc_freq, sym_rate, tune_reason, &tune_result, &request_id, NULL)) {
             return UI_CMD_APPLY_FAILED;
         }
+    }
+    if (cc_freq != 0) {
+        /* A return, as the Return-to-CC is: the patch table follows ui_manual_move_patches(). */
+        /* Under the tick guard, taken unless this thread holds it already (the command's or the P25 retune's hold). */
+        const int taken = ui_rxid_guard_enter(p25_sm_tick_guard_held_by_caller());
+        ui_manual_move_patches(state, same_system);
+        ui_rxid_guard_leave(taken);
     }
 
     reset_call_tracking(opts, state, 1);
@@ -3872,7 +3912,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
            (issue #575). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     } else {
-        ui_user_move_forgets_identity(state, p25_live);
+        ui_user_move_forgets_identity(state, p25_live, 0);
     }
     hand_tetra_sm_over(opts, state);
     cycle_rearms_cold_start_window(opts, state, p25_live);
@@ -3929,7 +3969,7 @@ lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, long freq, int p25_l
            (issue #575), but the user moved, so what was received before is not this channel's identity. */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     } else {
-        ui_user_move_forgets_identity(state, p25_live);
+        ui_user_move_forgets_identity(state, p25_live, 0);
     }
     hand_tetra_sm_over(opts, state);
     cycle_rearms_cold_start_window(opts, state, p25_live);
@@ -7433,10 +7473,47 @@ tg_listen_evaluate_call(const dsd_opts* opts, const dsd_state* state, const dsd_
     return dsd_tg_policy_evaluate_group_call(opts, state, target, 0, 0, 0, decision);
 }
 
-/* Only mode/allow-list denial can change as a result of a row edit. A patched
- * P25 call is judged on the member WG its grant matched, plus the supergroup's
- * own final blocks (a mode row on the supergroup releases it; an allow-list miss
- * there does not, since a listed member is how patch-aware following admits it). */
+/* Whether @p call is a P25 group call on a live patch's supergroup, judged through the patch resolver. */
+static int
+tg_listen_call_is_patched(const dsd_state* state, const dsd_call_snapshot* call) {
+    return DSD_SYNC_IS_P25(call->protocol) && call->kind != DSD_CALL_KIND_PRIVATE_VOICE && call->ota_target_id != 0U
+           && call->ota_target_id <= UINT32_MAX && dsd_p25_patch_sg_live(state, (uint32_t)call->ota_target_id);
+}
+
+/* An active group call judged as admission judges it now. A P25 call on a live patch's supergroup goes through the
+ * patch resolver (the supergroup, then each current member), so a patch another listened member carries is kept;
+ * a final block on the supergroup ends that resolution with the supergroup's decision. Any other call is judged on its
+ * stored policy target (the member a past resolution chose) plus the supergroup's final blocks. */
+static int
+tg_listen_judge_call(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                     dsd_tg_policy_decision* decision) {
+    if (tg_listen_call_is_patched(state, call)) {
+        dsd_p25_patch_resolution resolution;
+        if (dsd_p25_patch_resolve(opts, state, (uint32_t)call->ota_target_id, 0, 0, 0, DSD_P25_PATCH_RESOLVE_ADMIT,
+                                  NULL, NULL, &resolution)
+            != 0) {
+            return -1;
+        }
+        *decision = resolution.decision;
+        return 0;
+    }
+    const uint64_t target = call->policy_target_id ? call->policy_target_id : call->ota_target_id;
+    if (target == 0U || target > UINT32_MAX) {
+        return -1;
+    }
+    if (tg_listen_evaluate_call(opts, state, call, (uint32_t)target, decision) != 0) {
+        return -1;
+    }
+    if (call->ota_target_id <= UINT32_MAX) {
+        (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, (uint32_t)call->ota_target_id, (uint32_t)target, 0,
+                                                   decision);
+    }
+    return 0;
+}
+
+/* Only mode/allow-list denial can change as a result of a row edit. A mode row on a patch's supergroup releases it;
+ * an allow-list miss there does not while a listed member carries the patch, since that is how patch-aware following
+ * admits it. */
 static unsigned int
 tg_listen_blocked_slots(const dsd_opts* opts, const dsd_state* state) {
     unsigned int blocked = 0;
@@ -7446,17 +7523,9 @@ tg_listen_blocked_slots(const dsd_opts* opts, const dsd_state* state) {
             || call.kind == DSD_CALL_KIND_PRIVATE_VOICE) {
             continue;
         }
-        const uint64_t target = call.policy_target_id ? call.policy_target_id : call.ota_target_id;
-        if (target == 0U || target > UINT32_MAX) {
-            continue;
-        }
         dsd_tg_policy_decision decision;
-        if (tg_listen_evaluate_call(opts, state, &call, (uint32_t)target, &decision) != 0) {
+        if (tg_listen_judge_call(opts, state, &call, &decision) != 0) {
             continue;
-        }
-        if (call.ota_target_id <= UINT32_MAX) {
-            (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, (uint32_t)call.ota_target_id, (uint32_t)target, 0,
-                                                       &decision);
         }
         if (decision.block_reasons & (DSD_TG_POLICY_BLOCK_MODE | DSD_TG_POLICY_BLOCK_ALLOWLIST)) {
             blocked |= 1U << slot;
@@ -10778,6 +10847,46 @@ command_feeds_playout(const struct dsd_app_command* c) {
                    || c->id == DSD_APP_CMD_SLOT_PREF_SET));
 }
 
+/* A command that rewrites decoder-owned P25 trunking state the watchdog's TUNED tick reads: the hand-set Phase 2
+   parameters, whose WACN/SYSID of another system resets the IDEN tables and empties the patch table through its owner
+   rule (p25_update_system_identity(), dsd_p25_patch_note_system()) while the tick's patch re-resolution reads it. */
+static int
+command_changes_p25_system(const struct dsd_app_command* c) {
+    return c && c->id == DSD_APP_CMD_P25_P2_PARAMS_SET;
+}
+
+/* A command that writes what the TUNED tick's patched-call re-resolution (p25_slot_refresh_patch()) reads through the
+   talkgroup policy, besides what command_changes_call_verdict() covers (the policy store, the Hold, the allow list, the
+   unknown-only record switch): the group, private, data and encrypted tune switches, the encryption lockout ledger, and
+   the lockout's key epoch, which every key and decryption edit bumps (dsd_enc_lockout_bump_key_epoch()). */
+static int
+command_changes_tune_policy(const struct dsd_app_command* c) {
+    static const int commands[] = {
+        DSD_APP_CMD_TRUNK_GROUP_TOGGLE, DSD_APP_CMD_TRUNK_PRIV_TOGGLE, DSD_APP_CMD_TRUNK_DATA_TOGGLE,
+        DSD_APP_CMD_TRUNK_ENC_TOGGLE,   DSD_APP_CMD_ENC_LOCKOUT_CLEAR, DSD_APP_CMD_KEY_BASIC_SET,
+        DSD_APP_CMD_KEY_SCRAMBLER_SET,  DSD_APP_CMD_KEY_RC4DES_SET,    DSD_APP_CMD_KEY_HYTERA_SET,
+        DSD_APP_CMD_KEY_AES_SET,        DSD_APP_CMD_KEY_TYT_AP_SET,    DSD_APP_CMD_KEY_RETEVIS_RC2_SET,
+        DSD_APP_CMD_KEY_TYT_EP_SET,     DSD_APP_CMD_KEY_KEN_SCR_SET,   DSD_APP_CMD_KEY_ANYTONE_BP_SET,
+        DSD_APP_CMD_KEY_XOR_SET,        DSD_APP_CMD_KEY_DIRECT_SET,    DSD_APP_CMD_DECRYPTION_APPLY,
+        DSD_APP_CMD_IMPORT_KEYS_DEC,    DSD_APP_CMD_IMPORT_KEYS_HEX,   DSD_APP_CMD_IMPORT_KEYS_CLEAR,
+    };
+    if (!c) {
+        return 0;
+    }
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        if (commands[i] == c->id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A command that writes an input of the watchdog's TUNED tick other than the playout's. */
+static int
+command_writes_tick_inputs(const struct dsd_app_command* c) {
+    return command_changes_p25_system(c) || command_changes_tune_policy(c);
+}
+
 /* A command that opens, closes or publishes a per-call, static or raw WAV. The watchdog's release publishes and reopens
    the per-call WAVs through the event layer, and its playout drain writes the static WAV, both under the tick guard, so
    these commands take it too (issue #661). Commands that reach the WAVs only through the event layer hold its call-state
@@ -10858,7 +10967,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
        verdict it takes before its return tune to the drain after it. A call's new verdict is taken before the guard is
        free again: what the playout queued for an active call plays under the verdict the command left, also when the
        call ends before the next emission (issue #651). */
-    const int guarded = command_feeds_playout(c) || command_touches_wav_outputs(c);
+    const int guarded = command_feeds_playout(c) || command_touches_wav_outputs(c) || command_writes_tick_inputs(c);
     if (guarded) {
         if (!p25_sm_tick_guard_try_enter()) {
 #ifdef DSD_NEO_TEST_HOOKS

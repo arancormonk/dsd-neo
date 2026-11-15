@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state_ext.h>
@@ -2435,24 +2436,37 @@ struct dsd_state {
     int p25_p2_voice_err_hist_pos[2];
     unsigned int p25_p2_voice_err_hist_sum[2];
 
-    // P25 regroup/patch tracking (active super group IDs)
-    // Tracks up to 8 concurrent SGIDs; updates come from MFID A4/90 regroup PDUs.
+    // P25 regroup/patch tracking (active super group IDs); see <dsd-neo/core/p25_patch.h>.
+    // Tracks up to DSD_P25_PATCH_MAX concurrent SGIDs; updates come from MFID A4/90 regroup PDUs.
     int p25_patch_count;
-    uint16_t p25_patch_sgid[8];
-    uint8_t p25_patch_is_patch[8]; // 1=two-way patch, 0=simulselect
-    uint8_t p25_patch_active[8];   // 1=active, 0=inactive
-    time_t p25_patch_last_update[8];
+    uint16_t p25_patch_sgid[DSD_P25_PATCH_MAX];
+    uint8_t p25_patch_is_patch[DSD_P25_PATCH_MAX];   // 1=two-way patch, 0=simulselect
+    uint8_t p25_patch_active[DSD_P25_PATCH_MAX];     // 1=active, 0=inactive
+    time_t p25_patch_last_update[DSD_P25_PATCH_MAX]; // decode time of the last refresh (display only)
+    // Freshness on the listening clock: last message naming the SG, last membership message.
+    double p25_patch_seen_listen_s[DSD_P25_PATCH_MAX];
+    double p25_patch_members_listen_s[DSD_P25_PATCH_MAX];
+    // Recency for ordering and eviction, from p25_patch_seq_counter.
+    uint32_t p25_patch_seq[DSD_P25_PATCH_MAX];
+    uint32_t p25_patch_seq_counter;
+    // Listening clock: seconds of continuous control-channel reception, and the previous reading (0 = broken).
+    double p25_patch_listen_s;
+    double p25_patch_listen_last_m;
+    // The system the table belongs to (valid while p25_patch_owner_known).
+    uint32_t p25_patch_owner_wacn;
+    uint16_t p25_patch_owner_sysid;
+    uint8_t p25_patch_owner_known;
     // Membership (best-effort): WGIDs and WUIDs per SG
-    uint8_t p25_patch_wgid_count[8];
-    uint16_t p25_patch_wgid[8][8];
-    uint8_t p25_patch_wuid_count[8];
-    uint32_t p25_patch_wuid[8][8];
+    uint8_t p25_patch_wgid_count[DSD_P25_PATCH_MAX];
+    uint16_t p25_patch_wgid[DSD_P25_PATCH_MAX][DSD_P25_PATCH_GROUP_MAX];
+    uint8_t p25_patch_wuid_count[DSD_P25_PATCH_MAX];
+    uint32_t p25_patch_wuid[DSD_P25_PATCH_MAX][DSD_P25_PATCH_RADIO_MAX];
     // Optional crypt/state context from GRG commands
-    uint16_t p25_patch_key[8]; // Key ID
-    uint8_t p25_patch_alg[8];  // ALG (vendor-specific)
-    uint8_t p25_patch_ssn[8];  // SSN
+    uint16_t p25_patch_key[DSD_P25_PATCH_MAX]; // Key ID
+    uint8_t p25_patch_alg[DSD_P25_PATCH_MAX];  // ALG (vendor-specific)
+    uint8_t p25_patch_ssn[DSD_P25_PATCH_MAX];  // SSN
     // Whether p25_patch_key[i] has been explicitly set by a GRG command
-    uint8_t p25_patch_key_valid[8];
+    uint8_t p25_patch_key_valid[DSD_P25_PATCH_MAX];
 
     // P25 affiliated RIDs tracking (simple fixed-size table)
     // Tracks up to 256 recent unit registrations (RIDs) with last-seen time for aging.

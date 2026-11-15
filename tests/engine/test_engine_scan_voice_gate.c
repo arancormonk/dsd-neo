@@ -22,6 +22,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -109,6 +110,71 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
     out->tune_allowed = test_tune_allowed(opts, opts ? opts->trunk_tune_private_calls : 0, encrypted, data_call)
                         || (src != 0U && src == g_allowed_radio);
     return 0;
+}
+
+/* No patch table in this fixture: no supergroup is live, so the patch resolver is never asked (ENGINE_P25_PATCH_SCAN
+ * runs the patched cases on the real policy). */
+int
+dsd_p25_patch_sg_live(const dsd_state* state, uint32_t sg) {
+    (void)state;
+    (void)sg;
+    return 0;
+}
+
+int
+dsd_p25_patch_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t src, int encrypted,
+                      int data_call, dsd_p25_patch_resolve_purpose purpose, dsd_p25_patch_adjust_fn adjust,
+                      const void* adjust_ctx, dsd_p25_patch_resolution* out) {
+    (void)opts;
+    (void)state;
+    (void)sg;
+    (void)src;
+    (void)encrypted;
+    (void)data_call;
+    (void)purpose;
+    (void)adjust;
+    (void)adjust_ctx;
+    (void)out;
+    g_failures++;
+    return -1;
+}
+
+int
+dsd_p25_patch_media_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t stored, uint32_t src,
+                            dsd_p25_patch_resolution* out) {
+    (void)opts;
+    (void)state;
+    (void)sg;
+    (void)stored;
+    (void)src;
+    (void)out;
+    g_failures++;
+    return -1;
+}
+
+int
+dsd_p25_patch_is_current_member(const dsd_state* state, uint32_t sg, uint32_t wg) {
+    (void)state;
+    (void)sg;
+    (void)wg;
+    g_failures++;
+    return 0;
+}
+
+int
+dsd_p25_patch_admits_hold(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t src) {
+    (void)opts;
+    (void)state;
+    (void)sg;
+    (void)src;
+    g_failures++;
+    return 0;
+}
+
+/* The stand-in evaluators apply the encrypted-call tuning rule themselves (test_tune_allowed()). */
+int
+dsd_tg_policy_encrypted_tune_denied(const dsd_opts* opts, int encrypted) {
+    return encrypted && opts && opts->trunk_tune_enc_calls == 0;
 }
 
 /* The radio the stand-in radio list blocks (0: none). */
@@ -813,41 +879,41 @@ test_tg_hold_call_active(void) {
         g_failures++;
         return;
     }
-    CHECK("null state is not a held call", dsd_scan_tg_hold_call_active(NULL) == 0);
+    CHECK("null state is not a held call", dsd_scan_tg_hold_call_active(NULL, NULL) == 0);
     fix.state->tg_hold = 22;
-    CHECK("hold without any call", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    CHECK("hold without any call", dsd_scan_tg_hold_call_active(fix.opts, fix.state) == 0);
 
     /* Slot 0: a group call to 22. */
     open_call_identity(&fix, 0U, DSD_CALL_KIND_GROUP_VOICE, 11, 22, 22, 100.0);
     fix.state->tg_hold = 0;
-    CHECK("no hold", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    CHECK("no hold", dsd_scan_tg_hold_call_active(fix.opts, fix.state) == 0);
     fix.state->tg_hold = 22;
-    CHECK("held group call", dsd_scan_tg_hold_call_active(fix.state) == 1);
+    CHECK("held group call", dsd_scan_tg_hold_call_active(fix.opts, fix.state) == 1);
     fix.state->tg_hold = 99;
-    CHECK("hold on another talkgroup", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    CHECK("hold on another talkgroup", dsd_scan_tg_hold_call_active(fix.opts, fix.state) == 0);
     fix.state->tg_hold = 22;
     (void)dsd_call_state_end_ex(fix.state, 0U, 100.5, DSD_CALL_END_EXPLICIT);
-    CHECK("ended call", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    CHECK("ended call", dsd_scan_tg_hold_call_active(fix.opts, fix.state) == 0);
 
     /* A data call to the held talkgroup is not a call being followed. */
     open_call_identity(&fix, 0U, DSD_CALL_KIND_DATA, 11, 22, 22, 101.0);
-    CHECK("data call", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    CHECK("data call", dsd_scan_tg_hold_call_active(fix.opts, fix.state) == 0);
     (void)dsd_call_state_end_ex(fix.state, 0U, 101.5, DSD_CALL_END_EXPLICIT);
 
     /* A private call is held by either end, so the held id may be the source. */
     open_call_identity(&fix, 1U, DSD_CALL_KIND_PRIVATE_VOICE, 22, 77, 77, 102.0);
-    CHECK("held private call source", dsd_scan_tg_hold_call_active(fix.state) == 1);
+    CHECK("held private call source", dsd_scan_tg_hold_call_active(fix.opts, fix.state) == 1);
     (void)dsd_call_state_end_ex(fix.state, 1U, 102.5, DSD_CALL_END_EXPLICIT);
     /* A group call's source is not an identity the hold follows. */
     open_call_identity(&fix, 1U, DSD_CALL_KIND_GROUP_VOICE, 22, 77, 77, 103.0);
-    CHECK("group call source", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    CHECK("group call source", dsd_scan_tg_hold_call_active(fix.opts, fix.state) == 0);
     (void)dsd_call_state_end_ex(fix.state, 1U, 103.5, DSD_CALL_END_EXPLICIT);
 
     /* The remapped policy target is the identity the hold is compared against. */
     open_call_identity(&fix, 1U, DSD_CALL_KIND_GROUP_VOICE, 11, 500, 22, 104.0);
-    CHECK("held remapped target", dsd_scan_tg_hold_call_active(fix.state) == 1);
+    CHECK("held remapped target", dsd_scan_tg_hold_call_active(fix.opts, fix.state) == 1);
     fix.state->tg_hold = 500;
-    CHECK("hold on the pre-remap target", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    CHECK("hold on the pre-remap target", dsd_scan_tg_hold_call_active(fix.opts, fix.state) == 0);
     fixture_free(&fix);
 }
 

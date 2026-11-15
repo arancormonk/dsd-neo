@@ -19,6 +19,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -188,6 +189,28 @@ p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t so
     return 1;
 }
 
+/* A group voice user, standard (LCO 0x00) or a Motorola patched supergroup (LCGRGR): record its service options,
+ * drop the previous talker's alias and note the affiliation, then start the voice. A rejected start (or a TDULC,
+ * which starts none) returns before the LC's encrypted service option marks the crypto pending. */
+static int
+p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t source) {
+    ctx->state->dmr_so = ctx->lc_svcopt;
+    ctx->state->generic_talker_alias[0][0] = '\0';
+
+    if (source != 0 && group != 0) {
+        p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
+    }
+
+    if (!ctx->allow_voice_start) {
+        return 0;
+    }
+    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, group, 0, (int)source, 1, ctx->lc_svcopt)) {
+        return 0;
+    }
+    p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
+    return 1;
+}
+
 static void
 p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Voice Channel User");
@@ -198,20 +221,7 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " - Group %d Source %d", group, source);
     UNUSED2(res, explicit_src);
 
-    ctx->state->dmr_so = ctx->lc_svcopt;
-    ctx->state->generic_talker_alias[0][0] = '\0';
-
-    if (source != 0 && group != 0) {
-        p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
-    }
-
-    if (!ctx->allow_voice_start) {
-        return;
-    }
-    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, group, 0, (int)source, 1, ctx->lc_svcopt)) {
-        return;
-    }
-    p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
+    (void)p25_lcw_accept_group_voice_user(ctx, group, source);
 }
 
 static void
@@ -355,6 +365,8 @@ p25_lcw_update_primary_control_channel(p25_lcw_ctx* ctx, uint32_t wacn, uint16_t
         return;
     }
 
+    /* The network status names the system the patch table belongs to, whatever the seed or the tuning gate below. */
+    (void)dsd_p25_patch_note_system(ctx->state, wacn, sysid);
     long int cc_freq = process_channel_to_freq(ctx->opts, ctx->state, channel);
     int accepted_cc = p25_cc_update_primary_from_network_status(ctx->opts, ctx->state, cc_freq);
     const int metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(ctx->opts);
@@ -849,10 +861,9 @@ p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
     if (ctx->bits[31] == 1) {
         DSD_FPRINTF(stderr, " EXT;");
     }
+    // The layout is the standard Group Voice Channel User's, with the supergroup for the group.
     p25_patch_update(ctx->state, (int)sg, 1, 1);
-    if (ctx->allow_voice_start) {
-        (void)p25_sm_emit_active_call(ctx->opts, ctx->state, 0, (int)sg, 0, (int)src, 1, ctx->lc_svcopt);
-    }
+    (void)p25_lcw_accept_group_voice_user(ctx, (uint16_t)sg, src);
 }
 
 static void
@@ -915,11 +926,12 @@ p25_lcw_handle_mfid90_opcode_04(p25_lcw_ctx* ctx) {
     uint32_t ga2 = (uint32_t)convert_bits_into_output(&ctx->bits[48], 16);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Delete");
     DSD_FPRINTF(stderr, " SG: %u;", (unsigned)sg);
-    if (ga1 != 0 && ga1 != sg) {
+    // A Delete that lists the SG itself ends the whole patch (p25_patch_remove_wgid()).
+    if (ga1 != 0) {
         DSD_FPRINTF(stderr, " GA1: %u;", (unsigned)ga1);
         p25_patch_remove_wgid(ctx->state, (int)sg, (int)ga1);
     }
-    if (ga2 != 0 && ga2 != sg) {
+    if (ga2 != 0) {
         DSD_FPRINTF(stderr, " GA2: %u;", (unsigned)ga2);
         p25_patch_remove_wgid(ctx->state, (int)sg, (int)ga2);
     }

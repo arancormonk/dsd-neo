@@ -1277,6 +1277,29 @@ dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const
     return 1;
 }
 
+int
+dsd_call_state_update_policy_target(dsd_state* state, uint8_t slot, uint64_t epoch, uint64_t policy_target) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U || policy_target == 0U) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    int changed = 0;
+    if (snapshot->phase == DSD_CALL_PHASE_ACTIVE && snapshot->epoch == epoch
+        && snapshot->policy_target_id != policy_target) {
+        snapshot->policy_target_id = policy_target;
+        snapshot->revision = call_state_next_nonzero(snapshot->revision);
+        ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+        changed = 1;
+    }
+    dsd_call_state_ext_unlock(ext);
+    return changed;
+}
+
 static int
 recent_activity_index_valid(uint8_t index) {
     return index < DSD_RECENT_ACTIVITY_COUNT;

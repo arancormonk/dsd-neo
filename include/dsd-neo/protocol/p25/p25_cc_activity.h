@@ -10,6 +10,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CC_ACTIVITY_H
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CC_ACTIVITY_H
 
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -25,7 +26,9 @@ extern "C" {
  * @brief Mark a decoded P25 control-channel message.
  *
  * This is stricter than generic frame sync/tune timestamps: call it only after
- * a validated P25 control-channel block or LCCH MAC has decoded.
+ * a validated P25 control-channel block or LCCH MAC has decoded. It is also
+ * the patch table's listening (dsd_p25_patch_listen_note()): only control
+ * channel PDUs advance that clock, never a voice channel's signalling.
  *
  * @param state Decoder state.
  */
@@ -42,6 +45,7 @@ p25_sm_note_cc_activity(dsd_state* state) {
     state->last_cc_sync_time_m = now_m;
     state->p25_last_cc_msg_time = now;
     state->p25_last_cc_msg_time_m = now_m;
+    dsd_p25_patch_listen_note(state, now_m);
 }
 
 #ifdef __cplusplus

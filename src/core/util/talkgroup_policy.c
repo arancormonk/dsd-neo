@@ -2114,6 +2114,11 @@ tg_policy_private_set_hold_state(const dsd_state* state, uint32_t src, uint32_t 
     }
 }
 
+int
+dsd_tg_policy_encrypted_tune_denied(const dsd_opts* opts, int encrypted) {
+    return encrypted && opts && opts->trunk_tune_enc_calls == 0;
+}
+
 static void DSD_ATTR_USED
 tg_policy_apply_group_tune_blocks(const dsd_opts* opts, int encrypted, int data_call, dsd_tg_policy_decision* out) {
     if (!out) {
@@ -2127,7 +2132,7 @@ tg_policy_apply_group_tune_blocks(const dsd_opts* opts, int encrypted, int data_
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_DATA_DISABLED;
     }
-    if (encrypted && opts && opts->trunk_tune_enc_calls == 0) {
+    if (dsd_tg_policy_encrypted_tune_denied(opts, encrypted)) {
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED;
     }
@@ -2151,7 +2156,7 @@ tg_policy_apply_private_tune_blocks(const dsd_opts* opts, int encrypted, int dat
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_DATA_DISABLED;
     }
-    if (encrypted && opts && opts->trunk_tune_enc_calls == 0) {
+    if (dsd_tg_policy_encrypted_tune_denied(opts, encrypted)) {
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED;
     }
@@ -2269,6 +2274,22 @@ dsd_tg_policy_evaluate_group_source_fallback(const dsd_opts* opts, const dsd_sta
     return 0;
 }
 
+uint32_t
+dsd_tg_policy_ota_final_reasons(const dsd_state* state, const dsd_tg_policy_decision* sg_decision) {
+    if (!sg_decision) {
+        return 0U;
+    }
+    uint32_t final = sg_decision->block_reasons & DSD_TG_POLICY_BLOCK_OTA_FINAL;
+    if (final & (uint32_t)DSD_TG_POLICY_BLOCK_MODE) {
+        dsd_tg_policy_lookup lookup;
+        if (!tg_policy_lookup_group_in_ctx(tg_policy_ctx_get_const(state), sg_decision->target_id, &lookup)
+            || !tg_policy_lookup_knows_talkgroup(&lookup)) {
+            final &= ~(uint32_t)DSD_TG_POLICY_BLOCK_MODE;
+        }
+    }
+    return final;
+}
+
 int
 dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* state, uint32_t ota_target,
                                      uint32_t policy_target, uint32_t src, dsd_tg_policy_decision* decision) {
@@ -2279,9 +2300,18 @@ dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* stat
     if (dsd_tg_policy_evaluate_group_call(opts, state, ota_target, src, 0, 0, &ota) != 0) {
         return 0;
     }
-    const uint32_t final = ota.block_reasons & DSD_TG_POLICY_BLOCK_OTA_FINAL;
+    const uint32_t final = dsd_tg_policy_ota_final_reasons(state, &ota);
     if (final == 0U) {
         return 0;
+    }
+    dsd_tg_policy_merge_ota_final(decision, final);
+    return 1;
+}
+
+void
+dsd_tg_policy_merge_ota_final(dsd_tg_policy_decision* decision, uint32_t final) {
+    if (!decision || final == 0U) {
+        return;
     }
     decision->block_reasons |= final;
     decision->tune_allowed = 0;
@@ -2294,7 +2324,6 @@ dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* stat
         decision->tg_record_allowed = 0;
         decision->tg_stream_allowed = 0;
     }
-    return 1;
 }
 
 /* Whether a private call counts as known for record-unknown-only (issue #708). Either endpoint known makes the call

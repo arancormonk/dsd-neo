@@ -11,9 +11,11 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
@@ -8987,6 +8989,64 @@ test_radio_stream_off_skips_export(void) {
     return rc;
 }
 
+// A patched P25 call is exported as it plays (keep-or-resolve over its supergroup and current members): a `*`
+// catch-all with listening off does not block a listed member's recording, and a call stored on a locked, unlisted
+// supergroup is judged on the listed member that carries it.
+static int
+test_stream_verdict_patched_p25(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    int rc = 0;
+    for (int locked = 0; locked < 2; locked++) {
+        for (uint8_t slot = 0U; slot < 2U; slot++) {
+            stream_fixture(&opts, &state, event_history, &wav_sentinel);
+            opts.trunk_tune_group_calls = 1;
+            rc |= expect_int("patched member row", stream_policy_row(&state, 9801U, 1), 0);
+            if (locked) {
+                opts.trunk_use_allow_list = 1;
+                (void)dsd_enc_lockout_note(&state, 9800U, 1, 0x84, 4);
+            } else {
+                dsd_tg_policy_entry e;
+                DSD_MEMSET(&e, 0, sizeof e);
+                e.kind = DSD_TG_POLICY_ROW_PATTERN;
+                DSD_SNPRINTF(e.pattern, sizeof e.pattern, "%s", "*");
+                DSD_SNPRINTF(e.mode, sizeof e.mode, "%s", "B");
+                e.source = DSD_TG_POLICY_SOURCE_IMPORTED;
+                rc |= expect_int("patched catch-all", dsd_tg_policy_add_pattern_entry(&state, &e), 0);
+            }
+            state.p25_patch_count = 1;
+            state.p25_patch_sgid[0] = 9800U;
+            state.p25_patch_is_patch[0] = 1U;
+            state.p25_patch_active[0] = 1U;
+            state.p25_patch_wgid_count[0] = 1U;
+            state.p25_patch_wgid[0][0] = 9801U;
+            dsd_p25_patch_touch_members(&state, 0);
+            const dsd_call_observation observation = {
+                .protocol = DSD_SYNC_P25P2_POS,
+                .slot = slot,
+                .kind = DSD_CALL_KIND_GROUP_VOICE,
+                .ota_target_id = 9800U,
+                .policy_target_id = locked ? 9800U : 9801U,
+                .ota_source_id = 42U,
+                .observed_m = g_observed_m,
+            };
+            g_observed_m += 0.1;
+            rc |= expect_int("patched call", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+            dsd_event_sync_slot(&opts, &state, slot);
+            dsd_event_refresh_stream_verdict(&opts, &state, slot);
+            const Event_History* staged = &event_history[slot].Event_History_Items[0];
+            rc |= expect_int(locked ? "locked SG with a listed member: exported"
+                                    : "catch-all B with a listed member: exported",
+                             staged->stream_blocked, 0);
+            rc |= expect_u64("judged on the listed member", staged->policy_target_id, 9801U);
+            dsd_state_ext_free_all(&state);
+        }
+    }
+    return rc;
+}
+
 // A policy change applied after the row's last render reaches a close that comes before the next render (a radio list
 // import and a WAV stop in one command drain): dsd_event_refresh_stream_verdict() re-judges the call's own staged row,
 // both ways, and leaves a slot without an open call alone.
@@ -9638,6 +9698,7 @@ main(void) {
     rc |= test_stream_off_skips_export();
     rc |= test_radio_stream_off_skips_export();
     rc |= test_stream_verdict_refreshed_before_close();
+    rc |= test_stream_verdict_patched_p25();
     rc |= test_patched_call_member_stream_off();
     rc |= test_consecutive_calls_opposite_verdicts();
     rc |= test_hold_does_not_override_stream_off();

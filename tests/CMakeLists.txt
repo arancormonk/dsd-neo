@@ -1487,6 +1487,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_p25_patch
+  HEADERS_PUBLIC_CORE_P25_PATCH
+  dsd-neo/core/p25_patch.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_p25_patch_policy
+  HEADERS_PUBLIC_CORE_P25_PATCH_POLICY
+  dsd-neo/core/p25_patch_policy.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_utf16
   HEADERS_PUBLIC_CORE_UTF16
   dsd-neo/core/utf16.h
@@ -3019,6 +3031,8 @@ add_executable(
     test_support/scan_group_stubs.c
     ui/test_ui_menu_services.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_frequency.c
+    # p25_update_system_identity() hands a system change to the patch table's owner rule.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
@@ -7231,6 +7245,30 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_dsd_time PRIVATE dsd-neo_core)
 add_test(NAME CORE_DSD_TIME COMMAND dsd-neo_test_core_dsd_time)
 
+# P25 patch table state: listening clock, seen/members stamps, expiry, recency, clear.
+add_executable(
+    dsd-neo_test_core_p25_patch_state
+    core/test_core_p25_patch_state.c
+)
+target_include_directories(
+    dsd-neo_test_core_p25_patch_state
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_p25_patch_state PRIVATE dsd-neo_core)
+add_test(NAME CORE_P25_PATCH_STATE COMMAND dsd-neo_test_core_p25_patch_state)
+
+# P25 patch policy resolver: SG and current members, final reasons, ADMIT/MEDIA eligibility and ranking, keep-or-resolve.
+add_executable(
+    dsd-neo_test_core_p25_patch_policy
+    core/test_core_p25_patch_policy.c
+)
+target_include_directories(
+    dsd-neo_test_core_p25_patch_policy
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_p25_patch_policy PRIVATE dsd-neo_core)
+add_test(NAME CORE_P25_PATCH_POLICY COMMAND dsd-neo_test_core_p25_patch_policy)
+
 # UTF-16 decoding / UTF-8 encoding for radio-sourced text (header-only)
 add_executable(dsd-neo_test_core_utf16 core/test_core_utf16.c)
 target_include_directories(
@@ -7441,6 +7479,8 @@ add_executable(
     dsd-neo_test_core_p25_bandplan_seed
     core/test_core_p25_bandplan_seed.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_frequency.c
+    # p25_update_system_identity() hands a system change to the patch table's owner rule.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
 )
 target_include_directories(
@@ -8995,6 +9035,37 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_ANALOG_SCAN_CALLS
         COMMAND dsd-neo_test_engine_analog_scan_calls
     )
+    # The P25 patch table's listening clock and owner against the real engine: control-channel blocks advance the
+    # clock, trunk excursions, stream gaps and the no-carrier reset break its continuity, and every other carrier
+    # boundary, a manual return to the control channel among them, empties the table. A rigctl peer, which radio-off
+    # builds have too, stood in for by --wrap.
+    add_executable(
+        dsd-neo_test_engine_p25_patch_owner
+        engine/test_engine_p25_patch_owner.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_p25_patch_owner
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/app_control
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_p25_patch_owner
+        PRIVATE
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=io_control_set_freq_tagged"
+            "-Wl,--start-group"
+            dsd-neo_app_control
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_P25_PATCH_OWNER
+        COMMAND dsd-neo_test_engine_p25_patch_owner
+    )
     # The engine loop's side of a gap in the radio stream (issue #518 D5): a frame it cuts
     # unwinds, and the stream-gap carrier boundary resets the decoding and keeps the carrier.
     # The gap reaches the decoder through the RTL symbol reader, which only a radio build has.
@@ -9228,6 +9299,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_scan_hooks.c
+    # A tune that leaves the carrier breaks the P25 patch table's listening clock.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
@@ -9327,6 +9400,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
     # The typed-frequency match, which reads a target's width at the DSP rate (issue #644).
     ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
@@ -9648,6 +9722,44 @@ add_test(
     NAME ENGINE_SCAN_VOICE_GATE
     COMMAND dsd-neo_test_engine_scan_voice_gate
 )
+
+# The -Y voice check and the talkgroup Hold check judge a patched P25 call through the patch resolver (real policy)
+add_executable(
+    dsd-neo_test_engine_p25_patch_scan
+    engine/test_engine_p25_patch_scan.c
+)
+target_include_directories(
+    dsd-neo_test_engine_p25_patch_scan
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_engine_p25_patch_scan
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_p25_patch_scan
+        PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+    )
+endif()
+# The voice and Hold checks run every frame: their policy evaluations are counted where GNU ld --wrap links.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_options(
+        dsd-neo_test_engine_p25_patch_scan
+        PRIVATE "LINKER:--wrap=dsd_tg_policy_evaluate_group_call"
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_p25_patch_scan
+        PRIVATE DSD_TEST_WRAP_POLICY_EVALUATION
+    )
+endif()
+add_test(NAME ENGINE_P25_PATCH_SCAN COMMAND dsd-neo_test_engine_p25_patch_scan)
 
 add_executable(
     dsd-neo_test_runtime_config_user
@@ -10861,6 +10973,7 @@ target_include_directories(
     dsd-neo_test_p25_mbt_decode
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/protocol/p25
         ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 target_link_libraries(
@@ -10873,6 +10986,8 @@ add_test(NAME P25_MBT_DECODE COMMAND dsd-neo_test_p25_mbt_decode)
 add_executable(
     dsd-neo_test_p25_p1_tsbk_handlers
     protocol/p25/test_p25_p1_tsbk_handlers.c
+    # The network status names the patch table's owner; a validated control block advances its listening clock.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
 )
@@ -11443,6 +11558,8 @@ add_test(
 add_executable(
     dsd-neo_test_p25_p2_xcch_helpers
     protocol/p25/test_p25_p2_xcch_helpers.c
+    # An LCCH whose CRC passed advances the patch table's listening clock.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     test_support/call_state_stubs.c
 )
 target_include_directories(
@@ -11610,6 +11727,9 @@ add_executable(
     dsd-neo_test_p25_p1_tsbk_sequence
     protocol/p25/test_p25_p1_tsbk_sequence.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    # The real patch table, so MFID90 regroup TSBKs reach it through processTSBK().
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_patch.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/fec/trellis34.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_tsbk.c
@@ -11798,6 +11918,23 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
 )
 add_test(NAME P25_P2_VPDU_CORE COMMAND dsd-neo_test_p25_p2_vpdu_core)
+
+# P25 P2 MAC regroup add/delete spans and failed-CRC patch gating
+add_executable(
+    dsd-neo_test_p25_p2_mac_regroup
+    protocol/p25/test_p25_p2_mac_regroup.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_mac_regroup
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_mac_regroup
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_P2_MAC_REGROUP COMMAND dsd-neo_test_p25_p2_mac_regroup)
 
 add_executable(
     dsd-neo_test_p25_p2_vpdu_grants
@@ -15405,6 +15542,10 @@ add_test(NAME P25_INDIV_GATING COMMAND dsd-neo_test_p25_indiv_gating)
 add_executable(
     dsd-neo_test_p25_p1_pdu_private_allowlist
     protocol/p25/test_p25_p1_pdu_private_allowlist.c
+    # The network status names the patch table's owner; a validated control block advances its listening clock.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
+    # The real patch table: an MFID90 regroup grant names its supergroup there.
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_patch.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_pdu_trunking.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
@@ -15452,6 +15593,21 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
 )
 add_test(NAME P25_PREEMPT COMMAND dsd-neo_test_p25_preempt)
+
+# A followed patched P25 call is one call while its resolution re-selects members: OTA keys, re-resolution, held call
+add_executable(
+    dsd-neo_test_p25_patch_follow
+    protocol/p25/test_p25_patch_follow.c
+)
+target_include_directories(
+    dsd-neo_test_p25_patch_follow
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25
+)
+target_link_libraries(
+    dsd-neo_test_p25_patch_follow
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_PATCH_FOLLOW COMMAND dsd-neo_test_p25_patch_follow)
 
 # DMR grant policy behavior (allow-list, explicit block modes, private source allow-list)
 add_executable(
@@ -26006,6 +26162,8 @@ if(DSD_HAS_RADIO)
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
+        # The session's P25 patch table, kept aside while the search visits other carriers.
+        ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )
@@ -26028,6 +26186,8 @@ if(DSD_HAS_RADIO)
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
+        # The session's P25 patch table, kept aside while the search visits other carriers.
+        ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )

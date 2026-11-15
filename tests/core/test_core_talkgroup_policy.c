@@ -2653,6 +2653,72 @@ add_exact_row(dsd_state* st, uint32_t id, const char* mode, const char* name) {
     return dsd_tg_policy_append_exact(st, &e);
 }
 
+/* The final reasons of supergroup @p sg's own group evaluation. */
+static uint32_t
+sg_final_reasons(const dsd_opts* opts, const dsd_state* st, uint32_t sg) {
+    dsd_tg_policy_decision decision;
+    if (dsd_tg_policy_evaluate_group_call(opts, st, sg, 1, 0, 0, &decision) != 0) {
+        return UINT32_MAX;
+    }
+    return dsd_tg_policy_ota_final_reasons(st, &decision);
+}
+
+// A supergroup's final reasons: mode B/DE counts only from a row that knows the supergroup (an exact, range or digit
+// pattern row), never from the `*` catch-all, which stands for "every other talkgroup" as an allow-list miss does. Call
+// skip, session avoid and the encryption lockout stay final whichever row matched.
+static int
+test_ota_final_reasons_catch_all(void) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    if (!st || !opts) {
+        free_test_state(st);
+        free(opts);
+        return 1;
+    }
+    opts->trunk_tune_group_calls = 1;
+    int rc = expect_true("final seed catch-all B", add_pattern_row(st, "*", "B", "EVERYONE-ELSE") == 0);
+    rc |= expect_true("final seed member", add_exact_row(st, 123, "A", "MEMBER") == 0);
+    rc |= expect_true("final seed exact SG B", add_exact_row(st, 9101, "B", "SG-EXACT") == 0);
+    rc |= expect_true("final seed range SG B", add_range_row(st, 9200, 9210, "B", "SG-RANGE") == 0);
+    rc |= expect_true("final seed pattern SG DE", add_pattern_row(st, "93xx", "DE", "SG-PATTERN") == 0);
+
+    dsd_tg_policy_decision decision;
+    rc |= expect_true("catch-all SG evaluates blocked",
+                      dsd_tg_policy_evaluate_group_call(opts, st, 9100, 1, 0, 0, &decision) == 0
+                          && (decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE) && !decision.tune_allowed);
+    rc |= expect_true("catch-all mode B is not final", sg_final_reasons(opts, st, 9100) == 0U);
+    rc |= expect_true("exact SG mode B is final", sg_final_reasons(opts, st, 9101) == DSD_TG_POLICY_BLOCK_MODE);
+    rc |= expect_true("range SG mode B is final", sg_final_reasons(opts, st, 9205) == DSD_TG_POLICY_BLOCK_MODE);
+    rc |= expect_true("pattern SG mode DE is final", sg_final_reasons(opts, st, 9305) == DSD_TG_POLICY_BLOCK_MODE);
+
+    rc |= expect_true("final skip catch-all SG",
+                      dsd_tg_policy_call_skip_arm(st, 9102, 1, 0, dsd_decode_now_mono_s()) == 0);
+    rc |= expect_true("skip on a catch-all SG stays final",
+                      sg_final_reasons(opts, st, 9102) == DSD_TG_POLICY_BLOCK_CALL_SKIP);
+    rc |= expect_true("final avoid catch-all SG", dsd_tg_policy_session_avoid_add(st, 9103) == 0);
+    rc |= expect_true("avoid on a catch-all SG stays final",
+                      sg_final_reasons(opts, st, 9103) == DSD_TG_POLICY_BLOCK_SESSION_AVOID);
+    (void)dsd_enc_lockout_note(st, 9104, 1, 0x84, 4);
+    rc |= expect_true("lockout on a catch-all SG stays final",
+                      sg_final_reasons(opts, st, 9104) == DSD_TG_POLICY_BLOCK_ENC_LOCKOUT);
+    rc |= expect_true("NULL decision has no final reasons", dsd_tg_policy_ota_final_reasons(st, NULL) == 0U);
+
+    // dsd_tg_policy_apply_ota_final_blocks() merges the same reasons: the catch-all no longer mutes a listened member.
+    dsd_tg_policy_decision member;
+    rc |=
+        expect_true("member evaluates allowed", dsd_tg_policy_evaluate_group_call(opts, st, 123, 1, 0, 0, &member) == 0
+                                                    && member.tune_allowed && member.audio_allowed);
+    rc |= expect_true("catch-all SG merges nothing into the member",
+                      dsd_tg_policy_apply_ota_final_blocks(opts, st, 9100, 123, 1, &member) == 0 && member.tune_allowed
+                          && member.audio_allowed && member.tg_audio_allowed && member.block_reasons == 0U);
+    rc |= expect_true("exact SG mode B still merged",
+                      dsd_tg_policy_apply_ota_final_blocks(opts, st, 9101, 123, 1, &member) == 1 && !member.tune_allowed
+                          && !member.audio_allowed && (member.block_reasons & DSD_TG_POLICY_BLOCK_MODE));
+    free_test_state(st);
+    free(opts);
+    return rc;
+}
+
 /* Whether the talkgroup lookup for @p id decides by @p match through the row named @p name. */
 static int
 group_row_is(const dsd_state* st, uint32_t id, dsd_tg_policy_match_type match, const char* name) {
@@ -4172,6 +4238,7 @@ main(void) {
     rc |= test_session_avoids();
     rc |= test_call_skips();
     rc |= test_ota_final_blocks();
+    rc |= test_ota_final_reasons_catch_all();
     rc |= test_record_unknown_only();
     rc |= test_record_unknown_only_patterns();
     rc |= test_set_fields_record();

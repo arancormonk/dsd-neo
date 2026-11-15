@@ -10,6 +10,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -344,7 +345,6 @@ code_held(const dsd_state* state) {
 void
 dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind reason, int guard) {
     (void)opts;
-    (void)reason;
     (void)guard;
     ++boundary;
     boundary_tagged = dsd_signal_search_visit_get(&boundary_session, &boundary_hit);
@@ -353,6 +353,11 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     state->dmr_color_code = 16;
     state->nac = 0;
     dsd_state_forget_p2_proof(state);
+    /* The engine's boundary for every kind but a stream gap: the carrier left's P25 patches go with it. This stub
+       does the clear; ENGINE_P25_PATCH_OWNER proves the production boundary's. */
+    if (reason != DSD_CARRIER_BOUNDARY_STREAM_GAP) {
+        dsd_p25_patch_clear_all(state);
+    }
     state->carrier_seq++;
 }
 
@@ -3154,6 +3159,82 @@ test_shutdown_during_active_call(dsd_opts* o, dsd_state* s, const dsd_signal_sea
     session_site(s, 0, 0, 0);
 }
 
+/* The session's P25 patch table (system A's SG 1400 patching WG 1401) on the session's own listening clock. */
+static void
+session_patches(dsd_state* s) {
+    dsd_p25_patch_clear_all(s);
+    (void)dsd_p25_patch_note_system(s, 0xA1001U, 0x101U);
+    s->p25_patch_count = 1;
+    s->p25_patch_sgid[0] = 1400;
+    s->p25_patch_active[0] = 1;
+    s->p25_patch_is_patch[0] = 1;
+    s->p25_patch_wgid_count[0] = 1;
+    s->p25_patch_wgid[0][0] = 1401;
+    s->p25_patch_key_valid[0] = 1; // KEY=0: a clear patch
+    s->p25_patch_listen_s = 40.0;
+    s->p25_patch_seen_listen_s[0] = 39.0;
+    s->p25_patch_members_listen_s[0] = 39.0;
+    s->p25_patch_seq_counter = 3U;
+    s->p25_patch_seq[0] = 2U;
+    s->p25_patch_listen_last_m = 1000.0;
+}
+
+static int
+session_patches_back(const dsd_state* s) {
+    return s->p25_patch_count == 1 && s->p25_patch_sgid[0] == 1400 && s->p25_patch_active[0] == 1
+           && s->p25_patch_wgid_count[0] == 1 && s->p25_patch_wgid[0][0] == 1401 && s->p25_patch_key_valid[0] == 1
+           && s->p25_patch_owner_known == 1 && s->p25_patch_owner_wacn == 0xA1001U && s->p25_patch_owner_sysid == 0x101U
+           && s->p25_patch_listen_s > 39.5 && s->p25_patch_seq_counter == 3U
+           && s->p25_patch_listen_last_m < 0.5; // restored, continuity broken
+}
+
+static int
+no_patches(const dsd_state* s) {
+    return s->p25_patch_count == 0 && s->p25_patch_active[0] == 0 && s->p25_patch_wgid_count[0] == 0
+           && s->p25_patch_owner_known == 0 && s->p25_patch_listen_s < 0.5;
+}
+
+/* A voice-only visit to system B, whose calls name the same SG number: an SG-only row, no members, no KEY. */
+static void
+visit_names_sg(dsd_state* s) {
+    s->p25_patch_count = 1;
+    s->p25_patch_sgid[0] = 1400;
+    s->p25_patch_active[0] = 1;
+}
+
+/* The patch table is the session's: every visit starts with an empty, unowned one, so a voice-only visit to another
+   system naming the same SG number inherits neither the session's members nor its KEY=0, and the session's comes back
+   whole only when the search returns to the session (a Stop, or the teardown of a decoder session that ended during a
+   visit), never on a visit. */
+static void
+test_patches_stay_with_session(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    dsd_signal_search_config one = tag_config(config, 97, 1, 0);
+    session_site(s, CODE_A, 0, 0);
+    session_patches(s);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(no_patches(s));
+    visit_names_sg(s);
+    next_visit(o, s);
+    assert(no_patches(s));
+    visit_names_sg(s);
+    stop_tag_session(o, s);
+    assert(session_patches_back(s));
+
+    /* The decoder session ends during a visit: the session's table comes back with its site at the teardown. */
+    one = tag_config(config, 98, 1, 0);
+    session_patches(s);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    visit_names_sg(s);
+    dsd_engine_signal_search_shutdown(o, s);
+    dsd_signal_search_visit_clear();
+    dsd_engine_signal_search_release_site(s);
+    assert(session_patches_back(s));
+    dsd_p25_patch_clear_all(s);
+    session_site(s, 0, 0, 0);
+}
+
 /* Review focus 2: a departure in the middle of a call and of a pending code recovery. The recovery's candidate waits
    on the carrier it was found on (p25p2_seed_recover.c drops it once the carrier count moves); every departure route
    moves it at its boundary, under the visit's own code, and then puts the session's site back, no proof surviving. */
@@ -3425,6 +3506,7 @@ test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     test_unknown_identity_restored(o, s, config);
     test_verified_seed_at_start_not_restored_as_proof(o, s, config);
     test_shutdown_during_active_call(o, s, config);
+    test_patches_stay_with_session(o, s, config);
     test_departure_mid_recovery_drops_pending(o, s, config);
     test_code_list_bound_dedupe_order(o, s, config);
     test_code_list_pause_resume_and_new_start(o, s, config);

@@ -12,6 +12,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
@@ -1146,22 +1147,7 @@ init_state_protocol_defaults_b(dsd_state* state) {
 
 static void
 init_state_p25_patch_defaults(dsd_state* state) {
-    state->p25_patch_count = 0;
-    for (int p = 0; p < 8; p++) {
-        state->p25_patch_sgid[p] = 0;
-        state->p25_patch_is_patch[p] = 0;
-        state->p25_patch_active[p] = 0;
-        state->p25_patch_last_update[p] = 0;
-        state->p25_patch_wgid_count[p] = 0;
-        state->p25_patch_wuid_count[p] = 0;
-        for (int q = 0; q < 8; q++) {
-            state->p25_patch_wgid[p][q] = 0;
-            state->p25_patch_wuid[p][q] = 0;
-        }
-        state->p25_patch_key[p] = 0;
-        state->p25_patch_alg[p] = 0;
-        state->p25_patch_ssn[p] = 0;
-    }
+    dsd_p25_patch_clear_all(state);
 }
 
 /* What a decoded P25p1 NID has taught this session, and nothing else has any way to know:

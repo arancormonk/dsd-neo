@@ -379,11 +379,11 @@ void p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_stat
 /**
  * @brief Note a validated P25 control block at its decode boundary (issue #703).
  *
- * Records control-channel activity (p25_sm_note_cc_activity(): the P25 owner and the decode stamps) and, with
- * trunking on, establishes the control channel from the tuner that carried the block when none is known yet
- * (p25_sm_seed_cc_from_current_tuner_if_unknown()). Running here rather than in a later tick keeps a retune queued
- * behind the block from lending its frequency to this evidence. Call it only for a TSBK, MBT or LCCH MAC whose CRC
- * passed.
+ * Records control-channel activity (p25_sm_note_cc_activity(): the P25 owner, the decode stamps and the patch table's
+ * listening clock) and, with trunking on, establishes the control channel from the tuner that carried the block when
+ * none is known yet (p25_sm_seed_cc_from_current_tuner_if_unknown()). Running here rather than in a later tick keeps a
+ * retune queued behind the block from lending its frequency to this evidence. Call it only for a TSBK, MBT or LCCH MAC
+ * whose CRC passed: never for a voice channel's signalling, which would advance the listening clock.
  *
  * @param opts Decoder options.
  * @param state Decoder state.
@@ -1161,6 +1161,11 @@ p25_sm_ev_crypto_pending_epoch(int slot) {
 /**
  * @brief Record or update a P25 regroup/patch state for a Super Group ID (SGID).
  *
+ * A message that only names the SG (grants, grant updates, voice users): it refreshes the
+ * row's seen stamp and recency, never the members stamp, and first expires members that
+ * are no longer current. A new SG takes at most a memberless row of a full table, never a
+ * live patch's slot: it writes nothing when every entry is live. See <dsd-neo/core/p25_patch.h>.
+ *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID.
  * @param is_patch 1 for two-way patch, 0 for simulselect (one-way regroup).
@@ -1171,6 +1176,10 @@ void p25_patch_update(dsd_state* state, int sgid, int is_patch, int active);
 /**
  * @brief Add a Working Group ID to an SGID entry (creates/activates if needed).
  *
+ * A membership message: every accepted Add (a duplicate included) reactivates the entry and
+ * refreshes its seen and members stamps. The SG listed as its own member is ignored; a member
+ * past DSD_P25_PATCH_GROUP_MAX is dropped, noted on the handler's stderr line (no newline).
+ *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID.
  * @param wgid Working Group ID to add.
@@ -1179,6 +1188,9 @@ void p25_patch_add_wgid(dsd_state* state, int sgid, int wgid);
 
 /**
  * @brief Add a Working Unit ID to an SGID entry (creates/activates if needed).
+ *
+ * Refreshes like p25_patch_add_wgid(); a radio past DSD_P25_PATCH_RADIO_MAX is dropped, noted
+ * on the handler's stderr line (no newline).
  *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID.
@@ -1190,6 +1202,8 @@ void p25_patch_add_wuid(dsd_state* state, int sgid, uint32_t wuid);
  * @brief Compose a detailed status string including WGID/WUID context.
  *
  * Example: "SG069[P] WG:2(0345,0789); SG142[S] U:3".
+ * Lists active entries whose SG was named within the TTL on the listening clock; member and
+ * KEY/ALG/SSN fields only while the members are current. Never mutates the state.
  *
  * @param state Decoder state (read-only).
  * @param out Destination buffer.
@@ -1201,6 +1215,10 @@ int p25_patch_compose_details(const dsd_state* state, char* out, size_t cap);
 /**
  * @brief Remove a WGID membership or clear the entire SG record.
  *
+ * A Delete that lists the SG itself ends the whole patch (p25_patch_clear_sg()). Members that
+ * are no longer current expire first; removing the last member deactivates the entry and
+ * expires its KEY/ALG/SSN context. Not a refresh: neither stamp moves.
+ *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID.
  * @param wgid Working Group ID to remove.
@@ -1208,6 +1226,8 @@ int p25_patch_compose_details(const dsd_state* state, char* out, size_t cap);
 void p25_patch_remove_wgid(dsd_state* state, int sgid, int wgid);
 /**
  * @brief Clear all membership and status for an SG record.
+ *
+ * A Cancel: the entry turns inactive and its members and KEY/ALG/SSN context expire.
  *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID to clear.
@@ -1219,6 +1239,9 @@ void p25_patch_clear_sg(dsd_state* state, int sgid);
  *
  * Inactive GRG commands remove the supergroup record. Active commands with a
  * changed SSN clear stale membership before the caller adds the new members.
+ * SG-only: an active command refreshes the row (seen stamp and recency) like
+ * p25_patch_update(); the members stamp refreshes only through the following
+ * p25_patch_add_wgid()/p25_patch_add_wuid() or p25_patch_set_kas().
  *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID.
@@ -1232,7 +1255,8 @@ int p25_patch_prepare_grg_update(dsd_state* state, int sgid, int is_patch, int a
 /**
  * @brief Set optional Key/Alg/SSN context for an SG.
  *
- * Values of -1 leave the existing field unchanged.
+ * Values of -1 leave the existing field unchanged. A membership message: it refreshes the
+ * entry's seen and members stamps.
  *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID.
@@ -1245,6 +1269,8 @@ void p25_patch_set_kas(dsd_state* state, int sgid, int key, int alg, int ssn);
 /**
  * @brief Return 1 if TG is a WGID within an active SG that is explicitly clear.
  *
+ * Only an SG named within the TTL whose members are current counts.
+ *
  * Used to override ENC lockout when GRG commands indicate a clear operation
  * for a patch/regroup.
  *
@@ -1256,24 +1282,13 @@ int p25_patch_tg_key_is_clear(const dsd_state* state, int tg);
 /**
  * @brief Return 1 if an SGID has explicit KEY=0 (clear) policy and is active.
  *
+ * Only an SG named within the TTL whose members (and so KEY context) are current counts.
+ *
  * @param state Decoder state (read-only).
  * @param sgid Super Group ID to query.
  * @return 1 if active and explicitly clear; 0 otherwise.
  */
 int p25_patch_sg_key_is_clear(const dsd_state* state, int sgid);
-
-/**
- * @brief Collect active WGID members for a supergroup.
- *
- * Stale, inactive, and non-existent supergroups return 0.
- *
- * @param state Decoder state (read-only).
- * @param sgid Super Group ID.
- * @param out Optional WGID destination array.
- * @param cap Capacity of destination array.
- * @return Number of active WGID members known for the SG.
- */
-int p25_patch_collect_active_wgids(const dsd_state* state, int sgid, uint16_t* out, size_t cap);
 
 /* ============================================================================
  * Affiliation (RID) tracking

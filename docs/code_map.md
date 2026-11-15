@@ -174,12 +174,17 @@ Generated (do not edit/commit):
     not the code changed (an IDEN update a visit took before its network status is stamped with the code in force), so
     a hand-set `-X` code or an imported channel map comes back and nothing a visit learned reaches the next. The proof
     (`p2_cc_verified`) is never restored: the boundary cleared it, and a code proven on another carrier proves nothing
-    here. A channel map that moved gets a new `trunk_chan_map_seq`. `dsd_engine_signal_search_shutdown()` restores it
-    once a boundary has closed the reception; a decoder session that ends during a visit keeps the visit's code and
-    proof for the final call snapshots that follow, and `dsd_engine_cleanup()` then puts the session's back, unproven,
-    through `dsd_engine_signal_search_release_site()`, before the `--p25-bandplan-export` write, so no visited system's IDEN
-    tables reach the exported band plan. A session site that cannot be saved whole (its channel map's storage) refuses
-    the start. The coordinator also keeps the session's P25 Phase 2 code list (`p2_codes`, 16, most
+    here. A channel map that moved gets a new `trunk_chan_map_seq`. The P25 patch table is not part of the site: Start
+    saves the session's whole (`dsd_p25_patch_snapshot`, owner, listening clock and sequence counter with it), every
+    departure's boundary empties it, so each visit starts with an empty, unowned table and a voice-only visit to
+    another system naming the same supergroup number inherits neither the session's members nor its KEY=0, and only
+    the return to the session puts it back with the site (`search_return_site()`).
+    `dsd_engine_signal_search_shutdown()` restores both once a boundary has closed the reception; a decoder session
+    that ends during a visit keeps the visit's code and proof for the final call snapshots that follow, and
+    `dsd_engine_cleanup()` then puts the session's back, unproven, through `dsd_engine_signal_search_release_site()`,
+    before the `--p25-bandplan-export` write, so no visited system's IDEN tables reach the exported band plan. A
+    session site that cannot be saved whole (its channel map's storage) refuses the start. The coordinator also keeps
+    the session's P25 Phase 2 code list (`p2_codes`, 16, most
     recently confirmed first, a repeat moving to the front; Pause and Resume keep it, a new start begins empty):
     `dsd_engine_signal_search_p25p2_code()` (the runtime code hook) adds a code without a reserved field from any
     `dsd_p25p2_code_source` while a visit is receiving, and `dsd_engine_signal_search_p25p2_codes()` (the runtime codes
@@ -1017,7 +1022,8 @@ announcements, which resolve against whatever IDEN tables the state holds, the s
 site's protection, services, LRA and network-active broadcasts) is `dsd_p25_site_snapshot` in
 `src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). Trunk scan
 keeps the session's hand-set flag across a restore, and keeps the code's proof, the NAC, the modulation and the call
-state in its own snapshot fields.
+state in its own snapshot fields, and the target's P25 patch table (entries, owner, listening clock, sequence counter)
+as a `dsd_p25_patch_snapshot`: another target's reception never moves it, and a restore breaks the clock's continuity.
 The one deliberate crossing is by provenance: when the parked target's WACN/SYS is known and another target's
 snapshot holds a P25 IDEN entry learned on that same WACN/SYS, the coordinator fills empty slots or replaces an
 untyped FDMA entry with a typed peer entry at trust 1 (`trunk_scan_share_peer_idens()`, TDMA first), and `dsd_engine_p25_bandplan_export()` in
@@ -2228,9 +2234,10 @@ suite runs under this compiler.
   `audio`. The verdict is recording-owned: `watchdog_event_current_load_labels()` (`dsd_events.c`) judges the call on
   every render through `dsd_audio_stream_export_allowed()` (module-private, `src/core/audio/dsd_audio_gate_internal.h`),
   which evaluates it as the record gate does (a private call on both parties; a group call on its policy target -- a
-  patched P25 call's member while the membership is current -- then `dsd_tg_policy_apply_ota_final_blocks()` on the
-  over-the-air target, then the radio part), and stores `Event_History::stream_blocked` and `policy_target_id` on the
-  staged row. A Hold lifts what it lifts for recording (the allow-list miss, and a stream flag derived off by a
+  patched P25 call's keep-or-resolve target (`dsd_p25_patch_media_resolve()`) -- then
+  `dsd_tg_policy_apply_ota_final_blocks()` on the over-the-air target, then the radio part), and stores
+  `Event_History::stream_blocked` and `policy_target_id` on the staged row. A Hold lifts what it lifts for recording
+  (the allow-list miss, and a stream flag derived off by a
   `B`/`DE` or `audio=off` row) but never an explicit `stream=off` on an audible row (`DSD_TG_POLICY_BLOCK_STREAM`) or a
   radio row's.
   Once the call has ended the staged row's own `policy_target_id` is reused, since patch membership needs an active
@@ -2671,8 +2678,9 @@ suite runs under this compiler.
 - Invariant (preemption bookkeeping, `dsd_tg_policy_should_preempt()`): the active-call records are what a protocol
   describes, not a history. Right before asking, a protocol calls `dsd_tg_policy_describe_followed_call()` for each
   call it holds, with the time it began following that call (dwell runs from it; a matching record keeps its start and
-  cooldown; nothing is stamped). A candidate is the held call itself, and never preempts it, only when it matches a
-  record's target, channel, slot and group or private class (`tg_policy_active_call_matches_route_slot()`, as a
+  cooldown; nothing is stamped). A route's target is the call's over-the-air target (a patched P25 call's supergroup),
+  while its decision carries the policy priority. A candidate is the held call itself, and never preempts it, only
+  when it matches a record's target, channel, slot and group or private class (`tg_policy_active_call_matches_route_slot()`, as a
   describe matches): a talkgroup and a unit may share a number, so a candidate of the other class is another call that
   displaces the record by priority. The channel matches by `tg_policy_route_same_channel()`: the same channel number
   when both routes name one, else the same positive frequency (a route without a channel, such as an unresolved DMR
@@ -2681,13 +2689,59 @@ suite runs under this compiler.
   call is acquired, because the release cleared the displaced records. `note_active_call()` stamps a cooldown
   only when it replaces a valid, different record. A list reload or clear carries the records and the last
   cooldown into the new context; `install` (a scan target transition) restarts them.
-- Invariant (patched P25 calls): a call snapshot's `policy_target_id` is the member WG the grant matched, while
-  `ota_target_id` is the supergroup every frontend shows. `DSD_TG_POLICY_BLOCK_OTA_FINAL` in
-  `<dsd-neo/core/talkgroup_policy.h>` names the supergroup blocks no member overrides (call skip, encryption
-  lockout, session avoid, mode B/DE). The P25 grant path stops at them before considering members, and every
-  consumer that judges a live call on its policy target also calls `dsd_tg_policy_apply_ota_final_blocks()` with
-  the over-the-air target: the audio/record/P25p2 media gates, the row-edit release in app-control and the Qt block
-  label. User blocks (Lock out, Avoid TG, Skip) are written against the over-the-air target. A private call has no
+- Invariant (patched P25 calls): a call snapshot's `policy_target_id` is the talkgroup the grant's resolution chose
+  (a member WG or the supergroup), while `ota_target_id` is the supergroup every frontend shows. One resolver,
+  `dsd_p25_patch_resolve()` (`<dsd-neo/core/p25_patch_policy.h>`, `src/core/util/p25_patch_policy.c`), judges the
+  supergroup and then each member whose membership is current, pure over current state (no cache), so a patch is heard
+  when the supergroup or any current member is listened to. ADMIT (the grant path and its voice-start recheck, with the
+  planned encryption-lockout release as the adjust hook) needs `tg_tune_allowed`, the talkgroup part only (a blocked
+  source applies to whichever candidate wins, so it never eliminates them), and ranks Hold, media, priority, then
+  preempt; MEDIA needs the gates' talkgroup audio predicate (`dsd_audio_policy_tg_allows_audio()`: a matching Hold, or
+  audio without an allow-list denial; no tuning, so routed audio with group tuning off stays audible) and ranks Hold,
+  then priority; the supergroup wins a full tie (membership and its freshness: P25 patch table state, below). The
+  supergroup's final reasons (`dsd_tg_policy_ota_final_reasons()`: call skip, encryption lockout, session avoid, and
+  mode B/DE only from a row that knows the supergroup -- a `*` catch-all's B/DE is not final, so a listened member
+  admits the patch) end ADMIT with the supergroup's decision. For media only a call skip or session avoid ends it; an
+  explicit mode B/DE and the encryption lockout are merged into each member's decision, so the lockout only denies
+  tuning and a mode block leaves a member playable only through a matching Hold (as a Hold plays a plain call's mode
+  block). The media consumers (audio and record gates, the export verdict, the P25 Phase 2 verdict and its key)
+  keep-or-resolve through `dsd_p25_patch_media_resolve()`: the stored target is kept while it may play (the supergroup
+  on its own decision, or a current member), else the resolver answers, judged at every read, and the gates use the
+  decision it returns instead of evaluating again. It judges unencrypted, not as a data call and without adjustment,
+  as the gates do, and per frame costs no evaluation when the supergroup is no live patch's, one for a kept supergroup,
+  two for a kept member (its own and the supergroup's, whose final reasons it merges), else the supergroup, the stored
+  member when current and every current member. `dsd_tg_policy_apply_ota_final_blocks()` merges the same final
+  reasons; the gates' other paths call it with the over-the-air target, and the Qt block label judges the
+  keep-or-resolve media target the audio follows. A call is judged through the resolver only while its supergroup is a
+  live patch's (`dsd_p25_patch_sg_live()`); any other call keeps its stored target and spends no evaluation. A followed
+  patch is one call while its member is re-selected: the trunk SM keys follow and dwell, duplicate grants, Phase 2
+  moved slots, the crypto sticky block and the reprobe hand-over on the over-the-air target, kind and route, and its
+  active-call ledger routes carry the over-the-air target (so a re-selection counts no preemption and keeps the
+  cooldown). On an unchanged voice identity, each SM tick, a duplicate grant and the held-call description it
+  re-resolves for admission: the winner becomes the slot's and the snapshot's policy target in place
+  (`dsd_call_state_update_policy_target()`, no boundary; the received service options and priority stay as received)
+  and the ledger takes its priority; when nothing in the patch may be followed the held call is described with no
+  priority protection (-1). The watchdog's TUNED tick runs that re-resolution on its own thread, so every command that
+  writes a talkgroup policy input applies under the P25 SM tick guard: the policy store, Hold, allow list and record
+  switch (`command_changes_call_verdict()`), and the tune switches, the encryption lockout ledger, every key edit (they
+  bump its key epoch) and the Phase 2 parameters (`command_writes_tick_inputs()`). Admission also judges the row-edit
+  release (`tg_listen_blocked_slots()`), the talkgroup
+  Hold check and conventional trunk-scan activity. The Hold check (`dsd_scan_tg_hold_call_active()`, every frame)
+  answers through `dsd_p25_patch_admits_hold()`: ADMIT ranks a matching Hold first, so the held supergroup or current
+  member is admitted exactly when the supergroup has no final reason and the held candidate may itself be followed,
+  at one evaluation for a Hold on the supergroup and two for a member however many the patch carries; any other Hold
+  answers no without an evaluation. The -Y voice check runs every frame, so it
+  takes the keep-or-resolve media target the audio follows (`dsd_p25_patch_media_resolve()`, so a kept call costs what
+  the audio gate's does) with that target's own tune verdict and the encrypted-call rule
+  (`dsd_tg_policy_encrypted_tune_denied()`): a member that plays but may not be followed does not hold the channel,
+  even when a member the media ranking put below it could be followed (decided limit: one resolution per frame, the
+  audio's). A conventional (trunking off) call is published on the media target, keeping the one its ACTIVE call
+  names. Tests:
+  `CORE_P25_PATCH_POLICY`, `CORE_TALKGROUP_POLICY`, `P25_GRANT_POLICY`, `P25_PATCH_FOLLOW`, `CORE_AUDIO_GROUP_GATE`,
+  `CORE_P25P2_PLAYOUT`, `CORE_CALL_ALERT_HISTORY`, `APP_COMMAND_QUEUE` (`test_row_edit_keeps_a_patch_another_member_carries`),
+  `ENGINE_P25_PATCH_SCAN`, `ENGINE_TRUNK_SCAN` (`test_p25_conventional_activity_patch`), `UI_QT_METRICS_MODEL`
+  (`test_block_label_patched_call`). User blocks (Lock out, Avoid TG, Skip) are
+  written against the over-the-air target. A private call has no
   talkgroup: `apply_cmd_lockout_resolve_target()` refuses its lockout with a toast (issue #773), since the talkgroup
   row it would write blocks the talkgroup with the radio's number; a radio is blocked from the radio ID list.
   `dsd_call_kind` does not tell individual from group data, so a data call is locked out as a talkgroup (decided
@@ -3214,6 +3268,59 @@ suite runs under this compiler.
   in its open, so only startup opens one. `dsd_audio_path_input_kind()` is `-i`'s extension rule. The switch lives in
   its own object file so a link-time wrap of `openAudioInput()` reaches it. Tests: `CORE_AUDIO_INPUT_SWITCH`,
   `CORE_AUDIO_OPEN_INPUT`.
+- P25 patch table state (`dsd_state::p25_patch_*`, `<dsd-neo/core/p25_patch.h>`, `src/core/util/p25_patch_state.c`):
+  the caps (`DSD_P25_PATCH_MAX` 16 supergroups, `DSD_P25_PATCH_GROUP_MAX` 32 groups and `DSD_P25_PATCH_RADIO_MAX` 16
+  radios each) and freshness on a per-system listening clock: `dsd_p25_patch_listen_note()` adds the gap between two
+  CRC-good control-channel PDUs only when it is at most 0.25 s (`DSD_P25_PATCH_LISTEN_GAP_S`: a control channel sends
+  one every few tens of ms, and any departure takes longer), and `dsd_p25_patch_listen_break()` makes the next note
+  start afresh. Each entry carries two stamps on that clock, each current for `DSD_P25_PATCH_TTL_SECONDS` (20 s) of
+  listening. The seen stamp (`p25_patch_seen_listen_s`: any message that names the supergroup, such as an Add, LCGRGR,
+  the Phase 1 MFID90 regroup grants TSBK 0x02 and MBT 0x02 and grant update TSBK 0x03 (its second supergroup whenever
+  CH2 is nonzero, the rule its CH2 dispatch uses), the Phase 2 MFID90 regroup grants 0xA3/0xA4, grant update 0xA5 (its
+  second supergroup only with a valid CH2 other than CH1, the rule its display uses) and voice channel update 0x83, the
+  Phase 2 supergroup voice messages MFID90 0x80/0xA0 and standard 0x90, or a regroup command) keeps the row; the members
+  stamp (`p25_patch_members_listen_s`: only a membership message, a regroup Add on TSBK 0x00, MAC 0x81 or LC 0x03, an
+  Extended Function create with its radio, a Harris regroup member or KEY/ALG/SSN command) keeps its member lists and
+  KEY/ALG/SSN context usable. A message that only names the supergroup says nothing about who is in the patch, so
+  `p25_patch_update()` refreshes the seen stamp alone and an expired member list or KEY=0 never becomes current again
+  from it. Readers take a const state and never mutate it; the writers (`src/protocol/p25/p25_patch.c`) expire members
+  that are not current (groups, radios and KEY context) before they change an entry. Every accepted Add, a duplicate
+  included, refreshes both stamps and reactivates the entry; an Add of the supergroup as its own member is ignored, and
+  a Delete that lists it ends the patch; the last member's Delete ends the patch and its KEY context; a Harris regroup
+  command with a new SSN on an active entry expires its members; a member past a cap is dropped with one stderr note. A
+  per-state counter (`p25_patch_seq_counter`) stamps each refresh into `p25_patch_seq`, compared wrap-safe
+  (`dsd_p25_patch_seq_age()`): it orders display and eviction. A full table evicts by class, the least recently
+  refreshed first within each: an inactive slot, then one not seen-current, then a seen-current row that is not live (no
+  current group or radio: a grant or voice row, or members aged out), and a live patch last. Only a member-bearing
+  message (an Add, a Harris regroup or Extended Function create through `p25_patch_prepare_grg_update()`, a KEY/ALG/SSN
+  command) may take a live patch's slot; a message that only names a new supergroup (`p25_patch_update()`: a grant, an
+  update, a supergroup voice message) takes at most a memberless row and writes nothing when the table holds only live
+  patches, so an unrelated grant never ends a patch with current members; an inactive newcomer, such as a cancel naming
+  an unknown supergroup, takes only an inactive or not seen-current slot. Overflow Adds within one second never evict
+  the newest entry, as ordering by the second-resolution `p25_patch_last_update` (now only the decode-time display
+  stamp) could. Freshness is per entry, not per member (decided limit): an Add for one member refreshes the whole list,
+  so a member the system drops without a Delete stays current until the entry's members stamp ages out. The clock
+  advances only in
+  `p25_sm_note_cc_activity()`, which `p25_sm_note_validated_cc()` runs for a TSBK, an outbound MBT or an LCCH MAC whose
+  CRC passed, never for a voice channel's signalling; it breaks at every departure: each trunk tune that moves the
+  receiver (`dsd_engine_tune_leaves_carrier()`), every carrier boundary, the no-carrier reset and a trunk-scan or
+  Signal search restore. So time on a voice channel, in hangtime, hunting or on another scan target never counts, and
+  a receiver that only hears voice channels never ages its patches by time (a Delete, a cancel or eviction ends them;
+  decided limit). Persistent changes come only from content that passed its CRC: the TSBK and MBT paths need it under
+  `-F`, and a Phase 2 MAC_SIGNAL that failed its CRC (which reaches the VPDU decoder only under `-F`) changes no patch
+  (`p25p2_vpdu_network_table_writable()`, see `p2_cc` under Protocols). The table belongs to one system:
+  `dsd_p25_patch_note_system()` runs wherever WACN/SYSID are decoded from a checked network status (TSBK, MBT, LC,
+  Phase 2 MAC) whatever the seed (`p2_hardset` included) or the voice-tuned gate, and in `p25_update_system_identity()`;
+  an unknown owner adopts the first identity, another system's empties the table (`dsd_p25_patch_clear_all()`). An
+  RFSS status names no WACN and changes no owner. A carrier boundary of kind TUNE, SOURCE, INPUT_SWITCH, SCAN_STEP or
+  REPLAY_RETUNE empties the table and its owner, STREAM_GAP only breaks the clock's continuity, and a manual move under
+  trunking keeps the table only on a return to the owning system's control channel (`ui_manual_move_patches()`; see
+  `dsd_engine_carrier_boundary()`, which also holds the trunking-off replay limit). `dsd_p25_patch_snapshot` keeps a
+  system's whole table aside (owner, clock and sequence counter with it; a restore breaks continuity): each trunk-scan
+  target carries one, and Signal search keeps the session's. `dsd_app_p25_patches()` lists the active entries named
+  within the TTL, most recent first, with member lists only while they are current. Tests: `CORE_P25_PATCH_STATE`,
+  `P25_PATCH_TRACKING`, `P25_MFID90_GRG`, `P25_P1_TSBK_SEQUENCE`, `P25_MBT_DECODE`, `P25_P1_MDPU_HELPERS`,
+  `P25_P2_XCCH_HELPERS`, `P25_GRANT_POLICY`, `ENGINE_P25_PATCH_OWNER`, `APP_CONTROL_P25_NETWORK`.
 - Received identity record (`dsd_state::rx_id`, `<dsd-neo/core/received_identity.h>`,
   `src/core/util/received_identity.c`): the system identity the carrier being decoded sent, kept apart from the decoder
   state that decoding needs (the Phase 2 seed, control channel anchors and return hints, a `--tetra-net` preset, values
@@ -3540,16 +3647,18 @@ suite runs under this compiler.
     sync stamps (and `dsd_mark_cc_sync()`/`dsd_mark_vc_sync()` in `src/core/time/dsd_time_state.c`), the CQPSK dwell,
     the FSK no-sync reacquire watchdog, the no-carrier, stale-follow, scan and trunk timers, the retune completion
     stamps in `src/runtime/trunk_tuning_hooks.c` and the rdio sidecar's fallback start time. Every clock read in
-    `src/protocol` (and `p25_sm_note_cc_activity()` in `include/dsd-neo/protocol/p25/p25_cc_activity.h`) is decode
-    time: protocol windows (the DMR header repeat, SLCO print throttle and RC repeat dedup, the P25 PTT
-    retransmission and FACCH double-END windows, the regroup key TTL, NXDN recent context), trunk SM stamps and ticks,
-    sync stamps, and decoded-output timestamps and file names. The P25 SM watchdog thread sleeps in real time, but the
-    ticks it drives compare decode time, so where a tick falls among a replay's samples follows the wall clock, one
-    reason a trunked (`-T`) replay is outside the replay determinism guarantee (`docs/iq-capture-replay.md`). In
+    `src/protocol` (and `p25_sm_note_cc_activity()` in `include/dsd-neo/protocol/p25/p25_cc_activity.h`, whose
+    readings feed the P25 patch table's listening clock) is decode time: protocol windows (the DMR header repeat, SLCO
+    print throttle and RC repeat dedup, the P25 PTT retransmission and FACCH double-END windows, NXDN recent context),
+    trunk SM stamps and ticks, sync stamps, and decoded-output timestamps and file names. The P25 SM watchdog thread
+    sleeps in real time, but the ticks it drives compare decode time, so where a tick falls among a replay's samples
+    follows the wall clock, one reason a trunked (`-T`) replay is outside the replay determinism guarantee
+    (`docs/iq-capture-replay.md`). In
     `src/core`, `src/app_control` and `src/ui` decode time drives the call store's fallback stamps
     (`call_state_observed_m()` and the recent-activity stamps, so the reacquisition window, `started_m` and
     recent-activity TTLs share the protocols' clock), the event layer's VOICE_END alert and drop-hold due times, event
-    and history row stamps (merged-row spans), enc-lockout, patch-TTL and call-skip checks, init-time sync seeds,
+    and history row stamps (merged-row spans), enc-lockout and call-skip checks (the P25 patch TTL counts the patch
+    table's listening seconds instead, see P25 patch table state above), init-time sync seeds,
     output-file names, the symbol-file rotation timer, the frame, P25 SM and LRRP log stamps, the input-level warning
     cooldown (`dsd_input_level_publish()`: whether a repeated RF or input-level warning prints, against the decode
     time of the last one, `input_level_last_toast_time`), the decoder-thread command stamps in `app_command_queue.c`
@@ -9752,8 +9861,10 @@ Notes:
   drops purge the identifier once through `dsd_state_p25_invalidate_iden_chan_map()`, also the implementation of
   the protocol wrapper. `dsd_state_p25_bandplan_seed_mask()` reports changes without purging so first identity learn
   can coalesce foreign-entry drops and seed/reconcile changes. Known-system changes retain the full reset.
-  `svc_set_p2_params()` uses that lifecycle for a nonzero identity; clearing 0/0 leaves tables. CLI `-X` seeds only
-  after successful short-option parsing, using the final identity. Export collection replaces untyped same-key rows
+  `svc_set_p2_params()` uses that lifecycle for a nonzero identity; clearing 0/0 leaves tables. Its command
+  (`DSD_APP_CMD_P25_P2_PARAMS_SET`) applies under the P25 SM tick guard (`command_changes_p25_system()`): another
+  system's WACN/SYSID resets the IDEN tables and empties the patch table the watchdog's TUNED tick reads. CLI `-X` seeds
+  only after successful short-option parsing, using the final identity. Export collection replaces untyped same-key rows
   with typed rows and suppresses untyped FDMA only in the exact same scope as TDMA; global and scoped rows coexist.
   It examines all candidates at capacity and accumulates omitted entries for the export warning. CSV exports offsets
   from OFF_SPACING and empty types for untyped entries; import can encode FDMA offsets in spacing units when needed.
@@ -10007,6 +10118,14 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   opposite one, `p25_sacch_to_voice_slot()`), which the engine's receive policy judges, and moves no control channel
   stamp. A verdict whose checksum failed reports nothing, under `-F` too, whatever its fallback dispatches. An LCCH
   reports itself as control channel activity at its CRC-16 (`p25_sm_note_validated_cc()`), once.
+- MAC message span (`<dsd-neo/protocol/p25/p25p2_mac_parse.h>`). A MAC PDU's messages fill `MAC[1]..MAC[span]`, after
+  the one-octet MAC header and before the CRC: FACCH 17 octets, SACCH 20, LCCH 18 (its last 12 bits before the CRC-16
+  are the NAC), the bit counts the checksums above cover. `process_MAC_VPDU_crc()` segments with
+  `p25p2_mac_parse_span(type, p25p2_mac_span(type, p2_is_lcch))`; later segments must end within the span, while a
+  first segment whose own length claims more is kept for its handler to bound (`p25p2_mac_result::span`). Motorola
+  Group Regroup Add/Delete (0x81/0x89) count their length octet as the whole message: SG at octets 4-5, then
+  `(len - 5) / 2` work groups; a length under 5 or past the span changes nothing, and an Add with no member creates no
+  patch.
 - Scrambling code recovery (`p25p2_seed_recover.c`, issue #804). On a carrier whose code is not proven
   (`p2_cc_verified == 0`), not hand-set (`p2_hardset == 0`) and not trunked (`trunk_enable == 0`), `processP2()` hands
   each window to `p25p2_seed_recover_window()` after `p25p2_window_position()` and before the descrambler, with
@@ -10407,8 +10526,17 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   pending announcements they resolve, the secondary control channel broadcasts (0xE9/0x79/0x69: site fill-in,
   candidates, pending announcements, scan-list fallback), the adjacent-status neighbours, the system service broadcast
   (0x78), the time and date announcement (0x75) and the protection parameters (bridged 0x7F); so it proves no NAC
-  either. The TSBK path (`tsbk_dispatch_message()`) and the MBT trunking path (`p25_mpdu_handle_trunking()`) need
-  their CRCs under `-F` too. A seed set by hand (`-X`, or `svc_set_p2_params()` for the menu, Qt and API) with all
+  either. Nor does it change the unit and group tables (`p25p2_vpdu_network_table_writable()`): no patch (the Motorola
+  regroup Add/Delete 0x81/0x89 and Extended Function create/cancel 0x84, the Harris regroup with its KEY context 0xB0,
+  the supergroup voice and regroup grant refreshes MFID90 0x80/0xA0/0xA3/0xA4/0xA5/0x83 and standard 0x90), no radio
+  registration or deregistration (unit and location registration responses 0xEC/0x6C/0x6B, deregistration
+  acknowledgement 0x6F/0xEF) and no group affiliation (group affiliation responses 0x68/0xE8, group voice service
+  request 0x41, MFID90 0xA0); each still prints. The one table write such a PDU still makes is an allowed grant's
+  source-to-talkgroup affiliation (`p25_grant_track_src_tg()`, decided: `-F` acts on the grant on purpose and its call
+  publishes that source and talkgroup anyway; gating it would need a CRC flag in `p25_sm_event_t` at every Phase 2 grant
+  site). The TSBK path (`tsbk_dispatch_message()`) and the MBT trunking path (`p25_mpdu_handle_trunking()`), which carry
+  the Phase 1 registration and affiliation responses, need their CRCs under `-F` too. A seed set by hand (`-X`,
+  or `svc_set_p2_params()` for the menu, Qt and API) with all
   three parts nonzero sets `p2_hardset`: no NID or network status rewrites it, and neither a CC selection
   (`p25_sm_forget_selected_site()`) nor the no-carrier cleanup after generic trunk activity
   (`no_carrier_clear_stale_p25_return_hints_after_generic_activity()`) clears it; both still drop its proof. Every other
@@ -10779,13 +10907,23 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      tuner's, the DMR
      rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`.
   5. `state->carrier_seq` moves, so a decoder that buffered the left carrier's bursts drops them (see below).
+  With the received identity the P25 patch table goes too (`dsd_p25_patch_clear_all()`: entries, owner, listening
+  clock): a manual tune, a new source or input, a scan step or a replay retune names no system, so the next carrier
+  never inherits another system's members or KEY=0 (with trunking off a replay loses patch membership at each recorded
+  retune; the next Add restores it). A manual move under trunking runs no boundary and follows
+  `ui_manual_move_patches()`: one to the control channel of the table's own P25 system (`p25_cc_freq`, read before the
+  move: the Return-to-CC, the Lockout and Skip returns, a control channel selection of that frequency) is a same-system
+  move that keeps the table and only breaks its clock's continuity; one to any other carrier (a channel or candidate
+  cycle, a selection of another control channel, a return to a control channel that is not the P25 system's) empties
+  it. Trunk moves within a system keep it and only break its clock's continuity (`dsd_engine_tune_leaves_carrier()`).
 
   A stream gap (`DSD_CARRIER_BOUNDARY_STREAM_GAP`, issue #518 D5: a USB recovery, an rtl_tcp reconnect, or one a
   capture recorded) leaves no carrier and runs only what the gap cut (`carrier_boundary_stream_gap()`): the Phase 2
   playout takes the calls' verdicts, the calls end as on a sync loss, the DMR confirmation restarts
   (`dmr_confidence_reset()`: candidate, lock, voice gate, without the colour code
   `dsd_engine_forget_carrier_codes()` would take with it), `dsd_engine_forget_carrier_decoding()` runs, and the
-  carrier count moves with the carrier change noted. An analog call ends at its last accepted block, a candidate
+  carrier count moves with the carrier change noted; the P25 patch table stays, its listening clock's continuity broken.
+  An analog call ends at its last accepted block, a candidate
   unpublished (`dsd_engine_analog_call_end()`), and analog reception starts over as at a retune
   (`dsd_analog_rx_reset()`: the received tone, the tone policy's verdict, the monitor's audio chain and converter;
   issue #667 A3), whether or not the stream's generation moved with the gap. The codes, the received identity, the
@@ -11256,7 +11394,8 @@ Private per-protocol modules worth knowing about:
   ordinary announcements never touch SM timers. Calls announced together, on Phase 2 and in LC `0x42`, are ranked
   (audible before probe as `p25_sm_grant_is_silent_probe()` classifies them, admitted, hold, priority, listed order)
   and the first carrier change ends the update. Before `should_preempt` the SM
-  describes every assigned slot with `followed_since_m` (kept across repeats and re-grants of the same call; reset by
+  describes every assigned slot by its over-the-air target, a patched one re-resolved first, with `followed_since_m`
+  (kept across repeats and re-grants of the same call, a patch's member re-selections included; reset by
   `p25_sm_clear_followed_history()`; restarted when a TDMA slot's conversation lapsed, its last stop a whole hangtime
   old with no voice awaited since). A TDMA slot counts as held while its voice is live, within the hangtime after it,
   or while its voice is awaited (`p25_slot_awaiting_voice()`) for at most the grant timeout from `acquire_since_m`.
@@ -11266,7 +11405,7 @@ Private per-protocol modules worth knowing about:
   voice starts and accepted grants describe; only a preemption commits a cooldown, after the candidate is tuned. A
   preemption whose CC return fails or defers restores the force-release latch and keeps the held call. A clear-bit
   encryption-lockout release (`p25_grant_commit_enc_release()`) and the stale-regrant guard's probe are spent only on
-  acceptance. Tests: `P25_PREEMPT`, `P25_GRANT_POLICY`, `P25_P2_VPDU_GRANTS`.
+  acceptance. Tests: `P25_PREEMPT`, `P25_GRANT_POLICY`, `P25_P2_VPDU_GRANTS`, `P25_PATCH_FOLLOW`.
 - P25 followed-call identity across a fade (`p25_trunk_sm.c`, `p25_voice_canonical_lacks_identity()`). The engine's
   no-carrier pass ends the canonical calls as a sync loss and resets the P25 crypto without telling the P25 SM, which
   keeps following the assignment. Past the reacquire window a Phase 1 call comes back through the clear ESS with the

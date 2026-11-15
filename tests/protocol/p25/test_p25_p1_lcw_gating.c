@@ -139,6 +139,7 @@ expect_eq_int(const char* tag, int got, int want) {
 }
 
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors);
+void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
 
 static int
 init_retained_p1_call(dsd_opts* opts, dsd_state* state, int tg, int src) {
@@ -350,7 +351,7 @@ test_telephone_after_missed_boundary_drops_old_source(void) {
 }
 
 static int
-test_rejected_lcw_stops_post_processing(int format) {
+test_rejected_lcw_stops_post_processing(int format, int mfid) {
     static dsd_opts opts;
     static dsd_state state;
     uint8_t lcw[72];
@@ -367,6 +368,7 @@ test_rejected_lcw_stops_post_processing(int format) {
 
     DSD_MEMSET(lcw, 0, sizeof(lcw));
     set_bits_msb(lcw, 0, 8, (unsigned)format);
+    set_bits_msb(lcw, 8, 8, (unsigned)mfid);
     set_bits_msb(lcw, 16, 8, 0x40);
     if (format == 0x00) {
         set_bits_msb(lcw, 32, 16, 0x3456);
@@ -385,6 +387,127 @@ test_rejected_lcw_stops_post_processing(int format) {
     dsd_call_snapshot call;
     rc |= expect_eq_int("rejected LCW canonical retained", dsd_call_state_get(&state, 0U, &call), 1);
     rc |= expect_eq_int("rejected LCW canonical remains ended", call.phase, DSD_CALL_PHASE_ENDED);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+#define LCGRGR_SG  1400
+#define LCGRGR_SRC 0x040506
+
+/* Group Voice Channel User (LCO 0x00): standard (MFID 00) or Motorola LCGRGR (MFID 90), whose group is the patch
+   supergroup. */
+static void
+build_group_voice_user_lcw(uint8_t lcw[72], int mfid, int svc, int group, int source) {
+    DSD_MEMSET(lcw, 0, 72);
+    set_bits_msb(lcw, 0, 8, 0x00);
+    set_bits_msb(lcw, 8, 8, (unsigned)mfid);
+    set_bits_msb(lcw, 16, 8, (unsigned)svc);
+    set_bits_msb(lcw, 32, 16, (unsigned)group);
+    set_bits_msb(lcw, 48, 24, (unsigned)source);
+}
+
+static int
+ga_recorded(const dsd_state* state, uint32_t rid, uint16_t tg) {
+    for (size_t i = 0; i < sizeof(state->p25_ga_rid) / sizeof(state->p25_ga_rid[0]); i++) {
+        if (state->p25_ga_rid[i] == rid && state->p25_ga_tg[i] == tg) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A clear call on the supergroup, followed, with audio open. Its HDU's definitive ALGID 0x80 classified it CLEAR, so
+   a voice user of the same identity keeps that classification (p25_voice_start_should_preserve_p1_crypto()): only the
+   LC's encrypted service option can close the gate. */
+static int
+init_established_clear_call(dsd_opts* opts, dsd_state* state) {
+    if (!init_retained_p1_call(opts, state, LCGRGR_SG, LCGRGR_SRC)) {
+        return 0;
+    }
+    if (!p25_sm_emit_active_call(opts, state, 0, LCGRGR_SG, 0, LCGRGR_SRC, 1, 0)) {
+        return 0;
+    }
+    state->payload_algid = 0x80;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state->p25_p2_audio_allowed[0] = 1;
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "OLD ALIAS");
+    return 1;
+}
+
+/* An encrypted voice user on the established clear call closes the gate until the crypto is classified again. The
+   standard LCO 0x00 already does (preservation); LCGRGR must do the same for a patched call. */
+static int
+test_group_voice_user_parity(int mfid) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    char tag[96];
+    int rc = 0;
+
+    DSD_SNPRINTF(tag, sizeof tag, "mfid %02X established clear fixture", mfid);
+    rc |= expect_eq_int(tag, init_established_clear_call(&opts, &state), 1);
+    build_group_voice_user_lcw(lcw, mfid, 0x40, LCGRGR_SG, LCGRGR_SRC);
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    DSD_SNPRINTF(tag, sizeof tag, "mfid %02X call kept", mfid);
+    rc |= expect_eq_int(tag, sm->state == P25_SM_TUNED && sm->slots[0].ota_tg == LCGRGR_SG, 1);
+    DSD_SNPRINTF(tag, sizeof tag, "mfid %02X encrypted revokes clear state", mfid);
+    rc |= expect_eq_int(tag, state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    DSD_SNPRINTF(tag, sizeof tag, "mfid %02X encrypted closes audio gate", mfid);
+    rc |= expect_eq_int(tag, state.p25_p2_audio_allowed[0], 0);
+    DSD_SNPRINTF(tag, sizeof tag, "mfid %02X service options", mfid);
+    rc |= expect_eq_int(tag, state.dmr_so, 0x40);
+    DSD_SNPRINTF(tag, sizeof tag, "mfid %02X talker alias cleared", mfid);
+    rc |= expect_eq_int(tag, state.generic_talker_alias[0][0], '\0');
+    DSD_SNPRINTF(tag, sizeof tag, "mfid %02X group affiliation", mfid);
+    rc |= expect_eq_int(tag, ga_recorded(&state, LCGRGR_SRC, LCGRGR_SG), 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* Preservation: KEY=0 on the active patch is a clear classification, so an encrypted LCGRGR keeps the gate open. */
+static int
+test_lcgrgr_key0_keeps_clear_gate(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    int rc = 0;
+
+    rc |= expect_eq_int("LCGRGR KEY=0 fixture", init_established_clear_call(&opts, &state), 1);
+    p25_patch_update(&state, LCGRGR_SG, 1, 1);
+    p25_patch_add_wgid(&state, LCGRGR_SG, LCGRGR_SG + 1);
+    p25_patch_set_kas(&state, LCGRGR_SG, 0, 0x80, 1);
+    build_group_voice_user_lcw(lcw, 0x90, 0x40, LCGRGR_SG, LCGRGR_SRC);
+    p25_lcw(&opts, &state, lcw, 0);
+
+    rc |= expect_eq_int("LCGRGR KEY=0 keeps clear state", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_eq_int("LCGRGR KEY=0 keeps audio gate", state.p25_p2_audio_allowed[0], 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* A TDULC ends the transmission: its LCGRGR starts no voice and marks no crypto, but still records the user. */
+static int
+test_lcgrgr_from_tdulc_records_without_voice_start(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    int rc = 0;
+
+    rc |= expect_eq_int("LCGRGR TDULC fixture", init_retained_p1_call(&opts, &state, 0x1234, 0x010203), 1);
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    DSD_SNPRINTF(state.generic_talker_alias[0], sizeof state.generic_talker_alias[0], "%s", "OLD ALIAS");
+    build_group_voice_user_lcw(lcw, 0x90, 0x40, LCGRGR_SG, LCGRGR_SRC);
+    p25_lcw_from_tdulc(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("LCGRGR TDULC no voice start", sm->slots[0].voice_active, 0);
+    rc |= expect_eq_int("LCGRGR TDULC keeps SM target", sm->slots[0].ota_tg, 0x1234);
+    rc |= expect_eq_int("LCGRGR TDULC no crypto mark", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_eq_int("LCGRGR TDULC service options", state.dmr_so, 0x40);
+    rc |= expect_eq_int("LCGRGR TDULC talker alias cleared", state.generic_talker_alias[0][0], '\0');
+    rc |= expect_eq_int("LCGRGR TDULC group affiliation", ga_recorded(&state, LCGRGR_SRC, LCGRGR_SG), 1);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -565,8 +688,14 @@ main(void) {
     rc |= test_extended_private_encrypted_service_lockout();
     rc |= test_telephone_resolves_retained_identity();
     rc |= test_telephone_after_missed_boundary_drops_old_source();
-    rc |= test_rejected_lcw_stops_post_processing(0x00);
-    rc |= test_rejected_lcw_stops_post_processing(0x03);
+    rc |= test_rejected_lcw_stops_post_processing(0x00, 0x00);
+    rc |= test_rejected_lcw_stops_post_processing(0x03, 0x00);
+    // Preservation: a rejected MFID90 LCGRGR (patched supergroup) leaves no crypto mark either.
+    rc |= test_rejected_lcw_stops_post_processing(0x00, 0x90);
+    rc |= test_group_voice_user_parity(0x00);
+    rc |= test_group_voice_user_parity(0x90);
+    rc |= test_lcgrgr_key0_keeps_clear_gate();
+    rc |= test_lcgrgr_from_tdulc_records_without_voice_start();
 
     dsd_state_ext_free_all(&st);
     return rc;

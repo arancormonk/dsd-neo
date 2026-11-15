@@ -791,6 +791,18 @@ test_trunking_payload_crc_dispatch(void) {
     rc |= expect_int("trunking handler accepted bad header", p25_mpdu_handle_trunking(&opts, &state, &ctx), 1);
     rc |= expect_int("trunking bad header suppresses dispatch", g_pdu_trunking_calls, 0);
 
+    /* Preservation: under -F an MBT whose packet CRC failed still never reaches the trunking decoder, so its MFID90
+       regroup grant names no patch supergroup. */
+    dsd_opts_set_relaxed_crc(&opts, 1);
+    ctx.err[0] = 0;
+    ctx.err[1] = -2;
+    DSD_MEMCPY(ctx.mpdu_byte + P25_MPDU_R12_BYTES, payload, sizeof(payload));
+    ctx.mpdu_byte[P25_MPDU_R12_BYTES + 2] ^= 0x01U;
+    reset_dispatch_counters();
+    rc |= expect_int("trunking handler accepted bad packet", p25_mpdu_handle_trunking(&opts, &state, &ctx), 1);
+    rc |= expect_int("trunking bad packet crc kept", ctx.err[1] != 0, 1);
+    rc |= expect_int("trunking bad packet suppresses dispatch under -F", g_pdu_trunking_calls, 0);
+
     ctx.err[0] = 0;
     ctx.sap = 0x20;
     ctx.fmt = 0x17;

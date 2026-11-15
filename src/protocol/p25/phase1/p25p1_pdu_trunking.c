@@ -14,6 +14,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -344,6 +345,8 @@ p25_handle_mbt_net_sts_broadcast(const dsd_opts* opts, dsd_state* state, const u
     DSD_FPRINTF(stderr, "  LRA [%02X] WACN [%05lX] SYSID [%03X] NAC [%03llX]\n", lra, wacn, sysid, state->p2_cc);
     DSD_FPRINTF(stderr, "  CHAN-T [%04X] CHAN-R [%04X]", channelt, channelr);
 
+    /* The checked broadcast names the system the patch table belongs to, whatever the seed or the tuning gate below. */
+    (void)dsd_p25_patch_note_system(state, (uint32_t)wacn, (uint16_t)sysid);
     long int ct_freq = process_channel_to_freq(opts, state, channelt);
     long int cr_freq = process_channel_to_freq(opts, state, channelr);
     UNUSED(cr_freq);
@@ -847,6 +850,9 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
 
     p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc_bits, group, (int)src, freq1,
                                    P25_SM_GRANT_PROVENANCE_ASSIGNMENT);
+    // The grant names the supergroup (both MBT CRCs passed: p25_mpdu_handle_trunking()): its row stays, its members
+    // do not.
+    p25_patch_update(state, group, /*is_patch*/ 1, /*active*/ 1);
 }
 
 static void DSD_ATTR_USED

@@ -20,6 +20,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -619,6 +620,31 @@ p25p2_vpdu_system_tables_writable(const p25p2_vpdu_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, " (CRC failed; not applied)");
     return 0;
+}
+
+/* Nor does it change the network tables kept about units and groups: a patch (no member added or deleted, no KEY
+ * context, no create, cancel or supergroup refresh), a radio's registration or deregistration, or a group
+ * affiliation. Each message still prints, with " (CRC failed; <what> not applied)". */
+static int
+p25p2_vpdu_network_table_writable(const p25p2_vpdu_ctx* ctx, const char* what) {
+    if (ctx->crc_ok) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, " (CRC failed; %s not applied)", what);
+    return 0;
+}
+
+/* A regroup grant or update names its supergroups (@p sg2 0 when it names one): each row stays, as on a supergroup
+   voice message, and its members do not. SG 0 names none. */
+static void
+p25p2_vpdu_note_regroup_grant(const p25p2_vpdu_ctx* ctx, int sg1, int sg2) {
+    if ((sg1 == 0 && sg2 == 0) || !p25p2_vpdu_network_table_writable(ctx, "patch")) {
+        return;
+    }
+    p25_patch_update(ctx->state, sg1, /*is_patch*/ 1, /*active*/ 1);
+    if (sg2 != 0 && sg2 != sg1) {
+        p25_patch_update(ctx->state, sg2, /*is_patch*/ 1, /*active*/ 1);
+    }
 }
 
 static void
@@ -1246,6 +1272,7 @@ p25p2_vpdu_iter_block_01(p25p2_vpdu_ctx* ctx) {
         // Only for the group of a call active on this carrier, like every other trunking-off writer: a conventional
         // call takes p25_vc_freq as its own frequency (issue #575).
         p25p2_vpdu_update_playback_if_match(opts, state, sgroup, freq);
+        p25p2_vpdu_note_regroup_grant(ctx, sgroup, 0);
     }
 
     if (len_b < 0) {
@@ -1305,6 +1332,7 @@ p25p2_vpdu_iter_block_02(p25p2_vpdu_ctx* ctx) {
         //might only want to do these on a grant update, and not a grant by itself?
         // Only for the group of a call active on this carrier, as for the implicit grant (issue #575).
         p25p2_vpdu_update_playback_if_match(opts, state, sgroup, freq);
+        p25p2_vpdu_note_regroup_grant(ctx, sgroup, 0);
     }
 
     if (len_b < 0) {
@@ -1342,7 +1370,8 @@ p25p2_vpdu_iter_block_03(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n MFID90 Group Regroup Channel Grant Update");
         DSD_FPRINTF(stderr, "\n  Channel 1 [%04X] Group 1 [%d][%04X]", channel1, group1, group1);
         freq1 = process_channel_to_freq(opts, state, channel1);
-        if (channel2 != channel1 && p25p2_vpdu_channel_is_valid(channel2)) {
+        const int names_second = channel2 != channel1 && p25p2_vpdu_channel_is_valid(channel2);
+        if (names_second) {
             DSD_FPRINTF(stderr, "\n  Channel 2 [%04X] Group 2 [%d][%04X]", channel2, group2, group2);
             freq2 = process_channel_to_freq(opts, state, channel2);
         }
@@ -1351,14 +1380,15 @@ p25p2_vpdu_iter_block_03(p25p2_vpdu_ctx* ctx) {
 
         if (opts->trunk_tune_group_calls == 0) {
             ctx->skip_rest = 1;
-            goto BLOCK_END;
+        } else {
+            const int loop = (channel1 == channel2) ? 1 : 2;
+            const p25p2_vpdu_group_candidate candidates[2] = {{channel1, group1, freq1, P25_SM_SVC_UNKNOWN},
+                                                              {channel2, group2, freq2, P25_SM_SVC_UNKNOWN}};
+            const p25p2_vpdu_candidate_policy policy = {1};
+            (void)p25p2_vpdu_try_group_candidates(opts, state, candidates, loop, &policy);
         }
-
-        const int loop = (channel1 == channel2) ? 1 : 2;
-        const p25p2_vpdu_group_candidate candidates[2] = {{channel1, group1, freq1, P25_SM_SVC_UNKNOWN},
-                                                          {channel2, group2, freq2, P25_SM_SVC_UNKNOWN}};
-        const p25p2_vpdu_candidate_policy policy = {1};
-        (void)p25p2_vpdu_try_group_candidates(opts, state, candidates, loop, &policy);
+        // Group 2 is named only with a second channel of its own, as printed above.
+        p25p2_vpdu_note_regroup_grant(ctx, group1, names_second ? group2 : 0);
     }
 
     if (len_b < 0) {
@@ -2068,84 +2098,57 @@ BLOCK_END:
     ctx->iter_idx = i;
 }
 
-static void
-p25p2_vpdu_iter_block_15(p25p2_vpdu_ctx* ctx) {
-    dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
-    int type = ctx->type;
-    const unsigned long long int* MAC = ctx->mac;
-    struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
-    int len_a VPDU_MAYBE_UNUSED = ctx->len_a;
-    int len_b = ctx->len_b;
-    int len_c VPDU_MAYBE_UNUSED = ctx->len_c;
-    int slot VPDU_MAYBE_UNUSED = ctx->slot;
-    int i = ctx->iter_idx;
-    UNUSED4(type, mac_res, len_c, slot);
-
-    if (MAC[1 + len_a] == 0x81 && MAC[2 + len_a] == 0x90) {
-        int wg_len = MAC[3 + len_a] & 0x3F; // length in bytes of workgroup list
-        int sg = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
-        DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Add Command\n");
-        DSD_FPRINTF(stderr, "  SG: %d", sg);
-        // Workgroup IDs start at byte 6, each is 16 bits
-        int num_wg = (wg_len >= 2) ? ((wg_len - 2) / 2) : 0; // subtract sg bytes, divide by 2
-        for (int wi = 0; wi < num_wg && (6 + len_a + wi * 2 + 1) < 24; wi++) {
-            int wg = (MAC[6 + len_a + wi * 2] << 8) | MAC[6 + len_a + wi * 2 + 1];
-            if (wg != 0) {
-                DSD_FPRINTF(stderr, " WG%d: %d", wi + 1, wg);
-                p25_patch_add_wgid(state, sg, wg);
-            }
-        }
-        DSD_FPRINTF(stderr, "\n");
-        p25_patch_update(state, sg, /*is_patch*/ 1, /*active*/ 1);
+/* Motorola Group Regroup Add (0x81) and Delete (0x89): opcode, MFID, a length octet that counts the whole message,
+ * the SG, then the work groups, two octets each: (len - 5) / 2 complete pairs. A length shorter than that header or
+ * running past the transport's MAC span (an oversized first segment) carries nothing; the SG is not even read. */
+static int
+p25p2_vpdu_moto_regroup_len(const p25p2_vpdu_ctx* ctx) {
+    const int len = (int)(ctx->mac[3 + ctx->len_a] & 0x3F);
+    const int room = ctx->mac_res->span - ctx->len_a;
+    if (len < 5 || len > room) {
+        DSD_FPRINTF(stderr, "  invalid: length %d (room %d)\n", len, room);
+        return -1;
     }
-
-    if (len_b < 0) {
-        goto BLOCK_END;
-    }
-BLOCK_END:
-    VPDU_LABEL_UNUSED;
-
-    ctx->len_b = len_b;
-    ctx->iter_idx = i;
+    return len;
 }
 
 static void
-p25p2_vpdu_iter_block_16(p25p2_vpdu_ctx* ctx) {
-    dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
-    int type = ctx->type;
-    const unsigned long long int* MAC = ctx->mac;
-    struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
-    int len_a VPDU_MAYBE_UNUSED = ctx->len_a;
-    int len_b = ctx->len_b;
-    int len_c VPDU_MAYBE_UNUSED = ctx->len_c;
-    int slot VPDU_MAYBE_UNUSED = ctx->slot;
-    int i = ctx->iter_idx;
-    UNUSED4(type, mac_res, len_c, slot);
+p25p2_vpdu_handle_moto_regroup_add_delete(const p25p2_vpdu_ctx* ctx, int is_add) {
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
 
-    if (MAC[1 + len_a] == 0x89 && MAC[2 + len_a] == 0x90) {
-        int wg_len = MAC[3 + len_a] & 0x3F;
-        int sg = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
-        DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Delete Command\n");
-        DSD_FPRINTF(stderr, "  SG: %d", sg);
-        int num_wg = (wg_len >= 2) ? ((wg_len - 2) / 2) : 0;
-        for (int wi = 0; wi < num_wg && (6 + len_a + wi * 2 + 1) < 24; wi++) {
-            int wg = (MAC[6 + len_a + wi * 2] << 8) | MAC[6 + len_a + wi * 2 + 1];
-            if (wg != 0) {
-                DSD_FPRINTF(stderr, " WG%d: %d", wi + 1, wg);
-                p25_patch_remove_wgid(state, sg, wg);
-            }
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup %s Command\n", is_add ? "Add" : "Delete");
+    const int len = p25p2_vpdu_moto_regroup_len(ctx);
+    if (len < 0) {
+        return;
+    }
+    const int sg = p25p2_vpdu_u16(ctx->mac, 4 + len_a);
+    DSD_FPRINTF(stderr, "  SG: %d", sg);
+    const int apply = p25p2_vpdu_network_table_writable(ctx, "patch");
+
+    const int pairs = (len - 5) / 2;
+    int members = 0;
+    for (int wi = 0; wi < pairs; wi++) {
+        const int wg = p25p2_vpdu_u16(ctx->mac, 6 + len_a + (wi * 2));
+        if (wg == 0) {
+            continue;
         }
-        DSD_FPRINTF(stderr, "\n");
+        DSD_FPRINTF(stderr, " WG%d: %d", wi + 1, wg);
+        if (!apply) {
+            continue;
+        }
+        if (is_add) {
+            p25_patch_add_wgid(state, sg, wg);
+        } else {
+            p25_patch_remove_wgid(state, sg, wg);
+        }
+        members++;
     }
-
-    if (len_b < 0) {
-        goto BLOCK_END;
+    DSD_FPRINTF(stderr, "\n");
+    // An Add that names no member creates and refreshes nothing.
+    if (is_add && members > 0) {
+        p25_patch_update(state, sg, /*is_patch*/ 1, /*active*/ 1);
     }
-BLOCK_END:
-    VPDU_LABEL_UNUSED;
-
-    ctx->len_b = len_b;
-    ctx->iter_idx = i;
 }
 
 static void
@@ -2183,6 +2186,7 @@ p25p2_vpdu_iter_block_17(p25p2_vpdu_ctx* ctx) {
             p25_sm_event_t ev = p25_sm_ev_group_grant_update(channel, 0, sg, /*source*/ 0, svc);
             p25p2_vpdu_dispatch_grant_event(opts, state, &ev, dispatch);
         }
+        p25p2_vpdu_note_regroup_grant(ctx, sg, 0);
     }
 
     if (len_b < 0) {
@@ -3136,7 +3140,9 @@ p25p2_vpdu_iter_block_35(p25p2_vpdu_ctx* ctx) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
         // Treat observed Super Group activity as an active patch (vendor-specific signaling may differ)
-        p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
+        if (p25p2_vpdu_network_table_writable(ctx, "patch")) {
+            p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
+        }
 
         if (tracked_voice && p25p2_vpdu_pdu_type_is_live_voice(ctx->pdu_type) && (svc & 0x40) && opts->trunk_enable == 1
             && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
@@ -3182,14 +3188,17 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         if (tracked_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
-        p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
+        if (p25p2_vpdu_network_table_writable(ctx, "patch")) {
+            p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
+        }
 
         uint32_t mfid90_wacn = (MAC[10 + len_a] << 16) | (MAC[11 + len_a] << 8) | (MAC[12 + len_a] & 0xF0);
         mfid90_wacn >>= 4;
         uint16_t mfid90_sys = (uint16_t)(((MAC[12 + len_a] & 0x0F) << 8) | MAC[13 + len_a]);
         DSD_FPRINTF(stderr, " EXT - FQSUID: %05X:%03X.%d", mfid90_wacn, mfid90_sys, src);
 
-        if (src != 0 && gr != 0) {
+        // A failed-CRC PDU (-F) records no affiliation either; the patch note above already said so.
+        if (ctx->crc_ok && src != 0 && gr != 0) {
             p25_ga_add(state, (uint32_t)src, (uint16_t)gr);
         }
         if (tracked_voice && p25p2_vpdu_pdu_type_is_live_voice(ctx->pdu_type) && (svc & 0x40) && opts->trunk_enable == 1
@@ -3233,14 +3242,22 @@ p25p2_vpdu_harris_a4_wuid_count(int msg_len) {
     return (count > 3) ? 3 : count;
 }
 
+/* Harris regroup members and KEY context: @p apply is 0 for a failed-CRC MAC_SIGNAL (-F), which prints them only. */
+typedef struct {
+    int is_patch;
+    int active;
+    int ssn;
+    int apply;
+} p25p2_vpdu_harris_grg_opts;
+
 static void
 p25p2_vpdu_handle_harris_a4_wgid(dsd_state* state, const unsigned long long int* mac, int len_a, int msg_len,
-                                 int is_patch, int active, int ssn) {
+                                 const p25p2_vpdu_harris_grg_opts* grg) {
     int sg = (mac[5 + len_a] << 8) | mac[6 + len_a];
     int key = (mac[7 + len_a] << 8) | mac[8 + len_a];
     int alg = mac[9 + len_a];
     DSD_FPRINTF(stderr, " SG: %d; KEY ID: %04X; ALG: %02X;\n  ", sg, key, alg);
-    if (!p25_patch_prepare_grg_update(state, sg, is_patch, active, ssn)) {
+    if (grg->apply && !p25_patch_prepare_grg_update(state, sg, grg->is_patch, grg->active, grg->ssn)) {
         return;
     }
 
@@ -3248,20 +3265,22 @@ p25p2_vpdu_handle_harris_a4_wgid(dsd_state* state, const unsigned long long int*
     for (int wi = 0; wi < count && (10 + len_a + (wi * 2) + 1) < 24; wi++) {
         int wgid = (mac[10 + len_a + (wi * 2)] << 8) | mac[11 + len_a + (wi * 2)];
         DSD_FPRINTF(stderr, "WGID: %d; ", wgid);
-        if (wgid != 0) {
+        if (grg->apply && wgid != 0) {
             p25_patch_add_wgid(state, sg, wgid);
         }
     }
-    p25_patch_set_kas(state, sg, key, alg, ssn);
+    if (grg->apply) {
+        p25_patch_set_kas(state, sg, key, alg, grg->ssn);
+    }
 }
 
 static void
 p25p2_vpdu_handle_harris_a4_wuid(dsd_state* state, const unsigned long long int* mac, int len_a, int msg_len,
-                                 int is_patch, int active, int ssn) {
+                                 const p25p2_vpdu_harris_grg_opts* grg) {
     int sg = (mac[5 + len_a] << 8) | mac[6 + len_a];
     int key = (mac[7 + len_a] << 8) | mac[8 + len_a];
     DSD_FPRINTF(stderr, "  SG: %d KEY ID: %04X", sg, key);
-    if (!p25_patch_prepare_grg_update(state, sg, is_patch, active, ssn)) {
+    if (grg->apply && !p25_patch_prepare_grg_update(state, sg, grg->is_patch, grg->active, grg->ssn)) {
         return;
     }
 
@@ -3269,33 +3288,43 @@ p25p2_vpdu_handle_harris_a4_wuid(dsd_state* state, const unsigned long long int*
     for (int wi = 0; wi < count && (9 + len_a + (wi * 3) + 2) < 24; wi++) {
         int wuid = (mac[9 + len_a + (wi * 3)] << 16) | (mac[10 + len_a + (wi * 3)] << 8) | mac[11 + len_a + (wi * 3)];
         DSD_FPRINTF(stderr, " WUID: %d;", wuid);
-        if (wuid != 0) {
+        if (grg->apply && wuid != 0) {
             p25_patch_add_wuid(state, sg, (uint32_t)wuid);
         }
     }
-    p25_patch_set_kas(state, sg, key, -1, ssn);
+    if (grg->apply) {
+        p25_patch_set_kas(state, sg, key, -1, grg->ssn);
+    }
 }
 
 static void
-p25p2_vpdu_handle_harris_a4_grg(dsd_state* state, const unsigned long long int* mac, int len_a, int len_b) {
+p25p2_vpdu_handle_harris_a4_grg(const p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    const unsigned long long int* mac = ctx->mac;
+    const int len_a = ctx->len_a;
+    const int len_b = ctx->len_b;
     int len_grg = mac[3 + len_a] & 0x3F;
     int msg_len = p25p2_vpdu_harris_a4_msg_len(len_b, len_grg);
     int tga = mac[4 + len_a] >> 5;
     int ssn = mac[4 + len_a] & 0x1F;
-    int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
-    int active = (tga & 0x1) ? 1 : 0;
+    p25p2_vpdu_harris_grg_opts grg = {
+        .is_patch = ((tga & 0x4) == 0) ? 1 : 0,
+        .active = (tga & 0x1) ? 1 : 0,
+        .ssn = ssn,
+        .apply = 0,
+    };
 
     p25p2_vpdu_print_harris_a4_options(tga, ssn);
+    grg.apply = p25p2_vpdu_network_table_writable(ctx, "patch");
     if ((tga & 0x2) == 2) {
-        p25p2_vpdu_handle_harris_a4_wgid(state, mac, len_a, msg_len, is_patch, active, ssn);
+        p25p2_vpdu_handle_harris_a4_wgid(state, mac, len_a, msg_len, &grg);
     } else {
-        p25p2_vpdu_handle_harris_a4_wuid(state, mac, len_a, msg_len, is_patch, active, ssn);
+        p25p2_vpdu_handle_harris_a4_wuid(state, mac, len_a, msg_len, &grg);
     }
 }
 
 static void
 p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
-    dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
     struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
@@ -3308,7 +3337,7 @@ p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
 
     if (MAC[1 + len_a] == 0xB0 && MAC[2 + len_a] == 0xA4) //&& MAC[2+len_a] == 0xA4
     {
-        p25p2_vpdu_handle_harris_a4_grg(state, MAC, len_a, len_b);
+        p25p2_vpdu_handle_harris_a4_grg(ctx);
     }
 
     if (len_b < 0) {
@@ -3347,7 +3376,9 @@ p25p2_vpdu_iter_block_38(p25p2_vpdu_ctx* ctx) {
         if (RV == 0) {
             DSD_FPRINTF(stderr, " REG_ACCEPT;");
             // Track affiliated RID
-            p25_aff_register(state, (uint32_t)src);
+            if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
+                p25_aff_register(state, (uint32_t)src);
+            }
         }
         if (RV == 1) {
             DSD_FPRINTF(stderr, " REG_FAIL;"); //RFSS was unable to verify
@@ -3372,7 +3403,10 @@ BLOCK_END:
 }
 
 static void
-p25p2_vpdu_handle_location_registration_response(dsd_state* state, const unsigned long long int* MAC, int len_a) {
+p25p2_vpdu_handle_location_registration_response(const p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    const unsigned long long int* MAC = ctx->mac;
+    const int len_a = ctx->len_a;
     int k = 1; // vPDU offset
     if (MAC[len_a] == 0x07) {
         k = 0; // TSBK offset
@@ -3394,8 +3428,10 @@ p25p2_vpdu_handle_location_registration_response(dsd_state* state, const unsigne
     switch (rv) {
         case 0:
             DSD_FPRINTF(stderr, " REG_ACCEPT;");
-            p25_aff_register(state, (uint32_t)target);
-            p25_ga_add(state, (uint32_t)target, (uint16_t)group);
+            if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
+                p25_aff_register(state, (uint32_t)target);
+                p25_ga_add(state, (uint32_t)target, (uint16_t)group);
+            }
             break;
         case 1: DSD_FPRINTF(stderr, " REG_FAIL;"); break;
         case 2: DSD_FPRINTF(stderr, " REG_DENY;"); break;
@@ -3418,7 +3454,7 @@ p25p2_vpdu_iter_block_39(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x6B) {
-        p25p2_vpdu_handle_location_registration_response(state, MAC, len_a);
+        p25p2_vpdu_handle_location_registration_response(ctx);
     }
 
     if (MAC[1 + len_a] == 0x6C) {
@@ -3444,7 +3480,9 @@ p25p2_vpdu_iter_block_39(p25p2_vpdu_ctx* ctx) {
         if (RV == 0) {
             DSD_FPRINTF(stderr, " REG_ACCEPT;");
             // Track affiliated RID
-            p25_aff_register(state, (uint32_t)src);
+            if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
+                p25_aff_register(state, (uint32_t)src);
+            }
         }
         if (RV == 1) {
             DSD_FPRINTF(stderr, " REG_FAIL;"); //RFSS was unable to verify
@@ -3521,7 +3559,9 @@ p25p2_vpdu_iter_block_41(p25p2_vpdu_ctx* ctx) {
             DSD_FPRINTF(stderr, " - Extended;");
         }
         // Remove RID from affiliation table
-        p25_aff_deregister(state, (uint32_t)src);
+        if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
+            p25_aff_deregister(state, (uint32_t)src);
+        }
     }
 
     if (len_b < 0) {
@@ -3822,6 +3862,9 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
                     lcolorcode, channel);
         long int cc_freq = process_channel_to_freq(opts, state, channel);
         if (p25p2_vpdu_system_tables_writable(ctx)) {
+            /* The checked broadcast names the system the patch table belongs to, whatever the seed or the tuning gate
+               below. */
+            (void)dsd_p25_patch_note_system(state, (uint32_t)lwacn, (uint16_t)lsysid);
             p25p2_vpdu_note_nsb_system_tdma(state);
             int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
             const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
@@ -3884,6 +3927,9 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
         long int nf1 = process_channel_to_freq(opts, state, channelt);
         (void)process_channel_to_freq(opts, state, channelr);
         if (p25p2_vpdu_system_tables_writable(ctx)) {
+            /* The checked broadcast names the system the patch table belongs to, whatever the seed or the tuning gate
+               below. */
+            (void)dsd_p25_patch_note_system(state, (uint32_t)lwacn, (uint16_t)lsysid);
             p25p2_vpdu_note_nsb_system_tdma(state);
             int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, nf1);
             const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
@@ -4156,7 +4202,7 @@ p25p2_vpdu_iter_block_52(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n Group Affiliation Response");
         DSD_FPRINTF(stderr, "\n  LG: %d GAV: %d AGA: %d GA: %d TA: %d", lg, gav, aga, ga, ta);
         // Track RID affiliation (TA is the target address / unit ID)
-        if (gav == 0) { // Accepted
+        if (gav == 0 && p25p2_vpdu_network_table_writable(ctx, "affiliation")) { // Accepted
             p25_aff_register(state, (uint32_t)ta);
             // Also track group affiliation (RID -> TG mapping)
             p25_ga_add(state, (uint32_t)ta, (uint32_t)ga);
@@ -4508,7 +4554,7 @@ p25p2_vpdu_handle_group_voice_service_request(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  SVC [%02X] Group [%d][%04X] Source [%d]", svc, group, group, source);
     p25p2_vpdu_print_svc_no_state(ctx->opts, svc);
     p25p2_vpdu_print_target_label(ctx->state, DSD_CALL_KIND_GROUP_VOICE, (uint32_t)group);
-    if (source != 0 && group != 0) {
+    if (source != 0 && group != 0 && p25p2_vpdu_network_table_writable(ctx, "affiliation")) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
     }
 }
@@ -4886,7 +4932,7 @@ p25p2_vpdu_handle_group_affiliation_response_extended(p25p2_vpdu_ctx* ctx) {
                                  "AFF-X Target: %d GA: %d AGA: %d Response: %d; ", target, group, announcement_group,
                                  response);
 
-    if (response == 0) {
+    if (response == 0 && p25p2_vpdu_network_table_writable(ctx, "affiliation")) {
         p25_aff_register(state, (uint32_t)target);
         p25_ga_add(state, (uint32_t)target, (uint16_t)group);
     }
@@ -5024,7 +5070,7 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) 
     } else if (class_id == 0x02 && operand == 0x00) {
         int sg = argument & 0xFFFF;
         DSD_FPRINTF(stderr, " Create Supergroup");
-        if (sg != 0) {
+        if (sg != 0 && p25p2_vpdu_network_table_writable(ctx, "patch")) {
             p25_patch_prepare_grg_update(ctx->state, sg, /*is_patch*/ 1, /*active*/ 1, /*ssn*/ -1);
             if (target != 0) {
                 p25_patch_add_wuid(ctx->state, sg, (uint32_t)target);
@@ -5033,7 +5079,7 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) 
     } else if (class_id == 0x02 && operand == 0x01) {
         int sg = argument & 0xFFFF;
         DSD_FPRINTF(stderr, " Cancel Supergroup");
-        if (sg != 0) {
+        if (sg != 0 && p25p2_vpdu_network_table_writable(ctx, "patch")) {
             p25_patch_clear_sg(ctx->state, sg);
         }
     }
@@ -5240,7 +5286,9 @@ p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* 
     DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d Standard Group Regroup Voice", slot + 1, supergroup, source);
 
     if (supergroup != 0) {
-        p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
+        if (p25p2_vpdu_network_table_writable(ctx, "patch")) {
+            p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
+        }
         if (p25p2_vpdu_observe_voice(ctx->opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)supergroup,
                                      (uint64_t)(uint32_t)source, -1, ctx->pdu_type)) {
             state->p25_p2_last_mac_active[slot] = dsd_decode_time();
@@ -5311,7 +5359,9 @@ p25p2_vpdu_dispatch_motorola_vendor(p25p2_vpdu_ctx* ctx, int opcode) {
         case 0xA6: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 0); break;
         case 0xA7: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 1); break;
         case 0xA8: p25p2_vpdu_handle_motorola_ack_response(ctx); break;
+        case 0x81: p25p2_vpdu_handle_moto_regroup_add_delete(ctx, /*is_add*/ 1); break;
         case 0x84: p25p2_vpdu_handle_motorola_regroup_extended_function(ctx); break;
+        case 0x89: p25p2_vpdu_handle_moto_regroup_add_delete(ctx, /*is_add*/ 0); break;
         case 0x8B: p25p2_vpdu_handle_motorola_tdma_data_channel(ctx); break;
         default: break;
     }
@@ -5808,18 +5858,17 @@ p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_iter_block_01, p25p2_vpdu_iter_block_02, p25p2_vpdu_iter_block_03, p25p2_vpdu_iter_block_04,
         p25p2_vpdu_iter_block_05, p25p2_vpdu_iter_block_06, p25p2_vpdu_iter_block_07, p25p2_vpdu_iter_block_08,
         p25p2_vpdu_iter_block_09, p25p2_vpdu_iter_block_10, p25p2_vpdu_iter_block_11, p25p2_vpdu_iter_block_12,
-        p25p2_vpdu_iter_block_13, p25p2_vpdu_iter_block_14, p25p2_vpdu_iter_block_15, p25p2_vpdu_iter_block_16,
-        p25p2_vpdu_iter_block_17, p25p2_vpdu_iter_block_19, p25p2_vpdu_iter_block_20, p25p2_vpdu_iter_block_21,
-        p25p2_vpdu_iter_block_22, p25p2_vpdu_iter_block_23, p25p2_vpdu_iter_block_24, p25p2_vpdu_iter_block_25,
-        p25p2_vpdu_iter_block_26, p25p2_vpdu_iter_block_27, p25p2_vpdu_iter_block_28, p25p2_vpdu_iter_block_29,
-        p25p2_vpdu_iter_block_30, p25p2_vpdu_iter_block_31, p25p2_vpdu_iter_block_32, p25p2_vpdu_iter_block_33,
-        p25p2_vpdu_iter_block_34, p25p2_vpdu_iter_block_35, p25p2_vpdu_iter_block_36, p25p2_vpdu_iter_block_37,
-        p25p2_vpdu_iter_block_38, p25p2_vpdu_iter_block_39, p25p2_vpdu_iter_block_40, p25p2_vpdu_iter_block_41,
-        p25p2_vpdu_iter_block_43, p25p2_vpdu_iter_block_44, p25p2_vpdu_iter_block_45, p25p2_vpdu_iter_block_46,
-        p25p2_vpdu_iter_block_47, p25p2_vpdu_iter_block_48, p25p2_vpdu_iter_block_49, p25p2_vpdu_iter_block_50,
-        p25p2_vpdu_iter_block_51, p25p2_vpdu_iter_block_52, p25p2_vpdu_iter_block_53, p25p2_vpdu_iter_block_54,
-        p25p2_vpdu_iter_block_55, p25p2_vpdu_iter_block_56, p25p2_vpdu_iter_block_57, p25p2_vpdu_iter_block_58,
-        p25p2_vpdu_iter_block_59,
+        p25p2_vpdu_iter_block_13, p25p2_vpdu_iter_block_14, p25p2_vpdu_iter_block_17, p25p2_vpdu_iter_block_19,
+        p25p2_vpdu_iter_block_20, p25p2_vpdu_iter_block_21, p25p2_vpdu_iter_block_22, p25p2_vpdu_iter_block_23,
+        p25p2_vpdu_iter_block_24, p25p2_vpdu_iter_block_25, p25p2_vpdu_iter_block_26, p25p2_vpdu_iter_block_27,
+        p25p2_vpdu_iter_block_28, p25p2_vpdu_iter_block_29, p25p2_vpdu_iter_block_30, p25p2_vpdu_iter_block_31,
+        p25p2_vpdu_iter_block_32, p25p2_vpdu_iter_block_33, p25p2_vpdu_iter_block_34, p25p2_vpdu_iter_block_35,
+        p25p2_vpdu_iter_block_36, p25p2_vpdu_iter_block_37, p25p2_vpdu_iter_block_38, p25p2_vpdu_iter_block_39,
+        p25p2_vpdu_iter_block_40, p25p2_vpdu_iter_block_41, p25p2_vpdu_iter_block_43, p25p2_vpdu_iter_block_44,
+        p25p2_vpdu_iter_block_45, p25p2_vpdu_iter_block_46, p25p2_vpdu_iter_block_47, p25p2_vpdu_iter_block_48,
+        p25p2_vpdu_iter_block_49, p25p2_vpdu_iter_block_50, p25p2_vpdu_iter_block_51, p25p2_vpdu_iter_block_52,
+        p25p2_vpdu_iter_block_53, p25p2_vpdu_iter_block_54, p25p2_vpdu_iter_block_55, p25p2_vpdu_iter_block_56,
+        p25p2_vpdu_iter_block_57, p25p2_vpdu_iter_block_58, p25p2_vpdu_iter_block_59,
     };
     const size_t handler_count = sizeof(handlers) / sizeof(handlers[0]);
     for (size_t h = 0; h < handler_count; h++) {
@@ -5883,14 +5932,13 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
     // 2 = Manufacturer Message, 3 Phase 1 OSP/ISP extended/explicit
 
     struct p25p2_mac_result mac_res;
-    if (p25p2_mac_parse(type, MAC, &mac_res) != 0) {
+    if (p25p2_mac_parse_span(type, p25p2_mac_span(type, state->p2_is_lcch == 1), MAC, &mac_res) != 0) {
         return;
     }
     const int initial_len_a = (mac_res.segment_count > 0) ? mac_res.segments[0].offset : 0;
     const int initial_len_b = (mac_res.segment_count > 0) ? mac_res.segments[0].length : 0;
-    const int initial_len_c = (mac_res.segment_count > 1)
-                                  ? mac_res.segments[1].length
-                                  : ((mac_res.segment_count == 0) ? ((type == 1) ? 19 : 16) : 0);
+    const int initial_len_c =
+        (mac_res.segment_count > 1) ? mac_res.segments[1].length : ((mac_res.segment_count == 0) ? mac_res.span : 0);
 
     p25p2_vpdu_ctx ctx = {
         .opts = opts,

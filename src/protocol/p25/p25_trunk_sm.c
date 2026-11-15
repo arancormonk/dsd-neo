@@ -11,6 +11,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
@@ -1265,26 +1266,6 @@ p25_grant_release_enc_lockout_if_clear(p25_sm_ctx_t* ctx, const dsd_opts* opts, 
     }
 }
 
-/* Candidates (the supergroup and its members) share the grant's source, so its radio part is the same for all: they are
-   ranked on their talkgroup part, and a radio block applies to whichever wins. */
-static int
-p25_grant_policy_candidate_is_better(const dsd_tg_policy_decision* candidate, const dsd_tg_policy_decision* best,
-                                     int have_best) {
-    if (!candidate || !candidate->tg_tune_allowed) {
-        return 0;
-    }
-    if (!have_best || !best) {
-        return 1;
-    }
-    if (candidate->tg_hold_match != best->tg_hold_match) {
-        return candidate->tg_hold_match ? 1 : 0;
-    }
-    if (candidate->priority != best->priority) {
-        return (candidate->priority > best->priority) ? 1 : 0;
-    }
-    return (candidate->preempt_requested && !best->preempt_requested) ? 1 : 0;
-}
-
 // Blocks that deny tuning; the rest only restrict media.
 #define P25_GRANT_TUNE_DENY_BLOCKS                                                                                     \
     (~((uint32_t)DSD_TG_POLICY_BLOCK_AUDIO | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD                                      \
@@ -1308,53 +1289,26 @@ p25_grant_apply_planned_release(const p25_grant_eval_ctx_t* eval_ctx, uint32_t t
     }
 }
 
+// The resolver's adjust hook: judge each candidate as the planned lockout release leaves it.
+static void
+p25_grant_adjust_candidate(uint32_t target, dsd_tg_policy_decision* decision, const void* ctx) {
+    p25_grant_apply_planned_release((const p25_grant_eval_ctx_t*)ctx, target, decision);
+}
+
+/* A group grant is judged by the patch resolver (ADMIT): the supergroup, then its current members, with the planned
+   lockout release applied to each candidate first. The candidates share the grant's source, so a radio block applies to
+   whichever wins. */
 static int
 p25_grant_eval_group_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm_event_t* ev,
                             const p25_grant_eval_ctx_t* eval_ctx, dsd_tg_policy_decision* out_decision) {
-    uint16_t members[8] = {0};
-    int member_count =
-        p25_patch_collect_active_wgids(state, eval_ctx->tg, members, sizeof(members) / sizeof(members[0]));
-    dsd_tg_policy_decision best;
-    dsd_tg_policy_decision first;
-    int have_best = 0;
-    int have_first = 0;
-    DSD_MEMSET(&best, 0, sizeof(best));
-    DSD_MEMSET(&first, 0, sizeof(first));
-
-    for (int i = 0; i <= member_count; i++) {
-        uint32_t target = (i == 0) ? (uint32_t)eval_ctx->tg : (uint32_t)members[i - 1];
-        dsd_tg_policy_decision candidate;
-        if (i > 0 && (target == 0U || target == (uint32_t)eval_ctx->tg)) {
-            continue;
-        }
-        if (dsd_tg_policy_evaluate_group_call(opts, state, target, (uint32_t)ev->src, eval_ctx->encrypted_call,
-                                              eval_ctx->data_call, &candidate)
-            != 0) {
-            return -1;
-        }
-        p25_grant_apply_planned_release(eval_ctx, target, &candidate);
-        // A block on the supergroup itself is final (see DSD_TG_POLICY_BLOCK_OTA_FINAL):
-        // a member reprieve here cost an encryption-locked SG a tune / classify /
-        // re-lock cycle per grant update, and let unlisted members in blacklist
-        // mode carry nearly any patch through its SG's user lockout.
-        if (i == 0 && (candidate.block_reasons & DSD_TG_POLICY_BLOCK_OTA_FINAL)) {
-            *out_decision = candidate;
-            return 0;
-        }
-        if (!have_first) {
-            first = candidate;
-            have_first = 1;
-        }
-        if (p25_grant_policy_candidate_is_better(&candidate, &best, have_best)) {
-            best = candidate;
-            have_best = 1;
-        }
-    }
-
-    if (!have_first) {
+    dsd_p25_patch_resolution resolution;
+    if (dsd_p25_patch_resolve(opts, state, (uint32_t)eval_ctx->tg, (uint32_t)ev->src, eval_ctx->encrypted_call,
+                              eval_ctx->data_call, DSD_P25_PATCH_RESOLVE_ADMIT, p25_grant_adjust_candidate, eval_ctx,
+                              &resolution)
+        != 0) {
         return -1;
     }
-    *out_decision = have_best ? best : first;
+    *out_decision = resolution.decision;
     return 0;
 }
 
@@ -1693,14 +1647,16 @@ p25_grant_stale_regrant_blocked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     return p25_stale_regrant_update_blocked(ctx, guard, opts, state, ev, freq, slot, age_s, now_m, out_probe);
 }
 
+/* A call's route for the policy's active-call ledger. Its target is the over-the-air one (a patched call's supergroup,
+ * never the member its resolution chose), so the ledger holds a patch as one call whichever member judges it. */
 static void
 p25_grant_fill_route(dsd_tg_policy_call_route* route, const p25_sm_event_t* ev, long freq, int slot, int needs_retune,
-                     int target_id) {
+                     int ota_target) {
     if (!route || !ev) {
         return;
     }
     DSD_MEMSET(route, 0, sizeof(*route));
-    route->target_id = (uint32_t)target_id;
+    route->target_id = (uint32_t)ota_target;
     route->source_id = (uint32_t)((ev->src > 0) ? ev->src : 0);
     route->freq_hz = freq;
     route->channel = ev->channel;
@@ -1729,20 +1685,28 @@ p25_slot_follow_lapsed(const p25_sm_slot_ctx_t* slot_ctx, double lapse_s, double
            && now_m - slot_ctx->last_stop_m >= lapse_s;
 }
 
-/* Stamp when the slot began following this call: a repeat or re-grant of the same call on the same carrier within its
- * conversation keeps the stamp; another call, or the same talkgroup again after the conversation lapsed, restarts it.
- * Preemption dwell runs from it. */
+/* The over-the-air target of the slot's call: its talkgroup (a patched call's supergroup) or its destination radio.
+ * Follow, dwell, duplicate and moved-slot matching key on it, never on the policy target a patch resolution chose. */
+static int
+p25_slot_ota_target(const p25_sm_slot_ctx_t* slot_ctx) {
+    return slot_ctx->is_group ? slot_ctx->ota_tg : slot_ctx->dst;
+}
+
+/* Stamp when the slot began following this call (@p ota_target, the over-the-air target): a repeat or re-grant of the
+ * same call on the same carrier within its conversation keeps the stamp, whichever member a patch resolution chose;
+ * another call, or the same talkgroup again after the conversation lapsed, restarts it. Preemption dwell runs from
+ * it. */
 static void
-p25_slot_note_follow(p25_sm_slot_ctx_t* slot_ctx, int target_id, int is_group, long freq, double lapse_s,
+p25_slot_note_follow(p25_sm_slot_ctx_t* slot_ctx, int ota_target, int is_group, long freq, double lapse_s,
                      double now_m) {
     is_group = is_group ? 1 : 0;
-    if (slot_ctx->followed_since_m > 0.0 && slot_ctx->followed_target == target_id
+    if (slot_ctx->followed_since_m > 0.0 && slot_ctx->followed_target == ota_target
         && slot_ctx->followed_is_group == is_group && slot_ctx->followed_freq_hz == freq
         && !p25_slot_follow_lapsed(slot_ctx, lapse_s, now_m)) {
         return;
     }
     slot_ctx->followed_since_m = now_m;
-    slot_ctx->followed_target = target_id;
+    slot_ctx->followed_target = ota_target;
     slot_ctx->followed_is_group = is_group;
     slot_ctx->followed_freq_hz = freq;
 }
@@ -1793,7 +1757,8 @@ p25_grant_candidate_displaces_active(const p25_sm_ctx_t* ctx, const dsd_state* s
 }
 
 /* Tell the policy what the SM holds on its carrier right before asking whether a candidate may displace it: every
- * assigned slot, by its policy target, with the time the SM began following that call. A transmission's end clears
+ * assigned slot, by its over-the-air target with the decision it is held by now (a patched call re-resolved), with the
+ * time the SM began following that call. A transmission's end clears
  * its record while hangtime keeps the carrier, and a group list reload may have replaced the records; without this a
  * held conversation could never be outranked, or would restart its dwell. */
 static int p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx);
@@ -1825,39 +1790,123 @@ p25_grant_slot_holds_call(const p25_sm_ctx_t* ctx, const dsd_state* state, const
            && (now_m - slot_ctx->last_stop_m) < p25_sm_effective_hangtime(state, ctx->config.hangtime_s);
 }
 
+/* A held call no candidate in its patch may be followed by: any preempting candidate outranks it (talkgroup
+ * priorities are 0..100). Dwell and cooldown still apply. */
+#define P25_HELD_UNPROTECTED_PRIORITY (-1)
+
+/* Whether the slot's group call is judged through the patch resolver: its supergroup is a live patch's, or an earlier
+ * resolution left it on a member. Every other call keeps the policy target it was admitted with, and no evaluation is
+ * spent on it. */
+static int
+p25_slot_is_patched(const dsd_state* state, const p25_sm_slot_ctx_t* slot_ctx) {
+    return slot_ctx->grant_active && slot_ctx->is_group && slot_ctx->ota_tg > 0
+           && (slot_ctx->target_id != slot_ctx->ota_tg || dsd_p25_patch_sg_live(state, (uint32_t)slot_ctx->ota_tg));
+}
+
+/* Point logical slot @p slot's call at policy target @p target in place: the slot, the carrier's talkgroup when it
+ * named the old target, and the slot's ACTIVE canonical call of the same over-the-air target. No boundary: the
+ * received identity and service options, the epoch, the follow time and the crypto stay. */
 static void
-p25_grant_describe_held_calls(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m) {
+p25_slot_set_policy_target(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int target) {
+    p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    if (target <= 0 || slot_ctx->target_id == target) {
+        return;
+    }
+    if (ctx->vc_tg == slot_ctx->target_id) {
+        ctx->vc_tg = target;
+    }
+    slot_ctx->target_id = target;
+    slot_ctx->tg = target;
+    const int ota_target = p25_slot_ota_target(slot_ctx);
+    dsd_call_snapshot call;
+    if (state && ota_target > 0 && dsd_call_state_get(state, (uint8_t)slot, &call) > 0
+        && call.phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_P25(call.protocol)
+        && call.ota_target_id == (uint64_t)(uint32_t)ota_target) {
+        (void)dsd_call_state_update_policy_target(state, (uint8_t)slot, call.epoch, (uint64_t)(uint32_t)target);
+    }
+}
+
+/* Re-resolve logical slot @p slot's patched group call for admission. When a candidate may be followed the slot is
+ * re-pointed at the winner and @p out is its decision; when none may (a final block on the supergroup, every listened
+ * member gone) the stored target stays for the media gates to resolve on their own, and @p out carries no priority
+ * protection. Returns 0, leaving @p out untouched, when the slot's call is not patched. */
+static int
+p25_slot_resolve_patch(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot,
+                       dsd_tg_policy_decision* out) {
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    if (!p25_slot_is_patched(state, slot_ctx)) {
+        return 0;
+    }
+    dsd_p25_patch_resolution resolution;
+    (void)dsd_p25_patch_resolve(opts, state, (uint32_t)slot_ctx->ota_tg,
+                                (uint32_t)(slot_ctx->src > 0 ? slot_ctx->src : 0), 0, slot_ctx->data_call,
+                                DSD_P25_PATCH_RESOLVE_ADMIT, NULL, NULL, &resolution);
+    *out = resolution.decision;
+    if (!resolution.eligible) {
+        out->priority = P25_HELD_UNPROTECTED_PRIORITY;
+        return 1;
+    }
+    p25_slot_set_policy_target(ctx, state, slot, (int)resolution.policy_target);
+    return 1;
+}
+
+/* Whether slot @p s of the carrier is a call the SM holds and describes to preemption. */
+static int
+p25_grant_slot_is_held(const p25_sm_ctx_t* ctx, const dsd_state* state, int s, double now_m) {
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
+    return slot_ctx->grant_active && slot_ctx->target_id > 0 && slot_ctx->freq_hz == ctx->vc_freq_hz
+           && (!ctx->vc_is_tdma || p25_grant_slot_holds_call(ctx, state, slot_ctx, now_m));
+}
+
+/* Describe held slot @p s to the ledger: by its over-the-air target, with the decision it is held by now (a patched
+ * call re-resolved; any other call by the target it was admitted with). */
+static void
+p25_grant_describe_held_slot(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int s, double now_m) {
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
+    const uint32_t src = (uint32_t)(slot_ctx->src > 0 ? slot_ctx->src : 0);
+    dsd_tg_policy_decision held;
+    if (!p25_slot_resolve_patch(ctx, opts, state, s, &held)) {
+        const int evaluated =
+            slot_ctx->is_group ? dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)slot_ctx->target_id, src, 0,
+                                                                   slot_ctx->data_call, &held)
+                               : dsd_tg_policy_evaluate_private_grant(opts, state, src, (uint32_t)slot_ctx->target_id,
+                                                                      0, slot_ctx->data_call, &held);
+        if (evaluated != 0) {
+            return;
+        }
+    }
+    dsd_tg_policy_call_route route;
+    DSD_MEMSET(&route, 0, sizeof(route));
+    route.target_id = (uint32_t)p25_slot_ota_target(slot_ctx);
+    route.source_id = src;
+    route.freq_hz = slot_ctx->freq_hz;
+    route.channel = slot_ctx->channel;
+    route.slot = ctx->vc_is_tdma ? s : -1;
+    (void)dsd_tg_policy_describe_followed_call(state, &route, &held, p25_slot_followed_since(slot_ctx, now_m), now_m);
+}
+
+static void
+p25_grant_describe_held_calls(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m) {
     const int slots = ctx->vc_is_tdma ? 2 : 1;
     for (int s = 0; s < slots; s++) {
-        const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
-        const int route_slot = ctx->vc_is_tdma ? s : -1;
-        if (!slot_ctx->grant_active || slot_ctx->target_id <= 0 || slot_ctx->freq_hz != ctx->vc_freq_hz
-            || (ctx->vc_is_tdma && !p25_grant_slot_holds_call(ctx, state, slot_ctx, now_m))) {
+        if (!p25_grant_slot_is_held(ctx, state, s, now_m)) {
             if (ctx->vc_is_tdma) {
                 (void)dsd_tg_policy_clear_active_call(state, s);
             }
             continue;
         }
-        dsd_tg_policy_decision held;
-        const int evaluated =
-            slot_ctx->is_group
-                ? dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)slot_ctx->target_id,
-                                                    (uint32_t)(slot_ctx->src > 0 ? slot_ctx->src : 0), 0,
-                                                    slot_ctx->data_call, &held)
-                : dsd_tg_policy_evaluate_private_grant(opts, state, (uint32_t)(slot_ctx->src > 0 ? slot_ctx->src : 0),
-                                                       (uint32_t)slot_ctx->target_id, 0, slot_ctx->data_call, &held);
-        if (evaluated != 0) {
-            continue;
-        }
-        dsd_tg_policy_call_route route;
-        DSD_MEMSET(&route, 0, sizeof(route));
-        route.target_id = (uint32_t)slot_ctx->target_id;
-        route.source_id = (uint32_t)(slot_ctx->src > 0 ? slot_ctx->src : 0);
-        route.freq_hz = slot_ctx->freq_hz;
-        route.channel = slot_ctx->channel;
-        route.slot = route_slot;
-        (void)dsd_tg_policy_describe_followed_call(state, &route, &held, p25_slot_followed_since(slot_ctx, now_m),
-                                                   now_m);
+        p25_grant_describe_held_slot(ctx, opts, state, s, now_m);
+    }
+}
+
+/* A followed patched call on logical slot @p slot is re-resolved on its events (an unchanged voice identity, the SM
+ * tick): a member re-selected since (an edit, a member deleted or expired, a Hold, a final block on the supergroup)
+ * judges it, and the ledger takes the priority the patch is held by. Nothing else is touched. */
+static void
+p25_slot_refresh_patch(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot, double now_m) {
+    if (slot >= 0 && slot <= 1 && p25_slot_is_patched(state, &ctx->slots[slot])
+        && p25_grant_slot_is_held(ctx, state, slot, now_m)) {
+        p25_grant_describe_held_slot(ctx, opts, state, slot, now_m);
     }
 }
 
@@ -2001,10 +2050,11 @@ p25_grant_slot_call_identity_matches(const p25_sm_slot_ctx_t* slot_ctx, const p2
     return is_group ? (slot_ctx->ota_tg == ev->tg) : (slot_ctx->dst == ev->dst);
 }
 
+/* Whether the slot holds the call @p ev names (over-the-air target and kind, whichever member a patch resolution chose
+ * on either side) and of the same voice/data class. */
 static int
-p25_grant_slot_matches_moved_target(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev, int target_id,
-                                    int data_call) {
-    if (!slot_ctx || !ev || !slot_ctx->grant_active || slot_ctx->target_id != target_id) {
+p25_grant_slot_matches_moved_target(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev, int data_call) {
+    if (!slot_ctx || !ev || !slot_ctx->grant_active) {
         return 0;
     }
     if (slot_ctx->data_call != (data_call ? 1 : 0)) {
@@ -2016,13 +2066,13 @@ p25_grant_slot_matches_moved_target(const p25_sm_slot_ctx_t* slot_ctx, const p25
 
 static void
 p25_grant_clear_moved_target_slots(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int keep_slot,
-                                   const p25_sm_event_t* ev, int target_id, long freq, int data_call) {
-    if (!ctx || !ev || target_id <= 0) {
+                                   const p25_sm_event_t* ev, long freq, int data_call) {
+    if (!ctx || !ev || p25_grant_ota_target_id(ev) <= 0) {
         return;
     }
     for (int s = 0; s < 2; s++) {
         const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
-        if (s == keep_slot || !p25_grant_slot_matches_moved_target(slot_ctx, ev, target_id, data_call)) {
+        if (s == keep_slot || !p25_grant_slot_matches_moved_target(slot_ctx, ev, data_call)) {
             continue;
         }
         if (slot_ctx->freq_hz == freq && slot_ctx->channel == ev->channel) {
@@ -2067,7 +2117,7 @@ p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const dsd_state* state, const p2
         return;
     }
     p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
-    p25_slot_note_follow(slot_ctx, target_id, ev->is_group, freq,
+    p25_slot_note_follow(slot_ctx, p25_grant_ota_target_id(ev), ev->is_group, freq,
                          p25_sm_effective_hangtime(state, ctx->config.hangtime_s), now_m);
     slot_ctx->grant_active = 1;
     slot_ctx->freq_hz = freq;
@@ -2389,13 +2439,15 @@ p25_grant_decoder_tuned_to_freq(const dsd_opts* opts, const dsd_state* state, lo
                : 0;
 }
 
+/* A repeat of the slot's call: the same carrier, voice/data class and over-the-air identity. A patched call whose
+ * resolution re-selected another member is the same call. */
 static int
 p25_grant_slot_duplicate_matches(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev,
-                                 const dsd_tg_policy_call_route* route, long freq, int target_id, int data_call) {
+                                 const dsd_tg_policy_call_route* route, long freq, int data_call) {
     if (!slot_ctx || !ev || !route) {
         return 0;
     }
-    if (slot_ctx->freq_hz != freq || slot_ctx->target_id != target_id || slot_ctx->data_call != data_call) {
+    if (slot_ctx->freq_hz != freq || slot_ctx->data_call != data_call) {
         return 0;
     }
     if (!p25_grant_slot_call_identity_matches(slot_ctx, ev)) {
@@ -2404,9 +2456,19 @@ p25_grant_slot_duplicate_matches(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm
     return (slot_ctx->grant_active || slot_ctx->last_active_m > 0.0) ? 1 : 0;
 }
 
+/* A repeat on a carrier the grant names no slot of: the carrier's call by its policy target (vc_tg), or the call slot 0
+ * holds under that target with the same over-the-air identity (a patched call re-judged on another member). */
 static int
-p25_grant_fallback_duplicate_matches(const p25_sm_ctx_t* ctx, int target_id, int data_call) {
-    return ctx && ctx->vc_tg == target_id && ctx->vc_data_call == data_call;
+p25_grant_fallback_duplicate_matches(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, int target_id, int data_call) {
+    if (!ctx || ctx->vc_data_call != data_call) {
+        return 0;
+    }
+    if (ctx->vc_tg == target_id) {
+        return 1;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[0];
+    return slot_ctx->grant_active && slot_ctx->target_id == ctx->vc_tg
+           && p25_grant_slot_call_identity_matches(slot_ctx, ev);
 }
 
 static int
@@ -2519,9 +2581,9 @@ p25_grant_duplicate_route_matches(const p25_sm_ctx_t* ctx, const dsd_opts* opts,
         return 0;
     }
     if (route->slot >= 0 && route->slot <= 1) {
-        return p25_grant_slot_duplicate_matches(&ctx->slots[route->slot], ev, route, freq, target_id, data_call);
+        return p25_grant_slot_duplicate_matches(&ctx->slots[route->slot], ev, route, freq, data_call);
     }
-    return p25_grant_fallback_duplicate_matches(ctx, target_id, data_call);
+    return p25_grant_fallback_duplicate_matches(ctx, ev, target_id, data_call);
 }
 
 static int
@@ -2532,6 +2594,20 @@ p25_grant_duplicate_starts_new_epoch(const p25_sm_ctx_t* ctx, const p25_sm_event
     }
     const int assignment_slot = p25_grant_logical_slot(ctx, route->slot);
     return assignment_slot >= 0 && assignment_slot <= 1 && !p25_voice_slot_epoch_active(&ctx->slots[assignment_slot]);
+}
+
+/* The repeated call on logical slot @p call_slot: its resolution (@p target_id) judges it from now on, a patched call
+ * possibly on another member, and live voice republishes the call. */
+static void
+p25_grant_duplicate_refresh_call(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int call_slot,
+                                 int target_id, int data_call, double now_m) {
+    if (call_slot < 0 || call_slot > 1) {
+        return;
+    }
+    p25_slot_set_policy_target(ctx, state, call_slot, target_id);
+    if (!data_call && ctx->slots[call_slot].voice_active) {
+        p25_call_publish_observation(ctx, opts, state, call_slot, 0, 0, 0, P25_CALL_OBS_ASSIGNMENT_REPEAT, now_m);
+    }
 }
 
 static int
@@ -2566,9 +2642,7 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
     }
     p25_grant_note_enc_reprobe_admitted(ctx, eval_ctx, now_m);
     const int call_slot = p25_grant_logical_slot(ctx, route->slot);
-    if (!data_call && call_slot >= 0 && call_slot <= 1 && ctx->slots[call_slot].voice_active) {
-        p25_call_publish_observation(ctx, opts, state, call_slot, 0, 0, 0, P25_CALL_OBS_ASSIGNMENT_REPEAT, now_m);
-    }
+    p25_grant_duplicate_refresh_call(ctx, opts, state, call_slot, target_id, data_call, now_m);
     if (data_call) {
         ctx->t_tune_m = now_m;
         ctx->t_voice_m = 0.0;
@@ -2648,7 +2722,7 @@ p25_grant_matches_sticky_block(const p25_sm_ctx_t* ctx, const dsd_state* state, 
     }
 
     const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[grant->slot];
-    if (slot_ctx->freq_hz != grant->freq || slot_ctx->channel != ev->channel || slot_ctx->target_id != grant->target_id
+    if (slot_ctx->freq_hz != grant->freq || slot_ctx->channel != ev->channel
         || slot_ctx->data_call != (eval_ctx->data_call ? 1 : 0)) {
         return 0;
     }
@@ -2731,7 +2805,7 @@ p25_grant_prepare_route(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
     out->clear_policy_slot_only = p25_grant_should_clear_slot_only(ctx, opts, state, ev, out->freq, out->slot);
     out->reused_carrier = out->clear_policy_slot_only;
     out->target_id = p25_grant_target_id(ev, decision);
-    p25_grant_fill_route(&out->route, ev, out->freq, out->slot, out->needs_retune, out->target_id);
+    p25_grant_fill_route(&out->route, ev, out->freq, out->slot, out->needs_retune, p25_grant_ota_target_id(ev));
     return 1;
 }
 
@@ -2971,8 +3045,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     }
     p25_sm_cancel_pending_cc_acquisition(ctx);
     p25_grant_commit_enc_release(ctx, state, &eval_ctx);
-    p25_grant_clear_moved_target_slots(ctx, opts, state, grant.slot, ev, grant.target_id, grant.freq,
-                                       eval_ctx.data_call);
+    p25_grant_clear_moved_target_slots(ctx, opts, state, grant.slot, ev, grant.freq, eval_ctx.data_call);
     p25_grant_claim_slots(ctx, state, ev, &grant, &eval_ctx);
     p25_grant_note_enc_reprobe_admitted(ctx, &eval_ctx, grant.now_m);
     p25_grant_start_stale_regrant_probe(ctx, &grant);
@@ -4011,9 +4084,9 @@ p25_voice_start_update_crypto(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int
 // identity being replaced, and leaving it on would deny the new call the
 // acquisition deferral it never had reason to lose.
 static void
-p25_voice_start_clear_stale_reprobe(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* call_ev, int target_id) {
+p25_voice_start_clear_stale_reprobe(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* call_ev) {
     const int is_group = call_ev->is_group ? 1 : 0;
-    if (slot_ctx->target_id != target_id || slot_ctx->is_group != is_group) {
+    if (slot_ctx->is_group != is_group || p25_slot_ota_target(slot_ctx) != p25_grant_ota_target_id(call_ev)) {
         slot_ctx->enc_lockout_reprobe = 0;
     }
 }
@@ -4039,10 +4112,11 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     }
 
     const int target_id = p25_grant_target_id(call_ev, decision);
+    const int ota_target = p25_grant_ota_target_id(call_ev);
     dsd_tg_policy_call_route route;
-    p25_grant_fill_route(&route, call_ev, slot_ctx->freq_hz, ctx->vc_is_tdma ? slot : -1, 0, target_id);
-    p25_voice_start_clear_stale_reprobe(slot_ctx, call_ev, target_id);
-    p25_slot_note_follow(slot_ctx, target_id, call_ev->is_group, slot_ctx->freq_hz,
+    p25_grant_fill_route(&route, call_ev, slot_ctx->freq_hz, ctx->vc_is_tdma ? slot : -1, 0, ota_target);
+    p25_voice_start_clear_stale_reprobe(slot_ctx, call_ev);
+    p25_slot_note_follow(slot_ctx, ota_target, call_ev->is_group, slot_ctx->freq_hz,
                          p25_sm_effective_hangtime(state, ctx->config.hangtime_s), now_m);
     slot_ctx->target_id = target_id;
     slot_ctx->ota_tg = call_ev->is_group ? call_ev->tg : 0;
@@ -4112,6 +4186,8 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
 
     if (!changes.requires_update) {
         p25_p1_hdu_crypto_consume_identity(ctx, state, input);
+        // An unchanged identity skips the recheck; a patched call is still re-resolved on it.
+        p25_slot_refresh_patch(ctx, opts, state, slot, now_m);
         return 1;
     }
 
@@ -7031,6 +7107,18 @@ p25_sm_tick_hunting(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double 
     }
 }
 
+/* Every followed patched call is re-resolved on the tick (p25_slot_refresh_patch()). */
+static void
+p25_sm_tick_refresh_patches(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m) {
+    if (!state) {
+        return;
+    }
+    const int slots = ctx->vc_is_tdma ? 2 : 1;
+    for (int s = 0; s < slots; s++) {
+        p25_slot_refresh_patch(ctx, opts, state, s, now_m);
+    }
+}
+
 static void
 p25_sm_tick_age_tables(dsd_state* state) {
     if (!state) {
@@ -7094,6 +7182,7 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 
         case P25_SM_ON_CC: p25_sm_tick_on_cc(ctx, opts, state, now_m, ctx->config.cc_grace_s); break;
         case P25_SM_TUNED:
+            p25_sm_tick_refresh_patches(ctx, opts, state, now_m);
             p25_sm_tick_tuned(ctx, opts, state, now_m, ctx->config.hangtime_s, ctx->config.grant_timeout_s);
             break;
         case P25_SM_HUNTING: p25_sm_tick_hunting(ctx, opts, state, now_m); break;
@@ -7363,6 +7452,25 @@ p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, 
                                                   call.kind == DSD_CALL_KIND_PRIVATE_VOICE, encrypted, 0);
 }
 
+/* The talkgroup a conventional call on @p slot is judged on. No grant chose a member here, so a group call on a live
+ * patch's supergroup takes the patch's keep-or-resolve media target (a member Hold, or a member listed under the
+ * allow-list, plays it), keeping the target the slot's ACTIVE call of the same supergroup already names while it may
+ * play; every other call is its own target, evaluating nothing. */
+static uint32_t
+p25_sm_conventional_policy_target(const dsd_opts* opts, const dsd_state* state, int slot,
+                                  const p25_sm_conventional_call_t* call) {
+    if (!call->is_group) {
+        return call->target;
+    }
+    uint32_t stored = 0U;
+    dsd_call_snapshot current;
+    if (dsd_call_state_get(state, (uint8_t)slot, &current) > 0 && current.phase == DSD_CALL_PHASE_ACTIVE
+        && current.ota_target_id == (uint64_t)call->target && current.policy_target_id <= UINT32_MAX) {
+        stored = (uint32_t)current.policy_target_id;
+    }
+    return dsd_p25_patch_media_target(opts, state, call->target, stored, call->source);
+}
+
 static int
 p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, int ptt_retransmit) {
     if (!state || !ev) {
@@ -7380,7 +7488,7 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
         .slot = (uint8_t)slot,
         .kind = call.is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE,
         .ota_target_id = call.target,
-        .policy_target_id = call.target,
+        .policy_target_id = p25_sm_conventional_policy_target(opts, state, slot, &call),
         .ota_source_id = call.source,
         .frequency_hz = call.frequency_hz,
         .service_options = (uint16_t)service_options,

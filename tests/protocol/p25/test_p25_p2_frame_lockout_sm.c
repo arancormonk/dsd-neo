@@ -278,11 +278,12 @@ test_clear_regroup_override_survives_voice_burst(void) {
     return rc;
 }
 
-// A regroup's KEY=0 clear policy expires 20 s after its last update, on the decode clock. Without
-// -T, an encrypted-service voice burst on a member talkgroup 20 s after the update still runs the
-// vocoder (both frames decode and queue in the slot's playout). The same burst 21 s after it
-// is gated: crypto goes pending, the audio gate closes, and no frame decodes. Each burst starts
-// from a fresh call, and T is far from any platform clock reading.
+// A regroup's KEY=0 clear policy expires after 20 s of control-channel listening since its last
+// update (the decode clock moves with it here, PDUs every 100 ms). Without -T, an encrypted-service
+// voice burst on a member talkgroup 20 s after the update still runs the vocoder (both frames
+// decode and queue in the slot's playout). The same burst 21 s after it is gated: crypto goes
+// pending, the audio gate closes, and no frame decodes. Each burst starts from a fresh call, and
+// T is far from any platform clock reading.
 static int
 run_regroup_clear_key_burst_at(uint64_t age_s, dsd_p25_crypto_state* crypto, int* audio_allowed, int* decoded) {
     static dsd_opts opts;
@@ -301,7 +302,11 @@ run_regroup_clear_key_burst_at(uint64_t age_s, dsd_p25_crypto_state* crypto, int
     p25_patch_update(&state, 1234, /*is_patch*/ 1, /*active*/ 1);
     p25_patch_set_kas(&state, 1234, /*key*/ 0, /*alg*/ 0x84, /*ssn*/ 1);
 
-    dsd_decode_clock_test_set_ns(k_t0_ns + (age_s * 1000000000ULL));
+    p25_sm_note_validated_cc(&opts, &state);
+    for (uint64_t tenth = 1U; tenth <= age_s * 10U; tenth++) {
+        dsd_decode_clock_test_set_ns(k_t0_ns + (tenth * 100000000ULL));
+        p25_sm_note_validated_cc(&opts, &state); // a CRC-good control-channel block
+    }
     if (!seed_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 1234)) {
         dsd_decode_clock_use_system();
         dsd_state_ext_free_all(&state);

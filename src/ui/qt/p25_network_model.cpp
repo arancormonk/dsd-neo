@@ -4,6 +4,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <dsd-neo/app_control/p25_network.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <utility>
 #include "p25_network_model.h"
@@ -73,8 +74,8 @@ P25NetworkModel::refresh(const dsd_state* snapshot) {
                                          {"isCandidate", bool(r.is_candidate)},
                                          {"cfvaText", QString::fromLatin1(r.cfva_text)}});
     }
-    dsd_app_p25_patch patch[8];
-    count = dsd_app_p25_patches(snapshot, patch, 8);
+    dsd_app_p25_patch patch[DSD_P25_PATCH_MAX];
+    count = dsd_app_p25_patches(snapshot, patch, DSD_P25_PATCH_MAX);
     for (int i = 0; i < count; ++i) {
         const auto& r = patch[i];
         QVariantList groups, units;

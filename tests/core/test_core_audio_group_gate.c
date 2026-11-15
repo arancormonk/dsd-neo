@@ -12,7 +12,9 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -740,6 +742,212 @@ test_midcall_source_mute(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* The scenarios of test_patch_media_keep_or_resolve(). */
+typedef enum {
+    PATCH_MEDIA_LONG_DWELL = 0,
+    PATCH_MEDIA_MEMBER_DELETED,
+    PATCH_MEDIA_GROUP_TUNING_OFF,
+    PATCH_MEDIA_DECRYPTABLE,
+    PATCH_MEDIA_CATCH_ALL_MEMBER,
+    PATCH_MEDIA_CATCH_ALL_SG,
+    PATCH_MEDIA_LOCKED_SG,
+    PATCH_MEDIA_LOCKED_MEMBER,
+    PATCH_MEDIA_EXPLICIT_SG_BLOCK,
+    PATCH_MEDIA_HOLD_MEMBER_SG_BLOCK,
+    PATCH_MEDIA_HOLD_MEMBER_SG_BLOCK_STORED_SG,
+    PATCH_MEDIA_HOLD_MEMBER_SG_SKIP,
+    PATCH_MEDIA_HOLD_MEMBER_SG_AVOID,
+    PATCH_MEDIA_STORED_SG_KEPT,
+    PATCH_MEDIA_COUNT,
+} patch_media_case;
+
+static const char* const k_patch_media_names[PATCH_MEDIA_COUNT] = {
+    "long voice-channel dwell (preservation)",
+    "chosen member deleted, another listened member",
+    "group tuning off, routed audio",
+    "decryptable encrypted call",
+    "catch-all B, stored member",
+    "catch-all B, stored supergroup",
+    "retained SG lockout, unlisted SG, stored supergroup",
+    "retained SG lockout, unlisted SG, stored member (preservation)",
+    "explicit SG row B (preservation)",
+    "held member, explicit SG row B (base behaviour)",
+    "held member, explicit SG row B, stored supergroup",
+    "held member, SG call skip",
+    "held member, SG session avoid",
+    "listened supergroup kept over a higher-priority member",
+};
+
+/* Whether scenario @p c plays. */
+static int
+patch_media_audible(patch_media_case c) {
+    return c != PATCH_MEDIA_EXPLICIT_SG_BLOCK && c != PATCH_MEDIA_HOLD_MEMBER_SG_SKIP
+           && c != PATCH_MEDIA_HOLD_MEMBER_SG_AVOID;
+}
+
+/* A live patch 9700 = {9701, 9702} on the listening clock; @p count members. */
+static void
+seed_patch_members(dsd_state* st, int count) {
+    st->p25_patch_count = 1;
+    st->p25_patch_sgid[0] = 9700U;
+    st->p25_patch_is_patch[0] = 1U;
+    st->p25_patch_active[0] = 1U;
+    st->p25_patch_wgid_count[0] = (uint8_t)count;
+    st->p25_patch_wgid[0][0] = 9701U;
+    st->p25_patch_wgid[0][1] = 9702U;
+    dsd_p25_patch_touch_members(st, 0);
+}
+
+/* Configure scenario @p c; returns the stored policy target of the call. */
+static uint32_t
+patch_media_setup(dsd_opts* opts, dsd_state* st, patch_media_case c, int slot, int* rc) {
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_enc_calls = 1;
+    opts->trunk_use_allow_list = 1;
+    seed_patch_members(st, 2);
+    *rc |= expect_eq("patch media member row", seed_policy_group(st, 9701U, "A", "MEMBER"), 0);
+    switch (c) {
+        case PATCH_MEDIA_LONG_DWELL: return 9701U;
+        case PATCH_MEDIA_MEMBER_DELETED:
+            *rc |= expect_eq("patch media second member row", seed_policy_group(st, 9702U, "A", "MEMBER-2"), 0);
+            return 9701U;
+        case PATCH_MEDIA_GROUP_TUNING_OFF: opts->trunk_tune_group_calls = 0; return 9700U;
+        case PATCH_MEDIA_DECRYPTABLE:
+            opts->trunk_tune_enc_calls = 0;
+            st->p25_crypto_state[slot] = DSD_P25_CRYPTO_DECRYPTABLE;
+            st->payload_algid = 0x84;
+            st->payload_algidR = 0x84;
+            return 9700U;
+        case PATCH_MEDIA_CATCH_ALL_MEMBER:
+        case PATCH_MEDIA_CATCH_ALL_SG: {
+            opts->trunk_use_allow_list = 0;
+            dsd_tg_policy_entry e;
+            DSD_MEMSET(&e, 0, sizeof(e));
+            e.kind = DSD_TG_POLICY_ROW_PATTERN;
+            DSD_SNPRINTF(e.pattern, sizeof(e.pattern), "%s", "*");
+            DSD_SNPRINTF(e.mode, sizeof(e.mode), "%s", "B");
+            e.source = DSD_TG_POLICY_SOURCE_IMPORTED;
+            *rc |= expect_eq("patch media catch-all", dsd_tg_policy_add_pattern_entry(st, &e), 0);
+            return c == PATCH_MEDIA_CATCH_ALL_MEMBER ? 9701U : 9700U;
+        }
+        case PATCH_MEDIA_LOCKED_SG:
+        case PATCH_MEDIA_LOCKED_MEMBER:
+            opts->trunk_tune_enc_calls = 0;
+            (void)dsd_enc_lockout_note(st, 9700U, 1, 0x84, 4);
+            *rc |= expect_eq("patch media lockout armed", dsd_enc_lockout_is_blocked(opts, st, 9700U, 1), 1);
+            return c == PATCH_MEDIA_LOCKED_SG ? 9700U : 9701U;
+        case PATCH_MEDIA_EXPLICIT_SG_BLOCK:
+            *rc |= expect_eq("patch media SG row", seed_policy_group(st, 9700U, "B", "SG"), 0);
+            return 9701U;
+        case PATCH_MEDIA_HOLD_MEMBER_SG_BLOCK:
+        case PATCH_MEDIA_HOLD_MEMBER_SG_BLOCK_STORED_SG:
+            st->tg_hold = 9701U;
+            *rc |= expect_eq("patch media held SG row", seed_policy_group(st, 9700U, "B", "SG"), 0);
+            return c == PATCH_MEDIA_HOLD_MEMBER_SG_BLOCK ? 9701U : 9700U;
+        case PATCH_MEDIA_HOLD_MEMBER_SG_SKIP:
+            st->tg_hold = 9701U;
+            *rc |= expect_eq("patch media SG skip",
+                             dsd_tg_policy_call_skip_arm(st, 9700U, 4567U, 0, dsd_decode_now_mono_s()), 0);
+            return 9701U;
+        case PATCH_MEDIA_HOLD_MEMBER_SG_AVOID:
+            st->tg_hold = 9701U;
+            *rc |= expect_eq("patch media SG avoid", dsd_tg_policy_session_avoid_add(st, 9700U), 0);
+            return 9701U;
+        case PATCH_MEDIA_STORED_SG_KEPT: {
+            opts->trunk_use_allow_list = 0;
+            dsd_tg_policy_entry high;
+            *rc |=
+                expect_eq("patch media high-priority member",
+                          dsd_tg_policy_make_exact_entry(9702U, "A", "HIGH", DSD_TG_POLICY_SOURCE_IMPORTED, &high), 0);
+            high.priority = 50;
+            *rc |= expect_eq("patch media high-priority row", dsd_tg_policy_append_exact(st, &high), 0);
+            return 9700U;
+        }
+        case PATCH_MEDIA_COUNT:
+        default: break;
+    }
+    return 9700U;
+}
+
+/* What happens to the call after it started: time passes or the chosen member leaves the patch. */
+static void
+patch_media_after_start(dsd_state* st, patch_media_case c, uint64_t* now_ns) {
+    if (c == PATCH_MEDIA_LONG_DWELL) {
+        *now_ns += 60ULL * 1000000000ULL;
+        dsd_decode_clock_test_set_ns(*now_ns);
+    } else if (c == PATCH_MEDIA_MEMBER_DELETED) {
+        st->p25_patch_wgid[0][0] = 9702U;
+        st->p25_patch_wgid_count[0] = 1U;
+    }
+}
+
+static int
+patch_media_expect(const char* name, const dsd_opts* opts, const dsd_state* st, int phase2, int slot, int audible) {
+    int rc = 0;
+    int muted = -1;
+    int record = -1;
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof tag, "%s P%d slot %d", name, phase2 ? 2 : 1, slot);
+    rc |= expect_eq(tag, dsd_audio_group_gate_mono(opts, st, 9700, 0, &muted), 0);
+    rc |= expect_eq(tag, muted, !audible);
+    rc |= expect_eq(tag, dsd_audio_record_policy_gate_slot(opts, st, slot, &record), 0);
+    rc |= expect_eq(tag, record, audible);
+    if (phase2) {
+        int left = -1;
+        int right = -1;
+        rc |= expect_eq(
+            tag, dsd_audio_group_gate_dual(opts, st, slot == 0 ? 9700 : 0, slot == 1 ? 9700 : 0, 0, 0, &left, &right),
+            0);
+        rc |= expect_eq(tag, slot == 0 ? left : right, !audible);
+        rc |= expect_eq(tag, dsd_p25p2_decode_audio_allowed(opts, st, slot, 0x84), audible);
+        dsd_p25p2_playout_verdict verdict;
+        rc |= expect_eq(tag, dsd_p25p2_playout_policy_verdict(opts, st, slot, &verdict, NULL, NULL), 1);
+        rc |= expect_eq(tag, verdict.blocked, !audible);
+        rc |= expect_eq(tag, verdict.recordable, audible);
+    }
+    if (rc) {
+        DSD_FPRINTF(stderr, "patch media case failed: %s\n", tag);
+    }
+    return rc;
+}
+
+/* Patched P25 media keep-or-resolve: the stored policy target is kept while it is a current member that may play,
+   otherwise the patch resolver (media) answers, on Phase 1 and both Phase 2 slots. */
+static int
+test_patch_media_keep_or_resolve(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int c = 0; c < PATCH_MEDIA_COUNT; ++c) {
+        for (int phase2 = 0; phase2 <= 1; ++phase2) {
+            for (int slot = 0; slot < (phase2 ? 2 : 1); ++slot) {
+                uint64_t now_ns = 5000000000000ULL;
+                dsd_decode_clock_use_test(now_ns);
+                DSD_MEMSET(opts, 0, sizeof(*opts));
+                reset_state(st);
+                const int synctype = phase2 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+                st->synctype = synctype;
+                st->currentslot = slot;
+                st->p25_crypto_state[slot] = DSD_P25_CRYPTO_CLEAR;
+                st->p25_p2_audio_allowed[slot] = 1;
+                const uint32_t stored = patch_media_setup(opts, st, (patch_media_case)c, slot, &rc);
+                rc |=
+                    expect_eq("patch media call",
+                              seed_call(st, (uint8_t)slot, synctype, DSD_CALL_KIND_GROUP_VOICE, 9700, stored, 4567), 1);
+                patch_media_after_start(st, (patch_media_case)c, &now_ns);
+                const int audible = patch_media_audible((patch_media_case)c);
+                rc |= patch_media_expect(k_patch_media_names[c], opts, st, phase2, slot, audible);
+                if (phase2 && c == PATCH_MEDIA_STORED_SG_KEPT) {
+                    // A listened supergroup is kept as stored: the verdict key does not move to the member.
+                    dsd_p25p2_policy_key key;
+                    rc |= expect_eq("stored SG kept key", dsd_p25p2_playout_policy_key(opts, st, slot, NULL, &key), 1);
+                    rc |= expect_eq("stored SG kept target", (int)key.policy_target, 9700);
+                }
+                dsd_decode_clock_use_system();
+            }
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1076,7 +1284,8 @@ main(void) {
         rc |= expect_eq("case10b-rec-allow", allow, 0);
     }
 
-    // Case 10c: Dual-slot P25 SG calls must apply each slot's patched policy TG independently.
+    // Case 10c: Dual-slot P25 SG calls must apply each slot's patched policy TG independently: each slot is judged on
+    // its own call's supergroup and members.
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
     opts->trunk_use_allow_list = 1;
@@ -1085,21 +1294,32 @@ main(void) {
     rc |= expect_eq("case10c-left-call",
                     seed_call(st, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 9600U, 9601U, 777003U), 1);
     rc |= expect_eq("case10c-right-call",
-                    seed_call(st, 1U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 9600U, 9602U, 777004U), 1);
-    st->p25_patch_count = 1;
-    st->p25_patch_sgid[0] = 9600U;
-    st->p25_patch_is_patch[0] = 1U;
-    st->p25_patch_active[0] = 1U;
-    st->p25_patch_last_update[0] = time(NULL);
-    st->p25_patch_wgid_count[0] = 2U;
-    st->p25_patch_wgid[0][0] = 9601U;
-    st->p25_patch_wgid[0][1] = 9602U;
+                    seed_call(st, 1U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 9610U, 9602U, 777004U), 1);
+    st->p25_patch_count = 2;
+    for (int i = 0; i < 2; ++i) {
+        st->p25_patch_sgid[i] = i == 0 ? 9600U : 9610U;
+        st->p25_patch_is_patch[i] = 1U;
+        st->p25_patch_active[i] = 1U;
+        st->p25_patch_last_update[i] = time(NULL);
+        st->p25_patch_wgid_count[i] = 1U;
+        st->p25_patch_wgid[i][0] = i == 0 ? 9601U : 9602U;
+    }
     {
         int outL = -1;
         int outR = -1;
-        rc |= expect_eq("case10c-ret", dsd_audio_group_gate_dual(opts, st, 9600UL, 9600UL, 0, 0, &outL, &outR), 0);
+        rc |= expect_eq("case10c-ret", dsd_audio_group_gate_dual(opts, st, 9600UL, 9610UL, 0, 0, &outL, &outR), 0);
         rc |= expect_eq("case10c-outL", outL, 1);
         rc |= expect_eq("case10c-outR", outR, 0);
+        // Both slots on one supergroup that carries the listed member: a slot whose stored member is unlisted is judged
+        // on the listed one (keep-or-resolve), so both play.
+        rc |= expect_eq("case10c-same-sg-right-call",
+                        seed_call(st, 1U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 9600U, 9602U, 777004U), 1);
+        st->p25_patch_wgid_count[0] = 2U;
+        st->p25_patch_wgid[0][1] = 9602U;
+        rc |= expect_eq("case10c-same-sg-ret", dsd_audio_group_gate_dual(opts, st, 9600UL, 9600UL, 0, 0, &outL, &outR),
+                        0);
+        rc |= expect_eq("case10c-same-sg-outL", outL, 0);
+        rc |= expect_eq("case10c-same-sg-outR", outR, 0);
     }
 
     rc |= test_session_avoid_overrides_hold(opts, st);
@@ -1114,6 +1334,7 @@ main(void) {
     rc |= test_record_unknown_only_p25_unmute(opts, st);
     rc |= test_hold_keeps_radio_restrictions(opts, st);
     rc |= test_midcall_source_mute(opts, st);
+    rc |= test_patch_media_keep_or_resolve(opts, st);
     if (rc == 0) {
         printf("CORE_AUDIO_GROUP_GATE: OK\n");
     }

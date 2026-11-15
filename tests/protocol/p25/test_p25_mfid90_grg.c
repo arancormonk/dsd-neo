@@ -10,14 +10,22 @@
  * the underlying patch API contracts match what the handlers expect.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_patch_test_clock.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -51,6 +59,16 @@ expect_true(const char* tag, int cond) {
     return 0;
 }
 
+/* The Phase 2 MAC path links GPS decoding, whose text helper lives in the DMR library. */
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
+    (void)state;
+    (void)wr;
+    (void)len;
+    (void)input;
+}
+
 int p25_mfid90_base_station_id_decode(const uint8_t tsbk_byte[12], char* cwid, size_t cwid_size, uint16_t* channel);
 
 static void
@@ -71,7 +89,7 @@ pack_mfid90_cwid_values(uint8_t tsbk[12], const uint8_t values[8]) {
 
 static int
 find_sg_idx(const dsd_state* st, uint16_t sgid) {
-    for (int i = 0; i < st->p25_patch_count && i < 8; i++) {
+    for (int i = 0; i < st->p25_patch_count && i < DSD_P25_PATCH_MAX; i++) {
         if (st->p25_patch_sgid[i] == sgid) {
             return i;
         }
@@ -81,15 +99,129 @@ find_sg_idx(const dsd_state* st, uint16_t sgid) {
 
 static int
 sg_has_wgid(const dsd_state* st, int idx, uint16_t wgid) {
-    if (idx < 0 || idx >= 8) {
+    if (idx < 0 || idx >= DSD_P25_PATCH_MAX) {
         return 0;
     }
-    for (int i = 0; i < st->p25_patch_wgid_count[idx] && i < 8; i++) {
+    for (int i = 0; i < st->p25_patch_wgid_count[idx] && i < DSD_P25_PATCH_GROUP_MAX; i++) {
         if (st->p25_patch_wgid[idx][i] == wgid) {
             return 1;
         }
     }
     return 0;
+}
+
+static int
+members_current(const dsd_state* st, uint16_t sgid) {
+    int idx = find_sg_idx(st, sgid);
+    return idx >= 0 && dsd_p25_patch_members_current(st, idx);
+}
+
+/* MFID90 Group Regroup Add (0x81) / Delete (0x89) on a P2 MAC: SG and two groups in a 9-octet message. */
+static void
+send_mac_regroup(dsd_opts* opts, dsd_state* st, int add, int sg, int wg1, int wg2) {
+    unsigned long long int MAC[24] = {0};
+    MAC[1] = add ? 0x81 : 0x89;
+    MAC[2] = 0x90;
+    MAC[3] = 9;
+    MAC[4] = (unsigned long long)((sg >> 8) & 0xFF);
+    MAC[5] = (unsigned long long)(sg & 0xFF);
+    MAC[6] = (unsigned long long)((wg1 >> 8) & 0xFF);
+    MAC[7] = (unsigned long long)(wg1 & 0xFF);
+    MAC[8] = (unsigned long long)((wg2 >> 8) & 0xFF);
+    MAC[9] = (unsigned long long)(wg2 & 0xFF);
+    process_MAC_VPDU(opts, st, 1, P25_MAC_PDU_SIGNAL, MAC);
+}
+
+static void
+set_lcw_bits(uint8_t* b, int off, int n, uint32_t v) {
+    for (int i = 0; i < n; i++) {
+        b[off + i] = (uint8_t)((v >> (n - 1 - i)) & 1U);
+    }
+}
+
+/* MFID90 LC Group Regroup Add (0x03) / Delete (0x04): SG and two groups. */
+static void
+send_lc_regroup(dsd_opts* opts, dsd_state* st, int add, int sg, int ga1, int ga2) {
+    uint8_t lcw[96];
+    DSD_MEMSET(lcw, 0, sizeof lcw);
+    set_lcw_bits(lcw, 0, 8, add ? 0x03U : 0x04U);
+    set_lcw_bits(lcw, 8, 8, 0x90U);
+    set_lcw_bits(lcw, 16, 16, (uint32_t)sg);
+    set_lcw_bits(lcw, 32, 16, (uint32_t)ga1);
+    set_lcw_bits(lcw, 48, 16, (uint32_t)ga2);
+    p25_lcw(opts, st, lcw, /*irrecoverable_errors*/ 0);
+}
+
+static void
+reset_path_state(dsd_opts* opts, dsd_state* st) {
+    dsd_state_ext_free_all(st);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(st, 0, sizeof(*st));
+    st->lastsynctype = DSD_SYNC_P25P1_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), opts, st);
+}
+
+/* B2/B3 on the P2 MAC path: the SG listed as a member is ignored; a duplicate Add keeps the members current; an Add
+   reactivates a deleted patch; a Delete listing the SG ends the whole patch. */
+static int
+test_mac_regroup_path(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state st;
+    reset_path_state(&opts, &st);
+
+    send_mac_regroup(&opts, &st, 1, 1400, 1400, 1401);
+    int idx = find_sg_idx(&st, 1400);
+    rc |= expect_true("MAC add: SG exists", idx >= 0);
+    rc |= expect_true("MAC add: SG not its own member", idx >= 0 && !sg_has_wgid(&st, idx, 1400));
+    rc |= expect_true("MAC add: real member stored", idx >= 0 && sg_has_wgid(&st, idx, 1401));
+
+    p25_patch_test_listen_for(&st, 15.0);
+    send_mac_regroup(&opts, &st, 1, 1400, 1401, 0); // duplicate
+    p25_patch_test_listen_for(&st, 10.0);
+    rc |= expect_true("MAC duplicate add keeps members current", members_current(&st, 1400));
+
+    send_mac_regroup(&opts, &st, 0, 1400, 1401, 0); // last member deleted
+    idx = find_sg_idx(&st, 1400);
+    rc |= expect_true("MAC last delete deactivates", idx >= 0 && st.p25_patch_active[idx] == 0);
+    send_mac_regroup(&opts, &st, 1, 1400, 1402, 1403);
+    idx = find_sg_idx(&st, 1400);
+    rc |= expect_true("MAC add reactivates", idx >= 0 && st.p25_patch_active[idx] == 1);
+
+    send_mac_regroup(&opts, &st, 0, 1400, 1400, 0);
+    idx = find_sg_idx(&st, 1400);
+    rc |= expect_true("MAC delete listing SG ends patch", idx >= 0 && st.p25_patch_active[idx] == 0);
+    rc |= expect_true("MAC delete listing SG clears members", idx >= 0 && st.p25_patch_wgid_count[idx] == 0);
+    dsd_state_ext_free_all(&st);
+    return rc;
+}
+
+/* B2/B3 on the P1 LC path: a duplicate Add refreshes, a deleted patch is reactivated by an Add, and a Delete that
+   lists the SG ends the whole patch. */
+static int
+test_lc_regroup_path(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state st;
+    reset_path_state(&opts, &st);
+
+    send_lc_regroup(&opts, &st, 1, 1400, 1401, 1402);
+    p25_patch_test_listen_for(&st, 15.0);
+    send_lc_regroup(&opts, &st, 1, 1400, 1401, 0); // duplicate
+    p25_patch_test_listen_for(&st, 10.0);
+    rc |= expect_true("LC duplicate add keeps members current", members_current(&st, 1400));
+
+    send_lc_regroup(&opts, &st, 0, 1400, 1400, 0);
+    int idx = find_sg_idx(&st, 1400);
+    rc |= expect_true("LC delete listing SG ends patch", idx >= 0 && st.p25_patch_active[idx] == 0);
+    rc |= expect_true("LC delete listing SG clears members", idx >= 0 && st.p25_patch_wgid_count[idx] == 0);
+    send_lc_regroup(&opts, &st, 1, 1400, 1403, 0);
+    idx = find_sg_idx(&st, 1400);
+    rc |= expect_true("LC add reactivates", idx >= 0 && st.p25_patch_active[idx] == 1);
+    rc |= expect_true("LC add after delete holds only the new member",
+                      idx >= 0 && st.p25_patch_wgid_count[idx] == 1 && sg_has_wgid(&st, idx, 1403));
+    dsd_state_ext_free_all(&st);
+    return rc;
 }
 
 int
@@ -255,6 +387,9 @@ main(void) {
             rc |= expect_eq("Clear: SG inactive", st3.p25_patch_active[idx], 0);
         }
     }
+
+    rc |= test_mac_regroup_path();
+    rc |= test_lc_regroup_path();
 
     (void)errno;
     return rc;

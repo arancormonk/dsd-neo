@@ -18,6 +18,8 @@
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
@@ -53,6 +55,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
+#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -698,6 +701,91 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
     out->tune_allowed =
         test_tg_policy_tune_allowed(opts, opts ? opts->trunk_tune_private_calls : 0, encrypted, data_call);
     return 0;
+}
+
+/* The patch resolver stand-in (its semantics are CORE_P25_PATCH_POLICY's): supergroup g_patch_sg is live, and its
+   resolution names member g_patch_member and admits it when g_patch_admits. The last resolution's arguments are kept so
+   a case can tell what the coordinator asked. */
+static uint32_t g_patch_sg = 0U;
+static uint32_t g_patch_member = 0U;
+static int g_patch_admits = 0;
+static int g_patch_resolutions = 0;
+static dsd_p25_patch_resolve_purpose g_patch_purpose = DSD_P25_PATCH_RESOLVE_MEDIA;
+static uint32_t g_patch_src = 0U;
+
+int
+dsd_p25_patch_sg_live(const dsd_state* state, uint32_t sg) {
+    (void)state;
+    return sg != 0U && sg == g_patch_sg;
+}
+
+int
+dsd_p25_patch_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t src, int encrypted,
+                      int data_call, dsd_p25_patch_resolve_purpose purpose, dsd_p25_patch_adjust_fn adjust,
+                      const void* adjust_ctx, dsd_p25_patch_resolution* out) {
+    (void)opts;
+    (void)state;
+    (void)adjust;
+    (void)adjust_ctx;
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    g_patch_resolutions++;
+    g_patch_purpose = purpose;
+    g_patch_src = src;
+    out->policy_target = g_patch_admits ? g_patch_member : sg;
+    out->eligible = g_patch_admits;
+    out->decision.target_id = out->policy_target;
+    out->decision.source_id = src;
+    out->decision.encrypted = encrypted;
+    out->decision.data_call = data_call;
+    out->decision.tune_allowed = g_patch_admits;
+    out->decision.tg_tune_allowed = g_patch_admits;
+    return 0;
+}
+
+/* The voice check's keep-or-resolve and the Hold check's membership read, on the same stand-in: the stored target is
+   never kept, so the resolution above answers; a member is current when it is g_patch_member of the live g_patch_sg. */
+int
+dsd_p25_patch_media_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t stored, uint32_t src,
+                            dsd_p25_patch_resolution* out) {
+    (void)stored;
+    if (!dsd_p25_patch_sg_live(state, sg)) {
+        if (out) {
+            DSD_MEMSET(out, 0, sizeof(*out));
+            out->policy_target = sg;
+        }
+        return out ? 0 : -1;
+    }
+    return dsd_p25_patch_resolve(opts, state, sg, src, 0, 0, DSD_P25_PATCH_RESOLVE_MEDIA, NULL, NULL, out) == 0 ? 1
+                                                                                                                : -1;
+}
+
+int
+dsd_p25_patch_is_current_member(const dsd_state* state, uint32_t sg, uint32_t wg) {
+    return dsd_p25_patch_sg_live(state, sg) && wg != 0U && wg == g_patch_member;
+}
+
+/* The Hold check's admission, answered by the stand-in resolution as the full ADMIT would answer it. */
+int
+dsd_p25_patch_admits_hold(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t src) {
+    if (!state || state->tg_hold == 0U) {
+        return 0;
+    }
+    const uint32_t hold = state->tg_hold;
+    if (hold != sg && !dsd_p25_patch_is_current_member(state, sg, hold)) {
+        return 0;
+    }
+    dsd_p25_patch_resolution resolution;
+    return dsd_p25_patch_resolve(opts, state, sg, src, 0, 0, DSD_P25_PATCH_RESOLVE_ADMIT, NULL, NULL, &resolution) == 0
+           && resolution.eligible && resolution.policy_target == hold;
+}
+
+/* The stand-in evaluators apply the encrypted-call tuning rule themselves (test_tg_policy_tune_allowed()). */
+int
+dsd_tg_policy_encrypted_tune_denied(const dsd_opts* opts, int encrypted) {
+    return encrypted && opts && opts->trunk_tune_enc_calls == 0;
 }
 
 /* No radio list in this fixture: no radio is blocked. */
@@ -1487,6 +1575,40 @@ reset_scan_opts_state(dsd_opts* opts, dsd_state* state) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/* The patch table's freshness travels with the target (its listening clock, stamps, recency and owner), as do
+   entries and members past the old 8x8 table. */
+static void
+seed_p25_patch_freshness(dsd_state* state, double clock_s, uint32_t base) {
+    state->p25_patch_listen_s = clock_s;
+    state->p25_patch_listen_last_m = 42.0;
+    state->p25_patch_seen_listen_s[0] = clock_s - 1.0;
+    state->p25_patch_members_listen_s[0] = clock_s - 2.0;
+    state->p25_patch_seq[0] = base;
+    state->p25_patch_seq_counter = base + 1U;
+    state->p25_patch_owner_known = 1;
+    state->p25_patch_owner_wacn = base + 2U;
+    state->p25_patch_owner_sysid = (uint16_t)(base + 3U);
+    state->p25_patch_sgid[DSD_P25_PATCH_MAX - 1] = (uint16_t)(base + 4U);
+    state->p25_patch_wgid[DSD_P25_PATCH_MAX - 1][DSD_P25_PATCH_GROUP_MAX - 1] = (uint16_t)(base + 5U);
+    state->p25_patch_wuid[DSD_P25_PATCH_MAX - 1][DSD_P25_PATCH_RADIO_MAX - 1] = base + 6U;
+}
+
+static int
+expect_p25_patch_freshness(const dsd_state* state, double clock_s, uint32_t base) {
+    if (fabs(state->p25_patch_listen_s - clock_s) > 1e-9 || fabs(state->p25_patch_listen_last_m) > 1e-9
+        || fabs(state->p25_patch_seen_listen_s[0] - (clock_s - 1.0)) > 1e-9
+        || fabs(state->p25_patch_members_listen_s[0] - (clock_s - 2.0)) > 1e-9 || state->p25_patch_seq[0] != base
+        || state->p25_patch_seq_counter != base + 1U || state->p25_patch_owner_known != 1
+        || state->p25_patch_owner_wacn != base + 2U || state->p25_patch_owner_sysid != (uint16_t)(base + 3U)
+        || state->p25_patch_sgid[DSD_P25_PATCH_MAX - 1] != (uint16_t)(base + 4U)
+        || state->p25_patch_wgid[DSD_P25_PATCH_MAX - 1][DSD_P25_PATCH_GROUP_MAX - 1] != (uint16_t)(base + 5U)
+        || state->p25_patch_wuid[DSD_P25_PATCH_MAX - 1][DSD_P25_PATCH_RADIO_MAX - 1] != base + 6U) {
+        DSD_FPRINTF(stderr, "P25 patch freshness/owner state leaked across scan targets\n");
+        return 1;
+    }
+    return 0;
+}
+
 static void
 seed_target0_p25_state(dsd_state* state) {
     state->p25_prot_valid = 1;
@@ -1560,6 +1682,7 @@ seed_target0_p25_state(dsd_state* state) {
     state->p25_pending_announcements[0].wacn = 0xABCDE;
     state->p25_pending_announcements[0].last_seen = 445;
     state->p25_src_nid = 0xABCDE;
+    seed_p25_patch_freshness(state, 100.0, 10U);
 }
 
 static void
@@ -1627,6 +1750,7 @@ seed_target1_p25_state(dsd_state* state) {
     state->p25_pending_announcements[0].channel = 0x400B;
     state->p25_pending_announcements[0].last_seen = 909;
     state->p25_src_nid = 0x77777;
+    seed_p25_patch_freshness(state, 500.0, 70U);
 }
 
 static int
@@ -1635,7 +1759,8 @@ expect_empty_target_p25_state(const dsd_state* state) {
         || state->p25_sys_services_valid != 0 || state->p25_site_lra_valid != 0
         || state->p25_site_network_active_valid != 0 || state->p25_patch_count != 0 || state->p25_aff_count != 0
         || state->p25_ga_count != 0 || state->p25_nb_count != 0 || state->p25_secondary_cc_count != 0
-        || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0) {
+        || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0 || state->p25_patch_owner_known != 0
+        || state->p25_patch_seq_counter != 0U || fabs(state->p25_patch_listen_s) > 1e-9) {
         DSD_FPRINTF(stderr, "target 0 P25 state leaked into empty target 1 snapshot\n");
         return 1;
     }
@@ -1671,6 +1796,7 @@ expect_target0_p25_state(const dsd_state* state) {
         DSD_FPRINTF(stderr, "P25 patch state leaked across scan targets\n");
         test_rc = 1;
     }
+    test_rc |= expect_p25_patch_freshness(state, 100.0, 10U);
     if (state->p25_aff_count != 1 || state->p25_aff_rid[0] != 400 || state->p25_aff_last_seen[0] != 222
         || state->p25_ga_count != 1 || state->p25_ga_rid[0] != 500 || state->p25_ga_tg[0] != 600
         || state->p25_ga_last_seen[0] != 333) {
@@ -1859,6 +1985,86 @@ test_coordinator_idle_rotation_and_state_restore(void) {
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* @p count control-channel blocks 100 ms apart on the decode clock from @p start_ns (p25_sm_note_cc_activity(), the
+   CRC-good control block's mark). */
+static void
+hear_cc_blocks(dsd_state* state, uint64_t start_ns, int count) {
+    for (int i = 0; i < count; i++) {
+        dsd_decode_clock_test_set_ns(start_ns + ((uint64_t)i * 100000000ULL));
+        p25_sm_note_cc_activity(state);
+    }
+}
+
+/* Preservation (the snapshot carries the clock since the patch table moved onto it): a target's patch table and
+   listening clock sit unchanged while another target is received, and the restore breaks continuity, so the first
+   control-channel block back only stores its reading, however close it is to the last one heard before the switch. */
+static int
+test_target_patch_clock_survives_other_reception(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    static const uint64_t k_t0_ns = 3000000000000ULL;
+    dsd_decode_clock_use_test(k_t0_ns);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "patch clock: scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    (void)dsd_p25_patch_note_system(&state, 0xA1001U, 0x101U);
+    state.p25_patch_count = 1;
+    state.p25_patch_sgid[0] = 1400;
+    state.p25_patch_active[0] = 1;
+    state.p25_patch_wgid_count[0] = 1;
+    state.p25_patch_wgid[0][0] = 1401;
+    hear_cc_blocks(&state, k_t0_ns, 11); // 1.0 s of target 0's control channel
+    const double target0_clock = state.p25_patch_listen_s;
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_patch_count != 0) {
+        DSD_FPRINTF(stderr, "patch clock: target 1 did not start with an empty table\n");
+        test_rc = 1;
+    }
+    hear_cc_blocks(&state, k_t0_ns + 1100000000ULL, 6); // target 1 listens 0.5 s
+    if (fabs(state.p25_patch_listen_s - 0.5) > 1e-6) {
+        DSD_FPRINTF(stderr, "patch clock: target 1 listened %.6f s, want 0.5\n", state.p25_patch_listen_s);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || fabs(state.p25_patch_listen_s - target0_clock) > 1e-9
+        || fabs(state.p25_patch_listen_last_m) > 1e-9 || state.p25_patch_count != 1
+        || state.p25_patch_wgid[0][0] != 1401 || state.p25_patch_owner_wacn != 0xA1001U) {
+        DSD_FPRINTF(stderr, "patch clock: target 0's table or clock changed while target 1 was received\n");
+        test_rc = 1;
+    }
+    /* 50 ms after target 1's last block: within the 0.25 s gap, but the restore broke continuity. */
+    hear_cc_blocks(&state, k_t0_ns + 1650000000ULL, 2);
+    if (fabs(state.p25_patch_listen_s - (target0_clock + 0.1)) > 1e-6) {
+        DSD_FPRINTF(stderr, "patch clock: target 0 resumed at %.6f s, want %.6f\n", state.p25_patch_listen_s,
+                    target0_clock + 0.1);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    dsd_decode_clock_use_system();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -4068,6 +4274,94 @@ test_receive_expiry_yields_conventional_target(void) {
     free(state);
     free(opts);
     trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A P25 group call on a live patch's supergroup holds a conventional target by the patch resolver's admission (a
+ * listened member carrying the patch), not by the supergroup's own decision; a private call and a call on no live patch
+ * are judged as before (preservation). */
+static int
+test_p25_conventional_activity_patch(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-conventional,851500000,,250,250,\n"
+                             "b,dmr-conventional,461000000,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+
+    static const struct {
+        const char* label;
+        uint32_t sg;
+        int admits;
+        int is_private;
+        int holds;
+        int resolutions;
+    } cases[] = {
+        {"patch admitted through its member", 1001, 1, 0, 1, 1},
+        {"patch with no listened member", 1001, 0, 0, 0, 1},
+        {"no live patch judged on its own decision", 0, 1, 0, 0, 0},
+        {"private call never resolved", 1001, 1, 1, 0, 0},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_scan_opts_state(opts, state);
+        opts->trunk_enable = 1;
+        opts->trunk_tune_group_calls = 1;
+        opts->trunk_tune_private_calls = 1;
+        /* The stand-in policy refuses every call under the allow-list: only the resolver can admit one. */
+        opts->trunk_use_allow_list = 1;
+        state->p25_cc_freq = 852000000;
+        state->trunk_cc_freq = 852000000;
+        DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+        opts->trunk_scan_list_count = 1;
+        char err[256] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "P25 conventional patch %s init failed: %s\n", cases[i].label, err);
+            test_rc = 1;
+            break;
+        }
+        g_patch_sg = cases[i].sg;
+        g_patch_member = 1003;
+        g_patch_admits = cases[i].admits;
+        g_patch_resolutions = 0;
+        g_patch_src = 0U;
+        trunk_scan_test_set_now(0.10);
+        dsd_engine_trunk_scan_p25_conventional_activity(opts, state, DSD_SYNC_P25P1_POS, 0, 1001, 2002,
+                                                        cases[i].is_private, 0, 0);
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(opts, state);
+        if (dsd_engine_trunk_scan_active_index(state) != (cases[i].holds ? 0U : 1U)) {
+            DSD_FPRINTF(stderr, "P25 conventional patch %s violated hold policy\n", cases[i].label);
+            test_rc = 1;
+        }
+        if (g_patch_resolutions != cases[i].resolutions
+            || (cases[i].resolutions && (g_patch_purpose != DSD_P25_PATCH_RESOLVE_ADMIT || g_patch_src != 2002U))) {
+            DSD_FPRINTF(stderr, "P25 conventional patch %s: resolver asked %d times (purpose %d, source %u)\n",
+                        cases[i].label, g_patch_resolutions, (int)g_patch_purpose, (unsigned)g_patch_src);
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(opts, state);
+    }
+    g_patch_sg = 0U;
+    g_patch_admits = 0;
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -24742,6 +25036,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_target_patch_clock_survives_other_reception);
     rc |= run_with_default_tune_hook(test_init_reads_the_list_spec);
     rc |= run_with_default_tune_hook(test_lists_load_in_order_and_rotate_over_the_lists_on);
     rc |= run_with_default_tune_hook(test_lists_load_errors_name_the_file);
@@ -24829,6 +25124,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_classes_enable_missing_decoders);
     rc |= run_with_default_tune_hook(test_nxdn_conventional_activity_hold);
     rc |= run_with_default_tune_hook(test_p25_conventional_activity_hold);
+    rc |= run_with_default_tune_hook(test_p25_conventional_activity_patch);
     rc |= run_with_default_tune_hook(test_p25_conventional_activity_receive_policy);
     rc |= run_with_default_tune_hook(test_receive_expiry_yields_conventional_target);
     rc |= run_with_default_tune_hook(test_conventional_activity_data_call_respects_tune_data_calls);

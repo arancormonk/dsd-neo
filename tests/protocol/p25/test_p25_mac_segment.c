@@ -258,6 +258,52 @@ expect_int(const char* tag, int got, int want) {
     return 0;
 }
 
+/* Each transport's MAC message span: FACCH 17, SACCH 20, LCCH 18 octets after the MAC header (TIA-102.BBAC bit
+   counts: FACCH 8 + 136 + CRC-12; SACCH 8 + 160 + CRC-12; LCCH 8 + 144 + NAC 12 + CRC-16). */
+static int
+run_transport_span_cases(void) {
+    unsigned long long mac[24] = {0};
+    struct p25p2_mac_result res;
+    int rc = 0;
+
+    rc |= expect_int("span FACCH", p25p2_mac_span(0, 0), 17);
+    rc |= expect_int("span SACCH", p25p2_mac_span(1, 0), 20);
+    rc |= expect_int("span LCCH", p25p2_mac_span(1, 1), 18);
+    rc |= expect_int("span FACCH ignores LCCH flag", p25p2_mac_span(0, 1), 17);
+
+    const int spans[] = {P25P2_MAC_SPAN_FACCH, P25P2_MAC_SPAN_SACCH, P25P2_MAC_SPAN_LCCH};
+    for (size_t i = 0; i < sizeof spans / sizeof spans[0]; i++) {
+        DSD_MEMSET(mac, 0, sizeof(mac));
+        if (p25p2_mac_parse_span(1, spans[i], mac, &res) != 0) {
+            return 410;
+        }
+        rc |= expect_int("span null fill count", res.segment_count, 1);
+        rc |= expect_int("span null fill len", res.segments[0].length, spans[i]);
+        rc |= expect_int("span recorded", res.span, spans[i]);
+
+        // A Motorola Group Regroup Add that ends exactly on the span is one segment; the next octet is outside.
+        DSD_MEMSET(mac, 0, sizeof(mac));
+        mac[1] = 0x30;
+        mac[6] = 0x81;
+        mac[7] = 0x90;
+        mac[8] = (unsigned long long)(spans[i] - 5);
+        if (p25p2_mac_parse_span(1, spans[i], mac, &res) != 0) {
+            return 411;
+        }
+        rc |= expect_int("span exact later segment count", res.segment_count, 2);
+        rc |= expect_int("span exact later segment len", res.segments[1].length, spans[i] - 5);
+        mac[8] = (unsigned long long)(spans[i] - 4);
+        if (p25p2_mac_parse_span(1, spans[i], mac, &res) != 0) {
+            return 412;
+        }
+        rc |= expect_int("span overflowing later segment dropped", res.segment_count, 1);
+    }
+
+    rc |= expect_int("span zero rejected", p25p2_mac_parse_span(1, 0, mac, &res), -1);
+    rc |= expect_int("span past buffer rejected", p25p2_mac_parse_span(1, 24, mac, &res), -1);
+    return rc;
+}
+
 static int
 run_direct_segment_parse_cases(void) {
     unsigned long long mac[24] = {0};
@@ -317,7 +363,7 @@ run_direct_segment_parse_cases(void) {
         return 406;
     }
     rc |= expect_int("null fills remaining count", res.segment_count, 1);
-    rc |= expect_int("null fills remaining len", res.segments[0].length, 19);
+    rc |= expect_int("null fills remaining len", res.segments[0].length, P25P2_MAC_SPAN_SACCH);
 
     const uint8_t bridged_ops[] = {0x69U, 0x7FU, 0xEFU};
     for (size_t i = 0; i < sizeof(bridged_ops) / sizeof(bridged_ops[0]); i++) {
@@ -329,7 +375,7 @@ run_direct_segment_parse_cases(void) {
         }
         rc |= expect_int("bridged later segment count", res.segment_count, 2);
         rc |= expect_int("bridged later segment offset", res.segments[1].offset, 5);
-        rc |= expect_int("bridged later segment len", res.segments[1].length, 14);
+        rc |= expect_int("bridged later segment len", res.segments[1].length, P25P2_MAC_SPAN_SACCH - 5);
     }
 
     DSD_MEMSET(mac, 0, sizeof(mac));
@@ -347,10 +393,13 @@ run_direct_segment_parse_cases(void) {
     if (p25p2_mac_parse(0, mac, &res) != 0) {
         return 402;
     }
-    rc |= expect_int("fixed harris count", res.segment_count, 2);
+    rc |= expect_int("fixed harris count", res.segment_count, 3);
     rc |= expect_int("fixed harris len", res.segments[0].length, 9);
     rc |= expect_int("fixed harris next offset", res.segments[1].offset, 9);
     rc |= expect_int("fixed harris next len", res.segments[1].length, 7);
+    // FACCH's 17th MAC octet (MAC[17]) is message area: null fill, not part of the CRC.
+    rc |= expect_int("fixed harris fill offset", res.segments[2].offset, 16);
+    rc |= expect_int("fixed harris fill len", res.segments[2].length, 1);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x30;
@@ -388,7 +437,7 @@ run_direct_segment_parse_cases(void) {
     }
     rc |= expect_int("truncated third segment count", res.segment_count, 2);
 
-    return rc;
+    return rc | run_transport_span_cases();
 }
 
 static int
@@ -576,12 +625,12 @@ main(void) {
         return rc;
     }
 
-    // FACCH capacity = 16 octets (after opcode). Choose opcode 0x23 (base table 0), MCO=35 → infer 34 → cap 16.
-    rc = run_case(/*FACCH*/ 0, 0x23, /*B*/ 16, /*C*/ 0);
+    // FACCH carries 17 MAC octets. Choose opcode 0x23 (base table 0), MCO=35 → infer 34 → cap 17.
+    rc = run_case(/*FACCH*/ 0, 0x23, /*B*/ 17, /*C*/ 0);
     if (rc != 0) {
         return rc;
     }
-    rc = run_payload_len_case("p25_moto_81_len", /*FACCH*/ 0, 0x81, 0x90, 0x06, /*B*/ 6, /*C*/ 10);
+    rc = run_payload_len_case("p25_moto_81_len", /*FACCH*/ 0, 0x81, 0x90, 0x06, /*B*/ 6, /*C*/ 11);
     if (rc != 0) {
         return rc;
     }
@@ -589,39 +638,39 @@ main(void) {
     if (rc != 0) {
         return rc;
     }
-    rc = run_payload_len_case("p25_moto_8b_len", /*FACCH*/ 0, 0x8B, 0x90, 0x0F, /*B*/ 15, /*C*/ 1);
+    rc = run_payload_len_case("p25_moto_8b_len", /*FACCH*/ 0, 0x8B, 0x90, 0x0F, /*B*/ 15, /*C*/ 2);
     if (rc != 0) {
         return rc;
     }
-    rc = run_payload_len_case("p25_moto_8f_len", /*FACCH*/ 0, 0x8F, 0x90, 0x0B, /*B*/ 11, /*C*/ 5);
+    rc = run_payload_len_case("p25_moto_8f_len", /*FACCH*/ 0, 0x8F, 0x90, 0x0B, /*B*/ 11, /*C*/ 6);
     if (rc != 0) {
         return rc;
     }
-    rc = run_payload_len_case("p25_moto_bf_len", /*FACCH*/ 0, 0xBF, 0x90, 0x00, /*B*/ 3, /*C*/ 13);
+    rc = run_payload_len_case("p25_moto_bf_len", /*FACCH*/ 0, 0xBF, 0x90, 0x00, /*B*/ 3, /*C*/ 14);
     if (rc != 0) {
         return rc;
     }
-    rc = run_payload_len_case("p25_multifrag_cont_len", /*FACCH*/ 0, 0x10, 0x0A, 0x00, /*B*/ 10, /*C*/ 6);
+    rc = run_payload_len_case("p25_multifrag_cont_len", /*FACCH*/ 0, 0x10, 0x0A, 0x00, /*B*/ 10, /*C*/ 7);
     if (rc != 0) {
         return rc;
     }
-    rc = run_payload_len_case("p25_null_avoid_zero_bias_len", /*FACCH*/ 0, 0x08, 0x0A, 0x00, /*B*/ 10, /*C*/ 6);
+    rc = run_payload_len_case("p25_null_avoid_zero_bias_len", /*FACCH*/ 0, 0x08, 0x0A, 0x00, /*B*/ 10, /*C*/ 7);
     if (rc != 0) {
         return rc;
     }
-    rc = run_payload_len_case("p25_harris_a8_len", /*FACCH*/ 0, 0xA8, 0xA4, 0x0A, /*B*/ 10, /*C*/ 6);
+    rc = run_payload_len_case("p25_harris_a8_len", /*FACCH*/ 0, 0xA8, 0xA4, 0x0A, /*B*/ 10, /*C*/ 7);
     if (rc != 0) {
         return rc;
     }
-    rc = run_payload_len_case("p25_harris_b0_len", /*SACCH*/ 1, 0xB0, 0xA4, 0x11, /*B*/ 17, /*C*/ 2);
+    rc = run_payload_len_case("p25_harris_b0_len", /*SACCH*/ 1, 0xB0, 0xA4, 0x11, /*B*/ 17, /*C*/ 3);
     if (rc != 0) {
         return rc;
     }
-    rc = run_payload_len_case("p25_tait_b5_fixed_len", /*FACCH*/ 0, 0xB5, 0xD8, 0x08, /*B*/ 5, /*C*/ 11);
+    rc = run_payload_len_case("p25_tait_b5_fixed_len", /*FACCH*/ 0, 0xB5, 0xD8, 0x08, /*B*/ 5, /*C*/ 12);
     if (rc != 0) {
         return rc;
     }
-    rc = run_payload_len_case("p25_tait_variable_len", /*FACCH*/ 0, 0xB4, 0xD8, 0x08, /*B*/ 8, /*C*/ 8);
+    rc = run_payload_len_case("p25_tait_variable_len", /*FACCH*/ 0, 0xB4, 0xD8, 0x08, /*B*/ 8, /*C*/ 9);
     if (rc != 0) {
         return rc;
     }

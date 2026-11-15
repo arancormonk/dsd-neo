@@ -46,6 +46,8 @@ target_sources(
         util/id_pattern.c
         util/received_identity.c
         util/received_identity_site.c
+        util/p25_patch_policy.c
+        util/p25_patch_state.c
         util/receive.c
         util/enc_lockout.c
         util/dsd_events.c

@@ -14,7 +14,9 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
@@ -935,7 +937,7 @@ test_patch_change_retakes_the_verdict(void) {
         g_state.p25_p2_audio_allowed[1] = 0;
         burst(0, 0, DSD_P25P2_BURST_4V, 1000);
         if (stale) {
-            g_state.p25_patch_last_update[0] = dsd_decode_time() - 60;
+            g_state.p25_patch_listen_s += 60.0; // 60 s of control-channel listening with no refresh
         } else {
             g_state.p25_patch_wgid_count[0] = 0;
         }
@@ -943,6 +945,103 @@ test_patch_change_retakes_the_verdict(void) {
         rc |= expect_int(stale ? "a stale patch mutes the waiting frames" : "a member leaving mutes the waiting frames",
                          g_block_count, 0);
         rc |= expect_int("they are consumed in time", dsd_p25p2_playout_level(&g_state, 0), 0);
+    }
+    return rc;
+}
+
+/* How a patched call's frames wait in test_patch_media_frames_play(). */
+typedef enum {
+    PATCH_FRAMES_MEMBER_RESELECTED = 0, /* the chosen member leaves the patch; another listed member still carries it */
+    PATCH_FRAMES_CATCH_ALL,             /* a `*` catch-all with listening off, the chosen member listed */
+    PATCH_FRAMES_LOCKED_SG,             /* a retained SG lockout, the SG unlisted, the call stored on the SG */
+    PATCH_FRAMES_LONG_DWELL,            /* 60 s on the voice channel, no control channel: members stay (preservation) */
+    PATCH_FRAMES_COUNT,
+} patch_frames_case;
+
+static const char* const k_patch_frames_names[PATCH_FRAMES_COUNT] = {
+    "a re-selected member keeps the waiting frames",
+    "a catch-all B keeps the member's frames",
+    "a retained SG lockout keeps the clear member's frames",
+    "a long voice-channel dwell keeps the frames",
+};
+
+static uint64_t
+patch_frames_setup(patch_frames_case c, int slot, int* rc) {
+    g_opts.trunk_use_allow_list = 1;
+    g_opts.trunk_tune_group_calls = 1;
+    g_opts.trunk_tune_enc_calls = 1;
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P2_POS;
+    g_state.p25_p2_audio_allowed[slot ^ 1] = 0;
+    *rc |= expect_int("patch frames member listed", dsd_tg_policy_set_mode(&g_state, 0x0201U, 0x0201U, "A"), 0);
+    g_state.p25_patch_count = 1;
+    g_state.p25_patch_active[0] = 1;
+    g_state.p25_patch_sgid[0] = 0x0100U;
+    g_state.p25_patch_wgid_count[0] = 2;
+    g_state.p25_patch_wgid[0][0] = 0x0201U;
+    g_state.p25_patch_wgid[0][1] = 0x0202U;
+    dsd_p25_patch_touch_members(&g_state, 0);
+    switch (c) {
+        case PATCH_FRAMES_MEMBER_RESELECTED:
+            *rc |= expect_int("patch frames second member", dsd_tg_policy_set_mode(&g_state, 0x0202U, 0x0202U, "A"), 0);
+            return 0x0201U;
+        case PATCH_FRAMES_CATCH_ALL: {
+            g_opts.trunk_use_allow_list = 0;
+            dsd_tg_policy_entry e;
+            DSD_MEMSET(&e, 0, sizeof(e));
+            e.kind = DSD_TG_POLICY_ROW_PATTERN;
+            DSD_SNPRINTF(e.pattern, sizeof(e.pattern), "%s", "*");
+            DSD_SNPRINTF(e.mode, sizeof(e.mode), "%s", "B");
+            e.source = DSD_TG_POLICY_SOURCE_IMPORTED;
+            *rc |= expect_int("patch frames catch-all", dsd_tg_policy_add_pattern_entry(&g_state, &e), 0);
+            return 0x0201U;
+        }
+        case PATCH_FRAMES_LOCKED_SG:
+            g_opts.trunk_tune_enc_calls = 0;
+            (void)dsd_enc_lockout_note(&g_state, 0x0100U, 1, 0x84, 4);
+            return 0x0100U;
+        case PATCH_FRAMES_LONG_DWELL:
+        case PATCH_FRAMES_COUNT:
+        default: break;
+    }
+    return 0x0201U;
+}
+
+/* A patched call's frames wait on a slot while its patch or time moves on, with no burst in between: they play when
+   the supergroup or another current member is still listened to (keep-or-resolve), on both slots. */
+static int
+test_patch_media_frames_play(void) {
+    int rc = 0;
+    for (int c = 0; c < PATCH_FRAMES_COUNT; c++) {
+        for (int slot = 0; slot < 2; slot++) {
+            uint64_t now_ns = 2000000ULL * 1000000000ULL;
+            dsd_decode_clock_use_test(now_ns);
+            setup(0, 2);
+            const uint64_t stored = patch_frames_setup((patch_frames_case)c, slot, &rc);
+            const dsd_call_observation observation = {
+                .protocol = DSD_SYNC_P25P2_POS,
+                .slot = (uint8_t)slot,
+                .kind = DSD_CALL_KIND_GROUP_VOICE,
+                .ota_target_id = 0x0100U,
+                .policy_target_id = stored,
+                .ota_source_id = 1000U,
+            };
+            (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+            burst(slot, 0, DSD_P25P2_BURST_4V, 1000);
+            if (c == PATCH_FRAMES_MEMBER_RESELECTED) {
+                g_state.p25_patch_wgid[0][0] = 0x0202U;
+                g_state.p25_patch_wgid_count[0] = 1;
+            } else if (c == PATCH_FRAMES_LONG_DWELL) {
+                now_ns += 60ULL * 1000000000ULL;
+                dsd_decode_clock_test_set_ns(now_ns);
+            }
+            // Retake the slot's verdict from live policy (as a command or a later burst would), whatever the key says.
+            dsd_p25p2_playout_note_policy(&g_opts, &g_state);
+            dsd_p25p2_playout_pair_done(&g_opts, &g_state);
+            char tag[128];
+            DSD_SNPRINTF(tag, sizeof tag, "%s (slot %d)", k_patch_frames_names[c], slot);
+            rc |= expect_int(tag, g_block_count, 4);
+            dsd_decode_clock_use_system();
+        }
     }
     return rc;
 }
@@ -978,7 +1077,7 @@ test_gate_decision_keeps_its_key(void) {
     rc |= expect_int("the gate allows the patched call",
                      dsd_p25p2_decode_audio_allowed_verdict(&g_opts, &g_state, 0, 0x80, &decision, &decision_valid), 1);
     rc |= expect_int("and hands back its decision", decision_valid, 1);
-    g_state.p25_patch_last_update[0] = dsd_decode_time() - 60;
+    g_state.p25_patch_listen_s += 60.0; // 60 s of control-channel listening with no refresh
     g_serial++;
     for (int f = 0; f < 4; f++) {
         for (int i = 0; i < 160; i++) {
@@ -1513,9 +1612,11 @@ __wrap_dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapsho
     return rc;
 }
 
-/* While armed, the first patch goes stale right after the next group-call policy evaluation returns: the clock crossing
-   the patch's TTL inside the decode gate. */
+/* While armed (n > 0), the first patch goes stale right after the n-th group-call policy evaluation from now returns: the
+   clock crossing the patch's TTL inside the decode gate. */
 static int g_stale_patch_after_evaluation = 0;
+/* Group-call policy evaluations made through the library's public entry point. */
+static int g_group_evaluations = 0;
 
 int __real_dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
                                              int encrypted, int data_call, dsd_tg_policy_decision* out);
@@ -1526,59 +1627,119 @@ int
 __wrap_dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
                                          int encrypted, int data_call, dsd_tg_policy_decision* out) {
     const int rc = __real_dsd_tg_policy_evaluate_group_call(opts, state, tg, src, encrypted, data_call, out);
-    if (g_stale_patch_after_evaluation) {
-        g_stale_patch_after_evaluation = 0;
-        g_state.p25_patch_last_update[0] = dsd_decode_time() - 60;
+    g_group_evaluations++;
+    if (g_stale_patch_after_evaluation > 0) {
+        g_stale_patch_after_evaluation--;
+        if (g_stale_patch_after_evaluation == 0) {
+            g_state.p25_patch_listen_s += 60.0; // 60 s of control-channel listening with no refresh
+        }
     }
     return rc;
 }
 
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
-/* The patch through whose allow-listed member a call is heard goes stale while the decode gate evaluates the call's
-   burst: the decision and its key come from the same look (the member), so the emission notices the patch gone and
-   mutes the burst's frames. */
+/* The patch through whose allow-listed member a call is heard goes stale while the decode gate judges the call's burst,
+   after each of its group evaluations in turn, or only after it. Whenever it happens, the decision and its key come
+   from the same look: the gate allows the call exactly when the key names the member (else the key is the supergroup
+   it judged), and the frames of an allowed burst are muted at emission once the patch is gone. The keep-or-resolve
+   evaluates the supergroup before it reads the membership, so going stale after that first evaluation is judged on the
+   supergroup (refused); going stale after the look keeps the member (allowed). */
 static int
 test_gate_key_matches_its_decision(void) {
     int rc = 0;
-    setup(0, 2);
-    g_opts.trunk_use_allow_list = 1;
-    g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P2_POS;
-    rc |= expect_int("member listed", dsd_tg_policy_set_mode(&g_state, 0x0200U, 0x0200U, "A"), 0);
-    g_state.p25_patch_count = 1;
-    g_state.p25_patch_active[0] = 1;
-    g_state.p25_patch_sgid[0] = 0x0100U;
-    g_state.p25_patch_wgid_count[0] = 1;
-    g_state.p25_patch_wgid[0][0] = 0x0200U;
-    g_state.p25_patch_last_update[0] = dsd_decode_time();
-    const dsd_call_observation observation = {
-        .protocol = DSD_SYNC_P25P2_POS,
-        .slot = 0U,
-        .kind = DSD_CALL_KIND_GROUP_VOICE,
-        .ota_target_id = 0x0100U,
-        .policy_target_id = 0x0200U,
-        .ota_source_id = 1000U,
-    };
-    (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
-    g_state.p25_p2_audio_allowed[1] = 0;
-    dsd_p25p2_burst_decision decision;
-    int decision_valid = 0;
-    g_stale_patch_after_evaluation = 1;
-    rc |= expect_int("the gate allows the patched call",
-                     dsd_p25p2_decode_audio_allowed_verdict(&g_opts, &g_state, 0, 0x80, &decision, &decision_valid), 1);
-    rc |= expect_int("the patch went stale during it", g_stale_patch_after_evaluation, 0);
-    rc |= expect_int("its key is the member it judged", (int)decision.key.policy_target, 0x0200);
-    g_serial++;
-    for (int f = 0; f < 4; f++) {
-        for (int i = 0; i < 160; i++) {
-            g_state.s_l[i] = (short)(1000 + f);
+    int refused = 0;
+    int allowed = 0;
+    for (int after = 1; after <= 4; after++) {
+        setup(0, 2);
+        g_opts.trunk_use_allow_list = 1;
+        g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P2_POS;
+        rc |= expect_int("member listed", dsd_tg_policy_set_mode(&g_state, 0x0200U, 0x0200U, "A"), 0);
+        g_state.p25_patch_count = 1;
+        g_state.p25_patch_active[0] = 1;
+        g_state.p25_patch_sgid[0] = 0x0100U;
+        g_state.p25_patch_wgid_count[0] = 1;
+        g_state.p25_patch_wgid[0][0] = 0x0200U;
+        g_state.p25_patch_last_update[0] = dsd_decode_time();
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_P25P2_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 0x0100U,
+            .policy_target_id = 0x0200U,
+            .ota_source_id = 1000U,
+        };
+        (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        g_state.p25_p2_audio_allowed[1] = 0;
+        dsd_p25p2_burst_decision decision;
+        int decision_valid = 0;
+        g_stale_patch_after_evaluation = after;
+        const int allows =
+            dsd_p25p2_decode_audio_allowed_verdict(&g_opts, &g_state, 0, 0x80, &decision, &decision_valid);
+        if (g_stale_patch_after_evaluation != 0) {
+            g_stale_patch_after_evaluation = 0;
+            g_state.p25_patch_listen_s += 60.0; // the patch goes stale right after the gate's look
         }
-        g_state.mbe_short_silenced[0] = 0U;
-        dsd_p25p2_playout_stage_decided(&g_opts, &g_state, 0, 0, g_serial, &decision);
+        rc |= expect_int("the gate hands back its decision", decision_valid, 1);
+        rc |= expect_int("its key is what it judged", (int)decision.key.policy_target, allows ? 0x0200 : 0x0100);
+        if (after == 1) {
+            rc |= expect_int("stale after the supergroup's evaluation: judged on the supergroup", allows, 0);
+        }
+        if (!allows) {
+            refused++;
+            continue;
+        }
+        allowed++;
+        g_serial++;
+        for (int f = 0; f < 4; f++) {
+            for (int i = 0; i < 160; i++) {
+                g_state.s_l[i] = (short)(1000 + f);
+            }
+            g_state.mbe_short_silenced[0] = 0U;
+            dsd_p25p2_playout_stage_decided(&g_opts, &g_state, 0, 0, g_serial, &decision);
+        }
+        dsd_p25p2_playout_burst_done(&g_opts, &g_state, 0, 0, DSD_P25P2_BURST_4V);
+        dsd_p25p2_playout_pair_done(&g_opts, &g_state);
+        rc |= expect_int("the stale patch mutes the frames", g_block_count, 0);
     }
-    dsd_p25p2_playout_burst_done(&g_opts, &g_state, 0, 0, DSD_P25P2_BURST_4V);
-    dsd_p25p2_playout_pair_done(&g_opts, &g_state);
-    rc |= expect_int("the stale patch mutes the frames", g_block_count, 0);
+    rc |= expect_int("some looks judged the supergroup", refused > 0, 1);
+    rc |= expect_int("some looks judged the member", allowed > 0, 1);
+    return rc;
+}
+
+/* The mono gate (the Phase 1 path) judges a frame with one group evaluation, as for a call no patch carries, when the
+   call is stored on its supergroup and that supergroup may play: the judgement the keep made is the decision. */
+static int
+test_mono_gate_evaluates_once(void) {
+    int rc = 0;
+    for (int patched = 0; patched < 2; patched++) {
+        setup(0, 1);
+        g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P1_POS;
+        g_state.currentslot = 0;
+        if (patched) {
+            g_state.p25_patch_count = 1;
+            g_state.p25_patch_active[0] = 1;
+            g_state.p25_patch_sgid[0] = 0x0100U;
+            g_state.p25_patch_wgid_count[0] = 1;
+            g_state.p25_patch_wgid[0][0] = 0x0200U;
+            dsd_p25_patch_touch_members(&g_state, 0);
+        }
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 0x0100U,
+            .policy_target_id = 0x0100U,
+            .ota_source_id = 1000U,
+        };
+        (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        int muted = -1;
+        g_group_evaluations = 0;
+        rc |= expect_int("mono gate runs", dsd_audio_group_gate_mono(&g_opts, &g_state, 0x0100U, 0, &muted), 0);
+        rc |= expect_int(patched ? "kept supergroup plays" : "plain call plays", muted, 0);
+        rc |= expect_int(patched ? "kept supergroup: one evaluation per frame" : "plain call: one evaluation per frame",
+                         g_group_evaluations, 1);
+    }
     return rc;
 }
 
@@ -2124,6 +2285,7 @@ main(void) {
     rc |= test_replaced_call_keeps_its_verdict();
     rc |= test_later_burst_refreshes_the_verdict();
     rc |= test_patch_change_retakes_the_verdict();
+    rc |= test_patch_media_frames_play();
     rc |= test_source_learned_retakes_the_verdict();
     rc |= test_gate_decision_keeps_its_key();
     rc |= test_full_queue_reclaims_removed_entries();
@@ -2144,6 +2306,7 @@ main(void) {
 #if defined(DSD_TEST_WRAP_CALL_STATE)
     rc |= test_verdict_taken_as_the_call_ends();
     rc |= test_gate_key_matches_its_decision();
+    rc |= test_mono_gate_evaluates_once();
 #endif
     rc |= test_close_after_covered_superframe_keeps_18();
     rc |= test_sacch_at_voice_position_fills();
