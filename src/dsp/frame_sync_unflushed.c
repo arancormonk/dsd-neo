@@ -21,7 +21,17 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_unflushed.h"
 
-void
+/* The take runs once per post, from the per-symbol check inlined in the symbol reader: kept out of line, so its lock
+   and the backlog's code stay out of the reader's hot loop. */
+#if defined(_MSC_VER)
+#define DSD_UNFLUSHED_TAKE_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define DSD_UNFLUSHED_TAKE_NOINLINE __attribute__((noinline))
+#else
+#define DSD_UNFLUSHED_TAKE_NOINLINE
+#endif
+
+DSD_UNFLUSHED_TAKE_NOINLINE void
 frame_sync_take_unflushed_retunes_now(const dsd_opts* opts, dsd_state* state, uint64_t posted) {
     dsd_frame_sync_unflushed_seen = posted;
     /* A post an input replacement retired moves nothing (dsd_frame_sync_forget_unflushed_retunes()). */
