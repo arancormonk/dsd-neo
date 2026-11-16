@@ -302,6 +302,11 @@ dsd_app_snapshot_consumer_wipe_keys(void) {
 }
 
 void
+dsd_app_opts_snapshot_consumer_wipe_keys(void) {
+    log_exit("api-keys");
+}
+
+void
 ui_overlays_shutdown(void) {
     log_exit("overlays");
 }
@@ -687,9 +692,10 @@ test_ui_thread_takes_the_stop_signal(void) {
     /* Issue #672: the start-time copy keeps -Z for dsd_terminal_open()'s warning (nothing was published here). */
     rc |= expect_int("start-copy-keeps-payload", g_open_payload, 1);
     /* Issue #672 (B17): RadioReference first, then every other overlay, while curses still runs. Last, the thread that
-       reads the state snapshot no more wipes its buffer's key copies (the stop left them to a next read). */
-    if (strcmp(g_exit_log, "rr,overlays,close,keys") != 0) {
-        DSD_FPRINTF(stderr, "exit order '%s', want 'rr,overlays,close,keys'\n", g_exit_log);
+       reads the snapshots no more wipes its buffers' key copies, the state's then the options' API keys (the stop
+       left them to a next read). */
+    if (strcmp(g_exit_log, "rr,overlays,close,keys,api-keys") != 0) {
+        DSD_FPRINTF(stderr, "exit order '%s', want 'rr,overlays,close,keys,api-keys'\n", g_exit_log);
         rc |= 1;
     }
     return rc;

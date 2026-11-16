@@ -236,6 +236,66 @@ stopped_session_snapshot_keeps_no_key(void) {
     freeState(&state);
 }
 
+static int
+opts_api_keys_are_empty(const dsd_opts* opts) {
+    for (size_t i = 0; i < sizeof opts->rdio_api_key; ++i) {
+        if (opts->rdio_api_key[i] != '\0') {
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < sizeof opts->rr_app_key; ++i) {
+        if (opts->rr_app_key[i] != '\0') {
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < sizeof opts->api_token; ++i) {
+        if (opts->api_token[i] != '\0') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The options snapshot outlives its session as the state snapshot does. While the session runs, a frontend reads the
+   rdio-scanner and RadioReference API keys from it (the terminal UI's RadioReference panel and its config save); the
+   API token never reaches it. The stop wipes the keys from the published copy and the consumer's, whatever else
+   stays. */
+static void
+stopped_session_opts_snapshot_keeps_no_api_key(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    DSD_SNPRINTF(opts.rdio_api_key, sizeof opts.rdio_api_key, "%s", "rdio-test-key");
+    DSD_SNPRINTF(opts.rr_app_key, sizeof opts.rr_app_key, "%s", "rr-test-key");
+    DSD_SNPRINTF(opts.api_token, sizeof opts.api_token, "%s", "api-test-token");
+    DSD_SNPRINTF(opts.rr_username, sizeof opts.rr_username, "%s", "listener");
+    dsd_app_frontend_runtime_start(&opts, &state);
+    const dsd_opts* snapshot = dsd_app_get_latest_opts_snapshot();
+    check(snapshot && strcmp(snapshot->rdio_api_key, "rdio-test-key") == 0
+              && strcmp(snapshot->rr_app_key, "rr-test-key") == 0 && snapshot->api_token[0] == '\0',
+          "a running session's options snapshot has the API keys its frontends read, never the token");
+    dsd_app_opts_snapshot_consumer_wipe_keys();
+    check(snapshot && opts_api_keys_are_empty(snapshot), "a reader's wipe clears its options buffer's API keys");
+    snapshot = dsd_app_get_latest_opts_snapshot();
+    check(snapshot && strcmp(snapshot->rr_app_key, "rr-test-key") == 0,
+          "its next read in a running session copies the options again");
+    dsd_app_frontend_runtime_stop();
+    /* A reader that reads no more wipes its own buffer, with no next read. */
+    const dsd_opts* last_read = snapshot;
+    dsd_app_opts_snapshot_consumer_wipe_keys();
+    check(last_read && opts_api_keys_are_empty(last_read),
+          "a reader that read its last keeps no API key in its buffer");
+    snapshot = dsd_app_get_latest_opts_snapshot();
+    check(snapshot && opts_api_keys_are_empty(snapshot), "a stopped session's options snapshot keeps no API key");
+    check(snapshot && strcmp(snapshot->rr_username, "listener") == 0,
+          "a stopped session's options snapshot keeps the rest");
+    DSD_SECURE_ZERO(opts.rdio_api_key, sizeof opts.rdio_api_key);
+    DSD_SECURE_ZERO(opts.rr_app_key, sizeof opts.rr_app_key);
+    DSD_SECURE_ZERO(opts.api_token, sizeof opts.api_token);
+    freeState(&state);
+}
+
 /* Known stream bytes: RC4 with a nine-byte zero key after drop 256;
  * AES-128/256 OFB with zero key/IV after the first block (OpenSSL oracle).
  * Record the plaintext emitted by the real voice pipeline, not just mute flags. */
@@ -713,6 +773,7 @@ int
 main(void) {
     bootstrap_snapshot_secrets();
     stopped_session_snapshot_keeps_no_key();
+    stopped_session_opts_snapshot_keeps_no_api_key();
     zero_key_voice();
     presence_follows_material();
     test_tetra_air_keys();

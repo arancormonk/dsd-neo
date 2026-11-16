@@ -29,6 +29,8 @@ static int g_session_open;
 static int g_search_session_ends;
 static int g_snapshot_key_wipes;
 static int g_snapshot_keys_wiped_with_the_feed_stopped;
+static int g_opts_snapshot_key_wipes;
+static int g_opts_snapshot_keys_wiped_with_the_feed_stopped;
 
 void
 dsd_app_command_session_set_open(int open) { // NOLINT(misc-use-internal-linkage)
@@ -183,6 +185,12 @@ dsd_app_snapshot_wipe_keys(void) {
 }
 
 void
+dsd_app_opts_snapshot_wipe_keys(void) {
+    g_opts_snapshot_key_wipes++;
+    g_opts_snapshot_keys_wiped_with_the_feed_stopped = g_hooks.publish_opts_snapshot == NULL;
+}
+
+void
 dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     g_opts_snapshot_calls++;
@@ -217,7 +225,8 @@ main(void) {
        the previous one's last call. */
     dsd_app_frontend_runtime_start(NULL, NULL);
     assert(g_session_open == 1);
-    assert(g_notification_resets == 0 && g_search_session_ends == 0 && g_snapshot_key_wipes == 0);
+    assert(g_notification_resets == 0 && g_search_session_ends == 0 && g_snapshot_key_wipes == 0
+           && g_opts_snapshot_key_wipes == 0);
     /* A silent input's wait asks the queue whether a command waits (issue #634). */
     assert(g_controls_pending == dsd_app_commands_pending);
     assert(g_controls_need_frame_loop == dsd_app_commands_need_frame_loop);
@@ -250,6 +259,8 @@ main(void) {
     /* The last state snapshot outlives the session, its key copies do not: wiped once no publication can bring them
        back. */
     assert(g_snapshot_key_wipes == 1 && g_snapshot_keys_wiped_with_the_feed_stopped);
+    /* So do the options snapshot's API keys. */
+    assert(g_opts_snapshot_key_wipes == 1 && g_opts_snapshot_keys_wiped_with_the_feed_stopped);
     /* So does a Signal search status a rejected start left with no coordinator to stop it. */
     assert(g_search_session_ends == 1);
     assert(g_session_open == 0);
