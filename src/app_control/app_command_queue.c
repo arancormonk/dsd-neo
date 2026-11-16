@@ -6986,7 +6986,7 @@ cfg_mode_is_analog_family(const dsd_opts* opts, dsdneoUserDecodeMode mode) {
     return (mode == DSDCFG_MODE_ANALOG || mode == DSDCFG_MODE_AM) && opts->m17encoder != 1;
 }
 
-/* A running raw I/Q stream can run the mode (issue #743): the plan its restart would make, asked from its spec. */
+/* A raw I/Q stream, running or not, can run the mode (issue #743): the plan its start would make, from its spec. */
 static int
 rr_apply_check_iq_stream(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
     char why[192];
@@ -7010,7 +7010,8 @@ rr_apply_check_iq_stream(const dsd_opts* opts, dsd_state* state, dsdneoUserDecod
    refusal names the rate the replay keeps, as the mode change's own does (decode_mode_replan_replay()). */
 static int
 rr_apply_check_replay(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
-    if (dsd_opts_input_is_iq_stream(opts) && state->rtl_ctx) {
+    /* A stream's plan comes from its spec, so it is asked whether the stream runs or not. */
+    if (dsd_opts_input_is_iq_stream(opts)) {
         return rr_apply_check_iq_stream(opts, state, mode);
     }
     if (!dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
