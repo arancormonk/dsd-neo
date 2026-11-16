@@ -49,11 +49,13 @@ ensure_opts_mu_init(void) {
     }
 }
 
-/* The secrets an options copy holds: the rdio-scanner and RadioReference API keys, which a frontend reads from its copy
-   (the terminal UI's RadioReference panel and its config save), and the API token, which never reaches one. */
+/* The secrets an options copy holds: the rdio-scanner API key and URL (a URL can carry credentials) and the
+   RadioReference API key, which a frontend reads from its copy (the terminal UI's RadioReference panel and its config
+   save), and the API token, which never reaches one. */
 static void
 ui_opts_snapshot_wipe_key_copies(dsd_opts* snap) {
     DSD_SECURE_ZERO(snap->rdio_api_key, sizeof snap->rdio_api_key);
+    DSD_SECURE_ZERO(snap->rdio_api_url, sizeof snap->rdio_api_url);
     DSD_SECURE_ZERO(snap->rr_app_key, sizeof snap->rr_app_key);
     DSD_SECURE_ZERO(snap->api_token, sizeof snap->api_token);
 }

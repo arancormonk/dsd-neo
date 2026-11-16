@@ -59,9 +59,10 @@ void dsd_app_snapshot_consumer_wipe_keys(void);
 const dsd_opts* dsd_app_get_latest_opts_snapshot(void);
 
 /**
- * @brief Wipe the API keys (rdio_api_key, rr_app_key, api_token) of the buffer dsd_app_get_latest_opts_snapshot()
- * returns (DSD_SECURE_ZERO), as the stop wipes the published copy's. Called by the reading thread once it reads no
- * more, as dsd_app_snapshot_consumer_wipe_keys() is. A later read copies the published options again.
+ * @brief Wipe the API keys and the rdio-scanner URL (rdio_api_key, rdio_api_url, rr_app_key, api_token) of the buffer
+ * dsd_app_get_latest_opts_snapshot() returns (DSD_SECURE_ZERO), as the stop wipes the published copy's. Called by the
+ * reading thread once it reads no more, as dsd_app_snapshot_consumer_wipe_keys() is. A later read copies the published
+ * options again.
  */
 void dsd_app_opts_snapshot_consumer_wipe_keys(void);
 /** Read configured decoder settings from matching frontend snapshots. The state snapshot also
