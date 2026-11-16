@@ -8577,10 +8577,11 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   longer parses `audio_in_dev`.
 - Targets:
   - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers (the recorded rate chain's check,
-    `iq_rate_chain.c`), and the live rate plan; no SDR dependency
+    `iq_rate_chain.c`), the live rate plan, the general rate plan (`iq_rate_plan_general.c`) and the network I/Q spec
+    and format names (`iq_net_spec.c`); no SDR dependency
   - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, SoapySDR, and native Airspy backends; provides
     constellation/eye/spectrum snapshots, optional bias-tee (RTL path), and auto-PPM hooks
-    - `dsd-neo_io_iq_net` (OBJECT, folded in) — the network I/Q input core: spec, wire formats, socket reader
+    - `dsd-neo_io_iq_net` (OBJECT, folded in) — the network I/Q input core: wire-format converters, socket reader
     - Built when `DSD_HAS_RADIO` is true (RTL, Soapy, or Airspy available, or the pipeline explicitly forced on); otherwise provided as an INTERFACE stub target
   - `dsd-neo_io_audio` — network audio/input backends: UDP PCM16LE input, TCP PCM16LE input, UDP audio output helpers,
     and M17 UDP helpers
@@ -9422,9 +9423,14 @@ Key public headers:
     Autogain."; the capture's gain is published), no PPM correction (the applied one is 0, and no line says the source
     takes none), so nothing is logged as unsupported. Tests: `IO_RTL_CAPTURE_WRITES` (`capture_records_gain_mode`),
     `IO_RTL_REPLAY_RETUNE_REJECT`.
-- Network I/Q input core (issue #743): `include/dsd-neo/io/iq_net.h`, `src/io/radio/iq_net_{spec,format,rate,reader}.c`
-  (private `iq_net_internal.h`), object target `dsd-neo_io_iq_net` folded into `dsd-neo_io_radio`; radio builds
-  only (the header's declarations sit under `USE_RADIO`). It knows nothing of the input ring, resampler or decoder.
+- Network I/Q input core (issue #743): `include/dsd-neo/io/iq_net.h`, `src/io/radio/iq_net_{format,rate,reader}.c`
+  (private `iq_net_internal.h`), object target `dsd-neo_io_iq_net` folded into `dsd-neo_io_radio`; radio builds only
+  (the header's declarations sit under `USE_RADIO`). The spec and the wire-format names and sizes are in every build:
+  `include/dsd-neo/io/iq_net_spec.h`, `src/io/iq/iq_net_spec.c` in `dsd-neo_io_iq` (private
+  `src/io/iq/iq_net_spec_internal.h`, which the reader and `IO_IQ_NET` include), so the runtime (input rate policy,
+  and the CLI and config that read a stream spec) parses one without radio support. It keeps its own field splitter:
+  the shared one (`runtime/spec_fields.h`) is in `dsd-neo_runtime`, which links `dsd-neo_io_iq`, so using it here
+  would make a link cycle. It knows nothing of the input ring, resampler or decoder.
   - Spec: `dsd_iq_net_spec_parse()` reads `iqtcp:HOST:PORT:RATE:FORMAT[:FREQ]` / `iqudp:BIND:PORT:RATE:FORMAT[:FREQ]`
     with its own splitter that keeps empty fields, fields checked in order so the message names the first bad one
     (and the expected shape); PORT 1..65535, RATE whole Hz with k/M (>= 8000), FREQ Hz with k/M/G rounded half up

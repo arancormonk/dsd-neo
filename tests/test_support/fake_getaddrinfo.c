@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 
 /* The first answer is set by the test before anything looks the name up; the later one can change while a reader
    thread looks it up, so it is atomic (an IPv4 address held in an int). */
@@ -23,6 +24,8 @@ static uint32_t g_first_answer = 0x7F000001U;
 static atomic_int g_later_answer;
 static atomic_int g_lookups;
 static atomic_int g_non_ipv4_lookups;
+static atomic_int g_hold;
+static atomic_int g_held;
 
 /* One answer: the addrinfo and the address it points at, freed together. */
 typedef struct {
@@ -56,6 +59,30 @@ dsd_fake_resolver_non_ipv4_lookups(void) {
     return atomic_load(&g_non_ipv4_lookups);
 }
 
+void
+dsd_fake_resolver_hold(int held) {
+    atomic_store(&g_hold, held ? 1 : 0);
+}
+
+int
+dsd_fake_resolver_held(void) {
+    return atomic_load(&g_held);
+}
+
+/* A lookup that waits while the test holds the resolver. */
+static void
+fake_resolver_wait_hold(void) {
+    if (!atomic_load(&g_hold)) {
+        return;
+    }
+    atomic_fetch_add(&g_held, 1);
+    const struct timespec tick = {0, 1000000L};
+    while (atomic_load(&g_hold)) {
+        (void)nanosleep(&tick, NULL);
+    }
+    atomic_fetch_sub(&g_held, 1);
+}
+
 int
 getaddrinfo(const char* node, const char* service, const struct addrinfo* hints, struct addrinfo** res) {
     (void)service;
@@ -63,6 +90,8 @@ getaddrinfo(const char* node, const char* service, const struct addrinfo* hints,
         return EAI_FAIL;
     }
     *res = NULL;
+    /* A hold holds every name, as a resolver that does not answer does. */
+    fake_resolver_wait_hold();
     if (!node || strcmp(node, DSD_FAKE_RESOLVER_HOST) != 0) {
         return EAI_NONAME;
     }

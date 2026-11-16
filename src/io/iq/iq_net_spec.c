@@ -4,18 +4,75 @@
  */
 
 /*
- * The `iqtcp:` / `iqudp:` input spec: parse and canonical text.
+ * The `iqtcp:` / `iqudp:` input spec: parse and canonical text, and the wire formats' names and sizes. Socket-free, so
+ * it is built into dsd-neo_io_iq for every build; the reader and the converters are in src/io/radio/iq_net_*.c.
  */
 
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/io/iq_net.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <stdint.h>
 #include <string.h>
 
-#include "iq_net_internal.h"
+#include "iq_net_spec_internal.h"
 
 enum { IQ_NET_FIELDS_MAX = 6, IQ_NET_FIELD_TEXT_MAX = 512 };
+
+/* ---- Wire-format names ---- */
+
+typedef struct {
+    dsd_iq_net_format format;
+    const char* name;
+    size_t sample_bytes;
+} iq_net_format_info;
+
+static const iq_net_format_info k_formats[] = {
+    {DSD_IQ_NET_FORMAT_CU8, "cu8", 2U},   {DSD_IQ_NET_FORMAT_CS8, "cs8", 2U},   {DSD_IQ_NET_FORMAT_CS16, "cs16", 4U},
+    {DSD_IQ_NET_FORMAT_CS32, "cs32", 8U}, {DSD_IQ_NET_FORMAT_CF32, "cf32", 8U},
+};
+
+static const iq_net_format_info*
+iq_net_format_lookup(dsd_iq_net_format format) {
+    for (size_t i = 0; i < sizeof(k_formats) / sizeof(k_formats[0]); i++) {
+        if (k_formats[i].format == format) {
+            return &k_formats[i];
+        }
+    }
+    return NULL;
+}
+
+const char*
+dsd_iq_net_format_name(dsd_iq_net_format format) {
+    const iq_net_format_info* info = iq_net_format_lookup(format);
+    return info ? info->name : NULL;
+}
+
+dsd_iq_net_format
+dsd_iq_net_format_from_name(const char* name) {
+    if (!name) {
+        return DSD_IQ_NET_FORMAT_NONE;
+    }
+    for (size_t i = 0; i < sizeof(k_formats) / sizeof(k_formats[0]); i++) {
+        const char* want = k_formats[i].name;
+        size_t j = 0;
+        while (want[j] != '\0'
+               && (name[j] == want[j] || (name[j] >= 'A' && name[j] <= 'Z' && name[j] + 32 == want[j]))) {
+            j++;
+        }
+        if (want[j] == '\0' && name[j] == '\0') {
+            return k_formats[i].format;
+        }
+    }
+    return DSD_IQ_NET_FORMAT_NONE;
+}
+
+size_t
+dsd_iq_net_format_sample_bytes(dsd_iq_net_format format) {
+    const iq_net_format_info* info = iq_net_format_lookup(format);
+    return info ? info->sample_bytes : 0U;
+}
+
+/* ---- Spec ---- */
 
 static const char*
 iq_net_kind_prefix(dsd_iq_net_kind kind) {

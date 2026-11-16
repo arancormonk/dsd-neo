@@ -18403,13 +18403,44 @@ if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_iq_net io/test_io_iq_net.c)
     target_include_directories(
         dsd-neo_test_io_iq_net
-        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/src/io/iq
     )
     target_link_libraries(
         dsd-neo_test_io_iq_net
-        PRIVATE dsd-neo_io_iq_net dsd-neo_runtime dsd-neo_dsp dsd-neo_platform
+        PRIVATE
+            dsd-neo_io_iq_net
+            dsd-neo_io_iq
+            dsd-neo_runtime
+            dsd-neo_dsp
+            dsd-neo_platform
     )
     add_test(NAME IO_IQ_NET COMMAND dsd-neo_test_io_iq_net)
+
+    # The reader's host lookup does not hold up a stop (#743): POSIX, since the
+    # executable answers its own getaddrinfo() to hold a lookup.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_io_iq_net_resolve
+            io/test_io_iq_net_resolve.c
+            test_support/fake_getaddrinfo.c
+        )
+        target_include_directories(
+            dsd-neo_test_io_iq_net_resolve
+            PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+        )
+        target_link_libraries(
+            dsd-neo_test_io_iq_net_resolve
+            PRIVATE
+                dsd-neo_io_iq_net
+                dsd-neo_io_iq
+                dsd-neo_runtime
+                dsd-neo_dsp
+                dsd-neo_platform
+        )
+        add_test(NAME IO_IQ_NET_RESOLVE COMMAND dsd-neo_test_io_iq_net_resolve)
+    endif()
 
     add_executable(dsd-neo_test_io_rtl_auto_ppm io/test_io_rtl_auto_ppm.cpp)
     target_include_directories(

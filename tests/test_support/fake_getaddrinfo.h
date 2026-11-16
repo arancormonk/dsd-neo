@@ -43,6 +43,15 @@ int dsd_fake_resolver_lookups(void);
 /** @brief Lookups since the last reset whose hints did not ask for AF_INET alone. */
 int dsd_fake_resolver_non_ipv4_lookups(void);
 
+/**
+ * @brief Hold every lookup, of any name, until released (@p held 0), as a resolver that does not answer holds
+ *        getaddrinfo(); releasing lets the held ones answer.
+ */
+void dsd_fake_resolver_hold(int held);
+
+/** @brief Lookups waiting in a hold now. */
+int dsd_fake_resolver_held(void);
+
 #ifdef __cplusplus
 }
 #endif

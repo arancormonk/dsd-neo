@@ -9,63 +9,12 @@
 
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/iq_net.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include "iq_net_internal.h"
-
-typedef struct {
-    dsd_iq_net_format format;
-    const char* name;
-    size_t sample_bytes;
-} iq_net_format_info;
-
-static const iq_net_format_info k_formats[] = {
-    {DSD_IQ_NET_FORMAT_CU8, "cu8", 2U},   {DSD_IQ_NET_FORMAT_CS8, "cs8", 2U},   {DSD_IQ_NET_FORMAT_CS16, "cs16", 4U},
-    {DSD_IQ_NET_FORMAT_CS32, "cs32", 8U}, {DSD_IQ_NET_FORMAT_CF32, "cf32", 8U},
-};
-
-static const iq_net_format_info*
-iq_net_format_lookup(dsd_iq_net_format format) {
-    for (size_t i = 0; i < sizeof(k_formats) / sizeof(k_formats[0]); i++) {
-        if (k_formats[i].format == format) {
-            return &k_formats[i];
-        }
-    }
-    return NULL;
-}
-
-const char*
-dsd_iq_net_format_name(dsd_iq_net_format format) {
-    const iq_net_format_info* info = iq_net_format_lookup(format);
-    return info ? info->name : NULL;
-}
-
-dsd_iq_net_format
-dsd_iq_net_format_from_name(const char* name) {
-    if (!name) {
-        return DSD_IQ_NET_FORMAT_NONE;
-    }
-    for (size_t i = 0; i < sizeof(k_formats) / sizeof(k_formats[0]); i++) {
-        const char* want = k_formats[i].name;
-        size_t j = 0;
-        while (want[j] != '\0'
-               && (name[j] == want[j] || (name[j] >= 'A' && name[j] <= 'Z' && name[j] + 32 == want[j]))) {
-            j++;
-        }
-        if (want[j] == '\0' && name[j] == '\0') {
-            return k_formats[i].format;
-        }
-    }
-    return DSD_IQ_NET_FORMAT_NONE;
-}
-
-size_t
-dsd_iq_net_format_sample_bytes(dsd_iq_net_format format) {
-    const iq_net_format_info* info = iq_net_format_lookup(format);
-    return info ? info->sample_bytes : 0U;
-}
 
 /* cu8's rails convert to +-1.0 and the codes next to them to +-0.992 (rtl_device_signal_clip_level()'s single-pass
    level). cs8's rails convert to -1.0 and 127/128 = 0.9921875, the codes inside them to at most 0.984 in magnitude;

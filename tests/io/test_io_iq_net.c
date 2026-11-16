@@ -15,6 +15,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/iq_net.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -39,6 +40,7 @@
 #endif
 
 #include "iq_net_internal.h"
+#include "iq_net_spec_internal.h"
 
 #ifdef MSG_NOSIGNAL
 #define TEST_SEND_FLAGS MSG_NOSIGNAL

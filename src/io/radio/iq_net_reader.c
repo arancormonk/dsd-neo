@@ -21,6 +21,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/iq_net.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -41,6 +42,7 @@
 #include <sys/socket.h>
 #endif
 
+#include "../iq/iq_net_spec_internal.h"
 #include "iq_net_internal.h"
 
 /* A TCP read leaves room for a carried partial sample in front, so one call never exceeds the receive buffer. */
