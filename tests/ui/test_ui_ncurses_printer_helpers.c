@@ -3504,6 +3504,7 @@ test_slot_row_shows_its_own_calls_key(void) {
         rc |= capture_check("the Loaded lines show no Hytera key the user never loaded", "Hytera", 0);
         rc |= capture_check(with_direct ? "the Loaded lines show the key set directly" : "no key is loaded",
                             with_direct ? "Moto BP Key Loaded (not forced): 070" : "Moto BP Key Loaded", with_direct);
+        dsd_state_ext_free_all(state);
         free(state);
     }
     assert(rc == 0);
