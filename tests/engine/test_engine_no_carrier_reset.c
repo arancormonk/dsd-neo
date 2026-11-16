@@ -380,6 +380,11 @@ reset_rtl_profile_fakes(void) {
 // call does on the invalid socket every other case configures.
 static int g_rigctl_setfreq_ok = 0;
 static int g_rigctl_setfreq_calls = 0;
+/* The rigctl peer's io_control leg, faked: a tune the peer confirms, as io_control_set_freq_tagged() records it (the
+   frequency sent, and the decoder's tuner frequency). Only while g_rigctl_io_fake is set and rigctl is in use. */
+static int g_rigctl_io_fake = 0;
+static uint32_t g_rigctl_io_freq = 0U;
+
 static long int g_rigctl_setfreq_freq = 0;
 // The -B requests the legacy rigctl leg makes (issue #589); the peer takes each one.
 static int g_rigctl_setmod_calls = 0;
@@ -1082,6 +1087,25 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
     g_rigctl_setfreq_calls++;
     g_rigctl_setfreq_freq = freq;
     return g_rigctl_setfreq_ok ? true : false;
+}
+
+int __real_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
+                                      uint64_t* out_pending_id);
+int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
+                                      uint64_t* out_pending_id);
+
+int
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+    if (g_rigctl_io_fake && opts && opts->use_rigctl == 1) {
+        if (out_pending_id) {
+            *out_pending_id = 0U;
+        }
+        g_rigctl_io_freq = freq_hz;
+        opts->rigctl_sent_freq_hz = freq_hz;
+        opts->rtlsdr_center_freq = freq_hz;
+        return 0;
+    }
+    return __real_io_control_set_freq_tagged(opts, state, freq_hz, out_pending_id);
 }
 
 bool
@@ -11879,6 +11903,18 @@ enum { DMR_MANUAL_OWNER_DMR = 0, DMR_MANUAL_OWNER_UNKNOWN, DMR_MANUAL_OWNER_P25,
 static const char* const k_dmr_manual_owner_names[] = {"", " (owner not known yet)", " (P25 owns the trunk)",
                                                        " (NXDN owns the trunk)"};
 
+/* After dmr_manual_setup(): the trunk's @p owner, with every protocol decoded unless the DMR machine owns it. */
+static void
+dmr_manual_set_owner(dsd_opts* opts, dsd_state* state, int owner) {
+    static const dsd_trunk_recovery_protocol owners[] = {DSD_TRUNK_RECOVERY_DMR, DSD_TRUNK_RECOVERY_UNKNOWN,
+                                                         DSD_TRUNK_RECOVERY_P25, DSD_TRUNK_RECOVERY_NXDN};
+    if (owner != DMR_MANUAL_OWNER_DMR) {
+        opts->frame_p25p1 = opts->frame_p25p2 = 1;
+        opts->frame_nxdn48 = opts->frame_nxdn96 = 1;
+        state->trunk_recovery_protocol = owners[owner];
+    }
+}
+
 /* One manual @p move off the followed call's voice channel, a DMR sync current, under @p owner. With the owner not
    known yet (no CRC-valid DMR CSBK has named it) the DMR machine judges the move. With P25 or NXDN the owner, the
    last control channel decoded, the receiver can still have reached a DMR carrier sending no CSBK (a conventional
@@ -11892,13 +11928,7 @@ dmr_manual_move_case(int move, int owner) {
         return 1;
     }
     int rc = dmr_manual_setup(opts, state, DMR_MANUAL_VC);
-    if (owner != DMR_MANUAL_OWNER_DMR) {
-        static const dsd_trunk_recovery_protocol owners[] = {DSD_TRUNK_RECOVERY_DMR, DSD_TRUNK_RECOVERY_UNKNOWN,
-                                                             DSD_TRUNK_RECOVERY_P25, DSD_TRUNK_RECOVERY_NXDN};
-        opts->frame_p25p1 = opts->frame_p25p2 = 1;
-        opts->frame_nxdn48 = opts->frame_nxdn96 = 1;
-        state->trunk_recovery_protocol = owners[owner];
-    }
+    dmr_manual_set_owner(opts, state, owner);
     char name[96];
     DSD_SNPRINTF(name, sizeof name, "%s%s", k_dmr_manual_names[move], k_dmr_manual_owner_names[owner]);
     char what[192];
@@ -11920,6 +11950,86 @@ dmr_manual_move_case(int move, int owner) {
     return rc;
 }
 
+/* A Return to CC with the receiver already on the control channel leaves nothing behind, whoever judges it: the DMR
+   machine under DMR trunking, the engine's reading of the receiver (dsd_engine_receiver_frequency()) under P25 or
+   NXDN trunking. The followed call's privacy stays, and nothing is held. */
+static int
+dmr_manual_stay_cases(void) {
+    static const int owners[] = {DMR_MANUAL_OWNER_DMR, DMR_MANUAL_OWNER_P25, DMR_MANUAL_OWNER_NXDN};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof owners / sizeof owners[0]; i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_manual_setup(opts, state, DMR_MANUAL_CC);
+        dmr_manual_set_owner(opts, state, owners[i]);
+        g_rtl_tune_calls = 0;
+        g_dmr_holds = g_dmr_forgets = 0;
+        char what[192];
+        DSD_SNPRINTF(what, sizeof what, "a Return to CC already on the control channel%s is applied and tunes",
+                     k_dmr_manual_owner_names[owners[i]]);
+        rc |= expect_true(what, dmr_manual_press(opts, state, DMR_MANUAL_RETURN_CC) == 1 && g_rtl_tune_calls >= 1
+                                    && g_rtl_tune_freq == (uint32_t)DMR_MANUAL_CC);
+        DSD_SNPRINTF(what, sizeof what,
+                     "a Return to CC already on the control channel%s holds nothing and keeps the privacy (holds %d, "
+                     "so 0x%02X)",
+                     k_dmr_manual_owner_names[owners[i]], g_dmr_holds, (unsigned)state->dmr_so);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U
+                                    && g_dmr_holds == 0 && state->dmr_so == 0x40U);
+        dmr_manual_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* Under P25 trunking with DMR decoding on, the operator's move on a rigctl peer after a reconnect: the peer
+   restarted on a carrier of its own (the voice channel, whose Basic Privacy call plays), nothing was sent on the new
+   connection (dsd_opts::rigctl_sent_freq_hz 0), and the decoder's tuner frequency still names what the old peer was
+   last sent, the control channel. The Return to CC there leaves the carrier the peer is on: the engine's reading,
+   the frequency the peer last confirmed, is unknown, which counts as a leave, so the call's privacy is forgotten and
+   the voice held. The reading itself: unknown before anything is sent, then what the peer confirmed, whatever the
+   tuner frequency. */
+static int
+test_rigctl_reconnect_move_back_leaves(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_manual_setup(opts, state, DMR_MANUAL_VC);
+    dmr_manual_set_owner(opts, state, DMR_MANUAL_OWNER_P25);
+    opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_TCP;
+    state->rtl_ctx = NULL;
+    opts->rtlsdr_center_freq = (uint32_t)DMR_MANUAL_CC;
+    opts->rigctl_sent_freq_hz = 0U;
+    rc |= expect_true("after a reconnect the engine's reading of a rigctl peer is unknown",
+                      dsd_engine_receiver_frequency(opts, state) == 0U);
+    g_rigctl_io_fake = 1;
+    g_rigctl_io_freq = 0U;
+    g_dmr_holds = g_dmr_forgets = 0;
+    const int drained = dmr_manual_press(opts, state, DMR_MANUAL_RETURN_CC);
+    g_rigctl_io_fake = 0;
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what, "the Return to CC after a reconnect tunes the peer (tuned %u Hz)",
+                 (unsigned)g_rigctl_io_freq);
+    rc |= expect_true(what, drained == 1 && g_rigctl_io_freq == (uint32_t)DMR_MANUAL_CC);
+    rc |= expect_dmr_privacy_forgotten("the Return to CC after a reconnect", state, 70ULL);
+    DSD_SNPRINTF(what, sizeof what, "the Return to CC after a reconnect holds both slots, once (holds %d)",
+                 g_dmr_holds);
+    rc |=
+        expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U && g_dmr_holds == 1);
+    opts->rtlsdr_center_freq = (uint32_t)DMR_MANUAL_VC;
+    rc |= expect_true("the engine's reading of a rigctl peer is the frequency it confirmed, not the tuner frequency",
+                      dsd_engine_receiver_frequency(opts, state) == (uint32_t)DMR_MANUAL_CC);
+    opts->use_rigctl = 0;
+    dmr_manual_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Under DMR trunking a manual Return to CC, a channel cycle, a lockout and a skip retune through io_control, which runs
    neither the engine's tune hook nor a carrier boundary. Judged by the DMR machine as its own follows are, each move
    that leaves the followed call's carrier ends the call (its row keeping the FID), then forgets its privacy bit, FID,
@@ -11935,20 +12045,7 @@ test_dmr_manual_moves_forget_and_hold(void) {
             rc |= dmr_manual_move_case(move, owner);
         }
     }
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (init_test_runtime(&opts, &state) != 0) {
-        return 1;
-    }
-    rc |= dmr_manual_setup(opts, state, DMR_MANUAL_CC);
-    g_rtl_tune_calls = 0;
-    rc |= expect_true("a Return to CC already on the control channel is applied and tunes",
-                      dmr_manual_press(opts, state, DMR_MANUAL_RETURN_CC) == 1 && g_rtl_tune_calls >= 1
-                          && g_rtl_tune_freq == (uint32_t)DMR_MANUAL_CC);
-    rc |= expect_true("a Return to CC already on the control channel holds nothing",
-                      state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
-    dmr_manual_done(opts, state);
-    free_test_runtime(opts, state);
+    rc |= dmr_manual_stay_cases();
     return rc;
 }
 
@@ -17589,6 +17686,7 @@ main(void) {
     rc |= test_trunk_scan_park_judged_once();
     rc |= test_return_to_cc_judged_once();
     rc |= test_manual_hook_leg_judged_once();
+    rc |= test_rigctl_reconnect_move_back_leaves();
     rc |= test_walk_owns_the_tuner_through_its_settling();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();

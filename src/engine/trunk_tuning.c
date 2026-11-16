@@ -1143,7 +1143,12 @@ dsd_engine_receiver_hz(const dsd_opts* opts, const dsd_state* state) {
 
 uint32_t
 dsd_engine_receiver_frequency(const dsd_opts* opts, const dsd_state* state) {
-    return (opts && state) ? dsd_engine_receiver_hz(opts, state) : 0U;
+    if (!opts || !state) {
+        return 0U;
+    }
+    /* Not opts->rtlsdr_center_freq on rigctl: a reconnect keeps it at what the old peer was last sent, and the untyped
+       -Y step's rigctl leg does not set it. */
+    return opts->use_rigctl == 1 ? opts->rigctl_sent_freq_hz : dsd_engine_receiver_hz(opts, state);
 }
 
 /* After an accepted tune from @p from_hz (dsd_engine_receiver_hz() before it) to @p freq: when the tune moved the

@@ -162,9 +162,11 @@ void dsd_engine_legacy_tune_caches_forget(void);
  */
 void dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state);
 
-/** @brief Where the receiver is, as the engine's own judge of a tune reads it: the frequency the RTL stream last
- *  applied, else the decoder's tuner frequency (opts->rtlsdr_center_freq, which a rigctl tune sets once it is done).
- *  It makes no rigctl round trip. */
+/** @brief Where the receiver is, for the judge of an operator's move that reads no tuner: on a rigctl peer, the
+ *  frequency the peer last confirmed on this connection (opts->rigctl_sent_freq_hz, which every rigctl tune leg sets on
+ *  success; 0, unknown, after a connect or reconnect before anything was sent, which the judge counts as a leave);
+ *  otherwise the frequency the RTL stream last applied, else the decoder's tuner frequency (opts->rtlsdr_center_freq).
+ *  It makes no rigctl round trip. An outside retune of the peer (its own knob, another client) is not seen. */
 uint32_t dsd_engine_receiver_frequency(const dsd_opts* opts, const dsd_state* state);
 
 /**

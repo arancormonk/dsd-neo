@@ -9021,6 +9021,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dmr_enc_class_hold"
             "-Wl,--wrap=dmr_forget_call_privacy"
             "-Wl,--wrap=dmr_forget_call_decryption"
+            # A rigctl peer's io_control leg, faked where a case asks (the rigctl reconnect move).
+            "-Wl,--wrap=io_control_set_freq_tagged"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support

@@ -3307,16 +3307,18 @@ suite runs under this compiler.
   tune another trunk machine makes (P25, NXDN), or an operator's manual move under P25 or NXDN trunking on that hook
   leg, judged by the engine's reading of the tuner, which also forgets the DMR calls' privacy bit and talkgroup keys
   there; an operator's manual move under P25 or NXDN trunking with DMR decoding on that takes the io_control leg, judged
-  by the same reading of the receiver before the tune (`dsd_engine_receiver_frequency()`, no rigctl round trip) once the
-  move ended the left calls (`dmr_sm_note_foreign_operator_leave()`), since under `-fa` DMR voice can play on both ends
-  of it; with trunking off a manual move's own carrier boundary judges it). The two cases: a lockout or skip under DMR
-  trunking forgets the privacy bit once more in its no-carrier pass, which holds nothing, as every no-carrier pass; and
-  an operator's manual move with DMR decoding off on the io_control leg is judged by nobody, as no DMR frame is decoded
-  to read the left calls' privacy. Then each slot's encryption is unknown until that slot's call says: an LC that passed
-  its check (`CRCCorrect`, a RAS acceptance under `-F` included, header or embedded; a shape the decoder reads no
-  privacy from, such as Tait FID 0x58 or an unknown FID, says as much as such a call ever says), a PI header naming a
-  cipher the decoder knows (one that leaves the ALG ID 0 keeps the slot held, a Kirisun one forcing no classification
-  either), or a forced classification. A DMR frame judged clear only because nothing has said otherwise is unknown there
+  by the same reading of the receiver before the tune (`dsd_engine_receiver_frequency()`, no rigctl round trip: on a
+  rigctl peer the frequency it last confirmed on this connection, unknown after a reconnect and so a leave, never the
+  tuner frequency a reconnect leaves naming the old peer's) once the move ended the left calls
+  (`dmr_sm_note_foreign_operator_leave()`), since under `-fa` DMR voice can play on both ends of it; with trunking off a
+  manual move's own carrier boundary judges it). The two cases: a lockout or skip under DMR trunking forgets the privacy
+  bit once more in its no-carrier pass, which holds nothing, as every no-carrier pass; and an operator's manual move
+  with DMR decoding off on the io_control leg is judged by nobody, as no DMR frame is decoded to read the left calls'
+  privacy. Then each slot's encryption is unknown until that slot's call says: an LC that passed its check
+  (`CRCCorrect`, a RAS acceptance under `-F` included, header or embedded; a shape the decoder reads no privacy from,
+  such as Tait FID 0x58 or an unknown FID, says as much as such a call ever says), a PI header naming a cipher the
+  decoder knows (one that leaves the ALG ID 0 keeps the slot held, a Kirisun one forcing no classification either), or a
+  forced classification. A DMR frame judged clear only because nothing has said otherwise is unknown there
   (`mbe_dmr_slot_judge()`, `dsd_state::dmr_enc_class_held`), with X2-TDMA's rule below. A key forced onto every frame
   keys it as before: forced clear (`dsd_key_dmr_forced_clear()`) or a keyed transform the frame got with nothing asking
   for it (`-4` with a Basic or Hytera key). On the single-slot decoder under trunking (`-fr -T`), whose voice runs on
@@ -3343,9 +3345,9 @@ suite runs under this compiler.
   `ENGINE_NO_CARRIER_RESET` (`test_dmr_voice_held_until_the_call_says()`, `test_dmr_hold_edges()`,
   `test_run_first_landing_is_never_held()`, `test_scan_first_landing_is_never_held()`,
   `test_dmr_manual_moves_forget_and_hold()`, `test_trunk_scan_park_judged_once()`, `test_return_to_cc_judged_once()`,
-  `test_manual_hook_leg_judged_once()`, `park_judge_advance_falls_back()`, `park_judge_pending_first_park()`,
-  `park_judge_rotation_rolls_back()`, `park_judge_resume_fails_everywhere()`), `ENGINE_TRUNK_SCAN`, `ENGINE_RUN_SETUP`,
-  `ENGINE_REPLAY_DECODE_CLOCK`, `DMR_FLCO_PRIVACY_MODES`.
+  `test_manual_hook_leg_judged_once()`, `test_rigctl_reconnect_move_back_leaves()`, `park_judge_advance_falls_back()`,
+  `park_judge_pending_first_park()`, `park_judge_rotation_rolls_back()`, `park_judge_resume_fails_everywhere()`),
+  `ENGINE_TRUNK_SCAN`, `ENGINE_RUN_SETUP`, `ENGINE_REPLAY_DECODE_CLOCK`, `DMR_FLCO_PRIVACY_MODES`.
   P25 Phase 1 and Phase 2 use `p25_crypto_audio_output_permitted()`; Phase 2 also needs its decode gate. NXDN and
   dPMR use `nxdn_cipher_type` and the key the vocoder applies
   (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). X2-TDMA is judged per timeslot and
