@@ -5220,16 +5220,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     restarted UDP input (`apply_cfg_note_reopen()`); its WAV reopen refuses a pipe or device. The queue answers the
     runtime's controls-pending query (`dsd_app_commands_pending()`). Tests: `APP_COMMAND_QUEUE`, `RUNTIME_CONFIG_APPLY`,
     `UI_MENU_SERVICES`, `UI_TCP_AUDIO_CONNECT`.
-  - Replay tuning (issue #575): an I/Q replay plays the tuning its capture recorded and defers every other retune
-    unseen, so while the input in force is a replay (`dsd_opts_input_is_iq_replay()`) `MANUAL_TUNE` (the Spectrum tap),
-    `RTL_SET_FREQ` (the terminal's frequency entry, `=` or Input > `Frequency...`, Qt's Spectrum "Go to" and the API's
-    `rtl_set_freq`), `TUNER_RELEASE` (`CommandBridge::releaseTuner()`), `RETURN_CC` (refused ahead of its no-op cases,
-    trunking off or no control channel yet, so it never reads as done) and `CHANNEL_CYCLE` and `CHANNEL_CYCLE_PREV`
-    (every leg: LCN, P25 candidate, `-Y` row, trunk-scan target) are refused as failed commands with the toast "An I/Q
-    replay cannot retune." (`ui_cmd_refuse_fixed_tuning()`, which refuses an I/Q stream the same way with its own
-    reason, and `RIGCTL_CONNECT` / `RIGCTL_CONNECT_CFG` on either: a peer beside one would take the trunking retunes,
-    issue #743 B12), where they used to report a tune that never landed or fail
-    on the backend's deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their
+  - Replay and I/Q stream tuning (issues #575, #743): an I/Q replay plays the tuning its capture recorded and defers
+    every other retune unseen, and the program sending an I/Q stream picks its channel, so while the input in force has
+    fixed tuning (`dsd_opts_input_has_fixed_tuning()`) `MANUAL_TUNE` (the Spectrum tap), `RTL_SET_FREQ` (the terminal's
+    frequency entry, `=` or Input > `Frequency...`, Qt's Spectrum "Go to" and the API's `rtl_set_freq`),
+    `TUNER_RELEASE` (`CommandBridge::releaseTuner()`), `RETURN_CC` (refused ahead of its no-op cases, trunking off or no
+    control channel yet, so it never reads as done), `CHANNEL_CYCLE` and `CHANNEL_CYCLE_PREV` (every leg: LCN, P25
+    candidate, `-Y` row, trunk-scan target), and `RIGCTL_CONNECT` / `RIGCTL_CONNECT_CFG` (a peer beside either would
+    take the trunking retunes, issue #743 B12) are refused as failed commands by `ui_cmd_refuse_fixed_tuning()`, which
+    toasts the input's reason: "An I/Q replay cannot retune." on a replay, "An I/Q stream cannot retune: change the
+    channel in the sending program." on a stream. They used to report a tune that never landed or fail on the backend's
+    deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their
     main effect is on the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts
     point at a release; the running trunk scan's gate comes first among those, so a trunked target it parks on (trunking
     on, the target's) is refused as `Trunk scan active`, not `Trunking active` (issue #644 C-B1); every refusal of the
