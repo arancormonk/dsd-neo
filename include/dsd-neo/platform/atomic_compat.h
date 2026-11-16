@@ -144,6 +144,21 @@ dsd_atomic_u64_fetch_add_relaxed(dsd_atomic_u64* a, uint64_t delta) {
     return (uint64_t)InterlockedExchangeAdd64(&a->v, (LONG64)delta);
 }
 
+/* Stores @p desired when the value is *@p expected and returns 1; otherwise loads the value into *@p expected and
+   returns 0. */
+static inline int
+dsd_atomic_u64_compare_exchange_relaxed(dsd_atomic_u64* a, uint64_t* expected, uint64_t desired) {
+    if (!a || !expected) {
+        return 0;
+    }
+    const LONG64 old = InterlockedCompareExchange64(&a->v, (LONG64)desired, (LONG64)*expected);
+    if ((uint64_t)old == *expected) {
+        return 1;
+    }
+    *expected = (uint64_t)old;
+    return 0;
+}
+
 static inline uint64_t
 dsd_atomic_u64_load_acquire(const dsd_atomic_u64* a) {
     return dsd_atomic_u64_load_relaxed(a);
@@ -197,6 +212,18 @@ dsd_atomic_u64_fetch_add_relaxed(dsd_atomic_u64* a, uint64_t delta) {
         return 0;
     }
     return atomic_fetch_add_explicit(&a->v, delta, memory_order_relaxed);
+}
+
+/* Stores @p desired when the value is *@p expected and returns 1; otherwise loads the value into *@p expected and
+   returns 0. */
+static inline int
+dsd_atomic_u64_compare_exchange_relaxed(dsd_atomic_u64* a, uint64_t* expected, uint64_t desired) {
+    if (!a || !expected) {
+        return 0;
+    }
+    return atomic_compare_exchange_strong_explicit(&a->v, expected, desired, memory_order_relaxed, memory_order_relaxed)
+               ? 1
+               : 0;
 }
 
 static inline uint64_t

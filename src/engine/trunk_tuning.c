@@ -904,7 +904,8 @@ engine_fixed_tuning_result(const dsd_opts* opts) {
     return dsd_opts_input_is_iq_replay(opts) ? DSD_TRUNK_TUNE_RESULT_DEFERRED : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
 
-/* When the last fixed-tuning refusal was logged, on the real-time clock: the machines retry at their own pace. */
+/* When the last fixed-tuning refusal was logged, on the real-time clock: the machines retry at their own pace. The
+   decoder thread and the P25 watchdog both refuse, so the stamp is claimed by compare-exchange and one of them logs. */
 static dsd_atomic_u64 s_fixed_tuning_notice_ms;
 
 /* Each public tune entry refuses an input with fixed tuning before anything changes: no request is begun, nothing is
@@ -913,9 +914,9 @@ static dsd_atomic_u64 s_fixed_tuning_notice_ms;
 static dsd_trunk_tune_result
 engine_fixed_tuning_refusal(const dsd_opts* opts) {
     const uint64_t now_ms = dsd_realtime_mono_ms();
-    const uint64_t last_ms = dsd_atomic_u64_load_relaxed(&s_fixed_tuning_notice_ms);
-    if (last_ms == 0U || now_ms - last_ms >= 1000U) {
-        dsd_atomic_u64_store_relaxed(&s_fixed_tuning_notice_ms, now_ms);
+    uint64_t last_ms = dsd_atomic_u64_load_relaxed(&s_fixed_tuning_notice_ms);
+    if ((last_ms == 0U || now_ms - last_ms >= 1000U)
+        && dsd_atomic_u64_compare_exchange_relaxed(&s_fixed_tuning_notice_ms, &last_ms, now_ms)) {
         DSD_FPRINTF(stderr, "%s",
                     dsd_opts_input_is_iq_replay(opts)
                         ? "NOTICE: Retune ignored during IQ replay.\n"

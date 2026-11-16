@@ -88,6 +88,23 @@ test_fetch_add_single_thread(void) {
     return rc;
 }
 
+/* A compare-exchange stores only over the value expected, and hands back the value it found otherwise. */
+static int
+test_compare_exchange(void) {
+    int rc = 0;
+    dsd_atomic_u64 a;
+    dsd_atomic_u64_init(&a, 20U);
+    uint64_t expected = 19U;
+    rc |= expect_int("compare_exchange refuses a stale value",
+                     dsd_atomic_u64_compare_exchange_relaxed(&a, &expected, 30U), 0);
+    rc |= expect_u64("the refusal reports the value", expected, 20U);
+    rc |= expect_u64("the refusal stores nothing", dsd_atomic_u64_load_relaxed(&a), 20U);
+    rc |= expect_int("compare_exchange takes the value expected",
+                     dsd_atomic_u64_compare_exchange_relaxed(&a, &expected, 0xFFFFFFFF00000001ULL), 1);
+    rc |= expect_u64("the exchange stores all 64 bits", dsd_atomic_u64_load_relaxed(&a), 0xFFFFFFFF00000001ULL);
+    return rc;
+}
+
 static int
 test_multithread_increment(void) {
     int rc = 0;
@@ -136,6 +153,7 @@ main(void) {
     int rc = 0;
     rc |= test_init_load_store();
     rc |= test_fetch_add_single_thread();
+    rc |= test_compare_exchange();
     rc |= test_multithread_increment();
     rc |= test_release_acquire_smoke();
     return rc ? 1 : 0;
