@@ -37,11 +37,13 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <errno.h>
 #include <math.h>
 #include <memory>
 #include <mutex>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -105,6 +107,57 @@ start_thread(dsd_thread_t* thread, dsd_thread_fn fn, void* arg) {
     const int created = dsd_thread_create(thread, fn, arg);
     assert(created == 0);
 }
+
+/* ---- Logger: counts the reader's and the stream's lines and keeps the test's output clean ---- */
+
+enum LogKind : int {
+    kLogStall,
+    kLogResume,
+    kLogLost,
+    kLogReconnected,
+    kLogMalformed,
+    kLogRefused,
+    kLogBindRefused,
+    kLogNoPlan,
+    kLogKinds,
+};
+
+const char* const kLogTexts[kLogKinds] = {
+    "I/Q stream: no samples from",
+    "I/Q stream: samples from",
+    "I/Q stream: lost the connection",
+    "I/Q stream: reconnected to",
+    "does not hold whole cs16 samples; set the sender's packet size to a multiple of 4 bytes",
+    "I/Q stream: cannot connect to",
+    "I/Q stream: cannot receive on",
+    "I/Q stream: cannot run at the 144000 Hz DSP rate TETRA needs",
+};
+
+std::atomic<int> g_log_counts[kLogKinds];
+
+int
+log_count(LogKind kind) {
+    return g_log_counts[kind].load();
+}
+
+} // namespace
+
+void
+dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
+    (void)level;
+    char text[1024];
+    va_list ap;
+    va_start(ap, format);
+    (void)DSD_VSNPRINTF(text, sizeof text, format, ap);
+    va_end(ap);
+    for (int k = 0; k < kLogKinds; k++) {
+        if (strstr(text, kLogTexts[k]) != nullptr) {
+            g_log_counts[k].fetch_add(1);
+        }
+    }
+}
+
+namespace {
 
 /* ---- The clock the reader declares stalls on ---- */
 
@@ -511,6 +564,26 @@ test_blocks_exactly_one_chunk(void) {
     tcp_close(t);
 }
 
+/* level_waits_for_a_block: a read of a few samples publishes no level of its own: a lone full-scale pair waits for the
+ * reads after it, and the level comes once they span a block, measured over all of it. */
+void
+test_level_waits_for_a_block(void) {
+    tcp_rig t;
+    tcp_open(t, kRate, 0U, 1);
+    const uint8_t rail[4] = {0xFFU, 0x7FU, 0xFFU, 0x7FU};
+    send_all(t.conn, rail, sizeof rail);
+    assert(wait_until([&] { return ingest(t.s).reader.samples >= 1U; }, kWaitMs));
+    dsd_input_level_snapshot level{};
+    assert(rtl_stream_test_input_level_read(&level) == 0);
+    tcp_send_pairs(t, kBlock - 1U);
+    assert(wait_until([&] { return rtl_stream_test_input_level_read(&level) == 1; }, kWaitMs));
+    assert(level.source == DSD_INPUT_LEVEL_SOURCE_NET_IQ);
+    assert(level.sample_count == (uint64_t)kBlockFloats);
+    assert(fabs(level.peak_dbfs) < 0.01);
+    assert(level.clip_pct > 0.0 && level.clip_pct < 1.0);
+    tcp_close(t);
+}
+
 /* blocks_after_upsampling_and_gaps: a 24 kHz stream resampled to the 48 kHz DSP rate makes blocks of N, and a UDP
  * datagram the locked sender lost (not whole samples) leaves a gap mark that resets the demod at the next block, which
  * is still a whole block, while the resampler starts over. */
@@ -568,6 +641,8 @@ test_ring_full_drops_whole_blocks(void) {
     const uint32_t gen = rtl_stream_output_generation();
     rtl_stream_test_live_sequence live_before{};
     rtl_stream_test_get_live_sequence(&live_before);
+    rtl_stream_test_replay_state gaps_before{};
+    assert(dsd_rtl_stream_test_get_replay_state(&gaps_before) == 0);
     tcp_send_pairs(t, (size_t)kRate * 3U);
     assert(wait_until([&] { return ingest(t.s).blocks_dropped > 0U; }, kWaitMs));
     rtl_net_iq_state st = ingest(t.s);
@@ -586,6 +661,10 @@ test_ring_full_drops_whole_blocks(void) {
     tcp_send_pairs(t, kRate / 2U);
     assert(wait_until([&] { return blocks_taken() >= taken + (size_t)(kRate / 2U / kBlock); }, kWaitMs));
     expect_blocks_exactly(kBlockFloats);
+    /* The drops left a gap mark, and the demod reset at it once it drained to it. */
+    rtl_stream_test_replay_state gaps_after{};
+    assert(dsd_rtl_stream_test_get_replay_state(&gaps_after) == 0);
+    assert(gaps_after.input_gap_reset_count > gaps_before.input_gap_reset_count);
     tcp_close(t);
 }
 
@@ -620,8 +699,12 @@ test_tcp_reconnect_runs_the_boundary(void) {
     stream_open(t.s, tcp_spec(t.port, 24000U, "cs16", 426700000U).c_str(), 1);
     t.conn = accept_within(t.listener, kWaitMs);
     assert(t.conn >= 0);
+    blocks_reset();
     tcp_send_pairs(t, 4800U);
     assert(wait_until([&] { return rtl_device_has_stream(t.s.dev) == 1; }, kWaitMs));
+    /* The demod takes everything before the loss, so the ring is empty at the boundary. */
+    assert(wait_until([&] { return ingest(t.s).reader.samples >= 4800U; }, kWaitMs));
+    assert(wait_until([&] { return blocks_taken() >= (size_t)ingest(t.s).blocks_written; }, kWaitMs));
     const uint64_t seq = rtl_stream_discontinuity_seq();
     const uint32_t gen = rtl_stream_output_generation();
     close(t.conn);
@@ -634,13 +717,54 @@ test_tcp_reconnect_runs_the_boundary(void) {
     assert(rtl_device_has_stream(t.s.dev) == 0);
     const rtl_net_iq_state st = ingest(t.s);
     assert(st.resampler_clears >= 1U);
+    /* The ring was empty at the boundary, so its purge has nothing to discard: every block written after it reaches
+       the demod, those queued while the demod holds the first one included (controller_net_iq_boundary() lets the
+       purge go; left pending, the demod would apply it after that first block and drop the rest). */
     blocks_reset();
+    g_blocks.paused.store(1);
     tcp_send_pairs(t, 4800U);
+    assert(wait_until([] { return g_blocks.waiting.load() != 0; }, kWaitMs));
+    assert(wait_until([&] { return ingest(t.s).blocks_written >= st.blocks_written + 30U; }, kWaitMs));
+    dsd_sleep_ms(50U);
+    const uint64_t written = ingest(t.s).blocks_written - st.blocks_written;
+    g_blocks.paused.store(0);
+    assert(wait_until([&] { return blocks_taken() >= (size_t)written; }, kWaitMs));
+    dsd_sleep_ms(50U);
+    assert(blocks_taken() == (size_t)(ingest(t.s).blocks_written - st.blocks_written));
     assert(wait_until([&] { return rtl_device_has_stream(t.s.dev) == 1; }, kWaitMs));
-    assert(wait_until([] { return blocks_taken() > 10U; }, kWaitMs));
     expect_blocks_exactly(kBlockFloats);
     uint32_t centre = 0U;
     assert(rtl_stream_get_last_applied_freq(&centre) == 0 && centre == 426700000U);
+    tcp_close(t);
+}
+
+/* level_starts_over_at_a_reconnect: the samples a level block was collecting before a reconnect are not the new
+ * connection's: a full-scale pair read before the drop is let go at the boundary, so the first level after it waits for
+ * a whole block of the new connection's samples and reports their level, unclipped. Before, the pair stayed in the
+ * block, which the new connection completed a sample early and published clipped at 0 dBFS. */
+void
+test_level_starts_over_at_a_reconnect(void) {
+    tcp_rig t;
+    tcp_open(t, kRate, 0U, 1);
+    const uint8_t rail[4] = {0xFFU, 0x7FU, 0xFFU, 0x7FU};
+    send_all(t.conn, rail, sizeof rail);
+    assert(wait_until([&] { return ingest(t.s).reader.samples >= 1U; }, kWaitMs));
+    const uint64_t seq = rtl_stream_discontinuity_seq();
+    const uint32_t gen = rtl_stream_output_generation();
+    (void)dsd_socket_close(t.conn);
+    t.conn = accept_within(t.listener, kWaitMs);
+    assert(t.conn != DSD_INVALID_SOCKET);
+    expect_boundary(t.s, seq, gen, 1U);
+    const uint64_t samples_before = ingest(t.s).reader.samples;
+    dsd_input_level_snapshot level{};
+    tcp_send_pairs(t, kBlock - 1U);
+    assert(wait_until([&] { return ingest(t.s).reader.samples >= samples_before + kBlock - 1U; }, kWaitMs));
+    assert(rtl_stream_test_input_level_read(&level) == 0);
+    tcp_send_pairs(t, 1U);
+    assert(wait_until([&] { return rtl_stream_test_input_level_read(&level) == 1; }, kWaitMs));
+    assert(level.sample_count == (uint64_t)kBlockFloats);
+    assert(fabs(level.peak_dbfs - (-12.04)) < 0.1);
+    assert(level.clip_pct < 1e-9);
     tcp_close(t);
 }
 
@@ -834,6 +958,8 @@ test_setters_refuse_and_tune_fails(void) {
     rtl_stream_test_running_chain chain{};
     assert(rtl_stream_test_get_running_chain(&chain) == 0);
     assert(chain.capture_rate_hz == kRate);
+    /* Centred I/Q: the running stream applies no Fs/4 shift (dongle.centered_iq). */
+    assert(chain.fs4_rotation == 0);
     tcp_close(t);
 }
 
@@ -979,9 +1105,11 @@ struct named_test {
 
 const named_test kTests[] = {
     {"blocks_exactly_one_chunk", test_blocks_exactly_one_chunk},
+    {"level_waits_for_a_block", test_level_waits_for_a_block},
     {"blocks_after_upsampling_and_gaps", test_blocks_after_upsampling_and_gaps},
     {"ring_full_drops_whole_blocks", test_ring_full_drops_whole_blocks},
     {"tcp_reconnect_runs_the_boundary", test_tcp_reconnect_runs_the_boundary},
+    {"level_starts_over_at_a_reconnect", test_level_starts_over_at_a_reconnect},
     {"tcp_stall_resume_runs_the_boundary", test_tcp_stall_resume_runs_the_boundary},
     {"udp_silence_and_relock_run_the_boundary", test_udp_silence_and_relock_run_the_boundary},
     {"stops_are_prompt", test_stops_are_prompt},
@@ -1013,6 +1141,13 @@ main(int argc, char** argv) {
     assert(ran > 0);
     dsd_runtime_set_controls_pending(nullptr);
     dsd_socket_cleanup();
+    if (only == nullptr) {
+        /* The lines the cases' paths log, each counted, none printed. */
+        assert(log_count(kLogStall) >= 3 && log_count(kLogResume) >= 2);
+        assert(log_count(kLogLost) >= 1 && log_count(kLogReconnected) >= 1);
+        assert(log_count(kLogMalformed) == 1);
+        assert(log_count(kLogRefused) == 1 && log_count(kLogBindRefused) == 1 && log_count(kLogNoPlan) == 1);
+    }
     DSD_FPRINTF(stderr, "IO_NET_IQ_STREAM: OK\n");
     return 0;
 }

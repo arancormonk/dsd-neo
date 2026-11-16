@@ -9019,13 +9019,13 @@ Key public headers:
     warnings; with no fresh measurement it keeps the old level and warns about nothing. An I/Q replay in force
     (`dsd_opts_input_is_iq_replay()`) keeps every warning its capture calls for, so a paused replay prints the same
     advisories in every run. PCM inputs keep the decoder's level. A raw I/Q stream's level
-    (`DSD_INPUT_LEVEL_SOURCE_NET_IQ`, the sender's own samples per received block) counts as RF for all of this. The
-    warning and the terminal's level row give one advice text, `dsd_input_level_advice()`: a replay's says its level
-    was set when the capture was recorded (issue #743 B8), a stream's names the sending program, another radio's its RF
-    gain, an audio input's its volume. Tests: `IO_INPUT_LEVEL_METRICS`, `CORE_INPUT_LEVEL`,
-    `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`. CU8 moments keep 64-bit totals while
-    accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening reduces its byte
-    extrema in registers and maps the four clipping-edge values to one unsigned interval. These integer
+    (`DSD_INPUT_LEVEL_SOURCE_NET_IQ`, the sender's own samples, each snapshot over at least one block) counts as RF for
+    all of this. The warning and the terminal's level row give one advice text, `dsd_input_level_advice()`: a replay's
+    says its level was set when the capture was recorded (issue #743 B8), a stream's names the sending program,
+    another radio's its RF gain, an audio input's its volume. Tests: `IO_INPUT_LEVEL_METRICS`,
+    `CORE_INPUT_LEVEL`, `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`. CU8 moments keep 64-bit
+    totals while accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening reduces
+    its byte extrema in registers and maps the four clipping-edge values to one unsigned interval. These integer
     reductions leave both the sample values and the statistics exact (`DSP_SIMD_WIDEN`, `IO_INPUT_LEVEL_METRICS`).
   - USB identity and reset (`radio/rtl_usb_identity.{h,cpp}`, module-private, the only includer of `libusb.h`, which
     `cmake/arch_rules.cmake` enforces): which USB device a stalled dongle is, so a USB port reset reaches it and never a
@@ -9566,8 +9566,9 @@ Key public headers:
     the demod's reserve capped at one block (`g_demod_input_reserve_floats`, 2N floats; every other source keeps
     `MAXIMUM_BUF_LENGTH`). The device opens the input (TCP connects, UDP binds) on the decoder thread; the pipeline is
     the demod thread and the reader (`stream_open_start_net_pipeline()`), no controller thread.
-  - Ingest, on the reader's thread: each received block's level (`DSD_INPUT_LEVEL_SOURCE_NET_IQ`: cu8 as bytes, cs8
-    x256 and cs16 as 16-bit samples, cs32/cf32 as floats) is published; the reader-side resampler
+  - Ingest, on the reader's thread: the level of what is received (`DSD_INPUT_LEVEL_SOURCE_NET_IQ`: cu8 as bytes, cs8
+    x256 and cs16 as 16-bit samples, cs32/cf32 as floats) is published over at least one block, short reads collected
+    until they span one; the reader-side resampler
     (`rtl_iq_resampler_open()`, the design a resampled replay uses: protected band 0.45 of the final DSP rate) takes
     4096-sample slices; a one-block accumulator of `dsd_iq_live_block_samples()` writes whole blocks only. A block the
     ring cannot take is dropped whole: producer drops, `input_ring_note_gap()`, `dsd_iq_net_reader_note_drop()`, no log

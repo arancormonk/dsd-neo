@@ -2189,6 +2189,7 @@ typedef struct {
     int complex_rate_hz;
     uint32_t capture_rate_hz;
     int forced;
+    int fs4_rotation; /* the stream shifts the capture by Fs/4 and rotates it back (capture_fs4_shift_active()) */
 } rtl_stream_test_running_chain;
 
 int rtl_stream_test_get_running_chain(rtl_stream_test_running_chain* out);

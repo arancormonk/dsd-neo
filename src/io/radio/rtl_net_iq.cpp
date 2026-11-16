@@ -50,9 +50,12 @@ struct rtl_net_iq {
     dsd_iq_resampler* resampler = nullptr;
     float* resampled = nullptr;
     size_t resampled_cap = 0U;
-    /* The input level's integer view of a received block (cu8 bytes, or cs8/cs16 as 16-bit samples). */
+    /* The input level's integer view of what it measures (cu8 bytes, or cs8/cs16 as 16-bit samples), and the samples
+       of short reads it collects until they span a block (level_fill complex samples). */
     uint8_t* level_u8 = nullptr;
     int16_t* level_s16 = nullptr;
+    float* level_pending = nullptr;
+    size_t level_fill = 0U;
     rtl_net_iq_boundary_fn on_boundary = nullptr;
     void* boundary_ctx = nullptr;
     std::atomic<uint64_t> blocks_written{0U};
@@ -61,6 +64,7 @@ struct rtl_net_iq {
     std::atomic<uint64_t> known_losses{0U};
     std::atomic<uint64_t> input_restarts{0U};
     std::atomic<uint64_t> resampler_clears{0U};
+    std::atomic<uint64_t> resampler_errors{0U};
 };
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -74,11 +78,11 @@ rtl_net_iq_test_set_clock(dsd_iq_net_clock_fn clock_ms, void* clock_ctx) {
 }
 #endif
 
-/* The level of one received block, from the sender's own sample values: cu8 as the RTL-SDR's bytes, cs8 and cs16 as
- * 16-bit samples (cs8 times 256, so its rails clip as a 16-bit stream's do), cs32 and cf32 as the floats. The
+/* The level of @p pairs received samples, from the sender's own sample values: cu8 as the RTL-SDR's bytes, cs8 and cs16
+ * as 16-bit samples (cs8 times 256, so its rails clip as a 16-bit stream's do), cs32 and cf32 as the floats. The
  * converters are exact for the integer formats, so rounding back gives the sample sent. */
 static void
-net_iq_publish_level(struct rtl_net_iq* n, const float* iq, size_t pairs) {
+net_iq_measure_level(struct rtl_net_iq* n, const float* iq, size_t pairs) {
     const size_t count = pairs * 2U;
     dsd_input_level_snapshot snapshot;
     int rc = -1;
@@ -102,6 +106,29 @@ net_iq_publish_level(struct rtl_net_iq* n, const float* iq, size_t pairs) {
     }
     if (rc == 0) {
         rtl_stream_input_level_publish(&snapshot);
+    }
+}
+
+/* Publish the level of what the reader received, each snapshot over at least one block's worth of samples: a read of
+ * a few samples (a TCP fragment, a short datagram) waits for the reads after it, so a handful near the rail cannot
+ * read as clipping. A read of a block or more is measured as it came. */
+static void
+net_iq_publish_level(struct rtl_net_iq* n, const float* iq, size_t pairs) {
+    const size_t span = n->chunk_pairs;
+    while (pairs > 0U) {
+        if (n->level_fill == 0U && pairs >= span) {
+            net_iq_measure_level(n, iq, pairs);
+            return;
+        }
+        const size_t take = pairs < span - n->level_fill ? pairs : span - n->level_fill;
+        DSD_MEMCPY(n->level_pending + n->level_fill * 2U, iq, take * 2U * sizeof(float));
+        n->level_fill += take;
+        iq += take * 2U;
+        pairs -= take;
+        if (n->level_fill == span) {
+            net_iq_measure_level(n, n->level_pending, span);
+            n->level_fill = 0U;
+        }
     }
 }
 
@@ -170,17 +197,22 @@ net_iq_on_samples(void* ctx, const float* iq, size_t pairs) {
         const int made = dsd_iq_resampler_process(n->resampler, iq, slice, n->resampled, n->resampled_cap);
         if (made > 0) {
             net_iq_append(n, n->resampled, (size_t)made);
+        } else if (made < 0) {
+            /* Cannot happen with slices within the design's max_in; counted, so a misconfiguration shows. */
+            n->resampler_errors.fetch_add(1U, std::memory_order_relaxed);
         }
         iq += slice * 2U;
         pairs -= slice;
     }
 }
 
-/* The samples after this point do not follow the ones before it: the block being filled is let go and the resampler
- * starts over from silence, as the demod's filters do at the gap. */
+/* The samples after this point do not follow the ones before it: the block being filled and the samples a level block
+ * was collecting are let go, so the first level after the gap measures the new samples only, and the resampler starts
+ * over from silence, as the demod's filters do at the gap. */
 static void
 net_iq_restart_input(struct rtl_net_iq* n) {
     n->fill = 0U;
+    n->level_fill = 0U;
     n->input_restarts.fetch_add(1U, std::memory_order_relaxed);
     if (n->resampler) {
         dsd_iq_resampler_clear(n->resampler);
@@ -239,6 +271,7 @@ net_iq_free(struct rtl_net_iq* n) {
     free(n->chunk);
     free(n->level_u8);
     free(n->level_s16);
+    free(n->level_pending);
     delete n;
 }
 
@@ -260,6 +293,10 @@ net_iq_alloc_buffers(struct rtl_net_iq* n, const struct rtl_net_iq_config* cfg) 
         if (!n->resampled) {
             return -1;
         }
+    }
+    n->level_pending = static_cast<float*>(calloc((size_t)n->chunk_pairs * 2U, sizeof(float)));
+    if (!n->level_pending) {
+        return -1;
     }
     const size_t level_count = (size_t)DSD_IQ_NET_MAX_CALLBACK_SAMPLES * 2U;
     if (cfg->spec.format == DSD_IQ_NET_FORMAT_CU8) {
@@ -381,6 +418,7 @@ rtl_net_iq_get_state(const struct rtl_net_iq* n, rtl_net_iq_state* out) {
     out->known_losses = n->known_losses.load(std::memory_order_relaxed);
     out->input_restarts = n->input_restarts.load(std::memory_order_relaxed);
     out->resampler_clears = n->resampler_clears.load(std::memory_order_relaxed);
+    out->resampler_errors = n->resampler_errors.load(std::memory_order_relaxed);
     out->local_port = dsd_iq_net_reader_local_port(n->reader);
     dsd_iq_net_reader_get_counters(n->reader, &out->reader);
 }

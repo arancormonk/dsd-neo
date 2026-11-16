@@ -16613,6 +16613,7 @@ rtl_stream_test_get_running_chain(rtl_stream_test_running_chain* out) {
     out->complex_rate_hz = demod.complex_rate;
     out->capture_rate_hz = load_dongle_rate();
     out->forced = demod.capture_rate_device_forced;
+    out->fs4_rotation = capture_fs4_shift_active();
     return 0;
 }
 
