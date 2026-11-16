@@ -2488,7 +2488,9 @@ suite runs under this compiler.
     reader's cursor stays and the hop retries (the consumer's at its next read).
   - Budget: 1024 rows of 192 B plus 4 KiB of links, about 196 KiB per ring; three rings (live, published, consumer),
     about 588 KiB. The ring is not part of a trunk-scan target's saved state: one log spans the session, so it adds
-    nothing per target. Tests: `CORE_UNIT_ACTIVITY`, `APP_CONTROL_SNAPSHOT_UNIT_ACTIVITY`.
+    nothing per target. Tests: `CORE_UNIT_ACTIVITY`, `APP_CONTROL_SNAPSHOT_UNIT_ACTIVITY`, `ENGINE_TRUNK_SCAN`
+    (`test_unit_activity_ring_spans_trunk_scan_switch`: a real A -> B -> A switch keeps the instance, every row, its
+    system and its name).
   - Coverage and limits: P25 Phase 1 and 2, DMR Tier III (standard FID 0x00 CSBKs) with Motorola ARS on DMR data,
     NXDN Type C and TETRA. EDACS adds no row (no public spec; its unit-event opcodes come from one code lineage), nor
     do NXDN Type D and P25 multi-fragment messages (TDMA control channel support, issue #874). The log holds what a

@@ -9679,6 +9679,12 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
     # The scan quiet check (issue #834), over a fake signal tap.
     ${PROJECT_SOURCE_DIR}/src/engine/scan_quiet.c
+    # The session's unit activity log across a target switch, read through the view every frontend shows.
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan
@@ -9686,6 +9692,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/engine
         ${PROJECT_SOURCE_DIR}/src/dsp
+        ${PROJECT_SOURCE_DIR}/src/core/util
 )
 target_compile_definitions(
     dsd-neo_test_engine_trunk_scan
