@@ -12030,6 +12030,79 @@ test_rigctl_reconnect_move_back_leaves(void) {
     return rc;
 }
 
+/* The P25 machine's own tunes on a rigctl peer after a reconnect, through the engine's tune hooks: the peer restarted
+   on a carrier of its own (the voice channel, whose Basic Privacy call plays), nothing was sent on the new connection,
+   and the decoder's tuner frequency still names what the old peer was last sent. A hunt's control-channel tune, or a
+   grant, to that stale frequency leaves the carrier the peer is on: the engine's reading is unknown, which counts as a
+   leave, so the DMR call's privacy bit and talkgroup keys are forgotten, both slots' voice is held once, and the P25
+   patch table's listening clock breaks (the orphan-recording flush shares the judgement). A tune to the frequency the
+   peer last confirmed stays. */
+enum { RIGCTL_HOOK_CC = 0, RIGCTL_HOOK_VC = 1, RIGCTL_HOOK_STAY = 2 };
+
+static int
+rigctl_reconnect_hook_case(int kind) {
+    static const char* const names[] = {"a hunt's control-channel tune after a reconnect",
+                                        "a grant to the stale frequency after a reconnect",
+                                        "a control-channel tune to where the peer confirmed"};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_manual_setup(opts, state, DMR_MANUAL_VC);
+    dmr_manual_set_owner(opts, state, DMR_MANUAL_OWNER_P25);
+    opts->use_rigctl = 1;
+    opts->setmod_bw = 0;
+    opts->audio_in_type = AUDIO_IN_TCP;
+    state->rtl_ctx = NULL;
+    const long stale_hz = kind == RIGCTL_HOOK_VC ? DMR_MANUAL_VC : DMR_MANUAL_CC;
+    opts->rtlsdr_center_freq = (uint32_t)stale_hz;
+    opts->rigctl_sent_freq_hz = kind == RIGCTL_HOOK_STAY ? (uint32_t)DMR_MANUAL_CC : 0U;
+    state->p25_patch_listen_last_m = 5.0;
+    g_rigctl_setfreq_ok = 1;
+    g_dmr_holds = g_dmr_forgets = 0;
+    const dsd_trunk_tune_result result = kind == RIGCTL_HOOK_VC
+                                             ? dsd_engine_trunk_tune_to_freq_request(opts, state, stale_hz, 0, 0U)
+                                             : dsd_engine_trunk_tune_to_cc_request(opts, state, stale_hz, 0, 0U);
+    g_rigctl_setfreq_ok = 0;
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what, "%s is accepted (sent %u Hz)", names[kind], (unsigned)opts->rigctl_sent_freq_hz);
+    rc |= expect_true(what, result == DSD_TRUNK_TUNE_RESULT_OK && opts->rigctl_sent_freq_hz == (uint32_t)stale_hz);
+    if (kind == RIGCTL_HOOK_STAY) {
+        DSD_SNPRINTF(what, sizeof what, "%s holds nothing and keeps the privacy and the listening clock (holds %d)",
+                     names[kind], g_dmr_holds);
+        rc |= expect_true(what, g_dmr_holds == 0 && g_dmr_forgets == 0 && state->dmr_so == 0x40U
+                                    && state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U
+                                    && state->p25_patch_listen_last_m > 4.0);
+    } else {
+        /* The engine's judge forgets the privacy bit and the talkgroup keys, the FID staying for the rows. */
+        uint32_t keyed_from = 0U;
+        const int keyed = keyring_dmr_tg_autoload_apply(state, 0U, 0U, &keyed_from);
+        DSD_SNPRINTF(what, sizeof what, "%s forgets the privacy bit and talkgroup keys (so 0x%02X, K=%llu)",
+                     names[kind], (unsigned)state->dmr_so, state->K);
+        rc |= expect_true(what, state->dmr_so == 0U && state->dmr_soR == 0U && g_dmr_forgets >= 1 && !keyed
+                                    && state->K == 70ULL);
+        DSD_SNPRINTF(what, sizeof what, "%s holds both slots, once (holds %d)", names[kind], g_dmr_holds);
+        rc |= expect_true(what,
+                          state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U && g_dmr_holds == 1);
+        DSD_SNPRINTF(what, sizeof what, "%s breaks the patch table's listening clock", names[kind]);
+        rc |= expect_true(what, state->p25_patch_listen_last_m < 1.0);
+    }
+    opts->use_rigctl = 0;
+    dmr_manual_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+test_rigctl_reconnect_hook_tunes_leave(void) {
+    int rc = 0;
+    for (int kind = RIGCTL_HOOK_CC; kind <= RIGCTL_HOOK_STAY; kind++) {
+        rc |= rigctl_reconnect_hook_case(kind);
+    }
+    return rc;
+}
+
 /* Under DMR trunking a manual Return to CC, a channel cycle, a lockout and a skip retune through io_control, which runs
    neither the engine's tune hook nor a carrier boundary. Judged by the DMR machine as its own follows are, each move
    that leaves the followed call's carrier ends the call (its row keeping the FID), then forgets its privacy bit, FID,
@@ -17687,6 +17760,7 @@ main(void) {
     rc |= test_return_to_cc_judged_once();
     rc |= test_manual_hook_leg_judged_once();
     rc |= test_rigctl_reconnect_move_back_leaves();
+    rc |= test_rigctl_reconnect_hook_tunes_leave();
     rc |= test_walk_owns_the_tuner_through_its_settling();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();

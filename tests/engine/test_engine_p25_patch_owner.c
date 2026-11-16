@@ -134,6 +134,7 @@ session_new(dsd_opts** out_opts, dsd_state** out_state, int trunk) {
     opts->setmod_bw = 0;
     opts->trunk_enable = trunk;
     opts->rtlsdr_center_freq = (uint32_t)kCcHz;
+    opts->rigctl_sent_freq_hz = (uint32_t)kCcHz; // the peer confirmed the control channel on this connection
     state->p25_cc_freq = kCcHz;
     state->trunk_cc_freq = kCcHz;
     dsd_trunk_tuning_requests_reset();

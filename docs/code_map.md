@@ -2401,12 +2401,15 @@ suite runs under this compiler.
     EDACS EOT or the DMR SLCO tune; a DMR XPT or Capacity Plus control channel carries voice) and the return to the
     control channel (`engine_return_to_cc_request_once()`, again after its release ended the voice channel's calls). A
     trunk tune to the frequency the receiver is on (a grant on a DMR composite control channel) moves nothing and closes
-    nothing. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune: on an RTL stream tuned
+    nothing. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune, the reading
+    `dsd_engine_receiver_frequency()` gives every judge of a move: on a rigctl peer, the frequency it last confirmed on
+    this connection (`opts->rigctl_sent_freq_hz`; 0, unknown and so a leave, after a connect or reconnect before
+    anything was sent, never the tuner frequency a reconnect leaves naming the old peer's); on an RTL stream tuned
     directly, the frequency the stream last applied (`rtl_stream_get_last_applied_freq()`), since a timed-out tune names
     its target in `opts->rtlsdr_center_freq` before it lands and a later failure leaves the radio where it was;
-    otherwise `opts->rtlsdr_center_freq`, which a rigctl tune sets once done. Retunes an external controller makes over
-    the RTL UDP port are invisible to the decoder: a recording can span one (limit). One `sf_command()` per open slot
-    file per departure; nothing on the write path.
+    otherwise `opts->rtlsdr_center_freq`. The P25 patch listening clock's break and the DMR leave judge below read the
+    same value. Retunes an external controller makes over the RTL UDP port are invisible to the decoder: a recording
+    can span one (limit). One `sf_command()` per open slot file per departure; nothing on the write path.
   - Start: `dsd_rdio_recording_start()` (`<dsd-neo/runtime/rdio_export.h>`), the rule the rdio-scanner sidecar uses
     too: the start a recorder stamped itself when it passes one (`close_and_publish_call_wav_ex()`'s `started`: the
     analog call's first sample, issue #668), else the row's `event_start_time`, or the WAV's open stamp when later
@@ -3345,8 +3348,9 @@ suite runs under this compiler.
   `ENGINE_NO_CARRIER_RESET` (`test_dmr_voice_held_until_the_call_says()`, `test_dmr_hold_edges()`,
   `test_run_first_landing_is_never_held()`, `test_scan_first_landing_is_never_held()`,
   `test_dmr_manual_moves_forget_and_hold()`, `test_trunk_scan_park_judged_once()`, `test_return_to_cc_judged_once()`,
-  `test_manual_hook_leg_judged_once()`, `test_rigctl_reconnect_move_back_leaves()`, `park_judge_advance_falls_back()`,
-  `park_judge_pending_first_park()`, `park_judge_rotation_rolls_back()`, `park_judge_resume_fails_everywhere()`),
+  `test_manual_hook_leg_judged_once()`, `test_rigctl_reconnect_move_back_leaves()`,
+  `test_rigctl_reconnect_hook_tunes_leave()`, `park_judge_advance_falls_back()`, `park_judge_pending_first_park()`,
+  `park_judge_rotation_rolls_back()`, `park_judge_resume_fails_everywhere()`),
   `ENGINE_TRUNK_SCAN`, `ENGINE_RUN_SETUP`, `ENGINE_REPLAY_DECODE_CLOCK`, `DMR_FLCO_PRIVACY_MODES`.
   P25 Phase 1 and Phase 2 use `p25_crypto_audio_output_permitted()`; Phase 2 also needs its decode gate. NXDN and
   dPMR use `nxdn_cipher_type` and the key the vocoder applies

@@ -1124,15 +1124,22 @@ dsd_engine_log_queued_ted_override(const dsd_opts* opts, const dsd_state* state,
 }
 #endif
 
-/* Where the receiver is before a tune (issue #809 B4): on an RTL stream tuned directly, the frequency the stream last
-   applied, since a timed-out tune names its target in opts->rtlsdr_center_freq before it lands and a later failure
-   leaves the radio where it was; otherwise the decoder's tuner frequency, which a rigctl tune sets once it is done. */
+/* Where the receiver is before a tune (issue #809 B4), with no rigctl round trip. On a rigctl peer, the frequency it
+   last confirmed on this connection (opts->rigctl_sent_freq_hz, which every rigctl tune leg sets on success); 0,
+   unknown, after a connect or reconnect before anything was sent, which every judge counts as a leave. Never the
+   decoder's tuner frequency there: a reconnect keeps it at what the old peer was last sent, and the untyped -Y step's
+   rigctl leg does not set it. On an RTL stream tuned directly, the frequency the stream last applied, since a timed-out
+   tune names its target in opts->rtlsdr_center_freq before it lands and a later failure leaves the radio where it was;
+   otherwise the decoder's tuner frequency. */
 static uint32_t
 dsd_engine_receiver_hz(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->use_rigctl == 1) {
+        return opts->rigctl_sent_freq_hz;
+    }
 #ifdef USE_RADIO
     uint32_t applied = 0U;
-    if (opts->use_rigctl != 1 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx
-        && rtl_stream_get_last_applied_freq(&applied) == 0 && applied != 0U) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && rtl_stream_get_last_applied_freq(&applied) == 0
+        && applied != 0U) {
         return applied;
     }
 #else
@@ -1146,19 +1153,18 @@ dsd_engine_receiver_frequency(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return 0U;
     }
-    /* Not opts->rtlsdr_center_freq on rigctl: a reconnect keeps it at what the old peer was last sent, and the untyped
-       -Y step's rigctl leg does not set it. */
-    return opts->use_rigctl == 1 ? opts->rigctl_sent_freq_hz : dsd_engine_receiver_hz(opts, state);
+    return dsd_engine_receiver_hz(opts, state);
 }
 
-/* After an accepted tune from @p from_hz (dsd_engine_receiver_hz() before it) to @p freq: when the tune moved the
-   receiver off its carrier, the per-call audio no call owns closes, so the next carrier's never joins it (issue #809
-   B4), and the P25 patch table's listening clock breaks continuity, so the time away from the control channel, however
-   short, never counts as listening to it. Only that: a call the move carries over as one (a TETRA reallocation) is
-   active, and its recording closes at its own commit; the patch table is the system's, which a trunk move keeps. A tune
-   to the carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and closes nothing. A
-   tune another trunk machine made (P25, NXDN) also leaves behind what DMR calls said of their encryption, judged by
-   this reading of the tuner: their privacy bit and talkgroup keys go, the FID staying for the rows
+/* After an accepted tune from @p from_hz (dsd_engine_receiver_hz() before it, the one reading of the receiver every
+   judge of a move uses, on a rigctl peer the frequency it last confirmed) to @p freq: when the tune moved the receiver
+   off its carrier, the per-call audio no call owns closes, so the next carrier's never joins it (issue #809 B4), and
+   the P25 patch table's listening clock breaks continuity, so the time away from the control channel, however short,
+   never counts as listening to it. Only that: a call the move carries over as one (a TETRA reallocation) is active,
+   and its recording closes at its own commit; the patch table is the system's, which a trunk move keeps. A tune to the
+   carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and closes nothing. A tune
+   another trunk machine made (P25, NXDN) also leaves behind what DMR calls said of their encryption, judged by this
+   reading of the receiver: their privacy bit and talkgroup keys go, the FID staying for the rows
    (dmr_forget_call_decryption()), and the next carrier's voice is held until its calls say (dmr_enc_class_hold()). A
    tune its caller judges (dsd_trunk_tuning_caller_judges(): the DMR machine's own, which this reading can disagree
    with on a composite control channel, a trunk-scan park, a return to the control channel, an operator's manual move)
