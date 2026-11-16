@@ -407,7 +407,7 @@ test_dmr_chain_after_return(void) {
     dmr_sm_ctx_t ctx;
     dmr_sm_init_ctx(&ctx, opts, state);
     rc |= expect_true("the return", dmr_sm_return_to_cc(&ctx, opts, state, CC_HZ) == DSD_TRUNK_TUNE_RESULT_OK);
-    state->symbol_clock += 5U * DMR_VC_SUPERFRAME_SYMBOLS;
+    state->symbol_clock += (uint64_t)5U * DMR_VC_SUPERFRAME_SYMBOLS;
     dmr_vcrypt_superframe_start(state, 0U);
     rc |= expect_true("the first voice sync after the return finds the chain lost", state->dmr_vc_untrusted[0] == 1U);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

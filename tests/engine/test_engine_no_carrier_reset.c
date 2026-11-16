@@ -3299,7 +3299,7 @@ dmr_hop_active_frame(char frame[4][24]) {
     char ambe_d[49];
     mbe_process_result decoded;
     for (int seed = 1; seed < 96; ++seed) {
-        DSD_MEMSET(frame, 0, 4 * 24);
+        DSD_MEMSET(frame, 0, (size_t)4U * 24U);
         frame[(seed + 0) % 4][(seed * 5 + 3) % 24] = 1;
         frame[(seed + 1) % 4][(seed * 7 + 11) % 24] = 1;
         frame[(seed + 2) % 4][(seed * 13 + 17) % 24] = 1;
@@ -3391,7 +3391,7 @@ dmr_hop_cap_plus_rest_slco(dsd_opts* opts, dsd_state* state, uint8_t lsn) {
     uint8_t raw[68];
     DSD_MEMSET(expanded, 0, sizeof expanded);
     for (int word = 0; word < 3; word++) {
-        dmr_hop_slc_word(&expanded[word * 17], &slco[word * 12]);
+        dmr_hop_slc_word(&expanded[(size_t)word * 17U], &slco[(size_t)word * 12U]);
     }
     for (int i = 0; i < 67; i++) {
         raw[(i * 4) % 67] = expanded[i];
@@ -3401,7 +3401,7 @@ dmr_hop_cap_plus_rest_slco(dsd_opts* opts, dsd_state* state, uint8_t lsn) {
         uint8_t cach[25];
         DSD_MEMSET(cach, 0, sizeof cach);
         DSD_MEMCPY(cach, tact[lcss[fragment]], 7U);
-        DSD_MEMCPY(&cach[7], &raw[fragment * 17], 17U);
+        DSD_MEMCPY(&cach[7], &raw[(size_t)fragment * 17U], 17U);
         (void)dmr_cach(opts, state, cach);
     }
     return crc_ok;
@@ -14963,9 +14963,9 @@ test_y_quiet_refused_row_restarts_after_an_edit(void) {
         expect_true("refused for its width", scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED && g_yq.requests == 0);
     rc |= expect_true("nothing owed before an edit", dsd_engine_scan_quiet_take_republish(opts, state, 2) == 0);
     opts->analog_nfm_bandwidth_hz = 12500;
-    rc |= expect_true("the edit owes one republication",
-                      dsd_engine_scan_quiet_take_republish(opts, state, 2) == 1
-                          && dsd_engine_scan_quiet_take_republish(opts, state, 2) == 0);
+    const int first_take = dsd_engine_scan_quiet_take_republish(opts, state, 2);
+    const int second_take = dsd_engine_scan_quiet_take_republish(opts, state, 2);
+    rc |= expect_true("the edit owes one republication", first_take == 1 && second_take == 0);
     /* Taken but not republished: back to the width published, then the edit again, owes again. */
     opts->analog_nfm_bandwidth_hz = 13500;
     rc |= expect_true("back as published: nothing owed", dsd_engine_scan_quiet_take_republish(opts, state, 2) == 0);

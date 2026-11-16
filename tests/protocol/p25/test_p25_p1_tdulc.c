@@ -459,7 +459,7 @@ test_tdulc_link_control_takes_only_the_call_it_ended(void) {
     rc |= expect_eq_int("its repeat files under that source too",
                         (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDULC_DIBITS), 0x123456);
     rc |= expect_eq_int("and so does the repeat after it",
-                        (int)run_harris_gps_tdulc(&opts, &state, start + 2U * P25P1_TDULC_DIBITS), 0x123456);
+                        (int)run_harris_gps_tdulc(&opts, &state, start + (uint64_t)2U * P25P1_TDULC_DIBITS), 0x123456);
     // Much later, a voiceless transmission whose TDULC alone decoded: the ended call is not its call.
     rc |= expect_eq_int("a later TDULC files under no source of the older call",
                         (int)run_harris_gps_tdulc(&opts, &state, start + 50000U), 0);
@@ -487,11 +487,12 @@ test_tdulc_link_control_takes_only_the_call_it_ended(void) {
     rc |= expect_eq_int("and its repeat",
                         (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDU_DIBITS + P25P1_TDULC_DIBITS),
                         0x123456);
-    state.symbol_clock = start + P25P1_TDU_DIBITS + 2U * P25P1_TDULC_DIBITS;
+    state.symbol_clock = start + P25P1_TDU_DIBITS + (uint64_t)2U * P25P1_TDULC_DIBITS;
     processTDU(&opts, &state);
-    rc |= expect_eq_int(
-        "a TDULC after a TDU between the call's TDULCs",
-        (int)run_harris_gps_tdulc(&opts, &state, start + 2U * P25P1_TDU_DIBITS + 2U * P25P1_TDULC_DIBITS), 0x123456);
+    rc |= expect_eq_int("a TDULC after a TDU between the call's TDULCs",
+                        (int)run_harris_gps_tdulc(
+                            &opts, &state, start + (uint64_t)2U * P25P1_TDU_DIBITS + (uint64_t)2U * P25P1_TDULC_DIBITS),
+                        0x123456);
     // A TDU much later, then a TDULC: a later transmission's end, which ended no call.
     state.symbol_clock = start + 90000U;
     processTDU(&opts, &state);

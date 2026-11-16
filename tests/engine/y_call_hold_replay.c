@@ -30,10 +30,10 @@
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_mode.h>
-#include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "scan_landing.h"
 #include "scan_owner.h"
@@ -62,7 +62,7 @@ enter_row_zero(dsd_opts* opts, dsd_state* state) {
     dsd_state_lcn_on_air_note(state, 0);
     state->operator_tuned = 0U;
     /* No step before the landing: the hangtime anchor lies ahead of the replay's clock until the landing sets it. */
-    state->last_cc_sync_time = dsd_decode_time() + 86400 * 365;
+    state->last_cc_sync_time = dsd_decode_time() + (time_t)86400 * 365;
     DSD_FPRINTF(stderr, "YHOLD row0 mode=%s\n", dsd_scan_mode_name(mode));
 }
 
