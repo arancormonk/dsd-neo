@@ -149,18 +149,28 @@ expect_udp_loopback_round_trips(void) {
     struct sockaddr_in rx_addr;
     rc |= get_bound_addr(rx, &rx_addr);
 
-    const struct timeval expected_tv = {.tv_sec = 1, .tv_usec = 250000};
     if (dsd_socket_set_recv_timeout(rx, 1250) != 0 || dsd_socket_set_send_timeout(tx, 1250) != 0) {
         DSD_FPRINTF(stderr, "socket timeout setup failed\n");
         rc = 1;
         goto done;
     }
+    /* The kernel keeps the timeout in its own clock ticks and rounds it up to a whole tick (Linux stores jiffies), so
+       it reads back as 1.25 s plus less than one tick: 1.253333 s on a 300 Hz kernel. One tick is at most 10 ms (the
+       slowest kernel clock, 100 Hz). */
+    const long long expected_us = 1250000LL;
+    const long long max_tick_us = 10000LL;
     struct timeval got_tv;
     int got_len = (int)sizeof(got_tv);
-    if (dsd_socket_getsockopt(rx, SOL_SOCKET, SO_RCVTIMEO, &got_tv, &got_len) != 0 || got_len != (int)sizeof(got_tv)
-        || got_tv.tv_sec != expected_tv.tv_sec || got_tv.tv_usec != expected_tv.tv_usec) {
-        DSD_FPRINTF(stderr, "receive timeout round-trip mismatch\n");
+    if (dsd_socket_getsockopt(rx, SOL_SOCKET, SO_RCVTIMEO, &got_tv, &got_len) != 0 || got_len != (int)sizeof(got_tv)) {
+        DSD_FPRINTF(stderr, "receive timeout read-back failed\n");
         rc = 1;
+    } else {
+        const long long got_us = (long long)got_tv.tv_sec * 1000000LL + (long long)got_tv.tv_usec;
+        if (got_us < expected_us || got_us - expected_us >= max_tick_us) {
+            DSD_FPRINTF(stderr, "receive timeout round-trip mismatch: %lld us, expected %lld us up to one tick more\n",
+                        got_us, expected_us);
+            rc = 1;
+        }
     }
 
     errno = 0;
