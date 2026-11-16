@@ -333,6 +333,9 @@ another `RuntimeException`, no component) and checks the status `startDecoder()`
 distinct. The suite's `start_status_contract` source check pins every `START_*` to its `android/start_status.h` twin
 (`START_NOT_ALLOWED` is `kStartNotAllowed`), no Kotlin status at 0 (a failed JNI call's answer, `kStartCallFailed`),
 `platformStartDecoder()` returning the status as it is and the host failing every status but `kStartHandedOver`.
+Its `counter_reader_contract` pins `platformUserStopGeneration()` and `platformForegroundEpoch()` to
+`read_static_counter()`, which must answer -1 when the class, the method or the call fails (never Qt's
+`callStaticMethod<jlong>()`, which answers 0, a valid count).
 In `DecoderServiceStopTest.kt`, `switch_drain` checks a switch drains and is no user stop, and a user Stop during its drain
 abandons; `stop_generation` checks which requests move the generation (Stop listening while IDLE, RUNNING, STARTING and
 with no context, the notification's Stop, Recents) and which do not (deliveries of counted stops, switches, lifecycle and

@@ -352,6 +352,48 @@ def start_status_contract():
     return None
 
 
+def counter_reader_contract():
+    """#786: the roaming counters cross JNI as a plain long, and 0 is both a valid count and what a failed Qt call answers.
+
+    QJniObject::callStaticMethod<jlong>() clears a failed lookup's exception and returns 0, so a reader built on it reads
+    an unreadable counter as the counter's first value. Each reader must go through read_static_counter(), which checks
+    the class, the method and the call one by one and answers -1 on any failure, and the Kotlin side must be the static
+    ()J reader it names.
+    """
+    jni_path = REPO / "android/decoder_host_android.cpp"
+    try:
+        jni = jni_path.read_text(encoding="utf-8")
+        kotlin = {name: (REPO / APP_SOURCES / name).read_text(encoding="utf-8")
+                  for name in ("DecoderService.kt", "LocationStream.kt")}
+    except OSError as error:
+        return f"cannot read the counter reader sources: {error}"
+    readers = (
+        ("platformUserStopGeneration", "kServiceClass", "DecoderService.kt", "userStopGeneration"),
+        ("platformForegroundEpoch", "kStreamClass", "LocationStream.kt", "foregroundEpoch"),
+    )
+    for host_fn, owner, source, method in readers:
+        if not re.search(rf"@JvmStatic\s+fun {method}\(\): Long\b", kotlin[source]):
+            return f"{APP_SOURCES / source}: expected a @JvmStatic fun {method}(): Long for the host to read"
+        body = re.search(rf"DecoderHostAndroid::{host_fn}\(\) \{{(.*?)\n\}}", jni, re.S)
+        if not body or not re.search(rf'return read_static_counter\({owner}, "{method}"\);', body.group(1)):
+            return f"android/decoder_host_android.cpp: {host_fn} must answer read_static_counter({owner}, \"{method}\")"
+    helper = re.search(r"\nread_static_counter\(const char\* owner, const char\* name\) \{(.*?)\n\}", jni, re.S)
+    if not helper:
+        return "android/decoder_host_android.cpp: no read_static_counter(owner, name)"
+    steps = (
+        r"=\s*env\.findClass\(owner\);\s*if \(found == nullptr\) \{\s*return -1;",
+        r'=\s*env\.findStaticMethod\(found, name, "\(\)J"\);\s*if \(method == nullptr\) \{\s*return -1;',
+        r"=\s*env->CallStaticLongMethod\(found, method\);\s*if \(env\.checkAndClearExceptions\(\) \|\| value < 0\) \{"
+        r"\s*return -1;",
+    )
+    for step in steps:
+        if not re.search(step, helper.group(1)):
+            return f"android/decoder_host_android.cpp: read_static_counter must answer -1 on each failure; expected /{step}/"
+    if "callStaticMethod" in helper.group(1):
+        return "android/decoder_host_android.cpp: read_static_counter must not use QJniObject::callStaticMethod (0 on failure)"
+    return None
+
+
 def native_lifecycle_contract():
     """DsdNative.kt never compiles here (it loads the app library), so its JNI pairing is read from the sources."""
     kotlin_path = REPO / APP_SOURCES / "DsdNative.kt"
@@ -1483,7 +1525,12 @@ SUITES = {
                        "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt", "SuppressLint.kt"),
             ),
         ),
-        checks=(stop_callers_carry_their_cause, native_lifecycle_contract, start_status_contract),
+        checks=(
+            stop_callers_carry_their_cause,
+            native_lifecycle_contract,
+            start_status_contract,
+            counter_reader_contract,
+        ),
     ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure

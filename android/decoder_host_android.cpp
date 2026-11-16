@@ -271,6 +271,29 @@ static_method_available(const char* owner, const char* name, const char* signatu
     return found != nullptr && env.findStaticMethod(found, name, signature) != nullptr;
 }
 
+/*
+ * A static ()J counter of @p owner (#786), or -1 when it cannot be read. Checked step by step:
+ * QJniObject::callStaticMethod<jlong>() clears a failed lookup's exception and answers 0, a valid count, so a reader
+ * built on it could never report the failure. The counters start at 0 and only grow, so a negative value is no count.
+ */
+qint64
+read_static_counter(const char* owner, const char* name) {
+    QJniEnvironment env;
+    const jclass found = env.findClass(owner);
+    if (found == nullptr) {
+        return -1;
+    }
+    const jmethodID method = env.findStaticMethod(found, name, "()J");
+    if (method == nullptr) {
+        return -1;
+    }
+    const jlong value = env->CallStaticLongMethod(found, method);
+    if (env.checkAndClearExceptions() || value < 0) {
+        return -1;
+    }
+    return static_cast<qint64>(value);
+}
+
 /** @brief A Java float[] returned by a static call into @p values; false when the call or the copy failed. */
 bool
 read_floats(const QJniObject& array, QVector<float>* values) {
@@ -617,23 +640,13 @@ DecoderHostAndroid::platformStartDecoder(const QStringList& argv, uint64_t attem
 qint64
 DecoderHostAndroid::platformUserStopGeneration() {
     // Must match DecoderService.kt: @JvmStatic fun userStopGeneration(): Long. Lock-only, like retireAttempts().
-    QJniEnvironment env;
-    const jlong generation = QJniObject::callStaticMethod<jlong>(kServiceClass, "userStopGeneration", "()J");
-    if (env.checkAndClearExceptions()) {
-        return -1;
-    }
-    return static_cast<qint64>(generation);
+    return read_static_counter(kServiceClass, "userStopGeneration");
 }
 
 qint64
 DecoderHostAndroid::platformForegroundEpoch() {
     // Must match LocationStream.kt: @JvmStatic fun foregroundEpoch(): Long. An atomic read.
-    QJniEnvironment env;
-    const jlong epoch = QJniObject::callStaticMethod<jlong>(kStreamClass, "foregroundEpoch", "()J");
-    if (env.checkAndClearExceptions()) {
-        return -1;
-    }
-    return static_cast<qint64>(epoch);
+    return read_static_counter(kStreamClass, "foregroundEpoch");
 }
 
 void

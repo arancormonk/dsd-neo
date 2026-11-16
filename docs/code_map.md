@@ -17182,7 +17182,10 @@ next start refused superseded or a start on its way superseded later, switch sto
 stream calls and a scripted feed (`testContext.emitLocationStreamUpdate()`). Tests: `UI_QT_ANDROID_HOST` (stream record
 → signal, malformed records, synchronous reads, every start status's text, the expectation, retirement, switch stop),
 `UI_QT_SESSION_ARGS` (`test_stop_expectation`), `ANDROID_R8` (keeps and descriptors of the new JNI calls),
-`ANDROID_ENGINE_STOP_JVM` (`start_status_contract`: every `START_*` has its `android/start_status.h` twin).
+`ANDROID_ENGINE_STOP_JVM` (`start_status_contract`: every `START_*` has its `android/start_status.h` twin;
+`counter_reader_contract`: both counters are read through `read_static_counter()`). Rule: the two counters are read with
+checked JNI steps (class, method, call), each failure answering -1; `QJniObject::callStaticMethod<jlong>()` clears a failed
+lookup's exception and returns 0, a valid count, so it would read an unreadable counter as unchanged.
 
 Location feed, prompt broker and foreground epoch (issue #786, Kotlin): `LocationStream.kt` is GPS roaming's continuous
 feed and never touches the one-shot `LocationSupport` requests. Its JNI entry points (`@JvmStatic`, kept in
