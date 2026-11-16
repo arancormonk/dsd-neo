@@ -12248,9 +12248,9 @@ bootstrap_with_ini(const char* ini, const char* const* args, int nargs, int* exi
 
 /* Issue #743 (D8): a config that runs an I/Q stream with [trunking] enabled, [trunking] scanner or [trunk_scan] enabled
    is refused at startup with exit 1, naming the key and the fix, before anything opens: the bootstrap returns before
-   the engine runs. A config file named alone runs its own trunking (no command-line option overrides it), and the -Y
-   scanner a config turns on survives -i, which a command line's trunking override does not clear. A stream config
-   without them starts. */
+   the engine runs. The config's keys count as it wrote them, whether the stream is the config's own input or the
+   command line's -i, whose trunking override and trunk-scan drop would otherwise clear them for the session. A stream
+   config without them starts. */
 static int
 test_bootstrap_refuses_config_tuning_on_iq_stream(void) {
     static const char k_stream[] = "[input]\n"
@@ -12272,6 +12272,8 @@ test_bootstrap_refuses_config_tuning_on_iq_stream(void) {
         {"[trunking]\nscanner = true\n", k_alone, 1, "[trunking] scanner"},
         {"[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n", k_alone, 1, "[trunk_scan] enabled"},
         {"[trunking]\nscanner = true\n", k_cli_stream, 4, "[trunking] scanner"},
+        {"[trunking]\nenabled = true\n", k_cli_stream, 4, "[trunking] enabled"},
+        {"[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n", k_cli_stream, 4, "[trunk_scan] enabled"},
         {"[mode]\ndecode = \"dmr\"\n", k_alone, 1, NULL},
     };
 

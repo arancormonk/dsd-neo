@@ -737,29 +737,33 @@ bootstrap_handle_post_parse_actions(const bootstrap_cli_args* args, dsd_opts* op
     return bootstrap_handle_list_profiles(args, config_env, out_exit_rc);
 }
 
-/* The [trunking] or [trunk_scan] key of the loaded config that turns on trunking or a scan, or NULL. The command line's
-   own -T, -Y and --trunk-scan were refused while it was parsed; what is left came from the config. */
+/* The [trunking] or [trunk_scan] key that turns on trunking or a scan beside the stream, or NULL. The loaded config's
+   own keys count as it wrote them, before the command line's trunking override or its -i drops them for the session
+   (bootstrap_apply_trunk_cli_gating(), bootstrap_apply_trunk_scan_pre_cli_gating()): the rule is the config's, as
+   --validate-config and the next-start rules judge it. The session's flags are asked too, for a config the profile
+   composed. The command line's own -T, -Y and --trunk-scan were refused while it was parsed. */
 static const char*
-bootstrap_config_tuning_key(const dsd_opts* opts) {
-    if (opts->trunk_enable == 1) {
+bootstrap_config_tuning_key(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
+    if ((cfg && cfg->has_trunking && cfg->trunk_enabled) || opts->trunk_enable == 1) {
         return "[trunking] enabled";
     }
-    if (opts->scanner_mode == 1) {
+    if ((cfg && cfg->has_trunking && cfg->trunk_scanner) || opts->scanner_mode == 1) {
         return "[trunking] scanner";
     }
-    if (opts->trunk_scan_enabled == 1) {
+    if ((cfg && cfg->has_trunk_scan && cfg->trunk_scan_enabled) || opts->trunk_scan_enabled == 1) {
         return "[trunk_scan] enabled";
     }
     return NULL;
 }
 
-/* An I/Q stream input decodes the one channel its sender streams (issue #743, D8): a config that runs one with
-   trunking, the -Y scanner or a trunk scan on is refused at startup, before anything opens, naming the key and the fix,
-   as --validate-config and a runtime config apply refuse it (the next-start rules, issue #671). */
+/* An I/Q stream input decodes the one channel its sender streams (issue #743, D8): a loaded config that turns on
+   trunking, the -Y scanner or a trunk scan beside one, the stream named in the config or on the command line, is
+   refused at startup, before anything opens, naming the key and the fix, as --validate-config and a runtime config
+   apply refuse it (the next-start rules, issue #671). @p cfg is the loaded config, NULL for none. */
 static int
-bootstrap_refuse_config_tuning_on_iq_stream(const dsd_opts* opts, int* out_exit_rc) {
+bootstrap_refuse_config_tuning_on_iq_stream(const dsd_opts* opts, const dsdneoUserConfig* cfg, int* out_exit_rc) {
     const char* key =
-        dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev) ? bootstrap_config_tuning_key(opts) : NULL;
+        dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev) ? bootstrap_config_tuning_key(opts, cfg) : NULL;
     if (!key) {
         return DSD_BOOTSTRAP_CONTINUE;
     }
@@ -869,7 +873,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
         return boot_rc;
     }
-    boot_rc = bootstrap_refuse_config_tuning_on_iq_stream(opts, out_exit_rc);
+    boot_rc = bootstrap_refuse_config_tuning_on_iq_stream(opts, user_cfg_loaded ? &user_cfg : NULL, out_exit_rc);
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
         return boot_rc;
     }
