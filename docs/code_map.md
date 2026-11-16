@@ -10678,7 +10678,8 @@ Notes:
       `dsd_rtl_stream_metrics_hook_replay_advance_decode_clock()`. Each notes it through
       `dsd_opts_note_iq_replay_center()`, which stores only a nonzero centre that differs from the one noted; a live
       read writes nothing and costs nothing new, and a live fill drops the centre a replay fill left in the cache.
-    - A move from one nonzero centre to another is a retune the capture recorded. The read paths note each centre
+    - A move from one nonzero centre to another is a retune the capture recorded. The read paths note each new centre
+      (`dsd_opts_iq_replay_center_is_new()`, an inline compare, so a sample on the centre already held makes no call)
       through `dsd_frame_sync_note_replay_center()` (runtime), which returns from `dsd_opts_note_iq_replay_center()`
       whether the decoder adopted a new centre over another and, when it did, runs the frame-sync hook `replay_retune`
       there, before the read returns the first sample the new carrier carries: a retune can land inside a frame, whose

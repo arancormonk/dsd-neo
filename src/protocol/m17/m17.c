@@ -2059,7 +2059,9 @@ m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, 
                was captured on (issue #575). */
             uint32_t replay_center_hz = 0U;
             (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
-            dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
+            if (dsd_opts_iq_replay_center_is_new(opts, replay_center_hz)) {
+                dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
+            }
             if (gated < 0) {
                 gated = dsd_squelch_stream_gate_running(opts, state);
             }

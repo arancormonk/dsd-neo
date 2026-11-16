@@ -2774,6 +2774,15 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
     return 1;
 }
 
+/* The I/Q replay centre the sample was captured on (issue #575): only a new one goes to the hook, so a sample on the
+   centre already held costs one compare and no call. */
+static inline void
+symbol_note_replay_center(dsd_opts* opts, dsd_state* state, uint32_t center_hz) {
+    if (dsd_opts_iq_replay_center_is_new(opts, center_hz)) {
+        dsd_frame_sync_note_replay_center(opts, state, center_hz);
+    }
+}
+
 static inline int
 symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work) {
     for (;;) {
@@ -2826,7 +2835,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
         /* The cache checks each sample's batch against this generation. */
         work->rtl_sample_generation = work->rtl_stream_generation;
         opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
-        dsd_frame_sync_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
+        symbol_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
         return 1;
     }
     if (!symbol_rtl_read_one(opts, state, sample_out, work, &work->rtl_sample_generation)) {
@@ -2836,7 +2845,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
        on (issue #575). */
     uint32_t replay_center_hz = 0U;
     (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
-    dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
+    symbol_note_replay_center(opts, state, replay_center_hz);
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
     if (!work->rtl_symbol_rate_output && !work->cqpsk_symbol_rate && !work->rtl_fsk_discriminator_output) {
         *sample_out *= opts->rtl_volume_multiplier;
@@ -3218,7 +3227,7 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
         return 0;
     }
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
-    dsd_frame_sync_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
+    symbol_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
     state->lastsample = work->sample;
     /* One sample per symbol here, which the measurement recognises as a grid with no
        sub-symbol structure to report on. */

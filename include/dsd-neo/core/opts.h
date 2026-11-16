@@ -1042,6 +1042,21 @@ dsd_opts_tuned_freq_hz(const dsd_opts* opts) {
 }
 
 /**
+ * @brief Whether @p center_hz is a centre dsd_opts_note_iq_replay_center() would adopt: a centre, and not the one held.
+ *
+ * The per-sample readers ask this before they call dsd_frame_sync_note_replay_center(), so a sample on the centre
+ * already held costs one compare and no call.
+ *
+ * @param opts Decoder options (may be NULL).
+ * @param center_hz Capture centre in Hz of the sample just read; 0 for none.
+ * @return 1 when the centre would be adopted, 0 otherwise.
+ */
+static inline int
+dsd_opts_iq_replay_center_is_new(const dsd_opts* opts, uint32_t center_hz) {
+    return opts != NULL && center_hz != 0U && opts->iq_replay_center_freq != center_hz;
+}
+
+/**
  * @brief Note the centre the I/Q replay sample the decoder just read was captured on, for dsd_opts_tuned_freq_hz().
  *
  * Every read path that runs the decode clock on a replay sample calls it, on the decoder thread (issue #575): the
@@ -1057,7 +1072,7 @@ dsd_opts_tuned_freq_hz(const dsd_opts* opts) {
  */
 static inline int
 dsd_opts_note_iq_replay_center(dsd_opts* opts, uint32_t center_hz) {
-    if (opts == NULL || center_hz == 0U || opts->iq_replay_center_freq == center_hz) {
+    if (!dsd_opts_iq_replay_center_is_new(opts, center_hz)) {
         return 0;
     }
     const int moved = opts->iq_replay_center_freq != 0U;

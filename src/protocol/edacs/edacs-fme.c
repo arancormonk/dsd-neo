@@ -423,7 +423,9 @@ edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, float* voice
        captured on (issue #575). */
     uint32_t replay_center_hz = 0U;
     (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
-    dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
+    if (dsd_opts_iq_replay_center_is_new(opts, replay_center_hz)) {
+        dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
+    }
     /* EDACS keeps the stream on the digital family, so this is the FSK discriminator output, on the modem's fixed
        scale (fsk_modem.h): the PCM range holds +/-6553 Hz, past EDACS voice's 5 kHz, and noise beyond it saturates;
        the release register reads it. The monitor's volume trim is not applied to it (nor to any FSK direct output,
