@@ -1664,10 +1664,10 @@ scan_quiet_key_get(const dsd_state* state) {
 #endif
 
 #ifdef USE_RADIO
-/* The setting turned on mid-visit: the visit landed now gets no check, since the syncs it heard while the setting was
-   off moved no sync sequence, and it asks for no eligibility from now. A visit tuned before the setting turned on whose
-   landing is not noted yet (in flight, or landed before the coordinator noted it) gets none either, at its publication
-   (quiet_publication_ends_visit()): the setting applies from the next tune. */
+/* The setting turned on mid-visit: the visit landed now gets no check, since the checked content and carriers it heard
+   while the setting was off moved no activity sequence, and it asks for no eligibility from now. A visit tuned before
+   the setting turned on whose landing is not noted yet (in flight, or landed before the coordinator noted it) gets
+   none either, at its publication (quiet_publication_ends_visit()): the setting applies from the next tune. */
 static void
 quiet_skip_landed_visit(dsd_engine_scan_owner* owner) {
     const dsd_engine_scan_landing* landing = &owner->landing;

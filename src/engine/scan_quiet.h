@@ -246,10 +246,11 @@ int scan_quiet_wants_eligibility(const dsd_opts* opts, const dsd_state* state, i
 
 /** Publish the visit on air @p e for @p owner_kind (@p e->key.owner), then run one service step (start, collect,
  * expire). It reconciles the check first, adopting a park measured or suspended in flight once its landing is noted. A
- * DONE visit stays DONE. A sync or a carrier heard since the visit's activity baseline (its tune's issue) ends the
- * visit DONE at once, eligible or not, with nothing requested. Otherwise an ineligible visit is SUSPENDED (keeping what
- * its landing adopts it by); a new visit, one republished after a suspension, or one published with other facts than
- * were measured starts again. No-op with the setting off or in a radio-off build. */
+ * DONE visit stays DONE. Checked content (a PROVEN note) or a carrier heard since the visit's activity baseline (its
+ * tune's issue) ends the visit DONE at once, eligible or not, with nothing requested; a raw sync ends nothing.
+ * Otherwise an ineligible visit is SUSPENDED (keeping what its landing adopts it by); a new visit, one republished
+ * after a suspension, or one published with other facts than were measured starts again. No-op with the setting off
+ * or in a radio-off build. */
 void scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner_kind,
                                     const scan_quiet_eligibility* e);
 

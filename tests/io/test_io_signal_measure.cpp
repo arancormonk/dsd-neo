@@ -1373,7 +1373,7 @@ test_quiet_requests(dsd_signal_quiet_detector* d) {
         for (uint32_t width : am_widths) {
             assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, width, rate) == 1);
         }
-        // Widths rendered only as the other kind: AM 11.25, 12.5 and 16 kHz, NFM 8.333 kHz.
+        // Widths rendered only as the other kind: AM 11.25, 12, 12.5 and 16 kHz, NFM 8.333 kHz.
         assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, 8333u, rate) == 0);
         assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, 12000u, rate) == 0);
         for (uint32_t width : {11250u, 12500u, 16000u}) {
