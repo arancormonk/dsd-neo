@@ -9,6 +9,7 @@
 - -U beside a stream exits 1 before anything opens, and the rigctl peer never sees a connection.
 """
 import argparse
+import contextlib
 import json
 import re
 import signal
@@ -77,6 +78,18 @@ def stop(process, output):
     return log
 
 
+def stop_after(process, output, body):
+    """Run @p body, then stop the decoder whatever happened. A failure of @p body is the one raised: the stop's own
+    checks (exit code, sanitizer output) are then not allowed to replace it."""
+    try:
+        body()
+    except BaseException:
+        with contextlib.suppress(AssertionError):
+            stop(process, output)
+        raise
+    return stop(process, output)
+
+
 def start(binary, cwd, args):
     process = subprocess.Popen([binary, "--no-config", "--frontend", "none"] + args + ["-o", "null"], cwd=cwd,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -138,7 +151,7 @@ class Sender:
         self.thread.start()
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *_):
         self.done.set()
         self.thread.join()
 
@@ -170,7 +183,7 @@ class Listener:
         self.thread.start()
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *_):
         self.done.set()
         self.thread.join()
 
@@ -215,15 +228,19 @@ class Api:
 def check_udp_notice(binary, cwd):
     port = free_port(socket.SOCK_DGRAM)
     process, output = start(binary, cwd, ["-fs", "-i", f"iqudp:127.0.0.1:{port}:48000:cs16"])
-    output.wait_for(rf"I/Q stream: receiving on 127\.0\.0\.1:{port} ", "UDP receiving notice")
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        probe.bind(("127.0.0.1", port))
-        bound_by_us = True
-    except OSError:
-        bound_by_us = False
-    probe.close()
-    log = stop(process, output)
+    bound_by_us = []
+
+    def body():
+        output.wait_for(rf"I/Q stream: receiving on 127\.0\.0\.1:{port} ", "UDP receiving notice")
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.bind(("127.0.0.1", port))
+            bound_by_us.append(True)
+        except OSError:
+            pass
+        probe.close()
+
+    log = stop_after(process, output, body)
     assert not bound_by_us, "the notice came before the stream bound its port:\n" + log
     assert len(re.findall(r"I/Q stream: receiving on", log)) == 1, "one receiving notice wanted:\n" + log
     print("UDP NOTICE OK: receiving on port", port, "once, after the bind")
@@ -234,19 +251,22 @@ def check_tcp_replan_and_tuning(binary, cwd):
     with Sender() as sender, Listener() as rig:
         process, output = start(binary, cwd, ["-fs", "-i", f"iqtcp:127.0.0.1:{sender.port}:48000:cs16", "--api",
                                               str(api_port)])
-        try:
+
+        def body():
             sender.wait_for(1, output)
             api = Api(api_port)
-            response = api.call("decode_mode_set", {"value": DECODE_MODE_TETRA})
-            assert response.get("ok"), response
-            output.wait_for(r"re-planning the rate chain for the TETRA decoder", "TETRA re-plan")
-            sender.wait_for(2, output)
-            assert api.call("rigctl_connect_cfg", {"host": "127.0.0.1", "port": rig.port}).get("ok")
-            assert api.call("manual_tune", {"value": 851375000}).get("ok")
-            time.sleep(1.0)
-            api.close()
-        finally:
-            log = stop(process, output)
+            try:
+                response = api.call("decode_mode_set", {"value": DECODE_MODE_TETRA})
+                assert response.get("ok"), response
+                output.wait_for(r"re-planning the rate chain for the TETRA decoder", "TETRA re-plan")
+                sender.wait_for(2, output)
+                assert api.call("rigctl_connect_cfg", {"host": "127.0.0.1", "port": rig.port}).get("ok")
+                assert api.call("manual_tune", {"value": 851375000}).get("ok")
+                time.sleep(1.0)
+            finally:
+                api.close()
+
+        log = stop_after(process, output, body)
     assert rig.connections == 0, "a rigctl peer beside the stream was connected:\n" + log
     print("TCP RE-PLAN OK:", sender.connections, "connections; rigctl peer untouched")
 

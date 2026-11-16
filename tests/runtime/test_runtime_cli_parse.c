@@ -12262,19 +12262,28 @@ test_bootstrap_refuses_config_tuning_on_iq_stream(void) {
     static const char* const k_alone[] = {"{ini}"};
     static const char* const k_cli_stream[] = {"--config", "{ini}", "-i", "iqudp:127.0.0.1:7356:240k:cs16"};
 
+    static const char k_rtl[] = "[input]\n"
+                                "source = \"rtl\"\n"
+                                "rtl_freq = \"851.0125M\"\n";
+
     static const struct {
         const char* sections;
         const char* const* args;
         int nargs;
         const char* want_key; /* NULL: the start goes on */
+        const char* input;    /* the config's [input]; NULL for the stream */
     } cases[] = {
-        {"[trunking]\nenabled = true\n", k_alone, 1, "[trunking] enabled"},
-        {"[trunking]\nscanner = true\n", k_alone, 1, "[trunking] scanner"},
-        {"[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n", k_alone, 1, "[trunk_scan] enabled"},
-        {"[trunking]\nscanner = true\n", k_cli_stream, 4, "[trunking] scanner"},
-        {"[trunking]\nenabled = true\n", k_cli_stream, 4, "[trunking] enabled"},
-        {"[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n", k_cli_stream, 4, "[trunk_scan] enabled"},
-        {"[mode]\ndecode = \"dmr\"\n", k_alone, 1, NULL},
+        {"[trunking]\nenabled = true\n", k_alone, 1, "[trunking] enabled", NULL},
+        {"[trunking]\nscanner = true\n", k_alone, 1, "[trunking] scanner", NULL},
+        {"[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n", k_alone, 1, "[trunk_scan] enabled", NULL},
+        {"[trunking]\nscanner = true\n", k_cli_stream, 4, "[trunking] scanner", NULL},
+        {"[trunking]\nenabled = true\n", k_cli_stream, 4, "[trunking] enabled", NULL},
+        {"[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n", k_cli_stream, 4, "[trunk_scan] enabled",
+         NULL},
+        {"[mode]\ndecode = \"dmr\"\n", k_alone, 1, NULL, NULL},
+        /* A config of an RTL-SDR with trunking on: refused with a stream on the command line, started without one. */
+        {"[trunking]\nenabled = true\n", k_cli_stream, 4, "[trunking] enabled", k_rtl},
+        {"[trunking]\nenabled = true\n", k_alone, 1, NULL, k_rtl},
     };
 
     int rc = 0;
@@ -12289,7 +12298,7 @@ test_bootstrap_refuses_config_tuning_on_iq_stream(void) {
         initOpts(opts);
         initState(state);
         char ini[1024];
-        DSD_SNPRINTF(ini, sizeof ini, "%s\n%s", k_stream, cases[i].sections);
+        DSD_SNPRINTF(ini, sizeof ini, "%s\n%s", cases[i].input ? cases[i].input : k_stream, cases[i].sections);
         int exit_rc = -1;
         char err[4096];
         const int boot = bootstrap_with_ini(ini, cases[i].args, cases[i].nargs, &exit_rc, err, sizeof err, opts, state);
