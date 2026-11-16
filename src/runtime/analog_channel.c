@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <limits.h>
 #include <stdint.h>
@@ -424,11 +425,30 @@ dsd_analog_channel_lpf_off_check(int kind, int explicit_width_hz, int channel_lp
     return -1;
 }
 
-dsd_input_dsp_rate
-dsd_input_dsp_rate_for(const char* audio_in_dev, int audio_in_type, int iq_replay_active, int rtl_bw_khz) {
+uint32_t
+dsd_input_dsp_stream_target_hz(int dsp_bw_khz, int frame_tetra) {
+    if (dsp_bw_khz > INT_MAX / 1000) {
+        return 0U;
+    }
+    /* A stream records no bandwidth, so the request in force (explicit, a mode preset or the default) is the target. */
+    const uint32_t target_hz = dsd_iq_dsp_target_hz(dsp_bw_khz, 1, 0, frame_tetra);
+    return target_hz > (uint32_t)INT_MAX ? 0U : target_hz;
+}
+
+/* dsd_input_dsp_rate_for(), with the TETRA setting a raw I/Q stream's target follows. */
+static dsd_input_dsp_rate
+input_dsp_rate_classify(const char* audio_in_dev, int audio_in_type, int iq_replay_active, int rtl_bw_khz,
+                        int frame_tetra) {
     dsd_input_dsp_rate policy = {DSD_ANALOG_RATE_RTL_BW, 0};
     if (iq_replay_active || dsd_opts_audio_in_dev_is_iqreplay_spec(audio_in_dev)) {
         policy.source = DSD_ANALOG_RATE_CAPTURE;
+        return policy;
+    }
+    if (dsd_opts_audio_in_dev_is_iqtcp_spec(audio_in_dev) || dsd_opts_audio_in_dev_is_iqudp_spec(audio_in_dev)) {
+        /* Its plan lands on the target, so that is the rate; one too large for an int saturates as a live radio's. */
+        const uint32_t target_hz = dsd_input_dsp_stream_target_hz(rtl_bw_khz, frame_tetra);
+        policy.source = DSD_ANALOG_RATE_PLANNED;
+        policy.rate_hz = target_hz > 0U ? (int)target_hz : INT_MAX;
         return policy;
     }
     const int device =
@@ -445,10 +465,15 @@ dsd_input_dsp_rate_for(const char* audio_in_dev, int audio_in_type, int iq_repla
 }
 
 dsd_input_dsp_rate
+dsd_input_dsp_rate_for(const char* audio_in_dev, int audio_in_type, int iq_replay_active, int rtl_bw_khz) {
+    return input_dsp_rate_classify(audio_in_dev, audio_in_type, iq_replay_active, rtl_bw_khz, 0);
+}
+
+dsd_input_dsp_rate
 dsd_input_dsp_rate_policy(const dsd_opts* opts) {
     if (!opts) {
         return dsd_input_dsp_rate_for(NULL, AUDIO_IN_RTL, 0, 0);
     }
-    return dsd_input_dsp_rate_for(opts->audio_in_dev, opts->audio_in_type, dsd_opts_input_is_iq_replay(opts),
-                                  opts->rtl_dsp_bw_khz);
+    return input_dsp_rate_classify(opts->audio_in_dev, opts->audio_in_type, dsd_opts_input_is_iq_replay(opts),
+                                   opts->rtl_dsp_bw_khz, opts->frame_tetra == 1);
 }

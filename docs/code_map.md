@@ -3979,16 +3979,22 @@ suite runs under this compiler.
     `dsd_analog_rtl_bandwidths_with_whole_sps()`, the ones that give a symbol rate a whole number of samples per symbol
     (at least 2), which the symbol timing warnings name. An Airspy takes every one of them
     (`DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ` is the RTL maximum, 72; issue #806), through the same helpers.
-    `dsd_input_dsp_rate_policy()` / `dsd_input_dsp_rate_for()` are the one source-aware rate policy that the
-    predictive width checks (engine startup, `--validate-config`, the app-control services and width view, the
-    channel scan) and the stream start read: every live radio (RTL-SDR, rtl_tcp, SoapySDR, Airspy) runs at its DSP
-    bandwidth, known before it opens (a SoapySDR or Airspy device's capture rate is stepped to it exactly, or the open
-    refuses; whether a SoapySDR device can deliver such a rate is known only at open), and an I/Q replay's rate only
-    once it starts. `dsd_analog_width_check_at()` words a rate refusal for what sets the rate (`dsd_analog_rate_source`
-    from that policy, fix text from `dsd_analog_width_rate_fix()`): the DSP bandwidths that fit, called the RTL DSP
-    bandwidth on an RTL-SDR or rtl_tcp input and the DSP bandwidth on a SoapySDR or Airspy device and an I/Q replay,
-    whose rate plan follows it (issue #701). `dsd_analog_channel_lpf_off_check()` is the
-    `DSD_NEO_CHANNEL_LPF=0` rule (an explicit width, or the AM default, cannot run), taking that state as an argument.
+    `dsd_input_dsp_rate_policy()` / `dsd_input_dsp_rate_for()` are the one source-aware rate policy that the predictive
+    width checks (engine startup, `--validate-config`, the app-control services and width view, the channel scan) and
+    the stream start read: every live radio (RTL-SDR, rtl_tcp, SoapySDR, Airspy) runs at its DSP bandwidth, known before
+    it opens (a SoapySDR or Airspy device's capture rate is stepped to it exactly, or the open refuses; whether a
+    SoapySDR device can deliver such a rate is known only at open), and an I/Q replay's rate only once it starts. A raw
+    I/Q stream (`iqtcp:` / `iqudp:`, issue #743) is PLANNED: the general rate plan always lands on its DSP target
+    (`dsd_input_dsp_stream_target_hz()`, the inline `dsd_iq_dsp_target_hz()` for a source that records no bandwidth;
+    TETRA's 72 kHz under `opts->frame_tetra` in `dsd_input_dsp_rate_policy()`), so that rate is known before it opens;
+    `dsd_input_dsp_rate_planned()` adds the stream's RATE for a caller holding its parsed spec (0 where no plan reaches
+    the target), and is built apart in `src/runtime/planned_dsp_rate.c` because it runs the io_iq planner, which the
+    tests that build `analog_channel.c` on its own do not link. `dsd_analog_width_check_at()` words a rate refusal for
+    what sets the rate (`dsd_analog_rate_source` from that policy, fix text from `dsd_analog_width_rate_fix()`): the DSP
+    bandwidths that fit, called the RTL DSP bandwidth on an RTL-SDR or rtl_tcp input and the DSP bandwidth on a SoapySDR
+    or Airspy device, an I/Q replay and a raw I/Q stream, whose rate plans follow it (issues #701, #743).
+    `dsd_analog_channel_lpf_off_check()` is the `DSD_NEO_CHANNEL_LPF=0` rule (an explicit width, or the AM default,
+    cannot run), taking that state as an argument.
     It is pure integer arithmetic so callers need not link the DSP;
     `src/dsp/demod_pipeline.cpp` static-asserts its design constants against the ones here. Tests:
     `RUNTIME_ANALOG_CHANNEL`, `DSP_CHANNEL_FILTERS` (validator and design agree across a width/rate grid; the

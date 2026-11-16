@@ -6,6 +6,7 @@ target_sources(
     PRIVATE
         state_ext.c
         analog_channel.c
+        planned_dsp_rate.c
         config.cpp
         config_user.cpp
         config_user_loader.cpp

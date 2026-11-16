@@ -31,6 +31,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -220,6 +221,9 @@ typedef enum dsd_analog_rate_source {
                                       device that cannot deliver a rate stepped to it is refused when it opens. */
     DSD_ANALOG_RATE_CAPTURE = 2, /**< An I/Q replay: its rate plan follows the DSP bandwidth (issue #701), a bandwidth
                                       change re-planning the chain to it and resampling the capture where it must. */
+    DSD_ANALOG_RATE_PLANNED = 3, /**< A raw I/Q stream (`iqtcp:` / `iqudp:`, issue #743): the general rate plan takes
+                                      the stream's own rate to the DSP target, known before it opens
+                                      (dsd_input_dsp_rate_planned()), a bandwidth change re-planning it. */
 } dsd_analog_rate_source;
 
 /**
@@ -230,27 +234,55 @@ typedef enum dsd_analog_rate_source {
  * stream refuses to open. So an analog width is held to that bandwidth before the stream opens, on every live radio.
  * Whether a SoapySDR device can deliver a rate the step takes to the bandwidth is a separate question, known only when
  * it opens, which refuses one it cannot. An I/Q replay's rate comes from its sidecar and the plan its start makes, so
- * none is known before it starts; PCM input has no DSP rate.
+ * none is known before it starts. A raw I/Q stream records nothing: its plan (dsd_iq_plan_general_rate()) always lands
+ * on the DSP target (dsd_iq_dsp_target_hz(): the DSP bandwidth, TETRA's 72 kHz under TETRA), so that rate is known
+ * before it opens. PCM input has no DSP rate.
  */
 typedef struct dsd_input_dsp_rate {
     int source;  /**< dsd_analog_rate_source: what sets the rate, which picks the fix a width refusal names. */
     int rate_hz; /**< The DSP rate in Hz, known before the stream opens: the DSP bandwidth on every live radio
-                      (saturated, never overflowed, for an out-of-range bandwidth); 0 for an I/Q replay, PCM input
-                      or a bandwidth of 0 or less. */
+                      (saturated, never overflowed, for an out-of-range bandwidth), the planned target on a raw I/Q
+                      stream (its 48 kHz default for a bandwidth of 0 or less, saturated likewise); 0 for an I/Q
+                      replay, PCM input, a live radio's bandwidth of 0 or less, or a stream no plan reaches. */
 } dsd_input_dsp_rate;
 
 /**
  * @brief dsd_input_dsp_rate_policy() for an input named by its device string @p audio_in_dev and @p audio_in_type,
  * classified as the stream start classifies it (detect_radio_source()): an I/Q replay spec, or @p iq_replay_active,
- * is a replay; a SoapySDR or Airspy spec is that device; an RTL-SDR or rtl_tcp spec, and any other device string under
+ * is a replay; an `iqtcp:` or `iqudp:` spec is a raw I/Q stream (PLANNED, at the target for @p rtl_bw_khz with TETRA
+ * off); a SoapySDR or Airspy spec is that device; an RTL-SDR or rtl_tcp spec, and any other device string under
  * AUDIO_IN_RTL, is an RTL-SDR; anything else is PCM input. @p rtl_bw_khz is the DSP bandwidth it runs at.
+ *
+ * A stream's own rate decides only whether it opens at all, which a caller holding its parsed spec asks
+ * dsd_input_dsp_rate_planned().
  */
 dsd_input_dsp_rate dsd_input_dsp_rate_for(const char* audio_in_dev, int audio_in_type, int iq_replay_active,
                                           int rtl_bw_khz);
 
-/** @brief The DSP rate the input @p opts names runs at (dsd_input_dsp_rate_for()); NULL reads as an RTL-SDR at no
- * known bandwidth. */
+/** @brief The DSP rate the input @p opts names runs at (dsd_input_dsp_rate_for(), a raw I/Q stream planned with
+ * @p opts' TETRA setting); NULL reads as an RTL-SDR at no known bandwidth. */
 dsd_input_dsp_rate dsd_input_dsp_rate_policy(const dsd_opts* opts);
+
+/**
+ * @brief The DSP target a raw I/Q stream is planned for at the DSP bandwidth @p dsp_bw_khz, with TETRA on when
+ *        @p frame_tetra: dsd_iq_dsp_target_hz() for a source that records no bandwidth.
+ *
+ * @return The target in Hz, or 0 for a bandwidth whose rate in Hz an int does not hold.
+ */
+uint32_t dsd_input_dsp_stream_target_hz(int dsp_bw_khz, int frame_tetra);
+
+/**
+ * @brief The PLANNED policy: the DSP rate a raw I/Q stream at @p stream_rate_hz (its spec's RATE) runs at for the DSP
+ *        bandwidth @p dsp_bw_khz, with TETRA on when @p frame_tetra.
+ *
+ * The rate is the target (dsd_input_dsp_stream_target_hz()) when the general plan (dsd_iq_plan_general_rate()) reaches
+ * it from @p stream_rate_hz, else 0: the stream start refuses the same rate with the plan's reason. A bandwidth above
+ * what a rate in Hz holds is no plan either. It runs the I/Q rate planner, so it is built apart from the rest of this
+ * header's functions (src/runtime/planned_dsp_rate.c).
+ *
+ * @return source DSD_ANALOG_RATE_PLANNED, with the rate.
+ */
+dsd_input_dsp_rate dsd_input_dsp_rate_planned(uint32_t stream_rate_hz, int dsp_bw_khz, int frame_tetra);
 
 /**
  * @brief dsd_analog_width_check() at a DSP rate that @p source (dsd_analog_rate_source) sets.
@@ -265,8 +297,8 @@ int dsd_analog_width_check_at(int kind, int width_hz, int rate_hz, int source, c
  *
  * Every source's rate follows the DSP bandwidth, so the fix names the DSP bandwidths that would fit: "set the RTL DSP
  * bandwidth to 24, 48 or 72 kHz" for DSD_ANALOG_RATE_RTL_BW, and "set the DSP bandwidth to 24, 48 or 72 kHz" for a
- * SoapySDR or Airspy device (DSD_ANALOG_RATE_DEVICE, stepped to it) and an I/Q replay (DSD_ANALOG_RATE_CAPTURE, which
- * re-plans its rate to it).
+ * SoapySDR or Airspy device (DSD_ANALOG_RATE_DEVICE, stepped to it), an I/Q replay (DSD_ANALOG_RATE_CAPTURE, which
+ * re-plans its rate to it) and a raw I/Q stream (DSD_ANALOG_RATE_PLANNED, likewise).
  *
  * @return 0 on success, -1 on a NULL or empty buffer.
  */
