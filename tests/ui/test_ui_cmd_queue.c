@@ -52,6 +52,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/fec/block_codes.h>
@@ -4934,6 +4935,152 @@ test_iq_stream_refuses_tunes_and_release(void) {
         rc |= expect_true(what, state.p25_vc_freq[0] == 852000000L);
         freeState(&state);
     }
+    return rc;
+}
+
+/* One command drained on @p opts / @p state as the decoder drains it, the toast cleared first. */
+static int
+drain_stream_command(dsd_opts* opts, dsd_state* state, int queued, const char* label) {
+    state->ui_msg[0] = '\0';
+    int rc = expect_int(label, queued, DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* A -Y list of two rows on an I/Q stream, with @p scanner the conventional scanner's flag. */
+static void
+init_stream_with_rows(dsd_opts* opts, dsd_state* state, const char* dev, int scanner) {
+    init_radio_context(opts, state, dev);
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    state->trunk_lcn_freq[0] = 857000000L;
+    state->trunk_lcn_freq[1] = 858000000L;
+    opts->scanner_mode = scanner;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+}
+
+/*
+ * Issue #743: an I/Q stream decodes the one channel its sending program streams, so trunking turned on, a -Y scan
+ * started or resumed, a hold or avoid that would step a -Y scan and a scan list switch are failed commands with the
+ * stream's reason, reaching no tuner. Turning trunking or the scanner off, and clearing the avoids, stay allowed. A
+ * replay keeps trunking as its start allowed it: its retunes defer by design (issue #575).
+ */
+static int
+test_iq_stream_refuses_trunking_and_scans(void) {
+    static const char kReason[] = "An I/Q stream cannot retune: change the channel in the sending program.";
+    static const char* const k_streams[] = {"iqtcp:127.0.0.1:5000:240k:cs16", "iqudp:0.0.0.0:5000:48k:cu8"};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    char what[128];
+    for (size_t i = 0; i < sizeof k_streams / sizeof k_streams[0]; i++) {
+        const char* dev = k_streams[i];
+
+        /* Trunking on is refused by the toggle and by TRUNK_SET; off is allowed by both. */
+        init_stream_with_rows(&opts, &state, dev, 0);
+        DSD_SNPRINTF(what, sizeof what, "trunk toggle on, %s", dev);
+        rc |= drain_stream_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_TRUNK_TOGGLE), what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_int(what, opts.trunk_enable, 0);
+        rc |= expect_contains(what, state.ui_msg, kReason);
+        DSD_SNPRINTF(what, sizeof what, "trunk set on, %s", dev);
+        rc |= drain_stream_command(&opts, &state, post_i32(DSD_APP_CMD_TRUNK_SET, 1), what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_int(what, opts.trunk_enable, 0);
+        rc |= expect_contains(what, state.ui_msg, kReason);
+        opts.trunk_enable = 1;
+        DSD_SNPRINTF(what, sizeof what, "trunk toggle off, %s", dev);
+        rc |= drain_stream_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_TRUNK_TOGGLE), what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 0);
+        rc |= expect_int(what, opts.trunk_enable, 0);
+        opts.trunk_enable = 1;
+        DSD_SNPRINTF(what, sizeof what, "trunk set off, %s", dev);
+        rc |= drain_stream_command(&opts, &state, post_i32(DSD_APP_CMD_TRUNK_SET, 0), what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 0);
+        rc |= expect_int(what, opts.trunk_enable, 0);
+        freeState(&state);
+
+        /* The scanner's start and a resume are refused; its stop is allowed. */
+        init_stream_with_rows(&opts, &state, dev, 0);
+        DSD_SNPRINTF(what, sizeof what, "scanner start, %s", dev);
+        rc |= drain_stream_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE), what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_int(what, opts.scanner_mode, 0);
+        rc |= expect_contains(what, state.ui_msg, kReason);
+        rc |= expect_int(what, g_cc_tune_calls + g_io_control_tune_calls, 0);
+        state.lcn_scan_paused = 1U;
+        DSD_SNPRINTF(what, sizeof what, "scan resume, %s", dev);
+        rc |= drain_stream_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_SCAN_RESUME), what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_int(what, state.lcn_scan_paused, 1);
+        rc |= expect_contains(what, state.ui_msg, kReason);
+        DSD_SNPRINTF(what, sizeof what, "scanner resume, %s", dev);
+        rc |= drain_stream_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE), what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_int(what, state.lcn_scan_paused, 1);
+        rc |= expect_int(what, g_cc_tune_calls + g_io_control_tune_calls, 0);
+        freeState(&state);
+
+        init_stream_with_rows(&opts, &state, dev, 1);
+        DSD_SNPRINTF(what, sizeof what, "scanner stop, %s", dev);
+        rc |= drain_stream_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE), what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 0);
+        rc |= expect_int(what, opts.scanner_mode, 0);
+        freeState(&state);
+
+        /* A hold or avoid would step a -Y scan; clearing the avoids is a flag edit. */
+        static const struct {
+            int cmd;
+            const char* tag;
+        } k_controls[] = {{DSD_APP_CMD_SCAN_AVOID, "scan avoid"}, {DSD_APP_CMD_SCAN_HOLD_TOGGLE, "scan hold"}};
+
+        for (size_t c = 0; c < sizeof k_controls / sizeof k_controls[0]; c++) {
+            init_stream_with_rows(&opts, &state, dev, 1);
+            DSD_SNPRINTF(what, sizeof what, "%s, %s", k_controls[c].tag, dev);
+            rc |= drain_stream_command(&opts, &state, dsd_app_command_action(k_controls[c].cmd), what);
+            rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+            rc |= expect_contains(what, state.ui_msg, kReason);
+            rc |= expect_int(what, g_cc_tune_calls + g_io_control_tune_calls, 0);
+            rc |= expect_int(what, state.lcn_scan_hold, 0);
+            rc |= expect_int(what, state.lcn_freq_roll, 0);
+            freeState(&state);
+        }
+        init_stream_with_rows(&opts, &state, dev, 1);
+        DSD_SNPRINTF(what, sizeof what, "scan avoid clear, %s", dev);
+        rc |= drain_stream_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID_CLEAR), what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 0);
+        rc |= expect_true(what, strstr(state.ui_msg, kReason) == NULL);
+        freeState(&state);
+
+        /* A scan list switch reaches no coordinator. */
+        init_stream_with_rows(&opts, &state, dev, 0);
+        const dsd_app_scan_list_set_payload list = {.session = 7U, .request = 1U, .list = 1, .enabled = 1U};
+        DSD_SNPRINTF(what, sizeof what, "scan list set, %s", dev);
+        rc |= drain_stream_command(&opts, &state, dsd_app_command_submit(DSD_APP_CMD_SCAN_LIST_SET, &list, sizeof list),
+                                   what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_contains(what, state.ui_msg, kReason);
+        freeState(&state);
+
+        /* The passband a rigctl peer would take: none runs beside a stream. */
+        init_stream_with_rows(&opts, &state, dev, 0);
+        opts.setmod_bw = 0;
+        DSD_SNPRINTF(what, sizeof what, "rigctl passband, %s", dev);
+        rc |= drain_stream_command(&opts, &state, post_i32(DSD_APP_CMD_RIGCTL_SET_MOD_BW, 12500), what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_int(what, opts.setmod_bw, 0);
+        rc |= expect_contains(what, state.ui_msg,
+                              "An I/Q stream has no tuner controls: adjust the radio in the sending program.");
+        freeState(&state);
+    }
+
+    /* A replay keeps trunking: its start allows -T, and the trunk machines' retunes defer. */
+    init_stream_with_rows(&opts, &state, "iqreplay:capture.iq.json", 0);
+    rc |= drain_stream_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_TRUNK_TOGGLE), "trunk toggle, replay");
+    rc |= expect_int("trunk toggle, replay", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("trunk toggle, replay", opts.trunk_enable, 1);
+    freeState(&state);
     return rc;
 }
 
@@ -14805,7 +14952,7 @@ test_stream_bandwidth_change_replans(void) {
                           && g_fake_replay_creates[1].bw_source == DSD_RTL_DSP_BW_SOURCE_DEFAULT);
     rc |=
         expect_true("stream bw start fails: the request goes back", opts.rtl_dsp_bw_khz == 48 && state.rtl_ctx != NULL);
-    rc |= expect_toast("stream bw start fails: toast", &state, "the stream did not start at the new rate");
+    rc |= expect_toast("stream bw start fails: toast", &state, "the I/Q stream did not start at the new rate");
     rc |= expect_int("stream bw start fails: failed", dsd_app_command_test_last_failed(), 1);
     freeState(&state);
 
@@ -14838,14 +14985,14 @@ test_stream_mode_change_replans(void) {
     rc |= expect_int("stream tetra: one restart", g_config_rtl_creates, 1);
     rc |= expect_true("stream tetra: opened with the TETRA decoder, no resume",
                       g_fake_replay_creates[0].frame_tetra == 1 && g_fake_replay_creates[0].resume_pending == 0);
-    rc |= expect_str("stream tetra: toast", state.ui_msg, "Decoding TETRA: stream reconnected at 72 kHz");
+    rc |= expect_str("stream tetra: toast", state.ui_msg, "Decoding TETRA: I/Q stream reconnected at 72 kHz");
     rc |= expect_int("stream tetra: not failed", dsd_app_command_test_last_failed(), 0);
     g_fake_request_rate_hz = 72000;
 
     rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR, "stream dmr");
     rc |= expect_int("stream dmr: a second restart", g_config_rtl_creates, 2);
     rc |= expect_int("stream dmr: opened without TETRA", g_fake_replay_creates[1].frame_tetra, 0);
-    rc |= expect_str("stream dmr: toast", state.ui_msg, "Decoding DMR: stream reconnected at 48 kHz");
+    rc |= expect_str("stream dmr: toast", state.ui_msg, "Decoding DMR: I/Q stream reconnected at 48 kHz");
     g_fake_request_rate_hz = 48000;
 
     rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_P25P1, "stream p25");
@@ -15185,6 +15332,51 @@ test_stream_next_start_rules(void) {
     return rc;
 }
 
+/*
+ * Issue #743: a config naming an I/Q stream [input] while a -Y scan or a trunk-scan coordinator decides the front end
+ * is refused whole, as the input rows refuse a switch under a scan: the stream could not carry the scan on. Its own
+ * fix, not a rule about the save: a config that also turns the scanner off is refused too, and nothing opens.
+ */
+static int
+test_stream_config_apply_under_a_scan(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static dsdneoUserConfig cfg;
+    static const char k_live[] = "rtl:0:851.375M:20:0:48";
+    int rc = 0;
+    for (int kind = 0; kind < 3; kind++) {
+        const char* label = kind == 0   ? "stream config under a -Y scan"
+                            : kind == 1 ? "stream config turning the scanner off"
+                                        : "stream config under a trunk scan";
+        init_stream_replan_context(&opts, &state, fake_ctx, k_live, 48, 48000);
+        state.lcn_freq_count = 2;
+        state.trunk_lcn_freq[0] = 857000000L;
+        state.trunk_lcn_freq[1] = 858000000L;
+        stream_input_config(&cfg, "240k", "cs16");
+        if (kind == 2) {
+            opts.trunk_scan_enabled = 1;
+            state.trunk_scan_target_count = 2U;
+        } else {
+            opts.scanner_mode = 1;
+        }
+        if (kind == 1) {
+            cfg.has_trunking = 1;
+            cfg.trunk_scanner = 0;
+        }
+        rc |= submit_config(&opts, &state, &cfg, label);
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_toast(label, &state, "Config not applied: stop the scan first");
+        rc |= expect_int(label, g_config_rtl_creates, 0);
+        rc |= expect_str(label, opts.audio_in_dev, k_live);
+        rc |= expect_int(label, kind == 2 ? opts.trunk_scan_enabled : opts.scanner_mode, 1);
+        opts.trunk_scan_enabled = 0;
+        state.trunk_scan_target_count = 0U;
+        freeState(&state);
+    }
+    return rc;
+}
+
 /* The [input] a replay session started with: the rtl_tcp one of the config it loaded (issue #743). */
 static void
 init_replay_loaded_input(dsdneoUserConfig* loaded) {
@@ -15349,6 +15541,69 @@ test_replay_config_apply_keeps_the_saved_input(void) {
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
     rc |= expect_true("live [input]: the live radio is saved",
                       snap.has_input && snap.input_source == DSDCFG_INPUT_RTL && snap.rtltcp_host[0] == '\0');
+    freeState(&state);
+
+    reset_rx_family_wrap();
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * Issue #743 (D8): a replay whose saved [input] is a raw I/Q stream (--config with an iqtcp [input] beside --iq-replay)
+ * runs trunking and the -Y scanner as any replay does: every save writes them off beside that stream, so the save
+ * starts. A config turning trunking on applies, and the scanner starts; before, both were refused by the stream's
+ * next-start rule as if the stream ran. A config that replaces the replay with that stream is judged on what the replay
+ * runs: under -T it is refused (before, the save hid -T, and the stream ran with trunking on).
+ */
+static int
+test_replay_with_a_saved_stream_runs_trunking_and_scans(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static dsdneoUserConfig saved_stream;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig snap;
+    int rc = 0;
+    stream_input_config(&saved_stream, "240k", "cs16");
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("replay trunking on: retained", dsd_user_config_retain_input(&state, &saved_stream), 0);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    cfg.trunk_enabled = 1;
+    rc |= submit_config(&opts, &state, &cfg, "replay trunking on");
+    rc |= expect_int("replay trunking on: not failed", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("replay trunking on: trunking on", opts.trunk_enable, 1);
+    rc |= expect_str("replay trunking on: the replay runs", opts.audio_in_dev, "iqreplay:capture.iq.json");
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    rc |= expect_true("replay trunking on: saved off beside the stream",
+                      snap.input_source == DSDCFG_INPUT_IQTCP && snap.trunk_enabled == 0);
+    freeState(&state);
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("replay scanner start: retained", dsd_user_config_retain_input(&state, &saved_stream), 0);
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 0;
+    state.trunk_lcn_freq[0] = 857000000L;
+    state.trunk_lcn_freq[1] = 858000000L;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |=
+        drain_stream_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE), "replay scanner start");
+    rc |= expect_true("replay scanner start: not refused for the stream", strstr(state.ui_msg, "I/Q stream") == NULL);
+    rc |= expect_int("replay scanner start: scanner on", opts.scanner_mode, 1);
+    freeState(&state);
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("replay -T to the stream: retained", dsd_user_config_retain_input(&state, &saved_stream), 0);
+    opts.trunk_enable = 1;
+    stream_input_config(&cfg, "240k", "cs16");
+    rc |= submit_config(&opts, &state, &cfg, "replay -T to the stream");
+    rc |= expect_int("replay -T to the stream: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("replay -T to the stream: nothing opened", g_config_rtl_creates, 0);
+    rc |= expect_str("replay -T to the stream: the replay runs", opts.audio_in_dev, "iqreplay:capture.iq.json");
+    rc |= expect_toast("replay -T to the stream: toast", &state,
+                       "trunking.enabled cannot be used with an I/Q stream input");
     freeState(&state);
 
     reset_rx_family_wrap();
@@ -29177,6 +29432,94 @@ test_replay_refuses_tuner_controls(void) {
     return rc;
 }
 
+/* Issue #743: an I/Q stream's sending program runs the radio, so each tuner control (gain, device index, PPM set and
+   step, bias tee, rtl_tcp autotune, auto-PPM, tuner autogain) is refused before anything changes with the stream's own
+   reason, which says where the control is: no option moves, the stream is not restarted (a reconnect), no PPM request
+   is recorded, and the autogain setting a later radio opens with stays as it was. */
+static int
+test_iq_stream_refuses_tuner_controls(void) {
+    static const char kReason[] = "An I/Q stream has no tuner controls: adjust the radio in the sending program.";
+    static dsd_opts opts;
+    static dsd_state state;
+
+    static const struct {
+        int cmd;
+        int32_t value;
+    } k_cases[] = {
+        {DSD_APP_CMD_RTL_SET_GAIN, 20},    {DSD_APP_CMD_RTL_SET_DEV, 1},      {DSD_APP_CMD_RTL_SET_PPM, 5},
+        {DSD_APP_CMD_PPM_DELTA, 1},        {DSD_APP_CMD_RTL_SET_BIAS_TEE, 1}, {DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, 1},
+        {DSD_APP_CMD_RTL_SET_AUTO_PPM, 1},
+    };
+
+    static const char* const k_streams[] = {"iqtcp:127.0.0.1:5000:240000:cs16", "iqudp:0.0.0.0:5000:48000:cu8"};
+    int rc = 0;
+    for (size_t s = 0; s < sizeof k_streams / sizeof k_streams[0]; s++) {
+        for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+            init_running_radio(&opts, &state, k_streams[s]);
+            opts.rtl_gain_value = 0;
+            opts.rtl_dev_index = 0;
+            opts.rtlsdr_ppm_error = 0;
+            opts.rtl_bias_tee = 0;
+            opts.rtltcp_autotune = 0;
+            opts.rtl_auto_ppm = 0;
+            g_bias_tee_armed = 1;
+            g_bias_tee_result = 0;
+            char tag[96];
+            DSD_SNPRINTF(tag, sizeof tag, "stream tuner control %zu on %s", i, k_streams[s]);
+            rc |= expect_int(tag, post_i32(k_cases[i].cmd, k_cases[i].value), DSD_APP_COMMAND_SUBMIT_QUEUED);
+            state.ui_msg[0] = '\0';
+            rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_str(tag, state.ui_msg, kReason);
+            rc |= expect_int(tag, g_config_rtl_creates, 0);
+            rc |= expect_true(tag, state.rtl_ctx == (RtlSdrContext*)g_config_rtl_ctx);
+            rc |= expect_true(tag, opts.rtl_gain_value == 0 && opts.rtl_dev_index == 0 && opts.rtlsdr_ppm_error == 0
+                                       && opts.rtl_bias_tee == 0 && opts.rtltcp_autotune == 0 && opts.rtl_auto_ppm == 0
+                                       && opts.rtl_needs_restart == 0);
+            rc |= expect_int(tag, rtl_stream_get_requested_ppm(&opts), 0);
+            g_bias_tee_armed = 0;
+            end_running_radio(&state);
+        }
+
+        init_running_radio(&opts, &state, k_streams[s]);
+        rtl_stream_set_tuner_autogain(0);
+        const dsd_app_dsp_payload toggle = {.op = DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE};
+        rc |= expect_int("stream autogain toggle queued",
+                         dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &toggle, sizeof toggle),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        state.ui_msg[0] = '\0';
+        rc |= expect_int("stream autogain toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_str("stream autogain toggle toast", state.ui_msg, kReason);
+        rc |= expect_int("stream autogain toggle changes nothing", rtl_stream_get_tuner_autogain(), 0);
+        end_running_radio(&state);
+    }
+    return rc;
+}
+
+/* Issue #743: Signal search on an I/Q stream is refused at its start with the stream's reason, published as the
+   search's error: the sending program picks the channel, so no visit could tune. */
+static int
+test_iq_stream_refuses_signal_search(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_running_radio(&opts, &state, "iqtcp:127.0.0.1:5000:240000:cs16");
+    dsd_signal_search_config config;
+    DSD_MEMSET(&config, 0, sizeof config);
+    config.session_id = 41U;
+    config.range_count = 1U;
+    rc |= expect_int("stream search queued", dsd_app_signal_search_start(&config), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("stream search drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_signal_search_status status;
+    DSD_MEMSET(&status, 0, sizeof status);
+    dsd_app_signal_search_status_get(&status, NULL, 0);
+    rc |= expect_int("stream search: an error", status.phase, DSD_SEARCH_ERROR);
+    rc |= expect_int("stream search: no coordinator", dsd_engine_signal_search_active(&state), 0);
+    rc |= expect_str("stream search: its reason", status.message,
+                     "Signal search needs a tunable SDR: an I/Q stream cannot retune");
+    end_running_radio(&state);
+    return rc;
+}
+
 /* What the capture-stopped log and toast of a restart say (issue #743 B16). */
 static const char k_restart_capture_toast[] = "I/Q capture stopped: the stream restarted; what was recorded is kept";
 
@@ -31327,6 +31670,8 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_capture_seal_before_a_reopen_in_the_same_drain();
     rc |= test_replay_refuses_tuner_controls();
+    rc |= test_iq_stream_refuses_tuner_controls();
+    rc |= test_iq_stream_refuses_signal_search();
     rc |= test_restart_stops_the_iq_capture();
     rc |= test_same_source_restart_takes_a_stream_gap();
 #endif
@@ -31416,7 +31761,9 @@ main(void) {
     rc |= test_kept_fixed_input_config_pushes_squelch();
 #endif
     rc |= test_stream_next_start_rules();
+    rc |= test_stream_config_apply_under_a_scan();
     rc |= test_replay_config_apply_keeps_the_saved_input();
+    rc |= test_replay_with_a_saved_stream_runs_trunking_and_scans();
     rc |= test_replay_input_switches_keep_a_saved_input();
     rc |= test_replay_widths_held_to_the_planned_rate();
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
@@ -31621,6 +31968,7 @@ main(void) {
     rc |= test_rigctl_reconnect_key_uses_the_connect_service();
     rc |= test_fixed_tuning_refuses_rigctl_connect();
     rc |= test_iq_stream_refuses_tunes_and_release();
+    rc |= test_iq_stream_refuses_trunking_and_scans();
     rc |= test_stop_playback_pulse_failure_keeps_the_playback();
     rc |= test_stop_playback_reopens_pulse_as_a_new_stream();
     rc |= test_output_reconfigure_failure_keeps_the_switch();

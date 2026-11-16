@@ -8620,6 +8620,33 @@ test_trunk_scan_rejects_iq_replay_input(void) {
         test_rc = 1;
     }
 
+    /* Issue #743: an I/Q stream is refused with its own reason, its open stream and a rigctl peer configured beside it
+       alike: the sending program picks its channel. */
+    static const char* const k_streams[] = {"iqtcp:127.0.0.1:5000:240000:cs16", "iqudp:0.0.0.0:5000:48000:cu8"};
+    for (size_t i = 0; i < sizeof k_streams / sizeof k_streams[0]; i++) {
+        for (int rigctl = 0; rigctl < 2; rigctl++) {
+            reset_scan_opts_state(&opts, &state);
+            DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", k_streams[i]);
+            opts.use_rigctl = rigctl;
+            DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+            opts.trunk_scan_list_count = 1;
+            err[0] = '\0';
+            rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+            if (rc == 0
+                || strstr(err, "--trunk-scan cannot use an I/Q stream input: it decodes only the channel the sending "
+                               "program streams")
+                       == NULL) {
+                DSD_FPRINTF(stderr, "I/Q stream scan should be refused with its reason (%s, rigctl %d) rc=%d err=%s\n",
+                            k_streams[i], rigctl, rc, err);
+                test_rc = 1;
+            }
+            if (dsd_engine_trunk_scan_active_index(&state) != (size_t)-1 || dsd_trunk_scan_hook_p25_ctx() != NULL) {
+                DSD_FPRINTF(stderr, "I/Q stream rejection attached a coordinator (%s)\n", k_streams[i]);
+                test_rc = 1;
+            }
+        }
+    }
+
     /* Issue #743 (B14): the replay flags a session keeps after a config apply moved it onto a live rtl_tcp radio refuse
        nothing: the radio tunes. */
     reset_scan_opts_state(&opts, &state);

@@ -3848,8 +3848,11 @@ suite runs under this compiler.
       (`config_user_validation.cpp`): when the `[input]` it writes is an I/Q stream, retained or live, each key a D8
       rule refuses is written off, through the `turn_off` field of the same rule table, so a replay with `-T`, `-Y` or
       `--trunk-scan` under a stream config saves a config the next start runs. The next-start checks build on this
-      snapshot too, so in such a replay session a change that turns one of them on is judged against a save with them
-      off. Bootstrap retains the loaded block (`dsd_user_config_retain_input()`) in state
+      snapshot too: in such a replay session a change that keeps the replay running is judged on the save it leaves,
+      with them off (`app_check_next_start_input()` turns them off after the change), so the replay runs `-T`, `-Y` and
+      a config that turns trunking on; a config whose `[input]` replaces the replay is judged on what the session runs
+      (`dsd_snapshot_opts_to_user_config_as_run()`, the snapshot before the turn-off), so `-T` refuses a switch to the
+      stream. Bootstrap retains the loaded block (`dsd_user_config_retain_input()`) in state
       slot 15 (`DSD_STATE_EXT_RUNTIME_CONFIG_INPUT`), freed with the state. A config apply
       (`cfg_settle_retained_input()`) changes it only when the config has an `[input]`, stays applied, and leaves the
       replay running: a loaded file's payload replaces it, a plain patch merges the keys it sets

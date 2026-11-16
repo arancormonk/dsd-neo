@@ -858,6 +858,11 @@ inputs cannot scan by themselves because DSD-neo has no tuner to retune.
 Run trunk scan against live input. IQ replay remains useful for testing one captured control/voice path, but not for
 rotating across unrelated scan targets.
 
+`--trunk-scan cannot use an I/Q stream input: it decodes only the channel the sending program streams`
+
+An I/Q stream (`-i iqtcp:` or `-i iqudp:`) carries the one channel another program picks, and DSD-neo cannot retune it.
+Run trunk scan on a radio DSD-neo tunes. The command line refuses `--trunk-scan` beside a stream before this check.
+
 ## Analog NFM and AM targets
 
 An `nfm-conventional` target parks on one analog narrowband FM channel and plays it through the analog FM monitor (the

@@ -119,6 +119,7 @@
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "key_commands.h"
+#include "next_start_check.h"
 #include "recording_view_internal.h"
 #include "rr_apply_verdict.h"
 #include "scan_avoid_view_internal.h"
@@ -515,13 +516,24 @@ ui_toast_mhz(uint32_t hz, char* out, size_t out_size) {
    caller fails the command. */
 static int
 ui_cmd_refuse_fixed_tuning(const dsd_opts* opts, dsd_state* state) {
-    if (!dsd_opts_input_has_fixed_tuning(opts)) {
+    const char* why = svc_fixed_tuning_reason(opts);
+    if (!why) {
         return 0;
     }
-    ui_set_toast(state, 3, "%s",
-                 dsd_opts_input_is_iq_replay(opts)
-                     ? "An I/Q replay cannot retune."
-                     : "An I/Q stream cannot retune: change the channel in the sending program.");
+    ui_set_toast(state, 3, "%s", why);
+    return 1;
+}
+
+/* A tuner control (gain, PPM, bias tee, device, the automatic ones) asked of an I/Q stream: the sending program runs
+   the radio, so nothing here would apply it (issue #743). Returns 1, with the stream's reason toasted, on a stream; the
+   caller answers the command as unsupported. A replay's controls keep their own "Unsupported:" toasts. */
+static int
+ui_cmd_refuse_stream_tuner_control(const dsd_opts* opts, dsd_state* state) {
+    const char* why = svc_iq_stream_tuner_reason(opts);
+    if (!why) {
+        return 0;
+    }
+    ui_set_toast(state, 3, "%s", why);
     return 1;
 }
 
@@ -2074,6 +2086,9 @@ ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct dsd_app
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
+        if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
         const int capture_before = opts && opts->iq_capture_requested;
         int rc = svc_rtl_set_dev_index(opts, state, v);
         result = ui_cmd_apply_status_from_service_rc(rc);
@@ -2459,6 +2474,9 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
+        if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
         const int capture_before = opts && opts->iq_capture_requested;
         int rc = svc_rtl_set_gain(opts, state, v);
         result = ui_cmd_apply_status_from_service_rc(rc);
@@ -2479,14 +2497,16 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     return result;
 }
 
-/* A PPM correction on an input with fixed tuning (an I/Q replay): nothing applies it, so it is refused with a toast before
-   the request is recorded. Returns 1 when refused. */
+/* A PPM correction on an input with fixed tuning (an I/Q replay or stream): nothing applies it, so it is refused with a
+   toast before the request is recorded, a stream's naming its sending program. Returns 1 when refused. */
 static int
 ui_cmd_refuse_fixed_source_ppm(const dsd_opts* opts, dsd_state* state) {
     if (!dsd_opts_input_has_fixed_tuning(opts)) {
         return 0;
     }
-    ui_set_toast(state, 3, "Unsupported: PPM correction not available on active backend");
+    if (!ui_cmd_refuse_stream_tuner_control(opts, state)) {
+        ui_set_toast(state, 3, "Unsupported: PPM correction not available on active backend");
+    }
     return 1;
 }
 
@@ -2630,6 +2650,9 @@ ui_cmd_handle_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, const struct ds
     int32_t on = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
+        if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
         int rc = svc_rtl_set_bias_tee(opts, state, on);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2648,6 +2671,9 @@ ui_cmd_handle_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, const struct
     int32_t on = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
+        if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
         int rc = svc_rtltcp_set_autotune(opts, state, on);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2666,6 +2692,9 @@ ui_cmd_handle_rtl_set_auto_ppm(dsd_opts* opts, dsd_state* state, const struct ds
     int32_t on = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
+        if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
         int rc = svc_rtl_set_auto_ppm(opts, state, on);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2772,6 +2801,10 @@ ui_cmd_handle_rigctl_set_mod_bw(dsd_opts* opts, dsd_state* state, const struct d
     int32_t hz = 0;
     if (!state || !ui_cmd_parse_i32_payload(c, &hz)) {
         return UI_CMD_APPLY_COMPLETED;
+    }
+    /* No rigctl peer runs beside an I/Q stream (issue #743): its sending program sets the passband. */
+    if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
     }
     char why[96];
     if (svc_apply_rigctl_setmod_bw(opts, state, (int)hz, command_writes_policy_store(c), why, sizeof why) != 0) {
@@ -3559,7 +3592,9 @@ apply_cmd_dsp(const struct dsd_app_command* c, const dsd_opts* opts, dsd_state* 
     /* A fixed source (an I/Q replay) has no tuner gain to supervise: the toggle is refused, and never recorded as the
        operator's setting for the radio a later open runs (rtl_stream_set_tuner_autogain()). */
     if (p.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE && dsd_opts_input_has_fixed_tuning(opts)) {
-        ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
+        if (!ui_cmd_refuse_stream_tuner_control(opts, state)) {
+            ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
+        }
         return UI_CMD_APPLY_UNSUPPORTED;
     }
     apply_dsp_op(&p, opts, state);
@@ -6718,7 +6753,7 @@ decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDeco
         char rate[DSD_ANALOG_WIDTH_TEXT_MAX];
         (void)dsd_analog_width_format((int)replay_rate_hz, rate, sizeof rate);
         if (dsd_opts_input_is_iq_stream(opts)) {
-            DSD_SNPRINTF(text, sizeof text, "stream reconnected at %s", rate);
+            DSD_SNPRINTF(text, sizeof text, "I/Q stream reconnected at %s", rate);
         } else {
             DSD_SNPRINTF(text, sizeof text, "replay %s %s", replay_resampled ? "resampled to" : "runs at", rate);
         }
@@ -8801,6 +8836,11 @@ apply_cmd_scan_list_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     if (!scan_list_set_payload_valid(&p)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
+    /* No trunk scan runs on an I/Q stream (issue #743): the list a switch would turn on is one it cannot tune. */
+    if (dsd_opts_input_is_iq_stream(opts) && ui_cmd_refuse_fixed_tuning(opts, state)) {
+        *code_out = DSD_APP_SCAN_LIST_SET_UNAVAILABLE;
+        return UI_CMD_APPLY_FAILED;
+    }
     const int code = dsd_trunk_scan_hook_list_set(opts, state, p.session, p.list, p.enabled, p.request);
     *code_out = code;
     scan_list_set_toast(state, code, p.list, p.enabled);
@@ -8840,6 +8880,11 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     if (opts->scanner_mode != 1) {
         ui_set_toast(state, 3, "Not scanning: hold/avoid need -Y or --trunk-scan");
         return 1;
+    }
+    /* A -Y scan never starts on an I/Q stream (issue #743); were one to run, a hold released or a row avoided would
+       step it to a row its receiver cannot reach. */
+    if (dsd_opts_input_is_iq_stream(opts) && ui_cmd_refuse_fixed_tuning(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
     }
     if (op == DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) {
         apply_manual_scan_hold_toggle(state);
@@ -9645,6 +9690,9 @@ cfg_overlay_next_start_fields(dsdneoUserConfig* next, const void* ctx) {
  * (svc_check_next_start()). An I/Q stream input beside trunking, the -Y scanner or a trunk scan breaks one too (issue
  * #743, D8), so a config that names an [input] is judged as well, on the input it leaves (G3): an input-only switch to
  * a stream under trunking already on is refused, and one that leaves the stream while it turns trunking on applies.
+ * During an I/Q replay whose saved [input] is a stream, a config that keeps the replay is judged on the save it leaves
+ * (trunking and the scanners off beside the stream, as every save writes them, so the replay runs them), and one that
+ * replaces the replay on what the session runs (app_check_next_start_input()).
  */
 static int
 cfg_check_next_start(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
@@ -9652,7 +9700,11 @@ cfg_check_next_start(const dsd_opts* opts, dsd_state* state, const dsdneoUserCon
         return UI_CMD_APPLY_COMPLETED;
     }
     char why[256];
-    if (svc_check_next_start(opts, state, cfg_overlay_next_start_fields, cfg, why, sizeof why) == 0) {
+    /* An [input] that sets the device replaces the running input, an I/Q replay included: it runs trunking and the
+       scanners as the session runs them, which a replay's save hides beside a stream [input] it loaded. */
+    if (app_check_next_start_input(opts, state, cfg_overlay_next_start_fields, cfg,
+                                   dsd_user_config_input_sets_device(cfg), why, sizeof why)
+        == 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
     LOG_WARN("Config not applied: %s.\n", why);
@@ -9712,11 +9764,19 @@ cfg_check_retained_stream_patch(const dsd_opts* opts, dsd_state* state, const ds
 /* A raw I/Q stream [input] (issue #743) is refused before anything changes when its keys build no spec, or its RATE no
    plan takes to the DSP target the config leaves (cfg_check_iq_stream_spec()), with the parser's or planner's reason,
    as --validate-config and the next start refuse it; so is a replay patch that leaves the [input] the session saves
-   such a stream (cfg_check_retained_stream_patch()). */
+   such a stream (cfg_check_retained_stream_patch()). While a -Y scan or a trunk-scan coordinator decides the front end
+   it is refused whole as the input rows refuse a switch (ui_input_switch_refused()): the stream could not carry on the
+   scan the config would leave running. */
 static int
 cfg_check_iq_stream_input(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int loaded_file) {
     if (!cfg_is_iq_stream_source(cfg)) {
         return cfg_check_retained_stream_patch(opts, state, cfg, loaded_file);
+    }
+    if (dsd_user_config_input_sets_device(cfg)
+        && (ui_scan_goes_on(opts, state) || (opts->trunk_scan_enabled == 1 && state->trunk_scan_target_count > 0U))) {
+        LOG_WARN("Config not applied: an I/Q stream input cannot run a scan; stop the scan first.\n");
+        ui_set_toast(state, 5, "Config not applied: stop the scan first");
+        return UI_CMD_APPLY_FAILED;
     }
     return cfg_check_iq_stream_spec(opts, state, cfg, cfg);
 }

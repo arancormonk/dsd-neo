@@ -580,6 +580,9 @@ search_validate_start(const dsd_opts* opts, const dsd_state* state, const dsd_si
     const char* why = NULL;
     if (!opts || !state || !search_valid_config(config)) {
         why = "Invalid signal search configuration";
+    } else if (dsd_opts_input_is_iq_stream(opts)) {
+        /* The sending program picks a stream's channel (issue #743): say so, rather than ask for an SDR. */
+        why = "Signal search needs a tunable SDR: an I/Q stream cannot retune";
     } else if (!search_live_receiver(opts, state)) {
         why = "Signal search needs exclusive use of a live tunable SDR";
     } else if (dsd_engine_signal_search_active(state)

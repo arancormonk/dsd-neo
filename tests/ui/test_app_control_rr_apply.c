@@ -1202,6 +1202,42 @@ test_apply_replay_never_tunes(void) {
     }
     return rc;
 }
+
+/* Issue #743: an import on an I/Q stream never tunes either, TCP or UDP: the sending program picks the channel. The
+   import's mode and files apply; no tune is asked, no pending manual tune is superseded, no receiver-move boundary
+   forgets the carrier's codes, and the toast names no tune. A conventional import, so the stream's next-start rules
+   (no trunking beside a stream) have nothing to refuse. */
+static int
+test_apply_iq_stream_never_tunes(void) {
+    static const char* const k_streams[] = {"iqtcp:127.0.0.1:5000:240000:cs16", "iqudp:0.0.0.0:5000:48000:cu8"};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+    for (size_t i = 0; i < sizeof k_streams / sizeof k_streams[0]; i++) {
+        init_test_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", k_streams[i]);
+        DSD_MEMSET(&p, 0, sizeof p);
+        p.decode_mode = (int32_t)DSDCFG_MODE_TDMA;
+        p.trunking = 0U;
+        p.tune_hz = 851012500U;
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        seed_carrier_codes(&state);
+        state.ui_msg[0] = '\0';
+        const char* what = k_streams[i];
+        rc |= expect_int(what, dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("stream import: no tune", g_io_control_tune_calls, 0);
+        rc |= expect_int("stream import: no pending record", g_manual_tune_supersedes, 0);
+        rc |= expect_carrier_codes("stream import: no boundary", &state, 0);
+        rc |= expect_contains(what, state.ui_msg, "Applied: RR import");
+        rc |= expect_int("stream import: no tune message", strstr(state.ui_msg, "tune") == NULL, 1);
+        rc |= expect_int("stream import: its mode", opts.frame_dmr, 1);
+        freeState(&state);
+    }
+    return rc;
+}
 #endif
 
 #if defined(DSD_NEO_TEST_RR_APPLY_WRAP) && defined(USE_RADIO)
@@ -1737,6 +1773,7 @@ main(void) {
     rc |= test_apply_requests_the_tune();
     rc |= test_apply_tune_forgets_the_carrier_codes();
     rc |= test_apply_replay_never_tunes();
+    rc |= test_apply_iq_stream_never_tunes();
 #endif
 #ifdef DSD_NEO_TEST_RR_APPLY_WRAP
     rc |= test_apply_partial_files();

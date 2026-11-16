@@ -948,6 +948,18 @@ void dsd_finalize_user_config_file_input_after_cli(const dsdneoUserConfig* cfg, 
  */
 void dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg);
 
+/**
+ * @brief The snapshot dsd_snapshot_opts_to_user_config() takes, before its last step turns off the keys an I/Q stream
+ * [input] cannot start beside (dsd_user_config_turn_off_beside_iq_stream()): trunking, the -Y scanner and a trunk
+ * scan as the session runs them (issue #743). A replay session with a retained stream [input] runs them, which every
+ * save hides; a change that replaces the replay with that input must be judged on them.
+ *
+ * @param opts Decoder options to read.
+ * @param state Decoder state to read.
+ * @param cfg [out] Destination user config snapshot.
+ */
+void dsd_snapshot_opts_to_user_config_as_run(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg);
+
 /*
  * The [input] a session running an I/Q replay saves (issue #743). A replay (--iq-replay) has no INI form, so every save
  * of such a session (autosave, Save, --print-config) writes the [input] of the config it loaded, unchanged, or no

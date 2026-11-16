@@ -137,6 +137,16 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     DSD_MEMSET(cfg, 0, sizeof *cfg);
 }
 
+void
+dsd_snapshot_opts_to_user_config_as_run(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    dsd_snapshot_opts_to_user_config(opts, state, cfg);
+}
+
+void
+dsd_user_config_turn_off_beside_iq_stream(dsdneoUserConfig* cfg) {
+    (void)cfg;
+}
+
 int
 dsd_user_config_check_trunk_scan_startable(const dsdneoUserConfig* cfg, const dsdneoUserConfig* before, char* why,
                                            size_t why_size) {

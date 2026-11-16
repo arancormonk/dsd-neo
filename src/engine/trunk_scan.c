@@ -6044,6 +6044,12 @@ trunk_scan_init_validate(const dsd_opts* opts, const dsd_state* state, char* err
         scan_set_error(err, err_sz, "--trunk-scan cannot use IQ replay input because replay cannot retune");
         return -1;
     }
+    if (dsd_opts_input_is_iq_stream(opts)) {
+        scan_set_error(err, err_sz,
+                       "--trunk-scan cannot use an I/Q stream input: it decodes only the channel the sending program "
+                       "streams");
+        return -1;
+    }
     if (!trunk_scan_has_tuning_backend(opts, state)) {
         scan_set_error(err, err_sz, "--trunk-scan requires an open RTL input or rigctl tuning");
         return -1;

@@ -2675,6 +2675,17 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     if (!opts || !state || !cfg) {
         return;
     }
+    dsd_snapshot_opts_to_user_config_as_run(opts, state, cfg);
+    /* Last, over the next-start values too: a save beside an I/Q stream [input] (a replay session's retained one) must
+       start (issue #743, D8). */
+    dsd_user_config_turn_off_beside_iq_stream(cfg);
+}
+
+void
+dsd_snapshot_opts_to_user_config_as_run(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    if (!opts || !state || !cfg) {
+        return;
+    }
 
     user_cfg_reset(cfg);
     snapshot_input_config(opts, state, cfg);
@@ -2690,9 +2701,6 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snapshot_dsp_config(cfg);
     snapshot_analog_config(opts, state, cfg);
     snapshot_next_start_config(opts, cfg);
-    /* Last, over the next-start values too: a save beside an I/Q stream [input] (a replay session's retained one) must
-       start (issue #743, D8). */
-    dsd_user_config_turn_off_beside_iq_stream(cfg);
 }
 
 // Template generation ---------------------------------------------------------

@@ -93,6 +93,18 @@ int svc_open_symbol_out(dsd_opts* opts, dsd_state* state, const char* filename);
  * encoder fixes its input rate when it starts.
  */
 const char* svc_input_switch_unsupported(const dsd_opts* opts);
+/**
+ * @brief Why nothing can move the receiver of an input with fixed tuning (dsd_opts_input_has_fixed_tuning(), issues
+ * #575, #743), as the toast every refused tune, scan or trunking start gives: "An I/Q replay cannot retune." or "An I/Q
+ * stream cannot retune: change the channel in the sending program."; NULL on any other input.
+ */
+const char* svc_fixed_tuning_reason(const dsd_opts* opts);
+/**
+ * @brief Why an I/Q stream (dsd_opts_input_is_iq_stream()) takes no tuner control, gain, PPM, bias tee, device or the
+ * automatic ones (issue #743), as the toast each refused control gives: the sending program runs the radio. NULL on any
+ * other input, an I/Q replay included, whose controls answer with their own "Unsupported:" toasts.
+ */
+const char* svc_iq_stream_tuner_reason(const dsd_opts* opts);
 /** @brief 1 while the input is a playback: a WAV or raw file, or a symbol file. */
 int svc_playback_running(const dsd_opts* opts);
 /** @brief Open a file as `-i` opens it (dsd_audio_path_input_kind()): Input > Switch source > WAV / raw file. */

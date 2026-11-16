@@ -1082,6 +1082,17 @@ test_wheel_capture_follows_the_snapshots(void) {
     DSD_SNPRINTF(osnap.audio_in_dev, sizeof osnap.audio_in_dev, "%s", "iqreplay:capture.json");
     wheel_frame(&osnap);
     rc |= expect_int("I/Q replay: capture off", ui_mouse_capture_is_on(), 0);
+    /* Nor under an I/Q stream (issue #743): its sending program picks the channel, TCP or UDP. */
+    DSD_SNPRINTF(osnap.audio_in_dev, sizeof osnap.audio_in_dev, "%s", "rtl:0");
+    wheel_frame(&osnap);
+    DSD_SNPRINTF(osnap.audio_in_dev, sizeof osnap.audio_in_dev, "%s", "iqtcp:127.0.0.1:1234:240000:cs16");
+    wheel_frame(&osnap);
+    rc |= expect_int("I/Q stream over TCP: capture off", ui_mouse_capture_is_on(), 0);
+    DSD_SNPRINTF(osnap.audio_in_dev, sizeof osnap.audio_in_dev, "%s", "rtl:0");
+    wheel_frame(&osnap);
+    DSD_SNPRINTF(osnap.audio_in_dev, sizeof osnap.audio_in_dev, "%s", "iqudp:0.0.0.0:7355:48000:cu8");
+    wheel_frame(&osnap);
+    rc |= expect_int("I/Q stream over UDP: capture off", ui_mouse_capture_is_on(), 0);
     DSD_SNPRINTF(osnap.audio_in_dev, sizeof osnap.audio_in_dev, "%s", "rtl:0");
     wheel_frame(&osnap);
     rc |= expect_int("live radio: capture on", ui_mouse_capture_is_on(), 1);

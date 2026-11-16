@@ -452,6 +452,24 @@ svc_switch_input(dsd_opts* opts, dsd_state* state, dsd_audio_input_kind kind, co
 }
 
 const char*
+svc_fixed_tuning_reason(const dsd_opts* opts) {
+    if (!opts || !dsd_opts_input_has_fixed_tuning(opts)) {
+        return NULL;
+    }
+    return dsd_opts_input_is_iq_replay(opts)
+               ? "An I/Q replay cannot retune."
+               : "An I/Q stream cannot retune: change the channel in the sending program.";
+}
+
+const char*
+svc_iq_stream_tuner_reason(const dsd_opts* opts) {
+    if (!opts || !dsd_opts_input_is_iq_stream(opts)) {
+        return NULL;
+    }
+    return "An I/Q stream has no tuner controls: adjust the radio in the sending program.";
+}
+
+const char*
 svc_input_switch_unsupported(const dsd_opts* opts) {
     if (!opts) {
         return "no session";
@@ -2205,7 +2223,7 @@ svc_iq_stream_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason
     /* The new chain did not start: the previous one starts again. */
     restore(opts, state, restore_ctx);
     if (svc_rtl_restart_locked(opts, state) == 0) {
-        svc_why(why, why_size, "the stream did not start at the new rate (see log)");
+        svc_why(why, why_size, "the I/Q stream did not start at the new rate (see log)");
         return SVC_REPLAY_REPLAN_REFUSED;
     }
     return SVC_REPLAY_REPLAN_FAILED;
@@ -2667,7 +2685,7 @@ svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* wh
         if (replan == SVC_REPLAY_REPLAN_REFUSED) {
             if (why && why_size > 0U && why[0] == '\0') {
                 svc_why(why, why_size,
-                        dsd_opts_input_is_iq_stream(opts) ? "the stream cannot run at that bandwidth"
+                        dsd_opts_input_is_iq_stream(opts) ? "the I/Q stream cannot run at that bandwidth"
                                                           : "the replay cannot run at that bandwidth");
             }
             return -1;
