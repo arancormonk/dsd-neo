@@ -290,7 +290,6 @@ ua_normalize(const dsd_state* state, const dsd_unit_activity* in, dsd_unit_activ
     out->reason_code = in->reason_code;
     out->slot = in->slot;
     out->freq_hz = in->freq_hz;
-    out->scope_epoch = in->scope_epoch;
     ua_identity_normalize(&in->subject, &out->subject);
     ua_identity_normalize(&in->actor, &out->actor);
     ua_identity_normalize(&in->assigned, &out->assigned);
@@ -338,7 +337,7 @@ ua_payload_equal(const dsd_unit_activity* a, const dsd_unit_activity* b) {
 
 static int
 ua_reception_equal(const dsd_unit_activity* a, const dsd_unit_activity* b) {
-    return ua_scope_equal(&a->scope, &b->scope) && a->scope_epoch == b->scope_epoch && a->freq_hz == b->freq_hz;
+    return ua_scope_equal(&a->scope, &b->scope) && a->freq_hz == b->freq_hz;
 }
 
 /* A deregistration's assigned identity is not in its message: the producer reads it from the registration the first

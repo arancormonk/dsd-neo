@@ -2471,7 +2471,7 @@ suite runs under this compiler.
     the producer resolves it, a merge that pushes a non-empty one replaces it, and nothing else rewrites it.
   - Dedup: a push merges into one of the 16 most recently revised rows when every field but the stamps, `repeat`,
     `slot` and the name is equal (protocol, kind, role, result, stage, reason, the four identities with their homes,
-    group, value, value2, scope, `scope_epoch`, `freq_hz`), the decode clock has not gone back past the row's
+    group, value, value2, scope, `freq_hz`), the decode clock has not gone back past the row's
     `last_ms`, and less than 2 s passed since its `first_ms` (an anchored window). A merge bumps `repeat` (saturating),
     `last_ms` and `rev`, and keeps every key field the row holds. One exception to the key: a DEREGISTRATION push with
     no assigned identity matches whatever assigned identity the held row has, because that identity is not in the
@@ -2510,7 +2510,7 @@ suite runs under this compiler.
     value of a TETRA location registration row. Test: `CORE_UNIT_ACTIVITY_REASON` (every 8-bit P25 code against
     the prints' former table, kept in the test).
   - Protocol producers (`src/protocol/<name>/<name>_unit_activity.c`): one row per checked message, `freq_hz` the
-    tuned frequency, `scope_epoch` 0 (nothing exposes a trunk-scan generation). Every producer names the row through
+    tuned frequency. Every producer names the row through
     the one core rule, `dsd_unit_activity_freeze_name()`: the assigned identity when it is a RADIO, else the subject
     RADIO only while `dsd_unit_activity_identity_at_home()` (no home, or the home is the current reception's scope;
     the scope kinds are static-asserted equal to the alias scope's), looked up in the current scope; groups,
@@ -6260,8 +6260,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     (`dsd_source_label_lookup_scoped()`: the assigned ID first, then the subject unless its home is another system; a
     group's label); a row of another system shows `name_frozen`, because the current lists (a trunk-scan target's own)
     say nothing about another system's radio. So a later alias renames only rows of its own system, and A -> B -> A
-    shows each system's names. `scope_epoch` takes no part: no current epoch exists to compare, and the scope alone
-    already tells the systems apart. `dsd_app_unit_activity_name_key()` (`dsd_alias_name_key()`) changes whenever a
+    shows each system's names; the scope alone tells the systems apart. `dsd_app_unit_activity_name_key()` (`dsd_alias_name_key()`) changes whenever a
     name could change; a frontend then reads again from `{instance, 0}` and updates its rows by seq.
   - Frontends: the Qt Activity screen (`UnitActivityModel`, under UI, Qt).
   - Test: `APP_CONTROL_UNIT_ACTIVITY`.

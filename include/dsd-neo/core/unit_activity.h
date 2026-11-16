@@ -187,7 +187,6 @@ typedef struct {
  * - stage: a step within one command (a dsd_ua_stage: TETRA intent vs authenticated confirm), 0 when the message has
  *   none.
  * - slot: the TDMA slot heard on (0/1); freq_hz: the carrier heard on (0 unknown).
- * - scope_epoch: the trunk-scan target generation the row was heard under, or 0; the producer fills it.
  * - name_frozen: the latest pushed name: the subject's name as the producer resolved it at the push that inserted
  *   the row, replaced by each merge that pushes a non-empty one (UTF-8, NUL-terminated; push cuts it at a character
  *   boundary when it fills the field). It is "frozen" only against later alias changes: nothing rewrites it but a
@@ -202,7 +201,6 @@ typedef struct dsd_unit_activity {
     dsd_ua_scope scope;
     uint32_t group;
     uint32_t value, value2;
-    uint32_t scope_epoch;
     uint16_t reason_code;
     uint16_t repeat;
     uint8_t protocol; /**< dsd_ua_protocol */
@@ -251,7 +249,7 @@ typedef struct dsd_unit_activity_read_meta {
  *
  * Merge key: every field but seq, rev, first_ms, last_ms, wall_s, repeat, slot and name_frozen (protocol, kind,
  * role, result, stage, reason set and code, the four identities with their home systems, group, value, value2 and
- * their valid flags, scope, scope_epoch and freq_hz). One exception: a DEREGISTRATION push with no assigned identity
+ * their valid flags, scope and freq_hz). One exception: a DEREGISTRATION push with no assigned identity
  * matches a held row whatever its assigned identity (the producer reads that identity from the registration the first
  * acknowledgement removed, so a repeat finds none). A merge keeps the row's slot and every key field the row holds,
  * and takes the pushed name when it is not empty, so name_frozen holds the latest pushed name.

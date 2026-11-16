@@ -267,7 +267,6 @@ MUTATOR(m_scope_c, r->scope.c = DSD_UA_SCOPE_SITE_KNOWN | 0x0102U)
 MUTATOR(m_scope_kind, r->scope.kind = DSD_UA_SCOPE_P25_NAC)
 MUTATOR(m_scope_category, r->scope.category = 1U)
 MUTATOR(m_scope_invalid, r->scope.valid = 0U) /* rx_id is empty here: an unknown scope */
-MUTATOR(m_scope_epoch, r->scope_epoch = 2U)
 MUTATOR(m_freq, r->freq_hz = 851012500)
 
 /* Fields outside the key, or held only while a valid flag is set: the pair merges. */
@@ -314,7 +313,6 @@ test_pairs_differing_in_one_key_field(void) {
         {"scope kind", m_scope_kind, 0},
         {"scope category", m_scope_category, 0},
         {"scope unknown", m_scope_invalid, 0},
-        {"scope epoch", m_scope_epoch, 0},
         {"freq", m_freq, 0},
         {"slot", n_slot, 1},
         {"name", n_name, 1},
