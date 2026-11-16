@@ -882,9 +882,11 @@ check_executor_arming() {
               && rig.roaming.currentUid() == rig.uids[0] && rig.roaming.currentDistanceKm() >= 0
               && rig.roaming.currentDistanceKm() < 0.5,
           "arming: location starts once, and a fix on the site follows it");
+    check(rig.roaming.holdsLocation(), "arming: the running feed's fix is held");
     rig.set("heldTg", 5);
     check(rig.roaming.reason() == SiteRoaming::TalkgroupHeld && rig.host.streamStops == 1,
           "arming: a held talkgroup pauses it and stops location");
+    check(!rig.roaming.holdsLocation(), "arming: a stopped feed's fix is not kept in memory");
     rig.set("heldTg", 0);
     check(rig.host.streamStarts == 2, "arming: released, location starts again");
     rig.set("scanKind", 2);
@@ -1038,6 +1040,7 @@ check_executor_reset_drops_the_cached_fix() {
     check(rig.roaming.state() == SiteRoaming::Paused && rig.roaming.reason() == SiteRoaming::NoFix
               && rig.host.streamStarts == 2,
           "reset: the candidate goes, the cached fix is not fed again, and the feed restarts");
+    check(!rig.roaming.holdsLocation(), "reset: the fix from before the foreground loss is not kept in memory");
     rig.refix(10.49, 20.0);
     check(rig.roaming.reason() == SiteRoaming::NoFix, "reset: the same fix polled again counts for nothing");
     rig.nearB(9500);

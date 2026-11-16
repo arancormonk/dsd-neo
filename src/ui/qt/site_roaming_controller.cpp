@@ -162,7 +162,7 @@ SiteRoaming::setHost(DecoderHost* host) {
         }
     }
     m_streamOn = false;
-    m_hasMeasurement = false;
+    forgetMeasurement();
     m_streamState.clear();
     m_tx = Transaction();
     m_session = Session();
@@ -509,8 +509,9 @@ SiteRoaming::onForegroundLost() {
     m_verdictUid.clear();
     m_qualifyingUid.clear();
     m_resetFloor = m_seenNs;
-    m_hasMeasurement = false;
-    // The platform stopped the feed when the app left the foreground; it starts again when roaming needs it.
+    forgetMeasurement();
+    // The platform stopped the feed when the app left the foreground. The pass this runs in asks for it again when
+    // roaming needs it, even while the app is still hidden: the platform keeps that start until the app is visible.
     m_streamOn = false;
     m_streamState.clear();
 }
@@ -521,7 +522,7 @@ SiteRoaming::onStreamUpdate(const QVariantMap& record) {
         return;
     }
     m_streamState = record.value(QStringLiteral("state")).toString();
-    m_hasMeasurement = false;
+    forgetMeasurement();
     if (record.value(QStringLiteral("hasFix")).toBool()) {
         const QString provider = record.value(QStringLiteral("provider")).toString();
         const qint64 ns = record.value(QStringLiteral("measurementNs")).toLongLong();
@@ -554,7 +555,7 @@ SiteRoaming::ensureStream(bool need) {
     } else if (!need && m_streamOn) {
         m_streamOn = false;
         m_streamState.clear();
-        m_hasMeasurement = false;
+        forgetMeasurement();
         m_host->stopLocationStream();
     }
 }
@@ -568,6 +569,18 @@ SiteRoaming::streamReason() const {
         return ApproximateOnly;
     }
     return m_streamState == QLatin1String("locationOff") ? LocationOff : NoReason;
+}
+
+/* The reading goes with its flag: the privacy policy promises only the newest readings, and only while roaming runs. */
+void
+SiteRoaming::forgetMeasurement() {
+    m_hasMeasurement = false;
+    m_measurement = SiteRoamingMeasurement();
+}
+
+bool
+SiteRoaming::holdsLocation() const {
+    return m_hasMeasurement || !m_measurement.id.provider.empty();
 }
 
 const SiteRoamingMeasurement*

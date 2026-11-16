@@ -197,6 +197,11 @@ class SiteRoaming : public QObject {
     void setHost(DecoderHost* host);
     /** @brief The monotonic clock in ms every time here is read from: the frontend's by default, a test's instead. */
     void setClock(std::function<qint64()> clock);
+    /**
+     * @brief Whether a location reading is held in memory. Never once the feed is stopped or the app left the
+     * foreground: only the newest reading, and only while roaming runs (PRIVACY_POLICY.md).
+     */
+    bool holdsLocation() const;
 
     bool enabled() const;
     bool available() const;
@@ -370,6 +375,7 @@ class SiteRoaming : public QObject {
     void noteQualification();
     void revoke(qint64 nowMs);
     void ensureStream(bool need);
+    void forgetMeasurement();
     void updateTimer();
 
     Reason armReason() const;

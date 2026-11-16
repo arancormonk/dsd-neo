@@ -14829,9 +14829,12 @@ Qt Quick frontend (`src/ui/qt`):
   absorbed. A cancel once the start is handed over retires the host's attempt (`retireRoamAttempt()`); a switch
   cancelled after the session it left stopped, other than by the user's own action, leaves `recoveryNotice` for Home. A
   foreground loss (`foregroundEpoch()` moved) cancels a switch the host does not own yet and resets the core; a fix
-  polled again after it is never fed. Every accepted command that changes what the session follows
-  (`CommandBridge::operatorIntentSubmitted(kind)`: Hold TG and its release, a manual tune, a tuner release, trunking on
-  or off) blocks roaming, with no timeout, until the snapshot shows its outcome or the session ends; the intents belong
+  polled again after it is never fed. The latest fix's coordinates are
+  dropped from memory whenever the feed stops or the foreground is lost (`holdsLocation()`; the Android host's last
+  stream record likewise in `stopLocationStream()`, `holdsStreamRecord()`), as `PRIVACY_POLICY.md` promises. Every
+  accepted command that changes what the session follows (`CommandBridge::operatorIntentSubmitted(kind)`: Hold TG and
+  its release, a manual tune, a tuner release, trunking on or off) blocks roaming, with no timeout, until the snapshot
+  shows its outcome or the session ends; the intents belong
   to the session, so switching roaming off and on keeps them. A site the user switches to from a session roaming judges
   (shown neither Off nor Idle: Stop and switch, Listen to nearest, `noteSiteChoice()` before the stop) holds roaming on
   the session it starts until `resumeRoaming()`; a pick with nothing running is a start like any other, and a pick whose

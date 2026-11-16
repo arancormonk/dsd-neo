@@ -263,6 +263,13 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     qint64 foregroundEpoch() const override;
     void startLocationStream() override;
     void stopLocationStream() override;
+
+    /** @brief Whether a feed record (with the last fix's coordinates) is held; never once the feed is stopped. */
+    bool
+    holdsStreamRecord() const {
+        return !m_location_stream_last.isEmpty();
+    }
+
     /** @brief LocationPermission.requestRoamingPermission(), with the Activity; nothing without one. */
     void requestRoamingPermission(qint64 requestId) override;
     /** @brief LocationPermission.openAppLocationSettings(), with the Activity; nothing without one. */

@@ -669,6 +669,8 @@ DecoderHostAndroid::startLocationStream() {
 void
 DecoderHostAndroid::stopLocationStream() {
     m_location_stream = false;
+    // The last record holds the last fix's coordinates: none are kept once roaming no longer runs.
+    m_location_stream_last.clear();
     platformStopLocationStream();
 }
 

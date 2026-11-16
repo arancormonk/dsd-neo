@@ -1421,8 +1421,10 @@ check_location_stream() {
     QObject::disconnect(seen);
     check(updates.size() == 6 && phaseAtUpdate == dsd_qt::DecoderHost::Running,
           "the update's slot sees the session the same tick published");
+    check(host.holdsStreamRecord(), "a running feed keeps its last record to compare the next one with");
     running = false;
     host.stopLocationStream();
+    check(!host.holdsStreamRecord(), "a stopped feed keeps no record, so no coordinates");
     roaming() = PlatformRoaming();
     retained_record() = QJsonObject();
 }
