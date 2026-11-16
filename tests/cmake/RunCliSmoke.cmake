@@ -269,6 +269,50 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-analog")
         "12000 samples/s is below the 16000 that an analog FM channel needs; decoding may fail"
     )
     set(_forbid_output_regex "digital channel|36000|no receiver frequency")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-rate-above-ceiling")
+    # A RATE above the live-device capture ceiling (a typo such as 24M for 240k) is refused before anything connects,
+    # with the limit and the fix named, rather than sizing a ring and a chain for it.
+    set(_args
+        --no-config
+        --frontend
+        none
+        -i
+        iqtcp:127.0.0.1:1:24M:cs16
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "I/Q stream: the stream's rate [(]24000000 Hz[)] is above 3200000 Hz; send one channel [(]the sending program's VFO mode[)]"
+    )
+    set(_forbid_output_regex "connecting to")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-config-rate-above-ceiling")
+    # The same RATE from a config's [input] is refused alike at startup.
+    set(_cleanup_file
+        "${CMAKE_CURRENT_BINARY_DIR}/iq_stream_rate_above_ceiling.ini"
+    )
+    file(
+        WRITE "${_cleanup_file}"
+        "[input]\nsource = \"iqtcp\"\niq_host = \"127.0.0.1\"\niq_port = 1\niq_rate = \"24M\"\n"
+        "iq_format = \"cs16\"\n"
+    )
+    set(_args
+        --config
+        "${_cleanup_file}"
+        --frontend
+        none
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "I/Q stream: the stream's rate [(]24000000 Hz[)] is above 3200000 Hz; send one channel [(]the sending program's VFO mode[)]"
+    )
+    set(_forbid_output_regex "connecting to")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-met")
     set(_args
         --no-config

@@ -434,7 +434,11 @@ The samples carry no header: interleaved I then Q, little-endian, and nothing el
 rate, format or frequency, so the spec gives them:
 
 - RATE: complex samples per second, as the sending program sends them. A whole number of Hz, with an optional `k` or
-  `M` (`48k`, `240000`, `1.152M`), at least 8000.
+  `M` (`48k`, `240000`, `1.152M`), from 8000 to 3200000. 3.2 MS/s is the most a live receiver captures at, and what
+  dsd-neo's input is sized for. A faster stream is a whole band, not a channel: set the sending program to send the
+  one channel (SDR++'s `VFO` mode, below). A RATE above it stops the start with exit status 1, as a refused plan
+  does: `I/Q stream: the stream's rate (24000000 Hz) is above 3200000 Hz; send one channel (the sending program's VFO
+  mode).`
 - FORMAT: the sample type, scaled to the floats a live receiver delivers:
 
   | FORMAT | Sample | Scaling | Sent by, for example |
@@ -468,9 +472,10 @@ The stream runs through the I/Q front end a replay uses, planned as a WAV record
 bandwidth row, the control API's `RTL_SET_BW`, or `rtl_bw_khz` in a config whose `[input]` is the stream), else the
 mode's preset (72 kHz under `-fT`, 24 kHz under the EDACS/ProVoice presets), else 48 kHz. Under TETRA a D that is not
 a multiple of 18 kHz from 36 to 144 kHz becomes 72 kHz. A RATE of D x 2^k is only decimated; any other RATE is
-resampled first, with the replay's resampler and its limits. The plan is refused for a RATE that would need more than
-a 9x upsample to reach D, and for one of 2 x 1024 x D or more (98.304 MS/s at 48 kHz). A refused plan stops the start
-with exit status 1 before anything connects, naming the reason. The log shows the chain:
+resampled first, with the replay's resampler and its limits. The plan is refused for a RATE above 3200000 (above), and
+for one that would need more than a 9x upsample to reach D. A refused plan stops the start with exit status 1 before
+anything connects, naming the reason; `--validate-config` reports it on `iq_rate`, and a config loaded into a running
+session is refused with it. The log shows the chain:
 
 ```text
 I/Q stream: resampling the 48000 Hz stream to 72000 Hz (L/M=3/2, +0.00 ppm, 44 taps per phase, group delay 0.45 ms).

@@ -799,7 +799,9 @@ test_stream_plans(void) {
                              DSD_IQ_REPLAY_ORIGIN_EXACT);
     rc |= expect_stream_plan("1.152 MS/s at 48 kHz: 768 kHz / 16", 1152000U, 48000U, 768000U, 16U,
                              DSD_IQ_REPLAY_ORIGIN_RESAMPLED);
-    rc |= expect_stream_plan("just under 2 x 2^10 x 24 kHz", 49151999U, 24000U, 24576000U, 1024U,
+    rc |= expect_stream_plan("3.2 MS/s, the ceiling, at 48 kHz: 3.072 MHz / 64", 3200000U, 48000U, 3072000U, 64U,
+                             DSD_IQ_REPLAY_ORIGIN_RESAMPLED);
+    rc |= expect_stream_plan("just under 2 x 2^10 x 1 kHz", 2047999U, 1000U, 1024000U, 1024U,
                              DSD_IQ_REPLAY_ORIGIN_RESAMPLED);
     return rc;
 }
@@ -831,9 +833,26 @@ test_general_planner_refusals(void) {
                                  144000U,
                                  "the stream's rate (8000 Hz) would need more than a 9x upsample to reach the 144000 "
                                  "Hz DSP rate");
-    rc |= expect_general_refused("a stream at 2 x 2^10 x 24 kHz", DSD_IQ_PLAN_SOURCE_STREAM, 49152000U, 24000U,
-                                 "the stream's rate (49152000 Hz) is too fast to resample to the 24000 Hz DSP rate "
+    rc |= expect_general_refused("a stream at 2 x 2^10 x 1 kHz", DSD_IQ_PLAN_SOURCE_STREAM, 2048000U, 1000U,
+                                 "the stream's rate (2048000 Hz) is too fast to resample to the 1000 Hz DSP rate "
                                  "(more than a 1024 x 2 decimation)");
+    /* Issue #743: a stream faster than the live-device capture ceiling is refused whatever the target, before a ring
+       or a chain is sized for it; a capture at that rate still plans. */
+    rc |= expect_general_refused("a stream one sample past 3.2 MS/s", DSD_IQ_PLAN_SOURCE_STREAM, 3200001U, 48000U,
+                                 "the stream's rate (3200001 Hz) is above 3200000 Hz; send one channel (the sending "
+                                 "program's VFO mode)");
+    rc |= expect_general_refused("a stream at 2 x 2^10 x 24 kHz", DSD_IQ_PLAN_SOURCE_STREAM, 49152000U, 24000U,
+                                 "the stream's rate (49152000 Hz) is above 3200000 Hz; send one channel (the sending "
+                                 "program's VFO mode)");
+    rc |= expect_general_refused("a sidecar at 2 x 2^10 x 24 kHz", DSD_IQ_PLAN_SOURCE_SIDECAR, 49152000U, 24000U,
+                                 "the capture's rate (49152000 Hz) is too fast to resample to the 24000 Hz DSP rate "
+                                 "(more than a 1024 x 2 decimation)");
+    {
+        dsd_iq_replay_rate_plan plan;
+        rc |= expect_true("a sidecar past 3.2 MS/s still plans",
+                          dsd_iq_plan_general_rate(DSD_IQ_PLAN_SOURCE_SIDECAR, 3200001U, 48000U, &plan, NULL, 0U)
+                              == DSD_IQ_OK);
+    }
     rc |= expect_general_refused("a stream with no target", DSD_IQ_PLAN_SOURCE_STREAM, 48000U, 0U,
                                  "no DSP target rate to plan the stream for");
     /* A replay's words are as they were. */

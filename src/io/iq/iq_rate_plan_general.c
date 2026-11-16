@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rate_plan.h>
@@ -166,6 +167,14 @@ dsd_iq_plan_general_rate(dsd_iq_plan_source source, uint32_t source_rate_hz, uin
     if (fs < DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ) {
         plan_error(err_buf, err_buf_size, "the %s's rate (%u Hz) is below the %u Hz a %s can resample",
                    words.rate_owner, (unsigned)fs, (unsigned)DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ, words.runner);
+        return DSD_IQ_ERR_RATE_CHAIN;
+    }
+    if (source == DSD_IQ_PLAN_SOURCE_STREAM && fs > DSD_IQ_NET_MAX_RATE_HZ) {
+        /* Short enough for a toast (state.ui_msg) after "Config not applied: " at any RATE a spec holds. */
+        plan_error(err_buf, err_buf_size,
+                   "the stream's rate (%u Hz) is above %u Hz; send one channel (the sending "
+                   "program's VFO mode)",
+                   (unsigned)fs, (unsigned)DSD_IQ_NET_MAX_RATE_HZ);
         return DSD_IQ_ERR_RATE_CHAIN;
     }
     uint64_t r = 0U;

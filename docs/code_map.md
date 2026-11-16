@@ -9454,7 +9454,10 @@ Key public headers:
     own filter would run at the recorded rate (`replay_tetra_channel_runs()`: TETRA's domain, the channel filter not
     forced off, an override that times that rate, or the uplink), else `DSD_DIGITAL_CHANNEL_MAX_RATE_HZ`;
     `rtl_stream_replay_request::analog_family` carries the family a pending mode change will run. The plan refuses a
-    capture below 8 kHz, an upsample past 9x and a capture at 2 x 2^10 x D or faster. Stream open
+    capture below 8 kHz, an upsample past 9x and a capture at 2 x 2^10 x D or faster; a raw I/Q stream
+    (`DSD_IQ_PLAN_SOURCE_STREAM`) above `DSD_IQ_NET_MAX_RATE_HZ` (3.2 MS/s, the live capture ceiling
+    `kMaxCaptureRateHz` that `rtl_sdr_fm.cpp` asserts it equals) is refused too, so every stream start and re-plan check
+    (`dsd_input_dsp_stream_plan_check()`) shares the bound. Stream open
     (`stream_open_plan_replay_rate()`) plans at every start for the target `dsd_input_dsp_target_hz()` picks (inline in
     `runtime/analog_channel.h`, source-neutral: an EXPLICIT request, else the recorded bandwidth, else the request in
     force; under TETRA 72 kHz for a target outside 36-144 kHz in 18 kHz steps) and refuses a start whose plan fails; the

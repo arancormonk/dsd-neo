@@ -392,7 +392,7 @@ the session; they never write the process environment.
 | `udp_port` | INT (1-65535) | UDP port | `7355` |
 | `iq_host` | STRING | I/Q stream (`iqtcp`, `iqudp`): the TCP server to connect to, or the address to bind for UDP | `127.0.0.1` |
 | `iq_port` | INT (1-65535) | I/Q stream port | `1234` |
-| `iq_rate` | STRING | I/Q stream sample rate, complex samples per second: whole Hz, or with a `k` or `M` suffix (`48k`), at least 8000. Saved in Hz | `240k` |
+| `iq_rate` | STRING | I/Q stream sample rate, complex samples per second: whole Hz, or with a `k` or `M` suffix (`48k`), from 8000 to 3200000. Saved in Hz | `240k` |
 | `iq_format` | ENUM | I/Q stream sample format (`cu8|cs8|cs16|cs32|cf32`), interleaved I then Q, little-endian | `cs16` |
 | `iq_freq` | FREQ | I/Q stream receiver (centre) frequency, in Hz or with a K/M/G suffix; empty when unknown. Saved in Hz. Nothing is tuned to it; TETRA needs it to tie trunked calls to their allocations | (empty) |
 | `input_warn_db` | DOUBLE (-200-0) | Low input-level advisory threshold in dBFS | `-40.0` |

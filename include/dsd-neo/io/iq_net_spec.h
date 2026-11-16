@@ -27,6 +27,10 @@ extern "C" {
 #define DSD_IQ_NET_HOST_MAX      256
 /** Lowest sample rate a spec takes, in complex samples per second. */
 #define DSD_IQ_NET_MIN_RATE_HZ   8000U
+/** Fastest sample rate a stream runs, in complex samples per second: the live-device capture ceiling its input ring
+ *  and front end are sized for (the radio stream holds the two equal). A faster RATE reads, but no plan runs it
+ *  (dsd_iq_plan_general_rate()): a sending program sends one channel, not a whole band. */
+#define DSD_IQ_NET_MAX_RATE_HZ   3200000U
 /** Room dsd_iq_net_spec_format() needs for any spec, terminator included. */
 #define DSD_IQ_NET_SPEC_TEXT_MAX (DSD_IQ_NET_HOST_MAX + 48)
 

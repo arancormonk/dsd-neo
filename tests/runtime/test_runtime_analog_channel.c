@@ -422,7 +422,9 @@ test_input_dsp_rate_policy(void) {
         {"iqtcp:h:1:8000:cs16", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 48000},
         /* Its RATE decides whether a plan reaches the target: a spec that does not parse, or a rate no plan takes
            there, has no rate, which its start refuses. */
-        {"iqudp:0.0.0.0:7355:49151999:cu8", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 24000},
+        {"iqudp:0.0.0.0:7355:3.2M:cu8", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 24000},
+        {"iqudp:0.0.0.0:7355:3200001:cu8", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqudp:0.0.0.0:7355:49151999:cu8", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 0},
         {"iqudp:0.0.0.0:7355:49152000:cu8", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 0},
         {"iqtcp:h:1:7999:cs16", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 0},
         {"iqtcp:h:1:fast:cs16", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 0},
@@ -539,11 +541,12 @@ test_input_dsp_rate_planned(void) {
         int tetra;
         int want_rate_hz;
     } cases[] = {
-        {8000U, 48, 0, 48000},   {12500U, 24, 0, 24000},   {240000U, 48, 0, 48000},  {1152000U, 24, 0, 24000},
-        {48000U, 0, 0, 48000},   {48000U, 16, 0, 16000},   {8000U, 72, 1, 72000},    {8000U, 48, 1, 72000},
-        {25000U, 24, 1, 72000},  {96000U, 36, 1, 36000},   {1152000U, 72, 1, 72000}, {7999U, 48, 0, 0},
-        {8000U, 144, 1, 0},      {16000U, 144, 1, 144000}, {49152000U, 24, 0, 0},    {49151999U, 24, 0, 24000},
-        {48000U, INT_MAX, 0, 0}, {0U, 48, 0, 0},
+        {8000U, 48, 0, 48000},    {12500U, 24, 0, 24000},   {240000U, 48, 0, 48000},  {1152000U, 24, 0, 24000},
+        {48000U, 0, 0, 48000},    {48000U, 16, 0, 16000},   {8000U, 72, 1, 72000},    {8000U, 48, 1, 72000},
+        {25000U, 24, 1, 72000},   {96000U, 36, 1, 36000},   {1152000U, 72, 1, 72000}, {7999U, 48, 0, 0},
+        {8000U, 144, 1, 0},       {16000U, 144, 1, 144000}, {49152000U, 24, 0, 0},    {49151999U, 24, 0, 0},
+        {48000U, INT_MAX, 0, 0},  {0U, 48, 0, 0},           {3200000U, 48, 0, 48000}, {3200001U, 48, 0, 0},
+        {3200000U, 72, 1, 72000}, {3200001U, 72, 1, 0},
     };
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -576,6 +579,41 @@ test_input_dsp_rate_planned(void) {
     char fix[96];
     expect_int("fix text planned", dsd_analog_width_rate_fix(25000, DSD_ANALOG_RATE_PLANNED, fix, sizeof fix), 0);
     expect_str("fix text planned names the DSP bandwidth", fix, "set the DSP bandwidth to 48 or 72 kHz");
+}
+
+/* The stream plan check every start and re-plan asks (issue #743): a RATE above the live-device capture ceiling is
+   refused there, at any target, with the limit and the fix named; the ceiling itself runs. */
+static void
+test_input_dsp_stream_plan_check_ceiling(void) {
+    char why[192];
+    uint32_t rate_hz = 1U;
+    expect_int("3.2 MS/s runs",
+               dsd_input_dsp_stream_plan_check("iqtcp:h:1:3.2M:cs16", 48, 0, &rate_hz, why, sizeof why), 0);
+    expect_int("3.2 MS/s runs at 48 kHz", (int)rate_hz, 48000);
+
+    static const struct {
+        const char* spec;
+        int bw_khz;
+        int tetra;
+        const char* want;
+    } refused[] = {
+        {"iqtcp:h:1:3200001:cs16", 48, 0,
+         "the stream's rate (3200001 Hz) is above 3200000 Hz; send one channel (the sending program's VFO mode)"},
+        {"iqudp:0.0.0.0:7355:24M:cf32", 24, 0,
+         "the stream's rate (24000000 Hz) is above 3200000 Hz; send one channel (the sending program's VFO mode)"},
+        {"iqtcp:h:1:70M:cs16:426.7M", 72, 1,
+         "the stream's rate (70000000 Hz) is above 3200000 Hz; send one channel (the sending program's VFO mode)"},
+    };
+
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        rate_hz = 1U;
+        expect_int(refused[i].spec,
+                   dsd_input_dsp_stream_plan_check(refused[i].spec, refused[i].bw_khz, refused[i].tetra, &rate_hz, why,
+                                                   sizeof why),
+                   -1);
+        expect_int(refused[i].spec, (int)rate_hz, 0);
+        expect_str(refused[i].spec, why, refused[i].want);
+    }
 }
 
 /* DSD_NEO_CHANNEL_LPF=0 turns the channel filter off: an explicit width, or the AM default, cannot run, at any rate. */
@@ -716,6 +754,7 @@ main(void) {
     test_input_dsp_rate_policy();
     test_input_dsp_target();
     test_input_dsp_rate_planned();
+    test_input_dsp_stream_plan_check_ceiling();
     test_channel_lpf_off_check();
     test_rtl_bandwidth_helpers();
     if (g_failures) {

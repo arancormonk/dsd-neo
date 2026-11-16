@@ -357,8 +357,9 @@ typedef enum {
  * its capture_rate_hz is the source's rate. The plan always lands on D, so the DSP rate is known before the source
  * opens.
  *
- * Refused: a source below DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ, an upsample past DSD_IQ_REPLAY_MAX_UPSAMPLE_RATIO, a
- * source 2 x 2^10 x D or faster (the resampler would decimate by 2 or more), and a target of 0.
+ * Refused: a source below DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ, a stream above DSD_IQ_NET_MAX_RATE_HZ, an upsample past
+ * DSD_IQ_REPLAY_MAX_UPSAMPLE_RATIO, a source 2 x 2^10 x D or faster (the resampler would decimate by 2 or more), and a
+ * target of 0.
  *
  * @param out_plan [out] The plan; set only on success.
  * @return DSD_IQ_OK, DSD_IQ_ERR_RATE_CHAIN with the reason in @p err_buf (may be NULL), or DSD_IQ_ERR_INVALID_ARG for

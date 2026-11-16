@@ -11223,7 +11223,8 @@ if(DSD_HAS_RADIO)
             DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-airspy -P
             ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
     )
-    # Issue #743: an I/Q stream's startup lines, and a TCP stream with nothing listening exits 1 at its connect.
+    # Issue #743: an I/Q stream's startup lines, a TCP stream with nothing listening exits 1 at its connect, and a RATE
+    # above the capture ceiling (from -i or a config) exits 1 before it connects.
     foreach(
         _iq_mode
         IN
@@ -11233,6 +11234,8 @@ if(DSD_HAS_RADIO)
             min-rate-wide
             min-rate-analog
             min-rate-met
+            rate-above-ceiling
+            config-rate-above-ceiling
     )
         string(TOUPPER "${_iq_mode}" _iq_name)
         string(REPLACE "-" "_" _iq_name "${_iq_name}")

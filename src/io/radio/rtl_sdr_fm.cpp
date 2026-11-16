@@ -5766,6 +5766,8 @@ rtl_floor_log2_nonzero(int value) {
 /* Capture-rate window the ingest ring and watermark defaults are sized for. */
 static const long long kMinCaptureRateHz = 225000LL;
 static const long long kMaxCaptureRateHz = 3200000LL;
+/* A raw I/Q stream's RATE is held to the same ceiling (issue #743): its ring and chain are sized as a device's. */
+static_assert(kMaxCaptureRateHz == (long long)DSD_IQ_NET_MAX_RATE_HZ, "the stream rate ceiling is the capture ceiling");
 
 static int
 rtl_choose_passes_near_good_rate(int rate_in_hz, int suggested_passes) {

@@ -1292,9 +1292,9 @@ test_apply_replay_replan_refused_before_commit(void) {
     state.rtl_ctx = NULL;
     freeState(&state);
 
-    /* Issue #743: a running raw I/Q stream is asked its spec's plan instead. A 150 MS/s stream at a 96 kHz DSP
-       bandwidth runs, but no plan takes it to TETRA's 72 kHz: refused before the commit point with the rate it keeps,
-       nothing restarted. */
+    /* Issue #743: a running raw I/Q stream is asked its spec's plan instead. A 150 MS/s stream, above the 3.2 MS/s
+       ceiling no start lets run, set up as running at a 96 kHz DSP bandwidth anyway: no plan takes it to TETRA's
+       72 kHz, so it is refused before the commit point with the rate it keeps, nothing restarted. */
     replay_session(&opts, &state);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:1234:150000000:cs16");
     dsd_opts_set_rtl_dsp_bw(&opts, 96, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
@@ -1309,7 +1309,8 @@ test_apply_replay_replan_refused_before_commit(void) {
     state.rtl_ctx = NULL;
     freeState(&state);
 
-    /* The same stream not running (stopped, or its start failed): its spec plans as well, so it is refused the same. */
+    /* The same stream not running (stopped, or its start failed): its spec's plan is refused, with the ceiling it is
+       above, as its start would be. */
     replay_session(&opts, &state);
     state.rtl_ctx = NULL;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:1234:150000000:cs16");
@@ -1318,9 +1319,9 @@ test_apply_replay_replan_refused_before_commit(void) {
     tetra_payload(&p);
     p.trunking = 0U;
     p.tune_hz = 0U;
-    rc |= expect_refused_import(
-        "tetra on a stopped 150 MS/s stream", &opts, &state, &p,
-        "Failed: RR import -> TETRA cannot use this I/Q stream's rate; send 48 or 96 kHz instead");
+    rc |= expect_refused_import("tetra on a stopped 150 MS/s stream", &opts, &state, &p,
+                                "Failed: RR import -> the stream's rate (150000000 Hz) is above 3200000 Hz; send one "
+                                "channel (the sending program's VFO mode)");
     rc |= expect_int("stopped stream: no replay check or reopen", g_replan_check_calls == 0 && g_replan_calls == 0, 1);
     freeState(&state);
     reset_replay_script();

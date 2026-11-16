@@ -14977,8 +14977,8 @@ test_stream_bandwidth_change_replans(void) {
 
 /*
  * A switch to TETRA on a 240 kS/s stream at 48 kHz restarts it planned to 72 kHz, and the switch back restarts it at 48
- * kHz; a mode on the plan it runs restarts nothing. A stream whose rate no 48 kHz plan reaches (98.304 MS/s) stays on
- * TETRA when DMR is asked for: the profile goes back and nothing stops.
+ * kHz; a mode on the plan it runs restarts nothing. A stream whose rate no plan reaches (98.304 MS/s, above the 3.2 MS/s
+ * ceiling) stays on TETRA when DMR is asked for: the profile goes back and nothing stops.
  */
 static int
 test_stream_mode_change_replans(void) {
@@ -15007,9 +15007,10 @@ test_stream_mode_change_replans(void) {
     rc |= expect_str("stream p25: the usual toast", state.ui_msg, "Decoding P25 Phase 1");
     freeState(&state);
 
+    /* No start runs a stream above the 3.2 MS/s ceiling. One set up as running anyway refuses DMR, which no plan runs
+       it at, before anything stops: the profile goes back, and the TETRA it runs stays. */
     init_stream_replan_context(&opts, &state, fake_ctx, "iqtcp:127.0.0.1:1234:98304000:cs16", 48, 72000);
-    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA, "fast tetra");
-    rc |= expect_int("fast tetra: runs the plan already", g_config_rtl_creates, 0);
+    opts.frame_tetra = 1;
     dsd_scan_settings before;
     dsd_scan_settings after;
     dsd_scan_settings_capture(&opts, &state, &before);
@@ -15018,7 +15019,7 @@ test_stream_mode_change_replans(void) {
     rc |= expect_int("fast dmr: nothing restarted", g_config_rtl_creates, 0);
     rc |= expect_int("fast dmr: the profile is back", dsd_scan_settings_equal(&before, &after, 1), 1);
     rc |= expect_int("fast dmr: still TETRA", opts.frame_tetra, 1);
-    rc |= expect_toast("fast dmr: toast", &state, "Failed: DMR -> the stream's rate (98304000 Hz)");
+    rc |= expect_toast("fast dmr: toast", &state, "Failed: DMR -> the stream's rate (98304000 Hz) is above 3200000 Hz");
     rc |= expect_int("fast dmr: failed", dsd_app_command_test_last_failed(), 1);
     freeState(&state);
 
@@ -15111,6 +15112,9 @@ test_stream_config_apply_replans(void) {
         {"stream config bad port", "240k", 0, 0, "Config not applied: iqtcp: PORT '0'"},
         {"stream config bad rate", "7k", 1234, 0, "Config not applied: iqtcp: RATE '7k'"},
         {"stream config no plan", "49152000", 1235, 24, "Config not applied: the stream's rate (49152000 Hz)"},
+        {"stream config above the ceiling", "24M", 1235, 0,
+         "Config not applied: the stream's rate (24000000 Hz) is above 3200000 Hz; send one channel (the sending "
+         "program's VFO mode)"},
     };
 
     for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {

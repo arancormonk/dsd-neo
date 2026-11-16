@@ -118,7 +118,7 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   (issue #743). Raw I/Q that another program streams (SDR++'s IQ Exporter, GNU Radio, a forwarder), with no header:
   `iqtcp` connects to a TCP server at HOST:PORT, and `iqudp` binds BIND:PORT (`127.0.0.1` unless the sending program
   runs on another computer) and reads its datagrams. RATE is the stream's complex sample rate (whole Hz with an optional
-  `k` or `M`, at least 8000), FORMAT one of `cu8`, `cs8`, `cs16`, `cs32` or `cf32` (interleaved I then Q,
+  `k` or `M`, from 8000 to 3200000), FORMAT one of `cu8`, `cs8`, `cs16`, `cs32` or `cf32` (interleaved I then Q,
   little-endian), and FREQ the frequency the stream is centred on (Hz, or with `k`, `M` or `G`), which TETRA needs to
   tie trunked calls to their allocations. Every field is required but FREQ; a missing or bad one stops startup with exit
   status 1 and names the field. Example: `-fT -i iqtcp:127.0.0.1:1234:48k:cs16:426.7M`.

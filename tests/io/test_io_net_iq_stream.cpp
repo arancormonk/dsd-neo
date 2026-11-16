@@ -118,6 +118,7 @@ enum LogKind : int {
     kLogRefused,
     kLogBindRefused,
     kLogNoPlan,
+    kLogAboveCeiling,
     kLogKinds,
 };
 
@@ -130,6 +131,7 @@ const char* const kLogTexts[kLogKinds] = {
     "I/Q stream: cannot connect to",
     "I/Q stream: cannot receive on",
     "I/Q stream: cannot run at the 144000 Hz DSP rate TETRA needs",
+    "the stream's rate (3200001 Hz) is above 3200000 Hz; send one channel (the sending program's VFO mode)",
 };
 
 std::atomic<int> g_log_counts[kLogKinds];
@@ -1097,6 +1099,17 @@ test_open_failures_fail_the_start(void) {
     assert(rtl_stream_start(ctx) != 0);
     assert(failure_kind() == DSD_INPUT_FAILURE_NONE);
     (void)rtl_stream_destroy(ctx);
+    /* A RATE above the live-device capture ceiling fails before any socket opens too, whatever the target, rather than
+       sizing a ring and a chain for it (a typo such as 24M for 240k). */
+    opts->frame_tetra = 0;
+    opts->frame_dmr = 1;
+    opts->rtl_dsp_bw_khz = 48;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", tcp_spec(port, 3200001U, "cs16", 0U).c_str());
+    ctx = nullptr;
+    assert(rtl_stream_create(opts.get(), &ctx) == 0);
+    assert(rtl_stream_start(ctx) != 0);
+    assert(failure_kind() == DSD_INPUT_FAILURE_NONE);
+    (void)rtl_stream_destroy(ctx);
 }
 
 struct named_test {
@@ -1150,6 +1163,7 @@ main(int argc, char** argv) {
         assert(log_count(kLogLost) >= 1 && log_count(kLogReconnected) >= 1);
         assert(log_count(kLogMalformed) == 1);
         assert(log_count(kLogRefused) == 1 && log_count(kLogBindRefused) == 1 && log_count(kLogNoPlan) == 1);
+        assert(log_count(kLogAboveCeiling) == 1);
     }
     DSD_FPRINTF(stderr, "IO_NET_IQ_STREAM: OK\n");
     return 0;
