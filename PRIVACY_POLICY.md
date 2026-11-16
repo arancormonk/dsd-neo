@@ -94,7 +94,7 @@ GPS roaming:
   location about every 10 seconds, only while you are listening to a site it can follow and
   only while DSD-neo is on screen; leaving the app stops it. The distances are worked out on
   your device, nothing is sent anywhere, and these locations are never saved: the app keeps
-  only the newest one in memory while roaming uses it.
+  only the newest readings in memory while roaming runs.
 
 The first time you use location, the app asks for approximate location (Use my location) or
 for approximate and precise location (the nearby-site chooser, Listen's Nearest order and GPS
@@ -106,12 +106,12 @@ Google's), which may use Wi-Fi, mobile network and GPS information and contact t
 to do it, under that provider's terms. The app asks for location only while you are using it,
 never in the background.
 
-The last location the app got for the first three uses (latitude, longitude, accuracy and
-time) is saved on your device so it can pick nearby sites and order your saved systems by
-distance. It stops being used after 24 hours and is removed the next time the app checks it,
-while it is running or when you open it again. The app does not write it to its diagnostics log, and it is not part
-of the app's own backup file. If you deny location, ZIP code, browse and system ID searches
-all still work.
+The last location the app got for Use my location, the nearby-site chooser and Listen's
+Nearest order (latitude, longitude, accuracy and time) is saved on your device so it can pick
+nearby sites and order your saved systems by distance. It stops being used after 24 hours
+and is removed the next time the app checks it, while it is running or when you open it
+again. The app does not write it to its diagnostics log, and it is not part of the app's own
+backup file. If you deny location, ZIP code, browse and system ID searches all still work.
 
 ## Files and settings on your device
 

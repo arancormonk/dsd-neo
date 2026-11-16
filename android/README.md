@@ -1908,10 +1908,11 @@ module behind it, so androiddeployqt has nothing extra to package.
   the service has not taken yet. Approximate location is not used. Turning DSD-neo's
   location permission off, or from precise to approximate, while it runs makes
   Android close the app, and listening stops. Sites with Extra decoder arguments of
-  their own never roam, and Extra decoder arguments in Settings turn roaming off. A
-  switch resets what was changed only for the old session, as **Stop and switch**
-  does. A session the app took up after its window was recreated does not roam until
-  listening starts again. See
+  their own never roam, and Extra decoder arguments in Settings keep roaming from
+  working while they are set. A switch resets what was changed only for the old
+  session, as **Stop and switch** does. If Android reopens DSD-neo's screen while it
+  was still listening in the background, roaming stays off for that session; stop and
+  start listening to use it again. See
   [GPS roaming](../docs/radioreference-import.md#gps-roaming-android) for the rest.
 - **One decoder per process.** The service rejects a start unless it is idle.
 - **SoapySDR is not supported** and is not planned.

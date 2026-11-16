@@ -229,8 +229,8 @@ Roaming follows a session when all of these hold:
 - The site is trunked, trunking is on, and it listens through an RTL-SDR, an Airspy or an rtl_tcp server. TCP or UDP
   audio, files and I/Q replay never roam, and neither does a trunk scan or a scan list.
 - Neither the site nor Settings has **Extra decoder arguments**. A site with its own shows "Not used by GPS roaming:
-  this site has extra options" in the chooser and is never switched to. Extra decoder arguments in Settings turn
-  roaming off: "GPS roaming is off while extra options are set in Settings".
+  this site has extra options" in the chooser and is never switched to. Extra decoder arguments in Settings keep
+  roaming from working while they are set: "GPS roaming is off while extra options are set in Settings".
 - No talkgroup is held and you have not tuned by hand.
 
 A site roaming can switch to is one of these sites that is not avoided, has coordinates, and is within **Roam to
@@ -239,23 +239,23 @@ sites within**.
 The rule: about every 10 seconds the app reads your precise location. It switches when another site is nearer than
 the one you are on by at least **Switch when another site is closer by**, plus twice the accuracy Android reports
 for the location. That has to hold for at least 3 new readings that span at least 20 seconds. The bigger the
-location's uncertainty, the bigger the gap a switch needs. If the site you are on is avoided, has no coordinates or
-cannot be used by roaming, roaming moves to the nearest usable site with no margin. A reading older than 60
-seconds, or less accurate than 1 km, pauses roaming until a better one comes.
+location's uncertainty, the bigger the gap a switch needs. If the site you are on is avoided or has no coordinates,
+roaming moves to the nearest usable site with no margin. A reading older than 60 seconds, or less accurate than
+1 km, pauses roaming until a better one comes.
 
 Defaults: in miles, **Roam to sites within** is 60 mi and **Switch when another site is closer by** is 1 mi; with
 **Use metric units** they are 100 km and 2 km. The choices are 15, 30, 60 or 125 mi (25, 50, 100 or 200 km) and
 0.5, 1 or 3 mi (1, 2 or 5 km). A value you picked in the other unit stays as it is and shows converted (100 km as
 about 62 mi).
 
-Calls come first. While the decoder follows a call, clear, encrypted or data, a switch waits for it to end: "Waiting
-for this call to end before switching to …". It waits at most 90 seconds, then switches anyway. So a call longer
-than 90 seconds, or a call the decoder never saw end, is cut after 90 seconds. On a Hytera XPT site the pause
-between a call's transmissions (the hang time) reads as no call, so a switch can land between two of them.
+Calls come first. Any call the decoder follows, including encrypted calls and data, makes a switch wait for it to
+end: "Waiting for this call to end before switching to …". A switch waits for a call at most 90 seconds. A call
+still going after that, or one the decoder never saw end, is cut. On a Hytera XPT site the pause between a call's
+transmissions (the hang time) reads as no call, so a switch can land between two of them.
 
 A switch works like **Stop and switch**: the session stops, the app waits for Idle, and the new site starts with its
-own frequency, files and settings. Nothing you changed only for the old session carries over: a held talkgroup, a
-key or gain you set while listening, and sheets you had open on the Monitor. The Monitor's header shows what
+own frequency, files and settings. Nothing you changed only for the old session carries over: a key or gain you
+set while listening, and sheets you had open on the Monitor. The Monitor's header shows what
 roaming is doing, such as "STAYING · GPS ROAMING" or "WAITING FOR CALL END · GPS ROAMING".
 
 What pauses, holds or cancels roaming:
@@ -265,8 +265,8 @@ What pauses, holds or cancels roaming:
 - Choosing a site yourself while listening (a site's **Stop and switch**, or **Stop and switch to nearest**) holds
   roaming on that site: "Holding the site you chose", with **Resume roaming**. Starting a site while nothing is
   listening is a new session, and roaming follows it.
-- **Stop** (in the app, the notification or Recent apps), turning roaming off, or starting something else cancels a
-  switch on its way. A tap, Back, or opening and closing the site chooser does not.
+- **Stop** (in the app or the notification), swiping DSD-neo away in Recent apps, turning roaming off, or starting
+  something else cancels a switch on its way. A tap, Back, or opening and closing the site chooser does not.
 - Leaving DSD-neo (Home, another app on top, or the screen turning off) forgets the readings collected so far and
   cancels a switch that has not yet started the new site. If the old site had already stopped, listening stays
   stopped and Home says "Roaming did not switch to …. Listening stopped." with **Listen to …** for the site it left.
@@ -284,8 +284,9 @@ Limits:
 - **Taking location away ends the app.** If you turn off DSD-neo's location permission, or change it from precise to
   approximate, in Android's settings while DSD-neo runs, Android closes DSD-neo and listening stops. Android does
   not reopen it.
-- **A session the app took up after its window was recreated does not roam** until you start listening again. It
-  reads "Start listening again to use GPS roaming".
+- **Reopened while listening.** If Android reopens DSD-neo's screen while it was still listening in the background,
+  roaming stays off for that session: "Start listening again to use GPS roaming". Stop and start listening to use it
+  again.
 - **A switch in progress is not saved.** If DSD-neo closes during a switch, the switch is lost. Opening DSD-neo
   again with roaming on does not start listening by itself.
 
