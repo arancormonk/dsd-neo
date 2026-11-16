@@ -41,12 +41,7 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "missing-argument")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-rtltcp-bad-port")
     # Issue #743 B15: an rtl_tcp port that is not one fails --print-config, which
     # reads the spec as the engine will, with the field named; nothing is exported.
-    set(_args
-        "--no-config"
-        "-i"
-        "rtltcp:radio.local:12x:851M"
-        "--print-config"
-    )
+    set(_args "--no-config" "-i" "rtltcp:radio.local:12x:851M" "--print-config")
     set(_want_rc 1)
     set(_want_stdout_regex "")
     set(_want_stderr_regex "\"12x\".*65535")
