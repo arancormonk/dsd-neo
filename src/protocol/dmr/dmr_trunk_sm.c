@@ -998,7 +998,9 @@ dmr_sm_end_left_calls(dsd_opts* opts, dsd_state* state) {
 /* What a DMR tune that left a carrier forgets of the left calls' decryption, as the release does
    (dsd_engine_release_tuned_call_state()): both slots' ALG, key ID and MI, and each slot's MI chain. Otherwise a rigctl
    tune, which keeps the symbol timeline, would step the left call's MI on and decrypt the next carrier's frames before
-   their own PI or LC with it. Only DMR's own tunes reach this, so P25 and NXDN never meet these shared fields here. */
+   their own PI or LC with it. Only DMR's own tunes and an operator's manual move while DMR owns the trunk
+   (dmr_sm_note_operator_leave(), gated on dsd_trunk_dmr_recovery_allowed() by its caller) reach this, so P25 and NXDN
+   never meet these shared fields here. */
 static void
 dmr_sm_forget_left_crypto(dsd_state* state) {
     state->payload_algid = 0;

@@ -349,21 +349,21 @@ void dmr_sm_note_carrier_tune(dsd_state* state, long receiver_hz, long freq_hz);
 void dmr_sm_note_operator_leave(dsd_opts* opts, dsd_state* state, long receiver_hz, long freq_hz);
 
 /** @brief The DMR machine's own tunes: dsd_trunk_tuning_hook_tune_to_freq() / _to_cc() (no TED SPS override) inside a
- *  dsd_trunk_tuning_dmr_judges_begin() / _end() pair, so the engine's tune hook leaves the judgement of a leave, for
+ *  dsd_trunk_tuning_caller_judges_begin() / _end() pair, so the engine's tune hook leaves the judgement of a leave, for
  *  the DMR calls' privacy and the hold, to the machine (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()). */
 static inline dsd_trunk_tune_result
 dmr_sm_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq_hz, uint64_t* out_request_id) {
-    dsd_trunk_tuning_dmr_judges_begin();
+    dsd_trunk_tuning_caller_judges_begin();
     const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq_hz, 0, out_request_id);
-    dsd_trunk_tuning_dmr_judges_end();
+    dsd_trunk_tuning_caller_judges_end();
     return result;
 }
 
 static inline dsd_trunk_tune_result
 dmr_sm_tune_to_cc(dsd_opts* opts, dsd_state* state, long freq_hz, uint64_t* out_request_id) {
-    dsd_trunk_tuning_dmr_judges_begin();
+    dsd_trunk_tuning_caller_judges_begin();
     const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq_hz, 0, out_request_id);
-    dsd_trunk_tuning_dmr_judges_end();
+    dsd_trunk_tuning_caller_judges_end();
     return result;
 }
 

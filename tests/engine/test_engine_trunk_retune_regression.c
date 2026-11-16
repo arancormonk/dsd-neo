@@ -350,11 +350,25 @@ p25_sm_hunt_probe_in_flight(const p25_sm_ctx_t* ctx) {
     return g_p25_hunt_in_flight;
 }
 
-/* From runtime/trunk_tuning_hooks.c: no DMR machine tune is in progress in these fixtures, so the engine's hook judges
-   every leave. */
+/* From runtime/trunk_tuning_hooks.c: a tune its caller judges (dsd_trunk_tuning_caller_judges_begin()), as the real
+   one counts it on this thread. */
+static int g_caller_judges_depth = 0;
+
+void
+dsd_trunk_tuning_caller_judges_begin(void) {
+    g_caller_judges_depth++;
+}
+
+void
+dsd_trunk_tuning_caller_judges_end(void) {
+    if (g_caller_judges_depth > 0) {
+        g_caller_judges_depth--;
+    }
+}
+
 int
-dsd_trunk_tuning_dmr_judges(void) {
-    return 0;
+dsd_trunk_tuning_caller_judges(void) {
+    return g_caller_judges_depth > 0;
 }
 
 void

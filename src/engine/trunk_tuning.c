@@ -300,9 +300,13 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     // service options and the classification they establish belong to the channel being left;
     // a stale privacy bit here would mute the opening bursts of the next tuned call until its
     // first LC decodes. Nor does the next call key from the left calls' talkgroups. Until each slot's next call says
-    // whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()).
-    dmr_forget_call_privacy(state);
-    dmr_enc_class_hold(state);
+    // whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()). A release whose caller
+    // judges the move itself (dsd_trunk_tuning_caller_judges(): a trunk-scan forced advance, whose park's restore
+    // judges it) leaves both to that caller, so the move is judged once.
+    if (!dsd_trunk_tuning_caller_judges()) {
+        dmr_forget_call_privacy(state);
+        dmr_enc_class_hold(state);
+    }
     state->payload_algid = 0;
     state->payload_algidR = 0;
     state->payload_keyid = 0;
@@ -1145,16 +1149,16 @@ dsd_engine_receiver_hz(const dsd_opts* opts, const dsd_state* state) {
    to the carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and closes nothing. A
    tune another trunk machine made (P25, NXDN) also leaves behind what DMR calls said of their encryption, judged by
    this reading of the tuner: their privacy bit and talkgroup keys go, the FID staying for the rows
-   (dmr_forget_call_decryption()), and the next carrier's voice is held until its calls say (dmr_enc_class_hold()). The
-   DMR machine's own tunes (dsd_trunk_tuning_dmr_judges()) are its to judge, as it judges whether its calls end there
-   (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()): this reading can disagree with it on a composite control
-   channel. */
+   (dmr_forget_call_decryption()), and the next carrier's voice is held until its calls say (dmr_enc_class_hold()). A
+   tune its caller judges (dsd_trunk_tuning_caller_judges(): the DMR machine's own, which this reading can disagree
+   with on a composite control channel, a trunk-scan park, a return to the control channel, an operator's manual move)
+   is left to that caller, so every move is judged once. */
 static void
 dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq) {
     if ((long int)from_hz != freq) {
         dsd_event_flush_orphan_recordings(opts, state);
         dsd_p25_patch_listen_break(state);
-        if (!dsd_trunk_tuning_dmr_judges()) {
+        if (!dsd_trunk_tuning_caller_judges()) {
             dmr_forget_call_decryption(state);
             dmr_enc_class_hold(state);
         }
@@ -1188,9 +1192,14 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
     const long int cc = dsd_engine_resolve_cc_freq(state);
     const int trunk_enabled = (opts->trunk_enable == 1);
     const int retunes = trunk_enabled && cc != 0;
+    /* The release below judges the return: it ends the left calls, then forgets their privacy and holds the next
+       carrier's voice once (dsd_engine_release_tuned_call_state()). The control-channel tune and the audio close after
+       the release leave that to it (dsd_trunk_tuning_caller_judges()). */
     if (retunes) {
         const int cc_sps = dsd_engine_compute_cc_sps(opts, state);
+        dsd_trunk_tuning_caller_judges_begin();
         tune_result = dsd_engine_trunk_tune_to_cc_request(opts, state, cc, cc_sps, request_id);
+        dsd_trunk_tuning_caller_judges_end();
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             return tune_result;
         }
@@ -1199,7 +1208,9 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
     dsd_engine_release_tuned_call_state(opts, state);
     if (retunes) {
         /* The release ended the voice channel's calls before the receiver's audio of it closes. */
+        dsd_trunk_tuning_caller_judges_begin();
         dsd_engine_tune_leaves_carrier(opts, state, from_hz, cc);
+        dsd_trunk_tuning_caller_judges_end();
     }
 
     /* Keep symbol timing aligned with the current control-channel mode. A return that retuned nothing leaves a chain

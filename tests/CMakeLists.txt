@@ -9017,6 +9017,10 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_signal_quiet_cancel"
             "-Wl,--wrap=dsd_signal_quiet_rate_supported"
             "-Wl,--wrap=dsd_signal_quiet_analog_supported"
+            # The DMR privacy forgets and voice holds each move makes, counted (one judge per move).
+            "-Wl,--wrap=dmr_enc_class_hold"
+            "-Wl,--wrap=dmr_forget_call_privacy"
+            "-Wl,--wrap=dmr_forget_call_decryption"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support

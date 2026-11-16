@@ -474,24 +474,24 @@ dsd_trunk_tuning_note_result(uint64_t request_id, dsd_trunk_tune_result result) 
 #else
 #define DSD_TRUNK_TUNING_THREAD_LOCAL _Thread_local
 #endif
-/* How deep this thread is in the DMR machine's own tunes (dsd_trunk_tuning_dmr_judges_begin()). */
-static DSD_TRUNK_TUNING_THREAD_LOCAL int s_dmr_judges_depth = 0;
+/* How deep this thread is in tunes their caller judges (dsd_trunk_tuning_caller_judges_begin()). */
+static DSD_TRUNK_TUNING_THREAD_LOCAL int s_caller_judges_depth = 0;
 
 void
-dsd_trunk_tuning_dmr_judges_begin(void) {
-    s_dmr_judges_depth++;
+dsd_trunk_tuning_caller_judges_begin(void) {
+    s_caller_judges_depth++;
 }
 
 void
-dsd_trunk_tuning_dmr_judges_end(void) {
-    if (s_dmr_judges_depth > 0) {
-        s_dmr_judges_depth--;
+dsd_trunk_tuning_caller_judges_end(void) {
+    if (s_caller_judges_depth > 0) {
+        s_caller_judges_depth--;
     }
 }
 
 int
-dsd_trunk_tuning_dmr_judges(void) {
-    return s_dmr_judges_depth > 0;
+dsd_trunk_tuning_caller_judges(void) {
+    return s_caller_judges_depth > 0;
 }
 
 void

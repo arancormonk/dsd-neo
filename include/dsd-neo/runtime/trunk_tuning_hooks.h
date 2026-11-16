@@ -238,15 +238,18 @@ dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state
 dsd_trunk_tune_result dsd_trunk_tuning_hook_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t* out_request_id);
 
 /**
- * @brief Mark the tunes this thread makes until the matching end as the DMR machine's own (nested pairs count). The DMR
- * machine judges whether such a tune left the carrier for the DMR calls' privacy and the hold on the next carrier's
- * voice (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()), so the engine's tune hook leaves both to it. A tune any
- * other trunk machine makes (P25, NXDN) is judged by the engine's own reading of the tuner.
+ * @brief Mark the tunes this thread makes until the matching end as judged by their caller (nested pairs count): the
+ * caller decides whether such a tune left the carrier, for the DMR calls' privacy and the hold on the next carrier's
+ * voice, so the engine's tune hook leaves both to it and every move is judged once. The DMR machine's own tunes
+ * (dmr_sm_tune_to_freq(), dmr_sm_tune_to_cc(): dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()), a trunk-scan
+ * park's (the target restore), a return to the control channel's (its release) and an operator's manual tune the caller
+ * judges (its carrier boundary, or the DMR machine's dmr_sm_note_operator_leave()) take it. Any other tune (another
+ * trunk machine's, P25 or NXDN) is judged by the engine's own reading of the tuner.
  */
-void dsd_trunk_tuning_dmr_judges_begin(void);
-void dsd_trunk_tuning_dmr_judges_end(void);
-/** @brief Whether a tune this thread is making is the DMR machine's own (dsd_trunk_tuning_dmr_judges_begin()). */
-int dsd_trunk_tuning_dmr_judges(void);
+void dsd_trunk_tuning_caller_judges_begin(void);
+void dsd_trunk_tuning_caller_judges_end(void);
+/** @brief Whether a tune this thread is making is judged by its caller (dsd_trunk_tuning_caller_judges_begin()). */
+int dsd_trunk_tuning_caller_judges(void);
 
 /** @brief The installed tuner_free_for_protocol() answer; 1 (free) when no hook is installed (headless and test builds). */
 int dsd_trunk_tuning_hook_tuner_free(const dsd_opts* opts, const dsd_state* state);

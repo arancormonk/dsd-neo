@@ -203,6 +203,8 @@ static int g_p25_tick_guard_held_during_tune = 0;
 static int g_rtl_tune_calls = 0;
 static uint32_t g_rtl_tune_freq = 0;
 static int g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+/* A frequency whose next tune fails, once (0: none). */
+static uint32_t g_rtl_fail_once_hz = 0U;
 /* The centre the fake controller last applied, which rtl_stream_get_last_applied_freq() reports (0: none known). */
 static uint32_t g_rtl_last_applied_hz = 0U;
 static int g_rtl_output_rate = 48000;
@@ -318,6 +320,7 @@ reset_rtl_profile_fakes(void) {
     g_rtl_tune_calls = 0;
     g_rtl_tune_freq = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_fail_once_hz = 0U;
     g_rtl_last_applied_hz = 0U;
     g_rtl_output_rate = 48000;
     g_rtl_cqpsk_enable = 1;
@@ -413,6 +416,35 @@ __wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
     g_manual_tune_supersedes++;
 #endif
     __real_dsd_engine_manual_tune_supersede(state);
+}
+
+/* The DMR voice holds and privacy forgets a move makes, counted: every move is judged once. A forget that
+   dmr_forget_call_privacy() makes through dmr_forget_call_decryption() inside its own object is not counted again. */
+static int g_dmr_holds = 0;
+static int g_dmr_forgets = 0;
+void __real_dmr_enc_class_hold(dsd_state* state);
+void __wrap_dmr_enc_class_hold(dsd_state* state);
+void __real_dmr_forget_call_privacy(dsd_state* state);
+void __wrap_dmr_forget_call_privacy(dsd_state* state);
+void __real_dmr_forget_call_decryption(dsd_state* state);
+void __wrap_dmr_forget_call_decryption(dsd_state* state);
+
+void
+__wrap_dmr_enc_class_hold(dsd_state* state) {
+    g_dmr_holds++;
+    __real_dmr_enc_class_hold(state);
+}
+
+void
+__wrap_dmr_forget_call_privacy(dsd_state* state) {
+    g_dmr_forgets++;
+    __real_dmr_forget_call_privacy(state);
+}
+
+void
+__wrap_dmr_forget_call_decryption(dsd_state* state) {
+    g_dmr_forgets++;
+    __real_dmr_forget_call_decryption(state);
 }
 
 #ifdef USE_RADIO
@@ -813,6 +845,10 @@ fake_rtl_tune(uint32_t center_freq_hz, uint64_t request_id) {
     }
     g_rtl_tune_calls++;
     g_rtl_tune_freq = center_freq_hz;
+    if (g_rtl_fail_once_hz != 0U && center_freq_hz == g_rtl_fail_once_hz) {
+        g_rtl_fail_once_hz = 0U;
+        return RTL_STREAM_TUNE_FAILED;
+    }
     if (g_rtl_watch_freq != 0U && center_freq_hz == g_rtl_watch_freq) {
         g_rtl_watch_tunes++;
     }
@@ -11788,6 +11824,7 @@ dmr_manual_setup(dsd_opts* opts, dsd_state* state, long receiver_hz) {
     g_rtl_last_applied_hz = (uint32_t)receiver_hz;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     state->synctype = state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_DMR; // the DMR machine owns the trunk (dmr_sm_submit_grant())
     state->trunk_cc_freq = DMR_MANUAL_CC;
     state->trunk_vc_freq[0] = DMR_MANUAL_VC;
     for (int i = 0; i < 3; i++) {
@@ -11877,6 +11914,200 @@ test_dmr_manual_moves_forget_and_hold(void) {
                       state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
     dmr_manual_done(opts, state);
     free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A --trunk-scan over two dmr-trunk targets through the real coordinator and the real engine tune hooks, the tuner
+   (an RTL stream) at 433 MHz, away from both. @p landed is the run's landing at its start (dsd_engine_note_run_start()
+   leaves 0 for a run that starts with its trunk scan; 1 is a run that landed before the scan was started from the
+   menu). The first park's retune (the first target's) fails once when @p first_park_fails, and the start parks the
+   second target instead. */
+static int
+park_judge_start(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, uint8_t landed, int first_park_fails) {
+    const int fd = dsd_test_mkstemp(path, path_size, "park-judge-");
+    if (fd < 0) {
+        path[0] = '\0';
+        return 1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    int rc = expect_true("park judge targets file", fp != NULL);
+    if (fp) {
+        DSD_FPRINTF(fp, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                        "cap,dmr-trunk,451000000,,250,250,,\n"
+                        "xpt,dmr-trunk,452000000,,250,250,,\n");
+        (void)fclose(fp);
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    opts->rtlsdr_center_freq = 433000000U;
+    g_rtl_last_applied_hz = 433000000U;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
+    dsd_engine_note_run_start(opts, state);
+    state->run_landed = landed;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_fail_once_hz = first_park_fails ? 451000000U : 0U;
+    g_dmr_holds = g_dmr_forgets = 0;
+    char err[256] = {0};
+    rc |= expect_true("park judge trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
+    g_rtl_fail_once_hz = 0U;
+    return rc;
+}
+
+static void
+park_judge_done(dsd_opts* opts, dsd_state* state, const char* path) {
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    state->rtl_ctx = NULL;
+    if (path[0] != '\0') {
+        (void)remove(path);
+    }
+}
+
+/* A trunk-scan park is judged once, by its restore, never again by the engine's tune hook its trunked target's
+   control-channel tune goes through. A run that starts with its trunk scan makes its first landing at the first
+   park: it holds nothing. Each later park holds both slots, once. A run that landed before its scan was started holds
+   at the first park too; a first park whose retune fails uses nothing up, so the next park is still the first
+   landing. */
+static int
+test_trunk_scan_park_judged_once(void) {
+    int rc = 0;
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= park_judge_start(opts, state, path, sizeof path, 0U, 0);
+    rc |= expect_true("a run starting with its trunk scan: the first park tunes the trunked target",
+                      g_rtl_tune_freq == 451000000U);
+    rc |= expect_true("a run starting with its trunk scan: the first park holds nothing",
+                      state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U && g_dmr_holds == 0);
+    g_dmr_holds = g_dmr_forgets = 0;
+    rc |= expect_true("the advance to the second target",
+                      dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0
+                          && g_rtl_tune_freq == 452000000U);
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "a later park holds both slots once (holds %d, forgets %d)", g_dmr_holds,
+                 g_dmr_forgets);
+    rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U && g_dmr_holds == 1
+                                && g_dmr_forgets == 1);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= park_judge_start(opts, state, path, sizeof path, 1U, 0);
+    DSD_SNPRINTF(what, sizeof what, "a trunk scan started after the run landed: its first park holds once (holds %d)",
+                 g_dmr_holds);
+    rc |=
+        expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U && g_dmr_holds == 1);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= park_judge_start(opts, state, path, sizeof path, 0U, 1);
+    DSD_SNPRINTF(what, sizeof what,
+                 "a first park whose retune failed uses nothing up: the next park is the run's first landing and holds "
+                 "nothing (tuned %u Hz, holds %d, landed %u)",
+                 (unsigned)g_rtl_tune_freq, g_dmr_holds, (unsigned)state->run_landed);
+    rc |= expect_true(what, g_rtl_tune_freq == 452000000U && g_dmr_holds == 0 && state->dmr_enc_class_held[0] == 0U
+                                && state->dmr_enc_class_held[1] == 0U && state->run_landed == 1U);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A return to the control channel through the tuning hooks (the DMR machine's dmr_sm_return_to_cc(), a P25 or NXDN
+   return) is judged once, by its release: one privacy forget and one hold, not one each for the control-channel tune,
+   the release and the audio close after it. */
+static int
+test_return_to_cc_judged_once(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = (uint32_t)DMR_MANUAL_VC;
+    g_rtl_last_applied_hz = (uint32_t)DMR_MANUAL_VC;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_cc_freq = DMR_MANUAL_CC;
+    seed_dmr_basic_privacy_call(state, 70ULL);
+    g_dmr_holds = g_dmr_forgets = 0;
+    uint64_t request_id = 0U;
+    int rc = expect_true("the return to the control channel",
+                         dsd_trunk_tuning_hook_return_to_cc(opts, state, &request_id) == DSD_TRUNK_TUNE_RESULT_OK);
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "a return to the control channel forgets and holds once (holds %d, forgets %d)",
+                 g_dmr_holds, g_dmr_forgets);
+    rc |= expect_true(what, g_dmr_holds == 1 && g_dmr_forgets == 1 && state->dmr_so == 0U
+                                && state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A manual Return to CC that takes the P25 hook leg (a P25 control channel context) is judged once. Under DMR
+   trunking the DMR machine judges it (dmr_sm_note_operator_leave(): its privacy bit before the rows end and the FID
+   after, two forgets, one hold), the engine's tune hook leaving it to the caller; under P25 trunking the engine's tune
+   hook judges it (one forget, one hold), and the DMR machine reads and judges nothing. */
+static int
+test_manual_hook_leg_judged_once(void) {
+    int rc = 0;
+    for (int dmr_owns = 1; dmr_owns >= 0; dmr_owns--) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_manual_setup(opts, state, DMR_MANUAL_VC);
+        dsd_trunk_tuning_hooks_set(
+            (dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                     .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                     .return_to_cc_request = dsd_engine_return_to_cc_request});
+        opts->frame_p25p1 = 1;
+        state->synctype = DSD_SYNC_NONE;
+        state->lastsynctype = DSD_SYNC_P25P1_POS;
+        state->p25_cc_is_tdma = 0;
+        state->p25_cc_freq = DMR_MANUAL_CC;
+        state->trunk_recovery_protocol = dmr_owns ? DSD_TRUNK_RECOVERY_DMR : DSD_TRUNK_RECOVERY_P25;
+        g_dmr_holds = g_dmr_forgets = 0;
+        const int drained = dmr_manual_press(opts, state, DMR_MANUAL_RETURN_CC);
+        char what[192];
+        DSD_SNPRINTF(what, sizeof what,
+                     "%s: a manual Return to CC on the hook leg is judged once (holds %d, forgets %d)",
+                     dmr_owns ? "DMR trunking" : "P25 trunking", g_dmr_holds, g_dmr_forgets);
+        rc |= expect_true(what, drained == 1 && g_dmr_holds == 1 && g_dmr_forgets == (dmr_owns ? 2 : 1)
+                                    && state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+        dmr_manual_done(opts, state);
+        dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+        dsd_trunk_tuning_requests_reset();
+        free_test_runtime(opts, state);
+    }
     return rc;
 }
 
@@ -17145,6 +17376,9 @@ main(void) {
     rc |= test_pending_walk_owns_the_tuner_against_trunk_recovery();
     rc |= test_return_to_cc_replaces_a_pending_walk();
     rc |= test_dmr_manual_moves_forget_and_hold();
+    rc |= test_trunk_scan_park_judged_once();
+    rc |= test_return_to_cc_judged_once();
+    rc |= test_manual_hook_leg_judged_once();
     rc |= test_walk_owns_the_tuner_through_its_settling();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();

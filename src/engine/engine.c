@@ -3603,7 +3603,11 @@ carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_
     if (tetra_owned) {
         tetra_sm_abandon_carrier(opts, state);
     }
+    /* The boundary judges the move for the DMR calls' privacy and voice hold, once
+       (dsd_engine_boundary_holds_dmr_voice()): the release leaves both to it. */
+    dsd_trunk_tuning_caller_judges_begin();
     dsd_engine_release_tuned_call_state(opts, state);
+    dsd_trunk_tuning_caller_judges_end();
 }
 
 /* With its codes, step 3 forgets the evidence that vouched for the carrier's transmissions: every confirmation gate's

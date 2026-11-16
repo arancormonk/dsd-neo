@@ -2526,12 +2526,12 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     // the left target's calls keyed from. The raw snapshot keeps the service options and vendor evidence only for
     // rollback to a carrier that a failed switch never left (issue #657). Until each slot's call there says whether it
     // is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()), unless nothing has landed yet in
-    // the run (dsd_state::run_landed): the first park of a scan the run started with.
+    // the run (dsd_state::run_landed): the first park of a scan the run started with. The park lands, and uses that up,
+    // only once its retune is accepted (trunk_scan_switch_to()).
     dmr_forget_call_privacy(state);
     if (state->run_landed != 0U) {
         dmr_enc_class_hold(state);
     }
-    state->run_landed = 1U;
     state->trunk_chan_map_seq = trunk_scan_next_chan_map_seq(coord, state->trunk_chan_map_seq);
     rt->snapshot.site.trunk_chan_map_seq = state->trunk_chan_map_seq;
 }
@@ -3297,12 +3297,17 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
                                                                   : trunk_scan_gfsk_sps(opts, state, rt->target.type);
         return dsd_engine_scan_tune_to_freq(opts, state, freq, ted_sps, out_request_id);
     }
-    /* Trunk targets re-park on their control channel; only the two axes differ per type. */
+    /* Trunk targets re-park on their control channel; only the two axes differ per type. The park's restore judged the
+       move for the DMR calls' privacy and voice hold (trunk_scan_restore_target_snapshot()), so the engine's tune hook
+       leaves it to the restore (dsd_trunk_tuning_caller_judges()), as the conventional tunes above run no judge. */
     state->p25_cc_freq = trunk_scan_type_anchors_p25_cc_freq(rt->target.type) ? freq : 0;
     state->trunk_cc_freq = freq;
     const int cc_sps = trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state)
                                                              : trunk_scan_gfsk_sps(opts, state, rt->target.type);
-    return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, cc_sps, out_request_id);
+    dsd_trunk_tuning_caller_judges_begin();
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, cc_sps, out_request_id);
+    dsd_trunk_tuning_caller_judges_end();
+    return result;
 }
 
 /*
@@ -3837,7 +3842,10 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
          * call the receiver then stays on, and before the snapshot, so the saved state is idle by
          * construction and revisiting the target cannot restore a call that ended a rotation ago. */
         if (coord->forced_visit_release) {
+            /* The park's restore below judges this move for the DMR calls' privacy and voice hold, once. */
+            dsd_trunk_tuning_caller_judges_begin();
             trunk_scan_release_active_carrier(opts, state, outgoing);
+            dsd_trunk_tuning_caller_judges_end();
             /* Rollback must preserve this release too. Restoring the pre-release call and
              * ending it again duplicates its history event if every park fails. */
             trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
@@ -3912,6 +3920,9 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
 
     trunk_scan_arm_tune_completion(opts, state, coord, rt, tune_result, tune_request_id);
     rt->retry_until_m = 0.0;
+    /* The receiver landed on the target: the run's first landing is used up (dsd_state::run_landed). A retune that
+       failed above leaves it for the retry. */
+    state->run_landed = 1U;
     LOG_INFO("NOTICE: Trunk scan target '%s' at %ld Hz\n", rt->target.id, trunk_scan_retune_freq(state, &rt->target));
     return 0;
 }
