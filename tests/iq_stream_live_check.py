@@ -3,9 +3,12 @@
 
 - A UDP stream says "I/Q stream: receiving on BIND:PORT" once, and only once its socket is bound: the port can no
   longer be bound by anyone else when the line appears.
+- A start under TETRA with no FREQ at a rate under TETRA's says each rate note once, though the startup said them before
+  the stream opened and the start says them again for every later start.
 - A TCP stream re-plans through a restart: a mode switch to TETRA over the control API reconnects to the sender, and
-  says so. The tuning commands a stream cannot take reach no rigctl peer: rigctl_connect_cfg and manual_tune are
-  refused, and the peer never sees a connection.
+  says so, and the restart, a start under TETRA with no FREQ, says that trunked calls cannot be tied. The tuning
+  commands a stream cannot take reach no rigctl peer: rigctl_connect_cfg and manual_tune are refused, and the peer
+  never sees a connection.
 - -U beside a stream exits 1 before anything opens, and the rigctl peer never sees a connection.
 """
 import argparse
@@ -254,6 +257,23 @@ def check_udp_notice(binary, cwd):
     print("UDP NOTICE OK: receiving on port", port, "once, after the bind")
 
 
+FREQ_NOTE = r"I/Q stream: no receiver frequency \(FREQ\) was given"
+TETRA_RATE_WARNING = r"I/Q stream: 20000 samples/s is below the 25000 that TETRA needs"
+
+
+def check_startup_notes_once(binary, cwd):
+    port = free_port(socket.SOCK_DGRAM)
+    process, output = start(binary, cwd, ["-fT", "-i", f"iqudp:127.0.0.1:{port}:20000:cs16"])
+
+    def body():
+        output.wait_for(rf"I/Q stream: receiving on 127\.0\.0\.1:{port} ", "UDP receiving notice")
+
+    log = stop_after(process, output, body)
+    assert len(re.findall(FREQ_NOTE, log)) == 1, "one no-FREQ notice wanted:\n" + log
+    assert len(re.findall(TETRA_RATE_WARNING, log)) == 1, "one TETRA rate warning wanted:\n" + log
+    print("STARTUP NOTES OK: each said once")
+
+
 def check_tcp_replan_and_tuning(binary, cwd):
     api_port = free_port(socket.SOCK_STREAM)
     with Sender() as sender, Listener() as rig:
@@ -268,6 +288,8 @@ def check_tcp_replan_and_tuning(binary, cwd):
                 assert response.get("ok"), response
                 output.wait_for(r"re-planning the rate chain for the TETRA decoder", "TETRA re-plan")
                 sender.wait_for(2, output)
+                output.wait_for(r"(?s)TETRA decoder; the stream reconnects[.].*" + FREQ_NOTE,
+                                "no-FREQ notice at the re-plan")
                 assert api.call("rigctl_connect_cfg", {"host": "127.0.0.1", "port": rig.port}).get("ok")
                 assert api.call("manual_tune", {"value": 851375000}).get("ok")
                 time.sleep(1.0)
@@ -276,6 +298,7 @@ def check_tcp_replan_and_tuning(binary, cwd):
 
         log = stop_after(process, output, body)
     assert rig.connections == 0, "a rigctl peer beside the stream was connected:\n" + log
+    assert len(re.findall(FREQ_NOTE, log)) == 1, "one no-FREQ notice wanted, at the re-plan:\n" + log
     print("TCP RE-PLAN OK:", sender.connections, "connections; rigctl peer untouched")
 
 
@@ -301,6 +324,7 @@ def main():
     binary = str(Path(args.binary).resolve())
     with tempfile.TemporaryDirectory(prefix="dsd-iq-stream-") as temporary:
         check_udp_notice(binary, temporary)
+        check_startup_notes_once(binary, temporary)
         check_tcp_replan_and_tuning(binary, temporary)
         check_rigctl_refused_at_start(binary, temporary)
 

@@ -652,6 +652,11 @@ dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) 
     g_stream_source_guarded = guard_held;
 }
 
+void
+dsd_engine_note_iq_stream_tetra(const dsd_opts* opts) {
+    (void)opts;
+}
+
 static int g_p25_tick_guard_depth = 0;
 static int g_p25_tick_guard_enter_calls = 0;
 static int g_p25_tick_guard_leave_calls = 0;

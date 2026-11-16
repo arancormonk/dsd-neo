@@ -457,7 +457,8 @@ rate, format or frequency, so the spec gives them:
   TETRA still decodes signalling and speech and records DMO calls, but it records no trunked call, as for a replay
   with an unknown centre. A start under `-fT` without FREQ says so: `NOTICE: I/Q stream: no receiver frequency (FREQ)
   was given, so TETRA decodes signalling and speech but cannot tie trunked calls to the channels their allocations
-  name.`
+  name.` So does every later start under TETRA (a loaded config, the RTL-SDR row bringing the stream back, a re-plan),
+  and a switch to TETRA while the stream runs, once for each start.
 
 Every field is checked before anything opens. A missing or bad one stops startup with exit status 1 and names the
 field: `-i: iqtcp: PORT '0' is not a port number from 1 to 65535 (expected iqtcp:HOST:PORT:RATE:FORMAT[:FREQ])`. The
@@ -493,7 +494,8 @@ A RATE the planner takes can still be too narrow for the signal. dsd-neo warns b
 
 A start below its rate is not refused: it warns, for example `WARNING: I/Q stream: 24000 samples/s is below the 25000
 that TETRA needs (36000 when the sending program does not centre the channel exactly); decoding may fail. Raise the
-sample rate in the sending program.` For TETRA, 48 or 96 kHz is a comfortable rate. The sending program's own channel
+sample rate in the sending program.` Every start warns, not only the first, and so does a switch to TETRA while the
+stream runs, once for each start. For TETRA, 48 or 96 kHz is a comfortable rate. The sending program's own channel
 filter must be as wide as the signal: a TETRA carrier fills 25 kHz (its signal reaches 12.15 kHz either side of the
 centre), so a 12.5 or 18 kHz filter cuts it. Set at least 25 kHz there. No AGC is needed in the sending program; dsd-neo
 sets its own levels.

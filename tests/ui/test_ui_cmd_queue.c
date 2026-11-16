@@ -13389,6 +13389,20 @@ record_rigctl_log(dsd_neo_log_level_t level, const char* text) {
     }
 }
 
+/* Issue #743: the rate notes a stream start says (a rate under TETRA's, and under TETRA no FREQ), counted. */
+static int g_stream_freq_notes = 0;
+static int g_stream_tetra_rate_warnings = 0;
+
+static void
+record_stream_notes_log(const char* text) {
+    if (text && strstr(text, "I/Q stream: no receiver frequency (FREQ) was given")) {
+        g_stream_freq_notes++;
+    }
+    if (text && strstr(text, "I/Q stream: 20000 samples/s is below the 25000 that TETRA needs")) {
+        g_stream_tetra_rate_warnings++;
+    }
+}
+
 static void
 record_restart_log(const char* text) {
     if (text && strstr(text, "restart to use the new")) {
@@ -13408,6 +13422,7 @@ record_test_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
 #endif
     record_rigctl_log(level, text);
     record_restart_log(text);
+    record_stream_notes_log(text);
 }
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -15037,6 +15052,99 @@ stream_input_config(dsdneoUserConfig* cfg, const char* rate, const char* format)
     cfg->iq_port = 1234;
     DSD_SNPRINTF(cfg->iq_rate, sizeof cfg->iq_rate, "%s", rate);
     DSD_SNPRINTF(cfg->iq_format, sizeof cfg->iq_format, "%s", format);
+}
+
+static void
+stream_notes_reset(void) {
+    g_stream_freq_notes = 0;
+    g_stream_tetra_rate_warnings = 0;
+}
+
+/* The stream rate notes said since the last call, against @p freq_notes and @p rate_warnings; the counts start over. */
+static int
+expect_stream_notes(const char* label, int freq_notes, int rate_warnings) {
+    char sub[160];
+    DSD_SNPRINTF(sub, sizeof sub, "%s: no-FREQ notices", label);
+    int rc = expect_int(sub, g_stream_freq_notes, freq_notes);
+    DSD_SNPRINTF(sub, sizeof sub, "%s: TETRA rate warnings", label);
+    rc |= expect_int(sub, g_stream_tetra_rate_warnings, rate_warnings);
+    stream_notes_reset();
+    return rc;
+}
+
+static const char k_stream_20k[] = "iqtcp:127.0.0.1:1234:20000:cs16";
+
+/*
+ * Issue #743: every stream start says its rate notes, not only the one the command line makes: a 20 kS/s stream with
+ * no FREQ under TETRA warns of the rate and says it cannot tie trunked calls, once, when the RTL-SDR row brings it back,
+ * when a config switches to it, and when a switch to TETRA restarts it. A switch to TETRA that restarts nothing (the
+ * plan is the same at an explicit 72 kHz) says them once for the start in force; a second switch to TETRA does not.
+ * A stream with FREQ at 48 kS/s says neither.
+ */
+static int
+test_stream_starts_say_their_rate_notes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static dsdneoUserConfig cfg;
+    int rc = 0;
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_20k, 72, 72000);
+    state.rtl_ctx = NULL;
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", k_stream_20k);
+    opts.frame_tetra = 1;
+    stream_notes_reset();
+    rc |= expect_int("notes: rtl row", post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("notes: rtl row drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("notes: rtl row reopened the stream", g_config_rtl_create_dev, k_stream_20k);
+    rc |= expect_stream_notes("notes: rtl row", 1, 1);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, "rtl:0:851.375M:20:0:48", 48, 48000);
+    stream_input_config(&cfg, "20000", "cs16");
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_TETRA;
+    stream_notes_reset();
+    rc |= submit_config(&opts, &state, &cfg, "notes: config");
+    rc |= expect_str("notes: config opened the stream", g_config_rtl_create_dev, k_stream_20k);
+    rc |= expect_stream_notes("notes: config", 1, 1);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_20k, 48, 48000);
+    stream_notes_reset();
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA,
+                               "notes: tetra restart");
+    rc |= expect_int("notes: tetra restart: one restart", g_config_rtl_creates, 1);
+    rc |= expect_stream_notes("notes: tetra restart", 1, 1);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_20k, 72, 72000);
+    dsd_opts_set_rtl_dsp_bw(&opts, 72, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    stream_notes_reset();
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA,
+                               "notes: tetra kept");
+    rc |= expect_int("notes: tetra kept: nothing restarted", g_config_rtl_creates, 0);
+    rc |= expect_int("notes: tetra kept: TETRA on", opts.frame_tetra, 1);
+    rc |= expect_stream_notes("notes: tetra kept", 1, 1);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR, "notes: dmr kept");
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA,
+                               "notes: tetra again");
+    rc |= expect_int("notes: tetra again: nothing restarted", g_config_rtl_creates, 0);
+    rc |= expect_stream_notes("notes: tetra again: once per start", 0, 0);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, "iqtcp:127.0.0.1:1234:48000:cs16:426700000", 48, 48000);
+    stream_notes_reset();
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA,
+                               "notes: tetra with FREQ");
+    rc |= expect_int("notes: tetra with FREQ: one restart", g_config_rtl_creates, 1);
+    rc |= expect_stream_notes("notes: tetra with FREQ", 0, 0);
+    freeState(&state);
+
+    reset_rx_family_wrap();
+    return rc;
 }
 
 /*
@@ -31827,6 +31935,7 @@ main(void) {
     rc |= test_replay_config_apply_replans();
     rc |= test_stream_bandwidth_change_replans();
     rc |= test_stream_mode_change_replans();
+    rc |= test_stream_starts_say_their_rate_notes();
     rc |= test_stream_config_apply_replans();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_kept_fixed_input_config_pushes_squelch();

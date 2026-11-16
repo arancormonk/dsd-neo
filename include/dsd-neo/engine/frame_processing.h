@@ -139,6 +139,12 @@ void dsd_engine_note_input_replaced(dsd_state* state);
  *  of its own. @p guard_held as for the boundary. */
 void dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held);
 
+/** A raw I/Q stream switched to TETRA with no restart, its plan unchanged (issue #743): say what a start under TETRA
+ *  says, once per stream start, a rate under TETRA's and, with no FREQ in its spec, that trunked calls cannot be tied
+ *  to their allocations. Nothing when TETRA is off, the input is no stream, or the start in force said them already.
+ *  Decoder thread. */
+void dsd_engine_note_iq_stream_tetra(const dsd_opts* opts);
+
 /** An I/Q replay's retune the capture recorded, which the read path adopted (dsd_frame_sync_note_replay_center()),
  * before it returns the first sample the new carrier carries (issue #575). With trunking off it is another
  * conventional carrier, the boundary an accepted live retune is (dsd_engine_carrier_boundary(),

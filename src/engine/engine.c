@@ -767,15 +767,18 @@ iq_stream_min_rate_hz(const dsd_opts* opts, const char** out_family) {
     return 16000U;
 }
 
-/* What a start on the stream @p spec says before it opens (issue #743): where a TCP stream connects (a UDP one says
-   where it receives once it is bound, dsd_engine_note_stream_source()), a rate under what the mode decodes from, and
-   under TETRA a stream without FREQ, whose trunked calls cannot be tied to their allocations. */
+/* The rate notes a stream start says, each once per start (issue #743): whether the start in hand said them before it
+   opened (the startup's spec check, dsd_engine_setup_parse_iq_stream_input(); every later start says them once it
+   runs, note_iq_stream_started()), and whether the start in force said them under TETRA, which a switch to TETRA that
+   restarts nothing says then (dsd_engine_note_iq_stream_tetra()). Decoder thread. */
+static int s_iq_stream_notes_said_before_open = 0;
+static int s_iq_stream_tetra_notes_said = 0;
+
+/* A rate under what the mode decodes from, and under TETRA a stream without FREQ, whose trunked calls cannot be tied
+   to their allocations. */
 static void
-iq_stream_startup_notes(const dsd_opts* opts, const dsd_iq_net_spec* spec) {
-    if (spec->kind == DSD_IQ_NET_KIND_TCP) {
-        LOG_INFO("NOTICE: I/Q stream: connecting to %s:%d (%s, %u samples/s)\n", spec->host, spec->port,
-                 dsd_iq_net_format_name(spec->format), spec->rate_hz);
-    }
+iq_stream_rate_notes(const dsd_opts* opts, const dsd_iq_net_spec* spec) {
+    s_iq_stream_tetra_notes_said = opts->frame_tetra == 1;
     const char* family = "";
     const uint32_t min_hz = iq_stream_min_rate_hz(opts, &family);
     if (spec->rate_hz < min_hz) {
@@ -792,6 +795,18 @@ iq_stream_startup_notes(const dsd_opts* opts, const dsd_iq_net_spec* spec) {
             spec->kind == DSD_IQ_NET_KIND_TCP ? "iqtcp" : "iqudp");
     }
 }
+
+/* What a start on the stream @p spec says before it opens: where a TCP stream connects (a UDP one says where it
+   receives once it is bound, note_iq_stream_started()), and its rate notes. */
+static void
+iq_stream_startup_notes(const dsd_opts* opts, const dsd_iq_net_spec* spec) {
+    if (spec->kind == DSD_IQ_NET_KIND_TCP) {
+        LOG_INFO("NOTICE: I/Q stream: connecting to %s:%d (%s, %u samples/s)\n", spec->host, spec->port,
+                 dsd_iq_net_format_name(spec->format), spec->rate_hz);
+    }
+    iq_stream_rate_notes(opts, spec);
+    s_iq_stream_notes_said_before_open = 1;
+}
 #endif
 
 /* A raw I/Q stream spec (`-i iqtcp:` / `-i iqudp:` or an [input] that builds one, issue #743) read before anything
@@ -801,6 +816,9 @@ iq_stream_startup_notes(const dsd_opts* opts, const dsd_iq_net_spec* spec) {
    planner's reason. -1 when refused. */
 static int
 dsd_engine_setup_parse_iq_stream_input(dsd_opts* opts) {
+#ifdef USE_RADIO
+    s_iq_stream_notes_said_before_open = 0;
+#endif
     if (!dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)) {
         return 0;
     }
@@ -3819,8 +3837,9 @@ carrier_source_key(const dsd_opts* opts) {
 
 /* A raw I/Q stream that started (issue #743): the receiver is on the stream's FREQ, 0 when its spec names none (never
    the 850 MHz default, a replay's centre or another stream's), which the protocols' frequency readers and every
-   frontend read (dsd_opts_tuned_freq_hz()); and a UDP stream, bound and read from now, says where, which is the line a
-   sender waits for. */
+   frontend read (dsd_opts_tuned_freq_hz()); a UDP stream, bound and read from now, says where, which is the line a
+   sender waits for; and a start the startup did not announce (a config apply, a remembered radio row, a re-plan) says
+   its rate notes. */
 static void
 note_iq_stream_started(dsd_opts* opts) {
     dsd_iq_net_spec spec;
@@ -3833,6 +3852,27 @@ note_iq_stream_started(dsd_opts* opts) {
         LOG_INFO("NOTICE: I/Q stream: receiving on %s:%d (%s, %u samples/s)\n", spec.host, spec.port,
                  dsd_iq_net_format_name(spec.format), spec.rate_hz);
     }
+#ifdef USE_RADIO
+    if (s_iq_stream_notes_said_before_open) {
+        s_iq_stream_notes_said_before_open = 0;
+    } else {
+        iq_stream_rate_notes(opts, &spec);
+    }
+#endif
+}
+
+void
+dsd_engine_note_iq_stream_tetra(const dsd_opts* opts) {
+#ifdef USE_RADIO
+    dsd_iq_net_spec spec;
+    if (!opts || opts->frame_tetra != 1 || s_iq_stream_tetra_notes_said || !dsd_opts_input_is_iq_stream(opts)
+        || dsd_iq_net_spec_parse(opts->audio_in_dev, &spec, NULL, 0U) != 0) {
+        return;
+    }
+    iq_stream_rate_notes(opts, &spec);
+#else
+    (void)opts;
+#endif
 }
 
 void

@@ -11683,8 +11683,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     the same stream is a stream gap; its start also puts `rtlsdr_center_freq` on FREQ (0 when none, never the 850 MHz
     default or a replay's centre), which `dsd_opts_tuned_freq_hz()`, history rows, the control-channel caches and
     TETRA's call association read, and a UDP stream says `I/Q stream: receiving on BIND:PORT` once it is bound
-    (`note_iq_stream_started()`). `dsd_engine_stream_reopened_on()` never lands a pending tune on a replay or a
-    stream (`dsd_opts_input_has_fixed_tuning()`).
+    (`note_iq_stream_started()`). Every stream start says its rate notes (a rate under the mode's minimum; under TETRA
+    no FREQ) unless the startup's spec check said them before that start opened
+    (`dsd_engine_setup_parse_iq_stream_input()`); a switch to TETRA whose plan is unchanged, so nothing restarts, says
+    them through `dsd_engine_note_iq_stream_tetra()` from `svc_iq_stream_replan_locked()`, once per start.
+    `dsd_engine_stream_reopened_on()` never lands a pending tune on a replay or a stream
+    (`dsd_opts_input_has_fixed_tuning()`).
   - A config apply that leaves the same radio source on another frequency as `dsd_opts_tuned_freq_hz()` reads it
     (`apply_cfg_radio_input()`), unless the apply left the carrier already (`apply_cfg_left_carrier()`): a start on
     another source, or the live Airspy retune, which moves `carrier_seq` with no stream start. A reopen of the same

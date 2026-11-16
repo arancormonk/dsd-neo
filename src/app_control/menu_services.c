@@ -2207,6 +2207,8 @@ svc_iq_stream_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason
         *out_dsp_rate_hz = rate_hz;
     }
     if ((int)rate_hz == rtl_stream_get_request_rate_hz()) {
+        /* No start follows to say what a stream under TETRA needs; a switch to TETRA says it now. */
+        dsd_engine_note_iq_stream_tetra(opts);
         return SVC_REPLAY_REPLAN_KEPT;
     }
     LOG_INFO("I/Q stream: re-planning the rate chain for %s; the stream reconnects.\n", what);
