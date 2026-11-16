@@ -6971,7 +6971,10 @@ controller_stream_boundary(struct controller_state* s, int reason, int (*device_
  * and the decoder ends the reception at the moved count, as for an rtl_tcp reconnect. The reader is the ring's only
  * producer, so an input ring still empty here holds nothing a purge would discard: it lets the purge go itself, which
  * the demod, waiting for input, would otherwise take only after the first block after the gap and apply to the ones
- * after it. */
+ * after it. A ring that still holds blocks from before the gap leaves the purge pending for the demod, so the first
+ * block or two the reader commits after the gap, before the demod's next read takes the purge, go with it. That window
+ * is accepted: a few ms right after a reconnect or a resume, and the discontinuity count has moved already, so the
+ * decoder ends the reception there either way. */
 static void
 controller_net_iq_boundary(const char* reason, void* ctx) {
     auto* s = static_cast<controller_state*>(ctx);
