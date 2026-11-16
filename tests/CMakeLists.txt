@@ -16284,6 +16284,11 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
         PROPERTIES LABELS "protocol;tetra"
     )
 endforeach()
+# The unit activity rows are also read back through the app-control view every frontend shows, as names reach users.
+target_sources(
+    dsd-neo_test_tetra_tetra_unit_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
+)
 
 # A followed call returns to the control channel it left when another cell is decoded on its traffic carrier
 # (discussion #748), and nothing of that cell is taken on meanwhile: the real BSCH parser, MAC, call records and

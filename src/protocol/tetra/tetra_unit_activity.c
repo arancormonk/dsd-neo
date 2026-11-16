@@ -48,75 +48,71 @@ tetra_ua_radio(uint32_t ssi) {
     return out;
 }
 
-/* The MS an LU PDU concerns: 1 with @p out filled (a clear SSI or USSI is a radio, @p foreign set for a USSI; an SMI an
-   identity of unknown kind), 0 when the PDU names no MS a row can keep apart from another's: an encrypted short
-   identity, an event label or no address (rows of different MSs would merge into one). */
+/* The MS an LU PDU concerns, as @p row's subject: 1 when set (a clear SSI or USSI is a radio; an SMI an identity of
+   unknown kind), 0 when the PDU names no MS a row can keep apart from another's: an encrypted short identity, an event
+   label or no address (rows of different MSs would merge into one). A USSI is the SSI a migrating MS has in its home
+   network, which the row cannot name as a home: the subject is nonlocal, so the local lists never name it, though its
+   assigned identity may be named. */
 static int
-tetra_ua_addressed(const tetra_mm_addr* addr, dsd_ua_identity* out, int* foreign) {
-    DSD_MEMSET(out, 0, sizeof *out);
-    *foreign = 0;
+tetra_ua_set_addressed(const tetra_mm_addr* addr, dsd_unit_activity* row) {
     if (addr == NULL || !addr->valid || addr->encrypted) {
         return 0;
     }
     uint32_t ssi = 0;
     if (tetra_mm_addr_radio_ssi(addr, &ssi)) {
-        *out = tetra_ua_radio(ssi);
-        *foreign = addr->type == TETRA_MM_ADDR_USSI;
+        row->subject = tetra_ua_radio(ssi);
+        row->subject_nonlocal = addr->type == TETRA_MM_ADDR_USSI ? 1U : 0U;
     } else if (addr->type == TETRA_MM_ADDR_SMI && addr->ssi != 0U) {
-        out->id = addr->ssi;
-        out->subtype = DSD_UA_ID_UNKNOWN;
-        out->valid = 1;
+        row->subject.id = addr->ssi;
+        row->subject.subtype = DSD_UA_ID_UNKNOWN;
+        row->subject.valid = 1;
     }
-    return out->valid;
+    return row->subject.valid;
 }
 
-/* The subject's name as the receiver knows it now (the core's one naming rule), and the push. A USSI is the SSI a
-   migrating MS has in its home network, which the row cannot name as a home: the local lists never name it, though its
-   assigned identity may be named. */
+/* The subject's name as the receiver knows it now (the core's one naming rule), and the push. */
 static void
-tetra_ua_push(dsd_state* state, dsd_unit_activity* row, int foreign_subject) {
-    if (!foreign_subject || row->assigned.valid) {
-        dsd_unit_activity_freeze_name(state, row);
-    }
+tetra_ua_push(dsd_state* state, dsd_unit_activity* row) {
+    dsd_unit_activity_freeze_name(state, row);
     (void)dsd_unit_activity_push(state, row);
 }
 
 void
 tetra_ua_lu_accept(const dsd_opts* opts, dsd_state* state, const tetra_mm_addr* addr,
                    const tetra_mm_lu_accept_t* accept) {
-    dsd_ua_identity subject;
-    int foreign = 0;
-    if (state == NULL || accept == NULL || !tetra_ua_addressed(addr, &subject, &foreign)) {
+    if (state == NULL || accept == NULL) {
         return;
     }
     dsd_unit_activity row =
         tetra_ua_row(opts, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_ACCEPTED);
-    row.subject = subject;
+    if (!tetra_ua_set_addressed(addr, &row)) {
+        return;
+    }
     row.value = accept->type;
     row.value_valid = 1;
     if (accept->ssi_valid) {
         row.assigned = tetra_ua_radio(accept->ssi);
     }
-    tetra_ua_push(state, &row, foreign);
+    tetra_ua_push(state, &row);
 }
 
 void
 tetra_ua_lu_reject(const dsd_opts* opts, dsd_state* state, const tetra_mm_addr* addr,
                    const tetra_mm_lu_reject_t* reject) {
-    dsd_ua_identity subject;
-    int foreign = 0;
-    if (state == NULL || reject == NULL || !tetra_ua_addressed(addr, &subject, &foreign)) {
+    if (state == NULL || reject == NULL) {
         return;
     }
     dsd_unit_activity row =
         tetra_ua_row(opts, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_REFUSED);
-    row.subject = subject;
+    if (!tetra_ua_set_addressed(addr, &row)) {
+        return;
+    }
     row.reason_set = DSD_UA_REASON_TETRA_LU_REJECT;
     row.reason_code = reject->cause;
     /* The location update type (Table 16.67) is not the accept type the value of this kind shows. */
     row.value2 = reject->type;
     row.value2_valid = 1;
-    tetra_ua_push(state, &row, foreign);
+    tetra_ua_push(state, &row);
 }
 
 void
@@ -148,5 +144,5 @@ tetra_ua_enable_disable(const dsd_opts* opts, dsd_state* state, const tetra_mm_e
     } else {
         return; /* neither a subscription nor a terminal: nothing is commanded */
     }
-    tetra_ua_push(state, &row, 0);
+    tetra_ua_push(state, &row);
 }

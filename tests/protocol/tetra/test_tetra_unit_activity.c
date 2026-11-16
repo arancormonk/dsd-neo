@@ -13,6 +13,7 @@
  * Identities and the network are made up.
  */
 
+#include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -395,6 +396,60 @@ test_naming(void) {
     session_close(&s);
 }
 
+/* The name every frontend shows for the newest row (the app-control view over the live ring). */
+static void
+view_newest_name(const dsd_state* state, char* out, size_t cap) {
+    dsd_app_unit_activity_cursor cursor = {0, 0};
+    dsd_app_unit_activity_meta meta;
+    dsd_app_unit_activity_row rows[16];
+    const int n = dsd_app_unit_activity_rows(state, &cursor, rows, 16, &meta);
+    out[0] = '\0';
+    uint64_t newest = 0;
+    for (int i = 0; i < n; i++) {
+        if (rows[i].seq > newest) {
+            newest = rows[i].seq;
+            DSD_SNPRINTF(out, cap, "%s", rows[i].subject_name);
+        }
+    }
+}
+
+/* A USSI is a migrating MS's number in its home network: neither the push nor the view names it from the cell's lists,
+   even when its assigned identity has no name; an assigned identity with a name still names it. */
+static void
+test_ussi_never_named_locally(void) {
+    session s = session_open();
+    dsd_unit_activity r;
+    char name[64];
+    dsd_rxid_note_tetra_cell(s.state, TEST_MCC, TEST_MNC, 1U);
+    (void)dsd_alias_learn_radio(NULL, s.state, NULL, TEST_MS_SSI, "PATROL 1", NULL);
+    ttb_block sdu = {0};
+    lu_accept(&sdu, 5, TEST_ASSIGNED_SSI);
+    send_sdu(&s, TETRA_MAC_ADDR_USSI, TEST_MS_SSI, &sdu);
+    if (one_row(s.state, &r, "USSI with an unnamed assigned SSI")) {
+        check(r.name_frozen[0] == '\0', "an unnamed assigned SSI does not fall back to the USSI's local namesake");
+    }
+    view_newest_name(s.state, name, sizeof name);
+    check(name[0] == '\0', "the view does not name the USSI accept from the local lists");
+    sdu = (ttb_block){0};
+    lu_reject(&sdu, 1, 3);
+    send_sdu(&s, TETRA_MAC_ADDR_USSI, TEST_MS_SSI, &sdu);
+    if (one_row(s.state, &r, "USSI reject")) {
+        check(r.name_frozen[0] == '\0', "a USSI reject is not named at push");
+    }
+    view_newest_name(s.state, name, sizeof name);
+    check(name[0] == '\0', "the view does not name a USSI reject from the local lists");
+    (void)dsd_alias_learn_radio(NULL, s.state, NULL, TEST_ASSIGNED_SSI, "VISITOR 9", NULL);
+    sdu = (ttb_block){0};
+    lu_accept(&sdu, 3, TEST_ASSIGNED_SSI);
+    send_sdu(&s, TETRA_MAC_ADDR_USSI, TEST_MS_SSI, &sdu);
+    if (one_row(s.state, &r, "USSI with a named assigned SSI")) {
+        check(strcmp(r.name_frozen, "VISITOR 9") == 0, "a named assigned SSI names the migrating MS");
+    }
+    view_newest_name(s.state, name, sizeof name);
+    check(strcmp(name, "VISITOR 9") == 0, "the view names the migrating MS by its assigned SSI");
+    session_close(&s);
+}
+
 int
 main(void) {
     test_lu_accept();
@@ -402,6 +457,7 @@ main(void) {
     test_lu_reject();
     test_enable_disable();
     test_naming();
+    test_ussi_never_named_locally();
     if (g_failures != 0) {
         printf("FAIL  tetra_unit_activity: %d check(s) failed\n", g_failures);
         return 1;
