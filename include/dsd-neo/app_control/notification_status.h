@@ -48,7 +48,8 @@ typedef struct {
     /**
      * Non-zero while DSD-neo can tune the radio feeding it (dsd_opts_radio_can_tune(), issue #743): a live RTL-SDR,
      * rtl_tcp, SoapySDR or Airspy input. 0 on an I/Q replay or I/Q stream (radio input with fixed tuning) and on audio
-     * input. Published through the status JSON only; the v4 record does not carry it.
+     * input. Only @c radio_input set with this clear means the tuner commands are refused: audio input still tunes a
+     * rigctl peer. Published through the status JSON only; the v4 record does not carry it.
      */
     uint8_t tunable;
     uint8_t trunking;    /**< opts->trunk_enable. */

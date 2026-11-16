@@ -345,8 +345,13 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
 * `tunable`: `true` while DSD-neo can tune the radio that feeds it (a live
   RTL-SDR, rtl_tcp, SoapySDR or Airspy input). It is `false` on an I/Q replay
   and on an I/Q stream (`-i iqtcp:` / `-i iqudp:`), whose channel is fixed, and
-  on audio input. Grey out tuning, gain and PPM controls while it is `false`:
-  the decoder refuses those commands there.
+  on audio input, which has no radio of its own.
+  * While `radio_input` is `true` and `tunable` is `false` (a replay or a
+    stream), grey out tuning, gain and PPM controls: the decoder refuses those
+    commands there.
+  * On audio input (`radio_input` is `false`) `tunable` says nothing about those
+    controls: a frequency still tunes a connected rigctl peer, and the gain and
+    PPM settings set up the radio a later switch opens.
 
 * `message`: `{text, expires}` while the decoder shows a notice (for example the
   reason it refused a queued command), else `null`.

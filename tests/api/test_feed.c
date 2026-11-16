@@ -335,6 +335,9 @@ test_status_tunable(void) {
         {AUDIO_IN_PULSE, "pulse", "\"radio_input\":false,\"tunable\":false,"},
     };
 
+    /* Audio input reads tunable false whether or not a rigctl peer is there to take a frequency: only radio_input set
+       with tunable clear means the tuner commands are refused (docs/api.md). */
+
     const int type = g_opts->audio_in_type;
     char dev[sizeof g_opts->audio_in_dev];
     DSD_SNPRINTF(dev, sizeof dev, "%s", g_opts->audio_in_dev);
@@ -344,6 +347,10 @@ test_status_tunable(void) {
         feed_tick();
         expect_status_has(rows[i].want);
     }
+    g_opts->use_rigctl = 1;
+    feed_tick();
+    expect_status_has("\"radio_input\":false,\"tunable\":false,");
+    g_opts->use_rigctl = 0;
     g_opts->audio_in_type = type;
     DSD_SNPRINTF(g_opts->audio_in_dev, sizeof g_opts->audio_in_dev, "%s", dev);
 }
