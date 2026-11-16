@@ -997,6 +997,18 @@ test_network_status_owns_patches(int hardset) {
     return rc;
 }
 
+/* p25_unit_activity.c looks up the address a home SUID holds on the serving system; this harness keeps no table. */
+int
+p25_aff_assigned_for_home(const dsd_state* state, const p25_home_id* home, uint32_t serving_wacn, uint16_t serving_sys,
+                          uint32_t* assigned) {
+    (void)state;
+    (void)home;
+    (void)serving_wacn;
+    (void)serving_sys;
+    (void)assigned;
+    return 0;
+}
+
 int
 main(void) {
     dsd_decode_clock_use_test(1000000000ULL);
