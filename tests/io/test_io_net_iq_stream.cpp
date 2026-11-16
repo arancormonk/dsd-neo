@@ -39,7 +39,6 @@
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
-#include <errno.h>
 #include <math.h>
 #include <memory>
 #include <mutex>
@@ -56,12 +55,12 @@
 #include "rtl_net_iq.h"
 #include "rtl_stream_test_support.h"
 
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+#endif
 
 #if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
 #include <xmmintrin.h>
@@ -189,45 +188,54 @@ failure_kind(void) {
 }
 
 int
-local_port(int fd) {
+local_port(dsd_socket_t sock) {
     struct sockaddr_in sa;
-    socklen_t len = sizeof sa;
-    assert(getsockname(fd, (struct sockaddr*)&sa, &len) == 0);
+#if DSD_PLATFORM_WIN_NATIVE
+    int len = (int)sizeof sa;
+#else
+    socklen_t len = (socklen_t)sizeof sa;
+#endif
+    assert(getsockname(sock, (struct sockaddr*)&sa, &len) == 0);
     return (int)ntohs(sa.sin_port);
 }
 
-/* A TCP listener on an ephemeral loopback port. */
-int
-open_listener(int backlog, int* out_port) {
-    const int fd = socket(AF_INET, SOCK_STREAM, 0);
-    assert(fd >= 0);
-    int one = 1;
-    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+/* A socket bound to an ephemeral loopback port. */
+dsd_socket_t
+bound_socket(int type, int* out_port) {
+    const dsd_socket_t sock = dsd_socket_create(AF_INET, type, 0);
+    assert(sock != DSD_INVALID_SOCKET);
     struct sockaddr_in sa = loopback(0);
-    assert(bind(fd, (struct sockaddr*)&sa, sizeof sa) == 0);
-    assert(listen(fd, backlog) == 0);
-    *out_port = local_port(fd);
-    return fd;
+    assert(dsd_socket_bind(sock, (struct sockaddr*)&sa, (int)sizeof sa) == 0);
+    *out_port = local_port(sock);
+    return sock;
 }
 
-int
-accept_within(int listener, uint64_t ms) {
+/* A TCP listener on an ephemeral loopback port. */
+dsd_socket_t
+open_listener(int backlog, int* out_port) {
+    const dsd_socket_t sock = bound_socket(SOCK_STREAM, out_port);
+    assert(dsd_socket_listen(sock, backlog) == 0);
+    return sock;
+}
+
+dsd_socket_t
+accept_within(dsd_socket_t listener, uint64_t ms) {
     const uint64_t deadline = now_ms() + ms;
     while (now_ms() < deadline) {
-        if (dsd_socket_wait((dsd_socket_t)listener, DSD_SOCKET_WAIT_READ, 20U) > 0) {
-            const int fd = accept(listener, nullptr, nullptr);
-            if (fd >= 0) {
-                return fd;
+        if (dsd_socket_wait(listener, DSD_SOCKET_WAIT_READ, 20U) > 0) {
+            const dsd_socket_t sock = dsd_socket_accept(listener, nullptr, nullptr);
+            if (sock != DSD_INVALID_SOCKET) {
+                return sock;
             }
         }
     }
-    return -1;
+    return DSD_INVALID_SOCKET;
 }
 
 void
-send_all(int fd, const uint8_t* p, size_t n) {
+send_all(dsd_socket_t sock, const uint8_t* p, size_t n) {
     while (n > 0U) {
-        const ssize_t k = send(fd, p, n, MSG_NOSIGNAL);
+        const int k = dsd_socket_send(sock, p, n, MSG_NOSIGNAL);
         assert(k > 0);
         p += k;
         n -= (size_t)k;
@@ -251,33 +259,29 @@ cs16_tone(size_t pairs, uint64_t* phase) {
 }
 
 struct udp_sender {
-    int fd = -1;
+    dsd_socket_t sock = DSD_INVALID_SOCKET;
     struct sockaddr_in to{};
 };
 
 udp_sender
 udp_sender_open(int port) {
     udp_sender s;
-    s.fd = socket(AF_INET, SOCK_DGRAM, 0);
-    assert(s.fd >= 0);
+    s.sock = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    assert(s.sock != DSD_INVALID_SOCKET);
     s.to = loopback(port);
     return s;
 }
 
 void
 udp_send(const udp_sender& s, const uint8_t* p, size_t n) {
-    assert(sendto(s.fd, p, n, 0, (const struct sockaddr*)&s.to, sizeof s.to) == (ssize_t)n);
+    assert(dsd_socket_sendto(s.sock, p, n, 0, (const struct sockaddr*)&s.to, (int)sizeof s.to) == (int)n);
 }
 
 /* A UDP port free right now (bound and closed again): the stream binds it next. */
 int
 free_udp_port(void) {
-    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    assert(fd >= 0);
-    struct sockaddr_in sa = loopback(0);
-    assert(bind(fd, (struct sockaddr*)&sa, sizeof sa) == 0);
-    const int port = local_port(fd);
-    close(fd);
+    int port = 0;
+    (void)dsd_socket_close(bound_socket(SOCK_DGRAM, &port));
     return port;
 }
 
@@ -473,8 +477,8 @@ udp_spec(int port, uint32_t rate, const char* format) {
 /* A TCP stream with its sender: the stream connects during its open, the sender accepts after. */
 struct tcp_rig {
     stream_rig s;
-    int listener = -1;
-    int conn = -1;
+    dsd_socket_t listener = DSD_INVALID_SOCKET;
+    dsd_socket_t conn = DSD_INVALID_SOCKET;
     int port = 0;
     uint64_t phase = 0U;
 };
@@ -484,7 +488,7 @@ tcp_open(tcp_rig& t, uint32_t rate, uint32_t freq, int reader) {
     t.listener = open_listener(8, &t.port);
     stream_open(t.s, tcp_spec(t.port, rate, "cs16", freq).c_str(), reader);
     t.conn = accept_within(t.listener, kWaitMs);
-    assert(t.conn >= 0);
+    assert(t.conn != DSD_INVALID_SOCKET);
 }
 
 void
@@ -496,14 +500,14 @@ tcp_send_pairs(tcp_rig& t, size_t pairs) {
 void
 tcp_close(tcp_rig& t) {
     (void)stream_close(t.s);
-    if (t.conn >= 0) {
-        close(t.conn);
+    if (t.conn != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(t.conn);
     }
-    if (t.listener >= 0) {
-        close(t.listener);
+    if (t.listener != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(t.listener);
     }
-    t.conn = -1;
-    t.listener = -1;
+    t.conn = DSD_INVALID_SOCKET;
+    t.listener = DSD_INVALID_SOCKET;
 }
 
 /* ---- Cases ---- */
@@ -623,7 +627,7 @@ test_blocks_after_upsampling_and_gaps(void) {
     assert(st.resampler_clears == 1U && st.boundaries == 0U);
     expect_blocks_exactly(kBlockFloats);
     (void)stream_close(s);
-    close(tx.fd);
+    (void)dsd_socket_close(tx.sock);
 }
 
 /* ring_full_drops_whole_blocks: a demod that stops taking input leaves the ring full; the reader drops whole blocks,
@@ -698,7 +702,7 @@ test_tcp_reconnect_runs_the_boundary(void) {
     t.listener = open_listener(8, &t.port);
     stream_open(t.s, tcp_spec(t.port, 24000U, "cs16", 426700000U).c_str(), 1);
     t.conn = accept_within(t.listener, kWaitMs);
-    assert(t.conn >= 0);
+    assert(t.conn != DSD_INVALID_SOCKET);
     blocks_reset();
     tcp_send_pairs(t, 4800U);
     assert(wait_until([&] { return rtl_device_has_stream(t.s.dev) == 1; }, kWaitMs));
@@ -707,11 +711,11 @@ test_tcp_reconnect_runs_the_boundary(void) {
     assert(wait_until([&] { return blocks_taken() >= (size_t)ingest(t.s).blocks_written; }, kWaitMs));
     const uint64_t seq = rtl_stream_discontinuity_seq();
     const uint32_t gen = rtl_stream_output_generation();
-    close(t.conn);
+    (void)dsd_socket_close(t.conn);
     assert(wait_until([&] { return rtl_device_has_stream(t.s.dev) == 0; }, kWaitMs));
     expect_yields_without_stream(t.s);
     t.conn = accept_within(t.listener, kWaitMs);
-    assert(t.conn >= 0);
+    assert(t.conn != DSD_INVALID_SOCKET);
     expect_boundary(t.s, seq, gen, 1U);
     /* Up, but nothing written since the boundary: still no stream. */
     assert(rtl_device_has_stream(t.s.dev) == 0);
@@ -847,8 +851,8 @@ test_udp_silence_and_relock_run_the_boundary(void) {
     assert(wait_until([&] { return rtl_device_has_stream(s.dev) == 1; }, kWaitMs));
     assert(ingest(s).reader.reconnects == 1U);
     (void)stream_close(s);
-    close(a.fd);
-    close(b.fd);
+    (void)dsd_socket_close(a.sock);
+    (void)dsd_socket_close(b.sock);
     rtl_net_iq_test_set_clock(nullptr, nullptr);
 }
 
@@ -861,49 +865,49 @@ test_stops_are_prompt(void) {
         tcp_open(t, kRate, 0U, 0);
         dsd_sleep_ms(300U);
         assert(stream_close(t.s) < kPromptMs);
-        close(t.conn);
-        close(t.listener);
+        (void)dsd_socket_close(t.conn);
+        (void)dsd_socket_close(t.listener);
     }
     {
         tcp_rig t;
         tcp_open(t, kRate, 0U, 0);
-        close(t.listener);
-        close(t.conn);
-        /* Refused reconnects: the reader backs off 0.2, 0.4, 0.6 s ... */
-        assert(wait_until([&] { return ingest(t.s).reader.connect_attempts >= 4U; }, kWaitMs));
+        (void)dsd_socket_close(t.listener);
+        (void)dsd_socket_close(t.conn);
+        /* Refused reconnects: the reader backs off 0.2, 0.4, 0.6 s ... Windows takes about 2 s to refuse each connect on
+           loopback, so the four attempts get three times the usual wait. */
+        assert(wait_until([&] { return ingest(t.s).reader.connect_attempts >= 4U; }, 3U * kWaitMs));
         assert(stream_close(t.s) < kPromptMs);
     }
-#ifdef __linux__
     {
         tcp_rig t;
         t.listener = open_listener(0, &t.port);
         stream_open(t.s, tcp_spec(t.port, kRate, "cs16", 0U).c_str(), 0);
         t.conn = accept_within(t.listener, kWaitMs);
-        assert(t.conn >= 0);
-        /* Fill the accept queue so the reconnect's handshake waits. */
-        std::vector<int> fillers;
+        assert(t.conn != DSD_INVALID_SOCKET);
+        /* Fill the accept queue so the reconnect's handshake waits. That is where the platform drops the SYN (Linux,
+           macOS); where it answers a full queue with a reset (Windows) the reconnect is refused and the stop lands in a
+           connect or its backoff instead, which must be as prompt. */
+        std::vector<dsd_socket_t> fillers;
         for (int i = 0; i < 4; i++) {
-            const int fd = socket(AF_INET, SOCK_STREAM, 0);
-            assert(fd >= 0);
+            const dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+            assert(sock != DSD_INVALID_SOCKET);
             struct sockaddr_in sa = loopback(t.port);
-            (void)dsd_socket_set_nonblocking((dsd_socket_t)fd, 1);
-            const int connecting = connect(fd, (struct sockaddr*)&sa, sizeof sa);
-            assert(connecting == 0 || errno == EINPROGRESS);
-            fillers.push_back(fd);
+            (void)dsd_socket_set_nonblocking(sock, 1);
+            (void)dsd_socket_connect(sock, (struct sockaddr*)&sa, (int)sizeof sa);
+            fillers.push_back(sock);
         }
         dsd_sleep_ms(100U);
         const uint64_t attempts = ingest(t.s).reader.connect_attempts;
-        close(t.conn);
-        t.conn = -1;
+        (void)dsd_socket_close(t.conn);
+        t.conn = DSD_INVALID_SOCKET;
         assert(wait_until([&] { return ingest(t.s).reader.connect_attempts > attempts; }, kWaitMs));
         dsd_sleep_ms(300U);
         assert(stream_close(t.s) < kPromptMs);
-        for (int fd : fillers) {
-            close(fd);
+        for (dsd_socket_t sock : fillers) {
+            (void)dsd_socket_close(sock);
         }
-        close(t.listener);
+        (void)dsd_socket_close(t.listener);
     }
-#endif
     {
         tcp_rig t;
         tcp_open(t, kRate, 0U, 0);
@@ -912,8 +916,8 @@ test_stops_are_prompt(void) {
         dsd_sleep_ms(500U);
         assert(stream_close(t.s) < kPromptMs);
         dsd_exitflag_store(0);
-        close(t.conn);
-        close(t.listener);
+        (void)dsd_socket_close(t.conn);
+        (void)dsd_socket_close(t.listener);
     }
 }
 
@@ -1008,12 +1012,12 @@ fp_stream_run(tcp_rig& t, dsd_fp_mode mode, unsigned int caller_bits, unsigned i
     fp_set_caller_bits(caller_bits);
     stream_open(t.s, tcp_spec(t.port, kRate, "cs16", 0U).c_str(), 1);
     t.conn = accept_within(t.listener, kWaitMs);
-    assert(t.conn >= 0);
+    assert(t.conn != DSD_INVALID_SOCKET);
     tcp_send_pairs(t, 4800U);
     assert(wait_until([&] { return t.s.reader.samples.load() > 1000U; }, kWaitMs));
     (void)stream_close(t.s);
-    close(t.conn);
-    t.conn = -1;
+    (void)dsd_socket_close(t.conn);
+    t.conn = DSD_INVALID_SOCKET;
     const std::lock_guard<std::mutex> hold(g_fp_seen_lock);
     for (const char* tag : {"iq_net", "rtl_demod"}) {
         int seen = 0;
@@ -1050,7 +1054,7 @@ test_fp_mode_applied_on_the_reader(void) {
 #endif
     dsd_runtime_fp_mode_set_observer(nullptr);
     dsd_runtime_fp_mode_publish(DSD_FP_MODE_INHERIT);
-    close(t.listener);
+    (void)dsd_socket_close(t.listener);
 #if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
     _mm_setcsr(original);
 #endif
@@ -1060,8 +1064,7 @@ test_fp_mode_applied_on_the_reader(void) {
 void
 test_open_failures_fail_the_start(void) {
     int port = 0;
-    const int fd = open_listener(1, &port);
-    close(fd);
+    (void)dsd_socket_close(open_listener(1, &port));
     auto opts = std::make_unique<dsd_opts>();
     DSD_MEMSET(opts.get(), 0, sizeof(dsd_opts));
     opts->audio_in_type = AUDIO_IN_RTL;
@@ -1074,17 +1077,14 @@ test_open_failures_fail_the_start(void) {
     assert(rtl_stream_start(ctx) != 0);
     assert(failure_kind() == DSD_INPUT_FAILURE_REFUSED);
     (void)rtl_stream_destroy(ctx);
-    const int held = socket(AF_INET, SOCK_DGRAM, 0);
-    assert(held >= 0);
-    struct sockaddr_in sa = loopback(0);
-    assert(bind(held, (struct sockaddr*)&sa, sizeof sa) == 0);
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s",
-                 udp_spec(local_port(held), kRate, "cs16").c_str());
+    int held_port = 0;
+    const dsd_socket_t held = bound_socket(SOCK_DGRAM, &held_port);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", udp_spec(held_port, kRate, "cs16").c_str());
     ctx = nullptr;
     assert(rtl_stream_create(opts.get(), &ctx) == 0);
     assert(rtl_stream_start(ctx) != 0);
     (void)rtl_stream_destroy(ctx);
-    close(held);
+    (void)dsd_socket_close(held);
     /* A RATE no chain reaches the target from (8 kHz to TETRA's 144 kHz is past 9x) fails before any socket opens. */
     opts->frame_dmr = 0;
     opts->frame_tetra = 1;
@@ -1126,7 +1126,9 @@ const named_test kTests[] = {
 int
 main(int argc, char** argv) {
     const char* only = (argc > 1) ? argv[1] : nullptr;
+#if !DSD_PLATFORM_WIN_NATIVE
     (void)signal(SIGPIPE, SIG_IGN);
+#endif
     assert(dsd_socket_init() == 0);
     dsd_neo_config_init();
     dsd_runtime_set_controls_pending(command_queued);

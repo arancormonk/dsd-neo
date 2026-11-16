@@ -9623,12 +9623,12 @@ Key public headers:
   - Availability: `rtl_device_has_stream()` is the reader's (`dsd_iq_net_reader_available()`): none while connecting
     or reconnecting, or from a stall until the boundary ran and a block was written, so a frame read waiting for
     samples gives way to a queued command only then. Restart = stop + start: a new device, a new connection.
-  - Tests: `IO_NET_IQ_STREAM` (C++, POSIX, the real stream against senders on loopback; the stall clock injected with
-    `rtl_net_iq_test_set_clock()`, blocks seen through `rtl_stream_test_set_live_block_hook()`), `IO_RTL_DEMOD_CONFIG`
-    (source matrix). The whole program on loopback, POSIX: `RUNTIME_IQ_STREAM_LIVE` (`tests/iq_stream_live_check.py`:
-    the UDP notice once bound, a TETRA re-plan that reconnects, rigctl refused) and `DECODE_IQ_NET_TCP`, `_UDP` and
-    `_ANALOG` (`tests/iq_net_decode_check.py`: committed fixtures sent at real time in each wire format, decode counts
-    asserted; see `docs/testing.md`, "Raw I/Q over the network").
+  - Tests: `IO_NET_IQ_STREAM` (C++, every platform, the real stream against senders on loopback; the stall clock
+    injected with `rtl_net_iq_test_set_clock()`, blocks seen through `rtl_stream_test_set_live_block_hook()`),
+    `IO_RTL_DEMOD_CONFIG` (source matrix). The whole program on loopback, POSIX: `RUNTIME_IQ_STREAM_LIVE`
+    (`tests/iq_stream_live_check.py`: the UDP notice once bound, a TETRA re-plan that reconnects, rigctl refused) and
+    `DECODE_IQ_NET_TCP`, `_UDP` and `_ANALOG` (`tests/iq_net_decode_check.py`: committed fixtures sent at real time in
+    each wire format, decode counts asserted; see `docs/testing.md`, "Raw I/Q over the network").
 
 Notes:
 
