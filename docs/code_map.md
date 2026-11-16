@@ -3409,10 +3409,11 @@ suite runs under this compiler.
   sites). No session decision reads `iq_replay_active` / `iq_replay_requested`, which a config apply that moves a replay
   session onto a live radio leaves set; only "the process started as a replay" does (the engine's sidecar path and exit
   code), and the RTL orchestrator's private options copy keeps its own `iq_replay_active`. Pull-replay mechanics (the
-  checkpoint re-plan, capture rates) stay on `dsd_opts_input_is_iq_replay()`. `dsd_opts_trunk_vc_followed()` says whether the receiver sits on a voice channel a trunking grant sent
-  it to (`trunk_enable` and `trunk_is_tuned` both 1): only then does `trunk_vc_freq[]` name the carrier being decoded,
-  and a call observation whose message carries no frequency may stamp it (P25's target-matched `p25_vc_freq[]` differs;
-  see Protocols). Tests: `CORE_OPTS_TUNED_FREQ`, `CORE_OPTS_TUNABILITY`.
+  checkpoint re-plan, capture rates) stay on `dsd_opts_input_is_iq_replay()`. `dsd_opts_trunk_vc_followed()` says
+  whether the receiver sits on a voice channel a trunking grant sent it to (`trunk_enable` and `trunk_is_tuned` both
+  1): only then does `trunk_vc_freq[]` name the carrier being decoded, and a call observation whose message carries no
+  frequency may stamp it (P25's target-matched `p25_vc_freq[]` differs; see Protocols). Tests: `CORE_OPTS_TUNED_FREQ`,
+  `CORE_OPTS_TUNABILITY`.
 - Session predicates (EDACS and M17): a decoder-enabled flag is a capability, not a session, since Auto enables
   ProVoice and M17 beside every other decoder. `dsd_edacs_session(opts, state)` (`<dsd-neo/core/edacs_session.h>`,
   header-only so the runtime squelch policy reads it without linking core) is a selected EDACS session:
@@ -8921,12 +8922,12 @@ Key public headers:
     a stale or missing level reads `No input` with no readings. When the live decoder is behind,
     `dsd_input_level_publish()` replaces its stale RF level with a fresh producer snapshot before classifying
     warnings; with no fresh measurement it keeps the old level and warns about nothing. An I/Q replay in force
-    (`dsd_opts_input_is_iq_replay()`) keeps every warning its capture calls for, so a paused replay prints the same advisories in every run. PCM inputs keep the decoder's level. Tests:
-    `IO_INPUT_LEVEL_METRICS`, `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`. CU8 moments keep
-    64-bit totals while accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening
-    reduces its byte extrema in registers and maps the four clipping-edge values to one unsigned interval. These
-    integer reductions leave both the sample values and the statistics exact (`DSP_SIMD_WIDEN`,
-    `IO_INPUT_LEVEL_METRICS`).
+    (`dsd_opts_input_is_iq_replay()`) keeps every warning its capture calls for, so a paused replay prints the same
+    advisories in every run. PCM inputs keep the decoder's level. Tests: `IO_INPUT_LEVEL_METRICS`,
+    `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`. CU8 moments keep 64-bit totals while
+    accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening reduces its byte
+    extrema in registers and maps the four clipping-edge values to one unsigned interval. These integer reductions leave
+    both the sample values and the statistics exact (`DSP_SIMD_WIDEN`, `IO_INPUT_LEVEL_METRICS`).
   - USB identity and reset (`radio/rtl_usb_identity.{h,cpp}`, module-private, the only includer of `libusb.h`, which
     `cmake/arch_rules.cmake` enforces): which USB device a stalled dongle is, so a USB port reset reaches it and never a
     second dongle another program streams from. `rtl_usb_identity_resolve()` runs before `rtlsdr_open()`: it takes the
