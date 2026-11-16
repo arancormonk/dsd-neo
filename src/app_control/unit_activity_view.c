@@ -341,7 +341,8 @@ ua_subject_name(const ua_naming* n, const dsd_unit_activity* r, char* out, size_
         found = ua_radio_name(n, &r->assigned, name, sizeof name)
                 || (!r->subject_nonlocal && ua_identity_is_local(n, &r->subject)
                     && ua_radio_name(n, &r->subject, name, sizeof name));
-    } else if (n->live) {
+    } else if (n->live && !r->subject_nonlocal) {
+        /* A nonlocal group (an NXDN inter-system group command no Location ID qualifies) is another system's. */
         found = dsd_tg_policy_lookup_group_label(n->snapshot, r->subject.id, NULL, 0U, name, sizeof name);
     }
     ua_text_set(out, cap, found ? name : r->name_frozen);

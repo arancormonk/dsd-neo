@@ -2539,8 +2539,9 @@ suite runs under this compiler.
     source (its Source ID waits for the Source ID Extension that qualifies it; the row shows the ID only and is not
     corrected when the extension arrives), and a P25 abbreviated registration response's unit of another System ID
     heard before the site's WACN, and an NXDN inter-system remote control subject its Location ID does not qualify.
-    Neither the push nor the view names it from the local lists; its assigned identity
-    still names it. It is keyed with the subject, and push clears it on a row with no valid subject.
+    Neither the push nor the view names it from the local lists, a radio's name or a group's label alike (an NXDN
+    inter-system group command is never qualified by a Location ID); its assigned identity still names it. It is keyed
+    with the subject, and push clears it on a row with no valid subject.
     - DMR (`dmr_unit_activity.c`; standard FID 0x00 CSBKs that passed their own CRC, never one `-F` accepted as RAS):
       C_ACKD 0x62 from REGI is REGISTRATION / ACK / ACKNOWLEDGED with no reason (a deregistration is answered alike, TS
       102 361-4 clause 6.4.6), 0x2A / 0x2B from REGI REGISTRATION refused / denied, 0x65 from REGI GROUP_AFFILIATION

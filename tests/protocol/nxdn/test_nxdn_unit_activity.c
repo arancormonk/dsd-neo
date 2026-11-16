@@ -541,6 +541,23 @@ test_rem_con_inter_system(dsd_opts* opts) {
     free(st);
 }
 
+/* The newest row's subject name as every frontend shows it (the app-control view over the live ring). */
+static void
+view_newest_name(const dsd_state* state, char* out, size_t cap) {
+    dsd_app_unit_activity_cursor cursor = {0, 0};
+    dsd_app_unit_activity_meta meta;
+    dsd_app_unit_activity_row rows[16];
+    const int n = dsd_app_unit_activity_rows(state, &cursor, rows, 16, &meta);
+    uint64_t newest = 0;
+    out[0] = '\0';
+    for (int i = 0; i < n; i++) {
+        if (rows[i].seq > newest) {
+            newest = rows[i].seq;
+            DSD_SNPRINTF(out, cap, "%s", rows[i].subject_name);
+        }
+    }
+}
+
 /* The newest row's target text as every frontend shows it (the app-control view over the live ring). */
 static void
 view_newest_target(const dsd_state* state, char* out, size_t cap) {
@@ -603,6 +620,48 @@ test_visitor_home_group_not_labelled(dsd_opts* opts) {
     free(st);
 }
 
+/* A group stun between systems whose Location ID relates to the destination: a Location ID qualifies a unit, never a
+   group, so the group is another system's, unqualified. System 77's TG 300 "Local Fire" never names it, at push or
+   in the view; the same stun within the system is named. */
+static void
+test_inter_system_group_subject_not_labelled(dsd_opts* opts) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    if (st == NULL) {
+        abort();
+    }
+    g_instance = 0;
+    g_rev = 0;
+    uint8_t e[CAC_ELEMENTS];
+    dsd_unit_activity r;
+    char name[96];
+    dsd_rxid_note_nxdn_location(st, 2U, 77U, 3U);
+    dsd_tg_policy_entry fire;
+    expect_true(dsd_tg_policy_make_exact_entry(300U, "A", "Local Fire", DSD_TG_POLICY_SOURCE_IMPORTED, &fire) == 0,
+                "a group label row");
+    (void)dsd_tg_policy_upsert_exact(st, &fire, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+
+    build_rem_con(e, 0x34U, 0U, 0U, 1001U, 300U, 0U);
+    set_inter_system(e, 1U, 78U);
+    run_cac(opts, st, e);
+    if (one_row(st, &r, "inter-system group stun")) {
+        expect_true(r.subject.subtype == DSD_UA_ID_GROUP && r.subject_nonlocal && r.name_frozen[0] == '\0',
+                    "an unqualified inter-system group is nonlocal and stored unnamed");
+    }
+    view_newest_name(st, name, sizeof name);
+    expect_true(name[0] == '\0', "the view does not label an inter-system group from the local list");
+
+    build_rem_con(e, 0x34U, 0U, 0U, 1001U, 300U, 1U);
+    run_cac(opts, st, e);
+    (void)one_row(st, &r, "group stun within the system");
+    view_newest_name(st, name, sizeof name);
+    expect_true(strcmp(name, "Local Fire") == 0, "a group of the reception's own system is labelled");
+    if (g_failures != 0) {
+        DSD_FPRINTF(stderr, "last name: '%s'\n", name);
+    }
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -617,6 +676,7 @@ main(void) {
     test_naming(opts);
     test_rem_con_inter_system(opts);
     test_visitor_home_group_not_labelled(opts);
+    test_inter_system_group_subject_not_labelled(opts);
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);
