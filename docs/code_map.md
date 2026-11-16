@@ -5266,17 +5266,19 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     control channel yet, so it never reads as done), `CHANNEL_CYCLE` and `CHANNEL_CYCLE_PREV` (every leg: LCN, P25
     candidate, `-Y` row, trunk-scan target), and `RIGCTL_CONNECT` / `RIGCTL_CONNECT_CFG` (a peer beside either would
     take the trunking retunes, issue #743 B12) are refused as failed commands by `ui_cmd_refuse_fixed_tuning()`, which
-    toasts the input's reason (`svc_fixed_tuning_reason()`): "An I/Q replay cannot retune." on a replay, "An I/Q stream
-    cannot retune: change the channel in the sending program." on a stream. They used to report a tune that never landed
-    or fail on the backend's deferred result with no reason given. On a stream the same reason refuses what would only
-    ask for tunes it cannot make (the §2b matrix, issue #743): `TRUNK_TOGGLE` / `TRUNK_SET` on, the `-Y` scanner's start
-    and resume (`SCANNER_TOGGLE`, `SCAN_RESUME`; `tuning_refused_on_iq_stream()` in `actions_trunk.c`), a `-Y` hold or
-    avoid (unreachable, refused anyway) and `SCAN_LIST_SET`; turning trunking or the scanner off and clearing or
-    removing avoids stay allowed. A replay keeps trunking and `-Y` as its start allowed them (its retunes defer by
-    design). A stream's tuner controls (`RTL_SET_GAIN`, `RTL_SET_DEV`, `RTL_SET_PPM`, `PPM_DELTA`, `RTL_SET_BIAS_TEE`,
-    `RTLTCP_SET_AUTOTUNE`, `RTL_SET_AUTO_PPM`, the tuner-autogain DSP op, `RIGCTL_SET_MOD_BW`) are refused with
-    `ui_cmd_refuse_stream_tuner_control()` (`svc_iq_stream_tuner_reason()`: "An I/Q stream has no tuner controls: adjust
-    the radio in the sending program."), a replay's with their own "Unsupported:" toasts. Signal search refuses a
+    toasts the input's reason (`svc_fixed_tuning_reason()`): "An I/Q replay cannot retune: it plays the tuning it
+    recorded." on a replay, "An I/Q stream cannot retune: change the channel in the sending program." on a stream. They
+    used to report a tune that never landed or fail on the backend's deferred result with no reason given. On a stream
+    the same reason refuses what would only ask for tunes it cannot make (the §2b matrix, issue #743): `TRUNK_TOGGLE` /
+    `TRUNK_SET` on, the `-Y` scanner's start and resume (`SCANNER_TOGGLE`; `SCAN_RESUME` while a scan is paused or held
+    on an entry, else its no-scan answer; `tuning_refused_on_iq_stream()` in `actions_trunk.c`), a `-Y` hold or avoid
+    (unreachable, refused anyway) and `SCAN_LIST_SET`; turning trunking or the scanner off and clearing or removing
+    avoids stay allowed. A replay keeps trunking and `-Y` as its start allowed them (its retunes defer by design). The
+    tuner controls of either input with fixed tuning (`RTL_SET_GAIN`, `RTL_SET_DEV`, `RTL_SET_PPM`, `PPM_DELTA`,
+    `RTL_SET_BIAS_TEE`, `RTLTCP_SET_AUTOTUNE`, `RTL_SET_AUTO_PPM`, the tuner-autogain DSP op; `RIGCTL_SET_MOD_BW` on a
+    stream only, since a replay's start may connect a peer) are refused with `ui_cmd_refuse_fixed_tuner_control()`
+    (`svc_fixed_tuner_reason()`: "An I/Q replay has no tuner controls: it plays what was recorded." / "An I/Q stream has
+    no tuner controls: adjust the radio in the sending program."), the words Qt's RadioSheet shows. Signal search refuses a
     stream at its start with "Signal search needs a tunable SDR: an I/Q stream cannot retune" (`signal_search.c`), the
     RadioReference import never tunes one (`rr_apply_tune()`), the mouse wheel never captures on one
     (`ui_wheel_capture_wanted()`), and a config naming a stream `[input]` while a `-Y` scan or a trunk-scan
@@ -6479,7 +6481,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `src/app_control/notification_status.c`. The snapshot publishers (`ui_snapshot.c`, `ui_opts_snapshot.c`) feed it
   through `dsd_app_notification_publish_state()`/`_publish_opts()`, which stay dormant until a reader has called
   `dsd_app_notification_get()` once. The struct's `tunable` (issue #743, `dsd_opts_radio_can_tune()`: 0 on an I/Q
-  replay or stream and on audio input) reaches the API's status JSON (`api_feed.c`, `docs/api.md`) only: the `v4`
+  replay or stream and on audio input; only `radio_input` set with `tunable` clear means the tuner commands are
+  refused, since audio input still tunes a rigctl peer) reaches the API's status JSON (`api_feed.c`, `docs/api.md`) only: the `v4`
   record below does not carry it, and `DecoderStatus.kt` is unchanged (`APP_CONTROL_NOTIFICATION_STATUS` pins the
   header, `API_FEED` the JSON). `dsd_app_notification_encode()` writes one tab-separated record, version `v4`, 39
   fields: an 11-field header (version, protocol, radio_input, trunking, trunk_tuned, cc_freq_hz, vc_freq_hz,
@@ -13675,7 +13678,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     its reading first, then `Analog:`/`Passband:`), the identity row an Airspy, rtl_tcp server, I/Q replay or I/Q
     stream gets ahead of its readings (`ui_render_radio_identity_row()`, issue #743 B5: `| rtl_tcp: H:P;`, `| I/Q
     replay: FILE;`, `| I/Q stream: ENDPOINT; FORMAT, RATE; STATE`, the state last because it alone changes, from
-    `dsd_app_frontend_iq_stream_state()`; a replay or stream shows no `G:`/`PPM:`, Auto PPM or External RTL Tuning
+    `dsd_app_frontend_iq_stream_state()`, and a host too long for the row cut with its port kept so the state stays; a replay or stream shows no `G:`/`PPM:`, Auto PPM or External RTL Tuning
     row), Auto PPM, input level, outputs, M17
     encoder, Scan Mode, Trunk Scan, Scan Timing, and every DSP panel line — with readings through `dsd_number_text()`
     at fixed widths and status words in rooms that stay; configuration-only rows (toggles, keys, paths, External RTL
@@ -14049,8 +14052,13 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     rtl_tcp server or SoapySDR device by name. The radio submenu is named for its input (`lbl_input_rtl()`: `RTL-SDR`,
     `I/Q stream`, `I/Q replay`), and its tuner rows (gain, PPM, tuner autogain, bias tee, device index, `Auto-PPM &
     rtl_tcp`) follow `tuner_rows_offered()`: hidden on an Airspy (rows of its own) and on a radio input DSD-neo cannot
-    tune (`dsd_opts_radio_can_tune()`), kept on audio input, where they set up the RTL-SDR a switch opens. Tests:
-    `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT{,_NO_RADIO}`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`.
+    tune (`dsd_opts_radio_can_tune()`), kept on audio input, where they set up the RTL-SDR a switch opens. A submenu
+    row with a `label_fn` titles its frame with the label it renders (`ui_menu_push_submenu()`, the frame's
+    `title_buf`), so the breadcrumb reads `Input > I/Q stream`, never the row's id. The rigctl rows (`input.rigctl`,
+    `input.setmod`) are hidden on a stream (`rigctl_rows_offered()`), which refuses a peer and its passband; a replay
+    keeps them. The Visual Aids header names a stream or replay (`I/Q Stream Visual Aids`, `I/Q Replay Visual Aids`).
+    Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`, `UI_MENU_TREE_AUDIT{,_NO_RADIO}`,
+    `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`.
   - Analog channel width (issue #525): the Input menu's `input.nfm_bw` row, right after `input.sql` (`NFM bandwidth...
     [12.5 kHz]`, or `[default]`, on a radio input while the configured -fA preset runs FM or an explicit width is set
     under another preset, `is_nfm_width_editable()`), prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as
@@ -15299,7 +15307,7 @@ Qt Quick frontend (`src/ui/qt`):
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
     It hides "Explore from here", closes that button's confirm and an open "Go to" sheet when a replay begins, and
-    shows "An I/Q replay cannot retune." in the button's place, the refusal's own words.
+    shows "An I/Q replay cannot retune: it plays the tuning it recorded." in the button's place, the refusal's own words.
   - I/Q stream (issue #743): `MetricsModel::tunable` (same group) is `dsd_opts_radio_can_tune()` on that snapshot.
     Spectrum's `fixedInput` (`replayInput`, or `radioInput && !tunable`) makes it view-only as a replay does, with the
     stream's reason, "An I/Q stream cannot retune: change the channel in the sending program." (`fixedReason`), and no
