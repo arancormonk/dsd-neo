@@ -217,8 +217,8 @@ infer which saved row represents which site. Manual rows never group.
 ### GPS roaming (Android)
 
 **GPS roaming** switches to the nearest saved site of the system you are listening to as you move. Turn it on with
-the **GPS roaming** switch in the site chooser, under the location button, or on the **GPS roaming** card in
-Settings. Turning it on asks Android for precise location. The switch stays on until you turn it off. It belongs to
+the **GPS roaming** switch in the site chooser, under the nearest-site button, or with **Use GPS roaming** on the
+**GPS roaming** card in Settings. Turning it on asks Android for precise location. The switch stays on until you turn it off. It belongs to
 this phone, so a backup does not carry it; the two distances below are carried. Roaming never stores your location
 or writes it to the saved location fix. While it has a usable location, the site chooser shows distances from it
 and keeps its order until you reopen it or tap **Use my location**.
