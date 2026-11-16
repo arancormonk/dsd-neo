@@ -145,12 +145,17 @@ p25_ua_set_assigned(const dsd_state* state, dsd_unit_activity* row, const p25_ho
 static void
 p25_ua_set_subject_unit(const dsd_state* state, dsd_unit_activity* row, const p25_ua_unit* u) {
     row->subject = p25_ua_unit_identity(u);
-    if (u && u->local != 0U && row->subject.valid) {
-        if (u->home.valid) {
-            p25_ua_set_assigned(state, row, &u->home, u->local);
-        } else if (u->local != u->id) {
-            row->assigned = p25_ua_identity(u->local);
-        }
+    if (!u || !row->subject.valid) {
+        return;
+    }
+    row->subject_nonlocal = (u->nonlocal && !u->home.valid) ? 1U : 0U;
+    if (u->local == 0U) {
+        return;
+    }
+    if (u->home.valid) {
+        p25_ua_set_assigned(state, row, &u->home, u->local);
+    } else if (u->local != u->id) {
+        row->assigned = p25_ua_identity(u->local);
     }
 }
 
@@ -162,6 +167,9 @@ p25_ua_registration_response(const p25_ua_origin* o, int rv, const p25_home_id* 
     dsd_unit_activity row;
     p25_ua_row_init(o, &row, DSD_UA_REGISTRATION, DSD_UA_ROLE_RESPONSE, p25_ua_rv_result(rv));
     row.subject = p25_ua_identity_home(home->id, home);
+    /* An abbreviated response before the site's WACN is known gives no home; one for another System ID than the
+       serving one is a sibling system's unit, whose ID is no local radio's. */
+    row.subject_nonlocal = (!home->valid && !p25_ua_home_is_serving(o->state, home)) ? 1U : 0U;
     if ((rv & 3) == 0) {
         p25_ua_set_assigned(o->state, &row, home, assigned);
     }
@@ -349,7 +357,7 @@ p25_ua_answer_request(const p25_ua_origin* o, uint32_t target, const p25_ua_unit
         return;
     }
     dsd_unit_activity row;
-    const p25_ua_unit paged = {target, {0U, 0U, 0U, 0U}, 0U};
+    const p25_ua_unit paged = {target, {0U, 0U, 0U, 0U}, 0U, 0U};
     p25_ua_directed(o, DSD_UA_ANSWER_REQUEST, DSD_UA_ROLE_REPORT, &paged, source, &row);
     if (has_service) {
         p25_ua_set_value(&row, service);

@@ -11220,6 +11220,8 @@ add_test(NAME P25_AFF_ASSIGNMENT COMMAND dsd-neo_test_p25_aff_assignment)
 add_executable(
     dsd-neo_test_p25_unit_activity
     protocol/p25/test_p25_unit_activity.c
+    # Names are also read back through the app-control view every frontend shows.
+    ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
 )
 target_include_directories(
     dsd-neo_test_p25_unit_activity

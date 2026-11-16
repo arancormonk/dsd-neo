@@ -12,6 +12,7 @@
  * Made-up systems only: WACN 0xBEE00 / SYS 0x123 serving, WACN 0xBEE01 / SYS 0x3A5 another.
  */
 
+#include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
@@ -1258,6 +1259,100 @@ test_p25_mbt_report_rows(void) {
     return rc;
 }
 
+/* ---- Final review fixes: names that belong to another system ---- */
+
+/* The name every frontend shows for the newest row (the app-control view over the live ring). */
+static void
+view_newest_name(const fixture* f, char* out, size_t cap) {
+    dsd_app_unit_activity_cursor cursor = {0, 0};
+    dsd_app_unit_activity_meta meta;
+    dsd_app_unit_activity_row rows[MAX_ROWS];
+    const int n = dsd_app_unit_activity_rows(f->state, &cursor, rows, MAX_ROWS, &meta);
+    uint64_t newest = 0;
+    out[0] = '\0';
+    for (int i = 0; i < n; i++) {
+        if (rows[i].seq > newest) {
+            newest = rows[i].seq;
+            DSD_SNPRINTF(out, cap, "%s", rows[i].subject_name);
+        }
+    }
+}
+
+/* A link control word (9 octets) through p25_lcw(). */
+static void
+run_lcw(fixture* f, const uint8_t lc[9]) {
+    uint8_t bits[72];
+    for (int i = 0; i < 72; i++) {
+        bits[i] = (uint8_t)((lc[i / 8] >> (7 - (i % 8))) & 1U);
+    }
+    dsd_test_capture_stderr cap;
+    quiet_begin(&cap);
+    p25_lcw(f->opts, f->state, bits, 0);
+    quiet_end(&cap);
+}
+
+/* LC 0x5B Message Update - Source ID Extension Required (TIA-102.AABF-D §7.3.31): its Source ID is qualified by the
+   Source ID Extension that follows, so it is not a local radio's address. A local radio with that number never names
+   it, at push or in the view; the same source in a plain 0x55 is a local radio and is named. */
+static int
+test_p25_lc_source_awaiting_extension_not_named(void) {
+    fixture f;
+    int rc = 0;
+    char name[64];
+    if (fixture_open(&f) != 0) {
+        return 1;
+    }
+    (void)dsd_alias_learn_radio(NULL, f.state, NULL, 0x00710E, "Engine 7", NULL);
+    const uint8_t lc5b[9] = {0x5B, 0x00, 0x42, 0x00, 0x71, 0x0D, 0x00, 0x71, 0x0E};
+    run_lcw(&f, lc5b);
+    const dsd_unit_activity* r = last_row(&f);
+    rc |= expect_true("0x5B row", r != NULL && r->subject.id == 0x00710EU);
+    rc |= expect_true("0x5B source not named at push", r != NULL && r->name_frozen[0] == '\0');
+    view_newest_name(&f, name, sizeof name);
+    rc |= expect_true("0x5B source not named in the view", name[0] == '\0');
+
+    const uint8_t lc55[9] = {0x55, 0x00, 0x43, 0x00, 0x71, 0x0D, 0x00, 0x71, 0x0E};
+    run_lcw(&f, lc55);
+    r = last_row(&f);
+    rc |= expect_true("0x55 source named at push", r != NULL && strcmp(r->name_frozen, "Engine 7") == 0);
+    view_newest_name(&f, name, sizeof name);
+    rc |= expect_true("0x55 source named in the view", strcmp(name, "Engine 7") == 0);
+    fixture_close(&f);
+    return rc;
+}
+
+/* An abbreviated registration response of a sibling system's unit (System ID other than the serving one) before the
+   site's WACN is known: its Source ID is that system's number, not a local radio's, so a local radio with the same
+   number never names it. */
+static int
+test_p25_sibling_unit_before_wacn_not_named(void) {
+    fixture f;
+    unsigned long long int mac[24];
+    int rc = 0;
+    char name[64];
+    if (fixture_open(&f) != 0) {
+        return 1;
+    }
+    (void)dsd_alias_learn_radio(NULL, f.state, NULL, 0x00ABCF, "Carol", NULL);
+    f.state->p2_wacn = 0;
+    tsbk_reg_rsp(mac, 0, OTHER_SYS, 0x00ABCF, 0x001299);
+    run_tsbk(&f, mac);
+    const dsd_unit_activity* r = last_row(&f);
+    rc |= expect_true("sibling row", r != NULL && r->subject.id == 0x00ABCFU && !r->subject.home_valid
+                                         && r->assigned.valid && r->assigned.id == 0x001299U);
+    rc |= expect_true("sibling unit not named at push", r != NULL && r->name_frozen[0] == '\0');
+    view_newest_name(&f, name, sizeof name);
+    rc |= expect_true("sibling unit not named in the view", name[0] == '\0');
+
+    /* A unit of the serving System ID is still named by its own ID. */
+    tsbk_reg_rsp(mac, 0, SERVING_SYS, 0x00ABCF, 0x001299);
+    run_tsbk(&f, mac);
+    r = last_row(&f);
+    rc |= expect_true("serving-system unit named", r != NULL && strcmp(r->name_frozen, "Carol") == 0);
+    fixture_close(&f);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1274,6 +1369,8 @@ main(void) {
     rc |= test_p25_native_0x6c_rows();
     rc |= test_p25_more_forms();
     rc |= test_p25_mbt_report_rows();
+    rc |= test_p25_lc_source_awaiting_extension_not_named();
+    rc |= test_p25_sibling_unit_before_wacn_not_named();
     if (rc == 0) {
         printf("P25_UNIT_ACTIVITY: OK\n");
     }

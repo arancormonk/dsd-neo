@@ -904,13 +904,13 @@ p25p2_vpdu_ua_origin(const p25p2_vpdu_ctx* ctx) {
 /* A source unit with the home system of its SUID (WACN and System ID the message carries). */
 static p25_ua_unit
 p25p2_vpdu_ua_fq_unit(uint32_t id, int wacn, int sys) {
-    const p25_ua_unit u = {id, {(uint32_t)wacn, (uint16_t)sys, id, 1U}, 0U};
+    const p25_ua_unit u = {id, {(uint32_t)wacn, (uint16_t)sys, id, 1U}, 0U, 0U};
     return u;
 }
 
 static p25_ua_unit
 p25p2_vpdu_ua_unit(uint32_t id) {
-    const p25_ua_unit u = {id, {0U, 0U, 0U, 0U}, 0U};
+    const p25_ua_unit u = {id, {0U, 0U, 0U, 0U}, 0U, 0U};
     return u;
 }
 

@@ -554,29 +554,31 @@ p25_lcw_handle_format_54(p25_lcw_ctx* ctx) {
 
 /* Message Update (TIA-102.AABF-D §7.3.19) and Message Update - Source ID Extension Required (§7.3.31, LCO 27): the
    16-bit Message octets 1-2, Target Address octets 3-5, Source Address (Source ID) octets 6-8. The link control word
-   reached here only after its FEC corrected it (p25p1_ldu1.c, p25p1_tdulc.c), so its message is a unit activity row. */
+   reached here only after its FEC corrected it (p25p1_ldu1.c, p25p1_tdulc.c), so its message is a unit activity row.
+   The extension form's Source ID is qualified by the Source ID Extension (LCO 9) that follows it: it is no local
+   address, and with no home system yet the row keeps it nonlocal (never named from the local lists). */
 static void
-p25_lcw_print_message_update(const dsd_opts* opts, dsd_state* state, const uint8_t* bits) {
+p25_lcw_print_message_update(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, uint8_t source_nonlocal) {
     uint16_t message = (uint16_t)convert_bits_into_output(&bits[8], 16);
     uint32_t target = (uint32_t)convert_bits_into_output(&bits[24], 24);
     uint32_t source = (uint32_t)convert_bits_into_output(&bits[48], 24);
     DSD_FPRINTF(stderr, " - MSG %04X TGT %u SRC %u", message, target, source);
     const p25_ua_origin origin = {opts, state, 0U, 0U, 1U};
-    const p25_ua_unit reporter = {source, {0U, 0U, 0U, 0U}, 0U};
-    const p25_ua_unit recipient = {target, {0U, 0U, 0U, 0U}, 0U};
+    const p25_ua_unit reporter = {source, {0U, 0U, 0U, 0U}, 0U, source_nonlocal};
+    const p25_ua_unit recipient = {target, {0U, 0U, 0U, 0U}, 0U, 0U};
     p25_ua_message_update(&origin, message, &recipient, &reporter);
 }
 
 static void
 p25_lcw_handle_format_55(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Message Update");
-    p25_lcw_print_message_update(ctx->opts, ctx->state, &ctx->bits[0]);
+    p25_lcw_print_message_update(ctx->opts, ctx->state, &ctx->bits[0], 0U);
 }
 
 static void
 p25_lcw_handle_format_5b(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Message Update %s Source ID Extension Required", dsd_unicode_or_ascii("–", "-"));
-    p25_lcw_print_message_update(ctx->opts, ctx->state, &ctx->bits[0]);
+    p25_lcw_print_message_update(ctx->opts, ctx->state, &ctx->bits[0], 1U);
 }
 
 static void

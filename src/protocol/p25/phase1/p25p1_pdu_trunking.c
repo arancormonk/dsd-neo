@@ -660,8 +660,8 @@ p25_handle_mbt_extended_command_metadata(const dsd_opts* opts, dsd_state* state,
     } else if (opcode == 0x1C) {
         DSD_FPRINTF(stderr, " SHORT DATA [%04X]", p25_mbt_u16(mpdu_byte, 17U));
     }
-    const p25_ua_unit source = {src_id, {src_wacn, src_sys, src_id, 1U}, src_local};
-    const p25_ua_unit target = {tgt_id, {tgt_wacn, tgt_sys, tgt_id, 1U}, tgt_local};
+    const p25_ua_unit source = {src_id, {src_wacn, src_sys, src_id, 1U}, src_local, 0U};
+    const p25_ua_unit target = {tgt_id, {tgt_wacn, tgt_sys, tgt_id, 1U}, tgt_local, 0U};
     p25_mbt_ua_command_metadata(opts, state, opcode, &source, &target, (uint16_t)p25_mbt_u16(mpdu_byte, 17U));
 }
 

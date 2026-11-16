@@ -43,11 +43,14 @@ typedef struct {
 
 /** A radio address with its home system (an SUID) when the message names one: home.valid 0 when it does not. local
  * is the unit's WUID on the system sending the message when the message carries one too (an MBT's Source / Target
- * Address), else 0; it becomes the row's assigned identity when the unit is the subject. */
+ * Address), else 0; it becomes the row's assigned identity when the unit is the subject.
+ * nonlocal 1: the message says id is not a local address but names no home (a link control word that requires a Source
+ * ID Extension); as the subject it is never named from the local lists (dsd_unit_activity::subject_nonlocal). */
 typedef struct {
     uint32_t id;
     p25_home_id home;
     uint32_t local;
+    uint8_t nonlocal;
 } p25_ua_unit;
 
 /**
