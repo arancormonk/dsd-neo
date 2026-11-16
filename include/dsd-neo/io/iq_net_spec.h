@@ -79,6 +79,27 @@ dsd_iq_net_kind dsd_iq_net_spec_kind(const char* text);
  */
 int dsd_iq_net_spec_parse(const char* text, dsd_iq_net_spec* out, char* err, size_t err_size);
 
+/** A spec's field, as a refusal names it (dsd_iq_net_spec_parse_field()). */
+typedef enum {
+    DSD_IQ_NET_FIELD_NONE = 0, /**< none: the spec read */
+    DSD_IQ_NET_FIELD_SPEC,     /**< the spec as a whole: no iqtcp:/iqudp: prefix, too long, too many fields */
+    DSD_IQ_NET_FIELD_HOST,     /**< HOST (iqtcp) or BIND (iqudp) */
+    DSD_IQ_NET_FIELD_PORT,
+    DSD_IQ_NET_FIELD_RATE,
+    DSD_IQ_NET_FIELD_FORMAT,
+    DSD_IQ_NET_FIELD_FREQ,
+} dsd_iq_net_field;
+
+/**
+ * @brief dsd_iq_net_spec_parse(), also saying which field it refused, so a caller can name its own place for that
+ *        field (a config key) without reading the reason's words.
+ *
+ * @param bad_field Receives the refused field, DSD_IQ_NET_FIELD_NONE on success (may be NULL).
+ * @return 0 on success, -1 on failure.
+ */
+int dsd_iq_net_spec_parse_field(const char* text, dsd_iq_net_spec* out, char* err, size_t err_size,
+                                dsd_iq_net_field* bad_field);
+
 /**
  * @brief Write @p spec back as its canonical text: RATE and FREQ in plain Hz, FREQ left out when 0.
  *

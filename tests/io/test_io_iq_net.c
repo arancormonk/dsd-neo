@@ -251,6 +251,36 @@ test_spec_parse_refusals(void) {
     CHECK(dsd_iq_net_spec_kind(NULL) == DSD_IQ_NET_KIND_NONE);
 }
 
+/* Issue #743: the refused field is reported apart from the reason's words, for a caller that names its own place for
+   it (a config key); NONE on success, SPEC for the spec as a whole. */
+static void
+test_spec_parse_names_the_field(void) {
+    static const struct {
+        const char* text;
+        dsd_iq_net_field field;
+    } rows[] = {
+        {"iqtcp:h:12:48k:cs16:851M", DSD_IQ_NET_FIELD_NONE}, {"tcp:h:1", DSD_IQ_NET_FIELD_SPEC},
+        {"iqtcp:h:12:48k:cs16:1:2", DSD_IQ_NET_FIELD_SPEC},  {"iqtcp:", DSD_IQ_NET_FIELD_HOST},
+        {"iqudp::12:48k:cs16", DSD_IQ_NET_FIELD_HOST},       {"iqtcp:h", DSD_IQ_NET_FIELD_PORT},
+        {"iqtcp:h:0:48k:cs16", DSD_IQ_NET_FIELD_PORT},       {"iqtcp:h:12", DSD_IQ_NET_FIELD_RATE},
+        {"iqtcp:h:12:7999:cs16", DSD_IQ_NET_FIELD_RATE},     {"iqtcp:h:12:48k", DSD_IQ_NET_FIELD_FORMAT},
+        {"iqtcp:h:12:48k:s16", DSD_IQ_NET_FIELD_FORMAT},     {"iqtcp:h:12:48k:cs16:5G", DSD_IQ_NET_FIELD_FREQ},
+    };
+
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        dsd_iq_net_spec spec;
+        dsd_iq_net_field field = rows[i].field == DSD_IQ_NET_FIELD_FREQ ? DSD_IQ_NET_FIELD_HOST : DSD_IQ_NET_FIELD_FREQ;
+        const int rc = dsd_iq_net_spec_parse_field(rows[i].text, &spec, NULL, 0U, &field);
+        if (field != rows[i].field || (rc == 0) != (rows[i].field == DSD_IQ_NET_FIELD_NONE)) {
+            DSD_FPRINTF(stderr, "field row %zu '%s': rc %d field %d, want %d\n", i, rows[i].text, rc, (int)field,
+                        (int)rows[i].field);
+            g_failures++;
+        }
+    }
+    dsd_iq_net_spec spec;
+    CHECK(dsd_iq_net_spec_parse_field("iqtcp:h:12:48k:cs16", &spec, NULL, 0U, NULL) == 0);
+}
+
 static void
 test_spec_format_refusals(void) {
     dsd_iq_net_spec spec;
@@ -1631,6 +1661,7 @@ main(void) {
     test_error_classes();
     test_spec_parse_ok();
     test_spec_parse_refusals();
+    test_spec_parse_names_the_field();
     test_spec_format_refusals();
     test_format_table();
     test_convert_cu8();

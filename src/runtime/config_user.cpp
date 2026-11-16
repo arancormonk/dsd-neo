@@ -1529,12 +1529,13 @@ static const char kAirspyInputSpec[] = "airspy";
    form a -i spec takes too), so a config naming the running stream another way builds the same spec. -1, with the
    parser's reason in @p why (may be NULL), when the fields build no spec. */
 static int
-format_iq_stream_input_spec(const dsdneoUserConfig* cfg, char* out, size_t out_size, char* why, size_t why_size) {
+format_iq_stream_input_spec_field(const dsdneoUserConfig* cfg, char* out, size_t out_size, char* why, size_t why_size,
+                                  dsd_iq_net_field* bad_field) {
     char text[DSD_IQ_NET_SPEC_TEXT_MAX + 128];
     DSD_SNPRINTF(text, sizeof text, "%s:%s:%d:%s:%s%s%s", cfg->input_source == DSDCFG_INPUT_IQUDP ? "iqudp" : "iqtcp",
                  cfg->iq_host, cfg->iq_port, cfg->iq_rate, cfg->iq_format, cfg->iq_freq[0] ? ":" : "", cfg->iq_freq);
     dsd_iq_net_spec spec;
-    if (dsd_iq_net_spec_parse(text, &spec, why, why_size) != 0) {
+    if (dsd_iq_net_spec_parse_field(text, &spec, why, why_size, bad_field) != 0) {
         return -1;
     }
     if (dsd_iq_net_spec_format(&spec, out, out_size) < 0) {
@@ -1544,6 +1545,32 @@ format_iq_stream_input_spec(const dsdneoUserConfig* cfg, char* out, size_t out_s
         return -1;
     }
     return 0;
+}
+
+static int
+format_iq_stream_input_spec(const dsdneoUserConfig* cfg, char* out, size_t out_size, char* why, size_t why_size) {
+    return format_iq_stream_input_spec_field(cfg, out, out_size, why, why_size, NULL);
+}
+
+const char*
+dsd_user_config_iq_stream_bad_key(const dsdneoUserConfig* cfg) {
+    if (!cfg || !cfg->has_input
+        || (cfg->input_source != DSDCFG_INPUT_IQTCP && cfg->input_source != DSDCFG_INPUT_IQUDP)) {
+        return NULL;
+    }
+    char spec[DSD_IQ_NET_SPEC_TEXT_MAX];
+    dsd_iq_net_field field = DSD_IQ_NET_FIELD_NONE;
+    if (format_iq_stream_input_spec_field(cfg, spec, sizeof spec, NULL, 0U, &field) == 0) {
+        return NULL;
+    }
+    switch (field) {
+        case DSD_IQ_NET_FIELD_HOST: return "iq_host";
+        case DSD_IQ_NET_FIELD_PORT: return "iq_port";
+        case DSD_IQ_NET_FIELD_RATE: return "iq_rate";
+        case DSD_IQ_NET_FIELD_FORMAT: return "iq_format";
+        case DSD_IQ_NET_FIELD_FREQ: return "iq_freq";
+        default: return "source";
+    }
 }
 
 int

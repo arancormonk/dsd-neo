@@ -897,6 +897,15 @@ int dsd_user_config_iq_stream_input_spec(const dsdneoUserConfig* cfg, char* out,
                                          size_t why_size);
 
 /**
+ * @brief The [input] key whose value the spec parser refuses in an `iqtcp` / `iqudp` [input]
+ *        (dsd_user_config_iq_stream_input_spec()), from the field the parser names (dsd_iq_net_spec_parse_field()):
+ *        `iq_host`, `iq_port`, `iq_rate`, `iq_format` or `iq_freq`, else `source`.
+ *
+ * @return The key, or NULL when the keys build a spec or the [input] is no stream source.
+ */
+const char* dsd_user_config_iq_stream_bad_key(const dsdneoUserConfig* cfg);
+
+/**
  * @brief Whether @p cfg names a tuner gain: an `rtl_gain` key that was read (0 included, which is AGC), or a nonzero
  * gain set in code. An omitted gain leaves the gain the session runs.
  */

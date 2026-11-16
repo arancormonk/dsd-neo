@@ -209,7 +209,16 @@ typedef struct {
     const char* prefix;
     char* err;
     size_t err_size;
+    dsd_iq_net_field* field; /* the field being read, which a failure names; may be NULL */
 } iq_net_parse_ctx;
+
+/* The fields that follow are @p field's. */
+static void
+iq_net_at(const iq_net_parse_ctx* ctx, dsd_iq_net_field field) {
+    if (ctx->field) {
+        *ctx->field = field;
+    }
+}
 
 static int
 iq_net_fail(const iq_net_parse_ctx* ctx, const char* reason) {
@@ -315,40 +324,54 @@ static int
 iq_net_parse_fields(const iq_net_parse_ctx* ctx, char** fields, size_t n, dsd_iq_net_spec* spec) {
     static const char* const k_missing[] = {"", "", "PORT is missing", "RATE is missing", "FORMAT is missing"};
     const char* host_name = spec->kind == DSD_IQ_NET_KIND_TCP ? "HOST" : "BIND";
+    iq_net_at(ctx, DSD_IQ_NET_FIELD_HOST);
     if (n < 2U) {
         return iq_net_fail(ctx, spec->kind == DSD_IQ_NET_KIND_TCP ? "HOST is missing" : "BIND is missing");
     }
     if (iq_net_parse_host(ctx, fields[1], host_name, spec) != 0) {
         return -1;
     }
+    iq_net_at(ctx, DSD_IQ_NET_FIELD_PORT);
     if (n < 3U) {
         return iq_net_fail(ctx, k_missing[n]);
     }
     if (iq_net_parse_port(ctx, fields[2], spec) != 0) {
         return -1;
     }
+    iq_net_at(ctx, DSD_IQ_NET_FIELD_RATE);
     if (n < 4U) {
         return iq_net_fail(ctx, k_missing[n]);
     }
     if (iq_net_parse_rate(ctx, fields[3], spec) != 0) {
         return -1;
     }
+    iq_net_at(ctx, DSD_IQ_NET_FIELD_FORMAT);
     if (n < 5U) {
         return iq_net_fail(ctx, k_missing[n]);
     }
     if (iq_net_parse_format(ctx, fields[4], spec) != 0) {
         return -1;
     }
+    iq_net_at(ctx, DSD_IQ_NET_FIELD_FREQ);
     return iq_net_parse_freq(ctx, n > 5U ? fields[5] : NULL, spec);
 }
 
 int
 dsd_iq_net_spec_parse(const char* text, dsd_iq_net_spec* out, char* err, size_t err_size) {
+    return dsd_iq_net_spec_parse_field(text, out, err, err_size, NULL);
+}
+
+int
+dsd_iq_net_spec_parse_field(const char* text, dsd_iq_net_spec* out, char* err, size_t err_size,
+                            dsd_iq_net_field* bad_field) {
     if (err && err_size > 0) {
         err[0] = '\0';
     }
+    if (bad_field) {
+        *bad_field = DSD_IQ_NET_FIELD_SPEC;
+    }
     const dsd_iq_net_kind kind = dsd_iq_net_spec_kind(text);
-    iq_net_parse_ctx ctx = {iq_net_kind_prefix(kind), err, err_size};
+    iq_net_parse_ctx ctx = {iq_net_kind_prefix(kind), err, err_size, bad_field};
     if (!out || kind == DSD_IQ_NET_KIND_NONE) {
         if (err && err_size > 0) {
             DSD_SNPRINTF(err, err_size, "not an iqtcp: or iqudp: spec");
@@ -371,6 +394,7 @@ dsd_iq_net_spec_parse(const char* text, dsd_iq_net_spec* out, char* err, size_t 
     if (iq_net_parse_fields(&ctx, fields, n, &spec) != 0) {
         return -1;
     }
+    iq_net_at(&ctx, DSD_IQ_NET_FIELD_NONE);
     *out = spec;
     return 0;
 }

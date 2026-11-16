@@ -874,24 +874,6 @@ validate_composed_file_path(const dsdneoUserConfig* cfg, const char* section, co
     }
 }
 
-/* The [input] key a raw I/Q stream spec's field comes from (issue #743), as the parser names the field. */
-static const char*
-iq_stream_key_of_reason(const char* why) {
-    static const struct {
-        const char* field;
-        const char* key;
-    } k_fields[] = {{"HOST", "iq_host"}, {"BIND", "iq_host"},     {"PORT", "iq_port"},
-                    {"RATE", "iq_rate"}, {"FORMAT", "iq_format"}, {"FREQ", "iq_freq"}};
-
-    for (const auto& f : k_fields) {
-        const char* at = strstr(why, f.field);
-        if (at != nullptr && (at == why || at[-1] == ' ')) {
-            return f.key;
-        }
-    }
-    return "source";
-}
-
 /* The keys an I/Q stream does not use, which belong to the inputs DSD-neo tunes: said, as the stream ignores them. */
 static void
 validate_iq_stream_unused_keys(const dsdneoUserConfig* cfg, const char* section, const char* prefix,
@@ -935,7 +917,7 @@ validate_composed_iq_stream(const dsdneoUserConfig* cfg, const char* section, co
     char why[DSD_IQ_NET_SPEC_TEXT_MAX + 128];
     char key[64];
     if (dsd_user_config_iq_stream_input_spec(cfg, spec, sizeof spec, why, sizeof why) != 0) {
-        DSD_SNPRINTF(key, sizeof key, "%s%s", prefix, iq_stream_key_of_reason(why));
+        DSD_SNPRINTF(key, sizeof key, "%s%s", prefix, dsd_user_config_iq_stream_bad_key(cfg));
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section, key, why);
         return;
     }
