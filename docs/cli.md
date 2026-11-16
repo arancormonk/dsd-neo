@@ -426,8 +426,18 @@ Windows console runs:
   pass. X2-TDMA says whether a superframe is encrypted only after its first three voice frames: those frames follow the
   slot's previous superframe, so when a call changes between clear and encrypted, those three frames (60 ms) take the
   old verdict once, for audio, recording and capture alike. At the start of a transmission nothing is known yet, so they
-  are saved only where both clear and encrypted audio would be: with encrypted audio unmuted and without `-q`. YSF
-  frames are captured once a FICH has verified the transmission on the carrier.
+  are saved only where both clear and encrypted audio would be: with encrypted audio unmuted and without `-q`. DMR
+  follows the same rule after a channel change: a DMR call that is already under way when the receiver arrives is
+  muted, and left out of the per-call WAV and the MBE capture, until the call says whether it is encrypted. That is
+  usually under a quarter of a second. It takes longer when reception is poor or the call sends a talker alias or GPS
+  position in that place, and a call whose encryption details never decode stays muted. A call heard from its start
+  loses nothing. Every channel change does this except the run's first landing: a trunked call followed, a return to
+  the control channel, a `-Y` step, a trunk-scan switch, a frequency you enter, a signal search step, a replay retune.
+  So does the release of a call on the same channel, including a return to the control channel when none is known.
+  With encrypted audio unmuted and without `-q` the held frames play, and a key forced onto every frame (`-4` with a
+  Basic Privacy or Hytera key) decrypts them, as before. On a rigctl peer, audio still inside the radio software right
+  after a retune can end that wait early (see `-U`). YSF frames are captured once a FICH has verified the transmission
+  on the carrier.
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
   filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded
   text message, `Talker Alias:`, `GPS:`, `DSD-neo:` for a decoder notice) follow its line and repeat that
@@ -2626,10 +2636,10 @@ channel is delayed.
   - What DSD-neo cannot drop is audio that is still inside the radio software, or in the sound system on its way to
     DSD-neo, when the tune is confirmed. It arrives after the retune and is read as the new channel's. So for the
     first moments after a retune, the old channel can still be heard: an end-of-call there can end the call just
-    followed, and a call header there can show the old channel's call on the new one. How long this lasts depends on
-    how much audio the radio software and the audio path between it and DSD-neo hold back. A low-latency audio path
-    shortens it: keep the radio software's audio buffering small, and prefer a direct network audio stream (UDP or
-    TCP) over a virtual sound card.
+    followed, a call header there can show the old channel's call on the new one, and a DMR call header there can end
+    the new channel's encryption wait early (see `-d`). How long this lasts depends on how much audio the radio
+    software and the audio path between it and DSD-neo hold back. A low-latency audio path shortens it: keep the radio
+    software's audio buffering small, and prefer a direct network audio stream (UDP or TCP) over a virtual sound card.
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode), the FM passband the peer is asked for wherever it
   does not demodulate the analog monitor: on digital modes, and on an RTL-family input, where the peer only follows the
   frequency and is asked for `-B` alone. On audio input, where the peer demodulates, the analog monitor asks for its own

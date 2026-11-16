@@ -402,6 +402,15 @@ During scanning:
   symbols of its sync search (62.5 ms at 4800 symbols/s, 125 ms at the 2400 symbols/s of NXDN48 and dPMR), so a
   target rotates up to that much after its dwell ends, not at the end of the search's 1800-symbol pass (375 ms or
   750 ms) as before. While frames keep arriving, the dwell is checked after every frame.
+- A DMR call that is already under way when the receiver arrives on a target or a `-Y` row, or when a trunked call is
+  followed, is muted and left out of call recordings until the call says whether it is encrypted. That is usually
+  under a quarter of a second; it takes longer when reception is poor or the call sends a talker alias or GPS position
+  in that place, and a call whose encryption details never decode stays muted. A call heard from its start loses
+  nothing. Every channel change does this except the run's first landing (the first park of a trunk scan the run
+  starts with), and so does the release of a call on the same channel, including a return to the control channel when
+  none is known. With encrypted audio unmuted the held frames play as before. On a rigctl peer, audio still inside the
+  radio software right after a retune can end that wait early. The details are under `-d` in
+  [the CLI guide](cli.md).
 - With `--scan-max-visit-ms` (or `[trunking] scan_max_visit_ms`) set, a visit also ends when it reaches the cap,
   whatever the target is doing: a trunked call being followed, a conventional hold, a control-channel hunt. The clock
   starts at the instant the target parks and starts again from zero on every re-park, so activity, grants and the
