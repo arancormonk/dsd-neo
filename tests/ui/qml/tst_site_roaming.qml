@@ -348,6 +348,37 @@ Item {
             compare(app.startError, "");
         }
 
+        // #786 r3: the core keeps judging while the old session stops. A fix
+        // that favours Hill, then one more near Lake, leaves Lake one fresh
+        // fix of evidence, not the old three: nothing starts, Home's notice.
+        function test_07g_a_fix_for_the_old_site_during_the_stop_revokes_the_switch() {
+            qualifyB();
+            compare(decoderHost.sessionState, 3);
+            nearA(1000);
+            nearB(1000);
+            testContext.setLifecyclePhase(0);
+            wait(20);
+            compare(decoderHost.sessionState, 0, "no start");
+            compare(app.pendingRestart, null);
+            verify(!siteRoaming.transactionActive);
+            verify(roamNotice().visible);
+            compare(siteRoaming.recoveryNotice, "Roaming did not switch to Lake. Listening stopped.");
+        }
+
+        // A fix that goes stale during the stop clears the evidence when it
+        // goes stale; a fresh fix near Lake afterwards starts the count again.
+        function test_07h_a_fix_gone_stale_during_the_stop_revokes_the_switch() {
+            qualifyB();
+            compare(decoderHost.sessionState, 3);
+            tick(61000);
+            nearB(0);
+            testContext.setLifecyclePhase(0);
+            wait(20);
+            compare(decoderHost.sessionState, 0, "no start");
+            verify(!siteRoaming.transactionActive);
+            verify(roamNotice().visible);
+        }
+
         function test_08_disable_during_stopping_leaves_listening_stopped_with_the_notice() {
             qualifyB();
             prefs.roamingEnabled = false;

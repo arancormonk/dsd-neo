@@ -246,6 +246,7 @@ SiteRoaming::evaluateOnce() {
     if (active() && m_tx.stage != Stage::WaitingForCall) {
         progressTransaction();
         if (active()) {
+            feedTransaction(t);
             ensureStream(true); // the checks before the destination starts derive the verdict again
             setView(Switching, NoReason);
             m_pending.destinationUid = m_tx.toUid;
@@ -410,6 +411,20 @@ SiteRoamingVerdict
 SiteRoaming::judgeAgainst(qint64 nowMs, const QString& key, const QString& fromUid) {
     return m_core.evaluate(nowMs, candidates(key), fromUid.toStdString(),
                            streamReason() == NoReason ? usableMeasurement() : nullptr, settings());
+}
+
+/* Every measurement and tick still reaches the core while a switch is past its call wait, judged from the session the
+ * switch leaves until the destination's start takes over (then from the destination's session): the evidence stays
+ * continuous, so a fix that revokes the verdict or a fix gone stale is seen when it happens, and the start's checks
+ * (startPlan()) derive the verdict from all of it. A tick never adds evidence: the core counts only a measurement it has
+ * not seen. */
+void
+SiteRoaming::feedTransaction(qint64 nowMs) {
+    if (m_tx.stage == Stage::Starting) {
+        (void)judgeAgainst(nowMs, m_session.groupKey, m_session.uid);
+    } else {
+        (void)judgeAgainst(nowMs, m_tx.groupKey, m_tx.fromUid);
+    }
 }
 
 /* Where a switch past its stop goes next, from the session state the host shows. */

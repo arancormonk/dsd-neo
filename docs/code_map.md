@@ -14831,6 +14831,10 @@ Qt Quick frontend (`src/ui/qt`):
   started (and read again when a candidate begins to qualify), so a user stop the app has not shown yet is never
   absorbed. A cancel once the start is handed over retires the host's attempt (`retireRoamAttempt()`); a switch
   cancelled after the session it left stopped, other than by the user's own action, leaves `recoveryNotice` for Home. A
+  Rule: every measurement and tick reaches the core in every transaction stage (`feedTransaction()` past the call
+  wait: from the session the switch leaves, then from the destination's), so the evidence stays continuous and the start
+  boundary derives the verdict from all of it; a fix favouring the old site or a fix gone stale during the stop leaves the
+  switch unqualified there (cancelled with the notice). A
   foreground loss (`foregroundEpoch()` moved) cancels a switch the host does not own yet and resets the core; once the
   destination's start is handed over it is retired (`retireStartForForeground()`): retired, or ended unrun by the
   service's own epoch fence (`startSuperseded()` with the epoch moved), listening stays stopped with `recoveryNotice`,
