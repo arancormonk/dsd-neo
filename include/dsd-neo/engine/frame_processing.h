@@ -148,9 +148,11 @@ void dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_h
 void dsd_engine_note_iq_stream_tetra(const dsd_opts* opts);
 
 /** A run's start: no DMR slot's voice is held for a move an earlier run on this state made (dmr_enc_class_hold()), and
- *  the run has landed already (its first stream opens on the carrier it decodes, dsd_state::run_landed) unless a scan
- *  configured for it (-Y, --trunk-scan) is to make its first landing. A scan started later in the run, from the menu,
- *  lands after the run did, so its first landing holds as any carrier move does. */
+ *  the run has landed already (its first stream opens on the carrier it decodes, dsd_state::run_landed) unless a trunk
+ *  scan configured for it (--trunk-scan) is to make its first landing, which it does by parking before anything
+ *  decodes. A -Y scan decodes the start frequency its stream opens on until its first step, so that start is the run's
+ *  first landing and the step holds. A scan started later in the run, from the menu, lands after the run did, so its
+ *  first landing holds as any carrier move does. */
 void dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state);
 
 /** The run's first radio stream start (the engine's own, before the frontends start): dsd_engine_note_stream_source(),

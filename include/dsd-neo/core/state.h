@@ -2052,8 +2052,9 @@ struct dsd_state {
     uint8_t dmr_enc_class_held[2];
     /* Whether the receiver has landed on a carrier yet in this run (any landing: the run's first stream, a tune, a scan
        row or park; dsd_engine_note_run_start()). The run's first landing holds no DMR slot's voice; every later one,
-       any carrier boundary or trunk-scan park, does. A run starts landed unless a scan configured for it (-Y,
-       --trunk-scan) is to make its first landing; a state outside any run (initState()) counts as landed. */
+       any carrier boundary or trunk-scan park, does. A run starts landed unless a trunk scan configured for it
+       (--trunk-scan) is to make its first landing (a -Y run lands where its stream opens, decoding there until its
+       first step); a state outside any run (initState()) counts as landed. */
     uint8_t run_landed;
 
     /* Per-slot, per-call DMR vendor late-entry mode (DMR_LE_VENDOR_* in <dsd-neo/protocol/dmr/dmr.h>, 0 none), set

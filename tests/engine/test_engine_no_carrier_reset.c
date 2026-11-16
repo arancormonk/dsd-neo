@@ -3189,10 +3189,12 @@ test_scan_walk_landing_forgets_dmr_call_privacy(void) {
 }
 
 /* A run's first landing holds no DMR slot's voice; every later carrier move does (dsd_state::run_landed). A -Y scan the
-   run starts with (scanner_mode at the run's start) makes that first landing at its first row entry, on a fresh state
-   and on a reused one alike: it forgets what the state held (a Basic Privacy call an earlier run left) but holds
-   nothing, and the next row entry holds both slots. A scan started from the menu after the run's first stream landed
-   the receiver on a carrier makes a carrier move like any other at its first row entry: it holds. */
+   run starts with (scanner_mode at the run's start) steps only once its start frequency, where the run's stream opens,
+   has gone quiet: that stream start is the run's first landing, on a fresh state and on a reused one alike, so the
+   first row entry after it forgets what the state held (a Basic Privacy call) and holds both slots, as every later row
+   entry does. A trunk scan the run starts with parks before anything decodes: its first park is the run's first
+   landing (the park judge cases). A scan started from the menu after the run's first stream landed the receiver on a
+   carrier makes a carrier move like any other at its first row entry: it holds. */
 static int
 test_scan_first_landing_is_never_held(void) {
     dsd_opts* opts = NULL;
@@ -3210,20 +3212,32 @@ test_scan_first_landing_is_never_held(void) {
         char what[160];
         opts->scanner_mode = 1;
         dsd_engine_note_run_start(opts, state);
+        /* The run's stream opens on its start frequency, which the run decodes until the first step. */
+        dsd_engine_note_run_stream_source(opts, state);
+        DSD_SNPRINTF(what, sizeof what, "%s: its stream start is the run's first landing (run_landed %u)", how,
+                     (unsigned)state->run_landed);
+        rc |= expect_true(what, state->run_landed == 1U && state->dmr_enc_class_held[0] == 0U
+                                    && state->dmr_enc_class_held[1] == 0U);
         seed_dmr_basic_privacy_call(state, 0ULL);
         DSD_SNPRINTF(what, sizeof what, "%s: the first -Y row entry lands", how);
         rc |= expect_true(what, land_untyped_row(opts, state, 0));
         DSD_SNPRINTF(what, sizeof what, "%s: the first -Y row entry forgets the privacy it found", how);
         rc |= expect_true(what, state->dmr_so == 0U && state->dmr_fid == 0U);
-        DSD_SNPRINTF(what, sizeof what, "%s: the first -Y row entry holds no slot's voice", how);
-        rc |= expect_true(what, state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+        DSD_SNPRINTF(what, sizeof what, "%s: the first -Y row entry, after the start frequency, holds both slots", how);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
         DSD_SNPRINTF(what, sizeof what, "%s: the next row entry lands", how);
         rc |= expect_true(what, land_untyped_row(opts, state, 1));
         DSD_SNPRINTF(what, sizeof what, "%s: a later row entry in the run holds both slots' voice", how);
         rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
     }
-    /* A run with no scan at its start: its first stream is its first landing. The user then starts -Y from the menu. */
+    /* A run that starts with its trunk scan has not landed until the scan's first park. */
     opts->scanner_mode = 0;
+    opts->trunk_scan_enabled = 1;
+    dsd_engine_note_run_start(opts, state);
+    rc |= expect_true("a run that starts with its trunk scan has not landed before its first park",
+                      state->run_landed == 0U);
+    opts->trunk_scan_enabled = 0;
+    /* A run with no scan at its start: its first stream is its first landing. The user then starts -Y from the menu. */
     dsd_engine_note_run_start(opts, state);
     dsd_engine_note_run_stream_source(opts, state);
     opts->scanner_mode = 1;

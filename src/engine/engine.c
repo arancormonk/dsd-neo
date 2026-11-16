@@ -3746,7 +3746,7 @@ carrier_boundary_stream_gap(dsd_opts* opts, dsd_state* state) {
 }
 
 /* The boundary's hold on each DMR slot's voice (dmr_enc_class_hold()): every boundary holds it but the run's first
-   landing (dsd_state::run_landed: nothing has landed yet in the run, as before a scan's first row entry). */
+   landing (dsd_state::run_landed: nothing has landed yet in the run). */
 static void
 dsd_engine_boundary_holds_dmr_voice(dsd_state* state) {
     if (state->run_landed != 0U) {
@@ -3762,7 +3762,9 @@ dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state) {
     }
     dmr_enc_class_release_hold(state, 0U);
     dmr_enc_class_release_hold(state, 1U);
-    state->run_landed = (opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1) ? 0U : 1U;
+    /* Only a trunk scan the run starts with lands before anything decodes: it parks first. A -Y scan steps only once
+       the start frequency its stream opens on has gone quiet, so that start is the run's first landing. */
+    state->run_landed = opts->trunk_scan_enabled == 1 ? 0U : 1U;
 }
 
 void

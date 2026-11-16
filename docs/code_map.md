@@ -3335,9 +3335,11 @@ suite runs under this compiler.
   forgets the earlier run's carrier when the device differs or the stream is an I/Q replay. A later source change in the
   run holds as before. The exemption is the run's first landing, keyed on nothing having landed yet in the run
   (`dsd_state::run_landed`, set by any landing: the run's first stream, a tune, a scan's row entry or park). A run
-  starts landed, its first stream being that landing, unless a scan configured for it (`-Y`, `--trunk-scan`) makes it:
-  then that scan's first row entry or park forgets what the state held but holds nothing
-  (`dsd_engine_note_run_start()`), and every later one holds. A park uses the exemption up only once its tune is
+  starts landed, its first stream being that landing, unless a trunk scan configured for it (`--trunk-scan`) makes it
+  by parking before anything decodes: then that scan's first park forgets what the state held but holds nothing
+  (`dsd_engine_note_run_start()`), and every later one holds. A `-Y` scan the run starts with steps only once the start
+  frequency its stream opens on has gone quiet, so that start is the run's first landing and its first row entry holds.
+  A park uses the exemption up only once its tune is
   confirmed (`trunk_scan_note_landing()`; a tune still PENDING has not landed), so after a failed or still pending one
   the next park is still the run's first landing. A scan started from the menu after the receiver landed in the run
   holds at its first landing, as any carrier move does. A no-carrier pass or a terminator on the carrier holds nothing
