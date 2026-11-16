@@ -224,9 +224,9 @@ class SiteRoaming : public QObject {
     Q_INVOKABLE void clearRecoveryNotice();
 
     /**
-     * @brief The user picked saved site @p uid in the site chooser while a session roaming can follow runs (Stop and
-     * switch, Listen to nearest, a row that restarts): the session that pick starts holds roaming. A pick with
-     * nothing running is a new start like any other and holds nothing.
+     * @brief The user picked saved site @p uid in the site chooser while a session roaming judges runs (shown neither
+     * Off nor Idle; Stop and switch, Listen to nearest, a row that restarts): the session that pick starts holds
+     * roaming. A pick with nothing running, or from a session roaming idles on, is a start like any other.
      */
     Q_INVOKABLE void noteSiteChoice(const QString& uid);
     /** @brief The start a site choice was noted for did not happen (refused, or its restart given up). */

@@ -1696,6 +1696,7 @@ Window {
                     ok: false,
                     started: false
                 });
+            siteRoaming.forgetSiteChoice();
             return;
         }
         var remember = !options || options.remember !== false;

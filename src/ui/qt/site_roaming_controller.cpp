@@ -939,8 +939,11 @@ SiteRoaming::noteSessionInitialized() {
 
 void
 SiteRoaming::noteSiteChoice(const QString& uid) {
-    const bool roamableRuns = enabled() && available() && m_sessionLive && sessionShapeReason() == NoReason;
-    m_pendingChoiceUid = roamableRuns ? uid : QString();
+    // A session roaming judges is one it shows as neither Off nor Idle: following, checking, switching, holding or
+    // paused (a hand-tuned saved site among them). One it idles on (a scan, an input it cannot retune) holds nothing.
+    const State shown = m_view.state;
+    const bool judged = enabled() && available() && m_sessionLive && shown != Off && shown != Idle;
+    m_pendingChoiceUid = judged ? uid : QString();
 }
 
 void

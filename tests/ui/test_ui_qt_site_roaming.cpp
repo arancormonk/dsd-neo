@@ -1327,6 +1327,30 @@ check_executor_manual_hold() {
     rig.roaming.noteSiteChoice(rig.uids[1]);
     rig.running(1);
     check(rig.roaming.state() != SiteRoaming::Holding, "hold: a pick with nothing running is a start like any other");
+    // D3: a session roaming pauses on (tuned by hand) counts; one it idles on (a scan, an input it cannot retune) does
+    // not.
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    rig.running(0);
+    rig.set("operatorTuned", true);
+    check(rig.roaming.state() == SiteRoaming::Paused, "hold: hand-tuned is paused");
+    rig.roaming.noteSiteChoice(rig.uids[1]);
+    rig.set("operatorTuned", false);
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    rig.running(1);
+    check(rig.roaming.state() == SiteRoaming::Holding, "hold: a pick from a hand-tuned session holds");
+    for (const char* key : {"scanKind", "radioInput"}) {
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        rig.running(0);
+        const bool scan = QLatin1String(key) == QLatin1String("scanKind");
+        rig.set(key, scan ? QVariant(2) : QVariant(false));
+        check(rig.roaming.state() == SiteRoaming::Idle, "hold: scanning or not tunable is idle");
+        rig.roaming.noteSiteChoice(rig.uids[2]);
+        rig.set(key, scan ? QVariant(0) : QVariant(true));
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        rig.running(2);
+        check(rig.roaming.state() != SiteRoaming::Holding,
+              "hold: a pick from a session roaming idles on holds nothing");
+    }
     rig.roaming.noteSiteChoice(rig.uids[2]);
     rig.roaming.forgetSiteChoice();
     rig.host.setPhase(dsd_qt::DecoderHost::Idle);

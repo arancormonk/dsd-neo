@@ -14794,10 +14794,10 @@ Qt Quick frontend (`src/ui/qt`):
   holds a switch while it reads true; the wait cap lives with the roaming verdict. Tests: `UI_QT_METRICS_MODEL`
   (`test_call_busy_follows_the_voice_channel()`), `CORE_OPTS_TUNED_FREQ`.
 - GPS site roaming executor (issue #786, `site_roaming_controller.{h,cpp}`, context property `siteRoaming`, class
-  `SiteRoaming`): decides with `SiteRoamingCore` (`site_roaming.{h,cpp}`) and owns the one roam transaction there can
-  be (`WaitingForCall → Stopping → WaitingForUsb → Starting`, then done, cancelled or refused). It arms only for a
-  session Main told it was started as a saved site (`noteSessionStart()`) and that passed the engine's
-  post-initialization edge (`noteSessionInitialized()`), whose row is roamable (`site_roamable()` in `site_groups`,
+  `SiteRoaming`): decides with `SiteRoamingCore` (`site_roaming.{h,cpp}`) and owns the one roam transaction there can be
+  (`WaitingForCall → Stopping → WaitingForUsb → Starting`, then done, cancelled or refused). It arms only for a session
+  Main told it was started as a saved site (`noteSessionStart()`) and that passed the engine's post-initialization edge
+  (`noteSessionInitialized()`), whose row is roamable (`site_roamable()` in `site_groups`,
   `SavedSystemsModel::roamable(row)`: grouped, trunking, an RTL-SDR, rtl_tcp, Airspy or SoapySDR receiver, no extra
   options of its own) in a group with two or more roamable rows, with no extra options in Settings, and whose decoder
   snapshot (`facts`, which Main binds to `metrics`) shows trunking, a tunable input, no scan, no operator hold and no
@@ -14807,33 +14807,33 @@ Qt Quick frontend (`src/ui/qt`):
   destination still a roamable, unavoided site of the group captured at the session's start), `noteWaitingForUsb()` /
   `noteUsbDenied()` and `noteStartResult()`. The destination's start carries the generation read when the session
   started (and read again when a candidate begins to qualify), so a user stop the app has not shown yet is never
-  absorbed. A cancel once the start is handed over retires the host's attempt (`retireRoamAttempt()`); a switch cancelled
-  after the session it left stopped, other than by the user's own action, leaves `recoveryNotice` for Home. A foreground
-  loss (`foregroundEpoch()` moved) cancels a switch the host does not own yet and resets the core; a fix polled again
-  after it is never fed. Every accepted command that changes what the session follows
+  absorbed. A cancel once the start is handed over retires the host's attempt (`retireRoamAttempt()`); a switch
+  cancelled after the session it left stopped, other than by the user's own action, leaves `recoveryNotice` for Home. A
+  foreground loss (`foregroundEpoch()` moved) cancels a switch the host does not own yet and resets the core; a fix
+  polled again after it is never fed. Every accepted command that changes what the session follows
   (`CommandBridge::operatorIntentSubmitted(kind)`: Hold TG and its release, a manual tune, a tuner release, trunking on
   or off) blocks roaming, with no timeout, until the snapshot shows its outcome or the session ends; the intents belong
-  to the session, so switching roaming off and on keeps them. A site the user switches to from a session roaming can
-  follow (Stop and switch, Listen to nearest, `noteSiteChoice()` before the stop) holds roaming on the session it starts
-  until `resumeRoaming()`; a pick with nothing running is a start like any other, and a pick whose start is refused or
-  given up (`forgetSiteChoice()`) holds nothing. Limit: a session Main took up without starting it
+  to the session, so switching roaming off and on keeps them. A site the user switches to from a session roaming judges
+  (shown neither Off nor Idle: Stop and switch, Listen to nearest, `noteSiteChoice()` before the stop) holds roaming on
+  the session it starts until `resumeRoaming()`; a pick with nothing running is a start like any other, and a pick whose
+  start is refused or given up (`forgetSiteChoice()`) holds nothing. Limit: a session Main took up without starting it
   (`adoptReattachedSession()`, a recreated window over a running service, `noteSessionAdopted()`) never arms, since its
-  stop generation and initialization edge were never seen; it idles with "Start listening again to use GPS roaming".
-  The 1 s timer runs only while a session is judged (armed or paused) or a switch is under way. Prefs (`AppPrefs`): `roaming/enabled` (device-local),
-  `roaming/maxDistanceKm` and `roaming/marginKm` (portable, in km; a choice of either unit, else the default of the unit
-  shown: 100 km / 2 km or 60 mi / 1 mi). In `Main.qml`, `roamToSite()` records the roam's restart
-  (`pendingRestart = {kind: "roam", roamId, uid}`) and `startRoam()` asks `startPlan()` before
-  `startSavedByUid(uid, roam)`, the one saved-start gate, which carries the roam through `startWithMap()` (the 4-argument
-  `sessionArgs.start()`, `pendingStartRoam` across a USB-access wait, a denial (`localDeviceFailureKind` 4) ending it
-  refused, a superseded start showing nothing). `cancelPendingRestart(reason)` takes a reason at every call site: a user
-  decision ("start", "retry", "restore", "close", "dismiss", "failed") cancels a roam through `siteRoaming.cancel()`;
-  incidental navigation ("back", "interaction" from the chooser's `SiteInteractionGuard`, "sites", "navigate",
-  "edit", "window") leaves a roam's restart, so no tap or Back strands or cancels it. `transactionEnded()` drops the
-  roam's restart and USB wait; `autoStartBlocked` also holds during a transaction and while any restart waits; Home
-  shows `recoveryNotice` with its "Listen to …" action (`homeRoamNotice`). Tests: `UI_QT_SITE_ROAMING` (the executor on
-  a scripted host and clock), `UI_QT_QML_SITE_ROAMING` (`tst_site_roaming.qml`, through Main on the lifecycle host),
-  `UI_QT_SITE_GROUPS` (`check_roamable()`), `UI_QT_PERSISTENCE` (`test_roaming_prefs()`), `UI_QT_CONTROLLER`
-  (`test_operator_intents()`).
+  stop generation and initialization edge were never seen; it idles with "Start listening again to use GPS roaming". The
+  1 s timer runs only while a session is judged (armed or paused) or a switch is under way. Prefs (`AppPrefs`):
+  `roaming/enabled` (device-local), `roaming/maxDistanceKm` and `roaming/marginKm` (portable, in km; a choice of either
+  unit, else the default of the unit shown: 100 km / 2 km or 60 mi / 1 mi). In `Main.qml`, `roamToSite()` records the
+  roam's restart (`pendingRestart = {kind: "roam", roamId, uid}`) and `startRoam()` asks `startPlan()` before
+  `startSavedByUid(uid, roam)`, the one saved-start gate, which carries the roam through `startWithMap()` (the
+  4-argument `sessionArgs.start()`, `pendingStartRoam` across a USB-access wait, a denial (`localDeviceFailureKind` 4)
+  ending it refused, a superseded start showing nothing). `cancelPendingRestart(reason)` takes a reason at every call
+  site: a user decision ("start", "retry", "restore", "close", "dismiss", "failed") cancels a roam through
+  `siteRoaming.cancel()`; incidental navigation ("back", "interaction" from the chooser's `SiteInteractionGuard`,
+  "sites", "navigate", "edit", "window") leaves a roam's restart, so no tap or Back strands or cancels it.
+  `transactionEnded()` drops the roam's restart and USB wait; `autoStartBlocked` also holds during a transaction and
+  while any restart waits; Home shows `recoveryNotice` with its "Listen to …" action (`homeRoamNotice`). Tests:
+  `UI_QT_SITE_ROAMING` (the executor on a scripted host and clock), `UI_QT_QML_SITE_ROAMING` (`tst_site_roaming.qml`,
+  through Main on the lifecycle host), `UI_QT_SITE_GROUPS` (`check_roamable()`), `UI_QT_PERSISTENCE`
+  (`test_roaming_prefs()`), `UI_QT_CONTROLLER` (`test_operator_intents()`).
 - Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's
   recent calls (`homeRecentList`) and the Talkgroups grid (`talkgroupGrid`) get their models from a `KeepPlace` only
   while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with
