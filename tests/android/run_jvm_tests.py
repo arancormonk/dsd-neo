@@ -313,13 +313,18 @@ def stop_callers_carry_their_cause():
 def start_status_contract():
     """#786 B2: startDecoder()'s status crosses JNI as a plain int, and 0 is what a failed JNI call answers.
 
-    So handed over must be nonzero and the same on both sides, every status distinct, and the host must treat
-    anything but handed over as a start error.
+    So handed over must be nonzero, every status distinct, android/start_status.h must name each one with the same
+    value (START_NOT_ALLOWED is kStartNotAllowed), the JNI call must pass the status on as it is, and the host must
+    treat anything but handed over as a start error.
     """
     kotlin_path = REPO / APP_SOURCES / "DecoderService.kt"
-    host_path = REPO / "android/decoder_host_android.cpp"
+    header_path = REPO / "android/start_status.h"
+    jni_path = REPO / "android/decoder_host_android.cpp"
+    host_path = REPO / "android/decoder_host_android_lifecycle.cpp"
     try:
         kotlin = kotlin_path.read_text(encoding="utf-8")
+        header = header_path.read_text(encoding="utf-8")
+        jni = jni_path.read_text(encoding="utf-8")
         host = host_path.read_text(encoding="utf-8")
     except OSError as error:
         return f"cannot read the start status sources: {error}"
@@ -331,11 +336,19 @@ def start_status_contract():
         return f"{APP_SOURCES / 'DecoderService.kt'}: no start status may be 0, a failed JNI call's answer: {statuses}"
     if len(set(statuses.values())) != len(statuses):
         return f"{APP_SOURCES / 'DecoderService.kt'}: the start statuses must be distinct: {statuses}"
-    native = re.search(r"constexpr jint kStartHandedOver = (-?\d+);", host)
-    if not native or int(native.group(1)) != handed:
-        return f"android/decoder_host_android.cpp: kStartHandedOver must equal START_HANDED_OVER ({handed})"
-    if not re.search(r"if \(status != kStartHandedOver\) \{\s*return QStringLiteral\(", host):
-        return "android/decoder_host_android.cpp: platformStartDecoder must fail every status but kStartHandedOver"
+    native = {name: int(value) for name, value in re.findall(r"constexpr int (kStart\w+) = (-?\d+);", header)}
+    for name, value in statuses.items():
+        twin = "kStart" + "".join(part.capitalize() for part in name[len("START_"):].split("_"))
+        if native.get(twin) != value:
+            return f"android/start_status.h: {twin} must equal {name} ({value})"
+    if native.get("kStartCallFailed") != 0 or len(set(native.values())) != len(native):
+        return f"android/start_status.h: kStartCallFailed must be 0 and every status distinct: {native}"
+    call = re.search(r"DecoderHostAndroid::platformStartDecoder\(.*?\n\}", jni, re.S)
+    if not call or "return static_cast<int>(status);" not in call.group(0):
+        return "android/decoder_host_android.cpp: platformStartDecoder must return startDecoder()'s status as it is"
+    if not re.search(r"if \(handover != kStartHandedOver\) \{[^}]*return failStart\(startRefusalText\(handover\)\);",
+                     host):
+        return "android/decoder_host_android_lifecycle.cpp: the host must fail every status but kStartHandedOver"
     return None
 
 

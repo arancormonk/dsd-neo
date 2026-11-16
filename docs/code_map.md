@@ -17028,8 +17028,10 @@ Start status, roaming switch and stop generation (issue #786): `DecoderService.s
 expectedStopGeneration)` returns an `Int` (B2): `START_HANDED_OVER` (1), or why the platform refused the START
 (`START_NOT_ALLOWED` for API 31's `ForegroundServiceStartNotAllowedException`, `START_ILLEGAL_STATE`,
 `START_SECURITY`, `START_NO_SERVICE` when no component took it, `START_UNEXPECTED` for any other
-`RuntimeException`); `platformStartDecoder()` reads it and returns a start error for anything but `kStartHandedOver`,
-so the failure card shows instead of a start grace running out. Handed over is nonzero because a JNI call that fails
+`RuntimeException`); `platformStartDecoder()` returns it as it is (`android/start_status.h` names each value, with the
+host's own `kStartNoContext`, `kStartBadArguments` and the failed call's `kStartCallFailed`), and the host fails anything
+but `kStartHandedOver` with the status's own plain-English text (`startRefusalText()`), so the failure card shows
+instead of a start grace running out. Handed over is nonzero because a JNI call that fails
 (Qt clears a pending exception and answers the default; a method R8 removed; a descriptor mismatch) answers 0. `stopDecoderForSwitch()` stops with
 `StopCause.SWITCH` (wire `switch`): it drains rdio uploads like the other causes the user did not ask for, and a user
 Stop during that drain is an ordinary repeated USER stop that abandons what is left (`note_stop_cause()` then names the
@@ -17051,6 +17053,37 @@ Stop then stops it as an ordinary user stop (its attempt ran; it is not `superse
 once under the lock and wins at every check point. Tests: `ANDROID_ENGINE_STOP_JVM` (`DecoderServiceAttemptTest.kt` roam and
 `start_status` cases, `DecoderServiceStopTest.kt` `switch_drain` and `stop_generation`, `EngineStopTest.kt`),
 `IO_RTL_RUN_RESULT` (switch causes), `ANDROID_R8` (the four-argument `startDecoder` descriptor).
+
+Host API for GPS roaming (issue #786): `DecoderHost` (`src/ui/qt/decoder_host.h`) adds non-pure virtuals whose defaults
+are a host with no roaming, so every subclass and the QML test host compile unchanged: `startWithStopExpectation(argv,
+expectedStopGeneration)` (default: `start()`; a negative expectation is none), `startSuperseded()` (property, its own
+`startSupersededChanged()`; the latest start ended unrun because a user stop came after its expectation; the next start
+clears it), `stopForSwitch()` (default `stop()`), `retireRoamAttempt()` (true when the roam's start never runs;
+default false, a start the base host accepted runs), `userStopGeneration()` and `foregroundEpoch()` (synchronous reads,
+default 0, negative when unreadable), `startLocationStream()`, `stopLocationStream()`, `requestRoamingPermission(id)`,
+`openAppLocationSettings()`, `openLocationSourceSettings()` (no-ops), and the signal `locationStreamUpdate(record)`:
+{generation, state, hasFix} and with a fix {provider, measurementNs, lat, lon, accuracyM, fixAtMs}. `fixAtMs` is the
+poll's `dsd_realtime_mono_ms()` less the record's `ageMs`, so it is on the frontend's monotonic clock; Android's
+`elapsedRealtimeNanos` (boot time, which runs on through deep sleep) is passed only as `measurementNs`, the measurement's
+identity with `provider`, never as a time. `SessionArgsBuilder::start(system, host, kind, expectedStopGeneration = -1)`
+routes a start with an expectation to `startWithStopExpectation()` and adds `superseded` to its result (only for the
+host's answer to that start). `DecoderHostAndroid` (`decoder_host_android_lifecycle.cpp`, JNI in
+`decoder_host_android.cpp`): a start with an expectation reads `DecoderService.userStopGeneration()` first and refuses
+itself superseded (no failure, nothing sent) when it moved, else passes the expectation to `startDecoder()`; a record of
+the host's own attempt with `superseded` sets the flag before the phase it carries is published, so the Idle edge already
+reads superseded. `retireRoamAttempt()` retires the attempt the latest start with an expectation handed over (any later
+accepted start supersedes it); a retirement that wins drops the attempt and winds a start on screen down (Stopping, then
+Idle on the next record) like a dismissed undelivered start, so no start grace brings a failure back.
+`stopForSwitch()` is `stop()`'s bookkeeping with `DecoderService.stopDecoderForSwitch()`. `LocationStream` is started
+and stopped over JNI and polled on `refresh()` only while started; `location_stream_update()` (`android/location_record.h`)
+reads a record (an integer generation, a known state, the fix fields all there and in range or none) and the host emits
+only when the record, less `fixAtMs`, differs from the last one it emitted (a null poll, a stop or a start forgets it).
+The QML test host (`tests/ui/qml_test_context.h`, `ImportOnlyHost`) plays all of it: settable generation and epoch, a
+next start refused superseded or a start on its way superseded later, switch stops, retirements (winning by default),
+stream calls and a scripted feed (`testContext.emitLocationStreamUpdate()`). Tests: `UI_QT_ANDROID_HOST` (stream record
+→ signal, malformed records, synchronous reads, every start status's text, the expectation, retirement, switch stop),
+`UI_QT_SESSION_ARGS` (`test_stop_expectation`), `ANDROID_R8` (keeps and descriptors of the new JNI calls),
+`ANDROID_ENGINE_STOP_JVM` (`start_status_contract`: every `START_*` has its `android/start_status.h` twin).
 
 Session end and the notification (issue #782): `stopSelf()` makes ActiveServices (`bringDownServiceLocked()`) cancel the
 foreground notification and only then schedule `onDestroy()` on the main looper, so a status tick queued in between that

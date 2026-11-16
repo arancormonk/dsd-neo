@@ -233,6 +233,38 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     bool start(const QStringList& argv) override;
     void stop() override;
+
+    /*
+     * GPS site roaming (#786; decoder_host_android_lifecycle.cpp, less its JNI). A start with an expectation is refused
+     * at once, superseded, when DecoderService.userStopGeneration() moved since; otherwise the service checks it
+     * again where it decides the start, and its record's "superseded" says it ended unrun. The location feed is
+     * LocationStream: started and stopped over JNI, polled on refresh() while started. The reads are synchronous JNI
+     * calls (DecoderService.userStopGeneration(), LocationStream.foregroundEpoch()); -1 when one failed.
+     */
+    bool startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration) override;
+
+    bool
+    startSuperseded() const override {
+        return m_start_superseded;
+    }
+
+    /** @brief DecoderService.stopDecoderForSwitch(), with the phase bookkeeping of stop(). */
+    void stopForSwitch() override;
+    /**
+     * @brief DecoderService.retireAttempts() for the current attempt. A retirement that wins leaves the attempt: the
+     * host winds a start on screen down (Stopping until the service's next record says Idle) and follows no attempt.
+     */
+    bool retireRoamAttempt() override;
+    qint64 userStopGeneration() const override;
+    qint64 foregroundEpoch() const override;
+    void startLocationStream() override;
+    void stopLocationStream() override;
+    /** @brief LocationPermission.requestRoamingPermission(), with the Activity; nothing without one. */
+    void requestRoamingPermission(qint64 requestId) override;
+    /** @brief LocationPermission.openAppLocationSettings(), with the Activity; nothing without one. */
+    void openAppLocationSettings() override;
+    /** @brief LocationPermission.openLocationSourceSettings(), with the Activity; nothing without one. */
+    void openLocationSourceSettings() override;
     void dismissFailure() override;
     bool moveToBackground() override;
     void refresh() override;
@@ -506,7 +538,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * ContentResolver or when the call failed.
      */
     static QString platformProbeImportDocument(qint64 request, const QString& reference, qint64 maxCount);
-    void requestServiceStop();
+    /** @brief DecoderService.stopDecoder(), or stopDecoderForSwitch() when @p forSwitch (#786). */
+    void requestServiceStop(bool forSwitch);
     /* Call recordings (#708) over JNI: RecordingShare, RecordingPlayback and RecordingExport. */
     /** @brief RecordingShare.roots(); empty when the call failed. */
     static QStringList platformRecordingRoots();
@@ -541,10 +574,30 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief RecordingShare.takeFailure(): the oldest share that failed after canShare(), or empty. */
     static QString platformTakeRecordingShareFailure();
     /**
-     * @brief DecoderService.startDecoder() with @p argv for start attempt @p attempt; returns why it could not be
-     * handed over (no context, the arguments, or the platform's refusal of the START, #786 B2), or empty.
+     * @brief DecoderService.startDecoder() with @p argv for start attempt @p attempt, expecting
+     * @p expectedStopGeneration (-1: none); returns its status (android/start_status.h): kStartHandedOver, the
+     * platform's refusal of the START (#786 B2), kStartCallFailed, or the host's own kStartNoContext or
+     * kStartBadArguments.
      */
-    static QString platformStartDecoder(const QStringList& argv, uint64_t attempt);
+    static int platformStartDecoder(const QStringList& argv, uint64_t attempt, qint64 expectedStopGeneration);
+    /** @brief What the UI shows for a start that was not handed over with @p status; plain English, translatable. */
+    static QString startRefusalText(int status);
+    /** @brief start() and startWithStopExpectation(): @p expectedStopGeneration is -1 for a start with none. */
+    bool startAttempt(const QStringList& argv, qint64 expectedStopGeneration);
+    /** @brief stop() and stopForSwitch(): the request goes to the service as a switch when @p forSwitch. */
+    void stopSession(bool forSwitch);
+    void setStartSuperseded(bool superseded);
+    /** @brief DecoderService.userStopGeneration(); -1 when the call failed. */
+    static qint64 platformUserStopGeneration();
+    /** @brief LocationStream.foregroundEpoch(); -1 when the call failed. */
+    static qint64 platformForegroundEpoch();
+    /** @brief LocationStream.startStream() with the app's context, and stopStream(). */
+    static void platformStartLocationStream();
+    static void platformStopLocationStream();
+    /** @brief LocationStream.pollStream(): its record, empty while it is stopped or when the call failed. */
+    static QString platformPollLocationStream();
+    /** @brief Emit locationStreamUpdate() for the feed's record when it reads and differs from the last one emitted. */
+    void refreshLocationStream();
     /**
      * @brief DecoderService.retireAttempts(): no attempt up to @p through may run any more (#782). Synchronous, from
      * the Qt thread. True when the service had already taken attempt @p through past the point a retirement cancels
@@ -684,6 +737,13 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool m_attempt_failed = false;
     int m_attempt_failure_kind = 0;
     QString m_attempt_failure_text;
+    // #786: the latest start ended unrun, superseded by a user stop; the location feed was started (refresh() polls it)
+    // and the last update emitted from it, less its fixAtMs (empty: none since the start or a record-less poll).
+    bool m_start_superseded = false;
+    // #786: the attempt a start with an expectation handed over, which retireRoamAttempt() retires (0: none).
+    uint64_t m_roam_attempt = 0;
+    bool m_location_stream = false;
+    QVariantMap m_location_stream_last;
     uint64_t m_adopted_idle_session = 0;
     uint64_t m_initialized_session = 0;
     int m_device_error = 0;

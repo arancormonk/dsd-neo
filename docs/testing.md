@@ -144,7 +144,12 @@ or plain path to the base host's copy, a stale destination is removed before the
 without its file fails. The file browser's dispatch (#830) runs against a `FileBrowser` stub with a record queue: each
 request reaches it with its arguments, records settle their live request once in order, and a retired request is
 cancelled there once and its record dropped. It links the real recording store (`DSD_NEO_TEST_HOOKS` on, for its pass
-hooks), so a share queued behind an export is shown held in the store until its copy is made. The `ANDROID_*_JVM`
+hooks), so a share queued behind an export is shown held in the store until its copy is made. GPS roaming's host API
+(#786) runs there too: the `LocationStream` record polled only while the feed is started, reported once per change with
+`fixAtMs` on the host's clock and malformed records refused; the stop generation and foreground epoch read at each call,
+never on a poll; each start status's own failure text (`platformStartDecoder()` returns the status); a start with an
+expectation refused superseded at once or by the service's record, never as a failure; `retireRoamAttempt()` before
+and after the commit; and `stopForSwitch()`. The `ANDROID_*_JVM`
 tests run production Android Kotlin on the plain JVM, without an Android build or emulator, one suite of
 `tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by
 default): `ANDROID_LOCATION_JVM` runs the location broker and geocoder queue with deterministic platform stubs,
@@ -324,8 +329,9 @@ failure on the running session's record, while an unsuperseded one is refused bu
 case also checks no `nativeInit`, no startup-diagnostics arm and no wake lock. `start_status` throws each refusal from
 the context stub (`ForegroundServiceStartNotAllowedException` at API 31, `IllegalStateException`, `SecurityException`,
 another `RuntimeException`, no component) and checks the status `startDecoder()` returns; every status is nonzero and
-distinct. The suite's `start_status_contract` source check pins `START_HANDED_OVER` to the host's `kStartHandedOver`,
-no status at 0 (a failed JNI call's answer) and `platformStartDecoder()` failing every other status.
+distinct. The suite's `start_status_contract` source check pins every `START_*` to its `android/start_status.h` twin
+(`START_NOT_ALLOWED` is `kStartNotAllowed`), no Kotlin status at 0 (a failed JNI call's answer, `kStartCallFailed`),
+`platformStartDecoder()` returning the status as it is and the host failing every status but `kStartHandedOver`.
 In `DecoderServiceStopTest.kt`, `switch_drain` checks a switch drains and is no user stop, and a user Stop during its drain
 abandons; `stop_generation` checks which requests move the generation (Stop listening while IDLE, RUNNING, STARTING and
 with no context, the notification's Stop, Recents) and which do not (deliveries of counted stops, switches, lifecycle and

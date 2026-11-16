@@ -168,6 +168,20 @@ class R8ArtifactTests(unittest.TestCase):
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeQuitUi"), downcalls)
         self.assertIn(QT_DENSITY, upcalls)
         self.assertIn((r8.APP_PACKAGE + "AppSupport", "activityDensity", "(Landroid/content/Context;)F"), upcalls)
+        # GPS roaming (#786): the switch stop, the stop generation, the location feed and its prompt and settings.
+        for owner, name, signature in (
+            ("DecoderService", "stopDecoderForSwitch", "(Landroid/content/Context;)V"),
+            ("DecoderService", "userStopGeneration", "()J"),
+            ("LocationStream", "startStream", "(Landroid/content/Context;)V"),
+            ("LocationStream", "stopStream", "()V"),
+            ("LocationStream", "pollStream", "()Ljava/lang/String;"),
+            ("LocationStream", "foregroundEpoch", "()J"),
+            ("LocationPermission", "requestRoamingPermission", "(Landroid/app/Activity;J)V"),
+            ("LocationPermission", "openAppLocationSettings", "(Landroid/app/Activity;)V"),
+            ("LocationPermission", "openLocationSourceSettings", "(Landroid/app/Activity;)V"),
+        ):
+            with self.subTest(name=name):
+                self.assertIn((r8.APP_PACKAGE + owner, name, signature), upcalls)
 
     def test_import_copy_entry_points_are_kept(self):
         # DecoderHostAndroid calls these by literal name and descriptor from the import worker (#832, #831).
@@ -197,6 +211,8 @@ class R8ArtifactTests(unittest.TestCase):
                              rules)
         self.assertIn("AppSupport", classes)
         self.assertIn("IncomingDocuments", classes)
+        self.assertIn("LocationStream", classes)
+        self.assertIn("LocationPermission", classes)
         for class_name in classes:
             called = {(name, signature) for owner, name, signature in upcalls
                       if owner == r8.APP_PACKAGE + class_name}

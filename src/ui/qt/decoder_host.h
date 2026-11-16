@@ -87,6 +87,8 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool recordingTransferActive READ recordingTransferActive NOTIFY recordingTransferChanged)
     Q_PROPERTY(qint64 recordingTransferBytes READ recordingTransferBytes NOTIFY recordingTransferChanged)
     Q_PROPERTY(qint64 recordingTransferTotalBytes READ recordingTransferTotalBytes NOTIFY recordingTransferChanged)
+    /* GPS site roaming (#786): the latest start ended unrun because a user stop came after its expectation. */
+    Q_PROPERTY(bool startSuperseded READ startSuperseded NOTIFY startSupersededChanged)
 
   public:
     /**
@@ -832,6 +834,105 @@ class DecoderHost : public QObject {
     /** @brief Request a graceful stop. Returns immediately; watch @c running. */
     virtual void stop() = 0;
 
+    /*
+     * GPS site roaming (#786). A roam ends the session it leaves with stopForSwitch() and starts the destination with
+     * startWithStopExpectation(), carrying the userStopGeneration() it read when the destination began to qualify. Every
+     * default here is a host with no roaming support: no location stream, no settings screens, a start with no
+     * expectation and reads of 0.
+     */
+
+    /**
+     * @brief Start as start() does, unless the user stopped listening since @p expectedStopGeneration was read.
+     *
+     * A host that tracks user stops compares @p expectedStopGeneration with its userStopGeneration() before it hands
+     * the start over and again where the platform decides the start. A start a user stop superseded never runs and is
+     * no failure: startSuperseded() turns true, at once (the call returns false) or later (the session goes back to
+     * Idle without running). A negative @p expectedStopGeneration is no expectation, as start(). The default ignores
+     * the expectation and calls start().
+     */
+    virtual bool
+    startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration) {
+        (void)expectedStopGeneration;
+        return start(argv);
+    }
+
+    /** @brief Whether the latest start ended unrun because a user stop superseded it; the next start clears it. */
+    virtual bool
+    startSuperseded() const {
+        return false;
+    }
+
+    /**
+     * @brief End the session for a roaming switch: a stop the user did not ask for, so it moves no userStopGeneration()
+     * and lets pending uploads finish, as Android's other automatic stops do. A user stop during it still wins. The
+     * default is stop().
+     */
+    virtual void
+    stopForSwitch() {
+        stop();
+    }
+
+    /**
+     * @brief Give up the latest start, handed over for a roam the user cancelled.
+     *
+     * @return true when the start never runs: the host had none on its way, or this retirement reached it before it
+     * could (not delivered yet, or still configuring). false when it had already gone past that point: it runs, or it
+     * ended on its own (startSuperseded(), a failure, an exit), and its session shows how. The default host starts
+     * synchronously, so a start it accepted runs: false.
+     */
+    virtual bool
+    retireRoamAttempt() {
+        return false;
+    }
+
+    /**
+     * @brief How many times the user asked to stop listening, from any place (the app, the notification, Recents),
+     * read now, never from the last poll. Negative when it could not be read. The default host has no other place: 0.
+     */
+    virtual qint64
+    userStopGeneration() const {
+        return 0;
+    }
+
+    /**
+     * @brief How many times the app left the foreground, read now, never from the last poll. Negative when it could not
+     * be read. The default host never leaves it: 0.
+     */
+    virtual qint64
+    foregroundEpoch() const {
+        return 0;
+    }
+
+    /**
+     * @brief Start the continuous location feed for roaming: locationStreamUpdate() reports it from then on.
+     *
+     * Call it once when roaming needs location and again after each return to the foreground (the platform stops the
+     * feed itself when the app leaves it), never on every tick. The default host has no feed.
+     */
+    virtual void
+    startLocationStream() {}
+
+    /** @brief Stop the location feed; no locationStreamUpdate() follows. The default host has no feed. */
+    virtual void
+    stopLocationStream() {}
+
+    /**
+     * @brief Ask for precise location for roaming, once per @p requestId: pass a new id for each thing the user does.
+     * The answer is not reported here; the feed's state shows it. The default host has nothing to ask.
+     */
+    virtual void
+    requestRoamingPermission(qint64 requestId) {
+        (void)requestId;
+    }
+
+    /** @brief Open the platform's settings page for this app's permissions. The default host has none. */
+    virtual void
+    openAppLocationSettings() {}
+
+    /** @brief Open the platform's location settings (location on or off). The default host has none. */
+    virtual void
+    openLocationSourceSettings() {}
+
     /**
      * @brief The user dismissed the failure on screen (#782).
      *
@@ -951,6 +1052,19 @@ class DecoderHost : public QObject {
      *        Android does with a permission prompt it closes unanswered (#782). Not an error; callers settle quietly.
      */
     void locationCancelled(qint64 requestId);
+    /**
+     * @brief The roaming location feed changed (#786): {generation, state, hasFix}, and with a fix {provider,
+     * measurementNs, lat, lon, accuracyM, fixAtMs}.
+     *
+     * @c state is "ok", "noPermission", "approximateOnly", "locationOff" or "providerUnavailable"; @c generation names
+     * the feed's subscription. @c provider with @c measurementNs (the platform's own stamp of the fix, never a time on
+     * this clock) identifies a measurement: a fix seen again keeps both. @c fixAtMs is when the fix was taken, in
+     * dsd_realtime_mono_ms() milliseconds, the frontend's monotonic clock, so compare it only with that clock.
+     * Only a host whose feed was started emits it, and only when the feed's record changed.
+     */
+    void locationStreamUpdate(const QVariantMap& record);
+    /** @brief startSuperseded() changed. */
+    void startSupersededChanged();
     /**
      * @brief A supported receiver was plugged in; each attachment is delivered once.
      *

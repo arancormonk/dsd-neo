@@ -253,7 +253,31 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     bool
     start(const QStringList& argv) override {
+        return beginStart(argv, -1);
+    }
+
+    /* #786: a roam's start, refused superseded, as Android's host refuses it, when the case moved userStopGeneration
+     * past the expectation or asked for it (supersedeNextStart). */
+    bool
+    startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration) override {
+        return beginStart(argv, expectedStopGeneration < 0 ? -1 : expectedStopGeneration);
+    }
+
+    bool
+    startSuperseded() const override {
+        return superseded;
+    }
+
+    bool
+    beginStart(const QStringList& argv, qint64 expectedStopGeneration) {
         lastArgv = argv;
+        lastStopExpectation = expectedStopGeneration;
+        setSuperseded(false);
+        if (expectedStopGeneration >= 0 && (supersedeNextStart || stopGeneration != expectedStopGeneration)) {
+            supersedeNextStart = false;
+            setSuperseded(true);
+            return false;
+        }
         // #647: as Android's, the start replaces the last session's receiver ending before the platform is asked,
         // so a start the platform then refuses has cleared it too.
         if (health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
@@ -271,6 +295,121 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     /* The argv of the last start asked for, accepted or not: what the session-args builder made of the system. */
     QStringList lastArgv;
+    /* #786: the last start's expected stop generation, -1 for a start with none. */
+    qint64 lastStopExpectation = -1;
+
+    /*
+     * GPS site roaming (#786), as Android's host plays it: the stop generation and foreground epoch a case sets, a
+     * start a case makes come back superseded, at once (supersedeNextStart) or after it was handed over
+     * (supersedeStart()), the switch stops and retirements, and a location feed the case scripts (testContext's
+     * emitLocationStreamUpdate()), with the calls that start and stop it.
+     */
+    qint64 stopGeneration = 0;
+    qint64 epoch = 0;
+    bool supersedeNextStart = false;
+    bool superseded = false;
+    bool retireWins = true;
+    int retireCalls = 0;
+    int switchStopCalls = 0;
+    int streamStarts = 0;
+    int streamStops = 0;
+    bool streamActive = false;
+    QVariantList permissionRequests;
+    int appSettingsOpens = 0;
+    int locationSettingsOpens = 0;
+
+    void
+    resetRoaming() {
+        stopGeneration = 0;
+        epoch = 0;
+        supersedeNextStart = false;
+        setSuperseded(false);
+        retireWins = true;
+        retireCalls = 0;
+        switchStopCalls = 0;
+        streamStarts = 0;
+        streamStops = 0;
+        streamActive = false;
+        permissionRequests.clear();
+        appSettingsOpens = 0;
+        locationSettingsOpens = 0;
+        lastStopExpectation = -1;
+    }
+
+    void
+    setSuperseded(bool value) {
+        if (superseded != value) {
+            superseded = value;
+            Q_EMIT startSupersededChanged();
+        }
+    }
+
+    /* The start on its way ends unrun, superseded, as Android's does when a user stop lands while it configures. */
+    void
+    supersedeStart() {
+        setSuperseded(true);
+        phase = Idle;
+        m_running = false;
+        Q_EMIT runningChanged();
+        Q_EMIT sessionStateChanged();
+    }
+
+    qint64
+    userStopGeneration() const override {
+        return stopGeneration;
+    }
+
+    qint64
+    foregroundEpoch() const override {
+        return epoch;
+    }
+
+    void
+    stopForSwitch() override {
+        ++switchStopCalls;
+        endSession();
+    }
+
+    /* A win while the start is on its way leaves the session stopped, as Android's host winds it down. */
+    bool
+    retireRoamAttempt() override {
+        ++retireCalls;
+        if (retireWins && phase == Starting) {
+            phase = Idle;
+            m_running = false;
+            Q_EMIT runningChanged();
+            Q_EMIT sessionStateChanged();
+        }
+        return retireWins;
+    }
+
+    void
+    startLocationStream() override {
+        ++streamStarts;
+        streamActive = true;
+    }
+
+    void
+    stopLocationStream() override {
+        ++streamStops;
+        streamActive = false;
+    }
+
+    void
+    requestRoamingPermission(qint64 requestId) override {
+        permissionRequests.append(requestId);
+    }
+
+    void
+    openAppLocationSettings() override {
+        ++appSettingsOpens;
+    }
+
+    void
+    openLocationSourceSettings() override {
+        ++locationSettingsOpens;
+    }
+
     qint64 locationRequested = 0;
     qint64 locationCancelRequested = 0;
 
@@ -584,6 +723,12 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     void
     stop() override {
         ++m_stop_calls;
+        endSession();
+    }
+
+    /* stop() and stopForSwitch(): the session ends, at once or (delayedStop) through Stopping. */
+    void
+    endSession() {
         phase = delayedStop ? Stopping : Idle;
         m_running = false;
         Q_EMIT runningChanged();
@@ -5116,6 +5261,7 @@ class Setup : public QObject {
         if (on) {
             m_lifecycle_host = signals_initialized ? m_initializing_host : m_import_host;
             m_lifecycle_host->acceptStart = true;
+            m_lifecycle_host->resetRoaming();
             if (m_backup != nullptr) {
                 m_backup->setHost(m_lifecycle_host); // the model's session gate follows the host the case runs on
             }
@@ -5159,6 +5305,65 @@ class Setup : public QObject {
     Q_INVOKABLE QStringList
     lastStartArgs() const {
         return m_lifecycle_host->lastArgv;
+    }
+
+    /** @brief #786: the expected stop generation the lifecycle host's last start carried; -1 for one with none. */
+    Q_INVOKABLE qint64
+    lastStartStopExpectation() const {
+        return m_lifecycle_host->lastStopExpectation;
+    }
+
+    /** @brief #786: the lifecycle host's userStopGeneration(), as a user stop from anywhere moves it. */
+    Q_INVOKABLE void
+    setUserStopGeneration(qint64 generation) {
+        m_lifecycle_host->stopGeneration = generation;
+    }
+
+    /** @brief #786: the lifecycle host's foregroundEpoch(), as leaving the foreground moves it. */
+    Q_INVOKABLE void
+    setForegroundEpoch(qint64 epoch) {
+        m_lifecycle_host->epoch = epoch;
+    }
+
+    /** @brief #786: the next start with an expectation comes back refused, superseded (a user stop after Qt's read). */
+    Q_INVOKABLE void
+    setNextStartSuperseded(bool superseded) {
+        m_lifecycle_host->supersedeNextStart = superseded;
+    }
+
+    /** @brief #786: the start on its way ends unrun, superseded (a user stop while the service configured it). */
+    Q_INVOKABLE void
+    supersedeStart() {
+        m_lifecycle_host->supersedeStart();
+    }
+
+    /** @brief #786: what the lifecycle host's retireRoamAttempt() answers (true: the retirement wins). */
+    Q_INVOKABLE void
+    setRetireRoamAttemptWins(bool wins) {
+        m_lifecycle_host->retireWins = wins;
+    }
+
+    /** @brief #786: the location feed's next update, as the host emits it from a poll. */
+    Q_INVOKABLE void
+    emitLocationStreamUpdate(const QVariantMap& record) {
+        Q_EMIT m_lifecycle_host->locationStreamUpdate(record);
+    }
+
+    /**
+     * @brief #786: the roaming calls the lifecycle host saw: {switchStops, retirements, streamStarts, streamStops,
+     * streamActive, permissionRequests (the ids, oldest first), appSettingsOpens, locationSettingsOpens}.
+     */
+    Q_INVOKABLE QVariantMap
+    roamingHostCalls() const {
+        const ImportOnlyHost* host = m_lifecycle_host;
+        return {{QStringLiteral("switchStops"), host->switchStopCalls},
+                {QStringLiteral("retirements"), host->retireCalls},
+                {QStringLiteral("streamStarts"), host->streamStarts},
+                {QStringLiteral("streamStops"), host->streamStops},
+                {QStringLiteral("streamActive"), host->streamActive},
+                {QStringLiteral("permissionRequests"), host->permissionRequests},
+                {QStringLiteral("appSettingsOpens"), host->appSettingsOpens},
+                {QStringLiteral("locationSettingsOpens"), host->locationSettingsOpens}};
     }
 
     Q_INVOKABLE void

@@ -1393,7 +1393,8 @@ SessionArgsBuilder::endUnstartedRecording(bool recording, bool started, const De
 }
 
 QVariantMap
-SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QString& kind) const {
+SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QString& kind,
+                          qint64 expectedStopGeneration) const {
     SessionArgsError error = SessionArgsError::None;
     bool recording = false;
     const QStringList args = buildForStart(system, host, kind, &error, &recording);
@@ -1402,9 +1403,16 @@ SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QS
     if (error == SessionArgsError::None && host) {
         host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
     }
-    const bool started = error == SessionArgsError::None && host && host->start(args);
+    const bool expects = expectedStopGeneration >= 0;
+    const bool asked = error == SessionArgsError::None && host;
+    const bool started =
+        asked && (expects ? host->startWithStopExpectation(args, expectedStopGeneration) : host->start(args));
     endUnstartedRecording(recording, started, host);
     result.insert(QStringLiteral("started"), started);
+    if (expects) {
+        // Only the host's answer to this start: a flag left from an earlier one says nothing of a build error.
+        result.insert(QStringLiteral("superseded"), asked && !started && host->startSuperseded());
+    }
     if (started && host->sessionActive() && m_profiles) {
         m_profiles->retainForSession(system.value("decryptionProfileUid").toString());
     }
