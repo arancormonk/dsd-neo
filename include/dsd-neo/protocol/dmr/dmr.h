@@ -48,13 +48,21 @@ unsigned int dmr_enc_class_observe(dsd_state* state, uint8_t slot, unsigned int 
 void dmr_enc_class_force(dsd_state* state, uint8_t slot, int encrypted);
 void dmr_enc_class_reset(dsd_state* state, uint8_t slot);
 int dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot);
-/** The receiver moved off a carrier or released its call: every carrier boundary but a stream gap (a user tune, a scan
- * step, a source or input change, a replay retune), a trunk-scan visit, the release, and every DMR tune the DMR
- * machine judges to leave its carrier (dmr_sm_follow_leaves(): a hop, a move, a status follow, a rest channel, a
- * Connect Plus data tune, a probe, a settle). Until each slot's call says whether it is encrypted, by an LC that passed
- * its check or a PI header naming a cipher, its voice is held (dsd_state::dmr_enc_class_held), so the next carrier's
- * frames before that are neither played nor recorded as audio. Not at a no-carrier pass or a stream gap, which stay on
- * the carrier; a run starts with no slot held, whatever an earlier run on the same state left. */
+/** The receiver moved off a carrier or released its call. Until each slot's call says whether it is encrypted, by an LC
+ * that passed its check or a PI header naming a cipher, its voice is held (dsd_state::dmr_enc_class_held), so the next
+ * carrier's frames before that are neither played nor recorded as audio. Every move is judged once, by one of:
+ * - a carrier boundary but a stream gap (a user tune, a scan step, a source or input change, a replay retune), and a
+ *   trunk-scan park, both unless it is the run's first landing (dsd_state::run_landed);
+ * - the release of a followed call, a return to the control channel's included, even when no control channel is
+ *   known and the receiver stays;
+ * - the DMR machine, for every DMR tune it judges to leave its carrier (dmr_sm_follow_leaves(): a hop, a move, a status
+ *   follow, a rest channel, a Connect Plus data tune, a probe, a settle) and for an operator's manual move under DMR
+ *   trunking or before the trunk's owner is known (dmr_sm_note_operator_leave());
+ * - the engine's reading of the receiver, for another trunk machine's tune (P25, NXDN) through the tune hooks and for
+ *   an operator's manual move under P25 or NXDN trunking with DMR decoding on (dmr_sm_note_foreign_operator_leave()).
+ * Never at a no-carrier pass or a stream gap, which stay on the carrier, nor at the run's first landing; a run starts
+ * with no slot held, whatever an earlier run on the same state left. docs/code_map.md (the encrypted-audio verdict)
+ * has the rules in full. */
 void dmr_enc_class_hold(dsd_state* state);
 /** The slot's call said whether it is encrypted, as far as the decoder reads it (an LC that passed its check, a PI
  * header naming a cipher, a forced classification), or a run starts: its voice is held no more. */
