@@ -1523,7 +1523,7 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 
 /* The frames dropped are not counted in device_frames: the decoder never had them. */
 int
-dsd_audio_discard_input(const dsd_audio_stream* stream) {
+dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t keep_ns) {
     if (!stream || !stream->is_input || stream->channels <= 0 || stream->channels > DSD_AAUDIO_DISCARD_MAX_CHANNELS) {
         set_error("Invalid arguments");
         return -1;
@@ -1531,12 +1531,25 @@ dsd_audio_discard_input(const dsd_audio_stream* stream) {
     if (!stream->handle) {
         return 0; /* between a disconnect and a reopen nothing is held */
     }
+    /* What the stream holds now: the frames the device wrote that no read took. The newest keep_ns of it stay. */
+    const int64_t written = AAudioStream_getFramesWritten(stream->handle);
+    const int64_t read = AAudioStream_getFramesRead(stream->handle);
+    if (written < 0 || read < 0) {
+        set_error_aaudio((aaudio_result_t)(written < 0 ? written : read));
+        return -1;
+    }
+    const uint64_t held = written > read ? (uint64_t)(written - read) : 0U;
+    const uint64_t keep = audio_input_keep_frames(keep_ns, stream->sample_rate, held);
+    const uint64_t owed =
+        held - keep < (uint64_t)DSD_AAUDIO_DISCARD_MAX_FRAMES ? held - keep : (uint64_t)DSD_AAUDIO_DISCARD_MAX_FRAMES;
     int16_t chunk[DSD_AAUDIO_DISCARD_CHUNK_FRAMES * DSD_AAUDIO_DISCARD_MAX_CHANNELS];
     const uint64_t start_ns = dsd_time_monotonic_ns();
     int dropped = 0;
-    /* A read that does not wait returns what the stream holds now; later frames are kept. */
-    while (dropped < DSD_AAUDIO_DISCARD_MAX_FRAMES && dsd_time_monotonic_ns() - start_ns < DSD_AAUDIO_DISCARD_MAX_NS) {
-        const aaudio_result_t res = AAudioStream_read(stream->handle, chunk, DSD_AAUDIO_DISCARD_CHUNK_FRAMES, 0);
+    /* Reads that do not wait take the oldest frames the stream holds; later frames are kept. */
+    while ((uint64_t)dropped < owed && dsd_time_monotonic_ns() - start_ns < DSD_AAUDIO_DISCARD_MAX_NS) {
+        const uint64_t left = owed - (uint64_t)dropped;
+        const int32_t want = left < DSD_AAUDIO_DISCARD_CHUNK_FRAMES ? (int32_t)left : DSD_AAUDIO_DISCARD_CHUNK_FRAMES;
+        const aaudio_result_t res = AAudioStream_read(stream->handle, chunk, want, 0);
         if (res <= 0) {
             if (res < 0) {
                 set_error_aaudio(res);

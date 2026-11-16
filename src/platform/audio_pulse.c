@@ -40,6 +40,14 @@
 
 #if DSD_PLATFORM_POSIX
 
+/* The frames an input discard kept (dsd_audio_discard_input()), interleaved, and the next one dsd_audio_read()
+   returns. */
+struct pulse_input_carry {
+    int16_t* frames;
+    size_t len;
+    size_t pos;
+};
+
 /*============================================================================
  * Internal Types
  *============================================================================*/
@@ -761,10 +769,17 @@ dsd_audio_open_input(const dsd_audio_params* params) {
     const char* dev = (params->device && params->device[0]) ? params->device : NULL;
     const char* app = (params->app_name && params->app_name[0]) ? params->app_name : "DSD-neo";
 
+    stream->input_carry = (struct pulse_input_carry*)calloc(1, sizeof(*stream->input_carry));
+    if (!stream->input_carry) {
+        set_error("Out of memory");
+        free(stream);
+        return NULL;
+    }
     stream->handle = pa_simple_new(NULL, app, PA_STREAM_RECORD, dev, "Audio Input", &ss, NULL, &attr, &err);
 
     if (!stream->handle) {
         set_error_pa(err);
+        free(stream->input_carry);
         free(stream);
         return NULL;
     }
@@ -949,6 +964,19 @@ dsd_audio_open_output(const dsd_audio_params* params) {
     return stream;
 }
 
+/* Up to @p frames of the frames an input discard kept, into @p buffer: the frames copied. */
+static size_t
+pulse_input_take_carry(struct pulse_input_carry* carry, int channels, int16_t* buffer, size_t frames) {
+    size_t take = carry->len - carry->pos;
+    if (take > frames) {
+        take = frames;
+    }
+    const size_t ch = (size_t)channels;
+    DSD_MEMCPY(buffer, carry->frames + carry->pos * ch, take * ch * sizeof(int16_t));
+    carry->pos += take;
+    return take;
+}
+
 int
 dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     if (!stream || !stream->handle || !buffer) {
@@ -961,10 +989,16 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
         return -1;
     }
 
-    size_t bytes = frames * (size_t)stream->channels * sizeof(int16_t);
+    struct pulse_input_carry* carry = stream->input_carry;
+    const size_t carried =
+        carry != NULL && carry->pos < carry->len ? pulse_input_take_carry(carry, stream->channels, buffer, frames) : 0U;
+    if (carried == frames) {
+        return (int)frames;
+    }
+    size_t bytes = (frames - carried) * (size_t)stream->channels * sizeof(int16_t);
     int err = 0;
 
-    if (pa_simple_read(stream->handle, buffer, bytes, &err) < 0) {
+    if (pa_simple_read(stream->handle, buffer + carried * (size_t)stream->channels, bytes, &err) < 0) {
         set_error_pa(err);
         return -1;
     }
@@ -980,6 +1014,41 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 #define PULSE_DISCARD_MAX_S        2U
 #define PULSE_DISCARD_MAX_NS       250000000ULL
 
+/* The newest frames a discard reads, kept in a ring of `cap` frames: `count` frames passed through it so far. */
+typedef struct {
+    int16_t* buf;
+    size_t cap;
+    size_t ch;
+    size_t count;
+} pulse_keep_ring;
+
+static void
+pulse_keep_push(pulse_keep_ring* ring, const int16_t* frames, size_t n) {
+    for (size_t i = 0; ring->cap > 0U && i < n; i++) {
+        const size_t at = (ring->count + i) % ring->cap;
+        DSD_MEMCPY(ring->buf + at * ring->ch, frames + i * ring->ch, ring->ch * sizeof(int16_t));
+    }
+    ring->count += n;
+}
+
+/* The carry becomes the ring's frames, oldest first; the old ones go. 0, or -1 when memory runs out (the frames are
+   dropped then, as a discard keeping none would). */
+static int
+pulse_keep_to_carry(struct pulse_input_carry* carry, const pulse_keep_ring* ring) {
+    const size_t held = ring->count < ring->cap ? ring->count : ring->cap;
+    int16_t* frames = held > 0U ? (int16_t*)malloc(held * ring->ch * sizeof(int16_t)) : NULL;
+    const int failed = held > 0U && frames == NULL;
+    const size_t first = held > 0U && ring->count > ring->cap ? ring->count % ring->cap : 0U;
+    for (size_t i = 0; frames != NULL && i < held; i++) {
+        DSD_MEMCPY(frames + i * ring->ch, ring->buf + ((first + i) % ring->cap) * ring->ch, ring->ch * sizeof(int16_t));
+    }
+    free(carry->frames);
+    carry->frames = frames;
+    carry->len = frames != NULL ? held : 0U;
+    carry->pos = 0U;
+    return failed ? -1 : 0;
+}
+
 /* A best effort, ended by timing. pa_simple keeps the record fragment it read last and returns the rest of it, and what
    the client already queued behind it, at once, so the discard reads until a read has to wait for audio: what the
    client held is gone then. That read's frames go too (the sound server captured them before they arrived). A read of
@@ -989,32 +1058,57 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
    monitor (a radio program played into a virtual sink: the usual rigctl setup) can read 0 while the client holds a
    whole fragment. pa_simple_flush() flushes the server side only, not the client's queue or the fragment pa_simple
    holds. The exact measure, pa_stream_readable_size(), needs the input on the pa_stream API, which pa_simple hides.
+   So the frames captured after the mark cannot be told apart before they are read: the discard reads everything and
+   keeps the newest @p keep_ns of it in the stream's carry, which reads return first.
 
    The pa_simple_read() that waits has no timeout: a source that stops delivering holds it as it holds every read. */
 int
-dsd_audio_discard_input(const dsd_audio_stream* stream) {
-    if (!stream || !stream->handle || !stream->is_input || stream->channels <= 0
+dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t keep_ns) {
+    if (!stream || !stream->handle || !stream->is_input || !stream->input_carry || stream->channels <= 0
         || (unsigned int)stream->channels > PULSE_DISCARD_MAX_CHANNELS) {
         set_error("Invalid arguments");
         return -1;
     }
     int16_t chunk[PULSE_DISCARD_CHUNK_FRAMES * PULSE_DISCARD_MAX_CHANNELS];
-    const size_t chunk_bytes = (size_t)PULSE_DISCARD_CHUNK_FRAMES * (size_t)stream->channels * sizeof(int16_t);
-    const size_t limit = (size_t)(stream->sample_rate > 0 ? stream->sample_rate : 48000) * PULSE_DISCARD_MAX_S;
+    const size_t ch = (size_t)stream->channels;
+    const size_t chunk_bytes = (size_t)PULSE_DISCARD_CHUNK_FRAMES * ch * sizeof(int16_t);
+    const size_t rate = (size_t)(stream->sample_rate > 0 ? stream->sample_rate : 48000);
+    const size_t limit = rate * PULSE_DISCARD_MAX_S;
+    const size_t keep = (size_t)audio_input_keep_frames(keep_ns, (int)rate, limit);
+    pulse_keep_ring ring = {keep > 0U ? (int16_t*)malloc(keep * ch * sizeof(int16_t)) : NULL, 0U, ch, 0U};
+    ring.cap = ring.buf != NULL ? keep : 0U;
+    struct pulse_input_carry* carry = stream->input_carry;
+    /* What an earlier discard kept and no read took yet is the oldest of what the stream holds. */
+    if (carry->pos < carry->len) {
+        pulse_keep_push(&ring, carry->frames + carry->pos * ch, carry->len - carry->pos);
+    }
+    const size_t carried = ring.count;
     const uint64_t start_ns = dsd_time_monotonic_ns();
-    size_t dropped = 0U;
-    while (dropped < limit && dsd_time_monotonic_ns() - start_ns < PULSE_DISCARD_MAX_NS) {
+    size_t read_frames = 0U;
+    int rc = 0;
+    while (read_frames < limit && dsd_time_monotonic_ns() - start_ns < PULSE_DISCARD_MAX_NS) {
         int err = 0;
         const uint64_t read_ns = dsd_time_monotonic_ns();
         if (pa_simple_read(stream->handle, chunk, chunk_bytes, &err) < 0) {
             set_error_pa(err);
-            return -1;
+            rc = -1;
+            break;
         }
-        dropped += PULSE_DISCARD_CHUNK_FRAMES;
+        pulse_keep_push(&ring, chunk, PULSE_DISCARD_CHUNK_FRAMES);
+        read_frames += PULSE_DISCARD_CHUNK_FRAMES;
         if (dsd_time_monotonic_ns() - read_ns > PULSE_DISCARD_WAITED_NS) {
             break;
         }
     }
+    if (pulse_keep_to_carry(carry, &ring) != 0 && rc == 0) {
+        set_error("Out of memory");
+    }
+    free(ring.buf);
+    if (rc < 0) {
+        return -1;
+    }
+    const size_t total = carried + read_frames;
+    const size_t dropped = total - carry->len;
     return dropped > (size_t)INT32_MAX ? INT32_MAX : (int)dropped;
 }
 
@@ -1173,6 +1267,10 @@ dsd_audio_close(dsd_audio_stream* stream) {
         pa_simple_free(stream->handle);
     }
 
+    if (stream->input_carry) {
+        free(stream->input_carry->frames);
+        free(stream->input_carry);
+    }
     free(stream);
 }
 

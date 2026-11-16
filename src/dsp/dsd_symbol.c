@@ -39,6 +39,7 @@
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -3737,15 +3738,18 @@ dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
     if (state->input_drop_generation != opts->pcm_input_generation) {
         return;
     }
+    /* What the input held at the mark goes; what arrived after it is the new channel's. A device keeps the audio it
+       captured since the mark; a stream or ring drops up to the count marked on it. */
+    const dsd_input_cut* cut = &state->input_drop_cut;
     switch (opts->audio_in_type) {
         case AUDIO_IN_PULSE:
             if (opts->audio_in_stream) {
-                (void)dsd_audio_discard_input(opts->audio_in_stream);
+                (void)dsd_audio_discard_input(opts->audio_in_stream, dsd_input_cut_age_ns(cut));
             }
             break;
-        case AUDIO_IN_UDP: (void)dsd_net_audio_input_hook_udp_discard_pending(opts); break;
-        case AUDIO_IN_TCP: (void)dsd_net_audio_input_hook_tcp_discard_pending(opts->tcp_in_ctx); break;
-        case AUDIO_IN_STDIN: (void)dsd_pcm_stream_discard_ready(opts->audio_in_stdin); break;
+        case AUDIO_IN_UDP: (void)dsd_net_audio_input_hook_udp_discard_through(opts, cut); break;
+        case AUDIO_IN_TCP: (void)dsd_net_audio_input_hook_tcp_discard_through(opts->tcp_in_ctx, cut); break;
+        case AUDIO_IN_STDIN: (void)dsd_pcm_stream_discard_through(opts->audio_in_stdin, cut); break;
         default: break;
     }
 }

@@ -29,6 +29,19 @@ typedef AAudioStream dsd_audio_backend_handle;
 typedef void dsd_audio_backend_handle;
 #endif
 
+/* The frames @p keep_ns of input lasts at @p rate, rounded up and at most @p limit: what an input discard keeps of the
+   newest input (dsd_audio_discard_input()). Past 10 s the count is held, which no discard's cap reaches. */
+static inline uint64_t
+audio_input_keep_frames(uint64_t keep_ns, int rate, uint64_t limit) {
+    if (rate <= 0 || keep_ns == 0U) {
+        return 0U;
+    }
+    const uint64_t max_ns = 10000000000ULL;
+    const uint64_t ns = keep_ns < max_ns ? keep_ns : max_ns;
+    const uint64_t frames = (ns * (uint64_t)rate + 999999999ULL) / 1000000000ULL;
+    return frames < limit ? frames : limit;
+}
+
 struct dsd_audio_stream {
     dsd_audio_backend_handle* handle;
     int is_input;
@@ -74,6 +87,13 @@ struct dsd_audio_stream {
     int has_device_name;
     char app_name[64];
     dsd_audio_output_recovery recovery;
+#endif
+
+#if defined(DSD_NEO_AUDIO_BACKEND_PULSE)
+    /* Input streams: the frames an input discard kept because they were captured after its mark
+       (dsd_audio_discard_input()), which dsd_audio_read() returns before the device's. pa_simple says nothing of what
+       it holds, so a discard reads it all and keeps the newest frames. Allocated with the stream. */
+    struct pulse_input_carry* input_carry;
 #endif
 
 #ifdef DSD_NEO_AUDIO_BACKEND_AAUDIO

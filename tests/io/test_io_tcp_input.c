@@ -6,6 +6,7 @@
  */
 
 #include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -71,7 +72,9 @@ main(void) {
         DSD_FPRINTF(stderr, "NULL read changed output or reported success\n");
         return 1;
     }
-    if (tcp_input_discard_pending(NULL) != 0) {
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    if (tcp_input_discard_through(NULL, &cut) != 0) {
         DSD_FPRINTF(stderr, "a NULL context's discard dropped something\n");
         return 1;
     }

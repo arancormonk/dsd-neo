@@ -424,8 +424,9 @@ test_streams_on_two_threads_never_overlap_in_portaudio(void) {
     assert(atomic_load(&g_lifecycle_overlap) == 0);
 }
 
-/* Issue #834: an input discard reads exactly the frames the stream reports available, in chunks, and no more; an
-   availability error is an error. */
+/* Issue #834: an input discard reads exactly the frames the stream reports available, in chunks, and no more, less
+   the newest frames it keeps (the audio captured since the mark: 5 ms at 48 kHz is 240 frames, and a keep longer than
+   what is held keeps it all); an availability error is an error. */
 static void
 test_input_discard_reads_what_is_available(void) {
     g_default_input = 0;
@@ -434,14 +435,19 @@ test_input_discard_reads_what_is_available(void) {
     assert(in != NULL);
     g_read_available = 600;
     g_frames_read = 0U;
-    assert(dsd_audio_discard_input(in) == 600);
+    assert(dsd_audio_discard_input(in, 0U) == 600);
     assert(g_frames_read == 600U);
     g_read_available = 0;
-    assert(dsd_audio_discard_input(in) == 0);
+    assert(dsd_audio_discard_input(in, 0U) == 0);
     assert(g_frames_read == 600U);
+    g_read_available = 600;
+    assert(dsd_audio_discard_input(in, 5000000U) == 360);
+    assert(g_frames_read == 960U && g_read_available == 240);
+    assert(dsd_audio_discard_input(in, 1000000000U) == 0);
+    assert(g_frames_read == 960U);
     g_read_available = (signed long)paUnanticipatedHostError;
-    assert(dsd_audio_discard_input(in) < 0);
-    assert(g_frames_read == 600U);
+    assert(dsd_audio_discard_input(in, 0U) < 0);
+    assert(g_frames_read == 960U);
     g_read_available = 0;
     dsd_audio_close(in);
     g_default_input = paNoDevice;

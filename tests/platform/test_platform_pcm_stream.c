@@ -9,6 +9,7 @@
  */
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -224,17 +225,33 @@ test_socket_idle_then_close(void) {
     socket_pair_close(&pair);
 }
 
-/* Issue #834: a discard drops the whole samples the reader holds and those the socket has ready, without a wait, keeps
-   a part of a sample so the samples after it stay whole, and keeps what arrives after it. */
+/* Wait until @p sock holds @p bytes ready to read (up to a second). */
+static int
+socket_holds(dsd_socket_t sock, long bytes) {
+    for (int tries = 0; tries < 100; tries++) {
+        if (dsd_socket_readable_bytes(sock) >= bytes) {
+            return 1;
+        }
+        dsd_sleep_ms(10U);
+    }
+    return 0;
+}
+
+/* Issue #834: a discard drops the whole samples the reader held at the mark and those the socket had ready then,
+   without a wait, keeps a part of a sample so the samples after it stay whole, and keeps what arrived after the mark,
+   before the discard or after it. */
 static void
-test_socket_discard_ready(void) {
+test_socket_discard_through(void) {
     socket_pair pair;
     check(socket_pair_open(&pair) == 0, "loopback connection for the discard");
     dsd_pcm_stream* stream = dsd_pcm_stream_open_socket(pair.client);
     check(stream != NULL, "open on the socket for the discard");
-    check(dsd_pcm_stream_discard_ready(NULL) == 0, "a NULL discard drops nothing");
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    check(cut.measured == 1U && cut.arrived == 0U, "the stream is the input marked on, holding nothing");
+    check(dsd_pcm_stream_discard_through(NULL, &cut) == 0, "a NULL discard drops nothing");
     const uint64_t idle_start = dsd_time_monotonic_ms();
-    check(dsd_pcm_stream_discard_ready(stream) == 0, "nothing ready: nothing dropped");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 0, "nothing held at the mark: nothing dropped");
     /* A discard that waited would block on the idle socket far past this bound, which is loose so that a loaded host
        does not fail it. */
     check(dsd_time_monotonic_ms() - idle_start < 2000U, "and no wait");
@@ -244,22 +261,30 @@ test_socket_discard_ready(void) {
     int16_t s = 0;
     check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 1, "the first sample");
     check(dsd_socket_send(pair.server, before + 2U, sizeof before - 2U, 0) == (int)(sizeof before - 2U), "send");
-    check(dsd_socket_wait(pair.client, DSD_SOCKET_WAIT_READ, 1000U) > 0, "the bytes arrived");
-    check(dsd_pcm_stream_discard_ready(stream) == 2, "the two whole samples ready go");
-    const uint8_t after[] = {0x05U, 0x06U, 0x00U};
+    check(socket_holds(pair.client, (long)(sizeof before - 2U)), "the bytes arrived");
+    dsd_input_backlog_mark(&cut);
+    check(cut.measured == 1U && cut.arrived == sizeof before, "the mark counts the bytes read in and ready");
+    /* 0x0605 arrives after the mark, before the discard: the new channel's. */
+    const uint8_t late[] = {0x05U, 0x06U};
+    check(dsd_socket_send(pair.server, late, sizeof late, 0) == (int)sizeof late, "send after the mark");
+    check(socket_holds(pair.client, (long)(sizeof before - 2U + sizeof late)), "it arrived");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 2, "the two whole samples held at the mark go");
+    const uint8_t after[] = {0x00U};
     check(dsd_socket_send(pair.server, after, sizeof after, 0) == (int)sizeof after, "send after the discard");
     check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 0x0504,
           "the part of a sample is kept: the next sample is whole");
     check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 6,
-          "and what came after is kept");
+          "and what came after the mark is kept");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 0, "a second discard on the same mark drops nothing");
     dsd_pcm_stream_close(stream);
+    check(dsd_input_backlog_cut_applies(&cut, stream) == 0, "a closed stream is no input to drop on");
     socket_pair_close(&pair);
 }
 
-/* Issue #834: stdin from another program (a pipe) drops what it holds; a regular file, which nothing feeds, drops
-   nothing. */
+/* Issue #834: stdin from another program (a pipe) drops what it held at the mark; a regular file, which nothing feeds,
+   drops nothing; and a mark made on another input drops nothing of this one. */
 static void
-test_fd_discard_ready(void) {
+test_fd_discard_through(void) {
     int fds[2] = {-1, -1};
     if (make_pipe(fds) != 0) {
         check(0, "pipe for the discard");
@@ -269,12 +294,27 @@ test_fd_discard_ready(void) {
     check(stream != NULL, "open on the pipe for the discard");
     const uint8_t held[] = {0x01U, 0x00U, 0x02U, 0x00U, 0x03U};
     put_bytes(fds[1], held, sizeof held);
-    check(dsd_pcm_stream_discard_ready(stream) == 2, "a pipe drops its two whole samples");
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    check(cut.measured == 1U && cut.arrived == sizeof held, "the mark counts what the pipe holds");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 2, "a pipe drops its two whole samples");
     const uint8_t after[] = {0x00U, 0x07U, 0x00U};
     put_bytes(fds[1], after, sizeof after);
     int16_t s = 0;
     check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 3, "the part sample is kept");
     check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 7, "and what came after");
+    /* Another input attached since: its mark is no mark of this one. */
+    int other[2] = {-1, -1};
+    check(make_pipe(other) == 0, "a second pipe");
+    dsd_pcm_stream* other_stream = dsd_pcm_stream_open_fd(other[0]);
+    const uint8_t more[] = {0x08U, 0x00U};
+    put_bytes(fds[1], more, sizeof more);
+    dsd_input_backlog_mark(&cut);
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 0, "a mark on another input drops nothing of this one");
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 8, "it reads on");
+    dsd_pcm_stream_close(other_stream);
+    (void)dsd_close(other[0]);
+    (void)dsd_close(other[1]);
     dsd_pcm_stream_close(stream);
     (void)dsd_close(fds[0]);
     (void)dsd_close(fds[1]);
@@ -291,7 +331,8 @@ test_fd_discard_ready(void) {
     FILE* file = dsd_fopen_existing_regular_file(path, "rb");
     check(file != NULL, "reopen the file for the discard");
     dsd_pcm_stream* file_stream = file ? dsd_pcm_stream_open_fd(dsd_fileno(file)) : NULL;
-    check(dsd_pcm_stream_discard_ready(file_stream) == 0, "a regular file drops nothing");
+    dsd_input_backlog_mark(&cut);
+    check(dsd_pcm_stream_discard_through(file_stream, &cut) == 0, "a regular file drops nothing");
     check(dsd_pcm_stream_read_wait(file_stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 5, "it reads on");
     dsd_pcm_stream_close(file_stream);
     if (file) {
@@ -321,8 +362,8 @@ main(void) {
     test_pipe_samples_then_end();
     test_regular_file();
     test_socket_idle_then_close();
-    test_socket_discard_ready();
-    test_fd_discard_ready();
+    test_socket_discard_through();
+    test_fd_discard_through();
     dsd_socket_cleanup();
     if (g_failures != 0) {
         return 1;

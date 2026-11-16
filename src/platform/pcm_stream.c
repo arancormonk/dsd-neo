@@ -4,7 +4,9 @@
  */
 
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -20,9 +22,8 @@
 /* How the stream stands: open, at its end, or ended by a read error. */
 enum { PCM_STREAM_OPEN = 0, PCM_STREAM_EOF = 1, PCM_STREAM_FAILED = 2 };
 
-/* The most one discard (dsd_pcm_stream_discard_ready()) takes: the buffer and 20 refills of it, about 4 s of 48 kHz
-   mono (2 s of stereo), and no refill after 250 ms on the monotonic clock, so a sender that outruns the reader cannot
-   hold it there. */
+/* The most one discard (dsd_pcm_stream_discard_through()) takes: the buffer and 20 refills of it, about 4 s of 48 kHz
+   mono (2 s of stereo), and no refill after 250 ms on the monotonic clock. */
 #define DSD_PCM_STREAM_DISCARD_MAX_FILLS 20U
 #define DSD_PCM_STREAM_DISCARD_MAX_MS    250U
 
@@ -34,10 +35,21 @@ struct dsd_pcm_stream {
     int fd;            /* the descriptor read: stdin, or a POSIX socket's; -1 for a Windows socket */
     dsd_socket_t sock; /* the socket waited on, or DSD_INVALID_SOCKET for a descriptor */
     int ended;
-    size_t pos; /* the next unread byte */
-    size_t len; /* the bytes held */
+    size_t pos;             /* the next unread byte */
+    size_t len;             /* the bytes held */
+    dsd_atomic_u64 read_in; /* the bytes read in so far: written by the reader, read by a backlog mark on any thread */
     uint8_t buf[DSD_PCM_STREAM_BUF_BYTES];
 };
+
+/* The stream's count for a backlog mark (<dsd-neo/platform/input_backlog.h>): the bytes read in so far and those the
+   descriptor or socket holds ready. A descriptor that is not a stream holds none. */
+static uint64_t
+pcm_stream_arrived(const void* queue) {
+    const dsd_pcm_stream* stream = (const dsd_pcm_stream*)queue;
+    const long ready = stream->sock != DSD_INVALID_SOCKET ? dsd_socket_readable_bytes(stream->sock)
+                                                          : dsd_fd_readable_bytes(stream->fd);
+    return dsd_atomic_u64_load_relaxed(&stream->read_in) + (ready > 0 ? (uint64_t)ready : 0U);
+}
 
 static dsd_pcm_stream*
 pcm_stream_alloc(int fd, dsd_socket_t sock) {
@@ -48,6 +60,9 @@ pcm_stream_alloc(int fd, dsd_socket_t sock) {
     stream->fd = fd;
     stream->sock = sock;
     stream->ended = PCM_STREAM_OPEN;
+    dsd_atomic_u64_init(&stream->read_in, 0U);
+    /* The input the decoder reads from now on: a rigctl retune's drop is measured on it. */
+    dsd_input_backlog_attach(stream, pcm_stream_arrived);
     return stream;
 }
 
@@ -76,6 +91,7 @@ dsd_pcm_stream_open_socket(dsd_socket_t sock) {
 
 void
 dsd_pcm_stream_close(dsd_pcm_stream* stream) {
+    dsd_input_backlog_detach(stream);
     free(stream);
 }
 
@@ -149,6 +165,8 @@ pcm_stream_fill(dsd_pcm_stream* stream) {
         const long got = pcm_stream_raw_read(stream, stream->buf + stream->len, sizeof(stream->buf) - stream->len);
         if (got > 0) {
             stream->len += (size_t)got;
+            dsd_atomic_u64_store_relaxed(&stream->read_in,
+                                         dsd_atomic_u64_load_relaxed(&stream->read_in) + (uint64_t)got);
             return 1;
         }
         if (got == 0) {
@@ -177,19 +195,29 @@ pcm_stream_wait(const dsd_pcm_stream* stream, unsigned int timeout_ms) {
 }
 
 long
-dsd_pcm_stream_discard_ready(dsd_pcm_stream* stream) {
+dsd_pcm_stream_discard_through(dsd_pcm_stream* stream, const dsd_input_cut* cut) {
     /* A descriptor nothing feeds (a regular file, a console) reports ready whatever a read would do: it holds no
        queued stream, and a read could wait or take the rest of a file. */
-    if (stream == NULL || (stream->sock == DSD_INVALID_SOCKET && !dsd_fd_is_stream(stream->fd))) {
+    if (stream == NULL || (stream->sock == DSD_INVALID_SOCKET && !dsd_fd_is_stream(stream->fd))
+        || !dsd_input_backlog_cut_applies(cut, stream)) {
         return 0;
     }
+    /* The bytes whole samples took so far: those read in, less what the buffer still holds. Only whole samples that
+       had arrived by the mark go; a part of one stays, so the samples after it stay whole. */
+    const uint64_t used = dsd_atomic_u64_load_relaxed(&stream->read_in) - (uint64_t)(stream->len - stream->pos);
+    uint64_t owed = cut->arrived > used ? (cut->arrived - used) & ~(uint64_t)1U : 0U;
     const uint64_t start_ms = dsd_time_monotonic_ms();
     long dropped = 0;
-    for (unsigned int fills = 0U; stream->ended == PCM_STREAM_OPEN; fills++) {
-        const size_t whole = (stream->len - stream->pos) & ~(size_t)1U;
+    for (unsigned int fills = 0U; owed > 0U && stream->ended == PCM_STREAM_OPEN; fills++) {
+        size_t whole = (stream->len - stream->pos) & ~(size_t)1U;
+        if ((uint64_t)whole > owed) {
+            whole = (size_t)owed;
+        }
         stream->pos += whole;
+        owed -= (uint64_t)whole;
         dropped += (long)(whole / 2U);
-        if (fills == DSD_PCM_STREAM_DISCARD_MAX_FILLS
+        /* The rest was ready at the mark, so a refill does not wait for it. */
+        if (owed == 0U || fills == DSD_PCM_STREAM_DISCARD_MAX_FILLS
             || dsd_time_monotonic_ms() - start_ms >= DSD_PCM_STREAM_DISCARD_MAX_MS || pcm_stream_wait(stream, 0U) <= 0
             || pcm_stream_fill(stream) <= 0) {
             break;

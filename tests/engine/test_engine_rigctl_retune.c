@@ -55,6 +55,7 @@
 #include "test_support.h"
 
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #if DSD_PLATFORM_WIN_NATIVE
 #include <fcntl.h>
@@ -574,6 +575,28 @@ test_udp_backlog(void) {
     rc |= expect_true("the samples queued before the confirmation are not read after it", udp_next(opts) == 9);
     rc |= expect_true("the samples after it are read", udp_next(opts) == 10);
 
+    /* What arrives between the confirmation and the next read is the new channel's: kept. */
+    const int16_t old_again[] = {60, 61, 62};
+    rc |= expect_true("the old channel's audio again", udp_queue(tx, port, opts, old_again, 3U));
+    rc |= expect_true("hop back",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC1_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("the new channel's audio before the next read",
+                      udp_send(tx, port, (const int16_t[]){70, 71}, 2U) == 0);
+    dsd_input_cut arrived;
+    for (int tries = 0; tries < 100; tries++) {
+        dsd_input_backlog_mark(&arrived);
+        if (arrived.arrived >= state->input_drop_cut.arrived + 2U) {
+            break;
+        }
+        dsd_sleep_ms(10U);
+    }
+    dsd_symbol_apply_input_drop(opts, state);
+    rc |=
+        expect_true("audio that arrived after the confirmation is kept", udp_next(opts) == 70 && udp_next(opts) == 71);
+    rc |= expect_true("hop",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_symbol_apply_input_drop(opts, state);
+
     const int16_t same[] = {5, 6};
     rc |= expect_true("queued again", udp_queue(tx, port, opts, same, 2U));
     rc |= expect_true("same carrier",
@@ -714,6 +737,199 @@ test_watchdog_tune_drops_at_the_next_read(void) {
         (void)dsd_socket_close(tx);
     }
     udp_input_stop(opts);
+    rig_case_close(&c);
+    return rc;
+}
+
+/* ---- A watchdog retune and the input's queue at the moment it was posted (issue #834) ---- */
+
+static int make_pipe(int fds[2]);
+
+/* What feeds the input under test: a UDP sender, a TCP server's end of the connection, or a pipe's write end. */
+typedef struct {
+    int kind; /* AUDIO_IN_UDP, AUDIO_IN_TCP or AUDIO_IN_STDIN */
+    dsd_socket_t sock;
+    int port;
+    int fd;
+} wait_src;
+
+static int
+wait_src_send(const wait_src* src, int16_t first, size_t count) {
+    if (src->kind == AUDIO_IN_UDP) {
+        return udp_send_ramp(src->sock, src->port, first, count);
+    }
+    uint8_t buf[1024];
+    if (count * 2U > sizeof buf) {
+        return -1;
+    }
+    for (size_t i = 0; i < count; i++) {
+        const uint16_t v = (uint16_t)(first + (int16_t)i);
+        buf[i * 2U] = (uint8_t)(v & 0xFFU);
+        buf[i * 2U + 1U] = (uint8_t)(v >> 8);
+    }
+    if (src->kind == AUDIO_IN_TCP) {
+        return dsd_socket_send(src->sock, buf, count * 2U, 0) == (int)(count * 2U) ? 0 : -1;
+    }
+    return dsd_write(src->fd, buf, count * 2U) == (ssize_t)(count * 2U) ? 0 : -1;
+}
+
+/* The input's next sample, waiting up to half a second for it (INT16_MIN for none). */
+static int16_t
+wait_input_next(dsd_opts* opts) {
+    int16_t s = 0;
+    for (int tries = 0; tries < 25; tries++) {
+        int got = 0;
+        if (opts->audio_in_type == AUDIO_IN_UDP) {
+            got = udp_input_read_sample_wait(opts, &s, 20U);
+        } else if (opts->audio_in_type == AUDIO_IN_TCP) {
+            got = tcp_input_read_sample_wait(opts->tcp_in_ctx, &s, 20U);
+        } else {
+            got = dsd_pcm_stream_read_wait(opts->audio_in_stdin, &s, 20U);
+        }
+        if (got == 1) {
+            return s;
+        }
+    }
+    return INT16_MIN;
+}
+
+/* The P25 watchdog, once the decoder waits on the empty input: it confirms a retune, and the new channel's first
+   audio arrives after it. */
+typedef struct {
+    const wait_src* src;
+    int sent;
+} wait_poster;
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    wait_poster_main(void* arg) {
+    wait_poster* wp = (wait_poster*)arg;
+    dsd_sleep_ms(150U);
+    dsd_frame_sync_note_off_thread_unflushed_retune();
+    wp->sent = wait_src_send(wp->src, 1000, 300U) == 0;
+    DSD_THREAD_RETURN;
+}
+
+/* The decoder thread's next read after a post: what symbol_read() does first. */
+static void
+take_at_the_next_read(dsd_opts* opts, dsd_state* state) {
+    dsd_frame_sync_take_off_thread_unflushed_retunes(opts, state);
+    dsd_symbol_apply_input_drop(opts, state);
+}
+
+/* The drop is of what the input held when the watchdog posted its retune. Audio queued then goes at the decoder's
+   next read; audio that arrived after it is the new channel's and is read, even when it is what ended the read that
+   was waiting when the post came. */
+static int
+watchdog_queue_case(dsd_opts* opts, dsd_state* state, const wait_src* src, const char* what) {
+    char label[160];
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    state->symbol_clock_input = opts->pcm_input_generation;
+    DSD_SNPRINTF(label, sizeof label, "%s: the old channel's audio, its first sample read", what);
+    int rc = expect_true(label, wait_src_send(src, 30, 300U) == 0 && wait_input_next(opts) == 30);
+    dsd_sleep_ms(50U); /* all of it queued */
+    dsd_frame_sync_note_off_thread_unflushed_retune();
+    take_at_the_next_read(opts, state);
+    rc |= expect_true("send after the drop", wait_src_send(src, 500, 2U) == 0);
+    DSD_SNPRINTF(label, sizeof label, "%s: what was queued at the post goes at the next read", what);
+    rc |= expect_true(label, wait_input_next(opts) == 500 && wait_input_next(opts) == 501);
+
+    const uint32_t e = state->symbol_clock_epoch;
+    wait_poster wp = {src, 0};
+    dsd_thread_t th;
+    rc |= expect_true("watchdog", dsd_thread_create(&th, wait_poster_main, &wp) == 0);
+    (void)getSymbol(opts, state, 0); /* waits on the empty input; the new channel's audio ends the wait */
+    (void)dsd_thread_join(th);
+    rc |= expect_true("the new channel's audio was sent", wp.sent);
+    take_at_the_next_read(opts, state);
+    rc |= expect_true("the post is taken once", state->symbol_clock_epoch == e + 1U);
+    const int16_t next = wait_input_next(opts);
+    DSD_SNPRINTF(label, sizeof label, "%s: the new channel's audio after the read it ended is kept (next %d)", what,
+                 (int)next);
+    rc |= expect_true(label, next > 1000 && next < 1300);
+    return rc;
+}
+
+static int
+test_watchdog_post_drops_only_what_was_queued(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_UDP) != 0) {
+        return expect_true("queue at the post: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    dsd_engine_net_audio_input_hooks_install();
+
+    /* UDP: the ring. */
+    int rc = expect_true("udp input", udp_input_start(opts, "127.0.0.1", 0, 48000) == 0);
+    wait_src udp = {AUDIO_IN_UDP, dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP), bound_port(opts->udp_in_sockfd),
+                    -1};
+    rc |= expect_true("udp sender", udp.sock != DSD_INVALID_SOCKET && udp.port > 0);
+    if (rc == 0) {
+        rc |= watchdog_queue_case(opts, state, &udp, "udp");
+    }
+    if (udp.sock != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(udp.sock);
+    }
+    udp_input_stop(opts);
+
+    /* TCP: the reader's buffer and the socket. */
+    opts->audio_in_type = AUDIO_IN_TCP;
+    dsd_socket_t listener = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    dsd_socket_t client = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr;
+    DSD_MEMSET(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    const int tcp_ok = listener != DSD_INVALID_SOCKET && client != DSD_INVALID_SOCKET
+                       && dsd_socket_bind(listener, (struct sockaddr*)&addr, sizeof addr) == 0
+                       && dsd_socket_listen(listener, 1) == 0;
+    rc |= expect_true("tcp sockets", tcp_ok);
+    if (tcp_ok) {
+        struct sockaddr_in bound;
+        DSD_MEMSET(&bound, 0, sizeof bound);
+        bound.sin_family = AF_INET;
+        bound.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        bound.sin_port = htons((uint16_t)bound_port(listener));
+        rc |= expect_true("tcp connect", dsd_socket_connect(client, (struct sockaddr*)&bound, sizeof bound) == 0);
+        wait_src tcp = {AUDIO_IN_TCP, dsd_socket_accept(listener, NULL, NULL), 0, -1};
+        opts->tcp_in_ctx = tcp_input_open(client, 48000);
+        rc |= expect_true("tcp input", tcp.sock != DSD_INVALID_SOCKET && opts->tcp_in_ctx != NULL);
+        if (tcp.sock != DSD_INVALID_SOCKET && opts->tcp_in_ctx != NULL) {
+            rc |= watchdog_queue_case(opts, state, &tcp, "tcp");
+        }
+        tcp_input_close(opts->tcp_in_ctx);
+        opts->tcp_in_ctx = NULL;
+        if (tcp.sock != DSD_INVALID_SOCKET) {
+            (void)dsd_socket_close(tcp.sock);
+        }
+    }
+    if (client != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(client);
+    }
+    if (listener != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(listener);
+    }
+
+    /* stdin from another program: the reader's buffer and the pipe. */
+    opts->audio_in_type = AUDIO_IN_STDIN;
+    int fds[2] = {-1, -1};
+    const int pipe_ok = make_pipe(fds) == 0;
+    rc |= expect_true("pipe", pipe_ok);
+    if (pipe_ok) {
+        opts->audio_in_stdin = dsd_pcm_stream_open_fd(fds[0]);
+        wait_src pipe_src = {AUDIO_IN_STDIN, DSD_INVALID_SOCKET, 0, fds[1]};
+        rc |= expect_true("stdin reader", opts->audio_in_stdin != NULL);
+        if (opts->audio_in_stdin != NULL) {
+            rc |= watchdog_queue_case(opts, state, &pipe_src, "stdin");
+        }
+        dsd_pcm_stream_close(opts->audio_in_stdin);
+        opts->audio_in_stdin = NULL;
+        (void)dsd_close(fds[0]);
+        (void)dsd_close(fds[1]);
+    }
     rig_case_close(&c);
     return rc;
 }
@@ -988,6 +1204,7 @@ main(void) {
     rc |= test_dmr_follow_end_to_end();
     rc |= test_udp_backlog();
     rc |= test_watchdog_tune_drops_at_the_next_read();
+    rc |= test_watchdog_post_drops_only_what_was_queued();
     rc |= test_watchdog_post_and_an_input_switch();
     rc |= test_drop_belongs_to_its_input();
     rc |= test_tcp_backlog();

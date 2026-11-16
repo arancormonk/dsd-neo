@@ -22,6 +22,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <time.h>
@@ -136,6 +137,18 @@ dsd_fd_is_stream(int fd) {
         return 0;
     }
     return (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode)) ? 1 : 0;
+}
+
+long
+dsd_fd_readable_bytes(int fd) {
+    if (!dsd_fd_is_stream(fd)) {
+        return -1;
+    }
+    int ready = 0;
+    if (ioctl(fd, FIONREAD, &ready) != 0 || ready < 0) {
+        return -1;
+    }
+    return (long)ready;
 }
 
 int

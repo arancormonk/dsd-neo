@@ -14,6 +14,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_H_H
 
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 
 #include <dsd-neo/core/input_level.h>
@@ -1614,14 +1615,17 @@ struct dsd_state {
     uint32_t symbol_clock_input; /* dsd_opts::pcm_input_generation the last symbol was read under (DSP's) */
     /* A rigctl peer confirmed a retune (issue #834): the audio input still holds the frequency left's samples, which
        the decoder thread drops at its next input read (dsd_symbol_apply_input_drop()), as an RTL retune's flush
-       drops them. Decoder-thread owned: a tune off it posts a count instead, which the decoder thread takes at its
+       drops them. Decoder-thread owned: a tune off it posts a mark instead, which the decoder thread takes at its
        next input read (frame_sync_take_unflushed_retunes()), or at the tune notice's reconcile if no read came first
-       (dsd_frame_sync_apply_off_thread_tunes()), and sets this then. A count posted before the input was replaced is
-       never taken (dsd_frame_sync_forget_unflushed_retunes()). */
+       (dsd_frame_sync_apply_off_thread_tunes()), and sets this then. A post an input replacement retired is never
+       taken (dsd_frame_sync_forget_unflushed_retunes()). */
     uint8_t input_drop_pending;
     /* dsd_opts::pcm_input_generation when the drop was asked for: a drop meant for an input since replaced (an input
        switch, a reopened stream) is cleared unrun. */
     uint32_t input_drop_generation;
+    /* Where the input stood when the retune was confirmed (dsd_input_backlog_mark()): the drop takes only what was
+       queued by then, never what arrived after it. */
+    dsd_input_cut input_drop_cut;
     /* Set while the DSP sync anchor (state-ext slot 12, src/dsp/symbol_anchor.c) records or holds a move for the grid;
        the grid looks the anchor up only then. */
     uint8_t symbol_anchor_hot;

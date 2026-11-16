@@ -39,6 +39,7 @@ target_sources(
     PRIVATE
         audio_concealment.c
         env.c
+        input_backlog.c
         nonce.c
         pcm_stream.c
         write_frames.c

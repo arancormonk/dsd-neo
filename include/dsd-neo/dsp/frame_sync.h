@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <time.h> // IWYU pragma: keep
 
 #ifdef __cplusplus
@@ -268,14 +269,25 @@ void dsd_frame_sync_note_off_thread_tune(const dsd_p25p1_decision* read);
 
 /**
  * @brief Note, before that tune's notice (dsd_frame_sync_note_off_thread_tune()), that a tune made off the decoder
- * thread moved a radio whose samples no retune flushes: a rigctl peer heard through an audio input. At its next input
- * read (frame_sync_take_unflushed_retunes()), or at the notice's reconcile if no read came first
- * (dsd_frame_sync_apply_off_thread_tunes()), the decoder thread moves dsd_state::symbol_clock_epoch, as the RTL readers
- * move it at a stream flush, and asks for the input's queued samples to be dropped (dsd_state::input_drop_pending). A
- * post made before the input is replaced is never taken (dsd_frame_sync_forget_unflushed_retunes()). Safe from any
- * thread.
+ * thread moved a radio whose samples no retune flushes: a rigctl peer heard through an audio input. The input is marked
+ * now (dsd_input_backlog_post()). At its next input read (frame_sync_take_unflushed_retunes()), or at the notice's
+ * reconcile if no read came first (dsd_frame_sync_apply_off_thread_tunes()), the decoder thread moves
+ * dsd_state::symbol_clock_epoch, as the RTL readers move it at a stream flush, and asks for what the input held at the
+ * mark to be dropped (dsd_state::input_drop_pending). A post an input replacement retires is never taken
+ * (dsd_frame_sync_forget_unflushed_retunes()). Safe from any thread.
  */
 void dsd_frame_sync_note_off_thread_unflushed_retune(void);
+
+/**
+ * @brief Ask for an input drop (issue #834): a rigctl peer confirmed a retune, at @p cut, while the audio input still
+ * held the frequency left's samples. Decoder thread; carried out at its next input read (dsd_symbol_apply_input_drop()),
+ * of what the input held at @p cut only.
+ *
+ * @param opts Decoder options (the input).
+ * @param state Decoder state taking the request.
+ * @param cut Where the input stood at the confirmation (dsd_input_backlog_mark()).
+ */
+void dsd_frame_sync_request_input_drop(const dsd_opts* opts, dsd_state* state, const dsd_input_cut* cut);
 
 /**
  * @brief On the decoder thread, take an unflushed retune posted off it

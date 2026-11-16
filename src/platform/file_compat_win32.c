@@ -1271,6 +1271,18 @@ dsd_fd_is_stream(int fd) {
     return (handle != INVALID_HANDLE_VALUE && GetFileType(handle) == FILE_TYPE_PIPE) ? 1 : 0;
 }
 
+long
+dsd_fd_readable_bytes(int fd) {
+    if (!dsd_fd_is_stream(fd)) {
+        return -1;
+    }
+    DWORD available = 0;
+    if (!PeekNamedPipe((HANDLE)_get_osfhandle(fd), NULL, 0, NULL, &available, NULL)) {
+        return -1;
+    }
+    return available > (DWORD)LONG_MAX ? LONG_MAX : (long)available;
+}
+
 ssize_t
 dsd_write(int fd, const void* buf, size_t count) {
     if (dsd_fd_is_negative(fd)) {

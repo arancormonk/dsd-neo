@@ -234,6 +234,15 @@ enum { DSD_SOCKET_WAIT_READ = 1, DSD_SOCKET_WAIT_WRITE = 2 };
 int dsd_socket_wait(dsd_socket_t sock, int events, unsigned int timeout_ms);
 
 /**
+ * @brief The bytes a connected socket holds ready to read, without reading them (FIONREAD). Safe while another thread
+ * reads the socket.
+ *
+ * @param sock Socket handle.
+ * @return The bytes ready, or -1 on failure.
+ */
+long dsd_socket_readable_bytes(dsd_socket_t sock);
+
+/**
  * @brief Set socket receive timeout.
  *
  * @param sock          Socket handle.

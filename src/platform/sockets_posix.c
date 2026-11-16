@@ -16,6 +16,7 @@
 #include <poll.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -216,6 +217,15 @@ dsd_socket_set_nonblocking(dsd_socket_t sock, int nonblock) {
         flags &= ~O_NONBLOCK;
     }
     return fcntl(sock, F_SETFL, flags);
+}
+
+long
+dsd_socket_readable_bytes(dsd_socket_t sock) {
+    int ready = 0;
+    if (sock == DSD_INVALID_SOCKET || ioctl(sock, FIONREAD, &ready) != 0 || ready < 0) {
+        return -1;
+    }
+    return (long)ready;
 }
 
 int

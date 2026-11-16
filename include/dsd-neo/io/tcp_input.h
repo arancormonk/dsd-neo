@@ -15,6 +15,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_TCP_INPUT_H_
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/sockets.h>
 #include <stdint.h>
 
@@ -58,13 +59,15 @@ void tcp_input_close(tcp_input_ctx* ctx);
 int tcp_input_read_sample_wait(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms);
 
 /**
- * @brief Drop the samples the connection holds now, buffered or ready on the socket (dsd_pcm_stream_discard_ready()):
- * what a rigctl peer sent before its retune (issue #834). Bytes that arrive later are kept.
+ * @brief Drop the samples the connection held when @p cut was marked, buffered or ready on the socket
+ * (dsd_pcm_stream_discard_through()): what a rigctl peer sent before its retune (issue #834). Bytes that arrived after
+ * the mark are kept.
  *
  * @param ctx TCP input context (may be NULL).
+ * @param cut The mark of the retune (dsd_input_backlog_mark()).
  * @return The samples dropped.
  */
-long tcp_input_discard_pending(tcp_input_ctx* ctx);
+long tcp_input_discard_through(tcp_input_ctx* ctx, const dsd_input_cut* cut);
 
 /**
  * @brief Check if TCP input context is valid and connected.

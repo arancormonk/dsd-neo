@@ -112,26 +112,30 @@ dsd_audio_stream* dsd_audio_open_output(const dsd_audio_params* params);
 int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
 
 /**
- * @brief Drop the input samples the stream holds now, unread (issue #834: a rigctl peer's audio from before its
- * retune).
+ * @brief Drop the input samples the stream holds now, unread, but for the newest @p keep_ns of them (issue #834: a
+ * rigctl peer's audio from before its retune; the audio captured since the retune was confirmed is kept).
  *
- * Per backend:
+ * A device captures in real time, so the newest @p keep_ns of what it holds is the audio captured since then. Per
+ * backend:
  * - PulseAudio (Linux, macOS), a best effort: what the client holds from the server (the rest of the record fragment
- *   being read, the queue behind it) is read and dropped until a read waits for audio; that read's frames go too. At
+ *   being read, the queue behind it) is read until a read waits for audio; that read's frames count as held too. At
  *   most 2 s of frames at the stream's rate, exact to one 32-frame read (the cap is checked before each read, so up to
  *   31 frames past it), no read begun after 250 ms on the monotonic clock, and the last read waits up to one record
- *   block (about 100 ms) on top of that.
+ *   block (about 100 ms) on top of that. pa_simple says nothing of what it holds before it is read, so the newest
+ *   frames read are kept in the stream and returned first by dsd_audio_read().
  * - PortAudio (Windows): one snapshot of the frames the stream reports available at the call
- *   (Pa_GetStreamReadAvailable(), at most its input buffer), read without a wait; no frame or time cap of its own.
- * - AAudio (Android): the frames reads with no wait return, at most 96000 frames (2 s at 48 kHz), exact to one
- *   256-frame read (up to 255 frames past it), no read begun after 250 ms.
- * Audio still on its way to DSD-neo (in the producer, or in the sound server) arrives after the call and is kept. The
- * stream object itself is not changed, only what its device holds.
+ *   (Pa_GetStreamReadAvailable(), at most its input buffer), less those kept, read without a wait; no frame or time
+ *   cap of its own.
+ * - AAudio (Android): the frames the device wrote and no read took (AAudioStream_getFramesWritten() less
+ *   AAudioStream_getFramesRead()), less those kept, read with no wait: at most 96000 frames (2 s at 48 kHz), no read
+ *   begun after 250 ms.
+ * Audio still on its way to DSD-neo (in the producer, or in the sound server) arrives after the call and is kept.
  *
  * @param stream    Input stream handle.
+ * @param keep_ns   The newest audio to keep, in nanoseconds of capture (0 drops all held).
  * @return Frames dropped, or negative on error (an output stream included).
  */
-int dsd_audio_discard_input(const dsd_audio_stream* stream);
+int dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t keep_ns);
 
 /**
  * @brief Write audio samples to output stream.

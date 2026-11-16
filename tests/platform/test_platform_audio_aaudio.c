@@ -84,6 +84,7 @@ static struct {
     aaudio_result_t read_result;
     int64_t frames_written;
     int64_t frames_read;
+    int64_t input_frames_taken; /* frames AAudioStream_read() returned */
     int64_t frames_read_step;
     int frames_read_error;
     int thread_create_calls;
@@ -410,6 +411,7 @@ AAudioStream_read(AAudioStream* stream, void* buffer, int32_t frames, int64_t ti
     if (buffer != NULL) {
         DSD_MEMSET(buffer, 0, (size_t)frames * (size_t)g.device_channels * sizeof(int16_t));
     }
+    g.input_frames_taken += frames;
     return frames;
 }
 
@@ -992,6 +994,26 @@ test_input_stream(void) {
     g.read_result = AAUDIO_OK;
     assert(dsd_audio_read(stream, buffer, 8) == -1);
     assert(strcmp(dsd_audio_get_error(), "AAUDIO_ERROR_TIMEOUT") == 0);
+    dsd_audio_close(stream);
+
+    /* Issue #834: an input discard reads the frames the device wrote and no read took, less the newest it keeps (the
+       audio captured since the mark: 5 ms at 48 kHz is 240 frames); a keep longer than what is held keeps it all. */
+    reset_fakes();
+    g.device_rate = 48000;
+    g.device_channels = 1;
+    stream = dsd_audio_open_input(&params);
+    assert(stream != NULL);
+    g.frames_read_step = 0; /* the fake's reads leave the read count where the test puts it */
+    g.frames_written = 600;
+    g.frames_read = 0;
+    assert(dsd_audio_discard_input(stream, 0U) == 600);
+    assert(g.input_frames_taken == 600);
+    g.frames_written = 1200; /* 600 more held */
+    g.frames_read = 600;
+    assert(dsd_audio_discard_input(stream, 5000000U) == 360);
+    assert(g.input_frames_taken == 960);
+    assert(dsd_audio_discard_input(stream, 1000000000U) == 0);
+    assert(g.input_frames_taken == 960);
     dsd_audio_close(stream);
 
     /* Input is never resampled: a mismatched grant is a clean failure. */

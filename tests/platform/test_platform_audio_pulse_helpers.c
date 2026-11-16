@@ -45,6 +45,11 @@ static char g_pa_simple_new_app[64];
 static int g_pa_simple_error;
 static int g_pa_simple_read_fail;
 static int g_pa_simple_read_calls;
+/* A capture the input reads (issue #834): mono frames numbered from g_pa_capture_next, g_pa_capture_held of them held
+   at once; a read past them waits 2 ms on the fake clock for the rest. Off unless g_pa_capture_on. */
+static int g_pa_capture_on;
+static int16_t g_pa_capture_next;
+static size_t g_pa_capture_held;
 static int g_pa_simple_write_fail;
 static int g_pa_simple_write_calls;
 static int g_pa_simple_drain_fail;
@@ -60,6 +65,9 @@ reset_pa_simple_fakes(void) {
     g_pa_simple_error = 0;
     g_pa_simple_read_fail = 0;
     g_pa_simple_read_calls = 0;
+    g_pa_capture_on = 0;
+    g_pa_capture_next = 0;
+    g_pa_capture_held = 0U;
     g_pa_simple_write_fail = 0;
     g_pa_simple_write_calls = 0;
     g_pa_simple_drain_fail = 0;
@@ -223,6 +231,19 @@ pa_simple_read(pa_simple* s, void* data, size_t bytes, int* error) {
     }
     if (data != NULL) {
         DSD_MEMSET(data, 0, bytes);
+    }
+    if (g_pa_capture_on && data != NULL) {
+        const size_t frames = bytes / sizeof(int16_t);
+        int16_t* out = (int16_t*)data;
+        for (size_t i = 0; i < frames; i++) {
+            out[i] = g_pa_capture_next++;
+        }
+        if (frames > g_pa_capture_held) {
+            g_now_ns += 2000000ULL;
+            g_pa_capture_held = 0U;
+        } else {
+            g_pa_capture_held -= frames;
+        }
     }
     if (error != NULL) {
         *error = 0;
@@ -848,6 +869,45 @@ test_pulse_enum_callbacks_and_guards(void) {
     assert(strcmp(dsd_audio_get_error(), "Internal error: unexpected enumeration state") == 0);
 }
 
+/* Issue #834: an input discard reads what the client holds, up to the read that waits, and keeps the newest of it for
+   the reads that follow: 1 ms at 48 kHz is 48 frames. Keeping none drops it all, as before. */
+static void
+test_pulse_input_discard_keeps_the_newest(void) {
+    reset_pa_simple_fakes();
+    dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
+    params.sample_rate = 48000;
+    params.channels = 1;
+    params.bits_per_sample = 16;
+    params.app_name = "dsd-neo-test";
+    dsd_audio_stream* in = dsd_audio_open_input(&params);
+    assert(in != NULL);
+    g_pa_capture_on = 1;
+    /* Held: frames 0..99. The discard reads 32 at a time; its fourth read waits and brings frames 96..127. */
+    g_pa_capture_held = 100U;
+    assert(dsd_audio_discard_input(in, 1000000U) == 80);
+    int16_t frames[50];
+    assert(dsd_audio_read(in, frames, 1) == 1 && frames[0] == 80);
+    assert(dsd_audio_read(in, frames, 50) == 50);
+    for (int i = 0; i < 50; i++) {
+        assert(frames[i] == (int16_t)(81 + i)); /* 81..127 kept, then the device's own from 128 */
+    }
+    /* What a discard kept and no read took is the oldest of what the next discard drops. */
+    g_pa_capture_held = 0U;
+    assert(dsd_audio_discard_input(in, 0U) == 32);
+    assert(dsd_audio_read(in, frames, 1) == 1 && frames[0] == 163);
+    /* A held carry, then a discard keeping 48: the carry goes first. */
+    g_pa_capture_held = 10U;
+    assert(dsd_audio_discard_input(in, 1000000U) == 0);
+    assert(dsd_audio_read(in, frames, 1) == 1 && frames[0] == 164);
+    g_pa_capture_held = 200U;
+    const int dropped = dsd_audio_discard_input(in, 1000000U);
+    assert(dsd_audio_read(in, frames, 1) == 1);
+    assert(dropped > 0 && frames[0] == (int16_t)(165 + dropped));
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+}
+
 int
 main(void) {
     test_pulse_size_helpers();
@@ -860,6 +920,7 @@ main(void) {
     test_pulse_async_device_recovery();
     test_pulse_sync_device_recovery();
     test_pulse_enum_callbacks_and_guards();
+    test_pulse_input_discard_keeps_the_newest();
     return 0;
 }
 

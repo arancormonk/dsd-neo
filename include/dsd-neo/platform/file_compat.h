@@ -479,6 +479,15 @@ int dsd_fd_wait_readable(int fd, unsigned int timeout_ms);
 int dsd_fd_is_stream(int fd);
 
 /**
+ * @brief The bytes a pipe, FIFO or socket descriptor holds ready to read, without reading them (FIONREAD; on Windows
+ * PeekNamedPipe() on a pipe). Safe while another thread reads the descriptor.
+ *
+ * @param fd File descriptor.
+ * @return The bytes ready, or -1 for a descriptor that is not such a stream and on failure.
+ */
+long dsd_fd_readable_bytes(int fd);
+
+/**
  * @brief Write to a file descriptor.
  *
  * @param fd        File descriptor.

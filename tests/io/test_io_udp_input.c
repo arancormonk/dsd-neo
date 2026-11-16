@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
@@ -439,37 +440,59 @@ test_counters_race_free_under_snapshots(void) {
     return rc;
 }
 
-/* Issue #834: a rigctl peer's confirmed retune drops the samples the ring holds, and the samples sent after it are
-   read. */
+/* Issue #834: a rigctl peer's confirmed retune drops the samples the ring held at its mark, and the samples written
+   after the mark are read. */
 static int
-test_discard_pending(void) {
+test_discard_through(void) {
     int rc = 0;
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.wav_sample_rate = 48000;
-    rc |= expect_int("a discard with no input", (int)udp_input_discard_pending(&opts), 0);
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    rc |= expect_int("a discard with no input", (int)udp_input_discard_through(&opts, &cut), 0);
     if (udp_input_start(&opts, "127.0.0.1", 0, 48000) != 0) {
         DSD_FPRINTF(stderr, "udp_input_start failed for the discard\n");
         return 1;
     }
+    rc |= expect_int("a mark made before the input started drops nothing of it",
+                     (int)udp_input_discard_through(&opts, &cut), 0);
     const int port = get_bound_port(opts.udp_in_sockfd);
     dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     const int16_t before[] = {11, 12, 13};
+    const int16_t late[] = {15};
     const int16_t after[] = {21, 22};
     if (tx == DSD_INVALID_SOCKET || send_pcm16le(tx, "127.0.0.1", port, before, 3) != 0) {
         DSD_FPRINTF(stderr, "failed to send the samples before the discard\n");
         rc = 1;
     } else {
-        /* The datagram may still be on its way to the ring: discards until it has gone, nothing sent meanwhile. */
-        long dropped = 0;
-        for (int tries = 0; tries < 100 && dropped < 3; tries++) {
-            dropped += udp_input_discard_pending(&opts);
-            if (dropped < 3) {
-                dsd_sleep_ms(10U);
+        /* The datagram may still be on its way to the ring: marks until the ring has it. */
+        for (int tries = 0; tries < 100; tries++) {
+            dsd_input_backlog_mark(&cut);
+            if (cut.arrived >= 3U) {
+                break;
             }
+            dsd_sleep_ms(10U);
         }
-        rc |= expect_int("the queued samples go", (int)dropped, 3);
+        rc |= expect_int("the mark counts the samples written", (int)cut.arrived, 3);
+        /* One more written after the mark, before the discard: the new channel's. */
+        rc |= expect_int("send after the mark", send_pcm16le(tx, "127.0.0.1", port, late, 1), 0);
+        dsd_input_cut now;
+        for (int tries = 0; tries < 100; tries++) {
+            dsd_input_backlog_mark(&now);
+            if (now.arrived >= 4U) {
+                break;
+            }
+            dsd_sleep_ms(10U);
+        }
+        rc |= expect_int("the queued samples go", (int)udp_input_discard_through(&opts, &cut), 3);
         rc |= expect_int("send after the discard", send_pcm16le(tx, "127.0.0.1", port, after, 2), 0);
+        int16_t first = 0;
+        int got_first = -1;
+        for (int tries = 0; tries < 50 && got_first < 0; tries++) {
+            got_first = udp_input_read_sample_wait(&opts, &first, 20U);
+        }
+        rc |= expect_int("the sample written after the mark is read", got_first == 1 && first == late[0], 1);
         for (int i = 0; i < 2; i++) {
             int16_t sample = 0;
             int got = -1;
@@ -511,7 +534,7 @@ main(void) {
     if (test_counters_race_free_under_snapshots() != 0) {
         goto cleanup;
     }
-    if (test_discard_pending() != 0) {
+    if (test_discard_through() != 0) {
         goto cleanup;
     }
 

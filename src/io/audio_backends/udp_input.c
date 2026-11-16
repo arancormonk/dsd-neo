@@ -8,6 +8,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
@@ -34,6 +35,9 @@ typedef struct udp_input_ring {
     size_t cap; // in samples
     size_t head;
     size_t tail;
+    /* Samples written so far, a backlog mark's count (issue #834): written under m, read by a mark on any thread. Those
+       taken out, read or dropped, are written less those the ring holds. */
+    dsd_atomic_u64 written;
     dsd_mutex_t m;
     dsd_cond_t cv;
 } udp_input_ring;
@@ -63,6 +67,7 @@ ring_init(udp_input_ring* r, size_t cap_samples) {
     r->buf = (int16_t*)malloc(cap_samples * sizeof(int16_t));
     r->cap = (r->buf ? cap_samples : 0);
     r->head = r->tail = 0;
+    dsd_atomic_u64_init(&r->written, 0U);
     dsd_mutex_init(&r->m);
     dsd_cond_init(&r->cv);
 }
@@ -115,6 +120,7 @@ ring_write(udp_input_ring* r, const int16_t* data, size_t count) {
         r->buf[r->head] = data[w++];
         r->head = (r->head + 1) % r->cap;
     }
+    dsd_atomic_u64_store_relaxed(&r->written, dsd_atomic_u64_load_relaxed(&r->written) + (uint64_t)w);
     return w;
 }
 
@@ -242,6 +248,14 @@ udp_input_bind_address(const char* bindaddr, int port, struct sockaddr_in* addr)
     return 0;
 }
 
+/* The ring's count for a backlog mark (<dsd-neo/platform/input_backlog.h>): the samples written into it so far. The
+   datagrams the socket holds that the receive thread has not taken yet count as later. */
+static uint64_t
+udp_input_arrived(const void* queue) {
+    const udp_input_ctx* ctx = (const udp_input_ctx*)queue;
+    return dsd_atomic_u64_load_relaxed(&ctx->ring.written);
+}
+
 /**
  * @brief Start UDP input thread and ring.
  *
@@ -313,8 +327,11 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
 
     opts->udp_in_ctx = ctx;
     opts->udp_in_sockfd = sockfd;
+    /* The input the decoder reads from now on: a rigctl retune's drop is measured on its ring. */
+    dsd_input_backlog_attach(ctx, udp_input_arrived);
     int rc = dsd_thread_create(&ctx->th, udp_rx_thread, ctx);
     if (rc != 0) {
+        dsd_input_backlog_detach(ctx);
         ring_destroy(&ctx->ring);
         dsd_socket_close(sockfd);
         free(ctx);
@@ -336,6 +353,7 @@ udp_input_stop(dsd_opts* opts) {
         return;
     }
     udp_input_ctx* ctx = (udp_input_ctx*)opts->udp_in_ctx;
+    dsd_input_backlog_detach(ctx);
     dsd_socket_t sockfd = ctx->sockfd;
     atomic_store(&ctx->running, 0);
     // wake any blocked reader
@@ -376,14 +394,18 @@ udp_input_read_sample(dsd_opts* opts, int16_t* out) {
 }
 
 long
-udp_input_discard_pending(dsd_opts* opts) {
-    if (!opts || !opts->udp_in_ctx) {
+udp_input_discard_through(dsd_opts* opts, const dsd_input_cut* cut) {
+    if (!opts || !opts->udp_in_ctx || !dsd_input_backlog_cut_applies(cut, opts->udp_in_ctx)) {
         return 0;
     }
     udp_input_ctx* ctx = (udp_input_ctx*)opts->udp_in_ctx;
     dsd_mutex_lock(&ctx->ring.m);
-    const size_t dropped = ring_used(&ctx->ring);
-    ctx->ring.tail = ctx->ring.head;
+    const size_t used = ring_used(&ctx->ring);
+    /* The samples read or dropped so far are those written less those the ring still holds. */
+    const uint64_t gone = dsd_atomic_u64_load_relaxed(&ctx->ring.written) - (uint64_t)used;
+    const uint64_t owed = cut->arrived > gone ? cut->arrived - gone : 0U;
+    const size_t dropped = owed < (uint64_t)used ? (size_t)owed : used;
+    ctx->ring.tail = (ctx->ring.tail + dropped) % ctx->ring.cap;
     dsd_mutex_unlock(&ctx->ring.m);
     return (long)dropped;
 }

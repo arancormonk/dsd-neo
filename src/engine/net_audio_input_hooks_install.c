@@ -23,8 +23,8 @@ dsd_engine_net_audio_input_hooks_install(void) {
     hooks.udp_stop = udp_input_stop;
     hooks.udp_read_sample = udp_input_read_sample;
     hooks.udp_read_sample_wait = udp_input_read_sample_wait;
-    hooks.tcp_discard_pending = tcp_input_discard_pending;
-    hooks.udp_discard_pending = udp_input_discard_pending;
+    hooks.tcp_discard_through = tcp_input_discard_through;
+    hooks.udp_discard_through = udp_input_discard_through;
     hooks.tcp_connect = ConnectBounded;
 
     dsd_net_audio_input_hooks_set(hooks);

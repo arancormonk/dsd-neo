@@ -22,6 +22,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
@@ -197,9 +198,10 @@ dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t s
     }
     state->symbol_clock_epoch++;
     /* The input still holds the frequency left's samples: the decoder thread drops them at its next input read
-       (dsd_symbol_apply_input_drop()), outside this tune. */
-    state->input_drop_pending = 1U;
-    state->input_drop_generation = opts->pcm_input_generation;
+       (dsd_symbol_apply_input_drop()), outside this tune, up to where the input stands now. */
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    dsd_frame_sync_request_input_drop(opts, state, &cut);
 }
 
 /* Off the decoder thread, a tune request's one read of the P25p1 decision the decoder publishes
