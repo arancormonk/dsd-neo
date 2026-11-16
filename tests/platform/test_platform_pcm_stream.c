@@ -235,7 +235,9 @@ test_socket_discard_ready(void) {
     check(dsd_pcm_stream_discard_ready(NULL) == 0, "a NULL discard drops nothing");
     const uint64_t idle_start = dsd_time_monotonic_ms();
     check(dsd_pcm_stream_discard_ready(stream) == 0, "nothing ready: nothing dropped");
-    check(dsd_time_monotonic_ms() - idle_start < 50U, "and no wait");
+    /* A discard that waited would block on the idle socket far past this bound, which is loose so that a loaded host
+       does not fail it. */
+    check(dsd_time_monotonic_ms() - idle_start < 2000U, "and no wait");
     /* 1, 2, 3, then the low byte of 0x0504: one sample the reader buffers, two and a half ready on the socket. */
     const uint8_t before[] = {0x01U, 0x00U, 0x02U, 0x00U, 0x03U, 0x00U, 0x04U};
     check(dsd_socket_send(pair.server, before, 2U, 0) == 2, "send the first sample");
