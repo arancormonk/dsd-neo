@@ -11117,6 +11117,43 @@ set_tests_properties(
     RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_BAD_PORT
     PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
 )
+# Issue #743: --print-config exports an I/Q stream input as its own [input] source, in the spec's canonical text, with
+# no tuner key; a build without radio support refuses the spec on the command line instead.
+if(DSD_HAS_RADIO)
+    add_test(
+        NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_IQ_STREAM
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=print-config-iq-stream -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    set_tests_properties(
+        RUNTIME_BOOTSTRAP_PRINT_CONFIG_IQ_STREAM
+        PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+    )
+    # Issue #743 (D8 over B1): a replay with -T under a stream [input] config saves the stream with trunking off; the
+    # autosave and --print-config both pass --validate-config.
+    add_test(
+        NAME RUNTIME_BOOTSTRAP_IQ_STREAM_REPLAY_SAVE_VALIDATES
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=iq-stream-replay-save-validates -D
+            DSD_NEO_IQ_FIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/dmr_t3_cc.iq.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    set_tests_properties(
+        RUNTIME_BOOTSTRAP_IQ_STREAM_REPLAY_SAVE_VALIDATES
+        PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+    )
+else()
+    add_test(
+        NAME RUNTIME_CLI_IQ_STREAM_NEEDS_RADIO
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=iq-stream-needs-radio -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+endif()
 
 add_test(
     NAME RUNTIME_BOOTSTRAP_LIST_PROFILES
@@ -11167,6 +11204,14 @@ if(DSD_HAS_RADIO)
         COMMAND
             ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
             DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-airspy -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    # Issue #743: an I/Q stream's planned rate holds the width before the stream connects.
+    add_test(
+        NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED_IQ_STREAM
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-iq-stream -P
             ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
     )
     add_test(

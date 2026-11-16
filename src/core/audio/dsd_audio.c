@@ -1057,6 +1057,7 @@ dsd_audio_try_open_named_input(dsd_opts* opts) {
         return (dsd_audio_open_tcp_input(opts) == 0) ? 1 : -1;
     }
     if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)
+        || dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)
         || dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
         || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
         || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)

@@ -28,6 +28,7 @@
 #include <dsd-neo/crypto/ecdsa.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/iq_capture.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/iq_wav.h>
@@ -883,13 +884,18 @@ cli_parse_squelch_option(const char* in, dsd_opts* opts, int* out_exit_rc) {
 }
 
 /* The bit of dsd_parse_args()' analog_cli_seen set once a tone switch was given; the bits below it are the analog width
-   options, 1 << dsd_analog_demod. The CLI_SCAN_* bits above it mark the scan options argv set, as opposed to the
-   config file, and pick the name a "no effect" warning uses. */
+   options, 1 << dsd_analog_demod. The CLI_SCAN_* bits above it mark the scan options argv set, as opposed to the config
+   file, and pick the name a "no effect" warning uses. The bits from CLI_TRUNK_SCAN_SEEN up mark the tuning options argv
+   set beyond what the options say, which an I/Q stream input refuses (cli_refuse_tuning_on_iq_stream()). */
 enum {
     CLI_TONE_FILTER_SEEN = 1 << 8,
     CLI_SCAN_VOICE_ONLY_SEEN = 1 << 9,
     CLI_SCAN_MAX_VISIT_SEEN = 1 << 10,
     CLI_SCAN_SKIP_SILENT_SEEN = 1 << 11,
+    CLI_TRUNK_SCAN_SEEN = 1 << 12, /* --trunk-scan or --trunk-scan-off */
+    CLI_RTL_UDP_CONTROL_SEEN = 1 << 13,
+    CLI_AUTO_PPM_SEEN = 1 << 14,
+    CLI_RTLTCP_AUTOTUNE_SEEN = 1 << 15,
 };
 
 /**
@@ -965,7 +971,7 @@ cli_warn_analog_width_without_radio(const dsd_opts* opts, int kind, const char* 
     const char* dev = opts->audio_in_dev;
     if (opts->iq_replay_requested || dsd_opts_audio_in_dev_is_rtl_spec(dev) || dsd_opts_audio_in_dev_is_rtltcp_spec(dev)
         || dsd_opts_audio_in_dev_is_soapy_spec(dev) || dsd_opts_audio_in_dev_is_airspy_spec(dev)
-        || dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
+        || dsd_opts_audio_in_dev_is_iqreplay_spec(dev) || dsd_opts_audio_in_dev_is_iq_stream_spec(dev)) {
         return;
     }
     if (kind == DSD_ANALOG_DEMOD_AM && opts->use_rigctl == 1) {
@@ -1053,6 +1059,91 @@ cli_check_preset_input(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode cl
         return -1;
     }
     return cli_check_tetra_input(opts, cli_mode == DSDCFG_MODE_TETRA, out_exit_rc);
+}
+
+/* -i iqtcp:... / -i iqudp:... (issue #743): the spec is read here, so a field it refuses fails the parse naming that
+   field, and is kept in its canonical form, which every later comparison of the input reads. A build without radio
+   support reads it and refuses the input, as it refuses --iq-replay. Returns 0 when -i named no stream or a stream it
+   took, -1 when refused. */
+static int
+cli_read_iq_stream_spec(dsd_opts* opts, int* out_exit_rc) {
+    if (!dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)) {
+        return 0;
+    }
+    char why[DSD_IQ_NET_SPEC_TEXT_MAX + 128];
+    dsd_iq_net_spec spec;
+    if (dsd_iq_net_spec_parse(opts->audio_in_dev, &spec, why, sizeof why) != 0) {
+        LOG_ERROR("-i: %s\n", why);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return -1;
+    }
+    char canonical[DSD_IQ_NET_SPEC_TEXT_MAX];
+    if (dsd_iq_net_spec_format(&spec, canonical, sizeof canonical) < 0) {
+        LOG_ERROR("-i: %s is not an I/Q stream spec\n", opts->audio_in_dev);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return -1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", canonical);
+#ifdef USE_RADIO
+    return 0;
+#else
+    LOG_ERROR("-i %s: requires a build with radio pipeline support\n",
+              spec.kind == DSD_IQ_NET_KIND_TCP ? "iqtcp" : "iqudp");
+    cli_set_exit_rc(out_exit_rc, 1);
+    return -1;
+#endif
+}
+
+/* The first tuning option argv gave that an I/Q stream refuses, or NULL; @p seen is dsd_parse_args()' analog_cli_seen.
+   -T and -Y each set trunk_cli_seen and clear the other, so the one in force is the one given last. */
+static const char*
+cli_iq_stream_refused_flag(const dsd_opts* opts, int seen) {
+    if (opts->trunk_cli_seen && opts->trunk_enable == 1) {
+        return "-T";
+    }
+    if (opts->trunk_cli_seen && opts->scanner_mode == 1) {
+        return "-Y";
+    }
+    if (seen & CLI_TRUNK_SCAN_SEEN) {
+        return "--trunk-scan";
+    }
+    if (opts->use_rigctl == 1) {
+        return "-U";
+    }
+    if (seen & CLI_RTL_UDP_CONTROL_SEEN) {
+        return "--rtl-udp-control";
+    }
+    if (seen & CLI_AUTO_PPM_SEEN) {
+        return "--auto-ppm";
+    }
+    if (seen & CLI_RTLTCP_AUTOTUNE_SEEN) {
+        return "--rtltcp-autotune";
+    }
+    return NULL;
+}
+
+/* An I/Q stream input (issue #743) decodes the one channel its sender streams: the command line's tuning, trunking,
+   scanning and tuner options are refused naming the flag, before anything opens, and so is --iq-capture (a stream is
+   recorded where it is sent; D5). A config's trunking or scanning is refused at startup too
+   (dsd_runtime_bootstrap()). */
+static int
+cli_refuse_tuning_on_iq_stream(const dsd_opts* opts, int seen, int parse_rc, int* out_exit_rc) {
+    if (parse_rc != DSD_PARSE_CONTINUE || !dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)) {
+        return parse_rc;
+    }
+    const char* flag = cli_iq_stream_refused_flag(opts, seen);
+    if (flag) {
+        LOG_ERROR("%s: the I/Q stream input cannot retune; it decodes the one channel the sender streams.\n", flag);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return DSD_PARSE_ERROR;
+    }
+    if (opts->iq_capture_requested) {
+        LOG_ERROR("--iq-capture: the I/Q stream input is not recorded here; record it in the sending program (an SDR++ "
+                  "baseband WAV replays with --iq-replay).\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return DSD_PARSE_ERROR;
+    }
+    return parse_rc;
 }
 
 static int
@@ -1361,6 +1452,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--rtltcp-autotune") == 0) {                                                               \
             opts->rtltcp_autotune = 1;                                                                                 \
+            analog_cli_seen |= CLI_RTLTCP_AUTOTUNE_SEEN;                                                               \
             cli_env_override("DSD_NEO_TCP_AUTOTUNE", "1");                                                             \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1384,6 +1476,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             }                                                                                                          \
             net_cli.rtl_udp_seen = 1;                                                                                  \
             net_cli.rtl_udp_port = parsed_port;                                                                        \
+            analog_cli_seen |= CLI_RTL_UDP_CONTROL_SEEN;                                                               \
             arg_advance = 2;                                                                                           \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1402,6 +1495,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             }                                                                                                          \
             net_cli.rtl_udp_seen = 1;                                                                                  \
             net_cli.rtl_udp_port = parsed_port;                                                                        \
+            analog_cli_seen |= CLI_RTL_UDP_CONTROL_SEEN;                                                               \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rtl-udp-control-bind") == 0) {                                                          \
@@ -1794,12 +1888,14 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                          out_exit_rc)) {                                                               \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            analog_cli_seen |= CLI_TRUNK_SCAN_SEEN;                                                                    \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--trunk-scan=", 13) == 0) {                                                              \
             if (!cli_add_trunk_scan_list(opts, "--trunk-scan", argv[i] + 13, 0, &trunk_scan_cli_seen, out_exit_rc)) {  \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            analog_cli_seen |= CLI_TRUNK_SCAN_SEEN;                                                                    \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--trunk-scan-off=", 17) == 0) {                                                          \
@@ -1807,6 +1903,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                          out_exit_rc)) {                                                               \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            analog_cli_seen |= CLI_TRUNK_SCAN_SEEN;                                                                    \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--trunk-scan-hold") == 0) {                                                               \
@@ -2019,6 +2116,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm") == 0) {                                                                      \
             opts->rtl_auto_ppm = 1;                                                                                    \
+            analog_cli_seen |= CLI_AUTO_PPM_SEEN;                                                                      \
             cli_env_override("DSD_NEO_AUTO_PPM", "1");                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -2968,9 +3066,10 @@ dsd_warn_ineffective_scan_opts(const dsd_opts* opts, unsigned int seen) {
 
 /* What runs once every option has been read, whatever order they came in. @p analog_cli_seen has bit
    1 << dsd_analog_demod set for each analog width option given (and CLI_TONE_FILTER_SEEN for a tone switch,
-   CLI_SCAN_*_SEEN for each scan option). */
+   CLI_SCAN_*_SEEN for each scan option, and the tuning options' bits an I/Q stream refuses). */
 static int
 cli_finish_parse(dsd_opts* opts, const dsd_state* state, int parse_rc, int analog_cli_seen, int* out_exit_rc) {
+    parse_rc = cli_refuse_tuning_on_iq_stream(opts, analog_cli_seen, parse_rc, out_exit_rc);
     parse_rc = cli_finish_airspy_input(opts, parse_rc, out_exit_rc);
     if (parse_rc == DSD_PARSE_CONTINUE && (analog_cli_seen & (1 << DSD_ANALOG_DEMOD_FM))) {
         cli_warn_analog_width_without_radio(opts, DSD_ANALOG_DEMOD_FM, "--nfm-bandwidth-hz");
@@ -3369,6 +3468,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             }                                                                                                          \
             DSD_STRNCPY(opts->audio_in_dev, optarg, 2047);                                                             \
             opts->audio_in_dev[2047] = '\0';                                                                           \
+            if (cli_read_iq_stream_spec(opts, out_exit_rc) != 0) {                                                     \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             break;                                                                                                     \
         case 'T':                                                                                                      \
             /* Enable trunking features. */                                                                            \

@@ -48,6 +48,25 @@ tetra_rate_replay_advice(int rate_hz, const char* rate_text, int brief, char* ou
     }
 }
 
+/* A raw I/Q stream re-plans its rate to TETRA's when TETRA comes on (issue #743), through a restart, so only a stream
+   whose rate no plan resamples to a TETRA rate reaches its text, which names the rate and the fix: the sending
+   program's sample rate. The brief form fits a toast. */
+static void
+tetra_rate_stream_advice(int rate_hz, const char* rate_text, int brief, char* out, size_t out_size) {
+    if (brief) {
+        DSD_SNPRINTF(out, out_size,
+                     rate_hz % DSD_TETRA_SYMBOL_RATE_HZ != 0
+                         ? "DSP rate %s is no multiple of 18 kHz, and this I/Q stream cannot be resampled to one"
+                         : "DSP rate %s is outside 36 to 144 kHz, and this I/Q stream cannot be resampled to one",
+                     rate_text);
+    } else {
+        DSD_SNPRINTF(out, out_size,
+                     "TETRA needs a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz, not %s: this I/Q "
+                     "stream's rate cannot be resampled to a TETRA rate; change the sample rate in the sending program",
+                     rate_text);
+    }
+}
+
 /* A live radio runs at its DSP bandwidth (an RTL-SDR's cascade lands on it, a SoapySDR or Airspy device is stepped to
    it, issue #806), so the fix is the 72 kHz bandwidth in the input's spec form. TETRA switched on at another one stays
    on but decodes nothing, and the bandwidth is the operator's to change: dsd-neo never moves it on its own, which the
@@ -75,8 +94,11 @@ dsd_tetra_dsp_rate_advice(const dsd_opts* opts, int rate_hz, int brief, char* ou
     }
     char rate_text[DSD_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_analog_width_format(rate_hz, rate_text, sizeof rate_text);
-    if (dsd_input_dsp_rate_policy(opts).source == DSD_ANALOG_RATE_CAPTURE) {
+    const int source = dsd_input_dsp_rate_policy(opts).source;
+    if (source == DSD_ANALOG_RATE_CAPTURE) {
         tetra_rate_replay_advice(rate_hz, rate_text, brief, out, out_size);
+    } else if (source == DSD_ANALOG_RATE_PLANNED) {
+        tetra_rate_stream_advice(rate_hz, rate_text, brief, out, out_size);
     } else {
         tetra_rate_live_advice(opts, rate_text, brief, out, out_size);
     }

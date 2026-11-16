@@ -12062,6 +12062,256 @@ test_bootstrap_replay_saves_the_loaded_input(void) {
 }
 #endif
 
+/* One command line of the I/Q stream rows (issue #743): its arguments after argv[0], and what the parse must say. */
+typedef struct {
+    const char* args[6];
+    int want_rc;          /* DSD_PARSE_CONTINUE or DSD_PARSE_ERROR */
+    const char* want_err; /* text the refusal's message holds, or NULL */
+    const char* want_dev; /* the input the parse leaves, or NULL */
+} cli_stream_row;
+
+static int
+run_cli_stream_row(const cli_stream_row* row) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    char storage[7][256];
+    char* argv[8] = {NULL};
+    int argc = 0;
+    DSD_SNPRINTF(storage[argc], sizeof storage[argc], "%s", "dsd-neo");
+    argv[argc] = storage[argc];
+    argc++;
+    for (size_t i = 0; i < 6 && row->args[i] != NULL; i++) {
+        DSD_SNPRINTF(storage[argc], sizeof storage[argc], "%s", row->args[i]);
+        argv[argc] = storage[argc];
+        argc++;
+    }
+    int argc_effective = 0;
+    int exit_rc = 0;
+    char err[4096];
+    const int rc = parse_args_capture_stderr(argc, argv, opts, state, &argc_effective, &exit_rc, err, sizeof err);
+    int fail = rc != row->want_rc;
+    if (row->want_rc == DSD_PARSE_ERROR) {
+        fail |= exit_rc != 1;
+    }
+    if (row->want_err != NULL) {
+        fail |= strstr(err, row->want_err) == NULL;
+    }
+    if (row->want_dev != NULL) {
+        fail |= strcmp(opts->audio_in_dev, row->want_dev) != 0;
+    }
+    if (fail) {
+        DSD_FPRINTF(stderr, "FAIL: %s %s %s: rc=%d (want %d) exit=%d dev=\"%s\" (want \"%s\") stderr:\n%s\n",
+                    row->args[0], row->args[1] ? row->args[1] : "", row->args[2] ? row->args[2] : "", rc, row->want_rc,
+                    exit_rc, opts->audio_in_dev, row->want_dev ? row->want_dev : "", err);
+    }
+    close_parse_outputs(opts);
+    freeState(state);
+    free(opts);
+    free(state);
+    return fail;
+}
+
+/* Issue #743: -i iqtcp: / -i iqudp: is read while the command line is parsed. A spec that reads is kept in its
+   canonical form; a field it refuses fails the parse with exit 1 and a message naming the field. In a build without
+   radio support the spec is read and refused, as --iq-replay is. */
+static int
+test_iq_stream_spec_on_the_command_line(void) {
+    static const char k_tcp[] = "iqtcp:127.0.0.1:1234:240k:cs16";
+#ifdef USE_RADIO
+    static const cli_stream_row rows[] = {
+        {{"-i", k_tcp, NULL}, DSD_PARSE_CONTINUE, NULL, "iqtcp:127.0.0.1:1234:240000:cs16"},
+        {{"-i", "iqudp:0.0.0.0:7356:1.152M:CF32:851.0125M", NULL},
+         DSD_PARSE_CONTINUE,
+         NULL,
+         "iqudp:0.0.0.0:7356:1152000:cf32:851012500"},
+        {{"-i", "iqtcp:radio.example:1234:48000:cu8:", NULL},
+         DSD_PARSE_CONTINUE,
+         NULL,
+         "iqtcp:radio.example:1234:48000:cu8"},
+        {{"-i", "iqtcp::1234:240k:cs16", NULL}, DSD_PARSE_ERROR, "-i: iqtcp: HOST is empty", NULL},
+        {{"-i", "iqudp::1234:240k:cs16", NULL}, DSD_PARSE_ERROR, "-i: iqudp: BIND is empty", NULL},
+        {{"-i", "iqtcp:h:0:240k:cs16", NULL}, DSD_PARSE_ERROR, "PORT '0' is not a port number from 1 to 65535", NULL},
+        {{"-i", "iqtcp:h:65536:240k:cs16", NULL}, DSD_PARSE_ERROR, "PORT '65536'", NULL},
+        {{"-i", "iqtcp:h:12x:240k:cs16", NULL}, DSD_PARSE_ERROR, "PORT '12x'", NULL},
+        {{"-i", "iqtcp:h:1234:7999:cs16", NULL}, DSD_PARSE_ERROR, "RATE '7999' is outside", NULL},
+        {{"-i", "iqtcp:h:1234:240.5:cs16", NULL}, DSD_PARSE_ERROR, "RATE '240.5' is not a whole number", NULL},
+        {{"-i", "iqtcp:h:1234:240k:s16", NULL}, DSD_PARSE_ERROR, "FORMAT 's16' is not one of", NULL},
+        {{"-i", "iqtcp:h:1234:240k", NULL}, DSD_PARSE_ERROR, "FORMAT is missing", NULL},
+        {{"-i", "iqtcp:h:1234:240k:cs16:5G", NULL}, DSD_PARSE_ERROR, "FREQ '5G' is above", NULL},
+        {{"-i", "iqtcp:h:1234:240k:cs16:851x", NULL}, DSD_PARSE_ERROR, "FREQ '851x' is not a frequency", NULL},
+    };
+#else
+    static const cli_stream_row rows[] = {
+        {{"-i", k_tcp, NULL}, DSD_PARSE_ERROR, "-i iqtcp: requires a build with radio pipeline support", NULL},
+        {{"-i", "iqudp:0.0.0.0:7356:48k:cu8", NULL},
+         DSD_PARSE_ERROR,
+         "-i iqudp: requires a build with radio pipeline support",
+         NULL},
+        {{"-i", "iqtcp:h:0:240k:cs16", NULL}, DSD_PARSE_ERROR, "PORT '0' is not a port number", NULL},
+    };
+#endif
+    int rc = 0;
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        rc |= run_cli_stream_row(&rows[i]);
+    }
+    return rc;
+}
+
+#ifdef USE_RADIO
+/* Issue #743 (D8, D5): an I/Q stream decodes the one channel its sender streams, so the command line's tuning,
+   trunking, scanning and tuner options are refused with exit 1 naming the flag, whichever side of -i they are written
+   on, and --iq-capture is refused for the sending program to record. The same options beside another radio input parse.
+  */
+static int
+test_iq_stream_refuses_tuning_options(void) {
+    static const char k_udp[] = "iqudp:127.0.0.1:7356:240k:cs16";
+    static const char k_cant[] = ": the I/Q stream input cannot retune; it decodes the one channel the sender streams.";
+    static const cli_stream_row rows[] = {
+        {{"-i", k_udp, "-T", NULL}, DSD_PARSE_ERROR, "-T: the I/Q stream input cannot retune", NULL},
+        {{"-T", "-i", k_udp, NULL}, DSD_PARSE_ERROR, "-T: the I/Q stream input cannot retune", NULL},
+        {{"-i", k_udp, "-Y", NULL}, DSD_PARSE_ERROR, "-Y: the I/Q stream input cannot retune", NULL},
+        {{"-i", k_udp, "--trunk-scan", "targets.csv", NULL}, DSD_PARSE_ERROR, "--trunk-scan: the I/Q stream", NULL},
+        {{"--trunk-scan", "a.csv", "--trunk-scan-off", "b.csv", "-i", k_udp},
+         DSD_PARSE_ERROR,
+         "--trunk-scan: the I/Q stream",
+         NULL},
+        {{"-U", "4532", "-i", k_udp, NULL}, DSD_PARSE_ERROR, "-U: the I/Q stream input cannot retune", NULL},
+        {{"-i", k_udp, "--rtl-udp-control", "6020", NULL}, DSD_PARSE_ERROR, "--rtl-udp-control: the I/Q stream", NULL},
+        {{"-i", k_udp, "--auto-ppm", NULL}, DSD_PARSE_ERROR, "--auto-ppm: the I/Q stream input cannot retune", NULL},
+        {{"-i", k_udp, "--rtltcp-autotune", NULL}, DSD_PARSE_ERROR, "--rtltcp-autotune: the I/Q stream", NULL},
+        {{"-i", k_udp, "--iq-capture", "stream.iq", NULL},
+         DSD_PARSE_ERROR,
+         "--iq-capture: the I/Q stream input is not recorded here; record it in the sending program",
+         NULL},
+        {{"-i", "rtl:0:851.375M", "-T", "--auto-ppm", NULL}, DSD_PARSE_CONTINUE, NULL, "rtl:0:851.375M"},
+        {{"-i", "rtltcp:127.0.0.1:1234:851.375M", "-U", "4532", "--rtltcp-autotune", NULL},
+         DSD_PARSE_CONTINUE,
+         NULL,
+         NULL},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        rc |= run_cli_stream_row(&rows[i]);
+    }
+    /* Every refusal is the one sentence after the flag. */
+    cli_stream_row whole = {{"-i", k_udp, "-T", NULL}, DSD_PARSE_ERROR, NULL, NULL};
+    char want[128];
+    DSD_SNPRINTF(want, sizeof want, "-T%s", k_cant);
+    whole.want_err = want;
+    rc |= run_cli_stream_row(&whole);
+    return rc;
+}
+
+/* Bootstrap "dsd-neo" with the @p nargs arguments @p args, a "{ini}" among them standing for a temporary config file
+   holding @p ini; returns what the bootstrap returns, and the stderr it printed in @p err. */
+static int
+bootstrap_with_ini(const char* ini, const char* const* args, int nargs, int* exit_rc, char* err, size_t err_size,
+                   dsd_opts* opts, dsd_state* state) {
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    char cfg_path[1024] = "";
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        return -100;
+    }
+    char storage[8][1024];
+    char* argv[9] = {NULL};
+    int argc = 0;
+    DSD_SNPRINTF(storage[argc], sizeof storage[argc], "%s", "dsd-neo");
+    argv[argc] = storage[argc];
+    argc++;
+    for (int i = 0; i < nargs && argc < 8; i++) {
+        DSD_SNPRINTF(storage[argc], sizeof storage[argc], "%s", strcmp(args[i], "{ini}") == 0 ? cfg_path : args[i]);
+        argv[argc] = storage[argc];
+        argc++;
+    }
+    int argc_effective = 0;
+    err[0] = '\0';
+    dsd_test_capture_stderr cap;
+    int boot = -101;
+    if (dsd_test_capture_stderr_begin(&cap, "runtime_cli_parse_boot") == 0) {
+        boot = dsd_runtime_bootstrap(argc, argv, opts, state, &argc_effective, exit_rc);
+        if (dsd_test_capture_stderr_end(&cap) != 0 || read_file_to_buffer(cap.path, err, err_size) != 0) {
+            boot = -102;
+        }
+        (void)remove(cap.path);
+    }
+    (void)remove(cfg_path);
+    return boot;
+}
+
+/* Issue #743 (D8): a config that runs an I/Q stream with [trunking] enabled, [trunking] scanner or [trunk_scan] enabled
+   is refused at startup with exit 1, naming the key and the fix, before anything opens: the bootstrap returns before
+   the engine runs. A config file named alone runs its own trunking (no command-line option overrides it), and the -Y
+   scanner a config turns on survives -i, which a command line's trunking override does not clear. A stream config
+   without them starts. */
+static int
+test_bootstrap_refuses_config_tuning_on_iq_stream(void) {
+    static const char k_stream[] = "[input]\n"
+                                   "source = \"iqtcp\"\n"
+                                   "iq_host = \"127.0.0.1\"\n"
+                                   "iq_port = 1234\n"
+                                   "iq_rate = \"240k\"\n"
+                                   "iq_format = \"cs16\"\n";
+    static const char* const k_alone[] = {"{ini}"};
+    static const char* const k_cli_stream[] = {"--config", "{ini}", "-i", "iqudp:127.0.0.1:7356:240k:cs16"};
+
+    static const struct {
+        const char* sections;
+        const char* const* args;
+        int nargs;
+        const char* want_key; /* NULL: the start goes on */
+    } cases[] = {
+        {"[trunking]\nenabled = true\n", k_alone, 1, "[trunking] enabled"},
+        {"[trunking]\nscanner = true\n", k_alone, 1, "[trunking] scanner"},
+        {"[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n", k_alone, 1, "[trunk_scan] enabled"},
+        {"[trunking]\nscanner = true\n", k_cli_stream, 4, "[trunking] scanner"},
+        {"[mode]\ndecode = \"dmr\"\n", k_alone, 1, NULL},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char ini[1024];
+        DSD_SNPRINTF(ini, sizeof ini, "%s\n%s", k_stream, cases[i].sections);
+        int exit_rc = -1;
+        char err[4096];
+        const int boot = bootstrap_with_ini(ini, cases[i].args, cases[i].nargs, &exit_rc, err, sizeof err, opts, state);
+        int fail = 0;
+        if (cases[i].want_key != NULL) {
+            char want[160];
+            DSD_SNPRINTF(want, sizeof want, "%s: the I/Q stream input cannot retune", cases[i].want_key);
+            fail = boot != DSD_BOOTSTRAP_ERROR || exit_rc != 1 || strstr(err, want) == NULL
+                   || strstr(err, "--config naming another file") == NULL;
+        } else {
+            fail = boot != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0;
+        }
+        if (fail) {
+            DSD_FPRINTF(stderr, "FAIL: stream config case %zu: boot=%d exit=%d stderr:\n%s\n", i, boot, exit_rc, err);
+            rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return rc;
+}
+#endif
+
 /* [analog] nfm_bandwidth_hz sets the configured width before the CLI runs, and --nfm-bandwidth-hz
  * overrides it; an out-of-range INI value is refused with a warning and leaves the default. */
 static int
@@ -12996,7 +13246,10 @@ main(void) {
 #ifdef USE_RADIO
     rc |= test_nfm_bandwidth_quiet_on_iq_replay();
     rc |= test_bootstrap_replay_saves_the_loaded_input();
+    rc |= test_iq_stream_refuses_tuning_options();
+    rc |= test_bootstrap_refuses_config_tuning_on_iq_stream();
 #endif
+    rc |= test_iq_stream_spec_on_the_command_line();
     rc |= test_bootstrap_analog_config_and_cli_override();
     rc |= test_input_source_tcp_ipv4_roundtrip();
     rc |= test_trunk_scan_long_options_parse();

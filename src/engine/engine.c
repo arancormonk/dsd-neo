@@ -58,6 +58,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -735,6 +736,95 @@ dsd_engine_setup_parse_rtltcp_input(dsd_opts* opts) {
     return 0;
 }
 
+#ifdef USE_RADIO
+/* The lowest stream rate each decode family is known to decode from (issue #743): TETRA's 25 kHz channel needs 25 kHz
+   from a sender that centres it exactly (36 kHz when its centring is approximate), a 12.5 kHz channel's modes 16 kHz,
+   and the 6.25 kHz ones (NXDN48, dPMR) 12 kHz. The widest family the session decodes sets it. */
+static uint32_t
+iq_stream_min_rate_hz(const dsd_opts* opts, const char** out_family) {
+    if (opts->frame_tetra == 1) {
+        *out_family = "TETRA";
+        return 25000U;
+    }
+    const int narrow_only = (opts->frame_nxdn48 || opts->frame_dpmr) && !opts->analog_only && !opts->frame_dmr
+                            && !opts->frame_p25p1 && !opts->frame_p25p2 && !opts->frame_nxdn96 && !opts->frame_ysf
+                            && !opts->frame_dstar && !opts->frame_x2tdma && !opts->frame_m17 && !opts->frame_provoice;
+    if (narrow_only) {
+        *out_family = "a 6.25 kHz channel";
+        return 12000U;
+    }
+    *out_family = "a 12.5 kHz channel";
+    return 16000U;
+}
+
+/* What a start on the stream @p spec says before it opens (issue #743): where a TCP stream connects (a UDP one says
+   where it receives once it is bound, dsd_engine_note_stream_source()), a rate under what the mode decodes from, and
+   under TETRA a stream without FREQ, whose trunked calls cannot be tied to their allocations. */
+static void
+iq_stream_startup_notes(const dsd_opts* opts, const dsd_iq_net_spec* spec) {
+    if (spec->kind == DSD_IQ_NET_KIND_TCP) {
+        LOG_INFO("NOTICE: I/Q stream: connecting to %s:%d (%s, %u samples/s)\n", spec->host, spec->port,
+                 dsd_iq_net_format_name(spec->format), spec->rate_hz);
+    }
+    const char* family = "";
+    const uint32_t min_hz = iq_stream_min_rate_hz(opts, &family);
+    if (spec->rate_hz < min_hz) {
+        LOG_WARN("WARNING: I/Q stream: %u samples/s is below the %u that %s needs%s; decoding may fail. Raise the "
+                 "sending program's sample rate.\n",
+                 spec->rate_hz, min_hz, family,
+                 opts->frame_tetra == 1 ? " (36000 when the sender's channel is not exactly centred)" : "");
+    }
+    if (opts->frame_tetra == 1 && spec->freq_hz == 0U) {
+        LOG_INFO("NOTICE: I/Q stream: no receiver frequency (FREQ) was given, so TETRA decodes signalling and speech "
+                 "but cannot tie trunked calls to the channels their allocations name. Add the sender's centre "
+                 "frequency as the spec's last field (%s:...:FORMAT:FREQ).\n",
+                 spec->kind == DSD_IQ_NET_KIND_TCP ? "iqtcp" : "iqudp");
+    }
+}
+#endif
+
+/* A raw I/Q stream spec (`-i iqtcp:` / `-i iqudp:` or an [input] that builds one, issue #743) read before anything
+   opens: refused with the field it names, or with no radio support in the build; otherwise written back in its
+   canonical form (the key every later comparison of the input reads), the receiver centred on FREQ (0 when not given,
+   never the 850 MHz default or a replay's centre), and a rate no plan takes to the mode's target refused with the
+   planner's reason. -1 when refused. */
+static int
+dsd_engine_setup_parse_iq_stream_input(dsd_opts* opts) {
+    if (!dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)) {
+        return 0;
+    }
+    char why[DSD_IQ_NET_SPEC_TEXT_MAX + 128];
+    dsd_iq_net_spec spec;
+    if (dsd_iq_net_spec_parse(opts->audio_in_dev, &spec, why, sizeof why) != 0) {
+        LOG_ERROR("Invalid I/Q stream input: %s\n", why);
+        return -1;
+    }
+    char canonical[DSD_IQ_NET_SPEC_TEXT_MAX];
+    if (dsd_iq_net_spec_format(&spec, canonical, sizeof canonical) < 0) {
+        LOG_ERROR("Invalid I/Q stream input: %s\n", opts->audio_in_dev);
+        return -1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", canonical);
+#ifndef USE_RADIO
+    LOG_ERROR("The I/Q stream input (%s:) requires a build with radio pipeline support\n",
+              spec.kind == DSD_IQ_NET_KIND_TCP ? "iqtcp" : "iqudp");
+    return -1;
+#else
+    if (dsd_input_dsp_stream_plan_check(opts->audio_in_dev, opts->rtl_dsp_bw_khz, opts->frame_tetra == 1, NULL, why,
+                                        sizeof why)
+        != 0) {
+        LOG_ERROR("I/Q stream: %s.\n", why);
+        return -1;
+    }
+    iq_stream_startup_notes(opts, &spec);
+    opts->rtltcp_enabled = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = spec.freq_hz;
+    dsd_opts_forget_iq_replay_center(opts);
+    return 0;
+#endif
+}
+
 /* The squelch for a startup notice: a level as dsd_squelch_format() writes it, or auto+NdB, noise+NdB. */
 static void
 dsd_engine_squelch_notice_text(const dsd_opts* opts, char* out, size_t out_size) {
@@ -1022,9 +1112,10 @@ dsd_engine_setup_rtl_spec_bw_khz(const dsd_opts* opts) {
  * known here, so a width it cannot filter is refused before the device opens, with the validator's actionable text:
  * `-fM -i rtl:0:118.1M:22:0:16 --am-bandwidth-hz 20000` stops here. It runs before an RTL-SDR input looks for its
  * device, so the refusal does not depend on a dongle being plugged in (or on radio support in the build): the spec
- * alone decides it. An rtl_tcp, SoapySDR or Airspy spec has set rtl_dsp_bw_khz already. An I/Q replay, whose sidecar
- * sets the rate, is checked where the rate is final, at stream start (rtl_demod_finalize_analog_channel()), as is
- * whether a SoapySDR device can deliver a rate stepped to the bandwidth at all.
+ * alone decides it. An rtl_tcp, SoapySDR or Airspy spec has set rtl_dsp_bw_khz already. A raw I/Q stream runs at the
+ * target its spec's RATE is planned to (DSD_ANALOG_RATE_PLANNED, issue #743), known here too. An I/Q replay, whose
+ * sidecar sets the rate, is checked where the rate is final, at stream start (rtl_demod_finalize_analog_channel()), as
+ * is whether a SoapySDR device can deliver a rate stepped to the bandwidth at all.
  */
 static int
 dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
@@ -1039,7 +1130,8 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
     const int bw_khz = rtl_spec ? dsd_engine_setup_rtl_spec_bw_khz(opts) : opts->rtl_dsp_bw_khz;
     const int live_radio = rtl_spec || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
                            || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
-                           || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev);
+                           || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
+                           || dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev);
     const dsd_input_dsp_rate rate =
         dsd_input_dsp_rate_for(opts->audio_in_dev, opts->audio_in_type, dsd_opts_input_is_iq_replay(opts), bw_khz);
     if (!live_radio || rate.rate_hz <= 0) {
@@ -1106,10 +1198,11 @@ dsd_engine_setup_parse_udp_specs(dsd_opts* opts) {
     return dsd_engine_setup_parse_m17_udp_output(opts);
 }
 
-/* An rtl_tcp, SoapySDR or Airspy spec read into the options it sets. -1 when one is refused. */
+/* An rtl_tcp, SoapySDR, I/Q stream or Airspy spec read into the options it sets. -1 when one is refused. */
 static int
 dsd_engine_setup_parse_radio_specs(dsd_opts* opts) {
-    if (dsd_engine_setup_parse_rtltcp_input(opts) != 0 || dsd_engine_setup_parse_soapy_input(opts) != 0) {
+    if (dsd_engine_setup_parse_rtltcp_input(opts) != 0 || dsd_engine_setup_parse_soapy_input(opts) != 0
+        || dsd_engine_setup_parse_iq_stream_input(opts) != 0) {
         return -1;
     }
     return dsd_normalize_airspy_input_spec(opts) != 0 ? -1 : 0;
@@ -3679,12 +3772,29 @@ carrier_source_hash(const char* text) {
     return hash != 0U ? hash : 1U;
 }
 
-/* The source a radio stream runs, as a key: the kind of device and which one, never its settings or tuning. */
+/* A raw I/Q stream's key (issue #743): its whole spec in canonical form, so another endpoint, rate, format or receiver
+   frequency (FREQ) is another source, and one spec written two ways is the same. */
+static void
+carrier_source_key_iq_stream(const char* dev, char* key, size_t key_size) {
+    dsd_iq_net_spec spec;
+    char canonical[DSD_IQ_NET_SPEC_TEXT_MAX];
+    if (dsd_iq_net_spec_parse(dev, &spec, NULL, 0U) == 0
+        && dsd_iq_net_spec_format(&spec, canonical, sizeof canonical) >= 0) {
+        DSD_SNPRINTF(key, key_size, "%s", canonical);
+    } else {
+        DSD_SNPRINTF(key, key_size, "%s", dev);
+    }
+}
+
+/* The source a radio stream runs, as a key: the kind of device and which one, never its settings or tuning. A raw I/Q
+   stream, which DSD-neo cannot tune, is keyed by everything its spec names, its receiver frequency included. */
 static uint64_t
 carrier_source_key(const dsd_opts* opts) {
     char key[sizeof opts->audio_in_dev + 32];
     const char* dev = opts->audio_in_dev;
-    if (dsd_opts_audio_in_dev_is_iqreplay_spec(dev) || dsd_opts_audio_in_dev_is_soapy_spec(dev)) {
+    if (dsd_opts_audio_in_dev_is_iq_stream_spec(dev)) {
+        carrier_source_key_iq_stream(dev, key, sizeof key);
+    } else if (dsd_opts_audio_in_dev_is_iqreplay_spec(dev) || dsd_opts_audio_in_dev_is_soapy_spec(dev)) {
         DSD_SNPRINTF(key, sizeof key, "%s", dev);
     } else if (dsd_opts_audio_in_dev_is_rtltcp_spec(dev)) {
         DSD_SNPRINTF(key, sizeof key, "rtltcp/%s/%d", opts->rtltcp_hostname, opts->rtltcp_portno);
@@ -3696,11 +3806,30 @@ carrier_source_key(const dsd_opts* opts) {
     return carrier_source_hash(key);
 }
 
+/* A raw I/Q stream that started (issue #743): the receiver is on the stream's FREQ, 0 when its spec names none (never
+   the 850 MHz default, a replay's centre or another stream's), which the protocols' frequency readers and every
+   frontend read (dsd_opts_tuned_freq_hz()); and a UDP stream, bound and read from now, says where, which is the line a
+   sender waits for. */
+static void
+note_iq_stream_started(dsd_opts* opts) {
+    dsd_iq_net_spec spec;
+    if (!dsd_opts_input_is_iq_stream(opts) || dsd_iq_net_spec_parse(opts->audio_in_dev, &spec, NULL, 0U) != 0) {
+        return;
+    }
+    opts->rtlsdr_center_freq = spec.freq_hz;
+    dsd_opts_forget_iq_replay_center(opts);
+    if (spec.kind == DSD_IQ_NET_KIND_UDP) {
+        LOG_INFO("NOTICE: I/Q stream: receiving on %s:%d (%s, %u samples/s)\n", spec.host, spec.port,
+                 dsd_iq_net_format_name(spec.format), spec.rate_hz);
+    }
+}
+
 void
 dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) {
     if (!opts || !state) {
         return;
     }
+    note_iq_stream_started(opts);
     const uint64_t key = carrier_source_key(opts);
 #ifdef USE_RADIO
     /* The decoder takes the stream's discontinuity count up at every start: a gap is raised only for samples read

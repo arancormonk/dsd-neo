@@ -505,6 +505,70 @@ def receiver_option_tables_match():
     return replay_prescan_matches(kotlin, args, compact)
 
 
+# A write to the parse's input in args.c: a copy, format or concatenation into opts->audio_in_dev, or one of its bytes.
+AUDIO_IN_DEV_WRITE = r"(?:DSD_\w+|memcpy|memmove|strn?cpy|strn?cat|v?snprintf)\(opts->audio_in_dev\b|opts->audio_in_dev\[[^\]]*\] = "
+
+
+def iq_stream_respelling(args):
+    """The match of cli_read_iq_stream_spec() in args.c, or why it is not only a respelling of -i's value (issue #743).
+
+    It may write the input once: an -i value that is already an iqtcp: or iqudp: spec, rewritten as the canonical text
+    of the spec parsed from it, which dsd_iq_net_spec_format() starts with that same kind. The input stays an I/Q
+    stream, which UsbReceiverKind.sourceOfArgs() reads as no receiver either way, so the Kotlin side needs nothing. It
+    runs only from getopt's -i, right after that value is copied in."""
+    function = re.search(
+        r"\nstatic int\ncli_read_iq_stream_spec\(dsd_opts\* opts, int\* out_exit_rc\) \{\n(.*?)\n\}\n", args, re.S
+    )
+    if not function:
+        return "cannot find cli_read_iq_stream_spec() in args.c"
+    body = function.group(1)
+    where = "args.c cli_read_iq_stream_spec()"
+    if not re.match(r"\s*if \(!dsd_opts_audio_in_dev_is_iq_stream_spec\(opts->audio_in_dev\)\) \{\s*return 0;\s*\}", body):
+        return f"{where} must return before anything else unless -i is already an I/Q stream spec"
+    respelling = 'DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", canonical);'
+    if re.findall(AUDIO_IN_DEV_WRITE, body) != ["DSD_SNPRINTF(opts->audio_in_dev"] or body.count(respelling) != 1:
+        return f"{where} may write the input only as {respelling}: model any other write in UsbReceiverKind.sourceOfArgs()"
+    canonical_lines = {line.strip() for line in body.splitlines() if re.search(r"\bcanonical\b", line)}
+    if canonical_lines != {
+        "char canonical[DSD_IQ_NET_SPEC_TEXT_MAX];",
+        "if (dsd_iq_net_spec_format(&spec, canonical, sizeof canonical) < 0) {",
+        respelling,
+    } or "if (dsd_iq_net_spec_parse(opts->audio_in_dev, &spec, why, sizeof why) != 0) {" not in body:
+        return f"{where} must write only the canonical text of the spec it parsed from -i"
+    calls = re.findall(r"\bcli_read_iq_stream_spec\(", args)
+    after_copy = (
+        r"DSD_STRNCPY\(opts->audio_in_dev, optarg, 2047\);[^\n]*\n[^\n]*opts->audio_in_dev\[2047\] = '\\0';[^\n]*\n"
+        r"[^\n]*opts->input_cli_seen = 1;[^\n]*\n[^\n]*if \(cli_read_iq_stream_spec\(opts, out_exit_rc\) != 0\)"
+    )
+    if len(calls) != 2 or not re.search(after_copy, args):
+        return f"{where} must run once, from getopt's -i right after its value is copied in"
+    spec_path = REPO / "src/io/iq/iq_net_spec.c"
+    try:
+        spec_source = spec_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the I/Q stream spec formatter: {error}"
+    prefix = re.search(
+        r'iq_net_kind_prefix\(dsd_iq_net_kind kind\) \{\s*return kind == DSD_IQ_NET_KIND_TCP \? "iqtcp" : "iqudp";\s*\}',
+        spec_source,
+    )
+    formatter = re.search(
+        r"\ndsd_iq_net_spec_format\(const dsd_iq_net_spec\* spec, char\* out, size_t out_size\) \{\n(.*?)\n\}\n",
+        spec_source,
+        re.S,
+    )
+    # Every call that writes the text: each a DSD_SNPRINTF whose format and first argument put the kind first.
+    body = formatter.group(1) if formatter else ""
+    writers = re.findall(r"\b\w+\(out\b", body)
+    texts = re.findall(r"DSD_SNPRINTF\(out, out_size, (\"[^\"]*\", [\w>-]+(?:\([^()]*\))?)", body)
+    kind_first = {
+        '"%s:%s:%d:%u:%s:%u", iq_net_kind_prefix(spec->kind)',
+        '"%s:%s:%d:%u:%s", iq_net_kind_prefix(spec->kind)',
+    }
+    if not prefix or not texts or len(texts) != len(writers) or any(text not in kind_first for text in texts):
+        return "dsd_iq_net_spec_format() must start its text with the spec's own iqtcp or iqudp kind"
+    return function
+
+
 def replay_prescan_matches(kotlin, args, compact):
     """UsbReceiverKind.replayRequested() reads --iq-replay as dsd_parse_args()'s long-option pre-scan does (#782 r2 H1).
 
@@ -561,10 +625,13 @@ def replay_prescan_matches(kotlin, args, compact):
     bootstrap_options = set(re.findall(r'strcmp\(argv\[\*i\], "(--[^"]*)"\) != 0', bootstrap))
     if not bootstrap_only <= bootstrap_options:
         return f"PRESCAN_BOOTSTRAP_ONLY names options bootstrap.c does not read: {sorted(bootstrap_only - bootstrap_options)}"
+    # -i's value respelled in canonical form (issue #743) is the same input, so it is set aside; any other write counts.
+    canonical = iq_stream_respelling(args)
+    if isinstance(canonical, str):
+        return canonical
+    args_without_respelling = args[: canonical.start()] + args[canonical.end() :]
     # The input the parse sets: getopt's -i (strncpy and terminator) and the replay (cli_set_iqreplay_audio_dev()).
-    writes = re.findall(
-        r"(?:DSD_\w+|memcpy|memmove|strn?cpy|strn?cat|v?snprintf)\(opts->audio_in_dev\b|opts->audio_in_dev\[[^\]]*\] = ", args
-    )
+    writes = re.findall(AUDIO_IN_DEV_WRITE, args_without_respelling)
     replay_sets = re.findall(r"opts->iq_replay_requested = 1;", args)
     if len(writes) != 4 or len(replay_sets) != 1:
         return (

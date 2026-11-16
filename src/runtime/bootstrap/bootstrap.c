@@ -737,6 +737,40 @@ bootstrap_handle_post_parse_actions(const bootstrap_cli_args* args, dsd_opts* op
     return bootstrap_handle_list_profiles(args, config_env, out_exit_rc);
 }
 
+/* The [trunking] or [trunk_scan] key of the loaded config that turns on trunking or a scan, or NULL. The command line's
+   own -T, -Y and --trunk-scan were refused while it was parsed; what is left came from the config. */
+static const char*
+bootstrap_config_tuning_key(const dsd_opts* opts) {
+    if (opts->trunk_enable == 1) {
+        return "[trunking] enabled";
+    }
+    if (opts->scanner_mode == 1) {
+        return "[trunking] scanner";
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        return "[trunk_scan] enabled";
+    }
+    return NULL;
+}
+
+/* An I/Q stream input decodes the one channel its sender streams (issue #743, D8): a config that runs one with
+   trunking, the -Y scanner or a trunk scan on is refused at startup, before anything opens, naming the key and the fix,
+   as --validate-config and a runtime config apply refuse it (the next-start rules, issue #671). */
+static int
+bootstrap_refuse_config_tuning_on_iq_stream(const dsd_opts* opts, int* out_exit_rc) {
+    const char* key =
+        dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev) ? bootstrap_config_tuning_key(opts) : NULL;
+    if (!key) {
+        return DSD_BOOTSTRAP_CONTINUE;
+    }
+    LOG_ERROR(
+        "%s: the I/Q stream input cannot retune; it decodes the one channel the sender streams. Turn %s off in the "
+        "config, or start with --config naming another file.\n",
+        key, key);
+    bootstrap_set_exit_rc(out_exit_rc, 1);
+    return DSD_BOOTSTRAP_ERROR;
+}
+
 static void
 bootstrap_log_startup_banner(void) {
     LOG_INFO("NOTICE: ------------------------------------------------------------------------------\n");
@@ -832,6 +866,10 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
         return boot_rc;
     }
     boot_rc = bootstrap_handle_post_parse_actions(&args, opts, state, config_env, out_exit_rc);
+    if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
+        return boot_rc;
+    }
+    boot_rc = bootstrap_refuse_config_tuning_on_iq_stream(opts, out_exit_rc);
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
         return boot_rc;
     }

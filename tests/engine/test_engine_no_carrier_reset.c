@@ -2741,6 +2741,67 @@ test_stream_source_key_moves_off_a_replay(void) {
     return rc;
 }
 
+/* Issue #743: a raw I/Q stream that starts puts the receiver on its FREQ, or on none when its spec names none (never
+   the 850 MHz default or a replay's centre), which every frontend and the protocols' frequency readers then read; its
+   source key is its whole spec, so a restart of the same stream (spelled either way) is a stream gap on its carrier,
+   and one with another FREQ, endpoint or rate is another source. A stream never reads as the place a pending tune was
+   going (dsd_engine_stream_reopened_on()). */
+static int
+test_iq_stream_start_sets_freq_and_source(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 850000000U;
+    opts->iq_replay_center_freq = 851012500U;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqudp:127.0.0.1:7356:240000:cs16");
+    dsd_engine_note_stream_source(opts, state, 0);
+    rc |= expect_true("no FREQ: the receiver is on none",
+                      opts->rtlsdr_center_freq == 0U && dsd_opts_tuned_freq_hz(opts) == 0U);
+    const uint64_t no_freq_key = state->carrier_source_key;
+
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqudp:127.0.0.1:7356:240000:cs16:851012500");
+    uint32_t seq = state->carrier_seq;
+    dsd_engine_note_stream_source(opts, state, 0);
+    const uint64_t freq_key = state->carrier_source_key;
+    rc |= expect_true("FREQ: the receiver is on it",
+                      opts->rtlsdr_center_freq == 851012500U && dsd_opts_tuned_freq_hz(opts) == 851012500U);
+    rc |= expect_true("another FREQ is another source", freq_key != no_freq_key && state->carrier_seq != seq);
+
+    /* The same stream spelled another way restarts on its own source: a stream gap (B19), the key kept. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqudp:127.0.0.1:7356:240k:CS16:851.0125M");
+    seq = state->carrier_seq;
+    dsd_engine_note_stream_source(opts, state, 0);
+    rc |= expect_true("the same stream restarted keeps its key",
+                      state->carrier_source_key == freq_key && state->carrier_seq == seq + 1U);
+
+    static const char* const k_others[] = {
+        "iqudp:127.0.0.1:7357:240000:cs16:851012500", "iqudp:127.0.0.1:7356:48000:cs16:851012500",
+        "iqudp:127.0.0.1:7356:240000:cu8:851012500", "iqtcp:127.0.0.1:7356:240000:cs16:851012500"};
+    for (size_t i = 0; i < sizeof k_others / sizeof k_others[0]; i++) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", k_others[i]);
+        dsd_engine_note_stream_source(opts, state, 0);
+        rc |= expect_true("another endpoint, rate, format or kind is another source",
+                          state->carrier_source_key != freq_key);
+    }
+
+    /* A tune the stop dropped never lands on a stream, even one whose FREQ is the tune's target. */
+    state->rtl_ctx = (RtlSdrContext*)opts;
+    rc |= expect_true("a stream is no landing",
+                      dsd_engine_stream_reopened_on(opts, state, state->carrier_source_key, 851012500U) == 0);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851.0125M");
+    dsd_engine_note_stream_source(opts, state, 0);
+    opts->rtlsdr_center_freq = 851012500U;
+    rc |= expect_true("an RTL-SDR on the target is",
+                      dsd_engine_stream_reopened_on(opts, state, state->carrier_source_key, 851012500U) == 1);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Issue #743 B12: beside an input with fixed tuning (an I/Q replay or stream) a rigctl peer moves a radio the session
    does not hear, so the legacy legs outside the trunk tuning entries see no front end there: the untyped -Y step, a
    Next walk and the direct control-channel return send the peer nothing, and the frequency last sent stays. */
@@ -14840,6 +14901,7 @@ main(void) {
     rc |= test_untyped_find_and_enter_row();
     rc |= test_untyped_row_confirmed_only_by_its_landing();
     rc |= test_stream_source_key_moves_off_a_replay();
+    rc |= test_iq_stream_start_sets_freq_and_source();
     rc |= test_fixed_tuning_legacy_legs_send_the_peer_nothing();
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
     rc |= test_live_loop_syncs_move_the_quiet_sync_sequence();
