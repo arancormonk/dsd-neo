@@ -59,11 +59,24 @@
 
 enum { DSD_ENGINE_SCAN_LANDING_NONE = 0, DSD_ENGINE_SCAN_LANDING_ROW = 1, DSD_ENGINE_SCAN_LANDING_TARGET = 2 };
 
+/** A receiver's stay with no -Y row landing in force begins (issue #834): the run's start, a -Y scan's start, a
+ * landing forgotten. The content and unchecked-frame counts now are the baseline its no-check status is judged against
+ * (dsd_state::scan_y_stay_content_seq, scan_y_stay_unchecked_seq): shown until a call is heard on the stay. */
+static inline void
+dsd_engine_scan_y_stay_begin(dsd_state* state) {
+    if (state) {
+        state->scan_y_stay_content_seq = state->scan_y_content_seq;
+        state->scan_y_stay_unchecked_seq = state->scan_y_unchecked_seq;
+    }
+}
+
 /** No landing is in force. A state with no scan owner has none to forget, and gets no owner made for it. The landing
  * epoch moves (issue #834): a quiet check of the landing forgotten is no longer the visit's, and no verdict a frame of
- * it left pending is waited for. */
+ * it left pending is waited for. The stay that follows starts its own call baseline (dsd_engine_scan_y_stay_begin()).
+ */
 static inline void
 dsd_engine_scan_landing_forget(dsd_state* state) {
+    dsd_engine_scan_y_stay_begin(state);
     if (!state || !dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN)) {
         return;
     }

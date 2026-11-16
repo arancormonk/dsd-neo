@@ -3765,6 +3765,8 @@ dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state) {
     /* Only a trunk scan the run starts with lands before anything decodes: it parks first. A -Y scan steps only once
        the start frequency its stream opens on has gone quiet, so that start is the run's first landing. */
     state->run_landed = opts->trunk_scan_enabled == 1 ? 0U : 1U;
+    /* The run's stay where its stream opens has heard no call yet (the -Y no-check status). */
+    dsd_engine_scan_y_stay_begin(state);
 }
 
 void

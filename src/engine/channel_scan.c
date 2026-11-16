@@ -1789,6 +1789,8 @@ dsd_engine_channel_scan_config_start(const dsd_opts* opts, dsd_state* state) {
     const int walk = dsd_engine_manual_tune_operator_walk_noted();
     const int adopted = walk && dsd_engine_manual_tune_adopt_walk(state);
     channel_scan_start_settles_hold(opts, state, adopted, walk && !adopted);
+    /* The scan's stay where the receiver is has heard no call yet (the -Y no-check status). */
+    dsd_engine_scan_y_stay_begin(state);
 }
 
 int
@@ -1821,6 +1823,8 @@ dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state) {
         state->operator_tuned = 0U;
     }
     opts->scanner_mode = 1;
+    /* The scan's stay where the receiver is has heard no call yet (the -Y no-check status). */
+    dsd_engine_scan_y_stay_begin(state);
     return 0;
 }
 

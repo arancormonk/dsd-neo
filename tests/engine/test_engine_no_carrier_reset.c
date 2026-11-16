@@ -14879,42 +14879,65 @@ yq_cause_case(int which) {
     return rc;
 }
 
-/* issue #834: on audio input a -Y session has no check, so the row on air shows "No check: input" only until it hears a
-   call. With no row landing in force (a step whose rigctl leg failed after it forgot the landing, an input switch)
-   there is no row visit to describe: nothing is said of the check, idle or during a decoded call, as on an RTL
-   session, whose checks name only landed visits. The next row landing shows the status again. */
+/* issue #834: on audio input a -Y session has no check, so its stay shows "No check: input" while it carries no call
+   and hides it only while a call is heard: on a landed row, from the landing; with no row landing in force, from the
+   stay's own start: the run's start (the start frequency before the first step), or a landing forgotten (a step whose
+   rigctl leg failed after it forgot the landing, an input switch) while the receiver stays where it was. */
 static int
-test_y_quiet_input_no_landing_says_nothing(void) {
+test_y_quiet_input_shows_until_a_call(void) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
     yq_start(0);
-    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 581012500L) == 0);
+    const long int base_hz = 581012500L;
+    /* The run starts on its start frequency, a -Y list configured, audio input: no row has landed yet. */
+    dsd_trunk_tuning_requests_reset();
     opts->audio_in_type = AUDIO_IN_PULSE;
-    dsd_engine_scan_quiet_publish_row(opts, state);
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 10;
+    opts->scan_skip_silent = 1;
+    yq_dmr_only(opts);
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        state->trunk_lcn_freq[row] = base_hz + (long int)row * 1000000L;
+    }
+    state->lcn_freq_roll = 0;
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U); /* an earlier run's call */
+    dsd_engine_note_run_start(opts, state);
+    state->last_cc_sync_time = time(NULL);
+    yq_timing_tick(opts, state);
+    int rc = expect_true("no row has landed", !dsd_engine_scan_landing_is_row(state, 0));
+    rc |= yq_expect_quiet(state, "audio input, idle before the first landing", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "audio input, a call before the first landing", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    /* A row lands: its visit has heard no call yet, then a call on it hides the status, as before. */
+    dsd_engine_scan_landing_note_row(state, 0, base_hz, 0U);
     yq_timing_tick(opts, state);
     rc |= yq_expect_quiet(state, "audio input, the row landed", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NO_CHECK,
                           DSD_SCAN_QUIET_REASON_INPUT);
-    /* The landing is forgotten and the receiver stays where it was. */
-    dsd_engine_scan_landing_forget(state);
-    yq_timing_tick(opts, state);
-    rc |= yq_expect_quiet(state, "audio input, no row landing", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
-                          DSD_SCAN_QUIET_REASON_NONE);
     dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     yq_timing_tick(opts, state);
-    rc |= yq_expect_quiet(state, "audio input, no row landing, a decoded call", DSD_SCAN_STAY_HANGTIME,
+    rc |= yq_expect_quiet(state, "audio input, a call on the landed row", DSD_SCAN_STAY_HANGTIME,
                           DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
-    /* The row lands again: its visit has heard no call yet. */
-    dsd_engine_scan_landing_note_row(state, 0, 581012500L, 0U);
+    /* The landing is forgotten and the receiver stays where it was: a new stay, idle until a call. */
+    dsd_engine_scan_landing_forget(state);
     yq_timing_tick(opts, state);
-    rc |= yq_expect_quiet(state, "audio input, the row landed again", DSD_SCAN_STAY_HANGTIME,
+    rc |= yq_expect_quiet(state, "audio input, idle after the landing was forgotten", DSD_SCAN_STAY_HANGTIME,
                           DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
+    state->scan_y_unchecked_seq++; /* an X2-TDMA frame dispatched */
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "audio input, a call after the landing was forgotten", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
     opts->audio_in_type = AUDIO_IN_RTL;
     yq_finish(opts, state);
     if (rc) {
-        DSD_FPRINTF(stderr, "FAIL #834: -Y on audio input with no row landing\n");
+        DSD_FPRINTF(stderr, "FAIL #834: -Y on audio input shows its status until a call\n");
     }
     return rc;
 }
@@ -15959,7 +15982,7 @@ test_scan_quiet_decisions(void) {
     for (int which = YQ_CAUSE_INPUT; which < YQ_CAUSE_COUNT; which++) {
         rc |= yq_cause_case(which);
     }
-    rc |= test_y_quiet_input_no_landing_says_nothing();
+    rc |= test_y_quiet_input_shows_until_a_call();
     rc |= test_y_quiet_refused_row_restarts_after_an_edit();
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);
