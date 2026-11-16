@@ -1551,8 +1551,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     readable and/or writable (`poll()` on POSIX, `select()` on Windows), reporting end of stream and errors as ready
     so the next `recv()`/`send()` returns them. Servers poll non-blocking sockets with it rather than receive
     timeouts, which leave a Windows TCP socket in an indeterminate state when they fire
-  - Name lookup: `dsd_socket_resolve()` refuses a port outside 0..65535 before it narrows one into `sin_port` (issue #743
-    B15), reads a numeric IPv4 address without a lookup, and looks any other name up through `getaddrinfo()` (IPv4,
+  - Name lookup: `dsd_socket_resolve()` refuses a port outside 0..65535 before it narrows one into `sin_port` (issue
+    #743 B15), reads a numeric IPv4 address without a lookup, and looks any other name up through `getaddrinfo()` (IPv4,
     first answer) on every call, on Windows and POSIX alike: it is thread-safe, which `gethostbyname()` was not, and
     rtl_tcp looks its host up again on its reader thread at each reconnect while the decoder thread can look up
     rigctl's, UDP output's or M17's (B18). `PLATFORM_SOCKET_RESOLVE` and `IO_RTL_TCP_RECONNECT` answer the lookups
@@ -3869,8 +3869,8 @@ suite runs under this compiler.
       (`k_file_path_spec_kinds` in `config_user_validation.cpp`: `iqreplay:`, and `iqtcp:` / `iqudp:`, which have a
       source of their own). A bare `tcp` or `udp` input snapshots
       as its `tcp`/`udp` source with the session's endpoint; `-` and `m17udp:` stay file inputs. Tests:
-      `RUNTIME_CONFIG_USER`, `RUNTIME_CLI_PARSE`, `RUNTIME_BOOTSTRAP_PRINT_CONFIG_REPLAY_KEEPS_INPUT`, `ENGINE_CLEANUP_AUDIO`,
-      `APP_COMMAND_QUEUE`, `CORE_STATE_EXT`.
+      `RUNTIME_CONFIG_USER`, `RUNTIME_CLI_PARSE`, `RUNTIME_BOOTSTRAP_PRINT_CONFIG_REPLAY_KEEPS_INPUT`,
+      `ENGINE_CLEANUP_AUDIO`, `APP_COMMAND_QUEUE`, `CORE_STATE_EXT`.
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`); the control API options and
     their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument
     error. A token can read like an option (`--print-config`), so every pass over the raw argv -- bootstrap's
@@ -3905,7 +3905,9 @@ suite runs under this compiler.
     setup (`dsd_engine_setup_parse_iq_stream_input()`) reads the spec
     of any origin again, refuses a RATE no plan takes to the mode's target, says where a TCP stream connects, warns a
     RATE under what the mode decodes from (TETRA 25 kHz, 12.5 kHz channels 16 kHz, 6.25 kHz ones 12 kHz) and notes a
-    TETRA start without FREQ.
+    TETRA start without FREQ. `--no-config` is still accepted from old command lines but does nothing (config loading
+    is opt-in): bootstrap logs one NOTICE saying so, and the test harnesses that pass it clear `DSD_NEO_CONFIG` as well
+    (`RUNTIME_CLI_NO_CONFIG_NOTICE`).
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits
@@ -5278,10 +5280,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `RTL_SET_BIAS_TEE`, `RTLTCP_SET_AUTOTUNE`, `RTL_SET_AUTO_PPM`, the tuner-autogain DSP op; `RIGCTL_SET_MOD_BW` on a
     stream only, since a replay's start may connect a peer) are refused with `ui_cmd_refuse_fixed_tuner_control()`
     (`svc_fixed_tuner_reason()`: "An I/Q replay has no tuner controls: it plays what was recorded." / "An I/Q stream has
-    no tuner controls: adjust the radio in the sending program."), the words Qt's RadioSheet shows. Signal search refuses a
-    stream at its start with "Signal search needs a tunable SDR: an I/Q stream cannot retune" (`signal_search.c`), the
-    RadioReference import never tunes one (`rr_apply_tune()`), the mouse wheel never captures on one
-    (`ui_wheel_capture_wanted()`), and a config naming a stream `[input]` while a `-Y` scan or a trunk-scan
+    no tuner controls: adjust the radio in the sending program."), the words Qt's RadioSheet shows. Signal search
+    refuses a stream at its start with "Signal search needs a tunable SDR: an I/Q stream cannot retune"
+    (`signal_search.c`), the RadioReference import never tunes one (`rr_apply_tune()`), the mouse wheel never captures
+    on one (`ui_wheel_capture_wanted()`), and a config naming a stream `[input]` while a `-Y` scan or a trunk-scan
     coordinator decides the front end is refused whole, "Config not applied: stop the scan first"
     (`cfg_check_iq_stream_input()`). Scan hold and avoid, skip and lockout are not refused on a replay: their
     main effect is on the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts
@@ -6482,10 +6484,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   through `dsd_app_notification_publish_state()`/`_publish_opts()`, which stay dormant until a reader has called
   `dsd_app_notification_get()` once. The struct's `tunable` (issue #743, `dsd_opts_radio_can_tune()`: 0 on an I/Q
   replay or stream and on audio input; only `radio_input` set with `tunable` clear means the tuner commands are
-  refused, since audio input still tunes a rigctl peer) reaches the API's status JSON (`api_feed.c`, `docs/api.md`) only: the `v4`
-  record below does not carry it, and `DecoderStatus.kt` is unchanged (`APP_CONTROL_NOTIFICATION_STATUS` pins the
-  header, `API_FEED` the JSON). `dsd_app_notification_encode()` writes one tab-separated record, version `v4`, 39
-  fields: an 11-field header (version, protocol, radio_input, trunking, trunk_tuned, cc_freq_hz, vc_freq_hz,
+  refused, since audio input still tunes a rigctl peer) reaches the API's status JSON (`api_feed.c`, `docs/api.md`)
+  only: the `v4` record below does not carry it, and `DecoderStatus.kt` is unchanged (`APP_CONTROL_NOTIFICATION_STATUS`
+  pins the header, `API_FEED` the JSON). `dsd_app_notification_encode()` writes one tab-separated record, version `v4`,
+  39 fields: an 11-field header (version, protocol, radio_input, trunking, trunk_tuned, cc_freq_hz, vc_freq_hz,
   center_freq_hz, lead_slot, audible_stamp in unsigned decimal, audible_age_ms in signed decimal with -1 for none), then
   14 fields per slot (state, name, tg_text, src_text, tg_id, enc, algid, kid, elapsed_ms, emergency, priority, kind,
   tg_label, protocol_label; issue #773 added the last three so the notification headlines a private call and a call no
@@ -9551,20 +9553,21 @@ Key public headers:
   - Reader (`dsd_iq_net_reader_*`): `_create()` allocates every buffer (64 KiB receive, 32768-pair output; nothing
     per read); `_open()` runs on the caller's thread (TCP: resolve, then `dsd_socket_connect_bounded()` 10 s,
     keepalive, SO_RCVBUF 4 MiB before the connect; UDP: bind without SO_REUSEADDR, so a port in use is refused and
-    no second socket can share it, SO_EXCLUSIVEADDRUSE on Windows, SO_RCVBUF, 200 ms receive timeout) and reports a `dsd_input_failure_kind` plus message, logging nothing; `_start()`
-    makes the `iq_net` thread (FP mode applied first), or a caller runs `_run()` on its own thread. Every wait is a
-    200 ms `dsd_socket_wait()` slice; TCP treats only EAGAIN/EWOULDBLOCK/EINTR (Winsock WSAEWOULDBLOCK/WSAEINTR) as
-    "nothing yet": its socket has no receive timeout, so Winsock's WSAETIMEDOUT there is a dead connection, which only
-    the UDP socket (receive timeout set) may take as a timeout. Callbacks run on the reader thread with no reader lock held; a RECONNECT or
-    RESUME event comes before the first sample after it, which is where the stream boundary belongs. TCP: the carry
-    of a partial sample survives a stall and is discarded at a reconnect; a loss reconnects forever, resolving again
-    at every attempt, the first at once and then 0.2 s x attempt (cap 2 s) in 20 ms slices; a connection that ends
-    before it delivers a sample does not reset the attempt count, so a server that accepts and closes is backed off.
-    UDP: datagrams must hold whole samples (others dropped whole, one warning per run naming the packet size, and a
-    KNOWN_LOSS event when from the locked sender); empty datagrams are ignored and are no sign of life; the first
-    valid sender is locked and others dropped with one notice; a stall releases the lock: the same sender then
-    resumes (RESUME), another is a RECONNECT. Stall = no valid sample for 2 s on the injectable clock
-    (`dsd_iq_net_reader_config.clock_ms`, NULL = `dsd_realtime_mono_ms()`); waits and backoff always run on real time.
+    no second socket can share it, SO_EXCLUSIVEADDRUSE on Windows, SO_RCVBUF, 200 ms receive timeout) and reports a
+    `dsd_input_failure_kind` plus message, logging nothing; `_start()` makes the `iq_net` thread (FP mode applied
+    first), or a caller runs `_run()` on its own thread. Every wait is a 200 ms `dsd_socket_wait()` slice; TCP treats
+    only EAGAIN/EWOULDBLOCK/EINTR (Winsock WSAEWOULDBLOCK/WSAEINTR) as "nothing yet": its socket has no receive timeout,
+    so Winsock's WSAETIMEDOUT there is a dead connection, which only the UDP socket (receive timeout set) may take as a
+    timeout. Callbacks run on the reader thread with no reader lock held; a RECONNECT or RESUME event comes before the
+    first sample after it, which is where the stream boundary belongs. TCP: the carry of a partial sample survives a
+    stall and is discarded at a reconnect; a loss reconnects forever, resolving again at every attempt, the first at
+    once and then 0.2 s x attempt (cap 2 s) in 20 ms slices; a connection that ends before it delivers a sample does not
+    reset the attempt count, so a server that accepts and closes is backed off. UDP: datagrams must hold whole samples
+    (others dropped whole, one warning per run naming the packet size, and a KNOWN_LOSS event when from the locked
+    sender); empty datagrams are ignored and are no sign of life; the first valid sender is locked and others dropped
+    with one notice; a stall releases the lock: the same sender then resumes (RESUME), another is a RECONNECT. Stall =
+    no valid sample for 2 s on the injectable clock (`dsd_iq_net_reader_config.clock_ms`, NULL =
+    `dsd_realtime_mono_ms()`); waits and backoff always run on real time.
   - Socket handle: published under the leaf `sock_lock` (never held across a wait, recv, connect, backoff or callback);
     a stop latches the flag and shuts down only the published socket; the reader unpublishes before it closes.
   - Availability (`dsd_iq_net_state`, one atomic): STOPPED, CONNECTING, WAITING (up, nothing written since it came
@@ -9622,7 +9625,10 @@ Key public headers:
     samples gives way to a queued command only then. Restart = stop + start: a new device, a new connection.
   - Tests: `IO_NET_IQ_STREAM` (C++, POSIX, the real stream against senders on loopback; the stall clock injected with
     `rtl_net_iq_test_set_clock()`, blocks seen through `rtl_stream_test_set_live_block_hook()`), `IO_RTL_DEMOD_CONFIG`
-    (source matrix).
+    (source matrix). The whole program on loopback, POSIX: `RUNTIME_IQ_STREAM_LIVE` (`tests/iq_stream_live_check.py`:
+    the UDP notice once bound, a TETRA re-plan that reconnects, rigctl refused) and `DECODE_IQ_NET_TCP`, `_UDP` and
+    `_ANALOG` (`tests/iq_net_decode_check.py`: committed fixtures sent at real time in each wire format, decode counts
+    asserted; see `docs/testing.md`, "Raw I/Q over the network").
 
 Notes:
 
@@ -10269,10 +10275,10 @@ Notes:
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`). `udp_input_read_sample_wait()` gives up after a timeout with no sample, so the decoder can
-  apply a queued command while the input is silent (issue #634). The UDP input counts packets, bytes and dropped samples in atomics
-  on its receive thread; each read copies them into `dsd_opts::udp_in_*` on the decoder thread, and a stop copies the
-  final counts, so an options snapshot never races the receiver (issue #743 B3; `IO_UDP_INPUT` under TSan). A restart
-  counts on from the totals the options show. `tcp_input.c` reads its socket through one
+  apply a queued command while the input is silent (issue #634). The UDP input counts packets, bytes and dropped samples
+  in atomics on its receive thread; each read copies them into `dsd_opts::udp_in_*` on the decoder thread, and a stop
+  copies the final counts, so an options snapshot never races the receiver (issue #743 B3; `IO_UDP_INPUT` under TSan). A
+  restart counts on from the totals the options show. `tcp_input.c` reads its socket through one
   `dsd_pcm_stream` (platform). Its one read, `tcp_input_read_sample_wait()` (issue #667 D12), times out and keeps the
   connection, so only a real close or socket error is a lost connection (B7): the symbol path reconnects, and EDACS
   analog voice and the M17 encoder close the input and shut down, as they did. EDACS analog voice reads TCP and UDP in
@@ -13678,8 +13684,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     its reading first, then `Analog:`/`Passband:`), the identity row an Airspy, rtl_tcp server, I/Q replay or I/Q
     stream gets ahead of its readings (`ui_render_radio_identity_row()`, issue #743 B5: `| rtl_tcp: H:P;`, `| I/Q
     replay: FILE;`, `| I/Q stream: ENDPOINT; FORMAT, RATE; STATE`, the state last because it alone changes, from
-    `dsd_app_frontend_iq_stream_state()`, and a host too long for the row cut with its port kept so the state stays; a replay or stream shows no `G:`/`PPM:`, Auto PPM or External RTL Tuning
-    row), Auto PPM, input level, outputs, M17
+    `dsd_app_frontend_iq_stream_state()`, and a host too long for the row cut with its port kept so the state stays; a
+    replay or stream shows no `G:`/`PPM:`, Auto PPM or External RTL Tuning row), Auto PPM, input level, outputs, M17
     encoder, Scan Mode, Trunk Scan, Scan Timing, and every DSP panel line — with readings through `dsd_number_text()`
     at fixed widths and status words in rooms that stay; configuration-only rows (toggles, keys, paths, External RTL
     Tuning, M17 UDP, Reverse Mute) keep wrapping. `FRQ:` is the tuned frequency through `dsd_freq_hz_mhz_text()` in
@@ -14058,9 +14064,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     renames it), so the breadcrumb reads `Input > I/Q stream`, never the row's id. Rigctl connect (`input.rigctl`) is
     hidden on any input with fixed tuning (`rigctl_connect_offered()`), which refuses a connect; Rigctl setmod
     bandwidth (`input.setmod`) only on a stream (`rigctl_setmod_offered()`), since a replay's start may have connected
-    a peer that still takes a passband. The Visual Aids header names a stream or replay (`I/Q Stream Visual Aids`, `I/Q Replay Visual Aids`).
-    Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`, `UI_MENU_TREE_AUDIT{,_NO_RADIO}`,
-    `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`.
+    a peer that still takes a passband. The Visual Aids header names a stream or replay (`I/Q Stream Visual Aids`,
+    `I/Q Replay Visual Aids`). Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`,
+    `UI_MENU_TREE_AUDIT{,_NO_RADIO}`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`.
   - Analog channel width (issue #525): the Input menu's `input.nfm_bw` row, right after `input.sql` (`NFM bandwidth...
     [12.5 kHz]`, or `[default]`, on a radio input while the configured -fA preset runs FM or an explicit width is set
     under another preset, `is_nfm_width_editable()`), prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as
@@ -15309,7 +15315,8 @@ Qt Quick frontend (`src/ui/qt`):
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
     It hides "Explore from here", closes that button's confirm and an open "Go to" sheet when a replay begins, and
-    shows "An I/Q replay cannot retune: it plays the tuning it recorded." in the button's place, the refusal's own words.
+    shows "An I/Q replay cannot retune: it plays the tuning it recorded." in the button's place, the refusal's own
+    words.
   - I/Q stream (issue #743): `MetricsModel::tunable` (same group) is `dsd_opts_radio_can_tune()` on that snapshot.
     Spectrum's `fixedInput` (`replayInput`, or `radioInput && !tunable`) makes it view-only as a replay does, with the
     stream's reason, "An I/Q stream cannot retune: change the channel in the sending program." (`fixedReason`), and no
