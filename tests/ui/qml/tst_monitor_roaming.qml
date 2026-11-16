@@ -19,6 +19,9 @@ Item {
         id: monitor
         anchors.fill: parent
     }
+    TextMetrics {
+        id: probe
+    }
 
     TestCase {
         id: tc
@@ -75,8 +78,10 @@ Item {
                 savedSystems.remove(0);
         }
 
-        // Hill running as a saved session; past its initialization edge unless @p starting.
+        // Hill running as a saved session; past its initialization edge unless @p starting. The host runs it, so the
+        // header's live pill reads LIVE as in a real session.
         function runHill(starting, busy) {
+            verify(decoderHost.start(["dsd-neo"]), "the host accepted the start");
             testContext.setLifecyclePhase(1);
             siteRoaming.noteSessionStart("saved", uids[0], 0);
             testContext.setLifecyclePhase(2);
@@ -144,24 +149,18 @@ Item {
         // With the header actions beside it, the line keeps the whole state where it fits, else the state alone,
         // never cut: checked on the rendered text at a phone's width and large font scales.
         function test_state_never_elided_data() {
-            return [{tag: "wide", width: 640, scale: 1, full: true},
-                    {tag: "phone", width: 360, scale: 1, full: true},
-                    {tag: "phone 1.3", width: 360, scale: 1.3, full: false},
-                    {tag: "phone 2.0", width: 360, scale: 2.0, full: false},
-                    {tag: "landscape 1.3", width: 800, scale: 1.3, full: true},
-                    {tag: "landscape 2.0", width: 800, scale: 2.0, full: false}];
+            // @a below: the line sits below the header actions and has the header's width.
+            return [{tag: "wide", width: 640, scale: 1, full: true, below: false},
+                    {tag: "phone", width: 360, scale: 1, full: true, below: true},
+                    {tag: "phone 1.3", width: 360, scale: 1.3, full: true, below: true},
+                    {tag: "phone 2.0", width: 360, scale: 2.0, full: false, below: true},
+                    {tag: "landscape 1.3", width: 800, scale: 1.3, full: true, below: true},
+                    {tag: "landscape 2.0", width: 800, scale: 2.0, full: true, below: true}];
         }
-        function test_state_never_elided(data) {
-            root.width = data.width;
-            Ui.Theme.fontScale = data.scale;
-            waitForCall();
-            waitForRendering(monitor);
-            var line = item("roamingHeaderLine");
-            verify(line.visible && line.width > 0);
-            compare(line.text, data.full ? "WAITING FOR CALL END · GPS ROAMING" : "WAITING");
+        function checkRendered(line, expected) {
+            compare(line.text, expected);
             verify(!line.truncated, "the state is not cut: " + line.text);
             verify(line.paintedWidth <= line.width + 0.5, "it fits its line");
-            compare(line.Accessible.name, "Waiting for this call to end before switching to Lake (up to 90 seconds)");
             // Beside the actions, inside the screen.
             var at = line.mapToItem(monitor, 0, 0);
             verify(at.x >= -0.5 && at.x + line.paintedWidth <= monitor.width + 0.5, "inside the screen");
@@ -169,6 +168,42 @@ Item {
             var actionsAt = actions.mapToItem(monitor, 0, 0);
             var beside = actionsAt.y + actions.height <= at.y + 0.5 || actionsAt.y >= at.y + line.height - 0.5;
             verify(beside || at.x + line.paintedWidth <= actionsAt.x + 0.5, "clear of the header actions");
+        }
+        function advance(font, text) {
+            probe.font = font;
+            probe.text = text;
+            return probe.advanceWidth;
+        }
+        function test_state_never_elided(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            waitForCall();
+            waitForRendering(monitor);
+            var line = item("roamingHeaderLine");
+            var pill = item("monitorLiveLabel");
+            verify(line.visible && line.width > 0);
+            compare(pill.text, "LIVE", "a running session's pill");
+            compare(line.clearOfActions, data.below);
+            var header = item("monitorHeader");
+            compare(line.width, data.below ? header.width : line.parent.width);
+            checkRendered(line, data.full ? "WAITING FOR CALL END · GPS ROAMING" : "WAITING");
+            compare(line.Accessible.name, "Waiting for this call to end before switching to Lake (up to 90 seconds)");
+
+            // The longest short form fits even with the pill at its widest label (a switch's STOPPING…): beside
+            // the actions the line narrows by as much as the pill widens; below them it keeps the header's width.
+            var widest = 0;
+            for (var label of ["LIVE", "LOST", "STARTING…", "STOPPING…"])
+                widest = Math.max(widest, advance(pill.font, label));
+            var narrowest = line.clearOfActions ? line.width : line.width - (widest - advance(pill.font, pill.text));
+            verify(advance(line.font, "SWITCHING") <= narrowest + 0.5,
+                   "SWITCHING fits beside STOPPING… (" + narrowest + " px)");
+
+            // The call ends: the switch goes ahead, and the line says so.
+            siteRoaming.facts = {savedUid: uids[0], trunking: true, radioInput: true, replayInput: false, scanKind: 0,
+                operatorTuned: false, heldTg: 0, callBusy: false, optionsKnown: true};
+            compare(siteRoaming.statusText, "Switching to Lake…");
+            waitForRendering(monitor);
+            checkRendered(line, line.text === "SWITCHING · GPS ROAMING" ? "SWITCHING · GPS ROAMING" : "SWITCHING");
         }
     }
 }

@@ -554,11 +554,11 @@ Item {
             sheet.currentSiteUid = uid
         }
         // A new roaming fix at @p lat (lon 20.0), @p after ms on.
-        function roamFix(lat, after) {
+        function roamFix(lat, after, accuracy) {
             testContext.setRoamingNow(testContext.roamingNow() + (after || 0))
             ns += 1000
             testContext.emitLocationStreamUpdate({generation: 1, state: "ok", hasFix: true, provider: "gps",
-                measurementNs: ns, lat: lat, lon: 20.0, accuracyM: 10, fixAtMs: testContext.roamingNow()})
+                measurementNs: ns, lat: lat, lon: 20.0, accuracyM: accuracy || 10, fixAtMs: testContext.roamingNow()})
         }
         function roamingOff() {
             prefs.roamingEnabled = false
@@ -601,10 +601,21 @@ Item {
                 mouseClick(toggle, toggle.width / 2, toggle.height / 2)
                 verify(!siteRoaming.enabled && !toggle.checked, "switched off")
 
+                // Extra options in Settings keep roaming off for every site: the switch says why.
+                prefs.extraArgs = "-Z"
+                verify(!toggle.enabled, "extra options in Settings: cannot switch on")
+                compare(line("siteRoamingUnavailable").text, "GPS roaming is off while extra options are set in Settings")
+                compare(toggle.Accessible.description, "GPS roaming is off while extra options are set in Settings",
+                        "a screen reader hears why on the switch")
+                prefs.extraArgs = ""
+                verify(toggle.enabled)
+                compare(toggle.Accessible.description, "")
+
                 // North and South are no sites roaming can use (no trunking, no receiver it can tune).
                 sheet.openFor(0)
                 verify(!toggle.enabled, "fewer than two roamable sites: cannot switch on")
                 compare(line("siteRoamingUnavailable").text, "Needs two or more sites in this system that GPS roaming can use: trunking on, a receiver it can tune, and no extra options.")
+                compare(toggle.Accessible.description, line("siteRoamingUnavailable").text)
                 verify(line("siteRoamingUnavailable").visible)
                 prefs.roamingEnabled = true
                 verify(toggle.enabled && toggle.checked, "but always switchable off")
@@ -724,11 +735,39 @@ Item {
                 compare(hill.Accessible.name, "Hill", "a moving distance is not spoken")
                 verify(line("siteAvoid" + valleyRow(1)) === avoid && avoid.activeFocus, "the keyboard stays on Lake's Avoid")
                 compare(line("siteLocationNotice").text, "Distances follow your location while GPS roaming runs.")
-                verify(line("nearestSiteSummary").text.indexOf("Ridge") >= 0, "the nearest is the nearest now")
+                var summary = line("nearestSiteSummary")
+                compare(summary.text, "Nearest site: Ridge · 0.0\u00a0km", "the nearest is the nearest now")
+                compare(summary.Accessible.name, "Nearest site: Ridge", "its moving distance is not spoken")
+                var accuracy = line("siteLocationAccuracy")
+                roamFix(11.5, 1000, 12)
+                verify(accuracy.text.indexOf("about 12\u00a0m") >= 0, accuracy.text)
+                verify(accuracy.Accessible.name.indexOf("about 25\u00a0m") >= 0, "spoken to a band: " + accuracy.Accessible.name)
+                var spoken = accuracy.Accessible.name
+                roamFix(11.5, 1000, 14)
+                verify(accuracy.text.indexOf("about 14\u00a0m") >= 0, accuracy.text)
+                compare(accuracy.Accessible.name, spoken, "a move within the band is not spoken")
 
                 sheet.useLocation()
                 decoderHost.locationResult(sheet.locationId, true, 11.5, 20.0, 10, Date.now(), false, "", "", "")
                 compare(sheet.rows, [valleyRow(2), valleyRow(1), valleyRow(0)], "asked for: the order of now")
+            } finally {
+                roamingOff()
+            }
+        }
+
+        // A sheet opened before any fix shows the rows unranked; the first fix ranks them once, and from then on the
+        // order is kept like any other.
+        function test_first_fix_ranks_an_unranked_order() {
+            roamingOn()
+            try {
+                runSite(valley[0])
+                sheet.openFor(valleyRow(0))
+                compare(sheet.rows, [valleyRow(0), valleyRow(1), valleyRow(2)], "no fix: row order")
+                roamFix(11.5, 1000)
+                compare(sheet.rows, [valleyRow(2), valleyRow(1), valleyRow(0)], "the first fix ranks them")
+                roamFix(10.0, 1000)
+                compare(sheet.rows, [valleyRow(2), valleyRow(1), valleyRow(0)], "then they are kept")
+                compare(line("siteTitle" + valleyRow(2)).text, "Ridge · 165.9 km")
             } finally {
                 roamingOff()
             }

@@ -35,9 +35,16 @@ ModalSheet {
     // keyboard and a screen reader stay on the control they are on. A site
     // added or gone takes the new order.
     property var order: []
+    // Whether `order` was ranked from a fix. One taken with none (the sheet
+    // opened before any fix) is ranked once when the first fix comes, then
+    // kept like any other: nothing was in order to keep yet.
+    property bool orderRanked: false
     readonly property var liveOrder: ranked(measured).map(function (entry) { return entry.uid; })
+    // Reads the fix itself: `liveFix` may not have caught up with it yet
+    // when this runs.
     onLiveOrderChanged: {
-        if (!liveFix || !sameSites(order, liveOrder))
+        var live = activeFix !== null && activeFix.live;
+        if (!live || !orderRanked || !sameSites(order, liveOrder))
             takeOrder();
     }
     // The sites in the order shown, each with its distance now.
@@ -75,8 +82,21 @@ ModalSheet {
     readonly property var nearestSite: (revision, savedSystems.get(nearest))
     readonly property real nearestDistance: nearestEntry ? nearestEntry.distance : -1
     readonly property bool listeningToNearest: sessionState === 2 && !!nearestSite.uid && nearestSite.uid === currentSiteUid
-    readonly property string accuracyText: {
-        var meters = activeFix ? activeFix.accuracyM : 0;
+    readonly property string accuracyText: accuracyFor(activeFix ? activeFix.accuracyM : 0)
+    // What a screen reader hears of it: while GPS roaming moves it with each
+    // fix, only a step to another band (10, 25, 50, 100, 250, 500 m, then
+    // whole km), so a focused line is not read out again on every fix.
+    readonly property string spokenAccuracy: liveFix ? accuracyFor(accuracyBand(activeFix.accuracyM)) : accuracyText
+    function accuracyBand(meters) {
+        if (!isFinite(meters) || meters <= 0)
+            return 0;
+        for (var band of [10, 25, 50, 100, 250, 500, 1000]) {
+            if (meters <= band)
+                return band;
+        }
+        return Math.ceil(meters / 1000) * 1000;
+    }
+    function accuracyFor(meters) {
         if (!activeFix || !isFinite(meters) || meters <= 0)
             return "";
         if (prefs.metricUnits && meters < 1000)
@@ -100,6 +120,11 @@ ModalSheet {
     // (siteRoaming says which); this card is that session's system when the
     // site it runs is one of these.
     readonly property int roamableCount: (revision, rows.filter(function (row) { return savedSystems.roamable(row); }).length)
+    // Roaming also needs the extra options in Settings to be empty.
+    readonly property bool globalExtraArgs: String(prefs.extraArgs || "").trim().length > 0
+    // Why roaming cannot be switched on for this card; empty when it can.
+    readonly property string roamingBlockedReason: globalExtraArgs ? qsTr("GPS roaming is off while extra options are set in Settings")
+        : roamableCount < 2 ? qsTr("Needs two or more sites in this system that GPS roaming can use: trunking on, a receiver it can tune, and no extra options.") : ""
     readonly property bool roamingHere: siteRoaming.currentUid.length > 0 && order.indexOf(siteRoaming.currentUid) >= 0
     readonly property int roamingState: siteRoaming.state
     // Roaming judges the session (neither Off nor Idle): it follows a site,
@@ -166,6 +191,7 @@ ModalSheet {
     }
     // Shows the order as it is now; the rows are remade only when it moved.
     function takeOrder() {
+        orderRanked = activeFix !== null;
         var next = liveOrder;
         if (next.join("\n") !== order.join("\n"))
             order = next;
@@ -427,6 +453,9 @@ ModalSheet {
         width: parent.width
         visible: sheet.activeFix !== null && !sheet.locationId
         text: sheet.nearest >= 0 ? Util.fill(qsTr("Nearest site: %1 · %2"), [sheet.nearestSite.siteName || sheet.nearestSite.name, Util.fmtDistanceKm(sheet.nearestDistance, prefs.metricUnits).replace(" ", "\u00a0")]) : qsTr("No site can be ranked. Check the sites’ coordinates and Avoid settings below.")
+        // While GPS roaming moves the distance with each fix, a screen reader
+        // hears the site alone, so a focused line is not read out again.
+        Accessible.name: !navigationAllowed || !visible ? "" : sheet.liveFix && sheet.nearest >= 0 ? qsTr("Nearest site: %1").arg(sheet.nearestSite.siteName || sheet.nearestSite.name) : text
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans
@@ -438,7 +467,9 @@ ModalSheet {
         objectName: "siteLocationAccuracy"
         width: parent.width
         visible: text.length > 0 && !sheet.locationId
-        text: sheet.accuracyText + (sheet.uncertainNearest ? qsTr(". Nearby sites may change order within this accuracy. For a better fix, enable precise location in your device settings.") : "")
+        readonly property string uncertainText: sheet.uncertainNearest ? qsTr(". Nearby sites may change order within this accuracy. For a better fix, enable precise location in your device settings.") : ""
+        text: sheet.accuracyText + uncertainText
+        Accessible.name: navigationAllowed && visible ? sheet.spokenAccuracy + uncertainText : ""
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans
@@ -470,8 +501,10 @@ ModalSheet {
             text: qsTr("GPS roaming")
             checked: siteRoaming.enabled
             // Always switchable off; on only where this system has two sites
-            // roaming can use.
-            enabled: siteRoaming.enabled || sheet.roamableCount >= 2
+            // roaming can use and Settings has no extra options. While it
+            // cannot be switched on, a screen reader hears why on the switch.
+            enabled: siteRoaming.enabled || sheet.roamingBlockedReason.length === 0
+            Accessible.description: enabled ? "" : sheet.roamingBlockedReason
             onToggled: {
                 sheet.setRoaming(checked);
                 checked = Qt.binding(function () { return siteRoaming.enabled; });
@@ -490,7 +523,7 @@ ModalSheet {
             objectName: "siteRoamingUnavailable"
             width: parent.width
             visible: !roamingToggle.enabled
-            text: qsTr("Needs two or more sites in this system that GPS roaming can use: trunking on, a receiver it can tune, and no extra options.")
+            text: sheet.roamingBlockedReason
             wrapMode: Text.Wrap
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(14)

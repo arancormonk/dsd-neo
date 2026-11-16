@@ -638,13 +638,22 @@ Item {
                 // session while roaming is on and blank while it idles, so the
                 // header, sized from this column, never changes height. A
                 // screen reader hears the sentence, and a change of state is
-                // read out once.
+                // read out once. Switching roaming on or off during the
+                // session adds or removes the line by design (the spec shows
+                // it while the switch is on): that one change of height, and
+                // of tier, is the user's own, never one roaming makes.
                 ReadableText {
                     id: roamingHeader
                     objectName: "roamingHeaderLine"
                     readonly property bool problem: siteRoaming.action === SiteRoaming.OpenAppSettings || siteRoaming.action === SiteRoaming.TurnOnLocation || siteRoaming.reason === SiteRoaming.SwitchFailed
                     readonly property bool fullFits: roamingHeaderMetrics.advanceWidth <= width + 0.5
-                    width: parent.width
+                    // Below the header actions (the title and meta lines are
+                    // taller than they are, at any font scale) the line has the
+                    // header's whole width, so a pill that widens (STOPPING… in
+                    // a switch) never squeezes the state; beside them, the
+                    // column's.
+                    readonly property bool clearOfActions: header.stacked || y >= headerActions.y + headerActions.height
+                    width: clearOfActions ? header.width : parent.width
                     visible: siteRoaming.available && siteRoaming.enabled && screen.sessionSystemUid.length > 0
                     text: fullFits ? siteRoaming.headerText : siteRoaming.headerShortText
                     Accessible.ignored: !navigationAllowed || !visible || text.length === 0

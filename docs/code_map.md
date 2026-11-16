@@ -14836,17 +14836,22 @@ Qt Quick frontend (`src/ui/qt`):
   (`test_roaming_prefs()`), `UI_QT_CONTROLLER` (`test_operator_intents()`). Its wording lives here, not in QML:
   `statusText` (the sentence), `headerText` / `headerShortText` (the Monitor line, "WAITING FOR CALL END · GPS ROAMING"
   / "WAITING") and `systemName` (the group's card title). The UI (all hidden while `available` is false): the site
-  chooser's "GPS roaming" switch (`setEnabledByUser()`; switching on needs two roamable sites on the card), its
-  disclosure, and for the card of the session roaming follows "Listening to <site> · <distance>" (the distance left out
-  of the accessible name) with the state line and its action (`performAction()`), else one line naming the system
-  roaming follows or the idle reason; a row with extra options says it is not used. While `fix` is there the chooser
-  measures from it and keeps its row order (rows keyed by uid, so a fix rebuilds no row) until it opens again or Use my
-  location answers. The Monitor header's heading column has one mono line, state first, measured against the column's
-  width beside the header actions for the short form, kept (blank when idle) for the whole saved session so the header
-  never changes height, and named by `statusText`; Settings has a GPS roaming card (the switch and the two distances
-  as choice sheets in the unit shown, an off-list stored value added as a checked choice, `Util.fmtDistanceSetting()`).
-  State changes, not distance changes, are read out (`Navigation.announce()`, deferred with `Qt.callLater`). Tests:
-  `tst_site_chooser_sheet.qml`, `tst_monitor_roaming.qml`, `tst_settings_roaming.qml` (`UI_QT_QML_CALL_LISTS`).
+  chooser's "GPS roaming" switch (`setEnabledByUser()`; switching on needs two roamable sites on the card and no extra
+  options in Settings, the reason on the switch's accessible description), its disclosure, and for the card of the
+  session roaming follows "Listening to <site> · <distance>" (the distance left out of the accessible name) with the
+  state line and its action (`performAction()`), else one line naming the system roaming follows or the idle reason; a
+  row with extra options says it is not used. While `fix` is there the chooser measures from it and keeps its row order
+  (rows keyed by uid, so a fix rebuilds no row) until it opens again or Use my location answers; an order taken with no
+  fix is ranked once at the first fix. While the fix is live the rows, the nearest-site line and the accuracy line (to a
+  band) leave the moving distance out of their accessible names. The Monitor header's heading column has one mono line,
+  state first, measured for the short form against its real width (the header's whole width once it sits below the
+  header actions, as it does on a phone at any font scale, else the column's beside them), kept (blank when idle) for
+  the whole saved session so roaming never changes the header's height (switching roaming on or off mid-session adds or
+  removes the line, by design), and named by `statusText`; Settings has a GPS roaming card (the switch and the two
+  distances as choice sheets in the unit shown, an off-list stored value added as a checked choice,
+  `Util.fmtDistanceSetting()`). State changes, not distance changes, are read out (`Navigation.announce()`, deferred
+  with `Qt.callLater`). Tests: `tst_site_chooser_sheet.qml`, `tst_monitor_roaming.qml`, `tst_settings_roaming.qml`
+  (`UI_QT_QML_CALL_LISTS`).
 - Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's
   recent calls (`homeRecentList`) and the Talkgroups grid (`talkgroupGrid`) get their models from a `KeepPlace` only
   while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with
