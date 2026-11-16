@@ -912,7 +912,8 @@ test_readers_carry_out_the_drop(void) {
     return rc;
 }
 
-/* A WAV file holds no other channel: the confirmation leaves its read position where it was. */
+/* A WAV file holds no other channel: the confirmation asks for the drop, and the next read carries it out without
+   moving the file's read position. */
 static int
 test_wav_input_unchanged(void) {
     char path[DSD_TEST_PATH_MAX];
@@ -944,6 +945,9 @@ test_wav_input_unchanged(void) {
         rc |= expect_true("ten read", sf_read_short(c.opts->audio_in_file, samples, 10) == 10);
         rc |= expect_true("tune", dsd_engine_trunk_tune_to_freq_request(c.opts, c.state, VC1_HZ, 0, 0U)
                                       == DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_true("wav: the drop is asked for", c.state->input_drop_pending == 1U);
+        dsd_symbol_apply_input_drop(c.opts, c.state); /* the decoder thread's next input read */
+        rc |= expect_true("wav: the drop is carried out", c.state->input_drop_pending == 0U);
         rc |= expect_true("the file reads on where it was", sf_seek(c.opts->audio_in_file, 0, SEEK_CUR) == 10);
         sf_close(c.opts->audio_in_file);
         c.opts->audio_in_file = NULL;
