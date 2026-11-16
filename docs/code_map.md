@@ -3407,7 +3407,8 @@ suite runs under this compiler.
   `dsd_opts_input_is_iq_replay()` says whether the input in force is an I/Q replay (an RTL input
   with an `iqreplay` spec), from the input type and device string rather than `iq_replay_active`, which an input switch
   does not clear. The tunability predicates read the same way (issue #743): `dsd_opts_input_is_iq_stream()` is an RTL
-  input with an `iqtcp` or `iqudp` spec (`dsd_opts_audio_in_dev_is_iqtcp_spec()` / `_iqudp_spec()`, both radio specs);
+  input with an `iqtcp` or `iqudp` spec (`dsd_opts_audio_in_dev_is_iqtcp_spec()` / `_iqudp_spec()`, both radio specs,
+  either one `dsd_opts_audio_in_dev_is_iq_stream_spec()`);
   `dsd_opts_input_has_fixed_tuning()` is a replay or a stream; `dsd_opts_radio_can_tune()` is a radio input without
   fixed tuning (the tuner and device controls, signal search, scan skip-silent, the spectrum's go-to and tap);
   `dsd_opts_session_can_tune(opts, peer)` is that on a radio input and the caller's own rigctl test (`use_rigctl`
@@ -3827,6 +3828,18 @@ suite runs under this compiler.
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
       present as a `[section]` header does (an empty `[analog]` acts), and `dsd_user_config_apply_key()` applies one
       `[section] key = value` through the loader's own mapper (the control API's `config_apply`)
+    - Raw I/Q stream source (issue #743): `[input] source = "iqtcp" | "iqudp"` (`DSDCFG_INPUT_IQTCP` / `_IQUDP`) with
+      `iq_host`, `iq_port`, `iq_rate`, `iq_format`, `iq_freq` (rate and frequency kept as text, as `rtl_freq` is).
+      `dsd_user_config_iq_stream_input_spec()` builds the canonical spec from them (the parser in
+      `<dsd-neo/io/iq_net_spec.h>`, every build), which the apply writes as the input with `rtl_bw_khz` as the DSP
+      bandwidth request, the squelch and the monitor volume; gain, PPM, auto-PPM and `rtl_freq` are not applied, and a
+      save (`snapshot_iq_stream_input_config()`) writes the stream as its source with none of them. Keys that build no
+      spec leave the input as it was. `--validate-config` errors on the key whose field the parser refuses, on
+      `iq_rate` for a rate no plan takes to the target (TETRA's under `decode = tetra`), and warns on those tuner keys;
+      an analog width is held to the planned rate. Three next-start rules refuse a stream beside `trunking.enabled`,
+      `trunking.scanner` or `trunk_scan.enabled` (D8): `--validate-config`, every runtime check that asks the rule,
+      and startup through bootstrap (below). `dsd_user_config_input_sets_device()` says whether an `[input]` replaces
+      the input, for the runtime apply's next-start check (app-control, "Next-start rule").
     - Replay config provenance (issue #743, `src/runtime/config_retained_input.c`): an I/Q replay has no INI form, so
       `dsd_snapshot_opts_to_user_config()` writes, for a session whose input is a replay
       (`dsd_opts_input_is_iq_replay()`), the `[input]` block (`has_input` .. `input_warn_db_is_set`) of the config the
@@ -3850,7 +3863,8 @@ suite runs under this compiler.
       `dsd_app_drain_cmds()` drops the copy after any command that left the replay. The UI snapshot copies it
       (`dsd_user_config_copy_retained_input()`, only when it changed) so the terminal's Save writes it too.
       `--validate-config` refuses a file input whose `file_path` is a spec kind no config can start
-      (`k_file_path_spec_kinds` in `config_user_validation.cpp`: `iqreplay:`). A bare `tcp` or `udp` input snapshots
+      (`k_file_path_spec_kinds` in `config_user_validation.cpp`: `iqreplay:`, and `iqtcp:` / `iqudp:`, which have a
+      source of their own). A bare `tcp` or `udp` input snapshots
       as its `tcp`/`udp` source with the session's endpoint; `-` and `m17udp:` stay file inputs. Tests:
       `RUNTIME_CONFIG_USER`, `RUNTIME_CLI_PARSE`, `RUNTIME_BOOTSTRAP_PRINT_CONFIG_REPLAY_KEEPS_INPUT`, `ENGINE_CLEANUP_AUDIO`,
       `APP_COMMAND_QUEUE`, `CORE_STATE_EXT`.
@@ -3877,6 +3891,16 @@ suite runs under this compiler.
     (`--src-csv`, `--p25-bandplan`, `--iq-replay`'s metadata) or hold a folder (`-d`, `-7`) check their own. A second
     `-C` is refused (issue #697): two maps would merge, the second one's channel numbers and EDACS LCN slots shadowing
     the first's, while only the last path is saved (`RUNTIME_CLI_PARSE`).
+    `-i iqtcp:` / `-i iqudp:` (issue #743) is read as it is parsed (`cli_read_iq_stream_spec()`): a field the spec
+    parser refuses fails with exit 1 naming it, a build without radio support refuses the input, and the spec is kept
+    in its canonical form. Once every option is read, `cli_refuse_tuning_on_iq_stream()` refuses `-T`, `-Y`,
+    `--trunk-scan`, `-U`, `--rtl-udp-control`, `--auto-ppm`, `--rtltcp-autotune` (argv's, by their seen bits) and
+    `--iq-capture` beside a stream, naming the flag (D5, D8); bootstrap then refuses a config's trunking, `-Y` scanner
+    or trunk scan beside one (`bootstrap_refuse_config_tuning_on_iq_stream()`, after the trunk gating and the one-shot
+    actions, before anything opens). The engine's setup (`dsd_engine_setup_parse_iq_stream_input()`) reads the spec
+    of any origin again, refuses a RATE no plan takes to the mode's target, says where a TCP stream connects, warns a
+    RATE under what the mode decodes from (TETRA 25 kHz, 12.5 kHz channels 16 kHz, 6.25 kHz ones 12 kHz) and notes a
+    TETRA start without FREQ.
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits
@@ -5541,7 +5565,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     without needing a finished plan; `dsd_app_rr_fill_apply_payload()` starts from it.
   - Next-start rule (issue #671): `app_check_next_start()` (`src/app_control/next_start_check.{h,c}`, pure) is the
     one body; `svc_check_next_start()` forwards to it on the decoder thread, and the RR pre-check calls it on the
-    snapshot copies.
+    snapshot copies. A config apply is judged on the save it leaves, its input included (issue #743, G3):
+    `cfg_check_next_start()` runs for a config with `[input]`, `[trunking]` or `[trunk_scan]`, and
+    `cfg_overlay_next_start_fields()` puts the config's input in the save where it replaces the input
+    (`dsd_user_config_input_sets_device()`), so an input-only switch to an I/Q stream under trunking already on is
+    refused whole, and one that leaves the stream while it turns trunking on applies. The RTL-SDR row that would reopen
+    a remembered stream (`svc_rtl_row_destination()`) asks the rule for that stream as the input
+    (`ui_rtl_row_refused_for_next_start()`). A stream `[input]` whose keys build no spec, or whose rate no plan
+    reaches, is refused before anything changes (`cfg_check_iq_stream_input()`).
   - Invariant: `apply_rr_import()` has one commit point. `rr_apply_preflight()` runs every deterministic check
     before the carrier boundary and the `-Y` leave (mode bound, verdict, next start, the receive profile the mode
     publishes against the configured widths a scan leave puts back, a running replay's dry re-plan, each CSV); a
@@ -9443,6 +9474,16 @@ Key public headers:
     (`svc_rtl_bandwidth_fits_analog_width()`) and a switch to Analog or AM (`ui_check_mode_receive_profile()`). A
     replay's analog-width refusals name the DSP bandwidths that fit, and TETRA's capture advice only a refused re-plan.
     Tests: `APP_COMMAND_QUEUE` (`test_replay_*`), `RUNTIME_CONFIG_APPLY`.
+  - Raw I/Q stream re-plan (issue #743, D7): a stream runs at the target its spec's RATE is planned to, so the same
+    callers re-plan a running stream through `svc_iq_stream_replan_locked()`, a restart that reconnects (or binds
+    again) and takes a stream gap on its carrier. The plan is asked from the spec before anything stops
+    (`dsd_input_dsp_stream_plan_check()`, `src/runtime/input_dsp_rate.c`: the parser's or planner's reason); a plan
+    no chain reaches puts the caller's profile back with the stream running, a plan equal to the running rate
+    (`rtl_stream_get_request_rate_hz()`) restarts nothing, and a failed start restarts the previous chain, then takes
+    the caller's start-failure path. `svc_replay_planned_rate_hz()` answers for a stream too, so the width checks and
+    `cfg_radio_reopen()` (`CFG_REOPEN_AT_REPLAY_RATE`) hold widths to the rate it will run at; the RR import's dry
+    check is `rr_apply_check_iq_stream()`. A config's gain restarts no stream. Tests: `APP_COMMAND_QUEUE`
+    (`test_stream_*`).
   - No tuner (issue #743 B2, B9): every tuner setter of a replay device (frequency, sample rate, gain and nearest gain,
     PPM, direct sampling, offset tuning, tuner bandwidth, bias tee, rtl_tcp autotune, xtal, test mode, IF gain)
     returns `DSD_ERR_NOT_SUPPORTED` before it changes or caches anything, an unchanged value included
@@ -11543,7 +11584,14 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     reopened (a restart for its gain, PPM, bandwidth or mode, or the recovery after a restart that failed) keeps the
     carrier but lost the samples between the stop and the start, so it runs the stream-gap boundary
     (`DSD_CARRIER_BOUNDARY_STREAM_GAP`, issue #743 B19): calls end and assemblies go, codes and identity stay. A replay
-    that resumes at its checkpoint (issue #701) runs neither.
+    that resumes at its checkpoint (issue #701) runs neither. A raw I/Q stream (issue #743), which DSD-neo cannot
+    tune, is keyed by its whole spec in canonical form, receiver frequency (FREQ) included
+    (`carrier_source_key_iq_stream()`), so another endpoint, rate, format or FREQ is another source and a restart of
+    the same stream is a stream gap; its start also puts `rtlsdr_center_freq` on FREQ (0 when none, never the 850 MHz
+    default or a replay's centre), which `dsd_opts_tuned_freq_hz()`, history rows, the control-channel caches and
+    TETRA's call association read, and a UDP stream says `I/Q stream: receiving on BIND:PORT` once it is bound
+    (`note_iq_stream_started()`). `dsd_engine_stream_reopened_on()` never lands a pending tune on a replay or a
+    stream (`dsd_opts_input_has_fixed_tuning()`).
   - A config apply that leaves the same radio source on another frequency as `dsd_opts_tuned_freq_hz()` reads it
     (`apply_cfg_radio_input()`), unless the apply left the carrier already (`apply_cfg_left_carrier()`): a start on
     another source, or the live Airspy retune, which moves `carrier_seq` with no stream start. A reopen of the same
