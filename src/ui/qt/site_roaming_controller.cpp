@@ -446,8 +446,8 @@ SiteRoaming::progressTransaction() {
 /* Whether the user asked to stop listening since @p generation was read, or the generation cannot be read now. */
 bool
 SiteRoaming::userStoppedSince(qint64 generation) const {
-    const qint64 now = m_host != nullptr ? m_host->userStopGeneration() : -1;
-    return now < 0 || now != generation;
+    const qint64 current = m_host != nullptr ? m_host->userStopGeneration() : -1;
+    return current < 0 || current != generation;
 }
 
 void

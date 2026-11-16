@@ -18,8 +18,10 @@
 
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/bootstrap.h>
