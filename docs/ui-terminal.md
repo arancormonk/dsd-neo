@@ -1322,7 +1322,7 @@ commands (inhibit, kill, radio check, ...) and status messages. The newest eight
 same words as the Activity screen in the Android and desktop apps:
 
 ```text
-| 12:34:56 Denied: Target Unit Not Valid (0x20); 1234567; TG 200 (x3)
+| 12:34:56 Denied: Target Unit Not Valid (0x20); 1234567; service 0x04, for 7654321 (x3)
 |  \-- P25 Phase 1, WACN BEE00 SYS 123
 | 12:34:51 Joined talkgroup; 1234567 [Engine 5]; TG 100
 ```

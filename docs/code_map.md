@@ -2498,17 +2498,26 @@ suite runs under this compiler.
     TETRA detach (U-ITSI DETACH) is uplink; and no row says a radio acted on a command (a P25 acknowledgement is only
     an acknowledgement, NXDN REM_CON_RESP comes before execution, DMR and TETRA send no outcome), which the view's
     labels keep to (below, under App control).
-  - Stages and reasons: `stage` is a `dsd_ua_stage` (a TETRA D-DISABLE / D-ENABLE intent or its authenticated
-    confirm: both are commands). `reason_set` names one of the reason tables in `<dsd-neo/core/unit_activity_reason.h>`
-    (`src/core/util/unit_activity_reason.c`, data only): P25 deny and queued (the words the P25 Deny / Queued
-    prints always used; `p25p2_vpdu.c` and `p25p1_tsbk.c` print through it, and their own table is gone), DMR Tier III C_ACKD (TS 102 361-4 Tables 7.42-7.45) and
-    Tier II NACK_Rsp (TS 102 361-2 Table 7.13, kept apart: 0x21 differs), NXDN Cause (MM) and Cause (SS) (TS 1-A Tables
-    6.5-27 / 6.5-29) and the TETRA location update reject cause (EN 300 392-2 Table 16.81). `dsd_ua_reason_text()`
-    returns NULL for a value its table does not define (P25 reads its ranges, "Reserved" / "User/System Defined", as
-    its prints did), so a print shows the raw value then. One table serves the log and the prints. The same header
-    names the TETRA location update accept types (`dsd_ua_tetra_accept_type_text()`, Table 16.68; NULL above 7), the
-    value of a TETRA location registration row. Test: `CORE_UNIT_ACTIVITY_REASON` (every 8-bit P25 code against
-    the prints' former table, kept in the test).
+  - Scope limits (decided, not bugs): a P25 row heard before the carrier's network status (the first second of a
+    session, or right after a trunk-scan hop, whose `trunk_scan_leave_carrier()` resets `rx_id`) takes the NAC scope,
+    as a learned alias heard then does. It is not named from the WACN/SYS lists afterwards, shows "NAC n" as its
+    system, and the same message heard after the network status starts a second row (scope is keyed), with a system
+    change line between them in the terminal. On Capacity Plus a trunk tune drops the colour code
+    (`dsd_rxid_trunk_tune()`) until the next burst gives it back, and the Capacity Plus scope needs it: the name key
+    changes twice per rest-channel move or call follow, so each frontend reads its rows again (up to 1024, on the UI
+    thread), and a row pushed in between (an ARS report) has no scope and shows only its frozen name. The colour code
+    of the channel reached is not known until it is heard, so it is not carried over.
+  - Stages and reasons: `stage` is a `dsd_ua_stage` (a TETRA D-DISABLE / D-ENABLE intent or its authenticated confirm:
+    both are commands). `reason_set` names one of the reason tables in `<dsd-neo/core/unit_activity_reason.h>`
+    (`src/core/util/unit_activity_reason.c`, data only): P25 deny and queued (the words the P25 Deny / Queued prints
+    always used; `p25p2_vpdu.c` and `p25p1_tsbk.c` print through it, and their own table is gone), DMR Tier III C_ACKD
+    (TS 102 361-4 Tables 7.42-7.45) and Tier II NACK_Rsp (TS 102 361-2 Table 7.13, kept apart: 0x21 differs), NXDN Cause
+    (MM) and Cause (SS) (TS 1-A Tables 6.5-27 / 6.5-29) and the TETRA location update reject cause (EN 300 392-2 Table
+    16.81). `dsd_ua_reason_text()` returns NULL for a value its table does not define (P25 reads its ranges, "Reserved"
+    / "User/System Defined", as its prints did), so a print shows the raw value then. One table serves the log and the
+    prints. The same header names the TETRA location update accept types (`dsd_ua_tetra_accept_type_text()`, Table
+    16.68; NULL above 7), the value of a TETRA location registration row. Test: `CORE_UNIT_ACTIVITY_REASON` (every 8-bit
+    P25 code against the prints' former table, kept in the test).
   - Protocol producers (`src/protocol/<name>/<name>_unit_activity.c`): one row per checked message, `freq_hz` the
     tuned frequency. Every producer names the row through the one core rule, `dsd_unit_activity_freeze_name()`: the
     assigned identity when it is a RADIO, else the subject RADIO only while `dsd_unit_activity_identity_at_home()` (no
@@ -18559,8 +18568,8 @@ item view refills its delegates even while invisible, so:
 
 - A hidden sheet or screen does not keep a live list model bound. It hands the view its model only while visible:
   `model: sheet.visible ? (metrics.decryptionSlots || []) : []` (KeySheet's slots), `FieldGrid`'s `live: sheet.visible`
-  (SiteSheet), `screen.live` (the Talkgroups chips), or `qml/KeepPlace.qml` for a scrolled list that must reopen at
-  the reader's place (History, Home's recent calls, the Talkgroups grid, Activity; see "Hidden lists" under UI, Qt), or a
+  (SiteSheet), `screen.live` (the Talkgroups chips), or `qml/KeepPlace.qml` for a scrolled list that must reopen at the
+  reader's place (History, Home's recent calls, the Talkgroups grid, Activity; see "Hidden lists" under UI, Qt), or a
   `Binding` that keeps the last model while hidden for Repeaters in a scrolled `Column` (the Signal search screen's
   detections and avoids, same section). Opening fills it from the readings as they are then. A sheet whose content
   follows the snapshot can instead refresh only while visible (`NetworkSheet`).
@@ -18784,8 +18793,9 @@ Pause holds it: each refresh rebuilds the rows.
 details open and readings that move every tick against `Main.qml` (`tst_a11y_scan_churn.qml`), closed KeySheet and
 SiteSheet and the open Network sheet across refreshes, reorders, capped arrivals, a shrink, a clear and refill, and hops
 between P25 targets (100 radios and 1 among them) and to targets with no P25 network (`tst_a11y_closed_sheets.qml`), the
-Activity screen hidden under a busy log and its rows renamed in place while open (`tst_a11y_activity.qml`), and a hidden Talkgroups screen across two
-targets' tables (`tst_a11y_talkgroups.qml`). `tst_a11y_text_reach.qml` walks every screen and sheet for visible text no
+Activity screen hidden under a busy log and its rows renamed in place while open (`tst_a11y_activity.qml`), and a
+hidden Talkgroups screen across two targets' tables (`tst_a11y_talkgroups.qml`).
+`tst_a11y_text_reach.qml` walks every screen and sheet for visible text no
 node reads, against one allowlist with a reason per entry, and `tst_a11y_paced_names.qml` holds moving readings to their
 pace. How the harness works and how to add a case: `docs/testing.md` "Accessibility event counts".
 

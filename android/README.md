@@ -630,8 +630,9 @@ kind at a time: **Logins**, **Talkgroups**, **Refused & queued**, **Radio comman
 A row says what was sent, never more: **Kill sent** means the system sent the command, not that the radio was killed.
 Some of it never reaches a listener: what the control channel sends while the receiver follows a voice call isn't heard
 (messages the voice channel itself carries still show), DMR and TETRA radios don't announce logging off, and whether a
-radio carried out a command isn't sent. The list is for the session only: it is empty at the next start. It keeps the newest 1,024 events; when more arrived while DSD-neo was in the background than
-it could keep, a row says **Earlier activity was not kept** where they were.
+radio carried out a command isn't sent. The list is for the session only: it is empty at the next start. It keeps the
+newest 1,024 events; when more arrived while DSD-neo was in the background than it could keep, a row says **Earlier
+activity was not kept** where they were.
 
 ### Extra decoder arguments the app refuses
 
