@@ -5245,7 +5245,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     replays `dsd_opts::symbol_capture_last`, which `closeSymbolOutFile()` sets for every capture it closes (a stop, a new
     capture, a rotation), so `SYMCAP_STOP` no longer writes `audio_in_dev`. The RTL-SDR row opens
     `svc_rtl_row_destination()` (the first radio spec that is no Airspy one: the running spec, then the one a PCM switch
-    kept; else `rtl`), and is checked against it before anything changes; once the radio runs, the PCM input it
+    kept; else `rtl`; the rule is `dsd_app_radio_row_destination()` in the radio-source view, which the terminal row's
+    label names too), and is checked against it before anything changes; once the radio runs, the PCM input it
     replaced is closed (`closeAudioInDevice()`), and kept when the radio does not start. The radio rows (RTL-SDR and
     Airspy, `ui_cmd_handle_rtl_enable_input()`) refuse a switch while a scan is in force as the PCM rows do
     (`ui_input_switch_refused()`, the same `Unsupported: stop the scan first`; issue #671), so a running `-Y` list is
@@ -5265,17 +5266,31 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     control channel yet, so it never reads as done), `CHANNEL_CYCLE` and `CHANNEL_CYCLE_PREV` (every leg: LCN, P25
     candidate, `-Y` row, trunk-scan target), and `RIGCTL_CONNECT` / `RIGCTL_CONNECT_CFG` (a peer beside either would
     take the trunking retunes, issue #743 B12) are refused as failed commands by `ui_cmd_refuse_fixed_tuning()`, which
-    toasts the input's reason: "An I/Q replay cannot retune." on a replay, "An I/Q stream cannot retune: change the
-    channel in the sending program." on a stream. They used to report a tune that never landed or fail on the backend's
-    deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their
+    toasts the input's reason (`svc_fixed_tuning_reason()`): "An I/Q replay cannot retune." on a replay, "An I/Q stream
+    cannot retune: change the channel in the sending program." on a stream. They used to report a tune that never landed
+    or fail on the backend's deferred result with no reason given. On a stream the same reason refuses what would only
+    ask for tunes it cannot make (the §2b matrix, issue #743): `TRUNK_TOGGLE` / `TRUNK_SET` on, the `-Y` scanner's start
+    and resume (`SCANNER_TOGGLE`, `SCAN_RESUME`; `tuning_refused_on_iq_stream()` in `actions_trunk.c`), a `-Y` hold or
+    avoid (unreachable, refused anyway) and `SCAN_LIST_SET`; turning trunking or the scanner off and clearing or
+    removing avoids stay allowed. A replay keeps trunking and `-Y` as its start allowed them (its retunes defer by
+    design). A stream's tuner controls (`RTL_SET_GAIN`, `RTL_SET_DEV`, `RTL_SET_PPM`, `PPM_DELTA`, `RTL_SET_BIAS_TEE`,
+    `RTLTCP_SET_AUTOTUNE`, `RTL_SET_AUTO_PPM`, the tuner-autogain DSP op, `RIGCTL_SET_MOD_BW`) are refused with
+    `ui_cmd_refuse_stream_tuner_control()` (`svc_iq_stream_tuner_reason()`: "An I/Q stream has no tuner controls: adjust
+    the radio in the sending program."), a replay's with their own "Unsupported:" toasts. Signal search refuses a
+    stream at its start with "Signal search needs a tunable SDR: an I/Q stream cannot retune" (`signal_search.c`), the
+    RadioReference import never tunes one (`rr_apply_tune()`), the mouse wheel never captures on one
+    (`ui_wheel_capture_wanted()`), and a config naming a stream `[input]` while a `-Y` scan or a trunk-scan
+    coordinator decides the front end is refused whole, "Config not applied: stop the scan first"
+    (`cfg_check_iq_stream_input()`). Scan hold and avoid, skip and lockout are not refused on a replay: their
     main effect is on the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts
     point at a release; the running trunk scan's gate comes first among those, so a trunked target it parks on (trunking
     on, the target's) is refused as `Trunk scan active`, not `Trunking active` (issue #644 C-B1); every refusal of the
     tap, the owner gates included, is a failed command with its reason toasted, as the frequency entry's are. Qt and the
     control API learn it from the toast: they see only whether the command was queued. Qt's Spectrum screen offers none
-    of them during a replay (`MetricsModel::replayInput`; see UI, Qt, "Tuned frequency, call codes and replay tuning on
-    screen"). `svc_rtl_stop_locked()` clears the replay centre the tuned-frequency reading follows (see IO, "I/Q replay
-    tuned frequency"). Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
+    of them during a replay or stream (`MetricsModel::replayInput`, `MetricsModel::tunable`; see UI, Qt, "Tuned
+    frequency, call codes and replay tuning on screen"). `svc_rtl_stop_locked()` clears the replay centre the
+    tuned-frequency reading follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`,
+    `UI_MENU_SERVICES`.
   - Tune toasts and payload range (issue #670): every tune toast names its frequency in MHz through
     `ui_toast_mhz()` (`dsd_freq_hz_mhz_text()`): `RTL_SET_FREQ`, `MANUAL_TUNE`, the P25 control channel selection and
     the `-Y` avoid (`Avoiding row <N> (<MHz>, <n> avoided)`, to the Hz). `LOG_*` tune lines and numeric API payloads
@@ -6463,7 +6478,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
 - Android notification record: `include/dsd-neo/app_control/notification_status.h` and
   `src/app_control/notification_status.c`. The snapshot publishers (`ui_snapshot.c`, `ui_opts_snapshot.c`) feed it
   through `dsd_app_notification_publish_state()`/`_publish_opts()`, which stay dormant until a reader has called
-  `dsd_app_notification_get()` once. `dsd_app_notification_encode()` writes one tab-separated record, version `v4`, 39
+  `dsd_app_notification_get()` once. The struct's `tunable` (issue #743, `dsd_opts_radio_can_tune()`: 0 on an I/Q
+  replay or stream and on audio input) reaches the API's status JSON (`api_feed.c`, `docs/api.md`) only: the `v4`
+  record below does not carry it, and `DecoderStatus.kt` is unchanged (`APP_CONTROL_NOTIFICATION_STATUS` pins the
+  header, `API_FEED` the JSON). `dsd_app_notification_encode()` writes one tab-separated record, version `v4`, 39
   fields: an 11-field header (version, protocol, radio_input, trunking, trunk_tuned, cc_freq_hz, vc_freq_hz,
   center_freq_hz, lead_slot, audible_stamp in unsigned decimal, audible_age_ms in signed decimal with -1 for none), then
   14 fields per slot (state, name, tg_text, src_text, tg_id, enc, algid, kid, elapsed_ms, emergency, priority, kind,
@@ -9024,10 +9042,11 @@ Key public headers:
     warnings; with no fresh measurement it keeps the old level and warns about nothing. An I/Q replay in force
     (`dsd_opts_input_is_iq_replay()`) keeps every warning its capture calls for, so a paused replay prints the same
     advisories in every run. PCM inputs keep the decoder's level. A raw I/Q stream's level
-    (`DSD_INPUT_LEVEL_SOURCE_NET_IQ`, the sender's own samples, each snapshot over at least one block) counts as RF for
-    all of this. The warning and the terminal's level row give one advice text, `dsd_input_level_advice()`: a replay's
-    says its level was set when the capture was recorded (issue #743 B8), a stream's names the sending program,
-    another radio's its RF gain, an audio input's its volume. Tests: `IO_INPUT_LEVEL_METRICS`,
+    (`DSD_INPUT_LEVEL_SOURCE_NET_IQ`, the sending program's own samples, each snapshot over at least one block) counts
+    as RF for all of this. The warning and the terminal's level row give one advice text, `dsd_input_level_advice()`: a
+    replay's says its level was set when the capture was recorded (issue #743 B8), a stream's names the sending
+    program's gain, another radio's its RF gain, an audio input's its volume; each short enough for the advisory line
+    to keep to 80 columns. Tests: `IO_INPUT_LEVEL_METRICS`,
     `CORE_INPUT_LEVEL`, `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`. CU8 moments keep 64-bit
     totals while accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening reduces
     its byte extrema in registers and maps the four clipping-edge values to one unsigned interval. These integer
@@ -9547,7 +9566,12 @@ Key public headers:
     a stop latches the flag and shuts down only the published socket; the reader unpublishes before it closes.
   - Availability (`dsd_iq_net_state`, one atomic): STOPPED, CONNECTING, WAITING (up, nothing written since it came
     up or since the last boundary), STREAMING (the consumer called `dsd_iq_net_reader_note_written()`), STALLED. Only
-    STREAMING is available. Counters are `dsd_atomic_u64`s copied by `dsd_iq_net_reader_get_counters()`.
+    STREAMING is available. Counters are `dsd_atomic_u64`s copied by `dsd_iq_net_reader_get_counters()`. The session's
+    stream (`dsd_iq_net_reader_config.publish_state`, set by `rtl_net_iq_create()`) also publishes each state, and
+    whether a CONNECTING follows a lost connection, to a process-wide atomic (`dsd_iq_net_published_state()`), STOPPED
+    again when it ends or is destroyed: a frontend's snapshot outlives the reader a restart frees, so the I/O pane's
+    "connected / reconnecting / waiting for data / no input" (`dsd_app_frontend_iq_stream_state()`) never touches it.
+    No per-block cost: the WAITING to STREAMING move publishes only when its compare-exchange wins.
   - Rate telemetry (`iq_net_rate.c`): 5 s warm-up, then 10 s windows of valid samples on the injectable clock; a window
     with a stall, boundary, known loss or consumer drop (`dsd_iq_net_reader_note_drop()`) is discarded and breaks a
     streak; three consecutive windows strictly below 0.9x or strictly above 1.1x the rate, on the same side, warn once
@@ -13648,7 +13672,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     sanitize/measure/cut/marker model is `ui_text.{h,c}`, shared with the chooser overlay (issue #672, B7; `UI_TEXT`,
     built again as `UI_TEXT_PDC_WIDE` and `UI_TEXT_PDC_NARROW`). The Input Output section's live rows go
     through it — each input's source row (receiver readings at fixed widths, `FRQ:` last) and channel row (`SQL:` and
-    its reading first, then `Analog:`/`Passband:`), the Airspy identity row, Auto PPM, input level, outputs, M17
+    its reading first, then `Analog:`/`Passband:`), the identity row an Airspy, rtl_tcp server, I/Q replay or I/Q
+    stream gets ahead of its readings (`ui_render_radio_identity_row()`, issue #743 B5: `| rtl_tcp: H:P;`, `| I/Q
+    replay: FILE;`, `| I/Q stream: ENDPOINT; FORMAT, RATE; STATE`, the state last because it alone changes, from
+    `dsd_app_frontend_iq_stream_state()`; a replay or stream shows no `G:`/`PPM:`, Auto PPM or External RTL Tuning
+    row), Auto PPM, input level, outputs, M17
     encoder, Scan Mode, Trunk Scan, Scan Timing, and every DSP panel line — with readings through `dsd_number_text()`
     at fixed widths and status words in rooms that stay; configuration-only rows (toggles, keys, paths, External RTL
     Tuning, M17 UDP, Reverse Mute) keep wrapping. `FRQ:` is the tuned frequency through `dsd_freq_hz_mhz_text()` in
@@ -13816,7 +13844,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     connection: set by the manual, scan and trunking rigctl legs, 0 after a connect) off one, `[-]` at 0.
     `input_freq_offered()` / `freq_entry_offered(opts)` offer it on a radio input or with a live rigctl peer
     (`dsd_opts_rigctl_live()`), never on an input with fixed tuning (`dsd_opts_input_has_fixed_tuning()`: an I/Q
-    replay); a scan no longer hides it, since an accepted entry pauses
+    replay or I/Q stream; `=` there opens the input's reason, a stream's naming the sending program); a scan no longer
+    hides it, since an accepted entry pauses
     the scan or, on a row of its list, holds it there (issue #644). The `-Y` Scan Mode row and the Trunk Scan row show
     that entry hold as one field, `HOLD (y continues)` (`ui_row_scan_hold_field()`, from the scan-state view's
     `entry_hold` for the row's own scan kind), in place of `HOLD`, so a narrow row's cut drops whole fields after it;
@@ -14010,6 +14039,18 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `bandwidthSet`/`bandwidthText`/`draft.bandwidthKhz`; note `scanBandwidthNote`). Tests:
     `tst_settings_receiver_defaults.qml`, `tst_wizard_bandwidth.qml`, `tst_wizard_gain.qml` (PPM),
     `tst_scan_list_screen.qml`, `tst_wizard_decode_chip.qml`, `tst_airspy_source_ui.qml`, `tst_a11y_text_reach.qml`.
+  - Radio input names and tuner rows (issue #743, B5): `lbl_current_input()` names a radio input by its kind through
+    the app-control radio-source view (`include/dsd-neo/app_control/radio_source_view.h`,
+    `dsd_app_radio_source_name()`): `Source: RTL-SDR dev N`, `rtl_tcp H:P`, `Airspy [serial]`, `SoapySDR [args]`,
+    `I/Q replay FILE`, `I/Q stream H:P (cs16, 240 kHz)` / `I/Q stream UDP :P (...)` (`dsd_app_iq_stream_describe()`; a
+    host too long for the label is cut and marked so the samples stay), where rtl_tcp, Airspy and a replay all read
+    `RTL-SDR dev N`. Switch source's radio row (`lbl_src_rtl()`) names the input it opens
+    (`dsd_app_radio_row_destination()`, which `svc_rtl_row_destination()` calls): `RTL-SDR`, or a remembered stream,
+    rtl_tcp server or SoapySDR device by name. The radio submenu is named for its input (`lbl_input_rtl()`: `RTL-SDR`,
+    `I/Q stream`, `I/Q replay`), and its tuner rows (gain, PPM, tuner autogain, bias tee, device index, `Auto-PPM &
+    rtl_tcp`) follow `tuner_rows_offered()`: hidden on an Airspy (rows of its own) and on a radio input DSD-neo cannot
+    tune (`dsd_opts_radio_can_tune()`), kept on audio input, where they set up the RTL-SDR a switch opens. Tests:
+    `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT{,_NO_RADIO}`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`.
   - Analog channel width (issue #525): the Input menu's `input.nfm_bw` row, right after `input.sql` (`NFM bandwidth...
     [12.5 kHz]`, or `[default]`, on a radio input while the configured -fA preset runs FM or an explicit width is set
     under another preset, `is_nfm_width_editable()`), prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as
@@ -15259,6 +15300,19 @@ Qt Quick frontend (`src/ui/qt`):
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
     It hides "Explore from here", closes that button's confirm and an open "Go to" sheet when a replay begins, and
     shows "An I/Q replay cannot retune." in the button's place, the refusal's own words.
+  - I/Q stream (issue #743): `MetricsModel::tunable` (same group) is `dsd_opts_radio_can_tune()` on that snapshot.
+    Spectrum's `fixedInput` (`replayInput`, or `radioInput && !tunable`) makes it view-only as a replay does, with the
+    stream's reason, "An I/Q stream cannot retune: change the channel in the sending program." (`fixedReason`), and no
+    Resume scan or Go to. `RadioSheet` hides its gain, PPM and Airspy rows on a fixed input and says why in their place
+    (`radioTunerNote`: "An I/Q stream has no tuner controls: adjust the radio in the sending program.", or a replay's
+    "An I/Q replay has no tuner controls: it plays what was recorded."); audio input keeps them. `radioSourceView()`
+    maps a replay or stream to no `sourceType`: no saved-system source starts one. No Qt start path picks a stream
+    (D4 a): `session_args_extra_error()` refuses an `-i iqtcp:` / `-i iqudp:` among a system's or the app's extra
+    options (`extra_names_iq_stream()`, read as getopt reads `-i`) with `SessionArgsError::IqStreamExtra` ("An I/Q
+    stream input is not available from saved systems yet. Run dsd-neo from the command line, or remove the -i option
+    from the extra decoder arguments."; start-screen category `iq-stream-extra`), since every check before the extras
+    describes the saved source. Tests: `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`, `UI_QT_QML_CALL_LISTS`
+    (`tst_spectrum_screen.qml`, `tst_radio_gain_override.qml`).
   - Scan pause (issue #671): `MetricsModel::fillScanControlView()` reads the app-control scan-state view
     (`dsd_app_scan_state_view_get()`) for `scanKind`, `scanPaused`, `scanResumable` (paused with no -Y resume already
     waiting on its row), `scanEntryCount` and `operatorTuned`, and for the running predicate behind `tunerControlled`,
