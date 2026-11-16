@@ -65,10 +65,17 @@ class SiteRoaming : public QObject {
     Q_PROPERTY(Reason reason READ reason NOTIFY changed)
     /* The state as one plain sentence (the reason's while Idle, Paused or Holding); empty while Off. */
     Q_PROPERTY(QString statusText READ statusText NOTIFY changed)
+    /* The state for the Monitor header, state first and the feature name last ("STAYING · GPS ROAMING", "PAUSED: NO
+     * FIX · GPS ROAMING"), so an elided line keeps the state; empty while Off or Idle. Its sentence is statusText. */
+    Q_PROPERTY(QString headerText READ headerText NOTIFY changed)
+    /* The state alone ("WAITING"), for a header too narrow for headerText; empty while Off or Idle. */
+    Q_PROPERTY(QString headerShortText READ headerShortText NOTIFY changed)
     /* What the reason's button does (performAction()). */
     Q_PROPERTY(Action action READ action NOTIFY changed)
     /* The site group of the session roaming follows ("<rrSid>|<receiver>", site_group_key()); empty with none. */
     Q_PROPERTY(QString groupKey READ groupKey NOTIFY changed)
+    /* That group's name, as its Home card names it (site_group_title() of its first row); empty with none. */
+    Q_PROPERTY(QString systemName READ systemName NOTIFY changed)
     /* The site the session runs, its name and its distance from the latest fix in km (-1 when unknown). */
     Q_PROPERTY(QString currentUid READ currentUid NOTIFY changed)
     Q_PROPERTY(QString currentName READ currentName NOTIFY changed)
@@ -196,8 +203,11 @@ class SiteRoaming : public QObject {
     State state() const;
     Reason reason() const;
     QString statusText() const;
+    QString headerText() const;
+    QString headerShortText() const;
     Action action() const;
     QString groupKey() const;
+    QString systemName() const;
     QString currentUid() const;
     QString currentName() const;
     double currentDistanceKm() const;

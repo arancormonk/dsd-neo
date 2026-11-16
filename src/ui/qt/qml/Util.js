@@ -379,6 +379,16 @@ function fmtDistanceKm(km, metricUnits) {
                        : qsTr("%1 mi").arg((km / 1.609344).toFixed(1))
 }
 
+// A distance setting (#786 GPS roaming) in the unit shown, to a tenth with no
+// trailing ".0": "25 km", "0.5 mi", and a value picked in the other unit as it
+// converts ("62.1 mi"). Empty for no distance.
+function fmtDistanceSetting(km, metricUnits) {
+    if (typeof km !== "number" || !isFinite(km) || km < 0)
+        return ""
+    var value = String(Math.round((metricUnits ? km : km / 1.609344) * 10) / 10)
+    return metricUnits ? qsTr("%1 km").arg(value) : qsTr("%1 mi").arg(value)
+}
+
 // The catalog entry a chip flag names, or null. One lookup for every question
 // asked of the catalog, so a flag that has to be matched some other way — the
 // importer's composite forms are already the reason LEGACY_DECODE_LABELS exists

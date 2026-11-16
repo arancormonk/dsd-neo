@@ -6059,6 +6059,21 @@ class Setup : public QObject {
             .setValue(QStringLiteral("location/lastFixAt"), dsd_qt::realtimeMSecsSinceEpoch() - 25LL * 60 * 60 * 1000);
     }
 
+    /** @brief #786: store GPS roaming distance @p key ("maxDistanceKm", "marginKm") as @p km behind AppPrefs, as a
+     *         restored backup or another unit's pick leaves it; an invalid @p km (undefined) removes it, as on a first
+     *         launch. No signal: a screen loaded after it reads it. */
+    Q_INVOKABLE void
+    storeRoamingDistance(const QString& key, const QVariant& km) {
+        QSettings stored(QSettings::IniFormat, QSettings::UserScope, dsd_qt::AppPrefs::settingsOrganization(),
+                         dsd_qt::AppPrefs::settingsApplication());
+        const QString name = QStringLiteral("roaming/") + key;
+        if (km.isValid() && !km.isNull()) {
+            stored.setValue(name, km.toDouble());
+        } else {
+            stored.remove(name);
+        }
+    }
+
     /** @brief The saved-system cards as a fresh Home finds them: no search, no screen reader, nothing held. Location
      *         support is left as setLocationSupported() last set it on the host and the cards together. */
     Q_INVOKABLE void

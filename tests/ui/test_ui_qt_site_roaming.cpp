@@ -1358,6 +1358,42 @@ check_executor_manual_hold() {
     check(rig.roaming.state() != SiteRoaming::Holding, "hold: a pick whose start never happened holds nothing later");
 }
 
+/* The Monitor header's line: state first, the feature last, and the state alone for a narrow header; nothing while
+ * Off or Idle. The system it follows is named as its Home card names it. */
+void
+check_executor_header_text() {
+    Rig rig;
+    const auto header = [&rig](const char* full, const char* shortForm) {
+        return rig.roaming.headerText() == QString::fromUtf8(full)
+               && rig.roaming.headerShortText() == QString::fromUtf8(shortForm);
+    };
+    check(header("", "") && rig.roaming.systemName().isEmpty(), "header: idle shows nothing");
+    rig.running(0, false);
+    check(header("", "") && rig.roaming.statusText() == QStringLiteral("GPS roaming starts once listening begins"),
+          "header: a starting session is idle, with its sentence");
+    rig.roaming.noteSessionInitialized();
+    check(header("PAUSED: NO FIX · GPS ROAMING", "PAUSED") && rig.roaming.systemName() == QStringLiteral("Valley"),
+          "header: waiting for a fix, and the system by its card's name");
+    rig.fix(10.0, 20.0);
+    check(header("STAYING · GPS ROAMING", "STAYING"), "header: following");
+    rig.set("callBusy", true);
+    rig.nearB(0);
+    check(header("CHECKING · GPS ROAMING", "CHECKING"), "header: a candidate");
+    rig.nearB(10000);
+    rig.nearB(10000);
+    check(header("WAITING FOR CALL END · GPS ROAMING", "WAITING"), "header: waiting for the call");
+    rig.set("heldTg", 5);
+    check(header("PAUSED: TALKGROUP HELD · GPS ROAMING", "PAUSED"), "header: a held talkgroup");
+    rig.set("heldTg", 0);
+    rig.set("callBusy", false);
+    rig.nearB(0);
+    rig.nearB(10000);
+    rig.nearB(10000);
+    check(header("SWITCHING · GPS ROAMING", "SWITCHING"), "header: switching");
+    rig.prefs.setRoamingEnabled(false);
+    check(header("", "") && rig.roaming.systemName().isEmpty(), "header: off shows nothing");
+}
+
 } // namespace
 
 int
@@ -1396,6 +1432,7 @@ main(int argc, char** argv) {
     check_executor_plan_out_of_turn();
     check_executor_adopted_and_retune();
     check_executor_timer();
+    check_executor_header_text();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

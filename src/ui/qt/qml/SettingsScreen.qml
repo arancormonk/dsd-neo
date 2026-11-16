@@ -45,6 +45,26 @@ Item {
         return Util.fill(qsTr("%1 · %2"), [screenModeNames[mode] || screenModeNames[0], detail]);
     }
 
+    // #786: a GPS roaming distance's choices in the unit shown, the stored
+    // one checked. A value picked in the other unit (or restored from a
+    // backup made in it) is on neither list here: it is shown as it
+    // converts, checked, after the others.
+    function openRoamingChoices(title, offered, stored, store) {
+        var values = [];
+        for (var i = 0; i < offered.length; ++i)
+            values.push(offered[i]);
+        var current = values.findIndex(function (km) { return Math.abs(km - stored) < 1e-6; });
+        if (current < 0) {
+            values.push(stored);
+            current = values.length - 1;
+        }
+        roamingChoices.open(title, values.map(function (km) {
+            return Util.fmtDistanceSetting(km, prefs.metricUnits);
+        }), function (index) {
+            store(values[index]);
+        }, current);
+    }
+
     function screenDelayText(seconds) {
         if (seconds < 60)
             return qsTr("%1 seconds").arg(seconds);
@@ -506,6 +526,77 @@ Item {
                         onToggled: function (state) {
                             prefs.metricUnits = state;
                         }
+                    }
+                }
+            }
+
+            // GPS ROAMING (#786): the site chooser's switch, beside the unit its
+            // distances are in. Only where the platform has a location feed.
+            UiPanel {
+                objectName: "settingsRoamingCard"
+                width: parent.width
+                visible: siteRoaming.available
+                height: roamingColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: roamingColumn
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        objectName: "settingsRoamingHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("GPS roaming")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    ToggleRow {
+                        objectName: "roamingToggle"
+                        title: qsTr("Use GPS roaming")
+                        subtitle: qsTr("Switch to the nearest saved site of the system you are listening to as you move.")
+                        checked: siteRoaming.enabled
+                        showDivider: true
+                        onToggled: function (state) {
+                            siteRoaming.setEnabledByUser(state);
+                        }
+                    }
+
+                    DisclosureRow {
+                        objectName: "roamingMaxDistanceRow"
+                        title: qsTr("Roam to sites within")
+                        subtitle: Util.fmtDistanceSetting(prefs.roamingMaxDistanceKm, prefs.metricUnits)
+                        showDivider: true
+                        onTapped: screen.openRoamingChoices(title, prefs.roamingMaxDistanceChoices, prefs.roamingMaxDistanceKm, function (km) {
+                            prefs.roamingMaxDistanceKm = km;
+                        })
+                    }
+
+                    DisclosureRow {
+                        objectName: "roamingMarginRow"
+                        title: qsTr("Switch when another site is closer by")
+                        subtitle: Util.fill(qsTr("%1 · Grows when your location is less precise, and needs readings over 20 seconds"), [Util.fmtDistanceSetting(prefs.roamingMarginKm, prefs.metricUnits)])
+                        onTapped: screen.openRoamingChoices(title, prefs.roamingMarginChoices, prefs.roamingMarginKm, function (km) {
+                            prefs.roamingMarginKm = km;
+                        })
+                    }
+
+                    ReadableText {
+                        objectName: "roamingNote"
+                        width: parent.width - 2 * Theme.cardPadding
+                        x: Theme.cardPadding
+                        topPadding: 4
+                        bottomPadding: 8
+                        text: qsTr("Uses precise location while DSD-neo is on screen.")
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(12)
+                        color: Theme.textSubdued
                     }
                 }
             }
@@ -1275,6 +1366,13 @@ Item {
                 }
             }
         }
+    }
+
+    // The GPS roaming distance rows' choices.
+    ChoiceSheet {
+        id: roamingChoices
+        objectName: "roamingChoices"
+        choiceObjectNamePrefix: "roamingChoice"
     }
 
     // The Screen and delay rows' choices.

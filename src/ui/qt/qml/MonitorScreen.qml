@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import DsdNeo 1.0
 import "Util.js" as Util
 
 // The live session: who you are hearing now, the calls you just heard, and one
@@ -628,6 +629,50 @@ Item {
                     color: Theme.textSubdued
                     // On a narrow phone screen, elide long budgets to leave room for controls.
                     elide: Text.ElideRight
+                }
+
+                // #786: what GPS roaming is doing, state first and the feature
+                // last, so eliding drops the name and never the state; where
+                // the line is too narrow for that (measured beside the header
+                // actions), the state alone. Kept for the whole of a saved
+                // session while roaming is on and blank while it idles, so the
+                // header, sized from this column, never changes height. A
+                // screen reader hears the sentence, and a change of state is
+                // read out once.
+                ReadableText {
+                    id: roamingHeader
+                    objectName: "roamingHeaderLine"
+                    readonly property bool problem: siteRoaming.action === SiteRoaming.OpenAppSettings || siteRoaming.action === SiteRoaming.TurnOnLocation || siteRoaming.reason === SiteRoaming.SwitchFailed
+                    readonly property bool fullFits: roamingHeaderMetrics.advanceWidth <= width + 0.5
+                    width: parent.width
+                    visible: siteRoaming.available && siteRoaming.enabled && screen.sessionSystemUid.length > 0
+                    text: fullFits ? siteRoaming.headerText : siteRoaming.headerShortText
+                    Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                    Accessible.focusable: navigationAllowed && visible && text.length > 0
+                    Accessible.name: navigationAllowed && visible && text.length > 0 ? siteRoaming.statusText : ""
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    font.letterSpacing: 0.8
+                    color: problem ? Theme.alert : Theme.textSubdued
+                    elide: Text.ElideRight
+                    TextMetrics {
+                        id: roamingHeaderMetrics
+                        font: roamingHeader.font
+                        text: siteRoaming.headerText
+                    }
+                    readonly property string step: [siteRoaming.state, siteRoaming.reason, siteRoaming.candidateUid, siteRoaming.destinationUid].join("|")
+                    // Once the bindings have settled, and only while it is shown.
+                    onStepChanged: Qt.callLater(announceState)
+                    function announceState() {
+                        if (text.length > 0 && Navigation.presented(roamingHeader))
+                            Navigation.announce(roamingSpeech, roamingHeader, siteRoaming.statusText);
+                    }
+                    QtObject {
+                        id: roamingSpeech
+                        objectName: "roamingHeaderSpeech"
+                        property string announced: ""
+                        property int announcements: 0
+                    }
                 }
             }
 

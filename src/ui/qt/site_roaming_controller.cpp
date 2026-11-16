@@ -33,7 +33,7 @@ const char* const kReasonTexts[] = {
     "",
     QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "Roaming works while listening to a site of a multi-site system"),
     QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "Start listening again to use GPS roaming"),
-    "",
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "GPS roaming starts once listening begins"),
     QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "Roaming works while listening to a site of a multi-site system"),
     QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "Roaming works while listening to a site of a multi-site system"),
     QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "Roaming works while listening to a site of a multi-site system"),
@@ -58,6 +58,38 @@ const char* const kReasonTexts[] = {
 };
 static_assert(sizeof(kReasonTexts) / sizeof(kReasonTexts[0]) == SiteRoaming::ManualHold + 1,
               "one sentence per Reason, in the enum's order");
+
+/* What a pause is for, as the Monitor header names it after "PAUSED: ", in the Reason enum's order; empty for the
+ * reasons that never pause (the header then says "PAUSED" alone). */
+const char* const kPauseWords[] = {
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "TRUNKING OFF"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "TUNED BY HAND"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "TALKGROUP HELD"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "CHANGE PENDING"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "NO PERMISSION"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "APPROXIMATE ONLY"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "LOCATION OFF"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "NO FIX"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "IMPRECISE FIX"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "NO SITE TO RANK"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "OUT OF RANGE"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "CHECK SETTINGS"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "SWITCH FAILED"),
+    "",
+};
+static_assert(sizeof(kPauseWords) / sizeof(kPauseWords[0]) == SiteRoaming::ManualHold + 1,
+              "one pause word per Reason, in the enum's order");
 
 /* The reasons the user's own action stands behind: cancelling for one leaves no notice, since what they did follows. */
 bool
@@ -1129,6 +1161,39 @@ SiteRoaming::statusText() const {
         case Switching: return tr("Switching to %1…").arg(destinationName());
         default: return reasonText();
     }
+}
+
+QString
+SiteRoaming::headerShortText() const {
+    switch (m_view.state) {
+        case Following: return tr("STAYING");
+        case Candidate: return tr("CHECKING");
+        case WaitingForCall: return tr("WAITING");
+        case Switching: return tr("SWITCHING");
+        case Holding: return tr("HOLDING");
+        case Paused: return tr("PAUSED");
+        default: return QString();
+    }
+}
+
+QString
+SiteRoaming::headerText() const {
+    QString words = headerShortText();
+    if (m_view.state == WaitingForCall) {
+        words = tr("WAITING FOR CALL END");
+    } else if (m_view.state == Paused && kPauseWords[m_view.reason][0] != '\0') {
+        words = tr("PAUSED: %1").arg(tr(kPauseWords[m_view.reason]));
+    }
+    return words.isEmpty() ? QString() : tr("%1 · GPS ROAMING").arg(words);
+}
+
+QString
+SiteRoaming::systemName() const {
+    if (m_systems == nullptr || m_view.groupKey.isEmpty()) {
+        return QString();
+    }
+    const QVariantList rows = m_systems->groupRows(m_view.groupKey);
+    return rows.isEmpty() ? QString() : site_group_title(m_systems->get(rows.first().toInt()));
 }
 
 SiteRoaming::Action
