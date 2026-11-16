@@ -333,11 +333,6 @@ typedef struct {
     /* One-shot: the switch this coordinator is about to perform is a forced eviction, so the
      * outgoing carrier is released before its snapshot is saved (#507). Consumed in the switch. */
     int forced_visit_release;
-    /* Set by a walk and a resume around each attempt (trunk_scan_walk_to(), trunk_scan_resume_attempt()): the switch
-       judges the park for the DMR calls' privacy and voice hold once its retune is accepted, not at the restore, so a
-       failed attempt the walk or resume goes on from, or rolls back from, judges nothing (trunk_scan_judge_park()). The
-       start and a retry, which do not roll back, keep the restore's judge. */
-    int judge_on_accept;
     int saved_trunk_enable;
     int saved_trunk_is_tuned;
     int saved_mod_c4fm;
@@ -421,6 +416,11 @@ typedef struct {
     uint64_t entry_avoid_rev;
     uint32_t entry_edit_seq;
     double entry_recheck_s;
+    /* Set by a walk and a resume around each attempt (trunk_scan_walk_to(), trunk_scan_resume_attempt()): the switch
+       judges the park for the DMR calls' privacy and voice hold once its retune is accepted, not at the restore, so a
+       failed attempt the walk or resume goes on from, or rolls back from, judges nothing (trunk_scan_judge_park()). The
+       start and a retry, which do not roll back, keep the restore's judge. */
+    int judge_on_accept;
     /* The outer loop's pass owes the scan quiet check its engine service (issue #834,
        dsd_engine_trunk_scan_quiet_service_pass()): the next tick under the guard publishes the visit on air, so the
        per-frame ticks of a carrier never walk for it. */

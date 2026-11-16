@@ -571,8 +571,8 @@ typedef struct {
        qualifying capture was seen in this wait before its deadline, so the wait is no longer for a capture and its
        deadline expires it only once no qualifying capture is left. */
     int settle_set;
-    uint64_t settle_from_ms;
     int capture_seen;
+    uint64_t settle_from_ms;
     /* Suspended while the visit's landing was still in force (issue #834 B8): the next frame boundary publishes it
        again, once (dsd_engine_scan_quiet_take_republish()); a publication or a new start clears it. */
     int republish_owed;
@@ -591,15 +591,15 @@ typedef struct {
     double visit_decode_m;
     uint64_t ready_ms;
     dsd_signal_quiet_result result;
-    /* Why the visit gets no check (dsd_scan_quiet_reason), with the check SUSPENDED (issue #834 B1): its session's or
-       its facts' reason at its publication, or its capture's (a refusal). NONE for any other phase or suspension. */
-    uint8_t reason;
     /* A refusal of the visit's capture (a centred capture, an uncalibrated rate or analog width; A5): the check stays
        SUSPENDED, so an edit restarts it on the same visit, but a publication of the same facts and revisions while the
        stream keeps the generation it refused (refused_generation, which any change of rate, shift or receive profile
        moves) starts nothing: one compare, no capture read. */
     int refused;
     uint32_t refused_generation;
+    /* Why the visit gets no check (dsd_scan_quiet_reason), with the check SUSPENDED (issue #834 B1): its session's or
+       its facts' reason at its publication, or its capture's (a refusal). NONE for any other phase or suspension. */
+    uint8_t reason;
     /* What the last capture read showed of the receiver (TUNER, RATE, or NONE for one it checks), on the input it was
        read on (receiver_input, receiver_device): the session's reason, which outranks a channel's, for a visit that
        never reads a capture (no class to judge) or still waits for its own. */
