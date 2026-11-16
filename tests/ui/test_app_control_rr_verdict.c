@@ -127,6 +127,10 @@ test_verdict_tetra_table(void) {
 
     f = facts_for(tetra, DSD_APP_RR_INPUT_IQ_REPLAY);
     rc |= expect_verdict("replay", &f, NULL, 0);
+    /* Issue #743: a raw I/Q stream re-plans to TETRA's rate whatever its DSP bandwidth, as a replay does. */
+    f = facts_for(tetra, DSD_APP_RR_INPUT_IQ_STREAM);
+    f.rtl_dsp_bw_khz = 48;
+    rc |= expect_verdict("stream at 48 kHz", &f, NULL, 0);
     f = facts_for(tetra, DSD_APP_RR_INPUT_SYMBOLS);
     rc |= expect_verdict("symbol capture", &f, NULL, 0);
     f = facts_for(tetra, DSD_APP_RR_INPUT_AUDIO);
@@ -152,10 +156,8 @@ test_verdict_other_modes(void) {
     f.input_kind = DSD_APP_RR_INPUT_SYMBOLS;
     rc |= expect_verdict("am on symbols", &f, "AM needs an I/Q radio input", 1);
     const int iq_inputs[] = {
-        DSD_APP_RR_INPUT_RTL,
-        DSD_APP_RR_INPUT_SOAPY,
-        DSD_APP_RR_INPUT_AIRSPY,
-        DSD_APP_RR_INPUT_IQ_REPLAY,
+        DSD_APP_RR_INPUT_RTL,       DSD_APP_RR_INPUT_SOAPY,     DSD_APP_RR_INPUT_AIRSPY,
+        DSD_APP_RR_INPUT_IQ_REPLAY, DSD_APP_RR_INPUT_IQ_STREAM,
     };
     for (size_t i = 0; i < sizeof iq_inputs / sizeof iq_inputs[0]; i++) {
         f.input_kind = iq_inputs[i];
@@ -210,6 +212,10 @@ test_facts_fill(void) {
     rc |= expect_int("soapy", input_kind_of(&opts, AUDIO_IN_RTL, "soapy:driver=hackrf"), DSD_APP_RR_INPUT_SOAPY);
     rc |= expect_int("airspy", input_kind_of(&opts, AUDIO_IN_RTL, "airspy"), DSD_APP_RR_INPUT_AIRSPY);
     rc |= expect_int("replay", input_kind_of(&opts, AUDIO_IN_RTL, "iqreplay:cap.json"), DSD_APP_RR_INPUT_IQ_REPLAY);
+    rc |= expect_int("iqtcp stream", input_kind_of(&opts, AUDIO_IN_RTL, "iqtcp:127.0.0.1:1234:240000:cs16"),
+                     DSD_APP_RR_INPUT_IQ_STREAM);
+    rc |= expect_int("iqudp stream", input_kind_of(&opts, AUDIO_IN_RTL, "iqudp:0.0.0.0:7356:48000:cu8"),
+                     DSD_APP_RR_INPUT_IQ_STREAM);
     rc |= expect_int("symbols", input_kind_of(&opts, AUDIO_IN_SYMBOL_BIN, "cap.bin"), DSD_APP_RR_INPUT_SYMBOLS);
     rc |= expect_int("float symbols", input_kind_of(&opts, AUDIO_IN_SYMBOL_FLT, "cap.sym"), DSD_APP_RR_INPUT_SYMBOLS);
     /* A radio spec left behind by a switch to PCM is audio: the type decides. */

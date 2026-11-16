@@ -1840,6 +1840,10 @@ ui_next_start_rtl_row_input(dsdneoUserConfig* save, const void* ctx) {
     save->iq_port = spec.port;
     DSD_SNPRINTF(save->iq_rate, sizeof save->iq_rate, "%u", spec.rate_hz);
     DSD_SNPRINTF(save->iq_format, sizeof save->iq_format, "%s", dsd_iq_net_format_name(spec.format));
+    save->iq_freq[0] = '\0';
+    if (spec.freq_hz != 0U) {
+        DSD_SNPRINTF(save->iq_freq, sizeof save->iq_freq, "%u", spec.freq_hz);
+    }
 }
 
 /* The RTL-SDR row reopens the radio a switch to PCM left, a raw I/Q stream included (issue #743), so a save it leaves
@@ -6993,6 +6997,11 @@ rr_apply_check_iq_stream(const dsd_opts* opts, dsd_state* state, dsdneoUserDecod
     }
     LOG_WARN("I/Q stream: the %s decoder needs a rate chain this stream cannot run: %s.\n",
              dsd_decode_mode_display_name(mode), why);
+    /* TETRA's refusal names the rate the stream keeps, as the replay's does; it fits the status line. */
+    char brief[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
+    if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, brief, sizeof brief) == 1) {
+        return rr_apply_refuse(state, brief);
+    }
     return rr_apply_refuse(state, why);
 }
 
@@ -10553,13 +10562,16 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         return UI_CMD_APPLY_FAILED;
     }
     DSD_MEMCPY(next_before, &opts->next_start, sizeof *next_before);
-    /* Only a config naming [trunking] or [trunk_scan] moves what the trunk-scan rules read. */
+    /* Only a config naming [trunking], [trunk_scan] or [input] moves what the next-start rules read: the trunk-scan
+       rules, and an I/Q stream's beside trunking or a scan (issue #743). */
     int has_trunking = 0;
     int has_trunk_scan = 0;
+    int has_input = 0;
     DSD_MEMCPY(&has_trunking, c->data + offsetof(dsdneoUserConfig, has_trunking), sizeof has_trunking);
     DSD_MEMCPY(&has_trunk_scan, c->data + offsetof(dsdneoUserConfig, has_trunk_scan), sizeof has_trunk_scan);
+    DSD_MEMCPY(&has_input, c->data + offsetof(dsdneoUserConfig, has_input), sizeof has_input);
     dsdneoUserConfig* saves = NULL;
-    if (has_trunking || has_trunk_scan) {
+    if (has_trunking || has_trunk_scan || has_input) {
         saves = (dsdneoUserConfig*)calloc(2, sizeof *saves);
         if (!saves) {
             free(next_before);

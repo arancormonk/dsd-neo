@@ -1255,6 +1255,23 @@ test_apply_replay_replan_refused_before_commit(void) {
     rc |= expect_int("p25: no reopen tried", g_replan_calls, 0);
     state.rtl_ctx = NULL;
     freeState(&state);
+
+    /* Issue #743: a running raw I/Q stream is asked its spec's plan instead. A 150 MS/s stream at a 96 kHz DSP
+       bandwidth runs, but no plan takes it to TETRA's 72 kHz: refused before the commit point with the rate it keeps,
+       nothing restarted. */
+    replay_session(&opts, &state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:1234:150000000:cs16");
+    dsd_opts_set_rtl_dsp_bw(&opts, 96, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    g_request_rate_hz = 96000;
+    tetra_payload(&p);
+    p.trunking = 0U;
+    p.tune_hz = 0U;
+    rc |= expect_refused_import("tetra on a 150 MS/s stream", &opts, &state, &p,
+                                "Failed: RR import -> DSP rate 96 kHz is no multiple of 18 kHz, and this I/Q stream "
+                                "cannot be resampled to one");
+    rc |= expect_int("stream: no replay check or reopen", g_replan_check_calls == 0 && g_replan_calls == 0, 1);
+    state.rtl_ctx = NULL;
+    freeState(&state);
     reset_replay_script();
     (void)remove(k_tetra_group_csv);
     return rc;
