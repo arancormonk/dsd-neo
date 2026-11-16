@@ -270,8 +270,9 @@ class SiteRoaming : public QObject {
      */
     Q_INVOKABLE void cancel(const QString& why);
     /**
-     * @brief The start of roam @p roamId, now that the decoder is idle: {ok, uid, expectedStopGeneration} after the
-     * authoritative checks, or {ok: false} when they cancelled it (or it is no longer this roam's turn).
+     * @brief The start of roam @p roamId, now that the decoder is idle: {ok, uid, expectedStopGeneration,
+     * expectedForegroundEpoch} after the authoritative checks, or {ok: false} when they cancelled it (or it is no
+     * longer this roam's turn).
      */
     Q_INVOKABLE QVariantMap startPlan(qint64 roamId);
     /** @brief Roam @p roamId's start waits for USB access. */
@@ -369,6 +370,9 @@ class SiteRoaming : public QObject {
     void attemptStop(qint64 nowMs);
     void progressTransaction();
     bool userStoppedSince(qint64 generation) const;
+    bool leftForegroundSince(qint64 epoch) const;
+    void finishUnrunStart();
+    void retireStartForForeground();
     void onHostSession();
     void onStreamUpdate(const QVariantMap& record);
     void onEnabledChanged();

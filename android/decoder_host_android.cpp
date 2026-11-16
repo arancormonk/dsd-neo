@@ -614,7 +614,8 @@ DecoderHostAndroid::setScreenPolicy(int mode, int delaySeconds) {
 }
 
 int
-DecoderHostAndroid::platformStartDecoder(const QStringList& argv, uint64_t attempt, qint64 expectedStopGeneration) {
+DecoderHostAndroid::platformStartDecoder(const QStringList& argv, uint64_t attempt, qint64 expectedStopGeneration,
+                                         qint64 expectedForegroundEpoch) {
     QJniObject context = android_context();
     if (!context.isValid()) {
         return kStartNoContext;
@@ -627,12 +628,14 @@ DecoderHostAndroid::platformStartDecoder(const QStringList& argv, uint64_t attem
     }
 
     // Must match DecoderService.kt: @JvmStatic fun startDecoder(context: Context, args: Array<String>, attempt: Long,
-    // expectedStopGeneration: Long): Int. -1 is NO_STOP_EXPECTATION: a manual start. The status is START_HANDED_OVER
-    // or why Android refused the START (#786 B2); a refused one never reaches the service. A call that fails answers
-    // kStartCallFailed (Qt clears a pending exception and returns 0), which is not kStartHandedOver.
+    // expectedStopGeneration: Long, expectedForegroundEpoch: Long): Int. -1 is NO_STOP_EXPECTATION and
+    // NO_FOREGROUND_EXPECTATION: a manual start. The status is START_HANDED_OVER or why Android refused the START
+    // (#786 B2); a refused one never reaches the service. A call that fails answers kStartCallFailed (Qt clears a
+    // pending exception and returns 0), which is not kStartHandedOver.
     const jint status = QJniObject::callStaticMethod<jint>(
-        kServiceClass, "startDecoder", "(Landroid/content/Context;[Ljava/lang/String;JJ)I", context.object(), args,
-        static_cast<jlong>(attempt), static_cast<jlong>(expectedStopGeneration));
+        kServiceClass, "startDecoder", "(Landroid/content/Context;[Ljava/lang/String;JJJ)I", context.object(), args,
+        static_cast<jlong>(attempt), static_cast<jlong>(expectedStopGeneration),
+        static_cast<jlong>(expectedForegroundEpoch));
     env->DeleteLocalRef(args);
     return static_cast<int>(status);
 }

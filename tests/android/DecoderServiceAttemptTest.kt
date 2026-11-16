@@ -40,17 +40,18 @@ private fun hostStart(service: DecoderService, args: Array<String>): Pair<Long, 
 }
 
 /**
- * #786: what the host's roaming start does: hostStart() with the user stop generation its transaction captured
- * ([expected], by default the one now).
+ * #786: what the host's roaming start does: hostStart() with the user stop generation and the foreground epoch its
+ * transaction captured ([expected] and [epoch], by default the ones now).
  */
 private fun roamStart(
     service: DecoderService,
     args: Array<String>,
-    expected: Long = DecoderService.userStopGeneration()
+    expected: Long = DecoderService.userStopGeneration(),
+    epoch: Long = ForegroundEpoch.current()
 ): Pair<Long, Intent> {
     val attempt = nextAttempt++
     DecoderService.retireAttempts(attempt - 1)
-    val status = DecoderService.startDecoder(service, args, attempt, expected)
+    val status = DecoderService.startDecoder(service, args, attempt, expected, epoch)
     check(status == DecoderService.START_HANDED_OVER) { "the roaming start was not handed over: $status" }
     return attempt to service.intents.remove()
 }
@@ -486,6 +487,182 @@ private fun roamWithAnUnchangedGenerationRuns() {
     check(!record().optBoolean("superseded")) { "a run the user stopped was not superseded: ${record()}" }
 }
 
+// #786 class sweep: a roam start the user's Stop superseded, the host retired, or leaving the foreground fenced never
+// starts its worker and never ends failed, at whichever point it is cancelled: as it is accepted, before configuration
+// (during the receiver take), during a setup step that then fails (nativeInit, the receiver take, nativeConfigure),
+// during a configuration that succeeds, or just before the worker would be published.
+private enum class RoamCancel(val wording: String) {
+    STOP("superseded by a user stop"),
+    RETIRE("retired"),
+    FOREGROUND("superseded by leaving the foreground")
+}
+
+private enum class RoamPoint {
+    ACCEPTANCE,
+    BEFORE_CONFIGURE,
+    INIT_FAILS,
+    TAKE_FAILS,
+    CONFIGURE_RUNS,
+    CONFIGURE_FAILS,
+    BEFORE_PUBLICATION
+}
+
+private fun cancelRoam(how: RoamCancel, service: DecoderService, attempt: Long) {
+    when (how) {
+        RoamCancel.STOP -> DecoderService.stopDecoder(service)
+        RoamCancel.RETIRE -> check(!DecoderService.retireAttempts(attempt)) { "the roam start was past retirement" }
+        RoamCancel.FOREGROUND -> ForegroundEpoch.advance()
+    }
+}
+
+/** Sets up [point]'s boundary to cancel the start [how]; the receiver take and the native steps are scripted. */
+private fun armRoamCancel(how: RoamCancel, point: RoamPoint, service: DecoderService, attempt: Long) {
+    val cancel = { cancelRoam(how, service, attempt) }
+    when (point) {
+        RoamPoint.ACCEPTANCE -> cancel()
+        RoamPoint.BEFORE_CONFIGURE -> UsbSourceManager.answer = { cancel(); UsbSessionTake() }
+        RoamPoint.INIT_FAILS -> {
+            DsdNative.initHook = cancel
+            DsdNative.initCode = -4
+        }
+        RoamPoint.TAKE_FAILS -> UsbSourceManager.answer = {
+            cancel()
+            UsbSessionTake.failed(UsbSessionTake.USB_OPEN_FAILED, "open failed")
+        }
+        RoamPoint.CONFIGURE_RUNS -> DsdNative.configureHook = cancel
+        RoamPoint.CONFIGURE_FAILS -> {
+            DsdNative.configureHook = cancel
+            DsdNative.configureCode = -3
+        }
+        RoamPoint.BEFORE_PUBLICATION -> DsdNative.diagnosticHook = { line ->
+            if (line.startsWith("service: engine configuration returned")) cancel()
+        }
+    }
+}
+
+private fun roamCancelledAt(how: RoamCancel, point: RoamPoint) {
+    val what = "${how.name.lowercase()} at ${point.name.lowercase()}"
+    val service = newService()
+    val generation = DecoderService.userStopGeneration()
+    val before = record()
+    val (attempt, intent) = roamStart(service, RTL)
+    armRoamCancel(how, point, service, attempt)
+    val id = deliver(service, intent)
+    neverRan(what)
+    val configured = point == RoamPoint.CONFIGURE_RUNS || point == RoamPoint.CONFIGURE_FAILS ||
+        point == RoamPoint.BEFORE_PUBLICATION
+    check(DsdNative.configured.size == (if (configured) 1 else 0)) { "$what: configured ${DsdNative.configured}" }
+    val discarded = point == RoamPoint.CONFIGURE_RUNS || point == RoamPoint.BEFORE_PUBLICATION
+    check(DsdNative.discards == (if (discarded) 1 else 0)) { "$what: discards ${DsdNative.discards}" }
+    val ended = record()
+    if (how == RoamCancel.RETIRE && point == RoamPoint.ACCEPTANCE) {
+        // Retired before it arrived: no session at all, as #782's undelivered retirements.
+        check(ended.optLong("sessionId") == before.optLong("sessionId")) { "$what: a retired START opened: $ended" }
+    } else {
+        check(
+            ended.optLong("attemptId") == attempt && ended.optLong("reason") == DsdNative.RUN_CANCELLED.toLong() &&
+                ended.optString("lastError") == "" && ended.optString("failureKind") == "" &&
+                ended.optBoolean("superseded") == (how != RoamCancel.RETIRE)
+        ) { "$what: the attempt ends cancelled, never failed: $ended" }
+        check(DsdNative.diagnostics.any { it.startsWith("service: start attempt $attempt ${how.wording}") }) {
+            "$what: ${DsdNative.diagnostics}"
+        }
+    }
+    val moved = DecoderService.userStopGeneration()
+    check(moved == generation + (if (how == RoamCancel.STOP) 1 else 0)) { "$what: only the user's Stop is counted" }
+    endsQuietly(service, id, what)
+    if (how == RoamCancel.STOP) {
+        theQueuedStopFindsNothing(service, moved, what)
+    } else {
+        check(service.intents.isEmpty()) { "$what: nothing else was queued" }
+    }
+}
+
+private fun roamCancelMatrix() {
+    for (how in RoamCancel.values()) {
+        for (point in RoamPoint.values()) {
+            roamCancelledAt(how, point)
+        }
+    }
+}
+
+// The roam START finds the service busy after the host retired it or the app left the foreground: it is turned away
+// silently, with no busy failure on the record of the run that holds the service (the user's Stop: above).
+private fun roamCancelledWhileBusy() {
+    for (how in listOf(RoamCancel.RETIRE, RoamCancel.FOREGROUND)) {
+        val service = newService()
+        val (manual, manualIntent) = hostStart(service, RTL)
+        deliver(service, manualIntent)
+        await(DsdNative.enteredRun)
+        val (attempt, intent) = roamStart(service, RTL)
+        cancelRoam(how, service, attempt)
+        val before = record()
+        deliver(service, intent)
+        val after = record()
+        check(DsdNative.configured.size == 1) { "$how: a cancelled START was configured: ${DsdNative.configured}" }
+        check(
+            after.optLong("sessionId") == before.optLong("sessionId") && after.optLong("attemptId") == manual &&
+                after.optString("lastError") == "" && !after.optBoolean("superseded")
+        ) { "$how: the busy run's record is left alone: $after" }
+        val expected = if (how == RoamCancel.RETIRE) {
+            "service: start attempt $attempt rejected as retired or superseded (state RUNNING)"
+        } else {
+            "service: start attempt $attempt rejected: superseded by leaving the foreground (state RUNNING)"
+        }
+        check(expected in DsdNative.diagnostics) { "$how: ${DsdNative.diagnostics}" }
+        finish(service)
+    }
+}
+
+// The native record already says a configure failed while the service, still STARTING, has not decided the start: a
+// cancel can still turn it into a cancelled start. The record the host reads carries no failure until the service's
+// own verdict, which for a start nobody cancelled is the failure.
+private fun aConfigureFailureWaitsForTheServiceVerdict() {
+    for (cancelled in listOf(false, true)) {
+        val service = newService()
+        val (attempt, intent) = roamStart(service, RTL)
+        var during: JSONObject? = null
+        DsdNative.configureCode = -3
+        DsdNative.configureHook = {
+            val session = record().optLong("sessionId")
+            DsdNative.lifecycle = longArrayOf(session, 0L, DsdNative.RUN_FAILED.toLong(), -1L, 0L, 6L, -3L, 0L, 0L)
+            during = record()
+            if (cancelled) DecoderService.stopDecoder(service)
+        }
+        val id = deliver(service, intent)
+        val mid = checkNotNull(during)
+        check(
+            mid.optString("state") == "STARTING" && mid.optLong("reason") == DsdNative.RUN_PENDING.toLong() &&
+                mid.optString("lastError") == ""
+        ) { "cancelled=$cancelled: the native failure shows before the service decided: $mid" }
+        val ended = record()
+        if (cancelled) {
+            supersededRecord(attempt, "native failure, then superseded")
+        } else {
+            check(ended.optLong("reason") == DsdNative.RUN_FAILED.toLong() && ended.optString("lastError") != "") {
+                "the start nobody cancelled fails: $ended"
+            }
+        }
+        val generation = DecoderService.userStopGeneration()
+        endsQuietly(service, id, "native failure, cancelled=$cancelled")
+        if (cancelled) theQueuedStopFindsNothing(service, generation, "native failure, superseded")
+    }
+}
+
+// A manual start carries no expectation: leaving the foreground and a retirement of an older attempt leave it alone.
+private fun manualStartIgnoresTheFences() {
+    val service = newService()
+    val (attempt, intent) = hostStart(service, RTL)
+    val epoch = intent.getLongExtra(DecoderService.EXTRA_EXPECTED_FOREGROUND_EPOCH, 0L)
+    check(epoch == DecoderService.NO_FOREGROUND_EXPECTATION) { "a manual start carries no foreground expectation" }
+    ForegroundEpoch.advance()
+    DsdNative.configureHook = { ForegroundEpoch.advance() }
+    deliver(service, intent)
+    await(DsdNative.enteredRun)
+    check(DecoderService.stateName() == "RUNNING" && record().optLong("attemptId") == attempt) { "the manual run" }
+    finish(service)
+}
+
 // #786 B2: a START the platform refuses never reaches the service, and the host is told at once.
 private fun theStartStatusSaysWhetherItWasHandedOver() {
     val service = newService()
@@ -494,10 +671,12 @@ private fun theStartStatusSaysWhetherItWasHandedOver() {
     check(manual.getLongExtra(DecoderService.EXTRA_EXPECTED_STOP_GENERATION, 0L) == DecoderService.NO_STOP_EXPECTATION) {
         "a manual start carries no stop-generation expectation"
     }
-    check(DecoderService.startDecoder(service, RTL, 0L, 7L) == DecoderService.START_HANDED_OVER)
-    check(service.intents.remove().getLongExtra(DecoderService.EXTRA_EXPECTED_STOP_GENERATION, 0L) == 7L) {
-        "a roaming start carries its expectation"
-    }
+    check(DecoderService.startDecoder(service, RTL, 0L, 7L, 3L) == DecoderService.START_HANDED_OVER)
+    val roam = service.intents.remove()
+    check(
+        roam.getLongExtra(DecoderService.EXTRA_EXPECTED_STOP_GENERATION, 0L) == 7L &&
+            roam.getLongExtra(DecoderService.EXTRA_EXPECTED_FOREGROUND_EPOCH, 0L) == 3L
+    ) { "a roaming start carries its expectations" }
     val sdk = Build.VERSION.SDK_INT
     try {
         Build.VERSION.SDK_INT = Build.VERSION_CODES.S
@@ -557,6 +736,10 @@ fun main(args: Array<String>) {
         "roam_superseded_during_configure" to ::roamSupersededDuringConfigure,
         "roam_superseded_before_publication" to ::roamSupersededJustBeforePublication,
         "roam_superseded_then_setup_fails" to ::roamSupersededThenSetupFails,
+        "roam_cancel_matrix" to ::roamCancelMatrix,
+        "roam_cancelled_while_busy" to ::roamCancelledWhileBusy,
+        "manual_start_ignores_the_fences" to ::manualStartIgnoresTheFences,
+        "configure_failure_waits_for_the_verdict" to ::aConfigureFailureWaitsForTheServiceVerdict,
         "roam_retired_before_commit" to ::roamRetiredBeforeCommit,
         "roam_unchanged_generation_runs" to ::roamWithAnUnchangedGenerationRuns,
         "start_status" to ::theStartStatusSaysWhetherItWasHandedOver

@@ -14831,7 +14831,12 @@ Qt Quick frontend (`src/ui/qt`):
   started (and read again when a candidate begins to qualify), so a user stop the app has not shown yet is never
   absorbed. A cancel once the start is handed over retires the host's attempt (`retireRoamAttempt()`); a switch
   cancelled after the session it left stopped, other than by the user's own action, leaves `recoveryNotice` for Home. A
-  foreground loss (`foregroundEpoch()` moved) cancels a switch the host does not own yet and resets the core; a fix
+  foreground loss (`foregroundEpoch()` moved) cancels a switch the host does not own yet and resets the core; once the
+  destination's start is handed over it is retired (`retireStartForForeground()`): retired, or ended unrun by the
+  service's own epoch fence (`startSuperseded()` with the epoch moved), listening stays stopped with `recoveryNotice`,
+  never "Could not switch"; one that committed runs on. `startPlan()` gives the start the transaction's epoch beside its
+  generation, and `finishUnrunStart()` tells a superseded start's cause apart by reading both again (a user stop:
+  silent; the foreground: the notice). A fix
   polled again after it, or relayed by another provider (`kSameFixNs`), is never fed. The latest fix's coordinates are
   dropped from memory whenever the feed stops or the foreground is lost (`holdsLocation()`; the Android host's last
   stream record likewise in `stopLocationStream()`, `holdsStreamRecord()`), as `PRIVACY_POLICY.md` promises. Every
@@ -14849,7 +14854,7 @@ Qt Quick frontend (`src/ui/qt`):
   unit, else the default of the unit shown: 100 km / 2 km or 60 mi / 1 mi). In `Main.qml`, `roamToSite()` records the
   roam's restart (`pendingRestart = {kind: "roam", roamId, uid}`) and `startRoam()` asks `startPlan()` before
   `startSavedByUid(uid, roam)`, the one saved-start gate, which carries the roam through `startWithMap()` (the
-  4-argument `sessionArgs.start()`, `pendingStartRoam` across a USB-access wait, a denial (`localDeviceFailureKind` 4)
+  5-argument `sessionArgs.start()`, `pendingStartRoam` across a USB-access wait, a denial (`localDeviceFailureKind` 4)
   ending it refused, a superseded start showing nothing). `cancelPendingRestart(reason)` takes a reason at every call
   site: a user decision ("start", "retry", "restore", "close", "dismiss", "failed") cancels a roam through
   `siteRoaming.cancel()`; incidental navigation ("back", "interaction" from the chooser's `SiteInteractionGuard`,
@@ -17117,8 +17122,8 @@ with its session id, to `routeSessionEnd()`, so completion cannot read and stop 
 now runs the actual service against a deferred-intent transport, a controlled native worker and platform stubs.
 
 Start status, roaming switch and stop generation (issue #786): `DecoderService.startDecoder(context, args, attempt,
-expectedStopGeneration)` returns an `Int` (B2): `START_HANDED_OVER` (1), or why the platform refused the START
-(`START_NOT_ALLOWED` for API 31's `ForegroundServiceStartNotAllowedException`, `START_ILLEGAL_STATE`,
+expectedStopGeneration, expectedForegroundEpoch)` returns an `Int` (B2): `START_HANDED_OVER` (1), or why the platform
+refused the START (`START_NOT_ALLOWED` for API 31's `ForegroundServiceStartNotAllowedException`, `START_ILLEGAL_STATE`,
 `START_SECURITY`, `START_NO_SERVICE` when no component took it, `START_UNEXPECTED` for any other
 `RuntimeException`); `platformStartDecoder()` returns it as it is (`android/start_status.h` names each value, with the
 host's own `kStartNoContext`, `kStartBadArguments` and the failed call's `kStartCallFailed`), and the host fails anything
@@ -17131,16 +17136,23 @@ user over the switch, `RunEndCause::kEndSwitch`; nothing else replaces a latched
 user stop requests for the process: `stopDecoder()` (counted under the service lock as it asks, its intent carrying
 `EXTRA_USER_STOP_GENERATION` so the delivery is not counted again), the notification's Stop (counted on delivery) and
 `onTaskRemoved()`, in any state, IDLE included; a switch, a detach and a lifecycle stop never count. A START carries
-`EXTRA_EXPECTED_STOP_GENERATION` (`NO_STOP_EXPECTATION`, -1, for every manual start). The service compares it with the
-generation under its lock when it accepts the START (after the foreign and retired checks and before the busy one:
+`EXTRA_EXPECTED_STOP_GENERATION` (`NO_STOP_EXPECTATION`, -1, for every manual start) and
+`EXTRA_EXPECTED_FOREGROUND_EPOCH` (`ForegroundEpoch.kt`, the app's foreground epoch that `LocationStream` advances in
+every `onStop`; `NO_FOREGROUND_EXPECTATION`, -1, for every manual start): a roam start never runs once the user stopped
+or the app left the foreground since its switch was decided (`supersededEnd()`; a user stop wins over the foreground,
+and both read as the record's `superseded`). The service compares them with the generation and the epoch under its lock
+when it accepts the START (after the foreign and retired checks and before the busy one:
 a mismatch that finds the service busy is turned away silently, as a retired START is, leaving the running session's
 record alone (unreachable today: only the Qt host sends START, and it hands one over only after a fresh IDLE read with
 every earlier attempt retired; a second START sender would break that, and the host then settles such a start as
 superseded when its grace runs out, below); one that finds it IDLE opens a session of its own, so the record names the attempt), before configure (with the retirement checks, around the
 receiver take) and at the STARTING → RUNNING commit beside `cancelRequested`: a mismatch at the commit discards the
 configured session (`nativeDiscardConfigured()`) and starts no worker. A setup failure between them (`nativeInit()`,
-the receiver take, `nativeConfigure()`) checks the generation too in `failStart()`: a superseded start's failure is not
-published, the user stopped. Each ends the attempt cancelled with the record's
+the receiver take, `nativeConfigure()`) makes the same check in `failStart()`, the retirement included (`unrunEnd()`,
+one helper for every check point): a retired or superseded start's failure is not published, it ends cancelled. While
+the service is STARTING, `lifecycleStatus()` publishes no native terminal reason: a configure that failed is not the
+start's outcome until the service decides it, so no poll reads a failure for a start that then ends cancelled. Each
+superseded end is cancelled with the record's
 `superseded` true, which `retireAttempts()` reports as taken (its record says how). When a retirement and a user
 stop both apply at a check, the attempt ends retired. Known limit (accepted): the notification's Stop and a Recents
 swipe are delivered on the main thread, which runs a whole START inside one `onStartCommand()`, so one pressed while a
@@ -17148,14 +17160,15 @@ roam START configures is counted only after that START's commit: the destination
 Stop then stops it as an ordinary user stop (its attempt ran; it is not `superseded`). A Stop from the app counts at
 once under the lock and wins at every check point. Tests: `ANDROID_ENGINE_STOP_JVM` (`DecoderServiceAttemptTest.kt` roam and
 `start_status` cases, `DecoderServiceStopTest.kt` `switch_drain` and `stop_generation`, `EngineStopTest.kt`),
-`IO_RTL_RUN_RESULT` (switch causes), `ANDROID_R8` (the four-argument `startDecoder` descriptor).
+`IO_RTL_RUN_RESULT` (switch causes), `ANDROID_R8` (the five-argument `startDecoder` descriptor).
 
 Host API for GPS roaming (issue #786): `DecoderHost` (`src/ui/qt/decoder_host.h`) adds non-pure virtuals whose defaults
 are a host with no roaming, so every subclass and the QML test host compile unchanged: `startWithStopExpectation(argv,
-expectedStopGeneration)` (default: `start()`; a negative expectation is a read that failed, never "no expectation", and
-is refused: `stopGenerationUnreadableText()`), `startSuperseded()` (property, its own `startSupersededChanged()`; only
-the Android host and the QML test host ever set it; the latest start ended unrun because a user stop came after its expectation; the next start
-clears it), `stopForSwitch()` (default `stop()`), `switchStopping()` (property, notified with `sessionStateChanged()`;
+expectedStopGeneration, expectedForegroundEpoch)` (default: `start()`; a negative expectation is a read that failed,
+never "no expectation", and is refused: `stopGenerationUnreadableText()`), `startSuperseded()` (property, its own
+`startSupersededChanged()`; only the Android host and the QML test host ever set it; the latest start ended unrun
+because a user stop or leaving the foreground came after its expectations; the next start clears it),
+`stopForSwitch()` (default `stop()`), `switchStopping()` (property, notified with `sessionStateChanged()`;
 default false: the Stopping on screen began with `stopForSwitch()` and no `stop()` came since), `retireRoamAttempt()` (true when the roam's start never runs;
 default false, a start the base host accepted runs), `userStopGeneration()` and `foregroundEpoch()` (synchronous reads,
 default 0, negative when unreadable), `startLocationStream()`, `stopLocationStream()`, `requestRoamingPermission(id)`,
@@ -17164,19 +17177,25 @@ default 0, negative when unreadable), `startLocationStream()`, `stopLocationStre
 poll's `dsd_realtime_mono_ms()` less the record's `ageMs`, so it is on the frontend's monotonic clock; Android's
 `elapsedRealtimeNanos` (boot time, which runs on through deep sleep) is passed only as `measurementNs`, the measurement's
 identity with `provider`, never as a time. `SessionArgsBuilder::start(system, host, kind)` is a manual start (`start()`);
-its overload with `expectedStopGeneration` routes to `startWithStopExpectation()` and adds `superseded` to its result
+its overload with `expectedStopGeneration, expectedForegroundEpoch` routes to `startWithStopExpectation()` and adds
+`superseded` to its result
 (only for the host's answer to that start), and refuses a negative expectation before the host is asked (`error`
 `stop-generation`). `DecoderHostAndroid` (`decoder_host_android_lifecycle.cpp`, JNI in
 `decoder_host_android.cpp`): a start with a negative expectation is a start error (the failure card, nothing sent); one
-with an expectation reads `DecoderService.userStopGeneration()` first and refuses itself superseded (no failure,
-nothing sent) when it moved or cannot be read, else passes the expectation to `startDecoder()`; a record of
+with expectations reads `DecoderService.userStopGeneration()` and `LocationStream.foregroundEpoch()` first and refuses
+itself superseded (no failure, nothing sent) when either moved or cannot be read (`roamSuperseded()`), else passes both
+to `startDecoder()`; a roam's START the platform refused (`refuseHandover()`) after either moved is superseded too, back
+to the phase before the request (Android refuses a foreground service start from the background, so a START asked for
+as the app leaves the foreground is refused), never the refusal's failure card; a record of
 the host's own attempt with `superseded` sets the flag before the phase it carries is published, so the Idle edge already
 reads superseded. `retireRoamAttempt()` retires the attempt the latest start with an expectation handed over (every later
 start attempt, refused or not, forgets it); a retirement that wins drops the attempt and winds a start on screen down (Stopping, then
 Idle on the next record) like a dismissed undelivered start, so no start grace brings a failure back. Rule: a roam's
-start the service never recorded (turned away busy) whose generation moved by the time its start grace runs out is the
-user's own stop: the host drops the attempt the same way and sets `startSuperseded()`, never the undelivered failure;
-one whose generation held is undelivered as before.
+start the service never recorded (turned away busy) whose generation or epoch moved by the time its start grace runs
+out is superseded: the host drops the attempt the same way and sets `startSuperseded()`, never the undelivered failure;
+one whose expectations held is undelivered as before. Rule: the tracker's cancelled terminal record of a session clears
+a failure an earlier record of the same session latched (`terminal_phase()`), as the service's cancelled end is its
+verdict on a start whose configure failed after it was retired or superseded.
 `stopForSwitch()` is `stop()`'s bookkeeping with `DecoderService.stopDecoderForSwitch()`; the Stopping it begins reads
 `switchStopping()` until a `stop()` or any other published phase (`setSessionPhase()` clears it). Rule: the Monitor's
 Stop listening stays enabled while `switchStopping()` (a switch's rdio drain can take minutes), and a `stop()` then is
@@ -17191,7 +17210,12 @@ next start refused superseded or a start on its way superseded later, switch sto
 `stop()` moves its generation, as the service counts each user stop), retirements (winning by default),
 stream calls and a scripted feed (`testContext.emitLocationStreamUpdate()`). Tests: `UI_QT_ANDROID_HOST` (stream record
 → signal, malformed records, synchronous reads, every start status's text, the expectation, retirement, switch stop
-and `switchStopping()` through its drain, a user stop during it, an ordinary user stop and a later receiver ending),
+and `switchStopping()` through its drain, a user stop during it, an ordinary user stop and a later receiver ending;
+`check_roam_foreground_fence()`: the epoch at the handover, a refusal after the app left the foreground or a user
+stop;
+`check_cancel_outranks_native_failure()`: a native configure failure then the service's cancelled end;
+`check_busy_superseded_start()` with the epoch), `UI_QT_SITE_ROAMING`
+(`check_executor_starting_foreground()`),
 `UI_QT_SESSION_ARGS` (`test_stop_expectation`), `ANDROID_R8` (keeps and descriptors of the new JNI calls),
 `ANDROID_ENGINE_STOP_JVM` (`start_status_contract`: every `START_*` has its `android/start_status.h` twin;
 `counter_reader_contract`: both counters are read through `read_static_counter()`). Rule: the two counters are read with

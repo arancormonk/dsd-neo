@@ -20,6 +20,8 @@ object DsdNative {
     var configureCode = STATUS_OK
     /** What nativeInit returns. */
     var initCode = STATUS_OK
+    /** Runs inside nativeInit, before it returns [initCode]: a boundary inside a start. */
+    var initHook: (() -> Unit)? = null
     var nativeStopCode = STATUS_OK
     /** Runs after every nativeStop, as a run that honours the stop at once would. */
     var stopHook: (() -> Unit)? = null
@@ -45,6 +47,7 @@ object DsdNative {
         configureHook = null
         configureCode = STATUS_OK
         initCode = STATUS_OK
+        initHook = null
         nativeStopCode = STATUS_OK
         stopHook = null
         runCode = STATUS_OK
@@ -60,7 +63,7 @@ object DsdNative {
         diagnosticHook = null
         UsbSourceManager.reset()
     }
-    fun nativeInit(config: String): Int { inits++; return initCode }
+    fun nativeInit(config: String): Int { inits++; initHook?.invoke(); return initCode }
     fun nativeConfigure(args: Array<String>, id: Long): Int {
         configured += args.toList()
         configureHook?.invoke()

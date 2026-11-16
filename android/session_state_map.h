@@ -479,6 +479,12 @@ class SessionPhaseTracker {
         if (reason == kRunFailed) {
             (void)latch_failure();
         } else {
+            /* #786: the service's cancelled end of this session is its verdict on the start, and outranks a failure an
+             * earlier record of the same session showed: a configure that failed in a start the host retired, or a
+             * user stop or leaving the foreground superseded, before the service published its end. */
+            if (reason == kRunCancelled) {
+                m_failed = false;
+            }
             m_attempting = false;
             m_saw_running = false;
             m_start_pending = false;

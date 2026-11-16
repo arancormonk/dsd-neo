@@ -1394,20 +1394,21 @@ SessionArgsBuilder::endUnstartedRecording(bool recording, bool started, const De
 
 QVariantMap
 SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QString& kind) const {
-    return startSession(system, host, kind, false, -1);
+    return startSession(system, host, kind, false, -1, -1);
 }
 
 QVariantMap
 SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QString& kind,
-                          qint64 expectedStopGeneration) const {
-    return startSession(system, host, kind, true, expectedStopGeneration);
+                          qint64 expectedStopGeneration, qint64 expectedForegroundEpoch) const {
+    return startSession(system, host, kind, true, expectedStopGeneration, expectedForegroundEpoch);
 }
 
 QVariantMap
 SessionArgsBuilder::startSession(const QVariantMap& system, DecoderHost* host, const QString& kind, bool expects,
-                                 qint64 expectedStopGeneration) const {
-    if (expects && expectedStopGeneration < 0) {
-        // A stop generation that could not be read: guessing "no user stop" could start over the user's Stop.
+                                 qint64 expectedStopGeneration, qint64 expectedForegroundEpoch) const {
+    if (expects && (expectedStopGeneration < 0 || expectedForegroundEpoch < 0)) {
+        // A value that could not be read: guessing "no user stop" could start over the user's Stop, and guessing "still
+        // in the foreground" could start while the app is hidden.
         return {{QStringLiteral("ok"), false},
                 {QStringLiteral("error"), QStringLiteral("stop-generation")},
                 {QStringLiteral("errorText"), DecoderHost::stopGenerationUnreadableText()},
@@ -1424,7 +1425,9 @@ SessionArgsBuilder::startSession(const QVariantMap& system, DecoderHost* host, c
     }
     const bool asked = error == SessionArgsError::None && host;
     const bool started =
-        asked && (expects ? host->startWithStopExpectation(args, expectedStopGeneration) : host->start(args));
+        asked
+        && (expects ? host->startWithStopExpectation(args, expectedStopGeneration, expectedForegroundEpoch)
+                    : host->start(args));
     endUnstartedRecording(recording, started, host);
     result.insert(QStringLiteral("started"), started);
     if (expects) {

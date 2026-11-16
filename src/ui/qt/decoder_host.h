@@ -87,7 +87,7 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool recordingTransferActive READ recordingTransferActive NOTIFY recordingTransferChanged)
     Q_PROPERTY(qint64 recordingTransferBytes READ recordingTransferBytes NOTIFY recordingTransferChanged)
     Q_PROPERTY(qint64 recordingTransferTotalBytes READ recordingTransferTotalBytes NOTIFY recordingTransferChanged)
-    /* GPS site roaming (#786): the latest start ended unrun because a user stop came after its expectation. */
+    /* GPS site roaming (#786): the latest start ended unrun: a user stop or leaving the foreground came after it. */
     Q_PROPERTY(bool startSuperseded READ startSuperseded NOTIFY startSupersededChanged)
     /* GPS site roaming (#786): the Stopping on screen is a roaming switch's, which a user stop() still ends for good. */
     Q_PROPERTY(bool switchStopping READ switchStopping NOTIFY sessionStateChanged)
@@ -838,24 +838,26 @@ class DecoderHost : public QObject {
 
     /*
      * GPS site roaming (#786). A roam ends the session it leaves with stopForSwitch() and starts the destination with
-     * startWithStopExpectation(), carrying the userStopGeneration() it read when the destination began to qualify. Every
-     * default here is a host with no roaming support: no location stream, no settings screens, a start with no
-     * expectation and reads of 0.
+     * startWithStopExpectation(), carrying the userStopGeneration() it read when the destination began to qualify and
+     * the foregroundEpoch() its switch was decided in. Every default here is a host with no roaming support: no
+     * location stream, no settings screens, a start with no expectation and reads of 0.
      */
 
     /**
-     * @brief Start as start() does, unless the user stopped listening since @p expectedStopGeneration was read.
+     * @brief Start as start() does, unless the user stopped listening since @p expectedStopGeneration was read, or
+     * the app left the foreground since @p expectedForegroundEpoch.
      *
-     * A host that tracks user stops compares @p expectedStopGeneration with its userStopGeneration() before it hands
-     * the start over and again where the platform decides the start. A start a user stop superseded never runs and is
-     * no failure: startSuperseded() turns true, at once (the call returns false) or later (the session goes back to
-     * Idle without running). A negative @p expectedStopGeneration is a read that failed, never "no expectation": the
-     * start is refused (a host that shows failures shows stopGenerationUnreadableText()). A manual start calls start(),
-     * which carries no expectation. The default refuses a negative one and otherwise calls start().
+     * A host that tracks them compares both with its userStopGeneration() and foregroundEpoch() before it hands the
+     * start over and again where the platform decides the start. A start either superseded never runs and is no
+     * failure: startSuperseded() turns true, at once (the call returns false) or later (the session goes back to Idle
+     * without running); the caller tells the two apart by reading them again. A negative expectation is a read that
+     * failed, never "no expectation": the start is refused (a host that shows failures shows
+     * stopGenerationUnreadableText()). A manual start calls start(), which carries no expectation. The default refuses
+     * a negative one and otherwise calls start().
      */
     virtual bool
-    startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration) {
-        return expectedStopGeneration >= 0 && start(argv);
+    startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration, qint64 expectedForegroundEpoch) {
+        return expectedStopGeneration >= 0 && expectedForegroundEpoch >= 0 && start(argv);
     }
 
     /** @brief Why a start with an expectation was refused for a stop generation that could not be read. */
@@ -864,7 +866,10 @@ class DecoderHost : public QObject {
         return tr("DSD-neo could not tell whether listening had been stopped, so it did not start. Try again.");
     }
 
-    /** @brief Whether the latest start ended unrun because a user stop superseded it; the next start clears it. */
+    /**
+     * @brief Whether the latest start ended unrun because a user stop or leaving the foreground superseded it; the next
+     * start clears it.
+     */
     virtual bool
     startSuperseded() const {
         return false;

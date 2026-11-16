@@ -5,7 +5,7 @@
 # helpers remain eligible for shrinking and obfuscation. Keep signatures intact
 # while allowing R8 to optimize the method bodies.
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DecoderService {
-    public static int startDecoder(android.content.Context, java.lang.String[], long, long);
+    public static int startDecoder(android.content.Context, java.lang.String[], long, long, long);
     public static boolean retireAttempts(long);
     public static void stopDecoder(android.content.Context);
     # GPS roaming (#786): the switch stop and the user stop generation.

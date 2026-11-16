@@ -295,6 +295,9 @@ static uint64_t lastStartAttempt;
 // stop generation the last handed-over one carried.
 static int startDispatchStatus = dsd_android::kStartHandedOver;
 static qint64 lastStartExpectation;
+static qint64 lastStartEpochExpectation;
+// #786: runs as a START is handed over, before its status: what the platform does meanwhile.
+static std::function<void()> startDispatchHook;
 static QList<uint64_t> retirements;
 static int lifecycleReadsAtRetire;
 static bool serviceTookAttempt;
@@ -470,13 +473,19 @@ void
 DecoderHostAndroid::shareDiagnostics(const QString&, const QString&) {}
 
 int
-DecoderHostAndroid::platformStartDecoder(const QStringList&, uint64_t attempt, qint64 expectedStopGeneration) {
+DecoderHostAndroid::platformStartDecoder(const QStringList&, uint64_t attempt, qint64 expectedStopGeneration,
+                                         qint64 expectedForegroundEpoch) {
+    /* #786: what Android does when the app left the foreground as the START was asked for. */
+    if (startDispatchHook) {
+        startDispatchHook();
+    }
     if (startDispatchStatus != kStartHandedOver) {
         return startDispatchStatus;
     }
     ++startDispatches;
     lastStartAttempt = attempt;
     lastStartExpectation = expectedStopGeneration;
+    lastStartEpochExpectation = expectedForegroundEpoch;
     return kStartHandedOver;
 }
 
@@ -991,12 +1000,13 @@ check_start_expectation() {
     host.refresh();
 
     int reads = roaming().generationReads;
-    check(host.start(argv) && lastStartExpectation == -1, "a manual start carries no expectation");
+    check(host.start(argv) && lastStartExpectation == -1 && lastStartEpochExpectation == -1,
+          "a manual start carries no expectation");
     check(roaming().generationReads == reads, "and reads no stop generation");
     endAttempt();
     /* A negative expectation is a read that failed, never "no expectation": a start error, with nothing sent. */
     int dispatchedBefore = startDispatches;
-    check(!host.startWithStopExpectation(argv, -7), "a negative expectation is refused");
+    check(!host.startWithStopExpectation(argv, -7, 0), "a negative expectation is refused");
     check(startDispatches == dispatchedBefore && roaming().generationReads == reads && !host.startSuperseded(),
           "before anything reaches the service, and not as a supersede");
     check(host.sessionState() == DecoderHost::Failed
@@ -1008,15 +1018,15 @@ check_start_expectation() {
     /* A generation read that fails at the start is a user stop: fail-safe. */
     roaming().stopGeneration = -1;
     dispatchedBefore = startDispatches;
-    check(!host.startWithStopExpectation(argv, 5) && host.startSuperseded() && startDispatches == dispatchedBefore,
+    check(!host.startWithStopExpectation(argv, 5, 0) && host.startSuperseded() && startDispatches == dispatchedBefore,
           "a start whose generation cannot be read is superseded");
     check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "and is no failure");
     roaming().stopGeneration = 5;
     reads = roaming().generationReads;
 
-    check(host.startWithStopExpectation(argv, 5), "a start whose generation still holds is handed over");
-    check(lastStartExpectation == 5 && roaming().generationReads == reads + 1,
-          "it carries its expectation, read against the generation once");
+    check(host.startWithStopExpectation(argv, 5, 0), "a start whose generation still holds is handed over");
+    check(lastStartExpectation == 5 && lastStartEpochExpectation == 0 && roaming().generationReads == reads + 1,
+          "it carries its expectations, read against the generation once");
     check(host.sessionState() == DecoderHost::Starting && !host.startSuperseded(), "it starts");
     endAttempt();
     check(!host.startSuperseded(), "a cancelled end alone is not superseded");
@@ -1026,7 +1036,7 @@ check_start_expectation() {
     roaming().stopGeneration = 6;
     const int dispatched = startDispatches;
     const int retired = retirements.size();
-    check(!host.startWithStopExpectation(argv, 5), "a start a user stop superseded is refused");
+    check(!host.startWithStopExpectation(argv, 5, 0), "a start a user stop superseded is refused");
     check(startDispatches == dispatched && retirements.size() == retired, "nothing reaches the service");
     check(host.startSuperseded() && supersededSignals == 1, "it reads superseded, announced once");
     check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty() && host.inputFailureKind() == 0,
@@ -1035,7 +1045,7 @@ check_start_expectation() {
     endAttempt();
 
     /* A user stop the service saw first: its record of the attempt says superseded, set before the Idle edge. */
-    check(host.startWithStopExpectation(argv, 6), "a start handed over");
+    check(host.startWithStopExpectation(argv, 6, 0), "a start handed over");
     const uint64_t attempt = lastStartAttempt;
     bool supersededAtIdle = false;
     const auto edge = QObject::connect(&host, &DecoderHost::sessionStateChanged, [&host, &supersededAtIdle] {
@@ -1060,7 +1070,7 @@ check_start_expectation() {
     check(host.sessionState() == DecoderHost::Idle && host.startSuperseded(), "and stays so");
 
     /* Another attempt's superseded record is none of this one's. */
-    check(host.startWithStopExpectation(argv, 6), "another start");
+    check(host.startWithStopExpectation(argv, 6, 0), "another start");
     nowMs += 250;
     host.refresh();
     check(!host.startSuperseded() && host.sessionState() == DecoderHost::Starting,
@@ -1093,7 +1103,7 @@ check_roam_attempt_retirement() {
         retained_record() = {{"sessionId", 150}, {"state", "IDLE"}, {"attemptId", qint64(1)}};
         running = false;
         host.refresh();
-        check(host.startWithStopExpectation(argv, 3), "the roam start is handed over");
+        check(host.startWithStopExpectation(argv, 3, 0), "the roam start is handed over");
         const uint64_t attempt = lastStartAttempt;
         if (configuring) {
             retained_record() = {
@@ -1127,7 +1137,7 @@ check_roam_attempt_retirement() {
         retained_record() = {{"sessionId", 160}, {"state", "IDLE"}};
         running = false;
         host.refresh();
-        check(host.startWithStopExpectation(argv, 3), "a roam start");
+        check(host.startWithStopExpectation(argv, 3, 0), "a roam start");
         const uint64_t attempt = lastStartAttempt;
         retained_record() = {
             {"sessionId", 161}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)attempt}};
@@ -1154,7 +1164,7 @@ check_roam_attempt_retirement() {
                              {"reason", kRunCancelled},
                              {"attemptId", static_cast<qint64>(lastStartAttempt)}};
         host.refresh();
-        check(host.startWithStopExpectation(argv, 3), "another roam start");
+        check(host.startWithStopExpectation(argv, 3, 0), "another roam start");
         retained_record() = {{"sessionId", 163},
                              {"state", "RUNNING"},
                              {"reason", kRunPending},
@@ -1169,7 +1179,8 @@ check_roam_attempt_retirement() {
         running = false;
         host.refresh();
         roaming().stopGeneration = 4;
-        check(!host.startWithStopExpectation(argv, 3) && host.startSuperseded(), "the next roam start is superseded");
+        check(!host.startWithStopExpectation(argv, 3, 0) && host.startSuperseded(),
+              "the next roam start is superseded");
         const int before = retirements.size();
         serviceTookAttempt = true;
         check(host.retireRoamAttempt() && retirements.size() == before,
@@ -1191,18 +1202,23 @@ check_busy_superseded_start() {
     using dsd_qt::DecoderHost;
     using namespace dsd_android;
     const QStringList argv{QStringLiteral("-i"), QStringLiteral("rtl:0")};
-    for (const bool stopped : {true, false}) {
+    /* 0: nothing moved; 1: a user stop; 2: the app left the foreground. */
+    for (const int moved : {1, 2, 0}) {
+        const bool stopped = moved != 0;
         DecoderHostAndroid host;
         retirements.clear();
         serviceTookAttempt = false;
         roaming().stopGeneration = 8;
+        roaming().epoch = 3;
         nowMs = 730000;
         retained_record() = {{"sessionId", 200}, {"state", "IDLE"}, {"attemptId", qint64(1)}};
         running = false;
         host.refresh();
-        check(host.startWithStopExpectation(argv, 8), "the roam start is handed over");
-        if (stopped) {
+        check(host.startWithStopExpectation(argv, 8, 3), "the roam start is handed over");
+        if (moved == 1) {
             roaming().stopGeneration = 9;
+        } else if (moved == 2) {
+            roaming().epoch = 4;
         }
         for (uint64_t waited = 250; waited <= 2000; waited += 250) {
             nowMs = 730000 + waited;
@@ -1224,6 +1240,125 @@ check_busy_superseded_start() {
             check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptUndelivered
                       && !host.startSuperseded(),
                   "one whose generation held is still undelivered");
+        }
+    }
+    roaming().stopGeneration = 0;
+    roaming().epoch = 0;
+    retained_record() = QJsonObject();
+}
+
+/* #786 r2: a roam's start is fenced on the foreground epoch as on the stop generation. Moved before the handover: it is
+ * refused superseded, nothing sent; a negative one is a start error. Moved as Android refuses the START (it refuses a
+ * foreground service start from the background): superseded too, never the refusal's failure card. A refusal with
+ * nothing moved is the failure it always was. */
+static void
+check_roam_foreground_fence() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    const QStringList argv{QStringLiteral("-i"), QStringLiteral("rtl:0")};
+    DecoderHostAndroid host;
+    nowMs = 740000;
+    roaming().stopGeneration = 2;
+    roaming().epoch = 6;
+    retained_record() = {{"sessionId", 210}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    const int sent = startDispatches;
+    check(!host.startWithStopExpectation(argv, 2, -1) && startDispatches == sent && !host.startSuperseded()
+              && host.sessionState() == DecoderHost::Failed
+              && host.failureText() == DecoderHost::stopGenerationUnreadableText(),
+          "fence: an unreadable epoch is a start error, nothing sent");
+    host.stop();
+    check(!host.startWithStopExpectation(argv, 2, 5) && startDispatches == sent && host.startSuperseded()
+              && host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(),
+          "fence: the epoch moved since the switch: superseded, nothing sent, no failure");
+    check(host.startWithStopExpectation(argv, 2, 6) && lastStartEpochExpectation == 6 && !host.startSuperseded(),
+          "fence: the epoch the switch was decided in goes with the START");
+    retained_record() = {{"sessionId", 211},
+                         {"state", "IDLE"},
+                         {"reason", kRunCancelled},
+                         {"attemptId", static_cast<qint64>(lastStartAttempt)}};
+    nowMs += 250;
+    host.refresh();
+    /* 0: nothing moved; 1: the app left the foreground; 2: a user stop, as the START was refused. */
+    for (const int moved : {1, 2, 0}) {
+        startDispatchStatus = kStartNotAllowed;
+        startDispatchHook = [moved] {
+            if (moved == 1) {
+                roaming().epoch = 7;
+            } else if (moved == 2) {
+                roaming().stopGeneration = 3;
+            }
+        };
+        const bool started = host.startWithStopExpectation(argv, 2, 6);
+        startDispatchStatus = kStartHandedOver;
+        startDispatchHook = nullptr;
+        if (moved != 0) {
+            check(!started && host.startSuperseded() && host.sessionState() == DecoderHost::Idle
+                      && host.failureText().isEmpty() && host.inputFailureKind() == 0,
+                  "fence: refused after the app left the foreground or a user stop: superseded, no failure card");
+            nowMs += 2500;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "fence: and stays idle");
+            roaming().epoch = 6;
+            roaming().stopGeneration = 2;
+        } else {
+            check(!started && !host.startSuperseded() && host.sessionState() == DecoderHost::Failed
+                      && !host.failureText().isEmpty(),
+                  "fence: a refusal with nothing moved is still the start's failure");
+            host.stop();
+        }
+    }
+    roaming().stopGeneration = 0;
+    roaming().epoch = 0;
+    retained_record() = QJsonObject();
+}
+
+/* #786 r2: a poll can read the native record of a configure that failed before the service decided the start
+ * (STARTING, RUN_FAILED). When the service then ends it cancelled (superseded, or the host's retirement), that end is
+ * the verdict: Idle, no failure. A start nobody cancelled still fails. */
+static void
+check_cancel_outranks_native_failure() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    const QStringList argv{QStringLiteral("-i"), QStringLiteral("rtl:0")};
+    /* 0: superseded; 1: cancelled (retired); 2: failed. */
+    for (const int end : {0, 1, 2}) {
+        DecoderHostAndroid host;
+        nowMs = 750000;
+        roaming().stopGeneration = 1;
+        retained_record() = {{"sessionId", 220}, {"state", "IDLE"}};
+        running = false;
+        host.refresh();
+        check(host.startWithStopExpectation(argv, 1, 0), "replay: the roam start is handed over");
+        const auto attempt = static_cast<qint64>(lastStartAttempt);
+        retained_record() = {{"sessionId", 221},
+                             {"state", "STARTING"},
+                             {"reason", kRunFailed},
+                             {"lastError", "Decoder run failed (-1)"},
+                             {"attemptId", attempt}};
+        nowMs += 250;
+        host.refresh();
+        retained_record() = {{"sessionId", 221},
+                             {"state", "IDLE"},
+                             {"reason", end == 2 ? kRunFailed : kRunCancelled},
+                             {"lastError", end == 2 ? "resource-9" : ""},
+                             {"attemptId", attempt},
+                             {"superseded", end == 0}};
+        nowMs += 250;
+        host.refresh();
+        if (end == 2) {
+            check(host.sessionState() == DecoderHost::Failed && !host.failureText().isEmpty(),
+                  "replay: a start nobody cancelled fails");
+        } else {
+            check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty()
+                      && host.startSuperseded() == (end == 0),
+                  "replay: the service's cancelled end outranks the native failure seen before it");
+            nowMs += 3000;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "replay: and stays idle");
         }
     }
     roaming().stopGeneration = 0;
@@ -4785,6 +4920,8 @@ main(int argc, char** argv) {
     check_start_expectation();
     check_roam_attempt_retirement();
     check_busy_superseded_start();
+    check_roam_foreground_fence();
+    check_cancel_outranks_native_failure();
     check_stop_for_switch();
     check_document_pick_record();
     check_document_requests();

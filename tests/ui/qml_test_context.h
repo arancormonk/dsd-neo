@@ -254,15 +254,16 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     bool
     start(const QStringList& argv) override {
-        return beginStart(argv, false, -1);
+        return beginStart(argv, false, -1, -1);
     }
 
     /* #786: a roam's start, refused superseded, as Android's host refuses it, when the case moved userStopGeneration
-     * past the expectation or asked for it (supersedeNextStart); one with a negative expectation (a read that failed)
-     * fails, as Android's shows a start error. */
+     * or foregroundEpoch past the expectations or asked for it (supersedeNextStart); one with a negative expectation (a
+     * read that failed) fails, as Android's shows a start error. */
     bool
-    startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration) override {
-        return beginStart(argv, true, expectedStopGeneration);
+    startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration,
+                             qint64 expectedForegroundEpoch) override {
+        return beginStart(argv, true, expectedStopGeneration, expectedForegroundEpoch);
     }
 
     bool
@@ -271,17 +272,19 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     }
 
     bool
-    beginStart(const QStringList& argv, bool expects, qint64 expectedStopGeneration) {
+    beginStart(const QStringList& argv, bool expects, qint64 expectedStopGeneration, qint64 expectedForegroundEpoch) {
         lastArgv = argv;
         lastStopExpectation = expects ? expectedStopGeneration : -1;
+        lastEpochExpectation = expects ? expectedForegroundEpoch : -1;
         setSuperseded(false);
-        if (expects && expectedStopGeneration < 0) {
+        if (expects && (expectedStopGeneration < 0 || expectedForegroundEpoch < 0)) {
             phase = Failed;
             failure = stopGenerationUnreadableText();
             Q_EMIT sessionStateChanged();
             return false;
         }
-        if (expects && (supersedeNextStart || stopGeneration != expectedStopGeneration)) {
+        if (expects
+            && (supersedeNextStart || stopGeneration != expectedStopGeneration || epoch != expectedForegroundEpoch)) {
             supersedeNextStart = false;
             setSuperseded(true);
             return false;
@@ -303,8 +306,9 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     /* The argv of the last start asked for, accepted or not: what the session-args builder made of the system. */
     QStringList lastArgv;
-    /* #786: the last start's expected stop generation, -1 for a start with none. */
+    /* #786: the last start's expected stop generation and foreground epoch, -1 each for a start with none. */
     qint64 lastStopExpectation = -1;
+    qint64 lastEpochExpectation = -1;
 
     /*
      * GPS site roaming (#786), as Android's host plays it: the stop generation and foreground epoch a case sets, a
@@ -343,6 +347,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         appSettingsOpens = 0;
         locationSettingsOpens = 0;
         lastStopExpectation = -1;
+        lastEpochExpectation = -1;
     }
 
     void
@@ -5358,6 +5363,12 @@ class Setup : public QObject {
     Q_INVOKABLE qint64
     lastStartStopExpectation() const {
         return m_lifecycle_host->lastStopExpectation;
+    }
+
+    /** @brief #786: the foreground epoch the lifecycle host's last start carried; -1 for one with none. */
+    Q_INVOKABLE qint64
+    lastStartEpochExpectation() const {
+        return m_lifecycle_host->lastEpochExpectation;
     }
 
     /** @brief #786: the lifecycle host's userStopGeneration(), as a user stop from anywhere moves it. */

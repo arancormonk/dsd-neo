@@ -346,9 +346,13 @@ def start_status_contract():
     call = re.search(r"DecoderHostAndroid::platformStartDecoder\(.*?\n\}", jni, re.S)
     if not call or "return static_cast<int>(status);" not in call.group(0):
         return "android/decoder_host_android.cpp: platformStartDecoder must return startDecoder()'s status as it is"
-    if not re.search(r"if \(handover != kStartHandedOver\) \{[^}]*return failStart\(startRefusalText\(handover\)\);",
-                     host):
-        return "android/decoder_host_android_lifecycle.cpp: the host must fail every status but kStartHandedOver"
+    if not re.search(r"if \(handover != kStartHandedOver\) \{\s*return refuseHandover\(attempt, handover,", host):
+        return (
+            "android/decoder_host_android_lifecycle.cpp: every status but kStartHandedOver must go to refuseHandover()"
+        )
+    refusal = re.search(r"DecoderHostAndroid::refuseHandover\(.*?\n\}", host, re.S)
+    if not refusal or "return failStart(startRefusalText(status));" not in refusal.group(0):
+        return "android/decoder_host_android_lifecycle.cpp: refuseHandover() must fail a start it does not supersede"
     return None
 
 
@@ -1337,7 +1341,13 @@ SUITES = {
         checks=(location_wiring,),
         builds=(
             Build(
-                sources=("LocationSupport.kt", "LocationPermission.kt", "LocationStream.kt", "SettingsScreens.kt"),
+                sources=(
+                    "LocationSupport.kt",
+                    "LocationPermission.kt",
+                    "LocationStream.kt",
+                    "ForegroundEpoch.kt",
+                    "SettingsScreens.kt",
+                ),
                 tests=(
                     "LocationGeocodeQueueTest.kt",
                     "LocationSupportTest.kt",
@@ -1519,7 +1529,14 @@ SUITES = {
             Build(sources=("EngineStop.kt",), tests=("EngineStopTest.kt",)),
             Build(
                 # UsbSourceManager is the stub in ServiceNative.kt: the service's take of its receiver is scripted.
-                sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt", "UsbReceiverKind.kt", "UsbSessionTake.kt"),
+                sources=(
+                    "EngineStop.kt",
+                    "DecoderService.kt",
+                    "DecoderStatus.kt",
+                    "UsbReceiverKind.kt",
+                    "UsbSessionTake.kt",
+                    "ForegroundEpoch.kt",
+                ),
                 tests=("DecoderServiceStopTest.kt", "DecoderServiceAttemptTest.kt", "DecoderServiceUsbTest.kt"),
                 stubs=("Service.kt", "ServiceContext.kt", "ServicePackageManager.kt", "ServiceNative.kt",
                        "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt", "SuppressLint.kt"),

@@ -432,9 +432,10 @@ SiteRoaming::progressTransaction() {
         // A user stop never fails a session, so this is the destination's own failure.
         refuseTransaction(false);
     } else if (phase == DecoderHost::Idle && (m_host->startSuperseded() || userStoppedSince(m_tx.stopGeneration))) {
-        // The user stopped listening while the destination started, before it ran (superseded) or after its start
-        // committed and before its initialization edge (the generation moved): no card, no notice, nothing failed.
-        finishTransaction(QStringLiteral("cancelled"), false);
+        // The destination ended unrun because the user stopped listening or the app left the foreground while it
+        // started (superseded), or the user stopped it after its start committed and before its initialization edge
+        // (the generation moved): nothing failed. An epoch move with no supersede was seen first, at noteForeground().
+        finishUnrunStart();
     } else if (phase == DecoderHost::Idle && m_tx.startShown) {
         // The destination ended without ever listening (a bootstrap that exits) and without failing.
         refuseTransaction(true);
@@ -448,6 +449,36 @@ bool
 SiteRoaming::userStoppedSince(qint64 generation) const {
     const qint64 current = m_host != nullptr ? m_host->userStopGeneration() : -1;
     return current < 0 || current != generation;
+}
+
+/* Whether the app left the foreground since epoch @p epoch, or the epoch cannot be read now. */
+bool
+SiteRoaming::leftForegroundSince(qint64 epoch) const {
+    const qint64 current = m_host != nullptr ? m_host->foregroundEpoch() : -1;
+    return current < 0 || current != epoch;
+}
+
+/* The destination's start ended unrun, superseded: the user's own stop is silent, and leaving the foreground leaves
+ * listening stopped with the notice (as a switch the foreground loss cancelled before the start). Never a refusal. */
+void
+SiteRoaming::finishUnrunStart() {
+    const bool notice = !userStoppedSince(m_tx.stopGeneration) && leftForegroundSince(m_tx.epoch);
+    finishTransaction(QStringLiteral("cancelled"), notice);
+}
+
+/* The app left the foreground while the destination's start is on its way: it is retired unless it committed. One
+ * retired, or one the service fenced itself (its START carries the epoch), leaves listening stopped with the notice;
+ * one that committed runs on, and progressTransaction() follows it to its initialization edge. */
+void
+SiteRoaming::retireStartForForeground() {
+    const bool evaluating = m_evaluating;
+    m_evaluating = true;
+    const bool retired = m_host == nullptr || m_host->retireRoamAttempt();
+    m_evaluating = evaluating;
+    m_again = true;
+    if (retired) {
+        finishTransaction(QStringLiteral("cancelled"), true);
+    }
 }
 
 void
@@ -503,9 +534,12 @@ SiteRoaming::noteForeground() {
 
 void
 SiteRoaming::onForegroundLost() {
-    // A switch the host does not yet own goes: its start would follow a moment the app was not on screen for.
+    // A switch goes unless its destination already committed: its start would follow a moment the app was not on
+    // screen for.
     if (active() && m_tx.stage != Stage::Starting) {
         cancelTransaction(QStringLiteral("foreground"));
+    } else if (active()) {
+        retireStartForForeground();
     }
     // A partly qualified candidate cannot finish on return: its evidence and every fix seen are forgotten, and a fix
     // from before (the same measurement polled again) is never fed once more.
@@ -923,7 +957,8 @@ SiteRoaming::startPlan(qint64 roamId) {
     }
     return {{QStringLiteral("ok"), true},
             {QStringLiteral("uid"), m_tx.toUid},
-            {QStringLiteral("expectedStopGeneration"), m_tx.stopGeneration}};
+            {QStringLiteral("expectedStopGeneration"), m_tx.stopGeneration},
+            {QStringLiteral("expectedForegroundEpoch"), m_tx.epoch}};
 }
 
 void
@@ -948,8 +983,8 @@ SiteRoaming::noteStartResult(qint64 roamId, const QVariantMap& result) {
         return;
     }
     if (result.value(QStringLiteral("superseded")).toBool()) {
-        // The user stopped listening after the last read: no card, no notice.
-        finishTransaction(QStringLiteral("cancelled"), false);
+        // The user stopped listening, or the app left the foreground, after the last read: no card.
+        finishUnrunStart();
     } else if (!result.value(QStringLiteral("ok")).toBool() || !result.value(QStringLiteral("started")).toBool()) {
         // Main shows the failure card, as for any refused start.
         refuseTransaction(false);

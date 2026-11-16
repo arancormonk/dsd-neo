@@ -283,19 +283,20 @@ Window {
         };
     }
     // Roam @p roamId's start, after siteRoaming's checks pass: the site as it
-    // is saved now, carrying the user stop generation the switch was decided
-    // under, through the one saved-start gate.
+    // is saved now, carrying the user stop generation and the foreground epoch
+    // the switch was decided under, through the one saved-start gate.
     function startRoam(roamId) {
         var plan = siteRoaming.startPlan(roamId);
         if (plan.ok)
             startSavedByUid(plan.uid, {
                 roamId: roamId,
-                expectedStopGeneration: plan.expectedStopGeneration
+                expectedStopGeneration: plan.expectedStopGeneration,
+                expectedForegroundEpoch: plan.expectedForegroundEpoch
             });
     }
     // The roam a start waiting for USB access belongs to ({roamId,
-    // expectedStopGeneration}), or null: the grant resumes it through its
-    // checks, a refusal ends it.
+    // expectedStopGeneration, expectedForegroundEpoch}), or null: the grant
+    // resumes it through its checks, a refusal ends it.
     property var pendingStartRoam: null
     // DecoderHost::DevicePermission (LocalDeviceFailureKind): the user refused USB access.
     readonly property int usbDevicePermission: 4
@@ -1474,8 +1475,9 @@ Window {
      * Start saved system @p uid as it is saved now. The one gate every saved
      * start passes through (card, site chooser, auto-start, Retry, a pin, a
      * USB grant, a GPS roam), so a removed or avoided site is refused alike
-     * from each. @p roam ({roamId, expectedStopGeneration}) is the GPS roam
-     * the start belongs to (#786), absent for any other.
+     * from each. @p roam ({roamId, expectedStopGeneration,
+     * expectedForegroundEpoch}) is the GPS roam the start belongs to (#786),
+     * absent for any other.
      */
     function startSavedByUid(uid, roam) {
         // Refused before cancelling, as restartSite() is: a USB attachment
@@ -1680,10 +1682,11 @@ Window {
      * never into the attempt Retry repeats or anything saved, so a failed or
      * later start of the list scans it as ever.
      *
-     * @a options.roam ({roamId, expectedStopGeneration}, #786) makes it a GPS
-     * roam's start: it carries the expectation to the host, through a
-     * USB-access wait too, and tells siteRoaming what came of it. A start a
-     * user stop superseded shows nothing: the user stopped listening.
+     * @a options.roam ({roamId, expectedStopGeneration,
+     * expectedForegroundEpoch}, #786) makes it a GPS roam's start: it carries
+     * the expectations to the host, through a USB-access wait too, and tells
+     * siteRoaming what came of it. A start a user stop or leaving the
+     * foreground superseded shows nothing: siteRoaming says what follows.
      */
     function startWithMap(sys, row, scan, options) {
         var roam = !scan && options && options.roam ? options.roam : null;
@@ -1748,7 +1751,8 @@ Window {
         // What the start is, said here and not read off the map: an edited Explore start can carry a saved
         // system's uid, and must not record into that system's call recordings.
         var built = scan ? scanListStarter.startLists([sys].concat(companions), decoderHost, holdTarget)
-            : roam ? sessionArgs.start(sys, decoderHost, "saved", roam.expectedStopGeneration)
+            : roam ? sessionArgs.start(sys, decoderHost, "saved", roam.expectedStopGeneration,
+                                       roam.expectedForegroundEpoch)
             : sessionArgs.start(sys, decoderHost, row >= 0 ? "saved" : sys.signalSearch ? "search" : "explore");
         if (roam)
             siteRoaming.noteStartResult(roam.roamId, built);
@@ -1793,8 +1797,8 @@ Window {
         // stamp lastHeard, re-attribute history rows, or hide the previous
         // session's calls from the monitor pane.
         if (!(built.started)) {
-            // #786: superseded by the user's own stop after the roam last
-            // read it: they stopped listening, and nothing failed.
+            // #786: superseded by the user's own stop, or by leaving the
+            // foreground, after the roam last read them: nothing failed.
             if (built.superseded === true) {
                 attemptedSource = previousSource;
                 return;

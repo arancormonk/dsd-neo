@@ -637,6 +637,7 @@ class FakeHost : public dsd_qt::DecoderHost {
     int streamStops = 0;
     QList<qint64> permissions;
     QList<qint64> expectations;
+    QList<qint64> epochExpectations;
 
     bool
     isRunning() const override {
@@ -656,8 +657,9 @@ class FakeHost : public dsd_qt::DecoderHost {
     }
 
     bool
-    startWithStopExpectation(const QStringList& argv, qint64 expected) override {
+    startWithStopExpectation(const QStringList& argv, qint64 expected, qint64 expectedEpoch) override {
         expectations.append(expected);
+        epochExpectations.append(expectedEpoch);
         return start(argv);
     }
 
@@ -958,8 +960,9 @@ check_executor_route() {
     rig.host.setPhase(dsd_qt::DecoderHost::Idle);
     const QVariantMap plan = rig.roaming.startPlan(id);
     check(plan.value("ok").toBool() && plan.value("uid").toString() == rig.uids[1]
-              && plan.value("expectedStopGeneration").toLongLong() == 0,
-          "route: the plan starts Lake with the generation the session started under");
+              && plan.value("expectedStopGeneration").toLongLong() == 0
+              && plan.value("expectedForegroundEpoch").toLongLong() == 0,
+          "route: the plan starts Lake with the generation and the epoch the switch was decided under");
     rig.roaming.noteStartResult(id, {{"ok", true}, {"started", true}, {"superseded", false}});
     rig.host.setPhase(dsd_qt::DecoderHost::Starting);
     rig.roaming.noteSessionStart("saved", rig.uids[1], id);
@@ -1182,6 +1185,76 @@ check_executor_foreground() {
     }
 }
 
+/* #786 r2: the app leaves the foreground while the destination's start is on its way. Unless it committed, it never
+ * runs and never reads as a refusal: listening stays stopped, with Home's notice, whether the host's retirement wins,
+ * the service fenced the start itself (its START carries the epoch: superseded), or the host refused it superseded
+ * as it was handed over. One that committed runs on. A supersede after a user stop stays silent. */
+template <typename HandOver>
+void
+check_executor_starting_foreground(const HandOver& handOver) {
+    const QString notice = QStringLiteral("Roaming did not switch to Lake. Listening stopped.");
+    {
+        Rig rig;
+        handOver(rig);
+        rig.host.epochValue = 1;
+        rig.tick(1000);
+        check(rig.host.retires == 1 && rig.ended == QStringList{QStringLiteral("cancelled")}
+                  && rig.host.phase == dsd_qt::DecoderHost::Idle && rig.roaming.recoveryNotice() == notice
+                  && rig.roaming.reason() != SiteRoaming::SwitchFailed,
+              "starting, foreground: the uncommitted start is retired: stopped, the notice");
+    }
+    {
+        Rig rig;
+        handOver(rig);
+        rig.host.retireWins = false;
+        rig.host.epochValue = 1;
+        rig.tick(1000);
+        check(rig.host.retires == 1 && rig.roaming.transactionActive() && rig.ended.isEmpty(),
+              "starting, foreground: a start the service took is followed, not cancelled");
+        rig.host.superseded = true;
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        check(rig.ended == QStringList{QStringLiteral("cancelled")} && rig.roaming.recoveryNotice() == notice
+                  && rig.roaming.reason() != SiteRoaming::SwitchFailed,
+              "starting, foreground: the service fenced it: stopped, the notice, no refusal");
+    }
+    {
+        Rig rig;
+        handOver(rig);
+        rig.host.epochValue = 1; // the service fenced the START before Qt's next tick saw the epoch move
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        check(rig.ended == QStringList{QStringLiteral("cancelled")} && rig.roaming.recoveryNotice() == notice
+                  && rig.roaming.reason() != SiteRoaming::SwitchFailed,
+              "starting, foreground: the Idle edge reads the epoch first: no refusal");
+    }
+    {
+        Rig rig;
+        handOver(rig);
+        rig.host.retireWins = false;
+        rig.host.setPhase(dsd_qt::DecoderHost::Running);
+        rig.host.epochValue = 1;
+        rig.tick(1000);
+        rig.roaming.noteSessionInitialized();
+        check(rig.ended == QStringList{QStringLiteral("done")} && rig.roaming.recoveryNotice().isEmpty(),
+              "starting, foreground: a start that committed runs on");
+    }
+    for (const bool userStop : {false, true}) {
+        Rig rig;
+        rig.qualifyB();
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        rig.roaming.startPlan(rig.roamId());
+        if (userStop) {
+            rig.host.generation = 1;
+        }
+        rig.host.epochValue = 1;
+        rig.roaming.noteStartResult(rig.roamId(), {{"ok", true}, {"started", false}, {"superseded", true}});
+        check(rig.ended == QStringList{QStringLiteral("cancelled")}
+                  && rig.roaming.recoveryNotice() == (userStop ? QString() : notice)
+                  && rig.roaming.reason() != SiteRoaming::SwitchFailed,
+              userStop ? "handover superseded after a user stop too: silent"
+                       : "handover superseded by leaving the foreground: stopped, the notice");
+    }
+}
+
 /* The destination's start: a disable retires it (stopped, with the notice) unless it already committed (it runs);
  * an end with no initialization is refused; a supersede is the user's stop. */
 void
@@ -1242,6 +1315,7 @@ check_executor_starting() {
                   && rig.roaming.recoveryNotice().isEmpty(),
               "starting: a failed destination is refused even when Main's cancel comes first");
     }
+    check_executor_starting_foreground(handOver);
     {
         Rig rig;
         rig.qualifyB();

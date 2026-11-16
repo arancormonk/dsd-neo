@@ -13,7 +13,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import org.json.JSONObject
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * GPS roaming's continuous location feed (#786), apart from the one-shot [LocationSupport] requests, which it never
@@ -45,7 +44,6 @@ object LocationStream {
 
     private val main = Handler(Looper.getMainLooper())
     private val lock = Any()
-    private val epoch = AtomicLong(0)
 
     // Under [lock]: every start and stop takes the next serial, so only the newest call's work publishes; [record] is
     // what the poll reads, null while the stream is not wanted.
@@ -89,10 +87,10 @@ object LocationStream {
      * `onStart` when the app is hidden. A start asked for before the latest `onStop` is dropped.
      */
     @JvmStatic fun startStream(context: Context) {
-        val startedIn = epoch.get()
+        val startedIn = ForegroundEpoch.current()
         val call = synchronized(lock) { ++serial }
         main.post {
-            if (epoch.get() != startedIn) return@post
+            if (ForegroundEpoch.current() != startedIn) return@post
             if (visible) {
                 start(context.applicationContext, call)
             } else {
@@ -128,7 +126,7 @@ object LocationStream {
     }
 
     /** How many times the app has left the foreground: 0 at launch, one more on every Activity `onStop`. */
-    @JvmStatic fun foregroundEpoch(): Long = epoch.get()
+    @JvmStatic fun foregroundEpoch(): Long = ForegroundEpoch.current()
 
     /**
      * Activity `onStart`, on the main looper: the feed may register again. A start Qt asked for while the app was hidden
@@ -138,14 +136,14 @@ object LocationStream {
         visible = true
         val waiting = deferred ?: return
         deferred = null
-        if (waiting.epoch == epoch.get()) start(waiting.context, waiting.call)
+        if (waiting.epoch == ForegroundEpoch.current()) start(waiting.context, waiting.call)
     }
 
     /** Activity `onStop`, on the main looper: the foreground is gone, so the feed stops before Qt's thread freezes. */
     @JvmStatic fun onActivityStop() {
         visible = false
         deferred = null
-        epoch.incrementAndGet()
+        ForegroundEpoch.advance()
         withdraw()
         unsubscribe()
     }

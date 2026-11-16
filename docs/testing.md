@@ -326,7 +326,14 @@ the START is accepted (the service IDLE), during the receiver take, during `nati
 would be published each ends the attempt unrun and `superseded` (a configured one discarded), and the Stop's own queued
 intent then finds nothing and is not counted again; a Stop during `nativeConfigure()` or the receiver take followed by
 that step failing ends `superseded` with no failure (`roam_superseded_then_setup_fails`), while the same failure with no
-Stop is still `RUN_FAILED`; a retirement during configure ends it retired, not superseded; an
+Stop is still `RUN_FAILED`; `roam_cancel_matrix` runs every cell of the class: a user Stop, a host retirement and
+leaving the foreground (`ForegroundEpoch.advance()`), each as the START is accepted, during the receiver take, during a
+`nativeInit()`, receiver take or `nativeConfigure()` that then fails, during a configure that succeeds and just before
+the worker would be published: no worker, a cancelled record with no error or failure kind (`superseded` unless
+retired; a START retired before it arrived opens no session), and only the user's Stop counted;
+`roam_cancelled_while_busy` turns a retired or fenced START away from a busy service with its record untouched;
+`configure_failure_waits_for_the_verdict` checks that no poll during a configure that failed reads a failure before the
+service decides; `manual_start_ignores_the_fences` checks that a manual start runs after the epoch moves; a retirement during configure ends it retired, not superseded; an
 unchanged generation runs; a superseded START that finds the service still STOPPING is turned away with no busy
 failure on the running session's record, while an unsuperseded one is refused busy as before. The before-acceptance
 case also checks no `nativeInit`, no startup-diagnostics arm and no wake lock. `start_status` throws each refusal from

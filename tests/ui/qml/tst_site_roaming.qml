@@ -223,6 +223,7 @@ Item {
             compare(argAfter("-C"), "/tmp/roam-Lake-chan.csv");
             compare(argAfter("-G"), "/tmp/roam-Lake-tg.csv");
             compare(testContext.lastStartStopExpectation(), 0, "the start carries the generation it was decided under");
+            compare(testContext.lastStartEpochExpectation(), 0, "and the foreground epoch");
             compare(app.pendingRestart, null);
             compare(app.sessionStartUid, uids[1]);
             testContext.setLifecyclePhase(2);
@@ -673,6 +674,39 @@ Item {
             wait(20);
             compare(decoderHost.sessionState, 0, "the start's checks read the epoch now");
             verify(roamNotice().visible);
+        }
+
+        // #786 r2: the app leaves the foreground while Lake's start is on its
+        // way. Uncommitted, it is retired: listening stays stopped, Home's
+        // notice, no failure card and no "Could not switch".
+        function test_19b_foreground_loss_while_the_start_is_on_its_way() {
+            toLakeStarting();
+            testContext.setForegroundEpoch(1);
+            tick(500);
+            compare(calls().retirements, 1);
+            compare(decoderHost.sessionState, 0, "retired: listening stopped");
+            verify(!siteRoaming.transactionActive);
+            verify(roamNotice().visible);
+            compare(siteRoaming.recoveryNotice, "Roaming did not switch to Lake. Listening stopped.");
+            verify(siteRoaming.reason !== SiteRoaming.SwitchFailed);
+            verify(!app.showFailure);
+            compare(app.startError, "");
+        }
+
+        // The service fenced Lake's START itself (it carries the epoch), so
+        // the retirement finds it ended on its own: the same outcome.
+        function test_19c_the_service_fences_the_start() {
+            toLakeStarting();
+            testContext.setRetireRoamAttemptWins(false);
+            testContext.setForegroundEpoch(1);
+            tick(500);
+            verify(siteRoaming.transactionActive, "followed until the host says how it ended");
+            testContext.supersedeStart();
+            compare(decoderHost.sessionState, 0);
+            verify(!siteRoaming.transactionActive);
+            verify(roamNotice().visible);
+            verify(siteRoaming.reason !== SiteRoaming.SwitchFailed);
+            verify(!app.showFailure);
         }
 
         // Undelivered and configuring are the host's to tell apart; either way its attempt is retired.

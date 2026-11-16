@@ -236,15 +236,16 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     /*
      * GPS site roaming (#786; decoder_host_android_lifecycle.cpp, less its JNI). A start with a negative expectation
-     * (a read that failed) is a start error. One with an expectation is refused at once, superseded, when
-     * DecoderService.userStopGeneration() moved since (or cannot be read); otherwise the service checks it again where
-     * it decides the start, and its record's "superseded" says it ended unrun. One the service turned away unrecorded
-     * whose generation moved settles superseded when its start grace runs out, never as undelivered. The location feed
-     * is LocationStream: started and stopped over JNI, polled at the end of refresh() while started. The reads are
-     * synchronous JNI calls (DecoderService.userStopGeneration(), LocationStream.foregroundEpoch()); -1 when one
-     * failed.
+     * (a read that failed) is a start error. One with expectations is refused at once, superseded, when
+     * DecoderService.userStopGeneration() or LocationStream.foregroundEpoch() moved since (or cannot be read);
+     * otherwise both go with the START and the service checks them again where it decides the start, and its record's
+     * "superseded" says it ended unrun. A START Android refused after either moved (it refuses a foreground service
+     * start from the background), and one the service turned away unrecorded after either moved when its start grace
+     * runs out, settle superseded too, never as a failure. The location feed is LocationStream: started and stopped
+     * over JNI, polled at the end of refresh() while started. The reads are synchronous JNI calls; -1 when one failed.
      */
-    bool startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration) override;
+    bool startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration,
+                                  qint64 expectedForegroundEpoch) override;
 
     bool
     startSuperseded() const override {
@@ -593,20 +594,36 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static QString platformTakeRecordingShareFailure();
     /**
      * @brief DecoderService.startDecoder() with @p argv for start attempt @p attempt, expecting
-     * @p expectedStopGeneration (-1: none); returns its status (android/start_status.h): kStartHandedOver, the
-     * platform's refusal of the START (#786 B2), kStartCallFailed, or the host's own kStartNoContext or
-     * kStartBadArguments.
+     * @p expectedStopGeneration and @p expectedForegroundEpoch (-1: none); returns its status (android/start_status.h):
+     * kStartHandedOver, the platform's refusal of the START (#786 B2), kStartCallFailed, or the host's own
+     * kStartNoContext or kStartBadArguments.
      */
-    static int platformStartDecoder(const QStringList& argv, uint64_t attempt, qint64 expectedStopGeneration);
+    static int platformStartDecoder(const QStringList& argv, uint64_t attempt, qint64 expectedStopGeneration,
+                                    qint64 expectedForegroundEpoch);
     /** @brief What the UI shows for a start that was not handed over with @p status; plain English, translatable. */
     static QString startRefusalText(int status);
-    /** @brief start() and startWithStopExpectation(): @p expects says whether @p expectedStopGeneration applies. */
-    bool startAttempt(const QStringList& argv, bool expects, qint64 expectedStopGeneration);
+
+    /** @brief What a GPS roam's start expects to hold until it runs (#786); -1 each for a start with none. */
+    struct RoamExpectation {
+        qint64 stopGeneration = -1;
+        qint64 foregroundEpoch = -1;
+    };
+
+    /** @brief start() and startWithStopExpectation(): @p expects says whether @p expectation applies. */
+    bool startAttempt(const QStringList& argv, bool expects, RoamExpectation expectation);
     /**
-     * @brief Refuse a start with an expectation before it begins: one for a generation that could not be read
-     * (negative: a start error), or one a user stop superseded (startSuperseded()). True when it refused.
+     * @brief Refuse a start with expectations before it begins: one with a value that could not be read (negative: a
+     * start error), or one a user stop or leaving the foreground superseded (startSuperseded()). True when it refused.
      */
-    bool refuseUnexpectedStart(qint64 expectedStopGeneration);
+    bool refuseUnexpectedStart(RoamExpectation expectation);
+    /** @brief Whether a user stop or leaving the foreground came after @p expectation (a failed read counts), now. */
+    static bool roamSuperseded(RoamExpectation expectation);
+    /**
+     * @brief A start that was not handed over with @p status: a failure, unless it is a roam's (@p roam) superseded
+     * since its expectation, which settles back to @p before with startSuperseded(). Always returns false.
+     */
+    bool refuseHandover(uint64_t attempt, int status, bool roam, RoamExpectation expectation,
+                        const SessionPhaseTracker& before);
     /** @brief stop() and stopForSwitch(): the request goes to the service as a switch when @p forSwitch. */
     void stopSession(bool forSwitch);
     void setStartSuperseded(bool superseded);
@@ -765,7 +782,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool m_start_superseded = false;
     // #786: the attempt a start with an expectation handed over, which retireRoamAttempt() retires (0: none).
     uint64_t m_roam_attempt = 0;
-    qint64 m_roam_expectation = -1;
+    RoamExpectation m_roam_expectation;
     // #786: the Stopping a stop began is a roaming switch's (stopForSwitch()); a user stop() or any other phase ends it.
     bool m_switch_stop = false;
     bool m_location_stream = false;
