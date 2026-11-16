@@ -592,8 +592,9 @@ test_udp_backlog(void) {
         dsd_sleep_ms(10U);
     }
     dsd_symbol_apply_input_drop(opts, state);
-    rc |=
-        expect_true("audio that arrived after the confirmation is kept", udp_next(opts) == 70 && udp_next(opts) == 71);
+    const int16_t kept_first = udp_next(opts);
+    const int16_t kept_second = udp_next(opts);
+    rc |= expect_true("audio that arrived after the confirmation is kept", kept_first == 70 && kept_second == 71);
     rc |= expect_true("hop",
                       dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     dsd_symbol_apply_input_drop(opts, state);
@@ -835,7 +836,9 @@ watchdog_queue_case(dsd_opts* opts, dsd_state* state, const wait_src* src, const
     take_at_the_next_read(opts, state);
     rc |= expect_true("send after the drop", wait_src_send(src, 500, 2U) == 0);
     DSD_SNPRINTF(label, sizeof label, "%s: what was queued at the post goes at the next read", what);
-    rc |= expect_true(label, wait_input_next(opts) == 500 && wait_input_next(opts) == 501);
+    const int16_t after_first = wait_input_next(opts);
+    const int16_t after_second = wait_input_next(opts);
+    rc |= expect_true(label, after_first == 500 && after_second == 501);
 
     const uint32_t e = state->symbol_clock_epoch;
     wait_poster wp = {src, 0};

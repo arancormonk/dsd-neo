@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/sockets.h>
 #include <stdint.h>

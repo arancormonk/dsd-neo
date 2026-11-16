@@ -7,6 +7,7 @@
 #include <stddef.h>
 
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/platform/input_backlog.h"
 #include "dsd-neo/platform/sockets.h"
 
 static dsd_net_audio_input_hooks g_net_audio_input_hooks = {0};
