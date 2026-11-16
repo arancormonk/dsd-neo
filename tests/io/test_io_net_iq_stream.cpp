@@ -722,15 +722,16 @@ test_tcp_reconnect_runs_the_boundary(void) {
        purge go; left pending, the demod would apply it after that first block and drop the rest). */
     blocks_reset();
     g_blocks.paused.store(1);
+    const uint64_t samples_before = st.reader.samples;
     tcp_send_pairs(t, 4800U);
     assert(wait_until([] { return g_blocks.waiting.load() != 0; }, kWaitMs));
+    /* Every sample read and most of its blocks queued behind the one the demod holds. */
+    assert(wait_until([&] { return ingest(t.s).reader.samples >= samples_before + 4800U; }, kWaitMs));
     assert(wait_until([&] { return ingest(t.s).blocks_written >= st.blocks_written + 30U; }, kWaitMs));
-    dsd_sleep_ms(50U);
-    const uint64_t written = ingest(t.s).blocks_written - st.blocks_written;
     g_blocks.paused.store(0);
-    assert(wait_until([&] { return blocks_taken() >= (size_t)written; }, kWaitMs));
-    dsd_sleep_ms(50U);
-    assert(blocks_taken() == (size_t)(ingest(t.s).blocks_written - st.blocks_written));
+    /* A purge left pending would discard the queued blocks, and the demod would never catch up with the reader. */
+    assert(wait_until([&] { return blocks_taken() == (size_t)(ingest(t.s).blocks_written - st.blocks_written); },
+                      kWaitMs));
     assert(wait_until([&] { return rtl_device_has_stream(t.s.dev) == 1; }, kWaitMs));
     expect_blocks_exactly(kBlockFloats);
     uint32_t centre = 0U;
