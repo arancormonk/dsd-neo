@@ -53,8 +53,9 @@ void dsd_engine_set_decoder_thread(int is_decoder);
  * tune; 0 when none was sent), the epoch moves, so no span the decoders measure on the symbol clock (a DMR slot's MI
  * chain, a P25 Phase 1 terminator's place, the DMR polarity run) reaches across the tune, and the input's queued
  * samples are dropped at the decoder thread's next input read (dsd_state::input_drop_pending,
- * dsd_symbol_apply_input_drop()). Off the decoder thread (the P25 watchdog) both happen when the decoder thread
- * reconciles the tune (dsd_frame_sync_apply_off_thread_tunes()).
+ * dsd_symbol_apply_input_drop()). Off the decoder thread (the P25 watchdog) the tune posts a count, and both happen at
+ * the decoder thread's next input read (frame_sync_take_unflushed_retunes()), or at the tune notice's reconcile if no
+ * read came first (dsd_frame_sync_apply_off_thread_tunes()).
  * Called by each rigctl leg, once its frequency request was answered RPRT 0: the backend tune
  * (dsd_engine_tune_with_backend()), the legacy -Y step and control-channel return, and app-control's io_control leg.
  */

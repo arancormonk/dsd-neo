@@ -38,6 +38,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
 #include <sndfile.h>
@@ -609,13 +610,18 @@ test_udp_backlog(void) {
     return rc;
 }
 
-/* A sender that waits, then sends a datagram: what a source delivers after the decoder already waits on it. */
+/* A sender that waits, then sends a datagram, and sends it again every few ms until the reader says its read returned:
+   what a source delivers after the decoder already waits on it. A reader that is descheduled past the first burst
+   still gets one; one that never returns is ended through the exit flag after a bound, so the test fails, never
+   hangs. */
 typedef struct {
     dsd_socket_t tx;
     int port;
     int16_t first;
     size_t count;
     unsigned int delay_ms;
+    atomic_int read_returned;
+    atomic_int gave_up;
 } late_sender;
 
 static int
@@ -643,9 +649,17 @@ static DSD_THREAD_RETURN_TYPE
     __stdcall
 #endif
     late_sender_main(void* arg) {
-    const late_sender* ls = (const late_sender*)arg;
+    late_sender* ls = (late_sender*)arg;
     dsd_sleep_ms(ls->delay_ms);
-    (void)udp_send_ramp(ls->tx, ls->port, ls->first, ls->count);
+    for (unsigned int waited_ms = 0U; !atomic_load(&ls->read_returned); waited_ms += 20U) {
+        (void)udp_send_ramp(ls->tx, ls->port, ls->first, ls->count);
+        if (waited_ms >= 5000U) {
+            atomic_store(&ls->gave_up, 1);
+            dsd_exitflag_store(1);
+            break;
+        }
+        dsd_sleep_ms(20U);
+    }
     DSD_THREAD_RETURN;
 }
 
@@ -679,18 +693,59 @@ test_watchdog_tune_drops_at_the_next_read(void) {
     dsd_engine_set_decoder_thread(1);
     rc |= expect_epoch("the watchdog's tune leaves the epoch to the decoder thread", state, e, 0);
     /* The new channel's audio comes once the decoder waits on the input. No reconcile runs before the read. */
-    late_sender ls = {tx, port, 1000, 300U, 50U};
+    late_sender ls = {tx, port, 1000, 300U, 50U, 0, 0};
     dsd_thread_t th;
     rc |= expect_true("late sender", dsd_thread_create(&th, late_sender_main, &ls) == 0);
     (void)getSymbol(opts, state, 0);
+    atomic_store(&ls.read_returned, 1);
     (void)dsd_thread_join(th);
-    rc |= expect_epoch("the next read moves the epoch", state, e, 1);
+    rc |= expect_true("the read returned on the new channel's audio", atomic_load(&ls.gave_up) == 0);
+    dsd_exitflag_store(0);
+    rc |= expect_true("the next read moves the epoch once", state->symbol_clock_epoch == e + 1U);
     rc |= expect_true("and the read drops the old channel's queued audio: what follows is the new channel's",
                       udp_next(opts) >= 1000);
+    /* The tune's notice is reconciled later: the count the read took is not taken again. */
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    rc |= expect_true("the reconcile takes nothing twice",
+                      state->symbol_clock_epoch == e + 1U && state->input_drop_pending == 0U);
     if (tx != DSD_INVALID_SOCKET) {
         (void)dsd_socket_close(tx);
     }
     udp_input_stop(opts);
+    rig_case_close(&c);
+    return rc;
+}
+
+/* A watchdog retune posted before the input is replaced moved the peer before the new stream began: the new stream
+   holds nothing of the channel it left, so the post is never taken. One posted after the replacement is. */
+static int
+test_watchdog_post_and_an_input_switch(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_PULSE) != 0) {
+        return expect_true("watchdog switch: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    uint32_t e = state->symbol_clock_epoch;
+    dsd_engine_set_decoder_thread(0);
+    int rc = expect_true("watchdog tune before the switch",
+                         dsd_engine_trunk_tune_to_freq_request(opts, state, VC1_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_engine_set_decoder_thread(1);
+    dsd_opts_reset_pcm_input_state(opts); /* the input is replaced before the decoder's next read */
+    dsd_frame_sync_take_off_thread_unflushed_retunes(opts, state);
+    rc |= expect_true("a post made before the switch is not taken on the new input",
+                      state->symbol_clock_epoch == e && state->input_drop_pending == 0U);
+    dsd_engine_set_decoder_thread(0);
+    rc |= expect_true("watchdog tune after the switch",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_engine_set_decoder_thread(1);
+    dsd_frame_sync_take_off_thread_unflushed_retunes(opts, state);
+    rc |= expect_true("a post made after the switch is taken",
+                      state->symbol_clock_epoch == e + 1U && state->input_drop_pending == 1U
+                          && state->input_drop_generation == opts->pcm_input_generation);
+    state->input_drop_pending = 0U;
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     rig_case_close(&c);
     return rc;
 }
@@ -916,6 +971,7 @@ main(void) {
     rc |= test_dmr_follow_end_to_end();
     rc |= test_udp_backlog();
     rc |= test_watchdog_tune_drops_at_the_next_read();
+    rc |= test_watchdog_post_and_an_input_switch();
     rc |= test_drop_belongs_to_its_input();
     rc |= test_tcp_backlog();
     rc |= test_stdin_backlog();

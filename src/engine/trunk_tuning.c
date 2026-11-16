@@ -190,7 +190,8 @@ dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t s
         return;
     }
     if (!s_decoder_thread) {
-        /* The decoder thread moves the epoch and asks for the drop when it reconciles this tune. */
+        /* The decoder thread moves the epoch and asks for the drop at its next input read, or at this tune's notice
+           if no read comes first. */
         dsd_frame_sync_note_off_thread_unflushed_retune();
         return;
     }

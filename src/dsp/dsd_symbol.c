@@ -2935,8 +2935,10 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
                 DSD_FPRINTF(stderr, "Error, couldn't Reconnect to TCP audio input\n");
                 return 0;
             }
-            /* A new stream, whatever the old one's resampler tail still returns first (issue #628). */
+            /* A new stream, whatever the old one's resampler tail still returns first (issue #628), and none of a
+               watchdog retune posted before it is this stream's drop (issue #834). */
             dsd_opts_note_pcm_stream(opts);
+            dsd_frame_sync_forget_unflushed_retunes();
             LOG_INFO("TCP Socket Reconnected Successfully.\n");
             return 1;
         }

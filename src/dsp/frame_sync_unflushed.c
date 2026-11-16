@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/unflushed_retune.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <stdint.h>
 #include "frame_sync_unflushed.h"
@@ -40,6 +41,11 @@ frame_sync_take_unflushed_retunes_now(const dsd_opts* opts, dsd_state* state, ui
 void
 frame_sync_unflushed_retunes_reset(void) {
     dsd_frame_sync_unflushed_seen = dsd_atomic_u64_load_acquire(&dsd_frame_sync_unflushed_posted);
+}
+
+void
+dsd_frame_sync_forget_unflushed_retunes(void) {
+    frame_sync_unflushed_retunes_reset();
 }
 
 void

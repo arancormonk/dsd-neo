@@ -28,7 +28,8 @@ float getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
  * flush does: PulseAudio, PortAudio or AAudio input (dsd_audio_discard_input()), the UDP ring and the TCP connection
  * (the network-audio hooks), and stdin when it is a pipe or socket (dsd_pcm_stream_discard_ready()). Files and RTL
  * streams hold nothing to drop. Every input reader runs it before it reads (getSymbol(), EDACS analog voice), on the
- * decoder thread, outside the tune. No-op when nothing is pending.
+ * decoder thread, outside the tune. No-op when nothing is pending; a request asked for on an input since replaced
+ * (dsd_state::input_drop_generation is not dsd_opts::pcm_input_generation) is cleared and drops nothing.
  *
  * @param opts Decoder options (the input).
  * @param state Decoder state holding the request.

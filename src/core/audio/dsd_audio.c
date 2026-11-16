@@ -505,8 +505,10 @@ openAudioInput(dsd_opts* opts) {
         return -1;
     }
     /* Every Pulse open is a new stream, whatever asked for it (a config switch, the end of a playback, a file that
-       ran out): the PCM noise squelch forgets the old stream's references (issue #628). */
+       ran out): the PCM noise squelch forgets the old stream's references (issue #628), and a watchdog retune posted
+       before it drops nothing of it (issue #834). */
     dsd_opts_note_pcm_stream(opts);
+    dsd_frame_sync_forget_unflushed_retunes();
     return 0;
 }
 
