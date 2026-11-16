@@ -8844,28 +8844,6 @@ static ReplayPlanInForce g_replay_plan_in_force = {};
 static dsd_iq_replay_checkpoint g_replay_last_checkpoint = {};
 static int g_replay_last_checkpoint_valid = 0;
 
-/* The DSP rate a replay is planned for (issue #701), and whether it was asked for: the requested bandwidth when a user
- * or a config asked for one, otherwise the bandwidth the sidecar recorded (a WAV records none: the request, a mode
- * preset or the default). A mode preset does not beat a recorded bandwidth, as the capture's chain is what the replay
- * reproduces. TETRA times its symbols only at a multiple of 18 kHz: a target that is not one becomes TETRA's 72 kHz. */
-static uint32_t
-stream_open_replay_target_hz(const rtl_stream_replay_request* req, const dsd_iq_replay_config* cfg, int* out_explicit) {
-    const int explicit_target = req->dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT ? 1 : 0;
-    int khz = req->dsp_bw_khz;
-    if (!explicit_target && cfg->recorded_dsp_bw_khz > 0) {
-        khz = cfg->recorded_dsp_bw_khz;
-    }
-    if (khz <= 0) {
-        khz = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
-    }
-    uint32_t target_hz = (uint32_t)khz * 1000U;
-    if (req->frame_tetra == 1 && !dsd_tetra_dsp_rate_runs((int)target_hz)) {
-        target_hz = (uint32_t)DSD_TETRA_DSP_BW_KHZ * 1000U;
-    }
-    *out_explicit = explicit_target;
-    return target_hz;
-}
-
 /* The request @p opts holds: its DSP bandwidth request, whether the TETRA decoder runs and whether the analog monitor
  * does. */
 static rtl_stream_replay_request
@@ -8923,8 +8901,11 @@ static int
 stream_plan_replay_rate(const rtl_stream_replay_request* req, int uplink, const dsd_iq_replay_config* replay_cfg,
                         dsd_iq_replay_rate_plan* out_plan, uint32_t* out_target_hz, char* err_buf,
                         size_t err_buf_size) {
-    int explicit_target = 0;
-    const uint32_t target_hz = stream_open_replay_target_hz(req, replay_cfg, &explicit_target);
+    /* The request when a user or a config asked for one, else the bandwidth the sidecar recorded (a WAV records none:
+       the mode preset or the default), TETRA's 72 kHz where TETRA cannot run at it. */
+    const int explicit_target = req->dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT ? 1 : 0;
+    const uint32_t target_hz =
+        dsd_iq_dsp_target_hz(req->dsp_bw_khz, explicit_target, replay_cfg->recorded_dsp_bw_khz, req->frame_tetra == 1);
     const uint32_t required_hz = req->frame_tetra == 1 ? (uint32_t)DSD_TETRA_SYMBOL_RATE_HZ : 0U;
     *out_target_hz = target_hz;
     return dsd_iq_replay_plan_rate(replay_cfg, target_hz, required_hz, explicit_target,

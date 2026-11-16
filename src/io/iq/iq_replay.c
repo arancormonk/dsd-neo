@@ -2276,6 +2276,16 @@ dsd_iq_replay_chunk_bytes_for(dsd_iq_sample_format format, uint32_t capture_hz, 
 }
 
 uint32_t
+dsd_iq_live_block_samples(uint32_t dsp_in_hz) {
+    const uint64_t samples =
+        ((uint64_t)dsp_in_hz * DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES) / DSD_IQ_REPLAY_CHUNK_REFERENCE_RATE_HZ;
+    if (samples > DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES) {
+        return DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES;
+    }
+    return samples == 0U ? 1U : (uint32_t)samples;
+}
+
+uint32_t
 dsd_iq_replay_nominal_rate_hz(const dsd_iq_replay_config* cfg) {
     if (!cfg) {
         return 0U;
@@ -2566,21 +2576,34 @@ rate_plan_general_backend(dsd_iq_replay_origin origin) {
     return DSD_RATE_PLAN_BACKEND_REPLAY_EXACT;
 }
 
-/* The general rule's plan: the capture at @p fs resampled (or not) to @p r = D x 2^k and decimated by 2^k to D. It runs
+/* What a general plan's refusals call its source's rate and its chain: a replay's capture, or a stream. */
+typedef struct {
+    const char* rate_owner; /* "capture": "the capture's rate" */
+    const char* runner;     /* "replay": "the 72000 Hz replay chain", "a replay can resample" */
+} general_plan_words;
+
+static general_plan_words
+general_plan_words_of(dsd_iq_plan_source source) {
+    if (source == DSD_IQ_PLAN_SOURCE_STREAM) {
+        return (general_plan_words){"stream", "stream"};
+    }
+    return (general_plan_words){"capture", "replay"};
+}
+
+/* The general rule's plan: the source at @p fs resampled (or not) to @p r = D x 2^k and decimated by 2^k to D. It runs
  * no step, as forced, as every replay did before issue #806. */
 static int
-rate_plan_fill_general(const dsd_iq_replay_config* cfg, uint32_t r, uint32_t k, uint32_t d,
+rate_plan_fill_general(dsd_iq_plan_source source, uint32_t fs, uint32_t r, uint32_t k, uint32_t d,
                        dsd_iq_replay_rate_plan* plan, char* err_buf, size_t err_buf_size) {
-    const uint32_t fs = cfg->sample_rate_hz;
     rate_plan_fill(plan, fs, r, 1U << k, 1U, d, 0);
-    if (cfg->container == DSD_IQ_REPLAY_CONTAINER_WAV) {
+    if (source == DSD_IQ_PLAN_SOURCE_WAV) {
         plan->origin = DSD_IQ_REPLAY_ORIGIN_WAV;
     } else {
         plan->origin = plan->resample ? DSD_IQ_REPLAY_ORIGIN_RESAMPLED : DSD_IQ_REPLAY_ORIGIN_EXACT;
     }
     if (!replay_chain_plan(rate_plan_general_backend(plan->origin), r, r, 0U, d, (int)k, &plan->chain)) {
-        set_error(err_buf, err_buf_size, "the %u Hz replay chain cannot be planned%s%s", (unsigned)r,
-                  plan->chain.message[0] ? ": " : "", plan->chain.message);
+        set_error(err_buf, err_buf_size, "the %u Hz %s chain cannot be planned%s%s", (unsigned)r,
+                  general_plan_words_of(source).runner, plan->chain.message[0] ? ": " : "", plan->chain.message);
         return DSD_IQ_ERR_RATE_CHAIN;
     }
     plan->complex_rate_hz = plan->chain.step_out_hz;
@@ -2589,32 +2612,26 @@ rate_plan_fill_general(const dsd_iq_replay_config* cfg, uint32_t r, uint32_t k, 
     return DSD_IQ_OK;
 }
 
-/* The general rule (dsd_iq_replay_plan_rate()) for the capture at @p fs and the target @p d. */
+/* The general rule's R = D x 2^k and k for a source at @p fs (dsd_iq_plan_general_rate()): the source's own rate when
+ * it is one, else the rate it resamples to, or a refusal. */
 static int
-rate_plan_general(const dsd_iq_replay_config* cfg, uint32_t d, dsd_iq_replay_rate_plan* plan, char* err_buf,
-                  size_t err_buf_size) {
-    const uint32_t fs = cfg->sample_rate_hz;
-    if (d == 0U) {
-        set_error(err_buf, err_buf_size, "no DSP target rate to plan the replay for");
-        return DSD_IQ_ERR_RATE_CHAIN;
-    }
-    if (fs < DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ) {
-        set_error(err_buf, err_buf_size, "the capture's rate (%u Hz) is below the %u Hz a replay can resample",
-                  (unsigned)fs, (unsigned)DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ);
-        return DSD_IQ_ERR_RATE_CHAIN;
-    }
+rate_plan_general_rate_of(dsd_iq_plan_source source, uint32_t fs, uint32_t d, uint64_t* out_r, uint32_t* out_k,
+                          char* err_buf, size_t err_buf_size) {
     for (uint32_t k = 0U; k <= DSD_IQ_REPLAY_MAX_PLAN_PASSES; k++) {
         if ((uint64_t)d << k == (uint64_t)fs) {
-            return rate_plan_fill_general(cfg, fs, k, d, plan, err_buf, err_buf_size);
+            *out_r = fs;
+            *out_k = k;
+            return DSD_IQ_OK;
         }
     }
+    const general_plan_words words = general_plan_words_of(source);
     uint64_t r = d;
     uint32_t k = 0U;
     if (fs < d) {
         if ((uint64_t)d > (uint64_t)fs * DSD_IQ_REPLAY_MAX_UPSAMPLE_RATIO) {
             set_error(err_buf, err_buf_size,
-                      "the capture's rate (%u Hz) would need more than a %ux upsample to reach the %u Hz DSP rate",
-                      (unsigned)fs, (unsigned)DSD_IQ_REPLAY_MAX_UPSAMPLE_RATIO, (unsigned)d);
+                      "the %s's rate (%u Hz) would need more than a %ux upsample to reach the %u Hz DSP rate",
+                      words.rate_owner, (unsigned)fs, (unsigned)DSD_IQ_REPLAY_MAX_UPSAMPLE_RATIO, (unsigned)d);
             return DSD_IQ_ERR_RATE_CHAIN;
         }
     } else {
@@ -2624,13 +2641,46 @@ rate_plan_general(const dsd_iq_replay_config* cfg, uint32_t d, dsd_iq_replay_rat
         r = (uint64_t)d << k;
         if ((uint64_t)fs >= 2U * r) {
             set_error(err_buf, err_buf_size,
-                      "the capture's rate (%u Hz) is too fast to resample to the %u Hz DSP rate (more than a %u x 2 "
+                      "the %s's rate (%u Hz) is too fast to resample to the %u Hz DSP rate (more than a %u x 2 "
                       "decimation)",
-                      (unsigned)fs, (unsigned)d, (unsigned)(1U << DSD_IQ_REPLAY_MAX_PLAN_PASSES));
+                      words.rate_owner, (unsigned)fs, (unsigned)d, (unsigned)(1U << DSD_IQ_REPLAY_MAX_PLAN_PASSES));
             return DSD_IQ_ERR_RATE_CHAIN;
         }
     }
-    return rate_plan_fill_general(cfg, (uint32_t)r, k, d, plan, err_buf, err_buf_size);
+    *out_r = r;
+    *out_k = k;
+    return DSD_IQ_OK;
+}
+
+int
+dsd_iq_plan_general_rate(dsd_iq_plan_source source, uint32_t source_rate_hz, uint32_t target_dsp_hz,
+                         dsd_iq_replay_rate_plan* out_plan, char* err_buf, size_t err_buf_size) {
+    if (!out_plan) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    const general_plan_words words = general_plan_words_of(source);
+    const uint32_t fs = source_rate_hz;
+    const uint32_t d = target_dsp_hz;
+    if (d == 0U) {
+        set_error(err_buf, err_buf_size, "no DSP target rate to plan the %s for", words.runner);
+        return DSD_IQ_ERR_RATE_CHAIN;
+    }
+    if (fs < DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ) {
+        set_error(err_buf, err_buf_size, "the %s's rate (%u Hz) is below the %u Hz a %s can resample", words.rate_owner,
+                  (unsigned)fs, (unsigned)DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ, words.runner);
+        return DSD_IQ_ERR_RATE_CHAIN;
+    }
+    uint64_t r = 0U;
+    uint32_t k = 0U;
+    dsd_iq_replay_rate_plan plan;
+    int rc = rate_plan_general_rate_of(source, fs, d, &r, &k, err_buf, err_buf_size);
+    if (rc == DSD_IQ_OK) {
+        rc = rate_plan_fill_general(source, fs, (uint32_t)r, k, d, &plan, err_buf, err_buf_size);
+    }
+    if (rc == DSD_IQ_OK) {
+        *out_plan = plan;
+    }
+    return rc;
 }
 
 int
@@ -2646,11 +2696,9 @@ dsd_iq_replay_plan_rate(const dsd_iq_replay_config* cfg, uint32_t target_dsp_hz,
         *out_plan = plan;
         return DSD_IQ_OK;
     }
-    const int rc = rate_plan_general(cfg, target_dsp_hz, &plan, err_buf, err_buf_size);
-    if (rc == DSD_IQ_OK) {
-        *out_plan = plan;
-    }
-    return rc;
+    const dsd_iq_plan_source source =
+        cfg->container == DSD_IQ_REPLAY_CONTAINER_WAV ? DSD_IQ_PLAN_SOURCE_WAV : DSD_IQ_PLAN_SOURCE_SIDECAR;
+    return dsd_iq_plan_general_rate(source, cfg->sample_rate_hz, target_dsp_hz, out_plan, err_buf, err_buf_size);
 }
 
 static int

@@ -9343,23 +9343,28 @@ Key public headers:
     domain; (ii) a recorded step, to `dsp_rate_hz`; (iii) a forced post-1 chain, its passes kept, stepped to D through
     `dsd_rate_plan_compute()` (backend REPLAY_KEEP, request D x 2^p, so the planner sees it forced); (iv) folds of a
     chain that does not step: a power-of-two post into base under a requirement, then half-band passes down into the
-    domain. Only KEEP steps: otherwise the capture decimates by 2^k when it is D x 2^k, else it is resampled to the
-    largest D x 2^k at or below its rate (or up to D), step off, forced. The recorded chain is read and checked in
-    `metadata_finalize()` before any plan (`dsd_iq_rate_chain_check()`, `src/io/iq/iq_rate_chain.c`, which the capture
-    writer runs too before it writes the scalars). The caller's filter domain is `replay_max_complex_rate_hz()` in
-    `rtl_sdr_fm.cpp`: none for the analog monitor and for TETRA where its own filter would run at the recorded rate
-    (`replay_tetra_channel_runs()`: TETRA's domain, the channel filter not forced off, an override that times that rate,
-    or the uplink), else `DSD_DIGITAL_CHANNEL_MAX_RATE_HZ`; `rtl_stream_replay_request::analog_family` carries the
-    family a pending mode change will run. The plan refuses a capture below 8 kHz, an upsample past 9x and a capture at
-    2 x 2^10 x D or faster. Stream open (`stream_open_plan_replay_rate()`) plans at every start for the target
-    `stream_open_replay_target_hz()` picks (an EXPLICIT request, else the recorded bandwidth, else the request in force;
-    under TETRA 72 kHz for a target outside 36-144 kHz in 18 kHz steps) and refuses a start whose plan fails; the stream
-    runs the planned bandwidth while opts keeps the request, and the plan in force is kept for
+    domain. Only KEEP steps: otherwise the general rule plans it, `dsd_iq_plan_general_rate()`, the source-neutral
+    planner a raw I/Q stream runs too (issue #743; `dsd_iq_plan_source` SIDECAR, WAV or STREAM sets the origin and the
+    refusals' words): the source decimates by 2^k when it is D x 2^k, else it is resampled to the largest D x 2^k at or
+    below its rate (or up to D), step off, forced; a stream plans what an explicit request on a sidecar at its rate
+    plans. The recorded chain is read and checked in `metadata_finalize()` before any plan (`dsd_iq_rate_chain_check()`,
+    `src/io/iq/iq_rate_chain.c`, which the capture writer runs too before it writes the scalars). The caller's filter
+    domain is `replay_max_complex_rate_hz()` in `rtl_sdr_fm.cpp`: none for the analog monitor and for TETRA where its
+    own filter would run at the recorded rate (`replay_tetra_channel_runs()`: TETRA's domain, the channel filter not
+    forced off, an override that times that rate, or the uplink), else `DSD_DIGITAL_CHANNEL_MAX_RATE_HZ`;
+    `rtl_stream_replay_request::analog_family` carries the family a pending mode change will run. The plan refuses a
+    capture below 8 kHz, an upsample past 9x and a capture at 2 x 2^10 x D or faster. Stream open
+    (`stream_open_plan_replay_rate()`) plans at every start for the target `dsd_iq_dsp_target_hz()` picks (inline in
+    `iq_replay.h`, source-neutral: an EXPLICIT request, else the recorded bandwidth, else the request in force; under
+    TETRA 72 kHz for a target outside 36-144 kHz in 18 kHz steps) and refuses a start whose plan fails; the stream runs
+    the planned bandwidth while opts keeps the request, and the plan in force is kept for
     `rtl_stream_replay_replan_check()`; the replay device resamples with `dsd_iq_resampler` (protected band 0.45 x D) in
     the reader thread only when `dsp_input_rate_hz` differs from the capture's, clears it at a RETUNE, RESET, MUTE and
     loop rewind, hands event callbacks the DSP input rate, and counts pacing and media time in capture samples
-    (`dsd_iq_replay_chunk_bytes_for()` keeps a resampled chunk within one live transfer). A replay with no known centre
-    (a WAV with none) opens and loops: stream open skips the frequency check for a replay, and
+    (`dsd_iq_replay_chunk_bytes_for()` keeps a resampled chunk within one live transfer). A live source that hands the
+    demodulator whole blocks after its own resampling (a raw I/Q stream) sizes them with `dsd_iq_live_block_samples()`:
+    the same 16/3 ms span counted in samples at the DSP input rate, 1 to 8192, with no sample format. A replay with no
+    known centre (a WAV with none) opens and loops: stream open skips the frequency check for a replay, and
     `controller_finalize_dsp_chain()` runs the DSP half of `controller_finalize_rate_chain()` without a centre.
     `controller_apply_replay_settings()` runs the applied plan's complex rate (`rate_in`, `complex_rate`, `rate_out` =
     complex over post), forced flag and step; a config no plan was applied to (test seams) runs its half-band output as
