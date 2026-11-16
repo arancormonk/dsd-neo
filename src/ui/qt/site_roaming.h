@@ -33,6 +33,17 @@ constexpr std::int64_t kMaxFixAgeMs = 60000;
 constexpr double kMaxAccuracyM = 1000;
 /** @brief The longest a switch waits for a followed call before it goes ahead mid-call. */
 constexpr std::int64_t kMaxCallWaitMs = 90000;
+/**
+ * @brief Two fixes whose elapsed-realtime stamps are at most this far apart (5 ms) are one physical fix: the fused
+ * provider re-reports a GPS fix under its own name with the GPS stamp.
+ */
+constexpr std::int64_t kSameFixNs = 5000000;
+
+/** @brief Whether elapsed-realtime stamps @p a_ns and @p b_ns are one physical fix (at most kSameFixNs apart). */
+inline bool
+site_roaming_same_fix(std::int64_t a_ns, std::int64_t b_ns) {
+    return (a_ns > b_ns ? a_ns - b_ns : b_ns - a_ns) <= kSameFixNs;
+}
 
 /** @brief One site of the current system, in row order. */
 struct SiteRoamingCandidate {
@@ -45,7 +56,11 @@ struct SiteRoamingCandidate {
     bool roamable = false;
 };
 
-/** @brief A fix's identity: a replayed cached fix keeps it, a new fix at identical coordinates gets a new one. */
+/**
+ * @brief A fix's identity: a replayed cached fix keeps it, a new fix at identical coordinates gets a new one. A fix is
+ * new evidence only when its stamp is newer than the newest seen from its provider and more than kSameFixNs away from
+ * the newest seen from each other provider, so one fix relayed by another provider counts once.
+ */
 struct SiteRoamingMeasurementId {
     std::string provider;
     std::int64_t elapsed_realtime_ns = 0;
@@ -131,7 +146,8 @@ class SiteRoamingCore {
                                    const SiteRoamingMeasurement& m, const SiteRoamingSettings& settings, bool fresh);
     SiteRoamingVerdict cleared(const SiteRoamingVerdict& v);
 
-    // The newest elapsed-realtime stamp seen from each provider: a stamp at or below it has been seen.
+    // The newest elapsed-realtime stamp seen from each provider: a stamp at or below its own provider's, or within
+    // kSameFixNs of another provider's, has been seen.
     std::map<std::string, std::int64_t> newest_ns_by_provider_;
     SiteRoamingEvidence evidence_;
     bool has_settings_ = false;

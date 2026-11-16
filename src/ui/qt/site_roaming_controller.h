@@ -431,7 +431,8 @@ class SiteRoaming : public QObject {
     bool m_streamOn = false;
     QString m_streamState;
     /* The newest fix stamp seen from each provider, and as it stood at the last reset (a foreground loss): a fix at
-     * or before that is from before the reset, and is never fed again. */
+     * or before that, or within kSameFixNs of another provider's (a relay), is from before the reset, and is never fed
+     * again. */
     QHash<QString, qint64> m_seenNs;
     QHash<QString, qint64> m_resetFloor;
     bool m_hasMeasurement = false;

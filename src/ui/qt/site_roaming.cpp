@@ -151,8 +151,13 @@ SiteRoamingCore::consumeNew(const SiteRoamingMeasurementId& id) {
     if (it != newest_ns_by_provider_.end() && id.elapsed_realtime_ns <= it->second) {
         return false;
     }
+    // Another provider's newest stamp within kSameFixNs: the same fix relayed (fused re-reporting GPS), seen already.
+    const bool relayed =
+        std::any_of(newest_ns_by_provider_.cbegin(), newest_ns_by_provider_.cend(), [&id](const auto& seen) {
+            return seen.first != id.provider && site_roaming_same_fix(seen.second, id.elapsed_realtime_ns);
+        });
     newest_ns_by_provider_[id.provider] = id.elapsed_realtime_ns;
-    return true;
+    return !relayed;
 }
 
 void

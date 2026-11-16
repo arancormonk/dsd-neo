@@ -14804,8 +14804,11 @@ Qt Quick frontend (`src/ui/qt`):
   the current site is eligible and `d(current) − d(best) ≥ margin_km + 2·accuracy_km`, or when the current site is not
   eligible (no margin). Evidence for one candidate is {uid, first and latest fix time, count}; only a measurement never
   seen before (a provider's `elapsedRealtimeNanos` newer than the newest seen from it, so a replayed or reordered fix is
-  not new) that is switch-worthy for the same winner extends it; a different winner or a new measurement that is not
-  worthy restarts it, and timer ticks, list changes and a settings change (which clears it) can only take a verdict
+  not new, and more than `kSameFixNs` (5 ms) from the newest seen from each other provider, so a GPS fix the fused
+  provider re-reports under its own name counts once; this refines the spec's `(provider, elapsedRealtimeNanos)`
+  identity, which let one physical fix count twice) that is switch-worthy for the same winner extends it; a different
+  winner or a new measurement that is not worthy restarts it, and timer ticks, list changes and a settings change (which
+  clears it) can only take a verdict
   away. `Switch` needs a span of at least `kDwellMs` (20 s) and `kMinDwellSamples` (3) measurements; a verdict holds
   only while each later evaluation derives it again. `reset()` forgets the evidence and every measurement seen (the
   executor calls it on a foreground loss). `CallWaitClock` is the bounded call wait: it starts at the first busy
@@ -14829,7 +14832,7 @@ Qt Quick frontend (`src/ui/qt`):
   absorbed. A cancel once the start is handed over retires the host's attempt (`retireRoamAttempt()`); a switch
   cancelled after the session it left stopped, other than by the user's own action, leaves `recoveryNotice` for Home. A
   foreground loss (`foregroundEpoch()` moved) cancels a switch the host does not own yet and resets the core; a fix
-  polled again after it is never fed. The latest fix's coordinates are
+  polled again after it, or relayed by another provider (`kSameFixNs`), is never fed. The latest fix's coordinates are
   dropped from memory whenever the feed stops or the foreground is lost (`holdsLocation()`; the Android host's last
   stream record likewise in `stopLocationStream()`, `holdsStreamRecord()`), as `PRIVACY_POLICY.md` promises. Every
   accepted command that changes what the session follows (`CommandBridge::operatorIntentSubmitted(kind)`: Hold TG and

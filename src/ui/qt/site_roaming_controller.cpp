@@ -527,7 +527,12 @@ SiteRoaming::onStreamUpdate(const QVariantMap& record) {
         const QString provider = record.value(QStringLiteral("provider")).toString();
         const qint64 ns = record.value(QStringLiteral("measurementNs")).toLongLong();
         m_seenNs[provider] = std::max(m_seenNs.value(provider, 0), ns);
-        if (!m_resetFloor.contains(provider) || ns > m_resetFloor.value(provider)) {
+        // From before the reset: at or below its provider's floor, or another provider's relay of a fix seen then.
+        bool before = m_resetFloor.contains(provider) && ns <= m_resetFloor.value(provider);
+        for (auto it = m_resetFloor.cbegin(); !before && it != m_resetFloor.cend(); ++it) {
+            before = it.key() != provider && site_roaming_same_fix(it.value(), ns);
+        }
+        if (!before) {
             m_measurement.id.provider = provider.toStdString();
             m_measurement.id.elapsed_realtime_ns = ns;
             m_measurement.lat = record.value(QStringLiteral("lat")).toDouble();

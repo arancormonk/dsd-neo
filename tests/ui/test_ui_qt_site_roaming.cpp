@@ -235,8 +235,8 @@ check_cluster_then_silence() {
           "cluster: and stays paused");
 }
 
-/* A replayed cached fix (same provider and stamp) adds nothing, however often or late it arrives, even restamped;
- * a new fix at identical coordinates counts. */
+/* A replayed cached fix (same provider and stamp) adds nothing, however often or late it arrives, even restamped, and
+ * neither does one fix relayed by another provider (its stamp within 5 ms); a new fix at identical coordinates counts. */
 void
 check_replayed_and_identical_fixes() {
     SiteRoamingCore core;
@@ -253,11 +253,20 @@ check_replayed_and_identical_fixes() {
     older.id.elapsed_realtime_ns = first.id.elapsed_realtime_ns - 1;
     core.evaluate(41000, sites, "A", &older, kSettings);
     check(core.evidence().count == 1, "replay: an older stamp from the same provider is not new");
-    SiteRoamingMeasurement other = nearB(42000);
-    other.id.provider = "network";
-    other.id.elapsed_realtime_ns = first.id.elapsed_realtime_ns;
-    core.evaluate(42000, sites, "A", &other, kSettings);
-    check(core.evidence().count == 2, "replay: the same stamp from another provider is new");
+    // The fused provider re-reports a GPS fix under its own name with the GPS stamp: one physical fix, counted once.
+    SiteRoamingMeasurement relay = nearB(42000);
+    relay.id.provider = "fused";
+    relay.id.elapsed_realtime_ns = first.id.elapsed_realtime_ns;
+    core.evaluate(42000, sites, "A", &relay, kSettings);
+    check(core.evidence().count == 1, "replay: the same stamp from another provider is the same fix");
+    relay.id.elapsed_realtime_ns = first.id.elapsed_realtime_ns + dsd_qt::kSameFixNs;
+    core.evaluate(42000, sites, "A", &relay, kSettings);
+    check(core.evidence().count == 1, "replay: a stamp within 5 ms of another provider's newest is not new");
+    SiteRoamingMeasurement other = nearB(43000);
+    other.id.provider = "fused";
+    other.id.elapsed_realtime_ns = first.id.elapsed_realtime_ns + dsd_qt::kSameFixNs + 1;
+    core.evaluate(43000, sites, "A", &other, kSettings);
+    check(core.evidence().count == 2, "replay: a stamp more than 5 ms from another provider's newest is new");
     const SiteRoamingMeasurement same_place = nearB(50000);
     check(is(core.evaluate(50000, sites, "A", &same_place, kSettings), Kind::Switch, "B") && core.evidence().count == 3
               && core.evidence().last_ms - core.evidence().first_ms == 50000,
@@ -815,13 +824,14 @@ struct Rig {
                                           {"fixAtMs", now}});
     }
 
-    /* The same measurement as the last fix, polled again (as a host may after its feed restarts). */
+    /* The same measurement as the last fix, polled again (as a host may after its feed restarts), as @p provider
+     * reports it (another provider relays it with its stamp). */
     void
-    refix(double lat, double lon) {
+    refix(double lat, double lon, const char* provider = "gps") {
         Q_EMIT host.locationStreamUpdate({{"generation", 2},
                                           {"state", "ok"},
                                           {"hasFix", true},
-                                          {"provider", "gps"},
+                                          {"provider", provider},
                                           {"measurementNs", ns},
                                           {"lat", lat},
                                           {"lon", lon},
@@ -1043,6 +1053,9 @@ check_executor_reset_drops_the_cached_fix() {
     check(!rig.roaming.holdsLocation(), "reset: the fix from before the foreground loss is not kept in memory");
     rig.refix(10.49, 20.0);
     check(rig.roaming.reason() == SiteRoaming::NoFix, "reset: the same fix polled again counts for nothing");
+    rig.refix(10.49, 20.0, "fused");
+    check(rig.roaming.reason() == SiteRoaming::NoFix,
+          "reset: the same fix relayed by another provider counts for nothing");
     rig.nearB(9500);
     rig.nearB(10000);
     check(rig.host.switchStops == 0, "reset: two new fixes are not three");
