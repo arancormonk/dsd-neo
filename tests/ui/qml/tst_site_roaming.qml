@@ -349,10 +349,98 @@ Item {
             verify(!roamNotice().visible);
             testContext.setLifecyclePhase(2);
             testContext.emitSessionInitialized();
+            // Nothing ran when it was picked: a new start, which roams as any other.
+            compare(siteRoaming.state, SiteRoaming.Paused);
+            compare(siteRoaming.reason, SiteRoaming.NoFix);
+        }
+
+        // D3: a switch the user makes from a session roaming follows holds roaming on the site chosen.
+        function test_09b_stop_and_switch_from_a_roaming_session_holds() {
+            startSite(0);
+            var chooser = findChild(app, "siteChooserSheet");
+            chooser.openFor(0);
+            chooser.stopAndSwitch(1);
+            testContext.setLifecyclePhase(0);
+            tryCompare(decoderHost, "sessionState", 1);
+            compare(argAfter("-C"), "/tmp/roam-Lake-chan.csv");
+            testContext.setLifecyclePhase(2);
+            testContext.emitSessionInitialized();
             compare(siteRoaming.state, SiteRoaming.Holding);
             compare(siteRoaming.statusText, "Holding the site you chose");
+            compare(siteRoaming.action, SiteRoaming.ResumeRoaming);
             siteRoaming.performAction();
             verify(siteRoaming.state !== SiteRoaming.Holding, "Resume roaming");
+        }
+
+        // A switch the user gave up (a tap during its stop) holds nothing on a later start of that site.
+        function test_09c_a_switch_given_up_holds_nothing_later() {
+            startSite(0);
+            var chooser = findChild(app, "siteChooserSheet");
+            chooser.openFor(0);
+            chooser.stopAndSwitch(1);
+            compare(decoderHost.sessionState, 3);
+            mouseClick(app.contentItem, 10, 10);
+            compare(app.pendingRestart, null, "the tap gave the switch up");
+            testContext.setLifecyclePhase(0);
+            wait(20);
+            compare(decoderHost.sessionState, 0);
+            app.startSystem(1);
+            testContext.setLifecyclePhase(2);
+            testContext.emitSessionInitialized();
+            verify(siteRoaming.state !== SiteRoaming.Holding);
+        }
+
+        // A switch whose start is refused (the site was avoided meanwhile) holds nothing on a later start.
+        function test_09d_a_refused_switch_holds_nothing_later() {
+            startSite(0);
+            var chooser = findChild(app, "siteChooserSheet");
+            chooser.openFor(0);
+            chooser.stopAndSwitch(1);
+            chooser.visible = false;
+            savedSystems.setAvoidSite(1, true);
+            testContext.setLifecyclePhase(0);
+            tryVerify(function () { return app.startError.length > 0; });
+            savedSystems.setAvoidSite(1, false);
+            app.startError = "";
+            app.startSystem(1);
+            testContext.setLifecyclePhase(2);
+            testContext.emitSessionInitialized();
+            verify(siteRoaming.state !== SiteRoaming.Holding);
+        }
+
+        // A switch whose start the build refuses (a bad PPM) holds nothing on a later start either.
+        function test_09f_a_switch_the_build_refuses_holds_nothing_later() {
+            verify(savedSystems.update(1, {ppm: "x"}));
+            startSite(0);
+            var chooser = findChild(app, "siteChooserSheet");
+            chooser.openFor(0);
+            chooser.stopAndSwitch(1);
+            testContext.setLifecyclePhase(0);
+            tryVerify(function () { return app.startError.length > 0; });
+            verify(savedSystems.update(1, {ppm: ""}));
+            app.startError = "";
+            app.startSystem(1);
+            testContext.setLifecyclePhase(2);
+            testContext.emitSessionInitialized();
+            verify(siteRoaming.state !== SiteRoaming.Holding);
+        }
+
+        // A session the window took up without starting it never arms, and says so.
+        function test_09e_an_adopted_session_never_arms() {
+            app.sessionStartKind = "";
+            prefs.acceptedStartKind = "saved";
+            prefs.acceptedStartUid = uids[0];
+            testContext.setLifecyclePhase(2);
+            compare(app.sessionStartUid, uids[0], "Main took the session up");
+            compare(siteRoaming.reason, SiteRoaming.SessionAdopted);
+            compare(siteRoaming.statusText, "Start listening again to use GPS roaming");
+            verify(!calls().streamActive);
+            nearB(0);
+            nearB(10000);
+            nearB(10000);
+            compare(calls().switchStops, 0);
+            testContext.setLifecyclePhase(0);
+            compare(siteRoaming.reason, SiteRoaming.NoSession);
         }
 
         function test_10_failed_during_the_stop_starts_nothing() {
@@ -532,7 +620,8 @@ Item {
             verify(roamNotice().visible);
         }
 
-        function test_20_disable_while_the_start_is_undelivered_or_configuring() {
+        // Undelivered and configuring are the host's to tell apart; either way its attempt is retired.
+        function test_20_disable_while_the_start_is_handed_over_retires_it() {
             toLakeStarting();
             prefs.roamingEnabled = false;
             compare(calls().retirements, 1);
@@ -552,6 +641,25 @@ Item {
             compare(siteRoaming.state, SiteRoaming.Off);
         }
 
+        // A restore (#580) replaces the systems a roam names: it ends the roam, silently, in its stop or its start.
+        function test_21b_restore_during_the_stop_or_the_start() {
+            qualifyB();
+            app.dropPendingStarts("restore");
+            verify(!siteRoaming.transactionActive);
+            compare(app.pendingRestart, null);
+            testContext.setLifecyclePhase(0);
+            wait(20);
+            compare(decoderHost.sessionState, 0, "during the stop: nothing starts");
+            verify(!roamNotice().visible);
+            toLakeStarting();
+            var retired = calls().retirements;
+            app.dropPendingStarts("restore");
+            compare(calls().retirements, retired + 1);
+            compare(decoderHost.sessionState, 0, "during the start: retired, listening stopped");
+            verify(!siteRoaming.transactionActive);
+            verify(!roamNotice().visible, "the restore's own action: no notice");
+        }
+
         function test_22_manual_pick_once_the_destination_runs() {
             toLakeStarting();
             testContext.setLifecyclePhase(2);
@@ -565,6 +673,9 @@ Item {
             tryCompare(decoderHost, "sessionState", 1);
             compare(argAfter("-C"), "/tmp/roam-Ridge-chan.csv");
             verify(!roamNotice().visible);
+            testContext.setLifecyclePhase(2);
+            testContext.emitSessionInitialized();
+            compare(siteRoaming.state, SiteRoaming.Holding, "picked from the roaming session Lake: held");
         }
 
         function test_23_destination_that_exits_without_initializing() {

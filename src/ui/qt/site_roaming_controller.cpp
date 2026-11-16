@@ -32,6 +32,7 @@ constexpr double kSameKm = 1e-9;
 const char* const kReasonTexts[] = {
     "",
     QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "Roaming works while listening to a site of a multi-site system"),
+    QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "Start listening again to use GPS roaming"),
     "",
     QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "Roaming works while listening to a site of a multi-site system"),
     QT_TRANSLATE_NOOP("dsd_qt::SiteRoaming", "Roaming works while listening to a site of a multi-site system"),
@@ -96,6 +97,7 @@ SiteRoaming::View::operator==(const View& other) const {
 SiteRoaming::SiteRoaming(AppPrefs* prefs, SavedSystemsModel* systems, QObject* parent)
     : QObject(parent), m_prefs(prefs), m_systems(systems),
       m_clock([] { return static_cast<qint64>(dsd_realtime_mono_ms()); }) {
+    m_timer.setObjectName(QStringLiteral("siteRoamingTick"));
     m_timer.setInterval(kTickMs);
     connect(&m_timer, &QTimer::timeout, this, &SiteRoaming::tick);
     if (m_prefs != nullptr) {
@@ -133,6 +135,7 @@ SiteRoaming::setHost(DecoderHost* host) {
     m_tx = Transaction();
     m_session = Session();
     m_sessionLive = false;
+    m_adoptedLive = false;
     clearIntents();
     m_epochKnown = false;
     m_core.reset();
@@ -404,8 +407,11 @@ SiteRoaming::progressTransaction() {
 void
 SiteRoaming::onHostSession() {
     const int phase = m_host != nullptr ? m_host->sessionState() : DecoderHost::Idle;
-    if (m_sessionLive && (phase == DecoderHost::Idle || phase == DecoderHost::Failed)) {
-        endSession();
+    if (phase == DecoderHost::Idle || phase == DecoderHost::Failed) {
+        m_adoptedLive = false;
+        if (m_sessionLive) {
+            endSession();
+        }
     }
     evaluate();
 }
@@ -528,9 +534,14 @@ SiteRoaming::usableMeasurement() const {
     return m_hasMeasurement ? &m_measurement : nullptr;
 }
 
+/* The 1 s pass is for a session roaming judges (armed or paused: a fix ages, the epoch may move) and for a switch
+ * under way; idle or off, every change that matters evaluates anyway. */
 void
 SiteRoaming::updateTimer() {
-    const bool run = m_host != nullptr && enabled();
+    const State shown = m_pending.state;
+    const bool judging =
+        m_sessionLive && (shown == Paused || shown == Following || shown == Candidate || shown == WaitingForCall);
+    const bool run = m_host != nullptr && enabled() && (active() || judging);
     if (run && !m_timer.isActive()) {
         m_timer.start();
     } else if (!run && m_timer.isActive()) {
@@ -549,7 +560,10 @@ SiteRoaming::armReason() const {
 SiteRoaming::Reason
 SiteRoaming::sessionShapeReason() const {
     if (!m_sessionLive) {
-        return m_failedUid.isEmpty() ? NoSession : SwitchFailed;
+        if (!m_failedUid.isEmpty()) {
+            return SwitchFailed;
+        }
+        return m_adoptedLive ? SessionAdopted : NoSession;
     }
     const int phase = m_host->sessionState();
     if (phase != DecoderHost::Running) {
@@ -728,7 +742,8 @@ SiteRoaming::clearAppliedIntents() {
     if (m_holdIntent.pending && (m_holdIntent.kind == QLatin1String("hold")) == (m_facts.heldTg != 0)) {
         m_holdIntent = Intent();
     }
-    if (m_tunerIntent.pending && m_facts.operatorTuned != m_tunerIntent.baseline) {
+    // A manual tune or a tuner release shows as the operator holding the tuner, already held or not.
+    if (m_tunerIntent.pending && (m_facts.operatorTuned || m_facts.operatorTuned != m_tunerIntent.baseline)) {
         m_tunerIntent = Intent();
     }
     if (m_trunkingIntent.pending && m_facts.trunking == (m_trunkingIntent.kind == QLatin1String("trunkingOn"))) {
@@ -821,8 +836,14 @@ SiteRoaming::startPlan(qint64 roamId) {
         return active() && m_tx.roamId == roamId
                && (m_tx.stage == Stage::Stopping || m_tx.stage == Stage::WaitingForUsb);
     };
-    // Only once the session it leaves has stopped: Main asks at Idle.
-    if (!turn() || m_host == nullptr || m_host->sessionState() != DecoderHost::Idle) {
+    if (!turn()) {
+        return refused;
+    }
+    // Main asks only once the session it leaves is idle. Asked at any other moment, no one will ask again: the roam
+    // ends rather than stay stranded in its stop.
+    if (m_host == nullptr || m_host->sessionState() != DecoderHost::Idle) {
+        cancelTransaction(QStringLiteral("turn"));
+        evaluate();
         return refused;
     }
     noteForeground();
@@ -890,6 +911,7 @@ SiteRoaming::noteSessionStart(const QString& kind, const QString& uid, qint64 ro
     next.manualHold = !own && enabled() && !uid.isEmpty() && uid == m_pendingChoiceUid;
     m_session = next;
     m_sessionLive = true;
+    m_adoptedLive = false;
     m_pendingChoiceUid.clear();
     clearIntents();
     m_failedUid.clear();
@@ -917,7 +939,22 @@ SiteRoaming::noteSessionInitialized() {
 
 void
 SiteRoaming::noteSiteChoice(const QString& uid) {
-    m_pendingChoiceUid = enabled() ? uid : QString();
+    const bool roamableRuns = enabled() && available() && m_sessionLive && sessionShapeReason() == NoReason;
+    m_pendingChoiceUid = roamableRuns ? uid : QString();
+}
+
+void
+SiteRoaming::forgetSiteChoice() {
+    m_pendingChoiceUid.clear();
+}
+
+void
+SiteRoaming::noteSessionAdopted(const QString& kind) {
+    if (m_sessionLive || m_host == nullptr || m_host->sessionState() != DecoderHost::Running) {
+        return;
+    }
+    m_adoptedLive = kind == QLatin1String("saved");
+    evaluate();
 }
 
 void

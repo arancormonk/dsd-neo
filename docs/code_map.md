@@ -14813,8 +14813,13 @@ Qt Quick frontend (`src/ui/qt`):
   after it is never fed. Every accepted command that changes what the session follows
   (`CommandBridge::operatorIntentSubmitted(kind)`: Hold TG and its release, a manual tune, a tuner release, trunking on
   or off) blocks roaming, with no timeout, until the snapshot shows its outcome or the session ends; the intents belong
-  to the session, so switching roaming off and on keeps them. A site picked in the chooser (`noteSiteChoice()`) holds
-  roaming on its session until `resumeRoaming()`. Prefs (`AppPrefs`): `roaming/enabled` (device-local),
+  to the session, so switching roaming off and on keeps them. A site the user switches to from a session roaming can
+  follow (Stop and switch, Listen to nearest, `noteSiteChoice()` before the stop) holds roaming on the session it starts
+  until `resumeRoaming()`; a pick with nothing running is a start like any other, and a pick whose start is refused or
+  given up (`forgetSiteChoice()`) holds nothing. Limit: a session Main took up without starting it
+  (`adoptReattachedSession()`, a recreated window over a running service, `noteSessionAdopted()`) never arms, since its
+  stop generation and initialization edge were never seen; it idles with "Start listening again to use GPS roaming".
+  The 1 s timer runs only while a session is judged (armed or paused) or a switch is under way. Prefs (`AppPrefs`): `roaming/enabled` (device-local),
   `roaming/maxDistanceKm` and `roaming/marginKm` (portable, in km; a choice of either unit, else the default of the unit
   shown: 100 km / 2 km or 60 mi / 1 mi). In `Main.qml`, `roamToSite()` records the roam's restart
   (`pendingRestart = {kind: "roam", roamId, uid}`) and `startRoam()` asks `startPlan()` before

@@ -258,6 +258,9 @@ Window {
             siteRoaming.cancel(why);
         else if (why !== "roamStart" && pendingRestart && pendingRestart.kind === "roam")
             return;
+        // A site restart the user asked for, given up: a pick it carried holds nothing.
+        if (pendingRestart && pendingRestart.kind !== "roam")
+            siteRoaming.forgetSiteChoice();
         pendingRestart = null;
         leavingSearch = false;
     }
@@ -294,6 +297,8 @@ Window {
     // expectedStopGeneration}), or null: the grant resumes it through its
     // checks, a refusal ends it.
     property var pendingStartRoam: null
+    // DecoderHost::DevicePermission (LocalDeviceFailureKind): the user refused USB access.
+    readonly property int usbDevicePermission: 4
     Connections {
         target: siteRoaming
         function onSwitchRequested(roamId, uid) {
@@ -343,11 +348,12 @@ Window {
     // idle and says it is stopping. Back cancels the handoff, back to that
     // screen and its controls, so a stop that never finishes cannot lock it.
     property bool leavingSearch: false
+    // Whether the restart was taken.
     function restartSite(uid) {
         // Refused before cancelling: a restart that cannot run leaves a
         // handoff already waiting alone.
         if (decoderHost.sessionState !== 2 || savedSystems.rowForUid(uid) < 0)
-            return;
+            return false;
         cancelPendingRestart("start");
         pendingStart = null;
         pendingStartRow = -1;
@@ -357,6 +363,7 @@ Window {
             uid: uid
         };
         decoderHost.stop();
+        return true;
     }
     // Issue #644: what the channel the operator tuned to can be started as,
     // with its own settings: each scan-list row on it (its list, held on that
@@ -713,6 +720,7 @@ Window {
     // refused start), each a user decision.
     function dropPendingStarts(reason) {
         cancelPendingRestart(reason || "restore");
+        siteRoaming.forgetSiteChoice();
         mainRoot.pendingStartRoam = null;
         if (mainRoot.pendingStart && mainRoot.pendingStart.signalSearch)
             abandonSignalSearchStart();
@@ -1212,6 +1220,9 @@ Window {
             }
         }
         mainRoot.syncOperatorHold();
+        // #786: a session this window did not start never arms GPS roaming,
+        // and says so.
+        siteRoaming.noteSessionAdopted(mainRoot.sessionStartKind);
     }
 
     // The receiver an Explore map stands on when the operator takes the tuner:
@@ -1315,6 +1326,7 @@ Window {
     onDismissedFailureChanged: {
         if (dismissedFailure.length > 0) {
             cancelPendingRestart("dismiss");
+            siteRoaming.forgetSiteChoice();
             mainRoot.pendingStartRoam = null;
             awaitingUsbAccess = false;
             mainRoot.pendingStart = null;
@@ -1332,7 +1344,7 @@ Window {
             // #786: access refused for a GPS roam's start ends it refused; its
             // banner stays, and a later grant starts nothing.
             if (mainRoot.awaitingUsbAccess && mainRoot.pendingStartRoam && !decoderHost.localDeviceReady
-                && decoderHost.localDeviceFailureKind === 4 && !decoderHost.localDeviceRequestPending) {
+                && decoderHost.localDeviceFailureKind === mainRoot.usbDevicePermission && !decoderHost.localDeviceRequestPending) {
                 var denied = mainRoot.pendingStartRoam;
                 mainRoot.pendingStartRoam = null;
                 mainRoot.pendingStart = null;
@@ -1678,8 +1690,14 @@ Window {
         cancelPendingRestart(roam ? "roamStart" : "start");
         mainRoot.awaitingSessionInitialized = false;
         mainRoot.sessionReachedRunning = false;
-        if (!sys || !sys.sourceType)
+        if (!sys || !sys.sourceType) {
+            if (roam)
+                siteRoaming.noteStartResult(roam.roamId, {
+                    ok: false,
+                    started: false
+                });
             return;
+        }
         var remember = !options || options.remember !== false;
         // Issue #697: the other lists a scan starts with, in list order.
         var companions = scan && options && options.companions ? options.companions : [];
@@ -1733,6 +1751,9 @@ Window {
             : sessionArgs.start(sys, decoderHost, row >= 0 ? "saved" : sys.signalSearch ? "search" : "explore");
         if (roam)
             siteRoaming.noteStartResult(roam.roamId, built);
+        // A start that does not happen carries no site choice to a later one.
+        if (!built.ok || !built.started)
+            siteRoaming.forgetSiteChoice();
         if (!built.ok) {
             // Match the rejected field without exposing a prohibited argument or a key.
             if (scan) {
@@ -2779,14 +2800,16 @@ Window {
             wizard.openForEdit(row);
             mainRoot.wizardOpen = true;
         }
-        // #786: a site the user picks here holds GPS roaming on its session.
         onStartSite: function (row) {
-            siteRoaming.noteSiteChoice(savedSystems.get(row).uid || "");
             mainRoot.startSystem(row);
         }
+        // #786: a site the user switches to from a session GPS roaming
+        // follows holds roaming on the session it starts. Noted before the
+        // stop, while that session still runs.
         onRestartSite: function (uid) {
             siteRoaming.noteSiteChoice(uid);
-            mainRoot.restartSite(uid);
+            if (!mainRoot.restartSite(uid))
+                siteRoaming.forgetSiteChoice();
         }
         onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
     }

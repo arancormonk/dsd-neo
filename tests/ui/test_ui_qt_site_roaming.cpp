@@ -15,6 +15,7 @@
 #include <QSettings>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QVariant>
 #include <QVariantMap>
 #include <cstddef>
@@ -942,8 +943,6 @@ check_executor_route() {
     rig.tick(1000);
     rig.nearB(1000);
     check(rig.switches.size() == 1 && rig.host.switchStops == 1, "route: no second switch");
-    check(!rig.roaming.startPlan(id).value("ok").toBool() && rig.roaming.transactionActive(),
-          "route: no start while the session still stops, and the switch goes on");
     rig.host.setPhase(dsd_qt::DecoderHost::Idle);
     const QVariantMap plan = rig.roaming.startPlan(id);
     check(plan.value("ok").toBool() && plan.value("uid").toString() == rig.uids[1]
@@ -1239,7 +1238,70 @@ check_executor_starting() {
     }
 }
 
-/* The site the user picks holds roaming until Resume roaming or another start. */
+/* Asked for a start out of turn (the session it leaves still stopping), no one asks again: the roam ends, with the
+ * notice, rather than sit in its stop. */
+void
+check_executor_plan_out_of_turn() {
+    Rig rig;
+    rig.qualifyB();
+    check(!rig.roaming.startPlan(rig.roamId()).value("ok").toBool() && !rig.roaming.transactionActive()
+              && rig.ended == QStringList{QStringLiteral("cancelled")} && !rig.roaming.recoveryNotice().isEmpty(),
+          "plan: asked while the session still stops, the roam ends");
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    check(!rig.roaming.startPlan(rig.roamId()).value("ok").toBool() && rig.ended.size() == 1,
+          "plan: and stays ended at Idle");
+}
+
+/* A session the app took up without starting never arms, and says so; a manual tune while already tuned by hand shows
+ * the operator hold, not a pending change. */
+void
+check_executor_adopted_and_retune() {
+    Rig rig;
+    rig.host.setPhase(dsd_qt::DecoderHost::Running);
+    rig.roaming.noteSessionAdopted("saved");
+    check(rig.roaming.state() == SiteRoaming::Idle && rig.roaming.reason() == SiteRoaming::SessionAdopted
+              && rig.roaming.statusText() == QStringLiteral("Start listening again to use GPS roaming")
+              && rig.host.streamStarts == 0,
+          "adopted: idle, with its own reason, and no location");
+    rig.fix(10.49, 20.0);
+    check(rig.switches.isEmpty(), "adopted: never arms");
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    check(rig.roaming.reason() == SiteRoaming::NoSession, "adopted: ended, nothing runs");
+    rig.host.setPhase(dsd_qt::DecoderHost::Running);
+    rig.roaming.noteSessionAdopted("scan");
+    check(rig.roaming.reason() == SiteRoaming::NoSession, "adopted: only a saved session says so");
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+
+    rig.running();
+    rig.set("operatorTuned", true);
+    rig.roaming.noteOperatorIntent("manualTune");
+    check(rig.roaming.reason() == SiteRoaming::OperatorTune
+              && rig.roaming.statusText() == QStringLiteral("Paused while you tune by hand"),
+          "retune: tuned by hand already, a further tune shows the operator hold");
+}
+
+/* The 1 s pass runs only while roaming judges a session or a switch is under way. */
+void
+check_executor_timer() {
+    Rig rig;
+    const QTimer* timer = rig.roaming.findChild<QTimer*>(QStringLiteral("siteRoamingTick"));
+    check(timer != nullptr && !timer->isActive(), "timer: idle with nothing running");
+    rig.running();
+    check(timer->isActive(), "timer: armed (waiting for a fix)");
+    rig.set("heldTg", 3);
+    check(timer->isActive(), "timer: paused");
+    rig.set("heldTg", 0);
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    check(!timer->isActive(), "timer: stops once nothing runs");
+    rig.qualifyB();
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    check(timer->isActive() && rig.roaming.transactionActive(), "timer: runs through a switch");
+    rig.prefs.setRoamingEnabled(false);
+    check(!timer->isActive(), "timer: off");
+}
+
+/* The site the user switches to from a session roaming follows holds roaming until Resume roaming or another start; a
+ * pick with nothing running, or one given up, holds nothing. */
 void
 check_executor_manual_hold() {
     Rig rig;
@@ -1257,10 +1319,19 @@ check_executor_manual_hold() {
     rig.roaming.performAction();
     check(rig.roaming.state() == SiteRoaming::Candidate || rig.roaming.state() == SiteRoaming::Paused,
           "hold: Resume roaming arms it");
+    rig.roaming.noteSiteChoice(rig.uids[2]);
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    rig.running(0);
+    check(rig.roaming.state() != SiteRoaming::Holding, "hold: only the chosen site's own start holds");
     rig.host.setPhase(dsd_qt::DecoderHost::Idle);
     rig.roaming.noteSiteChoice(rig.uids[1]);
+    rig.running(1);
+    check(rig.roaming.state() != SiteRoaming::Holding, "hold: a pick with nothing running is a start like any other");
+    rig.roaming.noteSiteChoice(rig.uids[2]);
+    rig.roaming.forgetSiteChoice();
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
     rig.running(2);
-    check(rig.roaming.state() != SiteRoaming::Holding, "hold: only the chosen site's own start holds");
+    check(rig.roaming.state() != SiteRoaming::Holding, "hold: a pick whose start never happened holds nothing later");
 }
 
 } // namespace
@@ -1298,6 +1369,9 @@ main(int argc, char** argv) {
     check_executor_foreground();
     check_executor_starting();
     check_executor_manual_hold();
+    check_executor_plan_out_of_turn();
+    check_executor_adopted_and_retune();
+    check_executor_timer();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

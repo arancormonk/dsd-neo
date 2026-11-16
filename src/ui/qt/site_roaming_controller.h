@@ -121,6 +121,8 @@ class SiteRoaming : public QObject {
         NoReason,
         /** Idle: nothing is listening. */
         NoSession,
+        /** Idle: the session was running before the app opened (a recreated window took it up); it never arms. */
+        SessionAdopted,
         /** Idle: the session is starting (before the engine's post-initialization edge). */
         SessionStarting,
         /** Idle: the session is not a saved site (a scan list, Explore, Signal search, an operator's Explore). */
@@ -221,8 +223,19 @@ class SiteRoaming : public QObject {
     /** @brief Hide the recovery notice. */
     Q_INVOKABLE void clearRecoveryNotice();
 
-    /** @brief The user picked saved site @p uid in the site chooser: its session, once started, holds roaming. */
+    /**
+     * @brief The user picked saved site @p uid in the site chooser while a session roaming can follow runs (Stop and
+     * switch, Listen to nearest, a row that restarts): the session that pick starts holds roaming. A pick with
+     * nothing running is a new start like any other and holds nothing.
+     */
     Q_INVOKABLE void noteSiteChoice(const QString& uid);
+    /** @brief The start a site choice was noted for did not happen (refused, or its restart given up). */
+    Q_INVOKABLE void forgetSiteChoice();
+    /**
+     * @brief Main took up a session of @p kind it did not start (the service outlived the window). It never arms:
+     * its stop generation and initialization edge were never seen. A saved one idles with SessionAdopted.
+     */
+    Q_INVOKABLE void noteSessionAdopted(const QString& kind);
     /**
      * @brief The host accepted a start of @p kind ("saved", "scan", "explore") naming @p uid: a new session. @p roamId
      * is the roam the start belongs to, 0 for any other start (which cancels a roam under way).
@@ -379,7 +392,7 @@ class SiteRoaming : public QObject {
     SavedSystemsModel* m_systems = nullptr;
     QPointer<DecoderHost> m_host;
     std::function<qint64()> m_clock;
-    QTimer m_timer;
+    QTimer m_timer{this};
 
     SiteRoamingCore m_core;
     CallWaitClock m_callWait;
@@ -387,6 +400,8 @@ class SiteRoaming : public QObject {
     QVariantMap m_factsMap;
     Session m_session;
     bool m_sessionLive = false;
+    /* A saved session Main took up without starting it (noteSessionAdopted()), until it ends or another starts. */
+    bool m_adoptedLive = false;
     QString m_pendingChoiceUid;
     Intent m_holdIntent;
     Intent m_tunerIntent;
