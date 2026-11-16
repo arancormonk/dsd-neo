@@ -209,6 +209,29 @@ private fun foreignAndDestroyedAnswers() {
     answer(next, -1, -1)
 }
 
+// A prompt that cannot open (requestPermissions throws, as for an activity that is finishing) answers every waiter
+// as interrupted at once: a one-shot request ends cancelled, the feed is left as it was, and the next ask prompts.
+private fun throwingPromptSettlesTheWaiters() {
+    val failing = noAccess().apply { requestFailure = IllegalStateException("finishing") }
+    startFeed(failing)
+    val generation = feed().optLong("generation")
+    LocationSupport.requestSiteLocation(failing, 800)
+    Handler.drain()
+    val cancelled = JSONObject(LocationSupport.pollResult())
+    check(cancelled.optLong("id") == 800L && cancelled.optBoolean("cancelled")) { "the one-shot request ends cancelled" }
+    askRoaming(failing)
+    check(failing.permissionRequests == 0 && feed().optLong("generation") == generation) {
+        "the feed is left as it was"
+    }
+    failing.requestFailure = null
+    askRoaming(failing)
+    check(failing.permissionRequests == 1) { "a prompt that never opened does not block the next" }
+    failing.grant(coarse = true, fine = true)
+    answer(failing, 0, 0)
+    check(feed().optString("state") == "ok") { "and its answer reaches the feed" }
+    stopFeed()
+}
+
 // Precise allowed in Settings while the feed waited: the ask prompts nothing and the feed registers now.
 private fun alreadyPrecise() {
     val activity = noAccess()
@@ -247,6 +270,10 @@ fun main() {
     sharedPrompt()
     foreignAndDestroyedAnswers()
     alreadyPrecise()
+    throwingPromptSettlesTheWaiters()
     settingsScreens()
-    println("PASS: location prompt codes, precise and approximate answers, denial, cancellation, disable, sharing, Settings")
+    println(
+        "PASS: location prompt codes, precise and approximate answers, denial, cancellation, disable, sharing, " +
+            "a prompt that cannot open, Settings"
+    )
 }

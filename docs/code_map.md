@@ -17213,9 +17213,11 @@ advanced, subscription withdrawn and listeners removed, all on the main thread, 
 app is not visible) and `onDestroy()` in `onDestroy`. `LocationPermission.kt` owns the app's one runtime location prompt
 (request code 4303) for `LocationSupport` (`ONE_SHOT`) and the stream (`ROAMING`): an asker that arrives while a prompt
 is open waits for its answer (one place per asker; asking again replaces its wait), every waiter is answered inside
-`onRequestPermissionsResult()` itself (no wait for `onStart`), an answer for another activity or for a prompt
-forgotten in `onDestroy(activity)` is dropped, and every prompt lists coarse first so `grants[0]` is coarse whoever
-opened it. `requestRoamingPermission(activity, id)` asks for coarse and fine even when coarse is granted (Android's
+`onRequestPermissionsResult()` itself (no wait for `onStart`), a prompt that cannot open (`requestPermissions()` throws)
+answers every waiter at once as interrupted (empty grants) and leaves none open, an answer for another activity or for a
+prompt forgotten in `onDestroy(activity)` is dropped, and every prompt lists coarse first so `grants[0]` is coarse
+whoever opened it. `requestRoamingPermission(activity, id)` asks for coarse and fine even when coarse is granted
+(Android's
 upgrade dialog), asks nothing when fine is granted, and asks once per id (each user action takes a new id); its answer
 re-registers the current subscription only if that start is still the newest call, so a stop during the prompt
 starts nothing, and empty grants (an interrupted prompt) change nothing. `openAppLocationSettings(activity)` (App info,

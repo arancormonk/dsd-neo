@@ -46,7 +46,14 @@ object LocationPermission {
         if (promptActivity != null) return promptPermissions
         promptActivity = activity
         promptPermissions = permissions.toList()
-        activity.requestPermissions(permissions, REQUEST_CODE)
+        try {
+            activity.requestPermissions(permissions, REQUEST_CODE)
+        } catch (_: Exception) {
+            // No prompt opened (an activity that is finishing, say): every waiter gets an interrupted prompt's empty
+            // answer now, and the next ask opens a prompt, rather than all waiting for an answer that never comes.
+            promptActivity = null
+            settle(activity, IntArray(0))
+        }
         return promptPermissions
     }
 
@@ -85,10 +92,15 @@ object LocationPermission {
         if (code != REQUEST_CODE) return false
         if (promptActivity !== activity) return true
         promptActivity = null
+        settle(activity, grants)
+        return true
+    }
+
+    /** Answers every waiter with [grants] (empty: the prompt was interrupted, which each reads as cancelled). */
+    private fun settle(activity: Activity, grants: IntArray) {
         val answered = waiters.values.toList()
         waiters.clear()
         answered.forEach { it(activity, grants) }
-        return true
     }
 
     /** Forgets [activity]'s open prompt and who waits for it. */
