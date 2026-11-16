@@ -203,6 +203,11 @@ class SavedSystemsModel : public QAbstractListModel {
     /** @brief The rows of @p row's site group (groupKey()), in row order; empty for a row in no group. nearestRow()
      *         and siteCount() read the same group. */
     Q_INVOKABLE QVariantList siblingRows(int row) const;
+    /** @brief The rows whose groupKey() is @p key, in row order; empty for an empty key. */
+    QVariantList groupRows(const QString& key) const;
+    /** @brief Whether GPS roaming (#786) may start row @p row, read from its own fields (site_roamable()); false out of
+     *         range. Roaming also needs the app-wide extra arguments to be empty, which this does not read. */
+    Q_INVOKABLE bool roamable(int row) const;
     Q_INVOKABLE int nearestRow(int row, double lat, double lon) const;
     Q_INVOKABLE int siteCount(int row) const;
     Q_INVOKABLE double distanceKm(int row, double lat, double lon) const;

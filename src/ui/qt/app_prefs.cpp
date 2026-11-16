@@ -124,6 +124,11 @@ enum Key {
     // The order the saved-systems list is shown in. Device-local: it follows how this device's screen was arranged,
     // like kListenSection.
     kSystemsSort,
+    // Issue #786: GPS site roaming. The switch is device-local (whether this device may use its location for it); the
+    // two distances, in km, are portable with the other listening choices.
+    kRoamingEnabled,
+    kRoamingMaxDistanceKm,
+    kRoamingMarginKm,
     kKeyCount
 };
 
@@ -177,6 +182,9 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"listen/section", false},
     {"ui/chooseFilesInApp", false},
     {"listen/systemsSort", false},
+    {"roaming/enabled", false},
+    {"roaming/maxDistanceKm", true},
+    {"roaming/marginKm", true},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -204,6 +212,75 @@ as_scalar(const QVariant& stored) {
  */
 
 constexpr double kDefaultHangtimeSec = 2.0;
+
+/*
+ * Issue #786: GPS roaming's distances, stored in km. Each unit offers its own choices; a value offered in either unit
+ * is kept as it was picked (62 mi stays 99.779… km in metric), any other reads as the default of the unit shown now.
+ */
+constexpr double kKmPerMile = 1.609344;
+constexpr double kRoamingMatchKm = 1e-6;
+
+struct RoamingChoices {
+    QList<double> km;
+    QList<double> miles;
+    double kmDefault = 0;
+    double milesDefault = 0;
+};
+
+const RoamingChoices&
+roaming_max_choices() {
+    static const RoamingChoices choices{{25, 50, 100, 200}, {15, 30, 60, 125}, 100, 60};
+    return choices;
+}
+
+const RoamingChoices&
+roaming_margin_choices() {
+    static const RoamingChoices choices{{1, 2, 5}, {0.5, 1, 3}, 2, 1};
+    return choices;
+}
+
+/** @brief The choice @p km is, in km, from either unit's list; false when it is none of them. */
+bool
+roaming_offered(const RoamingChoices& choices, double km, double* offered) {
+    if (!std::isfinite(km)) {
+        return false;
+    }
+    const auto inKm = [km](double value) { return std::fabs(value - km) < kRoamingMatchKm; };
+    const auto km_it = std::find_if(choices.km.cbegin(), choices.km.cend(), inKm);
+    if (km_it != choices.km.cend()) {
+        *offered = *km_it;
+        return true;
+    }
+    const auto inMiles = [km](double value) { return std::fabs(value * kKmPerMile - km) < kRoamingMatchKm; };
+    const auto mi_it = std::find_if(choices.miles.cbegin(), choices.miles.cend(), inMiles);
+    if (mi_it != choices.miles.cend()) {
+        *offered = *mi_it * kKmPerMile;
+        return true;
+    }
+    return false;
+}
+
+/** @brief The distance @p stored holds when it is an offered choice, else the default in the unit shown. */
+double
+stored_roaming_km(const RoamingChoices& choices, const QVariant& stored, bool metric) {
+    bool ok = false;
+    const double km = stored.toDouble(&ok);
+    double offered = 0;
+    if (stored.isValid() && ok && roaming_offered(choices, km, &offered)) {
+        return offered;
+    }
+    return metric ? choices.kmDefault : choices.milesDefault * kKmPerMile;
+}
+
+/** @brief The choices of the unit shown, in km. */
+QVariantList
+roaming_unit_choices(const RoamingChoices& choices, bool metric) {
+    QVariantList out;
+    for (const double value : metric ? choices.km : choices.miles) {
+        out.append(metric ? value : value * kKmPerMile);
+    }
+    return out;
+}
 
 /** @brief Finite seconds in the UI range, rounded to the displayed precision. */
 double
@@ -386,6 +463,8 @@ stored_int_differs(const QVariant& stored, int next) {
 } // namespace
 
 AppPrefs::AppPrefs(QObject* parent) : QObject(parent), m_settings() {
+    // A roaming distance never picked reads as the default of the unit shown, so the unit moves it.
+    connect(this, &AppPrefs::metricUnitsChanged, this, &AppPrefs::roamingDistancesChanged);
     m_locationExpiry.setSingleShot(true);
     connect(&m_locationExpiry, &QTimer::timeout, this, [this]() {
         armLocationExpiry(); // Re-arm if the wall clock moved backwards before the timer fired.
@@ -976,6 +1055,69 @@ AppPrefs::setSystemsSort(const QString& sort) {
     }
     m_settings.setValue(key_name(kSystemsSort), sort);
     Q_EMIT systemsSortChanged();
+}
+
+bool
+AppPrefs::roamingEnabled() const {
+    return m_settings.value(key_name(kRoamingEnabled), false).toBool();
+}
+
+void
+AppPrefs::setRoamingEnabled(bool on) {
+    if (on == roamingEnabled()) {
+        return;
+    }
+    m_settings.setValue(key_name(kRoamingEnabled), on);
+    Q_EMIT roamingEnabledChanged();
+}
+
+double
+AppPrefs::roamingMaxDistanceKm() const {
+    return stored_roaming_km(roaming_max_choices(), m_settings.value(key_name(kRoamingMaxDistanceKm)), metricUnits());
+}
+
+void
+AppPrefs::setRoamingMaxDistanceKm(double km) {
+    setRoamingKm(kRoamingMaxDistanceKm, km);
+}
+
+double
+AppPrefs::roamingMarginKm() const {
+    return stored_roaming_km(roaming_margin_choices(), m_settings.value(key_name(kRoamingMarginKm)), metricUnits());
+}
+
+void
+AppPrefs::setRoamingMarginKm(double km) {
+    setRoamingKm(kRoamingMarginKm, km);
+}
+
+void
+AppPrefs::setRoamingKm(int key, double km) {
+    const RoamingChoices& choices = key == kRoamingMarginKm ? roaming_margin_choices() : roaming_max_choices();
+    double offered = 0;
+    if (!roaming_offered(choices, km, &offered)) {
+        return;
+    }
+    // Compared with what is stored, not with what reads: picking the default writes it, so a later unit change keeps
+    // the value the user picked.
+    const QVariant stored = m_settings.value(key_name(static_cast<Key>(key)));
+    bool ok = false;
+    const double was = stored.toDouble(&ok);
+    if (stored.isValid() && ok && std::fabs(was - offered) < kRoamingMatchKm) {
+        return;
+    }
+    m_settings.setValue(key_name(static_cast<Key>(key)), offered);
+    Q_EMIT roamingDistancesChanged();
+}
+
+QVariantList
+AppPrefs::roamingMaxDistanceChoices() const {
+    return roaming_unit_choices(roaming_max_choices(), metricUnits());
+}
+
+QVariantList
+AppPrefs::roamingMarginChoices() const {
+    return roaming_unit_choices(roaming_margin_choices(), metricUnits());
 }
 
 bool

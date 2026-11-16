@@ -3,18 +3,33 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*
- * The site roaming decision core and the call wait cap, driven on a scripted clock. Distances are made up and
+ * The site roaming decision core and the call wait cap, driven on a scripted clock, then the executor (SiteRoaming)
+ * over a scripted host and the same kind of clock. Distances are made up and
  * generous; where a case needs a distance near the margin it measures it with site_distance_km itself, so the cases
  * hold for any accurate distance formula.
  */
+#include <QCoreApplication>
+#include <QList>
+#include <QObject>
+#include <QPair>
+#include <QSettings>
+#include <QString>
+#include <QStringList>
+#include <QVariant>
+#include <QVariantMap>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <string>
 #include <vector>
+#include "../test_support/qt_test_paths.h"
+#include "app_prefs.h"
+#include "decoder_host.h"
+#include "saved_systems_model.h"
 #include "site_groups.h"
 #include "site_roaming.h"
+#include "site_roaming_controller.h"
 
 namespace {
 
@@ -593,10 +608,650 @@ check_call_wait() {
     check(wait.busy(500002 + 2 * dsd_qt::kMaxCallWaitMs - 1, true) == CallWait::Expired, "wait: then expires");
 }
 
+// ---- The executor ----
+
+using dsd_qt::SiteRoaming;
+
+/* A host that does only what the executor asks, each call counted, every reading set by the case. A switch stop
+ * leaves it Stopping until the case says Idle, as Android's does. */
+class FakeHost : public dsd_qt::DecoderHost {
+  public:
+    SessionState phase = Idle;
+    qint64 generation = 0;
+    qint64 epochValue = 0;
+    bool superseded = false;
+    bool retireWins = true;
+    int switchStops = 0;
+    int retires = 0;
+    int streamStarts = 0;
+    int streamStops = 0;
+    QList<qint64> permissions;
+    QList<qint64> expectations;
+
+    bool
+    isRunning() const override {
+        return phase == Running;
+    }
+
+    QString
+    statusText() const override {
+        return QString();
+    }
+
+    bool
+    start(const QStringList& argv) override {
+        (void)argv;
+        setPhase(Starting);
+        return true;
+    }
+
+    bool
+    startWithStopExpectation(const QStringList& argv, qint64 expected) override {
+        expectations.append(expected);
+        return start(argv);
+    }
+
+    void
+    stop() override {
+        setPhase(Idle);
+    }
+
+    SessionState
+    sessionState() const override {
+        return phase;
+    }
+
+    bool
+    locationSupported() const override {
+        return true;
+    }
+
+    qint64
+    userStopGeneration() const override {
+        return generation;
+    }
+
+    qint64
+    foregroundEpoch() const override {
+        return epochValue;
+    }
+
+    bool
+    startSuperseded() const override {
+        return superseded;
+    }
+
+    void
+    stopForSwitch() override {
+        ++switchStops;
+        setPhase(Stopping);
+    }
+
+    bool
+    retireRoamAttempt() override {
+        ++retires;
+        if (retireWins) {
+            setPhase(Idle);
+        }
+        return retireWins;
+    }
+
+    void
+    startLocationStream() override {
+        ++streamStarts;
+    }
+
+    void
+    stopLocationStream() override {
+        ++streamStops;
+    }
+
+    void
+    requestRoamingPermission(qint64 id) override {
+        permissions.append(id);
+    }
+
+    void
+    setPhase(SessionState next) {
+        phase = next;
+        Q_EMIT sessionStateChanged();
+    }
+};
+
+/* Sites Hill (A), Lake (B) and Ridge (C) of one made-up system on one rtl_tcp receiver, where the core cases put A, B
+ * and C. The clock is the case's; a fix is stamped now. */
+struct Rig {
+    qint64 now = 1000000;
+    qint64 ns = 1;
+    dsd_qt::AppPrefs prefs;
+    dsd_qt::SavedSystemsModel systems;
+    FakeHost host;
+    SiteRoaming roaming{&prefs, &systems};
+    QStringList uids;
+    QList<QPair<qint64, QString>> switches;
+    QStringList ended;
+    QVariantMap readings;
+
+    Rig() {
+        QSettings stored;
+        for (const char* key : {"roaming/maxDistanceKm", "roaming/marginKm", "decode/extraArgs"}) {
+            stored.remove(QLatin1String(key));
+        }
+        prefs.setMetricUnits(true);
+        prefs.setRoamingEnabled(true);
+        while (systems.count() > 0 && systems.remove(0)) {}
+        const char* names[] = {"Hill", "Lake", "Ridge"};
+        const double lats[] = {10.0, 10.5, 10.5};
+        const double lons[] = {20.0, 20.0, 20.45};
+        for (int i = 0; i < 3; ++i) {
+            systems.add({{"name", QStringLiteral("Valley — %1").arg(QLatin1String(names[i]))},
+                         {"siteName", QLatin1String(names[i])},
+                         {"rrSid", 7},
+                         {"rrSiteId", 70 + i},
+                         {"trunking", true},
+                         {"sourceType", "rtltcp"},
+                         {"host", "127.0.0.1"},
+                         {"port", 1234},
+                         {"freqMhz", QString::number(851 + i)},
+                         {"siteLat", lats[i]},
+                         {"siteLon", lons[i]},
+                         {"hasSitePos", true}});
+            uids.append(systems.get(i).value("uid").toString());
+        }
+        roaming.setClock([this] { return now; });
+        roaming.setHost(&host);
+        QObject::connect(&roaming, &SiteRoaming::switchRequested, &roaming,
+                         [this](qint64 id, const QString& uid) { switches.append({id, uid}); });
+        QObject::connect(&roaming, &SiteRoaming::transactionEnded, &roaming, [this](qint64 id, const QString& outcome) {
+            (void)id;
+            ended.append(outcome);
+        });
+        readings = {{"savedUid", uids[0]},  {"trunking", true},  {"radioInput", true},
+                    {"replayInput", false}, {"scanKind", 0},     {"operatorTuned", false},
+                    {"heldTg", 0},          {"callBusy", false}, {"optionsKnown", true}};
+    }
+
+    ~Rig() {
+        roaming.setHost(nullptr);
+        prefs.setRoamingEnabled(false);
+        while (systems.count() > 0 && systems.remove(0)) {}
+    }
+
+    Rig(const Rig&) = delete;
+    Rig& operator=(const Rig&) = delete;
+
+    void
+    set(const char* key, const QVariant& value) {
+        readings[QLatin1String(key)] = value;
+        roaming.setFacts(readings);
+    }
+
+    /* Site @p index running as a saved session, past its initialization edge unless @p initialized is false. */
+    void
+    running(int index = 0, bool initialized = true) {
+        host.setPhase(dsd_qt::DecoderHost::Starting);
+        roaming.noteSessionStart("saved", uids[index], 0);
+        host.setPhase(dsd_qt::DecoderHost::Running);
+        set("savedUid", uids[index]);
+        if (initialized) {
+            roaming.noteSessionInitialized();
+        }
+    }
+
+    /* A new fix at @p lat, @p lon, @p after ms from the last moment, stamped then. */
+    void
+    fix(double lat, double lon, qint64 after = 0, double accuracy = 10) {
+        now += after;
+        ns += 1000;
+        Q_EMIT host.locationStreamUpdate({{"generation", 1},
+                                          {"state", "ok"},
+                                          {"hasFix", true},
+                                          {"provider", "gps"},
+                                          {"measurementNs", ns},
+                                          {"lat", lat},
+                                          {"lon", lon},
+                                          {"accuracyM", accuracy},
+                                          {"fixAtMs", now}});
+    }
+
+    /* The same measurement as the last fix, polled again (as a host may after its feed restarts). */
+    void
+    refix(double lat, double lon) {
+        Q_EMIT host.locationStreamUpdate({{"generation", 2},
+                                          {"state", "ok"},
+                                          {"hasFix", true},
+                                          {"provider", "gps"},
+                                          {"measurementNs", ns},
+                                          {"lat", lat},
+                                          {"lon", lon},
+                                          {"accuracyM", 10.0},
+                                          {"fixAtMs", now}});
+    }
+
+    void
+    nearB(qint64 after) {
+        fix(10.49, 20.0, after);
+    }
+
+    void
+    nearC(qint64 after) {
+        fix(10.5, 20.44, after);
+    }
+
+    void
+    tick(qint64 after) {
+        now += after;
+        roaming.tick();
+    }
+
+    /* Hill running, then three fixes near Lake over 20 s: the switch is due at the third. */
+    void
+    qualifyB() {
+        running();
+        nearB(0);
+        nearB(10000);
+        nearB(10000);
+    }
+
+    qint64
+    roamId() const {
+        return switches.isEmpty() ? 0 : switches.last().first;
+    }
+};
+
+/* Roaming arms only once the session passed its initialization edge, runs location only while armed, once per need,
+ * and idles or pauses with the reason. */
+void
+check_executor_arming() {
+    Rig rig;
+    check(rig.roaming.state() == SiteRoaming::Idle && rig.roaming.reason() == SiteRoaming::NoSession
+              && rig.host.streamStarts == 0,
+          "arming: nothing running is idle, with no location");
+    rig.running(0, false);
+    check(rig.roaming.reason() == SiteRoaming::SessionStarting && rig.host.streamStarts == 0,
+          "arming: not before the initialization edge");
+    rig.roaming.noteSessionInitialized();
+    check(rig.roaming.state() == SiteRoaming::Paused && rig.roaming.reason() == SiteRoaming::NoFix
+              && rig.host.streamStarts == 1 && rig.roaming.statusText() == QStringLiteral("Waiting for a location fix"),
+          "arming: after it, location starts and roaming waits for a fix");
+    rig.tick(1000);
+    rig.tick(1000);
+    rig.fix(10.0, 20.0);
+    check(rig.host.streamStarts == 1 && rig.roaming.state() == SiteRoaming::Following
+              && rig.roaming.currentUid() == rig.uids[0] && rig.roaming.currentDistanceKm() >= 0
+              && rig.roaming.currentDistanceKm() < 0.5,
+          "arming: location starts once, and a fix on the site follows it");
+    rig.set("heldTg", 5);
+    check(rig.roaming.reason() == SiteRoaming::TalkgroupHeld && rig.host.streamStops == 1,
+          "arming: a held talkgroup pauses it and stops location");
+    rig.set("heldTg", 0);
+    check(rig.host.streamStarts == 2, "arming: released, location starts again");
+    rig.set("scanKind", 2);
+    check(rig.roaming.state() == SiteRoaming::Idle && rig.roaming.reason() == SiteRoaming::Scanning, "arming: a scan");
+    rig.set("scanKind", 0);
+    rig.set("operatorTuned", true);
+    check(rig.roaming.reason() == SiteRoaming::OperatorTune, "arming: an operator hold pauses it");
+    rig.set("operatorTuned", false);
+    rig.set("savedUid", QString());
+    check(rig.roaming.reason() == SiteRoaming::NotSavedSite, "arming: a session that is no longer the saved site");
+    rig.set("savedUid", rig.uids[0]);
+    rig.prefs.setExtraArgs("-Z");
+    check(rig.roaming.state() == SiteRoaming::Idle && rig.roaming.reason() == SiteRoaming::GlobalExtraArgs
+              && rig.roaming.statusText()
+                     == QStringLiteral("GPS roaming is off while extra options are set in Settings"),
+          "arming: extra options in Settings idle it");
+    rig.prefs.setExtraArgs(QString());
+    rig.systems.update(1, {{"extraArgs", "-Y"}});
+    rig.systems.update(2, {{"trunking", false}});
+    check(rig.roaming.reason() == SiteRoaming::FewSites, "arming: fewer than two roamable sites");
+    rig.systems.update(1, {{"extraArgs", ""}});
+    check(rig.roaming.reason() == SiteRoaming::NoFix, "arming: two again (the fix went with the paused feed)");
+    rig.prefs.setRoamingEnabled(false);
+    check(rig.roaming.state() == SiteRoaming::Off && rig.host.streamStops >= 3, "arming: off stops location");
+    rig.roaming.setEnabledByUser(true);
+    rig.roaming.setEnabledByUser(true);
+    check(rig.host.permissions.size() == 2 && rig.host.permissions[0] != rig.host.permissions[1],
+          "arming: each switch-on by the user asks once, with a new request id");
+}
+
+/* Hill to Lake: one switch, at the third new fix that spans 20 s; the stop, then the start with the generation the
+ * session started under, then done once the destination initializes. */
+void
+check_executor_route() {
+    Rig rig;
+    rig.running();
+    rig.nearB(0);
+    check(rig.roaming.state() == SiteRoaming::Candidate && rig.roaming.candidateUid() == rig.uids[1]
+              && rig.roaming.statusText() == QStringLiteral("Lake is closer. Checking before switching"),
+          "route: the first fix makes Lake a candidate");
+    rig.nearB(10000);
+    for (int i = 0; i < 9; ++i) {
+        rig.tick(1000); // timer ticks add nothing
+    }
+    check(rig.switches.isEmpty() && rig.host.switchStops == 0, "route: no switch before the dwell");
+    rig.nearB(1000);
+    check(rig.switches.size() == 1 && rig.switches[0].second == rig.uids[1] && rig.host.switchStops == 1
+              && rig.roaming.state() == SiteRoaming::Switching && rig.roaming.transactionActive()
+              && rig.roaming.statusText() == QStringLiteral("Switching to Lake…"),
+          "route: the third fix spanning 20 s switches once");
+    const qint64 id = rig.roamId();
+    rig.tick(1000);
+    rig.nearB(1000);
+    check(rig.switches.size() == 1 && rig.host.switchStops == 1, "route: no second switch");
+    check(!rig.roaming.startPlan(id).value("ok").toBool() && rig.roaming.transactionActive(),
+          "route: no start while the session still stops, and the switch goes on");
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    const QVariantMap plan = rig.roaming.startPlan(id);
+    check(plan.value("ok").toBool() && plan.value("uid").toString() == rig.uids[1]
+              && plan.value("expectedStopGeneration").toLongLong() == 0,
+          "route: the plan starts Lake with the generation the session started under");
+    rig.roaming.noteStartResult(id, {{"ok", true}, {"started", true}, {"superseded", false}});
+    rig.host.setPhase(dsd_qt::DecoderHost::Starting);
+    rig.roaming.noteSessionStart("saved", rig.uids[1], id);
+    rig.host.setPhase(dsd_qt::DecoderHost::Running);
+    rig.set("savedUid", rig.uids[1]);
+    check(rig.roaming.transactionActive() && rig.ended.isEmpty(), "route: not done before initialization");
+    rig.roaming.noteSessionInitialized();
+    check(rig.ended == QStringList{QStringLiteral("done")} && !rig.roaming.transactionActive()
+              && rig.roaming.currentUid() == rig.uids[1] && rig.roaming.state() == SiteRoaming::Following
+              && rig.roaming.recoveryNotice().isEmpty(),
+          "route: done, following Lake");
+}
+
+/* A due switch waits for the followed call, at most 90 s of it, measured from when that destination's switch first
+ * found the call busy; a new destination waits its own 90 s. */
+void
+check_executor_call_wait() {
+    {
+        Rig rig;
+        rig.running();
+        rig.set("callBusy", true);
+        rig.nearB(0);
+        rig.nearB(10000);
+        rig.nearB(10000);
+        check(rig.roaming.state() == SiteRoaming::WaitingForCall && rig.roaming.destinationUid() == rig.uids[1]
+                  && rig.host.switchStops == 0
+                  && rig.roaming.statusText()
+                         == QStringLiteral("Waiting for this call to end before switching to Lake (up to 90 seconds)"),
+              "wait: a followed call holds the switch");
+        rig.set("callBusy", false);
+        check(rig.host.switchStops == 1, "wait: the call ending lets it go");
+    }
+    {
+        Rig rig;
+        rig.running();
+        rig.set("callBusy", true);
+        rig.nearB(0);
+        rig.nearB(10000);
+        rig.nearB(10000); // the wait starts here
+        for (int i = 0; i < 8; ++i) {
+            rig.nearB(10000);
+        }
+        rig.tick(9999); // 89.999 s
+        check(rig.host.switchStops == 0, "wait: still waiting just under 90 s");
+        rig.tick(1);
+        check(rig.host.switchStops == 1, "wait: 90 s of the call and it goes ahead mid-call");
+    }
+    {
+        Rig rig;
+        rig.running();
+        rig.set("callBusy", true);
+        rig.nearB(0);
+        rig.nearB(10000);
+        rig.nearB(10000); // Lake's wait starts at t=20 s
+        for (int i = 0; i < 4; ++i) {
+            rig.nearB(10000);
+        }
+        rig.nearC(10000); // t=70 s: Ridge is the candidate now
+        rig.nearC(10000);
+        rig.nearC(10000); // t=90 s: Ridge's switch is due, and its wait starts
+        check(rig.roaming.state() == SiteRoaming::WaitingForCall && rig.roaming.destinationUid() == rig.uids[2],
+              "wait: Ridge now");
+        for (int i = 0; i < 3; ++i) {
+            rig.nearC(10000);
+        }
+        rig.tick(5000); // t=125 s: 105 s after Lake's wait began, 35 s into Ridge's
+        check(rig.host.switchStops == 0, "wait: a new destination's wait starts over");
+        for (int i = 0; i < 5; ++i) {
+            rig.nearC(10000);
+        }
+        rig.tick(5000); // t=180 s
+        check(rig.host.switchStops == 1 && rig.switches.last().second == rig.uids[2],
+              "wait: Ridge goes after its own 90 s");
+    }
+}
+
+/* A foreground loss forgets the evidence and every fix seen; the last fix, polled again after it, adds nothing, and
+ * the feed is started again. */
+void
+check_executor_reset_drops_the_cached_fix() {
+    Rig rig;
+    rig.running();
+    rig.nearB(0);
+    rig.nearB(10000);
+    check(rig.roaming.state() == SiteRoaming::Candidate, "reset: two fixes, a candidate");
+    rig.host.epochValue = 1;
+    rig.tick(500);
+    check(rig.roaming.state() == SiteRoaming::Paused && rig.roaming.reason() == SiteRoaming::NoFix
+              && rig.host.streamStarts == 2,
+          "reset: the candidate goes, the cached fix is not fed again, and the feed restarts");
+    rig.refix(10.49, 20.0);
+    check(rig.roaming.reason() == SiteRoaming::NoFix, "reset: the same fix polled again counts for nothing");
+    rig.nearB(9500);
+    rig.nearB(10000);
+    check(rig.host.switchStops == 0, "reset: two new fixes are not three");
+    rig.nearB(10000);
+    check(rig.host.switchStops == 1, "reset: the third new fix over 20 s switches");
+}
+
+/* An operator command blocks roaming until the decoder shows its outcome, however long that takes; a release
+ * supersedes a hold that never applied; a manual tune that applies pauses it. */
+void
+check_executor_barrier() {
+    Rig rig;
+    rig.running();
+    rig.nearB(0);
+    rig.roaming.noteOperatorIntent("hold");
+    check(rig.roaming.reason() == SiteRoaming::PendingChange
+              && rig.roaming.statusText() == QStringLiteral("Waiting for your last change to take effect"),
+          "barrier: a queued hold blocks");
+    for (int i = 0; i < 5; ++i) {
+        rig.nearB(10000);
+    }
+    check(rig.host.switchStops == 0, "barrier: no switch past a full dwell while the hold waits");
+    rig.prefs.setRoamingEnabled(false);
+    rig.prefs.setRoamingEnabled(true);
+    for (int i = 0; i < 4; ++i) {
+        rig.nearB(10000);
+    }
+    check(rig.host.switchStops == 0 && rig.roaming.reason() == SiteRoaming::PendingChange,
+          "barrier: switching roaming off and on keeps the session's pending command");
+    rig.roaming.noteOperatorIntent("release");
+    check(rig.roaming.reason() == SiteRoaming::NoFix && rig.host.streamStarts == 2,
+          "barrier: a release supersedes the hold that never applied; location starts again");
+    rig.nearB(10000);
+    rig.nearB(10000);
+    check(rig.host.switchStops == 0 && rig.roaming.state() == SiteRoaming::Candidate,
+          "barrier: and the dwell starts over");
+    rig.nearB(10000);
+    check(rig.host.switchStops == 1, "barrier: then the switch");
+
+    Rig tune;
+    tune.running();
+    tune.nearB(0);
+    tune.roaming.noteOperatorIntent("manualTune");
+    for (int i = 0; i < 4; ++i) {
+        tune.nearB(10000);
+    }
+    check(tune.host.switchStops == 0 && tune.roaming.reason() == SiteRoaming::PendingChange,
+          "barrier: a manual tune not shown yet blocks past a full dwell");
+    tune.set("operatorTuned", true);
+    check(tune.roaming.reason() == SiteRoaming::OperatorTune, "barrier: once it applies, the operator hold pauses");
+    tune.set("operatorTuned", false);
+    tune.roaming.noteOperatorIntent("trunkingOff");
+    tune.set("trunking", false);
+    check(tune.roaming.reason() == SiteRoaming::NotTrunking, "barrier: trunking turned off applies and pauses");
+}
+
+/* A user stop moves the generation: seen when a candidate begins to qualify it ends roaming for the session; seen at
+ * the start it leaves the session stopped, with no notice. */
+void
+check_executor_generation() {
+    {
+        Rig rig;
+        rig.running();
+        rig.host.generation = 1; // a Stop the app has not shown yet
+        rig.nearB(0);
+        check(rig.roaming.state() == SiteRoaming::Idle && rig.roaming.reason() == SiteRoaming::NoSession,
+              "generation: read again as the candidate begins to qualify, it ends roaming for the session at once");
+        rig.nearB(10000);
+        rig.nearB(10000);
+        check(rig.switches.isEmpty() && rig.roaming.reason() == SiteRoaming::NoSession,
+              "generation: a stop before qualification begins is never absorbed");
+    }
+    {
+        Rig rig;
+        rig.qualifyB();
+        rig.host.generation = 1; // during Stopping, no new lifecycle edge
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        check(!rig.roaming.startPlan(rig.roamId()).value("ok").toBool()
+                  && rig.ended == QStringList{QStringLiteral("cancelled")} && rig.roaming.recoveryNotice().isEmpty(),
+              "generation: a stop during the switch's stop starts nothing, silently");
+    }
+    {
+        Rig rig;
+        rig.qualifyB();
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        check(rig.roaming.startPlan(rig.roamId()).value("ok").toBool(), "generation: the plan");
+        rig.roaming.noteStartResult(rig.roamId(), {{"ok", true}, {"started", false}, {"superseded", true}});
+        check(rig.ended == QStringList{QStringLiteral("cancelled")} && rig.roaming.recoveryNotice().isEmpty()
+                  && rig.roaming.reason() == SiteRoaming::NoSession,
+              "generation: refused superseded after the last read: stopped, no notice, no failure");
+    }
+}
+
+/* A foreground loss cancels a switch the host does not own yet; once the old session was told to stop, Home names the
+ * site it left. */
+void
+check_executor_foreground() {
+    {
+        Rig rig;
+        rig.running();
+        rig.set("callBusy", true);
+        rig.nearB(0);
+        rig.nearB(10000);
+        rig.nearB(10000);
+        rig.host.epochValue = 1;
+        rig.set("callBusy", false);
+        check(rig.host.switchStops == 0 && rig.ended == QStringList{QStringLiteral("cancelled")}
+                  && rig.roaming.recoveryNotice().isEmpty(),
+              "foreground: waiting for a call, the switch goes and the session stays");
+    }
+    {
+        Rig rig;
+        rig.qualifyB();
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        rig.host.epochValue = 1; // the queued start runs before the first resumed tick
+        check(!rig.roaming.startPlan(rig.roamId()).value("ok").toBool()
+                  && rig.roaming.recoveryNotice()
+                         == QStringLiteral("Roaming did not switch to Lake. Listening stopped.")
+                  && rig.roaming.recoveryActionText() == QStringLiteral("Listen to Hill")
+                  && rig.roaming.recoveryUid() == rig.uids[0],
+              "foreground: after the stop, nothing starts and Home names the site left");
+        rig.running(2);
+        check(rig.roaming.recoveryNotice().isEmpty(), "foreground: the next start clears the notice");
+    }
+}
+
+/* The destination's start: a disable retires it (stopped, with the notice) unless it already committed (it runs);
+ * an end with no initialization is refused; a supersede is the user's stop. */
+void
+check_executor_starting() {
+    const auto handOver = [](Rig& rig) {
+        rig.qualifyB();
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        rig.roaming.startPlan(rig.roamId());
+        rig.roaming.noteStartResult(rig.roamId(), {{"ok", true}, {"started", true}});
+        rig.host.setPhase(dsd_qt::DecoderHost::Starting);
+        rig.roaming.noteSessionStart("saved", rig.uids[1], rig.roamId());
+    };
+    {
+        Rig rig;
+        handOver(rig);
+        rig.prefs.setRoamingEnabled(false);
+        check(rig.host.retires == 1 && rig.ended == QStringList{QStringLiteral("cancelled")}
+                  && rig.host.phase == dsd_qt::DecoderHost::Idle && !rig.roaming.recoveryNotice().isEmpty(),
+              "starting: disabled while it configures: retired, stopped, the notice");
+    }
+    {
+        Rig rig;
+        handOver(rig);
+        rig.host.retireWins = false;
+        rig.host.setPhase(dsd_qt::DecoderHost::Running);
+        rig.prefs.setRoamingEnabled(false);
+        check(rig.host.retires == 1 && rig.ended == QStringList{QStringLiteral("done")}
+                  && rig.roaming.recoveryNotice().isEmpty() && rig.roaming.state() == SiteRoaming::Off,
+              "starting: committed already: Lake runs, no notice, roaming stays off");
+    }
+    {
+        Rig rig;
+        handOver(rig);
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle); // a bootstrap that exits, never initialized
+        check(rig.ended == QStringList{QStringLiteral("refused")} && rig.roaming.reason() == SiteRoaming::SwitchFailed
+                  && rig.roaming.statusText() == QStringLiteral("Could not switch to Lake")
+                  && rig.roaming.recoveryNotice()
+                         == QStringLiteral("Roaming did not switch to Lake. Listening stopped."),
+              "starting: idle without initialization is refused, with the notice");
+    }
+    {
+        Rig rig;
+        handOver(rig);
+        rig.host.superseded = true;
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        check(rig.ended == QStringList{QStringLiteral("cancelled")} && rig.roaming.recoveryNotice().isEmpty()
+                  && rig.roaming.reason() == SiteRoaming::NoSession,
+              "starting: superseded while it configured is the user's stop");
+    }
+    {
+        Rig rig;
+        rig.qualifyB();
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        rig.roaming.startPlan(rig.roamId());
+        rig.roaming.noteStartResult(rig.roamId(), {{"ok", false}, {"error", "frequency"}});
+        check(rig.ended == QStringList{QStringLiteral("refused")} && rig.roaming.reason() == SiteRoaming::SwitchFailed
+                  && rig.roaming.recoveryNotice().isEmpty(),
+              "starting: a start the build refused pauses roaming; the failure card says why");
+    }
+}
+
+/* The site the user picks holds roaming until Resume roaming or another start. */
+void
+check_executor_manual_hold() {
+    Rig rig;
+    rig.running();
+    rig.roaming.noteSiteChoice(rig.uids[1]);
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    rig.running(1);
+    check(rig.roaming.state() == SiteRoaming::Holding && rig.roaming.action() == SiteRoaming::ResumeRoaming
+              && rig.roaming.statusText() == QStringLiteral("Holding the site you chose"),
+          "hold: the site chosen holds roaming");
+    rig.fix(10.0, 20.0);
+    rig.fix(10.0, 20.0, 10000);
+    rig.fix(10.0, 20.0, 10000);
+    check(rig.switches.isEmpty(), "hold: no switch while held");
+    rig.roaming.performAction();
+    check(rig.roaming.state() == SiteRoaming::Candidate || rig.roaming.state() == SiteRoaming::Paused,
+          "hold: Resume roaming arms it");
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    rig.roaming.noteSiteChoice(rig.uids[1]);
+    rig.running(2);
+    check(rig.roaming.state() != SiteRoaming::Holding, "hold: only the chosen site's own start holds");
+}
+
 } // namespace
 
 int
-main() {
+main(int argc, char** argv) {
     check_route();
     check_dwell_needs_span_and_count();
     check_cluster_then_silence();
@@ -614,6 +1269,20 @@ main() {
     check_future_fix();
     check_invalid_settings();
     check_call_wait();
+
+    QCoreApplication app(argc, argv);
+    QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
+    QCoreApplication::setApplicationName(QStringLiteral("site-roaming-%1").arg(QCoreApplication::applicationPid()));
+    dsd_test_qt_isolate_paths();
+    check_executor_arming();
+    check_executor_route();
+    check_executor_call_wait();
+    check_executor_reset_drops_the_cached_fix();
+    check_executor_barrier();
+    check_executor_generation();
+    check_executor_foreground();
+    check_executor_starting();
+    check_executor_manual_hold();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

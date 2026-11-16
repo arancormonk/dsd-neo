@@ -5047,18 +5047,32 @@ if(DSD_ENABLE_QT_UI)
     dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_site_groups)
     add_test(NAME UI_QT_SITE_GROUPS COMMAND dsd-neo_test_ui_qt_site_groups)
 
-    # #786 site roaming: the decision core and the call wait cap on a scripted clock.
+    # #786 site roaming: the decision core, the call wait cap and the executor (arming, the switch transaction, the
+    # operator-intent barrier) on a scripted clock and host.
     add_executable(
         dsd-neo_test_ui_qt_site_roaming
         ui/test_ui_qt_site_roaming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_site_roaming
-        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
     )
-    target_link_libraries(dsd-neo_test_ui_qt_site_roaming PRIVATE Qt6::Core)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_site_roaming
+        PRIVATE Qt6::Gui Qt6::Qml dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
+    )
     target_compile_definitions(
         dsd-neo_test_ui_qt_site_roaming
         PRIVATE QT_NO_KEYWORDS

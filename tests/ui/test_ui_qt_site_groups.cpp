@@ -189,6 +189,53 @@ check_geodesy() {
           "WGS84 orders the nearer site first");
 }
 
+/* #786: a row GPS roaming may start is a grouped site that trunks, on a receiver it can retune, with no extra options
+ * of its own; the model answers the same for its rows, and nothing else (the app-wide options are the caller's). */
+void
+check_roamable() {
+    using dsd_qt::site_roamable;
+    const QVariantMap base{{"name", "Valley — Hill"}, {"rrSid", 7},          {"rrSiteId", 70},
+                           {"trunking", true},        {"sourceType", "usb"}, {"freqMhz", "851.0125"}};
+    check(site_roamable(base), "roamable: a grouped trunking site on an RTL-SDR");
+    for (const char* source : {"rtltcp", "airspy", "soapy"}) {
+        QVariantMap row = base;
+        row["sourceType"] = source;
+        check(site_roamable(row), "roamable: rtl_tcp, Airspy and SoapySDR retune too");
+    }
+    for (const char* source : {"tcp", "udp", "file", ""}) {
+        QVariantMap row = base;
+        row["sourceType"] = source;
+        check(!site_roamable(row), "roamable: network audio, a file or a replay cannot retune");
+    }
+    QVariantMap row = base;
+    row["trunking"] = false;
+    check(!site_roamable(row), "roamable: trunking off");
+    row = base;
+    row["extraArgs"] = "-i rtl:0:851.0125";
+    check(!site_roamable(row), "roamable: any extra option of its own");
+    row["extraArgs"] = "  ";
+    check(site_roamable(row), "roamable: blank extra options are none");
+    row = base;
+    row["rrSiteId"] = 0;
+    check(!site_roamable(row), "roamable: a row in no site group");
+    row = base;
+    row["rrSid"] = 0;
+    check(!site_roamable(row), "roamable: no RadioReference system");
+
+    dsd_qt::SavedSystemsModel model;
+    while (model.count() > 0 && model.remove(0)) {}
+    model.add(base);
+    QVariantMap other = base;
+    other["rrSiteId"] = 71;
+    other["extraArgs"] = "-Y";
+    model.add(other);
+    check(model.roamable(0) && !model.roamable(1), "roamable: the model reads each row's own fields");
+    check(!model.roamable(-1) && !model.roamable(2), "roamable: out of range");
+    check(model.groupRows(model.groupKey(0)) == QVariantList({0, 1}) && model.groupRows(QString()).isEmpty(),
+          "groupRows: the rows of a key, none for no key");
+    while (model.count() > 0 && model.remove(0)) {}
+}
+
 } // namespace
 
 int
@@ -249,6 +296,7 @@ main(int argc, char** argv) {
 
     check_receiver_groups();
     check_keys_and_titles();
+    check_roamable();
     QDir(dir).removeRecursively();
     return g_failures ? 1 : 0;
 }

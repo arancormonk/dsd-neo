@@ -14793,6 +14793,32 @@ Qt Quick frontend (`src/ui/qt`):
   busy also needs a slot's call line `ACTIVE`, and the hangtime after an XPT call reads not busy. GPS site roaming
   holds a switch while it reads true; the wait cap lives with the roaming verdict. Tests: `UI_QT_METRICS_MODEL`
   (`test_call_busy_follows_the_voice_channel()`), `CORE_OPTS_TUNED_FREQ`.
+- GPS site roaming executor (issue #786, `site_roaming_controller.{h,cpp}`, context property `siteRoaming`, class
+  `SiteRoaming`): decides with `SiteRoamingCore` (`site_roaming.{h,cpp}`) and owns the one roam transaction there can
+  be (`WaitingForCall → Stopping → WaitingForUsb → Starting`, then done, cancelled or refused). It arms only for a
+  session Main told it was started as a saved site (`noteSessionStart()`) and that passed the engine's
+  post-initialization edge (`noteSessionInitialized()`), whose row is roamable (`site_roamable()` in `site_groups`,
+  `SavedSystemsModel::roamable(row)`: grouped, trunking, an RTL-SDR, rtl_tcp, Airspy or SoapySDR receiver, no extra
+  options of its own) in a group with two or more roamable rows, with no extra options in Settings, and whose decoder
+  snapshot (`facts`, which Main binds to `metrics`) shows trunking, a tunable input, no scan, no operator hold and no
+  held talkgroup. The location feed runs only while armed. Main's start path carries out a switch: `switchRequested()`
+  (Main records `pendingRestart.kind == "roam"`), `DecoderHost::stopForSwitch()`, then at Idle `startPlan()` (the
+  checks: the foreground epoch and user stop generation read from the host now, the verdict derived again, the
+  destination still a roamable, unavoided site of the group captured at the session's start), `noteWaitingForUsb()` /
+  `noteUsbDenied()` and `noteStartResult()`. The destination's start carries the generation read when the session
+  started (and read again when a candidate begins to qualify), so a user stop the app has not shown yet is never
+  absorbed. A cancel once the start is handed over retires the host's attempt (`retireRoamAttempt()`); a switch cancelled
+  after the session it left stopped, other than by the user's own action, leaves `recoveryNotice` for Home. A foreground
+  loss (`foregroundEpoch()` moved) cancels a switch the host does not own yet and resets the core; a fix polled again
+  after it is never fed. Every accepted command that changes what the session follows
+  (`CommandBridge::operatorIntentSubmitted(kind)`: Hold TG and its release, a manual tune, a tuner release, trunking on
+  or off) blocks roaming, with no timeout, until the snapshot shows its outcome or the session ends; the intents belong
+  to the session, so switching roaming off and on keeps them. A site picked in the chooser (`noteSiteChoice()`) holds
+  roaming on its session until `resumeRoaming()`. Prefs (`AppPrefs`): `roaming/enabled` (device-local),
+  `roaming/maxDistanceKm` and `roaming/marginKm` (portable, in km; a choice of either unit, else the default of the unit
+  shown: 100 km / 2 km or 60 mi / 1 mi). Tests: `UI_QT_SITE_ROAMING` (the executor on a scripted host and clock),
+  `UI_QT_SITE_GROUPS` (`check_roamable()`), `UI_QT_PERSISTENCE` (`test_roaming_prefs()`), `UI_QT_CONTROLLER`
+  (`test_operator_intents()`).
 - Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's
   recent calls (`homeRecentList`) and the Talkgroups grid (`talkgroupGrid`) get their models from a `KeepPlace` only
   while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with

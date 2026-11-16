@@ -44,6 +44,7 @@
 #include <atomic>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <stdio.h>
 #include <thread>
 #include <utility>
@@ -1376,6 +1377,67 @@ test_screen_policy_prefs() {
     stored.remove(modeKey);
     stored.remove(delayKey);
     stored.remove(legacyKey);
+}
+
+/* Issue #786: GPS roaming's switch (off by default) and its two distances, in km. Unset, a distance reads as the
+ * default of the unit shown, so it follows the unit; a value offered in either unit is stored as picked and never
+ * changes with the unit; anything else is refused, and a stored one reads as the default. */
+void
+test_roaming_prefs() {
+    QSettings stored = prefs_file();
+    const QString maxKey = QStringLiteral("roaming/maxDistanceKm");
+    const QString marginKey = QStringLiteral("roaming/marginKm");
+    const QString unitKey = QStringLiteral("ui/metricUnits");
+    for (const QString& key : {maxKey, marginKey, QStringLiteral("roaming/enabled"), unitKey}) {
+        stored.remove(key);
+    }
+    const auto near = [](double a, double b) { return std::fabs(a - b) < 1e-9; };
+    constexpr double kMile = 1.609344;
+    AppPrefs prefs;
+    int changes = 0;
+    QObject::connect(&prefs, &AppPrefs::roamingDistancesChanged, &prefs, [&changes]() { ++changes; });
+    expect("roaming is off by default", !prefs.roamingEnabled());
+    expect("unset, miles: 60 mi and 1 mi",
+           near(prefs.roamingMaxDistanceKm(), 60 * kMile) && near(prefs.roamingMarginKm(), 1 * kMile));
+    expect("the miles choices", prefs.roamingMaxDistanceChoices().size() == 4
+                                    && near(prefs.roamingMaxDistanceChoices().at(2).toDouble(), 60 * kMile)
+                                    && prefs.roamingMarginChoices().size() == 3
+                                    && near(prefs.roamingMarginChoices().at(0).toDouble(), 0.5 * kMile));
+    prefs.setMetricUnits(true);
+    expect("a unit change is a distance change", changes == 1);
+    expect("unset, metric: 100 km and 2 km",
+           near(prefs.roamingMaxDistanceKm(), 100) && near(prefs.roamingMarginKm(), 2));
+    expect("the km choices", prefs.roamingMaxDistanceChoices() == QVariantList({25.0, 50.0, 100.0, 200.0})
+                                 && prefs.roamingMarginChoices() == QVariantList({1.0, 2.0, 5.0}));
+    prefs.setRoamingMaxDistanceKm(100);
+    expect("picking the default stores it", changes == 2 && stored.contains(maxKey));
+    prefs.setMetricUnits(false);
+    expect("a picked value stays when the unit changes", near(prefs.roamingMaxDistanceKm(), 100));
+    prefs.setRoamingMaxDistanceKm(15 * kMile);
+    expect("a miles choice is stored in km", near(stored.value(maxKey).toDouble(), 15 * kMile));
+    prefs.setMetricUnits(true);
+    expect("and kept in metric", near(prefs.roamingMaxDistanceKm(), 15 * kMile));
+    const int before = changes;
+    for (const double bad :
+         {37.0, 0.0, -100.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        prefs.setRoamingMaxDistanceKm(bad);
+        prefs.setRoamingMarginKm(bad);
+    }
+    expect("a value no unit offers is refused without a write",
+           changes == before && near(stored.value(maxKey).toDouble(), 15 * kMile) && !stored.contains(marginKey));
+    prefs.setRoamingMarginKm(5);
+    prefs.setRoamingMarginKm(5);
+    expect("the same choice again is no change", changes == before + 1 && near(prefs.roamingMarginKm(), 5));
+    for (const QVariant& damaged : {QVariant(37.0), QVariant(QStringLiteral("far")), QVariant(-1)}) {
+        stored.setValue(maxKey, damaged);
+        expect("a stored value no unit offers reads as the default", near(prefs.roamingMaxDistanceKm(), 100));
+    }
+    prefs.setRoamingEnabled(true);
+    expect("the switch persists",
+           AppPrefs().roamingEnabled() && stored.value(QStringLiteral("roaming/enabled")).toBool());
+    for (const QString& key : {maxKey, marginKey, QStringLiteral("roaming/enabled"), unitKey}) {
+        stored.remove(key);
+    }
 }
 
 /* The saved-systems sort last chosen, one of five ids, "added" for anything else. */
@@ -2877,6 +2939,10 @@ test_prefs_key_table(void) {
         {"chooseFilesInApp", true, "ui/chooseFilesInApp"},
         // The saved-systems sort last chosen.
         {"systemsSort", QStringLiteral("nearest"), "listen/systemsSort"},
+        // Issue #786: GPS roaming's switch and its two distances.
+        {"roamingEnabled", true, "roaming/enabled"},
+        {"roamingMaxDistanceKm", 50.0, "roaming/maxDistanceKm"},
+        {"roamingMarginKm", 5.0, "roaming/marginKm"},
     };
     QStringList covered;
     int writable = 0;
@@ -2967,6 +3033,7 @@ test_prefs_key_table(void) {
         QStringLiteral("location/lastLat"),
         QStringLiteral("location/lastLon"),
         QStringLiteral("monitor/detailsExpanded"),
+        QStringLiteral("roaming/enabled"),
         QStringLiteral("ui/chooseFilesInApp"),
         QStringLiteral("ui/notificationExplained"),
         QStringLiteral("ui/onboardingDone"),
@@ -2988,7 +3055,10 @@ test_prefs_key_table(void) {
                && portable.contains(QStringLiteral("recording/limitMb"))
                && portable.contains(QStringLiteral("recording/analogMaxGapMs"))
                && portable.contains(QStringLiteral("recording/analogPrerollMs"))
-               && portable.contains(QStringLiteral("listen/pinned")));
+               && portable.contains(QStringLiteral("listen/pinned"))
+               && portable.contains(QStringLiteral("roaming/maxDistanceKm"))
+               && portable.contains(QStringLiteral("roaming/marginKm"))
+               && !portable.contains(QStringLiteral("roaming/enabled")));
 
     const QVariantMap before = AppPrefs::readPortable();
     expect("readPortable returns only portable keys", !before.isEmpty()
@@ -3007,6 +3077,11 @@ test_prefs_key_table(void) {
                && before.value(QStringLiteral("search/sourceType")).toString() == "airspy"
                && before.value(QStringLiteral("search/host")).toString() == "host"
                && before.value(QStringLiteral("search/port")).toInt() == 4321);
+    // Issue #786: a backup carries roaming's distances, never its switch.
+    expect("readPortable carries the roaming distances, not the switch",
+           before.contains(QStringLiteral("roaming/maxDistanceKm"))
+               && before.contains(QStringLiteral("roaming/marginKm"))
+               && !before.contains(QStringLiteral("roaming/enabled")));
 
     file.setValue(QStringLiteral("ui/onboardingDone"), true);
     file.setValue(QStringLiteral("location/lastLat"), 9.0);
@@ -3858,6 +3933,7 @@ main(int argc, char** argv) {
     test_screen_policy_prefs();
     test_listen_section_pref();
     test_systems_sort_pref();
+    test_roaming_prefs();
     test_hangtime_unreadable_value();
     test_recording_prefs();
     test_analog_max_gap_pref();

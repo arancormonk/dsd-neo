@@ -183,6 +183,16 @@ site_group_key(const QVariantMap& row) {
     return site_group_key(sid, receiver_identity(row));
 }
 
+bool
+site_roamable(const QVariantMap& row) {
+    const QString source = row.value(QStringLiteral("sourceType")).toString();
+    const bool tunable = source == QLatin1String("usb") || source == QLatin1String("rtltcp")
+                         || source == QLatin1String("airspy") || source == QLatin1String("soapy");
+    return site_grouped(row.value(QStringLiteral("rrSid")).toInt(), row.value(QStringLiteral("rrSiteId")).toInt())
+           && row.value(QStringLiteral("trunking")).toBool() && tunable
+           && row.value(QStringLiteral("extraArgs")).toString().trimmed().isEmpty();
+}
+
 QString
 site_group_title(const QVariantMap& lead) {
     QString name = lead.value(QStringLiteral("name")).toString();

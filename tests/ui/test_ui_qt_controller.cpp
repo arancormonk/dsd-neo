@@ -1464,6 +1464,39 @@ test_scan_step_bridge() {
     freeState(&state);
 }
 
+/* #786: each command that changes what the session follows says so once it is queued, by its kind; GPS roaming waits
+ * for the decoder to show its outcome. A command the queue refuses says nothing. */
+static void
+test_operator_intents() {
+    dsd_qt::CommandBridge bridge;
+    QStringList kinds;
+    QObject::connect(&bridge, &dsd_qt::CommandBridge::operatorIntentSubmitted, &bridge,
+                     [&kinds](const QString& kind) { kinds.append(kind); });
+    check(!bridge.holdTalkgroup(5) && !bridge.releaseTuner() && kinds.isEmpty());
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    check(bridge.holdTalkgroup(5));
+    check(bridge.holdTalkgroup(0));
+    check(bridge.manualTuneHz(851012500U));
+    check(bridge.releaseTuner());
+    check(bridge.setTrunking(true));
+    check(bridge.setTrunking(false));
+    check(dsd_app_drain_cmds(&opts, &state) > 0); // the queue may coalesce; each accepted call said so
+    check(
+        kinds
+        == QStringList({QStringLiteral("hold"), QStringLiteral("release"), QStringLiteral("manualTune"),
+                        QStringLiteral("releaseTuner"), QStringLiteral("trunkingOn"), QStringLiteral("trunkingOff")}));
+    kinds.clear();
+    check(bridge.toggleMute() && bridge.tuneHz(851012500U) && bridge.lockoutSlot(0));
+    check(dsd_app_drain_cmds(&opts, &state) >= 0);
+    check(kinds.isEmpty());
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+}
+
 static int g_unavoid_calls = 0;
 static uint32_t g_unavoid_session = 0;
 static QString g_unavoid_target;
@@ -1882,6 +1915,7 @@ main(int argc, char** argv) {
     test_tone_filter_bridge();
     test_scan_row_edit_bridge();
     test_scan_step_bridge();
+    test_operator_intents();
     test_scan_avoid_identity_parse();
     test_scan_avoid_restore_bridge();
     test_zero_bounds();

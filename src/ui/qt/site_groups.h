@@ -46,6 +46,14 @@ QString site_group_key(const QVariantMap& row);
 // The key of a grouped row (site_grouped()) of system @p rrSid on @p receiver (receiver_identity()).
 QString site_group_key(int rrSid, const QString& receiver);
 /*
+ * Whether GPS site roaming (#786) may start @p row: a grouped site (site_grouped()) that trunks, on a receiver it can
+ * retune (an RTL-SDR, rtl_tcp, an Airspy or SoapySDR; never network audio, a file or a replay), with no extra
+ * arguments of its own. Extra arguments can override the input, the frequency, scanning or the configuration, so a row
+ * with any is never a roaming destination. Roaming also needs the app-wide extra arguments (Settings) to be empty,
+ * which the caller checks: this reads the row alone.
+ */
+bool site_roamable(const QVariantMap& row);
+/*
  * A group's name, from its lead row: the name without the " — <siteName>" an import generated, else the name as it is.
  * The card and its pin both show it.
  */
