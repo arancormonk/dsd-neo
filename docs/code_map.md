@@ -14842,14 +14842,22 @@ Qt Quick frontend (`src/ui/qt`):
   runs with the snapshot already current. Tests: `check_executor_same_tick()`, `tst_site_roaming.qml` `test_07k`.
   Rule: every end of a roam but "done" goes through `endTransaction(why, listeningStopped, refusal)`, which lets
   `endCause()` pick the strongest cause present now, in one precedence (`end_rank()`): the user's stop (or an
-  unreadable generation), the user's own choice (another start, Retry, a restore, a close, a dismissal, an operator
-  command), roaming turned off, the foreground lost, then the rest (a revoked verdict, the checks before a step, a stop
+  unreadable generation), the user's own choice (another start, Retry, a restore, a close, a dismissal), an operator
+  command ("intent"), roaming turned off, the foreground lost, then the rest (a revoked verdict, the checks before a step, a stop
   the host gave up on, a failed or refused start). Home's notice shows only when the session the roam left stays
   stopped (`leftStopped()`: Idle or Stopping) and the cause is not one the user's action or a card explains; a refusal
   ("Could not switch to %1") stands only when its own cause is the strongest. The notice remembers the session it says
   stopped (`m_noticeSessionId`), and `onHostSession()` withdraws it when that session shows Running again (a stop the
   host gave up on after the roam was cancelled); a new start clears it as before. Tests:
   `check_executor_end_precedence()`, `check_executor_notice_withdrawn()`, `tst_site_roaming.qml` `test_07j`, `test_07l`.
+  Rule: an operator barrier (`operatorBarrier()`: a command still pending, or the snapshot showing a held talkgroup,
+  an operator tune or trunking off) ends a switch in every stage before the destination's start: an accepted command
+  ends it at once (`noteOperatorIntent()`, cause "intent", ranked below the user's stop and own choice), a barrier the
+  snapshot shows during the stop ends it at the next evaluation, and the checks before each step refuse one. A drain can
+  keep the old session taking commands for minutes, so the stop is no fence by itself. The destination's start is its
+  own session's: it completes, and that session arms only once its barrier is gone. Tests:
+  `check_executor_operator_barriers()` (each barrier × call wait, stop, destination start), `tst_site_roaming.qml`
+  `test_24b`.
   Rule: before the destination's start, `progressStop()` reads the host's phase: Failed cancels; Running after the
   stop showed (Stopping) and before it went idle (`startPlan()` asks only at Idle) is a stop the host gave up on (its
   2 s stop grace), so the switch ends refused with no notice, the evidence is revoked and roaming shows "Could not

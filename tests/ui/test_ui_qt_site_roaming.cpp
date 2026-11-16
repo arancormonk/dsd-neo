@@ -1594,6 +1594,83 @@ check_executor_notice_withdrawn() {
     }
 }
 
+/* #786 r6: every operator barrier (a pending command, or a held talkgroup, an operator tune or trunking off the snapshot
+ * shows) in every stage of a switch: before the destination's start it ends the switch and nothing starts; the
+ * destination's start is its own session's, which arms only once the barrier is gone. */
+void
+check_executor_operator_barriers() {
+    using Phase = dsd_qt::DecoderHost::SessionState;
+
+    struct Barrier {
+        const char* name;
+        std::function<void(Rig&)> apply;
+        SiteRoaming::Reason after; // what the destination shows after its edge
+    };
+
+    const QList<Barrier> barriers = {
+        {"Hold TG pending", [](Rig& rig) { rig.roaming.noteOperatorIntent("hold"); }, SiteRoaming::PendingChange},
+        {"manual tune pending", [](Rig& rig) { rig.roaming.noteOperatorIntent("manualTune"); },
+         SiteRoaming::PendingChange},
+        {"trunking off pending", [](Rig& rig) { rig.roaming.noteOperatorIntent("trunkingOff"); },
+         SiteRoaming::PendingChange},
+        {"a talkgroup held", [](Rig& rig) { rig.set("heldTg", 5); }, SiteRoaming::TalkgroupHeld},
+        {"an operator tune", [](Rig& rig) { rig.set("operatorTuned", true); }, SiteRoaming::OperatorTune},
+        {"trunking off", [](Rig& rig) { rig.set("trunking", false); }, SiteRoaming::NotTrunking},
+    };
+    const QString notice = QStringLiteral("Roaming did not switch to Lake. Listening stopped.");
+    for (const Barrier& b : barriers) {
+        const auto label = [&b](const char* what) {
+            return QStringLiteral("barrier %1: %2").arg(QLatin1String(b.name), QLatin1String(what)).toUtf8();
+        };
+        {
+            Rig rig; // waiting for the call to end
+            rig.running();
+            rig.set("callBusy", true);
+            rig.nearB(0);
+            rig.nearB(10000);
+            rig.nearB(10000);
+            b.apply(rig);
+            rig.set("callBusy", false);
+            check(rig.host.switchStops == 0 && !rig.roaming.transactionActive()
+                      && rig.roaming.recoveryNotice().isEmpty(),
+                  label("in the call wait, no stop").constData());
+        }
+        {
+            Rig rig; // the switch's stop drains
+            rig.qualifyB();
+            b.apply(rig);
+            rig.nearB(1000);
+            rig.nearB(10000);
+            rig.nearB(10000);
+            const bool ended =
+                !rig.roaming.transactionActive() && rig.ended == QStringList{QStringLiteral("cancelled")};
+            rig.host.setPhase(Phase::Idle);
+            check(ended && !rig.roaming.startPlan(1).value("ok").toBool() && rig.host.switchStops == 1
+                      && rig.roaming.recoveryNotice() == notice,
+                  label("in the stop, the switch ends and Idle starts nothing").constData());
+        }
+        {
+            Rig rig; // the destination starting
+            rig.qualifyB();
+            rig.host.setPhase(Phase::Idle);
+            rig.roaming.startPlan(rig.roamId());
+            rig.roaming.noteStartResult(rig.roamId(), {{"ok", true}, {"started", true}});
+            rig.host.setPhase(Phase::Starting);
+            rig.roaming.noteSessionStart("saved", rig.uids[1], rig.roamId());
+            rig.host.setPhase(Phase::Running);
+            rig.set("savedUid", rig.uids[1]);
+            b.apply(rig);
+            rig.roaming.noteSessionInitialized();
+            rig.nearC(1000);
+            rig.nearC(10000);
+            rig.nearC(10000);
+            check(rig.ended == QStringList{QStringLiteral("done")} && rig.host.switchStops == 1
+                      && rig.roaming.reason() == b.after,
+                  label("the destination runs, and roams only once the barrier is gone").constData());
+        }
+    }
+}
+
 /* Asked for a start out of turn (the session it leaves still stopping), no one asks again: the roam ends, with the
  * notice, rather than sit in its stop. */
 void
@@ -1820,6 +1897,7 @@ main(int argc, char** argv) {
     check_executor_same_tick();
     check_executor_end_precedence();
     check_executor_notice_withdrawn();
+    check_executor_operator_barriers();
     check_executor_adopted_and_retune();
     check_executor_timer();
     check_executor_header_text();

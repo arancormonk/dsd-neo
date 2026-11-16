@@ -394,6 +394,7 @@ class SiteRoaming : public QObject {
     void clearIntents();
     void clearAppliedIntents();
     bool intentPending() const;
+    bool operatorBarrier() const;
     void noteQualification();
     void revoke(qint64 nowMs);
     void ensureStream(bool need);
@@ -412,6 +413,8 @@ class SiteRoaming : public QObject {
     const SiteRoamingMeasurement* usableMeasurement() const;
     SiteRoamingVerdict judgeAgainst(qint64 nowMs, const QString& key, const QString& fromUid);
     QString boundaryFailure(qint64 nowMs);
+    QString settingsFailure() const;
+    QString destinationFailure() const;
 
     void beginTransaction(const QString& uid);
     void cancelTransaction(const QString& why);

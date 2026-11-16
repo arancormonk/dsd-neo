@@ -99,34 +99,38 @@ static_assert(sizeof(kPauseWords) / sizeof(kPauseWords[0]) == SiteRoaming::Manua
 bool
 silent_reason(const QString& reason) {
     static const QStringList silent = {
-        QStringLiteral("userStop"), QStringLiteral("start"),      QStringLiteral("retry"),
-        QStringLiteral("restore"),  QStringLiteral("close"),      QStringLiteral("dismiss"),
-        QStringLiteral("failed"),   QStringLiteral("revoked"),    QStringLiteral("unarmable"),
-        QStringLiteral("intent"),   QStringLiteral("superseded"), QStringLiteral("unreadable"),
+        QStringLiteral("userStop"),   QStringLiteral("start"),      QStringLiteral("retry"),
+        QStringLiteral("restore"),    QStringLiteral("close"),      QStringLiteral("dismiss"),
+        QStringLiteral("failed"),     QStringLiteral("revoked"),    QStringLiteral("unarmable"),
+        QStringLiteral("superseded"), QStringLiteral("unreadable"),
     };
     return silent.contains(reason);
 }
 
 /*
  * The one precedence of every reason a roam ends for (#786 r5), strongest first: the user's stop (a generation that
- * cannot be read counts as one), the user's own choice (another start, Retry, a restore, a close, a dismissal, an
- * operator command), roaming turned off, the foreground lost, and then everything else (the verdict revoked, a stop the
- * host gave up on, a failed or refused start, the checks before a step). Lower is stronger.
+ * cannot be read counts as one), the user's own choice (another start, Retry, a restore, a close, a dismissal), an
+ * operator command that changes what the session follows (Hold TG, a manual tune, a tuner release, trunking on or off:
+ * "intent"), roaming turned off, the foreground lost, and then everything else (the verdict revoked, a stop the host
+ * gave up on, a failed or refused start, the checks before a step). Lower is stronger.
  */
 int
 end_rank(const QString& reason) {
-    static const QStringList manual = {QStringLiteral("start"), QStringLiteral("retry"),   QStringLiteral("restore"),
-                                       QStringLiteral("close"), QStringLiteral("dismiss"), QStringLiteral("intent")};
+    static const QStringList manual = {QStringLiteral("start"), QStringLiteral("retry"), QStringLiteral("restore"),
+                                       QStringLiteral("close"), QStringLiteral("dismiss")};
     if (reason == QLatin1String("userStop") || reason == QLatin1String("unreadable")) {
         return 0;
     }
     if (manual.contains(reason)) {
         return 1;
     }
-    if (reason == QLatin1String("disabled")) {
+    if (reason == QLatin1String("intent")) {
         return 2;
     }
-    return reason == QLatin1String("foreground") ? 3 : 4;
+    if (reason == QLatin1String("disabled")) {
+        return 3;
+    }
+    return reason == QLatin1String("foreground") ? 4 : 5;
 }
 
 SiteRoaming::State
@@ -270,6 +274,11 @@ SiteRoaming::evaluateOnce() {
     clearAppliedIntents();
     if (active() && m_tx.stage != Stage::WaitingForCall) {
         progressTransaction();
+        if (active() && m_tx.stage == Stage::Stopping && operatorBarrier()) {
+            // #786 r6: the old session follows something else now (a command it applied, or one still pending): the
+            // switch ends before its stop lets a start through.
+            cancelTransaction(QStringLiteral("intent"));
+        }
         if (active()) {
             feedTransaction(t);
             ensureStream(true); // the checks before the destination starts derive the verdict again
@@ -420,12 +429,38 @@ SiteRoaming::boundaryFailure(qint64 nowMs) {
     if (generation != m_tx.stopGeneration) {
         return QStringLiteral("userStop");
     }
+    const QString held = settingsFailure();
+    if (!held.isEmpty()) {
+        return held;
+    }
+    const QString destination = destinationFailure();
+    if (!destination.isEmpty()) {
+        return destination;
+    }
+    const SiteRoamingVerdict verdict = judgeAgainst(nowMs, m_tx.groupKey, m_tx.fromUid);
+    if (verdict.kind != SiteRoamingVerdict::Kind::Switch || QString::fromStdString(verdict.uid) != m_tx.toUid) {
+        return QStringLiteral("verdict");
+    }
+    return QString();
+}
+
+/* boundaryFailure()'s part that holds a switch back whatever its destination: roaming off, an operator barrier, extra
+ * options in Settings. */
+QString
+SiteRoaming::settingsFailure() const {
     if (!enabled()) {
         return QStringLiteral("disabled");
     }
-    if (globalExtras()) {
-        return QStringLiteral("extras");
+    if (operatorBarrier()) {
+        return QStringLiteral("intent");
     }
+    return globalExtras() ? QStringLiteral("extras") : QString();
+}
+
+/* boundaryFailure()'s part on the destination: still saved, in the group captured at the session's start, roamable and
+ * not avoided. */
+QString
+SiteRoaming::destinationFailure() const {
     const int row = m_systems->rowForUid(m_tx.toUid);
     if (row < 0) {
         return QStringLiteral("removed");
@@ -433,10 +468,6 @@ SiteRoaming::boundaryFailure(qint64 nowMs) {
     if (m_systems->groupKey(row) != m_tx.groupKey || !m_systems->roamable(row)
         || m_systems->get(row).value(QStringLiteral("avoidSite")).toBool()) {
         return QStringLiteral("destination");
-    }
-    const SiteRoamingVerdict verdict = judgeAgainst(nowMs, m_tx.groupKey, m_tx.fromUid);
-    if (verdict.kind != SiteRoamingVerdict::Kind::Switch || QString::fromStdString(verdict.uid) != m_tx.toUid) {
-        return QStringLiteral("verdict");
     }
     return QString();
 }
@@ -910,8 +941,11 @@ SiteRoaming::noteOperatorIntent(const QString& kind) {
     } else {
         return;
     }
-    if (active() && m_tx.stage == Stage::WaitingForCall) {
-        endTransaction(QStringLiteral("intent"), false, false);
+    // #786 r6: a command accepted before the destination's start ends the switch, in its call wait or in its stop (a
+    // drain can keep the old session taking commands for minutes); the destination's own start is not the old
+    // session's to fence, and its edge then waits for the command as any session does.
+    if (active() && m_tx.stage != Stage::Starting) {
+        cancelTransaction(QStringLiteral("intent"));
     }
     revoke(now());
     evaluate();
@@ -920,6 +954,16 @@ SiteRoaming::noteOperatorIntent(const QString& kind) {
 bool
 SiteRoaming::intentPending() const {
     return m_holdIntent.pending || m_tunerIntent.pending || m_trunkingIntent.pending;
+}
+
+/* #786 r6: what holds a switch back from its stop on: an operator command still pending, or the session's snapshot
+ * showing a held talkgroup, an operator tune or trunking off (the switch began with none of them). */
+bool
+SiteRoaming::operatorBarrier() const {
+    if (intentPending()) {
+        return true;
+    }
+    return m_sessionLive && m_facts.optionsKnown && (m_facts.heldTg != 0 || m_facts.operatorTuned || !m_facts.trunking);
 }
 
 void

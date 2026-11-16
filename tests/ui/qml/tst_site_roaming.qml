@@ -922,6 +922,32 @@ Item {
             compare(calls().switchStops, 1, "a release supersedes the hold that never applied");
         }
 
+        // #786 r6: Hold TG or a manual tune accepted while the switch's stop
+        // drains (the old session still takes commands) ends the switch:
+        // fresh qualifying fixes rebuild nothing, and Idle starts no Lake.
+        function test_24b_a_command_during_the_drain_ends_the_switch_data() {
+            return [{tag: "hold"}, {tag: "tune"}];
+        }
+        function test_24b_a_command_during_the_drain_ends_the_switch(data) {
+            qualifyB();
+            compare(decoderHost.sessionState, 3, "the switch's stop drains");
+            var stops = calls().switchStops;
+            if (data.tag === "hold")
+                verify(commands.holdTalkgroup(5));
+            else
+                verify(commands.manualTuneHz(852000000));
+            verify(!siteRoaming.transactionActive, "the command ends the switch");
+            compare(app.pendingRestart, null, "and its restart");
+            nearB(1000);
+            nearB(10000);
+            nearB(10000);
+            compare(calls().switchStops, stops, "no second switch");
+            testContext.setLifecyclePhase(0);
+            wait(20);
+            compare(decoderHost.sessionState, 0, "Idle starts no destination");
+            verify(roamNotice().visible, "listening stayed stopped: Home's notice");
+        }
+
         function test_25_hold_survives_roaming_off_and_on() {
             startSite(0);
             nearB(0);
