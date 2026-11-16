@@ -2535,7 +2535,8 @@ suite runs under this compiler.
     home system says whose it is: a TETRA USSI (a migrating MS's home-network SSI), a P25 LC 0x5B Message Update
     source (its Source ID waits for the Source ID Extension that qualifies it; the row shows the ID only and is not
     corrected when the extension arrives), and a P25 abbreviated registration response's unit of another System ID
-    heard before the site's WACN. Neither the push nor the view names it from the local lists; its assigned identity
+    heard before the site's WACN, and an NXDN inter-system remote control subject its Location ID does not qualify.
+    Neither the push nor the view names it from the local lists; its assigned identity
     still names it. It is keyed with the subject, and push clears it on a row with no valid subject.
     - DMR (`dmr_unit_activity.c`; standard FID 0x00 CSBKs that passed their own CRC, never one `-F` accepted as RAS):
       C_ACKD 0x62 from REGI is REGISTRATION / ACK / ACKNOWLEDGED with no reason (a deregistration is answered alike, TS
@@ -2559,7 +2560,12 @@ suite runs under this compiler.
       Parameter in `value2`. REM_CON_RESP 0x35: RESPONSE rows with the source (the controlled unit, TS 1-C Fig
       15.21-1) as the subject, the destination (the requester) as the recipient and Cause (SS) as the reason (the
       controller's send success, the target's receive success and the no-response timeout differ only there); no row
-      for a remote monitor answer. Unit IDs FFF0-FFFF are infrastructure. Test: `NXDN_UNIT_ACTIVITY`.
+      for a remote monitor answer. Between systems (CC Option I/I, Table 6.5-7) both read the Location ID Option and
+      Location ID after the mandatory part (TS 1-A §6.4.1.17 / §6.4.1.18): the unit it relates to (source or
+      destination, Table 6.5-12) gets it as its home, so another system's unit is neither named locally nor merged
+      with a unit of the same number elsewhere; an inter-system message whose unit cannot be qualified (no Location
+      ID, a reserved option, a group) marks the subject `subject_nonlocal`. Unit IDs FFF0-FFFF are infrastructure.
+      Test: `NXDN_UNIT_ACTIVITY` (`test_rem_con_inter_system`).
     - TETRA (`tetra_unit_activity.c`; clear or decrypted MM only): LU ACCEPT / REJECT for the MAC-addressed MS (an SMI
       is UNKNOWN; an event label, no address or an encrypted short identity adds no row, since rows of different MSs
       would merge; a USSI, a migrating MS's home-network SSI, is a `subject_nonlocal` subject; the address's

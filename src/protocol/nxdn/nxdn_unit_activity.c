@@ -38,6 +38,7 @@ enum {
     NXDN_UA_GRP_REG_RESP_BITS = 56U,
     NXDN_UA_GRP_REG_RESP_VISITOR_BITS = 72U,
     NXDN_UA_REM_CON_BITS = 72U,
+    NXDN_UA_REM_CON_LOCATION_BITS = 96U, /* with the Location ID Option and Location ID (octets 9-11) */
 };
 
 /* Table 6.5-22 Control Command. */
@@ -112,14 +113,14 @@ nxdn_ua_group_identity(uint32_t id) {
    then the system code of the category's width (Table 6.5-1: Global 10, Regional 14, Local 17 bits), in the scope
    encoding of a Type-C reception (dsd_ua_scope: a = 0x100 | category 0 Global / 1 Regional / 2 Local, b = system). */
 static void
-nxdn_ua_set_home(dsd_ua_identity* id, const uint8_t* e) {
+nxdn_ua_set_home_at(dsd_ua_identity* id, const uint8_t* e, size_t at) {
     static const uint8_t k_width[3] = {10U, 17U, 14U}; /* category bits 00, 01, 10 */
     static const uint8_t k_category[3] = {0U, 2U, 1U}; /* the received identity's numbering */
-    const uint32_t category_bits = nxdn_ua_bits(e, 13U, 2U);
+    const uint32_t category_bits = nxdn_ua_bits(e, at, 2U);
     if (category_bits > 2U) {
         return; /* 11 is reserved */
     }
-    const uint32_t sys = nxdn_ua_bits(e, 15U, k_width[category_bits]);
+    const uint32_t sys = nxdn_ua_bits(e, at + 2U, k_width[category_bits]);
     const uint8_t category = k_category[category_bits];
     /* Site 1 is a valid site code in every category: only the system code is checked here. */
     if (!dsd_nxdn_location_valid(category, sys, 1U)) {
@@ -129,6 +130,43 @@ nxdn_ua_set_home(dsd_ua_identity* id, const uint8_t* e) {
     id->home_a = 0x100U | category;
     id->home_b = sys;
     id->home_valid = 1;
+}
+
+/* The registration messages' Location ID: after the 5-bit option in octet 1. */
+static void
+nxdn_ua_set_home(dsd_ua_identity* id, const uint8_t* e) {
+    nxdn_ua_set_home_at(id, e, 13U);
+}
+
+/* Location ID Option (Table 6.5-12): its Related Unit ID, bits 4-3. */
+enum {
+    NXDN_UA_LOCATION_OF_SOURCE = 2U,
+    NXDN_UA_LOCATION_OF_DESTINATION = 1U,
+};
+
+/* A remote control message between systems (CC Option I/I, octet 1 bit 6, Table 6.5-7) carries, after its mandatory
+   part, the Location ID Option (octet 9 bits 7-3) and the Location ID of the unit it relates to (Table 6.5-12: the
+   source or the destination), category bit first and without the site code (TS 1-A §6.4.1.17 / §6.4.1.18, Figs
+   6.4-20 / 6.4-21). That unit gets the Location ID as its home. Returns 1 when the message is within one system or
+   its related unit was qualified, 0 when it is between systems and no unit could be: the Location ID is missing,
+   its option reserved, its system code invalid, or it relates to a group. */
+static int
+nxdn_ua_rem_con_home(const uint8_t* e, size_t bits, dsd_ua_identity* source, dsd_ua_identity* destination) {
+    if (nxdn_ua_bits(e, 9U, 1U) == 0U) {
+        return 1;
+    }
+    if (bits < NXDN_UA_REM_CON_LOCATION_BITS) {
+        return 0;
+    }
+    const uint32_t related = nxdn_ua_bits(e, 72U, 2U);
+    dsd_ua_identity* const unit = related == NXDN_UA_LOCATION_OF_SOURCE        ? source
+                                  : related == NXDN_UA_LOCATION_OF_DESTINATION ? destination
+                                                                               : NULL;
+    if (unit == NULL || !unit->valid || unit->subtype != DSD_UA_ID_RADIO) {
+        return 0;
+    }
+    nxdn_ua_set_home_at(unit, e, 77U);
+    return unit->home_valid;
 }
 
 /* Cause (MM) (Table 6.5-27): the registration's result. Location accepted with the group failed or refused (0x04,
@@ -327,6 +365,8 @@ nxdn_ua_rem_con_req(const dsd_opts* opts, dsd_state* state, const uint8_t* eleme
     row.result = DSD_UA_RESULT_NA;
     row.subject = unit_addressed ? nxdn_ua_unit(destination) : nxdn_ua_group_identity(destination);
     row.actor = nxdn_ua_unit(source);
+    /* Between systems, a unit the Location ID does not qualify may be another system's: not named here. */
+    row.subject_nonlocal = nxdn_ua_rem_con_home(elements, elements_bits, &row.actor, &row.subject) ? 0U : 1U;
     /* The command argument (Table 6.5-23: stun mode, monitor mode and duration) tells two commands apart. */
     row.value2 = parameter;
     row.value2_valid = 1;
@@ -356,6 +396,7 @@ nxdn_ua_rem_con_resp(const dsd_opts* opts, dsd_state* state, const uint8_t* elem
     row.result = nxdn_ua_ss_result(cause);
     row.subject = nxdn_ua_unit(source);
     row.recipient = nxdn_ua_unit(destination);
+    row.subject_nonlocal = nxdn_ua_rem_con_home(elements, elements_bits, &row.subject, &row.recipient) ? 0U : 1U;
     row.reason_set = DSD_UA_REASON_NXDN_SS;
     row.reason_code = cause;
     if (row.subject.valid) {

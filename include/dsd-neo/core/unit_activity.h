@@ -190,7 +190,8 @@ typedef struct {
  * - slot: the TDMA slot heard on (0/1); freq_hz: the carrier heard on (0 unknown).
  * - subject_nonlocal: 1 when the subject's number is known not to be a local radio's although no home system says
  *   whose it is (a TETRA USSI, a migrating MS's home-network SSI; a P25 Message Update source that waits for its Source
- *   ID Extension; a P25 roamer's home ID heard before the site's WACN): the local lists never name it, at push
+ *   ID Extension; a P25 roamer's home ID heard before the site's WACN; an NXDN inter-system remote control subject
+ *   its Location ID does not qualify): the local lists never name it, at push
  *   (dsd_unit_activity_freeze_name()) or in the view, though its assigned identity may be named. Keyed with the
  *   subject. Push clears it on a row with no valid subject.
  * - name_frozen: the latest pushed name: the subject's name as the producer resolved it at the push that inserted

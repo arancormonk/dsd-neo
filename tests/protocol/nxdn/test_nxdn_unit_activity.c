@@ -475,6 +475,71 @@ test_naming(dsd_opts* opts) {
     free(st);
 }
 
+/* An inter-system remote control message (CC Option I/I set, octet 1 bit 6, Table 6.5-7): its Location ID Option
+   (octet 9 bits 7-3, Table 6.5-12: 10 the source's, 01 the destination's) and the Location ID after it, category bit
+   first and without the site code (Fig 6.4-20 / 6.4-21, Fig 6.5-1), name the system the related unit belongs to. */
+static void
+set_inter_system(uint8_t* e, uint32_t related, uint32_t local_system) {
+    put_bits(e, 9, 1U, 1);
+    put_bits(e, 72, related, 2);
+    put_bits(e, 77, 1U, 2);            /* category bits 01: Local */
+    put_bits(e, 79, local_system, 17); /* a Local System Code is 17 bits */
+}
+
+/* A remote control response heard on system 77 from unit 2002 of system 78 is not the local unit 2002: no local name,
+   and the same response from unit 2002 of system 79 is another row. A request whose destination is another system's
+   unit is not named either; one of system 77's own units is. */
+static void
+test_rem_con_inter_system(dsd_opts* opts) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    if (st == NULL) {
+        abort();
+    }
+    g_instance = 0;
+    g_rev = 0;
+    uint8_t e[CAC_ELEMENTS];
+    dsd_unit_activity r;
+    dsd_rxid_note_nxdn_location(st, 2U, 77U, 3U);
+    (void)dsd_alias_learn_radio(NULL, st, NULL, 2002U, "LOCAL 2002", NULL);
+
+    build_rem_con(e, 0x35U, 1U, 0U, 2002U, 1001U, 0x01U);
+    set_inter_system(e, 2U, 78U);
+    run_cac(opts, st, e);
+    if (one_row(st, &r, "inter-system response from system 78")) {
+        expect_true(r.subject.home_valid && r.subject.home_b == 78U, "the source's Location ID is its home");
+        expect_true(r.name_frozen[0] == '\0', "another system's unit 2002 is not named from the local lists");
+    }
+    build_rem_con(e, 0x35U, 1U, 0U, 2002U, 1001U, 0x01U);
+    set_inter_system(e, 2U, 79U);
+    run_cac(opts, st, e);
+    if (one_row(st, &r, "inter-system response from system 79")) {
+        expect_true(r.repeat == 1U && r.subject.home_b == 79U, "a unit of another system is another row");
+    }
+    build_rem_con(e, 0x35U, 1U, 0U, 2002U, 1001U, 0x01U);
+    set_inter_system(e, 2U, 77U);
+    run_cac(opts, st, e);
+    if (one_row(st, &r, "inter-system response from the home system")) {
+        expect_true(strcmp(r.name_frozen, "LOCAL 2002") == 0, "a unit of the reception's own system is named");
+    }
+    build_rem_con(e, 0x34U, 1U, 0U, 1001U, 2002U, 0x8000U);
+    set_inter_system(e, 1U, 78U);
+    run_cac(opts, st, e);
+    if (one_row(st, &r, "inter-system request to system 78")) {
+        expect_true(r.subject.home_valid && r.subject.home_b == 78U && !r.actor.home_valid,
+                    "the destination's Location ID is the subject's home");
+        expect_true(r.name_frozen[0] == '\0', "another system's destination is not named from the local lists");
+    }
+    /* Inter-system with a reserved Location ID Option: which unit is foreign is unknown, so the subject is not named. */
+    build_rem_con(e, 0x35U, 1U, 0U, 2002U, 1001U, 0x01U);
+    set_inter_system(e, 3U, 78U);
+    run_cac(opts, st, e);
+    if (one_row(st, &r, "inter-system, reserved option")) {
+        expect_true(r.subject_nonlocal && r.name_frozen[0] == '\0', "an unqualified inter-system subject is nonlocal");
+    }
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -487,6 +552,7 @@ main(void) {
     test_rem_con_resp(opts, state);
     test_channel_gates(opts, state);
     test_naming(opts);
+    test_rem_con_inter_system(opts);
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);

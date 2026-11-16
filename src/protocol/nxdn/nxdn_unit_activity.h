@@ -40,6 +40,9 @@ extern "C" {
  *   G/U) is the subject and the source the actor, the Control Parameter keyed with it;
  * - REM_CON_RESP (Fig 6.4-21): a remote-control response to stun / revive / kill; the source (the controlled unit) is
  *   the subject, the destination (the requester) the recipient, Cause (SS) the reason.
+ * Between systems (CC Option I/I), a remote control message's Location ID is the home of the unit its Location ID
+ * Option relates to (the source or the destination, TS 1-A Table 6.5-12); when none can be qualified, the subject is
+ * nonlocal (dsd_unit_activity::subject_nonlocal).
  *
  * @return 1 when @p message_type is one of them (handled, whether a row was pushed or not), 0 otherwise.
  */
