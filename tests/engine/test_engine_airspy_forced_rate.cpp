@@ -361,24 +361,43 @@ clock_throttled(const std::string& l) {
     return l.size() >= from && l.compare(from, 4U, " SLC") == 0 && l.find("(single)", from) != std::string::npos;
 }
 
-/* @p l with an input-level warning's advice cut off after its reading: a live run's advice names the tuner's RF gain,
-   and a replay's says the level was set when the capture was recorded (issue #743 B8), so only the reading compares. */
+/* A level warning's advice differs between the runs on purpose (issue #743 B8): live, it names the tuner's RF gain;
+   replayed, it says the level was set when the capture was recorded. A replayed line with its advice put back as the
+   live run words it compares in full with the live line. */
+const struct {
+    const char* replay;
+    const char* live;
+} kLevelAdvice[] = {
+    {"recorded too strong; record with less gain next time", "lower RF gain or add filtering/attenuation"},
+    {"recorded at a low level; record with more gain next time", "raise RF gain if signal is present"},
+};
+
+/* @p l from the replay, its level advice as the live run would give it; *@p tuner_advice set when the replay itself
+   advised a tuner gain. */
 std::string
-without_level_advice(const std::string& l) {
-    static const char kWarning[] = "WARNING: RF Level ";
-    const size_t at = l.find(kWarning);
-    if (at == std::string::npos) {
+replay_advice_as_live(const std::string& l, bool* tuner_advice) {
+    if (l.find("WARNING: RF Level ") == std::string::npos) {
         return l;
     }
-    const size_t advice = l.find(": ", at + sizeof kWarning - 1U);
-    return advice == std::string::npos ? l : l.substr(0U, advice);
+    for (const auto& advice : kLevelAdvice) {
+        if (l.find(advice.live) != std::string::npos) {
+            *tuner_advice = true;
+        }
+    }
+    for (const auto& advice : kLevelAdvice) {
+        const size_t at = l.find(advice.replay);
+        if (at != std::string::npos) {
+            return l.substr(0U, at) + advice.live + l.substr(at + std::strlen(advice.replay));
+        }
+    }
+    return l;
 }
 
 /* The stable decoded fields: every decoder record (a line stamped HH:MM:SS, its stamp left out, and the indented lines
-   that go on with it) and the lines holding one of @p c's stable texts, leaving out the clock-throttled lines and any
-   level advice (without_level_advice()). */
+   that go on with it) and the lines holding one of @p c's stable texts, leaving out the clock-throttled lines. A
+   replay's (@p tuner_advice non-NULL) have their level advice as the live run words it (replay_advice_as_live()). */
 std::vector<std::string>
-stable_lines(const std::vector<std::string>& lines, const Case& c) {
+stable_lines(const std::vector<std::string>& lines, const Case& c, bool* tuner_advice = nullptr) {
     std::vector<std::string> out;
     bool in_record = false;
     for (const std::string& l : lines) {
@@ -390,7 +409,8 @@ stable_lines(const std::vector<std::string>& lines, const Case& c) {
             keep = keep || (t && l.find(t) != std::string::npos);
         }
         if (keep && !clock_throttled(l)) {
-            out.push_back(without_level_advice(stamped ? l.substr(9U) : l));
+            const std::string kept = stamped ? l.substr(9U) : l;
+            out.push_back(tuner_advice ? replay_advice_as_live(kept, tuner_advice) : kept);
         }
     }
     return out;
@@ -704,7 +724,9 @@ run_replay_and_compare(const Case& c, const dsd_test_forced_rate_input& in, cons
           live_post.size() == post.size() && !live_post.empty()
               && std::memcmp(live_post.data(), post.data(), live_post.size() * sizeof(float)) == 0);
     const std::vector<std::string> live_stable = stable_lines(live_lines, c);
-    check_stable_fields(c, live_stable, stable_lines(lines, c));
+    bool replay_tuner_advice = false;
+    check_stable_fields(c, live_stable, stable_lines(lines, c, &replay_tuner_advice));
+    check(std::string(c.name) + ": the replay's level warnings name no tuner gain", !replay_tuner_advice);
     DSD_FPRINTF(stderr, "%s: %zu transfers of %zu pairs, %zu post-step pairs, %zu stable lines\n", c.name,
                 feed.transfers.size(), feed.transfer_pairs, live_post.size() / 2U, live_stable.size());
 }
