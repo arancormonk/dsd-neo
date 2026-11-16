@@ -520,14 +520,14 @@ dsd_input_level_advice(const dsd_input_level_snapshot* snapshot, int replay) {
     if (!low && snapshot->status != DSD_INPUT_LEVEL_HOT && snapshot->status != DSD_INPUT_LEVEL_CLIPPING) {
         return NULL;
     }
+    /* Short enough that the advisory line keeps to 80 columns (issue #743): terse, as the live texts are. */
     if (replay) {
         /* The capture fixed the level when it was recorded: nothing here can change it (B8). */
-        return low ? "recorded at a low level; record with more gain next time"
-                   : "recorded too strong; record with less gain next time";
+        return low ? "recorded weak; use more gain next time" : "recorded too strong; use less gain next time";
     }
     if (snapshot->source == DSD_INPUT_LEVEL_SOURCE_NET_IQ) {
         /* The sending program sets the level of the samples it sends. */
-        return low ? "raise the sending program's level if a signal is present" : "lower the sending program's level";
+        return low ? "raise sending program's gain if signal is present" : "lower sending program's gain";
     }
     if (dsd_input_level_source_is_rf(snapshot->source)) {
         return low ? "raise RF gain if signal is present" : "lower RF gain or add filtering/attenuation";

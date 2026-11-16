@@ -737,23 +737,33 @@ dsd_engine_setup_parse_rtltcp_input(dsd_opts* opts) {
 }
 
 #ifdef USE_RADIO
+/* Whether the session decodes only the 6.25 kHz modes (NXDN48, dPMR): nothing wider, analog included. */
+static int
+iq_stream_decodes_narrow_only(const dsd_opts* opts) {
+    return (opts->frame_nxdn48 || opts->frame_dpmr) && !opts->analog_only && !opts->frame_dmr && !opts->frame_p25p1
+           && !opts->frame_p25p2 && !opts->frame_nxdn96 && !opts->frame_ysf && !opts->frame_dstar && !opts->frame_x2tdma
+           && !opts->frame_m17 && !opts->frame_provoice;
+}
+
 /* The lowest stream rate each decode family is known to decode from (issue #743): TETRA's 25 kHz channel needs 25 kHz
-   from a sender that centres it exactly (36 kHz when its centring is approximate), a 12.5 kHz channel's modes 16 kHz,
-   and the 6.25 kHz ones (NXDN48, dPMR) 12 kHz. The widest family the session decodes sets it. */
+   from a sending program that centres it exactly (36 kHz when its centring is approximate), a 12.5 kHz channel's modes
+   16 kHz, and the 6.25 kHz ones (NXDN48, dPMR) 12 kHz. The widest family the session decodes sets it, named as the
+   session runs it: an analog session by its FM or AM channel, which takes the 12.5 kHz rate. */
 static uint32_t
 iq_stream_min_rate_hz(const dsd_opts* opts, const char** out_family) {
     if (opts->frame_tetra == 1) {
         *out_family = "TETRA";
         return 25000U;
     }
-    const int narrow_only = (opts->frame_nxdn48 || opts->frame_dpmr) && !opts->analog_only && !opts->frame_dmr
-                            && !opts->frame_p25p1 && !opts->frame_p25p2 && !opts->frame_nxdn96 && !opts->frame_ysf
-                            && !opts->frame_dstar && !opts->frame_x2tdma && !opts->frame_m17 && !opts->frame_provoice;
-    if (narrow_only) {
-        *out_family = "a 6.25 kHz channel";
+    if (dsd_opts_is_analog_family(opts)) {
+        *out_family = opts->analog_demod == DSD_ANALOG_DEMOD_AM ? "an analog AM channel" : "an analog FM channel";
+        return 16000U;
+    }
+    if (iq_stream_decodes_narrow_only(opts)) {
+        *out_family = "NXDN48 or dPMR";
         return 12000U;
     }
-    *out_family = "a 12.5 kHz channel";
+    *out_family = "a 12.5 kHz digital channel";
     return 16000U;
 }
 
@@ -770,15 +780,16 @@ iq_stream_startup_notes(const dsd_opts* opts, const dsd_iq_net_spec* spec) {
     const uint32_t min_hz = iq_stream_min_rate_hz(opts, &family);
     if (spec->rate_hz < min_hz) {
         LOG_WARN("WARNING: I/Q stream: %u samples/s is below the %u that %s needs%s; decoding may fail. Raise the "
-                 "sending program's sample rate.\n",
+                 "sample rate in the sending program.\n",
                  spec->rate_hz, min_hz, family,
-                 opts->frame_tetra == 1 ? " (36000 when the sender's channel is not exactly centred)" : "");
+                 opts->frame_tetra == 1 ? " (36000 when the sending program does not centre the channel exactly)" : "");
     }
     if (opts->frame_tetra == 1 && spec->freq_hz == 0U) {
-        LOG_INFO("NOTICE: I/Q stream: no receiver frequency (FREQ) was given, so TETRA decodes signalling and speech "
-                 "but cannot tie trunked calls to the channels their allocations name. Add the sender's centre "
-                 "frequency as the spec's last field (%s:...:FORMAT:FREQ).\n",
-                 spec->kind == DSD_IQ_NET_KIND_TCP ? "iqtcp" : "iqudp");
+        LOG_INFO(
+            "NOTICE: I/Q stream: no receiver frequency (FREQ) was given, so TETRA decodes signalling and speech "
+            "but cannot tie trunked calls to the channels their allocations name. Add the sending program's centre "
+            "frequency as the spec's last field (%s:...:FORMAT:FREQ).\n",
+            spec->kind == DSD_IQ_NET_KIND_TCP ? "iqtcp" : "iqudp");
     }
 }
 #endif

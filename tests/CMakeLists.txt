@@ -11215,7 +11215,12 @@ if(DSD_HAS_RADIO)
     foreach(
         _iq_mode
         IN
-        ITEMS tcp-no-listener min-rate-narrow min-rate-wide min-rate-met
+        ITEMS
+            tcp-no-listener
+            min-rate-narrow
+            min-rate-wide
+            min-rate-analog
+            min-rate-met
     )
         string(TOUPPER "${_iq_mode}" _iq_name)
         string(REPLACE "-" "_" _iq_name "${_iq_name}")

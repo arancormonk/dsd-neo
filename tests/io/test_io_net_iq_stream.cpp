@@ -127,7 +127,7 @@ const char* const kLogTexts[kLogKinds] = {
     "I/Q stream: samples from",
     "I/Q stream: lost the connection",
     "I/Q stream: reconnected to",
-    "does not hold whole cs16 samples; set the sender's packet size to a multiple of 4 bytes",
+    "does not hold whole cs16 samples; set the sending program's packet size to a multiple of 4 bytes",
     "I/Q stream: cannot connect to",
     "I/Q stream: cannot receive on",
     "I/Q stream: cannot run at the 144000 Hz DSP rate TETRA needs",

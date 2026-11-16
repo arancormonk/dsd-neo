@@ -775,7 +775,7 @@ iq_net_tcp_lost(dsd_iq_net_reader* r, int code) {
         r->carry.len = 0;
     }
     if (code == 0) {
-        LOG_WARN("I/Q stream: lost the connection to %s (the sender closed it); reconnecting\n", r->peer);
+        LOG_WARN("I/Q stream: lost the connection to %s (the sending program closed it); reconnecting\n", r->peer);
     } else {
         LOG_WARN("I/Q stream: lost the connection to %s (error %d); reconnecting\n", r->peer, code);
     }
@@ -886,7 +886,7 @@ iq_net_udp_malformed(dsd_iq_net_reader* r, const struct sockaddr_in* from, size_
         iq_net_endpoint_text(from, who, sizeof(who));
         r->warned_malformed = 1;
         LOG_WARN("I/Q stream: dropped a %zu-byte datagram from %s that does not hold whole %s samples; set the "
-                 "sender's packet size to a multiple of %zu bytes\n",
+                 "sending program's packet size to a multiple of %zu bytes\n",
                  n, who, dsd_iq_net_format_name(r->spec.format), r->sample_bytes);
     }
     if (r->up) {
@@ -914,7 +914,8 @@ iq_net_udp_datagram(dsd_iq_net_reader* r, const struct sockaddr_in* from, size_t
             char who[IQ_NET_SENDER_MAX];
             iq_net_endpoint_text(from, who, sizeof(who));
             r->noted_foreign = 1;
-            LOG_INFO("I/Q stream: ignoring datagrams from %s; only one sender is read, now %s\n", who, r->sender);
+            LOG_INFO("I/Q stream: ignoring datagrams from %s; only one sending program is read at a time, now %s\n",
+                     who, r->sender);
         }
         return;
     }

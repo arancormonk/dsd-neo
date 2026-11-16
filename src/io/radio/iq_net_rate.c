@@ -109,6 +109,6 @@ void
 iq_net_rate_warning_text(char* out, size_t out_size, uint64_t measured_rate, uint32_t rate_hz) {
     DSD_SNPRINTF(out, out_size,
                  "I/Q stream: about %llu samples/s are arriving, but the input is set to %u. If nothing decodes, check "
-                 "that the sample rate matches the sender.\n",
+                 "that the rate in the spec matches the sending program's sample rate.\n",
                  (unsigned long long)measured_rate, (unsigned)rate_hz);
 }

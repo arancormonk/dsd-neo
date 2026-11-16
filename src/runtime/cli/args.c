@@ -1122,24 +1122,30 @@ cli_iq_stream_refused_flag(const dsd_opts* opts, int seen) {
     return NULL;
 }
 
-/* An I/Q stream input (issue #743) decodes the one channel its sender streams: the command line's tuning, trunking,
-   scanning and tuner options are refused naming the flag, before anything opens, and so is --iq-capture (a stream is
-   recorded where it is sent; D5). A config's trunking or scanning is refused at startup too
-   (dsd_runtime_bootstrap()). */
+/* An I/Q stream input (issue #743) decodes the one channel its sending program streams: the command line's tuning,
+   trunking and scanning options are refused naming the flag, its tuner options as tuner controls the sending program
+   has, before anything opens, and so is --iq-capture (a stream is recorded where it is sent; D5). A config's trunking
+   or scanning is refused at startup too (dsd_runtime_bootstrap()). */
 static int
 cli_refuse_tuning_on_iq_stream(const dsd_opts* opts, int seen, int parse_rc, int* out_exit_rc) {
     if (parse_rc != DSD_PARSE_CONTINUE || !dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)) {
         return parse_rc;
     }
     const char* flag = cli_iq_stream_refused_flag(opts, seen);
+    if (flag && (strcmp(flag, "--auto-ppm") == 0 || strcmp(flag, "--rtltcp-autotune") == 0)) {
+        /* A tuner setting, not a retune: the stream has no tuner here to set. */
+        LOG_ERROR("%s: an I/Q stream has no tuner controls; adjust the radio in the sending program.\n", flag);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return DSD_PARSE_ERROR;
+    }
     if (flag) {
-        LOG_ERROR("%s: the I/Q stream input cannot retune; it decodes the one channel the sender streams.\n", flag);
+        LOG_ERROR("%s: an I/Q stream cannot retune; it decodes only the channel the sending program streams.\n", flag);
         cli_set_exit_rc(out_exit_rc, 1);
         return DSD_PARSE_ERROR;
     }
     if (opts->iq_capture_requested) {
-        LOG_ERROR("--iq-capture: the I/Q stream input is not recorded here; record it in the sending program (an SDR++ "
-                  "baseband WAV replays with --iq-replay).\n");
+        LOG_ERROR("--iq-capture: an I/Q stream cannot be recorded here; record it in the sending program instead (an "
+                  "SDR++ baseband WAV plays back with --iq-replay).\n");
         cli_set_exit_rc(out_exit_rc, 1);
         return DSD_PARSE_ERROR;
     }

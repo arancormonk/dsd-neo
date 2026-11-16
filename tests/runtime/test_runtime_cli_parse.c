@@ -12165,30 +12165,36 @@ test_iq_stream_spec_on_the_command_line(void) {
 }
 
 #ifdef USE_RADIO
-/* Issue #743 (D8, D5): an I/Q stream decodes the one channel its sender streams, so the command line's tuning,
-   trunking, scanning and tuner options are refused with exit 1 naming the flag, whichever side of -i they are written
-   on, and --iq-capture is refused for the sending program to record. The same options beside another radio input parse.
+/* Issue #743 (D8, D5): an I/Q stream decodes the one channel its sending program streams, so the command line's tuning,
+   trunking and scanning options are refused with exit 1 naming the flag, whichever side of -i they are written on; its
+   tuner options (--auto-ppm, --rtltcp-autotune) are refused as tuner controls the sending program has; and
+   --iq-capture is refused for the sending program to record. The same options beside another radio input parse.
   */
 static int
 test_iq_stream_refuses_tuning_options(void) {
     static const char k_udp[] = "iqudp:127.0.0.1:7356:240k:cs16";
-    static const char k_cant[] = ": the I/Q stream input cannot retune; it decodes the one channel the sender streams.";
+    static const char k_cant[] =
+        ": an I/Q stream cannot retune; it decodes only the channel the sending program streams.";
+    static const char k_tuner[] = ": an I/Q stream has no tuner controls; adjust the radio in the sending program.";
     static const cli_stream_row rows[] = {
-        {{"-i", k_udp, "-T", NULL}, DSD_PARSE_ERROR, "-T: the I/Q stream input cannot retune", NULL},
-        {{"-T", "-i", k_udp, NULL}, DSD_PARSE_ERROR, "-T: the I/Q stream input cannot retune", NULL},
-        {{"-i", k_udp, "-Y", NULL}, DSD_PARSE_ERROR, "-Y: the I/Q stream input cannot retune", NULL},
-        {{"-i", k_udp, "--trunk-scan", "targets.csv", NULL}, DSD_PARSE_ERROR, "--trunk-scan: the I/Q stream", NULL},
+        {{"-i", k_udp, "-T", NULL}, DSD_PARSE_ERROR, "-T: an I/Q stream cannot retune", NULL},
+        {{"-T", "-i", k_udp, NULL}, DSD_PARSE_ERROR, "-T: an I/Q stream cannot retune", NULL},
+        {{"-i", k_udp, "-Y", NULL}, DSD_PARSE_ERROR, "-Y: an I/Q stream cannot retune", NULL},
+        {{"-i", k_udp, "--trunk-scan", "targets.csv", NULL}, DSD_PARSE_ERROR, "--trunk-scan: an I/Q stream", NULL},
         {{"--trunk-scan", "a.csv", "--trunk-scan-off", "b.csv", "-i", k_udp},
          DSD_PARSE_ERROR,
-         "--trunk-scan: the I/Q stream",
+         "--trunk-scan: an I/Q stream",
          NULL},
-        {{"-U", "4532", "-i", k_udp, NULL}, DSD_PARSE_ERROR, "-U: the I/Q stream input cannot retune", NULL},
-        {{"-i", k_udp, "--rtl-udp-control", "6020", NULL}, DSD_PARSE_ERROR, "--rtl-udp-control: the I/Q stream", NULL},
-        {{"-i", k_udp, "--auto-ppm", NULL}, DSD_PARSE_ERROR, "--auto-ppm: the I/Q stream input cannot retune", NULL},
-        {{"-i", k_udp, "--rtltcp-autotune", NULL}, DSD_PARSE_ERROR, "--rtltcp-autotune: the I/Q stream", NULL},
+        {{"-U", "4532", "-i", k_udp, NULL}, DSD_PARSE_ERROR, "-U: an I/Q stream cannot retune", NULL},
+        {{"-i", k_udp, "--rtl-udp-control", "6020", NULL}, DSD_PARSE_ERROR, "--rtl-udp-control: an I/Q stream", NULL},
+        {{"-i", k_udp, "--auto-ppm", NULL}, DSD_PARSE_ERROR, "--auto-ppm: an I/Q stream has no tuner controls", NULL},
+        {{"-i", k_udp, "--rtltcp-autotune", NULL},
+         DSD_PARSE_ERROR,
+         "--rtltcp-autotune: an I/Q stream has no tuner controls",
+         NULL},
         {{"-i", k_udp, "--iq-capture", "stream.iq", NULL},
          DSD_PARSE_ERROR,
-         "--iq-capture: the I/Q stream input is not recorded here; record it in the sending program",
+         "--iq-capture: an I/Q stream cannot be recorded here; record it in the sending program instead",
          NULL},
         {{"-i", "rtl:0:851.375M", "-T", "--auto-ppm", NULL}, DSD_PARSE_CONTINUE, NULL, "rtl:0:851.375M"},
         {{"-i", "rtltcp:127.0.0.1:1234:851.375M", "-U", "4532", "--rtltcp-autotune", NULL},
@@ -12206,6 +12212,11 @@ test_iq_stream_refuses_tuning_options(void) {
     DSD_SNPRINTF(want, sizeof want, "-T%s", k_cant);
     whole.want_err = want;
     rc |= run_cli_stream_row(&whole);
+    cli_stream_row tuner = {{"-i", k_udp, "--auto-ppm", NULL}, DSD_PARSE_ERROR, NULL, NULL};
+    char want_tuner[128];
+    DSD_SNPRINTF(want_tuner, sizeof want_tuner, "--auto-ppm%s", k_tuner);
+    tuner.want_err = want_tuner;
+    rc |= run_cli_stream_row(&tuner);
     return rc;
 }
 
@@ -12305,9 +12316,9 @@ test_bootstrap_refuses_config_tuning_on_iq_stream(void) {
         int fail = 0;
         if (cases[i].want_key != NULL) {
             char want[160];
-            DSD_SNPRINTF(want, sizeof want, "%s: the I/Q stream input cannot retune", cases[i].want_key);
+            DSD_SNPRINTF(want, sizeof want, "%s: an I/Q stream cannot retune", cases[i].want_key);
             fail = boot != DSD_BOOTSTRAP_ERROR || exit_rc != 1 || strstr(err, want) == NULL
-                   || strstr(err, "--config naming another file") == NULL;
+                   || strstr(err, "or start without that file (no --config, and DSD_NEO_CONFIG unset)") == NULL;
         } else {
             fail = boot != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0;
         }

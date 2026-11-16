@@ -756,8 +756,8 @@ bootstrap_config_tuning_key(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
     return NULL;
 }
 
-/* An I/Q stream input decodes the one channel its sender streams (issue #743, D8): a loaded config that turns on
-   trunking, the -Y scanner or a trunk scan beside one, the stream named in the config or on the command line, is
+/* An I/Q stream input decodes the one channel its sending program streams (issue #743, D8): a loaded config that turns
+   on trunking, the -Y scanner or a trunk scan beside one, the stream named in the config or on the command line, is
    refused at startup, before anything opens, naming the key and the fix, as --validate-config and a runtime config
    apply refuse it (the next-start rules, issue #671). @p cfg is the loaded config, NULL for none. */
 static int
@@ -768,8 +768,8 @@ bootstrap_refuse_config_tuning_on_iq_stream(const dsd_opts* opts, const dsdneoUs
         return DSD_BOOTSTRAP_CONTINUE;
     }
     LOG_ERROR(
-        "%s: the I/Q stream input cannot retune; it decodes the one channel the sender streams. Turn %s off in the "
-        "config, or start with --config naming another file.\n",
+        "%s: an I/Q stream cannot retune; it decodes only the channel the sending program streams. Turn %s off in "
+        "the config file, or start without that file (no --config, and DSD_NEO_CONFIG unset).\n",
         key, key);
     bootstrap_set_exit_rc(out_exit_rc, 1);
     return DSD_BOOTSTRAP_ERROR;

@@ -280,7 +280,7 @@ def check_rigctl_refused_at_start(binary, cwd):
         time.sleep(0.3)
     log = result.stdout.decode(errors="replace")
     assert result.returncode == 1, log
-    assert "-U: the I/Q stream input cannot retune" in log, log
+    assert "-U: an I/Q stream cannot retune" in log, log
     assert rig.connections == 0, "the rigctl peer was connected:\n" + log
     print("RIGCTL AT START OK: -U refused, no connection")
 

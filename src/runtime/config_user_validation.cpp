@@ -622,7 +622,7 @@ const trunk_scan_start_rule k_trunk_scan_start_rules[] = {
         "trunking",
         "enabled",
         iq_stream_beside_trunking,
-        "trunking.enabled cannot be used with an I/Q stream input; the stream decodes the one channel its sender "
+        "trunking.enabled cannot be used with an I/Q stream input; it decodes only the channel the sending program "
         "streams",
         turn_trunking_off,
     },
@@ -630,7 +630,7 @@ const trunk_scan_start_rule k_trunk_scan_start_rules[] = {
         "trunking",
         "scanner",
         iq_stream_beside_scanner,
-        "trunking.scanner cannot be used with an I/Q stream input; the stream decodes the one channel its sender "
+        "trunking.scanner cannot be used with an I/Q stream input; it decodes only the channel the sending program "
         "streams",
         turn_scanner_off,
     },
@@ -638,7 +638,7 @@ const trunk_scan_start_rule k_trunk_scan_start_rules[] = {
         "trunk_scan",
         "enabled",
         iq_stream_beside_trunk_scan,
-        "trunk_scan.enabled cannot be used with an I/Q stream input; the stream decodes the one channel its sender "
+        "trunk_scan.enabled cannot be used with an I/Q stream input; it decodes only the channel the sending program "
         "streams",
         turn_trunk_scan_off,
     },
@@ -878,7 +878,7 @@ validate_composed_file_path(const dsdneoUserConfig* cfg, const char* section, co
 static void
 validate_iq_stream_unused_keys(const dsdneoUserConfig* cfg, const char* section, const char* prefix,
                                dsdcfg_diagnostics_t* diags) {
-    static const char k_ignored[] = "is not used by an I/Q stream input: the sending program tunes";
+    static const char k_ignored[] = "is not used by an I/Q stream input: the sending program runs the radio";
 
     const struct {
         bool set;

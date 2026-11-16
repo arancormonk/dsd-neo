@@ -368,8 +368,8 @@ const struct {
     const char* replay;
     const char* live;
 } kLevelAdvice[] = {
-    {"recorded too strong; record with less gain next time", "lower RF gain or add filtering/attenuation"},
-    {"recorded at a low level; record with more gain next time", "raise RF gain if signal is present"},
+    {"recorded too strong; use less gain next time", "lower RF gain or add filtering/attenuation"},
+    {"recorded weak; use more gain next time", "raise RF gain if signal is present"},
 };
 
 /* @p l from the replay, its level advice as the live run would give it; *@p tuner_advice set when the replay itself

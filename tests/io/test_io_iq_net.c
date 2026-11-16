@@ -98,7 +98,7 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     va_start(ap, format);
     (void)DSD_VSNPRINTF(text, sizeof(text), format, ap);
     va_end(ap);
-    if (strstr(text, "set the sender's packet size to a multiple of")) {
+    if (strstr(text, "set the sending program's packet size to a multiple of")) {
         (void)atomic_fetch_add(&g_log_malformed, 1);
     }
     if (strstr(text, "ignoring datagrams from")) {
@@ -606,7 +606,7 @@ test_rate_rows(void) {
     iq_net_rate_warning_text(text, sizeof(text), 55200U, 48000U);
     CHECK(strcmp(text,
                  "I/Q stream: about 55200 samples/s are arriving, but the input is set to 48000. If nothing decodes, "
-                 "check that the sample rate matches the sender.\n")
+                 "check that the rate in the spec matches the sending program's sample rate.\n")
           == 0);
 }
 

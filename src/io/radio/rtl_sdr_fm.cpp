@@ -10173,7 +10173,7 @@ stream_open_validate_source_selection(dsd_opts* opts, RadioSourceKind source_kin
     if (source_kind == RADIO_SOURCE_NET_IQ && opts->iq_capture_requested) {
         /* The capture writer cannot describe a stream with no known centre and gaps no event marks; the sending
            program can record instead. */
-        LOG_ERROR("I/Q stream: --iq-capture cannot record this input; record it in the sending program.\n");
+        LOG_ERROR("--iq-capture: an I/Q stream cannot be recorded here; record it in the sending program instead.\n");
         return -1;
     }
     return 0;
@@ -14252,7 +14252,7 @@ rtl_stream_tune_impl(dsd_opts* opts, uint32_t frequency, uint64_t caller_token) 
         const uint64_t now_ns = dsd_realtime_mono_ns();
         if (now_ns > s_last_net_notice_ns.load(std::memory_order_acquire) + 1000000000ULL) {
             s_last_net_notice_ns.store(now_ns, std::memory_order_release);
-            LOG_INFO("NOTICE: An I/Q stream cannot retune: change the channel in the sending program.\n");
+            LOG_INFO("NOTICE: Retune ignored on the I/Q stream: the sending program picks the channel.\n");
         }
         return RTL_STREAM_TUNE_FAILED;
     }

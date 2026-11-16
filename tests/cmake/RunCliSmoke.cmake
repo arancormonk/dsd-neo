@@ -181,9 +181,9 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused-iq-stream")
     )
     set(_forbid_output_regex "radio stream")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-tcp-no-listener")
-    # Issue #743: a TCP stream says where it connects, warns a rate under TETRA's 25 kHz (36 kHz when the sender's
-    # centring is approximate) and notes that no FREQ was given; with nothing listening the connect fails and the
-    # start exits 1. Nothing listens on port 1.
+    # Issue #743: a TCP stream says where it connects, warns a rate under TETRA's 25 kHz (36 kHz when the sending
+    # program's centring is approximate) and notes that no FREQ was given; with nothing listening the connect fails
+    # and the start exits 1. Nothing listens on port 1.
     set(_args
         --no-config
         --frontend
@@ -198,7 +198,7 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-tcp-no-listener")
     set(_want_stdout_regex "")
     set(_want_stderr_regex "")
     set(_want_output_regex
-        "I/Q stream: connecting to 127[.]0[.]0[.]1:1 [(]cs16, 20000 samples/s[)].*20000 samples/s is below the 25000 that TETRA needs [(]36000 when the sender's channel is not exactly centred[)].*no receiver frequency [(]FREQ[)] was given.*cannot connect to 127[.]0[.]0[.]1:1.*Failed to open radio stream"
+        "I/Q stream: connecting to 127[.]0[.]0[.]1:1 [(]cs16, 20000 samples/s[)].*20000 samples/s is below the 25000 that TETRA needs [(]36000 when the sending program does not centre the channel exactly[)]; decoding may fail[.] Raise the sample rate in the sending program[.].*no receiver frequency [(]FREQ[)] was given.*Add the sending program's centre frequency.*cannot connect to 127[.]0[.]0[.]1:1.*Failed to open radio stream"
     )
     set(_forbid_output_regex "receiving on")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-narrow")
@@ -217,7 +217,7 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-narrow")
     set(_want_stdout_regex "")
     set(_want_stderr_regex "")
     set(_want_output_regex
-        "8000 samples/s is below the 12000 that a 6[.]25 kHz channel needs; decoding may fail"
+        "8000 samples/s is below the 12000 that NXDN48 or dPMR needs; decoding may fail"
     )
     set(_forbid_output_regex "36000|no receiver frequency")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-wide")
@@ -236,9 +236,28 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-wide")
     set(_want_stdout_regex "")
     set(_want_stderr_regex "")
     set(_want_output_regex
-        "12000 samples/s is below the 16000 that a 12[.]5 kHz channel needs; decoding may fail"
+        "12000 samples/s is below the 16000 that a 12[.]5 kHz digital channel needs; decoding may fail"
     )
     set(_forbid_output_regex "36000|no receiver frequency")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-analog")
+    # An analog session is warned for its FM or AM channel, not as a digital mode.
+    set(_args
+        --no-config
+        --frontend
+        none
+        -fA
+        -i
+        iqtcp:127.0.0.1:1:12000:cs16
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "12000 samples/s is below the 16000 that an analog FM channel needs; decoding may fail"
+    )
+    set(_forbid_output_regex "digital channel|36000|no receiver frequency")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-met")
     set(_args
         --no-config
