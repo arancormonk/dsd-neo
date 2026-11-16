@@ -613,8 +613,9 @@ of a unit (`1.2M`, `4.2G`). `FRQ:` is the tuned frequency in MHz to the Hz, in t
 frequency takes (`FRQ: 4294.967295 MHz;`), and `FRQ:           - MHz;` while none is known. An Airspy names itself on a
 row of its own (`| Airspy: <serial>; <rate> samples/s;`) above its receiver row (`| G: ...`), and so do an rtl_tcp
 server (`| rtl_tcp: <host>:<port>;`), an I/Q replay (`| I/Q replay: <file>;`) and an I/Q stream
-(`| I/Q stream: 127.0.0.1:1234; cs16, 48 kHz; connected`, its state last: `connecting`, `reconnecting` or `connected`
-over TCP, `opening` or `receiving` over UDP, `waiting for data` or `no input`); the receiver row of a replay or stream
+(`| I/Q stream: 127.0.0.1:1234; cs16, 48 kHz; connected`, over UDP `| I/Q stream: UDP 127.0.0.1:7355; ...`, or
+`UDP :7355` when it binds every address, its state last: `connecting`, `reconnecting` or `connected` over TCP,
+`opening` or `receiving` over UDP, `waiting for data` or `no input`); the receiver row of a replay or stream
 has no gain or PPM. A SoapySDR device's source
 row starts `| Soapy;` and ends with its arguments (`Args: driver=...;`), so at 80 columns `FRQ:` still fits ahead of
 the cut. Auto PPM and `External RTL Tuning on UDP` are rows of their own. Rows whose text changes only with

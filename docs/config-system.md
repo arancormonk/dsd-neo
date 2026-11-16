@@ -290,8 +290,9 @@ program sends, and nothing can retune it (issue #743). So `[trunking] enabled`, 
   DSD_NEO_CONFIG unset).` This holds for a config loaded through `DSD_NEO_CONFIG` too.
 - A config loaded into a running session that would leave a stream beside one of them is not applied, whether it
   changes the input, the trunking keys or both, and so is a switch back to a remembered stream while one is on.
-- A config that names a stream `[input]` while a `-Y` scan or trunk scan runs is not applied either
-  (`Config not applied: stop the scan first`).
+- A config that names a stream `[input]` while a `-Y` scan or trunk scan runs is not applied either. The log says
+  `Config not applied: an I/Q stream input cannot run a scan; stop the scan first.`, and the status line
+  `Config not applied: stop the scan first`.
 
 Terminal Config > Load points the autosave at the file it loads, and a profile load turns the autosave off, only once
 the config is applied; a load that is not applied leaves the autosave as it was, so exit never writes the session into
@@ -320,14 +321,17 @@ own `RTL-SDR` row; it is not saved. A file the switch opened by its `-i` extensi
 streams, `.bin` as a capture) is saved by its path, so startup opens it the same way.
 
 An I/Q replay (`--iq-replay`) has no `[input]` form. A session that runs one saves (the exit autosave, Save,
-`--print-config`) the `[input]` of the config it loaded, exactly as loaded, or no `[input]` when it loaded none. A config
-file loaded during the replay (Config > Load) whose `[input]` leaves the replay running is saved in its place. A config
-patch (the API's `config_apply`) changes only the `[input]` keys it names: one that sets `input_warn_db` alone keeps the
-saved source and its endpoint. A config without an `[input]`, or one that is not applied, keeps the saved one. Once the
-session leaves the replay, it saves the input it runs again; the RTL-SDR row that returns it to the replay keeps saving
-the input it left. An `[input]` no config can start (a file input whose `file_path` is an `iqreplay:...` spec) is never
-kept for a save, and `--validate-config` reports such a `file_path` as an error. A bare `-i tcp` or `-i udp` is saved
-as the `tcp` or `udp` source it opens (the session's endpoint, `localhost:7355` or `127.0.0.1:7355` by default).
+`--print-config`) the `[input]` of the config it loaded, exactly as loaded, or no `[input]` when it loaded none. When
+that `[input]` is an I/Q stream (`iqtcp` or `iqudp`), the save writes `[trunking] enabled`, `[trunking] scanner` and
+`[trunk_scan] enabled` off, even if the replay ran trunking or a scan (`-T`, `-Y`, `--trunk-scan`): the next start of
+the saved file runs the stream, which cannot run beside them. A config file loaded during the replay (Config > Load) whose `[input]` leaves the replay running is saved in its place. A
+config patch (the API's `config_apply`) changes only the `[input]` keys it names: one that sets `input_warn_db` alone
+keeps the saved source and its endpoint. A config without an `[input]`, or one that is not applied, keeps the saved one.
+Once the session leaves the replay, it saves the input it runs again; the RTL-SDR row that returns it to the replay
+keeps saving the input it left. An `[input]` no config can start (a file input whose `file_path` is an `iqreplay:...`
+spec) is never kept for a save, and `--validate-config` reports such a `file_path` as an error. A bare `-i tcp` or
+`-i udp` is saved as the `tcp` or `udp` source it opens (the session's endpoint, `localhost:7355` or `127.0.0.1:7355` by
+default).
 
 An I/Q stream (`-i iqtcp:` or `-i iqudp:`) is saved as its own `iqtcp` or `iqudp` source, its fields as it runs them
 (`iq_rate` and `iq_freq` in Hz), with `rtl_bw_khz`, the squelch keys and `rtl_volume`, but no gain, PPM or frequency
@@ -767,8 +771,9 @@ Output format:
   `rtl_bw_khz` is the DSP bandwidth request, and the squelch keys and `rtl_volume` apply as on any radio input.
   `rtl_gain`, `rtl_ppm`, `auto_ppm` and `rtl_freq` are not used, since the sending program runs the radio;
   `--validate-config` warns about each. A stream cannot run beside `[trunking] enabled`, `[trunking] scanner` or
-  `[trunk_scan] enabled` (see "Config Discovery and Locations"). A save writes the stream's fields as it runs them
-  (`iq_rate` and `iq_freq` in Hz) and no gain, PPM or frequency key.
+  `[trunk_scan] enabled` (see "Config Discovery and Locations"), so a save with a stream `[input]` writes those three
+  off. A save writes the stream's fields as it runs them (`iq_rate` and `iq_freq` in Hz) and no gain, PPM or frequency
+  key.
 
 - **File (`source = "file"`)**: Set `file_path` to switch the input to a file
   input (WAV/BIN/RAW/SYM). Use `file_sample_rate` for PCM16 WAV/RAW inputs that

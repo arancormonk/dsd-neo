@@ -575,12 +575,15 @@ The stream carries the one channel the sending program picked. dsd-neo cannot re
   the DSP bandwidth, still work. The API's status reports `tunable: false` (see `docs/api.md`).
 - The input level meter works as on any radio input; its advice says `raise the gain in the sending program` or
   `lower the gain in the sending program`.
-- The terminal names the input (`Source: I/Q stream 127.0.0.1:1234 (cs16, 48 kHz)`, or `I/Q stream UDP :7355 (...)`)
-  and shows its state on the I/O pane: `| I/Q stream: 127.0.0.1:1234; cs16, 48 kHz; connected`. The state is
+- The terminal names the input (`Source: I/Q stream 127.0.0.1:1234 (cs16, 48 kHz)`; over UDP `I/Q stream UDP :7355
+  (...)` when it binds every address, `0.0.0.0`, else `I/Q stream UDP 127.0.0.1:7355 (...)`) and shows its state on
+  the I/O pane: `| I/Q stream: 127.0.0.1:1234; cs16, 48 kHz; connected`, or `| I/Q stream: UDP 127.0.0.1:7355; ...`
+  over UDP. The state is
   `connecting`, `reconnecting` or `connected` for TCP, `opening` or `receiving` for UDP, and `waiting for data` or
   `no input` for either.
 - The Qt and Android apps have no I/Q stream source. A saved system whose extra decoder arguments carry
-  `-i iqtcp:` or `-i iqudp:` does not start: `An I/Q stream input is not available from saved systems yet.`
+  `-i iqtcp:` or `-i iqudp:` does not start: `An I/Q stream input is not available from saved systems yet. Run
+  dsd-neo from the command line, or remove the -i option from the extra decoder arguments.`
 
 `--iq-capture` is refused with a stream: `--iq-capture: an I/Q stream cannot be recorded here; record it in the sending
 program instead (an SDR++ baseband WAV plays back with --iq-replay).`
