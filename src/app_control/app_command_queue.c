@@ -3755,6 +3755,24 @@ request_manual_tune_io(dsd_opts* opts, dsd_state* state, long int freq, dsd_trun
     return result;
 }
 
+/* Whether the DMR machine judges an operator's manual move under trunking (manual_move_judge_before()): the DMR machine
+   owns this trunking, or its owner is not known yet. The default mode decodes every protocol, and until the first
+   CRC-valid DMR CSBK names the owner (dsd_state::trunk_recovery_protocol) no other judge runs on the io_control leg. A
+   trunk scan's parked DMR target owns its own (dsd_trunk_dmr_recovery_allowed()). A run known to be P25 or NXDN reads
+   no receiver for it. */
+static int
+dmr_judges_manual_move(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || opts->trunk_enable != 1) {
+        return 0;
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        return dsd_trunk_dmr_recovery_allowed(opts, state);
+    }
+    return opts->frame_dmr
+           && (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR
+               || state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_UNKNOWN);
+}
+
 /* @p out_result is the CC hook's result on the CC leg. On the io_control leg it is OK for an accepted tune (a timeout
    included), DEFERRED for a deferred one and FAILED otherwise, so a caller can tell a front end's refusal from a tune
    to retry (issue #666). @p out_pending_id (optional) is for a caller that follows a timed-out io_control tune to its
@@ -3776,8 +3794,8 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
         dsd_engine_manual_tune_walk_yields(1);
         const int ted_sps = dsd_opts_compute_sps_rate(opts, p25_cc_symbol_rate, current_demod_rate(opts, state));
         /* Judged once: by the caller where it judges the move itself (a carrier boundary with trunking off, the DMR
-           machine under DMR trunking: manual_move_judge_before()), else by the engine's tune hook. */
-        const int caller_judges = opts->trunk_enable != 1 || dsd_trunk_dmr_recovery_allowed(opts, state);
+           machine where dmr_judges_manual_move() says: manual_move_judge_before()), else by the engine's tune hook. */
+        const int caller_judges = opts->trunk_enable != 1 || dmr_judges_manual_move(opts, state);
         if (caller_judges) {
             dsd_trunk_tuning_caller_judges_begin();
         }
@@ -3929,12 +3947,12 @@ run_manual_retune_guarded(dsd_opts* opts, dsd_state* state, manual_retune_step_f
     return status;
 }
 
-/* Who judges an operator's manual move under DMR trunking (dsd_trunk_dmr_recovery_allowed()) for the DMR calls'
-   privacy and voice hold: the DMR machine, from where it read the receiver before the tune
-   (dmr_sm_receiver_frequency(); 0 unknown), through dmr_sm_note_operator_leave(). Such a move takes the io_control leg,
-   which runs neither the engine's tune hook nor a carrier boundary, or the P25 hook leg, which request_manual_tune()
-   marks as its caller's to judge. Under another trunking protocol the hook leg's engine judge is the one, and nothing
-   here reads the receiver (no rigctl round trip). */
+/* Who judges an operator's manual move under trunking (dmr_judges_manual_move()) for the DMR calls' privacy and voice
+   hold: the DMR machine, from where it read the receiver before the tune (dmr_sm_receiver_frequency(); 0 unknown),
+   through dmr_sm_note_operator_leave(). Such a move takes the io_control leg, which runs neither the engine's tune hook
+   nor a carrier boundary, or the P25 hook leg, which request_manual_tune() marks as its caller's to judge. Under a
+   trunking protocol known to be another (P25, NXDN) the hook leg's engine judge is the one, and nothing here reads the
+   receiver (no rigctl round trip). */
 typedef struct {
     int dmr_judges;
     long receiver_hz;
@@ -3942,7 +3960,7 @@ typedef struct {
 
 static manual_move_judge
 manual_move_judge_before(const dsd_opts* opts, const dsd_state* state) {
-    manual_move_judge judge = {dsd_trunk_dmr_recovery_allowed(opts, state), 0L};
+    manual_move_judge judge = {dmr_judges_manual_move(opts, state), 0L};
     if (judge.dmr_judges) {
         judge.receiver_hz = dmr_sm_receiver_frequency(opts);
     }
@@ -4220,7 +4238,7 @@ dsd_app_channel_walk_settled(dsd_opts* opts, dsd_state* state, int row, int dir,
     }
     manual_tune_moved(opts, state);
     /* Where the receiver was before the press's tune is not known by its late landing: counted as a leave. */
-    const manual_move_judge judge = {dsd_trunk_dmr_recovery_allowed(opts, state), 0L};
+    const manual_move_judge judge = {dmr_judges_manual_move(opts, state), 0L};
     lcn_cycle_finish(opts, state, row, freq, p25_live, row_current, DSD_TRUNK_TUNE_RESULT_OK, 0U, &judge);
     if (p25_live) {
         p25_sm_tick_guard_leave();

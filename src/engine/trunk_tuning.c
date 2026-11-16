@@ -301,8 +301,8 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     // a stale privacy bit here would mute the opening bursts of the next tuned call until its
     // first LC decodes. Nor does the next call key from the left calls' talkgroups. Until each slot's next call says
     // whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()). A release whose caller
-    // judges the move itself (dsd_trunk_tuning_caller_judges(): a trunk-scan forced advance, whose park's restore
-    // judges it) leaves both to that caller, so the move is judged once.
+    // judges the move itself (dsd_trunk_tuning_caller_judges(): a trunk-scan forced advance, whose park judges it, and
+    // a carrier boundary) leaves both to that caller, so the move is judged once.
     if (!dsd_trunk_tuning_caller_judges()) {
         dmr_forget_call_privacy(state);
         dmr_enc_class_hold(state);

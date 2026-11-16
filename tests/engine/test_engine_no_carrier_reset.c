@@ -11869,36 +11869,59 @@ dmr_manual_done(dsd_opts* opts, dsd_state* state) {
     state->rtl_ctx = NULL;
 }
 
+static const char* const k_dmr_manual_names[] = {"a manual Return to CC", "a trunked channel cycle", "a lockout",
+                                                 "a skip"};
+
+/* One manual @p move off the followed call's voice channel. With @p owner_unknown the run decodes every protocol (the
+   default mode) and no CRC-valid DMR CSBK has named the trunk's owner yet: no other judge runs on the io_control leg,
+   so the DMR machine judges the move then too. */
+static int
+dmr_manual_move_case(int move, int owner_unknown) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_manual_setup(opts, state, DMR_MANUAL_VC);
+    if (owner_unknown) {
+        opts->frame_p25p1 = opts->frame_p25p2 = 1;
+        opts->frame_nxdn48 = opts->frame_nxdn96 = 1;
+        state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_UNKNOWN;
+    }
+    char name[96];
+    DSD_SNPRINTF(name, sizeof name, "%s%s", k_dmr_manual_names[move], owner_unknown ? " (owner not known yet)" : "");
+    char what[192];
+    g_rtl_tune_calls = 0;
+    g_dmr_holds = 0;
+    const int drained = dmr_manual_press(opts, state, (dmr_manual_move)move);
+    DSD_SNPRINTF(what, sizeof what, "%s: the press is applied and moves the tuner", name);
+    rc |= expect_true(what, drained == 1 && g_rtl_tune_calls >= 1 && g_rtl_tune_freq != (uint32_t)DMR_MANUAL_VC);
+    /* A lockout's and a skip's no-carrier pass also unloads the keyloader's working keys, as before. */
+    rc |= expect_dmr_privacy_forgotten(name, state, move >= DMR_MANUAL_LOCKOUT ? 0ULL : 70ULL);
+    DSD_SNPRINTF(what, sizeof what, "%s: both slots' voice is held, once (holds %d)", name, g_dmr_holds);
+    rc |=
+        expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U && g_dmr_holds == 1);
+    DSD_SNPRINTF(what, sizeof what, "%s: the left call ended", name);
+    dsd_call_snapshot call;
+    rc |= expect_true(what, dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    dmr_manual_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Under DMR trunking a manual Return to CC, a channel cycle, a lockout and a skip retune through io_control, which runs
    neither the engine's tune hook nor a carrier boundary. Judged by the DMR machine as its own follows are, each move
    that leaves the followed call's carrier ends the call (its row keeping the FID), then forgets its privacy bit, FID,
-   class and talkgroup key and holds both slots' voice until the next carrier's calls say. A Return to CC with the
-   receiver already on the control channel leaves nothing behind. */
+   class and talkgroup key and holds both slots' voice until the next carrier's calls say. So it does in the default
+   every-protocol mode before a CRC-valid DMR CSBK names the trunk's owner. A Return to CC with the receiver already on
+   the control channel leaves nothing behind. */
 static int
 test_dmr_manual_moves_forget_and_hold(void) {
-    static const char* const names[] = {"a manual Return to CC", "a trunked channel cycle", "a lockout", "a skip"};
     int rc = 0;
-    for (int move = DMR_MANUAL_RETURN_CC; move <= DMR_MANUAL_SKIP; move++) {
-        dsd_opts* opts = NULL;
-        dsd_state* state = NULL;
-        if (init_test_runtime(&opts, &state) != 0) {
-            return 1;
+    for (int owner_unknown = 0; owner_unknown <= 1; owner_unknown++) {
+        for (int move = DMR_MANUAL_RETURN_CC; move <= DMR_MANUAL_SKIP; move++) {
+            rc |= dmr_manual_move_case(move, owner_unknown);
         }
-        rc |= dmr_manual_setup(opts, state, DMR_MANUAL_VC);
-        char what[160];
-        g_rtl_tune_calls = 0;
-        const int drained = dmr_manual_press(opts, state, (dmr_manual_move)move);
-        DSD_SNPRINTF(what, sizeof what, "%s: the press is applied and moves the tuner", names[move]);
-        rc |= expect_true(what, drained == 1 && g_rtl_tune_calls >= 1 && g_rtl_tune_freq != (uint32_t)DMR_MANUAL_VC);
-        /* A lockout's and a skip's no-carrier pass also unloads the keyloader's working keys, as before. */
-        rc |= expect_dmr_privacy_forgotten(names[move], state, move >= DMR_MANUAL_LOCKOUT ? 0ULL : 70ULL);
-        DSD_SNPRINTF(what, sizeof what, "%s: both slots' voice is held", names[move]);
-        rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
-        DSD_SNPRINTF(what, sizeof what, "%s: the left call ended", names[move]);
-        dsd_call_snapshot call;
-        rc |= expect_true(what, dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
-        dmr_manual_done(opts, state);
-        free_test_runtime(opts, state);
     }
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
@@ -11920,10 +11943,12 @@ test_dmr_manual_moves_forget_and_hold(void) {
 /* A --trunk-scan over two dmr-trunk targets through the real coordinator and the real engine tune hooks, the tuner
    (an RTL stream) at 433 MHz, away from both. @p landed is the run's landing at its start (dsd_engine_note_run_start()
    leaves 0 for a run that starts with its trunk scan; 1 is a run that landed before the scan was started from the
-   menu). The first park's retune (the first target's) fails once when @p first_park_fails, and the start parks the
-   second target instead. */
+   menu). The first park's retune (the first target's) fails once with PARK_JUDGE_FIRST_FAILS, and the start parks the
+   second target instead; with PARK_JUDGE_FIRST_PENDING it times out, its RTL tune left outstanding (PENDING). */
+enum { PARK_JUDGE_FIRST_LANDS = 0, PARK_JUDGE_FIRST_FAILS = 1, PARK_JUDGE_FIRST_PENDING = 2 };
+
 static int
-park_judge_start(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, uint8_t landed, int first_park_fails) {
+park_judge_start(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, uint8_t landed, int first_park) {
     const int fd = dsd_test_mkstemp(path, path_size, "park-judge-");
     if (fd < 0) {
         path[0] = '\0';
@@ -11952,12 +11977,15 @@ park_judge_start(dsd_opts* opts, dsd_state* state, char* path, size_t path_size,
     opts->trunk_scan_list_count = 1;
     dsd_engine_note_run_start(opts, state);
     state->run_landed = landed;
-    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
-    g_rtl_fail_once_hz = first_park_fails ? 451000000U : 0U;
+    g_rtl_tune_result = first_park == PARK_JUDGE_FIRST_PENDING ? RTL_STREAM_TUNE_TIMEOUT : RTL_STREAM_TUNE_OK;
+    g_rtl_timeout_outstanding = first_park == PARK_JUDGE_FIRST_PENDING;
+    g_rtl_fail_once_hz = first_park == PARK_JUDGE_FIRST_FAILS ? 451000000U : 0U;
     g_dmr_holds = g_dmr_forgets = 0;
     char err[256] = {0};
     rc |= expect_true("park judge trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
     g_rtl_fail_once_hz = 0U;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_timeout_outstanding = 0;
     return rc;
 }
 
@@ -11971,6 +11999,80 @@ park_judge_done(dsd_opts* opts, dsd_state* state, const char* path) {
     if (path[0] != '\0') {
         (void)remove(path);
     }
+}
+
+/* A first park whose RTL tune is still PENDING has not landed: it leaves the run's first landing for the park that
+   does. Its tune failing, the next park is the first landing and holds nothing; its tune completing, the run has
+   landed, and the next park holds. */
+static int
+park_judge_pending_first_park(void) {
+    int rc = 0;
+    char path[DSD_TEST_PATH_MAX];
+    char what[192];
+    for (int completes = 0; completes <= 1; completes++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_PENDING);
+        DSD_SNPRINTF(what, sizeof what, "a first park still PENDING has not landed (tuned %u Hz, landed %u)",
+                     (unsigned)g_rtl_tune_freq, (unsigned)state->run_landed);
+        rc |= expect_true(what, g_rtl_tune_freq == 451000000U && state->run_landed == 0U && g_dmr_holds == 0);
+        land_outstanding_tunes(completes ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED);
+        dsd_engine_trunk_scan_tick(opts, state);
+        if (completes) {
+            DSD_SNPRINTF(what, sizeof what, "a first park's PENDING tune that completes lands the run (landed %u)",
+                         (unsigned)state->run_landed);
+            rc |= expect_true(what, state->run_landed == 1U && g_dmr_holds == 0);
+            rc |= expect_true("the advance after a completed first park",
+                              dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0
+                                  && g_rtl_tune_freq == 452000000U);
+        }
+        DSD_SNPRINTF(what, sizeof what,
+                     "after a first park whose PENDING tune %s, the next park %s (tuned %u Hz, holds %d, landed %u)",
+                     completes ? "completed" : "failed", completes ? "holds once" : "holds nothing",
+                     (unsigned)g_rtl_tune_freq, g_dmr_holds, (unsigned)state->run_landed);
+        rc |=
+            expect_true(what, g_rtl_tune_freq == 452000000U && g_dmr_holds == (completes ? 1 : 0)
+                                  && state->dmr_enc_class_held[0] == (completes ? 1U : 0U) && state->run_landed == 1U);
+        park_judge_done(opts, state, path);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* An operator's advance off a landed park is a forced advance (#507): it releases the call and walks on. When the
+   alternate's retune fails, the walk falls back onto the original, and that move is judged once, by the fallback's
+   switch: one forget, one hold, not one each for the failed alternate, the fallback and the release after the walk.
+   With @p all_fail the fallback fails too and the walk rolls back; the release after it judges the move, once. */
+static int
+park_judge_advance_falls_back(int all_fail) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    int rc = park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_LANDS);
+    g_dmr_holds = g_dmr_forgets = 0;
+    g_rtl_fail_once_hz = 452000000U;
+    if (all_fail) {
+        g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    }
+    (void)dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    g_rtl_fail_once_hz = 0U;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what, "a forced advance %s is judged once (tuned %u Hz, holds %d, forgets %d)",
+                 all_fail ? "whose every park fails, rolled back,"
+                          : "whose alternate fails, fallen back onto the original,",
+                 (unsigned)g_rtl_tune_freq, g_dmr_holds, g_dmr_forgets);
+    rc |= expect_true(what, g_rtl_tune_freq == 451000000U && g_dmr_holds == 1 && g_dmr_forgets == 1
+                                && state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+    return rc;
 }
 
 /* A trunk-scan park is judged once, by its restore, never again by the engine's tune hook its trunked target's
@@ -11987,7 +12089,7 @@ test_trunk_scan_park_judged_once(void) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    rc |= park_judge_start(opts, state, path, sizeof path, 0U, 0);
+    rc |= park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_LANDS);
     rc |= expect_true("a run starting with its trunk scan: the first park tunes the trunked target",
                       g_rtl_tune_freq == 451000000U);
     rc |= expect_true("a run starting with its trunk scan: the first park holds nothing",
@@ -12007,7 +12109,7 @@ test_trunk_scan_park_judged_once(void) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    rc |= park_judge_start(opts, state, path, sizeof path, 1U, 0);
+    rc |= park_judge_start(opts, state, path, sizeof path, 1U, PARK_JUDGE_FIRST_LANDS);
     DSD_SNPRINTF(what, sizeof what, "a trunk scan started after the run landed: its first park holds once (holds %d)",
                  g_dmr_holds);
     rc |=
@@ -12018,7 +12120,7 @@ test_trunk_scan_park_judged_once(void) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    rc |= park_judge_start(opts, state, path, sizeof path, 0U, 1);
+    rc |= park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_FAILS);
     DSD_SNPRINTF(what, sizeof what,
                  "a first park whose retune failed uses nothing up: the next park is the run's first landing and holds "
                  "nothing (tuned %u Hz, holds %d, landed %u)",
@@ -12027,6 +12129,9 @@ test_trunk_scan_park_judged_once(void) {
                                 && state->dmr_enc_class_held[1] == 0U && state->run_landed == 1U);
     park_judge_done(opts, state, path);
     free_test_runtime(opts, state);
+    rc |= park_judge_pending_first_park();
+    rc |= park_judge_advance_falls_back(0);
+    rc |= park_judge_advance_falls_back(1);
     return rc;
 }
 
