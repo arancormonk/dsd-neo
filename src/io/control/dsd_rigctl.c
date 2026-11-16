@@ -1089,6 +1089,11 @@ io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq
     if (!opts || freq_hz == 0U) {
         return -1;
     }
+    /* An I/Q replay or stream has no tuner to move, and a rigctl peer beside it moves a radio the session does not hear
+       (issue #743 B12). */
+    if (dsd_opts_input_has_fixed_tuning(opts)) {
+        return -1;
+    }
     uint32_t applied_freq = freq_hz;
 
     LOG_INFO("io_control: tune to %u Hz\n", freq_hz);

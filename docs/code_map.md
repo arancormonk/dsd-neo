@@ -4665,6 +4665,19 @@ noted, `dsd_engine_manual_tune_noted()`; no correlated request unresolved, `dsd_
 trunk scan or `-Y` owning the tuner, `<dsd-neo/runtime/tuner_owner.h>`), and a table without it (headless and test
 builds) answers free (`dsd_trunk_tuning_hook_tuner_free()`).
 
+An input with fixed tuning (`dsd_opts_input_has_fixed_tuning()`: an I/Q replay or I/Q stream) is refused at the top of
+the four public tune entries (`dsd_engine_trunk_tune_to_freq_request()`, `_to_cc_request()`,
+`dsd_engine_return_to_cc_request()` and `dsd_engine_scan_tune_to_freq()`), before the operator-walk check, the decision
+read, the scan tune's request ID and any snapshot, profile, drain or timed digital family is spent (issue #743 B12): a
+rigctl peer beside a replay or stream used to take the trunking retunes the input defers and move a radio the session
+does not hear. A replay answers DEFERRED, as its stream always has, so the trunking machines retry it as any deferral;
+a stream answers FAILED, since nothing will ever land. The notice is logged at most once a second on the real-time
+clock. `dsd_engine_tune_with_backend()` checks again, so no later entry reaches a peer. The legacy paths outside these
+entries refuse it too: the untyped `-Y` step and the no-carrier direct control-channel return see no rigctl leg
+(`legacy_rigctl_leg_present()` in `engine.c`) and no front end (`untyped_front_end_present()`), and
+`io_control_set_freq_tagged()` answers -1 (`ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_NO_CARRIER_RESET`,
+`IO_RIGCTL_CONTROL`, `DECODE_IQ_REPLAY_RIGCTL`).
+
 A manual tune stays out of that ledger (issue #671, `include/dsd-neo/engine/manual_tune.h`,
 `src/engine/manual_tune_pending.c`). `io_control_set_freq_tagged()` tags each RTL leg with an ID from its own space
 (`RTL_STREAM_TUNE_ID_MANUAL_BIT`, bit 63, above any ledger ID). On `RTL_STREAM_TUNE_TIMEOUT` it hands the ID back, and
@@ -5213,7 +5226,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `rtl_set_freq`), `TUNER_RELEASE` (`CommandBridge::releaseTuner()`), `RETURN_CC` (refused ahead of its no-op cases,
     trunking off or no control channel yet, so it never reads as done) and `CHANNEL_CYCLE` and `CHANNEL_CYCLE_PREV`
     (every leg: LCN, P25 candidate, `-Y` row, trunk-scan target) are refused as failed commands with the toast "An I/Q
-    replay cannot retune." (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed or fail
+    replay cannot retune." (`ui_cmd_refuse_fixed_tuning()`, which refuses an I/Q stream the same way with its own
+    reason, and `RIGCTL_CONNECT` / `RIGCTL_CONNECT_CFG` on either: a peer beside one would take the trunking retunes,
+    issue #743 B12), where they used to report a tune that never landed or fail
     on the backend's deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their
     main effect is on the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts
     point at a release; the running trunk scan's gate comes first among those, so a trunked target it parks on (trunking

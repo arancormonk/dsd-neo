@@ -2864,6 +2864,38 @@ test_io_control_set_freq_rejects_missing_rtl_context(void) {
     return 0;
 }
 
+/* Issue #743 B12: an input with fixed tuning (an I/Q replay, an I/Q stream) has no tuner to move, and a rigctl peer beside
+   it would move a radio the session does not hear, so the tune is refused with neither asked. */
+static int
+test_io_control_set_freq_refuses_fixed_tuning(void) {
+    static const char* const kInputs[] = {"iqreplay:capture.iq.json", "iqtcp:127.0.0.1:5000:240k:cs16",
+                                          "iqudp:0.0.0.0:5000:240k:cu8"};
+    for (size_t i = 0; i < sizeof kInputs / sizeof kInputs[0]; i++) {
+        reset_stubs();
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", kInputs[i]);
+        opts.use_rigctl = 1;
+        opts.rigctl_sockfd = 103;
+        opts.rtlsdr_center_freq = 851000000U;
+        opts.rigctl_sent_freq_hz = 851000000U;
+        state.rtl_ctx = (RtlSdrContext*)&state;
+        push_response("RPRT 0\n");
+
+        uint64_t pending_id = 7U;
+        assert(io_control_set_freq_tagged(&opts, &state, 851075000U, &pending_id) == -1);
+        assert(pending_id == 0U);
+        assert(g_command_count == 0);
+        assert(g_rtl_tune_calls == 0);
+        assert(opts.rtlsdr_center_freq == 851000000U);
+        assert(opts.rigctl_sent_freq_hz == 851000000U);
+    }
+    return 0;
+}
+
 static int
 test_io_control_set_freq_propagates_rtl_deferred(void) {
     reset_stubs();
@@ -3033,6 +3065,7 @@ main(void) {
     rc |= test_a_manual_tune_weighs_a_typed_list_before_its_first_scope();
     rc |= test_io_control_set_freq_carries_a_uint32_past_long();
     rc |= test_io_control_set_freq_rejects_missing_rtl_context();
+    rc |= test_io_control_set_freq_refuses_fixed_tuning();
     rc |= test_io_control_set_freq_propagates_rtl_deferred();
     rc |= test_io_control_set_freq_caches_applied_rtl_frequency();
     rc |= test_io_control_set_freq_retains_accepted_rtl_timeout_target();

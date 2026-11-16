@@ -507,15 +507,20 @@ ui_toast_mhz(uint32_t hz, char* out, size_t out_size) {
     return out;
 }
 
-/* An I/Q replay plays the tuning its capture recorded and defers every other retune unseen (issue #575), so a tune or a
-   tuner release asked of it would be reported as done and never land. Returns 1, with the reason toasted, while the
-   input in force is a replay (dsd_opts_input_is_iq_replay()); the caller fails the command. */
+/* An input with fixed tuning (dsd_opts_input_has_fixed_tuning()) has no tuner a command can move: an I/Q replay plays
+   the tuning its capture recorded and defers every other retune unseen (issue #575), and the program sending an I/Q
+   stream picks its channel (issue #743). A tune, a tuner release or a rigctl peer asked of either would be reported as
+   done and never land. Returns 1, with the input's reason toasted, while the input in force has fixed tuning; the
+   caller fails the command. */
 static int
-ui_cmd_refuse_replay_tune(const dsd_opts* opts, dsd_state* state) {
-    if (!dsd_opts_input_is_iq_replay(opts)) {
+ui_cmd_refuse_fixed_tuning(const dsd_opts* opts, dsd_state* state) {
+    if (!dsd_opts_input_has_fixed_tuning(opts)) {
         return 0;
     }
-    ui_set_toast(state, 3, "An I/Q replay cannot retune.");
+    ui_set_toast(state, 3, "%s",
+                 dsd_opts_input_is_iq_replay(opts)
+                     ? "An I/Q replay cannot retune."
+                     : "An I/Q stream cannot retune: change the channel in the sending program.");
     return 1;
 }
 
@@ -1332,6 +1337,10 @@ ui_cmd_handle_rigctl_connect_cfg(dsd_opts* opts, dsd_state* state, const struct 
     int32_t port = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_host_port_payload(c, host, sizeof host, &port)) {
+        /* A peer beside an I/Q replay or stream would take the trunking retunes the input defers (issue #743 B12). */
+        if (ui_cmd_refuse_fixed_tuning(opts, state)) {
+            return UI_CMD_APPLY_FAILED;
+        }
         int rc = svc_rigctl_connect(opts, state, host, port);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2185,7 +2194,7 @@ ui_cmd_freq_payload_refused(dsd_state* state, uint32_t v, int* status) {
    refused. */
 static int
 ui_cmd_rtl_set_freq_refused(const dsd_opts* opts, dsd_state* state, uint32_t v, int* status) {
-    if (ui_cmd_refuse_replay_tune(opts, state)) {
+    if (ui_cmd_refuse_fixed_tuning(opts, state)) {
         *status = UI_CMD_APPLY_FAILED;
         return 1;
     }
@@ -2336,7 +2345,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
     /* Every refusal below is a failed command with its reason toasted, as the frequency entry's are
      * (ui_cmd_handle_rtl_set_freq()). The replay's comes ahead of the owner gates: their toasts point at a release,
      * which a replay refuses too. */
-    if (ui_cmd_refuse_replay_tune(opts, state)) {
+    if (ui_cmd_refuse_fixed_tuning(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
     /* The trunk scan, the owner a release cannot clear (see apply_tuner_release):
@@ -3871,7 +3880,7 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     }
     /* A retune the user asked for, refused as a tap is (issue #575), ahead of the cases with nothing to return to, so a
        replay never reports it done. */
-    if (ui_cmd_refuse_replay_tune(opts, state)) {
+    if (ui_cmd_refuse_fixed_tuning(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
     if (opts->trunk_enable != 1 || current_cc_freq(state) == 0) {
@@ -5800,7 +5809,7 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    if (ui_cmd_refuse_replay_tune(opts, state)) {
+    if (ui_cmd_refuse_fixed_tuning(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
     if (tuner_release_finds_pause(opts, state)) {
@@ -7454,7 +7463,11 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
         }
         case DSD_APP_CMD_RIGCTL_CONNECT: {
             /* The TCP input's host at the rigctl port, through the service the menu's connect takes too (issue #589).
-               The toasts name the host asked for: a failed reconnect keeps the old one in rigctlhostname. */
+               The toasts name the host asked for: a failed reconnect keeps the old one in rigctlhostname. Refused on an
+               input with fixed tuning, as the menu's connect is. */
+            if (ui_cmd_refuse_fixed_tuning(opts, state)) {
+                return UI_CMD_APPLY_FAILED;
+            }
             const int rc = svc_rigctl_connect(opts, state, opts->tcp_hostname, opts->rigctlportno);
             if (rc == 0) {
                 dmr_sm_note_receiver_unknown(dmr_sm_get_ctx()); // the new peer's radio may be tuned elsewhere
@@ -8733,7 +8746,7 @@ apply_cmd_channel_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     const int dir = c->id == DSD_APP_CMD_CHANNEL_CYCLE_PREV ? -1 : 1;
     // Every leg below is a retune the user asked for -- the next or previous target, -Y row, P25 candidate or LCN --
     // refused during an I/Q replay as a tap is (issue #575).
-    if (ui_cmd_refuse_replay_tune(opts, state)) {
+    if (ui_cmd_refuse_fixed_tuning(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
     // Under --trunk-scan "next" and "previous" mean a target. Walking the parked target's own

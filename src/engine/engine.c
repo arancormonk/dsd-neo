@@ -1282,6 +1282,13 @@ no_carrier_reset_nxdn_scan_markers(dsd_state* state) {
     state->nxdn_last_ran = -1;
 }
 
+/* Whether the legacy rigctl leg has a peer to tune: rigctl is on and the input's tuning is not fixed. Beside an I/Q
+ * replay or stream the peer moves a radio the session does not hear, so it is no front end there (issue #743 B12). */
+static int
+legacy_rigctl_leg_present(const dsd_opts* opts) {
+    return opts->use_rigctl == 1 && !dsd_opts_input_has_fixed_tuning(opts);
+}
+
 /* The legacy rigctl leg: the untyped -Y step and the direct control-channel return. On audio input a rigctl peer
  * demodulates (issue #621) it asks for the passband the analog monitor runs -- the configured width, the AM default, or
  * -B standing in for an unset NFM width -- or for the -B a digital mode is heard through, through the capturing call,
@@ -1294,7 +1301,7 @@ no_carrier_reset_nxdn_scan_markers(dsd_state* state) {
  * afterwards is the one last sent (dsd_opts::rigctl_sent_freq_hz). */
 static dsd_trunk_tune_result
 no_carrier_tune_rigctl_if_needed(dsd_opts* opts, const dsd_state* state, long int freq) {
-    if (opts->use_rigctl != 1) {
+    if (!legacy_rigctl_leg_present(opts)) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
     const dsd_rigctl_passband passband = dsd_rigctl_passband_of(opts, NULL);
@@ -1430,9 +1437,11 @@ walk_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t h
     return moved ? DSD_UNTYPED_STEP_FAILED_MOVED : DSD_UNTYPED_STEP_FAILED;
 }
 
+/* A front end the untyped list can tune: a rigctl peer (legacy_rigctl_leg_present()) or a radio DSD-neo tunes. An I/Q
+   replay or stream is neither, rigctl or not (issue #743). */
 static int
 untyped_front_end_present(const dsd_opts* opts) {
-    return opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL;
+    return legacy_rigctl_leg_present(opts) || dsd_opts_radio_can_tune(opts);
 }
 
 /* Puts every configured front end on @p freq for @p row of the untyped list, the rigctl leg first. @p moved is set once
@@ -1450,7 +1459,7 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int w
     }
     /* The output generation before any leg moves: only a newer capture can be the row's (issue #834). */
     dsd_engine_scan_landing_note_tune(state);
-    if (opts->use_rigctl == 1) {
+    if (legacy_rigctl_leg_present(opts)) {
         if (no_carrier_tune_rigctl_if_needed(opts, state, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
             return DSD_UNTYPED_STEP_FAILED;
         }
@@ -2523,7 +2532,7 @@ no_carrier_helper_result_is_deferred(int helper_attempted, dsd_trunk_tune_result
 
 static int
 no_carrier_apply_direct_cc_return(dsd_opts* opts, dsd_state* state, long cc, int helper_attempted) {
-    if (opts->use_rigctl == 1) {
+    if (legacy_rigctl_leg_present(opts)) {
         if (no_carrier_tune_rigctl_if_needed(opts, state, cc) != DSD_TRUNK_TUNE_RESULT_OK) {
             return 0;
         }

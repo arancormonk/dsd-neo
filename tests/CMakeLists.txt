@@ -20327,6 +20327,18 @@ if(DSD_HAS_RADIO)
                 DECODE_PCM_INPUT_PATHS
                 PROPERTIES LABELS "iq-decode" TIMEOUT 180
             )
+            # A replay with -T -U sends its rigctl peer no retune (issue #743 B12): a fake peer logs every command.
+            add_test(
+                NAME DECODE_IQ_REPLAY_RIGCTL
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/iq_replay_rigctl_check.py
+                    $<TARGET_FILE:dsd-neo> ${_DSD_NEO_IQ_FIXTURE_DIR}
+            )
+            set_tests_properties(
+                DECODE_IQ_REPLAY_RIGCTL
+                PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
         endif()
     endif()
 

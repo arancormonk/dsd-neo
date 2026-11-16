@@ -4831,6 +4831,63 @@ test_rigctl_reconnect_key_uses_the_connect_service(void) {
 }
 
 /*
+ * Issue #743 B12: a rigctl peer connected beside an I/Q replay or stream would take the trunking retunes the input
+ * defers and move a radio the session does not hear, so the '9' reconnect and the menu's connect are refused there as
+ * failed commands with the input's reason, before the service is asked. The stream's own reason comes with it, as it
+ * does for every tune the shared refusal turns away (the return to the control channel here).
+ */
+static int
+test_fixed_tuning_refuses_rigctl_connect(void) {
+    static const struct {
+        const char* dev;
+        const char* reason;
+    } inputs[] = {
+        {"iqreplay:capture.iq.json", "An I/Q replay cannot retune."},
+        {"iqtcp:127.0.0.1:5000:240k:cs16", "An I/Q stream cannot retune: change the channel in the sending program."},
+        {"iqudp:0.0.0.0:5000:240k:cu8", "An I/Q stream cannot retune: change the channel in the sending program."},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    char what[160];
+    for (size_t i = 0; i < sizeof inputs / sizeof inputs[0]; i++) {
+        for (int menu = 0; menu < 2; menu++) {
+            init_radio_context(&opts, &state, inputs[i].dev);
+            DSD_SNPRINTF(opts.tcp_hostname, sizeof opts.tcp_hostname, "%s", "sdr.example");
+            opts.rigctlportno = 4532;
+            arm_rigctl_connect_stub(1, 0);
+            DSD_SNPRINTF(what, sizeof what, "%s on %s", menu ? "menu rigctl connect" : "rigctl reconnect key",
+                         inputs[i].dev);
+            rc |= expect_int(what,
+                             menu ? post_host_port(DSD_APP_CMD_RIGCTL_CONNECT_CFG, "rig.example", 4533)
+                                  : post_empty(DSD_APP_CMD_RIGCTL_CONNECT),
+                             DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+            rc |= expect_int(what, g_rigctl_connect_calls, 0);
+            rc |= expect_int(what, opts.use_rigctl, 0);
+            rc |= expect_contains(what, state.ui_msg, inputs[i].reason);
+            freeState(&state);
+        }
+
+        init_radio_context(&opts, &state, inputs[i].dev);
+        seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+        DSD_SNPRINTF(what, sizeof what, "return to CC on %s", inputs[i].dev);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_int(what, g_cc_tune_calls + g_io_control_tune_calls, 0);
+        rc |= expect_contains(what, state.ui_msg, inputs[i].reason);
+        freeState(&state);
+    }
+    arm_rigctl_connect_stub(0, 0);
+    return rc;
+}
+
+/*
  * Stopping a playback onto a Pulse input that does not open leaves the playback running (issue #634): a failed switch
  * changes nothing, so the file stays open, its tone stays, and no new stream begins.
  */
@@ -31032,6 +31089,7 @@ main(void) {
     rc |= test_config_apply_pulse_device_is_a_new_stream();
     rc |= test_tcp_connect_clears_received_tone();
     rc |= test_rigctl_reconnect_key_uses_the_connect_service();
+    rc |= test_fixed_tuning_refuses_rigctl_connect();
     rc |= test_stop_playback_pulse_failure_keeps_the_playback();
     rc |= test_stop_playback_reopens_pulse_as_a_new_stream();
     rc |= test_output_reconfigure_failure_keeps_the_switch();

@@ -2741,6 +2741,59 @@ test_stream_source_key_moves_off_a_replay(void) {
     return rc;
 }
 
+/* Issue #743 B12: beside an input with fixed tuning (an I/Q replay or stream) a rigctl peer moves a radio the session
+   does not hear, so the legacy legs outside the trunk tuning entries see no front end there: the untyped -Y step, a
+   Next walk and the direct control-channel return send the peer nothing, and the frequency last sent stays. */
+static int
+test_fixed_tuning_legacy_legs_send_the_peer_nothing(void) {
+    static const char* const kInputs[] = {"iqreplay:capture.iq.json", "iqtcp:127.0.0.1:5000:240k:cs16"};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof kInputs / sizeof kInputs[0]; i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        if (setup_untyped_keyed_list(opts, state, 943012500, 943037500) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", kInputs[i]);
+        opts->use_rigctl = 1;
+        opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+        opts->setmod_bw = 0;
+        opts->rigctl_sent_freq_hz = 940012500U;
+        g_rigctl_setfreq_ok = 1;
+        g_rigctl_setfreq_calls = 0;
+        const int rtl_before = g_rtl_tune_calls;
+        rc |= expect_true("the step has no front end",
+                          dsd_engine_scan_untyped_enter_row(opts, state, 1, (double)time(NULL))
+                              == DSD_UNTYPED_STEP_FAILED);
+        rc |= expect_true("the walk is refused",
+                          dsd_engine_channel_scan_walk_row(opts, state, 1, 1) == DSD_SCAN_WALK_REFUSED);
+        rc |= expect_true("the step and walk tune no radio",
+                          g_rigctl_setfreq_calls == 0 && g_rtl_tune_calls == rtl_before);
+
+        /* The direct return with the voice channel gone quiet, and no stream for its RTL leg. */
+        opts->scanner_mode = 0;
+        opts->trunk_enable = 1;
+        opts->trunk_is_tuned = 1;
+        opts->frame_nxdn48 = 1;
+        opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = 0;
+        state->rtl_ctx = NULL;
+        state->trunk_cc_freq = 942212500L; // a frequency no other case uses
+        state->p25_cc_freq = 942212500L;
+        state->lastsynctype = DSD_SYNC_NXDN_POS;
+        state->last_vc_sync_time = 0;
+        noCarrier(opts, state);
+        rc |= expect_true("the direct return sends the peer nothing", g_rigctl_setfreq_calls == 0);
+        rc |= expect_true("the frequency last sent stays", opts->rigctl_sent_freq_hz == 940012500U);
+        g_rigctl_setfreq_ok = 0;
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* Issue #644: a -Y row is confirmed on air only by the landing the scan confirmed last, and every later tune
    attempt or displacement takes that away, whatever frequency the receiver may still be on. */
 static int
@@ -14785,6 +14838,7 @@ main(void) {
     rc |= test_untyped_find_and_enter_row();
     rc |= test_untyped_row_confirmed_only_by_its_landing();
     rc |= test_stream_source_key_moves_off_a_replay();
+    rc |= test_fixed_tuning_legacy_legs_send_the_peer_nothing();
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
     rc |= test_live_loop_syncs_move_the_quiet_sync_sequence();
     rc |= test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict();

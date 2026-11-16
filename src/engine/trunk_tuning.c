@@ -21,6 +21,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
@@ -894,10 +895,43 @@ dsd_engine_tune_rtl(dsd_opts* opts, dsd_state* state, long int freq, uint64_t re
 }
 #endif
 
+/* What a tune of an input with fixed tuning (dsd_opts_input_has_fixed_tuning()) comes to: an I/Q replay plays the
+   tuning its capture recorded and defers every other retune, as its stream always has, so the trunking machines retry
+   it as any deferral (issue #575); the program sending an I/Q stream picks the channel, so a tune of it fails, since
+   none will ever land (issue #743). */
+static dsd_trunk_tune_result
+engine_fixed_tuning_result(const dsd_opts* opts) {
+    return dsd_opts_input_is_iq_replay(opts) ? DSD_TRUNK_TUNE_RESULT_DEFERRED : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+/* When the last fixed-tuning refusal was logged, on the real-time clock: the machines retry at their own pace. */
+static dsd_atomic_u64 s_fixed_tuning_notice_ms;
+
+/* Each public tune entry refuses an input with fixed tuning before anything changes: no request is begun, nothing is
+   snapshotted, prepared or drained, and no backend is asked. A rigctl peer beside the replay or stream would otherwise
+   take the tune and move a radio the session does not hear (issue #743 B12). Logged at most once a second. */
+static dsd_trunk_tune_result
+engine_fixed_tuning_refusal(const dsd_opts* opts) {
+    const uint64_t now_ms = dsd_realtime_mono_ms();
+    const uint64_t last_ms = dsd_atomic_u64_load_relaxed(&s_fixed_tuning_notice_ms);
+    if (last_ms == 0U || now_ms - last_ms >= 1000U) {
+        dsd_atomic_u64_store_relaxed(&s_fixed_tuning_notice_ms, now_ms);
+        DSD_FPRINTF(stderr, "%s",
+                    dsd_opts_input_is_iq_replay(opts)
+                        ? "NOTICE: Retune ignored during IQ replay.\n"
+                        : "NOTICE: Retune ignored on the I/Q stream: the sending program picks the channel.\n");
+    }
+    return engine_fixed_tuning_result(opts);
+}
+
 static dsd_trunk_tune_result
 dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
     /* Nothing has moved yet: a refusal below must not report the last tune's rigctl move as this one's. */
     s_backend_rigctl_moved = 0;
+    /* The entries refuse it first; no later entry may reach a rigctl peer beside a replay or stream either. */
+    if (dsd_opts_input_has_fixed_tuning(opts)) {
+        return engine_fixed_tuning_result(opts);
+    }
     /* Every backend below carries the frequency as uint32_t; one past it (possible where long is 64-bit) would wrap to
        an unrelated channel, so the tune fails instead. The callers have already refused freq <= 0. */
 #if LONG_MAX > UINT32_MAX
@@ -1171,6 +1205,9 @@ dsd_engine_tuner_free_for_protocol(const dsd_opts* opts, const dsd_state* state)
 
 dsd_trunk_tune_result
 dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    if (dsd_opts_input_has_fixed_tuning(opts)) {
+        return engine_fixed_tuning_refusal(opts);
+    }
     if (engine_operator_walk_owns_tuner()) {
         return DSD_TRUNK_TUNE_RESULT_DEFERRED;
     }
@@ -1278,6 +1315,9 @@ engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long in
 dsd_trunk_tune_result
 dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                       uint64_t request_id) {
+    if (dsd_opts_input_has_fixed_tuning(opts)) {
+        return engine_fixed_tuning_refusal(opts);
+    }
     if (engine_operator_walk_owns_tuner()) {
         return DSD_TRUNK_TUNE_RESULT_DEFERRED;
     }
@@ -1359,6 +1399,9 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
 
 dsd_trunk_tune_result
 dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    if (dsd_opts_input_has_fixed_tuning(opts)) {
+        return engine_fixed_tuning_refusal(opts);
+    }
     if (engine_operator_walk_owns_tuner()) {
         return DSD_TRUNK_TUNE_RESULT_DEFERRED;
     }
@@ -1491,6 +1534,10 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     s_scan_tune_moved = 0;
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    /* Before a request is begun: a refused scan tune leaves no ID for the scanner to follow. */
+    if (dsd_opts_input_has_fixed_tuning(opts)) {
+        return engine_fixed_tuning_refusal(opts);
     }
 
     tune_request_id = dsd_trunk_tuning_request_begin();
