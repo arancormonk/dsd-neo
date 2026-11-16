@@ -1521,6 +1521,22 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 #define DSD_AAUDIO_DISCARD_MAX_FRAMES   (2 * 48000)
 #define DSD_AAUDIO_DISCARD_MAX_NS       250000000ULL
 
+/* The frames an input discard drops into @p owed: what the stream holds now (the frames the device wrote that no read
+   took) less the newest keep_ns of it, at most DSD_AAUDIO_DISCARD_MAX_FRAMES. 0, or -1 when a count failed. */
+static int
+aaudio_input_discard_owed(const dsd_audio_stream* stream, uint64_t keep_ns, uint64_t* owed) {
+    const int64_t written = AAudioStream_getFramesWritten(stream->handle);
+    const int64_t read = AAudioStream_getFramesRead(stream->handle);
+    if (written < 0 || read < 0) {
+        set_error_aaudio((aaudio_result_t)(written < 0 ? written : read));
+        return -1;
+    }
+    const uint64_t held = written > read ? (uint64_t)(written - read) : 0U;
+    const uint64_t drop = held - audio_input_keep_frames(keep_ns, stream->sample_rate, held);
+    *owed = drop < (uint64_t)DSD_AAUDIO_DISCARD_MAX_FRAMES ? drop : (uint64_t)DSD_AAUDIO_DISCARD_MAX_FRAMES;
+    return 0;
+}
+
 /* The frames dropped are not counted in device_frames: the decoder never had them. */
 int
 dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t keep_ns) {
@@ -1531,17 +1547,10 @@ dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t keep_ns) {
     if (!stream->handle) {
         return 0; /* between a disconnect and a reopen nothing is held */
     }
-    /* What the stream holds now: the frames the device wrote that no read took. The newest keep_ns of it stay. */
-    const int64_t written = AAudioStream_getFramesWritten(stream->handle);
-    const int64_t read = AAudioStream_getFramesRead(stream->handle);
-    if (written < 0 || read < 0) {
-        set_error_aaudio((aaudio_result_t)(written < 0 ? written : read));
+    uint64_t owed = 0U;
+    if (aaudio_input_discard_owed(stream, keep_ns, &owed) != 0) {
         return -1;
     }
-    const uint64_t held = written > read ? (uint64_t)(written - read) : 0U;
-    const uint64_t keep = audio_input_keep_frames(keep_ns, stream->sample_rate, held);
-    const uint64_t owed =
-        held - keep < (uint64_t)DSD_AAUDIO_DISCARD_MAX_FRAMES ? held - keep : (uint64_t)DSD_AAUDIO_DISCARD_MAX_FRAMES;
     int16_t chunk[DSD_AAUDIO_DISCARD_CHUNK_FRAMES * DSD_AAUDIO_DISCARD_MAX_CHANNELS];
     const uint64_t start_ns = dsd_time_monotonic_ns();
     int dropped = 0;

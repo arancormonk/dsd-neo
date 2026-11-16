@@ -1062,53 +1062,69 @@ pulse_keep_to_carry(struct pulse_input_carry* carry, const pulse_keep_ring* ring
    keeps the newest @p keep_ns of it in the stream's carry, which reads return first.
 
    The pa_simple_read() that waits has no timeout: a source that stops delivering holds it as it holds every read. */
-int
-dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t keep_ns) {
-    if (!stream || !stream->handle || !stream->is_input || !stream->input_carry || stream->channels <= 0
-        || (unsigned int)stream->channels > PULSE_DISCARD_MAX_CHANNELS) {
-        set_error("Invalid arguments");
-        return -1;
-    }
+/* Read what the client holds into @p ring, up to the read that waits, at most @p limit frames, no read begun after
+   the time cap: the frames read, or -1 on a read error. */
+static long
+pulse_discard_read_held(const dsd_audio_stream* stream, pulse_keep_ring* ring, size_t limit) {
     int16_t chunk[PULSE_DISCARD_CHUNK_FRAMES * PULSE_DISCARD_MAX_CHANNELS];
-    const size_t ch = (size_t)stream->channels;
-    const size_t chunk_bytes = (size_t)PULSE_DISCARD_CHUNK_FRAMES * ch * sizeof(int16_t);
-    const size_t rate = (size_t)(stream->sample_rate > 0 ? stream->sample_rate : 48000);
-    const size_t limit = rate * PULSE_DISCARD_MAX_S;
-    const size_t keep = (size_t)audio_input_keep_frames(keep_ns, (int)rate, limit);
-    pulse_keep_ring ring = {keep > 0U ? (int16_t*)malloc(keep * ch * sizeof(int16_t)) : NULL, 0U, ch, 0U};
-    ring.cap = ring.buf != NULL ? keep : 0U;
-    struct pulse_input_carry* carry = stream->input_carry;
-    /* What an earlier discard kept and no read took yet is the oldest of what the stream holds. */
-    if (carry->pos < carry->len) {
-        pulse_keep_push(&ring, carry->frames + carry->pos * ch, carry->len - carry->pos);
-    }
-    const size_t carried = ring.count;
+    const size_t chunk_bytes = (size_t)PULSE_DISCARD_CHUNK_FRAMES * ring->ch * sizeof(int16_t);
     const uint64_t start_ns = dsd_time_monotonic_ns();
     size_t read_frames = 0U;
-    int rc = 0;
     while (read_frames < limit && dsd_time_monotonic_ns() - start_ns < PULSE_DISCARD_MAX_NS) {
         int err = 0;
         const uint64_t read_ns = dsd_time_monotonic_ns();
         if (pa_simple_read(stream->handle, chunk, chunk_bytes, &err) < 0) {
             set_error_pa(err);
-            rc = -1;
-            break;
+            return -1;
         }
-        pulse_keep_push(&ring, chunk, PULSE_DISCARD_CHUNK_FRAMES);
+        pulse_keep_push(ring, chunk, PULSE_DISCARD_CHUNK_FRAMES);
         read_frames += PULSE_DISCARD_CHUNK_FRAMES;
         if (dsd_time_monotonic_ns() - read_ns > PULSE_DISCARD_WAITED_NS) {
             break;
         }
     }
-    if (pulse_keep_to_carry(carry, &ring) != 0 && rc == 0) {
+    return (long)read_frames;
+}
+
+/* A ring for the newest @p keep frames of @p ch channels, with what an earlier discard kept and no read took yet: the
+   oldest of what the stream holds. Without memory for it the ring keeps nothing. */
+static pulse_keep_ring
+pulse_keep_ring_open(const struct pulse_input_carry* carry, size_t keep, size_t ch) {
+    pulse_keep_ring ring = {keep > 0U ? (int16_t*)malloc(keep * ch * sizeof(int16_t)) : NULL, 0U, ch, 0U};
+    ring.cap = ring.buf != NULL ? keep : 0U;
+    if (carry->pos < carry->len) {
+        pulse_keep_push(&ring, carry->frames + carry->pos * ch, carry->len - carry->pos);
+    }
+    return ring;
+}
+
+static int
+pulse_discard_input_valid(const dsd_audio_stream* stream) {
+    return stream && stream->handle && stream->is_input && stream->input_carry && stream->channels > 0
+           && (unsigned int)stream->channels <= PULSE_DISCARD_MAX_CHANNELS;
+}
+
+int
+dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t keep_ns) {
+    if (!pulse_discard_input_valid(stream)) {
+        set_error("Invalid arguments");
+        return -1;
+    }
+    const size_t rate = (size_t)(stream->sample_rate > 0 ? stream->sample_rate : 48000);
+    const size_t limit = rate * PULSE_DISCARD_MAX_S;
+    const size_t keep = (size_t)audio_input_keep_frames(keep_ns, (int)rate, limit);
+    struct pulse_input_carry* carry = stream->input_carry;
+    pulse_keep_ring ring = pulse_keep_ring_open(carry, keep, (size_t)stream->channels);
+    const size_t carried = ring.count;
+    const long got = pulse_discard_read_held(stream, &ring, limit);
+    if (pulse_keep_to_carry(carry, &ring) != 0 && got >= 0) {
         set_error("Out of memory");
     }
     free(ring.buf);
-    if (rc < 0) {
+    if (got < 0) {
         return -1;
     }
-    const size_t total = carried + read_frames;
-    const size_t dropped = total - carry->len;
+    const size_t dropped = carried + (size_t)got - carry->len;
     return dropped > (size_t)INT32_MAX ? INT32_MAX : (int)dropped;
 }
 
