@@ -424,9 +424,11 @@ SiteRoaming::progressTransaction() {
     }
     m_tx.startShown = m_tx.startShown || phase != DecoderHost::Idle;
     if (phase == DecoderHost::Failed) {
+        // A user stop never fails a session, so this is the destination's own failure.
         refuseTransaction(false);
-    } else if (phase == DecoderHost::Idle && m_host->startSuperseded()) {
-        // The user stopped listening while the destination started: no card, no notice.
+    } else if (phase == DecoderHost::Idle && (m_host->startSuperseded() || userStoppedSince(m_tx.stopGeneration))) {
+        // The user stopped listening while the destination started, before it ran (superseded) or after its start
+        // committed and before its initialization edge (the generation moved): no card, no notice, nothing failed.
         finishTransaction(QStringLiteral("cancelled"), false);
     } else if (phase == DecoderHost::Idle && m_tx.startShown) {
         // The destination ended without ever listening (a bootstrap that exits) and without failing.
@@ -434,6 +436,13 @@ SiteRoaming::progressTransaction() {
     } else if (m_session.initialized && m_session.id == m_tx.destSessionId) {
         finishTransaction(QStringLiteral("done"), false);
     }
+}
+
+/* Whether the user asked to stop listening since @p generation was read, or the generation cannot be read now. */
+bool
+SiteRoaming::userStoppedSince(qint64 generation) const {
+    const qint64 now = m_host != nullptr ? m_host->userStopGeneration() : -1;
+    return now < 0 || now != generation;
 }
 
 void

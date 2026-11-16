@@ -713,6 +713,25 @@ Item {
             compare(findChild(app, "homeRoamNoticeListen").text, "Listen to Hill");
         }
 
+        // A user Stop once the destination's start committed (Running) but
+        // before its initialization edge is the user's stop: no notice, no
+        // "Could not switch", the roam over.
+        function test_23b_user_stop_before_the_destination_initialized() {
+            toLakeStarting();
+            testContext.setLifecyclePhase(2); // Running, not initialized
+            verify(siteRoaming.transactionActive, "the roam waits for the initialization edge");
+            testContext.setUserStopGeneration(1);
+            testContext.setLifecyclePhase(0);
+            verify(!siteRoaming.transactionActive);
+            compare(decoderHost.sessionState, 0);
+            compare(siteRoaming.state, SiteRoaming.Idle);
+            compare(siteRoaming.reason, SiteRoaming.NoSession);
+            verify(siteRoaming.statusText !== "Could not switch to Lake", "not a failed switch");
+            compare(siteRoaming.recoveryNotice, "");
+            verify(!roamNotice().visible, "no notice");
+            verify(!app.showFailure, "no failure card");
+        }
+
         // An operator command blocks roaming until the decoder shows it, however long that takes.
         function test_24_hold_talkgroup_delayed_past_a_qualified_roam() {
             startSite(0);

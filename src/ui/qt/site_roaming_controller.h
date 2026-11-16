@@ -357,6 +357,7 @@ class SiteRoaming : public QObject {
     void onSwitchVerdict(qint64 nowMs, const QString& uid);
     void attemptStop(qint64 nowMs);
     void progressTransaction();
+    bool userStoppedSince(qint64 generation) const;
     void onHostSession();
     void onStreamUpdate(const QVariantMap& record);
     void onEnabledChanged();
