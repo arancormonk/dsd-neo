@@ -275,6 +275,13 @@ ui_menu_push_submenu(const NcMenuItem* it, const UiCtx* ctx) {
     nf->hi = ui_first_selectable_idx(nf->items, nf->n, ctx);
     nf->top = 0;
     nf->title = it->label ? it->label : it->id;
+    /* A row that renders its label names its frame the same way (Input > I/Q stream), never by its id. */
+    if (it->label_fn) {
+        const char* got = it->label_fn(ctx, nf->title_buf, sizeof nf->title_buf);
+        if (got && *got) {
+            nf->title = got;
+        }
+    }
     ui_overlay_layout(nf, ctx);
 }
 

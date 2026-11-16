@@ -236,8 +236,8 @@ static const NcMenuItem INPUT_SOURCE_ITEMS[] = {
      .on_select = switch_to_airspy},
     {.id = "src.rtl",
      .label_fn = lbl_src_rtl,
-     .help = "Decode from the radio input this session last used (an RTL-SDR, rtl_tcp or I/Q stream), else the "
-             "RTL-SDR.",
+     .help = "Decode from the radio input this session last used (an RTL-SDR, rtl_tcp server, SoapySDR device, I/Q "
+             "replay or I/Q stream), else the RTL-SDR.",
      .on_select = switch_to_rtl},
 #endif
     {.id = "src.tcp",
@@ -309,11 +309,13 @@ const NcMenuItem INPUT_MENU_ITEMS[] = {
      .on_select = act_set_am_bw},
     /* The rigctl peer is a receiver like the inputs above: beside the passband rows it is asked for (issue #697). */
     {.id = "input.rigctl",
+     .is_enabled = rigctl_rows_offered,
      .label_fn = lbl_rigctl,
      .help = "Tune an external radio through a rigctl server.",
      .hotkey = "9",
      .on_select = io_rigctl_config},
     {.id = "input.setmod",
+     .is_enabled = rigctl_rows_offered,
      .label = "Rigctl setmod bandwidth...",
      .help = "Bandwidth in Hz passed with rigctl setmod.",
      .on_select = act_setmod_bw},

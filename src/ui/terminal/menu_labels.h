@@ -32,6 +32,7 @@ bool scan_rotation_active(const void* ctx);
 bool scan_avoids_manageable(const void* ctx);
 bool scan_lists_offered(const void* ctx);
 bool input_freq_offered(const void* ctx);
+bool rigctl_rows_offered(const void* ctx);
 bool freq_entry_offered(const dsd_opts* opts);
 bool provoice_active(const void* ctx);
 bool const_view_active(const void* ctx);

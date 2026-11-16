@@ -34,6 +34,8 @@ typedef struct {
     int hi;
     int top;
     const char* title;
+    /* The title a submenu row's label_fn rendered (the radio submenu names its input), which @c title points into. */
+    char title_buf[96];
     WINDOW* win;
     int w, h;
     int y, x;

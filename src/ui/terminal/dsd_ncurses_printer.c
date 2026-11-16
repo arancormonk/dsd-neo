@@ -619,18 +619,43 @@ ui_row_receiver_fields(ui_row* row, const dsd_opts* opts, const dsd_state* state
 
 /* An I/Q stream's identity row (issue #743): where it comes from, its samples, and where it stands, last, since only
    that changes ("connected", "waiting for data", "no input", dsd_app_frontend_iq_stream_state()). */
+/* Cut @p endpoint's host so the endpoint takes at most @p room characters, its ":PORT" kept and the cut marked "...":
+   a long host would otherwise push the samples and the state, the field that changes, off the row. Left as it is when
+   it fits, or when no room is left for a host at all. */
+static void
+ui_cut_endpoint_host(char* endpoint, size_t endpoint_size, int room) {
+    const size_t len = strlen(endpoint);
+    const char* port = strrchr(endpoint, ':');
+    if (room <= 0 || len <= (size_t)room || !port) {
+        return;
+    }
+    const size_t port_len = strlen(port);
+    if ((size_t)room < port_len + 4U) {
+        return;
+    }
+    char cut[DSD_APP_RADIO_SOURCE_NAME_MAX];
+    DSD_SNPRINTF(cut, sizeof cut, "%.*s...%s", (int)((size_t)room - port_len - 3U), endpoint, port);
+    DSD_SNPRINTF(endpoint, endpoint_size, "%s", cut);
+}
+
 static void
 ui_row_iq_stream_identity(ui_row* row, const dsd_opts* opts) {
     char endpoint[DSD_APP_RADIO_SOURCE_NAME_MAX];
     char detail[64];
     const char* standing = dsd_app_frontend_iq_stream_state(opts);
+    if (!standing) {
+        standing = "stopped";
+    }
     if (dsd_app_iq_stream_describe(opts->audio_in_dev, endpoint, sizeof endpoint, detail, sizeof detail) != 0) {
         ui_row_field(row, "| I/Q stream;");
     } else {
+        /* The row's last column wraps: what the endpoint may take is the width less everything else on the row. */
+        const int rest = (int)(strlen("| I/Q stream: ;") + strlen(" ;") + strlen(detail) + 1U + strlen(standing));
+        ui_cut_endpoint_host(endpoint, sizeof endpoint, ui_get_panel_cols() - 1 - rest);
         ui_row_field(row, "| I/Q stream: %s;", endpoint);
         ui_row_field(row, " %s;", detail);
     }
-    ui_row_field(row, " %s", standing ? standing : "stopped");
+    ui_row_field(row, " %s", standing);
 }
 
 /* A radio input named on a row of its own, ahead of its readings (issue #669; #743 B5): an Airspy's serial and rate,
@@ -1663,6 +1688,10 @@ ui_render_rtl_visual_aids(dsd_opts* opts, dsd_state* state) {
             title = "Airspy Visual Aids";
         } else if (ui_audio_in_is_soapy(opts)) {
             title = "SoapySDR Visual Aids";
+        } else if (dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)) {
+            title = "I/Q Stream Visual Aids"; /* issue #743: named for the input, as the source row is */
+        } else if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
+            title = "I/Q Replay Visual Aids";
         }
         ui_print_header(title);
         dsd_frontend_metrics metrics;

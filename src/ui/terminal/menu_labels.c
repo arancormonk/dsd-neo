@@ -168,6 +168,14 @@ input_freq_offered(const void* ctx) {
     return c && freq_entry_offered(c->opts);
 }
 
+/* The rigctl rows (connect, setmod bandwidth): not on an I/Q stream, whose sending program runs the radio and which
+   refuses a peer and its passband (issue #743). A replay keeps them: its start may connect a peer. */
+bool
+rigctl_rows_offered(const void* ctx) {
+    const UiCtx* c = (const UiCtx*)ctx;
+    return !c || !c->opts || !dsd_opts_input_is_iq_stream(c->opts);
+}
+
 bool
 provoice_active(const void* ctx) {
     const UiCtx* c = (const UiCtx*)ctx;

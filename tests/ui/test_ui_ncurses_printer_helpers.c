@@ -968,9 +968,15 @@ test_visual_aids_title_names_the_backend(void) {
         const char* dev;
         const char* title;
     } k_cases[] = {
-        {"rtl", "RTL-SDR Visual Aids"},    {"rtltcp:127.0.0.1:1234", "RTL-SDR Visual Aids"},
-        {"soapy", "SoapySDR Visual Aids"}, {"soapy:driver=airspy", "SoapySDR Visual Aids"},
-        {"airspy", "Airspy Visual Aids"},  {"airspy:0123456789abcdef", "Airspy Visual Aids"},
+        {"rtl", "RTL-SDR Visual Aids"},
+        {"rtltcp:127.0.0.1:1234", "RTL-SDR Visual Aids"},
+        {"soapy", "SoapySDR Visual Aids"},
+        {"soapy:driver=airspy", "SoapySDR Visual Aids"},
+        {"airspy", "Airspy Visual Aids"},
+        {"airspy:0123456789abcdef", "Airspy Visual Aids"},
+        {"iqtcp:127.0.0.1:1234:240000:cs16", "I/Q Stream Visual Aids"},
+        {"iqudp:0.0.0.0:7355:48000:cu8", "I/Q Stream Visual Aids"},
+        {"iqreplay:capture.iq.json", "I/Q Replay Visual Aids"},
     };
 
     for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
@@ -1774,7 +1780,7 @@ test_receiver_rows_fixed_width(void) {
    where every radio input once read "| RTL: N;" with an RTL-SDR's gain and PPM. A replay and a stream show no gain,
    PPM, Auto PPM or External RTL Tuning row: their capture or sending program set those. The stream's row is its
    endpoint, its samples and where it stands, last. At 80 columns both rows fit whole, the tuned frequency included;
-   a host too long for the row is cut at a field, and the readings row below keeps its own. */
+   a host too long for the row is cut (its port kept), so the samples and the state stay. */
 static void
 test_radio_input_identity_rows(void) {
     g_unicode_stub = 0;
@@ -1840,7 +1846,7 @@ test_radio_input_identity_rows(void) {
     g_iq_stream_state = "waiting for data";
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_equals("| I/Q stream: a-sending-program-host-with-a-long-name.example.internal:1234;...\n"
+    assert_capture_equals("| I/Q stream: a-sending-program-host-w...:1234; cs16, 240 kHz; waiting for data\n"
                           "| Mon: 2X; DSP-BW: 48 kHz; FRQ:           - MHz;\n"
                           "| SQL: off;\n");
     g_iq_stream_state = "connected";
