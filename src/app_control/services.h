@@ -854,6 +854,9 @@ int svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /* The tune alone, the io/control leg of svc_rtl_set_freq() with its pending manual-tune record (issue #671), for a
    caller that runs the carrier boundary itself once something else (a scan's pause) has run after the tune. */
 int svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz);
+/* io_control_set_freq_tagged(), every app-control tune's io/control leg: a rigctl peer's confirmed move to another
+   frequency is noted to the engine (dsd_engine_note_rigctl_retune(), issue #834), as the backend's own legs note it. */
+int svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out_pending_id);
 /** The tune leg of a frequency entry (svc_rtl_tune_only()'s shape): an RTL_STREAM_TUNE_* result or a refusal. */
 typedef int (*svc_tune_leg_fn)(dsd_opts* opts, dsd_state* state, uint32_t hz);
 

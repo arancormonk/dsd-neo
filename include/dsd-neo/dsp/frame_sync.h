@@ -266,15 +266,24 @@ void dsd_frame_sync_p25p1_read_decision(dsd_p25p1_decision* out);
  */
 void dsd_frame_sync_note_off_thread_tune(const dsd_p25p1_decision* read);
 
+/**
+ * @brief Note, before that tune's notice (dsd_frame_sync_note_off_thread_tune()), that a tune made off the decoder
+ * thread moved a radio whose samples no retune flushes: a rigctl peer heard through an audio input. The decoder thread
+ * moves dsd_state::symbol_clock_epoch when it reconciles the notice (dsd_frame_sync_apply_off_thread_tunes()), as the
+ * RTL readers move it at a stream flush. Safe from any thread.
+ */
+void dsd_frame_sync_note_off_thread_unflushed_retune(void);
+
 /** @brief Whether a tune off the decoder thread awaits dsd_frame_sync_apply_off_thread_tunes(). Decoder thread. */
 int dsd_frame_sync_off_thread_tune_pending(void);
 
 /**
  * @brief On the decoder thread, reconcile the tunes made off it since the last call, whatever the comparison did since:
- * forget the sync join histories, make the learned modulation the chain the latest tune set, end a comparison still
- * running there without a verdict, drop a verdict reached since on a comparison that tune captured, and put rf_mod and
- * the front end (@p opts) back on the chain the tune set if a step since moved them. Runs under the P25 SM tick guard
- * (taken when the caller does not hold it). 1 when one was reconciled.
+ * forget the sync join histories, move the symbol clock epoch for a radio moved on an unflushed stream
+ * (dsd_frame_sync_note_off_thread_unflushed_retune()), make the learned modulation the chain the latest tune set, end
+ * a comparison still running there without a verdict, drop a verdict reached since on a comparison that tune captured,
+ * and put rf_mod and the front end (@p opts) back on the chain the tune set if a step since moved them. Runs under the
+ * P25 SM tick guard (taken when the caller does not hold it). 1 when one was reconciled.
  */
 int dsd_frame_sync_apply_off_thread_tunes(const dsd_opts* opts, dsd_state* state);
 

@@ -1422,7 +1422,7 @@ legacy_rigctl_leg_present(const dsd_opts* opts) {
  * the passband read before it, and is a no-op for a peer back on its own or never asked. The frequency the peer is on
  * afterwards is the one last sent (dsd_opts::rigctl_sent_freq_hz). */
 static dsd_trunk_tune_result
-no_carrier_tune_rigctl_if_needed(dsd_opts* opts, const dsd_state* state, long int freq) {
+no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!legacy_rigctl_leg_present(opts)) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
@@ -1448,10 +1448,16 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, const dsd_state* state, long in
     }
     legacy_tune_caches_expire_if_stale();
     if (freq != s_last_rigctl_freq) {
+        const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
         if (!SetFreq(opts->rigctl_sockfd, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
         s_last_rigctl_freq = freq;
+        opts->rigctl_sent_freq_hz = (uint32_t)freq;
+        if (opts->audio_in_type != AUDIO_IN_RTL) {
+            /* No RTL leg follows (the untyped step's RTL leg retunes the stream it flushes; issue #834). */
+            dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, freq);
+        }
     }
     opts->rigctl_sent_freq_hz = (uint32_t)freq;
     return DSD_TRUNK_TUNE_RESULT_OK;

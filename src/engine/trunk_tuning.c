@@ -184,6 +184,18 @@ dsd_engine_set_decoder_thread(int is_decoder) {
     s_decoder_thread = is_decoder ? 1 : 0;
 }
 
+void
+dsd_engine_note_rigctl_retune(dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz) {
+    if (!opts || !state || opts->use_rigctl != 1 || (sent_before_hz != 0U && (long int)sent_before_hz == freq_hz)) {
+        return;
+    }
+    if (!s_decoder_thread) {
+        dsd_frame_sync_note_off_thread_unflushed_retune();
+        return;
+    }
+    state->symbol_clock_epoch++;
+}
+
 /* Off the decoder thread, a tune request's one read of the P25p1 decision the decoder publishes
    (dsd_frame_sync_p25p1_read_decision()): taken when the outermost request on this thread begins, and used for every
    read the request makes, and the requests it makes (a return's control-channel tune): the chain it tunes and the
@@ -934,6 +946,7 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
 #endif
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
+        const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
         if (!dsd_engine_tune_rigctl(opts, state, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
@@ -946,6 +959,8 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
         }
 #endif
         if (!conventional_scan || opts->audio_in_type != AUDIO_IN_RTL) {
+            /* No RTL leg follows, so no stream flush says the radio moved. */
+            dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, freq);
             return DSD_TRUNK_TUNE_RESULT_OK;
         }
     }

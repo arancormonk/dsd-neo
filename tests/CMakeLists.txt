@@ -8918,6 +8918,43 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime
 )
 
+# A rigctl peer's confirmed retune starts a new symbol timeline and drops the audio input's queued samples
+# (issue #834): the real rigctl client against a peer on a loopback socket.
+add_executable(
+    dsd-neo_test_engine_rigctl_retune
+    engine/test_engine_rigctl_retune.c
+)
+target_include_directories(
+    dsd-neo_test_engine_rigctl_retune
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/engine
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1
+)
+if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_engine_rigctl_retune
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_app_control
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_rigctl_retune
+        PRIVATE dsd-neo_engine dsd-neo_app_control ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME ENGINE_RIGCTL_RETUNE
+    COMMAND dsd-neo_test_engine_rigctl_retune
+)
+
 add_executable(
     dsd-neo_test_engine_no_carrier_reset
     engine/test_engine_no_carrier_reset.c

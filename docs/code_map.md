@@ -7152,8 +7152,20 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   protocol resets (NXDN resets `symbolcnt`), and an epoch DSP bumps on an RTL stream flush or profile change (any reset
   of the RTL symbol cache, also one the profile refresh meets ahead of a take), a symbol-capture replay starting over
   (`-~`), or an input switch (`dsd_opts::pcm_input_generation` moving, one compare a symbol) and the engine bumps on a scan target
-  change (`dsd_engine_forget_carrier_decoding()`). Carrier changes are compared on `carrier_seq` by the reader. DMR
-  voice crypto measures missed superframes on it.
+  change (`dsd_engine_forget_carrier_decoding()`) and on a rigctl peer's confirmed retune (issue #834,
+  `dsd_engine_note_rigctl_retune()` in `trunk_tuning.c`): the audio a rigctl peer sends runs on across its retune, so
+  this stands in for the RTL flush. Every rigctl leg calls it once the peer answered `RPRT 0` to a frequency other
+  than the one it last accepted (`dsd_opts::rigctl_sent_freq_hz`) and no RTL leg follows: the backend tune
+  (`dsd_engine_tune_with_backend()`, so every trunk grant, hop, control-channel tune and return, and every scan tune),
+  the legacy `-Y` step and control-channel return (`no_carrier_tune_rigctl_if_needed()`) and app-control's io_control
+  leg (`svc_io_control_tune()`, also a trunked manual return or channel walk, which runs no carrier boundary). A tune
+  to the frequency the peer is on, a refused request and a lost reply move nothing. Off the decoder thread (the P25
+  watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` before its tune notice, and the decoder
+  thread moves the epoch when it reconciles the notice (`dsd_frame_sync_apply_off_thread_tunes()`). It changes no
+  carrier count, privacy or crypto field, so the carrier boundary's order and the DMR forget's (the FID kept until the
+  left calls' rows are final) stand. Carrier changes are compared on `carrier_seq` by the reader. DMR voice crypto
+  measures missed superframes on it, the BS loop's polarity run its adjacency and a P25 Phase 1 terminator its place
+  after the last end (`p25p1_terminator_end.h`). Test: `ENGINE_RIGCTL_RETUNE`.
 - `symbol_timing_debug.c`: measures the sub-symbol offset the decoder's symbol grid settled on and reports it once
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.

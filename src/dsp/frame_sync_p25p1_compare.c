@@ -44,6 +44,10 @@ static atomic_int s_published = 0;
 static atomic_int s_off_thread_tunes = 0;
 /* The notice count the decoder thread has reconciled up to; only it reads this. */
 static unsigned int s_off_thread_tunes_seen = 0U;
+/* Off-thread tunes whose radio moved on a stream no retune flushes (dsd_frame_sync_note_off_thread_unflushed_retune()),
+   and the count the decoder thread has taken into the symbol clock epoch. */
+static atomic_int s_off_thread_unflushed = 0;
+static int s_off_thread_unflushed_seen = 0;
 
 #define DECISION_RUNNING 4
 #define DECISION_MASK    7
@@ -98,6 +102,11 @@ dsd_frame_sync_note_off_thread_tune(const dsd_p25p1_decision* read) {
     }
 }
 
+void
+dsd_frame_sync_note_off_thread_unflushed_retune(void) {
+    (void)atomic_fetch_add(&s_off_thread_unflushed, 1);
+}
+
 int
 dsd_frame_sync_off_thread_tune_pending(void) {
     return off_thread_tunes_count(atomic_load(&s_off_thread_tunes)) != s_off_thread_tunes_seen;
@@ -106,10 +115,22 @@ dsd_frame_sync_off_thread_tune_pending(void) {
 void
 dsd_frame_sync_off_thread_tunes_reset(const dsd_state* state) {
     s_off_thread_tunes_seen = off_thread_tunes_count(atomic_load(&s_off_thread_tunes));
+    s_off_thread_unflushed_seen = atomic_load(&s_off_thread_unflushed);
     if (state) {
         dsd_frame_sync_p25p1_mod_compare_publish(state);
     } else {
         atomic_store(&s_published, 0);
+    }
+}
+
+/* A tune that moved a radio whose samples no retune flushes (a rigctl peer's audio) noted it before its notice: the
+   symbols from here are not a measure across it, as after an RTL stream flush (issue #834). */
+static void
+apply_off_thread_unflushed_retunes(dsd_state* state) {
+    const int unflushed = atomic_load(&s_off_thread_unflushed);
+    if (unflushed != s_off_thread_unflushed_seen) {
+        s_off_thread_unflushed_seen = unflushed;
+        state->symbol_clock_epoch++;
     }
 }
 
@@ -127,6 +148,7 @@ dsd_frame_sync_apply_off_thread_tunes(const dsd_opts* opts, dsd_state* state) {
     s_off_thread_tunes_seen = off_thread_tunes_count(tunes);
     /* The carrier the tune left sent the histories: nothing of them pairs with the carrier it reached. */
     dsd_state_forget_sync_join_histories(state);
+    apply_off_thread_unflushed_retunes(state);
     /* The latest tune set the decoder's modulation and the front end on the chain it read (the learned modulation of
      * its read): the decoder follows it, whatever the comparison did since. */
     const int chain = decision_learned(tunes);

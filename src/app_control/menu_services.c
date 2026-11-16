@@ -34,6 +34,7 @@
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -2802,13 +2803,27 @@ svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
    the tuner replaces any manual tune still pending, and an RTL tune that timed out is followed to its completion, a
    late failure putting the cached frequency back (issue #671). */
 int
+svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out_pending_id) {
+    if (!opts) {
+        return -1;
+    }
+    const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
+    const int rc = io_control_set_freq_tagged(opts, state, hz, out_pending_id);
+    /* With rigctl in use io_control tunes the peer alone (no RTL leg), and 0 is its RPRT 0. */
+    if (rc == 0 && opts->use_rigctl == 1) {
+        dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, (long int)hz);
+    }
+    return rc;
+}
+
+int
 svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     if (!opts) {
         return -1;
     }
     const uint32_t prior_hz = opts->rtlsdr_center_freq;
     uint64_t pending_id = 0U;
-    const int rc = io_control_set_freq_tagged(opts, state, hz, &pending_id);
+    const int rc = svc_io_control_tune(opts, state, hz, &pending_id);
     /* A tune taken decides where the receiver goes, so it replaces a tune still pending; a refused one decides nothing,
        and that tune stands (issue #644). */
     if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {

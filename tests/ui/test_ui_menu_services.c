@@ -644,6 +644,15 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     g_carrier_boundary_guarded = guard_held;
 }
 
+/* A rigctl peer's confirmed move (issue #834): the engine's timeline is not this test's. */
+void
+dsd_engine_note_rigctl_retune(dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz) {
+    (void)opts;
+    (void)state;
+    (void)sent_before_hz;
+    (void)freq_hz;
+}
+
 void
 dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) {
     (void)opts;

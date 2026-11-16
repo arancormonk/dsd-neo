@@ -3692,7 +3692,7 @@ dsd_app_command_test_set_manual_tune_leg(int (*tune_leg)(dsd_opts* opts, const d
 /* The io_control leg of request_manual_tune(): an RTL_STREAM_TUNE_* result, or -1 refused. @p out_pending_id (optional)
    receives the ID a timed-out RTL tune's completion will come under (io_control_set_freq_tagged()). */
 static int
-manual_tune_io_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id) {
+manual_tune_io_leg(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out_pending_id) {
 #ifdef DSD_NEO_TEST_HOOKS
     if (g_test_manual_tune_leg) {
         if (out_pending_id) {
@@ -3701,7 +3701,7 @@ manual_tune_io_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t
         return g_test_manual_tune_leg(opts, state, hz, out_pending_id);
     }
 #endif
-    return io_control_set_freq_tagged(opts, state, hz, out_pending_id);
+    return svc_io_control_tune(opts, state, hz, out_pending_id);
 }
 
 /* The receiver moved to another carrier under a manual tune (issue #522): with rigctl on PCM input nothing else reports
@@ -7316,7 +7316,7 @@ rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* 
     if (dsd_opts_input_has_fixed_tuning(opts) || !rr_apply_tune_frequency_fits(p)) {
         return r;
     }
-    const int rc = io_control_set_freq_tagged(opts, state, p->tune_hz, &r.pending_id);
+    const int rc = svc_io_control_tune(opts, state, p->tune_hz, &r.pending_id);
     if (rc == RTL_STREAM_TUNE_DEFERRED) {
         r.outcome = RR_TUNE_DEFERRED;
         return r;

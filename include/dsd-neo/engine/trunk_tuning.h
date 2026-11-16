@@ -45,6 +45,19 @@ int dsd_engine_tuner_free_for_protocol(const dsd_opts* opts, const dsd_state* st
  */
 void dsd_engine_set_decoder_thread(int is_decoder);
 /**
+ * @brief A rigctl peer confirmed (RPRT 0) a tune to @p freq_hz, and no RTL leg retunes the stream after it.
+ *
+ * An RTL retune flushes the stream: the decoder reads nothing of the frequency left, and the RTL readers move
+ * dsd_state::symbol_clock_epoch. The audio a rigctl peer sends goes on across its retune, so this is that flush for it
+ * (issue #834): unless the peer was on @p freq_hz already (@p sent_before_hz, dsd_opts::rigctl_sent_freq_hz before the
+ * tune; 0 when none was sent), the epoch moves, so no span the decoders measure on the symbol clock (a DMR slot's MI
+ * chain, a P25 Phase 1 terminator's place, the DMR polarity run) reaches across the tune. Off the decoder thread (the
+ * P25 watchdog) the epoch moves when the decoder thread reconciles the tune (dsd_frame_sync_apply_off_thread_tunes()).
+ * Called by each rigctl leg, once its frequency request was answered RPRT 0: the backend tune
+ * (dsd_engine_tune_with_backend()), the legacy -Y step and control-channel return, and app-control's io_control leg.
+ */
+void dsd_engine_note_rigctl_retune(dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz);
+/**
  * @brief Tune a scanner row or target (the -Y channel scan, --trunk-scan).
  *
  * Queues the receive profile the row runs on, bound to @p freq: an analog row (the analog FM monitor in @p opts,

@@ -1353,6 +1353,22 @@ test_bs_polarity_run_needs_adjacent_bursts(void) {
             assert(state.dmr_voice_sync_run >= 1U && state.dmr_voice_sync_run < 4U);
         }
     }
+    /* A burst adjacent on the symbol clock across a timeline break (an RTL stream flush, a rigctl peer's confirmed
+       retune: issue #834) is another carrier's: the run starts over at it, and nothing flips. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 1;
+    state.dmr_color_code = 16;
+    load_single_burst_stream(0, DMR_BS_VOICE_SYNC);
+    g_voice_slot_open = 0;
+    state.symbol_clock = 10000U;
+    state.dmr_voice_sync_run = 3U;
+    state.dmr_voice_sync_clock = 10000U + 90U - 144U;
+    state.dmr_voice_sync_epoch = state.symbol_clock_epoch;
+    state.symbol_clock_epoch++;
+    dmrBS(&opts, &state);
+    assert(opts.inverted_dmr == 0);
+    assert(state.dmr_voice_sync_run >= 1U && state.dmr_voice_sync_run < 4U);
 }
 
 /* A Capacity Plus rest channel's SLCO in the first burst's CACH retunes the receiver, and the loop goes on to decode
