@@ -14816,7 +14816,17 @@ Qt Quick frontend (`src/ui/qt`):
   to the session, so switching roaming off and on keeps them. A site picked in the chooser (`noteSiteChoice()`) holds
   roaming on its session until `resumeRoaming()`. Prefs (`AppPrefs`): `roaming/enabled` (device-local),
   `roaming/maxDistanceKm` and `roaming/marginKm` (portable, in km; a choice of either unit, else the default of the unit
-  shown: 100 km / 2 km or 60 mi / 1 mi). Tests: `UI_QT_SITE_ROAMING` (the executor on a scripted host and clock),
+  shown: 100 km / 2 km or 60 mi / 1 mi). In `Main.qml`, `roamToSite()` records the roam's restart
+  (`pendingRestart = {kind: "roam", roamId, uid}`) and `startRoam()` asks `startPlan()` before
+  `startSavedByUid(uid, roam)`, the one saved-start gate, which carries the roam through `startWithMap()` (the 4-argument
+  `sessionArgs.start()`, `pendingStartRoam` across a USB-access wait, a denial (`localDeviceFailureKind` 4) ending it
+  refused, a superseded start showing nothing). `cancelPendingRestart(reason)` takes a reason at every call site: a user
+  decision ("start", "retry", "restore", "close", "dismiss", "failed") cancels a roam through `siteRoaming.cancel()`;
+  incidental navigation ("back", "interaction" from the chooser's `SiteInteractionGuard`, "sites", "navigate",
+  "edit", "window") leaves a roam's restart, so no tap or Back strands or cancels it. `transactionEnded()` drops the
+  roam's restart and USB wait; `autoStartBlocked` also holds during a transaction and while any restart waits; Home
+  shows `recoveryNotice` with its "Listen to …" action (`homeRoamNotice`). Tests: `UI_QT_SITE_ROAMING` (the executor on
+  a scripted host and clock), `UI_QT_QML_SITE_ROAMING` (`tst_site_roaming.qml`, through Main on the lifecycle host),
   `UI_QT_SITE_GROUPS` (`check_roamable()`), `UI_QT_PERSISTENCE` (`test_roaming_prefs()`), `UI_QT_CONTROLLER`
   (`test_operator_intents()`).
 - Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's

@@ -6053,6 +6053,9 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+            # Issue #786: GPS roaming's executor and its decision core, which Main drives.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming_controller.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
             # WP-S1: production persistence/generator and starter.
@@ -6119,6 +6122,19 @@ if(DSD_ENABLE_QT_UI)
         endif()
         set_target_properties(dsd-neo_test_ui_qt_qml PROPERTIES AUTOMOC ON)
         add_test(NAME UI_QT_QML_CALL_LISTS COMMAND dsd-neo_test_ui_qt_qml)
+        # Issue #786: GPS roaming through Main, on the lifecycle host and a scripted clock and location feed.
+        add_test(
+            NAME UI_QT_QML_SITE_ROAMING
+            COMMAND
+                dsd-neo_test_ui_qt_qml -input
+                ${CMAKE_CURRENT_SOURCE_DIR}/ui/qml/tst_site_roaming.qml
+        )
+        set_tests_properties(
+            UI_QT_QML_SITE_ROAMING
+            PROPERTIES
+                ENVIRONMENT
+                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+        )
         add_test(
             NAME UI_QT_QML_ACTION_MENU
             COMMAND

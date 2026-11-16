@@ -891,6 +891,10 @@ check_executor_arming() {
     rig.set("scanKind", 0);
     rig.set("operatorTuned", true);
     check(rig.roaming.reason() == SiteRoaming::OperatorTune, "arming: an operator hold pauses it");
+    rig.set("savedUid", QString());
+    check(rig.roaming.state() == SiteRoaming::Paused && rig.roaming.reason() == SiteRoaming::OperatorTune,
+          "arming: still paused once Main names the held session Explore");
+    rig.set("savedUid", rig.uids[0]);
     rig.set("operatorTuned", false);
     rig.set("savedUid", QString());
     check(rig.roaming.reason() == SiteRoaming::NotSavedSite, "arming: a session that is no longer the saved site");
@@ -1211,6 +1215,17 @@ check_executor_starting() {
         check(rig.ended == QStringList{QStringLiteral("cancelled")} && rig.roaming.recoveryNotice().isEmpty()
                   && rig.roaming.reason() == SiteRoaming::NoSession,
               "starting: superseded while it configured is the user's stop");
+    }
+    {
+        Rig rig;
+        handOver(rig);
+        // Main cancels for a failed session as it reacts to the same edge: the failure stands, refused, not retired.
+        QObject::disconnect(&rig.host, nullptr, &rig.roaming, nullptr);
+        rig.host.setPhase(dsd_qt::DecoderHost::Failed);
+        rig.roaming.cancel("failed");
+        check(rig.ended == QStringList{QStringLiteral("refused")} && rig.host.retires == 0
+                  && rig.roaming.recoveryNotice().isEmpty(),
+              "starting: a failed destination is refused even when Main's cancel comes first");
     }
     {
         Rig rig;

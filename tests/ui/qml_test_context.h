@@ -128,6 +128,7 @@
 #include "screen_reader_state.h"
 #include "session_args.h"
 #include "site_groups.h"
+#include "site_roaming_controller.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
 #include "store_notices.h"
@@ -364,6 +365,15 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     qint64
     userStopGeneration() const override {
         return stopGeneration;
+    }
+
+    /* #786: GPS roaming needs a host with a location feed; a case says so (testContext.setLifecycleLocationSupported()),
+     * before it loads Main, since the property is constant. */
+    bool locationSupport = false;
+
+    bool
+    locationSupported() const override {
+        return locationSupport;
     }
 
     qint64
@@ -1624,6 +1634,7 @@ class CommandRecorder : public QObject {
     manualTuneHz(unsigned int hz) {
         m_manual_tune_calls++;
         m_last_manual_tune_hz = hz;
+        Q_EMIT operatorIntentSubmitted(QStringLiteral("manualTune"));
         return true;
     }
 
@@ -1646,6 +1657,7 @@ class CommandRecorder : public QObject {
     holdTalkgroup(double tg) {
         ++m_hold_calls;
         m_last_hold_tg = tg;
+        Q_EMIT operatorIntentSubmitted(tg > 0 ? QStringLiteral("hold") : QStringLiteral("release"));
         return true;
     }
 
@@ -1893,6 +1905,9 @@ class CommandRecorder : public QObject {
     Q_INVOKABLE bool
     releaseTuner() {
         m_release_tuner_calls++;
+        if (m_release_tuner_accepted) {
+            Q_EMIT operatorIntentSubmitted(QStringLiteral("releaseTuner"));
+        }
         return m_release_tuner_accepted;
     }
 
@@ -1912,6 +1927,7 @@ class CommandRecorder : public QObject {
     setTrunking(bool on) {
         m_set_trunking_calls++;
         m_last_set_trunking = on;
+        Q_EMIT operatorIntentSubmitted(on ? QStringLiteral("trunkingOn") : QStringLiteral("trunkingOff"));
         return true;
     }
 
@@ -2350,6 +2366,10 @@ class CommandRecorder : public QObject {
     lastAllTalkgroupsTag() const {
         return m_last_all_talkgroups_tag;
     }
+
+  Q_SIGNALS:
+    /* #786: as CommandBridge says it of each queued command that changes what the session follows. */
+    void operatorIntentSubmitted(const QString& kind);
 
   private:
     int m_lockout_slot_calls = 0;
@@ -5273,9 +5293,13 @@ class Setup : public QObject {
                 m_backup->setHost(m_lifecycle_host); // the model's session gate follows the host the case runs on
             }
             m_lifecycle_host->startRunning = start_running;
+            // #786: roaming runs over the host the case runs on, from a fresh start each time.
+            m_site_roaming->setHost(nullptr);
+            m_site_roaming->setHost(m_lifecycle_host);
             m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_lifecycle_host);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_app_prefs);
         } else {
+            m_site_roaming->setHost(nullptr);
             m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_prefs);
         }
@@ -5371,6 +5395,30 @@ class Setup : public QObject {
                 {QStringLiteral("permissionRequests"), host->permissionRequests},
                 {QStringLiteral("appSettingsOpens"), host->appSettingsOpens},
                 {QStringLiteral("locationSettingsOpens"), host->locationSettingsOpens}};
+    }
+
+    /** @brief #786: whether the lifecycle host the case runs on accepts a start (false: the host refuses it). */
+    Q_INVOKABLE void
+    setLifecycleAcceptStart(bool accept) {
+        m_lifecycle_host->acceptStart = accept;
+    }
+
+    /** @brief #786: whether both lifecycle hosts have a location feed (GPS roaming runs only on one that does). */
+    Q_INVOKABLE void
+    setLifecycleLocationSupported(bool supported) {
+        m_import_host->locationSupport = supported;
+        m_initializing_host->locationSupport = supported;
+    }
+
+    /** @brief #786: the monotonic time in ms GPS roaming reads (its clock in these cases), and the stream's fixAtMs. */
+    Q_INVOKABLE void
+    setRoamingNow(qint64 ms) {
+        m_roaming_now = ms;
+    }
+
+    Q_INVOKABLE qint64
+    roamingNow() const {
+        return m_roaming_now;
     }
 
     Q_INVOKABLE void
@@ -6322,13 +6370,14 @@ class Setup : public QObject {
             {QStringLiteral("backup"), backupKeys},
             {QStringLiteral("rrPlaces"), propertyKeys(RrPlacesFake::staticMetaObject)},
             {QStringLiteral("savedSystemCards"), propertyKeys(dsd_qt::SavedSystemCards::staticMetaObject)},
+            {QStringLiteral("siteRoaming"), propertyKeys(dsd_qt::SiteRoaming::staticMetaObject)},
             {QStringLiteral("recordings"), RecordingsFake::rest()},
             {QStringLiteral("recordingStatus"), m_recording_status}};
         /* Group 3 captures the "(" that marks a call rather than a read. The name must not follow a "." or a word
          * character: `model.recordings.length` is a role's length, not a read of the `recordings` store. */
         static const QRegularExpression read(
             QStringLiteral("(?<![.\\w])(metrics|prefs|decoderHost|radioReference|backup|rrPlaces|savedSystemCards|"
-                           "recordings|recordingStatus)"
+                           "siteRoaming|recordings|recordingStatus)"
                            "\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
 
         QStringList missing;
@@ -6412,6 +6461,8 @@ class Setup : public QObject {
         /* Match ui_load() registrations before parsing QML importers. */
         // WP-D4: cancellation observes pointer, keyboard and shortcut input.
         qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
+        qmlRegisterUncreatableType<dsd_qt::SiteRoaming>(
+            "DsdNeo", 1, 0, "SiteRoaming", QStringLiteral("siteRoaming is the app's one roaming executor"));
         qmlRegisterType<dsd_qt::SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
         qmlRegisterType<dsd_qt::WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
 
@@ -6511,6 +6562,13 @@ class Setup : public QObject {
         /* Issue #668: the NFM pre-roll at AppPrefs' default, with its choices. */
         prefs[QStringLiteral("analogPrerollMs")] = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
         prefs[QStringLiteral("analogPrerollChoices")] = QVariantList({0, 100, 200, 300, 500, 1000});
+        /* Issue #786: GPS roaming off, its distances unset in miles, with the miles choices (in km). */
+        prefs[QStringLiteral("roamingEnabled")] = false;
+        prefs[QStringLiteral("roamingMaxDistanceKm")] = 60 * 1.609344;
+        prefs[QStringLiteral("roamingMarginKm")] = 1.609344;
+        prefs[QStringLiteral("roamingMaxDistanceChoices")] =
+            QVariantList({15 * 1.609344, 30 * 1.609344, 60 * 1.609344, 125 * 1.609344});
+        prefs[QStringLiteral("roamingMarginChoices")] = QVariantList({0.5 * 1.609344, 1.609344, 3 * 1.609344});
         m_prefs = prefs;
         ctx->setContextProperty(QStringLiteral("prefs"), prefs);
 
@@ -7049,6 +7107,11 @@ class Setup : public QObject {
          * cases. Nearest follows setLocationSupported(), off as the host map starts. */
         m_saved_system_cards = new dsd_qt::SavedSystemCards(saved_systems, app_prefs, imported_files, engine);
         ctx->setContextProperty(QStringLiteral("savedSystemCards"), m_saved_system_cards);
+        /* #786: the production roaming executor over the same stores, on a clock the case sets (setRoamingNow()); it
+         * runs over the lifecycle host while a case uses one, and over none otherwise. */
+        m_site_roaming = new dsd_qt::SiteRoaming(app_prefs, saved_systems, engine);
+        m_site_roaming->setClock([this] { return m_roaming_now; });
+        ctx->setContextProperty(QStringLiteral("siteRoaming"), m_site_roaming);
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);
@@ -7160,6 +7223,8 @@ class Setup : public QObject {
     ReplayFilesFake* m_replay_files = nullptr;
     ImportOnlyHost* m_initializing_host = nullptr;
     ImportOnlyHost* m_lifecycle_host = nullptr;
+    dsd_qt::SiteRoaming* m_site_roaming = nullptr;
+    qint64 m_roaming_now = 1000000;
     std::unique_ptr<dsd_opts> m_talkgroup_opts = std::make_unique<dsd_opts>();
     std::unique_ptr<dsd_state> m_talkgroup_state = std::make_unique<dsd_state>();
     /* Issue #782: two scan targets' policy tables (applyTalkgroupTable()), built on first use. */

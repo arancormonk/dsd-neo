@@ -561,9 +561,20 @@ SiteRoaming::sessionShapeReason() const {
     if (!m_session.initialized) {
         return SessionStarting;
     }
+    // The operator's hold makes the session Explore's for its length: it pauses roaming rather than idling it.
+    if (m_session.kind == QLatin1String("saved") && m_facts.optionsKnown && m_facts.operatorTuned) {
+        return OperatorTune;
+    }
     if (m_session.kind != QLatin1String("saved") || m_facts.savedUid != m_session.uid) {
         return NotSavedSite;
     }
+    return siteShapeReason();
+}
+
+/* What makes the running saved site one roaming can follow: no extra options anywhere, its row still in the group it
+ * started in, roamable, beside at least one other roamable site. */
+SiteRoaming::Reason
+SiteRoaming::siteShapeReason() const {
     if (globalExtras()) {
         return GlobalExtraArgs;
     }
@@ -794,6 +805,10 @@ void
 SiteRoaming::cancel(const QString& why) {
     if (!active()) {
         return;
+    }
+    // What the host already shows decides first: a destination that failed is refused, not cancelled.
+    if (m_tx.stage != Stage::WaitingForCall) {
+        progressTransaction();
     }
     cancelTransaction(why.isEmpty() ? QStringLiteral("start") : why);
     evaluate();

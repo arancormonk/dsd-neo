@@ -274,6 +274,9 @@ static void
 register_qml_types() {
     // WP-D4: cancellation observes pointer, keyboard and shortcut input.
     qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
+    // #786: the roaming executor's enums (SiteRoaming.Following, …); its one instance is the siteRoaming property.
+    qmlRegisterUncreatableType<dsd_qt::SiteRoaming>("DsdNeo", 1, 0, "SiteRoaming",
+                                                    QStringLiteral("siteRoaming is the app's one roaming executor"));
     qmlRegisterType<SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
     qmlRegisterType<WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
 }

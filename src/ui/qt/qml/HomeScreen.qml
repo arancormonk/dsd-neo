@@ -18,6 +18,11 @@ Item {
     // it only once the request lands.
     property string requestedSource: decoderHost && decoderHost.localDeviceRequestedSource ? decoderHost.localDeviceRequestedSource : ""
     property string completionMessage: ""
+    // #786: a GPS roam that left listening stopped ("Roaming did not switch
+    // to …"), and the action that starts the site it left ("Listen to …").
+    property string roamNotice: ""
+    property string roamNoticeAction: ""
+    signal roamNoticeListen
     signal retryFailure
     signal editFailure
     signal dismissFailure
@@ -1010,6 +1015,34 @@ Item {
                         text: qsTr("Play again")
                         enabled: !decoderHost.sessionActive
                         onClicked: screen.replayAgain()
+                    }
+                }
+            }
+
+            UiPanel {
+                objectName: "homeRoamNotice"
+                width: parent.width
+                visible: screen.roamNotice.length > 0
+                height: roamNoticeBody.implicitHeight + 2 * Theme.cardPadding
+                Column {
+                    id: roamNoticeBody
+                    x: Theme.cardPadding
+                    y: Theme.cardPadding
+                    width: parent.width - 2 * Theme.cardPadding
+                    spacing: 10
+                    ReadableText {
+                        width: parent.width
+                        text: screen.roamNotice
+                        wrapMode: Text.Wrap
+                        color: Theme.textPrimary
+                        font.pixelSize: Theme.fontSize(15)
+                    }
+                    OutlineButton {
+                        objectName: "homeRoamNoticeListen"
+                        width: parent.width
+                        text: screen.roamNoticeAction
+                        enabled: !decoderHost.sessionActive && !decoderHost.transitioning
+                        onClicked: screen.roamNoticeListen()
                     }
                 }
             }

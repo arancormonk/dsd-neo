@@ -350,6 +350,7 @@ class SiteRoaming : public QObject {
 
     Reason armReason() const;
     Reason sessionShapeReason() const;
+    Reason siteShapeReason() const;
     Reason liveReason() const;
     Reason streamReason() const;
     bool globalExtras() const;
