@@ -1321,6 +1321,60 @@ test_p25_lc_source_awaiting_extension_not_named(void) {
     return rc;
 }
 
+/* A visitor whose home SUID already holds local address 100 on the serving system sends a native Phase 2 report
+   naming only its home SUID: the row takes address 100 as its assigned identity (plan G5), and the radio is named by
+   it, at push and in the view. */
+static int
+test_p25_visitor_report_named_by_serving_assignment(void) {
+    fixture f;
+    unsigned long long int mac[24];
+    int rc = 0;
+    char name[64];
+    if (fixture_open(&f) != 0) {
+        return 1;
+    }
+    p2_reg_rsp_ext(mac, 0, OTHER_WACN, OTHER_SYS, 0x00BCDE, 100U);
+    run_p2(&f, mac);
+    (void)dsd_alias_learn_radio(NULL, f.state, NULL, 100U, "VISITOR", NULL);
+    (void)dsd_alias_learn_radio(NULL, f.state, NULL, 0x00BCDE, "Local namesake", NULL);
+
+    /* 0xDC Message Update - Extended VCH: message 3-4, target 5-7, source WACN / System ID 8-11, source ID 12-14. */
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0xDC;
+    mac[2] = 0x0E;
+    put_u16(mac, 3, 0x0042);
+    put_u24(mac, 5, 0x000202);
+    put_wacn_sys(mac, 8, OTHER_WACN, OTHER_SYS);
+    put_u24(mac, 12, 0x00BCDE);
+    run_p2(&f, mac);
+    const dsd_unit_activity* r = last_row(&f);
+    rc |= expect_row("0xDC visitor", r, DSD_UA_PROTO_P25P2, DSD_UA_MESSAGE, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA);
+    if (r) {
+        rc |= expect_home("0xDC visitor home", &r->subject, OTHER_WACN, OTHER_SYS);
+        rc |= expect_id("0xDC visitor assigned", &r->assigned, 100U, DSD_UA_ID_RADIO);
+        rc |= expect_true("0xDC visitor named by its assigned address", strcmp(r->name_frozen, "VISITOR") == 0);
+    }
+    view_newest_name(&f, name, sizeof name);
+    rc |= expect_true("the view names the visitor by its assigned address", strcmp(name, "VISITOR") == 0);
+
+    /* 0xD8 Status Update - Extended VCH: the same rule. */
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0xD8;
+    mac[2] = 0x0E;
+    mac[3] = 0x01;
+    mac[4] = 0x02;
+    put_u24(mac, 5, 0x000202);
+    put_wacn_sys(mac, 8, OTHER_WACN, OTHER_SYS);
+    put_u24(mac, 12, 0x00BCDE);
+    run_p2(&f, mac);
+    r = last_row(&f);
+    rc |= expect_true("0xD8 visitor named by its assigned address", r != NULL && r->kind == DSD_UA_STATUS
+                                                                        && r->assigned.valid && r->assigned.id == 100U
+                                                                        && strcmp(r->name_frozen, "VISITOR") == 0);
+    fixture_close(&f);
+    return rc;
+}
+
 /* An abbreviated registration response of a sibling system's unit (System ID other than the serving one) before the
    site's WACN is known: its Source ID is that system's number, not a local radio's, so a local radio with the same
    number never names it. */
@@ -1370,6 +1424,7 @@ main(void) {
     rc |= test_p25_more_forms();
     rc |= test_p25_mbt_report_rows();
     rc |= test_p25_lc_source_awaiting_extension_not_named();
+    rc |= test_p25_visitor_report_named_by_serving_assignment();
     rc |= test_p25_sibling_unit_before_wacn_not_named();
     if (rc == 0) {
         printf("P25_UNIT_ACTIVITY: OK\n");

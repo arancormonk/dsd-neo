@@ -10431,9 +10431,14 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   0x5C / 0xDC / MBT / LC 0x55 / 0x5B (reports: subject the reporting source, the target as recipient, value the 16-bit
   status, User Status high octet, or message), Status Query 0x5A / 0xDA / MBT (command to the target), Call Alert 0x5F /
   0xDF / MBT, Unit-to-Unit 0x45 / 0xC5 and telephone 0x4A Answer Requests, and the TSBK 0x2E Authentication Command
-  (target SUID). An extended form's source SUID gives its identity a home (0xE4 on a command operand when the Source ID is the
-  argument's; 0xE5 carries no Source ID, so its argument gets none), and an extended MBT (AABC-D Figs 6.2.4-2, 6.2.10-2, 6.2.17-2, 6.2.18-2)
-  names each unit by its SUID with its WUID on the sending system as the subject's `assigned` identity. Addresses
+  (target SUID). An extended form's source SUID gives its identity a home (0xE4 on a command operand when the Source
+  ID is the argument's; 0xE5 carries no Source ID, so its argument gets none), and an extended MBT (AABC-D Figs
+  6.2.4-2, 6.2.10-2, 6.2.17-2, 6.2.18-2) names each unit by its SUID with its WUID on the sending system as the
+  subject's `assigned` identity. A report, query, alert, answer request or authentication subject that names only its
+  home SUID (0xD8 / 0xDC and the other native extended forms) takes as `assigned` the address that SUID holds on the
+  serving system (`p25_aff_assigned_for_home()` with `p2_wacn` / `p2_sysid`, plan G5), so a visitor is named by its
+  local ID. The LC 0x5B source and an abbreviated registration response's unit of another System ID before the site's
+  WACN are `subject_nonlocal` (never named from the local lists). Addresses
   $FFFFFC-$FFFFFF are infrastructure, never radios (§2.3.30), and 0 names nobody. A repeated deregistration
   acknowledgement, which finds the registration gone, merges into the first one's row (the core's DEREGISTRATION key
   rule). Provenance: a row needs `p25p2_vpdu_ctx::crc_ok` (a MAC PDU `-F` let through makes none); TSBKs, MBTs and link

@@ -141,7 +141,19 @@ p25_ua_set_assigned(const dsd_state* state, dsd_unit_activity* row, const p25_ho
     row->assigned = p25_ua_identity(assigned);
 }
 
-/* The subject from @p u: its ID with its home, and its WUID on the sending system as the assigned identity. */
+/* The address @p home holds on the serving system (the registration the AFF table keeps, plan G5), 0 when none. */
+static uint32_t
+p25_ua_serving_assignment(const dsd_state* state, const p25_home_id* home) {
+    uint32_t assigned = 0U;
+    if (!home->valid
+        || !p25_aff_assigned_for_home(state, home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, &assigned)) {
+        return 0U;
+    }
+    return assigned;
+}
+
+/* The subject from @p u: its ID with its home, and as the assigned identity its WUID on the sending system, or, when
+   the message carries none, the address its home SUID holds on the serving system. */
 static void
 p25_ua_set_subject_unit(const dsd_state* state, dsd_unit_activity* row, const p25_ua_unit* u) {
     row->subject = p25_ua_unit_identity(u);
@@ -149,13 +161,14 @@ p25_ua_set_subject_unit(const dsd_state* state, dsd_unit_activity* row, const p2
         return;
     }
     row->subject_nonlocal = (u->nonlocal && !u->home.valid) ? 1U : 0U;
-    if (u->local == 0U) {
+    const uint32_t local = u->local != 0U ? u->local : p25_ua_serving_assignment(state, &u->home);
+    if (local == 0U) {
         return;
     }
     if (u->home.valid) {
-        p25_ua_set_assigned(state, row, &u->home, u->local);
-    } else if (u->local != u->id) {
-        row->assigned = p25_ua_identity(u->local);
+        p25_ua_set_assigned(state, row, &u->home, local);
+    } else if (local != u->id) {
+        row->assigned = p25_ua_identity(local);
     }
 }
 
@@ -372,6 +385,6 @@ p25_ua_authentication_command(const p25_ua_origin* o, const p25_ua_unit* target)
     }
     dsd_unit_activity row;
     p25_ua_row_init(o, &row, DSD_UA_AUTHENTICATION, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA);
-    row.subject = p25_ua_unit_identity(target);
+    p25_ua_set_subject_unit(o->state, &row, target);
     p25_ua_push(o, &row);
 }
