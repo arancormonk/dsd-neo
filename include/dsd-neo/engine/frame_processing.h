@@ -147,6 +147,11 @@ void dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_h
  *  Decoder thread. */
 void dsd_engine_note_iq_stream_tetra(const dsd_opts* opts);
 
+/** The run's first radio stream start (the engine's own, before the frontends start): dsd_engine_note_stream_source(),
+ *  whose source boundary forgets what a stream an earlier run on this state opened left (another device, or any I/Q
+ *  replay start), then the run's first landing is not held (dmr_enc_class_hold()): no move of this run has happened. */
+void dsd_engine_note_run_stream_source(dsd_opts* opts, dsd_state* state);
+
 /** An I/Q replay's retune the capture recorded, which the read path adopted (dsd_frame_sync_note_replay_center()),
  * before it returns the first sample the new carrier carries (issue #575). With trunking off it is another
  * conventional carrier, the boundary an accepted live retune is (dsd_engine_carrier_boundary(),

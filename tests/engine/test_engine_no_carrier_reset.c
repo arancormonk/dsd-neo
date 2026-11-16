@@ -3025,6 +3025,53 @@ test_carrier_boundary_forgets_dmr_call_privacy(void) {
     return rc;
 }
 
+/* A run's first stream start on a state an earlier run used (Android reuses its state): its source boundary against
+   the earlier run's stream (another device, or any I/Q replay start) forgets that carrier's evidence, as before, but
+   the run's first landing is never held. A later start in the run on another source holds as any source change does. */
+static int
+test_run_first_landing_is_never_held(void) {
+    static const struct {
+        const char* earlier;
+        const char* now;
+        const char* name;
+    } cases[] = {
+        {"rtl:0", "rtl:1", "another device"},
+        {"iqreplay:capture.iq.json", "iqreplay:capture.iq.json", "an I/Q replay start"},
+    };
+
+    int rc = 0;
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        opts->rtl_dev_index = 0;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[c].earlier);
+        dsd_engine_note_stream_source(opts, state, 0);
+        /* What the earlier run left: a call's privacy and a move's hold. */
+        seed_dmr_basic_privacy_call(state, 0ULL);
+        dmr_enc_class_hold(state);
+        opts->rtl_dev_index = 1;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[c].now);
+        dsd_engine_note_run_stream_source(opts, state);
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what,
+                     "the next run's first start, %s: its source boundary forgets the call's privacy", cases[c].name);
+        rc |= expect_true(what, state->dmr_so == 0U && state->dmr_fid == 0U);
+        DSD_SNPRINTF(what, sizeof what, "the next run's first start, %s: its first landing is not held", cases[c].name);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+        opts->rtl_dev_index = 2;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[c].now);
+        dsd_engine_note_stream_source(opts, state, 0);
+        DSD_SNPRINTF(what, sizeof what, "a later start in the run, %s: a source change holds the slots' voice",
+                     cases[c].name);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* The frequency entry itself (svc_rtl_set_freq(): the tune, then the carrier boundary of a user tune) forgets the left
    call's DMR privacy. */
 static int
@@ -3842,20 +3889,98 @@ test_dmr_hold_mono_trunked_slot2_header(char frame[4][24]) {
     return rc;
 }
 
+/* The slot's call as the call state holds it: 1 when it is active on talkgroup @p tg. */
+static int
+dmr_fold_slot_call_on(const dsd_state* state, uint8_t slot, uint64_t tg) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_target_id == tg;
+}
+
+/* An LC decoded on its own by the single-slot decoder under trunking (-fr -T), on slot 2 (currentslot 1) of a BS
+   carrier whose voice that decoder runs on both slots: it stays on slot 2, as on the dual-slot decoder (docs/cli.md:
+   the decoder logs the slot its bursts' CACH proved). Its call is published on slot 2 and its tag prints SLOT 2;
+   slot 2's terminator ends slot 2's call, not slot 1's; and its crypto is judged by slot 2's ALG ID and key (RC4 from
+   slot 2's PI header, with the slot 2 key loaded). */
+static int
+test_dmr_mono_trunked_lc_stays_on_its_slot(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_mono_trunked(opts, state);
+    dmr_hop_lc_on(opts, state, 0, 1U, 1U, 0x00U, 0x00U, 303U);
+    int rc = expect_true("-fr -T: slot 1's call is on slot 1", dmr_fold_slot_call_on(state, 0U, 303U));
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "mono-trunked-slot2-lc") != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    dmr_hold_mono_trunked(opts, state);
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x00U, 0x00U, 404U);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[4096];
+    const int read_ok = dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0;
+    rc |= expect_true("-fr -T: slot 2's voice LC header prints its own slot",
+                      read_ok && strstr(log, "SLOT 2") != NULL && strstr(log, "SLOT 1") == NULL);
+    rc |= expect_true("-fr -T: slot 2's voice LC header publishes its call on slot 2",
+                      dmr_fold_slot_call_on(state, 1U, 404U));
+    rc |= expect_true("-fr -T: slot 2's voice LC header leaves slot 1's call as it was",
+                      dmr_fold_slot_call_on(state, 0U, 303U));
+
+    dmr_hold_mono_trunked(opts, state);
+    dmr_hop_lc_on(opts, state, 1, 2U, 1U, 0x00U, 0x00U, 404U);
+    dsd_call_snapshot ended;
+    rc |= expect_true("-fr -T: slot 2's terminator ends slot 2's call",
+                      dsd_call_state_get(state, 1U, &ended) > 0 && ended.phase == DSD_CALL_PHASE_ENDED);
+    rc |=
+        expect_true("-fr -T: slot 2's terminator leaves slot 1's call active", dmr_fold_slot_call_on(state, 0U, 303U));
+
+    state->RR = 0x0102030405ULL;
+    state->scalar_key_present[1] = 1U;
+    dmr_hold_mono_trunked(opts, state);
+    dmr_hop_pi_header_on(opts, state, 1, 0x21U);
+    dmr_hold_mono_trunked(opts, state);
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x10U, 0x40U, 505U);
+    dsd_call_snapshot keyed;
+    rc |= expect_true("-fr -T: slot 2's encrypted call is judged by slot 2's ALG ID and key",
+                      dsd_call_state_get(state, 1U, &keyed) > 0 && keyed.ota_target_id == 505U && keyed.algid == 0x21U
+                          && keyed.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_true("-fr -T: slot 2's encrypted call leaves slot 1's crypto alone",
+                      state->payload_algid == 0 && state->dmr_so == 0U && dmr_fold_slot_call_on(state, 0U, 303U));
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static long
 dmr_hold_rigctl_on_cc(const dsd_opts* opts) {
     (void)opts;
     return DMR_HOP_CC;
 }
 
+/* A Basic Privacy call (FID 0x10, the privacy bit) keyed with -b 70. */
+static void
+dmr_hold_bp_call(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    state->dmr_fid = 0x10U;
+    state->dmr_so = 0x40U;
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+}
+
 /* A grant for the carrier the receiver is on (a composite control channel's own payload) leaves nothing, by the DMR
    machine's judgement, whatever the engine's reading of the tuner says (here: a rigctl session whose frequency
-   dsd-neo never set). The calls it keeps playing there are not held. */
+   dsd-neo never set). The call it keeps playing there is not held, and keeps its privacy: a clear call plays as it
+   came, and a Basic Privacy call (@p bp) still decrypts with its key, as on a fresh decoder that heard it. */
 static int
-test_dmr_composite_cc_grant_holds_nothing(char frame[4][24]) {
-    char as_it_came[49] = {0};
-    int rc = expect_true("a composite grant: a fresh decoder records the frame",
-                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+dmr_composite_cc_grant_case(char frame[4][24], int bp) {
+    const char* what_call = bp ? "a Basic Privacy call" : "a clear call";
+    char reference[49] = {0};
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what, "a composite grant, %s: a fresh decoder records the frame", what_call);
+    int rc = expect_true(what, dmr_hold_fresh_frame(bp ? dmr_hold_bp_call : dmr_hold_no_key, frame, reference));
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
@@ -3878,19 +4003,32 @@ test_dmr_composite_cc_grant_holds_nothing(char frame[4][24]) {
                                                         .return_to_cc_request = dsd_engine_return_to_cc_request});
     dmr_hop_clock_at(0.0);
     dmr_sm_init(opts, state);
+    if (bp) {
+        dmr_hold_bp_call(opts, state);
+    }
     dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN1, 101U, 1001U);
-    rc |= expect_true("the machine follows the grant on the control channel's own carrier",
-                      state->trunk_vc_freq[0] == DMR_HOP_CC);
-    rc |= expect_true("a composite grant holds no slot's voice",
-                      state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+    DSD_SNPRINTF(what, sizeof what, "a composite grant, %s: the machine follows it on the control channel's carrier",
+                 what_call);
+    rc |= expect_true(what, state->trunk_vc_freq[0] == DMR_HOP_CC);
+    DSD_SNPRINTF(what, sizeof what, "a composite grant, %s: no slot's voice is held", what_call);
+    rc |= expect_true(what, state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+    if (bp) {
+        rc |= expect_true("a composite grant, a Basic Privacy call: its privacy bit and FID stay",
+                          state->dmr_so == 0x40U && state->dmr_fid == 0x10U);
+    }
     char recorded[49] = {0};
-    rc |= expect_true("a composite grant: the call it keeps plays as it came",
-                      dmr_hop_record_frame(opts, state, frame, recorded)
-                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+    DSD_SNPRINTF(what, sizeof what, "a composite grant, %s: the call it keeps plays as on a fresh decoder", what_call);
+    rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded)
+                                && memcmp(recorded, reference, sizeof recorded) == 0);
     dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
     dmr_hop_done(opts, state);
     free_test_runtime(opts, state);
     return rc;
+}
+
+static int
+test_dmr_composite_cc_grant_holds_nothing(char frame[4][24]) {
+    return dmr_composite_cc_grant_case(frame, 0) | dmr_composite_cc_grant_case(frame, 1);
 }
 
 /* The hold's edges: what keys or ends it, per slot, on the single-slot decoder, and the one judge of a trunk move. */
@@ -3904,12 +4042,15 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_hold_unread_lc_shape(frame);
     rc |= test_dmr_hold_per_slot();
     rc |= test_dmr_hold_mono_trunked_slot2_header(frame);
+    rc |= test_dmr_mono_trunked_lc_stays_on_its_slot();
     rc |= test_dmr_composite_cc_grant_holds_nothing(frame);
     return rc;
 }
 
 /* A trunked follow that leaves the carrier (a voice channel followed from another without a release, a move) forgets
-   the left calls' DMR privacy, as a release does; a grant on the carrier the receiver is on keeps it. */
+   the left calls' DMR privacy, as a release does; a grant on the carrier the receiver is on keeps it. The DMR machine
+   judges the leave (dmr_sm_note_carrier_tune() and its follows), never the engine's tune by its reading of the tuner,
+   which can disagree with it on a composite control channel (test_dmr_composite_cc_grant_holds_nothing()). */
 static int
 test_trunk_follow_forgets_dmr_call_privacy(void) {
     dsd_opts* opts = NULL;
@@ -3932,8 +4073,11 @@ test_trunk_follow_forgets_dmr_call_privacy(void) {
     rc |= expect_true("keeps the call's privacy bit", state->dmr_so == 0x40U && state->dmr_fid == 0x10U);
     rc |= expect_true("the next voice channel, with no release",
                       dsd_engine_trunk_tune_to_freq_request(opts, state, vc2, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
-    /* The tune forgets what decrypts. The FID stays for the DMR machine that made the tune: it ends the left calls
-       after it, their rows rendering by that FID, and forgets it then (test_dmr_trunk_hop_leaves_no_call_crypto()). */
+    rc |= expect_true("the engine's tune alone forgets nothing of the DMR call's privacy",
+                      state->dmr_so == 0x40U && state->dmr_fid == 0x10U);
+    /* The DMR machine's note of its tune forgets what decrypts. The FID stays: the machine's follows end the left calls
+       first, their rows rendering by that FID, and forget it then (test_dmr_trunk_hop_leaves_no_call_crypto()). */
+    dmr_sm_note_carrier_tune(state, vc1, vc2);
     rc |= expect_true("a voice channel hop: no privacy bit is left, the FID stays for the machine",
                       state->dmr_so == 0U && state->dmr_soR == 0U && state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE
                           && state->dmr_fid == 0x10U && state->dmr_fidR == 0x10U);
@@ -16779,6 +16923,7 @@ main(void) {
     rc |= test_trunk_cc_return_closes_an_orphaned_recording();
     rc |= test_trunk_follow_closes_only_orphaned_recordings();
     rc |= test_carrier_boundary_forgets_dmr_call_privacy();
+    rc |= test_run_first_landing_is_never_held();
     rc |= test_frequency_entry_forgets_dmr_call_privacy();
     rc |= test_scan_walk_landing_forgets_dmr_call_privacy();
     rc |= test_trunk_follow_forgets_dmr_call_privacy();

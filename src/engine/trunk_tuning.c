@@ -1139,24 +1139,18 @@ dsd_engine_receiver_hz(const dsd_opts* opts, const dsd_state* state) {
 
 /* After an accepted tune from @p from_hz (dsd_engine_receiver_hz() before it) to @p freq: when the tune moved the
    receiver off its carrier, the per-call audio no call owns closes, so the next carrier's never joins it (issue #809
-   B4), the P25 patch table's listening clock breaks continuity, so the time away from the control channel, however
-   short, never counts as listening to it, and the DMR calls' privacy state goes. Only that: a call the move carries
-   over as one (a TETRA reallocation) is active, and its recording closes at its own commit; the patch table is the
-   system's, which a trunk move keeps. A tune to the carrier the receiver is on (a grant on a DMR composite control
-   channel) moves nothing and closes nothing. */
+   B4), and the P25 patch table's listening clock breaks continuity, so the time away from the control channel, however
+   short, never counts as listening to it. Only that: a call the move carries over as one (a TETRA reallocation) is
+   active, and its recording closes at its own commit; the patch table is the system's, which a trunk move keeps. A tune
+   to the carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and closes nothing. What
+   the DMR calls left behind said of their encryption, and the hold on the next carrier's voice, are the DMR machine's
+   to judge, as it judges whether its calls end there (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()): this
+   reading of the tuner can disagree with it. */
 static void
 dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq) {
     if ((long int)from_hz != freq) {
         dsd_event_flush_orphan_recordings(opts, state);
         dsd_p25_patch_listen_break(state);
-        /* Nor did the DMR calls left behind say how the next carrier's are encrypted (a voice channel followed from
-           another without a release, a move, a rest channel change): its frames before their own LC decrypt with no
-           privacy bit of theirs and no talkgroup key of theirs, a key set directly staying the user's. The FID stays
-           for the DMR machine, which ends those calls after this tune, their final rows rendering by it, and forgets
-           it then with the ALG, key ID and MI (dmr_trunk_sm.c). Whether the next carrier's voice is held until its
-           calls say how they are encrypted is the DMR machine's to judge, as it judges whether its calls end there
-           (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()). */
-        dmr_forget_call_decryption(state);
     }
 }
 

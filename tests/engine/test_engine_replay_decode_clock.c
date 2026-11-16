@@ -86,6 +86,7 @@ typedef struct {
     int slco_check;   /* feed one single-fragment SLCO inside the hook */
     time_t slco_stamp_after;
     time_t slco_now_after; /* decode time read just after the SLCO, to bracket its stamp */
+    uint8_t dmr_held[2];   /* each DMR slot's voice hold as the frontends start (dmr_enc_class_hold()) */
 } hook_view;
 
 static void
@@ -182,6 +183,8 @@ observe_start(dsd_opts* opts, dsd_state* state, void* context) {
     view->last_vc_sync_time = state->last_vc_sync_time;
     view->last_t3_tune_time = state->last_t3_tune_time;
     view->symbol_out_file_creation_time = opts->symbol_out_file_creation_time;
+    view->dmr_held[0] = state->dmr_enc_class_held[0];
+    view->dmr_held[1] = state->dmr_enc_class_held[1];
     if (view->floor_checks) {
         check_floor_decisions(opts, state);
     }
@@ -360,9 +363,11 @@ test_reused_state_stays_on_the_system_clock(void) {
         free_run(opts, state);
         return;
     }
-    /* What an earlier live run leaves behind: a single-fragment SLCO stamped 5 s ago on the system clock. */
+    /* What an earlier live run leaves behind: a single-fragment SLCO stamped 5 s ago on the system clock, and each DMR
+       slot's voice held by a move it made last. */
     const time_t left = dsd_realtime_time() - 5;
     state->slco_sfrag_last[0] = left;
+    dmr_enc_class_hold(state);
 
     hook_view second = {0};
     second.slco_check = 1;
@@ -386,6 +391,10 @@ test_reused_state_stays_on_the_system_clock(void) {
     check("the run on the reused state ended cleanly", rc == 0);
     check("the start hook ran once on the reused state", second.calls == 1);
     check("a replay run on a reused state stays on the system clock", second.source == DSD_DECODE_CLOCK_SYSTEM);
+    /* The replay's start is a source boundary against the earlier run's stream, but this run's first landing is not
+       held, neither for the earlier run's move nor for that boundary. */
+    check("a replay run on a reused state lands with no DMR slot held",
+          second.dmr_held[0] == 0U && second.dmr_held[1] == 0U);
     check("no stamp the earlier run left is ahead of the reused run's now", second.now >= left);
     /* Printed, it is restamped at the decode time it ran at, which lies between the two reads around it (on the system
        clock a second can turn between them). Held back, it keeps the earlier run's stamp, 5 s before both. */

@@ -734,25 +734,29 @@ test_voice_lc_holds_the_channel_only_when_admitted(void) {
         assert(state.last_cc_sync_time != 0);
         assert(slot == 1 ? state.last_vc_sync_time == 0 : state.last_vc_sync_time != 0);
     }
-    /* The single-slot output (-nm) folds a standalone TS2 LC onto lane 0; the burst's own CACH slot, which
-       dmr_data_sync() hands it as the lane's receive slot, still judges it. */
-    dsd_state_ext_free_all(&state);
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    opts.trunk_enable = 1;
-    opts.trunk_is_tuned = 1;
-    opts.dmr_mono = 1;
-    opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
-    opts.receive.filters[DSD_RECEIVE_SLOT].allow.bits[0] = UINT64_C(1) << 1; /* --slot-allow 1 */
-    state.trunk_cc_freq = 851012500L;
-    state.currentslot = 1;
-    state.dmr_stereo = 0;
-    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
-    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
-    irr = 0U;
-    dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
-    assert(state.currentslot == 0 && state.last_vc_sync_time == 0);
+    /* The single-slot output (-nm) under trunking runs a BS carrier's bursts on both slots, so a standalone TS2 LC
+       stays on slot 2, as on the dual-slot decoder; the burst's own CACH slot, which dmr_data_sync() hands it as the
+       lane's receive slot, judges it. Without trunking the single-slot decoder folds it onto lane 0, where its voice
+       is decoded. */
+    for (int trunked = 1; trunked >= 0; trunked--) {
+        dsd_state_ext_free_all(&state);
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.trunk_enable = trunked;
+        opts.trunk_is_tuned = 1;
+        opts.dmr_mono = 1;
+        opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+        opts.receive.filters[DSD_RECEIVE_SLOT].allow.bits[0] = UINT64_C(1) << 1; /* --slot-allow 1 */
+        state.trunk_cc_freq = 851012500L;
+        state.currentslot = 1;
+        state.dmr_stereo = 0;
+        state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+        state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+        irr = 0U;
+        dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
+        assert(state.currentslot == (trunked ? 1 : 0) && state.last_vc_sync_time == 0);
+    }
     dsd_state_ext_free_all(&state);
 }
 

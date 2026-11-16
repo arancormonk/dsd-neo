@@ -21,6 +21,11 @@ dmr_forget_call_privacy(dsd_state* state) {
 }
 
 void
+dmr_forget_call_decryption(dsd_state* state) {
+    state->dmr_so = state->dmr_soR = 0U;
+}
+
+void
 dmr_vcrypt_forget(dsd_state* state, uint8_t slot) {
     state->dmr_vc_ref_state[slot] = DMR_VC_REF_NONE;
     state->dmr_vc_untrusted[slot] = 1U;

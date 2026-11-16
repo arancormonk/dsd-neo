@@ -3932,6 +3932,18 @@ dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) 
 }
 
 void
+dsd_engine_note_run_stream_source(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    dsd_engine_note_stream_source(opts, state, 0);
+    /* The run's first landing: the source boundary against the stream an earlier run on this state opened forgets
+       that carrier's evidence, but no move of this run holds the DMR slots' voice. */
+    dmr_enc_class_release_hold(state, 0U);
+    dmr_enc_class_release_hold(state, 1U);
+}
+
+void
 dsd_engine_leave_replay_carrier(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->trunk_enable != 0 || opts->trunk_scan_enabled == 1) {
         return;
@@ -4161,7 +4173,7 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
-        dsd_engine_note_stream_source(opts, state, 0);
+        dsd_engine_note_run_stream_source(opts, state);
     }
     return 0;
 }
@@ -5373,7 +5385,8 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
     /* A state an earlier run used may still say its carrier was two-slot TDMA: this run proves its own. */
     state->tdma_carrier = 0U;
     /* Nor is a DMR slot's voice held for a move the earlier run made (dmr_enc_class_hold()): a host that reuses its
-       state (Android) would hold this run's first landing, which no source change marks when the device is the same. */
+       state (Android) would hold this run's first landing. The radio stream's first start clears it again after its
+       source boundary (dsd_engine_note_run_stream_source()). */
     dmr_enc_class_release_hold(state, 0U);
     dmr_enc_class_release_hold(state, 1U);
     if (enter_rc != 0) {

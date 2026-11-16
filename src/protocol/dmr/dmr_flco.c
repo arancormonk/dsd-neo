@@ -108,8 +108,8 @@ typedef struct {
     uint8_t burst_slot;
     uint8_t slot_collapsed;
     uint8_t slot_idx;
-    /* The slot whose voice this LC says how its call is encrypted (dmr_flco_voice_slot_of()), and whether it is known:
-       where the call's FID, service options and classification go. */
+    /* The slot whose voice this LC says how its call is encrypted, and whether it is known: the slot it is decoded on,
+       after any fold onto slot 0 (dmr_flco_single_slot_collapse()). */
     uint8_t voice_slot;
     uint8_t voice_slot_known;
     uint8_t unk;
@@ -201,24 +201,13 @@ dmr_flco_print_type_color(uint8_t type, const char* type1_color, const char* typ
     }
 }
 
+/* Whether this LC is folded onto slot 0: only where the voice it names is decoded on that one lane (MS, and the
+   single-slot decoder's direct-mode path). Under trunking the single-slot decoder runs a BS carrier's bursts on both
+   slots (dmr_bootstrap_mono()), so an LC decoded on its own there stays on the slot its burst's CACH proved, as on the
+   dual-slot decoder: its call, terminator, crypto and keys are that slot's. */
 static int
 dmr_flco_single_slot_collapse(const dsd_opts* opts, const dsd_state* state) {
-    return state->dmr_ms_mode == 1 || (opts->dmr_mono == 1 && state->dmr_stereo == 0);
-}
-
-/* Where the voice of the call this LC names is judged. Under trunking the single-slot decoder runs a BS carrier's voice
-   on both slots (dmr_bootstrap_mono()), each frame on its own slot, though a burst decoded outside that loop is folded
-   onto slot 0 above: there it is the burst's own slot. Otherwise the voice runs where the LC is decoded. */
-static void
-dmr_flco_voice_slot_of(dmr_flco_ctx* ctx, int burst_slot_known) {
-    const dsd_state* state = ctx->state;
-    if (ctx->opts->dmr_mono == 1 && ctx->opts->trunk_enable == 1 && state->dmr_ms_mode == 0) {
-        ctx->voice_slot = ctx->burst_slot;
-        ctx->voice_slot_known = (uint8_t)(burst_slot_known != 0);
-        return;
-    }
-    ctx->voice_slot = (uint8_t)(state->currentslot & 1);
-    ctx->voice_slot_known = (uint8_t)(dmr_slot_is_known(state) != 0);
+    return state->dmr_ms_mode == 1 || (opts->dmr_mono == 1 && opts->trunk_enable == 0 && state->dmr_stereo == 0);
 }
 
 static void
@@ -234,13 +223,13 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
     ctx->restchannel = -1;
 
     const int collapse = dmr_flco_single_slot_collapse(opts, state);
-    const int burst_slot_known = dmr_slot_is_known(state);
     ctx->burst_slot = (uint8_t)(state->currentslot & 1);
     ctx->slot_collapsed = (uint8_t)(collapse && ctx->burst_slot != 0);
     if (collapse) {
         state->currentslot = 0;
     }
-    dmr_flco_voice_slot_of(ctx, burst_slot_known);
+    ctx->voice_slot = (uint8_t)(state->currentslot & 1);
+    ctx->voice_slot_known = (uint8_t)(dmr_slot_is_known(state) != 0);
 
     ctx->slot = state->currentslot;
     ctx->slot_idx = (ctx->slot >= 2) ? 1 : ctx->slot;
@@ -731,8 +720,8 @@ dmr_flco_reset_slot_metadata(dmr_flco_ctx* ctx, uint8_t idx) {
 
 /* An LC that passed its check (CRCCorrect, a RAS acceptance under -F included) said how its slot's call is encrypted,
    as far as the decoder can read it: that slot's voice is held no more (dmr_enc_class_hold()). Released on the slot
-   the voice is judged on and on the burst's own, so a slot 2 LC folded onto the single-slot lane never ends slot 1's
-   hold where each slot's voice is judged on its own. A failed check, a protected LC or an FEC failure says nothing. */
+   the voice is judged on and on the burst's own, which differ only where the LC is folded onto the single lane. A
+   failed check, a protected LC or an FEC failure says nothing. */
 static void
 dmr_flco_release_voice_hold(const dmr_flco_ctx* ctx) {
     if (ctx->CRCCorrect != 1U || !ctx->voice_slot_known || !dmr_flco_lc_readable(ctx)) {
@@ -760,8 +749,7 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     // 16-bit masked CRC is strong enough to trust alone: the embedded LC's 5-bit checksum
     // passes a miscorrected payload roughly one time in 32, and on RAS systems under the
     // aggressive default the masked CRC never verifies, so those observations must repeat
-    // before they can flip an established classification. The call's FID, service options and
-    // classification go to the slot its voice is judged on (dmr_flco_voice_slot_of()).
+    // before they can flip an established classification.
     ctx->lc_so = ctx->so;
     if (ctx->voice_slot_known) {
         const int strong = ctx->type == 1U && ctx->CRCCorrect == 1U;
@@ -1423,7 +1411,7 @@ dmr_flco_arm_enc_lockout(dmr_flco_ctx* ctx, uint8_t eslot, int is_group) {
 
 static void
 dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
-    // The classification the call's LC set, on the slot its voice is judged on (dmr_flco_voice_slot_of()).
+    // The classification the call's LC set, on the slot its voice is judged on.
     const uint8_t eslot = ctx->voice_slot;
     const int is_group = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE;
     // The ledger is suspended -- not erased -- whenever encryption lockout is not

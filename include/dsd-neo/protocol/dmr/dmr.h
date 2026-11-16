@@ -89,9 +89,10 @@ void dmr_pi_precall_reset(dsd_state* state, uint8_t slot);
  * one gives way at the next call's first keyed frame. The payload ALG, KID and MI are the caller's: P25 and NXDN share
  * them. */
 void dmr_forget_call_privacy(dsd_state* state);
-/** dmr_forget_call_privacy() but for the FID, for a tune that leaves the carrier before a trunk machine ends the left
- * calls: an FID decrypts nothing without the privacy bit, and those calls' final history rows still render their
- * vendor annotations by it (dsd_events.c). The machine forgets the FID once their rows are final. */
+/** dmr_forget_call_privacy() but for the FID, for the DMR machine's leave of a carrier before it ends the left calls
+ * (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()): an FID decrypts nothing without the privacy bit, and those
+ * calls' final history rows still render their vendor annotations by it (dsd_events.c). The machine forgets the FID
+ * once their rows are final. */
 void dmr_forget_call_decryption(dsd_state* state);
 /** Forget only the held pre-call PI: it transferred, or a newer PI replaced it. */
 void dmr_pi_precall_drop_hold(dsd_state* state, uint8_t slot);
