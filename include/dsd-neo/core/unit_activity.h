@@ -256,10 +256,10 @@ typedef struct dsd_unit_activity_read_meta {
  *
  * Merge key: every field but seq, rev, first_ms, last_ms, wall_s, repeat, slot and name_frozen (protocol, kind,
  * role, result, stage, reason set and code, the four identities with their home systems, group, value, value2 and
- * their valid flags, subject_nonlocal, scope and freq_hz). One exception: a DEREGISTRATION push with no assigned identity
- * matches a held row whatever its assigned identity (the producer reads that identity from the registration the first
- * acknowledgement removed, so a repeat finds none). A merge keeps the row's slot and every key field the row holds,
- * and takes the pushed name when it is not empty, so name_frozen holds the latest pushed name.
+ * their valid flags, subject_nonlocal, scope and freq_hz). One exception: a DEREGISTRATION push with no assigned
+ * identity matches a held row whatever its assigned identity (the producer reads that identity from the registration
+ * the first acknowledgement removed, so a repeat finds none). A merge keeps the row's slot and every key field the row
+ * holds, and takes the pushed name when it is not empty, so name_frozen holds the latest pushed name.
  *
  * Returns 1 when a new row was inserted, 0 when the push merged into a row, -1 on a NULL argument, a protocol, kind,
  * role or result outside its enum, a valid identity, home or scope whose subtype or kind is outside its enum, or an

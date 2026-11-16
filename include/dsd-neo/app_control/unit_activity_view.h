@@ -79,9 +79,9 @@ typedef struct {
     char subject_name[64];
     /** The rest of the message, ", "-separated: its talkgroup (with its label), value, second value where it means
      * something (a DMR ARS "device" / "user", a P25 deny's "for n", an NXDN "visitor TG n" / "parameter 0xNNNN", a
-     * TETRA "update type n"), assigned identity ("as n"), recipient ("to n") and requester ("from n"). Each part is whole: a long talkgroup label is shortened first
-     * (ending "…"), and a part that still does not fit is left out with those after it (the text ends ", …"), so an
-     * ID is never cut. */
+     * TETRA "update type n"), assigned identity ("as n"), recipient ("to n") and requester ("from n"). Each part is
+     * whole: a long talkgroup label is shortened first (ending "…"), and a part that still does not fit is left out
+     * with those after it (the text ends ", …"), so an ID is never cut. */
     char target_text[128];
     /** The reason text and its code ("Target Unit Not Valid (0x20)"; "Reason 0x7A" when the table names none). */
     char reason_text[64];
