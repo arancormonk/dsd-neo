@@ -7289,9 +7289,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `frame_sync_unflushed.h`, with the take itself in `frame_sync_unflushed.c`: one relaxed load per symbol read and per
   EDACS triplet, with no measurable cost on a 120 s DMR decode), moving the epoch and asking for the drop with the
   post's mark, so the watchdog's tunes drop at the next read after the post; the notice's reconcile
-  (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet. A post made while no queue is attached (an
-  input being opened, a TCP reconnect) is measured on the next queue that attaches, so a retune confirmed once the new
-  connection existed drops what it held then; the TCP reconnect takes such a post before the connection's first read.
+  (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet. A post made while no queue is attached is
+  measured on the next queue that attaches only when it was made once that input began opening
+  (`dsd_input_backlog_opening()`, which the TCP reconnect calls when its connection is made), so a retune confirmed once
+  the new connection existed drops what it held then; the TCP reconnect takes such a post before the connection's first
+  read. One made before (during the reconnect's backoff, or with no opening) moved the peer before the input existed,
+  so what it holds arrived after the post: the opening or the attach retires it. A failed open ends the opening
+  (`dsd_frame_sync_forget_unflushed_retunes()`).
   Replacing the input (`dsd_opts_reset_pcm_input_state()`, the Pulse open, the TCP reconnect) retires a held post that
   was not measured on the queue attached then (`dsd_frame_sync_forget_unflushed_retunes()`, declared in
   `include/dsd-neo/dsp/unflushed_retune.h`, which `<dsd-neo/core/opts.h>` includes for

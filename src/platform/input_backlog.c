@@ -25,6 +25,11 @@ static dsd_input_arrived_fn s_arrived;
 static uint64_t s_seq; /* moves at every attach and every detach of the attached queue */
 static dsd_input_cut s_post;
 static int s_post_held;
+/* An input is being opened (dsd_input_backlog_opening()) and no queue has attached since. */
+static int s_opening;
+/* The held post was made while an input was being opened and no queue was attached: the queue that attaches next is
+   the one it was posted for. */
+static int s_post_opening;
 
 static void
 backlog_lock(void) {
@@ -64,14 +69,20 @@ dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived) {
     s_seq++;
     s_queue = queue;
     s_arrived = arrived;
-    /* Posted while the input was being opened, with no queue attached: it is measured on this queue, the input it was
-       posted for. What the queue holds now reached it before the post, or in the moment between its opening and this
-       call. */
+    /* Posted while this input was being opened, with no queue attached: it is measured on this queue, the input it was
+       posted for. What the queue holds now reached it before the post, or in the moment between the post and this
+       call. One posted before the opening began (or with no opening) moved the peer before this input existed, so
+       what it holds arrived after the post: it is retired. */
     if (s_post_held && !s_post.measured) {
-        s_post.seq = s_seq;
-        s_post.arrived = arrived(queue);
-        s_post.measured = 1U;
+        if (s_post_opening) {
+            s_post.seq = s_seq;
+            s_post.arrived = arrived(queue);
+            s_post.measured = 1U;
+        } else {
+            s_post_held = 0;
+        }
     }
+    s_opening = 0;
     backlog_unlock();
 }
 
@@ -120,10 +131,22 @@ dsd_input_cut_age_ns(const dsd_input_cut* cut) {
 }
 
 void
+dsd_input_backlog_opening(void) {
+    backlog_lock();
+    /* Posted while no queue was attached, before this input began: retired, as at the attach. */
+    if (s_post_held && !s_post.measured) {
+        s_post_held = 0;
+    }
+    s_opening = 1;
+    backlog_unlock();
+}
+
+void
 dsd_input_backlog_post(void) {
     backlog_lock();
     backlog_mark_locked(&s_post);
     s_post_held = 1;
+    s_post_opening = s_opening && !s_post.measured;
     backlog_unlock();
 }
 
@@ -145,6 +168,7 @@ dsd_input_backlog_forget(void) {
     if (s_post_held && !(s_post.measured && s_queue != NULL && s_post.seq == s_seq)) {
         s_post_held = 0;
     }
+    s_opening = 0;
     backlog_unlock();
 }
 
@@ -152,5 +176,6 @@ void
 dsd_input_backlog_retire(void) {
     backlog_lock();
     s_post_held = 0;
+    s_opening = 0;
     backlog_unlock();
 }

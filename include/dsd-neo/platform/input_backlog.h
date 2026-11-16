@@ -17,9 +17,11 @@
  * (dsd_input_cut_age_ns(), dsd_audio_discard_input()).
  *
  * The retune the P25 watchdog confirms off the decoder thread is held here until the decoder takes it
- * (dsd_input_backlog_post(), dsd_input_backlog_take()). One posted while no queue is attached (a stream being opened)
- * is measured when the next queue attaches. An input replacement (dsd_input_backlog_forget()) retires a post that was
- * not measured on the queue attached then, and a run boundary (dsd_input_backlog_retire()) any post.
+ * (dsd_input_backlog_post(), dsd_input_backlog_take()). One posted while no queue is attached is measured when the next
+ * queue attaches only if it was posted once that input began opening (dsd_input_backlog_opening(): a TCP reconnect's
+ * connection made); one posted before (the reconnect's backoff) moved the peer before the input existed and is
+ * retired. An input replacement (dsd_input_backlog_forget()) retires a post that was not measured on the queue attached
+ * then, and a run boundary (dsd_input_backlog_retire()) any post.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_INPUT_BACKLOG_H_
@@ -43,8 +45,13 @@ typedef struct dsd_input_cut {
 } dsd_input_cut;
 
 /** @p queue is the input the decoder reads from now on, its count read by @p arrived. A post no queue measured yet is
- * measured on it now. */
+ * measured on it now when it was posted since this input began opening (dsd_input_backlog_opening()), else retired. */
 void dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived);
+
+/** A replacement input begins: its connection exists, and its queue attaches next. A post no queue measured, made
+ * before now, is retired; one made from now until the attach is measured on the queue that attaches. Decoder thread.
+ * The next attach, dsd_input_backlog_forget() or dsd_input_backlog_retire() ends the opening. */
+void dsd_input_backlog_opening(void);
 
 /** @p queue goes away: detached before it is freed, if it is the one attached. */
 void dsd_input_backlog_detach(const void* queue);

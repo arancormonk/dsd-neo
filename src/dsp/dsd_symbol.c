@@ -2941,9 +2941,15 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
         opts->tcp_sockfd =
             dsd_net_audio_input_hook_tcp_connect(opts->tcp_hostname, opts->tcp_portno, 0, cancelled, NULL);
         if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
+            /* The new connection exists: a watchdog retune posted from now on may find the old channel's audio on it,
+               and is measured on its reader; one posted during the backoff moved the peer before it began (issue
+               #834). */
+            dsd_input_backlog_opening();
             opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
             if (opts->tcp_in_ctx == NULL) {
                 DSD_FPRINTF(stderr, "Error, couldn't Reconnect to TCP audio input\n");
+                /* No input took the opening's posts: they are not the drop of whatever opens next. */
+                dsd_frame_sync_forget_unflushed_retunes();
                 return 0;
             }
             /* A new stream, whatever the old one's resampler tail still returns first (issue #628). A watchdog retune

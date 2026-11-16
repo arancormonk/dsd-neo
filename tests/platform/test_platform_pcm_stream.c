@@ -341,6 +341,73 @@ test_fd_discard_through(void) {
     (void)remove(path);
 }
 
+/* Issue #834: a retune posted while no input is open, and none is being opened (the backoff before a TCP reconnect),
+   moved the peer before the next input began: that input's first samples arrived after it, so it is not measured on
+   that input and its drop never runs. */
+static void
+test_post_before_the_input_opens(void) {
+    dsd_input_backlog_retire();
+    dsd_input_backlog_post();
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the early post");
+    const uint8_t fresh[] = {0x65U, 0x00U, 0x66U, 0x00U};
+    check(dsd_socket_send(pair.server, fresh, sizeof fresh, 0) == (int)sizeof fresh, "send the new channel's audio");
+    check(socket_holds(pair.client, (long)sizeof fresh), "it arrived");
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_socket(pair.client);
+    check(stream != NULL, "open on the socket after the early post");
+    dsd_input_cut cut;
+    DSD_MEMSET(&cut, 0, sizeof cut);
+    const int held = dsd_input_backlog_take(&cut);
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "a post made before the input began is not its drop (held %d, measured %u, %llu)",
+                 held, (unsigned)cut.measured, (unsigned long long)cut.arrived);
+    check(!held, what);
+    int16_t s = 0;
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 0x65,
+          "its first sample is read");
+    dsd_pcm_stream_close(stream);
+    socket_pair_close(&pair);
+}
+
+/* Issue #834: once a replacement input begins opening (its connection made), a retune posted before its reader
+   attaches may find the old channel's audio on it: it is measured on that reader when it attaches. One posted before
+   the opening began is retired by it, and an opening no reader took (a failed open, then dsd_input_backlog_forget())
+   leaves no post for the next input. */
+static void
+test_post_while_the_input_opens(void) {
+    dsd_input_backlog_retire();
+    dsd_input_backlog_post();
+    dsd_input_backlog_opening();
+    check(dsd_input_backlog_take(NULL) == 0, "a post made before the opening began is retired by it");
+    dsd_input_backlog_post();
+    dsd_input_backlog_forget();
+    dsd_input_backlog_opening();
+    check(dsd_input_backlog_take(NULL) == 0, "an opening that ended unopened leaves no post");
+
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the opening");
+    const uint8_t old_audio[] = {0x01U, 0x00U, 0x02U, 0x00U};
+    check(dsd_socket_send(pair.server, old_audio, sizeof old_audio, 0) == (int)sizeof old_audio, "send old audio");
+    check(socket_holds(pair.client, (long)sizeof old_audio), "it arrived");
+    dsd_input_backlog_opening();
+    dsd_input_backlog_post();
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_socket(pair.client);
+    check(stream != NULL, "open on the socket being opened");
+    dsd_input_backlog_forget();
+    dsd_input_cut cut;
+    DSD_MEMSET(&cut, 0, sizeof cut);
+    check(dsd_input_backlog_take(&cut) == 1 && cut.measured == 1U && cut.arrived == sizeof old_audio,
+          "a post made while it opened is measured on its reader and survives the replacement");
+    const uint8_t fresh[] = {0x03U, 0x00U};
+    check(dsd_socket_send(pair.server, fresh, sizeof fresh, 0) == (int)sizeof fresh, "send new audio");
+    check(socket_holds(pair.client, (long)(sizeof old_audio + sizeof fresh)), "it arrived too");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 2, "the drop takes the old audio");
+    int16_t s = 0;
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 3, "and keeps the new");
+    dsd_pcm_stream_close(stream);
+    socket_pair_close(&pair);
+}
+
 static void
 test_no_stream(void) {
     int16_t s = 7;
@@ -364,6 +431,8 @@ main(void) {
     test_socket_idle_then_close();
     test_socket_discard_through();
     test_fd_discard_through();
+    test_post_before_the_input_opens();
+    test_post_while_the_input_opens();
     dsd_socket_cleanup();
     if (g_failures != 0) {
         return 1;

@@ -19,9 +19,9 @@ extern "C" {
  * @brief The input was replaced (a switch, a reopened or reconnected stream): an unflushed retune posted off the
  * decoder thread and not yet taken is retired, unrun, unless it was measured on the queue attached now
  * (dsd_input_backlog_forget()). One posted before the new stream existed moved the peer before it began, so the new
- * stream holds nothing of the channel it left; one posted once the new stream was opening is that stream's drop
- * (dsd_input_backlog_attach() measures it), and one posted from here on is taken at the next read as usual
- * (dsd_frame_sync_note_off_thread_unflushed_retune()). Decoder thread.
+ * stream holds nothing of the channel it left; one posted once the new stream was opening (dsd_input_backlog_opening())
+ * is that stream's drop (dsd_input_backlog_attach() measures it), and one posted from here on is taken at the next read
+ * as usual (dsd_frame_sync_note_off_thread_unflushed_retune()). Decoder thread.
  */
 void dsd_frame_sync_forget_unflushed_retunes(void);
 
