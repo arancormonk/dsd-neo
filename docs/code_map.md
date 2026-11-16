@@ -6909,7 +6909,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     follows a pause as long as a dropped carrier: it starts a new reception, and is itself dropped, since its first
     samples may have arrived before the pause. The frontends age the row against the same deadline meanwhile. Files,
     Pulse and IQ replay deliver continuously and never set one, so a replay stays deterministic however slowly it is
-    read.
+    read. Whether the input is one that may pause is asked of the input in force (`dsd_opts_input_is_iq_replay()`, not
+    the sticky replay flags) and noted in the tap's session beside the input type and `dsd_state::carrier_source_key`,
+    then asked again only when either moves (issue #743): every stream start rewrites the key, a config apply that
+    moves a replay onto a live radio included, so a read pays two compares for it.
   - `src/dsp/analog_ctcss.c` is the CTCSS detector: one continuously running phasor per table tone, 50 ms sub-blocks
     with absolute phase in a 250 ms window, one hop per sub-block. Each hop fits every bin's sub-block phases (a
     pulse-pair estimate refined by weighted least squares), snaps the fine estimate to the table within the tone's gate

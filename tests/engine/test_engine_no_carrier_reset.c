@@ -2715,6 +2715,32 @@ confirmed_rows_are(const char* tag, const dsd_state* state, int row0, int row1) 
     return 0;
 }
 
+/* Issue #743: the analog tap notes whether its input may pause beside the source the stream last started on
+   (dsd_state::carrier_source_key) and asks again only when that moves. A config apply that moves an I/Q replay onto a
+   live rtl_tcp radio restarts the stream there, and that start moves the key, so the tap's answer follows the switch
+   (DSP_SYMBOL_REPLAY's stalled-stream case). */
+static int
+test_stream_source_key_moves_off_a_replay(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:capture.iq.json");
+    dsd_engine_note_stream_source(opts, state, 0);
+    const uint64_t replay_key = state->carrier_source_key;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    DSD_SNPRINTF(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", "127.0.0.1");
+    opts->rtltcp_portno = 1234;
+    dsd_engine_note_stream_source(opts, state, 0);
+    const int rc =
+        expect_true("a live rtl_tcp start after a replay moves the source key",
+                    replay_key != 0U && state->carrier_source_key != 0U && state->carrier_source_key != replay_key);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Issue #644: a -Y row is confirmed on air only by the landing the scan confirmed last, and every later tune
    attempt or displacement takes that away, whatever frequency the receiver may still be on. */
 static int
@@ -14758,6 +14784,7 @@ main(void) {
     rc |= test_legacy_step_failure_reconciles_the_cached_centre();
     rc |= test_untyped_find_and_enter_row();
     rc |= test_untyped_row_confirmed_only_by_its_landing();
+    rc |= test_stream_source_key_moves_off_a_replay();
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
     rc |= test_live_loop_syncs_move_the_quiet_sync_sequence();
     rc |= test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict();

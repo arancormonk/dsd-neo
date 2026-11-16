@@ -2421,9 +2421,11 @@ test_rx_tone_stalled_radio_stream_goes_stale(void) {
     }
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && state.analog_rx.ctcss_tenths_hz == 1318);
 
-    /* IQ replay keeps no deadline and carries on across a gap. */
+    /* IQ replay keeps no deadline and carries on across a gap. Its stream starts on another source, which moves the
+       source key (dsd_engine_note_stream_source(), pinned by ENGINE_NO_CARRIER_RESET): the tap asks again. */
     opts.rtltcp_enabled = 0;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
+    state.carrier_source_key = 2U;
     feed_stream_block(&opts, &state, 131.8);
     assert(state.analog_rx.stale_after_ms == 0U);
     generation = state.analog_rx.generation;
@@ -2432,11 +2434,15 @@ test_rx_tone_stalled_radio_stream_goes_stale(void) {
     assert(state.analog_rx.ctcss_tenths_hz == 1318 && state.analog_rx.generation == generation);
 
     /* Issue #743 (B14): the replay flags a session keeps after a config apply moved it onto a live rtl_tcp radio do not
-       make that radio a file: it stamps its deadline again. */
+       make that radio a file: it stamps its deadline again. The tap keeps its answer until the live stream's start
+       moves the source key; it never reads the device name per block. */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
     opts.rtltcp_enabled = 1;
     opts.iq_replay_requested = 1;
     opts.iq_replay_active = 1;
+    feed_stream_block(&opts, &state, 131.8);
+    assert(state.analog_rx.stale_after_ms == 0U);
+    state.carrier_source_key = 3U;
     feed_stream_block(&opts, &state, 131.8);
     assert(state.analog_rx.stale_after_ms == g_fake_now_ms + (uint64_t)DSD_ANALOG_STREAM_PAUSE_MIN_MS);
 
