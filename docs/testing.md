@@ -1048,6 +1048,22 @@ The unit tests:
 | `RUNTIME_CONFIG_APPLY` | A startup RTL-SDR or rtl_tcp `[input]` `rtl_bw_khz` is an explicit request that outlives the input `--iq-replay` replaces; one that names no bandwidth requests none. |
 | `FUZZ_IO_IQ_WAV` (fuzz presets) | `dsd_iq_wav_read_info()` and the replay reader over a WAV (open, read, seek) on arbitrary input; seeds in `tests/fuzz/corpus/io_iq_wav/`. |
 
+#### Raw I/Q over the network, end to end (issue #743)
+
+`DECODE_IQ_NET_*` (`tests/iq_net_decode_check.py`, label `iq-decode`, radio builds on POSIX) send committed fixtures,
+converted with the standard library to the wire format a sending program writes, to `-i iqtcp:` or `-i iqudp:` at real
+time, as a live sender does. A live stream has no end, so the harness watches the output until the counts are met (or
+60 s pass), stops dsd-neo with SIGINT and requires exit 0 and no sanitizer report. What a block holds depends on when
+the samples arrived, so the cases count CRC-gated decodes with margin instead of comparing lines with a replay. Every
+live run measured, in dev-debug, ASan and TSan (TSan also pinned to one core), decoded each payload in full, as the
+replay does; the counts below are those, with the threshold in brackets.
+
+| Case | What it pins |
+| --- | --- |
+| `DECODE_IQ_NET_TCP` (needs `IQ_WAV_FIXTURES`) | The sender is a TCP server that keeps the connection open and quiet after the payload; each run must connect exactly once. (a) `tetra_scbs_real_air_50k.cs16` as it is, `cs16` at 50 kHz in SDR++'s 1024-byte writes, `-fT` with FREQ: resampled to 72 kHz, 79 identities (25). (b) `tetra_call_real_air_72k` as `cf32` at 72 kHz, `-fT -Z` with FREQ 426.7 MHz: 232 identities (200), the D-SETUP twice (1), 48 TCH/S bursts whose CRC passes (40), and the group call in the event history (`-J`) on its carrier's frequency, as `DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT` publishes it. (c) `call_48254/tetra.wav` cut to `cs16` at 48,254 Hz: resampled to 72 kHz, the same counts as (b). (d) `dmr_voice` as `cs8` at 48 kHz, `-fs`: the inverted polarity found and 51 CSBKs (40), with no voice burst and no RAS notice. None prints a TETRA rate warning or `CLIP`. |
+| `DECODE_IQ_NET_UDP` | (d) in 1472-byte datagrams (GNU Radio's UDP Sink size, under macOS's 9216-byte default limit) with an empty datagram before, halfway and after: 51 CSBKs (35, fewer than TCP's since a datagram the host drops is gone). The port is picked free and the payload sent once dsd-neo's notice names it as receiving; when another process took the port first, dsd-neo exits refusing it and the harness tries a new one. |
+| `DECODE_IQ_NET_ANALOG` (also `analog`) | `nfm_tone_synth` under `-fA` and `am_tone_synth` under `-fM`, as `cs16` at 48 kHz at the fixed gain `-n 50`, the monitor on stdout (`-o -`): at least 1.2 s of audio (1.48 s), the 1 kHz tone at 1000 Hz +/- 5 Hz in the 48 kHz output (1000.0), and its RMS level within 1 dB of the replay's (-15.06 dBFS NFM, -15.0 AM; -15.06 and -15.01 live). |
+
 #### Device-forced rates, live and replayed (issue #806)
 
 An Airspy delivers its own rate. The half-band passes leave 78,125 or 93,750 Hz, and the live I/Q rate step takes that
