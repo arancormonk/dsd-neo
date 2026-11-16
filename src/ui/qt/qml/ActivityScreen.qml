@@ -381,8 +381,16 @@ Item {
 
         function onFilterChanged() {
             activityPlace.forget();
-            Qt.callLater(activityList.positionViewAtBeginning);
+            toTopLater.restart();
         }
+    }
+    // The move to the top waits for the list's new rows on a timer the
+    // screen owns, not Qt.callLater(): a call still queued when the screen
+    // goes (Main torn down) would run on it after its context ended.
+    Timer {
+        id: toTopLater
+        interval: 0
+        onTriggered: activityList.positionViewAtBeginning()
     }
 
     // A sibling of the list, not a child: ListView reparents declared

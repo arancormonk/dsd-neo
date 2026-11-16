@@ -177,6 +177,22 @@ Item {
             verify(item("activityFilter0").Accessible.checked);
         }
 
+        // A filter change moves the list to the top once its rows are in. The
+        // move runs from a timer the screen owns (as #876 did for Qt.callLater()),
+        // so a screen torn down before it runs runs nothing late.
+        function test_filter_change_moves_to_top() {
+            failOnWarning(/invalid context|TypeError/);
+            for (var i = 1; i <= 30; i++)
+                verify(testContext.pushUnitActivity({kind: "registration", subject: i}));
+            tryCompare(list(), "count", 30);
+            list().contentY = list().originY + 600;
+            waitForRendering(list());
+            mouseClick(item("activityFilter1"));
+            tryVerify(function () { return Math.abs(list().contentY - list().originY) < 1; }, 1000, "the list went to the top");
+            mouseClick(item("activityFilter0"));
+            compare(activityView.filter, 0);
+        }
+
         // Review focus 3: back from the background on a busy site, the list shows
         // the newest rows and one row saying earlier activity was not kept, at
         // the bottom; a name change that reads every row again adds no second one.
