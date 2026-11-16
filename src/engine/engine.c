@@ -3701,6 +3701,11 @@ dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) 
     if (state->carrier_source_key != 0U
         && (key != state->carrier_source_key || dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev))) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SOURCE, guard_held);
+    } else if (state->carrier_source_key != 0U) {
+        /* A reopen of the same live source (a restart for a gain, PPM, bandwidth or mode change, or the recovery
+           after one that failed) lost the samples between the stop and the start: what was being decoded across them
+           cannot go on, as at any stream gap on the carrier (issue #743 B19). */
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, guard_held);
     }
     /* A stream started, on the same source or not, opens wherever it is told: no landing a scan confirmed before it
        says the receiver is on that row (issue #644). */

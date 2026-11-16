@@ -1218,9 +1218,11 @@ int svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_c
 /** Apply and roll back without acquiring; caller holds the P25 SM tick guard. */
 int svc_airspy_apply_config_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
                                    const svc_airspy_tuning* previous_tuning);
-/** @brief Set RTL device index and mark stream for restart (applied immediately if active). */
+/** @brief Set RTL device index and mark stream for restart (applied immediately if active). DSD_ERR_NOT_SUPPORTED, with
+ * nothing changed, on an input with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
 int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
-/** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
+/** @brief Set RTL manual gain (0–49), clamping and restarting if needed. DSD_ERR_NOT_SUPPORTED, with nothing changed and
+ * no restart, on an input with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /**
  * @brief Set RTL DSP baseband bandwidth (kHz, dsd_analog_rtl_dsp_bw_is_selectable()), restarting if needed.
@@ -1253,7 +1255,8 @@ int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, 
 int svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
 /** @brief Set RTL monitor/non-symbol gain multiplier (clamped to 0–3). */
 int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
-/** @brief Toggle RTL bias tee (applied live when stream active). */
+/** @brief Toggle RTL bias tee (applied live when stream active). DSD_ERR_NOT_SUPPORTED, with nothing changed, on an input
+ * with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
 int svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on);
 /**
  * @brief Why a radio control failed when the receiver itself was the cause, as the reason a "Failed:" toast gives
@@ -1267,9 +1270,11 @@ int svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on);
  * @return The reason, or NULL when the receiver is not the cause.
  */
 const char* svc_radio_control_unavailable_text(int device_rc);
-/** @brief Toggle RTL-TCP adaptive networking and propagate to env/stream. */
+/** @brief Toggle RTL-TCP adaptive networking and propagate to env/stream. DSD_ERR_NOT_SUPPORTED, with nothing changed,
+ * on an input with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
 int svc_rtltcp_set_autotune(dsd_opts* opts, const dsd_state* state, int on);
-/** @brief Toggle carrier/error-based auto PPM and propagate to env/stream. */
+/** @brief Toggle carrier/error-based auto PPM and propagate to env/stream. DSD_ERR_NOT_SUPPORTED, with nothing changed,
+ * on an input with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
 int svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on);
 #endif
 

@@ -38,6 +38,10 @@ void dsd_app_channel_walk_settled(dsd_opts* opts, dsd_state* state, int row, int
    off for the session (iq_capture_requested cleared and published) and a toast says so (@p state may be NULL). Every
    stream start of the session runs it before it opens, so it never reopens a sealed capture's file. */
 void dsd_app_take_capture_stopped(dsd_opts* opts, dsd_state* state);
+/* Decoder thread: a stream restart turned the I/Q capture off (svc_rtl_restart_locked(), issue #743 B16), so the next
+   dsd_app_take_capture_stopped() says so in a toast of its own, as it does for a seal; a seal not yet taken is
+   replaced, the capture being off already. */
+void dsd_app_note_capture_stopped_at_restart(void);
 #ifdef DSD_NEO_TEST_HOOKS
 
 /* Counts contended policy transactions; relaxed, so observing it adds no synchronization. */

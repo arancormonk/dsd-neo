@@ -779,6 +779,10 @@ dsd_app_take_capture_stopped(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
+/* The notice a restart that turned the I/Q capture off posts (issue #743 B16); APP_COMMAND_QUEUE covers it. */
+void
+dsd_app_note_capture_stopped_at_restart(void) {}
+
 int
 rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     note_rtl_lifecycle_call();

@@ -2044,13 +2044,42 @@ svc_rtl_scans_stream_reopened(const dsd_opts* opts, const dsd_state* state, int 
     dsd_engine_trunk_scan_stream_reopened(opts, state, opened);
 }
 
+/* Whether the last restart turned the I/Q capture off and then failed to start (svc_rtl_restart_locked()), for the
+   recovery that follows it to report the stop (svc_rtl_restart_recovery_locked()). Decoder thread only. */
+static int g_svc_failed_restart_stopped_capture;
+
+/* After a restart stopped a stream (@p stream_ran) that was recording to --iq-capture: the stop closed the file with
+   what it recorded, and the start would open it for writing again and empty it (issue #743 B16). The capture goes off
+   for the rest of the session before the start, and the log names the file. Returns 1 when it turned the capture off. */
+static int
+svc_restart_stop_capture(dsd_opts* opts, int stream_ran) {
+    if (!stream_ran || !opts->iq_capture_requested) {
+        return 0;
+    }
+    opts->iq_capture_requested = 0;
+    LOG_WARN("I/Q capture stopped: the stream restarted, and reopening %s would write over what it recorded, which is "
+             "kept. The capture stays off for the rest of this session.\n",
+             opts->iq_capture_path);
+    return 1;
+}
+
 int
 svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
+    /* A seal not drained yet (a retune's rate change, issue #806 X9) has turned the capture off already: taken first,
+       so the restart does not report it again. */
+    dsd_app_take_capture_stopped(opts, state);
+    const int stream_ran = state->rtl_ctx != NULL;
     svc_rtl_stop_locked(opts, state);
+    const int capture_stopped = svc_restart_stop_capture(opts, stream_ran);
     const int rc = svc_rtl_start_locked(opts, state);
+    /* Said after the start, which takes a notice before it opens: the toast follows the command's own. */
+    if (capture_stopped) {
+        dsd_app_note_capture_stopped_at_restart();
+    }
+    g_svc_failed_restart_stopped_capture = capture_stopped && rc != 0;
     /* A start that failed leaves the note to the recovery a failed change runs next, whose start may open on the tune's
        target (it puts back the centre the input ran, which a pending tune's timeout cached as its target). With no
        recovery, the note dies with the drop: the poll and the service take it, which ends what it names. */
@@ -2188,7 +2217,10 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_sto
     if (!opts || !state) {
         return -1;
     }
-    if (svc_recovery_stop_capture(opts, stream_stopped) && out_capture_stopped) {
+    /* The restart that failed may have turned the capture off itself, before its start (svc_rtl_restart_locked()). */
+    const int restart_stopped_capture = g_svc_failed_restart_stopped_capture;
+    g_svc_failed_restart_stopped_capture = 0;
+    if ((svc_recovery_stop_capture(opts, stream_stopped) || restart_stopped_capture) && out_capture_stopped) {
         *out_capture_stopped = 1;
     }
     /* The input that ran runs again, so a failure the failed change latched is not the session's: the latch goes back
@@ -2375,7 +2407,9 @@ svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
     if (!opts || !state) {
         return -1;
     }
-    if (svc_radio_source_is_soapy(opts) || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+    /* A fixed source (an I/Q replay) has no device to change: the restart would only rewind it (issue #743 B2). */
+    if (svc_radio_source_is_soapy(opts) || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
+        || dsd_opts_input_has_fixed_tuning(opts)) {
         return DSD_ERR_NOT_SUPPORTED;
     }
     if (index < 0) {
@@ -2392,7 +2426,9 @@ svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
 
 int
 svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
-    if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+    /* A fixed source (an I/Q replay) has no tuner gain: its gain is the one its capture recorded, and the restart a
+       change makes would only rewind it (issue #743 B2). Refused before anything changes. */
+    if (opts && (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev) || dsd_opts_input_has_fixed_tuning(opts))) {
         return DSD_ERR_NOT_SUPPORTED;
     }
     if (!opts || !state) {
@@ -2602,6 +2638,9 @@ svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on) {
     if (!opts) {
         return -1;
     }
+    if (dsd_opts_input_has_fixed_tuning(opts)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     const int requested = on ? 1 : 0;
     if (state && state->rtl_ctx) {
         /* Apply live when RTL stream is active */
@@ -2634,6 +2673,9 @@ svc_rtltcp_set_autotune(dsd_opts* opts, const dsd_state* state, int on) {
     if (!opts) {
         return -1;
     }
+    if (dsd_opts_input_has_fixed_tuning(opts)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     const int requested = on ? 1 : 0;
     if (state && state->rtl_ctx) {
         /* Apply live when RTL stream is active. */
@@ -2654,6 +2696,9 @@ int
 svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
     if (!opts) {
         return -1;
+    }
+    if (dsd_opts_input_has_fixed_tuning(opts)) {
+        return DSD_ERR_NOT_SUPPORTED;
     }
     opts->rtl_auto_ppm = on ? 1 : 0;
     /* A session override, so a stream restart and a saved config keep it */

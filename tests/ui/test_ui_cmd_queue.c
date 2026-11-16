@@ -11336,17 +11336,18 @@ record_capture_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
     }
 }
 
-/* The stream the rollback started runs the input that ran, without the I/Q capture: the start that failed was handed
-   the capture, the recovery start was not, the capture stays off for the session, and the log names the file, as kept
-   when the start that failed never opened it, or as written over when it had (@p written_over). */
+/* The stream the rollback started runs the input that ran, without the I/Q capture, which stays off for the session.
+   Neither start was handed the capture: the restart that stopped the recording stream turned it off before its own
+   start (issue #743 B16), so the start that failed could not open the file and write over it either, and the log names
+   the file as kept. */
 static int
-expect_capture_stopped(const char* label, const dsd_opts* opts, int written_over) {
-    int rc = expect_int(label, g_config_rtl_creates == 2 && g_config_rtl_captures == 1, 1);
+expect_capture_stopped(const char* label, const dsd_opts* opts) {
+    int rc = expect_int(label, g_config_rtl_creates == 2 && g_config_rtl_captures == 0, 1);
     rc |= expect_int(label, g_config_rtl_create_capture, 0);
     rc |= expect_int(label, opts->iq_capture_requested, 0);
     rc |= expect_int(label, strstr(g_capture_log, "I/Q capture stopped") != NULL && strstr(g_capture_log, "cap.iq"), 1);
-    rc |= expect_int(label, strstr(g_capture_log, "which is kept") != NULL, written_over ? 0 : 1);
-    rc |= expect_int(label, strstr(g_capture_log, "had already reopened cap.iq") != NULL, written_over ? 1 : 0);
+    rc |= expect_int(label, strstr(g_capture_log, "which is kept") != NULL, 1);
+    rc |= expect_int(label, strstr(g_capture_log, "had already reopened") == NULL, 1);
     return rc;
 }
 
@@ -17623,7 +17624,7 @@ test_config_rollback_keeps_the_iq_capture(void) {
     DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "192.0.2.7");
     cfg.rtltcp_port = 1234;
     rc |= submit_config(&opts, &state, &cfg, "capture cfg rtl_tcp host fails");
-    rc |= expect_capture_stopped("capture cfg rtl_tcp host fails: recording kept", &opts, 0);
+    rc |= expect_capture_stopped("capture cfg rtl_tcp host fails: recording kept", &opts);
     rc |= expect_str("capture cfg rtl_tcp host fails: host put back", opts.audio_in_dev, "rtltcp:127.0.0.1:1234");
     rc |= expect_str("capture cfg rtl_tcp host fails toast", state.ui_msg,
                      "Config not applied: the rtl_tcp input did not start (see log); I/Q capture stopped");
@@ -22435,10 +22436,12 @@ test_config_reopen_that_stops_the_scanner_skips_the_row(void) {
     cfg.trunk_scanner = 0;
     rc |= submit_config(&opts, &state, &cfg, "scanner off");
     rc |= expect_int("scanner off: applied", dsd_app_command_test_last_failed(), 0);
-    rc |= expect_int("scanner off: the Airspy started once, with the capture",
-                     g_config_rtl_creates == 1 && g_config_rtl_create_capture == 1 && state.rtl_ctx != NULL, 1);
+    /* The reopen stopped the stream that was recording: it closed the capture, which then stays off rather than let
+       the Airspy's start empty the file (issue #743 B16). */
+    rc |= expect_int("scanner off: the Airspy started once, without the capture",
+                     g_config_rtl_creates == 1 && g_config_rtl_create_capture == 0 && state.rtl_ctx != NULL, 1);
     rc |= expect_str("scanner off: on the Airspy", opts.audio_in_dev, "airspy");
-    rc |= expect_int("scanner off: the capture stays on", opts.iq_capture_requested, 1);
+    rc |= expect_int("scanner off: the capture is off", opts.iq_capture_requested, 0);
     rc |= expect_int("scanner off: no rollback toast", strstr(state.ui_msg, "Config not applied") == NULL, 1);
     rc |= expect_int("scanner off: the scan left, on the configured DMR",
                      opts.scanner_mode == 0 && dsd_scan_mode_active(&state) == DSD_SCAN_MODE_INHERIT
@@ -23567,13 +23570,13 @@ test_input_switch_rollback_keeps_the_iq_capture(void) {
     g_config_rtl_fail_starts = 1;
     g_capture_log[0] = '\0';
     rc |= switch_input_from(&opts, &state, DSD_APP_CMD_RTL_ENABLE_INPUT, "capture airspy to rtl drained");
-    rc |= expect_capture_stopped("capture airspy to rtl: recording kept", &opts, 0);
+    rc |= expect_capture_stopped("capture airspy to rtl: recording kept", &opts);
     rc |= expect_str("capture airspy to rtl: Airspy back", opts.audio_in_dev, "airspy");
     rc |= expect_str("capture airspy to rtl toast", state.ui_msg,
                      "Failed: the RTL-SDR input did not start (see log); I/Q capture stopped");
 
-    /* A start that fails after it opened the capture (an Airspy SDK that does not start) has already written the file
-       anew: the log says so, rather than claim the recording is kept, and the capture stops all the same. */
+    /* A start that would fail after it opened the capture (an Airspy SDK that does not start) used to write the file
+       anew before failing; it is not handed the capture now (issue #743 B16), so the recording is kept. */
     opts.iq_capture_requested = 1;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
     state.rtl_ctx = (RtlSdrContext*)fake_ctx;
@@ -23583,7 +23586,7 @@ test_input_switch_rollback_keeps_the_iq_capture(void) {
     g_config_rtl_fail_after_capture = 1;
     g_capture_log[0] = '\0';
     rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "capture rtl to airspy drained");
-    rc |= expect_capture_stopped("capture rtl to airspy: recording written over", &opts, 1);
+    rc |= expect_capture_stopped("capture rtl to airspy: recording kept", &opts);
     rc |= expect_str("capture rtl to airspy: RTL-SDR back", opts.audio_in_dev, "rtl:0:851.375M:0:0:48");
     rc |= expect_str("capture rtl to airspy toast", state.ui_msg,
                      "Failed: the Airspy input did not start (see log); I/Q capture stopped");
@@ -23601,8 +23604,8 @@ test_input_switch_rollback_keeps_the_iq_capture(void) {
     g_config_rtl_fail_starts = 1;
     g_capture_log[0] = '\0';
     rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "capture pcm over a stream drained");
-    rc |= expect_int("capture pcm over a stream: the Airspy tried with the capture, nothing restarted",
-                     g_config_rtl_creates == 1 && g_config_rtl_captures == 1, 1);
+    rc |= expect_int("capture pcm over a stream: the Airspy tried without the capture, nothing restarted",
+                     g_config_rtl_creates == 1 && g_config_rtl_captures == 0, 1);
     rc |= expect_int("capture pcm over a stream: still Pulse, the stream stopped",
                      opts.audio_in_type == AUDIO_IN_PULSE && state.rtl_ctx == NULL, 1);
     rc |= expect_str("capture pcm over a stream: device put back", opts.audio_in_dev, "pulse");
@@ -23741,7 +23744,7 @@ test_dsp_bandwidth_change_that_fails_keeps_the_running_input(void) {
     g_capture_log[0] = '\0';
     rc |= submit_dsp_bandwidth(&opts, &state, 24, "rtl bw 24");
     rc |= expect_int("rtl bw 24: failed", dsd_app_command_test_last_failed(), 1);
-    rc |= expect_capture_stopped("rtl bw 24: recording kept", &opts, 0);
+    rc |= expect_capture_stopped("rtl bw 24: recording kept", &opts);
     rc |= expect_int("rtl bw 24: the bandwidth that ran back", opts.rtl_dsp_bw_khz, 48);
     rc |= expect_int("rtl bw 24: restarted at 48 kHz", g_config_rtl_create_bw_khz == 48 && state.rtl_ctx != NULL, 1);
     rc |= expect_str("rtl bw 24 toast", state.ui_msg,
@@ -23780,7 +23783,8 @@ submit_airspy_setting(dsd_opts* opts, dsd_state* state, const char* key, const c
  * Issue #578: an Airspy setting the running Airspy takes only when it opens (its sample rate) reopens it, and a start
  * that fails puts the settings it replaced back and starts them again without the I/Q capture, as every rollback
  * restart does. The capture stays off for the rest of the session, so the message says so beside the failure, as the
- * config and Switch source rollbacks do. A setting that reopens and starts records on.
+ * config and Switch source rollbacks do. A setting that reopens and starts stops the capture too: the reopen closed the
+ * file with what it recorded, and its start would empty it (issue #743 B16).
  */
 static int
 test_airspy_setting_rollback_reports_the_iq_capture_stop(void) {
@@ -23803,19 +23807,22 @@ test_airspy_setting_rollback_reports_the_iq_capture_stop(void) {
     g_capture_log[0] = '\0';
     rc |= submit_airspy_setting(&opts, &state, "airspy_sample_rate", "2500000", "airspy rate fails");
     rc |= expect_int("airspy rate fails: failed", dsd_app_command_test_last_failed(), 1);
-    rc |= expect_capture_stopped("airspy rate fails: recording kept", &opts, 0);
+    rc |= expect_capture_stopped("airspy rate fails: recording kept", &opts);
     rc |= expect_int("airspy rate fails: the rate put back", (int)opts.airspy.sample_rate, (int)rate_before);
     rc |= expect_int("airspy rate fails: the Airspy runs", state.rtl_ctx != NULL, 1);
     rc |= expect_str("airspy rate fails toast", state.ui_msg, "Failed: Airspy setting; I/Q capture stopped");
 
-    /* One that starts records on, and says only that it applied. */
+    /* One that starts says it applied, and the next drain that the capture stopped. */
     opts.iq_capture_requested = 1;
     reset_config_rtl_wrap();
     g_config_rtl_open_ok = 1;
     rc |= submit_airspy_setting(&opts, &state, "airspy_sample_rate", "2500000", "airspy rate starts");
-    rc |=
-        expect_int("airspy rate starts: records on", g_config_rtl_create_capture == 1 && opts.iq_capture_requested, 1);
+    rc |= expect_int("airspy rate starts: without the capture",
+                     g_config_rtl_create_capture == 0 && !opts.iq_capture_requested, 1);
     rc |= expect_str("airspy rate starts toast", state.ui_msg, "Applied: Airspy setting");
+    rc |= expect_int("airspy rate starts: the next drain", dsd_app_drain_cmds(&opts, &state), 0);
+    rc |= expect_str("airspy rate starts: capture toast", state.ui_msg,
+                     "I/Q capture stopped: the stream restarted; what was recorded is kept");
 
     reset_config_rtl_wrap();
     opts.iq_capture_requested = 0;
@@ -25800,7 +25807,8 @@ test_scan_row_edit_commands_under_trunk_scan(void) {
     rc |= expect_int("configured gain untouched", state.trunk_scan_configured_gain, 22);
 
     /* The restart fails with an I/Q capture on: the previous gain is put back, and the input that ran starts again on
-       it without the capture, whose reopen would write over what it recorded. */
+       it without the capture, whose reopen would write over what it recorded. The restart turned the capture off before
+       its own start, so neither start was handed it (issue #743 B16). */
     opts.iq_capture_requested = 1;
     DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
     g_config_rtl_creates = 0;
@@ -25812,8 +25820,8 @@ test_scan_row_edit_commands_under_trunk_scan(void) {
     g_config_rtl_fail_starts = 0;
     rc |= expect_true("failed gain edit toast", strncmp(state.ui_msg, "Failed: this channel's RTL gain", 31) == 0);
     rc |= expect_int("failed gain edit puts the previous gain back", opts.rtl_gain_value, 20);
-    rc |= expect_int("the recovery start opened no capture",
-                     g_config_rtl_creates == 2 && g_config_rtl_captures == 1 && g_config_rtl_create_capture == 0
+    rc |= expect_int("no start opened the capture",
+                     g_config_rtl_creates == 2 && g_config_rtl_captures == 0 && g_config_rtl_create_capture == 0
                          && g_config_rtl_create_gain == 20 && state.rtl_ctx != NULL,
                      1);
     rc |= expect_int("the capture stays off", opts.iq_capture_requested, 0);
@@ -28469,6 +28477,218 @@ test_capture_seal_before_a_reopen_in_the_same_drain(void) {
 }
 #endif
 
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* A running radio stream (the fake context) on @p dev, its starts all succeeding, nothing counted yet. */
+static void
+init_running_radio(dsd_opts* opts, dsd_state* state, const char* dev) {
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->audio_out_type = 9;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", dev);
+    opts->rtl_dsp_bw_khz = 48;
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 0;
+    state->rtl_ctx = (RtlSdrContext*)g_config_rtl_ctx;
+    g_config_rtl_creates = 0;
+    g_config_rtl_captures = 0;
+    g_config_rtl_create_capture = -1;
+    g_capture_log[0] = '\0';
+}
+
+static void
+end_running_radio(dsd_state* state) {
+    dsd_app_frontend_runtime_stop();
+    state->rtl_ctx = NULL;
+    g_config_rtl_open_ok = 0;
+    g_config_rtl_fail_starts = 0;
+    freeState(state);
+}
+
+/* Issue #743 B2: an I/Q replay has no tuner. Its gain, device index, PPM (set and step), bias tee, rtl_tcp autotune and
+   auto-PPM commands are refused with their "Unsupported" toasts before anything changes: no option moves, the replay
+   is not restarted (which rewound it onto the system clock), and no PPM request is recorded ("Applied: RTL PPM" said a
+   correction landed that nothing applied). The tuner autogain toggle is refused too and leaves the supervisor's
+   setting as it was, so the replay's toggle is never the setting a later radio opens with. */
+static int
+test_replay_refuses_tuner_controls(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    static const struct {
+        int cmd;
+        int32_t value;
+        const char* toast;
+    } k_cases[] = {
+        {DSD_APP_CMD_RTL_SET_GAIN, 20, "Unsupported: gain control not available on active backend"},
+        {DSD_APP_CMD_RTL_SET_DEV, 1, "Unsupported: device index is not available for current radio source"},
+        {DSD_APP_CMD_RTL_SET_PPM, 5, "Unsupported: PPM correction not available on active backend"},
+        {DSD_APP_CMD_PPM_DELTA, 1, "Unsupported: PPM correction not available on active backend"},
+        {DSD_APP_CMD_RTL_SET_BIAS_TEE, 1, "Unsupported: bias tee control not available on active backend"},
+        {DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, 1, "Unsupported: RTL-TCP autotune not available on active backend"},
+        {DSD_APP_CMD_RTL_SET_AUTO_PPM, 1, "Unsupported: Auto PPM not available on active backend"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        init_running_radio(&opts, &state, "iqreplay:capture.iq.json");
+        opts.iq_replay_requested = 1;
+        opts.rtl_gain_value = 0;
+        opts.rtl_dev_index = 0;
+        opts.rtlsdr_ppm_error = 0;
+        opts.rtl_bias_tee = 0;
+        opts.rtltcp_autotune = 0;
+        opts.rtl_auto_ppm = 0;
+        g_bias_tee_armed = 1;
+        g_bias_tee_result = 0;
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof tag, "replay tuner control %zu", i);
+        rc |= expect_int(tag, post_i32(k_cases[i].cmd, k_cases[i].value), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        state.ui_msg[0] = '\0';
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_str(tag, state.ui_msg, k_cases[i].toast);
+        rc |= expect_int(tag, g_config_rtl_creates, 0);
+        rc |= expect_true(tag, state.rtl_ctx == (RtlSdrContext*)g_config_rtl_ctx);
+        rc |= expect_true(tag, opts.rtl_gain_value == 0 && opts.rtl_dev_index == 0 && opts.rtlsdr_ppm_error == 0
+                                   && opts.rtl_bias_tee == 0 && opts.rtltcp_autotune == 0 && opts.rtl_auto_ppm == 0
+                                   && opts.rtl_needs_restart == 0);
+        rc |= expect_int(tag, rtl_stream_get_requested_ppm(&opts), 0);
+        g_bias_tee_armed = 0;
+        end_running_radio(&state);
+    }
+
+    init_running_radio(&opts, &state, "iqreplay:capture.iq.json");
+    opts.iq_replay_requested = 1;
+    rtl_stream_set_tuner_autogain(0);
+    const dsd_app_dsp_payload toggle = {.op = DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE};
+    rc |= expect_int("replay autogain toggle queued",
+                     dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &toggle, sizeof toggle), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("replay autogain toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("replay autogain toggle toast", state.ui_msg,
+                     "Unsupported: gain control not available on active backend");
+    rc |= expect_int("replay autogain toggle changes nothing", rtl_stream_get_tuner_autogain(), 0);
+    end_running_radio(&state);
+    return rc;
+}
+
+/* What the capture-stopped log and toast of a restart say (issue #743 B16). */
+static const char k_restart_capture_toast[] = "I/Q capture stopped: the stream restarted; what was recorded is kept";
+
+/* Issue #743 B16: a restart of a stream recording to --iq-capture (RTL_RESTART, a gain, device or DSP bandwidth change)
+   used to start the stream again with the capture still requested, reopening its file for writing and emptying what
+   it had recorded (reproduced over rtl_tcp: 8.9 MB down to 4.5 MB). The stop closes the file with what it recorded and
+   the capture goes off for the rest of the session before the start: no start is handed it, the log names the file,
+   and the next drain shows the toast after the command's own. A restart whose start fails goes back to the input that
+   ran without the capture, and its rollback toast says the capture stopped. */
+static int
+test_restart_stops_the_iq_capture(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    static const struct {
+        int cmd;
+        int32_t value;
+    } k_restarts[] = {
+        {DSD_APP_CMD_RTL_RESTART, 0},
+        {DSD_APP_CMD_RTL_SET_GAIN, 20},
+        {DSD_APP_CMD_RTL_SET_DEV, 1},
+        {DSD_APP_CMD_RTL_SET_BW, 24},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_restarts / sizeof k_restarts[0]; i++) {
+        init_running_radio(&opts, &state, "rtl:0:851375000:22:0:48:0:2");
+        opts.iq_capture_requested = 1;
+        DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof tag, "restart %zu stops the capture", i);
+        if (k_restarts[i].cmd == DSD_APP_CMD_RTL_RESTART) {
+            rc |= expect_int(tag, post_empty(k_restarts[i].cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        } else {
+            rc |= expect_int(tag, post_i32(k_restarts[i].cmd, k_restarts[i].value), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        }
+        state.ui_msg[0] = '\0';
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_true(tag,
+                          g_config_rtl_creates == 1 && g_config_rtl_captures == 0 && g_config_rtl_create_capture == 0);
+        rc |= expect_int(tag, opts.iq_capture_requested, 0);
+        rc |= expect_true(tag, strstr(g_capture_log, "I/Q capture stopped: the stream restarted") != NULL
+                                   && strstr(g_capture_log, "reopening cap.iq") != NULL
+                                   && strstr(g_capture_log, "which is kept") != NULL);
+        rc |= expect_true(tag, strstr(state.ui_msg, "I/Q capture") == NULL);
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 0);
+        rc |= expect_str(tag, state.ui_msg, k_restart_capture_toast);
+        end_running_radio(&state);
+    }
+
+    /* The start fails once: the input that ran starts again, without the capture, and the rollback says so. */
+    init_running_radio(&opts, &state, "rtl:0:851375000:22:0:48:0:2");
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+    g_config_rtl_fail_starts = 1;
+    rc |= expect_int("failed restart queued", post_i32(DSD_APP_CMD_RTL_SET_BW, 24), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("failed restart drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("failed restart: no start was handed the capture",
+                      g_config_rtl_creates == 2 && g_config_rtl_captures == 0 && g_config_rtl_create_capture == 0);
+    rc |= expect_int("failed restart: the capture stays off", opts.iq_capture_requested, 0);
+    rc |= expect_true("failed restart: the input that ran is back", state.rtl_ctx != NULL && opts.rtl_dsp_bw_khz == 48);
+    rc |=
+        expect_contains("failed restart: the rollback says the capture stopped", state.ui_msg, "; I/Q capture stopped");
+    end_running_radio(&state);
+    return rc;
+}
+
+/* Issue #743 B19: a restart of the same live radio (same device) lost the samples between its stop and its start, and
+   used to adopt the new stream with no boundary: calls and frame assemblies ran on across the gap. The start now takes
+   the engine's same-carrier stream boundary, as at any gap: the calls end, the multi-frame assemblies go and the
+   carrier count moves, while the source stays (no source boundary). The recovery start after a restart that failed
+   takes it too: a config's new gain whose reopen does not start puts the gain that ran back and starts it again. */
+static int
+test_same_source_restart_takes_a_stream_gap(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int failed = 0; failed < 2; failed++) {
+        init_running_radio(&opts, &state, "rtl:0:851375000:22:0:48:0:2");
+        opts.rtlsdr_center_freq = 851375000U;
+        opts.rtl_gain_value = 22;
+        opts.rtl_volume_multiplier = 2;
+        dsd_engine_note_stream_source(&opts, &state, 0); /* the running stream's start */
+        const uint64_t key = state.carrier_source_key;
+        rc |= seed_active_canonical_calls(&opts, &state, 851375000L, 100);
+        state.nxdn_sf = 2;
+        state.dmr_cach_counter = 3;
+        const uint32_t carrier_seq = state.carrier_seq;
+        g_config_rtl_fail_starts = failed;
+        const char* tag = failed ? "failed restart recovers" : "same-source restart";
+        if (failed) {
+            dsdneoUserConfig cfg;
+            DSD_MEMSET(&cfg, 0, sizeof cfg);
+            cfg.has_input = 1;
+            cfg.input_source = DSDCFG_INPUT_RTL;
+            cfg.rtl_device = 0;
+            DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851375000");
+            cfg.rtl_gain = 30;
+            cfg.rtl_bw_khz = 48;
+            cfg.rtl_volume = 2;
+            rc |= expect_true(tag, dsd_app_command_apply_config(&cfg) > 0);
+        } else {
+            rc |= expect_int(tag, post_empty(DSD_APP_CMD_RTL_RESTART), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        }
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |=
+            expect_true(tag, state.rtl_ctx != NULL && g_config_rtl_creates == 1 + failed && opts.rtl_gain_value == 22);
+        rc |= expect_call_phase(tag, &state, 0U, DSD_CALL_PHASE_ENDED);
+        rc |= expect_call_phase(tag, &state, 1U, DSD_CALL_PHASE_ENDED);
+        rc |= expect_true(tag, state.nxdn_sf == 0 && state.dmr_cach_counter == 0);
+        rc |= expect_true(tag, state.carrier_seq != carrier_seq && state.carrier_source_key == key);
+        end_running_radio(&state);
+    }
+    return rc;
+}
+#endif
+
 /*
  * Issue #672: putting one avoided entry back (DSD_APP_CMD_SCAN_AVOID_REMOVE), clear outside a running rotation (B1),
  * avoid on an entry already avoided (B4) and exact counts (B6). Portable: the -Y walk goes through the queue's manual
@@ -30462,6 +30682,9 @@ main(void) {
     rc |= test_capture_stopped_notice();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_capture_seal_before_a_reopen_in_the_same_drain();
+    rc |= test_replay_refuses_tuner_controls();
+    rc |= test_restart_stops_the_iq_capture();
+    rc |= test_same_source_restart_takes_a_stream_gap();
 #endif
     rc |= test_stale_notice_post_stays_in_its_session();
     rc |= test_commands_that_need_the_frame_loop();

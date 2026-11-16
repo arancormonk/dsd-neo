@@ -2406,13 +2406,27 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     return result;
 }
 
+/* A PPM correction on an input with fixed tuning (an I/Q replay): nothing applies it, so it is refused with a toast before
+   the request is recorded. Returns 1 when refused. */
+static int
+ui_cmd_refuse_fixed_source_ppm(const dsd_opts* opts, dsd_state* state) {
+    if (!dsd_opts_input_has_fixed_tuning(opts)) {
+        return 0;
+    }
+    ui_set_toast(state, 3, "Unsupported: PPM correction not available on active backend");
+    return 1;
+}
+
 static int
 ui_cmd_handle_rtl_set_ppm(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
         /* The correction applies later, on the controller; a receiver that cannot take it now refuses it here, so the
-           toast never claims a change that will not land. */
+           toast never claims a change that will not land. A fixed source (an I/Q replay) never takes one. */
+        if (ui_cmd_refuse_fixed_source_ppm(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
         const char* unavailable = svc_radio_control_unavailable_text(0);
         if (unavailable) {
             ui_set_toast(state, 4, "Failed: %s", unavailable);
@@ -3467,6 +3481,12 @@ apply_cmd_dsp(const struct dsd_app_command* c, const dsd_opts* opts, dsd_state* 
     }
     if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
         && p.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    /* A fixed source (an I/Q replay) has no tuner gain to supervise: the toggle is refused, and never recorded as the
+       operator's setting for the radio a later open runs (rtl_stream_set_tuner_autogain()). */
+    if (p.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE && dsd_opts_input_has_fixed_tuning(opts)) {
+        ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
         return UI_CMD_APPLY_UNSUPPORTED;
     }
     apply_dsp_op(&p, opts, state);
@@ -4727,17 +4747,30 @@ apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserCo
     return rc;
 }
 
-/* apply_cfg_radio_input_tuned(), then a radio input left on another frequency leaves its carrier (issue #575). A source
-   the config changed already did, where the stream started (dsd_engine_note_stream_source()), as did the live Airspy
-   retune (svc_rtl_set_freq_locked()), each moving state->carrier_seq. What is left is a reopen of the same source on
-   the config's frequency, read as every frontend reads it (dsd_opts_tuned_freq_hz()): the input stays a radio input, so
-   no input boundary or no-carrier pass ends the reception before the next carrier syncs. A start that failed put the
-   old input back, and the same source reopened for a new gain stays on its carrier. */
+/* Whether the config apply that read @p carrier_seq, @p source_key and @p starts before it ran has left the carrier
+   already: a source the config changed did, where the stream started (dsd_engine_note_stream_source()), as did the
+   live Airspy retune (svc_rtl_set_freq_locked()), with no start, each moving state->carrier_seq. A reopen of the same
+   source moves it too, with a stream gap that stays on the carrier (issue #743 B19). */
+static int
+apply_cfg_left_carrier(const dsd_state* state, uint32_t carrier_seq, uint64_t source_key, unsigned int starts) {
+    if (state->carrier_seq == carrier_seq) {
+        return 0;
+    }
+    return state->carrier_source_key != source_key || svc_rtl_start_count() == starts;
+}
+
+/* apply_cfg_radio_input_tuned(), then a radio input left on another frequency leaves its carrier (issue #575), unless
+   the apply left it already (apply_cfg_left_carrier()). What is left is a reopen of the same source on the config's
+   frequency, read as every frontend reads it (dsd_opts_tuned_freq_hz()): the input stays a radio input, so no input
+   boundary or no-carrier pass ends the reception before the next carrier syncs. A start that failed put the old input
+   back, and the same source reopened for a new gain stays on its carrier. */
 static int
 apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
     const uint32_t carrier_seq = state->carrier_seq;
+    const uint64_t source_key = state->carrier_source_key;
+    const unsigned int starts = svc_rtl_start_count();
     const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
-    if (state->carrier_seq == carrier_seq && before->input.audio_in_type == AUDIO_IN_RTL
+    if (!apply_cfg_left_carrier(state, carrier_seq, source_key, starts) && before->input.audio_in_type == AUDIO_IN_RTL
         && opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_tuned_freq_hz(opts) != before->input.tuned_freq_hz) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1); // a config apply holds the guard
     }
@@ -10338,6 +10371,9 @@ apply_cmd_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
 static int
 ui_cmd_dispatch_available(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
 #ifdef USE_RADIO
+    if (c->id == DSD_APP_CMD_PPM_DELTA && ui_cmd_refuse_fixed_source_ppm(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
     if (c->id == DSD_APP_CMD_PPM_DELTA && ui_cmd_radio_unavailable_toast(state, 0)) {
         return UI_CMD_APPLY_FAILED;
     }
@@ -11486,39 +11522,61 @@ dsd_app_commands_pending(void) {
 /* The stream notice the next drain shows (dsd_app_stream_notice_post()); DSD_STREAM_NOTICE_NONE for none. One slot: a
    notice is a fact about the stream now, so a newer one replaces one not yet shown. */
 static atomic_int g_stream_notice = DSD_STREAM_NOTICE_NONE;
-/* The I/Q capture stopped recording (DSD_STREAM_NOTICE_CAPTURE_STOPPED), in a slot of its own: it changes the
-   options, so a newer notice must not replace it. */
-static atomic_int g_capture_stopped_notice = 0;
+
+/* Why the I/Q capture stopped recording, for the toast that says so: none yet, a seal at a retune's rate change
+   (DSD_STREAM_NOTICE_CAPTURE_STOPPED), or a stream restart (dsd_app_note_capture_stopped_at_restart()). */
+enum {
+    CAPTURE_STOPPED_NONE = 0,
+    CAPTURE_STOPPED_RATE_CHANGED = 1,
+    CAPTURE_STOPPED_RESTART = 2,
+};
+
+/* The I/Q capture stopped recording, in a slot of its own: it changes the options, so a newer stream notice must not
+   replace it. */
+static atomic_int g_capture_stopped_notice = CAPTURE_STOPPED_NONE;
 
 void
 dsd_app_stream_notice_post(int kind) {
     if (kind == DSD_STREAM_NOTICE_CAPTURE_STOPPED) {
-        atomic_store(&g_capture_stopped_notice, 1);
+        atomic_store(&g_capture_stopped_notice, CAPTURE_STOPPED_RATE_CHANGED);
         return;
     }
     atomic_store(&g_stream_notice, kind);
 }
 
 void
+dsd_app_note_capture_stopped_at_restart(void) {
+    atomic_store(&g_capture_stopped_notice, CAPTURE_STOPPED_RESTART);
+}
+
+void
 dsd_app_stream_notice_clear(void) {
     atomic_store(&g_stream_notice, DSD_STREAM_NOTICE_NONE);
-    atomic_store(&g_capture_stopped_notice, 0);
+    atomic_store(&g_capture_stopped_notice, CAPTURE_STOPPED_NONE);
 }
 
 /* The stream's I/Q capture stopped recording at a retune that changed the device's sample rate (issue #806 X9): the
    file keeps what it recorded until then. The capture stays off for the rest of the session, so no later start writes
    over that file, and the options and the toast say so. The drain takes it before every command and the stream start
    before it opens (svc_rtl_start_locked()), so a retune a command made that sealed the capture never lets a later
-   restart in the same drain reopen the file. */
+   restart in the same drain reopen the file. A restart that turned the capture off itself (issue #743 B16) is said
+   here too, once the command that restarted has set its own toast. */
 void
 dsd_app_take_capture_stopped(dsd_opts* opts, dsd_state* state) {
-    if (!opts || atomic_load(&g_capture_stopped_notice) == 0 || atomic_exchange(&g_capture_stopped_notice, 0) == 0) {
+    if (!opts || atomic_load(&g_capture_stopped_notice) == CAPTURE_STOPPED_NONE) {
+        return;
+    }
+    const int why = atomic_exchange(&g_capture_stopped_notice, CAPTURE_STOPPED_NONE);
+    if (why == CAPTURE_STOPPED_NONE) {
         return;
     }
     opts->iq_capture_requested = 0;
     dsd_telemetry_publish_opts_snapshot(opts);
     if (state) {
-        ui_set_toast(state, 5, "%s", "I/Q capture stopped: the device sample rate changed; what was recorded is kept");
+        ui_set_toast(state, 5, "%s",
+                     why == CAPTURE_STOPPED_RESTART
+                         ? "I/Q capture stopped: the stream restarted; what was recorded is kept"
+                         : "I/Q capture stopped: the device sample rate changed; what was recorded is kept");
         dsd_telemetry_publish_snapshot(state);
     }
 }

@@ -930,7 +930,8 @@ call_active(const dsd_state* state) {
  * centre stays: a replay that opened at 851.375 MHz and recorded a retune to 860 MHz, replaced by a live RTL-SDR at
  * 851.375 MHz, or one RTL-SDR replaced by another. The tuned frequency (dsd_opts_tuned_freq_hz()) and the source are
  * what is compared, not rtlsdr_center_freq: the outgoing call ends, and the codes and the untrunked frequency caches
- * go. The same source reopened for a new gain stays on its carrier, and its call stays open.
+ * go. The same source reopened for a new gain stays on its carrier and keeps its codes, but the samples between the
+ * stop and the start are lost, so its call ends at that stream gap (issue #743 B19).
  */
 static int
 test_config_source_change_is_a_carrier_boundary(void) {
@@ -985,7 +986,7 @@ test_config_source_change_is_a_carrier_boundary(void) {
     dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     (void)dsd_app_drain_cmds(opts, state);
     rc |= expect_true("the same RTL-SDR reopened for a gain", strstr(opts->audio_in_dev, ":30:") != NULL);
-    rc |= expect_true("a gain-only reopen keeps the call", call_active(state));
+    rc |= expect_true("a gain-only reopen ends the call at the gap", !call_active(state));
     rc |= expect_carrier_codes("a gain-only reopen keeps the codes", state, 0);
 
     free_test_runtime(&runtime);
@@ -995,7 +996,8 @@ test_config_source_change_is_a_carrier_boundary(void) {
 /*
  * Issue #575: the carrier boundary lives where a radio stream starts (dsd_engine_note_stream_source()). A device change
  * (RTL_SET_DEV) restarts the stream on another source: the outgoing call ends and its codes go. The same source restarted
- * (RTL_RESTART, here after a gain change) keeps its carrier and its call. A command that changes the source and restarts
+ * (RTL_RESTART, here after a gain change) keeps its carrier and its codes, while its call ends at the stream gap the
+ * restart made (issue #743 B19). A command that changes the source and restarts
  * through svc_rtl_restart() needs no boundary of its own: RTL_RESTART after another device index was written gets it.
  */
 static int
@@ -1022,7 +1024,7 @@ test_stream_restart_on_another_source_is_a_carrier_boundary(void) {
     opts->rtl_gain_value = 30;
     dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U);
     (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_true("a same-source restart keeps the call", call_active(state));
+    rc |= expect_true("a same-source restart ends the call at the gap", !call_active(state));
     rc |= expect_carrier_codes("a same-source restart keeps the codes", state, 0);
 
     const int32_t device = 1;
