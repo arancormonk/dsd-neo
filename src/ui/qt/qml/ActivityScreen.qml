@@ -452,7 +452,7 @@ Item {
                 width: parent.width
                 visible: !parent.filtered
                 horizontalAlignment: Text.AlignHCenter
-                text: qsTr("Some of it never reaches a listener: nothing shows while tuned to a voice channel, DMR and TETRA radios don't announce logging off, and whether a radio carried out a command isn't sent.")
+                text: qsTr("Some of it never reaches a listener: what the control channel sends while the receiver follows a voice call isn't heard, DMR and TETRA radios don't announce logging off, and whether a radio carried out a command isn't sent.")
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)
                 color: Theme.textSubdued
