@@ -17180,9 +17180,14 @@ feed and never touches the one-shot `LocationSupport` requests. Its JNI entry po
 `proguard-rules.pro`) are `startStream(context)`, `stopStream()`, `pollStream()` and `foregroundEpoch()`. A start or
 stop from any thread takes the next call serial under the lock and posts its work to the main looper, so only the
 newest call's work publishes; `stopStream()` clears the record under the lock, so the next poll answers null at once.
-A start registers only while the Activity is visible and its epoch has not moved since the call, and each start that
-registers is a new subscription with its own `generation` (callbacks of an older one are ignored; a second start while
-registered keeps it). With fine permission it registers `GPS_PROVIDER`, plus `FUSED_PROVIDER` on API 31+ when present
+The foreground contract: Qt asks for the feed again after every epoch move it sees, and a start asked for in the current
+epoch always ends up registered once the app is visible. A start whose epoch moved since the call is dropped (Qt asks
+again for the new epoch); one that reaches the main looper while the Activity is hidden (Qt's tick can run between
+`onStop` and its thread's freeze) is kept and registers on the next `onStart`, and a stop, a newer start, an `onStop` or
+`onDestroy` replaces or drops it. Without that, a return from Home, App info or the location settings left roaming
+waiting for a fix with nothing registered. Each start that registers is a new subscription with its own `generation`
+(callbacks of an older one are ignored; a second start while registered keeps it). With fine permission it registers
+`GPS_PROVIDER`, plus `FUSED_PROVIDER` on API 31+ when present
 (`LocationRequest` 10 s interval, 10 s minimum update interval, 0 m minimum distance, high accuracy, on the main
 executor); API 29-30 take the legacy `requestLocationUpdates(GPS_PROVIDER, 10000, 0f, listener, mainLooper)`. Present
 providers register even while disabled. State: `noPermission` (no coarse) and `approximateOnly` (coarse without fine)

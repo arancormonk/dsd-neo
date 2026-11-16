@@ -912,8 +912,9 @@ class DecoderHost : public QObject {
     /**
      * @brief Start the continuous location feed for roaming: locationStreamUpdate() reports it from then on.
      *
-     * Call it once when roaming needs location and again after each return to the foreground (the platform stops the
-     * feed itself when the app leaves it), never on every tick. The default host has no feed.
+     * Call it once when roaming needs location and again after each foregroundEpoch() move seen (the platform stops the
+     * feed itself when the app leaves it), never on every tick. A start called while the app is not visible takes
+     * effect when it is visible again. The default host has no feed.
      */
     virtual void
     startLocationStream() {}

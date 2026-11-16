@@ -18,9 +18,15 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * GPS roaming's continuous location feed (#786), apart from the one-shot [LocationSupport] requests, which it never
  * touches. Qt starts and stops it over JNI and polls its record on its tick; the Activity stops it itself on `onStop`,
- * because Qt's thread is frozen while the app is not visible, and it only starts while the app is. It asks for precise
- * location only: an approximate fix is too coarse and too slow to tell sites apart, so with approximate access alone it
- * registers nothing and says so.
+ * because Qt's thread is frozen while the app is not visible, and it only registers while the app is. It asks for
+ * precise location only: an approximate fix is too coarse and too slow to tell sites apart, so with approximate access
+ * alone it registers nothing and says so.
+ *
+ * The foreground contract: Qt asks for the feed again after every foreground epoch it sees move (each `onStop` moves
+ * it), and a start asked for in the current epoch always ends up registered once the app is visible. A start that
+ * reaches the main looper while the app is hidden (Qt's tick can still run between `onStop` and its thread's freeze)
+ * is kept and run on the next `onStart`; a stop, or a newer start, replaces it. A start asked for in an older epoch
+ * never runs: Qt asks again for the new one.
  *
  * All registration state belongs to the main looper. Each start that registers makes a new subscription with its own
  * `generation`, and a callback from an older one is ignored. A callback does a fixed amount of work: it keeps the
@@ -46,10 +52,14 @@ object LocationStream {
     private var serial = 0L
     private var record: Snapshot? = null
 
-    // The main looper's own.
+    // The main looper's own; [deferred] is the newest start that arrived while the app was hidden, for `onStart`.
     private var visible = false
+    private var deferred: Deferred? = null
     private var current: Subscription? = null
     private var lastGeneration = 0L
+
+    /** A start asked for in foreground epoch [epoch] that waits for the app to be visible. */
+    private class Deferred(val context: Context, val call: Long, val epoch: Long)
 
     /** One provider's fix, as the poll needs it. */
     private class Fix(val provider: String, val lat: Double, val lon: Double, val accuracyM: Float, val elapsedNs: Long)
@@ -74,19 +84,30 @@ object LocationStream {
         override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
     }
 
-    /** Starts the feed from any thread; it registers on the main looper, and only while the app is visible. */
+    /**
+     * Starts the feed from any thread; it registers on the main looper while the app is visible, and on the next
+     * `onStart` when the app is hidden. A start asked for before the latest `onStop` is dropped.
+     */
     @JvmStatic fun startStream(context: Context) {
         val startedIn = epoch.get()
         val call = synchronized(lock) { ++serial }
         main.post {
-            if (visible && epoch.get() == startedIn) start(context.applicationContext, call)
+            if (epoch.get() != startedIn) return@post
+            if (visible) {
+                start(context.applicationContext, call)
+            } else {
+                deferred = Deferred(context.applicationContext, call, startedIn)
+            }
         }
     }
 
     /** Stops the feed from any thread. The poll answers null at once; the listeners go on the main looper. */
     @JvmStatic fun stopStream() {
         withdraw()
-        main.post { unsubscribe() }
+        main.post {
+            deferred = null
+            unsubscribe()
+        }
     }
 
     /**
@@ -109,14 +130,21 @@ object LocationStream {
     /** How many times the app has left the foreground: 0 at launch, one more on every Activity `onStop`. */
     @JvmStatic fun foregroundEpoch(): Long = epoch.get()
 
-    /** Activity `onStart`, on the main looper: the feed may start again (Qt restarts it on resume). */
+    /**
+     * Activity `onStart`, on the main looper: the feed may register again. A start Qt asked for while the app was hidden
+     * in this epoch registers now; Qt asks for any other once it sees the epoch moved.
+     */
     @JvmStatic fun onActivityStart() {
         visible = true
+        val waiting = deferred ?: return
+        deferred = null
+        if (waiting.epoch == epoch.get()) start(waiting.context, waiting.call)
     }
 
     /** Activity `onStop`, on the main looper: the foreground is gone, so the feed stops before Qt's thread freezes. */
     @JvmStatic fun onActivityStop() {
         visible = false
+        deferred = null
         epoch.incrementAndGet()
         withdraw()
         unsubscribe()
@@ -125,6 +153,7 @@ object LocationStream {
     /** Activity `onDestroy`, on the main looper. */
     @JvmStatic fun onDestroy() {
         visible = false
+        deferred = null
         withdraw()
         unsubscribe()
     }

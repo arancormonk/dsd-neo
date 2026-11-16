@@ -585,6 +585,32 @@ Item {
             compare(calls().switchStops, 0, "the evidence from before is gone");
         }
 
+        // The app left the foreground and came back while roaming was armed:
+        // Qt asks for the feed again once per epoch move, whenever its tick
+        // sees it (the platform keeps a start asked for while hidden until the
+        // app is visible), and never stops it in between.
+        function test_16b_each_foreground_loss_asks_for_the_feed_again() {
+            startSite(0);
+            nearA(0);
+            compare(siteRoaming.state, SiteRoaming.Following);
+            var starts = calls().streamStarts;
+            var stops = calls().streamStops;
+            testContext.setForegroundEpoch(1);
+            tick(500);
+            compare(calls().streamStarts, starts + 1, "asked for again at the epoch move");
+            compare(calls().streamStops, stops, "not stopped by Qt");
+            compare(siteRoaming.statusText, "Waiting for a location fix");
+            tick(1000);
+            tick(1000);
+            compare(calls().streamStarts, starts + 1, "once per epoch, not on every tick");
+            nearA(1000);
+            compare(siteRoaming.state, SiteRoaming.Following, "the feed asked for again counts");
+            testContext.setForegroundEpoch(2);
+            tick(500);
+            compare(calls().streamStarts, starts + 2, "and again after the next return");
+            compare(calls().streamStops, stops);
+        }
+
         function test_17_foreground_loss_while_waiting_for_the_call() {
             startSite(0);
             testContext.setMetric("callBusy", true);

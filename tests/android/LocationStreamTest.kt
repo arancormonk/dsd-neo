@@ -223,8 +223,8 @@ private fun generations() {
     }
 }
 
-// Every onStop advances the foreground epoch and stops the feed; a start runs only while the app is visible, and a start
-// queued before a stop never runs after it, even when the app is back before the main looper gets to it.
+// Every onStop advances the foreground epoch and stops the feed; a start registers only while the app is visible, and a
+// start queued before a stop never runs after it, even when the app is back before the main looper gets to it.
 private fun onStopEndsTheFeed() {
     onSdk(30) {
         val activity = precise()
@@ -239,6 +239,7 @@ private fun onStopEndsTheFeed() {
         check(hidden.manager.updates.isEmpty()) { "no feed while the app is not visible" }
 
         LocationStream.onActivityStart()
+        check(hidden.manager.updates.keys == setOf(GPS)) { "the start asked for while hidden registers on onStart" }
         val raced = precise()
         LocationStream.startStream(raced)
         LocationStream.onActivityStop()
@@ -253,6 +254,61 @@ private fun onStopEndsTheFeed() {
         LocationStream.onDestroy()
         check(LocationStream.pollStream() == null && LocationStream.foregroundEpoch() == 2L)
         LocationStream.onActivityStart()
+    }
+}
+
+// The return to the foreground after Qt asked for the feed between onStop and its thread's freeze (D1 of the emulator
+// run): the start waits for onStart and registers then; a stop or a newer start in between replaces it, and an onStop
+// or onDestroy in between drops it.
+private fun startWhileHiddenRunsOnStart() {
+    onSdk(30) {
+        val first = precise()
+        start(first)
+        val before = record().optLong("generation")
+        LocationStream.onActivityStop()
+        val epoch = LocationStream.foregroundEpoch()
+
+        // Qt sees the epoch move and asks again while the app is hidden.
+        val asked = precise()
+        start(asked)
+        check(asked.manager.updates.isEmpty() && LocationStream.pollStream() == null) { "nothing registers while hidden" }
+        LocationStream.onActivityStart()
+        check(asked.manager.updates.keys == setOf(GPS)) { "the start registers on onStart" }
+        check(record().optString("state") == "ok" && record().optLong("generation") > before)
+        check(LocationStream.foregroundEpoch() == epoch) { "onStart leaves the epoch" }
+        listener(asked, GPS).onLocationChanged(fix())
+        check(record().optString("provider") == GPS) { "the registered feed publishes its fixes" }
+
+        // A stop between onStop and onStart cancels the start.
+        LocationStream.onActivityStop()
+        val cancelled = precise()
+        start(cancelled)
+        stop()
+        LocationStream.onActivityStart()
+        check(cancelled.manager.updates.isEmpty() && LocationStream.pollStream() == null) { "a stop cancels it" }
+
+        // Of two starts asked for while hidden, the newer registers.
+        LocationStream.onActivityStop()
+        val older = precise()
+        val newer = precise()
+        start(older)
+        start(newer)
+        LocationStream.onActivityStart()
+        check(older.manager.updates.isEmpty() && newer.manager.updates.keys == setOf(GPS)) { "the newer start wins" }
+
+        // A start kept for one onStart never runs after a later onStop, nor after onDestroy.
+        LocationStream.onActivityStop()
+        val stale = precise()
+        start(stale)
+        LocationStream.onActivityStop()
+        LocationStream.onActivityStart()
+        check(stale.manager.updates.isEmpty() && LocationStream.pollStream() == null) { "a later onStop drops it" }
+        LocationStream.onActivityStop()
+        val destroyed = precise()
+        start(destroyed)
+        LocationStream.onDestroy()
+        LocationStream.onActivityStart()
+        check(destroyed.manager.updates.isEmpty() && LocationStream.pollStream() == null) { "onDestroy drops it" }
     }
 }
 
@@ -280,6 +336,10 @@ fun main() {
     bestFreshSelection()
     generations()
     onStopEndsTheFeed()
+    startWhileHiddenRunsOnStart()
     pollSharesTheWritersLock()
-    println("PASS: location feed providers, provider state, best fresh fix, generations, onStop and the poll's lock")
+    println(
+        "PASS: location feed providers, provider state, best fresh fix, generations, onStop, a start while hidden " +
+            "and the poll's lock"
+    )
 }
