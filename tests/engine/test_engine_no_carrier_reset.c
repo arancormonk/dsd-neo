@@ -2969,7 +2969,7 @@ test_carrier_boundary_forgets_dmr_call_privacy(void) {
         const char* name;
     } kinds[] = {
         {DSD_CARRIER_BOUNDARY_TUNE, "a user tune"},
-        {DSD_CARRIER_BOUNDARY_SCAN_STEP, "a later scan step"},
+        {DSD_CARRIER_BOUNDARY_SCAN_STEP, "a scan step"},
         {DSD_CARRIER_BOUNDARY_SOURCE, "a source change"},
         {DSD_CARRIER_BOUNDARY_INPUT_SWITCH, "an input switch"},
         {DSD_CARRIER_BOUNDARY_REPLAY_RETUNE, "a replay retune"},
@@ -2984,9 +2984,6 @@ test_carrier_boundary_forgets_dmr_call_privacy(void) {
             if (init_test_runtime(&opts, &state) != 0) {
                 return 1;
             }
-            /* A scan's first landing in the run is the run's own and holds nothing
-               (test_scan_first_landing_is_never_held()); these are later ones. */
-            state->scan_landed = 1U;
             seed_dmr_basic_privacy_call(state, operator_key);
             dsd_engine_carrier_boundary(opts, state, kinds[k].kind, 0);
             rc |= expect_dmr_privacy_forgotten(kinds[k].name, state, operator_key);
@@ -3131,9 +3128,11 @@ test_scan_walk_landing_forgets_dmr_call_privacy(void) {
     return rc;
 }
 
-/* A -Y scan's first row entry in a run is the run's own first landing: it forgets what the state held (here a Basic
-   Privacy call an earlier run left) but holds no slot's voice. A later row entry in the run holds both slots; a run
-   start makes the next entry a first landing again, on a reused state too (dsd_state::scan_landed). */
+/* A run's first landing holds no DMR slot's voice; every later carrier move does (dsd_state::run_landed). A -Y scan the
+   run starts with (scanner_mode at the run's start) makes that first landing at its first row entry, on a fresh state
+   and on a reused one alike: it forgets what the state held (a Basic Privacy call an earlier run left) but holds
+   nothing, and the next row entry holds both slots. A scan started from the menu after the run's first stream landed
+   the receiver on a carrier makes a carrier move like any other at its first row entry: it holds. */
 static int
 test_scan_first_landing_is_never_held(void) {
     dsd_opts* opts = NULL;
@@ -3147,8 +3146,10 @@ test_scan_first_landing_is_never_held(void) {
         return 1;
     }
     for (int reused = 0; reused <= 1; reused++) {
-        const char* how = reused ? "a reused state's run" : "a fresh state's run";
+        const char* how = reused ? "a reused state's scanning run" : "a fresh state's scanning run";
         char what[160];
+        opts->scanner_mode = 1;
+        dsd_engine_note_run_start(opts, state);
         seed_dmr_basic_privacy_call(state, 0ULL);
         DSD_SNPRINTF(what, sizeof what, "%s: the first -Y row entry lands", how);
         rc |= expect_true(what, land_untyped_row(opts, state, 0));
@@ -3160,11 +3161,16 @@ test_scan_first_landing_is_never_held(void) {
         rc |= expect_true(what, land_untyped_row(opts, state, 1));
         DSD_SNPRINTF(what, sizeof what, "%s: a later row entry in the run holds both slots' voice", how);
         rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
-        /* What engine_run_session() does to a reused state at the next run's start (ENGINE_RUN_SETUP pins it). */
-        state->scan_landed = 0U;
-        dmr_enc_class_release_hold(state, 0U);
-        dmr_enc_class_release_hold(state, 1U);
     }
+    /* A run with no scan at its start: its first stream is its first landing. The user then starts -Y from the menu. */
+    opts->scanner_mode = 0;
+    dsd_engine_note_run_start(opts, state);
+    dsd_engine_note_run_stream_source(opts, state);
+    opts->scanner_mode = 1;
+    seed_dmr_basic_privacy_call(state, 0ULL);
+    rc |= expect_true("a scan started from the menu: its first row entry lands", land_untyped_row(opts, state, 0));
+    rc |= expect_true("a scan started from the menu after the receiver landed: its first row entry holds both slots",
+                      state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
     return rc;

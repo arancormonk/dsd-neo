@@ -3313,6 +3313,43 @@ expect_dmr_service_options(const char* label, const dsd_state* state, unsigned i
     return 0;
 }
 
+/* A trunk scan started from the menu after the run's first stream landed the receiver (run_landed 1): its first park is
+   a carrier move like any other, and holds each slot's voice until its call says. */
+static int
+test_menu_started_trunk_scan_first_park_holds(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("cap,dmr-trunk,451000000,,250,,\n"
+                             "xpt,dmr-trunk,452000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    state.run_landed = 1U;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "menu-started trunk scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    if (state.dmr_enc_class_held[0] != 1U || state.dmr_enc_class_held[1] != 1U) {
+        DSD_FPRINTF(stderr,
+                    "a trunk scan started after the receiver landed did not hold at its first park (held %u %u)\n",
+                    (unsigned)state.dmr_enc_class_held[0], (unsigned)state.dmr_enc_class_held[1]);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_dmr_service_options_state_isolated_per_target(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -3339,11 +3376,12 @@ test_dmr_service_options_state_isolated_per_target(void) {
                     dsd_engine_trunk_scan_active_index(&state), err);
         test_rc = 1;
     }
-    // The scan's first park is the run's own first landing: it holds no slot's voice.
-    if (state.dmr_enc_class_held[0] != 0U || state.dmr_enc_class_held[1] != 0U || state.scan_landed != 1U) {
+    // A run that starts with its trunk scan (run_landed 0, as dsd_engine_note_run_start() leaves it) makes its first
+    // landing at the scan's first park: it holds no slot's voice.
+    if (state.dmr_enc_class_held[0] != 0U || state.dmr_enc_class_held[1] != 0U || state.run_landed != 1U) {
         DSD_FPRINTF(stderr, "the trunk scan's first park held the slots' voice (held %u %u, landed %u)\n",
                     (unsigned)state.dmr_enc_class_held[0], (unsigned)state.dmr_enc_class_held[1],
-                    (unsigned)state.scan_landed);
+                    (unsigned)state.run_landed);
         test_rc = 1;
     }
 
@@ -27028,6 +27066,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_dmr_branding_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_dmr_confidence_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_dmr_service_options_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_menu_started_trunk_scan_first_park_holds);
     rc |= run_with_default_tune_hook(test_p25_targets_seed_valid_control_channel_timing);
     rc |= run_with_default_tune_hook(test_p25_nac_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_p25_conventional_grant_frequency_isolated_per_target);

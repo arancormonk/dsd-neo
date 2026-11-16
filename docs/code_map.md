@@ -3310,15 +3310,18 @@ suite runs under this compiler.
   landing is never held, whatever an earlier run on the same state left (Android reuses its state): the run start clears
   the hold, and so does the run's first radio stream start after its source boundary
   (`dsd_engine_note_run_stream_source()`), which still forgets the earlier run's carrier when the device differs or the
-  stream is an I/Q replay. A later source change in the run holds as before. So is a scan's first landing in the run
-  (its first `-Y` row entry, a SCAN_STEP boundary, or its first `--trunk-scan` park): it forgets what the state held but
-  holds nothing (`dsd_state::scan_landed`, cleared at each run start); every later row entry or park holds. A no-carrier
-  pass or a terminator on the carrier holds nothing and leaves a hold standing. A call whose voice LC header comes first
-  loses nothing. One joined mid-call is held until the first embedded LC its superframes complete: on the dual-slot BS
-  path 9 to 12 frames (180 to 240 ms) on a call whose every superframe carries its voice LC; on MS 12 frames, since the
-  MS decoder assembles the embedded LC after burst F's frames; and each superframe whose embedded LC fails its check or
-  carries something else (a talker alias, a GPS position) adds one superframe (18 frames, 360 ms). A protected LC never
-  ends the hold. Tests: `ENGINE_NO_CARRIER_RESET` (`test_dmr_voice_held_until_the_call_says()`, `test_dmr_hold_edges()`,
+  stream is an I/Q replay. A later source change in the run holds as before. The exemption is the run's first landing,
+  keyed on nothing having landed yet in the run (`dsd_state::run_landed`, set by any landing: the run's first stream, a
+  tune, a scan's row entry or park). A run starts landed, its first stream being that landing, unless a scan configured
+  for it (`-Y`, `--trunk-scan`) makes it: then that scan's first row entry or park forgets what the state held but holds
+  nothing (`dsd_engine_note_run_start()`), and every later one holds. A scan started from the menu after the receiver
+  landed in the run holds at its first landing, as any carrier move does. A no-carrier pass or a terminator on the
+  carrier holds nothing and leaves a hold standing. A call whose voice LC header comes first loses nothing. One joined
+  mid-call is held until the first embedded LC its superframes complete: on the dual-slot BS path 9 to 12 frames (180 to
+  240 ms) on a call whose every superframe carries its voice LC; on MS 12 frames, since the MS decoder assembles the
+  embedded LC after burst F's frames; and each superframe whose embedded LC fails its check or carries something else (a
+  talker alias, a GPS position) adds one superframe (18 frames, 360 ms). A protected LC never ends the hold. Tests:
+  `ENGINE_NO_CARRIER_RESET` (`test_dmr_voice_held_until_the_call_says()`, `test_dmr_hold_edges()`,
   `test_run_first_landing_is_never_held()`, `test_scan_first_landing_is_never_held()`,
   `test_dmr_manual_moves_forget_and_hold()`), `ENGINE_TRUNK_SCAN`, `ENGINE_RUN_SETUP`, `ENGINE_REPLAY_DECODE_CLOCK`,
   `DMR_FLCO_PRIVACY_MODES`.
@@ -12461,18 +12464,21 @@ Private per-protocol modules worth knowing about:
     keep the FID. The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
     reading of the tuner (`dsd_engine_receiver_hz()`): the machine's own tunes go through `dmr_sm_tune_to_freq()` and
     `dmr_sm_tune_to_cc()`, which mark them for the engine's hook (`dsd_trunk_tuning_dmr_judges()`), whose own judgement
-    then applies only to other machines' tunes, so a call the machine keeps on the carrier is never held mid-call nor
-    loses its privacy bit. An operator's manual move under trunking (a Return to CC, a lockout or skip return, a channel
-    or candidate cycle) retunes through io_control, which reaches neither the tune hooks nor a carrier boundary; once
-    the move ended the left calls, `dmr_sm_note_operator_leave()` judges it from the receiver the machine read before
-    the tune (unknown, as at a timed-out walk's late landing, counts as leaving) and leaves the carrier as a follow
-    does. Tests: `ENGINE_NO_CARRIER_RESET` (`test_dmr_trunk_hop_leaves_no_call_crypto()`,
-    `test_dmr_rest_move_leaves_no_call_crypto()`, `test_dmr_composite_cc_grant_holds_nothing()`). A follow of the
-    carrier the receiver is already on (a grant for the composite control channel's own payload, a Cap+ status naming
-    the rest channel it parks on, an XPT entry where it parks) adopts it in place: no call there ends, the slots keep
-    that carrier's records (identity, binding, follow time) and voice timers, the grant names its slot only when the
-    slot's record does not already name its call, its identity is not published into a call on the air that already
-    names one, and no block state is reset.
+    then applies only to other machines' tunes; DMR code tunes through `dmr_sm_tune_to_freq()` and
+    `dmr_sm_tune_to_cc()`, never the raw `dsd_trunk_tuning_hook_*` calls, since a DMR tune through those is judged by
+    the engine's reading of the tuner instead, which takes the safe side (it forgets the calls' privacy bit and holds
+    their voice even where the machine keeps the calls, as on a composite control channel), so a call the machine keeps
+    on the carrier is never held mid-call nor loses its privacy bit. An operator's manual move under trunking (a Return
+    to CC, a lockout or skip return, a channel or candidate cycle) retunes through io_control, which reaches neither the
+    tune hooks nor a carrier boundary; once the move ended the left calls, `dmr_sm_note_operator_leave()` judges it from
+    the receiver the machine read before the tune (unknown, as at a timed-out walk's late landing, counts as leaving)
+    and leaves the carrier as a follow does. Tests: `ENGINE_NO_CARRIER_RESET`
+    (`test_dmr_trunk_hop_leaves_no_call_crypto()`, `test_dmr_rest_move_leaves_no_call_crypto()`,
+    `test_dmr_composite_cc_grant_holds_nothing()`). A follow of the carrier the receiver is already on (a grant for the
+    composite control channel's own payload, a Cap+ status naming the rest channel it parks on, an XPT entry where it
+    parks) adopts it in place: no call there ends, the slots keep that carrier's records (identity, binding, follow
+    time) and voice timers, the grant names its slot only when the slot's record does not already name its call, its
+    identity is not published into a call on the air that already names one, and no block state is reset.
   - Ledger. A follow clears the ledger and notes the followed call (`dmr_sm_policy_note_follow()`); a preemption
     commits its cooldown (`dsd_tg_policy_commit_preemption()`) once the new carrier's tune was accepted, a Hold
     takeover commits none, and a deferred or failed tune changes nothing; every release clears the ledger

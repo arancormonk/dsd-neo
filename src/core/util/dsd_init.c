@@ -1603,6 +1603,8 @@ initState(dsd_state* state) {
     (void)dsd_call_state_ensure(state);
     // No engine run has used this state yet (see dsd_state::engine_fresh).
     state->engine_fresh = 1U;
+    // Outside any run every move holds the DMR slots' voice (dsd_state::run_landed).
+    state->run_landed = 1U;
 
 } //init_state
 

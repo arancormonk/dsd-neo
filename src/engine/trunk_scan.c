@@ -2525,13 +2525,13 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     // before their own LC with a key set directly. Nor does a slot's next call key from the talkgroups the target's or
     // the left target's calls keyed from. The raw snapshot keeps the service options and vendor evidence only for
     // rollback to a carrier that a failed switch never left (issue #657). Until each slot's call there says whether it
-    // is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()), unless this is the run's first
-    // park, the run's own first landing (dsd_state::scan_landed).
+    // is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()), unless nothing has landed yet in
+    // the run (dsd_state::run_landed): the first park of a scan the run started with.
     dmr_forget_call_privacy(state);
-    if (state->scan_landed != 0U) {
+    if (state->run_landed != 0U) {
         dmr_enc_class_hold(state);
     }
-    state->scan_landed = 1U;
+    state->run_landed = 1U;
     state->trunk_chan_map_seq = trunk_scan_next_chan_map_seq(coord, state->trunk_chan_map_seq);
     rt->snapshot.site.trunk_chan_map_seq = state->trunk_chan_map_seq;
 }

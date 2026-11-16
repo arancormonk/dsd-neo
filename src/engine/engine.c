@@ -3741,18 +3741,24 @@ carrier_boundary_stream_gap(dsd_opts* opts, dsd_state* state) {
     dsd_state_note_carrier_change(state);
 }
 
-/* The boundary's hold on each DMR slot's voice (dmr_enc_class_hold()): every kind holds it but a scan step that is the
-   scan's first landing in the run (dsd_state::scan_landed), which is the run's own first landing. */
+/* The boundary's hold on each DMR slot's voice (dmr_enc_class_hold()): every boundary holds it but the run's first
+   landing (dsd_state::run_landed: nothing has landed yet in the run, as before a scan's first row entry). */
 static void
-dsd_engine_boundary_holds_dmr_voice(dsd_state* state, dsd_carrier_boundary_kind kind) {
-    if (kind != DSD_CARRIER_BOUNDARY_SCAN_STEP) {
+dsd_engine_boundary_holds_dmr_voice(dsd_state* state) {
+    if (state->run_landed != 0U) {
         dmr_enc_class_hold(state);
+    }
+    state->run_landed = 1U;
+}
+
+void
+dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
         return;
     }
-    if (state->scan_landed != 0U) {
-        dmr_enc_class_hold(state);
-    }
-    state->scan_landed = 1U;
+    dmr_enc_class_release_hold(state, 0U);
+    dmr_enc_class_release_hold(state, 1U);
+    state->run_landed = (opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1) ? 0U : 1U;
 }
 
 void
@@ -3790,9 +3796,9 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
        privacy bit and no talkgroup key of theirs, a key set directly staying the user's. Not in the forget above,
        which a stream gap runs too: a call it reopens on the same carrier keys as before. Until each slot's call there
        says whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()), unless this is
-       the scan's first landing in the run, the run's own first landing (dsd_state::scan_landed). */
+       the run's first landing (dsd_state::run_landed). */
     dmr_forget_call_privacy(state);
-    dsd_engine_boundary_holds_dmr_voice(state, kind);
+    dsd_engine_boundary_holds_dmr_voice(state);
     /* The digital voice level starts the next carrier's reception at its start gain (issue #518). Not in the forget
        above, which a stream gap runs too: that is the same carrier, whose transmissions decide. */
     dsd_voice_level_reset(state, -1);
@@ -3951,11 +3957,14 @@ dsd_engine_note_run_stream_source(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
+    /* The run's start judged whether this stream is its first landing (dsd_engine_note_run_start()): the source
+       boundary against the stream an earlier run on this state opened forgets that carrier's evidence, but neither
+       holds the DMR slots' voice nor counts as this run's landing. */
+    const uint8_t landed = state->run_landed;
     dsd_engine_note_stream_source(opts, state, 0);
-    /* The run's first landing: the source boundary against the stream an earlier run on this state opened forgets
-       that carrier's evidence, but no move of this run holds the DMR slots' voice. */
     dmr_enc_class_release_hold(state, 0U);
     dmr_enc_class_release_hold(state, 1U);
+    state->run_landed = landed;
 }
 
 void
@@ -5401,11 +5410,8 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
     state->tdma_carrier = 0U;
     /* Nor is a DMR slot's voice held for a move the earlier run made (dmr_enc_class_hold()): a host that reuses its
        state (Android) would hold this run's first landing. The radio stream's first start clears it again after its
-       source boundary (dsd_engine_note_run_stream_source()). */
-    dmr_enc_class_release_hold(state, 0U);
-    dmr_enc_class_release_hold(state, 1U);
-    /* Nor has a scan of this run landed yet: its first landing is the run's (dsd_state::scan_landed). */
-    state->scan_landed = 0U;
+       source boundary (dsd_engine_note_run_stream_source()). Whether the run has landed yet is this run's own. */
+    dsd_engine_note_run_start(opts, state);
     if (enter_rc != 0) {
         rc = 1;
         goto ENGINE_OUT;
