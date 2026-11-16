@@ -253,6 +253,13 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     /** @brief DecoderService.stopDecoderForSwitch(), with the phase bookkeeping of stop(). */
     void stopForSwitch() override;
+
+    /** @brief The Stopping on screen began with stopForSwitch(), and no stop() came since. */
+    bool
+    switchStopping() const override {
+        return m_switch_stop && m_published_phase == kSessionStopping;
+    }
+
     /**
      * @brief DecoderService.retireAttempts() for the attempt the latest start handed over, if it was a roam's (any
      * later start attempt forgets it). A retirement that wins leaves the attempt: the
@@ -759,6 +766,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     // #786: the attempt a start with an expectation handed over, which retireRoamAttempt() retires (0: none).
     uint64_t m_roam_attempt = 0;
     qint64 m_roam_expectation = -1;
+    // #786: the Stopping a stop began is a roaming switch's (stopForSwitch()); a user stop() or any other phase ends it.
+    bool m_switch_stop = false;
     bool m_location_stream = false;
     QVariantMap m_location_stream_last;
     uint64_t m_adopted_idle_session = 0;

@@ -89,6 +89,8 @@ class DecoderHost : public QObject {
     Q_PROPERTY(qint64 recordingTransferTotalBytes READ recordingTransferTotalBytes NOTIFY recordingTransferChanged)
     /* GPS site roaming (#786): the latest start ended unrun because a user stop came after its expectation. */
     Q_PROPERTY(bool startSuperseded READ startSuperseded NOTIFY startSupersededChanged)
+    /* GPS site roaming (#786): the Stopping on screen is a roaming switch's, which a user stop() still ends for good. */
+    Q_PROPERTY(bool switchStopping READ switchStopping NOTIFY sessionStateChanged)
 
   public:
     /**
@@ -876,6 +878,20 @@ class DecoderHost : public QObject {
     virtual void
     stopForSwitch() {
         stop();
+    }
+
+    /**
+     * @brief Whether the Stopping shown is a roaming switch's stopForSwitch() that no user stop() has followed yet.
+     *
+     * Such a stop can wait minutes on uploads, and a session left by a switch is started again elsewhere, so the user's
+     * Stop stays offered through it: stop() then is the user's, which drops the uploads still waiting and stops the
+     * session for good (the roam sees the userStopGeneration() move). False once the user stopped too, and through
+     * every other Stopping. Changes with sessionStateChanged(). The default host stops a switch as it stops anything:
+     * false.
+     */
+    virtual bool
+    switchStopping() const {
+        return false;
     }
 
     /**

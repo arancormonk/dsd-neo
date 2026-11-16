@@ -335,6 +335,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         retireWins = true;
         retireCalls = 0;
         switchStopCalls = 0;
+        switchStop = false;
         streamStarts = 0;
         streamStops = 0;
         streamActive = false;
@@ -384,7 +385,16 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     void
     stopForSwitch() override {
         ++switchStopCalls;
+        switchStop = true;
         endSession();
+    }
+
+    /* #786: as Android's host, the Stopping a switch began until a user stop() or another phase. */
+    bool switchStop = false;
+
+    bool
+    switchStopping() const override {
+        return switchStop && phase == Stopping;
     }
 
     /* A win while the start is on its way leaves the session stopped, as Android's host winds it down. */
@@ -737,9 +747,15 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return true;
     }
 
+    /* Every user stop moves userStopGeneration(), as DecoderService counts each one (#786; one a case made unreadable
+     * stays so), and ends a switch's stop. */
     void
     stop() override {
         ++m_stop_calls;
+        if (stopGeneration >= 0) {
+            ++stopGeneration;
+        }
+        switchStop = false;
         endSession();
     }
 
@@ -6903,6 +6919,7 @@ class Setup : public QObject {
         QVariantMap host;
         host[QStringLiteral("running")] = false;
         host[QStringLiteral("transitioning")] = false;
+        host[QStringLiteral("switchStopping")] = false; // #786: no roaming switch is stopping
         host[QStringLiteral("statusText")] = QStringLiteral("idle");
         /* The spectrum view gates production on a live session, so the fixture
          * has to claim one or its frames would never start. */

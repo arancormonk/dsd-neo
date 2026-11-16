@@ -1251,8 +1251,52 @@ check_stop_for_switch() {
     check(serviceStops == 1 && roaming().switchStops == 1, "the switch stop goes to the service as a switch");
     check(host.sessionState() == DecoderHost::Stopping && phaseAtStopDispatch == DecoderHost::Stopping,
           "and Stopping shows before it is sent");
+    check(host.switchStopping(), "the Stopping is the switch's");
+    /* Its uploads can keep the service STOPPING for minutes: the user's Stop is still taken through it. */
+    retained_record() = {{"sessionId", 171}, {"state", "STOPPING"}, {"reason", kRunPending}};
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Stopping && host.switchStopping(), "through the switch's drain");
+    int changes = 0;
+    QObject::connect(&host, &DecoderHost::sessionStateChanged, &host, [&changes] { ++changes; });
     host.stop();
-    check(roaming().switchStops == 1, "a user stop is no switch");
+    check(serviceStops == 2 && roaming().switchStops == 1, "the user's Stop during it is sent, as the user's");
+    check(host.sessionState() == DecoderHost::Stopping && !host.switchStopping() && changes == 1,
+          "and the Stopping on screen is the user's now");
+    retained_record() = {{"sessionId", 171}, {"state", "IDLE"}, {"reason", kRunCancelled}};
+    running = false;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Idle && !host.switchStopping(), "the stop ends");
+
+    /* An ordinary user stop is no switch's: switchStopping() stays false through it. */
+    retained_record() = {{"sessionId", 172}, {"state", "RUNNING"}, {"reason", kRunPending}};
+    running = true;
+    host.refresh();
+    host.stop();
+    check(host.sessionState() == DecoderHost::Stopping && !host.switchStopping(), "a user stop is not a switch's");
+
+    /* A switch's stop the service never acknowledged shows the run again, and a later Stopping that is no stop's (the
+     * receiver ended) is not the switch's. */
+    retained_record() = {{"sessionId", 172}, {"state", "IDLE"}, {"reason", kRunCancelled}};
+    running = false;
+    host.refresh();
+    retained_record() = {{"sessionId", 173}, {"state", "RUNNING"}, {"reason", kRunPending}};
+    running = true;
+    host.refresh();
+    host.stopForSwitch();
+    check(host.switchStopping(), "a second switch");
+    for (int waited = 250; waited <= 2500; waited += 250) {
+        nowMs = 720000 + static_cast<uint64_t>(waited);
+        host.refresh();
+    }
+    check(host.sessionState() == DecoderHost::Running && !host.switchStopping(), "its stop expired");
+    retained_record() = {{"sessionId", 173},
+                         {"state", "RUNNING"},
+                         {"reason", kRunPending},
+                         {"endCause", kEndDetached},
+                         {"receiverSource", kReceiverRtl}};
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Stopping && !host.switchStopping(),
+          "a receiver ending later is not the switch's stop");
     serviceStops = 0;
     roaming().switchStops = 0;
     retained_record() = QJsonObject();

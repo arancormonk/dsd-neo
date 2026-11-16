@@ -154,6 +154,10 @@ DecoderHostAndroid::setSessionPhase(SessionPhase phase, const QString& reason) {
         }
     }
 
+    // #786: a switch's stop ends with the Stopping it began.
+    if (phase != kSessionStopping) {
+        m_switch_stop = false;
+    }
     if (phase == m_published_phase && failure == m_failure) {
         return;
     }
@@ -473,8 +477,14 @@ DecoderHostAndroid::stopSession(bool forSwitch) {
      * has read it, and until then the button would sit enabled and unchanged. The tracker holds Stopping over the
      * attempt's records until its terminal one, so a poll in between cannot flip it back. */
     if (m_phase.note_stop_requested(readRealtimeMs())) {
+        m_switch_stop = forSwitch;
         setSessionPhase(m_phase.phase());
         setStatus(phase_text(m_phase.phase()));
+    } else if (!forSwitch && switchStopping()) {
+        /* #786: the user's Stop during a switch's stop (its uploads can take minutes): sent as the user's, so the
+         * service drops what is left and counts it, and the roam sees the generation move and starts nothing. */
+        m_switch_stop = false;
+        Q_EMIT sessionStateChanged();
     }
     requestServiceStop(forSwitch);
 }

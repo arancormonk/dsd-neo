@@ -318,6 +318,35 @@ Item {
             verify(!siteRoaming.transactionActive);
         }
 
+        // A switch's stop can wait minutes on uploads. Stop listening stays
+        // offered through it, and the user's Stop ends the session for good:
+        // the roam is cancelled, nothing restarts and no notice shows.
+        function test_07e_stop_listening_during_the_switch_stop() {
+            qualifyB();
+            compare(decoderHost.sessionState, 3);
+            compare(calls().switchStops, 1);
+            tryCompare(app, "monitorMode", true);
+            var stop = findChild(findChild(app, "monitorScreen"), "stopListeningButton");
+            verify(stop !== null && stop.visible);
+            verify(stop.enabled, "Stop stays offered through the switch's stop");
+            compare(stop.text, "Stop listening");
+            var userStops = decoderHost.stopCalls();
+            mouseClick(stop);
+            compare(decoderHost.stopCalls(), userStops + 1, "the user's stop");
+            compare(calls().switchStops, 1, "no second switch");
+            compare(decoderHost.sessionState, 3);
+            verify(!stop.enabled, "the Stopping is the user's now");
+            compare(stop.text, "Stopping…");
+            testContext.setLifecyclePhase(0);
+            wait(20);
+            compare(decoderHost.sessionState, 0, "nothing restarts");
+            compare(app.pendingRestart, null);
+            verify(!siteRoaming.transactionActive);
+            verify(!roamNotice().visible, "the user's stop: no notice");
+            verify(!app.showFailure);
+            compare(app.startError, "");
+        }
+
         function test_08_disable_during_stopping_leaves_listening_stopped_with_the_notice() {
             qualifyB();
             prefs.roamingEnabled = false;

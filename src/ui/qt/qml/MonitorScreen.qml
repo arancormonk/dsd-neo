@@ -2945,8 +2945,12 @@ Item {
         anchors.bottomMargin: 22
         // 3 is DecoderHost.Stopping. The host publishes it the moment Stop is
         // tapped (#718), so the tap reads as taken while the engine winds down.
-        text: decoderHost.sessionState === 3 ? qsTr("Stopping…") : screen.system && screen.system.sourceType === "file" ? qsTr("Stop replay") : qsTr("Stop listening")
-        enabled: !decoderHost.transitioning && !keySheet.visible
+        // A GPS roaming switch's Stopping (#786) keeps Stop listening: its
+        // uploads can take minutes, and the user's Stop then ends the session
+        // for good instead of moving it to the next site.
+        readonly property bool switchStopping: decoderHost.switchStopping === true
+        text: decoderHost.sessionState === 3 && !switchStopping ? qsTr("Stopping…") : screen.system && screen.system.sourceType === "file" ? qsTr("Stop replay") : qsTr("Stop listening")
+        enabled: (!decoderHost.transitioning || switchStopping) && !keySheet.visible
         onClicked: decoderHost.stop()
     }
     // #647 D1a: the session's receiver. Healthy: its name and status. Lost:

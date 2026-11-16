@@ -17153,7 +17153,8 @@ are a host with no roaming, so every subclass and the QML test host compile unch
 expectedStopGeneration)` (default: `start()`; a negative expectation is a read that failed, never "no expectation", and
 is refused: `stopGenerationUnreadableText()`), `startSuperseded()` (property, its own `startSupersededChanged()`; only
 the Android host and the QML test host ever set it; the latest start ended unrun because a user stop came after its expectation; the next start
-clears it), `stopForSwitch()` (default `stop()`), `retireRoamAttempt()` (true when the roam's start never runs;
+clears it), `stopForSwitch()` (default `stop()`), `switchStopping()` (property, notified with `sessionStateChanged()`;
+default false: the Stopping on screen began with `stopForSwitch()` and no `stop()` came since), `retireRoamAttempt()` (true when the roam's start never runs;
 default false, a start the base host accepted runs), `userStopGeneration()` and `foregroundEpoch()` (synchronous reads,
 default 0, negative when unreadable), `startLocationStream()`, `stopLocationStream()`, `requestRoamingPermission(id)`,
 `openAppLocationSettings()`, `openLocationSourceSettings()` (no-ops), and the signal `locationStreamUpdate(record)`:
@@ -17174,15 +17175,21 @@ Idle on the next record) like a dismissed undelivered start, so no start grace b
 start the service never recorded (turned away busy) whose generation moved by the time its start grace runs out is the
 user's own stop: the host drops the attempt the same way and sets `startSuperseded()`, never the undelivered failure;
 one whose generation held is undelivered as before.
-`stopForSwitch()` is `stop()`'s bookkeeping with `DecoderService.stopDecoderForSwitch()`. `LocationStream` is started
+`stopForSwitch()` is `stop()`'s bookkeeping with `DecoderService.stopDecoderForSwitch()`; the Stopping it begins reads
+`switchStopping()` until a `stop()` or any other published phase (`setSessionPhase()` clears it). Rule: the Monitor's
+Stop listening stays enabled while `switchStopping()` (a switch's rdio drain can take minutes), and a `stop()` then is
+sent as the user's: the service abandons the drain and counts the stop, so the roam's `startPlan()` at Idle finds the
+generation moved and cancels silently (no restart, no notice). `LocationStream` is started
 and stopped over JNI and polled last in `refresh()` (after the tick's session record is applied, so a slot sees this
 tick's phase) only while started; `location_stream_update()` (`android/location_record.h`)
 reads a record (an integer generation, a known state, the fix fields all there and in range or none) and the host emits
 only when the record, less `fixAtMs`, differs from the last one it emitted (a null poll, a stop or a start forgets it).
 The QML test host (`tests/ui/qml_test_context.h`, `ImportOnlyHost`) plays all of it: settable generation and epoch, a
-next start refused superseded or a start on its way superseded later, switch stops, retirements (winning by default),
+next start refused superseded or a start on its way superseded later, switch stops (with `switchStopping()`; every
+`stop()` moves its generation, as the service counts each user stop), retirements (winning by default),
 stream calls and a scripted feed (`testContext.emitLocationStreamUpdate()`). Tests: `UI_QT_ANDROID_HOST` (stream record
-→ signal, malformed records, synchronous reads, every start status's text, the expectation, retirement, switch stop),
+→ signal, malformed records, synchronous reads, every start status's text, the expectation, retirement, switch stop
+and `switchStopping()` through its drain, a user stop during it, an ordinary user stop and a later receiver ending),
 `UI_QT_SESSION_ARGS` (`test_stop_expectation`), `ANDROID_R8` (keeps and descriptors of the new JNI calls),
 `ANDROID_ENGINE_STOP_JVM` (`start_status_contract`: every `START_*` has its `android/start_status.h` twin;
 `counter_reader_contract`: both counters are read through `read_static_counter()`). Rule: the two counters are read with

@@ -268,7 +268,9 @@ What pauses, holds or cancels roaming:
   roaming on that site: "Holding the site you chose", with **Resume roaming**. Starting a site while nothing is
   listening is a new session, and roaming follows it.
 - **Stop** (in the app or the notification), swiping DSD-neo away in Recent apps, turning roaming off, or starting
-  something else cancels a switch on its way. A tap, Back, or opening and closing the site chooser does not.
+  something else cancels a switch on its way. A tap, Back, or opening and closing the site chooser does not. While a
+  switch stops the old site, which can take a while when call uploads are still waiting, the Monitor keeps **Stop
+  listening**: it drops those uploads, cancels the switch and leaves listening stopped.
 - Leaving DSD-neo (Home, another app on top, or the screen turning off) forgets the readings collected so far and
   cancels a switch that has not yet started the new site. If the old site had already stopped, listening stays
   stopped and Home says "Roaming did not switch to …. Listening stopped." with **Listen to …** for the site it left.
