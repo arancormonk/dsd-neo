@@ -703,6 +703,7 @@ test_target_text_never_cuts_a_part(void) {
     _Static_assert(sizeof(k_label49) == DSD_SOURCE_ALIAS_NAME_MAX, "the longest label a row holds");
     dsd_state* st = new_state();
     dsd_app_unit_activity_cursor cursor = {0, 0};
+    tune_p25(st, SYS_A); /* a known reception: its rows' labels are live */
     assert(add_group_label(st, 100U, k_label49) == 0);
     assert(add_group_label(st, 4294967295U, k_label49) == 0);
 
@@ -1095,6 +1096,47 @@ test_late_alias_renames_same_scope_only(void) {
     free_state(st);
 }
 
+/* A trunk scan A -> B where neither target's network identity is known yet: both scopes are unknown, which says
+ * nothing about whether they are one system. A's row keeps the name its producer froze (Alice) and is never renamed
+ * from B's radio list (Bob); a row of a known scope is named live as before. */
+static void
+test_unknown_scope_keeps_frozen_name(void) {
+    dsd_state* st = new_state();
+    dsd_decode_clock_use_test(T0_NS);
+    dsd_app_unit_activity_row rows[8];
+    dsd_rxid_reset(st);
+
+    dsd_source_alias_store* list_a = dsd_source_alias_store_create();
+    dsd_source_alias_entry alice = {.id_start = RID, .id_end = RID};
+    DSD_SNPRINTF(alice.name, sizeof alice.name, "%s", "Alice");
+    assert(list_a && dsd_source_alias_store_append(list_a, &alice) == 0);
+    dsd_source_alias_install(st, list_a);
+    dsd_unit_activity r = rid_row("Alice");
+    assert(dsd_unit_activity_push(st, &r) == 1); /* seq 1, scope unknown, on A */
+    assert(!r.scope.valid);
+
+    dsd_source_alias_store* list_b = dsd_source_alias_store_create();
+    dsd_source_alias_entry bob = {.id_start = RID, .id_end = RID};
+    DSD_SNPRINTF(bob.name, sizeof bob.name, "%s", "Bob");
+    assert(list_b && dsd_source_alias_store_append(list_b, &bob) == 0);
+    dsd_source_alias_install(st, list_b); /* on B, still no identity */
+    assert(rows_of(st, rows, 8) == 1);
+    if (strcmp(rows[0].subject_name, "Alice") != 0) {
+        DSD_FPRINTF(stderr, "unknown scope: row renamed '%s' from another target's list, want 'Alice'\n",
+                    rows[0].subject_name);
+        assert(0);
+    }
+
+    /* Once B's identity is known, B's own rows are named live from its list. */
+    tune_p25(st, SYS_B);
+    r = rid_row("");
+    assert(dsd_unit_activity_push(st, &r) == 1); /* seq 2, scope B */
+    assert(rows_of(st, rows, 8) == 2);
+    assert(strcmp(find_seq(rows, 2, 2U)->subject_name, "Bob") == 0);
+    assert(strcmp(find_seq(rows, 2, 1U)->subject_name, "Alice") == 0);
+    free_state(st);
+}
+
 int
 main(void) {
     test_every_kind_role_result_label();
@@ -1116,6 +1158,7 @@ main(void) {
     test_bad_arguments();
     test_names_follow_row_scope();
     test_late_alias_renames_same_scope_only();
+    test_unknown_scope_keeps_frozen_name();
     printf("APP_CONTROL_UNIT_ACTIVITY: OK\n");
     return 0;
 }

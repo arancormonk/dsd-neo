@@ -295,13 +295,16 @@ typedef struct {
     int live;
 } ua_naming;
 
+/* A row is named live only when its scope and the snapshot's current one are both known and equal: an unknown scope
+ * on either side (before a target's network identity, a conventional carrier with none) says nothing about whether
+ * the current lists are the row's system's, so the row keeps what its producer froze. */
 static void
 ua_naming_init(const dsd_state* snapshot, const dsd_unit_activity* r, ua_naming* n) {
     dsd_alias_scope current;
     n->snapshot = snapshot;
     ua_alias_scope_of(&r->scope, &n->scope);
     (void)dsd_alias_scope_current(snapshot, &current);
-    n->live = dsd_alias_scope_equal(&n->scope, &current);
+    n->live = n->scope.valid && current.valid && dsd_alias_scope_equal(&n->scope, &current);
 }
 
 /* A radio's live name in the row's scope; 1 when found. */

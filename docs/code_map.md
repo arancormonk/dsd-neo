@@ -6288,8 +6288,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     those after it and the text ends ", …", so an ID is never cut. `scope_text` names the row's system ("WACN BEE00
     SYS 123 RFSS 1 SITE 2", "NAC 293", "Net 17 Site 5", Capacity Plus "Site 4 CC 3", "SYS 77 SITE 6", "MCC 901 MNC
     9999 LA 12"). Every text is well-formed UTF-8 cut at a character boundary, C0 and C1 controls as spaces.
-  - Names: only RADIO and GROUP subjects are named. While the row's scope is the snapshot's current one
-    (`dsd_alias_scope_equal()` on the learned-alias scope), the name comes from the snapshot's lists in that scope
+  - Names: only RADIO and GROUP subjects are named. While the row's scope is the snapshot's current one, both known
+    (`dsd_alias_scope_equal()` on two valid learned-alias scopes; an unknown scope on either side, as before a
+    target's network identity, keeps the frozen name and shows no live talkgroup label: test
+    `test_unknown_scope_keeps_frozen_name`), the name comes from the snapshot's lists in that scope
     (`dsd_source_label_lookup_scoped()`: the assigned ID first, then the subject unless its home is another system or
     it is `subject_nonlocal`; a group's label); a row of another system shows `name_frozen` (a radio's name or a
     group's label as its producer stored it), because the current lists (a trunk-scan target's own) say nothing about
