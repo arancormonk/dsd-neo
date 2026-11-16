@@ -241,7 +241,11 @@ test_enrichment_skips_another_protocols_call(dsd_opts* opts) {
             case 1: apx_embedded_gps(opts, state, bits); break;
             case 2: nmea_harris(opts, state, bits, 0U, 0); break;
             case 3: nxdn_gps_report(opts, state, bits, src); break;
-            case 4: lip_pdu_decoder(opts, state, bits, 76U, src); break;
+            case 4:
+                state->lastsynctype =
+                    DSD_SYNC_DMR_BS_DATA_POS; // carried by a DMR data frame (a zeroed state reads P25)
+                lip_pdu_decoder(opts, state, bits, 76U, src);
+                break;
             default: nmea_iec_61162_1(opts, state, bits, src, 1); break;
         }
         DSD_SNPRINTF(label, sizeof(label), "%s leaves the other protocol's call row alone", gps[i].name);

@@ -2079,9 +2079,10 @@ suite runs under this compiler.
   The event rows follow the same rule (`dsd_call_state_update_is_protocols()`, `call_state_internal.h`): an
   alias, position or text a protocol decoded reaches only its own protocol's call row (`dsd_event_enrich_alias()`,
   `_alias_ex()`, `_gps()`, `_text()`, `dsd_event_set_open_call_detail()` take the writer's protocol), so a P25 Motorola,
-  Harris or Tait alias, a DMR talker alias, DMR/P25/NXDN GPS, DMR LIP and UDT NMEA, D-STAR slow data or an NXDN alias
-  decoded before its own call opened leaves another protocol's open call alone; the P25 aliases that take their talker
-  from the slot's call (Harris, Tait, and the Motorola source match) take it only from a P25 call, so no other
+  Harris or Tait alias, a DMR talker alias, DMR/P25/NXDN GPS, LIP (DMR's, or a UDP port 5017 report in P25 Phase 1
+  packet data, named by the frame that carried it, `lip_pdu_protocol()`) and DMR UDT NMEA, D-STAR slow data or an NXDN
+  alias decoded before its own call opened leaves another protocol's open call alone; the P25 aliases that take their
+  talker from the slot's call (Harris, Tait, and the Motorola source match) take it only from a P25 call, so no other
   protocol's radio learns a P25 alias. Writers still choose the phase themselves where the store's rule is wider than
   theirs (a key choice record takes an ended call, so P25 `p25_crypto_publish_canonical()` and the DMR autoload record
   only on the open call). An identity a frame takes from the slot's call by copying that call's own protocol into an

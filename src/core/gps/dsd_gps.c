@@ -318,9 +318,10 @@ lip_store_state_strings(dsd_state* state, int slot, const lip_state_strings* gps
     }
 }
 
+/* @p protocol is the one whose signalling carried the report (DSD_SYNC_*), which owns the call it may enrich. */
 static void
 lip_report(const dsd_opts* opts, dsd_state* state, const lip_fields* f, uint32_t src, int hash_prefix,
-           uint32_t expected_source) {
+           uint32_t expected_source, int protocol) {
     DSD_FPRINTF(stderr, "Location Information Protocol; ");
     if (hash_prefix < 0) {
         DSD_FPRINTF(stderr, "Short Location Report; ");
@@ -370,10 +371,9 @@ lip_report(const dsd_opts* opts, dsd_state* state, const lip_fields* f, uint32_t
         lip_store_state_strings(state, slot, &gps);
         // Carrier reports need a known source before enriching an active call.
         // USBD hashes retain the existing wildcard-source behavior.
-        // LIP reaches here only from DMR (lip_protocol_decoder(), lip_pdu_decoder()).
         if (hash_prefix >= 0 || expected_source != 0U) {
-            (void)gps_enrich_active_call(state, (uint8_t)slot, DSD_SYNC_DMR_BS_DATA_POS, expected_source,
-                                         state->dmr_embedded_gps[slot], NULL);
+            (void)gps_enrich_active_call(state, (uint8_t)slot, protocol, expected_source, state->dmr_embedded_gps[slot],
+                                         NULL);
         }
         gps_write_lrrp_compact(opts, state, slot, src, lat_sf * latitude, lon_sf * longitude, vt, dt);
     } else {
@@ -466,7 +466,7 @@ lip_protocol_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* inpu
     lip_fields f;
     lip_fields_from_usbd(input, &f);
     uint8_t add_hash = (uint8_t)convert_bits_into_output(input + 72, 8);
-    lip_report(opts, state, &f, add_hash, add_hash, 0U);
+    lip_report(opts, state, &f, add_hash, add_hash, 0U, DSD_SYNC_DMR_BS_DATA_POS); // DMR embedded LC only
 }
 
 static const char*
@@ -493,6 +493,13 @@ lip_extension_label(uint8_t extension) {
     return labels[extension & 15U];
 }
 
+/* The protocol that carried a LIP PDU: DMR (a UDT block, a DMR data PDU's UDP port 5017), or P25 Phase 1, whose
+   packet data reaches UDP port 5017 through decode_ip_pdu() too. The frame that carried it set state->lastsynctype. */
+static int
+lip_pdu_protocol(const dsd_state* state) {
+    return DSD_SYNC_IS_P25(state->lastsynctype) ? DSD_SYNC_P25P1_POS : DSD_SYNC_DMR_BS_DATA_POS;
+}
+
 void
 lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
     if (bit_count < 2) {
@@ -507,7 +514,7 @@ lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, siz
         }
         lip_fields f;
         lip_fields_from_short_report(bits, &f);
-        lip_report(opts, state, &f, src, -1, src);
+        lip_report(opts, state, &f, src, -1, src, lip_pdu_protocol(state));
     } else if (type == 1) {
         if (bit_count < 6) {
             DSD_FPRINTF(stderr, "LIP: PDU type extension truncated (%zu bits);", bit_count);
