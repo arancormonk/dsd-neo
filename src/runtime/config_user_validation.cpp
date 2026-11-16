@@ -15,6 +15,7 @@
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/udp_comp_ports.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -480,6 +481,9 @@ struct trunk_scan_start_rule {
     const char* key;
     bool (*breaks)(const dsdneoUserConfig* cfg);
     const char* message;
+    /* For a rule an I/Q stream [input] breaks (issue #743, D8): turns the key off, as a session save writes it
+       (dsd_user_config_turn_off_beside_iq_stream()). NULL for the others. */
+    void (*turn_off)(dsdneoUserConfig* cfg);
 };
 
 /* The lists of a trunk scan the config turns on (issue #697): list 1 named, no gap, every lists_off entry a list, one
@@ -526,42 +530,85 @@ trunk_scan_beside_scanner(const dsdneoUserConfig* cfg) {
     return cfg->trunk_scan_enabled != 0 && cfg->trunk_scanner != 0 && cfg->trunk_enabled == 0;
 }
 
+/* A raw I/Q stream input (issue #743, D8) decodes the one channel its sender streams: nothing can retune it, so a
+   config that runs one cannot also follow a trunked system, scan with -Y or run a trunk scan. */
+bool
+input_is_iq_stream(const dsdneoUserConfig* cfg) {
+    return cfg->has_input != 0 && (cfg->input_source == DSDCFG_INPUT_IQTCP || cfg->input_source == DSDCFG_INPUT_IQUDP);
+}
+
+bool
+iq_stream_beside_trunking(const dsdneoUserConfig* cfg) {
+    return input_is_iq_stream(cfg) && cfg->trunk_enabled != 0;
+}
+
+bool
+iq_stream_beside_scanner(const dsdneoUserConfig* cfg) {
+    return input_is_iq_stream(cfg) && cfg->trunk_scanner != 0 && cfg->trunk_enabled == 0;
+}
+
+bool
+iq_stream_beside_trunk_scan(const dsdneoUserConfig* cfg) {
+    return input_is_iq_stream(cfg) && cfg->trunk_scan_enabled != 0;
+}
+
+void
+turn_trunking_off(dsdneoUserConfig* cfg) {
+    cfg->trunk_enabled = 0;
+}
+
+void
+turn_scanner_off(dsdneoUserConfig* cfg) {
+    cfg->trunk_scanner = 0;
+}
+
+void
+turn_trunk_scan_off(dsdneoUserConfig* cfg) {
+    cfg->trunk_scan_enabled = 0;
+}
+
 const trunk_scan_start_rule k_trunk_scan_start_rules[] = {
     {
         "trunk_scan",
         "targets_csv",
         trunk_scan_lacks_targets,
         "targets_csv is required when trunk_scan.enabled is true",
+        nullptr,
     },
     {
         "trunk_scan",
         "targets_csv",
         trunk_scan_lists_gap,
         "trunk_scan lists are numbered without gaps: each targets_csv_N needs targets_csv and every lower one",
+        nullptr,
     },
     {
         "trunk_scan",
         "lists_off",
         trunk_scan_lists_off_past_last,
         "trunk_scan.lists_off names a list number that has no targets_csv",
+        nullptr,
     },
     {
         "trunk_scan",
         "lists_off",
         trunk_scan_lists_all_off,
         "trunk_scan.lists_off switches every list off; at least one list must start on",
+        nullptr,
     },
     {
         "trunking",
         "chan_csv",
         trunk_scan_beside_channel_map,
         "trunking.chan_csv cannot be combined with trunk_scan.enabled; use per-target chan_csv values",
+        nullptr,
     },
     {
         "trunking",
         "p25_bandplan_csv",
         trunk_scan_beside_p25_bandplan,
         "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled; use per-target p25_bandplan_csv values",
+        nullptr,
     },
     {
         "trunking",
@@ -569,6 +616,31 @@ const trunk_scan_start_rule k_trunk_scan_start_rules[] = {
         trunk_scan_beside_scanner,
         "trunking.scanner cannot be combined with trunk_scan.enabled; the -Y scanner and a trunk scan both own the "
         "tuner",
+        nullptr,
+    },
+    {
+        "trunking",
+        "enabled",
+        iq_stream_beside_trunking,
+        "trunking.enabled cannot be used with an I/Q stream input; the stream decodes the one channel its sender "
+        "streams",
+        turn_trunking_off,
+    },
+    {
+        "trunking",
+        "scanner",
+        iq_stream_beside_scanner,
+        "trunking.scanner cannot be used with an I/Q stream input; the stream decodes the one channel its sender "
+        "streams",
+        turn_scanner_off,
+    },
+    {
+        "trunk_scan",
+        "enabled",
+        iq_stream_beside_trunk_scan,
+        "trunk_scan.enabled cannot be used with an I/Q stream input; the stream decodes the one channel its sender "
+        "streams",
+        turn_trunk_scan_off,
     },
 };
 
@@ -665,20 +737,45 @@ validate_configured_rtl_bw_khz(int bw) {
 }
 
 /* The rate source of the live radio input startup builds with rtl_bw_khz (it takes rtl_freq, and a host for rtl_tcp;
-   a SoapySDR or Airspy source always applies it), or -1 when the config builds none. */
+   a SoapySDR or Airspy source always applies it; a raw I/Q stream source when its keys build a spec, issue #743), or
+   -1 when the config builds none. */
 static int
 validate_config_live_radio_source(const dsdneoUserConfig* cfg) {
     if (!cfg->has_input) {
         return -1;
     }
+    char spec[DSD_IQ_NET_SPEC_TEXT_MAX];
     switch (cfg->input_source) {
         case DSDCFG_INPUT_RTL: return cfg->rtl_freq[0] != '\0' ? DSD_ANALOG_RATE_RTL_BW : -1;
         case DSDCFG_INPUT_RTLTCP:
             return (cfg->rtl_freq[0] != '\0' && cfg->rtltcp_host[0] != '\0') ? DSD_ANALOG_RATE_RTL_BW : -1;
         case DSDCFG_INPUT_SOAPY:
         case DSDCFG_INPUT_AIRSPY: return DSD_ANALOG_RATE_DEVICE;
+        case DSDCFG_INPUT_IQTCP:
+        case DSDCFG_INPUT_IQUDP:
+            return dsd_user_config_iq_stream_input_spec(cfg, spec, sizeof spec, nullptr, 0U) == 0
+                       ? DSD_ANALOG_RATE_PLANNED
+                       : -1;
         default: return -1;
     }
+}
+
+/* The DSP rate an analog width is held to: the configured bandwidth on a live radio, and on a raw I/Q stream the target
+   its RATE is planned to (dsd_input_dsp_rate_planned(); analog runs TETRA off), 0 when no plan reaches it (reported
+   on iq_rate, validate_composed_iq_stream()). */
+static int
+validate_configured_width_rate_hz(const dsdneoUserConfig* cfg) {
+    const int rtl_bw_khz = validate_configured_rtl_bw_khz(cfg->rtl_bw_khz);
+    if (validate_config_live_radio_source(cfg) != DSD_ANALOG_RATE_PLANNED) {
+        return rtl_bw_khz * 1000;
+    }
+    char spec[DSD_IQ_NET_SPEC_TEXT_MAX];
+    uint32_t rate_hz = 0U;
+    if (dsd_user_config_iq_stream_input_spec(cfg, spec, sizeof spec, nullptr, 0U) != 0
+        || dsd_input_dsp_stream_plan_check(spec, rtl_bw_khz, 0, &rate_hz, nullptr, 0U) != 0) {
+        return 0;
+    }
+    return (int)rate_hz;
 }
 
 static int
@@ -693,11 +790,12 @@ validate_composed_analog_width(const dsdneoUserConfig* cfg, const char* section,
     if (!cfg || !diags || !validate_analog_width_rate_applies(cfg)) {
         return;
     }
-    const int rtl_bw_khz = validate_configured_rtl_bw_khz(cfg->rtl_bw_khz);
+    const int rate_hz = validate_configured_width_rate_hz(cfg);
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
-    if (dsd_analog_width_check_at(DSD_ANALOG_DEMOD_FM, cfg->analog_nfm_bandwidth_hz, rtl_bw_khz * 1000,
-                                  validate_config_live_radio_source(cfg), err, sizeof err)
-        != 0) {
+    if (rate_hz > 0
+        && dsd_analog_width_check_at(DSD_ANALOG_DEMOD_FM, cfg->analog_nfm_bandwidth_hz, rate_hz,
+                                     validate_config_live_radio_source(cfg), err, sizeof err)
+               != 0) {
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "analog", key ? key : "nfm_bandwidth_hz",
                          err);
     }
@@ -722,11 +820,12 @@ validate_composed_am_width(const dsdneoUserConfig* cfg, const char* section, con
             ? cfg->analog_am_bandwidth_hz
             : 0;
     const int width_hz = dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, configured_hz);
-    const int rtl_bw_khz = validate_configured_rtl_bw_khz(cfg->rtl_bw_khz);
+    const int rate_hz = validate_configured_width_rate_hz(cfg);
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
-    if (dsd_analog_width_check_at(DSD_ANALOG_DEMOD_AM, width_hz, rtl_bw_khz * 1000,
-                                  validate_config_live_radio_source(cfg), err, sizeof err)
-        != 0) {
+    if (rate_hz > 0
+        && dsd_analog_width_check_at(DSD_ANALOG_DEMOD_AM, width_hz, rate_hz, validate_config_live_radio_source(cfg),
+                                     err, sizeof err)
+               != 0) {
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "analog", key ? key : "am_bandwidth_hz", err);
     }
 }
@@ -742,6 +841,10 @@ struct file_path_spec_kind {
 const file_path_spec_kind k_file_path_spec_kinds[] = {
     {dsd_opts_audio_in_dev_is_iqreplay_spec, "file_path is an I/Q replay (iqreplay:...), which a config cannot start; "
                                              "replay a capture with --iq-replay <path>"},
+    {dsd_opts_audio_in_dev_is_iqtcp_spec, "file_path is an I/Q stream (iqtcp:...), which a file input cannot start; "
+                                          "use source = \"iqtcp\" with iq_host, iq_port, iq_rate and iq_format"},
+    {dsd_opts_audio_in_dev_is_iqudp_spec, "file_path is an I/Q stream (iqudp:...), which a file input cannot start; "
+                                          "use source = \"iqudp\" with iq_host, iq_port, iq_rate and iq_format"},
 };
 } // namespace
 
@@ -769,6 +872,81 @@ validate_composed_file_path(const dsdneoUserConfig* cfg, const char* section, co
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "input", key ? key : "file_path",
                          kind->message);
     }
+}
+
+/* The [input] key a raw I/Q stream spec's field comes from (issue #743), as the parser names the field. */
+static const char*
+iq_stream_key_of_reason(const char* why) {
+    static const struct {
+        const char* field;
+        const char* key;
+    } k_fields[] = {{"HOST", "iq_host"}, {"BIND", "iq_host"},     {"PORT", "iq_port"},
+                    {"RATE", "iq_rate"}, {"FORMAT", "iq_format"}, {"FREQ", "iq_freq"}};
+
+    for (const auto& f : k_fields) {
+        const char* at = strstr(why, f.field);
+        if (at != nullptr && (at == why || at[-1] == ' ')) {
+            return f.key;
+        }
+    }
+    return "source";
+}
+
+/* The keys an I/Q stream does not use, which belong to the inputs DSD-neo tunes: said, as the stream ignores them. */
+static void
+validate_iq_stream_unused_keys(const dsdneoUserConfig* cfg, const char* section, const char* prefix,
+                               dsdcfg_diagnostics_t* diags) {
+    static const char k_ignored[] = "is not used by an I/Q stream input: the sending program tunes";
+
+    const struct {
+        bool set;
+        const char* key;
+        const char* message;
+    } k_unused[] = {
+        {cfg->rtl_gain_is_set != 0, "rtl_gain", k_ignored},
+        {cfg->rtl_ppm_is_set != 0, "rtl_ppm", k_ignored},
+        {cfg->rtl_auto_ppm != 0, "auto_ppm", k_ignored},
+        {cfg->rtl_freq[0] != '\0', "rtl_freq",
+         "does not tune an I/Q stream input; give its receiver frequency as iq_freq"},
+    };
+
+    for (const auto& u : k_unused) {
+        if (!u.set) {
+            continue;
+        }
+        char key[64];
+        char msg[160];
+        DSD_SNPRINTF(key, sizeof key, "%s%s", prefix, u.key);
+        DSD_SNPRINTF(msg, sizeof msg, "%s %s", u.key, u.message);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, 0, section, key, msg);
+    }
+}
+
+/* A raw I/Q stream [input] (issue #743): keys that build no spec are an error on the key the parser names, as is a RATE
+   no plan takes to the DSP target the config runs (TETRA's under decode = tetra), with the planner's reason; keys of
+   the inputs DSD-neo tunes are a warning. @p prefix is "" for the file's [input], "input." in a profile. */
+static void
+validate_composed_iq_stream(const dsdneoUserConfig* cfg, const char* section, const char* prefix,
+                            dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !input_is_iq_stream(cfg)) {
+        return;
+    }
+    char spec[DSD_IQ_NET_SPEC_TEXT_MAX];
+    char why[DSD_IQ_NET_SPEC_TEXT_MAX + 128];
+    char key[64];
+    if (dsd_user_config_iq_stream_input_spec(cfg, spec, sizeof spec, why, sizeof why) != 0) {
+        DSD_SNPRINTF(key, sizeof key, "%s%s", prefix, iq_stream_key_of_reason(why));
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section, key, why);
+        return;
+    }
+    const int tetra = cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_TETRA;
+    if (dsd_input_dsp_stream_plan_check(spec, validate_configured_rtl_bw_khz(cfg->rtl_bw_khz), tetra, nullptr, why,
+                                        sizeof why)
+        != 0) {
+        DSD_SNPRINTF(key, sizeof key, "%siq_rate", prefix);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section, key, why);
+    }
+    validate_iq_stream_unused_keys(cfg, section, prefix, diags);
 }
 
 /* A list policy with nothing to list is refused (issue #527): the loader would apply it as off, which the operator did
@@ -819,6 +997,7 @@ validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t*
     validate_composed_tone_policy(cfg, "analog", "tone_filter", diags);
     validate_composed_receive_names(cfg, "receive", "names", diags);
     validate_composed_file_path(cfg, "input", "file_path", diags);
+    validate_composed_iq_stream(cfg, "input", "", diags);
 }
 
 static void
@@ -835,6 +1014,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     validate_composed_tone_policy(cfg, section, "analog.tone_filter", diags);
     validate_composed_receive_names(cfg, section, "receive.names", diags);
     validate_composed_file_path(cfg, section, "input.file_path", diags);
+    validate_composed_iq_stream(cfg, section, "input.", diags);
 }
 
 static void
@@ -1079,6 +1259,24 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
         validate_composed_config_path(path, diags);
     }
     return diags->error_count > 0 ? -1 : rc;
+}
+
+void
+dsd_user_config_turn_off_beside_iq_stream(dsdneoUserConfig* cfg) {
+    if (cfg == nullptr) {
+        return;
+    }
+    /* Until no stream rule breaks: turning trunking off can leave the -Y scanner it outranked running. */
+    bool turned = true;
+    while (turned) {
+        turned = false;
+        for (const trunk_scan_start_rule& rule : k_trunk_scan_start_rules) {
+            if (rule.turn_off != nullptr && rule.breaks(cfg)) {
+                rule.turn_off(cfg);
+                turned = true;
+            }
+        }
+    }
 }
 
 int

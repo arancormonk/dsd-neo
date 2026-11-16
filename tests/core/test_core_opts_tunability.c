@@ -139,6 +139,27 @@ test_stream_spec_predicates(void) {
     assert(dsd_opts_audio_in_dev_is_udp_spec("iqudp:0.0.0.0:7356:48k:cu8") == 0);
 }
 
+/* Either stream kind is a stream spec; and a stream, a radio input, times its decoders from the demodulator's rate, not
+   from the PCM input rate (dsd_opts_source_uses_effective_input_rate()). */
+static void
+test_stream_spec_either_kind(void) {
+    assert(dsd_opts_audio_in_dev_is_iq_stream_spec("iqtcp:127.0.0.1:5555:240k:cs16") == 1);
+    assert(dsd_opts_audio_in_dev_is_iq_stream_spec("iqudp:0.0.0.0:7356:48k:cu8") == 1);
+    assert(dsd_opts_audio_in_dev_is_iq_stream_spec("iqreplay:capture.iq.json") == 0);
+    assert(dsd_opts_audio_in_dev_is_iq_stream_spec("udp:127.0.0.1:7355") == 0);
+    assert(dsd_opts_audio_in_dev_is_iq_stream_spec(NULL) == 0);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqtcp:127.0.0.1:5555:240000:cs16");
+    assert(dsd_opts_source_uses_effective_input_rate(opts) == 0);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqudp:0.0.0.0:7356:48000:cu8");
+    assert(dsd_opts_source_uses_effective_input_rate(opts) == 0);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp:127.0.0.1:7355");
+    assert(dsd_opts_source_uses_effective_input_rate(opts) == 1);
+    free(opts);
+}
+
 static void
 test_null_opts(void) {
     assert(dsd_opts_input_is_iq_stream(NULL) == 0);
@@ -152,6 +173,7 @@ test_null_opts(void) {
 int
 main(void) {
     test_stream_spec_predicates();
+    test_stream_spec_either_kind();
     test_null_opts();
     return test_predicate_table();
 }

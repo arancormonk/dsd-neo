@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
@@ -42,6 +43,37 @@ dsd_input_dsp_rate_planned(uint32_t stream_rate_hz, int dsp_bw_khz, int frame_te
         policy.rate_hz = (int)plan.demod_rate_hz;
     }
     return policy;
+}
+
+int
+dsd_input_dsp_stream_plan_check(const char* audio_in_dev, int dsp_bw_khz, int frame_tetra, uint32_t* out_rate_hz,
+                                char* why, size_t why_size) {
+    if (out_rate_hz) {
+        *out_rate_hz = 0U;
+    }
+    if (why && why_size > 0U) {
+        why[0] = '\0';
+    }
+    dsd_iq_net_spec spec;
+    if (dsd_iq_net_spec_parse(audio_in_dev, &spec, why, why_size) != 0) {
+        return -1;
+    }
+    const uint32_t target_hz = dsd_input_dsp_stream_target_hz(dsp_bw_khz, frame_tetra);
+    if (target_hz == 0U) {
+        if (why && why_size > 0U) {
+            DSD_SNPRINTF(why, why_size, "a %d kHz DSP bandwidth is no rate a stream can be planned to", dsp_bw_khz);
+        }
+        return -1;
+    }
+    dsd_iq_replay_rate_plan plan;
+    if (dsd_iq_plan_general_rate(DSD_IQ_PLAN_SOURCE_STREAM, spec.rate_hz, target_hz, &plan, why, why_size)
+        != DSD_IQ_OK) {
+        return -1;
+    }
+    if (out_rate_hz) {
+        *out_rate_hz = plan.demod_rate_hz;
+    }
+    return 0;
 }
 
 /* A raw I/Q stream named by @p audio_in_dev: its spec's RATE planned to the target, or no rate for a spec that does not

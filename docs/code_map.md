@@ -3831,7 +3831,12 @@ suite runs under this compiler.
       `dsd_snapshot_opts_to_user_config()` writes, for a session whose input is a replay
       (`dsd_opts_input_is_iq_replay()`), the `[input]` block (`has_input` .. `input_warn_db_is_set`) of the config the
       session loaded, unchanged, or no `[input]` when none was loaded; every save (exit autosave, terminal Save,
-      `--print-config`) goes through it. Bootstrap retains the loaded block (`dsd_user_config_retain_input()`) in state
+      `--print-config`) goes through it. The snapshot ends with `dsd_user_config_turn_off_beside_iq_stream()`
+      (`config_user_validation.cpp`): when the `[input]` it writes is an I/Q stream, retained or live, each key a D8
+      rule refuses is written off, through the `turn_off` field of the same rule table, so a replay with `-T`, `-Y` or
+      `--trunk-scan` under a stream config saves a config the next start runs. The next-start checks build on this
+      snapshot too, so in such a replay session a change that turns one of them on is judged against a save with them
+      off. Bootstrap retains the loaded block (`dsd_user_config_retain_input()`) in state
       slot 15 (`DSD_STATE_EXT_RUNTIME_CONFIG_INPUT`), freed with the state. A config apply
       (`cfg_settle_retained_input()`) changes it only when the config has an `[input]`, stays applied, and leaves the
       replay running: a loaded file's payload replaces it, a plain patch merges the keys it sets

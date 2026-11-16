@@ -127,6 +127,11 @@ static const input_key k_input_keys[] = {
     INPUT_KEY(tcp_port),
     INPUT_KEY(udp_addr),
     INPUT_KEY(udp_port),
+    INPUT_KEY(iq_host),
+    INPUT_KEY(iq_port),
+    INPUT_KEY(iq_rate),
+    INPUT_KEY(iq_format),
+    INPUT_KEY(iq_freq),
     INPUT_FLAGGED_KEY(input_warn_db, input_warn_db_is_set),
 };
 

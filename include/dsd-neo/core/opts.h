@@ -887,6 +887,12 @@ dsd_opts_audio_in_dev_is_iqudp_spec(const char* dev) {
     return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "iqudp", "iqudp:");
 }
 
+/** Whether @p dev names a raw I/Q stream of either kind (`iqtcp:` or `iqudp:`). */
+static inline int
+dsd_opts_audio_in_dev_is_iq_stream_spec(const char* dev) {
+    return dsd_opts_audio_in_dev_is_iqtcp_spec(dev) || dsd_opts_audio_in_dev_is_iqudp_spec(dev);
+}
+
 static inline int
 dsd_opts_audio_in_dev_is_tcp_spec(const char* dev) {
     return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "tcp", "tcp:");
@@ -1011,7 +1017,8 @@ dsd_opts_input_is_radio(const dsd_opts* opts) {
  * follows the capture's recorded RETUNEs (issue #575). `rtlsdr_center_freq` keeps the capture's opening centre then:
  * the replay defers every live retune before the field is written, and the trunking paths read it as the control or
  * current channel, so moving it would change how a replay decodes. Otherwise it is `rtlsdr_center_freq`, the centre
- * DSD-neo tuned the radio to.
+ * DSD-neo tuned the radio to; on a raw I/Q stream the receiver frequency its spec names (FREQ), or 0 when it names
+ * none, which the engine puts there when the stream starts (issue #743).
  *
  * Off a radio input it is 0, rigctl on an audio input included: `rtlsdr_center_freq` holds a made-up 850 MHz default
  * until DSD-neo tunes the peer (initOpts()), the legacy rigctl `-Y` scan never writes it, and a frequency changed on the
@@ -1274,6 +1281,7 @@ dsd_opts_source_uses_effective_input_rate(const dsd_opts* opts) {
             || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)
+            || dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) {
             return 0;
         }

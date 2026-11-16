@@ -324,6 +324,24 @@ uint32_t dsd_input_dsp_stream_target_hz(int dsp_bw_khz, int frame_tetra);
 dsd_input_dsp_rate dsd_input_dsp_rate_planned(uint32_t stream_rate_hz, int dsp_bw_khz, int frame_tetra);
 
 /**
+ * @brief Whether a raw I/Q stream named by @p audio_in_dev can run at the DSP bandwidth @p dsp_bw_khz, with TETRA on
+ *        when @p frame_tetra: the spec reads, and the general plan reaches the target from its RATE.
+ *
+ * The check a stream's start, and every change that re-plans a running stream through a restart (a mode, a DSP
+ * bandwidth, a config), makes before anything stops (issue #743): the same plan the stream opens on, asked dry.
+ *
+ * @param audio_in_dev The `iqtcp:` or `iqudp:` spec.
+ * @param dsp_bw_khz   The DSP bandwidth the stream would run at.
+ * @param frame_tetra  Nonzero when TETRA would be on.
+ * @param out_rate_hz  Receives the DSP rate the plan lands on (0 on failure; may be NULL).
+ * @param why          Receives the spec parser's or the planner's reason on failure (may be NULL).
+ * @param why_size     Capacity of @p why.
+ * @return 0 when the stream can run there, -1 when it cannot.
+ */
+int dsd_input_dsp_stream_plan_check(const char* audio_in_dev, int dsp_bw_khz, int frame_tetra, uint32_t* out_rate_hz,
+                                    char* why, size_t why_size);
+
+/**
  * @brief dsd_analog_width_check() at a DSP rate that @p source (dsd_analog_rate_source) sets.
  *
  * Accepts exactly what dsd_analog_width_check() accepts and words every refusal the same, apart from the fix a width

@@ -491,7 +491,9 @@ typedef enum DSD_ATTR_PACKED {
     DSDCFG_INPUT_FILE,
     DSDCFG_INPUT_TCP,
     DSDCFG_INPUT_UDP,
-    DSDCFG_INPUT_AIRSPY
+    DSDCFG_INPUT_AIRSPY,
+    DSDCFG_INPUT_IQTCP, /* a raw I/Q stream dsd-neo connects to over TCP (issue #743) */
+    DSDCFG_INPUT_IQUDP  /* a raw I/Q stream dsd-neo receives over UDP (issue #743) */
 } dsdneoUserInputSource;
 
 typedef enum DSD_ATTR_PACKED {
@@ -582,6 +584,14 @@ typedef struct dsdneoUserConfig {
     int tcp_port;
     char udp_addr[64];
     int udp_port;
+    /* A raw I/Q stream (source = "iqtcp" | "iqudp", issue #743): the spec's fields, iqtcp:iq_host:iq_port:iq_rate:
+       iq_format[:iq_freq] (dsd_user_config_radio_input_spec()). iq_rate and iq_freq keep their text (Hz, or with a k or
+       M suffix; iq_freq also G), as rtl_freq does; the spec parser reads them. */
+    char iq_host[256];
+    int iq_port;
+    char iq_rate[32];
+    char iq_format[8];
+    char iq_freq[64];
     double input_warn_db;     /* low input-level advisory threshold in dBFS */
     int input_warn_db_is_set; /* distinguish explicit value from default */
 
@@ -852,7 +862,8 @@ int dsd_user_config_scanner_after(const dsdneoUserConfig* cfg, const dsd_opts* o
  *
  * What dsd_apply_user_config_to_opts() writes to opts->audio_in_dev for an `rtl` source with `rtl_freq`, an `rtltcp`
  * source with `rtltcp_host` ("rtl:dev:freq:gain:ppm:bw:sql:vol", "rtltcp:host:port[:freq:...]"), a `soapy` source
- * ("soapy" or "soapy:<soapy_args>") or an `airspy` source ("airspy"), with the values the config leaves out taken from
+ * ("soapy" or "soapy:<soapy_args>"), an `airspy` source ("airspy") or an `iqtcp` / `iqudp` source whose iq_* keys build
+ * a raw I/Q stream spec (dsd_user_config_iq_stream_input_spec()), with the values the config leaves out taken from
  * @p opts as the apply takes them. A caller compares it with the running input to know whether the apply reopens the
  * device, and which kind of device then sets the rate.
  *
@@ -860,6 +871,30 @@ int dsd_user_config_scanner_after(const dsdneoUserConfig* cfg, const dsd_opts* o
  *         sets a non-radio input (or on bad arguments).
  */
 int dsd_user_config_radio_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* out, size_t out_size);
+
+/**
+ * @brief Whether applying @p cfg's [input] sets the input device (opts->audio_in_dev): a `pulse`, `soapy` or `airspy`
+ *        source always, an `rtl` source with `rtl_freq`, an `rtltcp` one with `rtltcp_host`, a `file` one with
+ *        `file_path`, a `tcp` one with `tcp_host`, a `udp` one with `udp_addr`, and an `iqtcp` / `iqudp` one whose keys
+ *        build a spec. Otherwise the input stays as it was, and so does the [input] a save writes.
+ *
+ * @return 1 when it does, 0 otherwise (no [input], or NULL).
+ */
+int dsd_user_config_input_sets_device(const dsdneoUserConfig* cfg);
+
+/**
+ * @brief The raw I/Q stream spec an `iqtcp` or `iqudp` [input] builds (issue #743):
+ *        `iqtcp:iq_host:iq_port:iq_rate:iq_format[:iq_freq]` in its canonical form, which `-i` takes too.
+ *
+ * @param cfg      The config.
+ * @param out      Receives the spec.
+ * @param out_size Capacity of @p out.
+ * @param why      Receives the spec parser's reason, naming the field, when the keys build none (may be NULL).
+ * @param why_size Capacity of @p why.
+ * @return 0 when it builds one, -1 when the [input] is no stream source or its keys build no spec.
+ */
+int dsd_user_config_iq_stream_input_spec(const dsdneoUserConfig* cfg, char* out, size_t out_size, char* why,
+                                         size_t why_size);
 
 /**
  * @brief Whether @p cfg names a tuner gain: an `rtl_gain` key that was read (0 included, which is AGC), or a nonzero
@@ -1098,6 +1133,17 @@ void dsd_user_config_compose_trunk_scan_lists(const dsdneoUserConfig* cfg, dsd_t
  */
 int dsd_user_config_check_trunk_scan_startable(const dsdneoUserConfig* cfg, const dsdneoUserConfig* before, char* why,
                                                size_t why_size);
+
+/**
+ * @brief Turn off in a config each key an I/Q stream [input] cannot start beside (issue #743, D8).
+ *
+ * When @p cfg's [input] is a raw I/Q stream (iqtcp or iqudp), every key the stream's next-start rule refuses
+ * (dsd_user_config_check_trunk_scan_startable(): trunking, the -Y scanner, a trunk scan) is set to off, so the config
+ * passes that rule. Driven by the same rules. Any other [input] is left as it is. A session snapshot
+ * (dsd_snapshot_opts_to_user_config()) ends with it: a replay session that runs trunking or a scan beside the stream
+ * [input] it loaded saves that [input] with them off, a config the next start runs.
+ */
+void dsd_user_config_turn_off_beside_iq_stream(dsdneoUserConfig* cfg);
 
 #ifdef __cplusplus
 }
