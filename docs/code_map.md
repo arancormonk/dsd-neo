@@ -9018,12 +9018,14 @@ Key public headers:
     `dsd_input_level_publish()` replaces its stale RF level with a fresh producer snapshot before classifying
     warnings; with no fresh measurement it keeps the old level and warns about nothing. An I/Q replay in force
     (`dsd_opts_input_is_iq_replay()`) keeps every warning its capture calls for, so a paused replay prints the same
-    advisories in every run. PCM inputs keep the decoder's level. The warning and the terminal's level row give one
-    advice text, `dsd_input_level_advice()`: a replay's says its level was set when the capture was recorded (issue
-    #743 B8), a live radio's names its RF gain, an audio input's its volume. Tests: `IO_INPUT_LEVEL_METRICS`,
-    `CORE_INPUT_LEVEL`, `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`. CU8 moments keep 64-bit
-    totals while accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening reduces
-    its byte extrema in registers and maps the four clipping-edge values to one unsigned interval. These integer
+    advisories in every run. PCM inputs keep the decoder's level. A raw I/Q stream's level
+    (`DSD_INPUT_LEVEL_SOURCE_NET_IQ`, the sender's own samples per received block) counts as RF for all of this. The
+    warning and the terminal's level row give one advice text, `dsd_input_level_advice()`: a replay's says its level
+    was set when the capture was recorded (issue #743 B8), a stream's names the sending program, another radio's its RF
+    gain, an audio input's its volume. Tests: `IO_INPUT_LEVEL_METRICS`, `CORE_INPUT_LEVEL`,
+    `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`. CU8 moments keep 64-bit totals while
+    accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening reduces its byte
+    extrema in registers and maps the four clipping-edge values to one unsigned interval. These integer
     reductions leave both the sample values and the statistics exact (`DSP_SIMD_WIDEN`, `IO_INPUT_LEVEL_METRICS`).
   - USB identity and reset (`radio/rtl_usb_identity.{h,cpp}`, module-private, the only includer of `libusb.h`, which
     `cmake/arch_rules.cmake` enforces): which USB device a stalled dongle is, so a USB port reset reaches it and never a
@@ -9116,11 +9118,13 @@ Key public headers:
     callback queues `usb_recovery_pending` on `hop_m`; `controller_wait_for_retune_work()` takes it alone, ahead of a
     queued retune or PPM change, and `controller_process_usb_recovery()` runs `controller_stream_boundary(s, reason,
     device_op, ctx)` (`reason`: the gap's, `kStreamGap*`). An unset channel center fails before any device or gate
-    operation (`IO_RTL_CONTROL_EDGES`). Otherwise: `controller_begin_reconfigure()` (gate, capture hold, input
-    purge, pre mute), `device_op` (USB: `rtl_device_usb_recover_handle()`, then the published tuner gain), then on every
-    exit the retune tail (post mute, `controller_finalize_reconfigure()` with `DemodRetuneResetReason::StreamGap`, which
-    keeps the FLL and records no capture RESET of its own, post-reset mute, capture hold released); only after a
-    successful `device_op` the output ring is emptied with the generation moved, `rtl_stream_note_discontinuity()`
+    operation (`IO_RTL_CONTROL_EDGES`). Otherwise its core, `controller_stream_boundary_at()` (which a raw I/Q stream's
+    reader also runs, at its centre or 0 and with no retune mutes; see the raw I/Q stream backend below): the gate,
+    capture hold, input purge, pre mute, `device_op` (USB: `rtl_device_usb_recover_handle()`, then the published
+    tuner gain), then on every exit the retune tail (post mute, `controller_finalize_reconfigure()` with
+    `DemodRetuneResetReason::StreamGap`, which keeps the FLL and records no capture RESET of its own, post-reset mute,
+    capture hold released); only after a successful `device_op` the output ring is emptied with the generation
+    moved, `rtl_stream_note_discontinuity()`
     records the gap's RETUNE+RESET pair and moves the count, and `rtl_device_resume_stream()` restarts the producer; the
     gate ends last. `retune_reset_reason_from_name()` maps the gap reasons to `StreamGap` for a replay. A success posts
     `DSD_STREAM_NOTICE_USB_RECOVERED` (`<dsd-neo/runtime/stream_notice_hooks.h>`); app-control installs the sink at
@@ -9486,14 +9490,14 @@ Key public headers:
     `cfg_radio_reopen()` (`CFG_REOPEN_AT_REPLAY_RATE`) hold widths to the rate it will run at; the RR import's dry
     check is `rr_apply_check_iq_stream()`. A config's gain restarts no stream. Tests: `APP_COMMAND_QUEUE`
     (`test_stream_*`).
-  - No tuner (issue #743 B2, B9): every tuner setter of a replay device (frequency, sample rate, gain and nearest gain,
-    PPM, direct sampling, offset tuning, tuner bandwidth, bias tee, rtl_tcp autotune, xtal, test mode, IF gain)
-    returns `DSD_ERR_NOT_SUPPORTED` before it changes or caches anything, an unchanged value included
-    (`rtl_device_source_is_fixed()`); the getters report the capture. The stream's open asks a fixed source
-    (`radio_source_has_fixed_tuning()`) for none of them: no runtime controls, no initial gain (no "Setting RTL
-    Autogain."; the capture's gain is published), no PPM correction (the applied one is 0, and no line says the source
-    takes none), so nothing is logged as unsupported. Tests: `IO_RTL_CAPTURE_WRITES` (`capture_records_gain_mode`),
-    `IO_RTL_REPLAY_RETUNE_REJECT`.
+  - No tuner (issue #743 B2, B9): every tuner setter of a replay device, and of a raw I/Q stream's (frequency, sample
+    rate, gain and nearest gain, PPM, direct sampling, offset tuning, tuner bandwidth, bias tee, rtl_tcp autotune,
+    xtal, test mode, IF gain) returns `DSD_ERR_NOT_SUPPORTED` before it changes or caches anything, an unchanged value
+    included (`rtl_device_source_is_fixed()`); the getters report the capture (or the stream). The stream's open asks
+    a fixed source (`radio_source_has_fixed_tuning()`) for none of them: no runtime controls, no initial gain (no
+    "Setting RTL Autogain."; the capture's gain is published), no PPM correction (the applied one is 0, and no line
+    says the source takes none), so nothing is logged as unsupported. Tests: `IO_RTL_CAPTURE_WRITES`
+    (`capture_records_gain_mode`), `IO_RTL_REPLAY_RETUNE_REJECT`, `IO_NET_IQ_STREAM`.
 - Network I/Q input core (issue #743): `include/dsd-neo/io/iq_net.h`, `src/io/radio/iq_net_{format,rate,reader}.c`
   (private `iq_net_internal.h`), object target `dsd-neo_io_iq_net` folded into `dsd-neo_io_radio`; radio builds only
   (the header's declarations sit under `USE_RADIO`). The spec and the wire-format names and sizes are in every build:
@@ -9541,6 +9545,48 @@ Key public headers:
     streak; three consecutive windows strictly below 0.9x or strictly above 1.1x the rate, on the same side, warn once
     per connection (re-armed at a reconnect; a resume warms up again without re-arming).
   - Tests: `IO_IQ_NET` (C, loopback, every platform with radio support).
+- Raw I/Q stream backend (issue #743): `RTL_BACKEND_NET_IQ` in `rtl_device.cpp`, `RADIO_SOURCE_NET_IQ` in
+  `rtl_sdr_fm.cpp` (an `iqtcp:` / `iqudp:` spec, recognised first), the ingest in `src/io/radio/rtl_net_iq.{h,cpp}`
+  (private). A live, pushed, fixed source: `radio_source_has_fixed_tuning()` and `rtl_device_source_is_fixed()` take
+  it as they take a replay (every tuner setter `DSD_ERR_NOT_SUPPORTED`, an unchanged one included; no runtime
+  controls, initial gain, PPM, auto-PPM, autogain supervisor, rtl_tcp autotune or capture writer; `--iq-capture` is
+  refused at open), `rtl_device_control_unavailable()` is 0 for it, and a stream tune returns FAILED
+  (`RTL_STREAM_TUNE_FAILED`; a replay's stays DEFERRED). `stream_is_replay_active()` keeps every replay-only use;
+  `stream_is_net_iq_active()` / `stream_source_is_fixed()` (`RtlSdrInternals::source_class`, decided at prepare)
+  answer the backend name ("iq-stream"), the tune paths and the autogain gate.
+  - Open: `stream_open_prepare_net_config()` parses the spec and plans it as a virtual cf32 capture at RATE with FREQ
+    as its centre: `dsd_iq_plan_general_rate(DSD_IQ_PLAN_SOURCE_STREAM, RATE, dsd_input_dsp_target_hz(...))`, applied
+    with `dsd_iq_replay_apply_rate_plan()`; a RATE no chain reaches fails the open before a socket opens.
+    `opts->rtlsdr_center_freq` (the stream's copy) becomes FREQ, so an earlier input's centre never carries over. No
+    frequency is required and no capture-rate window applies. `controller_apply_replay_settings()` then runs the
+    chain as for a replay (no device programming, dongle rate = the DSP input rate, finalize at FREQ or, at 0, the
+    DSP half only), without the replay's space notification. `stream_open_size_net_input()`: centred I/Q
+    (`dongle.centered_iq = 1`, no Fs/4; `rtl_device_signal_rotation_hz()` 0, clip level the format's), an input ring
+    of 2 s at the DSP input rate in whole blocks plus one block (so whole-block writes stay aligned with its end), and
+    the demod's reserve capped at one block (`g_demod_input_reserve_floats`, 2N floats; every other source keeps
+    `MAXIMUM_BUF_LENGTH`). The device opens the input (TCP connects, UDP binds) on the decoder thread; the pipeline is
+    the demod thread and the reader (`stream_open_start_net_pipeline()`), no controller thread.
+  - Ingest, on the reader's thread: each received block's level (`DSD_INPUT_LEVEL_SOURCE_NET_IQ`: cu8 as bytes, cs8
+    x256 and cs16 as 16-bit samples, cs32/cf32 as floats) is published; the reader-side resampler
+    (`rtl_iq_resampler_open()`, the design a resampled replay uses: protected band 0.45 of the final DSP rate) takes
+    4096-sample slices; a one-block accumulator of `dsd_iq_live_block_samples()` writes whole blocks only. A block the
+    ring cannot take is dropped whole: producer drops, `input_ring_note_gap()`, `dsd_iq_net_reader_note_drop()`, no log
+    (queued samples, the resampler and the generation stay; a PCM input in front leaves the stream running this way).
+    `dsd_iq_net_reader_note_written()` follows each block written. KNOWN_LOSS discards the partial block, clears the
+    resampler and marks a gap; DISCONNECTED discards the partial block.
+  - Boundary: RECONNECT (a new TCP connection, a new UDP sender) and RESUME (samples after a stall) discard the
+    partial block and clear the resampler, then `controller_net_iq_boundary()` runs `controller_stream_boundary_at()`
+    on the reader thread with no lock held (gate, demod-idle wait, input purge, finalize with StreamGap at the centre in
+    force or the DSP half at 0, output cleared with the generation moved, `rtl_stream_note_discontinuity()` with
+    `RTL_STREAM_GAP_REASON_NET_RECONNECT` / `_NET_RESUME`, which `retune_reset_reason_from_name()` maps to `StreamGap`)
+    before the first sample after it is written. An input ring still empty after it lets the purge go itself: the
+    reader is its only producer, and a demod waiting for input would otherwise apply it to the blocks after the first.
+  - Availability: `rtl_device_has_stream()` is the reader's (`dsd_iq_net_reader_available()`): none while connecting
+    or reconnecting, or from a stall until the boundary ran and a block was written, so a frame read waiting for
+    samples gives way to a queued command only then. Restart = stop + start: a new device, a new connection.
+  - Tests: `IO_NET_IQ_STREAM` (C++, POSIX, the real stream against senders on loopback; the stall clock injected with
+    `rtl_net_iq_test_set_clock()`, blocks seen through `rtl_stream_test_set_live_block_hook()`), `IO_RTL_DEMOD_CONFIG`
+    (source matrix).
 
 Notes:
 

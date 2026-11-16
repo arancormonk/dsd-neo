@@ -83,6 +83,7 @@ if(DSD_HAS_RADIO)
             radio/rtl_demod_config.cpp
             radio/rtl_finite.cpp
             radio/rtl_metrics.cpp
+            radio/rtl_net_iq.cpp
             radio/rtl_perf.cpp
             radio/rtl_stream.cpp
             radio/rtl_stream_c.cpp

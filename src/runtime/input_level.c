@@ -78,7 +78,8 @@ dsd_input_level_source_is_rf(dsd_input_level_source source) {
         case DSD_INPUT_LEVEL_SOURCE_RTL_TCP_CU8:
         case DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16:
         case DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32:
-        case DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32: return 1;
+        case DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32:
+        case DSD_INPUT_LEVEL_SOURCE_NET_IQ: return 1;
         case DSD_INPUT_LEVEL_SOURCE_PCM:
         case DSD_INPUT_LEVEL_SOURCE_UNKNOWN:
         default: return 0;
@@ -523,6 +524,10 @@ dsd_input_level_advice(const dsd_input_level_snapshot* snapshot, int replay) {
         /* The capture fixed the level when it was recorded: nothing here can change it (B8). */
         return low ? "recorded at a low level; record with more gain next time"
                    : "recorded too strong; record with less gain next time";
+    }
+    if (snapshot->source == DSD_INPUT_LEVEL_SOURCE_NET_IQ) {
+        /* The sending program sets the level of the samples it sends. */
+        return low ? "raise the sending program's level if a signal is present" : "lower the sending program's level";
     }
     if (dsd_input_level_source_is_rf(snapshot->source)) {
         return low ? "raise RF gain if signal is present" : "lower RF gain or add filtering/attenuation";

@@ -520,6 +520,9 @@ dsd_input_level_advice(const dsd_input_level_snapshot* snapshot, int replay) { /
         return low ? "recorded at a low level; record with more gain next time"
                    : "recorded too strong; record with less gain next time";
     }
+    if (snapshot->source == DSD_INPUT_LEVEL_SOURCE_NET_IQ) {
+        return low ? "raise the sending program's level if a signal is present" : "lower the sending program's level";
+    }
     if (snapshot->source != DSD_INPUT_LEVEL_SOURCE_PCM) {
         return low ? "raise RF gain if signal is present" : "lower RF gain or add filtering/attenuation";
     }

@@ -2266,6 +2266,8 @@ typedef void (*rtl_stream_test_replay_block_fn)(const rtl_stream_test_replay_blo
 
 /* Install only while the stream is stopped. NULL removes the hook. */
 void rtl_stream_test_set_replay_block_hook(rtl_stream_test_replay_block_fn hook, void* ctx);
+/* The same for every block a live source's demod takes (issue #743), with only float_count and the segments set. */
+void rtl_stream_test_set_live_block_hook(rtl_stream_test_replay_block_fn hook, void* ctx);
 /* The demod discards the I/Q replay block that holds chunk @p sequence instead of processing it, as a controller gate
  * closing on it would; 0 disarms. Set while no replay runs. */
 void rtl_stream_test_replay_discard_chunk(uint64_t sequence);

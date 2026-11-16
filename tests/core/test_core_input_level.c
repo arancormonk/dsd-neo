@@ -585,7 +585,8 @@ test_live_radio_after_a_replay_reads_live_levels(void) {
 }
 
 /* B8: a replay's warning says its level was set when the capture was recorded, where nothing can change it, never
-   to move a tuner gain the replay does not have. It warns as its RF source does. */
+   to move a tuner gain the replay does not have; a raw I/Q stream's names the program that sends it. Both warn as
+   their RF sources do. */
 static void
 test_replay_and_stream_advice(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -610,8 +611,20 @@ test_replay_and_stream_advice(void) {
     assert(strstr(msg, "recorded at a low level; record with more gain next time") != NULL);
     assert(strcmp(dsd_input_level_advice(&low.level, 0), "raise RF gain if signal is present") == 0);
 
-    low.level.status = DSD_INPUT_LEVEL_OK;
-    assert(dsd_input_level_advice(&low.level, 0) == NULL);
+    /* A stream counts as live RF (staleness, label, notify mask) and names its sender. */
+    assert(dsd_input_level_source_is_rf(DSD_INPUT_LEVEL_SOURCE_NET_IQ) == 1);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqtcp:127.0.0.1:1234:48k:cs16");
+    DSD_MEMSET(state, 0, sizeof(*state));
+    timed_level hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_NET_IQ, -15.0, -0.1, 0.2, 400);
+    publish(opts, state, &hot, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
+    assert(strstr(state->ui_msg, "lower the sending program's level") != NULL);
+    timed_level quiet = snapshot_for(DSD_INPUT_LEVEL_SOURCE_NET_IQ, -80.0, -40.0, 0.0, 1);
+    dsd_input_level_classify(&quiet.level, -40.0);
+    assert(strcmp(dsd_input_level_advice(&quiet.level, 0), "raise the sending program's level if a signal is present")
+           == 0);
+    quiet.level.status = DSD_INPUT_LEVEL_OK;
+    assert(dsd_input_level_advice(&quiet.level, 0) == NULL);
 
     free(state);
     free(opts);

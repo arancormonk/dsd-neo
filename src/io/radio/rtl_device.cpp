@@ -28,6 +28,8 @@
 #include <dsd-neo/dsp/iq_resampler.h>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/iq_capture.h>
+#include <dsd-neo/io/iq_net.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rate_plan.h>
@@ -69,6 +71,7 @@
 struct airspy_source;
 #include "rtl_capture_phase.h"
 #include "rtl_finite.h"
+#include "rtl_net_iq.h"
 #include "rtl_perf.h"
 #include "rtl_replay_device.h"
 #include "rtl_stream_shared.hpp"
@@ -339,6 +342,8 @@ enum RtlBackend : unsigned char {
     RTL_BACKEND_SOAPY = 2,
     RTL_BACKEND_IQ_REPLAY = 3,
     RTL_BACKEND_AIRSPY = 4,
+    /* Raw I/Q another program sends over the network (issue #743): a fixed source with no tuner (rtl_net_iq.h). */
+    RTL_BACKEND_NET_IQ = 5,
 };
 } // namespace
 
@@ -465,6 +470,8 @@ struct rtl_device {
        reopens the replay there (rtl_device_replay_checkpoint()). Written by the reader thread only, read once it is
        joined; at open, the point the replay opened at. */
     dsd_iq_replay_checkpoint replay_committed{};
+    /* The raw I/Q network input's ingest (RTL_BACKEND_NET_IQ): its socket reader, resampler and block writer. */
+    struct rtl_net_iq* net_iq = nullptr;
     /* SoapySDR backend */
     SoapySDR::Device* soapy_dev = nullptr;
     SoapySDR::Stream* soapy_stream = nullptr;
@@ -819,6 +826,11 @@ static const float kCu8TwoPassClipLevel = 0.992f;
 
 float
 rtl_device_signal_clip_level(const struct rtl_device* dev, int fs4_shift_active) {
+    if (dev && dev->backend == RTL_BACKEND_NET_IQ) {
+        /* The sender's format sets where its samples rail (dsd_iq_net_format_clip_level()). */
+        const dsd_iq_net_spec* spec = rtl_net_iq_spec(dev->net_iq);
+        return spec ? dsd_iq_net_format_clip_level(spec->format) : DSD_SIGNAL_CLIP_LEVEL_DEFAULT;
+    }
     const int cu8 = dev
                     && (dev->backend == RTL_BACKEND_USB || dev->backend == RTL_BACKEND_TCP
                         || (dev->backend == RTL_BACKEND_IQ_REPLAY && dev->replay_cfg.format == DSD_IQ_FORMAT_CU8));
@@ -836,6 +848,10 @@ rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shift_active
         /* The shift the ingest applies (the replay conversions rotate on this flag), at the capture's rate, which its
            events never change (the reader refuses a file whose events do), ahead of its resampler. */
         return dev->replay_cfg.fs4_shift_enabled ? (int32_t)(dev->replay_initial_sample_rate_hz / 4U) : 0;
+    }
+    if (dev && dev->backend == RTL_BACKEND_NET_IQ) {
+        /* The sender's samples are centred: nothing rotates them. */
+        return 0;
     }
     return fs4_shift_active ? (int32_t)(rate_hz / 4U) : 0;
 }
@@ -8644,6 +8660,9 @@ rtl_device_print_offset_capability(struct rtl_device* dev) {
         DSD_FPRINTF(stderr, "IQ replay: offset tuning capability query is not applicable.\n");
         return;
     }
+    if (dev->backend == RTL_BACKEND_NET_IQ) {
+        return;
+    }
     if (dev->backend == RTL_BACKEND_SOAPY) {
         DSD_FPRINTF(stderr,
                     "SoapySDR: offset tuning not implemented in this backend; using fs/4 shift fallback path.\n");
@@ -9716,43 +9735,49 @@ rtl_device_init_iq_replay_backend_state(struct rtl_device* dev, const dsd_iq_rep
     }
 }
 
+int
+rtl_iq_resampler_open(const char* who, const char* source_noun, uint32_t source_hz, uint32_t dsp_in_hz,
+                      uint64_t final_dsp_hz, size_t max_in, struct dsd_iq_resampler** out) {
+    *out = nullptr;
+    if (dsp_in_hz == source_hz) {
+        return 0;
+    }
+    if (source_hz > INT_MAX || dsp_in_hz > INT_MAX || final_dsp_hz == 0U || final_dsp_hz > INT_MAX) {
+        LOG_ERROR("%s: cannot resample %u Hz to %u Hz.\n", who, (unsigned)source_hz, (unsigned)dsp_in_hz);
+        return -1;
+    }
+    dsd_iq_resampler* r = static_cast<dsd_iq_resampler*>(malloc(sizeof(dsd_iq_resampler)));
+    if (!r) {
+        LOG_ERROR("%s: no memory for the resampler.\n", who);
+        return -1;
+    }
+    dsd_iq_resampler_init(r);
+    const int protect_hz = (int)(0.45 * (double)final_dsp_hz);
+    const int rc = dsd_iq_resampler_configure(r, (int)source_hz, (int)dsp_in_hz, protect_hz, max_in > 0U ? max_in : 1U);
+    if (rc != DSD_IQ_RESAMPLER_OK) {
+        LOG_ERROR("%s: cannot resample %u Hz to %u Hz: %s.\n", who, (unsigned)source_hz, (unsigned)dsp_in_hz,
+                  dsd_iq_resampler_status_text(rc));
+        free(r);
+        return -1;
+    }
+    LOG_INFO("%s: resampling the %u Hz %s to %u Hz (L/M=%d/%d, %+.2f ppm, %d taps per phase, group delay %.2f ms).\n",
+             who, (unsigned)source_hz, source_noun, (unsigned)dsp_in_hz, r->L, r->M,
+             dsd_iq_resampler_ratio_error_ppm(r), r->taps_per_phase, 1000.0 * dsd_iq_resampler_group_delay_seconds(r));
+    *out = r;
+    return 0;
+}
+
 /* Make the resampler a replay planned from @p capture_hz to @p dsp_in_hz needs (issue #701): none at equal rates. Its
  * protected band is 0.45 of the final DSP rate, the demod rate before post_downsample. */
 static int
 replay_open_resampler(struct rtl_device* dev, uint32_t capture_hz, uint32_t dsp_in_hz,
                       const dsd_iq_replay_config* cfg) {
-    if (dsp_in_hz == capture_hz) {
-        return 0;
-    }
     const uint64_t final_dsp_hz =
         (uint64_t)cfg->demod_rate_hz * (cfg->post_downsample > 0U ? cfg->post_downsample : 1U);
-    if (capture_hz > INT_MAX || dsp_in_hz > INT_MAX || final_dsp_hz == 0U || final_dsp_hz > INT_MAX) {
-        LOG_ERROR("IQ replay: cannot resample %u Hz to %u Hz.\n", (unsigned)capture_hz, (unsigned)dsp_in_hz);
-        return -1;
-    }
-    dsd_iq_resampler* r = static_cast<dsd_iq_resampler*>(malloc(sizeof(dsd_iq_resampler)));
-    if (!r) {
-        LOG_ERROR("IQ replay: no memory for the resampler.\n");
-        return -1;
-    }
-    dsd_iq_resampler_init(r);
-    const int protect_hz = (int)(0.45 * (double)final_dsp_hz);
     const size_t max_in = dsd_iq_replay_chunk_bytes_for(cfg->format, capture_hz, dsp_in_hz)
                           / dsd_iq_sample_format_alignment_bytes(cfg->format);
-    const int rc =
-        dsd_iq_resampler_configure(r, (int)capture_hz, (int)dsp_in_hz, protect_hz, max_in > 0U ? max_in : 1U);
-    if (rc != DSD_IQ_RESAMPLER_OK) {
-        LOG_ERROR("IQ replay: cannot resample %u Hz to %u Hz: %s.\n", (unsigned)capture_hz, (unsigned)dsp_in_hz,
-                  dsd_iq_resampler_status_text(rc));
-        free(r);
-        return -1;
-    }
-    LOG_INFO("IQ replay: resampling the %u Hz capture to %u Hz (L/M=%d/%d, %+.2f ppm, %d taps per phase, group delay "
-             "%.2f ms).\n",
-             (unsigned)capture_hz, (unsigned)dsp_in_hz, r->L, r->M, dsd_iq_resampler_ratio_error_ppm(r),
-             r->taps_per_phase, 1000.0 * dsd_iq_resampler_group_delay_seconds(r));
-    dev->replay_resampler = r;
-    return 0;
+    return rtl_iq_resampler_open("IQ replay", "capture", capture_hz, dsp_in_hz, final_dsp_hz, max_in,
+                                 &dev->replay_resampler);
 }
 
 int
@@ -9890,6 +9915,39 @@ rtl_device_create_iq_replay(const dsd_iq_replay_config* cfg, struct input_ring_s
     return dev;
 }
 
+struct rtl_device*
+rtl_device_create_net_iq(const struct rtl_net_iq_config* cfg, struct input_ring_state* input_ring) {
+    if (!cfg || !input_ring) {
+        return NULL;
+    }
+    struct rtl_device* dev = static_cast<rtl_device*>(calloc(1, sizeof(struct rtl_device)));
+    if (!dev) {
+        return NULL;
+    }
+    if (rtl_device_init_common_state(dev) != 0) {
+        free(dev);
+        return nullptr;
+    }
+    dev->backend = RTL_BACKEND_NET_IQ;
+    dev->dev_index = -1;
+    dev->input_ring = input_ring;
+    /* What the sender says it sends: its centre (0 when unknown) and its own rate, ahead of the resampler. */
+    dev->freq = cfg->spec.freq_hz;
+    dev->rate = cfg->spec.rate_hz;
+    dev->net_iq = rtl_net_iq_create(cfg, input_ring);
+    if (!dev->net_iq) {
+        rtl_device_cleanup_common_state(dev);
+        free(dev);
+        return NULL;
+    }
+    return dev;
+}
+
+struct rtl_net_iq*
+rtl_device_net_iq(const struct rtl_device* dev) {
+    return (dev && dev->backend == RTL_BACKEND_NET_IQ) ? dev->net_iq : nullptr;
+}
+
 static void
 rtl_device_signal_replay_forced_stop(struct rtl_device* dev) {
     if (!dev || dev->backend != RTL_BACKEND_IQ_REPLAY) {
@@ -9988,6 +10046,11 @@ rtl_device_close_backend_resources(struct rtl_device* dev) {
         replay_free_resampler(dev);
         dsd_iq_replay_config_clear(&dev->replay_cfg);
     }
+    if (dev->backend == RTL_BACKEND_NET_IQ) {
+        /* Its reader is joined: the socket closes and the buffers go. */
+        rtl_net_iq_destroy(dev->net_iq);
+        dev->net_iq = nullptr;
+    }
 }
 
 static void
@@ -10025,6 +10088,9 @@ rtl_device_destroy(struct rtl_device* dev) {
             dsd_thread_join(dev->thread);
             dev->thread_started = 0;
         }
+    } else if (dev->backend == RTL_BACKEND_NET_IQ) {
+        rtl_net_iq_stop(dev->net_iq);
+        dev->thread_started = 0;
     } else if (dev->thread_started) {
         rtl_device_request_thread_stop(dev);
         rtl_progress_monitor_stop(dev);
@@ -10360,12 +10426,12 @@ rtl_usb_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db) {
     return 0;
 }
 
-/* A device whose samples come from a source nothing here tunes (an I/Q replay): each tuner setter refuses it with
- * DSD_ERR_NOT_SUPPORTED before it changes or caches anything, so a caller tells a control that is not there from one
- * that took. Its getters go on reporting what the source recorded. */
+/* A device whose samples come from a source nothing here tunes (an I/Q replay, or a raw I/Q stream another program
+ * sends): each tuner setter refuses it with DSD_ERR_NOT_SUPPORTED before it changes or caches anything, so a caller
+ * tells a control that is not there from one that took. Its getters go on reporting what the source recorded. */
 static inline bool
 rtl_device_source_is_fixed(const struct rtl_device* dev) {
-    return dev->backend == RTL_BACKEND_IQ_REPLAY;
+    return dev->backend == RTL_BACKEND_IQ_REPLAY || dev->backend == RTL_BACKEND_NET_IQ;
 }
 
 /**
@@ -10557,6 +10623,10 @@ rtl_device_rate_plan_backend(const struct rtl_device* dev) {
         case RTL_BACKEND_SOAPY: return DSD_RATE_PLAN_BACKEND_SOAPY;
         case RTL_BACKEND_AIRSPY: return DSD_RATE_PLAN_BACKEND_AIRSPY;
         case RTL_BACKEND_IQ_REPLAY: return DSD_RATE_PLAN_BACKEND_REPLAY_EXACT;
+        case RTL_BACKEND_NET_IQ:
+            /* As the stream's general plan (dsd_iq_plan_general_rate()) names it. */
+            return rtl_net_iq_resample_info(dev->net_iq, NULL, NULL, NULL) ? DSD_RATE_PLAN_BACKEND_REPLAY_RESAMPLED
+                                                                           : DSD_RATE_PLAN_BACKEND_REPLAY_EXACT;
         default: return DSD_RATE_PLAN_BACKEND_RTL_USB;
     }
 }
@@ -10909,7 +10979,7 @@ rtl_device_get_tuner_gain(struct rtl_device* dev, int* out_tenth_db) {
     if (!out_tenth_db) {
         return -1;
     }
-    if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
+    if (dev && (dev->backend == RTL_BACKEND_AIRSPY || dev->backend == RTL_BACKEND_NET_IQ)) {
         return DSD_ERR_NOT_SUPPORTED;
     }
     if (!dev) {
@@ -11025,7 +11095,7 @@ rtl_device_supports_ppm(struct rtl_device* dev) {
     if (!dev) {
         return 0;
     }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+    if (rtl_device_source_is_fixed(dev)) {
         return 0;
     }
     if (dev->backend == RTL_BACKEND_SOAPY) {
@@ -11351,6 +11421,27 @@ rtl_usb_start_reader(struct rtl_device* dev) {
     return 0;
 }
 
+/* Start the reader of a backend other than USB (rtl_device_start_async()): 0, or nonzero when it did not start, its
+ * source is missing or the backend has no reader. */
+static int
+rtl_device_start_backend_reader(struct rtl_device* dev) {
+    switch (dev->backend) {
+        case RTL_BACKEND_AIRSPY: return rtl_airspy_start_stream(dev);
+        case RTL_BACKEND_TCP: dev->run.store(1); return dsd_thread_create(&dev->thread, tcp_thread_fn, dev);
+        case RTL_BACKEND_IQ_REPLAY:
+            if (!dev->replay_src) {
+                return -1;
+            }
+            dev->run.store(1, std::memory_order_release);
+            return replay_start_reader_thread(dev);
+        case RTL_BACKEND_SOAPY: return dev->soapy_dev ? soapy_start_reader(dev) : -1;
+        case RTL_BACKEND_NET_IQ:
+            /* The socket reader's own thread, which applies the session's floating-point mode first. */
+            return rtl_net_iq_start(dev->net_iq);
+        default: return -1;
+    }
+}
+
 /**
  * @brief Start asynchronous reading from the device.
  *
@@ -11383,30 +11474,7 @@ rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
     dev->buf_len = buf_len;
     rtl_reset_capture_state_on_stream_boundary(dev);
     dev->thread_started = 1;
-    int r = 0;
-    if (dev->backend == RTL_BACKEND_AIRSPY) {
-        r = rtl_airspy_start_stream(dev);
-    } else if (dev->backend == RTL_BACKEND_TCP) {
-        dev->run.store(1);
-        r = dsd_thread_create(&dev->thread, tcp_thread_fn, dev);
-    } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        if (!dev->replay_src) {
-            dev->thread_started = 0;
-            return -1;
-        }
-        dev->run.store(1, std::memory_order_release);
-        r = replay_start_reader_thread(dev);
-    } else if (dev->backend == RTL_BACKEND_SOAPY) {
-        if (!dev->soapy_dev) {
-            dev->thread_started = 0;
-            return -1;
-        }
-        r = soapy_start_reader(dev);
-    } else {
-        dev->thread_started = 0;
-        return -1;
-    }
-    if (r != 0) {
+    if (rtl_device_start_backend_reader(dev) != 0) {
         dev->thread_started = 0;
         dev->run.store(0);
         return -1;
@@ -11475,6 +11543,12 @@ rtl_device_stop_async(struct rtl_device* dev) {
     }
     if (!dev || !dev->thread_started) {
         return -1;
+    }
+    if (dev->backend == RTL_BACKEND_NET_IQ) {
+        /* The socket reader joins its own thread: it is woken from any wait within one slice. */
+        rtl_net_iq_stop(dev->net_iq);
+        dev->thread_started = 0;
+        return 0;
     }
     if (rtl_device_signal_reader_stop(dev) != 0) {
         return -1;
@@ -12074,13 +12148,19 @@ rtl_device_has_stream(const struct rtl_device* dev) {
         /* From the loss of the connection until a reconnected one is published. */
         return dev->tcp_connected.load(std::memory_order_acquire) ? 1 : 0;
     }
+    if (dev->backend == RTL_BACKEND_NET_IQ) {
+        /* While connected (a UDP sender locked) and delivering: none while it connects or reconnects, nor from a
+           stall until the boundary after it ran and its first block reached the ring (issue #743 G1). */
+        return rtl_net_iq_available(dev->net_iq);
+    }
     /* Every other backend has one while it runs. */
     return 1;
 }
 
 int
 rtl_device_control_unavailable(const struct rtl_device* dev) {
-    if (!dev || rtl_device_has_stream(dev)) {
+    /* A fixed source has no control to wait for: its setters refuse whatever the stream does. */
+    if (!dev || rtl_device_source_is_fixed(dev) || rtl_device_has_stream(dev)) {
         return 0;
     }
     return (dev->backend == RTL_BACKEND_TCP) ? RTL_DEVICE_ENOTCONN : RTL_DEVICE_EBUSY;
@@ -12678,7 +12758,7 @@ rtl_device_mute(struct rtl_device* dev, int bytes) {
     if (!dev) {
         return;
     }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+    if (dev->backend == RTL_BACKEND_IQ_REPLAY || dev->backend == RTL_BACKEND_NET_IQ) {
         return;
     }
     int mute_bytes = rtl_capture_align_u8_iq_bytes(bytes);

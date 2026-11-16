@@ -39,6 +39,8 @@ typedef enum DSD_ATTR_PACKED dsd_input_level_source {
     DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16 = 4,
     DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32 = 5,
     DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32 = 6,
+    /** Raw I/Q another program sends over the network (`iqtcp:` / `iqudp:`, issue #743): the sender's own samples. */
+    DSD_INPUT_LEVEL_SOURCE_NET_IQ = 7,
 } dsd_input_level_source;
 
 typedef struct dsd_input_level_snapshot {
@@ -131,8 +133,8 @@ int dsd_input_level_metrics_from_cf32(const float* samples, size_t count, dsd_in
  * @brief What to do about @p snapshot's level, or NULL for a status that needs nothing (OK, unknown).
  *
  * The one text the warning (dsd_input_level_format_advisory_for()) and the terminal's level row both show. An I/Q
- * replay (@p replay nonzero) says the level was fixed when the capture was recorded; a live radio names its RF gain,
- * and an audio input its volume.
+ * replay (@p replay nonzero) says the level was fixed when the capture was recorded; a raw I/Q stream names the program
+ * that sends it; another radio names its RF gain, and an audio input its volume.
  */
 const char* dsd_input_level_advice(const dsd_input_level_snapshot* snapshot, int replay);
 /** @brief dsd_input_level_format_advisory_for() for a live input (@p replay 0). */

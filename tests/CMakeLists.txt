@@ -19656,6 +19656,34 @@ if(DSD_HAS_RADIO)
         set_tests_properties(IO_RTL_TCP_RECONNECT PROPERTIES TIMEOUT 180)
     endif()
 
+    # The raw I/Q network input as a stream backend (issue #743): whole blocks at the demod, drop-on-full, the
+    # reconnect and resume boundaries, availability, prompt stops, the fixed-source contract, against senders on
+    # loopback.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_io_net_iq_stream
+            io/test_io_net_iq_stream.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_io_net_iq_stream
+            PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+        )
+        target_compile_definitions(
+            dsd-neo_test_io_net_iq_stream
+            PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        )
+        target_link_libraries(
+            dsd-neo_test_io_net_iq_stream
+            PRIVATE
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_io_iq
+                dsd-neo_core
+                ${LIBS}
+        )
+        add_test(NAME IO_NET_IQ_STREAM COMMAND dsd-neo_test_io_net_iq_stream)
+        set_tests_properties(IO_NET_IQ_STREAM PROPERTIES TIMEOUT 180)
+    endif()
+
     # Paced USB ingest benchmark (not a test); run under perf stat.
     add_executable(
         dsd-neo_bench_usb_ingest

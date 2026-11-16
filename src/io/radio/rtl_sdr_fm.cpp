@@ -39,6 +39,7 @@
 #include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/iq_capture.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rate_plan.h>
@@ -89,6 +90,7 @@
 #include "dsd-neo/dsp/fsk_modem.h"
 #include "rtl_auto_ppm.h"
 #include "rtl_finite.h"
+#include "rtl_net_iq.h"
 #include "rtl_perf.h"
 #include "rtl_ppm_request.h"
 #include "rtl_replay_device.h"
@@ -1304,10 +1306,11 @@ struct RtlSdrInternals {
     struct input_ring_state* input_ring = nullptr;
     struct udp_control** udp_ctrl_ptr = nullptr;
     const dsd_opts* opts = nullptr; /* snapshot for mode hints (P25p1/2, etc.) */
-    /* Whether `opts` names an I/Q replay, decided once when the stream is prepared: `opts` is the orchestrator's private
-       copy and its input name never changes under a running stream, while every decoder read and replay clock step
-       asks (stream_is_replay_active()). kStreamSourceUnknown on a stream no prepare filled in. */
-    int source_replay = 0;
+    /* Whether `opts` names an I/Q replay, a raw I/Q stream or a live device, decided once when the stream is prepared:
+       `opts` is the orchestrator's private copy and its input name never changes under a running stream, while every
+       decoder read and replay clock step asks (stream_is_replay_active(), stream_source_is_fixed()).
+       kStreamSourceUnknown on a stream no prepare filled in. */
+    int source_class = 0;
     /* The receive family a live switch (rtl_stream_request_analog_profile(), a retune profile) moved this stream
        onto, or kRxFamilyFromOptions while it still runs the family `opts` opened it on. `opts` is the orchestrator's
        private copy, taken before the open, so a decode-mode change on the decoder side never reaches it: once the
@@ -1398,6 +1401,16 @@ extern "C" void
 rtl_stream_test_set_replay_block_hook(rtl_stream_test_replay_block_fn hook, void* ctx) {
     g_test_replay_block_hook = hook;
     g_test_replay_block_ctx = ctx;
+}
+
+/* ... and the same for a live source's blocks (rtl_stream_test_set_live_block_hook()). */
+static rtl_stream_test_replay_block_fn g_test_live_block_hook = NULL;
+static void* g_test_live_block_ctx = NULL;
+
+extern "C" void
+rtl_stream_test_set_live_block_hook(rtl_stream_test_replay_block_fn hook, void* ctx) {
+    g_test_live_block_hook = hook;
+    g_test_live_block_ctx = ctx;
 }
 
 /* The chunk whose replay block the demod discards (rtl_stream_test_replay_discard_chunk()); 0: none. */
@@ -1557,12 +1570,14 @@ static std::mutex g_requested_ppm_state_mutex;
 
 static int radio_source_is_iq_replay(const dsd_opts* opts);
 
-/* RtlSdrInternals::source_replay */
+/* RtlSdrInternals::source_class */
 namespace {
 enum RtlStreamSource : int {
     kStreamSourceUnknown = 0,
     kStreamSourceLive = 1,
     kStreamSourceReplay = 2,
+    /* A raw I/Q stream another program sends (issue #743): live, but with a fixed channel. */
+    kStreamSourceNetIq = 3,
 };
 } // namespace
 
@@ -1572,10 +1587,24 @@ stream_is_replay_active(void) {
     if (!s || !s->opts) {
         return 0;
     }
-    if (s->source_replay != kStreamSourceUnknown) {
-        return (s->source_replay == kStreamSourceReplay) ? 1 : 0;
+    if (s->source_class != kStreamSourceUnknown) {
+        return (s->source_class == kStreamSourceReplay) ? 1 : 0;
     }
     return radio_source_is_iq_replay(s->opts) ? 1 : 0;
+}
+
+/* A raw I/Q stream runs (issue #743): live and pushed like a device, with nothing here to tune. */
+static inline int
+stream_is_net_iq_active(void) {
+    const struct RtlSdrInternals* s = g_stream;
+    return (s && s->opts && s->source_class == kStreamSourceNetIq) ? 1 : 0;
+}
+
+/* The running stream's tuning is fixed: an I/Q replay plays what its capture recorded, and a raw I/Q stream's sender
+ * picks its channel. */
+static inline int
+stream_source_is_fixed(void) {
+    return (stream_is_replay_active() || stream_is_net_iq_active()) ? 1 : 0;
 }
 
 static inline int
@@ -1802,6 +1831,8 @@ enum RadioSourceKind : uint8_t {
     RADIO_SOURCE_SOAPY = 2,
     RADIO_SOURCE_IQ_REPLAY = 3,
     RADIO_SOURCE_AIRSPY = 4,
+    /* Raw I/Q another program sends over the network (`iqtcp:` / `iqudp:`, issue #743). */
+    RADIO_SOURCE_NET_IQ = 5,
 };
 
 } // namespace
@@ -1811,6 +1842,10 @@ detect_radio_source(const dsd_opts* opts) {
     const char* dev = (opts) ? opts->audio_in_dev : NULL;
     if (!dev) {
         return RADIO_SOURCE_RTL_USB;
+    }
+    /* A raw I/Q stream's spec (`iqtcp:` / `iqudp:`). */
+    if (dsd_opts_audio_in_dev_is_iqtcp_spec(dev) || dsd_opts_audio_in_dev_is_iqudp_spec(dev)) {
+        return RADIO_SOURCE_NET_IQ;
     }
     if ((strcmp(dev, "rtltcp") == 0) || (strncmp(dev, "rtltcp:", 7) == 0)) {
         return RADIO_SOURCE_RTL_TCP;
@@ -1842,18 +1877,18 @@ radio_source_is_iq_replay(const dsd_opts* opts) {
     return detect_radio_source(opts) == RADIO_SOURCE_IQ_REPLAY;
 }
 
-/* A source nothing here tunes (an I/Q replay): its device refuses every tuner setter (rtl_device_set_frequency()), so
-   the stream's open asks it for none of them. */
+/* A source nothing here tunes (an I/Q replay, a raw I/Q stream): its device refuses every tuner setter
+   (rtl_device_set_frequency()), so the stream's open asks it for none of them. */
 static int
 radio_source_has_fixed_tuning(RadioSourceKind kind) {
-    return kind == RADIO_SOURCE_IQ_REPLAY ? 1 : 0;
+    return (kind == RADIO_SOURCE_IQ_REPLAY || kind == RADIO_SOURCE_NET_IQ) ? 1 : 0;
 }
 
 static int
 radio_source_is_rtl_family(const dsd_opts* opts) {
     RadioSourceKind kind = detect_radio_source(opts);
     return (kind == RADIO_SOURCE_RTL_USB || kind == RADIO_SOURCE_RTL_TCP || kind == RADIO_SOURCE_SOAPY
-            || kind == RADIO_SOURCE_IQ_REPLAY || kind == RADIO_SOURCE_AIRSPY)
+            || kind == RADIO_SOURCE_IQ_REPLAY || kind == RADIO_SOURCE_AIRSPY || kind == RADIO_SOURCE_NET_IQ)
                ? 1
                : 0;
 }
@@ -1880,6 +1915,7 @@ rtl_perf_source_name(void) {
         case RADIO_SOURCE_AIRSPY: return "airspy";
         case RADIO_SOURCE_SOAPY: return "soapy";
         case RADIO_SOURCE_IQ_REPLAY: return "iq_replay";
+        case RADIO_SOURCE_NET_IQ: return "iq_stream";
         case RADIO_SOURCE_RTL_USB:
         default: return "rtl";
     }
@@ -2437,7 +2473,9 @@ retune_reset_reason_from_name(const char* reason) {
         return DemodRetuneResetReason::CqpskReacquire;
     }
     if (strcmp(reason, RTL_STREAM_GAP_REASON_USB_RECOVERY) == 0
-        || strcmp(reason, RTL_STREAM_GAP_REASON_TCP_RECONNECT) == 0) {
+        || strcmp(reason, RTL_STREAM_GAP_REASON_TCP_RECONNECT) == 0
+        || strcmp(reason, RTL_STREAM_GAP_REASON_NET_RECONNECT) == 0
+        || strcmp(reason, RTL_STREAM_GAP_REASON_NET_RESUME) == 0) {
         return DemodRetuneResetReason::StreamGap;
     }
     return DemodRetuneResetReason::FrequencyRetune;
@@ -3814,6 +3852,42 @@ demod_replay_input_or_flush(void) {
     }
 }
 
+/* The most floats one demod block reserves from the input ring: MAXIMUM_BUF_LENGTH, or one whole block for a raw I/Q
+ * stream (issue #743), whose reader writes whole blocks of dsd_iq_live_block_samples(), so every block the demod takes
+ * is exactly one of them however the network delivered it, and its per-block decisions run on a replay's grid. Set by
+ * each stream open before its demod starts. */
+static std::atomic<size_t> g_demod_input_reserve_floats{(size_t)MAXIMUM_BUF_LENGTH};
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The block the demod just took, to the replay or live block hook a test installed. */
+static void
+demod_report_test_block(const DemodInputSpan* span) {
+    if (g_test_replay_block_hook && span->replay) {
+        rtl_stream_test_replay_block block = {};
+        block.sequence = span->chunk.sequence;
+        block.submit_gen = span->chunk.submit_gen;
+        block.media_start_ns = span->chunk.media_start_ns;
+        block.media_end_ns = span->chunk.media_end_ns;
+        block.have_input_level = span->chunk.have_input_level;
+        block.float_count = span->reserved_count;
+        block.p1 = span->ring_p1;
+        block.n1 = span->ring_n1;
+        block.p2 = span->ring_p2;
+        block.n2 = span->ring_n2;
+        g_test_replay_block_hook(&block, g_test_replay_block_ctx);
+    }
+    if (g_test_live_block_hook && !span->replay) {
+        rtl_stream_test_replay_block block = {};
+        block.float_count = span->reserved_count;
+        block.p1 = span->ring_p1;
+        block.n1 = span->ring_n1;
+        block.p2 = span->ring_p2;
+        block.n2 = span->ring_n2;
+        g_test_live_block_hook(&block, g_test_live_block_ctx);
+    }
+}
+#endif
+
 static int
 demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
     demod_input_span_init(span);
@@ -3823,8 +3897,8 @@ demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
     if (!demod_replay_input_or_flush()) {
         return 0;
     }
-    span->got = input_ring_read_reserve(&input_ring, static_cast<size_t>(MAXIMUM_BUF_LENGTH), &span->ring_p1,
-                                        &span->ring_n1, &span->ring_p2, &span->ring_n2);
+    span->got = input_ring_read_reserve(&input_ring, g_demod_input_reserve_floats.load(std::memory_order_relaxed),
+                                        &span->ring_p1, &span->ring_n1, &span->ring_p2, &span->ring_n2);
     if (span->got <= 0) {
         return 0;
     }
@@ -3842,20 +3916,7 @@ demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
     RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE, span->reserved_count);
     RTL_LIVE_TEST_BLOCK_TAKEN(span->replay);
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
-    if (g_test_replay_block_hook && span->replay) {
-        rtl_stream_test_replay_block block = {};
-        block.sequence = span->chunk.sequence;
-        block.submit_gen = span->chunk.submit_gen;
-        block.media_start_ns = span->chunk.media_start_ns;
-        block.media_end_ns = span->chunk.media_end_ns;
-        block.have_input_level = span->chunk.have_input_level;
-        block.float_count = span->reserved_count;
-        block.p1 = span->ring_p1;
-        block.n1 = span->ring_n1;
-        block.p2 = span->ring_p2;
-        block.n2 = span->ring_n2;
-        g_test_replay_block_hook(&block, g_test_replay_block_ctx);
-    }
+    demod_report_test_block(span);
 #endif
     return 1;
 }
@@ -4219,10 +4280,10 @@ rtl_stream_test_autogain_supervised_blocks(void) {
 
 static void
 demod_autogain_update(const struct demod_state* d, float input_mean_abs, float input_max_abs) {
-    /* An I/Q replay has no tuner gain to adjust, and the supervisor's hold and throttle windows run on real time: under
-     * replay it would only log adjustments on a wall-clock cadence. It stays out of a replay whatever raised the flag
-     * (stream open keeps it down there; a menu toggle or a retune profile can still raise it). */
-    if (stream_is_replay_active()) {
+    /* An I/Q replay or a raw I/Q stream has no tuner gain to adjust, and the supervisor's hold and throttle windows run
+     * on real time: under replay it would only log adjustments on a wall-clock cadence. It stays out of either whatever
+     * raised the flag (stream open keeps it down there; a menu toggle or a retune profile can still raise it). */
+    if (stream_source_is_fixed()) {
         return;
     }
     DemodAutogainState& st = demod_autogain_state();
@@ -6833,16 +6894,63 @@ static RtlTestHook<int> g_test_stream_boundary_probe;
 #define STREAM_BOUNDARY_TEST_STEP(step) ((void)0)
 #endif
 
+/* The core of a stream boundary (controller_stream_boundary(), and a raw I/Q stream's reconnect or resume, issue #743),
+ * on @p center_hz, which may be 0 for a source whose centre is unknown: the reconfigure gate parks the demod and holds
+ * the capture, @p device_op(@p ctx) (none: NULL) replaces the device's stream, and the tail a same-centre retune runs
+ * follows on every exit: finalize (input purge, demod reset with StreamGap, no capture RESET of its own; at centre 0
+ * the rate-chain half only, as a replay with no known centre opens), capture hold released. @p retune_mutes arms the
+ * device's pre, post and post-reset mutes around it, which a tuner needs to settle and a source with none (a raw I/Q
+ * stream) skips. Only when @p device_op succeeded: the output generation moves and the output ring is emptied, the gap
+ * is noted as @p reason (its RETUNE and RESET capture events, then the discontinuity count the decoder checks), and
+ * only then may the producer deliver again, so no sample from after the gap can be read before the count moved. The
+ * gate ends last. Entered with no lock held, from the controller thread or a producer that runs it itself. Returns
+ * @p device_op's result, else the producer's resume result (-ECANCELED once the device was stopped). */
+static int
+controller_stream_boundary_at(struct controller_state* s, uint32_t center_hz, const char* reason, int retune_mutes,
+                              int (*device_op)(void*), void* ctx) {
+    const int previous_complex_rate_hz = demod.complex_rate;
+    const dsd_opts* opts = g_stream ? g_stream->opts : NULL;
+    controller_enter_reconfigure_gate(s);
+    rtl_device_begin_capture_reconfigure(rtl_device_handle);
+    controller_request_input_purge();
+    if (retune_mutes) {
+        controller_arm_retune_mute("pre", 0);
+    }
+    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_GATE);
+    int rc = device_op ? device_op(ctx) : 0;
+    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_DEVICE_OP);
+    if (retune_mutes) {
+        controller_arm_retune_mute("post", 1);
+    }
+    if (center_hz != 0U) {
+        (void)controller_finalize_reconfigure(s, opts, center_hz, DemodRetuneResetReason::StreamGap, center_hz,
+                                              previous_complex_rate_hz, NULL);
+    } else {
+        (void)controller_finalize_dsp_chain(s, opts, 0U, 1, DemodRetuneResetReason::StreamGap, 0U,
+                                            previous_complex_rate_hz, NULL);
+    }
+    if (retune_mutes) {
+        controller_arm_retune_mute("post-reset", 1);
+    }
+    rtl_device_end_capture_reconfigure(rtl_device_handle);
+    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_TAIL);
+    if (rc == 0) {
+        rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
+        rtl_stream_note_discontinuity(reason);
+        STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_DISCONTINUITY);
+        rc = rtl_device_resume_stream(rtl_device_handle);
+        STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_RESUME);
+    }
+    controller_end_reconfigure(s);
+    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_END);
+    return rc;
+}
+
 /* A stream boundary on the same centre (issue #518 D1): the device's stream was lost and is replaced under the running
  * pipeline, a USB recovery's reset and reopen or an rtl_tcp reconnect, as @p reason (kStreamGap*) says. Runs on the
- * controller thread, which owns every retune, so the two never interleave. The reconfigure gate parks the demod and
- * holds the capture, @p device_op(@p ctx) replaces the device's stream, and the tail a same-centre retune runs follows
- * on every exit: post mute, finalize (input purge, demod reset with StreamGap, no capture RESET of its own), post-reset
- * mute, capture hold released. Only when @p device_op succeeded: the output generation moves and the output ring is
- * emptied, the gap is noted (its RETUNE and RESET capture events, then the discontinuity count the decoder checks), and
- * only then may the producer deliver again, so no sample from after the gap can be read before the count moved. The
- * gate ends last. Returns @p device_op's result, else the producer's resume result (-ECANCELED once the device was
- * stopped). */
+ * controller thread, which owns every retune, so the two never interleave: the boundary core
+ * (controller_stream_boundary_at()) on the centre in force, with the tuner's retune mutes. Refused (-EINVAL) with no
+ * centre applied. */
 static int
 controller_stream_boundary(struct controller_state* s, int reason, int (*device_op)(void*), void* ctx) {
     if (!s || !device_op) {
@@ -6852,27 +6960,27 @@ controller_stream_boundary(struct controller_state* s, int reason, int (*device_
     if (center_hz == 0U) {
         return -EINVAL;
     }
-    const int previous_complex_rate_hz = demod.complex_rate;
-    controller_begin_reconfigure(s);
-    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_GATE);
-    int rc = device_op(ctx);
-    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_DEVICE_OP);
-    controller_arm_retune_mute("post", 1);
-    (void)controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_hz,
-                                          DemodRetuneResetReason::StreamGap, center_hz, previous_complex_rate_hz, NULL);
-    controller_arm_retune_mute("post-reset", 1);
-    rtl_device_end_capture_reconfigure(rtl_device_handle);
-    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_TAIL);
-    if (rc == 0) {
-        rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
-        rtl_stream_note_discontinuity(stream_gap_reason_name(reason));
-        STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_DISCONTINUITY);
-        rc = rtl_device_resume_stream(rtl_device_handle);
-        STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_RESUME);
+    return controller_stream_boundary_at(s, center_hz, stream_gap_reason_name(reason), 1, device_op, ctx);
+}
+
+/* A raw I/Q stream's boundary (issue #743), on its reader's thread before the first sample after a reconnect, a new
+ * UDP sender or a resume after a stall (@p reason: RTL_STREAM_GAP_REASON_NET_*): the boundary core on the stream's
+ * centre (its FREQ, or 0), no device step, no retune mutes. The queued samples from before the gap go with the purge,
+ * and the decoder ends the reception at the moved count, as for an rtl_tcp reconnect. The reader is the ring's only
+ * producer, so an input ring still empty here holds nothing a purge would discard: it lets the purge go itself, which
+ * the demod, waiting for input, would otherwise take only after the first block after the gap and apply to the ones
+ * after it. */
+static void
+controller_net_iq_boundary(const char* reason, void* ctx) {
+    auto* s = static_cast<controller_state*>(ctx);
+    if (!s || !reason) {
+        return;
     }
-    controller_end_reconfigure(s);
-    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_END);
-    return rc;
+    (void)controller_stream_boundary_at(s, s->last_applied_freq_hz.load(std::memory_order_acquire), reason, 0, NULL,
+                                        NULL);
+    if (input_ring_used(&input_ring) == 0U) {
+        (void)g_ring_purge_pending.exchange(0, std::memory_order_acq_rel);
+    }
 }
 
 namespace {
@@ -8736,6 +8844,15 @@ stream_destroy_internals(void) {
 }
 
 static int
+stream_source_class_of(const dsd_opts* opts) {
+    switch (detect_radio_source(opts)) {
+        case RADIO_SOURCE_IQ_REPLAY: return kStreamSourceReplay;
+        case RADIO_SOURCE_NET_IQ: return kStreamSourceNetIq;
+        default: return kStreamSourceLive;
+    }
+}
+
+static int
 stream_prepare_internals(const dsd_opts* opts) {
     if (!opts) {
         return -1;
@@ -8756,7 +8873,7 @@ stream_prepare_internals(const dsd_opts* opts) {
     s->input_ring = &input_ring;
     s->udp_ctrl_ptr = &g_udp_ctrl;
     s->opts = opts;
-    s->source_replay = radio_source_is_iq_replay(opts) ? kStreamSourceReplay : kStreamSourceLive;
+    s->source_class = stream_source_class_of(opts);
     s->should_exit.store(0, std::memory_order_release);
     s->controller_thread_started.store(0, std::memory_order_release);
     s->demod_thread_started.store(0, std::memory_order_release);
@@ -9009,6 +9126,47 @@ stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, d
     return stream_open_plan_replay_rate(opts, replay_cfg, out_dsp_bw_hz);
 }
 
+/* A raw I/Q stream (issue #743) is planned as a virtual cf32 capture at its RATE with its FREQ as the centre (0 when
+ * unknown): the general rate plan (dsd_iq_plan_general_rate()) to the mode's target, which records no bandwidth, so
+ * the request in force or the mode preset sets it (dsd_input_dsp_target_hz()). The plan always lands on that target,
+ * the DSP bandwidth @p out_dsp_bw_hz the stream runs; a RATE no chain reaches fails the open with the planner's reason.
+ * The parsed spec is the device's to read again (stream_open_open_device_net()). */
+static int
+stream_open_prepare_net_config(dsd_opts* opts, dsd_iq_replay_config* cfg, int* cfg_loaded, int* out_dsp_bw_hz) {
+    dsd_iq_net_spec spec;
+    char err[256] = {0};
+    if (dsd_iq_net_spec_parse(opts->audio_in_dev, &spec, err, sizeof err) != 0) {
+        LOG_ERROR("%s.\n", err);
+        return -1;
+    }
+    DSD_MEMSET(cfg, 0, sizeof(*cfg));
+    cfg->container = DSD_IQ_REPLAY_CONTAINER_SIDECAR;
+    cfg->format = DSD_IQ_FORMAT_CF32;
+    DSD_SNPRINTF(cfg->capture_stage, sizeof cfg->capture_stage, "%s", "post_driver_cf32_pre_ring");
+    cfg->sample_rate_hz = spec.rate_hz;
+    cfg->center_frequency_hz = spec.freq_hz;
+    cfg->capture_center_frequency_hz = spec.freq_hz;
+    cfg->base_decimation = 1U;
+    cfg->post_downsample = 1U;
+    cfg->demod_rate_hz = spec.rate_hz;
+    *cfg_loaded = 1;
+    const int explicit_target = opts->rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT ? 1 : 0;
+    const uint32_t target_hz =
+        dsd_input_dsp_target_hz(opts->rtl_dsp_bw_khz, explicit_target, 0, opts->frame_tetra == 1);
+    dsd_iq_replay_rate_plan plan;
+    if (dsd_iq_plan_general_rate(DSD_IQ_PLAN_SOURCE_STREAM, spec.rate_hz, target_hz, &plan, err, sizeof err)
+            != DSD_IQ_OK
+        || dsd_iq_replay_apply_rate_plan(cfg, &plan) != DSD_IQ_OK) {
+        LOG_ERROR("I/Q stream: cannot run at the %u Hz DSP rate%s: %s.\n", (unsigned)target_hz,
+                  opts->frame_tetra == 1 ? " TETRA needs" : "", err[0] ? err : "no rate chain reaches it");
+        return -1;
+    }
+    /* The stream's centre is its FREQ: never the init default or a centre an earlier input left. */
+    opts->rtlsdr_center_freq = spec.freq_hz;
+    *out_dsp_bw_hz = (int)plan.target_dsp_hz;
+    return 0;
+}
+
 static void
 stream_open_reset_auto_ppm_state(const dsd_opts* opts) {
     if (!opts) {
@@ -9108,6 +9266,7 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
         LOG_ERROR("Failed to initialize input ring buffer.\n");
         return -1;
     }
+    g_demod_input_reserve_floats.store((size_t)MAXIMUM_BUF_LENGTH, std::memory_order_relaxed);
     /* A purge requested and never taken belongs to the stream that requested it: a stop can land between a RESET's or
        a live retune's request and the demod's or the replay reader's take. Left set, it would discard this stream's
        first input, a replay's chunk 1. The ring's discard generation starts again at input_ring_init(); the count of
@@ -9131,20 +9290,21 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
 
 /* The supervisor's on/off for the stream about to start, set before its workers run, so nothing a worker does first
    (the supervisor used to load its environment default on the first block it saw) writes over a setting made since.
-   An I/Q replay has no tuner gain to adjust (demod_autogain_update() stays out of it too), nor does an Airspy here. The
-   environment default holds under a manual gain too, where the supervisor walks the manual gain. */
+   An I/Q replay or a raw I/Q stream has no tuner gain to adjust (demod_autogain_update() stays out of them too), nor
+   does an Airspy here. The environment default holds under a manual gain too, where the supervisor walks the manual
+   gain. */
 static void
 stream_open_enable_default_autogain(const dsd_opts* opts, RadioSourceKind source_kind) {
-    const int capable =
-        !(source_kind == RADIO_SOURCE_IQ_REPLAY || (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)));
+    const int capable = !(radio_source_has_fixed_tuning(source_kind)
+                          || (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)));
     rtl_stream_open_tuner_autogain(capable);
 }
 
 static int
 stream_open_validate_scan_inputs(RadioSourceKind source_kind) {
-    /* An I/Q replay tunes nothing: its capture may not record a centre (a WAV with no auxi chunk and none in its name,
-       issue #701), and it runs all the same. */
-    if (controller.freq_len == 0 && source_kind != RADIO_SOURCE_IQ_REPLAY) {
+    /* An I/Q replay or a raw I/Q stream tunes nothing: its capture may not record a centre (a WAV with no auxi chunk and
+       none in its name, issue #701), nor a stream's spec name one (no FREQ), and it runs all the same. */
+    if (controller.freq_len == 0 && !radio_source_has_fixed_tuning(source_kind)) {
         LOG_ERROR("Please specify a frequency.\n");
         return -1;
     }
@@ -9232,6 +9392,31 @@ stream_open_open_device_replay(const dsd_iq_replay_config* replay_cfg, int repla
     return 0;
 }
 
+/* A raw I/Q stream's device (issue #743): the input opens here (TCP connects, UDP binds), and its reader resamples
+ * the stream to the DSP input rate @p cfg was planned to and runs the stream's boundary on a reconnect or a resume. */
+static int
+stream_open_open_device_net(const dsd_opts* opts, const dsd_iq_replay_config* cfg, int cfg_loaded) {
+    struct rtl_net_iq_config net_cfg = {};
+    if (!cfg_loaded || !cfg || dsd_iq_net_spec_parse(opts->audio_in_dev, &net_cfg.spec, NULL, 0) != 0) {
+        LOG_ERROR("I/Q stream: its rate plan is unavailable.\n");
+        return -1;
+    }
+    net_cfg.dsp_input_rate_hz = dsd_iq_replay_dsp_input_rate_hz(cfg);
+    net_cfg.final_dsp_rate_hz = cfg->demod_rate_hz * cfg->post_downsample;
+    net_cfg.on_boundary = controller_net_iq_boundary;
+    net_cfg.boundary_ctx = &controller;
+    rtl_device_handle = rtl_device_create_net_iq(&net_cfg, &input_ring);
+    if (!rtl_device_handle) {
+        return -1;
+    }
+    char spec_text[DSD_IQ_NET_SPEC_TEXT_MAX];
+    if (dsd_iq_net_spec_format(&net_cfg.spec, spec_text, sizeof spec_text) < 0) {
+        spec_text[0] = '\0';
+    }
+    LOG_INFO("Using I/Q stream source: %s.\n", spec_text);
+    return 0;
+}
+
 static int
 stream_open_open_device_soapy(const dsd_opts* opts) {
     const char* soapy_args = radio_source_soapy_args(opts);
@@ -9292,6 +9477,8 @@ stream_open_open_device(RadioSourceKind source_kind, const dsd_opts* opts, const
         rc = stream_open_open_device_rtltcp(opts);
     } else if (source_kind == RADIO_SOURCE_IQ_REPLAY) {
         rc = stream_open_open_device_replay(replay_cfg, replay_cfg_loaded);
+    } else if (source_kind == RADIO_SOURCE_NET_IQ) {
+        rc = stream_open_open_device_net(opts, replay_cfg, replay_cfg_loaded);
     } else if (source_kind == RADIO_SOURCE_AIRSPY) {
         rtl_device_handle = rtl_device_create_airspy(&opts->airspy, &input_ring);
         rc = rtl_device_handle ? 0 : -1;
@@ -9543,7 +9730,7 @@ stream_open_finalize_analog_channel(const dsd_opts* opts) {
  */
 static int
 stream_open_validate_device_capture_rate(RadioSourceKind source_kind) {
-    if (source_kind == RADIO_SOURCE_IQ_REPLAY || !rtl_device_handle) {
+    if (radio_source_has_fixed_tuning(source_kind) || !rtl_device_handle) {
         return 0;
     }
     int passes = rtl_downsample_passes_for_rate_in(demod.rate_in);
@@ -9608,12 +9795,16 @@ stream_open_apply_controller_settings(RadioSourceKind source_kind, const dsd_opt
     if (!opts) {
         return -1;
     }
-    if (source_kind == RADIO_SOURCE_IQ_REPLAY) {
+    if (radio_source_has_fixed_tuning(source_kind)) {
+        /* A fixed source's chain, with no device to program and no controller thread: a replay's planned chain, or a
+           raw I/Q stream's as a virtual cf32 capture. Only a replay's reader waits for room in the ring; a stream's
+           drops what a full ring cannot take. */
         if (!replay_cfg_loaded || controller_apply_replay_settings(&controller, opts, replay_cfg) != 0) {
-            LOG_ERROR("Failed to apply replay stream settings.\n");
+            LOG_ERROR("Failed to apply %s stream settings.\n",
+                      source_kind == RADIO_SOURCE_NET_IQ ? "I/Q stream" : "replay");
             return -1;
         }
-        input_ring_enable_space_notify(&input_ring, 1);
+        input_ring_enable_space_notify(&input_ring, source_kind == RADIO_SOURCE_IQ_REPLAY ? 1 : 0);
         return 0;
     }
     if (controller.freq_len == 0) {
@@ -9743,9 +9934,13 @@ stream_open_log_rate_chain_summary(int frame_tetra) {
     int replay_l = 0;
     int replay_m = 0;
     double replay_ppm = 0.0;
+    const struct rtl_net_iq* net_iq = rtl_device_net_iq(rtl_device_handle);
     if (rtl_device_replay_resample_info(rtl_device_handle, &replay_capture_hz, &replay_l, &replay_m, &replay_ppm)) {
         DSD_SNPRINTF(capture_text, sizeof capture_text, "%u Hz resampled to %u Hz (L/M=%d/%d, %+.2f ppm)",
                      (unsigned)replay_capture_hz, capture_hz, replay_l, replay_m, replay_ppm);
+    } else if (rtl_net_iq_resample_info(net_iq, &replay_l, &replay_m, &replay_ppm)) {
+        DSD_SNPRINTF(capture_text, sizeof capture_text, "%u Hz resampled to %u Hz (L/M=%d/%d, %+.2f ppm)",
+                     (unsigned)rtl_net_iq_spec(net_iq)->rate_hz, capture_hz, replay_l, replay_m, replay_ppm);
     } else {
         DSD_SNPRINTF(capture_text, sizeof capture_text, "%u Hz", capture_hz);
     }
@@ -9922,6 +10117,35 @@ stream_open_start_replay_pipeline(void) {
     return 0;
 }
 
+/* A raw I/Q stream runs the demod and the socket reader, which writes whole blocks and runs its own boundaries: no
+ * controller thread, no replay pacing. */
+static int
+stream_open_start_net_pipeline(void) {
+    if (stream_create_worker(&demod.thread, demod_thread_fn, &demod) != 0) {
+        LOG_ERROR("Failed to start the I/Q stream demod thread.\n");
+        return -1;
+    }
+    if (g_stream) {
+        stream_set_lifecycle_flag(g_stream->demod_thread_started, 1);
+    }
+    if (rtl_device_start_async(rtl_device_handle, (uint32_t)ACTUAL_BUF_LENGTH) != 0) {
+        LOG_ERROR("Failed to start the I/Q stream reader.\n");
+        if (g_stream) {
+            stream_set_lifecycle_flag(g_stream->should_exit, 1);
+        }
+        safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
+        dsd_thread_join(demod.thread);
+        if (g_stream) {
+            stream_set_lifecycle_flag(g_stream->demod_thread_started, 0);
+        }
+        return -1;
+    }
+    if (g_stream) {
+        stream_set_lifecycle_flag(g_stream->async_started, 1);
+    }
+    return 0;
+}
+
 static int
 stream_open_start_capture_threads(RadioSourceKind source_kind, const dsd_opts* opts) {
     if (source_kind == RADIO_SOURCE_RTL_TCP) {
@@ -9929,6 +10153,9 @@ stream_open_start_capture_threads(RadioSourceKind source_kind, const dsd_opts* o
     }
     if (source_kind == RADIO_SOURCE_IQ_REPLAY) {
         return stream_open_start_replay_pipeline();
+    }
+    if (source_kind == RADIO_SOURCE_NET_IQ) {
+        return stream_open_start_net_pipeline();
     }
     return start_threads_and_async();
 }
@@ -9941,6 +10168,12 @@ stream_open_validate_source_selection(dsd_opts* opts, RadioSourceKind source_kin
     opts->iq_replay_active = (source_kind == RADIO_SOURCE_IQ_REPLAY) ? 1 : 0;
     if (source_kind == RADIO_SOURCE_IQ_REPLAY && opts->iq_capture_requested) {
         LOG_ERROR("IQ replay cannot be combined with IQ capture in the same run.\n");
+        return -1;
+    }
+    if (source_kind == RADIO_SOURCE_NET_IQ && opts->iq_capture_requested) {
+        /* The capture writer cannot describe a stream with no known centre and gaps no event marks; the sending
+           program can record instead. */
+        LOG_ERROR("I/Q stream: --iq-capture cannot record this input; record it in the sending program.\n");
         return -1;
     }
     return 0;
@@ -10001,6 +10234,29 @@ stream_open_size_airspy_input(dsd_opts* opts) {
     return 0;
 }
 
+/* Seconds of samples at the DSP input rate a raw I/Q stream's input ring holds (issue #743 D6). */
+static const uint64_t kNetIqRingSeconds = 2U;
+
+/* A raw I/Q stream's input (issue #743): centred I/Q with no Fs/4 shift, an input ring that holds kNetIqRingSeconds at
+ * the DSP input rate @p dsp_in_hz in whole blocks, so a stream that falls behind drops blocks soon (drop-on-full)
+ * rather than build up seconds of latency, and a demod that takes one whole block at a time. The ring has one block of
+ * room more than it holds (it keeps one slot free), so whole-block writes stay aligned with its end. */
+static int
+stream_open_size_net_input(uint32_t dsp_in_hz) {
+    const uint64_t block = dsd_iq_live_block_samples(dsp_in_hz);
+    const uint64_t blocks = ((uint64_t)dsp_in_hz * kNetIqRingSeconds + block - 1U) / block;
+    const size_t block_floats = (size_t)block * 2U;
+    input_ring_destroy(&input_ring);
+    if (input_ring_init(&input_ring, (size_t)(blocks + 1U) * block_floats) != 0) {
+        LOG_ERROR("Failed to initialize the I/Q stream's input ring.\n");
+        return -1;
+    }
+    input_ring_enable_space_notify(&input_ring, 0);
+    dongle.centered_iq = 1;
+    g_demod_input_reserve_floats.store(block_floats, std::memory_order_relaxed);
+    return 0;
+}
+
 /* The tuner gain the stream opens with, written to the device (not an Airspy's, whose gains are its own, nor a fixed
  * source's, which has no tuner and reports the gain its capture recorded) and published. */
 static void
@@ -10028,9 +10284,10 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
                                      int replay_dsp_bw_hz) {
     stream_open_reset_auto_ppm_state(opts);
 
-    /* A replay runs the bandwidth its rate plan settled on (stream_open_plan_replay_rate()); opts keeps the request. */
-    rtl_dsp_bw_hz = (source_kind == RADIO_SOURCE_IQ_REPLAY && replay_dsp_bw_hz > 0) ? replay_dsp_bw_hz
-                                                                                    : opts->rtl_dsp_bw_khz * 1000;
+    /* A replay or a raw I/Q stream runs the bandwidth its rate plan settled on (stream_open_plan_replay_rate(),
+       stream_open_prepare_net_config()); opts keeps the request. */
+    rtl_dsp_bw_hz = (radio_source_has_fixed_tuning(source_kind) && replay_dsp_bw_hz > 0) ? replay_dsp_bw_hz
+                                                                                         : opts->rtl_dsp_bw_khz * 1000;
     if (stream_open_init_pipeline(opts, rtl_dsp_bw_hz) != 0) {
         return -1;
     }
@@ -10054,6 +10311,10 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (source_kind == RADIO_SOURCE_AIRSPY && stream_open_size_airspy_input(opts) != 0) {
         return -1;
     }
+    if (source_kind == RADIO_SOURCE_NET_IQ
+        && stream_open_size_net_input(dsd_iq_replay_dsp_input_rate_hz(replay_cfg)) != 0) {
+        return -1;
+    }
     if (stream_open_validate_device_capture_rate(source_kind) != 0) {
         return -1;
     }
@@ -10072,7 +10333,9 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
 
 static int
 stream_open_start_io_pipeline(const dsd_opts* opts, RadioSourceKind source_kind) {
-    if (source_kind != RADIO_SOURCE_IQ_REPLAY) {
+    /* A fixed source has no buffer to reset and records no capture (stream_open_validate_source_selection()). */
+    const int capture = !radio_source_has_fixed_tuning(source_kind);
+    if (capture) {
         (void)rtl_device_reset_buffer(rtl_device_handle);
         if (stream_open_capture_writer(opts, source_kind) != 0) {
             stream_abort_capture_writer();
@@ -10080,7 +10343,7 @@ stream_open_start_io_pipeline(const dsd_opts* opts, RadioSourceKind source_kind)
         }
     }
     if (stream_open_start_capture_threads(source_kind, opts) != 0) {
-        if (source_kind != RADIO_SOURCE_IQ_REPLAY) {
+        if (capture) {
             stream_abort_capture_writer();
         }
         return -1;
@@ -10132,7 +10395,11 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 
     g_replay_plan_in_force = ReplayPlanInForce{};
     g_replay_last_checkpoint_valid = 0;
-    if (stream_open_prepare_replay_config(opts, source_kind, &replay_cfg, &replay_cfg_loaded, &replay_dsp_bw_hz) != 0) {
+    const int prepared =
+        source_kind == RADIO_SOURCE_NET_IQ
+            ? stream_open_prepare_net_config(opts, &replay_cfg, &replay_cfg_loaded, &replay_dsp_bw_hz)
+            : stream_open_prepare_replay_config(opts, source_kind, &replay_cfg, &replay_cfg_loaded, &replay_dsp_bw_hz);
+    if (prepared != 0) {
         return -1;
     }
     if (stream_open_configure_pipeline_state(opts, source_kind, &replay_cfg, replay_cfg_loaded, replay_dsp_bw_hz)
@@ -13843,6 +14110,9 @@ rtl_stream_backend_name(void) {
     if (stream_is_replay_active()) {
         return "iq-replay";
     }
+    if (stream_is_net_iq_active()) {
+        return "iq-stream";
+    }
     if (g_stream && g_stream->opts) {
         if (g_stream->opts->rtltcp_enabled) {
             return "rtl_tcp";
@@ -13976,6 +14246,16 @@ rtl_stream_tune_impl(dsd_opts* opts, uint32_t frequency, uint64_t caller_token) 
         }
         return RTL_STREAM_TUNE_DEFERRED;
     }
+    if (stream_is_net_iq_active()) {
+        /* The sender picks the channel: nothing here retries a tune it cannot make (DEFERRED would be retried). */
+        static std::atomic<uint64_t> s_last_net_notice_ns{0};
+        const uint64_t now_ns = dsd_realtime_mono_ns();
+        if (now_ns > s_last_net_notice_ns.load(std::memory_order_acquire) + 1000000000ULL) {
+            s_last_net_notice_ns.store(now_ns, std::memory_order_release);
+            LOG_INFO("NOTICE: An I/Q stream cannot retune: change the channel in the sending program.\n");
+        }
+        return RTL_STREAM_TUNE_FAILED;
+    }
     if (auto_ppm_should_freeze_retunes() && dsd_rtl_stream_auto_ppm_training_active()) {
         rtl_stream_log_tune_warning(frequency, "auto_ppm_training");
         return RTL_STREAM_TUNE_DEFERRED;
@@ -14006,7 +14286,7 @@ rtl_stream_tune_impl(dsd_opts* opts, uint32_t frequency, uint64_t caller_token) 
 
 extern "C" int
 rtl_stream_tune_async(uint32_t frequency, uint64_t owner, uint32_t* ticket) {
-    if (!ticket || !owner || !frequency || !rtl_stream_context_active() || stream_is_replay_active()) {
+    if (!ticket || !owner || !frequency || !rtl_stream_context_active() || stream_source_is_fixed()) {
         return RTL_STREAM_TUNE_FAILED;
     }
     *ticket = schedule_manual_retune_tagged(frequency, owner);
@@ -14069,7 +14349,7 @@ dsd_rtl_stream_test_request_retune(long int frequency, int timeout_ms) {
     if (!g_stream) {
         return -2;
     }
-    if (stream_is_replay_active()) {
+    if (stream_source_is_fixed()) {
         return -1;
     }
 
@@ -15360,7 +15640,7 @@ struct RtlSourcePolicyMatrixOut {
 static int
 rtl_test_source_policy_args_valid(const RtlSourcePolicyMatrixOut* out, size_t count, const char* soapy_args,
                                   size_t args_size) {
-    return out && out->kind && out->rtltcp && out->soapy && out->replay && out->family && count >= 8U && out->names
+    return out && out->kind && out->rtltcp && out->soapy && out->replay && out->family && count >= 10U && out->names
            && out->names_size != 0U && soapy_args && args_size != 0U;
 }
 
@@ -15420,8 +15700,17 @@ rtl_stream_test_source_policy_matrix(int* out_kind, int* out_rtltcp, int* out_so
     }
 
     const char* specs[] = {
-        NULL,   "", "rtltcp", "rtltcp:127.0.0.1:1234", "soapy", "soapy:driver=rtlsdr", "iqreplay:/tmp/capture.iq.json",
-        "rtl:0"};
+        NULL,
+        "",
+        "rtltcp",
+        "rtltcp:127.0.0.1:1234",
+        "soapy",
+        "soapy:driver=rtlsdr",
+        "iqreplay:/tmp/capture.iq.json",
+        "rtl:0",
+        "iqtcp:127.0.0.1:1234:48000:cs16",
+        "iqudp:0.0.0.0:7355:48k:cu8:426.7M",
+    };
 
     struct RtlSdrInternals* prev_stream = g_stream;
     static RtlSdrInternals test_stream;
