@@ -10740,7 +10740,10 @@ Notes:
   reads the record fragment `pa_simple` keeps, and the queue behind it, in 32-frame reads until one waits for audio
   (more than 1 ms), that read included, and keeps the newest of it in the stream's carry (`struct pulse_input_carry`,
   allocated with the input stream), which `dsd_audio_read()` returns before the device's; the waiting read lasts until
-  the server's next record block (about one 100 ms fragment). There is no exact way through `pa_simple`:
+  the server's next record block (about one 100 ms fragment). It keeps as much as was captured from the mark to its
+  end, `keep_ns` plus the time it took, the waiting read included: the audio that read waited for was captured after
+  the mark. PortAudio and AAudio read only the snapshot they counted, with no wait, so audio captured while they read
+  is left in the stream. There is no exact way through `pa_simple`:
   `pa_simple_get_latency()` can read 0 on a sink monitor while the client holds a whole fragment, and
   `pa_simple_flush()` flushes the server side only, not the client's queue or the fragment `pa_simple` holds;
   `pa_stream_readable_size()` is exact but needs the input on the `pa_stream` API. A read of held data that is preempted
