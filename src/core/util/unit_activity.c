@@ -228,12 +228,13 @@ ua_scope_from_rxid(const dsd_received_identity* rx, dsd_ua_scope* out) {
     out->valid = 1U;
 }
 
-/* Copy @p in (any bytes) into zeroed @p out as a NUL-terminated UTF-8 string: up to its NUL, whole characters only
- * (dsd_utf8_whole_prefix_len()), cut to the field when it fills it. */
+/* Copy @p in (any bytes) into zeroed @p out as a NUL-terminated string: up to its NUL as it is (the view drops any
+ * byte that starts no character), or, when it fills the field, cut to whole characters (dsd_utf8_whole_prefix_len()). */
 static void
 ua_name_copy(char* out, size_t out_sz, const char* in, size_t in_sz) {
     const char* nul = memchr(in, '\0', in_sz);
-    const size_t len = dsd_utf8_whole_prefix_len(in, nul ? (size_t)(nul - in) : in_sz, out_sz - 1U);
+    const size_t whole = nul ? (size_t)(nul - in) : in_sz;
+    const size_t len = whole < out_sz ? whole : dsd_utf8_whole_prefix_len(in, whole, out_sz - 1U);
     DSD_MEMCPY(out, in, len);
 }
 
