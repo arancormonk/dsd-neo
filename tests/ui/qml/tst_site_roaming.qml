@@ -436,6 +436,20 @@ Item {
             compare(calls().switchStops, 1, "the call's end switches");
         }
 
+        // #786: the app left the foreground during the drain (the notice),
+        // then the host gave up the stop and Hill runs again: the notice,
+        // which said listening stopped, goes.
+        function test_07l_the_notice_goes_when_the_session_runs_again() {
+            qualifyB();
+            testContext.setForegroundEpoch(1);
+            tick(500);
+            compare(siteRoaming.recoveryNotice, "Roaming did not switch to Lake. Listening stopped.");
+            testContext.setLifecyclePhase(2);
+            compare(siteRoaming.recoveryNotice, "");
+            verify(!roamNotice().visible);
+            compare(decoderHost.sessionState, 2);
+        }
+
         function test_08_disable_during_stopping_leaves_listening_stopped_with_the_notice() {
             qualifyB();
             prefs.roamingEnabled = false;

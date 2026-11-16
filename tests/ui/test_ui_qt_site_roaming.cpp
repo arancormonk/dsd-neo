@@ -1567,6 +1567,33 @@ check_executor_end_precedence() {
     }
 }
 
+/* #786: the foreground loss cancels a switch during its drain, with Home's notice; the host then gives up the stop and
+ * shows the old session running again. The notice said listening stopped, so it goes. One whose session did stop
+ * stays. */
+void
+check_executor_notice_withdrawn() {
+    using Phase = dsd_qt::DecoderHost::SessionState;
+    const QString notice = QStringLiteral("Roaming did not switch to Lake. Listening stopped.");
+    {
+        Rig rig;
+        rig.qualifyB();
+        rig.host.epochValue = 1;
+        rig.tick(500);
+        check(rig.roaming.recoveryNotice() == notice, "notice: the foreground loss during the drain leaves it");
+        rig.host.setPhase(Phase::Running);
+        check(rig.roaming.recoveryNotice().isEmpty() && rig.roaming.recoveryUid().isEmpty(),
+              "notice: the session running again withdraws it");
+    }
+    {
+        Rig rig;
+        rig.qualifyB();
+        rig.host.epochValue = 1;
+        rig.tick(500);
+        rig.host.setPhase(Phase::Idle);
+        check(rig.roaming.recoveryNotice() == notice, "notice: a session that did stop keeps it");
+    }
+}
+
 /* Asked for a start out of turn (the session it leaves still stopping), no one asks again: the roam ends, with the
  * notice, rather than sit in its stop. */
 void
@@ -1792,6 +1819,7 @@ main(int argc, char** argv) {
     check_executor_stop_edges();
     check_executor_same_tick();
     check_executor_end_precedence();
+    check_executor_notice_withdrawn();
     check_executor_adopted_and_retune();
     check_executor_timer();
     check_executor_header_text();

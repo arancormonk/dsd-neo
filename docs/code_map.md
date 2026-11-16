@@ -14846,8 +14846,10 @@ Qt Quick frontend (`src/ui/qt`):
   command), roaming turned off, the foreground lost, then the rest (a revoked verdict, the checks before a step, a stop
   the host gave up on, a failed or refused start). Home's notice shows only when the session the roam left stays
   stopped (`leftStopped()`: Idle or Stopping) and the cause is not one the user's action or a card explains; a refusal
-  ("Could not switch to %1") stands only when its own cause is the strongest. Tests: `check_executor_end_precedence()`,
-  `tst_site_roaming.qml` `test_07j`.
+  ("Could not switch to %1") stands only when its own cause is the strongest. The notice remembers the session it says
+  stopped (`m_noticeSessionId`), and `onHostSession()` withdraws it when that session shows Running again (a stop the
+  host gave up on after the roam was cancelled); a new start clears it as before. Tests:
+  `check_executor_end_precedence()`, `check_executor_notice_withdrawn()`, `tst_site_roaming.qml` `test_07j`, `test_07l`.
   Rule: before the destination's start, `progressStop()` reads the host's phase: Failed cancels; Running after the
   stop showed (Stopping) and before it went idle (`startPlan()` asks only at Idle) is a stop the host gave up on (its
   2 s stop grace), so the switch ends refused with no notice, the evidence is revoked and roaming shows "Could not

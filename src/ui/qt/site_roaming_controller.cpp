@@ -558,6 +558,11 @@ SiteRoaming::onHostSession() {
         if (m_sessionLive) {
             endSession();
         }
+    } else if (phase == DecoderHost::Running && m_sessionLive && m_noticeSessionId != 0
+               && m_noticeSessionId == m_session.id) {
+        // #786: the session this roam's notice says stopped runs again (a stop the host gave up on after the roam was
+        // cancelled): the notice is no longer true.
+        clearRecoveryNotice();
     }
     evaluate();
 }
@@ -1041,6 +1046,7 @@ SiteRoaming::finishTransaction(const QString& outcome, bool notice) {
         m_noticeText = tr("Roaming did not switch to %1. Listening stopped.").arg(siteName(tx.toUid));
         m_noticeAction = tr("Listen to %1").arg(siteName(tx.fromUid));
         m_noticeUid = tx.fromUid;
+        m_noticeSessionId = tx.sessionId;
         Q_EMIT recoveryNoticeChanged();
     }
     if (m_evaluating) {
@@ -1248,6 +1254,7 @@ SiteRoaming::clearRecoveryNotice() {
     m_noticeText.clear();
     m_noticeAction.clear();
     m_noticeUid.clear();
+    m_noticeSessionId = 0;
     Q_EMIT recoveryNoticeChanged();
 }
 

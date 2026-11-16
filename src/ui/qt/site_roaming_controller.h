@@ -481,6 +481,8 @@ class SiteRoaming : public QObject {
     QString m_noticeText;
     QString m_noticeAction;
     QString m_noticeUid;
+    /* The session the notice says stopped (the roam's own session id; 0: no notice). */
+    qint64 m_noticeSessionId = 0;
 };
 
 } // namespace dsd_qt
