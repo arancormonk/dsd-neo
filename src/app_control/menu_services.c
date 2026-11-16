@@ -1394,9 +1394,24 @@ svc_rtl_stream_running(const dsd_opts* opts, const dsd_state* state) {
     return opts->audio_in_type == AUDIO_IN_RTL && state && state->rtl_ctx;
 }
 
+/* A running raw I/Q stream (issue #743): the rate its spec plans to for the request, when that is not the one it runs.
+   A stream records no bandwidth, so only the request and TETRA move its target. */
+static int
+svc_iq_stream_planned_rate_hz(const dsd_opts* opts, int bw_khz, int frame_tetra) {
+    uint32_t rate_hz = 0U;
+    if (dsd_input_dsp_stream_plan_check(opts->audio_in_dev, bw_khz, frame_tetra, &rate_hz, NULL, 0U) != 0
+        || (int)rate_hz == rtl_stream_get_request_rate_hz()) {
+        return 0;
+    }
+    return rate_hz > (uint32_t)INT_MAX ? INT_MAX : (int)rate_hz;
+}
+
 int
 svc_replay_planned_rate_hz(const dsd_opts* opts, const dsd_state* state, int bw_khz, int bw_source, int frame_tetra,
                            int analog_family) {
+    if (opts && dsd_opts_input_is_iq_stream(opts) && svc_rtl_stream_running(opts, state)) {
+        return svc_iq_stream_planned_rate_hz(opts, bw_khz, frame_tetra);
+    }
     if (!opts || !dsd_opts_input_is_iq_replay(opts) || !svc_rtl_stream_running(opts, state)) {
         return 0;
     }
@@ -1416,8 +1431,11 @@ svc_tetra_rate_advice(const dsd_opts* opts, const dsd_state* state, int brief, c
 #ifdef USE_RADIO
     if (opts) {
         rate_hz = svc_rtl_stream_running(opts, state) ? rtl_stream_get_request_rate_hz() : 0;
+        /* A stream that does not run yet opens at the rate its spec plans to under the session's TETRA setting (issue
+           #743), where TETRA's own rate is planned: not the analog bandwidth's rate. */
         if (rate_hz <= 0) {
-            rate_hz = svc_rtl_bw_dsp_rate_hz(opts, opts->rtl_dsp_bw_khz);
+            rate_hz = dsd_opts_input_is_iq_stream(opts) ? dsd_input_dsp_rate_policy(opts).rate_hz
+                                                        : svc_rtl_bw_dsp_rate_hz(opts, opts->rtl_dsp_bw_khz);
         }
     }
 #else
@@ -1869,6 +1887,9 @@ svc_radio_input_label(const dsd_opts* opts) {
     if (dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
         return "I/Q replay";
     }
+    if (dsd_opts_audio_in_dev_is_iq_stream_spec(dev)) {
+        return "I/Q stream";
+    }
     return "RTL-SDR";
 }
 
@@ -2150,6 +2171,44 @@ svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reaso
         return SVC_REPLAY_REPLAN_REFUSED;
     }
     return svc_rtl_replay_reopen_locked(opts, state, reason, restore, restore_ctx, why, why_size);
+}
+
+int
+svc_iq_stream_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason, svc_replay_profile_restore_fn restore,
+                            const void* restore_ctx, uint32_t* out_dsp_rate_hz, char* why, size_t why_size) {
+    svc_why(why, why_size, "%s", "");
+    if (!opts || !state || !restore || !dsd_opts_input_is_iq_stream(opts) || !state->rtl_ctx) {
+        return SVC_REPLAY_REPLAN_KEPT;
+    }
+    const char* what = reason ? reason : "the change";
+    char reason_text[192];
+    uint32_t rate_hz = 0U;
+    if (dsd_input_dsp_stream_plan_check(opts->audio_in_dev, opts->rtl_dsp_bw_khz, opts->frame_tetra == 1, &rate_hz,
+                                        reason_text, sizeof reason_text)
+        != 0) {
+        LOG_WARN("I/Q stream: %s needs a rate chain this stream cannot run: %s. The stream keeps its rate.\n", what,
+                 reason_text);
+        restore(opts, state, restore_ctx);
+        svc_why(why, why_size, "%s", reason_text);
+        return SVC_REPLAY_REPLAN_REFUSED;
+    }
+    if (out_dsp_rate_hz) {
+        *out_dsp_rate_hz = rate_hz;
+    }
+    if ((int)rate_hz == rtl_stream_get_request_rate_hz()) {
+        return SVC_REPLAY_REPLAN_KEPT;
+    }
+    LOG_INFO("I/Q stream: re-planning the rate chain for %s; the stream reconnects.\n", what);
+    if (svc_rtl_restart_locked(opts, state) == 0) {
+        return SVC_REPLAY_REPLAN_REOPENED;
+    }
+    /* The new chain did not start: the previous one starts again. */
+    restore(opts, state, restore_ctx);
+    if (svc_rtl_restart_locked(opts, state) == 0) {
+        svc_why(why, why_size, "the stream did not start at the new rate (see log)");
+        return SVC_REPLAY_REPLAN_REFUSED;
+    }
+    return SVC_REPLAY_REPLAN_FAILED;
 }
 
 /* Turn the I/Q capture off for the rest of the session before a rollback restart (svc_rtl_restart_recovery_locked()),
@@ -2593,17 +2652,23 @@ svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* wh
     dsd_opts_set_rtl_dsp_bw(opts, khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     /* Tuner bandwidth change requires reopen */
     opts->rtl_needs_restart = 1;
-    if (opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_input_is_iq_replay(opts) && state->rtl_ctx) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_input_rate_is_fixed(opts) && state->rtl_ctx) {
         /* A replay's rate follows the bandwidth (issue #701): it reopens at the chain the request plans, where it
-           stopped. */
+           stopped. A raw I/Q stream's does too, through a restart that reconnects (issue #743), once its spec is known
+           to plan the request. */
         char reason[64];
         DSD_SNPRINTF(reason, sizeof reason, "a %d kHz DSP bandwidth", khz);
-        const int replan = svc_rtl_replay_replan_locked(opts, state, reason, svc_rtl_bw_request_restore, &before, NULL,
-                                                        NULL, why, why_size);
+        const int replan = dsd_opts_input_is_iq_stream(opts)
+                               ? svc_iq_stream_replan_locked(opts, state, reason, svc_rtl_bw_request_restore, &before,
+                                                             NULL, why, why_size)
+                               : svc_rtl_replay_replan_locked(opts, state, reason, svc_rtl_bw_request_restore, &before,
+                                                              NULL, NULL, why, why_size);
         opts->rtl_needs_restart = 0;
         if (replan == SVC_REPLAY_REPLAN_REFUSED) {
             if (why && why_size > 0U && why[0] == '\0') {
-                svc_why(why, why_size, "the replay cannot run at that bandwidth");
+                svc_why(why, why_size,
+                        dsd_opts_input_is_iq_stream(opts) ? "the stream cannot run at that bandwidth"
+                                                          : "the replay cannot run at that bandwidth");
             }
             return -1;
         }

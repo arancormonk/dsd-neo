@@ -14736,6 +14736,455 @@ test_replay_config_apply_replans(void) {
     return rc;
 }
 
+/*
+ * Issue #743 (D7): a raw I/Q stream runs at the rate its spec plans to, so a change that moves that plan re-plans it
+ * through a restart, which reconnects (rebinds) and takes a stream gap on its carrier: the plan is asked from the spec
+ * before anything stops. A fake stream @p spec runs at @p bw_khz with the DSP rate @p running_hz, its start noted.
+ */
+static void
+init_stream_replan_context(dsd_opts* opts, dsd_state* state, void** fake_ctx, const char* spec, int bw_khz,
+                           int running_hz) {
+    init_decode_mode_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
+    dsd_opts_set_rtl_dsp_bw(opts, bw_khz, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    state->rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_fake_request_rate_hz = running_hz;
+    dsd_engine_note_stream_source(opts, state, 0);
+}
+
+static const char k_stream_240k[] = "iqtcp:127.0.0.1:1234:240000:cs16";
+
+/*
+ * RTL_SET_BW 48 -> 24 kHz on a 240 kS/s stream: one restart on the explicit request, no replay resume, a stream gap on
+ * the same source. A request the stream's rate cannot be planned to (49.152 MS/s at 24 kHz) is refused before anything
+ * stops, the request going back; a restart that fails starts the stream again on the request it ran. A request that
+ * leaves the plan where it is (TETRA's 72 kHz) restarts nothing.
+ */
+static int
+test_stream_bandwidth_change_replans(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+    const uint64_t key = state.carrier_source_key;
+    const uint32_t carrier_seq = state.carrier_seq;
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_RTL_SET_BW, 24, "stream bw 24");
+    rc |= expect_int("stream bw 24: one restart", g_config_rtl_creates, 1);
+    rc |= expect_true("stream bw 24: opened on the explicit request",
+                      g_fake_replay_creates[0].bw_khz == 24
+                          && g_fake_replay_creates[0].bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT
+                          && g_fake_replay_creates[0].resume_pending == 0);
+    rc |= expect_str("stream bw 24: the stream reopened", g_config_rtl_create_dev, k_stream_240k);
+    rc |= expect_true("stream bw 24: a stream gap on its own source",
+                      state.carrier_source_key == key && state.carrier_seq == carrier_seq + 1U);
+    rc |= expect_toast("stream bw 24: toast", &state, "Applied: RTL DSP BW -> 24 kHz");
+    rc |= expect_int("stream bw 24: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, "iqtcp:127.0.0.1:1234:49152000:cs16", 48, 48000);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_RTL_SET_BW, 24, "stream bw refused");
+    rc |= expect_int("stream bw refused: nothing restarted", g_config_rtl_creates, 0);
+    rc |= expect_true("stream bw refused: the request goes back",
+                      opts.rtl_dsp_bw_khz == 48 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_true("stream bw refused: the stream keeps running", state.rtl_ctx == (RtlSdrContext*)fake_ctx);
+    rc |= expect_toast("stream bw refused: toast", &state, "Refused: the stream's rate (49152000 Hz)");
+    rc |= expect_int("stream bw refused: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+    g_config_rtl_fail_starts = 1;
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_RTL_SET_BW, 24, "stream bw start fails");
+    rc |= expect_int("stream bw start fails: two starts", g_config_rtl_creates, 2);
+    rc |= expect_true("stream bw start fails: the second on the request it ran",
+                      g_fake_replay_creates[1].bw_khz == 48
+                          && g_fake_replay_creates[1].bw_source == DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |=
+        expect_true("stream bw start fails: the request goes back", opts.rtl_dsp_bw_khz == 48 && state.rtl_ctx != NULL);
+    rc |= expect_toast("stream bw start fails: toast", &state, "the stream did not start at the new rate");
+    rc |= expect_int("stream bw start fails: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 72000);
+    opts.frame_tetra = 1;
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_RTL_SET_BW, 24, "stream bw under tetra");
+    rc |= expect_int("stream bw under tetra: the plan stays, nothing restarts", g_config_rtl_creates, 0);
+    rc |= expect_true("stream bw under tetra: the request is in force",
+                      opts.rtl_dsp_bw_khz == 24 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    freeState(&state);
+
+    reset_rx_family_wrap();
+    return rc;
+}
+
+/*
+ * A switch to TETRA on a 240 kS/s stream at 48 kHz restarts it planned to 72 kHz, and the switch back restarts it at 48
+ * kHz; a mode on the plan it runs restarts nothing. A stream whose rate no 48 kHz plan reaches (98.304 MS/s) stays on
+ * TETRA when DMR is asked for: the profile goes back and nothing stops.
+ */
+static int
+test_stream_mode_change_replans(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA, "stream tetra");
+    rc |= expect_int("stream tetra: one restart", g_config_rtl_creates, 1);
+    rc |= expect_true("stream tetra: opened with the TETRA decoder, no resume",
+                      g_fake_replay_creates[0].frame_tetra == 1 && g_fake_replay_creates[0].resume_pending == 0);
+    rc |= expect_str("stream tetra: toast", state.ui_msg, "Decoding TETRA: stream reconnected at 72 kHz");
+    rc |= expect_int("stream tetra: not failed", dsd_app_command_test_last_failed(), 0);
+    g_fake_request_rate_hz = 72000;
+
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR, "stream dmr");
+    rc |= expect_int("stream dmr: a second restart", g_config_rtl_creates, 2);
+    rc |= expect_int("stream dmr: opened without TETRA", g_fake_replay_creates[1].frame_tetra, 0);
+    rc |= expect_str("stream dmr: toast", state.ui_msg, "Decoding DMR: stream reconnected at 48 kHz");
+    g_fake_request_rate_hz = 48000;
+
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_P25P1, "stream p25");
+    rc |= expect_int("stream p25: nothing restarted", g_config_rtl_creates, 2);
+    rc |= expect_str("stream p25: the usual toast", state.ui_msg, "Decoding P25 Phase 1");
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, "iqtcp:127.0.0.1:1234:98304000:cs16", 48, 72000);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA, "fast tetra");
+    rc |= expect_int("fast tetra: runs the plan already", g_config_rtl_creates, 0);
+    dsd_scan_settings before;
+    dsd_scan_settings after;
+    dsd_scan_settings_capture(&opts, &state, &before);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR, "fast dmr");
+    dsd_scan_settings_capture(&opts, &state, &after);
+    rc |= expect_int("fast dmr: nothing restarted", g_config_rtl_creates, 0);
+    rc |= expect_int("fast dmr: the profile is back", dsd_scan_settings_equal(&before, &after, 1), 1);
+    rc |= expect_int("fast dmr: still TETRA", opts.frame_tetra, 1);
+    rc |= expect_toast("fast dmr: toast", &state, "Failed: DMR -> the stream's rate (98304000 Hz)");
+    rc |= expect_int("fast dmr: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    reset_rx_family_wrap();
+    return rc;
+}
+
+/* A stream [input] of @p spec's fields (iqtcp, host 127.0.0.1, port 1234). */
+static void
+stream_input_config(dsdneoUserConfig* cfg, const char* rate, const char* format) {
+    DSD_MEMSET(cfg, 0, sizeof *cfg);
+    cfg->has_input = 1;
+    cfg->input_source = DSDCFG_INPUT_IQTCP;
+    DSD_SNPRINTF(cfg->iq_host, sizeof cfg->iq_host, "%s", "127.0.0.1");
+    cfg->iq_port = 1234;
+    DSD_SNPRINTF(cfg->iq_rate, sizeof cfg->iq_rate, "%s", rate);
+    DSD_SNPRINTF(cfg->iq_format, sizeof cfg->iq_format, "%s", format);
+}
+
+/*
+ * A config applied to a running stream: a [mode] decode = tetra, and an [input] naming the same stream with a new
+ * rtl_bw_khz, each restart it once at the new plan; one naming it with a gain alone restarts nothing and applies no
+ * gain (the sender tunes). An [input] naming another stream over a running RTL-SDR reopens on it, with no tuner key;
+ * one whose keys build no spec, or whose rate no plan reaches, is refused before anything changes.
+ */
+static int
+test_stream_config_apply_replans(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static dsdneoUserConfig cfg;
+    int rc = 0;
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_TETRA;
+    rc |= submit_config(&opts, &state, &cfg, "stream config tetra");
+    rc |= expect_int("stream config tetra: one restart", g_config_rtl_creates, 1);
+    rc |= expect_int("stream config tetra: with the TETRA decoder", g_fake_replay_creates[0].frame_tetra, 1);
+    rc |= expect_int("stream config tetra: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+    opts.rtl_gain_value = 20;
+    stream_input_config(&cfg, "240k", "cs16");
+    cfg.rtl_bw_khz = 24;
+    rc |= submit_config(&opts, &state, &cfg, "stream config bw 24");
+    rc |= expect_str("stream config bw 24: the stream stays the input", opts.audio_in_dev, k_stream_240k);
+    rc |= expect_int("stream config bw 24: one restart", g_config_rtl_creates, 1);
+    rc |= expect_true("stream config bw 24: the request is explicit",
+                      opts.rtl_dsp_bw_khz == 24 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    rc |= expect_int("stream config bw 24: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+    opts.rtl_gain_value = 20;
+    stream_input_config(&cfg, "240000", "CS16");
+    cfg.rtl_gain = 30;
+    cfg.rtl_gain_is_set = 1;
+    rc |= submit_config(&opts, &state, &cfg, "stream config gain");
+    rc |= expect_int("stream config gain: nothing restarted", g_config_rtl_creates, 0);
+    rc |= expect_int("stream config gain: no gain applied", opts.rtl_gain_value, 20);
+    rc |= expect_int("stream config gain: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, "rtl:0:851.375M:20:0:48", 48, 48000);
+    opts.rtl_gain_value = 20;
+    stream_input_config(&cfg, "1.152M", "cf32");
+    DSD_SNPRINTF(cfg.iq_freq, sizeof cfg.iq_freq, "%s", "851.0125M");
+    cfg.rtl_gain = 30;
+    cfg.rtl_gain_is_set = 1;
+    rc |= submit_config(&opts, &state, &cfg, "rtl to stream");
+    rc |= expect_int("rtl to stream: one reopen", g_config_rtl_creates, 1);
+    rc |= expect_str("rtl to stream: on the stream's canonical spec", g_config_rtl_create_dev,
+                     "iqtcp:127.0.0.1:1234:1152000:cf32:851012500");
+    rc |= expect_true("rtl to stream: no gain applied, no rtl_tcp",
+                      g_config_rtl_create_gain == 20 && opts.rtltcp_enabled == 0);
+    rc |= expect_true("rtl to stream: on its FREQ once it started", opts.rtlsdr_center_freq == 851012500U);
+    rc |= expect_int("rtl to stream: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+
+    static const struct {
+        const char* label;
+        const char* rate;
+        int port;
+        int bw_khz;
+        const char* toast;
+    } refused[] = {
+        {"stream config bad port", "240k", 0, 0, "Config not applied: iqtcp: PORT '0'"},
+        {"stream config bad rate", "7k", 1234, 0, "Config not applied: iqtcp: RATE '7k'"},
+        {"stream config no plan", "49152000", 1235, 24, "Config not applied: the stream's rate (49152000 Hz)"},
+    };
+
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+        stream_input_config(&cfg, refused[i].rate, "cs16");
+        cfg.iq_port = refused[i].port;
+        cfg.rtl_bw_khz = refused[i].bw_khz;
+        rc |= submit_config(&opts, &state, &cfg, refused[i].label);
+        rc |= expect_int(refused[i].label, g_config_rtl_creates, 0);
+        rc |= expect_str(refused[i].label, opts.audio_in_dev, k_stream_240k);
+        rc |= expect_toast(refused[i].label, &state, refused[i].toast);
+        rc |= expect_int(refused[i].label, dsd_app_command_test_last_failed(), 1);
+        freeState(&state);
+    }
+    reset_rx_family_wrap();
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/*
+ * Issue #743: a config naming the running I/Q stream (same spec, so nothing reopens) with a new squelch hands that
+ * squelch to the demodulator, a level as a level and an auto squelch whole, and its monitor volume is in force; so does
+ * a SoapySDR [input] over the running SoapySDR device, whose spec carries no squelch either. Before, the options took
+ * the new squelch and the toast said applied, but the running input kept squelching at the old one.
+ */
+static int
+test_kept_fixed_input_config_pushes_squelch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static dsdneoUserConfig cfg;
+    int rc = 0;
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    opts.rtl_volume_multiplier = 2;
+    stream_input_config(&cfg, "240k", "cs16");
+    cfg.rtl_sql = -55;
+    cfg.rtl_sql_is_set = 1;
+    cfg.rtl_volume = 3;
+    g_cmd_squelch_pushes = 0;
+    g_cmd_squelch_pushed = -1.0;
+    rc |= submit_config(&opts, &state, &cfg, "kept stream squelch");
+    rc |= expect_int("kept stream squelch: nothing restarted", g_config_rtl_creates, 0);
+    rc |= expect_str("kept stream squelch: the stream stays the input", opts.audio_in_dev, k_stream_240k);
+    rc |= expect_squelch_db("kept stream squelch: in the options", opts.rtl_squelch_level, -55.0);
+    rc |= expect_true("kept stream squelch: handed to the demod", g_cmd_squelch_pushes >= 1);
+    rc |= expect_squelch_db("kept stream squelch: the demod's level", g_cmd_squelch_pushed, -55.0);
+    rc |= expect_int("kept stream squelch: the monitor volume", opts.rtl_volume_multiplier, 3);
+    rc |= expect_int("kept stream squelch: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    stream_input_config(&cfg, "240k", "cs16");
+    cfg.rtl_sql = -60;
+    cfg.rtl_sql_mode = DSD_SQUELCH_MODE_AUTO;
+    cfg.rtl_sql_margin_db = 12;
+    cfg.rtl_sql_is_set = 1;
+    g_cmd_squelch_setting_pushes = 0;
+    DSD_MEMSET(&g_cmd_squelch_setting_pushed, 0, sizeof g_cmd_squelch_setting_pushed);
+    rc |= submit_config(&opts, &state, &cfg, "kept stream auto squelch");
+    rc |= expect_int("kept stream auto squelch: nothing restarted", g_config_rtl_creates, 0);
+    rc |= expect_true("kept stream auto squelch: handed to the demod whole",
+                      g_cmd_squelch_setting_pushes >= 1 && g_cmd_squelch_setting_pushed.mode == DSD_SQUELCH_MODE_AUTO
+                          && g_cmd_squelch_setting_pushed.margin_db == 12);
+    freeState(&state);
+
+    /* One whose bandwidth request the stream's rate cannot be planned to fails whole: the squelch goes back, and the
+       demodulator keeps (or is handed back) the one in force. */
+    init_stream_replan_context(&opts, &state, fake_ctx, "iqtcp:127.0.0.1:1234:49152000:cs16", 48, 48000);
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    stream_input_config(&cfg, "49152000", "cs16");
+    cfg.rtl_bw_khz = 24;
+    cfg.rtl_sql = -55;
+    cfg.rtl_sql_is_set = 1;
+    g_cmd_squelch_pushes = 0;
+    g_cmd_squelch_pushed = -1.0;
+    rc |= submit_config(&opts, &state, &cfg, "kept stream refused");
+    rc |= expect_int("kept stream refused: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_squelch_db("kept stream refused: the squelch goes back", opts.rtl_squelch_level, -80.0);
+    rc |= expect_true("kept stream refused: the demod runs the squelch in force",
+                      g_cmd_squelch_pushes == 0
+                          || fabs(g_cmd_squelch_pushed - dsd_squelch_level_from_sql(-80.0))
+                                 <= 1e-6 * dsd_squelch_level_from_sql(-80.0));
+    freeState(&state);
+
+    /* A SoapySDR [input] builds the spec it runs ("soapy") whatever its squelch, so it is kept the same way. */
+    init_stream_replan_context(&opts, &state, fake_ctx, "soapy", 48, 48000);
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_SOAPY;
+    cfg.rtl_sql = -55;
+    cfg.rtl_sql_is_set = 1;
+    g_cmd_squelch_pushes = 0;
+    g_cmd_squelch_pushed = -1.0;
+    rc |= submit_config(&opts, &state, &cfg, "kept soapy squelch");
+    rc |= expect_int("kept soapy squelch: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_str("kept soapy squelch: the device stays the input", opts.audio_in_dev, "soapy");
+    rc |= expect_squelch_db("kept soapy squelch: in the options", opts.rtl_squelch_level, -55.0);
+    rc |= expect_true("kept soapy squelch: handed to the demod", g_cmd_squelch_pushes >= 1);
+    rc |= expect_squelch_db("kept soapy squelch: the demod's level", g_cmd_squelch_pushed, -55.0);
+    freeState(&state);
+
+    reset_rx_family_wrap();
+    dsd_decode_clock_use_system();
+    return rc;
+}
+#endif
+
+static int expect_restarted_on(const char* label, const dsd_opts* opts, const dsd_state* state, const char* dev);
+
+/*
+ * Issue #743 (D8, G3): an I/Q stream input beside trunking, the -Y scanner or a trunk scan breaks a next-start rule,
+ * and a config apply is judged on the input it leaves, before anything changes: an input-only switch to a stream under
+ * trunking already on is refused, as is one that names the stream and trunking together; one that leaves the stream
+ * while it turns trunking on applies; an inputless [trunking] on a stream session is refused, an inputless [mode] not.
+ * The RTL-SDR row that would reopen a remembered stream under trunking is refused too, and runs without it.
+ */
+static int
+test_stream_next_start_rules(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static dsdneoUserConfig cfg;
+    static const char k_rule[] = "trunking.enabled cannot be used with an I/Q stream input";
+    int rc = 0;
+
+    init_stream_replan_context(&opts, &state, fake_ctx, "rtl:0:851.375M:20:0:48", 48, 48000);
+    opts.trunk_enable = 1;
+    stream_input_config(&cfg, "240k", "cs16");
+    rc |= submit_config(&opts, &state, &cfg, "input-only switch under trunking");
+    rc |= expect_int("input-only switch under trunking: nothing opened", g_config_rtl_creates, 0);
+    rc |= expect_str("input-only switch under trunking: the input stays", opts.audio_in_dev, "rtl:0:851.375M:20:0:48");
+    rc |= expect_toast("input-only switch under trunking: toast", &state, k_rule);
+    rc |= expect_int("input-only switch under trunking: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, "rtl:0:851.375M:20:0:48", 48, 48000);
+    stream_input_config(&cfg, "240k", "cs16");
+    cfg.has_trunking = 1;
+    cfg.trunk_enabled = 1;
+    rc |= submit_config(&opts, &state, &cfg, "stream and trunking together");
+    rc |= expect_int("stream and trunking together: nothing opened", g_config_rtl_creates, 0);
+    rc |= expect_int("stream and trunking together: trunking stays off", opts.trunk_enable, 0);
+    rc |= expect_toast("stream and trunking together: toast", &state, k_rule);
+    freeState(&state);
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851.375M");
+    cfg.has_trunking = 1;
+    cfg.trunk_enabled = 1;
+    rc |= submit_config(&opts, &state, &cfg, "leave the stream with trunking");
+    rc |= expect_true("leave the stream with trunking: the RTL-SDR opened",
+                      g_config_rtl_creates == 1 && strncmp(g_config_rtl_create_dev, "rtl:", 4) == 0);
+    rc |= expect_int("leave the stream with trunking: trunking on", opts.trunk_enable, 1);
+    rc |= expect_int("leave the stream with trunking: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+
+    /* The same config, or one turning the -Y scanner on, whose RTL-SDR does not start puts the stream back, and the
+       stream stays untrunked and unscanned: the tuner owner the config names takes no tuner over an input that cannot
+       retune. Before, the rollback left trunking (or the scanner) on over the stream, while every save hid it. */
+    for (int scanner = 0; scanner <= 1; scanner++) {
+        const char* label =
+            scanner ? "leave the stream with the scanner, start fails" : "leave the stream with trunking, start fails";
+        init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_input = 1;
+        cfg.input_source = DSDCFG_INPUT_RTL;
+        DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851.375M");
+        cfg.has_trunking = 1;
+        cfg.trunk_enabled = scanner ? 0 : 1;
+        cfg.trunk_scanner = scanner;
+        g_config_rtl_fail_starts = 1;
+        rc |= submit_config(&opts, &state, &cfg, label);
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_restarted_on(label, &opts, &state, k_stream_240k);
+        rc |= expect_int(label, opts.trunk_enable, 0);
+        rc |= expect_int(label, opts.scanner_mode, 0);
+        g_config_rtl_fail_starts = 0;
+        freeState(&state);
+    }
+
+    init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    cfg.trunk_enabled = 1;
+    rc |= submit_config(&opts, &state, &cfg, "inputless trunking on a stream");
+    rc |= expect_int("inputless trunking on a stream: trunking stays off", opts.trunk_enable, 0);
+    rc |= expect_toast("inputless trunking on a stream: toast", &state, k_rule);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_P25P1;
+    rc |= submit_config(&opts, &state, &cfg, "inputless mode on a stream");
+    rc |= expect_int("inputless mode on a stream: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+
+    /* The RTL-SDR row from Pulse reopens the stream a switch to Pulse left. */
+    for (int trunking = 1; trunking >= 0; trunking--) {
+        init_stream_replan_context(&opts, &state, fake_ctx, k_stream_240k, 48, 48000);
+        state.rtl_ctx = NULL;
+        opts.audio_in_type = AUDIO_IN_PULSE;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+        DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", k_stream_240k);
+        opts.trunk_enable = trunking;
+        const char* label = trunking ? "rtl row to a stream under trunking" : "rtl row to a stream";
+        rc |= expect_int(label, post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        state.ui_msg[0] = '\0';
+        rc |= expect_int(label, dsd_app_drain_cmds(&opts, &state), 1);
+        if (trunking) {
+            rc |= expect_int(label, g_config_rtl_creates, 0);
+            rc |= expect_str(label, opts.audio_in_dev, "pulse");
+            rc |= expect_toast(label, &state, "Refused: trunking.enabled cannot be used with an I/Q stream input");
+            rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
+        } else {
+            rc |= expect_str(label, g_config_rtl_create_dev, k_stream_240k);
+            rc |= expect_int(label, dsd_app_command_test_last_failed(), 0);
+        }
+        freeState(&state);
+    }
+    reset_rx_family_wrap();
+    return rc;
+}
+
 /* The [input] a replay session started with: the rtl_tcp one of the config it loaded (issue #743). */
 static void
 init_replay_loaded_input(dsdneoUserConfig* loaded) {
@@ -14809,6 +15258,30 @@ test_replay_config_apply_keeps_the_saved_input(void) {
     rc |= expect_true("sourceless patch: the new threshold is saved",
                       snap.input_warn_db_is_set && fabs(snap.input_warn_db - (-20.0)) < 1e-9);
     freeState(&state);
+
+    /* A loaded raw I/Q stream [input]: a sourceless patch merges into it, so it is judged on the stream it leaves, as
+       the next start judges it. A FORMAT no stream takes is refused and the loaded stream is saved; one it takes
+       applies and merges. Before, the bad FORMAT merged, and the save it left stopped the next start. */
+    static dsdneoUserConfig loaded_stream;
+    stream_input_config(&loaded_stream, "240k", "cs16");
+    for (int bad = 1; bad >= 0; bad--) {
+        const char* label = bad ? "sourceless stream patch, bad format" : "sourceless stream patch, format";
+        init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+        rc |= expect_int(label, dsd_user_config_retain_input(&state, &loaded_stream), 0);
+        dsd_user_config_init(&cfg);
+        cfg.has_input = 1;
+        DSD_SNPRINTF(cfg.iq_format, sizeof cfg.iq_format, "%s", bad ? "bad" : "cu8");
+        rc |= submit_config(&opts, &state, &cfg, label);
+        rc |= expect_str(label, opts.audio_in_dev, "iqreplay:capture.iq.json");
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), bad);
+        if (bad) {
+            rc |= expect_toast(label, &state, "Config not applied: iqtcp: ");
+        }
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        rc |= expect_true(label, snap.has_input && snap.input_source == DSDCFG_INPUT_IQTCP && snap.iq_port == 1234
+                                     && strcmp(snap.iq_format, bad ? "cs16" : "cu8") == 0);
+        freeState(&state);
+    }
 
     /* A patch naming an RTL-SDR source with a bandwidth and no frequency: the replay keeps running, re-planned, and the
        session saves the loaded [input] with the keys the patch set. */
@@ -30936,6 +31409,13 @@ main(void) {
     rc |= test_replay_mode_change_replans();
     rc |= test_replay_refused_replan_restores_the_profile();
     rc |= test_replay_config_apply_replans();
+    rc |= test_stream_bandwidth_change_replans();
+    rc |= test_stream_mode_change_replans();
+    rc |= test_stream_config_apply_replans();
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    rc |= test_kept_fixed_input_config_pushes_squelch();
+#endif
+    rc |= test_stream_next_start_rules();
     rc |= test_replay_config_apply_keeps_the_saved_input();
     rc |= test_replay_input_switches_keep_a_saved_input();
     rc |= test_replay_widths_held_to_the_planned_rate();

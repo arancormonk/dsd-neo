@@ -976,6 +976,20 @@ int dsd_user_config_retain_input(dsd_state* state, const dsdneoUserConfig* cfg);
 int dsd_user_config_merge_retained_input(dsd_state* state, const dsdneoUserConfig* patch);
 
 /**
+ * @brief The retained [input] as dsd_user_config_merge_retained_input() would leave it after @p patch, without changing
+ * the copy held: a config apply judges a patch on the [input] it leaves (issue #743), so a sourceless patch to a raw
+ * I/Q stream the session saves is refused when the stream it leaves builds no spec.
+ *
+ * @param state Decoder state that owns the copy.
+ * @param patch Config whose [input] keys would be merged (has_input set).
+ * @param out Receives a zeroed config holding the merged [input] block only.
+ * @return 1 when a copy is held and @p out holds the merge, 0 when none is held, @p patch has no [input] or an argument
+ * is NULL (@p out unchanged), -1 when an allocation fails (@p out unchanged).
+ */
+int dsd_user_config_retained_input_patched(const dsd_state* state, const dsdneoUserConfig* patch,
+                                           dsdneoUserConfig* out);
+
+/**
  * @brief Return 1 when @p path, as a file input's file_path, names an input spec no config can start (an I/Q replay,
  * `iqreplay:...`), 0 otherwise and for NULL. --validate-config reports such a file_path as an error.
  *

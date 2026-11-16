@@ -3841,7 +3841,10 @@ suite runs under this compiler.
       (`cfg_settle_retained_input()`) changes it only when the config has an `[input]`, stays applied, and leaves the
       replay running: a loaded file's payload replaces it, a plain patch merges the keys it sets
       (`dsd_user_config_merge_retained_input()`: set = differs from `dsd_user_config_init()`, or its `_is_set` flag), so
-      a sourceless patch keeps the source and endpoint. An `[input]` that is a file input of a non-file spec
+      a sourceless patch keeps the source and endpoint. A patch is checked first on the `[input]` its merge would leave
+      (`dsd_user_config_retained_input_patched()`, `cfg_check_retained_stream_patch()`): one that leaves a raw I/Q
+      stream whose keys build no spec, or whose RATE no plan takes, is refused before anything changes, as the next start
+      would refuse the save. An `[input]` that is a file input of a non-file spec
       (`dsd_user_config_file_path_is_input_spec()`) is never retained. The RTL-SDR row that returns a PCM session to the
       replay it left retains the snapshot of the input it leaves (`ui_input_left_for_replay()`);
       `dsd_app_drain_cmds()` drops the copy after any command that left the replay. The UI snapshot copies it
@@ -17487,7 +17490,11 @@ External dependencies (resolved via CMake):
   `dsd_scan_mode_set_configured_squelch()`, which touches no acquisition setting (so a squelch nudge can never read
   as a decoder change that ends the call) and leaves `dsd_opts` and the demod on the row's value while a row
   overrides it. `AIRSPY_SET` and `RTL_ENABLE_INPUT`/`AIRSPY_ENABLE_INPUT` rewrite no squelch and stay unscoped, so
-  a stream they reopen starts on the row's acquisition and threshold, the ones in force. Saves read `rtl_sql` from
+  a stream they reopen starts on the row's acquisition and threshold, the ones in force. A `CONFIG_APPLY` whose
+  `[input]` keeps the running RTL-family input (the same spec: a raw I/Q stream's or a SoapySDR device's carries no
+  squelch, so a new squelch alone keeps it) pushes the squelch it staged once the input is kept
+  (`apply_cfg_rtl_hot_restart()`), as a reopen opens on it; the monitor volume is read from `dsd_opts` per block.
+  Saves read `rtl_sql` from
   `dsd_scan_mode_configured_view()`. On non-radio inputs nothing gates digital acquisition; the level only reaches
   the unsynced analog input monitor in `dsd_symbol.c` (`-8`, with audio output on) and the carrier activity it
   stamps. Channel and trunk scan start warn once per affected row or target. Tests: `RUNTIME_SCAN_MODE`,

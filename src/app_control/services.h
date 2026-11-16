@@ -1082,16 +1082,18 @@ int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief The DSP rate a running I/Q replay will run at for a DSP bandwidth request of @p bw_khz from @p bw_source with
- *        the TETRA decoder on or off (@p frame_tetra), when that request re-plans it (issue #701). Decoder thread.
+ * @brief The DSP rate a running I/Q replay, or raw I/Q stream (issue #743), will run at for a DSP bandwidth request of
+ *        @p bw_khz from @p bw_source with the TETRA decoder on or off (@p frame_tetra), when that request re-plans it
+ *        (issue #701). Decoder thread.
  *
  * For a check made before a change puts the request in force (a config's preflight, RTL_SET_BW's and a mode change's
  * width checks): a width the change leaves in force is held to this rate, not the running stream's.
  *
  * @return The rate in Hz when the input in force is a replay with a stream running and the request plans a chain other
- *         than the one it runs (rtl_stream_replay_replan_check_request()); 0 otherwise: no replay runs, it keeps its
- *         chain (the running stream's rate holds), or no chain reaches the request (the re-plan refuses it, with the
- *         planner's reason).
+ *         than the one it runs (rtl_stream_replay_replan_check_request()), or a stream whose spec plans a rate other
+ *         than the one it runs (dsd_input_dsp_stream_plan_check()); 0 otherwise: no replay or stream runs, it keeps
+ *         its chain (the running stream's rate holds), or no chain reaches the request (the re-plan refuses it, with
+ *         the planner's reason).
  */
 int svc_replay_planned_rate_hz(const dsd_opts* opts, const dsd_state* state, int bw_khz, int bw_source, int frame_tetra,
                                int analog_family);
@@ -1128,6 +1130,26 @@ typedef void (*svc_replay_profile_restore_fn)(dsd_opts* opts, dsd_state* state, 
 int svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
                                  svc_replay_profile_restore_fn restore, const void* restore_ctx,
                                  uint32_t* out_dsp_rate_hz, int* out_resampled, char* why, size_t why_size);
+
+/**
+ * @brief Re-plan a running raw I/Q stream for the decode mode and DSP bandwidth the options now hold, through a restart
+ *        that reconnects (issue #743, D7). Caller holds the P25 SM tick guard; decoder thread.
+ *
+ * The stream twin of svc_rtl_replay_replan_locked(). Does nothing unless the input in force is a stream
+ * (dsd_opts_input_is_iq_stream()) with a stream running, and nothing when its spec plans the rate it runs. The plan is
+ * asked from the spec before anything stops (dsd_input_dsp_stream_plan_check()): one no chain reaches is refused,
+ * @p restore puts the caller's profile back and @p why gets the planner's reason, the stream running on. Otherwise the
+ * stream restarts (svc_rtl_restart_locked(): it reconnects, or binds again, and the decoder takes a stream gap). A
+ * start that fails puts the profile back and starts the previous chain again, and the refusal is reported; when that
+ * start fails too, no stream runs and the caller's start-failure path runs.
+ *
+ * @param reason          What changed, for the log.
+ * @param out_dsp_rate_hz [out] The DSP rate the plan lands on; may be NULL.
+ * @return An svc_replay_replan_result.
+ */
+int svc_iq_stream_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
+                                svc_replay_profile_restore_fn restore, const void* restore_ctx,
+                                uint32_t* out_dsp_rate_hz, char* why, size_t why_size);
 /**
  * @brief Start the input the options describe again after the start on the input that replaced it failed, or ran but
  * was undone, without acquiring; caller holds the P25 SM tick guard (issue #578).

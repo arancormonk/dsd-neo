@@ -186,6 +186,24 @@ merge_input_keys(dsdneoUserConfig* merged, const dsdneoUserConfig* patch, const 
 }
 
 int
+dsd_user_config_retained_input_patched(const dsd_state* state, const dsdneoUserConfig* patch, dsdneoUserConfig* out) {
+    if (state == NULL || patch == NULL || out == NULL || !patch->has_input || retained_input_of(state) == NULL) {
+        return 0;
+    }
+    /* The defaults a patch is built on. */
+    dsdneoUserConfig* defaults = (dsdneoUserConfig*)malloc(sizeof *defaults);
+    if (defaults == NULL) {
+        return -1;
+    }
+    dsd_user_config_init(defaults);
+    DSD_MEMSET(out, 0, sizeof *out);
+    (void)dsd_user_config_retained_input(state, out);
+    merge_input_keys(out, patch, defaults);
+    free(defaults);
+    return 1;
+}
+
+int
 dsd_user_config_merge_retained_input(dsd_state* state, const dsdneoUserConfig* patch) {
     if (state == NULL) {
         return -1;
@@ -196,17 +214,16 @@ dsd_user_config_merge_retained_input(dsd_state* state, const dsdneoUserConfig* p
     if (retained_input_of(state) == NULL) {
         return dsd_user_config_retain_input(state, patch);
     }
-    /* [0] the merge, from the retained [input]; [1] the defaults a patch is built on. */
-    dsdneoUserConfig* scratch = (dsdneoUserConfig*)calloc(2, sizeof *scratch);
-    if (scratch == NULL) {
+    dsdneoUserConfig* merged = (dsdneoUserConfig*)malloc(sizeof *merged);
+    if (merged == NULL) {
         return -1;
     }
-    dsd_user_config_init(&scratch[1]);
-    (void)dsd_user_config_retained_input(state, &scratch[0]);
-    merge_input_keys(&scratch[0], patch, &scratch[1]);
-    const int rc = dsd_user_config_retain_input(state, &scratch[0]);
-    DSD_SECURE_ZERO(scratch, 2U * sizeof *scratch);
-    free(scratch);
+    int rc = dsd_user_config_retained_input_patched(state, patch, merged);
+    if (rc == 1) {
+        rc = dsd_user_config_retain_input(state, merged);
+    }
+    DSD_SECURE_ZERO(merged, sizeof *merged);
+    free(merged);
     return rc;
 }
 
