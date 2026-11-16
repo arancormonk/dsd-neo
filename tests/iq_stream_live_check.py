@@ -11,6 +11,7 @@
 import argparse
 import contextlib
 import json
+import os
 import re
 import signal
 import socket
@@ -90,9 +91,16 @@ def stop_after(process, output, body):
     return stop(process, output)
 
 
+def isolated_env():
+    """The environment without DSD_NEO_CONFIG: --no-config does nothing, so this is what keeps a config out."""
+    env = dict(os.environ)
+    env.pop("DSD_NEO_CONFIG", None)
+    return env
+
+
 def start(binary, cwd, args):
     process = subprocess.Popen([binary, "--no-config", "--frontend", "none"] + args + ["-o", "null"], cwd=cwd,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                               env=isolated_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return process, Output(process)
 
 
@@ -276,7 +284,8 @@ def check_rigctl_refused_at_start(binary, cwd):
         udp = f"iqudp:127.0.0.1:{free_port(socket.SOCK_DGRAM)}:48000:cs16"
         result = subprocess.run([binary, "--no-config", "--frontend", "none", "-i", udp, "-U", str(rig.port), "-o",
                                  "null"],
-                                cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60, check=False)
+                                cwd=cwd, env=isolated_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                timeout=60, check=False)
         time.sleep(0.3)
     log = result.stdout.decode(errors="replace")
     assert result.returncode == 1, log

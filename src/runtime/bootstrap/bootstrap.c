@@ -90,6 +90,7 @@ typedef struct {
     const char* profile_cli;
     const char* validate_path_cli;
     int cfg_path_positional_ini;
+    int no_config_cli; /* --no-config: accepted, but it does nothing since config loading became opt-in */
 } bootstrap_cli_args;
 
 static void
@@ -211,6 +212,9 @@ bootstrap_parse_cli_args(int argc, char** argv, bootstrap_cli_args* args) {
             continue;
         }
         if (bootstrap_cli_try_flag(arg, "--list-profiles", &args->list_profiles_cli)) {
+            continue;
+        }
+        if (bootstrap_cli_try_flag(arg, "--no-config", &args->no_config_cli)) {
             continue;
         }
         (void)bootstrap_cli_try_file_rate_override(argc, argv, &i, args);
@@ -769,7 +773,7 @@ bootstrap_refuse_config_tuning_on_iq_stream(const dsd_opts* opts, const dsdneoUs
     }
     LOG_ERROR(
         "%s: an I/Q stream cannot retune; it decodes only the channel the sending program streams. Turn %s off in "
-        "the config file, or start without that file (no --config, and DSD_NEO_CONFIG unset).\n",
+        "the config file, or start without that file (no --config, no .ini file argument, and DSD_NEO_CONFIG unset).\n",
         key, key);
     bootstrap_set_exit_rc(out_exit_rc, 1);
     return DSD_BOOTSTRAP_ERROR;
@@ -836,6 +840,13 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     bootstrap_cli_args args;
     bootstrap_parse_cli_args(argc, argv, &args);
     bootstrap_apply_positional_ini_shortcut(argc, argv, &args);
+    /* Config loading has been opt-in since --no-config stopped doing anything; it is still accepted, so a command line
+       that passes it to keep a config out says it keeps nothing out. */
+    if (args.no_config_cli) {
+        LOG_INFO(
+            "NOTICE: --no-config has no effect: a config loads only with --config, a single .ini file argument, or "
+            "DSD_NEO_CONFIG.\n");
+    }
 
     const char* config_env = bootstrap_get_config_env_path();
 

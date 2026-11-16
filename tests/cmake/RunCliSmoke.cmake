@@ -46,6 +46,17 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-rtltcp-bad-port")
     set(_want_stdout_regex "")
     set(_want_stderr_regex "\"12x\".*65535")
     set(_forbid_output_regex "rtltcp_port")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "no-config-notice")
+    # --no-config was accepted and silently did nothing once config loading became opt-in: it says so now, once,
+    # and the run goes on.
+    set(_args "--no-config" "--print-config")
+    set(_want_rc 0)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "NOTICE: --no-config has no effect: a config loads only with --config, a single [.]ini file argument, or DSD_NEO_CONFIG[.]"
+    )
+    set(_forbid_output_regex "Loaded user config")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-iq-stream")
     # Issue #743: an I/Q stream exports as its own [input] source with the spec's fields in canonical text (RATE and
     # FREQ in Hz) and none of the tuner keys of the inputs DSD-neo tunes; nothing connects.
@@ -537,8 +548,11 @@ else()
     )
 endif()
 
+# A config in the caller's environment never reaches a row: --no-config does nothing (it says so).
 execute_process(
-    COMMAND "${DSD_NEO_CLI}" ${_args}
+    COMMAND
+        "${CMAKE_COMMAND}" -E env --unset=DSD_NEO_CONFIG "${DSD_NEO_CLI}"
+        ${_args}
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _stdout
     ERROR_VARIABLE _stderr

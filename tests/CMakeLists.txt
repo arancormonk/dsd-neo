@@ -11036,11 +11036,13 @@ set_tests_properties(
 # Issue #518 follow-up: --print-config comes before the engine reads an RTL-SDR or
 # rtl_tcp spec, so it exported the option defaults (rtl_gain = 0, which a load now
 # applies as AGC) instead of the spec's tuning. It reads the spec first now.
+# --no-config does nothing (it says so): the run is kept from a config by leaving
+# DSD_NEO_CONFIG unset, as for every run below that passes it.
 add_test(
     NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_SPEC
     COMMAND
-        $<TARGET_FILE:dsd-neo> --no-config -i rtl:0:155.34M:30:5:24:-40:3
-        --print-config
+        ${CMAKE_COMMAND} -E env --unset=DSD_NEO_CONFIG $<TARGET_FILE:dsd-neo>
+        --no-config -i rtl:0:155.34M:30:5:24:-40:3 --print-config
 )
 set_tests_properties(
     RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_SPEC
@@ -11052,8 +11054,9 @@ set_tests_properties(
 add_test(
     NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_SPEC
     COMMAND
-        $<TARGET_FILE:dsd-neo> --no-config -i
-        rtltcp:radio.local:1235:851.0125M:12:-2:16:-50:1 --print-config
+        ${CMAKE_COMMAND} -E env --unset=DSD_NEO_CONFIG $<TARGET_FILE:dsd-neo>
+        --no-config -i rtltcp:radio.local:1235:851.0125M:12:-2:16:-50:1
+        --print-config
 )
 set_tests_properties(
     RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_SPEC
@@ -11102,7 +11105,8 @@ endif()
 add_test(
     NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_EMPTY_FIELDS
     COMMAND
-        $<TARGET_FILE:dsd-neo> --no-config -i rtl::851.0125M:20:3 --print-config
+        ${CMAKE_COMMAND} -E env --unset=DSD_NEO_CONFIG $<TARGET_FILE:dsd-neo>
+        --no-config -i rtl::851.0125M:20:3 --print-config
 )
 set_tests_properties(
     RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_EMPTY_FIELDS
@@ -11116,6 +11120,14 @@ add_test(
     COMMAND
         ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
         DSD_NEO_CLI_SMOKE_MODE=print-config-rtltcp-bad-port -P
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+)
+# --no-config does nothing since config loading became opt-in; it says so.
+add_test(
+    NAME RUNTIME_CLI_NO_CONFIG_NOTICE
+    COMMAND
+        ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+        DSD_NEO_CLI_SMOKE_MODE=no-config-notice -P
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
 )
 set_tests_properties(

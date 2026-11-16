@@ -224,6 +224,9 @@ explicitly requested.
 - Environment: `DSD_NEO_CONFIG=/path/to/config.ini`
 - Explicit paths may be absolute, relative to the current working directory, or use `~`/environment expansion.
 
+`--no-config` is still accepted from older command lines, but it does nothing: dsd-neo prints a NOTICE saying so. To
+start without a config, leave out `--config` and any `.ini` argument, and unset `DSD_NEO_CONFIG`.
+
 When multiple config-path sources are present, explicit CLI paths win:
 
 1. `--config PATH` or a single positional `*.ini`

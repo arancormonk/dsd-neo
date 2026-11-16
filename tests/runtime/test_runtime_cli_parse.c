@@ -12317,8 +12317,11 @@ test_bootstrap_refuses_config_tuning_on_iq_stream(void) {
         if (cases[i].want_key != NULL) {
             char want[160];
             DSD_SNPRINTF(want, sizeof want, "%s: an I/Q stream cannot retune", cases[i].want_key);
-            fail = boot != DSD_BOOTSTRAP_ERROR || exit_rc != 1 || strstr(err, want) == NULL
-                   || strstr(err, "or start without that file (no --config, and DSD_NEO_CONFIG unset)") == NULL;
+            fail =
+                boot != DSD_BOOTSTRAP_ERROR || exit_rc != 1 || strstr(err, want) == NULL
+                || strstr(err,
+                          "or start without that file (no --config, no .ini file argument, and DSD_NEO_CONFIG unset)")
+                       == NULL;
         } else {
             fail = boot != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0;
         }
