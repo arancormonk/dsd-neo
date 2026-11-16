@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "nxdn_confirm.h"
 
 static dsd_opts g_opts;

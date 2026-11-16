@@ -64,6 +64,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/dsp/unflushed_retune.h"
 #include "dsd-neo/platform/sockets.h"
 #include "frame_sync_unflushed.h"
 #include "pcm_input_staging.h"

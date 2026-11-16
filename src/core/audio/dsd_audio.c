@@ -53,6 +53,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/dsp/unflushed_retune.h"
 #include "dsd_audio_internal.h"
 #include "voice_chain_internal.h"
 

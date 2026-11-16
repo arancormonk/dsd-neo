@@ -12,6 +12,7 @@
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"

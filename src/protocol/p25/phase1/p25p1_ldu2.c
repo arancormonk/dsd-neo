@@ -43,7 +43,6 @@
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>

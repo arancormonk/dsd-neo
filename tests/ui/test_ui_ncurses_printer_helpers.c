@@ -60,6 +60,7 @@
 #include "dsd-neo/core/call_state.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/runtime/decode_clock.h"
+#include "ui_key_status.h"
 #include "ui_row.h"
 #include "unit_activity_panel.h"
 

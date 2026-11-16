@@ -9,7 +9,6 @@
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
-#include <stddef.h>
 #include <stdint.h>
 #include "dsd-neo/core/state_fwd.h"
 

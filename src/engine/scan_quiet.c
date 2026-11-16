@@ -31,6 +31,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #endif
+#include "dsd-neo/runtime/analog_channel.h"
 #include "scan_landing.h"
 
 /* Width classes (the values of DSD_SIGNAL_QUIET_CLASS_*, which signal_measure.h, a radio header, names). */

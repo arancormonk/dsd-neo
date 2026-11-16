@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
+#include "dsd-neo/core/state_fwd.h"
 
 /* How far a terminator may stand from where the one before it ended and still be part of the same end
  * (dsd_state::p25_p1_terminator_end_next_clock): the symbol grid's slips move a sync word by a symbol or two, while a

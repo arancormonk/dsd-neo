@@ -48,10 +48,10 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "p25p1_current_call.h"
 
 #ifdef SOFTID
 #include <dsd-neo/core/talkgroup_policy.h>
+#include "p25p1_current_call.h"
 #endif
 
 static void

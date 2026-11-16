@@ -64,7 +64,6 @@
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
-#include <dsd-neo/io/control.h>
 #include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>

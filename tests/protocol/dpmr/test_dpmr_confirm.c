@@ -22,6 +22,7 @@
 #include <stdlib.h>
 
 #include "dpmr_confirm.h"
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int g_failures;
