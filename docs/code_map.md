@@ -2558,7 +2558,8 @@ suite runs under this compiler.
       carries, so a success is result UNKNOWN, the cause kept as the reason) and GRP_REG_RESP
       0x24 with Cause (MM) as the reason (location accepted with the group failed or refused is a registration
       accepted, a group join failed / refused); the home Location ID without site code is the subject's home, the
-      visitor unit (H/V set and present) `assigned` and the visitor group `value2`. REM_CON_REQ 0x34: stun / revival /
+      visitor unit (H/V set and present) `assigned` and the visitor group `value2`; a visitor's GroupID is its home
+      system's group (TS 1-C §15.2), so it is `group_nonlocal` and the view never labels it from this system's list. REM_CON_REQ 0x34: stun / revival /
       kill / remote monitor (unit only) COMMAND rows, G/U picking unit or group, the source the actor, the Control
       Parameter in `value2`. REM_CON_RESP 0x35: RESPONSE rows with the source (the controlled unit, TS 1-C Fig
       15.21-1) as the subject, the destination (the requester) as the recipient and Cause (SS) as the reason (the

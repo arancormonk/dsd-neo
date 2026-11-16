@@ -270,6 +270,7 @@ MUTATOR(m_scope_kind, r->scope.kind = DSD_UA_SCOPE_P25_NAC)
 MUTATOR(m_scope_category, r->scope.category = 1U)
 MUTATOR(m_scope_invalid, r->scope.valid = 0U) /* rx_id is empty here: an unknown scope */
 MUTATOR(m_subject_nonlocal, r->subject_nonlocal = 1U)
+MUTATOR(n_gated_group_nonlocal, r->group_nonlocal = 1U)
 MUTATOR(m_freq, r->freq_hz = 851012500)
 
 /* Fields outside the key, or held only while a valid flag is set: the pair merges. */
@@ -324,6 +325,7 @@ test_pairs_differing_in_one_key_field(void) {
         {"value without value_valid", n_gated_value, 1},
         {"value2 without value2_valid", n_gated_value2, 1},
         {"group without group_valid", n_gated_group, 1},
+        {"group nonlocal without a group", n_gated_group_nonlocal, 1},
         {"actor without valid", n_gated_actor, 1},
         {"home without home_valid", n_gated_home, 1},
     };
@@ -683,6 +685,21 @@ test_nonlocal_needs_a_subject(void) {
     free_state(st);
 }
 
+/* group_nonlocal is keyed with the group: the same group number of another system is another row. */
+static void
+test_group_nonlocal_is_keyed(void) {
+    dsd_state* st = new_state();
+    clock_at_ms(T0_MS);
+    dsd_unit_activity row = base_row();
+    row.group = 4001U;
+    row.group_valid = 1U;
+    assert(dsd_unit_activity_push(st, &row) == 1);
+    row.group_nonlocal = 1U;
+    assert(dsd_unit_activity_push(st, &row) == 1);
+    assert(dsd_unit_activity_push(st, &row) == 0);
+    free_state(st);
+}
+
 /* dsd_unit_activity_freeze_name(): a nonlocal subject is never named from the local lists (its assigned identity
  * still is), and a GROUP subject keeps its talkgroup label, so another system's group row still shows it. */
 static void
@@ -999,6 +1016,7 @@ main(void) {
     test_scope_from_rx_id();
     test_name_frozen_terminated_at_a_character();
     test_nonlocal_needs_a_subject();
+    test_group_nonlocal_is_keyed();
     test_freeze_name_nonlocal_and_group();
     test_rejects_bad_rows_and_args();
     test_push_allocation_failure();

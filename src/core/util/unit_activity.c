@@ -291,6 +291,7 @@ ua_normalize(const dsd_state* state, const dsd_unit_activity* in, dsd_unit_activ
     ua_identity_normalize(&in->recipient, &out->recipient);
     out->group_valid = in->group_valid ? 1U : 0U;
     out->group = in->group_valid ? in->group : 0U;
+    out->group_nonlocal = (in->group_valid && in->group_nonlocal) ? 1U : 0U;
     out->value_valid = in->value_valid ? 1U : 0U;
     out->value = in->value_valid ? in->value : 0U;
     out->value2_valid = in->value2_valid ? 1U : 0U;
@@ -326,8 +327,9 @@ ua_header_equal(const dsd_unit_activity* a, const dsd_unit_activity* b) {
 
 static int
 ua_payload_equal(const dsd_unit_activity* a, const dsd_unit_activity* b) {
-    return a->group_valid == b->group_valid && a->group == b->group && a->value_valid == b->value_valid
-           && a->value == b->value && a->value2_valid == b->value2_valid && a->value2 == b->value2;
+    return a->group_valid == b->group_valid && a->group == b->group && a->group_nonlocal == b->group_nonlocal
+           && a->value_valid == b->value_valid && a->value == b->value && a->value2_valid == b->value2_valid
+           && a->value2 == b->value2;
 }
 
 static int

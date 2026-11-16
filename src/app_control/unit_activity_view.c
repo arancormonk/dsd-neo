@@ -525,7 +525,8 @@ ua_join_whole(char* out, size_t limit, const char* part) {
     return 1;
 }
 
-/* The row's talkgroup with, when the row's system is current, its label shortened to what the rest leaves room for. */
+/* The row's talkgroup with, when the row's system is current and the group is its own (not another system's, as an
+ * NXDN visitor's home GroupID), its label shortened to what the rest leaves room for. */
 static void
 ua_group_text(const ua_naming* n, const dsd_unit_activity* r, size_t room, char* out, size_t cap) {
     char label[DSD_SOURCE_ALIAS_NAME_MAX + 16];
@@ -535,7 +536,7 @@ ua_group_text(const ua_naming* n, const dsd_unit_activity* r, size_t room, char*
     }
     DSD_SNPRINTF(out, cap, "TG %u", (unsigned)r->group);
     const size_t used = strlen(out) + 1U; /* the number and the space before the label */
-    if (!n->live || room <= used
+    if (!n->live || r->group_nonlocal || room <= used
         || !dsd_tg_policy_lookup_group_label(n->snapshot, r->group, NULL, 0U, label, sizeof label)) {
         return;
     }

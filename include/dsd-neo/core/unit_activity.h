@@ -194,6 +194,8 @@ typedef struct {
  *   its Location ID does not qualify): the local lists never name it, at push
  *   (dsd_unit_activity_freeze_name()) or in the view, though its assigned identity may be named. Keyed with the
  *   subject. Push clears it on a row with no valid subject.
+ * - group_nonlocal: 1 when the row's group number is another system's (an NXDN visitor's home GroupID, TS 1-C §15.2):
+ *   the view never labels it from the local lists. Keyed with the group; push clears it on a row with no group.
  * - name_frozen: the latest pushed name: the subject's name as the producer resolved it at the push that inserted
  *   the row, replaced by each merge that pushes a non-empty one (UTF-8, NUL-terminated; push cuts it at a character
  *   boundary when it fills the field). It is "frozen" only against later alias changes: nothing rewrites it but a
@@ -218,6 +220,7 @@ typedef struct dsd_unit_activity {
     uint8_t group_valid;
     uint8_t value2_valid;
     uint8_t subject_nonlocal;
+    uint8_t group_nonlocal;
     char name_frozen[32];
 } dsd_unit_activity;
 
@@ -257,7 +260,7 @@ typedef struct dsd_unit_activity_read_meta {
  *
  * Merge key: every field but seq, rev, first_ms, last_ms, wall_s, repeat, slot and name_frozen (protocol, kind,
  * role, result, stage, reason set and code, the four identities with their home systems, group, value, value2 and
- * their valid flags, subject_nonlocal, scope and freq_hz). One exception: a DEREGISTRATION push with no assigned
+ * their valid flags, subject_nonlocal, group_nonlocal, scope and freq_hz). One exception: a DEREGISTRATION push with no assigned
  * identity matches a held row whatever its assigned identity (the producer reads that identity from the registration
  * the first acknowledgement removed, so a repeat finds none). A merge keeps the row's slot and every key field the row
  * holds, and takes the pushed name when it is not empty, so name_frozen holds the latest pushed name.

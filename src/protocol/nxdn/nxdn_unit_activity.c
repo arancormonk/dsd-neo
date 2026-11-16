@@ -251,6 +251,8 @@ nxdn_ua_reg_resp(const dsd_opts* opts, dsd_state* state, const uint8_t* elements
     nxdn_ua_set_home(&row.subject, elements);
     row.group = group;
     row.group_valid = (uint8_t)(group != 0U);
+    /* A visitor's GroupID is its home system's group (TS 1-C §15.2): never labelled from this system's list. */
+    row.group_nonlocal = (uint8_t)(visitor & 1U);
     row.reason_set = DSD_UA_REASON_NXDN_MM;
     row.reason_code = cause;
     DSD_FPRINTF(stderr, " - Unit: %u; Group: %u; ", (unsigned)unit, (unsigned)group);
@@ -306,6 +308,8 @@ nxdn_ua_grp_reg_resp(const dsd_opts* opts, dsd_state* state, const uint8_t* elem
     row.subject = nxdn_ua_unit(unit);
     row.group = group;
     row.group_valid = (uint8_t)(group != 0U);
+    /* A visitor's GroupID is its home system's group (TS 1-C §15.2): never labelled from this system's list. */
+    row.group_nonlocal = (uint8_t)(visitor & 1U);
     row.reason_set = DSD_UA_REASON_NXDN_MM;
     row.reason_code = cause;
     DSD_FPRINTF(stderr, " - Unit: %u; Group: %u; ", (unsigned)unit, (unsigned)group);

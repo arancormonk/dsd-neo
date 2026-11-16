@@ -12,6 +12,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
@@ -540,6 +541,68 @@ test_rem_con_inter_system(dsd_opts* opts) {
     free(st);
 }
 
+/* The newest row's target text as every frontend shows it (the app-control view over the live ring). */
+static void
+view_newest_target(const dsd_state* state, char* out, size_t cap) {
+    dsd_app_unit_activity_cursor cursor = {0, 0};
+    dsd_app_unit_activity_meta meta;
+    dsd_app_unit_activity_row rows[16];
+    const int n = dsd_app_unit_activity_rows(state, &cursor, rows, 16, &meta);
+    uint64_t newest = 0;
+    out[0] = '\0';
+    for (int i = 0; i < n; i++) {
+        if (rows[i].seq > newest) {
+            newest = rows[i].seq;
+            DSD_SNPRINTF(out, cap, "%s", rows[i].target_text);
+        }
+    }
+}
+
+/* A visitor's registration names its home GroupID (TS 1-C §15.2): a talkgroup of the visitor's home system, which the
+   serving system's list never labels (system 77's TG 300 "Local Fire" is another group). A unit at home is labelled
+   as before. */
+static void
+test_visitor_home_group_not_labelled(dsd_opts* opts) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    if (st == NULL) {
+        abort();
+    }
+    g_instance = 0;
+    g_rev = 0;
+    uint8_t e[CAC_ELEMENTS];
+    dsd_unit_activity r;
+    char target[160];
+    dsd_rxid_note_nxdn_location(st, 2U, 77U, 3U);
+    dsd_tg_policy_entry fire;
+    expect_true(dsd_tg_policy_make_exact_entry(300U, "A", "Local Fire", DSD_TG_POLICY_SOURCE_IMPORTED, &fire) == 0,
+                "a group label row");
+    (void)dsd_tg_policy_upsert_exact(st, &fire, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+
+    build_reg_resp(e, 1U, 1001U, 300U, 0x01U, 3001U, 400U);
+    put_bits(e, 15, 88U, 17); /* the visitor's home: system 88 */
+    run_cac(opts, st, e);
+    (void)one_row(st, &r, "visitor registration");
+    view_newest_target(st, target, sizeof target);
+    expect_true(strcmp(target, "TG 300, visitor TG 400, as 3001") == 0, "a visitor's home group is not labelled here");
+
+    build_grp_reg_resp(e, 1U, 1001U, 300U, 0x01U, 400U);
+    run_cac(opts, st, e);
+    (void)one_row(st, &r, "visitor group registration");
+    view_newest_target(st, target, sizeof target);
+    expect_true(strcmp(target, "TG 300, visitor TG 400") == 0, "a visitor's home group join is not labelled here");
+
+    build_reg_resp(e, 0U, 1001U, 300U, 0x01U, 0U, 0U);
+    run_cac(opts, st, e);
+    (void)one_row(st, &r, "home registration");
+    view_newest_target(st, target, sizeof target);
+    expect_true(strcmp(target, "TG 300 Local Fire") == 0, "a unit at home has its group labelled");
+    if (g_failures != 0) {
+        DSD_FPRINTF(stderr, "last target text: '%s'\n", target);
+    }
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -553,6 +616,7 @@ main(void) {
     test_channel_gates(opts, state);
     test_naming(opts);
     test_rem_con_inter_system(opts);
+    test_visitor_home_group_not_labelled(opts);
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);

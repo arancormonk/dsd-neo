@@ -2442,6 +2442,8 @@ add_test(NAME NXDN_ALIAS_DECODE COMMAND dsd-neo_test_nxdn_alias_decode)
 add_executable(
     dsd-neo_test_nxdn_unit_activity
     protocol/nxdn/test_nxdn_unit_activity.c
+    # Talkgroup labels are also read back through the app-control view every frontend shows.
+    ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_unit_activity
