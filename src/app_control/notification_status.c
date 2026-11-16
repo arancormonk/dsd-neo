@@ -159,6 +159,9 @@ dsd_app_notification_publish_opts(const dsd_opts* opts) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     g_status.radio_input = radio ? 1U : 0U;
+    /* The predicate every refusal of a tuner command reads, so a frontend that greys its tuner views on this never
+       offers a command the decoder then turns down (issue #743). */
+    g_status.tunable = dsd_opts_radio_can_tune(opts) ? 1U : 0U;
     g_status.trunking = (opts->trunk_enable == 1) ? 1U : 0U;
     g_status.trunk_tuned = (opts->trunk_is_tuned == 1) ? 1U : 0U;
     /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575); 0 off a radio input. */

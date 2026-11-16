@@ -339,8 +339,14 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
 ### `status`: decoder status and command context
 
 `available`, `protocol`, `vc_freq_hz`, `cc_freq_hz`, `center_freq_hz`,
-`radio_input`, `trunking`, `trunk_tuned`, `lead_slot`, per-slot
+`radio_input`, `tunable`, `trunking`, `trunk_tuned`, `lead_slot`, per-slot
 `slots[{slot,state,name,src_text,tg_id,emergency,enc}]`, `synctype`, and:
+
+* `tunable`: `true` while DSD-neo can tune the radio that feeds it (a live
+  RTL-SDR, rtl_tcp, SoapySDR or Airspy input). It is `false` on an I/Q replay
+  and on an I/Q stream (`-i iqtcp:` / `-i iqudp:`), whose channel is fixed, and
+  on audio input. Grey out tuning, gain and PPM controls while it is `false`:
+  the decoder refuses those commands there.
 
 * `message`: `{text, expires}` while the decoder shows a notice (for example the
   reason it refused a queued command), else `null`.

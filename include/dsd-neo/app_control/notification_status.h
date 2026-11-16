@@ -45,8 +45,14 @@ typedef struct {
     int64_t cc_freq_hz;     /**< Control channel; 0 when none is known. */
     int64_t center_freq_hz; /**< Tuner centre; 0 unless the input is a radio. */
     uint8_t radio_input;    /**< Non-zero for RTL-family input only. */
-    uint8_t trunking;       /**< opts->trunk_enable. */
-    uint8_t trunk_tuned;    /**< opts->trunk_is_tuned. */
+    /**
+     * Non-zero while DSD-neo can tune the radio feeding it (dsd_opts_radio_can_tune(), issue #743): a live RTL-SDR,
+     * rtl_tcp, SoapySDR or Airspy input. 0 on an I/Q replay or I/Q stream (radio input with fixed tuning) and on audio
+     * input. Published through the status JSON only; the v4 record does not carry it.
+     */
+    uint8_t tunable;
+    uint8_t trunking;    /**< opts->trunk_enable. */
+    uint8_t trunk_tuned; /**< opts->trunk_is_tuned. */
     dsd_app_slot_call slots[DSD_CALL_STATE_SLOT_COUNT];
     /**
      * @brief Index into @c slots of the call that should headline, or -1 for none.

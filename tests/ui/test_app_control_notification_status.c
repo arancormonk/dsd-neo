@@ -317,6 +317,60 @@ test_replay_reports_the_capture_centre(void) {
     free(opts);
 }
 
+/* Issue #743: tunable says whether DSD-neo can tune the radio feeding it, by the predicate every tuner refusal reads
+   (dsd_opts_radio_can_tune()): a live RTL-SDR or rtl_tcp radio can; an I/Q replay or I/Q stream, a radio input with
+   fixed tuning, cannot; nor can audio input. The v4 record is unchanged by it: the same input with tunable on and off
+   encodes the same header. */
+static void
+test_publish_opts_carries_tunable(void) {
+    static const struct {
+        const char* dev;
+        int type;
+        uint8_t radio;
+        uint8_t tunable;
+    } rows[] = {
+        {"rtl:0:851.0125M", AUDIO_IN_RTL, 1U, 1U},
+        {"rtltcp:127.0.0.1:1234", AUDIO_IN_RTL, 1U, 1U},
+        {"iqreplay:capture.iq.json", AUDIO_IN_RTL, 1U, 0U},
+        {"iqtcp:127.0.0.1:5000:240000:cs16", AUDIO_IN_RTL, 1U, 0U},
+        {"iqudp:0.0.0.0:5000:48000:cu8:426700000", AUDIO_IN_RTL, 1U, 0U},
+        {"capture.wav", AUDIO_IN_WAV, 0U, 0U},
+    };
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    char first[DSD_APP_NOTIFICATION_RECORD_SIZE] = "";
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        opts->audio_in_type = rows[i].type;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", rows[i].dev);
+        opts->rtlsdr_center_freq = 851012500U;
+        dsd_app_notification_publish_opts(opts);
+
+        dsd_app_notification_status status;
+        assert(dsd_app_notification_get(&status) == 1);
+        assert(status.radio_input == rows[i].radio);
+        assert(status.tunable == rows[i].tunable);
+        assert(status.tunable == (dsd_opts_radio_can_tune(opts) ? 1U : 0U));
+
+        /* The two radio rows that differ only in tunable encode the same v4 header, version to lead slot. */
+        char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+        assert(dsd_app_notification_encode(record, sizeof record) > 0);
+        assert(strncmp(record, "v4\t", 3) == 0);
+        char* field = record;
+        for (int tab = 0; tab < 9 && field; tab++) {
+            field = strchr(field + 1, '\t');
+        }
+        assert(field != NULL);
+        *field = '\0';
+        if (i == 1U) {
+            DSD_SNPRINTF(first, sizeof first, "%s", record);
+        } else if (i == 3U) {
+            assert(strcmp(record, first) == 0);
+        }
+    }
+    free(opts);
+}
+
 /* The record's two halves are published by separate calls, and the opts half is the one
    that runs first -- dsd_telemetry_publish_both_and_redraw() publishes opts, then the whole
    snapshot body, then state. So there is a window at the start of every session in which
@@ -1044,6 +1098,7 @@ main(void) {
     test_sync_label_hold_runs_on_real_time();
     test_publish_opts_carries_radio_and_trunking();
     test_non_radio_input_reports_no_centre();
+    test_publish_opts_carries_tunable();
     test_replay_reports_the_capture_centre();
     test_opts_only_publish_keeps_the_no_slot_sentinel();
     test_revision_advances_on_each_publish();

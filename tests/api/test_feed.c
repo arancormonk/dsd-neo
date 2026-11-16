@@ -7,7 +7,7 @@
  * The API feed's scan avoid copy (issue #672) through its test hooks, against stand-ins for the server: a page reader
  * held between pinning the list and reading it while the decode thread swaps in a new list, and a failed collection of
  * a -Y list followed by a retry at the same key, and the cached records and copy dropped when no client is connected
- * and replaced at a decoder restart.
+ * and replaced at a decoder restart; and the status record's tunable for each kind of input (issue #743).
  */
 
 #include <assert.h>
@@ -315,6 +315,39 @@ test_cache_never_stale(void) {
     expect_status_has(want);
 }
 
+/*============================================================================
+ * The status record's tunable (issue #743)
+ *============================================================================*/
+
+/* `tunable` follows dsd_opts_radio_can_tune(), beside `radio_input`: a live radio is tunable, an I/Q stream and an I/Q
+   replay are radio inputs that are not, and audio input is neither. */
+static void
+test_status_tunable(void) {
+    static const struct {
+        int type;
+        const char* dev;
+        const char* want;
+    } rows[] = {
+        {AUDIO_IN_RTL, "rtl:0:851.0125M", "\"radio_input\":true,\"tunable\":true,"},
+        {AUDIO_IN_RTL, "iqtcp:127.0.0.1:5000:240000:cs16", "\"radio_input\":true,\"tunable\":false,"},
+        {AUDIO_IN_RTL, "iqudp:0.0.0.0:5000:48000:cu8", "\"radio_input\":true,\"tunable\":false,"},
+        {AUDIO_IN_RTL, "iqreplay:capture.iq.json", "\"radio_input\":true,\"tunable\":false,"},
+        {AUDIO_IN_PULSE, "pulse", "\"radio_input\":false,\"tunable\":false,"},
+    };
+
+    const int type = g_opts->audio_in_type;
+    char dev[sizeof g_opts->audio_in_dev];
+    DSD_SNPRINTF(dev, sizeof dev, "%s", g_opts->audio_in_dev);
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        g_opts->audio_in_type = rows[i].type;
+        DSD_SNPRINTF(g_opts->audio_in_dev, sizeof g_opts->audio_in_dev, "%s", rows[i].dev);
+        feed_tick();
+        expect_status_has(rows[i].want);
+    }
+    g_opts->audio_in_type = type;
+    DSD_SNPRINTF(g_opts->audio_in_dev, sizeof g_opts->audio_in_dev, "%s", dev);
+}
+
 int
 main(void) {
     g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
@@ -328,6 +361,7 @@ main(void) {
     test_reader_keeps_pinned_list();
     test_lcn_failed_collection();
     test_cache_never_stale();
+    test_status_tunable();
 
     dsd_api_feed_stop();
     dsd_app_frontend_runtime_stop();
