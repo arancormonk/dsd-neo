@@ -241,6 +241,44 @@ test_throttled_short_blocks_fill_the_window(void) {
     assert(frames_match(bins, whole));
 }
 
+/* A whole block keeps its tail for a short block after it, which then makes a
+ * frame at once; in a run of whole blocks only the first does (the rest analyse
+ * themselves and copy nothing), so a short block after the run waits for a
+ * whole window of short blocks. */
+void
+test_a_run_of_whole_blocks_keeps_no_history(void) {
+    const std::vector<float> iq = make_tone(kToneOffsetHz, kCaptureRateHz, kPairs);
+    (void)whole_block_frame(iq);
+    std::vector<float> bins;
+    uint32_t serial = 0;
+
+    /* One whole block (whole_block_frame()'s), then a short one: a frame at once. */
+    assert(read_frame(&bins, nullptr, &serial) == DSD_WIDEBAND_SPECTRUM_BINS);
+    uint32_t before = serial;
+    feed_short_block(iq, 0, kCenterHz, true);
+    assert(read_frame(&bins, nullptr, &serial) == DSD_WIDEBAND_SPECTRUM_BINS);
+    assert(serial != before);
+
+    /* Two whole blocks in a row: each still publishes its own frame. */
+    for (int k = 0; k < 2; k++) {
+        before = serial;
+        rtl_wideband_spectrum_test_reset_throttle();
+        rtl_wideband_spectrum_maybe_update(iq.data(), DSD_WIDEBAND_SPECTRUM_BINS * 2, kCaptureRateHz, kCenterHz);
+        assert(read_frame(&bins, nullptr, &serial) == DSD_WIDEBAND_SPECTRUM_BINS);
+        assert(serial != before);
+    }
+    /* The second kept no history: three short blocks make no frame, the fourth does. */
+    before = serial;
+    for (int b = 0; b < 3; b++) {
+        feed_short_block(iq, b * kShortPairs, kCenterHz, true);
+        assert(read_frame(&bins, nullptr, &serial) == DSD_WIDEBAND_SPECTRUM_BINS);
+        assert(serial == before);
+    }
+    feed_short_block(iq, 3 * kShortPairs, kCenterHz, true);
+    assert(read_frame(&bins, nullptr, &serial) == DSD_WIDEBAND_SPECTRUM_BINS);
+    assert(serial != before);
+}
+
 /* A clear drops the pairs before it: the first frame after it waits for a
  * whole window of pairs offered after it. */
 void
@@ -423,6 +461,7 @@ main(void) {
     test_clear_invalidates_frame();
     test_short_blocks_add_up_to_one_frame();
     test_throttled_short_blocks_fill_the_window();
+    test_a_run_of_whole_blocks_keeps_no_history();
     test_clear_restarts_the_history();
     test_a_gap_or_a_new_centre_restarts_the_history();
     test_disable_drops_frame();

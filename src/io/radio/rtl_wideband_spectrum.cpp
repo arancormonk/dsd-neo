@@ -105,6 +105,10 @@ int g_wb_hist_pairs = 0;
 uint32_t g_wb_hist_rate_hz = 0;
 uint32_t g_wb_hist_center_hz = 0;
 uint32_t g_wb_seen_gap_gen = 0;
+/* Whether the block before this one, in this stretch, filled the window by itself. A source sends blocks of one size,
+ * so in a run of such blocks only the first keeps its tail in the history, for a shorter block that may follow it; the
+ * rest analyse themselves and leave the history empty, sparing a copy per block. */
+bool g_wb_prev_block_filled = false;
 
 dsd_io::FftSetupCache g_wb_fft_setup;
 dsd_io::HannWindowCache<kWbSpecN> g_wb_hann;
@@ -157,6 +161,7 @@ wb_sync_history(uint32_t capture_rate_hz, uint32_t center_freq_hz) {
         g_wb_hist_center_hz = center_freq_hz;
         g_wb_hist_head = 0;
         g_wb_hist_pairs = 0;
+        g_wb_prev_block_filled = false;
     }
     return gen;
 }
@@ -176,6 +181,20 @@ wb_history_append(const float* iq_interleaved, int pairs) {
     }
     g_wb_hist_head = (g_wb_hist_head + keep) % kWbSpecN;
     g_wb_hist_pairs = (g_wb_hist_pairs + keep < kWbSpecN) ? (g_wb_hist_pairs + keep) : kWbSpecN;
+}
+
+/** @brief Take a block of @p pairs into the history: its tail, or, after a block that filled the window too, nothing
+ *  (the history starts over empty, and a shorter block after it waits for a whole window of its own). */
+void
+wb_history_take(const float* iq_interleaved, int pairs) {
+    const bool fills = pairs >= kWbSpecN;
+    if (fills && g_wb_prev_block_filled) {
+        g_wb_hist_head = 0;
+        g_wb_hist_pairs = 0;
+    } else {
+        wb_history_append(iq_interleaved, pairs);
+    }
+    g_wb_prev_block_filled = fills;
 }
 
 /** @brief Copy the full history into @p out, oldest pair first. */
@@ -224,17 +243,17 @@ rtl_wideband_spectrum_maybe_update(const float* iq_interleaved, int len_interlea
     }
 
     /* Every block goes into the history, a throttled one too: the next frame may
-     * need its tail. */
+     * need its tail (wb_history_take()). */
     const int n = kWbSpecN;
     const int pairs = len_interleaved >> 1;
     const uint32_t gen = wb_sync_history(capture_rate_hz, center_freq_hz);
-    wb_history_append(iq_interleaved, pairs);
+    wb_history_take(iq_interleaved, pairs);
 
     const uint64_t now_ns = dsd_realtime_mono_ns();
     if (g_wb_last_publish_ns != 0 && (now_ns - g_wb_last_publish_ns) < kWbSpecMinPeriodNs) {
         return;
     }
-    if (g_wb_hist_pairs < n) {
+    if (pairs < n && g_wb_hist_pairs < n) {
         return;
     }
 

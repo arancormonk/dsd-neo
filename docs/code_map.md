@@ -9037,7 +9037,9 @@ Key public headers:
     also drops the published frame and restarts the average), at a new rate or centre, and at
     `rtl_wideband_spectrum_note_gap()`, which the demod calls at every reset (`demod_reset_on_retune()`: retunes,
     stream and input gaps), every discarded block and every block a Signal search drops. Blocks of a full window or
-    more publish on the same cadence and from the same pairs as before. Test: `IO_RTL_WIDEBAND_SPECTRUM`.
+    more publish on the same cadence and from the same pairs as before; in a run of them only the first copies its tail
+    into the history (for a shorter block that may follow), the rest leave it empty (`wb_history_take()`). Test:
+    `IO_RTL_WIDEBAND_SPECTRUM`.
   - Input level freshness (B6): the producer stamps every level it measures on the real-time monotonic clock
     (`updated_ms`, in place of the wall read moments finalization used to take, so no new clock read on the sample
     path). `dsd_input_level_is_stale()` (`runtime/input_level.c`, `DSD_INPUT_LEVEL_STALE_MS` = 2 s) is the one rule:

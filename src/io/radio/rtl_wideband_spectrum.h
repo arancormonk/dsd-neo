@@ -21,6 +21,9 @@ extern "C" {
  * pairs of input, which blocks shorter than that make up between them; a
  * clear, a gap (rtl_wideband_spectrum_note_gap()) or a new rate or centre
  * starts that history over, and nothing is published until it is full again.
+ * A block that fills the window analyses itself; after another such block it
+ * leaves the history empty rather than copy its tail, so a shorter block that
+ * follows a run of them waits for a whole window of its own.
  *
  * @param iq_interleaved  Interleaved float I/Q at capture rate.
  * @param len_interleaved Number of floats (2x the complex pair count).
