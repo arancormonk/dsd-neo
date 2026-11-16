@@ -340,6 +340,33 @@ long dmr_sm_receiver_frequency(const dsd_opts* opts);
  *  of the tuner. */
 void dmr_sm_note_carrier_tune(dsd_state* state, long receiver_hz, long freq_hz);
 
+/** @brief An operator's move the tuner accepted, from @p receiver_hz (dmr_sm_receiver_frequency() read before the tune;
+ *  0 unknown) to @p freq_hz: a manual return to the control channel, a lockout or skip return, a channel or candidate
+ *  cycle. Called once the move ended the left calls (their rows keep the FID): judged as the machine's own follows
+ *  are, so a move that left the carrier forgets the left calls' privacy, ALG, key ID, MI and per-slot talkgroup key and
+ *  holds the next carrier's voice until its calls say whether they are encrypted (dmr_sm_leave_carrier()). A move to
+ *  the carrier the receiver is on keeps everything. */
+void dmr_sm_note_operator_leave(dsd_opts* opts, dsd_state* state, long receiver_hz, long freq_hz);
+
+/** @brief The DMR machine's own tunes: dsd_trunk_tuning_hook_tune_to_freq() / _to_cc() (no TED SPS override) inside a
+ *  dsd_trunk_tuning_dmr_judges_begin() / _end() pair, so the engine's tune hook leaves the judgement of a leave, for
+ *  the DMR calls' privacy and the hold, to the machine (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()). */
+static inline dsd_trunk_tune_result
+dmr_sm_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq_hz, uint64_t* out_request_id) {
+    dsd_trunk_tuning_dmr_judges_begin();
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq_hz, 0, out_request_id);
+    dsd_trunk_tuning_dmr_judges_end();
+    return result;
+}
+
+static inline dsd_trunk_tune_result
+dmr_sm_tune_to_cc(dsd_opts* opts, dsd_state* state, long freq_hz, uint64_t* out_request_id) {
+    dsd_trunk_tuning_dmr_judges_begin();
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq_hz, 0, out_request_id);
+    dsd_trunk_tuning_dmr_judges_end();
+    return result;
+}
+
 /** @brief Whether the machine follows a call on @p freq_hz (TUNED there). */
 int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
 

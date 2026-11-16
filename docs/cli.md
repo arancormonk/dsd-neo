@@ -437,17 +437,18 @@ Windows console runs:
   timestamp and the protocol token. A [service name](#receive-filters-and-service-names) that labels the traffic
   takes that place, scanning or not; other lines from a receiver that is not scanning a named channel are unchanged.
   A DMR, P25 Phase 2 or X2-TDMA line ends with the over-the-air slot, `Slot 1;` or `Slot 2;`. The single-slot DMR
-  decoder (`-fr`, `-nm`) carries both slots on one lane and logs the slot its bursts' CACH proved (`Slot 1;` while
-  none is proven). In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
-  P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]` by decoder lane (the single-slot decoder's rows are all `[S1]`), while
-  FDMA rows carry no slot tag. An analog line names its mode after the `ANALOG` token, `NFM` or `AM` as dsd-neo
-  demodulated it, and no mode on audio input, where another receiver did. It names the tuned frequency as digital lines
-  do, `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on audio input (earlier versions wrote
-  `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). On audio input an analog line names the
-  frequency a `-Y` row (stepped to by the scan or by `C`/`J`) or a conventional `--trunk-scan` target confirmed it
-  tuned its rigctl peer to; digital lines on audio input still name none, and neither a frequency changed on the peer
-  itself nor one tuned with `=` is named. Last comes the CTCSS tone or DCS code the call was received with, as Call
-  Info's `Rx tone:` line writes it:
+  decoder (`-fr`, `-nm`) without trunking carries both slots on one lane and logs the slot its bursts' CACH proved
+  (`Slot 1;` while none is proven); with trunking (`-T`) it decodes a repeater's calls on their own slots, as the
+  two-slot decoder does. In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
+  P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]` by decoder lane (the single-slot decoder's rows are all `[S1]` without
+  trunking, and its calls' own slots with it), while FDMA rows carry no slot tag. An analog line names its mode after
+  the `ANALOG` token, `NFM` or `AM` as dsd-neo demodulated it, and no mode on audio input, where another receiver did.
+  It names the tuned frequency as digital lines do, `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on
+  audio input (earlier versions wrote `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). On audio input
+  an analog line names the frequency a `-Y` row (stepped to by the scan or by `C`/`J`) or a conventional `--trunk-scan`
+  target confirmed it tuned its rigctl peer to; digital lines on audio input still name none, and neither a frequency
+  changed on the peer itself nor one tuned with `=` is named. Last comes the CTCSS tone or DCS code the call was
+  received with, as Call Info's `Rx tone:` line writes it:
   `ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`,
   `ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I;`, `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input
   `ANALOG; CTCSS 100.0 Hz;`. A call with no tone, or whose tone was never confirmed, names none; a tone lost just

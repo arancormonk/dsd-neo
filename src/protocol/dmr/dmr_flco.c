@@ -45,6 +45,7 @@
 #include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_hytera.h"
+#include "dmr_mono_slot.h"
 #include "dmr_tiii_site.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -108,8 +109,8 @@ typedef struct {
     uint8_t burst_slot;
     uint8_t slot_collapsed;
     uint8_t slot_idx;
-    /* The slot whose voice this LC says how its call is encrypted, and whether it is known: the slot it is decoded on,
-       after any fold onto slot 0 (dmr_flco_single_slot_collapse()). */
+    /* The slot whose call's encryption this LC tells, and whether that slot is known: the slot it is decoded on, after
+       any fold onto slot 0 (dmr_mono_folds_standalone_burst()). */
     uint8_t voice_slot;
     uint8_t voice_slot_known;
     uint8_t unk;
@@ -201,15 +202,6 @@ dmr_flco_print_type_color(uint8_t type, const char* type1_color, const char* typ
     }
 }
 
-/* Whether this LC is folded onto slot 0: only where the voice it names is decoded on that one lane (MS, and the
-   single-slot decoder's direct-mode path). Under trunking the single-slot decoder runs a BS carrier's bursts on both
-   slots (dmr_bootstrap_mono()), so an LC decoded on its own there stays on the slot its burst's CACH proved, as on the
-   dual-slot decoder: its call, terminator, crypto and keys are that slot's. */
-static int
-dmr_flco_single_slot_collapse(const dsd_opts* opts, const dsd_state* state) {
-    return state->dmr_ms_mode == 1 || (opts->dmr_mono == 1 && opts->trunk_enable == 0 && state->dmr_stereo == 0);
-}
-
 static void
 dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect,
                   uint32_t* IrrecoverableErrors, uint8_t type) {
@@ -222,7 +214,7 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
     ctx->type = type;
     ctx->restchannel = -1;
 
-    const int collapse = dmr_flco_single_slot_collapse(opts, state);
+    const int collapse = dmr_mono_folds_standalone_burst(opts, state);
     ctx->burst_slot = (uint8_t)(state->currentslot & 1);
     ctx->slot_collapsed = (uint8_t)(collapse && ctx->burst_slot != 0);
     if (collapse) {
@@ -1973,8 +1965,7 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
     }
     uint64_t request_id = 0U;
     const long receiver = dmr_sm_receiver_frequency(opts);
-    dsd_trunk_tune_result tune_result =
-        dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0, &request_id);
+    dsd_trunk_tune_result tune_result = dmr_sm_tune_to_cc(opts, state, state->trunk_cc_freq, &request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
     }

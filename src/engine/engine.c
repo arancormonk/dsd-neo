@@ -3741,6 +3741,20 @@ carrier_boundary_stream_gap(dsd_opts* opts, dsd_state* state) {
     dsd_state_note_carrier_change(state);
 }
 
+/* The boundary's hold on each DMR slot's voice (dmr_enc_class_hold()): every kind holds it but a scan step that is the
+   scan's first landing in the run (dsd_state::scan_landed), which is the run's own first landing. */
+static void
+dsd_engine_boundary_holds_dmr_voice(dsd_state* state, dsd_carrier_boundary_kind kind) {
+    if (kind != DSD_CARRIER_BOUNDARY_SCAN_STEP) {
+        dmr_enc_class_hold(state);
+        return;
+    }
+    if (state->scan_landed != 0U) {
+        dmr_enc_class_hold(state);
+    }
+    state->scan_landed = 1U;
+}
+
 void
 dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
     if (!opts || !state) {
@@ -3775,9 +3789,10 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     /* Nor did the left calls say how the next carrier's are encrypted: its frames before their own LC decrypt with no
        privacy bit and no talkgroup key of theirs, a key set directly staying the user's. Not in the forget above,
        which a stream gap runs too: a call it reopens on the same carrier keys as before. Until each slot's call there
-       says whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()). */
+       says whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()), unless this is
+       the scan's first landing in the run, the run's own first landing (dsd_state::scan_landed). */
     dmr_forget_call_privacy(state);
-    dmr_enc_class_hold(state);
+    dsd_engine_boundary_holds_dmr_voice(state, kind);
     /* The digital voice level starts the next carrier's reception at its start gain (issue #518). Not in the forget
        above, which a stream gap runs too: that is the same carrier, whose transmissions decide. */
     dsd_voice_level_reset(state, -1);
@@ -5389,6 +5404,8 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
        source boundary (dsd_engine_note_run_stream_source()). */
     dmr_enc_class_release_hold(state, 0U);
     dmr_enc_class_release_hold(state, 1U);
+    /* Nor has a scan of this run landed yet: its first landing is the run's (dsd_state::scan_landed). */
+    state->scan_landed = 0U;
     if (enter_rc != 0) {
         rc = 1;
         goto ENGINE_OUT;

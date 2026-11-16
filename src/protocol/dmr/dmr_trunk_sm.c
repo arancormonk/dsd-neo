@@ -641,9 +641,8 @@ dmr_sm_settle_step(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double n
         const long freq = dmr_cc_tuner_frequency(opts, ctx);
         const long alias_before = state->trunk_cc_freq;
         uint64_t request_id = 0U;
-        const dsd_trunk_tune_result result = freq > 0
-                                                 ? dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, 0, &request_id)
-                                                 : DSD_TRUNK_TUNE_RESULT_FAILED;
+        const dsd_trunk_tune_result result =
+            freq > 0 ? dmr_sm_tune_to_cc(opts, state, freq, &request_id) : DSD_TRUNK_TUNE_RESULT_FAILED;
         state->trunk_cc_freq = alias_before;
         if (dsd_trunk_tune_result_is_ok(result)) {
             dmr_sm_note_carrier_tune(state, receiver, freq);
@@ -932,7 +931,7 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     const long anchor = state->trunk_cc_freq;
     const long receiver = dmr_sm_attributed_receiver(ctx, opts);
     uint64_t request_id = 0U;
-    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, 0, &request_id);
+    const dsd_trunk_tune_result result = dmr_sm_tune_to_cc(opts, state, freq, &request_id);
     /* The shared tune helper stages a CC frequency for legacy callers. DMR
      * probes retain their return destination until a control message proves it. */
     state->trunk_cc_freq = anchor;
@@ -1036,6 +1035,13 @@ dmr_sm_note_carrier_tune(dsd_state* state, long receiver_hz, long freq_hz) {
         dmr_forget_call_decryption(state);
         dmr_sm_forget_left_crypto(state);
         dmr_enc_class_hold(state);
+    }
+}
+
+void
+dmr_sm_note_operator_leave(dsd_opts* opts, dsd_state* state, long receiver_hz, long freq_hz) {
+    if (opts && state && dmr_sm_follow_leaves(receiver_hz, freq_hz)) {
+        dmr_sm_leave_carrier(opts, state);
     }
 }
 
@@ -2237,8 +2243,7 @@ dmr_sm_follow_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const d
     double now_m = dsd_decode_now_mono_s();
     const int leaves = dmr_sm_follow_leaves(dmr_sm_ctx_receiver_frequency(ctx, opts), freq);
 
-    dsd_trunk_tune_result tune_result =
-        dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL); // DMR: no TED SPS override
+    dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, freq, NULL); // DMR: no TED SPS override
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         sm_log(opts, "grant-tune-deferred");
         return DMR_SM_GRANT_DEFERRED;
@@ -2421,7 +2426,7 @@ dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dm
         return DMR_SM_GRANT_IN_PLACE;
     }
 
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL);
+    dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, freq, NULL);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         sm_log(opts, "move-tune-deferred");
         return DMR_SM_GRANT_DEFERRED; // nothing changed: a repeat of the followed grant still names its call

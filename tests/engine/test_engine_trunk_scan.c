@@ -3339,6 +3339,13 @@ test_dmr_service_options_state_isolated_per_target(void) {
                     dsd_engine_trunk_scan_active_index(&state), err);
         test_rc = 1;
     }
+    // The scan's first park is the run's own first landing: it holds no slot's voice.
+    if (state.dmr_enc_class_held[0] != 0U || state.dmr_enc_class_held[1] != 0U || state.scan_landed != 1U) {
+        DSD_FPRINTF(stderr, "the trunk scan's first park held the slots' voice (held %u %u, landed %u)\n",
+                    (unsigned)state.dmr_enc_class_held[0], (unsigned)state.dmr_enc_class_held[1],
+                    (unsigned)state.scan_landed);
+        test_rc = 1;
+    }
 
     seed_dmr_service_options(&state, 0x10U, 0x40U, 0x68U, 0x41U);
     state.dmr_le_vendor[0] = DMR_LE_VENDOR_KIRISUN_ENC;

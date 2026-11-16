@@ -3920,6 +3920,16 @@ run_manual_retune_guarded(dsd_opts* opts, dsd_state* state, manual_retune_step_f
     return status;
 }
 
+/* Where the receiver is before an operator's manual tune under trunking, as the DMR machine reads it
+   (dmr_sm_receiver_frequency(); 0 unknown): what dmr_sm_note_operator_leave() judges the move from. The manual tunes
+   below take the io_control leg for a DMR trunk, which runs neither the engine's tune hook nor a carrier boundary, so
+   the machine's judgement of a leave is the one that forgets the left calls' privacy and holds the next carrier's
+   voice. */
+static long
+manual_move_receiver_before(const dsd_opts* opts) {
+    return opts->trunk_enable == 1 ? dmr_sm_receiver_frequency(opts) : 0;
+}
+
 static int
 apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
     const long freq = current_cc_freq(state);
@@ -3928,10 +3938,12 @@ apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live)
     const int sym_rate = cc_symbol_rate(opts, state, 0);
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
+    const long receiver = manual_move_receiver_before(opts);
     if (!request_manual_tune(opts, state, freq, sym_rate, "Return-to-CC", &tune_result, &request_id, NULL)) {
         return UI_CMD_APPLY_FAILED;
     }
     reset_call_tracking(opts, state, 1);
+    dmr_sm_note_operator_leave(opts, state, receiver, freq);
     ui_user_move_forgets_identity(state, p25_live, same_system);
     mark_cc_sync(state, 1);
     set_cc_symbol_timing(opts, state, sym_rate);
@@ -3972,6 +3984,7 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
     const int sym_rate = cc_symbol_rate(opts, state, 1);
     const long tetra_home = tetra_sm_return_cc_hz(state);
     int same_system = 0;
+    const long receiver = manual_move_receiver_before(opts);
     if (opts->trunk_enable == 1) {
         cc_freq = current_cc_freq(state);
         same_system = ui_move_is_same_p25_system(state, cc_freq);
@@ -3989,6 +4002,11 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
     }
 
     reset_call_tracking(opts, state, 1);
+    if (cc_freq != 0) {
+        /* The return left the blocked call's carrier: the no-carrier pass below forgets its privacy, but only the DMR
+           machine's judgement holds the next carrier's voice. */
+        dmr_sm_note_operator_leave(opts, state, receiver, cc_freq);
+    }
     if (cc_freq != 0) {
         /* Before the no-carrier pass, which would tick a machine that still owns the return. */
         hand_tetra_sm_home(opts, state, tetra_home);
@@ -4055,6 +4073,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
     const int sym_rate = cc_symbol_rate(opts, state, 0);
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
+    const long receiver = manual_move_receiver_before(opts);
     if (!request_manual_tune(opts, state, cand, sym_rate, "Candidate cycle", &tune_result, &request_id, NULL)) {
         if (tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
             /* Nothing was tuned, so nothing was tried: the next press picks the same candidate (issue #666). A
@@ -4071,6 +4090,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     } else {
         ui_user_move_forgets_identity(state, p25_live, 0);
+        dmr_sm_note_operator_leave(opts, state, receiver, cand);
     }
     hand_tetra_sm_over(opts, state);
     cycle_rearms_cold_start_window(opts, state, p25_live);
@@ -4116,11 +4136,12 @@ lcn_cycle_on_tune_outcome(dsd_state* state, int row, int dir, dsd_trunk_tune_res
 /* A walk off any scan (no -Y running) landed on @p freq for @p row (issue #644 B-2: only once the front end confirmed
    it): the calls end and what was received goes, the cursor and the row heard follow while @p row_current (the list
    and the row are still the ones walked; otherwise only the frequency stands), and a P25 SM that owns the trunk is
-   handed back its control channel (@p tune_result, @p request_id from request_manual_tune()). Row keys take effect only
+   handed back its control channel (@p tune_result, @p request_id from request_manual_tune()). Under trunking the DMR
+   machine judges the move from @p receiver_hz (manual_move_receiver_before(); 0 unknown). Row keys take effect only
    under -Y (docs/csv-formats.md), so none apply here. */
 static void
 lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, long freq, int p25_live, int row_current,
-                 dsd_trunk_tune_result tune_result, uint64_t request_id) {
+                 dsd_trunk_tune_result tune_result, uint64_t request_id, long receiver_hz) {
     reset_call_tracking(opts, state, 0);
     if (opts->trunk_enable != 1) {
         /* A conventional list's next channel is another carrier; a trunked system's channel list is the system's own
@@ -4128,6 +4149,7 @@ lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, long freq, int p25_l
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     } else {
         ui_user_move_forgets_identity(state, p25_live, 0);
+        dmr_sm_note_operator_leave(opts, state, receiver_hz, freq);
     }
     hand_tetra_sm_over(opts, state);
     cycle_rearms_cold_start_window(opts, state, p25_live);
@@ -4172,7 +4194,8 @@ dsd_app_channel_walk_settled(dsd_opts* opts, dsd_state* state, int row, int dir,
         p25_sm_tick_guard_enter();
     }
     manual_tune_moved(opts, state);
-    lcn_cycle_finish(opts, state, row, freq, p25_live, row_current, DSD_TRUNK_TUNE_RESULT_OK, 0U);
+    /* Where the receiver was before the press's tune is not known by its late landing: counted as a leave. */
+    lcn_cycle_finish(opts, state, row, freq, p25_live, row_current, DSD_TRUNK_TUNE_RESULT_OK, 0U, 0L);
     if (p25_live) {
         p25_sm_tick_guard_leave();
     }
@@ -4230,6 +4253,7 @@ lcn_cycle_walk_off_scan(dsd_opts* opts, dsd_state* state, int p25_live, int row,
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
     uint64_t pending_id = 0U;
+    const long receiver = manual_move_receiver_before(opts);
     if (!request_manual_tune(opts, state, freq, 0, "Channel cycle", &tune_result, &request_id, &pending_id)) {
         lcn_cycle_on_tune_outcome(state, row, dir, tune_result);
         return UI_CMD_APPLY_FAILED;
@@ -4238,7 +4262,7 @@ lcn_cycle_walk_off_scan(dsd_opts* opts, dsd_state* state, int p25_live, int row,
         dsd_engine_manual_tune_note_lcn_cycle(state, pending_id, (uint32_t)freq, prior_hz, row, dir, 0);
         return UI_CMD_APPLY_COMPLETED;
     }
-    lcn_cycle_finish(opts, state, row, freq, p25_live, 1, tune_result, request_id);
+    lcn_cycle_finish(opts, state, row, freq, p25_live, 1, tune_result, request_id, receiver);
     return UI_CMD_APPLY_COMPLETED;
 }
 

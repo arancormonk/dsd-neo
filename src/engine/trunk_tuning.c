@@ -1142,15 +1142,22 @@ dsd_engine_receiver_hz(const dsd_opts* opts, const dsd_state* state) {
    B4), and the P25 patch table's listening clock breaks continuity, so the time away from the control channel, however
    short, never counts as listening to it. Only that: a call the move carries over as one (a TETRA reallocation) is
    active, and its recording closes at its own commit; the patch table is the system's, which a trunk move keeps. A tune
-   to the carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and closes nothing. What
-   the DMR calls left behind said of their encryption, and the hold on the next carrier's voice, are the DMR machine's
-   to judge, as it judges whether its calls end there (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()): this
-   reading of the tuner can disagree with it. */
+   to the carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and closes nothing. A
+   tune another trunk machine made (P25, NXDN) also leaves behind what DMR calls said of their encryption, judged by
+   this reading of the tuner: their privacy bit and talkgroup keys go, the FID staying for the rows
+   (dmr_forget_call_decryption()), and the next carrier's voice is held until its calls say (dmr_enc_class_hold()). The
+   DMR machine's own tunes (dsd_trunk_tuning_dmr_judges()) are its to judge, as it judges whether its calls end there
+   (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()): this reading can disagree with it on a composite control
+   channel. */
 static void
 dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq) {
     if ((long int)from_hz != freq) {
         dsd_event_flush_orphan_recordings(opts, state);
         dsd_p25_patch_listen_break(state);
+        if (!dsd_trunk_tuning_dmr_judges()) {
+            dmr_forget_call_decryption(state);
+            dmr_enc_class_hold(state);
+        }
     }
 }
 

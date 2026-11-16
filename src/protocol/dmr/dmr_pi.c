@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "dmr_hytera.h"
+#include "dmr_mono_slot.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -78,8 +79,12 @@ dmr_pi_handle_kirisun(dsd_state* state, const uint8_t pi_byte[]) {
         state->payload_keyidR = key_hash;
         state->payload_miR = mi;
     }
-    // CRC-verified PI header (gated by the caller): strong classification evidence.
-    dmr_enc_class_force(state, (uint8_t)(state->currentslot & 1), (so & 0x40U) != 0U);
+    // CRC-verified PI header (gated by the caller): strong classification evidence, for a cipher the decoder can name.
+    // One with ALG ID 0 says the call is encrypted with none it knows: it forces nothing, so a hold on the slot's voice
+    // stands (dmr_pi_note_verified_first()).
+    if (alg != 0U) {
+        dmr_enc_class_force(state, (uint8_t)(state->currentslot & 1), (so & 0x40U) != 0U);
+    }
 
     DSD_FPRINTF(stderr, "%s ", KYEL);
     DSD_FPRINTF(stderr, "\n Slot %d", state->currentslot + 1);
@@ -331,13 +336,9 @@ dmr_pi_note_verified_first(dsd_state* state, int checksum_verified) {
     dmr_vcrypt_note_first(state, slot);
 }
 
-void
-dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {
+static void
+dmr_pi_run(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect) {
     const uint8_t MFID = PI_BYTE[1];
-
-    if (IrrecoverableErrors != 0) {
-        return;
-    }
 
     //update cc amd vc sync time for trunking purposes (particularly Con+)
     dmr_pi_update_sync_times_if_tuned(opts, state);
@@ -362,6 +363,26 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
         dmr_pi_handle_dmra(state, PI_BYTE);
         dmr_pi_note_verified_first(state, 0);
         dmr_pi_publish_crypto(opts, state, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
+    }
+}
+
+void
+dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {
+    if (IrrecoverableErrors != 0) {
+        return;
+    }
+    /* Where the single-slot decoder folds a slot 2 burst onto lane 0 (dmr_mono_folds_standalone_burst()), its PI header
+       is folded with its LC (dmr_flco_ctx_init()): the ALG ID, key ID and MI go where the lane's voice decrypts from,
+       and the burst's CRC verdict, indexed by its own slot, follows it. */
+    const uint8_t saved_crc = state->event_crc_invalid[0];
+    const int folded = dmr_mono_folds_standalone_burst(opts, state) && state->currentslot == 1;
+    if (folded) {
+        state->event_crc_invalid[0] |= state->event_crc_invalid[1];
+        state->currentslot = 0;
+    }
+    dmr_pi_run(opts, state, PI_BYTE, CRCCorrect);
+    if (folded) {
+        state->event_crc_invalid[0] = saved_crc;
     }
 }
 

@@ -7,10 +7,12 @@
 #ifndef DSD_NEO_PROTOCOL_DMR_MONO_SLOT_H
 #define DSD_NEO_PROTOCOL_DMR_MONO_SLOT_H
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
 
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
 /* Note one burst's CACH TACT while the single-slot decoder follows a repeater (BS sync): @p tact_ok whether it passed
@@ -65,6 +67,15 @@ static inline void
 dmr_mono_slot_forget(dsd_state* state) {
     state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
     state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;
+}
+
+/* Whether a burst decoded on its own (outside the dual-slot voice loop) is folded onto lane 0, its LC and its PI header
+   alike: where the voice its call carries is decoded on that one lane, MS mode and the single-slot decoder (-fr, -nm)
+   without trunking. Under trunking the single-slot decoder runs a BS carrier's bursts on both slots
+   (dmr_bootstrap_mono()), so such a burst stays on the slot its CACH proved, as on the dual-slot decoder. */
+static inline int
+dmr_mono_folds_standalone_burst(const dsd_opts* opts, const dsd_state* state) {
+    return state->dmr_ms_mode == 1 || (opts->dmr_mono == 1 && opts->trunk_enable == 0 && state->dmr_stereo == 0);
 }
 
 #endif

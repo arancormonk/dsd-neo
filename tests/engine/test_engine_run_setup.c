@@ -500,19 +500,22 @@ test_receiver_failure_is_not_successful_completion(void) {
     return rc;
 }
 
-/* Each DMR slot's voice hold as the run's start hook found it (dmr_enc_class_hold()). */
+/* Each DMR slot's voice hold as the run's start hook found it (dmr_enc_class_hold()), and whether a scan had landed
+   (dsd_state::scan_landed). */
 static int
 record_dmr_hold_at_start(dsd_opts* opts, dsd_state* state, void* context) {
     (void)opts;
     uint8_t* held = (uint8_t*)context;
     held[0] = state->dmr_enc_class_held[0];
     held[1] = state->dmr_enc_class_held[1];
+    held[2] = state->scan_landed;
     dsd_exitflag_store(1);
     return 0;
 }
 
 /* A host that runs one session after another on its one state (Android): a DMR slot's voice held for a move the
-   earlier run made is not held for the next run's first landing, which no source change marks on the same device. */
+   earlier run made is not held for the next run's first landing, which no source change marks on the same device, and
+   the earlier run's scan landing does not make the next run's first scan landing a later one. */
 static int
 test_reused_state_starts_with_no_dmr_hold(void) {
     dsd_opts* opts = NULL;
@@ -520,13 +523,16 @@ test_reused_state_starts_with_no_dmr_hold(void) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    uint8_t held[2] = {9U, 9U};
+    uint8_t held[3] = {9U, 9U, 9U};
     const dsd_engine_lifecycle_hooks hooks = {.start = record_dmr_hold_at_start, .context = held};
     int rc = expect_true("the first run", dsd_engine_run_with_lifecycle(opts, state, &hooks) == 0);
     state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 1U;
-    held[0] = held[1] = 9U;
+    state->scan_landed = 1U;
+    held[0] = held[1] = held[2] = 9U;
     rc |= expect_true("the next run on the same state", dsd_engine_run_with_lifecycle(opts, state, &hooks) == 0);
     rc |= expect_true("the next run starts with no DMR slot held", held[0] == 0U && held[1] == 0U);
+    /* So its scan's first landing (a -Y row entry, a --trunk-scan park) is its own first landing again. */
+    rc |= expect_true("the next run starts with no scan landed", held[2] == 0U);
     free_test_runtime(opts, state);
     return rc;
 }

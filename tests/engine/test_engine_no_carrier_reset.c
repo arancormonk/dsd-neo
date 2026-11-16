@@ -2969,7 +2969,7 @@ test_carrier_boundary_forgets_dmr_call_privacy(void) {
         const char* name;
     } kinds[] = {
         {DSD_CARRIER_BOUNDARY_TUNE, "a user tune"},
-        {DSD_CARRIER_BOUNDARY_SCAN_STEP, "a scan step"},
+        {DSD_CARRIER_BOUNDARY_SCAN_STEP, "a later scan step"},
         {DSD_CARRIER_BOUNDARY_SOURCE, "a source change"},
         {DSD_CARRIER_BOUNDARY_INPUT_SWITCH, "an input switch"},
         {DSD_CARRIER_BOUNDARY_REPLAY_RETUNE, "a replay retune"},
@@ -2984,6 +2984,9 @@ test_carrier_boundary_forgets_dmr_call_privacy(void) {
             if (init_test_runtime(&opts, &state) != 0) {
                 return 1;
             }
+            /* A scan's first landing in the run is the run's own and holds nothing
+               (test_scan_first_landing_is_never_held()); these are later ones. */
+            state->scan_landed = 1U;
             seed_dmr_basic_privacy_call(state, operator_key);
             dsd_engine_carrier_boundary(opts, state, kinds[k].kind, 0);
             rc |= expect_dmr_privacy_forgotten(kinds[k].name, state, operator_key);
@@ -3017,7 +3020,7 @@ test_carrier_boundary_forgets_dmr_call_privacy(void) {
     noCarrier(opts, state);
     rc |= expect_true("a no-carrier pass holds no slot's voice",
                       state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
-    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
     noCarrier(opts, state);
     rc |= expect_true("a hold stands through a no-carrier pass",
                       state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
@@ -3123,6 +3126,45 @@ test_scan_walk_landing_forgets_dmr_call_privacy(void) {
                       state->dmr_so == 0U && state->dmr_soR == 0U && state->dmr_fid == 0U && state->dmr_fidR == 0U
                           && state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE);
     rc |= expect_true("a -Y walk's landing: the slot keeps no left talkgroup", state->dmr_tg_autoload.slot_tg[0] == 0U);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A -Y scan's first row entry in a run is the run's own first landing: it forgets what the state held (here a Basic
+   Privacy call an earlier run left) but holds no slot's voice. A later row entry in the run holds both slots; a run
+   start makes the next entry a first landing again, on a reused state too (dsd_state::scan_landed). */
+static int
+test_scan_first_landing_is_never_held(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 986012500, 987012500) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    for (int reused = 0; reused <= 1; reused++) {
+        const char* how = reused ? "a reused state's run" : "a fresh state's run";
+        char what[160];
+        seed_dmr_basic_privacy_call(state, 0ULL);
+        DSD_SNPRINTF(what, sizeof what, "%s: the first -Y row entry lands", how);
+        rc |= expect_true(what, land_untyped_row(opts, state, 0));
+        DSD_SNPRINTF(what, sizeof what, "%s: the first -Y row entry forgets the privacy it found", how);
+        rc |= expect_true(what, state->dmr_so == 0U && state->dmr_fid == 0U);
+        DSD_SNPRINTF(what, sizeof what, "%s: the first -Y row entry holds no slot's voice", how);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+        DSD_SNPRINTF(what, sizeof what, "%s: the next row entry lands", how);
+        rc |= expect_true(what, land_untyped_row(opts, state, 1));
+        DSD_SNPRINTF(what, sizeof what, "%s: a later row entry in the run holds both slots' voice", how);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+        /* What engine_run_session() does to a reused state at the next run's start (ENGINE_RUN_SETUP pins it). */
+        state->scan_landed = 0U;
+        dmr_enc_class_release_hold(state, 0U);
+        dmr_enc_class_release_hold(state, 1U);
+    }
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
     return rc;
@@ -3826,8 +3868,8 @@ test_dmr_hold_per_slot(void) {
     return rc;
 }
 
-/* The single-slot decoder under trunking (-fr -T) runs a BS carrier's voice on both slots, but a voice LC header
-   decoded on its own (the first sync on a freshly tuned voice channel) is folded onto slot 0. Slot 2's header ends
+/* The single-slot decoder under trunking (-fr -T) runs a BS carrier's voice on both slots, and a voice LC header
+   decoded on its own (the first sync on a freshly tuned voice channel) stays on its burst's slot. Slot 2's header ends
    slot 2's hold, never slot 1's, and its service options and classification are slot 2's: a Basic Privacy header there
    keys slot 2's voice from its first frame, as the dual-slot decoder does. */
 static void
@@ -4031,6 +4073,82 @@ test_dmr_composite_cc_grant_holds_nothing(char frame[4][24]) {
     return dmr_composite_cc_grant_case(frame, 0) | dmr_composite_cc_grant_case(frame, 1);
 }
 
+/* A checked Kirisun PI header naming ALG ID 0 says the call is encrypted with no cipher the decoder knows: it forces no
+   classification, so a held slot stays held rather than playing as clear. */
+static int
+test_dmr_hold_kirisun_pi_naming_no_cipher(char frame[4][24]) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_no_key(opts, state);
+    uint8_t pi[10] = {0x00U, 0x0AU, 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_pi(opts, state, pi, 1U, 0U);
+    char recorded[49] = {0};
+    rc |= expect_true("a Kirisun PI with ALG ID 0 after a hop: no classification is forced",
+                      state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE);
+    rc |= expect_true("a Kirisun PI with ALG ID 0 after a hop: the frame stays held, not played as clear",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U
+                          && state->dmr_enc_class_held[0] == 1U);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The -1 RC4 key the PI header's key ID 5 names. */
+static void
+dmr_fold_rc4_key(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    state->R = 0x0102030405ULL;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 1U;
+}
+
+/* Without trunking the single-slot decoder (-fr) decodes a repeater's voice on lane 0, and folds a slot 2 LC there. Its
+   slot 2 PI header is folded with it: the RC4 ALG ID, key ID and MI reach lane 0, whose voice decrypts with them as
+   the dual-slot decoder decrypts slot 1's after the same header on slot 1. */
+static int
+test_dmr_mono_folds_slot2_pi_onto_lane0(char frame[4][24]) {
+    char reference[49] = {0};
+    char as_it_came[49] = {0};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_fold_rc4_key(opts, state);
+    int rc = expect_true("-fr: a fresh decoder records the frame as it came",
+                         dmr_hop_record_frame(opts, state, frame, as_it_came));
+    dmr_hop_pi_header_on(opts, state, 0, 0x21U);
+    rc |= expect_true("-fr: the dual-slot decoder decrypts slot 1's frame after its PI header",
+                      dmr_hop_record_frame(opts, state, frame, reference)
+                          && memcmp(reference, as_it_came, sizeof reference) != 0);
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_fold_rc4_key(opts, state);
+    opts->dmr_mono = 1;
+    opts->trunk_enable = 0;
+    state->dmr_stereo = 0;
+    state->dmr_ms_mode = 0;
+    state->dmr_mono_slot = 0;
+    dmr_hop_pi_header_on(opts, state, 1, 0x21U);
+    rc |= expect_true("-fr: a slot 2 PI header's ALG ID, key ID and MI reach lane 0",
+                      state->payload_algid == 0x21 && state->payload_keyid == 0x05 && state->payload_mi != 0ULL
+                          && state->payload_algidR == 0);
+    char recorded[49] = {0};
+    rc |= expect_true("-fr: lane 0's frame after a slot 2 PI header decrypts as on the dual-slot decoder",
+                      dmr_hop_record_frame(opts, state, frame, recorded)
+                          && memcmp(recorded, reference, sizeof recorded) == 0);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* The hold's edges: what keys or ends it, per slot, on the single-slot decoder, and the one judge of a trunk move. */
 static int
 test_dmr_hold_edges(void) {
@@ -4044,6 +4162,8 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_hold_mono_trunked_slot2_header(frame);
     rc |= test_dmr_mono_trunked_lc_stays_on_its_slot();
     rc |= test_dmr_composite_cc_grant_holds_nothing(frame);
+    rc |= test_dmr_hold_kirisun_pi_naming_no_cipher(frame);
+    rc |= test_dmr_mono_folds_slot2_pi_onto_lane0(frame);
     return rc;
 }
 
@@ -4073,17 +4193,28 @@ test_trunk_follow_forgets_dmr_call_privacy(void) {
     rc |= expect_true("keeps the call's privacy bit", state->dmr_so == 0x40U && state->dmr_fid == 0x10U);
     rc |= expect_true("the next voice channel, with no release",
                       dsd_engine_trunk_tune_to_freq_request(opts, state, vc2, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
-    rc |= expect_true("the engine's tune alone forgets nothing of the DMR call's privacy",
-                      state->dmr_so == 0x40U && state->dmr_fid == 0x10U);
-    /* The DMR machine's note of its tune forgets what decrypts. The FID stays: the machine's follows end the left calls
-       first, their rows rendering by that FID, and forget it then (test_dmr_trunk_hop_leaves_no_call_crypto()). */
-    dmr_sm_note_carrier_tune(state, vc1, vc2);
+    /* A tune no DMR machine made (another trunk machine's, P25 or NXDN, under -fa or a mixed setup) is judged by the
+       engine's reading of the tuner: it forgets what decrypts and holds the next carrier's voice. The FID stays for
+       the rows of the calls it leaves. */
+    rc |= expect_true("a tune another trunk machine made holds both slots' voice",
+                      state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
     rc |= expect_true("a voice channel hop: no privacy bit is left, the FID stays for the machine",
                       state->dmr_so == 0U && state->dmr_soR == 0U && state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE
                           && state->dmr_fid == 0x10U && state->dmr_fidR == 0x10U);
     uint32_t keyed_from = 0U;
     rc |= expect_true("a voice channel hop: an unnamed call keys from no left talkgroup",
                       !keyring_dmr_tg_autoload_apply(state, 0U, 0U, &keyed_from) && state->K == 70ULL);
+    /* The DMR machine's own tune (dmr_sm_tune_to_freq()) is the machine's to judge: the engine's tune leaves the call's
+       privacy and the hold alone, whatever its reading of the tuner (test_dmr_composite_cc_grant_holds_nothing()). */
+    seed_dmr_basic_privacy_call(state, 70ULL);
+    state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 0U;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request});
+    rc |= expect_true("a DMR machine's tune", dmr_sm_tune_to_freq(opts, state, vc1, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    rc |= expect_true("the engine leaves a DMR machine's tune to the machine's judgement",
+                      state->dmr_so == 0x40U && state->dmr_fid == 0x10U && state->dmr_enc_class_held[0] == 0U
+                          && state->dmr_enc_class_held[1] == 0U);
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
     rc |= test_dmr_trunk_hop_leaves_no_call_crypto();
@@ -11623,6 +11754,126 @@ test_walk_owns_the_tuner_through_its_settling(void) {
     return rc;
 }
 
+/* The DMR trunk's manual moves: an operator's press, through the command queue. */
+typedef enum {
+    DMR_MANUAL_RETURN_CC = 0,
+    DMR_MANUAL_CHANNEL_CYCLE,
+    DMR_MANUAL_LOCKOUT,
+    DMR_MANUAL_SKIP,
+} dmr_manual_move;
+
+#define DMR_MANUAL_CC 942262500L
+#define DMR_MANUAL_VC 943112500L
+
+/* A DMR trunk on an RTL stream (the fakes), following a Basic Privacy call (talkgroup 101 on slot 1, the -b 70 key, the
+   talkgroup key autoload's talkgroup 123) on a voice channel; the tuner is on @p receiver_hz. */
+static int
+dmr_manual_setup(dsd_opts* opts, dsd_state* state, long receiver_hz) {
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->use_rigctl = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->frame_p25p1 = opts->frame_p25p2 = 0;
+    opts->frame_dmr = 1;
+    opts->rtlsdr_center_freq = (uint32_t)receiver_hz;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_last_applied_hz = (uint32_t)receiver_hz;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    state->synctype = state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->trunk_cc_freq = DMR_MANUAL_CC;
+    state->trunk_vc_freq[0] = DMR_MANUAL_VC;
+    for (int i = 0; i < 3; i++) {
+        state->trunk_lcn_freq[i] = 944012500L + (long int)i * 1000000L;
+    }
+    state->lcn_freq_count = 3;
+    state->lcn_freq_roll = 0;
+    dmr_sm_init(opts, state);
+    const dsd_call_observation lc = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 101U,
+        .policy_target_id = 101U,
+        .ota_source_id = 1001U,
+        .service_options = 0x40U,
+        .has_service_metadata = 1U,
+        .observed_m = dsd_decode_now_mono_s(),
+    };
+    const int rc = expect_true("the followed call", dsd_call_state_observe(state, &lc, DSD_CALL_BOUNDARY_BEGIN) >= 0);
+    seed_dmr_basic_privacy_call(state, 70ULL);
+    dsd_app_frontend_runtime_start(opts, state);
+    return rc;
+}
+
+static int
+dmr_manual_press(dsd_opts* opts, dsd_state* state, dmr_manual_move move) {
+    switch (move) {
+        case DMR_MANUAL_RETURN_CC: return press_action(opts, state, DSD_APP_CMD_RETURN_CC);
+        case DMR_MANUAL_CHANNEL_CYCLE: return press_action(opts, state, DSD_APP_CMD_CHANNEL_CYCLE);
+        case DMR_MANUAL_LOCKOUT:
+            return dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0) > 0 ? dsd_app_drain_cmds(opts, state) : 0;
+        default: return dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, 0) > 0 ? dsd_app_drain_cmds(opts, state) : 0;
+    }
+}
+
+static void
+dmr_manual_done(dsd_opts* opts, dsd_state* state) {
+    dsd_app_frontend_runtime_stop();
+    dmr_sm_init(opts, state);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    state->rtl_ctx = NULL;
+}
+
+/* Under DMR trunking a manual Return to CC, a channel cycle, a lockout and a skip retune through io_control, which runs
+   neither the engine's tune hook nor a carrier boundary. Judged by the DMR machine as its own follows are, each move
+   that leaves the followed call's carrier ends the call (its row keeping the FID), then forgets its privacy bit, FID,
+   class and talkgroup key and holds both slots' voice until the next carrier's calls say. A Return to CC with the
+   receiver already on the control channel leaves nothing behind. */
+static int
+test_dmr_manual_moves_forget_and_hold(void) {
+    static const char* const names[] = {"a manual Return to CC", "a trunked channel cycle", "a lockout", "a skip"};
+    int rc = 0;
+    for (int move = DMR_MANUAL_RETURN_CC; move <= DMR_MANUAL_SKIP; move++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_manual_setup(opts, state, DMR_MANUAL_VC);
+        char what[160];
+        g_rtl_tune_calls = 0;
+        const int drained = dmr_manual_press(opts, state, (dmr_manual_move)move);
+        DSD_SNPRINTF(what, sizeof what, "%s: the press is applied and moves the tuner", names[move]);
+        rc |= expect_true(what, drained == 1 && g_rtl_tune_calls >= 1 && g_rtl_tune_freq != (uint32_t)DMR_MANUAL_VC);
+        /* A lockout's and a skip's no-carrier pass also unloads the keyloader's working keys, as before. */
+        rc |= expect_dmr_privacy_forgotten(names[move], state, move >= DMR_MANUAL_LOCKOUT ? 0ULL : 70ULL);
+        DSD_SNPRINTF(what, sizeof what, "%s: both slots' voice is held", names[move]);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+        DSD_SNPRINTF(what, sizeof what, "%s: the left call ended", names[move]);
+        dsd_call_snapshot call;
+        rc |= expect_true(what, dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+        dmr_manual_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= dmr_manual_setup(opts, state, DMR_MANUAL_CC);
+    g_rtl_tune_calls = 0;
+    rc |= expect_true("a Return to CC already on the control channel is applied and tunes",
+                      dmr_manual_press(opts, state, DMR_MANUAL_RETURN_CC) == 1 && g_rtl_tune_calls >= 1
+                          && g_rtl_tune_freq == (uint32_t)DMR_MANUAL_CC);
+    rc |= expect_true("a Return to CC already on the control channel holds nothing",
+                      state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+    dmr_manual_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Issue #644: the operator's return to the control channel (a P25 trunk's, through the control-channel tune) while a
    walk off any scan waits on its tune replaces the walk and tunes. */
 static int
@@ -16887,6 +17138,7 @@ main(void) {
     rc |= test_typed_goto_refused_by_rigctl_keeps_the_frames();
     rc |= test_pending_walk_owns_the_tuner_against_trunk_recovery();
     rc |= test_return_to_cc_replaces_a_pending_walk();
+    rc |= test_dmr_manual_moves_forget_and_hold();
     rc |= test_walk_owns_the_tuner_through_its_settling();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();
@@ -16924,6 +17176,7 @@ main(void) {
     rc |= test_trunk_follow_closes_only_orphaned_recordings();
     rc |= test_carrier_boundary_forgets_dmr_call_privacy();
     rc |= test_run_first_landing_is_never_held();
+    rc |= test_scan_first_landing_is_never_held();
     rc |= test_frequency_entry_forgets_dmr_call_privacy();
     rc |= test_scan_walk_landing_forgets_dmr_call_privacy();
     rc |= test_trunk_follow_forgets_dmr_call_privacy();

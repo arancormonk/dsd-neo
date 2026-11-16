@@ -2050,6 +2050,10 @@ struct dsd_state {
      * PI header says (dmr_enc_class_release_hold()). 0 when a run starts, whatever an earlier run on the same state
      * left (a host such as Android reuses its state across sessions). */
     uint8_t dmr_enc_class_held[2];
+    /* Whether a scan of this run has landed yet (its first -Y row entry, a SCAN_STEP carrier boundary, or its first
+       --trunk-scan park): that first landing is the run's own and holds no DMR slot's voice; every later one does.
+       0 when a run starts. */
+    uint8_t scan_landed;
 
     /* Per-slot, per-call DMR vendor late-entry mode (DMR_LE_VENDOR_* in <dsd-neo/protocol/dmr/dmr.h>, 0 none), set
      * from verified Kirisun/Hytera Enhanced signalling. The user's late-entry setting stays in opts->dmr_le, which

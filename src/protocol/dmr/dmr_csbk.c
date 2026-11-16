@@ -2243,7 +2243,7 @@ dmr_cspdu_cap_plus_3e_follow(dsd_opts* opts, dsd_state* state, const dmr_cap_plu
     const uint32_t old_rtl_center_freq = opts->rtlsdr_center_freq;
     const uint64_t generation_before = dsd_trunk_tuning_generation();
     const long receiver_before = dmr_sm_receiver_frequency(opts); // whether the follow leaves the carrier it is on
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0, NULL);
+    dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, grant_freq, NULL);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
     }
@@ -2625,7 +2625,7 @@ dmr_cspdu_con_plus_tune_data(dsd_opts* opts, dsd_state* state, uint8_t lcn, uint
         return 1;
     }
     const long receiver = dmr_sm_receiver_frequency(opts);
-    if (!dsd_trunk_tune_result_is_ok(dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL))) {
+    if (!dsd_trunk_tune_result_is_ok(dmr_sm_tune_to_freq(opts, state, freq, NULL))) {
         return 0;
     }
     dmr_sm_note_carrier_tune(state, receiver, freq);
