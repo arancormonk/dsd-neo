@@ -805,6 +805,16 @@ test_tcp_backlog(void) {
     int rc = expect_true("tcp sockets", listener != DSD_INVALID_SOCKET && client != DSD_INVALID_SOCKET
                                             && dsd_socket_bind(listener, (struct sockaddr*)&addr, sizeof addr) == 0
                                             && dsd_socket_listen(listener, 1) == 0);
+    if (rc != 0) {
+        if (client != DSD_INVALID_SOCKET) {
+            (void)dsd_socket_close(client);
+        }
+        if (listener != DSD_INVALID_SOCKET) {
+            (void)dsd_socket_close(listener);
+        }
+        rig_case_close(&c);
+        return rc;
+    }
     struct sockaddr_in bound;
     DSD_MEMSET(&bound, 0, sizeof bound);
     bound.sin_family = AF_INET;

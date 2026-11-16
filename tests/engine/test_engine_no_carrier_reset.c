@@ -14832,6 +14832,9 @@ yq_cause_case(int which) {
     static const unsigned k_reason[YQ_CAUSE_COUNT] = {DSD_SCAN_QUIET_REASON_INPUT, DSD_SCAN_QUIET_REASON_TUNER,
                                                       DSD_SCAN_QUIET_REASON_RATE, DSD_SCAN_QUIET_REASON_WIDTH,
                                                       DSD_SCAN_QUIET_REASON_NO_WIDTH};
+    if (which < 0 || which >= YQ_CAUSE_COUNT) {
+        return expect_true("a known no-check cause", 0);
+    }
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
