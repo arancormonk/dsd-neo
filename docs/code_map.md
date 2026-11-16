@@ -14856,7 +14856,7 @@ Qt Quick frontend (`src/ui/qt`):
   "sites", "navigate", "edit", "window") leaves a roam's restart, so no tap or Back strands or cancels it.
   `transactionEnded()` drops the roam's restart and USB wait; `autoStartBlocked` also holds during a transaction and
   while any restart waits; Home shows `recoveryNotice` with its "Listen to …" action (`homeRoamNotice`). Tests:
-  `UI_QT_SITE_ROAMING` (the executor on a scripted host and clock), `UI_QT_QML_SITE_ROAMING` (`tst_site_roaming.qml`,
+  `UI_QT_SITE_ROAMING` (the executor on a scripted host and clock), `UI_QT_QML_CALL_LISTS` (`tst_site_roaming.qml`,
   through Main on the lifecycle host), `UI_QT_SITE_GROUPS` (`check_roamable()`), `UI_QT_PERSISTENCE`
   (`test_roaming_prefs()`), `UI_QT_CONTROLLER` (`test_operator_intents()`). Its wording lives here, not in QML:
   `statusText` (the sentence), `headerText` / `headerShortText` (the Monitor line, "WAITING FOR CALL END · GPS ROAMING"
