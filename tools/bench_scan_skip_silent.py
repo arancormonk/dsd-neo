@@ -20,7 +20,8 @@ one of three scans: --trunk-scan conventional targets (--scan trunk), a typed -Y
 untyped -Y channel map under -ft (--scan untyped, which has no analog decoder, so it cannot hear the NFM calls). Silent
 channels take the three modes in turn, or the modes --silent-modes lists: nxdn48 and dpmr give noise rows whose raw
 frame syncs the protocol's checks reject (an NXDN48 target with a 2000 ms dwell; dPMR has no trunk-scan target type,
-so --scan trunk leaves its rows out of the target CSV). NFM rows and targets are 12.5 kHz wide with a -42 dB squelch, 5 to 6 dB over
+so --scan trunk leaves its rows out of the target CSV). The untyped map has no mode column: every row runs -ft's DMR
+and P25 decoders, so --scan untyped takes no --silent-modes. NFM rows and targets are 12.5 kHz wide with a -42 dB squelch, 5 to 6 dB over
 the scene's noise in the channel. It reads the retune log, dsd-neo's output (each line stamped as it arrives), its
 frame log, its per-call recordings and their journal, and its RTL perf CSV, and reports:
 
@@ -37,7 +38,8 @@ frame log, its per-call recordings and their journal, and its RTL perf CSV, and 
                 whole process's CPU time, each per second of run
   drops         the input ring drops the RTL stream counted (a retune that discards a stale block counts too)
 
-With --by-mode it adds, per mode the silent channels run, every scored visit to a silent channel of that mode: how
+With --by-mode it adds, per mode the silent channels run (under --scan untyped, the one decoder set -ft runs on every
+row), every scored visit to a silent channel of that mode: how
 many were skipped (a skip logged inside the visit) as a share of all of them, visits that never measured included; the
 skip latency (the scene's retune onto the channel to the skip's line, median and p95); and how each visit ended:
 skipped, left early with no skip (under 1.5 s), left at its dwell or hangtime (1.5 to 3.5 s), or held past it (a
@@ -95,6 +97,7 @@ STRONG_DB = 30.0
 NEAR_MARGIN_DB = 2.0
 ACTIVE = ("nfm", "dmr", "p25")
 SILENT_MODES = ACTIVE + ("nxdn48", "dpmr")  # the modes a silent channel can run (--silent-modes)
+UNTYPED_MODE = "-ft (dmr, p25)"  # --by-mode's one row under --scan untyped: what every untyped row decodes
 NXDN48_DWELL_MS = 2000
 EARLY_S = 1.5  # --by-mode's visit end buckets: under this a visit left early, past HELD_S it was held
 HELD_S = 3.5
@@ -606,8 +609,10 @@ def skips_on_air(skips, visit_list):
 
 def silent_by_mode(record, channels, lines, skips):
     """--by-mode: per mode the silent channels run, every scored visit to one of them: skipped or how it ended, and the
-    skip latency, from the scene's retune onto the channel (its monotonic stamp) to the skip's line."""
+    skip latency, from the scene's retune onto the channel (its monotonic stamp) to the skip's line. An untyped map's
+    rows all run -ft, whatever mode the typed map would give them: their visits are one row, UNTYPED_MODE."""
     modes = tuple(record["silent_modes"])
+    untyped = record["scan"] == "untyped"
     started = record["scene_started"]
     tunes = record["tunes"]
     spans = []  # (channel, start mono s from the scene's start, end mono s), the visits() order and bounds
@@ -620,7 +625,8 @@ def silent_by_mode(record, channels, lines, skips):
     for c, v0, v1 in spans[lead + 1 : -1]:
         if c is None or c.kind != "silent":
             continue
-        row = out.setdefault(channel_mode(c, modes), {"visits": 0, "skipped": 0, "ends": {}, "latency_s": []})
+        mode = UNTYPED_MODE if untyped else channel_mode(c, modes)
+        row = out.setdefault(mode, {"visits": 0, "skipped": 0, "ends": {}, "latency_s": []})
         row["visits"] += 1
         skip = next((t for t, hz in skips if round(hz) == c.frequency and v0 <= t <= v1 + 0.05), None)
         if skip is not None:
@@ -832,6 +838,11 @@ def parse_args():
     args.silent_modes = tuple(m.strip() for m in args.silent_modes.split(",") if m.strip())
     if not args.silent_modes or any(m not in SILENT_MODES for m in args.silent_modes):
         parser.error(f"--silent-modes takes modes of {','.join(SILENT_MODES)}")
+    if args.scan == "untyped" and args.silent_modes != ACTIVE:
+        parser.error(
+            "--scan untyped runs every row under -ft (DMR and P25 only) from a map with no mode column: "
+            "--silent-modes applies to --scan typed and --scan trunk"
+        )
     if args.scan == "trunk" and all(m == "dpmr" for m in args.silent_modes):
         parser.error("--scan trunk has no dPMR target type: give it another silent mode too")
     reception.ARGS = argparse.Namespace(dsd=args.dsd, dmr_synth_gen=args.dmr_synth_gen)
