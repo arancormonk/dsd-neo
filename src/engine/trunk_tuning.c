@@ -1153,10 +1153,10 @@ dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_h
            another without a release, a move, a rest channel change): its frames before their own LC decrypt with no
            privacy bit of theirs and no talkgroup key of theirs, a key set directly staying the user's. The FID stays
            for the DMR machine, which ends those calls after this tune, their final rows rendering by it, and forgets
-           it then with the ALG, key ID and MI (dmr_trunk_sm.c). Until each slot's call there says whether it is
-           encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()). */
+           it then with the ALG, key ID and MI (dmr_trunk_sm.c). Whether the next carrier's voice is held until its
+           calls say how they are encrypted is the DMR machine's to judge, as it judges whether its calls end there
+           (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()). */
         dmr_forget_call_decryption(state);
-        dmr_enc_class_hold(state);
     }
 }
 

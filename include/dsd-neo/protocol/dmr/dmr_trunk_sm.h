@@ -334,8 +334,9 @@ long dmr_sm_receiver_frequency(const dsd_opts* opts);
  *  Connect Plus data tune, a control channel probe or settle) took the receiver from @p receiver_hz (where it was
  *  before the tune, as dmr_sm_receiver_frequency() reads it; 0 unknown) to @p freq_hz: when it left that carrier, the left
  *  calls' ALG, key ID and MI and each slot's MI chain are forgotten, as a release forgets them, so the next carrier's
- *  frames before their own PI or LC never decrypt with them. The engine's tune already forgot their privacy bit; the
- *  FID is left. A tune that stays on the carrier keeps everything. */
+ *  frames before their own PI or LC never decrypt with them, and their voice is held until their calls say whether
+ *  they are encrypted (dmr_enc_class_hold()). The engine's tune already forgot their privacy bit; the FID is left. A
+ *  tune that stays on the carrier keeps everything. */
 void dmr_sm_note_carrier_tune(dsd_state* state, long receiver_hz, long freq_hz);
 
 /** @brief Whether the machine follows a call on @p freq_hz (TUNED there). */

@@ -48,13 +48,16 @@ unsigned int dmr_enc_class_observe(dsd_state* state, uint8_t slot, unsigned int 
 void dmr_enc_class_force(dsd_state* state, uint8_t slot, int encrypted);
 void dmr_enc_class_reset(dsd_state* state, uint8_t slot);
 int dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot);
-/** The receiver moved off a carrier (a hop, a move, a rest channel, a probe, a scan step, a user tune) or released its
- * call: until each slot's call says whether it is encrypted, by its own LC (dmr_enc_class_observe()) or PI header,
- * its voice is held (dsd_state::dmr_enc_class_held), so the next carrier's frames before that are neither played nor
- * recorded as audio. Not at a no-carrier pass or a stream gap, which stay on the carrier, nor at a session's first
- * landing. */
+/** The receiver moved off a carrier or released its call: every carrier boundary but a stream gap (a user tune, a scan
+ * step, a source or input change, a replay retune), a trunk-scan visit, the release, and every DMR tune the DMR
+ * machine judges to leave its carrier (dmr_sm_follow_leaves(): a hop, a move, a status follow, a rest channel, a
+ * Connect Plus data tune, a probe, a settle). Until each slot's call says whether it is encrypted, by an LC that passed
+ * its check or a PI header naming a cipher, its voice is held (dsd_state::dmr_enc_class_held), so the next carrier's
+ * frames before that are neither played nor recorded as audio. Not at a no-carrier pass or a stream gap, which stay on
+ * the carrier; a run starts with no slot held, whatever an earlier run on the same state left. */
 void dmr_enc_class_hold(dsd_state* state);
-/** The slot's call said whether it is encrypted (an LC or a PI header the decoder took): its voice is held no more. */
+/** The slot's call said whether it is encrypted, as far as the decoder reads it (an LC that passed its check, a PI
+ * header naming a cipher, a forced classification), or a run starts: its voice is held no more. */
 void dmr_enc_class_release_hold(dsd_state* state, uint8_t slot);
 int dmr_enc_class_established_clear(const dsd_state* state, uint8_t slot);
 

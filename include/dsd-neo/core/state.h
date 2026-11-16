@@ -2047,7 +2047,8 @@ struct dsd_state {
     uint8_t dmr_enc_class_pending[2]; /* quarantined contradicting candidate (0 none, 1 clear, 2 enc) */
     /* The receiver moved off a carrier or released its call, and the slot's call has not said yet whether it is
      * encrypted (dmr_enc_class_hold()): its voice is held, as an X2-TDMA call's opening frames are, until its own LC or
-     * PI header says (dmr_enc_class_release_hold()). 0 at a session's first landing. */
+     * PI header says (dmr_enc_class_release_hold()). 0 when a run starts, whatever an earlier run on the same state
+     * left (a host such as Android reuses its state across sessions). */
     uint8_t dmr_enc_class_held[2];
 
     /* Per-slot, per-call DMR vendor late-entry mode (DMR_LE_VENDOR_* in <dsd-neo/protocol/dmr/dmr.h>, 0 none), set

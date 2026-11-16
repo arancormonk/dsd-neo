@@ -9,6 +9,7 @@
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
@@ -63,6 +64,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -2985,6 +2987,9 @@ test_carrier_boundary_forgets_dmr_call_privacy(void) {
             seed_dmr_basic_privacy_call(state, operator_key);
             dsd_engine_carrier_boundary(opts, state, kinds[k].kind, 0);
             rc |= expect_dmr_privacy_forgotten(kinds[k].name, state, operator_key);
+            char what[160];
+            DSD_SNPRINTF(what, sizeof what, "%s: each slot's voice is held until its call says", kinds[k].name);
+            rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
             free_test_runtime(opts, state);
         }
         dsd_opts* opts = NULL;
@@ -2998,8 +3003,25 @@ test_carrier_boundary_forgets_dmr_call_privacy(void) {
         const int keyed = keyring_dmr_tg_autoload_apply(state, 0U, 0U, &keyed_from);
         rc |= expect_true("a stream gap keeps the call's privacy bit and its talkgroup's key",
                           state->dmr_so == 0x40U && keyed && keyed_from == 123U && state->K == 0x33ULL);
+        rc |= expect_true("a stream gap, on the same carrier, holds no slot's voice",
+                          state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
         free_test_runtime(opts, state);
     }
+    /* The no-carrier pass stays on the carrier: it holds nothing, and a hold a move set stands through it (a gap while
+       retuning can run one before the next carrier's first voice). */
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    noCarrier(opts, state);
+    rc |= expect_true("a no-carrier pass holds no slot's voice",
+                      state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
+    noCarrier(opts, state);
+    rc |= expect_true("a hold stands through a no-carrier pass",
+                      state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    free_test_runtime(opts, state);
     return rc;
 }
 
@@ -3121,10 +3143,10 @@ dmr_hop_active_frame(char frame[4][24]) {
     return 1;
 }
 
-/* @p frame decoded as the next carrier's first voice on slot 1, with an MBE recording attached: the 49 bits recorded
-   (and played). 1 when it was recorded. */
+/* @p frame decoded as the next carrier's voice on @p slot (0 for slot 1), with an MBE recording attached: the 49 bits
+   recorded (and played). 1 when it was recorded. */
 static int
-dmr_hop_record_frame(dsd_opts* opts, dsd_state* state, char frame[4][24], char recorded[49]) {
+dmr_hop_record_frame_on(dsd_opts* opts, dsd_state* state, int slot, char frame[4][24], char recorded[49]) {
     FILE* recording = tmpfile();
     if (recording == NULL) {
         return 0;
@@ -3132,16 +3154,26 @@ dmr_hop_record_frame(dsd_opts* opts, dsd_state* state, char frame[4][24], char r
     opts->floating_point = 1;
     opts->dmr_stereo = 1;
     opts->errorbars = 0;
-    opts->mbe_out_f = recording;
+    if (slot == 1) {
+        opts->mbe_out_fR = recording;
+    } else {
+        opts->mbe_out_f = recording;
+    }
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state->currentslot = 0;
+    state->currentslot = slot;
     processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DMR, NULL, frame, NULL);
     int ok = fseek(recording, 0, SEEK_SET) == 0;
     opts->mbe_in_f = recording;
     ok = ok && readAmbe2450Data(opts, state, recorded) == 0;
-    opts->mbe_in_f = opts->mbe_out_f = NULL;
+    opts->mbe_in_f = opts->mbe_out_f = opts->mbe_out_fR = NULL;
     (void)fclose(recording);
     return ok;
+}
+
+/* @p frame decoded as the next carrier's first voice on slot 1: dmr_hop_record_frame_on() there. */
+static int
+dmr_hop_record_frame(dsd_opts* opts, dsd_state* state, char frame[4][24], char recorded[49]) {
+    return dmr_hop_record_frame_on(opts, state, 0, frame, recorded);
 }
 
 /* The row the left call (talkgroup 101) committed carries its Motorola annotations. */
@@ -3303,9 +3335,11 @@ dmr_hop_done(dsd_opts* opts, dsd_state* state) {
     g_rigctl_setfreq_ok = 0;
 }
 
-/* A CRC-checked voice LC header on slot 1 for a group call on talkgroup @p tg: FID @p fid, service options @p so. */
+/* A group call LC on talkgroup @p tg on @p slot (0 for slot 1), of LC @p type (1 voice header, 3 embedded), whose
+   check passed or failed by @p crc: FID @p fid, service options @p so. */
 static void
-dmr_hop_voice_lc(dsd_opts* opts, dsd_state* state, uint8_t fid, uint8_t so, uint32_t tg) {
+dmr_hop_lc_on(dsd_opts* opts, dsd_state* state, int slot, uint8_t type, uint32_t crc, uint8_t fid, uint8_t so,
+              uint32_t tg) {
     uint8_t bits[96];
     DSD_MEMSET(bits, 0, sizeof bits);
     dmr_hop_put_bits(bits, 8U, fid, 8U);
@@ -3313,18 +3347,31 @@ dmr_hop_voice_lc(dsd_opts* opts, dsd_state* state, uint8_t fid, uint8_t so, uint
     dmr_hop_put_bits(bits, 24U, tg, 24U);
     dmr_hop_put_bits(bits, 48U, 3003U, 24U);
     uint32_t errors = 0U;
-    state->currentslot = 0;
+    state->currentslot = slot;
     state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    dmr_flco(opts, state, bits, 1U, &errors, 1U);
+    dmr_flco(opts, state, bits, crc, &errors, type);
+}
+
+/* A CRC-checked voice LC header on slot 1 for a group call on talkgroup @p tg: FID @p fid, service options @p so. */
+static void
+dmr_hop_voice_lc(dsd_opts* opts, dsd_state* state, uint8_t fid, uint8_t so, uint32_t tg) {
+    dmr_hop_lc_on(opts, state, 0, 1U, 1U, fid, so, tg);
+}
+
+/* A CRC-checked DMRA PI header on @p slot (0 for slot 1) naming ALG ID @p alg (0x21 RC4; 0x26 or above names no cipher
+   the decoder knows), key ID 5, MI 0x11223344. */
+static void
+dmr_hop_pi_header_on(dsd_opts* opts, dsd_state* state, int slot, uint8_t alg) {
+    uint8_t pi[10] = {alg, 0x10U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+    state->currentslot = slot;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_pi(opts, state, pi, 1U, 0U);
 }
 
 /* A CRC-checked DMRA PI header on slot 1: RC4 (ALG 0x21), key ID 5, MI 0x11223344, for talkgroup 303. */
 static void
 dmr_hop_pi_header(dsd_opts* opts, dsd_state* state) {
-    uint8_t pi[10] = {0x21U, 0x10U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
-    state->currentslot = 0;
-    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    dmr_pi(opts, state, pi, 1U, 0U);
+    dmr_hop_pi_header_on(opts, state, 0, 0x21U);
 }
 
 /* After a voice channel hop with no release, the next carrier's frames before their own PI or LC decrypt with nothing
@@ -3556,6 +3603,311 @@ test_dmr_voice_held_until_the_call_says(void) {
     return rc;
 }
 
+/* The frame as a fresh decoder (a session's first landing) records it with the keys @p setup loads: 1 when recorded. */
+static int
+dmr_hold_fresh_frame(void (*setup)(dsd_opts*, dsd_state*), char frame[4][24], char recorded[49]) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 0;
+    }
+    if (setup != NULL) {
+        setup(opts, state);
+    }
+    const int ok = dmr_hop_record_frame(opts, state, frame, recorded);
+    free_test_runtime(opts, state);
+    return ok;
+}
+
+/* -4 -b 70: Basic Privacy forced onto every frame, whatever the call says. */
+static void
+dmr_hold_force_basic_key(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    state->R = 0ULL;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 0U;
+    state->M = 1;
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+}
+
+/* No key at all. */
+static void
+dmr_hold_no_key(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    state->R = 0ULL;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 0U;
+    state->M = 0;
+    state->K = 0ULL;
+    state->basic_key_present = 0U;
+}
+
+/* A key forced onto every frame (-4 with a -b key) keys a held slot's frames as before: they play, keyed as on a fresh
+   decoder, though the call has not said yet whether it is encrypted. */
+static int
+test_dmr_hold_forced_key_plays(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    char reference[49] = {0};
+    int rc = expect_true("-4 -b: a fresh decoder records the frame as it came without a key",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    rc |= expect_true("-4 -b: a fresh decoder keys every frame",
+                      dmr_hold_fresh_frame(dmr_hold_force_basic_key, frame, reference)
+                          && memcmp(reference, as_it_came, sizeof reference) != 0);
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_force_basic_key(opts, state);
+    char recorded[49] = {0};
+    rc |= expect_true("-4 -b after a hop: a frame before the call says plays, keyed as on a fresh decoder",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && memcmp(recorded, reference, sizeof recorded) == 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* What follows a hop on slot 1 before the frame: a PI header naming no cipher the decoder knows (ALG 0x30, zeroed),
+   then a clear voice LC header. The PI says the call is encrypted with nothing to judge its frames by: they stay
+   held. Its LC ends the hold. */
+static int
+test_dmr_hold_pi_naming_no_cipher(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("a PI naming no cipher: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_no_key(opts, state);
+    dmr_hop_pi_header_on(opts, state, 0, 0x30U);
+    char recorded[49] = {0};
+    rc |= expect_true("a PI naming no cipher after a hop: no ALG ID is taken", state->payload_algid == 0);
+    rc |= expect_true("a PI naming no cipher after a hop: the frame stays held, not played as clear",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U
+                          && state->dmr_enc_class_held[0] == 1U);
+    dmr_hop_voice_lc(opts, state, 0x00U, 0x00U, 303U);
+    rc |= expect_true("a PI naming no cipher after a hop: once its LC says clear, the frame plays as it came",
+                      dmr_hop_record_frame(opts, state, frame, recorded)
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* An embedded LC whose 5-bit checksum failed says nothing: the slot stays held. One whose check passed (a RAS
+   acceptance under -F counts, CRCCorrect 1 with the slot's RAS flag) ends the hold. */
+static int
+test_dmr_hold_failed_embedded_lc(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("a failed embedded LC: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    for (int ras = 0; ras <= 1; ras++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        dmr_hold_no_key(opts, state);
+        dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x00U, 0x00U, 303U);
+        char recorded[49] = {0};
+        rc |= expect_true("an embedded LC whose checksum failed after a hop: the frame stays held",
+                          !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U
+                              && state->dmr_enc_class_held[0] == 1U);
+        state->event_crc_invalid[0] = ras ? DSD_CRC_RAS_UNVERIFIED : 0U;
+        dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x00U, 0x00U, 303U);
+        state->event_crc_invalid[0] = 0U;
+        rc |= expect_true(ras ? "a RAS-accepted embedded LC after a hop: the frame plays as it came"
+                              : "a checked embedded LC after a hop: the frame plays as it came",
+                          dmr_hop_record_frame(opts, state, frame, recorded)
+                              && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* A checked voice LC the decoder reads no privacy from (Tait, FID 0x58) says as much as such a call ever does: the
+   frame after it plays as a fresh decoder plays it, not held. */
+static int
+test_dmr_hold_unread_lc_shape(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("a Tait LC: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_no_key(opts, state);
+    dmr_hop_voice_lc(opts, state, 0x58U, 0x00U, 303U);
+    char recorded[49] = {0};
+    rc |= expect_true("a Tait LC after a hop: the frame plays as on a fresh decoder",
+                      dmr_hop_record_frame(opts, state, frame, recorded)
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Each slot's hold is its own: only that slot's LC or PI header ends it. */
+static int
+test_dmr_hold_per_slot(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_enc_class_hold(state);
+    dmr_hop_voice_lc(opts, state, 0x00U, 0x00U, 303U);
+    int rc = expect_true("slot 1's LC ends slot 1's hold only",
+                         state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 1U);
+    dmr_hop_pi_header_on(opts, state, 0, 0x21U);
+    rc |= expect_true("slot 1's PI header leaves slot 2 held", state->dmr_enc_class_held[1] == 1U);
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x00U, 0x00U, 404U);
+    rc |= expect_true("slot 2's LC ends slot 2's hold", state->dmr_enc_class_held[1] == 0U);
+    dmr_enc_class_hold(state);
+    dmr_hop_pi_header_on(opts, state, 1, 0x21U);
+    rc |= expect_true("slot 2's PI header ends slot 2's hold only",
+                      state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 0U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The single-slot decoder under trunking (-fr -T) runs a BS carrier's voice on both slots, but a voice LC header
+   decoded on its own (the first sync on a freshly tuned voice channel) is folded onto slot 0. Slot 2's header ends
+   slot 2's hold, never slot 1's, and its service options and classification are slot 2's: a Basic Privacy header there
+   keys slot 2's voice from its first frame, as the dual-slot decoder does. */
+static void
+dmr_hold_mono_trunked(dsd_opts* opts, dsd_state* state) {
+    opts->dmr_mono = 1;
+    opts->trunk_enable = 1;
+    opts->trunk_tune_enc_calls = 1;
+    state->dmr_stereo = 0;
+    state->dmr_ms_mode = 0;
+    state->dmr_mono_slot = 1;
+}
+
+static int
+test_dmr_hold_mono_trunked_slot2_header(char frame[4][24]) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_mono_trunked(opts, state);
+    dmr_enc_class_hold(state);
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x00U, 0x00U, 404U);
+    int rc = expect_true("-fr -T: slot 2's voice LC header ends slot 2's hold, not slot 1's",
+                         state->dmr_enc_class_held[1] == 0U && state->dmr_enc_class_held[0] == 1U);
+    free_test_runtime(opts, state);
+
+    /* The dual-slot decoder hearing slot 2's Basic Privacy header with -b 70, then slot 2's frame. */
+    char reference[49] = {0};
+    char as_it_came[49] = {0};
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= expect_true("a fresh decoder records slot 2's frame as it came",
+                      dmr_hop_record_frame_on(opts, state, 1, frame, as_it_came));
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x10U, 0x40U, 404U);
+    rc |= expect_true("the dual-slot decoder keys slot 2's frame after its BP header",
+                      dmr_hop_record_frame_on(opts, state, 1, frame, reference)
+                          && memcmp(reference, as_it_came, sizeof reference) != 0);
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_mono_trunked(opts, state);
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x10U, 0x40U, 404U);
+    rc |= expect_true("-fr -T: slot 2's BP header sets slot 2's FID, service options and classification",
+                      state->dmr_fidR == 0x10U && (state->dmr_soR & 0x40U) != 0U
+                          && state->dmr_enc_class[1] == DMR_ENC_CLASS_ENC && state->dmr_so == 0U && state->dmr_fid == 0U
+                          && state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE);
+    char recorded[49] = {0};
+    rc |= expect_true("-fr -T: slot 2's first frame after its BP header decrypts as on the dual-slot decoder",
+                      dmr_hop_record_frame_on(opts, state, 1, frame, recorded)
+                          && memcmp(recorded, reference, sizeof recorded) == 0);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static long
+dmr_hold_rigctl_on_cc(const dsd_opts* opts) {
+    (void)opts;
+    return DMR_HOP_CC;
+}
+
+/* A grant for the carrier the receiver is on (a composite control channel's own payload) leaves nothing, by the DMR
+   machine's judgement, whatever the engine's reading of the tuner says (here: a rigctl session whose frequency
+   dsd-neo never set). The calls it keeps playing there are not held. */
+static int
+test_dmr_composite_cc_grant_holds_nothing(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("a composite grant: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->trunk_enable = opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_NULL;
+    opts->setmod_bw = 0;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_hangtime = 0.0f;
+    opts->rtlsdr_center_freq = 0U;
+    state->trunk_cc_freq = DMR_HOP_CC;
+    state->trunk_chan_map[DMR_HOP_LCN1] = DMR_HOP_CC;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    g_rigctl_setfreq_ok = 1;
+    dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){.get_current_freq_hz = dmr_hold_rigctl_on_cc});
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    dmr_hop_clock_at(0.0);
+    dmr_sm_init(opts, state);
+    dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN1, 101U, 1001U);
+    rc |= expect_true("the machine follows the grant on the control channel's own carrier",
+                      state->trunk_vc_freq[0] == DMR_HOP_CC);
+    rc |= expect_true("a composite grant holds no slot's voice",
+                      state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+    char recorded[49] = {0};
+    rc |= expect_true("a composite grant: the call it keeps plays as it came",
+                      dmr_hop_record_frame(opts, state, frame, recorded)
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+    dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The hold's edges: what keys or ends it, per slot, on the single-slot decoder, and the one judge of a trunk move. */
+static int
+test_dmr_hold_edges(void) {
+    char frame[4][24];
+    int rc = expect_true("an active voice frame", dmr_hop_active_frame(frame) == 0);
+    rc |= test_dmr_hold_forced_key_plays(frame);
+    rc |= test_dmr_hold_pi_naming_no_cipher(frame);
+    rc |= test_dmr_hold_failed_embedded_lc(frame);
+    rc |= test_dmr_hold_unread_lc_shape(frame);
+    rc |= test_dmr_hold_per_slot();
+    rc |= test_dmr_hold_mono_trunked_slot2_header(frame);
+    rc |= test_dmr_composite_cc_grant_holds_nothing(frame);
+    return rc;
+}
+
 /* A trunked follow that leaves the carrier (a voice channel followed from another without a release, a move) forgets
    the left calls' DMR privacy, as a release does; a grant on the carrier the receiver is on keeps it. */
 static int
@@ -3593,6 +3945,7 @@ test_trunk_follow_forgets_dmr_call_privacy(void) {
     rc |= test_dmr_trunk_hop_leaves_no_call_crypto();
     rc |= test_dmr_rest_move_leaves_no_call_crypto();
     rc |= test_dmr_voice_held_until_the_call_says();
+    rc |= test_dmr_hold_edges();
     return rc;
 }
 

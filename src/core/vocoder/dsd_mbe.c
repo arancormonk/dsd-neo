@@ -2079,12 +2079,13 @@ typedef struct {
 // A DMR slot's frame judged clear only because nothing has said otherwise, on a slot whose call has not said yet
 // whether it is encrypted since the receiver moved or released its call (dsd_state::dmr_enc_class_held): its
 // encryption is unknown, as an X2-TDMA call's opening frames are, until its LC or PI header says. A key forced onto
-// every frame (dsd_key_dmr_forced_clear()) keys it as before.
+// every frame keys it as before: forced clear (dsd_key_dmr_forced_clear()), or a keyed transform the frame got with no
+// privacy bit or ALG ID to ask for it (Basic or Hytera Privacy forced with -4).
 static void
 mbe_dmr_slot_judge(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx, mbe_frame_judgement* j) {
     j->cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx);
-    j->crypto_unknown =
-        j->cls == DSD_VOICE_CRYPTO_CLEAR && state->dmr_enc_class_held[slot] != 0U && !dsd_key_dmr_forced_clear(state);
+    j->crypto_unknown = j->cls == DSD_VOICE_CRYPTO_CLEAR && state->dmr_enc_class_held[slot] != 0U
+                        && !dsd_key_dmr_forced_clear(state) && !frame_ctx->slot_keyed[slot];
 }
 
 // X2-TDMA's encryption on the slot, as processX2TDMAvoice() set it for the burst being decoded. X2 has no

@@ -1017,18 +1017,22 @@ dmr_sm_forget_left_crypto(dsd_state* state) {
 /* A follow, a move or a status follow took the receiver off the carrier whose calls the slots carried: those calls end
    first, so their final rows keep the FID their vendor annotations render by, and then nothing of theirs says how the
    next carrier's calls are encrypted: their privacy (dmr_forget_call_privacy(), FID included), then their ALG, key ID
-   and MI and each slot's MI chain (dmr_sm_forget_left_crypto()). */
+   and MI and each slot's MI chain (dmr_sm_forget_left_crypto()). Until each slot's call there says whether it is
+   encrypted, its voice is held (dmr_enc_class_hold()). The machine alone judges that the receiver left (a follow of
+   the carrier it is on, a composite control channel's payload, keeps its calls playing), whatever the tuner reads. */
 static void
 dmr_sm_leave_carrier(dsd_opts* opts, dsd_state* state) {
     dmr_sm_end_left_calls(opts, state);
     dmr_forget_call_privacy(state);
     dmr_sm_forget_left_crypto(state);
+    dmr_enc_class_hold(state);
 }
 
 void
 dmr_sm_note_carrier_tune(dsd_state* state, long receiver_hz, long freq_hz) {
     if (state && dmr_sm_follow_leaves(receiver_hz, freq_hz)) {
         dmr_sm_forget_left_crypto(state);
+        dmr_enc_class_hold(state);
     }
 }
 

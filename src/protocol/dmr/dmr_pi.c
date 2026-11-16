@@ -309,13 +309,18 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received) {
 static void
 dmr_pi_note_verified_first(dsd_state* state, int checksum_verified) {
     const uint8_t slot = (uint8_t)((state->currentslot == 1) ? 1 : 0);
-    /* The PI header the decoder took says the call is encrypted, with this ALG ID: its voice is held no more. */
-    dmr_enc_class_release_hold(state, slot);
+    const int algid = slot == 0U ? state->payload_algid : state->payload_algidR;
+    /* The PI header the decoder took says the call is encrypted, with this ALG ID: its voice is held no more. One that
+       names no cipher the decoder knows (ALG ID 0 here) still says the call is encrypted, with nothing to judge its
+       frames by: they stay held, not played as clear. */
+    if (algid != 0) {
+        dmr_enc_class_release_hold(state, slot);
+    }
     /* Under -F the burst decoder accepts a PI whose CRC failed against the standard mask as RAS: that is no check of its
        content, and trust comes only from a CRC (or the Hytera checksum) that passed (CRC/FEC provenance). */
     const int unverified =
         !checksum_verified && (state->event_crc_invalid[slot] & (DSD_CRC_RAS_UNVERIFIED | DSD_CRC_FAILED)) != 0U;
-    if (unverified || (slot == 0U ? state->payload_algid : state->payload_algidR) == 0) {
+    if (unverified || algid == 0) {
         /* Its fields replaced the slot's ALG ID, key id and MI all the same: whatever trust an earlier PI gave them, and
            the chain they anchored, are gone. */
         state->dmr_crypto_pi_verified[slot] = 0U;

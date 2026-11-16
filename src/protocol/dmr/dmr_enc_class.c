@@ -43,7 +43,6 @@ unsigned int
 dmr_enc_class_observe(dsd_state* state, uint8_t slot, unsigned int so, int strong) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
     const uint8_t obs = (so & 0x40U) != 0U ? DMR_ENC_CLASS_ENC : DMR_ENC_CLASS_CLEAR;
-    dmr_enc_class_release_hold(state, slot);
 
     if (strong) {
         state->dmr_enc_class[idx] = obs;

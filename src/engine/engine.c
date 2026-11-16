@@ -5372,6 +5372,10 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
     state->engine_fresh = 0U;
     /* A state an earlier run used may still say its carrier was two-slot TDMA: this run proves its own. */
     state->tdma_carrier = 0U;
+    /* Nor is a DMR slot's voice held for a move the earlier run made (dmr_enc_class_hold()): a host that reuses its
+       state (Android) would hold this run's first landing, which no source change marks when the device is the same. */
+    dmr_enc_class_release_hold(state, 0U);
+    dmr_enc_class_release_hold(state, 1U);
     if (enter_rc != 0) {
         rc = 1;
         goto ENGINE_OUT;

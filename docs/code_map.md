@@ -1895,24 +1895,23 @@ suite runs under this compiler.
   directly with `-b`, or none), so no call keeps another talkgroup's key. Each slot also keeps the talkgroup its own
   call last keyed from (`slot_tg`): a frame of a call no LC has named yet (an identity-less epoch, as a colour code
   change reopens a call) keys from it again, or from talkgroup 0's own key, else from none, never from the other slot's.
-  The slot's terminator, the no-carrier pass and every move off the carrier forget it with the rest of the left
-  calls' DMR privacy (`dmr_forget_call_privacy()`: every carrier boundary but a stream gap, every accepted trunk tune
-  that leaves the carrier through `dsd_engine_tune_leaves_carrier()`, as a voice channel hop with no release, a move
-  or a rest channel change, where the tune keeps the FID for the DMR machine to forget once the left calls' rows are
-  final (`dmr_forget_call_decryption()`, `dmr_sm_leave_carrier()`), the release, and a trunk-scan visit after its
-  snapshot restore), so the next carrier's
-  frames before their LC decrypt with no privacy bit and no talkgroup key of the left calls, while a key set directly
-  stays the user's. A call whose terminator was missed on the same carrier is still the slot's call, so a new call's
-  frames before its LC key from the old call's talkgroup (the code cannot tell them apart before that LC). The call's
-  LC, its printed key and the encryption lockout are judged by the key its own slot and talkgroup leave
-  (`keyring_dmr_tg_autoload_preview()`, `dmr_flco_call_key_of()`, `dmr_flco_missing_alg_key_can_decrypt()`). The
-  terminal UI's slot row shows the key its own call keyed from (`slot_key`, `dsd_dmr_slot_call_key()`, since the UI
-  snapshot holds no keyring), or none, and the Loaded lines and the Hytera menu label show the key the user loaded
-  (the key the autoload replaced while its key is the working key), never a talkgroup's, revealed only by
-  `--show-keys` through the redaction helpers. A key changed by anything else since is left alone, a scan's saved keys
-  and a key typed in overlay mode (`dsd_key_apply_direct()`) take the key the autoload replaced
-  (`key_scalars_capture()`), so a typed Basic Privacy key keeps no talkgroup's Hytera key, the secure wipe clears the
-  autoload's copies, and the no-carrier unload of a keyring's working keys is unchanged
+  The slot's terminator, the no-carrier pass and every move off the carrier forget it with the rest of the left calls'
+  DMR privacy (`dmr_forget_call_privacy()`: every carrier boundary but a stream gap, every accepted trunk tune that
+  leaves the carrier through `dsd_engine_tune_leaves_carrier()`, as a voice channel hop with no release, a move or a
+  rest channel change, where the tune keeps the FID for the DMR machine to forget once the left calls' rows are final
+  (`dmr_forget_call_decryption()`, `dmr_sm_leave_carrier()`), the release, and a trunk-scan visit after its snapshot
+  restore), so the next carrier's frames before their LC decrypt with no privacy bit and no talkgroup key of the left
+  calls, while a key set directly stays the user's. A call whose terminator was missed on the same carrier is still the
+  slot's call, so a new call's frames before its LC key from the old call's talkgroup (the code cannot tell them apart
+  before that LC). The call's LC, its printed key and the encryption lockout are judged by the key its own slot and
+  talkgroup leave (`keyring_dmr_tg_autoload_preview()`, `dmr_flco_call_key_of()`,
+  `dmr_flco_missing_alg_key_can_decrypt()`). The terminal UI's slot row shows the key its own call keyed from
+  (`slot_key`, `dsd_dmr_slot_call_key()`, since the UI snapshot holds no keyring), or none, and the Loaded lines and the
+  Hytera menu label show the key the user loaded (the key the autoload replaced while its key is the working key), never
+  a talkgroup's, revealed only by `--show-keys` through the redaction helpers. A key changed by anything else since is
+  left alone, a scan's saved keys and a key typed in overlay mode (`dsd_key_apply_direct()`) take the key the autoload
+  replaced (`key_scalars_capture()`), so a typed Basic Privacy key keeps no talkgroup's Hytera key, the secure wipe
+  clears the autoload's copies, and the no-carrier unload of a keyring's working keys is unchanged
   (`no_carrier_unload_keys_if_needed()`). Tests: `P25_CRYPTO_STATE`, `NXDN_ELEMENT_BOUNDS` (imported zero keys, the
   narrow AES fallback, VCALL_IV keeping the VCALL's key), `CORE_MBE_TRANSFORM_CONTEXT`, `DMR_BLOCK_CRYPTO`,
   `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO` (incomplete AES keys refused on the data and replay paths),
@@ -3287,15 +3286,27 @@ suite runs under this compiler.
   Privacy, forced with `-4` too, `-S`, a mapped Vertex keystream), or forced clear (`dsd_key_dmr_forced_clear()`)
   settles its decryptability in the frame classification; no mixer applies a forced-privacy unmute override.
   After the receiver moves off a carrier or releases its call (`dmr_enc_class_hold()`: every carrier boundary but a
-  stream gap, every accepted trunk tune that leaves the carrier, the release, a trunk-scan visit), each slot's
-  encryption is unknown until its call's own voice LC (`dmr_enc_class_observe()`) or PI header (`dmr_pi()`) says:
-  a DMR frame judged clear only because nothing has said otherwise is unknown there (`mbe_dmr_slot_judge()`,
-  `dsd_state::dmr_enc_class_held`), with X2-TDMA's rule below. A key forced onto every frame
-  (`dsd_key_dmr_forced_clear()`) keys it as before. Neither a session's first landing nor a no-carrier pass or a
-  terminator on the carrier holds anything, so those frames play as before. A call whose voice LC header comes first
-  loses nothing; one joined mid-call is held until the first embedded LC its superframes complete (at most 12 frames,
-  240 ms, over a sweep of every join phase). Test: `ENGINE_NO_CARRIER_RESET`
-  (`test_dmr_voice_held_until_the_call_says()`).
+  stream gap, a trunk-scan visit, the release, and every DMR tune the DMR machine judges to leave its carrier,
+  `dmr_sm_leave_carrier()` and `dmr_sm_note_carrier_tune()`, never the engine's own reading of the tuner, so a grant on
+  a composite control channel's carrier holds nothing), each slot's encryption is unknown until that slot's call says:
+  an LC that passed its check (`CRCCorrect`, a RAS acceptance under `-F` included, header or embedded; a shape the
+  decoder reads no privacy from, such as Tait FID 0x58 or an unknown FID, says as much as such a call ever says), a PI
+  header naming a cipher the decoder knows (one that leaves the ALG ID 0 keeps the slot held), or a forced
+  classification. A DMR frame judged clear only because nothing has said otherwise is unknown there
+  (`mbe_dmr_slot_judge()`, `dsd_state::dmr_enc_class_held`), with X2-TDMA's rule below. A key forced onto every frame
+  keys it as before: forced clear (`dsd_key_dmr_forced_clear()`) or a keyed transform the frame got with nothing asking
+  for it (`-4` with a Basic or Hytera key). On the single-slot decoder under trunking (`-fr -T`), whose voice runs on
+  both slots while an LC decoded on its own is folded onto slot 0, the LC's FID, service options, classification and
+  release go to the burst's own slot (`dmr_flco_voice_slot_of()`). A run starts with no slot held, whatever an earlier
+  run on the same state left (Android reuses its state); a stream start the engine counts as a source change (another
+  device than the earlier run's, or any I/Q replay start) holds as any source change does. A no-carrier pass or a
+  terminator on the carrier holds nothing and leaves a hold standing. A call whose voice LC header comes first loses
+  nothing. One joined mid-call is held until the first embedded LC its superframes complete: on the dual-slot BS path 9
+  to 12 frames (180 to 240 ms) on a call whose every superframe carries its voice LC; on MS 12 frames, since the MS
+  decoder assembles the embedded LC after burst F's frames; and each superframe whose embedded LC fails its check or
+  carries something else (a talker alias, a GPS position) adds one superframe (18 frames, 360 ms). A protected LC never
+  ends the hold. Tests: `ENGINE_NO_CARRIER_RESET` (`test_dmr_voice_held_until_the_call_says()`,
+  `test_dmr_hold_edges()`), `ENGINE_TRUNK_SCAN`, `ENGINE_RUN_SETUP`.
   P25 Phase 1 and Phase 2 use `p25_crypto_audio_output_permitted()`; Phase 2 also needs its decode gate. NXDN and
   dPMR use `nxdn_cipher_type` and the key the vocoder applies
   (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). X2-TDMA is judged per timeslot and
@@ -12414,19 +12425,21 @@ Private per-protocol modules worth knowing about:
     listens on; unknown counts as leaving) ends every slot's canonical call (EXPLICIT, synchronized,
     `dmr_sm_end_left_calls()`, as a release without a control channel does), so a displaced call never stays active
     beside the followed one. Then, as the release does, nothing of the left calls' crypto stays
-    (`dmr_sm_leave_carrier()`): their privacy with the FID (`dmr_forget_call_privacy()`), both slots' ALG, key ID and
-    MI (`payload_*`, `payload_miP`/`miN`) and MI chain (`dmr_vcrypt_forget()`), so the next carrier's frames before
-    their own PI or LC decrypt with none of it, and are held until that PI or LC says whether the call is encrypted
+    (`dmr_sm_leave_carrier()`): their privacy with the FID (`dmr_forget_call_privacy()`), both slots' ALG, key ID and MI
+    (`payload_*`, `payload_miP`/`miN`) and MI chain (`dmr_vcrypt_forget()`), so the next carrier's frames before their
+    own PI or LC decrypt with none of it, and are held until that PI or LC says whether the call is encrypted
     (`dmr_enc_class_hold()`, see the encrypted-audio verdict); a rigctl tune keeps the symbol timeline, so a trusted
     chain would otherwise step the left call's MI on and decrypt them with it. The tune itself forgets only what
     decrypts (`dmr_forget_call_decryption()` in `dsd_engine_tune_leaves_carrier()`), so the left calls' final rows,
     rendered at their end after it, keep the vendor annotations their FID names (`TXI;`, `PRIORITY;`). DMR's other tunes
-    that leave a carrier forget the same ALG, key ID, MI and MI chain once the tune is accepted
-    (`dmr_sm_note_carrier_tune()`, given the receiver's frequency before the tune): the Capacity Plus rest move
-    (`dmr_slco_tune_and_reset()`), the Connect Plus data tune, a control channel probe and a settle tune (these two read
-    it from the machine's own attribution, `dmr_sm_attributed_receiver()`, so the hunt adds no rigctl round trip). The
-    tune already forgot their privacy bit, and they keep the FID. Tests: `ENGINE_NO_CARRIER_RESET`
-    (`test_dmr_trunk_hop_leaves_no_call_crypto()`, `test_dmr_rest_move_leaves_no_call_crypto()`). A follow of the
+    that leave a carrier forget the same ALG, key ID, MI and MI chain, and hold the next carrier's voice, once the tune
+    is accepted (`dmr_sm_note_carrier_tune()`, given the receiver's frequency before the tune): the Capacity Plus rest
+    move (`dmr_slco_tune_and_reset()`), the Connect Plus data tune, a control channel probe and a settle tune (these two
+    read it from the machine's own attribution, `dmr_sm_attributed_receiver()`, so the hunt adds no rigctl round trip).
+    The tune already forgot their privacy bit, and they keep the FID. The hold follows the machine's judgement of a
+    leave alone, never the engine's reading of the tuner (`dsd_engine_receiver_hz()`), so a call the machine keeps on
+    the carrier is never held mid-call. Tests: `ENGINE_NO_CARRIER_RESET` (`test_dmr_trunk_hop_leaves_no_call_crypto()`,
+    `test_dmr_rest_move_leaves_no_call_crypto()`, `test_dmr_composite_cc_grant_holds_nothing()`). A follow of the
     carrier the receiver is already on (a grant for the composite control channel's own payload, a Cap+ status naming
     the rest channel it parks on, an XPT entry where it parks) adopts it in place: no call there ends, the slots keep
     that carrier's records (identity, binding, follow time) and voice timers, the grant names its slot only when the

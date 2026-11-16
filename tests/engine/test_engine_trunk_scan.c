@@ -3354,10 +3354,18 @@ test_dmr_service_options_state_isolated_per_target(void) {
 
     seed_dmr_service_options(&state, 0x22U, 0x02U, 0x33U, 0x03U);
     state.dmr_tg_autoload.slot_tg[0] = 123U;
+    state.dmr_enc_class_held[0] = state.dmr_enc_class_held[1] = 0U;
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "dmr service option scan did not rotate back to first target\n");
+        test_rc = 1;
+    }
+    // The visit's calls have not said yet whether they are encrypted: each slot's voice is held until they do, set
+    // after the restore, whatever the target's snapshot kept.
+    if (state.dmr_enc_class_held[0] != 1U || state.dmr_enc_class_held[1] != 1U) {
+        DSD_FPRINTF(stderr, "a target visit did not hold the slots' voice (held %u %u)\n",
+                    (unsigned)state.dmr_enc_class_held[0], (unsigned)state.dmr_enc_class_held[1]);
         test_rc = 1;
     }
     // The service options belong to the reception that ended when this target was left: a stale privacy bit would
