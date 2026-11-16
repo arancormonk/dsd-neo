@@ -25,6 +25,8 @@ namespace dsd_qt {
 namespace {
 
 constexpr int kTickMs = 1000;
+/* How long a session that has had no fix yet reads as locating (its first fix on the way) rather than paused. */
+constexpr qint64 kLocatingMs = 60000;
 constexpr double kKmPerMile = 1.609344;
 constexpr double kSameKm = 1e-9;
 
@@ -123,7 +125,8 @@ SiteRoaming::View::operator==(const View& other) const {
            && currentUid == other.currentUid && same_km(currentKm, other.currentKm)
            && candidateUid == other.candidateUid && same_km(candidateKm, other.candidateKm)
            && destinationUid == other.destinationUid && groupKey == other.groupKey
-           && transactionActive == other.transactionActive && fix == other.fix && available == other.available;
+           && transactionActive == other.transactionActive && fix == other.fix && available == other.available
+           && locating == other.locating;
 }
 
 SiteRoaming::SiteRoaming(AppPrefs* prefs, SavedSystemsModel* systems, QObject* parent)
@@ -176,6 +179,8 @@ SiteRoaming::setHost(DecoderHost* host) {
     m_resetFloor.clear();
     m_failedUid.clear();
     m_pendingChoiceUid.clear();
+    m_sessionHadFix = false;
+    m_locatingSinceMs = -1;
     m_host = host;
     if (host != nullptr) {
         connect(host, &DecoderHost::sessionStateChanged, this, &SiteRoaming::onHostSession);
@@ -541,6 +546,7 @@ SiteRoaming::onStreamUpdate(const QVariantMap& record) {
             m_measurement.accuracy_m = record.value(QStringLiteral("accuracyM")).toDouble();
             m_measurement.fix_at_ms = record.value(QStringLiteral("fixAtMs")).toLongLong();
             m_hasMeasurement = true;
+            m_sessionHadFix = true;
         }
     }
     evaluate();
@@ -553,9 +559,12 @@ SiteRoaming::ensureStream(bool need) {
         return;
     }
     if (need && !m_streamOn) {
+        if (m_locatingSinceMs < 0) {
+            m_locatingSinceMs = now(); // the session's first wait for a fix
+        }
         m_streamOn = true;
         m_streamState.clear();
-        m_hasMeasurement = false;
+        forgetMeasurement();
         m_host->startLocationStream();
     } else if (!need && m_streamOn) {
         m_streamOn = false;
@@ -977,6 +986,8 @@ SiteRoaming::noteSessionStart(const QString& kind, const QString& uid, qint64 ro
     m_qualifyingUid.clear();
     m_verdictUid.clear();
     m_callWait.reset();
+    m_sessionHadFix = false;
+    m_locatingSinceMs = -1;
     if (own) {
         m_tx.destSessionId = next.id;
     }
@@ -1122,12 +1133,19 @@ SiteRoaming::publish() {
                     {QStringLiteral("lon"), m_measurement.lon},
                     {QStringLiteral("accuracyM"), m_measurement.accuracy_m}};
     }
+    next.locating = next.state == Paused && next.reason == NoFix && locating(t);
     next.currentKm = distanceTo(next.fix, next.currentUid);
     next.candidateKm = distanceTo(next.fix, next.candidateUid);
     if (!(next == m_view)) {
         m_view = next;
         Q_EMIT changed();
     }
+}
+
+/* The session has had no fix yet and first waited for one less than kLocatingMs before @p nowMs. */
+bool
+SiteRoaming::locating(qint64 nowMs) const {
+    return !m_sessionHadFix && m_locatingSinceMs >= 0 && nowMs - m_locatingSinceMs < kLocatingMs;
 }
 
 double
@@ -1198,7 +1216,7 @@ SiteRoaming::headerShortText() const {
         case WaitingForCall: return tr("WAITING");
         case Switching: return tr("SWITCHING");
         case Holding: return tr("HOLDING");
-        case Paused: return tr("PAUSED");
+        case Paused: return m_view.locating ? tr("LOCATING") : tr("PAUSED");
         default: return QString();
     }
 }
@@ -1208,7 +1226,7 @@ SiteRoaming::headerText() const {
     QString words = headerShortText();
     if (m_view.state == WaitingForCall) {
         words = tr("WAITING FOR CALL END");
-    } else if (m_view.state == Paused && kPauseWords[m_view.reason][0] != '\0') {
+    } else if (m_view.state == Paused && !m_view.locating && kPauseWords[m_view.reason][0] != '\0') {
         words = tr("PAUSED: %1").arg(tr(kPauseWords[m_view.reason]));
     }
     return words.isEmpty() ? QString() : tr("%1 · GPS ROAMING").arg(words);

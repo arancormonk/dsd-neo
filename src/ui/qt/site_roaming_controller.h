@@ -66,9 +66,10 @@ class SiteRoaming : public QObject {
     /* The state as one plain sentence (the reason's while Idle, Paused or Holding); empty while Off. */
     Q_PROPERTY(QString statusText READ statusText NOTIFY changed)
     /* The state for the Monitor header, state first and the feature name last ("STAYING · GPS ROAMING", "PAUSED: NO
-     * FIX · GPS ROAMING"), so an elided line keeps the state; empty while Off or Idle. Its sentence is statusText. */
+     * FIX · GPS ROAMING"), so an elided line keeps the state; empty while Off or Idle. Its sentence is statusText. A
+     * session's wait for its first fix reads "LOCATING · GPS ROAMING" for up to 60 s; a fix lost later reads paused. */
     Q_PROPERTY(QString headerText READ headerText NOTIFY changed)
-    /* The state alone ("WAITING"), for a header too narrow for headerText; empty while Off or Idle. */
+    /* The state alone ("WAITING", "LOCATING"), for a header too narrow for headerText; empty while Off or Idle. */
     Q_PROPERTY(QString headerShortText READ headerShortText NOTIFY changed)
     /* What the reason's button does (performAction()). */
     Q_PROPERTY(Action action READ action NOTIFY changed)
@@ -351,6 +352,8 @@ class SiteRoaming : public QObject {
         bool transactionActive = false;
         QVariantMap fix;
         bool available = false;
+        /* Waiting for the session's first fix, within kLocatingMs of its first wait: the header says LOCATING. */
+        bool locating = false;
 
         bool operator==(const View& other) const;
     };
@@ -399,6 +402,7 @@ class SiteRoaming : public QObject {
 
     void setView(State shown, Reason why, const QString& arg = QString());
     void publish();
+    bool locating(qint64 nowMs) const;
     QString siteName(const QString& uid) const;
     double distanceTo(const QVariantMap& at, const QString& uid) const;
     QString distanceText(double km) const;
@@ -437,6 +441,10 @@ class SiteRoaming : public QObject {
     QHash<QString, qint64> m_resetFloor;
     bool m_hasMeasurement = false;
     SiteRoamingMeasurement m_measurement;
+    /* The session has had a fix fed, and when it first waited for one (-1: not yet): until its first fix, or for
+     * kLocatingMs, a missing fix reads as locating rather than paused. */
+    bool m_sessionHadFix = false;
+    qint64 m_locatingSinceMs = -1;
     bool m_epochKnown = false;
     qint64 m_seenEpoch = 0;
     QString m_qualifyingUid;

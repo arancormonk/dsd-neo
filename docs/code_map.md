@@ -14860,8 +14860,11 @@ Qt Quick frontend (`src/ui/qt`):
   through Main on the lifecycle host), `UI_QT_SITE_GROUPS` (`check_roamable()`), `UI_QT_PERSISTENCE`
   (`test_roaming_prefs()`), `UI_QT_CONTROLLER` (`test_operator_intents()`). Its wording lives here, not in QML:
   `statusText` (the sentence), `headerText` / `headerShortText` (the Monitor line, "WAITING FOR CALL END · GPS ROAMING"
-  / "WAITING") and `systemName` (the group's card title). The UI (all hidden while `available` is false): the site
-  chooser's "GPS roaming" switch (`setEnabledByUser()`; switching on needs two roamable sites on the card and no extra
+  / "WAITING"; a session's wait for its first fix reads "LOCATING · GPS ROAMING" / "LOCATING" for up to 60 s from its
+  first wait, and only a fix lost later, or none in that minute, reads "PAUSED: NO FIX"), `systemName` (the group's card
+  title). The UI
+  (all hidden while `available` is false): the site chooser's "GPS roaming" switch (`setEnabledByUser()`; switching on
+  needs two roamable sites on the card and no extra
   options in Settings, the reason on the switch's accessible description), its disclosure, and for the card of the
   session roaming follows "Listening to <site> · <distance>" (the distance left out of the accessible name) with the
   state line and its action (`performAction()`), else one line naming the system roaming follows or the idle reason; a

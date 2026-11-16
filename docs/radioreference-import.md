@@ -256,7 +256,9 @@ transmissions (the hang time) reads as no call, so a switch can land between two
 A switch works like **Stop and switch**: the session stops, the app waits for Idle, and the new site starts with its
 own frequency, files and settings. Nothing you changed only for the old session carries over: a key or gain you
 set while listening, and sheets you had open on the Monitor. The Monitor's header shows what
-roaming is doing, such as "STAYING · GPS ROAMING" or "WAITING FOR CALL END · GPS ROAMING".
+roaming is doing, such as "STAYING · GPS ROAMING" or "WAITING FOR CALL END · GPS ROAMING". Right after listening
+starts or a switch, it reads "LOCATING · GPS ROAMING" until the first location fix comes in (at most a minute); a fix
+lost after that reads "PAUSED: NO FIX · GPS ROAMING".
 
 What pauses, holds or cancels roaming:
 

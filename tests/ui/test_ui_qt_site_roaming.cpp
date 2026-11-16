@@ -1388,8 +1388,9 @@ check_executor_header_text() {
     check(header("", "") && rig.roaming.statusText() == QStringLiteral("GPS roaming starts once listening begins"),
           "header: a starting session is idle, with its sentence");
     rig.roaming.noteSessionInitialized();
-    check(header("PAUSED: NO FIX · GPS ROAMING", "PAUSED") && rig.roaming.systemName() == QStringLiteral("Valley"),
-          "header: waiting for a fix, and the system by its card's name");
+    check(header("LOCATING · GPS ROAMING", "LOCATING") && rig.roaming.systemName() == QStringLiteral("Valley")
+              && rig.roaming.statusText() == QStringLiteral("Waiting for a location fix"),
+          "header: the session's first fix on its way, and the system by its card's name");
     rig.fix(10.0, 20.0);
     check(header("STAYING · GPS ROAMING", "STAYING"), "header: following");
     rig.set("callBusy", true);
@@ -1408,6 +1409,35 @@ check_executor_header_text() {
     check(header("SWITCHING · GPS ROAMING", "SWITCHING"), "header: switching");
     rig.prefs.setRoamingEnabled(false);
     check(header("", "") && rig.roaming.systemName().isEmpty(), "header: off shows nothing");
+}
+
+/* A session's first wait for a fix reads as locating, not paused, until a fix comes or 60 s pass; a fix the session
+ * had and lost reads paused. A new session (a start or a switch) locates again. */
+void
+check_executor_locating() {
+    Rig rig;
+    const auto header = [&rig](const char* full, const char* shortForm) {
+        return rig.roaming.headerText() == QString::fromUtf8(full)
+               && rig.roaming.headerShortText() == QString::fromUtf8(shortForm);
+    };
+    rig.running();
+    rig.tick(59999);
+    check(header("LOCATING · GPS ROAMING", "LOCATING"), "locating: just under a minute with no fix");
+    rig.tick(1);
+    check(header("PAUSED: NO FIX · GPS ROAMING", "PAUSED") && rig.roaming.reason() == SiteRoaming::NoFix,
+          "locating: a minute with no fix is a pause");
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    rig.running(1);
+    check(header("LOCATING · GPS ROAMING", "LOCATING"), "locating: a new session locates again");
+    rig.fix(10.5, 20.0, 1000);
+    check(header("STAYING · GPS ROAMING", "STAYING"), "locating: its first fix");
+    rig.tick(60001);
+    check(header("PAUSED: NO FIX · GPS ROAMING", "PAUSED") && rig.roaming.reason() == SiteRoaming::NoFix,
+          "locating: a fix had and lost is a pause");
+    rig.host.epochValue = 1;
+    rig.tick(500);
+    check(header("PAUSED: NO FIX · GPS ROAMING", "PAUSED"),
+          "locating: back in the foreground after a fix, still paused");
 }
 
 } // namespace
@@ -1449,6 +1479,7 @@ main(int argc, char** argv) {
     check_executor_adopted_and_retune();
     check_executor_timer();
     check_executor_header_text();
+    check_executor_locating();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

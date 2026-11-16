@@ -116,7 +116,7 @@ Item {
             waitForRendering(monitor);
             var height = header.height;
             siteRoaming.noteSessionInitialized();
-            compare(line.text, "PAUSED: NO FIX · GPS ROAMING");
+            compare(line.text, "LOCATING · GPS ROAMING", "the first fix on its way: locating, not paused");
             fix(10.01, 1000);
             compare(line.text, "STAYING · GPS ROAMING");
             compare(line.Accessible.name, "Staying on this site until another is clearly closer", "read as the sentence");
