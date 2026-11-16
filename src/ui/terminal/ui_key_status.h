@@ -64,17 +64,4 @@ ui_dmr_key_hytera_segment_count(const ui_dmr_key* key) {
     return 1U;
 }
 
-/* The segments of the working Hytera key. */
-static inline unsigned int
-ui_hytera_key_segment_count(const dsd_state* state) {
-    if (state == NULL) {
-        return 0U;
-    }
-    ui_dmr_key key;
-    ui_dmr_key_working(state, &key);
-    const unsigned int count = ui_dmr_key_hytera_segment_count(&key);
-    ui_dmr_key_clear(&key);
-    return count;
-}
-
 #endif
