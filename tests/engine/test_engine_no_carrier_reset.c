@@ -3900,6 +3900,44 @@ test_dmr_hold_failed_embedded_lc(char frame[4][24]) {
     return rc;
 }
 
+/* -b 70 without -4: a Basic Privacy key the call's privacy bit asks for, forced onto nothing. */
+static void
+dmr_hold_basic_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_force_basic_key(opts, state);
+    state->M = 0;
+}
+
+/* A key that is loaded but not forced keys nothing while a slot is held: an embedded LC whose checksum failed, asking
+   for Basic Privacy (FID 0x10, privacy bit), neither plays nor records the frame. Only a checked LC ends the hold,
+   and the frame then plays keyed, as on a fresh decoder that heard the same LC. */
+static int
+test_dmr_hold_failed_embedded_lc_privacy_bit(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("a failed Basic Privacy LC: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_basic_key(opts, state);
+    char recorded[49] = {0};
+    rc |= expect_true("a Basic Privacy key after a hop: the frame is held",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+    dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, 0x40U, 303U);
+    rc |= expect_true("an embedded LC asking for Basic Privacy whose checksum failed: the frame stays held",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U
+                          && state->dmr_enc_class_held[0] == 1U);
+    dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x10U, 0x40U, 303U);
+    rc |= expect_true("a checked one ends the hold: the frame plays keyed",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && state->dmr_enc_class_held[0] == 0U && memcmp(recorded, as_it_came, sizeof recorded) != 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* A checked voice LC the decoder reads no privacy from (Tait, FID 0x58) says as much as such a call ever does: the
    frame after it plays as a fresh decoder plays it, not held. */
 static int
@@ -4237,6 +4275,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_hold_forced_key_plays(frame);
     rc |= test_dmr_hold_pi_naming_no_cipher(frame);
     rc |= test_dmr_hold_failed_embedded_lc(frame);
+    rc |= test_dmr_hold_failed_embedded_lc_privacy_bit(frame);
     rc |= test_dmr_hold_unread_lc_shape(frame);
     rc |= test_dmr_hold_per_slot();
     rc |= test_dmr_hold_mono_trunked_slot2_header(frame);

@@ -3338,14 +3338,15 @@ suite runs under this compiler.
     forcing no classification either);
   - a forced classification.
 
-  A DMR frame judged clear only because nothing has said otherwise is unknown there (`mbe_dmr_slot_judge()`,
-  `dsd_state::dmr_enc_class_held`), with X2-TDMA's rule below. A key forced onto every frame keys it as before: forced
-  clear (`dsd_key_dmr_forced_clear()`) or a keyed transform the frame got with nothing asking for it (`-4` with a Basic
-  or Hytera key). On the single-slot decoder under trunking (`-fr -T`), whose voice runs on both slots, an LC decoded
-  on its own stays on the slot its burst's CACH proved, as on the dual-slot decoder
+  A DMR frame on a held slot is unknown there (`mbe_dmr_slot_judge()`, `dsd_state::dmr_enc_class_held`), with X2-TDMA's
+  rule below, whatever class its privacy bit or ALG ID reads: an embedded LC whose checksum failed still sets the live
+  service options, and the key they select keys nothing until the hold ends. Only a key forced onto every frame keys it
+  as before (`mbe_dmr_slot_key_forced()`): forced clear (`dsd_key_dmr_forced_clear()`), the `-S` keystream, or `-4` with
+  a Basic or Hytera key. On the single-slot decoder under trunking (`-fr -T`), whose voice runs on both slots, an LC
+  decoded on its own stays on the slot its burst's CACH proved, as on the dual-slot decoder
   (`dmr_mono_folds_standalone_burst()`): its call, terminator, crypto, keys and release are that slot's. Without
-  trunking the single-slot decoder folds a slot 2 LC and its PI header alike onto lane 0, where its voice is decoded,
-  so a slot 2 encrypted call's ALG ID, key ID and MI reach that voice (`dmr_pi()`).
+  trunking the single-slot decoder folds a slot 2 LC and its PI header alike onto lane 0, where its voice is decoded, so
+  a slot 2 encrypted call's ALG ID, key ID and MI reach that voice (`dmr_pi()`).
 
   The exemption, the run's first landing, keyed on nothing having landed yet in the run (`dsd_state::run_landed`, set
   by any landing: the run's first stream, a tune, a scan's row entry or park):
