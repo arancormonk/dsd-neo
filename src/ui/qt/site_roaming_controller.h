@@ -321,6 +321,11 @@ class SiteRoaming : public QObject {
         bool manualHold = false;
         /* A user stop was seen while it ran (the generation moved), or the generation could not be read. */
         bool stopObserved = false;
+        /* What the decoder was started with (#786 r3): Settings' extra options were set, and the row was roamable
+         * (its own extra options, receiver, trunking). Edits made while it runs reach the decoder only at its next
+         * start, so they can only take roaming away, never give it. */
+        bool globalExtrasAtStart = false;
+        bool roamableAtStart = false;
     };
 
     struct Intent {

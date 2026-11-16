@@ -909,6 +909,40 @@ Item {
             compare(decoderHost.sessionState, 2);
         }
 
+        // #786 r3: the decoder runs with what it was started with. A session
+        // started with an input override in Settings stays out of roaming
+        // after the override is cleared: three fixes near Lake stop nothing.
+        function test_28b_extra_options_cleared_mid_session_still_idle_roaming() {
+            prefs.extraArgs = "-i rtltcp:127.0.0.1:5555";
+            startSite(0);
+            compare(args().indexOf("rtltcp:127.0.0.1:5555") >= 0, true, "the override reached the decoder");
+            prefs.extraArgs = "";
+            nearB(0);
+            nearB(10000);
+            nearB(10000);
+            compare(siteRoaming.statusText, "GPS roaming is off while extra options are set in Settings");
+            compare(calls().switchStops, 0);
+            compare(decoderHost.sessionState, 2, "Hill keeps running");
+        }
+
+        // The same for the site's own extra options, cleared in the editor
+        // while it runs: roaming stays off until the next start.
+        function test_28c_the_site_made_roamable_mid_session_still_idles() {
+            savedSystems.update(0, {extraArgs: "-v 3"});
+            startSite(0);
+            savedSystems.update(0, {extraArgs: ""});
+            nearB(0);
+            nearB(10000);
+            nearB(10000);
+            compare(siteRoaming.reason, SiteRoaming.SiteNotRoamable);
+            compare(calls().switchStops, 0);
+            compare(decoderHost.sessionState, 2, "Hill keeps running");
+            testContext.setLifecyclePhase(0);
+            wait(20);
+            startSite(0);
+            compare(siteRoaming.reason !== SiteRoaming.SiteNotRoamable, true, "the next start may roam");
+        }
+
         function test_29_the_same_input_option_on_both_rows_never_arms() {
             savedSystems.update(0, {extraArgs: "-i rtl:0:851.0125"});
             savedSystems.update(1, {extraArgs: "-i rtl:0:851.0125"});

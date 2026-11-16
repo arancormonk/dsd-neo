@@ -703,17 +703,19 @@ SiteRoaming::sessionShapeReason() const {
 }
 
 /* What makes the running saved site one roaming can follow: no extra options anywhere, its row still in the group it
- * started in, roamable, beside at least one other roamable site. */
+ * started in, roamable, beside at least one other roamable site. Extra options and the row's roamability count as the
+ * session started (the decoder runs what it was started with) and as they are now (an edit applies at the next start,
+ * and roaming must not restart into it): either one rules roaming out. */
 SiteRoaming::Reason
 SiteRoaming::siteShapeReason() const {
-    if (globalExtras()) {
+    if (globalExtras() || m_session.globalExtrasAtStart) {
         return GlobalExtraArgs;
     }
     const int row = m_systems->rowForUid(m_session.uid);
     if (row < 0 || m_session.groupKey.isEmpty() || m_systems->groupKey(row) != m_session.groupKey) {
         return NotGrouped;
     }
-    if (!m_systems->roamable(row)) {
+    if (!m_session.roamableAtStart || !m_systems->roamable(row)) {
         return SiteNotRoamable;
     }
     return roamableSiblings() < 2 ? FewSites : NoReason;
@@ -1026,6 +1028,8 @@ SiteRoaming::noteSessionStart(const QString& kind, const QString& uid, qint64 ro
     // A roam's destination keeps the generation its switch carried, so a user stop since then is never absorbed.
     next.stopGeneration = own ? m_tx.stopGeneration : (m_host != nullptr ? m_host->userStopGeneration() : -1);
     next.stopObserved = next.stopGeneration < 0;
+    next.globalExtrasAtStart = globalExtras();
+    next.roamableAtStart = row >= 0 && m_systems->roamable(row);
     next.manualHold = !own && enabled() && !uid.isEmpty() && uid == m_pendingChoiceUid;
     m_session = next;
     m_sessionLive = true;

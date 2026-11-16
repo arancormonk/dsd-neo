@@ -14821,7 +14821,9 @@ Qt Quick frontend (`src/ui/qt`):
   Main told it was started as a saved site (`noteSessionStart()`) and that passed the engine's post-initialization edge
   (`noteSessionInitialized()`), whose row is roamable (`site_roamable()` in `site_groups`,
   `SavedSystemsModel::roamable(row)`: grouped, trunking, an RTL-SDR, rtl_tcp, Airspy or SoapySDR receiver, no extra
-  options of its own) in a group with two or more roamable rows, with no extra options in Settings, and whose decoder
+  options of its own) in a group with two or more roamable rows, with no extra options in Settings (both as the session
+  started, latched in `noteSessionStart()`, and as they are now: an edit while it runs reaches the decoder only at the
+  next start, so it can take roaming away but never give it), and whose decoder
   snapshot (`facts`, which Main binds to `metrics`) shows trunking, a tunable input, no scan, no operator hold and no
   held talkgroup. The location feed runs only while armed. Main's start path carries out a switch: `switchRequested()`
   (Main records `pendingRestart.kind == "roam"`), `DecoderHost::stopForSwitch()`, then at Idle `startPlan()` (the

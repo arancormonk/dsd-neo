@@ -230,7 +230,9 @@ Roaming follows a session when all of these hold:
   audio, files and I/Q replay never roam, and neither does a trunk scan or a scan list.
 - Neither the site nor Settings has **Extra decoder arguments**. A site with its own shows "Not used by GPS roaming:
   this site has extra options" in the chooser and is never switched to. Extra decoder arguments in Settings keep
-  roaming from working while they are set: "GPS roaming is off while extra options are set in Settings".
+  roaming from working while they are set: "GPS roaming is off while extra options are set in Settings". Listening
+  keeps running with what it started with, so clearing either while you listen turns roaming on only from the next
+  start; adding them turns it off at once.
 - No talkgroup is held and you have not tuned by hand.
 
 A site roaming can switch to is one of these sites that is not avoided, has coordinates, and is within **Roam to
