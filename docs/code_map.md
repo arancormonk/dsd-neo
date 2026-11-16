@@ -1765,7 +1765,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     regular file reports ready at once and its read blocks. A reader attaches itself to the input backlog when it opens
     and detaches when it closes (`<dsd-neo/platform/input_backlog.h>`, `input_backlog.c`, issue #834): its count, safe
     from any thread, is the bytes it read in plus those its descriptor or socket holds ready (`dsd_fd_readable_bytes()`,
-    `dsd_socket_readable_bytes()`: `FIONREAD`, or `PeekNamedPipe()` on a Windows pipe).
+    `dsd_socket_readable_bytes()`: `FIONREAD`, or `PeekNamedPipe()` on a Windows pipe). The count and each refill (the
+    read and the bytes-read-in update) take the reader's own lock, so a count never sees a refill's bytes on both sides
+    or on neither; a sample read from the buffer takes no lock. `PLATFORM_PCM_STREAM_MARK` runs a refill inside the
+    count's readiness query (a GNU ld `--wrap` seam).
     `dsd_pcm_stream_discard_through()` drops the whole samples the reader and its descriptor held at a rigctl retune's
     mark, read without a wait (at most 21 buffers of 19200 bytes: about 4 s of 48 kHz mono, 2 s of stereo; and no refill
     after 250 ms on the monotonic clock), keeps every byte that arrived after the mark, and keeps a part sample so the

@@ -18215,6 +18215,33 @@ target_link_libraries(
 )
 add_test(NAME PLATFORM_PCM_STREAM COMMAND dsd-neo_test_platform_pcm_stream)
 
+# A backlog mark taken while the decoder refills the reader (issue #834), its readiness query wrapped through a GNU ld
+# --wrap seam so the refill runs inside it.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_platform_pcm_stream_mark
+        platform/test_platform_pcm_stream_mark.c
+    )
+    target_include_directories(
+        dsd-neo_test_platform_pcm_stream_mark
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_platform_pcm_stream_mark
+        PRIVATE dsd-neo_platform dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_platform_pcm_stream_mark
+        PRIVATE
+            -Wl,--wrap=dsd_fd_readable_bytes
+            -Wl,--wrap=dsd_socket_readable_bytes
+    )
+    add_test(
+        NAME PLATFORM_PCM_STREAM_MARK
+        COMMAND dsd-neo_test_platform_pcm_stream_mark
+    )
+endif()
+
 # A writerless FIFO is refused at once, never waited on (POSIX only: needs mkfifo and fork).
 if(UNIX)
     add_executable(
