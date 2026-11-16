@@ -1422,10 +1422,12 @@ I/Q replay defers every retune, so a `-Y` scan replayed with `--iq-replay` never
 (`tests/y_call_hold_check.py`; radio builds with a GNU or Clang toolchain, not macOS, since the host links with
 `--wrap`) therefore runs
 `dsd-neo_test_y_call_hold_replay`, a host that notes row zero's landing itself at the first hunt, on the replay's clock.
-Each call fixture, followed by `noise_floor`, is the landed row of a two-row map, typed (the row's own mode) and untyped
-under `-fa` (the default set), at `-t 1` and `-t 2`, with skip-silent off and on and no visit cap. It fails a
-frame-boundary step before the call's last sync, and a row still held more than the hangtime plus 2 s after it (3.5 s
-for NXDN, which holds a `-Y` row 2 s past each frame whose own CRCs proved its content). A call with no PROVEN or
+Each call fixture, followed by as much of `noise_floor` as the leave bound needs (the bound plus 1 s after the call), is
+the landed row of a two-row map with no visit cap, in four legs: typed (the row's own mode) at `-t 1` with skip-silent
+off and on, typed at `-t 2`, and untyped under `-fa` (the default set) at `-t 1`; `--all-legs` runs every set at both
+hangtimes with skip-silent off and on. It fails a frame-boundary step before the call's last sync, and a row still held
+more than the hangtime plus 2 s after it (3.5 s for NXDN, which holds a `-Y` row 2 s past each frame whose own CRCs
+proved its content), whether the row left late or the run ended first. A call with no PROVEN or
 PARTIAL note in its decoder set is what the rule exists to leave: it is reported as `unchecked` and only has to leave
 within the same bound from the landing (today the off-air `dpmr` capture, typed and under `-fa`, and `dstar` under
 `-fa`, which the default set does not decode as D-STAR within the capture). The host prints a `YHOLD` line for every

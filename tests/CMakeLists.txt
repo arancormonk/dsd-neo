@@ -20546,14 +20546,15 @@ if(DSD_HAS_RADIO)
             PROPERTIES LABELS "iq-decode" TIMEOUT 180
         )
         # A -Y row keeps a real call while its frames come and leaves it once the call ends (issue #834 item 3): each
-        # call fixture, with a receiver-noise tail, on a landed -Y row at -t 1 and -t 2, skip-silent off and on.
+        # call fixture, with as much receiver-noise tail as the leave bound needs, on a landed -Y row: typed at -t 1
+        # with skip-silent off and on, typed at -t 2, and under -fa (the script's LEGS).
         if(TARGET dsd-neo_test_y_call_hold_replay)
             add_test(
                 NAME DECODE_IQ_Y_CALL_HOLD
                 COMMAND
                     ${Python3_EXECUTABLE}
-                    ${CMAKE_CURRENT_SOURCE_DIR}/y_call_hold_check.py --hangtime
-                    1,2 $<TARGET_FILE:dsd-neo_test_y_call_hold_replay>
+                    ${CMAKE_CURRENT_SOURCE_DIR}/y_call_hold_check.py
+                    $<TARGET_FILE:dsd-neo_test_y_call_hold_replay>
                     ${_DSD_NEO_IQ_FIXTURE_DIR}
             )
             set_tests_properties(

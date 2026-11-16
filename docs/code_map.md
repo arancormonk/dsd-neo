@@ -715,7 +715,7 @@ Generated (do not edit/commit):
       against the setting off), `NXDN_FRAME_ROUTING` (`test_y_scan_hold_needs_a_checked_frame()`),
       `NXDN_DEPERM_PRIMITIVES` (`test_cac_fail_run_on_conventional_scan_keeps_anchor()`), `DECODE_IQ_Y_CALL_HOLD`
       (`tests/y_call_hold_check.py` over the `dsd-neo_test_y_call_hold_replay` host: every real call fixture kept while
-      its frames come and left once it ends, typed and as an untyped `-fa` row, at -t 1 and -t 2), and
+      its frames come and left once it ends, typed and as an untyped `-fa` row, at -t 1 and typed at -t 2), and
       `ENGINE_PROTOCOL_DISPATCH` (the unchecked-frame note for X2-TDMA, ProVoice and TETRA only).
     - Reason model and publication (issue #834 B1, `scan_quiet_timing_fill()`): both timing writers
       (`trunk_scan_publish_timing()` through `trunk_scan_timing_fill_quiet()`, the -Y `dsd_engine_scan_y_timing_tick()`
