@@ -146,6 +146,22 @@ send_sdu(session* s, uint32_t addr_type, uint32_t ssi, const ttb_block* sdu) {
     send_sdu_enc(s, 0, addr_type, ssi, sdu);
 }
 
+/* send_sdu() with a channel allocation of another cell (cell change flag 1, clause 23.5.4.1): the MLE hands the PDU on
+ * print-only, so it changes nothing of this cell. */
+static void
+send_sdu_other_cell(session* s, uint32_t ssi, const ttb_block* sdu) {
+    char log[2048];
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, ssi);
+    ttb_resource_flags(&b, 1);
+    ttb_allocation_cell(&b, 0x4u, 3u, 1234u, 1u);
+    ttb_put(&b, 2, 4); /* BL-UDATA */
+    ttb_put_bits(&b, sdu->bits, sdu->n);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_test_mac_logged(b.bits, b.n, 0, s->opts, s->state, log, sizeof log);
+}
+
 static void
 lu_accept(ttb_block* b, uint32_t accept_type, uint32_t assigned) {
     ttb_put(b, TETRA_MLE_PD_MM, 3);
@@ -396,6 +412,32 @@ test_naming(void) {
     session_close(&s);
 }
 
+/* A location update accept or reject, or a disable command, that came with another cell's channel allocation is
+   printed but makes no row: the log's scope is this cell's (print-only, as every other publication). */
+static void
+test_other_cell_makes_no_row(void) {
+    session s = session_open();
+    ttb_block sdu = {0};
+    lu_accept(&sdu, 3, TEST_ASSIGNED_SSI);
+    send_sdu_other_cell(&s, TEST_MS_SSI, &sdu);
+    expect_no_row(s.state, "another cell's LU ACCEPT");
+    sdu = (ttb_block){0};
+    lu_reject(&sdu, 1, 3);
+    send_sdu_other_cell(&s, TEST_MS_SSI, &sdu);
+    expect_no_row(s.state, "another cell's LU REJECT");
+    sdu = (ttb_block){0};
+    enable_disable(&sdu, 0, 0u, 0u, 0u, TEST_MS_SSI);
+    send_sdu_other_cell(&s, TEST_MS_SSI, &sdu);
+    expect_no_row(s.state, "another cell's D-DISABLE");
+    /* The same accept with this cell's allocation is a row (the PDU itself decodes). */
+    sdu = (ttb_block){0};
+    lu_accept(&sdu, 3, TEST_ASSIGNED_SSI);
+    send_sdu(&s, TETRA_MAC_ADDR_SSI, TEST_MS_SSI, &sdu);
+    dsd_unit_activity r;
+    (void)one_row(s.state, &r, "this cell's LU ACCEPT");
+    session_close(&s);
+}
+
 /* The name every frontend shows for the newest row (the app-control view over the live ring). */
 static void
 view_newest_name(const dsd_state* state, char* out, size_t cap) {
@@ -458,6 +500,7 @@ main(void) {
     test_enable_disable();
     test_naming();
     test_ussi_never_named_locally();
+    test_other_cell_makes_no_row();
     if (g_failures != 0) {
         printf("FAIL  tetra_unit_activity: %d check(s) failed\n", g_failures);
         return 1;

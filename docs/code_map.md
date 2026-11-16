@@ -12418,7 +12418,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   address, takes a call PDU of it (`tetra_calls_on_event()` acts on nothing and, at `opts->verbose > 1`, the default,
   logs so), attaches its allocation, event label or usage marker (`tetra_calls_on_allocation()` is not called), proves
   or maintains a call, or reaches the state machine. Its MM PDUs are printed without writing the D-MM STATUS shown or
-  the KSG a network uses (`tetra_mm_dispatch_as()`, from `tetra_mle_dispatch_sdu()`). An allocation left unread
+  the KSG a network uses, or a unit activity row (LU accept / reject, D-DISABLE / D-ENABLE; `tetra_mm_dispatch_as()`,
+  from `tetra_mle_dispatch_sdu()`; test `TETRA_UNIT_ACTIVITY` `test_other_cell_makes_no_row`). An allocation left unread
   (encrypted with no key: EN 300 392-7 clause 6.7.1.2 encrypts everything after the allocation-present flag) has no
   flag the decoder knows, and its PDU is handled as any other.
 - Known limits of a guarded follow, decided rather than worked around:

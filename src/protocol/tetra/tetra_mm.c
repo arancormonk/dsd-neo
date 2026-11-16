@@ -797,7 +797,10 @@ mm_report_enable_disable(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
                 e->intent ? "confirm" : "intent", (unsigned)e->equipment, (unsigned)e->subscription,
                 e->permanent ? " permanent" : "");
     mm_notice_enable_disable(ctx, e, name);
-    tetra_ua_enable_disable(ctx->opts, ctx->state, e);
+    /* Another cell's PDU (print-only) is printed, never logged under this cell's reception scope. */
+    if (!ctx->print_only) {
+        tetra_ua_enable_disable(ctx->opts, ctx->state, e);
+    }
 }
 
 /* EN 300 392-2 clause 16.9.2: location update and group identity PDUs. */
@@ -848,7 +851,10 @@ mm_report_lu_accept(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
     }
     DSD_FPRINTF(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d type=%u (%s) %s%s\n", ctx->cc, (unsigned)a->type,
                 mm_lu_accept_type_name(a->type), addr, assigned);
-    tetra_ua_lu_accept(ctx->opts, ctx->state, &ctx->addr, a);
+    /* Another cell's PDU (print-only) is printed, never logged under this cell's reception scope. */
+    if (!ctx->print_only) {
+        tetra_ua_lu_accept(ctx->opts, ctx->state, &ctx->addr, a);
+    }
 }
 
 /* Cipher control and the ciphering parameters it announces (EN 300 392-2 tables 16.12 and 16.13). */
@@ -954,7 +960,10 @@ mm_report_lu_reject(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
                 (unsigned)rej->type, (unsigned)rej->cause, (unsigned)rej->cipher_control, cipher,
                 mm_lu_type_name(rej->type), mm_lu_reject_cause_name(rej->cause), addr);
     mm_cipher_remember_ksg(ctx, rej->cipher_control, rej->cipher_params);
-    tetra_ua_lu_reject(ctx->opts, ctx->state, &ctx->addr, rej);
+    /* Another cell's PDU (print-only) is printed, never logged under this cell's reception scope. */
+    if (!ctx->print_only) {
+        tetra_ua_lu_reject(ctx->opts, ctx->state, &ctx->addr, rej);
+    }
 }
 
 /* Table 16.14 D-LOCATION UPDATE PROCEEDING: the (V)ASSI and the MNI are both type 1 elements. */
