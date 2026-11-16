@@ -3744,17 +3744,32 @@ test_stream_freq_ties_speech_to_its_allocation(void) {
         session_close(&s);
     }
 
-    /* Direct mode needs no frequency: a DMO call on a stream without FREQ publishes. */
-    session s = session_open();
-    session_history(&s);
-    s.opts->audio_in_type = AUDIO_IN_RTL;
-    DSD_SNPRINTF(s.opts->audio_in_dev, sizeof s.opts->audio_in_dev, "%s", "iqudp:0.0.0.0:7356:36000:cs16");
-    s.opts->rtlsdr_center_freq = 0U;
-    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
-    const dsd_call_snapshot call = canonical(s.state);
-    assert(call.phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_TETRA(call.protocol));
-    assert(call.ota_target_id == 0x800001u && call.ota_source_id == 100u);
-    session_close(&s);
+    /* Direct mode needs no frequency: a DMO call on a stream publishes with FREQ or without, and its history row
+       records the receiver frequency the stream names as it names it (right, wrong, or none: 0, never the 850 MHz
+       default). */
+    static const struct {
+        const char* spec;
+        uint32_t freq_hz;
+    } dmo[] = {{"iqudp:0.0.0.0:7356:36000:cs16", 0U},
+               {"iqudp:0.0.0.0:7356:36000:cs16:420012500", 420012500U},
+               {"iqudp:0.0.0.0:7356:36000:cs16:460000000", 460000000U}};
+
+    for (size_t i = 0; i < sizeof dmo / sizeof dmo[0]; i++) {
+        session s = session_open();
+        session_history(&s);
+        s.opts->audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(s.opts->audio_in_dev, sizeof s.opts->audio_in_dev, "%s", dmo[i].spec);
+        s.opts->rtlsdr_center_freq = dmo[i].freq_hz;
+        dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+        const dsd_call_snapshot call = canonical(s.state);
+        assert(call.phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_TETRA(call.protocol));
+        assert(call.ota_target_id == 0x800001u && call.ota_source_id == 100u);
+        dsd_event_sync_slot(s.opts, s.state, 0U);
+        const Event_History* row = &s.state->event_history_s[0].Event_History_Items[0];
+        assert(strstr(row->event_string, "TETRA DMO TGT: 08388609; SRC: 00000100;") != NULL);
+        assert(row->freq_hz == (int64_t)dmo[i].freq_hz);
+        session_close(&s);
+    }
 }
 
 /* A D-SETUP of call @p call_id to @p ssi whose allocation assigns @p up_down (table 21.87: 01 the downlink, 10 the

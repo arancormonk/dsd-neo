@@ -2732,12 +2732,15 @@ main(void) {
     dsd_state_ext_free_all(&xpt_st);
 
     /* Issue #743 (G7): on a raw I/Q stream the receiver frequency is the stream's FREQ, which the engine puts the
-       receiver on at its start: an XPT site status caches it as the control channel, and caches nothing on a stream
-       without FREQ (0), rather than the 850 MHz default the options start with. */
+       receiver on at its start: an XPT site status caches it as the control channel as the stream names it (the
+       site's 461.25 MHz, or a wrong 470 MHz, which nothing here can tell from a right one), and caches nothing on a
+       stream without FREQ (0), rather than the 850 MHz default the options start with. */
     static const struct {
         const char* spec;
         uint32_t freq_hz;
-    } streams[] = {{"iqtcp:127.0.0.1:1234:48000:cs16:461250000", 461250000U}, {"iqtcp:127.0.0.1:1234:48000:cs16", 0U}};
+    } streams[] = {{"iqtcp:127.0.0.1:1234:48000:cs16:461250000", 461250000U},
+                   {"iqtcp:127.0.0.1:1234:48000:cs16:470000000", 470000000U},
+                   {"iqtcp:127.0.0.1:1234:48000:cs16", 0U}};
 
     for (size_t i = 0; i < sizeof streams / sizeof streams[0]; i++) {
         init_env(&xpt_opts, &xpt_st);

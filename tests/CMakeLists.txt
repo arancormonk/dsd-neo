@@ -11206,6 +11206,22 @@ if(DSD_HAS_RADIO)
             DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-airspy -P
             ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
     )
+    # Issue #743: an I/Q stream's startup lines, and a TCP stream with nothing listening exits 1 at its connect.
+    foreach(
+        _iq_mode
+        IN
+        ITEMS tcp-no-listener min-rate-narrow min-rate-wide min-rate-met
+    )
+        string(TOUPPER "${_iq_mode}" _iq_name)
+        string(REPLACE "-" "_" _iq_name "${_iq_name}")
+        add_test(
+            NAME RUNTIME_CLI_IQ_STREAM_${_iq_name}
+            COMMAND
+                ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+                DSD_NEO_CLI_SMOKE_MODE=iq-stream-${_iq_mode} -P
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+        )
+    endforeach()
     # Issue #743: an I/Q stream's planned rate holds the width before the stream connects.
     add_test(
         NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED_IQ_STREAM
@@ -20411,6 +20427,19 @@ if(DSD_HAS_RADIO)
             set_tests_properties(
                 DECODE_IQ_REPLAY_RIGCTL
                 PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
+            # A raw I/Q stream on loopback (issue #743): the UDP receiving notice follows the bind, a mode switch to
+            # TETRA over the control API reconnects the TCP stream, and no rigctl peer beside it is ever connected.
+            add_test(
+                NAME RUNTIME_IQ_STREAM_LIVE
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/iq_stream_live_check.py
+                    $<TARGET_FILE:dsd-neo>
+            )
+            set_tests_properties(
+                RUNTIME_IQ_STREAM_LIVE
+                PROPERTIES LABELS "iq-stream" TIMEOUT 120
             )
         endif()
     endif()

@@ -180,6 +180,83 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused-iq-stream")
         "NFM bandwidth 25 kHz does not fit the 16 kHz DSP rate [(]the largest width it fits is 13[.]2 kHz[)]; set the DSP bandwidth to 48 or 72 kHz"
     )
     set(_forbid_output_regex "radio stream")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-tcp-no-listener")
+    # Issue #743: a TCP stream says where it connects, warns a rate under TETRA's 25 kHz (36 kHz when the sender's
+    # centring is approximate) and notes that no FREQ was given; with nothing listening the connect fails and the
+    # start exits 1. Nothing listens on port 1.
+    set(_args
+        --no-config
+        --frontend
+        none
+        -fT
+        -i
+        iqtcp:127.0.0.1:1:20000:cs16
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "I/Q stream: connecting to 127[.]0[.]0[.]1:1 [(]cs16, 20000 samples/s[)].*20000 samples/s is below the 25000 that TETRA needs [(]36000 when the sender's channel is not exactly centred[)].*no receiver frequency [(]FREQ[)] was given.*cannot connect to 127[.]0[.]0[.]1:1.*Failed to open radio stream"
+    )
+    set(_forbid_output_regex "receiving on")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-narrow")
+    # A session that decodes only 6.25 kHz channels (NXDN48) is warned under 12 kHz; no TETRA notes.
+    set(_args
+        --no-config
+        --frontend
+        none
+        -fi
+        -i
+        iqtcp:127.0.0.1:1:8000:cs16
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "8000 samples/s is below the 12000 that a 6[.]25 kHz channel needs; decoding may fail"
+    )
+    set(_forbid_output_regex "36000|no receiver frequency")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-wide")
+    # A DMR session is warned under 16 kHz; at 48 kHz with a FREQ it is warned of nothing.
+    set(_args
+        --no-config
+        --frontend
+        none
+        -fs
+        -i
+        iqtcp:127.0.0.1:1:12000:cs16
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "12000 samples/s is below the 16000 that a 12[.]5 kHz channel needs; decoding may fail"
+    )
+    set(_forbid_output_regex "36000|no receiver frequency")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-met")
+    set(_args
+        --no-config
+        --frontend
+        none
+        -fT
+        -i
+        iqtcp:127.0.0.1:1:48000:cs16:420.0125M
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "I/Q stream: connecting to 127[.]0[.]0[.]1:1 [(]cs16, 48000 samples/s[)]"
+    )
+    set(_forbid_output_regex "is below the|no receiver frequency")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused")
     # Issue #525: an explicit NFM width the rtl_tcp input's 24 kHz DSP
     # bandwidth cannot filter is refused before the device opens, with the
