@@ -114,7 +114,11 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -125,6 +129,7 @@
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -1568,22 +1573,24 @@ analog_replay_gap(char** args, int count) {
  *    the sender stopping for a second before the sample pause_s names: a stream pause part-way through a monitor block.
  *  - udp-tap: the iq kind's discriminator tap sent the same way, for the noise squelch on a live input.
  * Every burst is keyed with 2 ms raised-cosine ramps. */
-#define ANALOG_SCENE_MAX_BURSTS  8
-#define ANALOG_SCENE_SEED        668U
-#define ANALOG_SCENE_VOICE_LO_HZ 300.0
-#define ANALOG_SCENE_VOICE_HI_HZ 2500.0
-#define ANALOG_SCENE_CTCSS_HZ    100.0
-#define ANALOG_SCENE_PCM_VOICE   0.1   /* RMS, full scale 1: -20 dBFS */
-#define ANALOG_SCENE_PCM_CTCSS   0.05  /* peak: -26 dBFS */
-#define ANALOG_SCENE_PCM_FLOOR   0.001 /* RMS: -60 dBFS */
-#define ANALOG_SCENE_PCM_CLIP    0.9
-#define ANALOG_SCENE_IQ_DEV_HZ   3000.0
-#define ANALOG_SCENE_IQ_TONED_HZ 2500.0
-#define ANALOG_SCENE_IQ_CTCSS_HZ 600.0
-#define ANALOG_SCENE_UDP_STOP_MS 1000U
-#define ANALOG_SCENE_UDP_END_MS  1500U
+#define ANALOG_SCENE_MAX_BURSTS   8
+#define ANALOG_SCENE_SEED         668U
+#define ANALOG_SCENE_VOICE_LO_HZ  300.0
+#define ANALOG_SCENE_VOICE_HI_HZ  2500.0
+#define ANALOG_SCENE_CTCSS_HZ     100.0
+#define ANALOG_SCENE_PCM_VOICE    0.1   /* RMS, full scale 1: -20 dBFS */
+#define ANALOG_SCENE_PCM_CTCSS    0.05  /* peak: -26 dBFS */
+#define ANALOG_SCENE_PCM_FLOOR    0.001 /* RMS: -60 dBFS */
+#define ANALOG_SCENE_PCM_CLIP     0.9
+#define ANALOG_SCENE_IQ_DEV_HZ    3000.0
+#define ANALOG_SCENE_IQ_TONED_HZ  2500.0
+#define ANALOG_SCENE_IQ_CTCSS_HZ  600.0
+#define ANALOG_SCENE_UDP_STOP_MS  1000U
+#define ANALOG_SCENE_UDP_END_MS   1500U
+/* How long the udp scene's sender waits at most for the decoder to read what it sent. */
+#define ANALOG_SCENE_UDP_DRAIN_MS 60000U
 /* The udp scene's monitor blocks are 960 samples (symbol_analog_block_size()); at 8192 Hz each is 117 ms. */
-#define ANALOG_SCENE_UDP_RATE    8192.0
+#define ANALOG_SCENE_UDP_RATE     8192.0
 
 typedef enum { ANALOG_SCENE_IQ = 0, ANALOG_SCENE_PCM, ANALOG_SCENE_UDP, ANALOG_SCENE_UDP_TAP } analog_scene_kind;
 
@@ -1937,6 +1944,58 @@ analog_scene_read_tap(void) {
     return rc;
 }
 
+/* The samples the decoder took from the udp input. The scene's sender paces itself by them: a decoder slower than the
+   scene's real time (a sanitizer build on a loaded host) would otherwise let the input's ring overflow and drop part of
+   the scene, the burst included. */
+static dsd_atomic_u64 g_scene_read;
+
+static int
+analog_scene_udp_read(dsd_opts* opts, int16_t* out) {
+    const int got = udp_input_read_sample(opts, out);
+    if (got == 1) {
+        (void)dsd_atomic_u64_fetch_add_release(&g_scene_read, 1U);
+    }
+    return got;
+}
+
+static int
+analog_scene_udp_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    const int got = udp_input_read_sample_wait(opts, out, timeout_ms);
+    if (got == 1) {
+        (void)dsd_atomic_u64_fetch_add_release(&g_scene_read, 1U);
+    }
+    return got;
+}
+
+/* The network input hooks the engine installs (dsd_engine_net_audio_input_hooks_install()), with the udp reads
+   counted for the sender. */
+static void
+analog_scene_count_udp_reads(void) {
+    dsd_atomic_u64_init(&g_scene_read, 0U);
+    dsd_net_audio_input_hooks hooks = {0};
+    hooks.tcp_open = tcp_input_open;
+    hooks.tcp_close = tcp_input_close;
+    hooks.tcp_read_sample_wait = tcp_input_read_sample_wait;
+    hooks.udp_start = udp_input_start;
+    hooks.udp_stop = udp_input_stop;
+    hooks.udp_read_sample = analog_scene_udp_read;
+    hooks.udp_read_sample_wait = analog_scene_udp_read_wait;
+    hooks.tcp_discard_pending = tcp_input_discard_pending;
+    hooks.udp_discard_pending = udp_input_discard_pending;
+    hooks.tcp_connect = ConnectBounded;
+    dsd_net_audio_input_hooks_set(hooks);
+}
+
+/* Waits until the decoder took @p count of the scene's samples, for at most ANALOG_SCENE_UDP_DRAIN_MS. */
+static void
+analog_scene_wait_read(uint64_t count) {
+    const uint64_t give_up = dsd_realtime_mono_ms() + ANALOG_SCENE_UDP_DRAIN_MS;
+    while (dsd_atomic_u64_load_acquire(&g_scene_read) < count && dsd_realtime_mono_ms() < give_up
+           && !dsd_exitflag_load()) {
+        dsd_sleep_ms(1U);
+    }
+}
+
 /* Waits until @p due_ms on the real-time clock. */
 static void
 analog_scene_wait_until(uint64_t due_ms) {
@@ -1946,8 +2005,11 @@ analog_scene_wait_until(uint64_t due_ms) {
     }
 }
 
-/* The udp scene's sender: 20 ms datagrams, each sent when its first sample is due, the stop before the sample at
-   pause_s, and then, once the decoder had time to read the last of it, the end of the run. */
+/* The udp scene's sender: 20 ms datagrams, each sent when its first sample is due and no more than a quarter second
+   ahead of what the decoder read, so the input's ring never overflows however slowly the decoder runs; the stop before
+   the sample at pause_s, which starts once the decoder read everything before it, so the input stays empty for the
+   whole ANALOG_SCENE_UDP_STOP_MS; and then, once the decoder read the last sample and had time to decode it, the end of
+   the run. */
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
@@ -1958,20 +2020,31 @@ static DSD_THREAD_RETURN_TYPE
     dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
     if (sock != DSD_INVALID_SOCKET && dsd_socket_resolve("127.0.0.1", g_scene.port, &to) == 0) {
         const size_t chunk = (size_t)g_scene.pcm_rate / 50U;
+        const size_t ahead = (size_t)g_scene.pcm_rate / 4U;
         const size_t stop_at = (size_t)lround(g_scene.scene->pause_s * (double)g_scene.pcm_rate);
-        const uint64_t began = dsd_realtime_mono_ms();
+        /* Sample origin_at is due at origin_ms; each later one at the scene's rate after it. */
+        uint64_t origin_ms = dsd_realtime_mono_ms();
+        size_t origin_at = 0U;
         size_t at = 0U;
         while (at < g_scene.pcm_n) {
             size_t take = g_scene.pcm_n - at < chunk ? g_scene.pcm_n - at : chunk;
             if (at < stop_at && at + take > stop_at) {
                 take = stop_at - at;
             }
-            const uint64_t stopped = (stop_at > 0U && at >= stop_at) ? ANALOG_SCENE_UDP_STOP_MS : 0U;
-            analog_scene_wait_until(began + stopped + (uint64_t)at * 1000U / (uint64_t)g_scene.pcm_rate);
+            if (stop_at > 0U && at == stop_at) {
+                analog_scene_wait_read(stop_at);
+                origin_ms = dsd_realtime_mono_ms() + ANALOG_SCENE_UDP_STOP_MS;
+                origin_at = at;
+            }
+            analog_scene_wait_until(origin_ms + (uint64_t)(at - origin_at) * 1000U / (uint64_t)g_scene.pcm_rate);
+            if (at > ahead) {
+                analog_scene_wait_read(at - ahead);
+            }
             (void)dsd_socket_sendto(sock, g_scene.pcm + at, take * sizeof(int16_t), 0, (const struct sockaddr*)&to,
                                     (int)sizeof(to));
             at += take;
         }
+        analog_scene_wait_read(g_scene.pcm_n);
         dsd_sleep_ms(ANALOG_SCENE_UDP_END_MS);
     }
     if (sock != DSD_INVALID_SOCKET) {
@@ -2462,6 +2535,7 @@ analog_start(dsd_opts* opts, dsd_state* state, void* context) {
         opts->audio_out_type = 8;
     }
     if (g_scene.pcm != NULL && !g_scene.feeding) {
+        analog_scene_count_udp_reads();
         if (dsd_thread_create(&g_scene.feeder, analog_scene_feed, NULL) != 0) {
             DSD_FPRINTF(stderr, "analog replay: cannot start the udp scene's sender\n");
             return -1;
