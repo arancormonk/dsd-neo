@@ -231,8 +231,12 @@ Item {
             tryCompare(list(), "count", 1);
             waitForRendering(list());
             var who = shown(rowItem(1), "activityRowWho");
-            compare(who.textFormat, Text.PlainText);
             compare(who.text, "<b>Car</b> 7 (42)");
+            var name = shown(rowItem(1), "activityRowName");
+            compare(name.textFormat, Text.PlainText);
+            compare(name.text, "<b>Car</b> 7");
+            compare(shown(rowItem(1), "activityRowId").textFormat, Text.PlainText);
+            compare(shown(rowItem(1), "activityRowId").text, "(42)");
         }
 
         // Issue #782: hidden, the list holds no rows while messages land; shown
@@ -365,6 +369,19 @@ Item {
                     verify(p.y >= 0 && p.y + line.height <= row.height + 0.5, name + " inside the row's height");
                 }
             }
+            // The unit ID is drawn whole, never cut: only the name gives way.
+            for (var want of [{seq: 1, id: "(1234567)"}, {seq: 2, id: "1234568"}]) {
+                var at = rowItem(want.seq);
+                var idLine = shown(at, "activityRowId") || shown(at, "activityRowWho");
+                verify(idLine.text.indexOf(want.id) >= 0, idLine.text);
+                verify(!idLine.truncated, want.id + " drawn whole: " + idLine.text);
+                verify(idLine.width >= idLine.implicitWidth - 0.5 || idLine.lineCount > 1, want.id + " not cut");
+                var idAt = idLine.mapToItem(at, 0, 0);
+                verify(idAt.x >= 0 && idAt.x + idLine.width <= at.width + 0.5, want.id + " inside the row");
+            }
+            var nameLine = shown(rowItem(1), "activityRowName");
+            verify(nameLine !== null && nameLine.visible && nameLine.text === "Engine 7 Driver", "the name is shown, cut at its end");
+            compare(rowItem(1).Accessible.name.indexOf("Engine 7 Driver (1234567)"), 0);
         }
     }
 }

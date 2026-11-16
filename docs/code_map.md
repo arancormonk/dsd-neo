@@ -16184,8 +16184,10 @@ Qt Quick frontend (`src/ui/qt`):
   the screen's filter (`activityView`): one `DSD_UA_FILTER_*` bit or every row, the gap row under every filter. The
   screen reuses History's shell, `FilterPill` (one of six, so `Accessible.RadioButton`, checkable, `Accessible.checked`
   on the chosen one and no separate `selected`, as Listen's tabs) in a wrapping `Flow` (every pill reachable by a swipe;
-  a horizontal strip builds no off-screen chip) and History's row grammar: who (name with its ID, elided in the middle
-  so the ID stays whole) and the time with a repeat count, what (the view's headline with the target, two lines), where
+  a horizontal strip builds no off-screen chip) and History's row grammar: who (the name, then its ID in a text of its
+  own that keeps its whole width, wrapping only if alone it is wider than the line; only the name is cut, at its end,
+  in what is left, and it goes when not a character fits; the row's accessible name still reads both whole) and the
+  time with a repeat count, what (the view's headline with the target, two lines), where
   (a reason the headline does not carry, the protocol, the scope, two lines); where an eight-digit ID and the widest
   time do not fit on one line, every row puts its time under the name (one rule per list). Only an inhibit or kill row
   (`DSD_UA_TONE_WARNING`) takes `Theme.alert`. The empty state lives in its own `PlexFlickable` over the list's area:

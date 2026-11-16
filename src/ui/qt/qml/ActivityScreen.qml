@@ -184,7 +184,8 @@ Item {
             readonly property var rowSeq: model.seq
             readonly property bool gap: model.gap
             // Who: the radio's or group's name with its ID, or the ID alone.
-            readonly property string who: model.name.length > 0 ? Util.oneLine(model.name) + " (" + model.subject + ")" : model.subject
+            readonly property bool named: model.name.length > 0
+            readonly property string who: named ? Util.oneLine(model.name) + " (" + model.subject + ")" : model.subject
             // What happened, and to what: the talkgroup, value, recipient.
             readonly property string what: [model.headline, model.target].filter(function (part) {
                 return part.length > 0;
@@ -233,26 +234,66 @@ Item {
                     width: parent.width
                     height: stacked ? whoText.height + 3 + stamp.height : whoText.height
 
-                    // Plain text, one line: a name is what the air or a list
-                    // delivered, and must never be read as markup. A long one
-                    // is cut in its middle, so the ID at its end stays whole.
-                    Text {
+                    // The name, then its ID. Plain text: a name is what the
+                    // air or a list delivered, and must never be read as
+                    // markup. The ID is never cut: it keeps its whole width
+                    // (wrapping only if even it alone is wider than the line),
+                    // and a long name is cut at its end in what is left.
+                    Item {
                         id: whoText
                         objectName: "activityRowWho"
+                        // The whole line as the row's accessible name reads it.
+                        readonly property string text: row.who
+                        // The space between name and ID, as one line of text sets it.
+                        readonly property real gapWidth: spaced.advanceWidth - unspaced.advanceWidth
+                        readonly property real nameRoom: width - idText.width - gapWidth
                         width: whoLine.stacked ? parent.width : parent.width - stamp.implicitWidth - 12
-                        text: row.who
-                        textFormat: Text.PlainText
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(16)
-                        font.weight: Font.DemiBold
-                        color: Theme.textPrimary
-                        elide: Text.ElideMiddle
+                        height: Math.max(nameText.visible ? nameText.height : 0, idText.height)
+
+                        TextMetrics {
+                            id: spaced
+                            font: idText.font
+                            text: "W ("
+                        }
+                        TextMetrics {
+                            id: unspaced
+                            font: idText.font
+                            text: "W("
+                        }
+
+                        Text {
+                            id: nameText
+                            objectName: "activityRowName"
+                            // Room for at least a character and the "…" (about "W(").
+                            visible: row.named && whoText.nameRoom >= unspaced.advanceWidth
+                            width: Math.min(implicitWidth, Math.max(0, whoText.nameRoom))
+                            text: row.named ? Util.oneLine(model.name) : ""
+                            textFormat: Text.PlainText
+                            font: idText.font
+                            color: Theme.textPrimary
+                            elide: Text.ElideRight
+                        }
+
+                        Text {
+                            id: idText
+                            objectName: "activityRowId"
+                            // Right after the name as drawn (a cut name is shorter than its room).
+                            x: nameText.visible ? Math.min(nameText.contentWidth, nameText.width) + whoText.gapWidth : 0
+                            width: Math.min(implicitWidth, whoText.width)
+                            text: row.named ? "(" + model.subject + ")" : model.subject
+                            textFormat: Text.PlainText
+                            wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(16)
+                            font.weight: Font.DemiBold
+                            color: Theme.textPrimary
+                        }
                     }
 
                     Row {
                         id: stamp
                         x: whoLine.stacked ? 0 : parent.width - width
-                        y: whoLine.stacked ? whoText.height + 3 : whoText.baselineOffset - timeText.baselineOffset
+                        y: whoLine.stacked ? whoText.height + 3 : idText.baselineOffset - timeText.baselineOffset
                         spacing: 8
 
                         Text {
