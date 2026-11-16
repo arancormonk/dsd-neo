@@ -257,9 +257,14 @@ void rtl_device_destroy(struct rtl_device* dev);
 /**
  * @brief Set device center frequency.
  *
+ * An I/Q replay has no tuner: this setter and every other tuner setter below (sample rate, gain, nearest gain, PPM,
+ * direct sampling, offset tuning, tuner bandwidth, bias tee, rtl_tcp autotune, xtal, test mode, IF gain) return
+ * DSD_ERR_NOT_SUPPORTED on it, an unchanged value included, before they change or cache anything. The getters go on
+ * reporting what the capture recorded.
+ *
  * @param dev RTL-SDR device handle.
  * @param frequency Frequency in Hz.
- * @return 0 on success, negative on failure.
+ * @return 0 on success, DSD_ERR_NOT_SUPPORTED on an I/Q replay, negative on failure.
  */
 int rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency);
 

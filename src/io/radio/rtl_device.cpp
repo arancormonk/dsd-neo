@@ -10360,17 +10360,28 @@ rtl_usb_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db) {
     return 0;
 }
 
+/* A device whose samples come from a source nothing here tunes (an I/Q replay): each tuner setter refuses it with
+ * DSD_ERR_NOT_SUPPORTED before it changes or caches anything, so a caller tells a control that is not there from one
+ * that took. Its getters go on reporting what the source recorded. */
+static inline bool
+rtl_device_source_is_fixed(const struct rtl_device* dev) {
+    return dev->backend == RTL_BACKEND_IQ_REPLAY;
+}
+
 /**
  * @brief Set device center frequency.
  *
  * @param dev RTL-SDR device handle.
  * @param frequency Frequency in Hz.
- * @return 0 on success, negative on failure.
+ * @return 0 on success, DSD_ERR_NOT_SUPPORTED on a fixed source, negative on failure.
  */
 int
 rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
     if (!dev) {
         return -1;
+    }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
     }
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_frequency(dev, frequency);
@@ -10394,13 +10405,6 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
     int rc = -1;
     if (dev->backend == RTL_BACKEND_AIRSPY) {
         rc = airspy_source_frequency(dev->airspy, frequency);
-    } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        if (dev->replay_cfg.capture_center_frequency_hz > 0
-            && (uint64_t)frequency != dev->replay_cfg.capture_center_frequency_hz) {
-            DSD_FPRINTF(stderr, "IQ replay: ignoring retune request to %u Hz (capture center is %llu Hz).\n", frequency,
-                        (unsigned long long)dev->replay_cfg.capture_center_frequency_hz);
-        }
-        rc = 0;
     } else {
 #ifdef USE_SOAPYSDR
         if (dev->backend == RTL_BACKEND_SOAPY) {
@@ -10436,6 +10440,9 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
     if (!dev) {
         return -1;
     }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_sample_rate(dev, samp_rate);
     }
@@ -10452,41 +10459,36 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
         }
         return rc;
     }
-    int rc = -1;
-    uint32_t applied_rate = samp_rate;
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        rc = 0;
-    } else {
 #ifdef USE_SOAPYSDR
-        if (dev->backend == RTL_BACKEND_SOAPY) {
-            rc = soapy_call_locked(dev, "setSampleRate", [&]() -> int {
-                double requested = (double)samp_rate;
-                double applied = requested;
-                bool adjusted = false;
-                try {
-                    std::vector<double> listed =
-                        soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
-                    std::vector<dsdneo::SoapyRange> ranges =
-                        soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
-                    applied = dsdneo::soapy_nearest_sample_rate(requested, listed, ranges, &adjusted);
-                } catch (const std::exception&) {
-                    applied = requested;
-                }
-                if (adjusted) {
-                    DSD_FPRINTF(stderr, "SoapySDR: adjusted sample rate from %.0f Hz to %.0f Hz.\n", requested,
-                                applied);
-                }
-                dev->soapy_dev->setSampleRate(SOAPY_SDR_RX, 0, applied);
-                applied_rate = (uint32_t)std::lround(applied);
-                return 0;
-            });
+    if (dev->backend == RTL_BACKEND_SOAPY) {
+        uint32_t applied_rate = samp_rate;
+        const int rc = soapy_call_locked(dev, "setSampleRate", [&]() -> int {
+            double requested = (double)samp_rate;
+            double applied = requested;
+            bool adjusted = false;
+            try {
+                std::vector<double> listed =
+                    soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
+                std::vector<dsdneo::SoapyRange> ranges =
+                    soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
+                applied = dsdneo::soapy_nearest_sample_rate(requested, listed, ranges, &adjusted);
+            } catch (const std::exception&) {
+                applied = requested;
+            }
+            if (adjusted) {
+                DSD_FPRINTF(stderr, "SoapySDR: adjusted sample rate from %.0f Hz to %.0f Hz.\n", requested, applied);
+            }
+            dev->soapy_dev->setSampleRate(SOAPY_SDR_RX, 0, applied);
+            applied_rate = (uint32_t)std::lround(applied);
+            return 0;
+        });
+        if (rc == 0) {
+            dev->rate = applied_rate;
         }
+        return rc;
+    }
 #endif
-    }
-    if (rc == 0) {
-        dev->rate = applied_rate;
-    }
-    return rc;
+    return -1;
 }
 
 /**
@@ -10790,6 +10792,9 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
     if (!dev) {
         return -1;
     }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     if (dev->backend == RTL_BACKEND_USB) {
         /* The gain record took the applied gain under the lock. */
         return rtl_usb_set_gain(dev, gain);
@@ -10797,22 +10802,17 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
     if (dev->backend == RTL_BACKEND_TCP) {
         return rtl_tcp_set_gain(dev, gain == RTL_AUTO_GAIN, gain, nullptr);
     }
-    int rc = -1;
-    int applied_gain = gain;
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        /* A replay has no tuner: the mode it reports is its capture's (replay_cfg), which no request changes. */
-        rc = 0;
-    } else {
 #ifdef USE_SOAPYSDR
-        if (dev->backend == RTL_BACKEND_SOAPY) {
-            rc = rtl_device_set_gain_soapy(dev, gain, false, &applied_gain);
+    if (dev->backend == RTL_BACKEND_SOAPY) {
+        int applied_gain = gain;
+        const int rc = rtl_device_set_gain_soapy(dev, gain, false, &applied_gain);
+        if (rc == 0) {
+            dev->gain = applied_gain;
         }
+        return rc;
+    }
 #endif
-    }
-    if (rc == 0) {
-        dev->gain = applied_gain;
-    }
-    return rc;
+    return -1;
 }
 
 static int
@@ -10859,6 +10859,9 @@ rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db, int* ou
     if (!dev) {
         return -1;
     }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     /* The selection may be negative (E4K, FC0012/FC0013), so it travels apart from the status. */
     int selected = target_tenth_db;
     int rc = -1;
@@ -10866,9 +10869,6 @@ rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db, int* ou
         rc = rtl_usb_set_gain_nearest(dev, target_tenth_db, &selected);
     } else if (dev->backend == RTL_BACKEND_TCP) {
         rc = rtl_device_set_gain_nearest_tcp(dev, target_tenth_db, &selected);
-    } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        dev->gain = target_tenth_db;
-        rc = 0;
     } else {
 #ifdef USE_SOAPYSDR
         if (dev->backend == RTL_BACKEND_SOAPY) {
@@ -10978,6 +10978,9 @@ rtl_device_set_ppm(struct rtl_device* dev, int ppm_error) {
     if (!dev) {
         return -1;
     }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_ppm(dev, ppm_error);
     }
@@ -10992,24 +10995,22 @@ rtl_device_set_ppm(struct rtl_device* dev, int ppm_error) {
     if (ppm_error == dev->ppm_error) {
         return 0;
     }
-    int rc = -1;
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        rc = 0;
 #ifdef USE_SOAPYSDR
-    } else if (dev->backend == RTL_BACKEND_SOAPY) {
-        rc = soapy_call_locked(dev, "setFrequencyCorrection", [&]() -> int {
+    if (dev->backend == RTL_BACKEND_SOAPY) {
+        const int rc = soapy_call_locked(dev, "setFrequencyCorrection", [&]() -> int {
             if (!dev->soapy_dev->hasFrequencyCorrection(SOAPY_SDR_RX, 0)) {
                 return DSD_ERR_NOT_SUPPORTED;
             }
             dev->soapy_dev->setFrequencyCorrection(SOAPY_SDR_RX, 0, (double)ppm_error);
             return 0;
         });
+        if (rc == 0) {
+            dev->ppm_error = ppm_error;
+        }
+        return rc;
+    }
 #endif
-    }
-    if (rc == 0) {
-        dev->ppm_error = ppm_error;
-    }
-    return rc;
+    return -1;
 }
 
 /**
@@ -11054,6 +11055,9 @@ rtl_device_set_direct_sampling(struct rtl_device* dev, int on) {
     if (!dev) {
         return -1;
     }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_direct_sampling(dev, on);
     }
@@ -11063,16 +11067,7 @@ rtl_device_set_direct_sampling(struct rtl_device* dev, int on) {
             dev->tcp_took.direct_sampling = 1;
         });
     }
-    int rc = -1;
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        rc = 0;
-    } else if (dev->backend == RTL_BACKEND_SOAPY) {
-        rc = DSD_ERR_NOT_SUPPORTED;
-    }
-    if (rc == 0) {
-        dev->direct_sampling = on;
-    }
-    return rc;
+    return dev->backend == RTL_BACKEND_SOAPY ? DSD_ERR_NOT_SUPPORTED : -1;
 }
 
 /**
@@ -11086,10 +11081,12 @@ rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on) {
     if (!dev) {
         return -1;
     }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_offset_tuning(dev, on);
     }
-    int r = -1;
     const int took = on ? 1 : 0;
     if (dev->backend == RTL_BACKEND_TCP) {
         return rtl_tcp_command(dev, 0x0A, (uint32_t)took, [&]() {
@@ -11097,15 +11094,7 @@ rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on) {
             dev->tcp_took.offset_tuning = 1;
         });
     }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        r = 0;
-    } else if (dev->backend == RTL_BACKEND_SOAPY) {
-        r = DSD_ERR_NOT_SUPPORTED;
-    }
-    if (r == 0) {
-        dev->offset_took = took;
-    }
-    return r;
+    return dev->backend == RTL_BACKEND_SOAPY ? DSD_ERR_NOT_SUPPORTED : -1;
 }
 
 int
@@ -11220,15 +11209,14 @@ rtl_device_set_tuner_bandwidth(struct rtl_device* dev, uint32_t bw_hz) {
     if (!dev) {
         return -1;
     }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_tuner_bandwidth(dev, bw_hz);
     }
     if (dev->backend == RTL_BACKEND_TCP) {
         /* Not universally supported by rtl_tcp; ignore */
-        (void)bw_hz;
-        return 0;
-    }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         (void)bw_hz;
         return 0;
     }
@@ -12709,35 +12697,27 @@ rtl_device_set_bias_tee(struct rtl_device* dev, int on) {
     if (!dev) {
         return -1;
     }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     int requested = on ? 1 : 0;
-    int rc = -1;
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        rc = 0;
-    } else if (dev->backend == RTL_BACKEND_TCP) {
+    if (dev->backend == RTL_BACKEND_TCP) {
         /* rtl_tcp protocol command 0x0E toggles bias tee */
         return rtl_tcp_command(dev, 0x0E, (uint32_t)requested, [&]() {
             dev->bias_tee_on = requested;
             dev->tcp_took.bias_tee = 1;
         });
-    } else if (dev->backend == RTL_BACKEND_SOAPY || dev->backend == RTL_BACKEND_AIRSPY) {
-        rc = DSD_ERR_NOT_SUPPORTED;
-    } else {
-        return rtl_usb_set_bias_tee(dev, requested);
     }
-    if (rc == 0) {
-        dev->bias_tee_on = requested;
+    if (dev->backend == RTL_BACKEND_SOAPY || dev->backend == RTL_BACKEND_AIRSPY) {
+        return DSD_ERR_NOT_SUPPORTED;
     }
-    return rc;
+    return rtl_usb_set_bias_tee(dev, requested);
 }
 
 int
 rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff) {
     if (!dev) {
         return -1;
-    }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        (void)onoff;
-        return 0;
     }
     if (dev->backend != RTL_BACKEND_TCP) {
         return DSD_ERR_NOT_SUPPORTED;
@@ -12750,6 +12730,9 @@ int
 rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint32_t tuner_xtal_hz) {
     if (!dev) {
         return -1;
+    }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
     }
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_xtal_freq(dev, rtl_xtal_hz, tuner_xtal_hz);
@@ -12779,9 +12762,6 @@ rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint32_t 
     }
     dev->rtl_xtal_hz = rtl_xtal_hz;
     dev->tuner_xtal_hz = tuner_xtal_hz;
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        return 0;
-    }
     if (dev->backend == RTL_BACKEND_SOAPY) {
         return DSD_ERR_NOT_SUPPORTED;
     }
@@ -12793,11 +12773,11 @@ rtl_device_set_testmode(struct rtl_device* dev, int on) {
     if (!dev) {
         return -1;
     }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     int requested = on ? 1 : 0;
-    int rc = -1;
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        rc = 0;
-    } else if (dev->backend == RTL_BACKEND_TCP) {
+    if (dev->backend == RTL_BACKEND_TCP) {
         /* The server writes register 0x19 for test mode and the digital AGC both (B9): turning test mode off puts the
          * digital AGC back as the gain state wants it. */
         return rtl_tcp_apply(
@@ -12815,15 +12795,11 @@ rtl_device_set_testmode(struct rtl_device* dev, int on) {
                 dev->tcp_took.testmode = 1;
             },
             [&]() { dev->tcp_took.testmode_unknown = 1; });
-    } else if (dev->backend == RTL_BACKEND_SOAPY) {
-        rc = DSD_ERR_NOT_SUPPORTED;
-    } else {
-        return rtl_usb_set_testmode(dev, requested);
     }
-    if (rc == 0) {
-        dev->testmode_on = requested;
+    if (dev->backend == RTL_BACKEND_SOAPY) {
+        return DSD_ERR_NOT_SUPPORTED;
     }
-    return rc;
+    return rtl_usb_set_testmode(dev, requested);
 }
 
 int
@@ -12834,6 +12810,9 @@ rtl_device_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db) {
     if (stage < 0) {
         return -1;
     }
+    if (rtl_device_source_is_fixed(dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_if_gain(dev, stage, gain_tenth_db);
     }
@@ -12843,9 +12822,6 @@ rtl_device_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db) {
                                [&]() { rtl_if_gain_upsert(dev->if_gains, &dev->if_gain_count, stage, gain_tenth_db); });
     }
     rtl_if_gain_upsert(dev->if_gains, &dev->if_gain_count, stage, gain_tenth_db);
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        return 0;
-    }
     if (dev->backend == RTL_BACKEND_SOAPY) {
         return DSD_ERR_NOT_SUPPORTED;
     }

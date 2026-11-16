@@ -11,7 +11,10 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/log.h>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "dsd-neo/core/opts_fwd.h"
@@ -19,6 +22,7 @@
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "rtl_stream_test_support.h"
+#include "test_env.h"
 #include "test_support.h"
 
 static int
@@ -84,8 +88,9 @@ remove_fixture_dirs(void) {
     return rc;
 }
 
+/* A replay fixture; @p auto_gain records a tuner that ran its automatic gain. */
 static int
-make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size) {
+make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, int auto_gain = 0) {
     if (!out_metadata_path || out_metadata_path_size == 0U) {
         return 1;
     }
@@ -107,6 +112,7 @@ make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size) {
 
     dsd_iq_capture_config cfg;
     fill_capture_cfg(&cfg, data_path, metadata_path);
+    cfg.tuner_gain_auto = auto_gain;
     dsd_iq_capture_writer* writer = NULL;
     char err_buf[256] = {0};
     if (dsd_iq_capture_open(&cfg, &writer, err_buf, sizeof(err_buf)) != DSD_IQ_OK || !writer) {
@@ -194,9 +200,90 @@ test_replay_retune_rejected_quickly(void) {
     return rc;
 }
 
+/* Every log line, joined, for a test to search. The tap is installed once, from main(), and runs on any thread. */
+static std::mutex g_log_mutex;
+static std::string g_log;
+
+static void
+record_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    if (text) {
+        const std::lock_guard<std::mutex> lock(g_log_mutex);
+        g_log += text;
+    }
+}
+
+static std::string
+recorded_log(void) {
+    const std::lock_guard<std::mutex> lock(g_log_mutex);
+    return g_log;
+}
+
+/* Issue #743 B9: a replay has no tuner, so its start asks it for no tuner control and says nothing about one: no
+ * "Setting RTL Autogain." for a capture made under automatic gain, no control named unsupported for the bias tee, the
+ * PPM correction or the environment's direct sampling, xtal, test mode and IF gains, and no PPM request fails. The
+ * tuner gain published is the capture's: automatic. */
+static int
+test_replay_start_asks_no_tuner_control(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), 1);
+    if (rc != 0) {
+        return rc;
+    }
+    static const char* const kEnv[][2] = {
+        {"DSD_NEO_RTL_DIRECT", "2"},
+        {"DSD_NEO_RTL_XTAL_HZ", "28800000"},
+        {"DSD_NEO_RTL_TESTMODE", "1"},
+        {"DSD_NEO_RTL_IF_GAINS", "1:6"},
+    };
+    for (const auto& kv : kEnv) {
+        rc |= expect_int_eq(kv[0], dsd_test_setenv(kv[0], kv[1], 1), 0);
+    }
+    dsd_neo_config_init();
+
+    std::unique_ptr<dsd_opts> opts = std::make_unique<dsd_opts>();
+    prepare_replay_opts(opts.get(), metadata_path);
+    opts->rtl_gain_value = 0; /* automatic */
+    opts->rtl_bias_tee = 1;
+    opts->rtlsdr_ppm_error = 5;
+
+    {
+        const std::lock_guard<std::mutex> lock(g_log_mutex);
+        g_log.clear();
+    }
+    RtlSdrContext* ctx = NULL;
+    rc |= expect_int_eq("rtl_stream_create", rtl_stream_create(opts.get(), &ctx), 0);
+    if (ctx) {
+        rc |= expect_int_eq("rtl_stream_start", rtl_stream_start(ctx), 0);
+        int is_auto = 0;
+        rc |= expect_int_eq("rtl_stream_get_gain", rtl_stream_get_gain(nullptr, &is_auto), 0);
+        rc |= expect_true("the capture's automatic gain is published", is_auto == 1);
+        rc |= expect_int_eq("rtl_stream_stop", rtl_stream_stop(ctx), 0);
+        rc |= expect_int_eq("rtl_stream_destroy", rtl_stream_destroy(ctx), 0);
+    }
+
+    const std::string log = recorded_log();
+    rc |= expect_true("no autogain line", log.find("Autogain") == std::string::npos);
+    rc |= expect_true("no control named unsupported", log.find("unsupported") == std::string::npos);
+    rc |= expect_true("no failed PPM request", log.find("PPM correction request") == std::string::npos);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "log:\n%s", log.c_str());
+    }
+
+    for (const auto& kv : kEnv) {
+        (void)dsd_test_unsetenv(kv[0]);
+    }
+    dsd_neo_config_init();
+    return rc;
+}
+
 int
 main(void) {
+    dsd_neo_log_set_tap(record_log, nullptr);
     int rc = test_replay_retune_rejected_quickly();
+    rc |= test_replay_start_asks_no_tuner_control();
     rc |= remove_fixture_dirs();
     return rc ? 1 : 0;
 }

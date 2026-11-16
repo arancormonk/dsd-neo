@@ -1842,6 +1842,13 @@ radio_source_is_iq_replay(const dsd_opts* opts) {
     return detect_radio_source(opts) == RADIO_SOURCE_IQ_REPLAY;
 }
 
+/* A source nothing here tunes (an I/Q replay): its device refuses every tuner setter (rtl_device_set_frequency()), so
+   the stream's open asks it for none of them. */
+static int
+radio_source_has_fixed_tuning(RadioSourceKind kind) {
+    return kind == RADIO_SOURCE_IQ_REPLAY ? 1 : 0;
+}
+
 static int
 radio_source_is_rtl_family(const dsd_opts* opts) {
     RadioSourceKind kind = detect_radio_source(opts);
@@ -9455,8 +9462,14 @@ stream_open_apply_testmode(const dsdneoRuntimeConfig* cfg) {
     log_unsupported_control_if_needed("Test mode control", rc);
 }
 
+/* The tuner controls the options and the environment configure. A fixed source has none: it is asked for none of them,
+   so its open logs no control as unsupported, and no bias tee runs (the squelch calibration's key says so). */
 static void
-stream_open_apply_runtime_controls(const dsd_opts* opts) {
+stream_open_apply_runtime_controls(const dsd_opts* opts, RadioSourceKind source_kind) {
+    if (radio_source_has_fixed_tuning(source_kind)) {
+        g_squelch_bias_tee.store(0, std::memory_order_relaxed);
+        return;
+    }
     if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         return;
     }
@@ -9582,7 +9595,7 @@ stream_open_note_ppm_capability(void) {
 }
 
 static void
-stream_open_apply_requested_ppm(const dsd_opts* opts) {
+stream_open_apply_requested_ppm(const dsd_opts* opts, RadioSourceKind source_kind) {
     if (!opts) {
         return;
     }
@@ -9590,6 +9603,12 @@ stream_open_apply_requested_ppm(const dsd_opts* opts) {
     if (initial_ppm_request.ppm != 0 && !g_ppm_control_supported.load(std::memory_order_relaxed)) {
         LOG_INFO("Device does not support frequency (PPM) correction; configured ppm %d will have no effect.\n",
                  initial_ppm_request.ppm);
+    }
+    if (radio_source_has_fixed_tuning(source_kind)) {
+        /* Nothing applies a correction to a fixed source. */
+        store_dongle_ppm_error(0);
+        g_auto_ppm_controller.reset(0, opts->rtlsdr_center_freq);
+        return;
     }
     int ppm_rc = apply_ppm_setting(initial_ppm_request.ppm);
     if (ppm_rc == 0) {
@@ -10000,10 +10019,14 @@ stream_open_size_airspy_input(dsd_opts* opts) {
     return 0;
 }
 
-/* The tuner gain the stream opens with, written to the device (not an Airspy's, whose gains are its own) and
- * published. */
+/* The tuner gain the stream opens with, written to the device (not an Airspy's, whose gains are its own, nor a fixed
+ * source's, which has no tuner and reports the gain its capture recorded) and published. */
 static void
 stream_open_apply_initial_gain(RadioSourceKind source_kind) {
+    if (radio_source_has_fixed_tuning(source_kind)) {
+        rtl_stream_publish_tuner_gain();
+        return;
+    }
     uint32_t gain_generation = 0U;
     const int gain_cacheable = capture_writes_generation(&gain_generation);
     int gain_rc = source_kind == RADIO_SOURCE_AIRSPY ? 0 : rtl_device_set_gain(rtl_device_handle, dongle.gain);
@@ -10052,11 +10075,11 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (stream_open_validate_device_capture_rate(source_kind) != 0) {
         return -1;
     }
-    stream_open_apply_runtime_controls(opts);
+    stream_open_apply_runtime_controls(opts, source_kind);
     stream_open_apply_audio_filters_from_config();
     stream_open_apply_initial_gain(source_kind);
     stream_open_note_ppm_capability();
-    stream_open_apply_requested_ppm(opts);
+    stream_open_apply_requested_ppm(opts, source_kind);
 
     if (stream_open_finalize_rate_chain(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
         return -1;
