@@ -47,6 +47,11 @@ Item {
         function shown(row, name) {
             return findChild(row, name);
         }
+        // A count as the app's locale writes it ("1,024" in en_US, "1024" in
+        // C): the screen follows Qt.locale(), so the expected text does too.
+        function count(n) {
+            return Number(n).toLocaleString(Qt.locale(), "f", 0);
+        }
 
         function init() {
             testContext.clearUnitActivity();
@@ -215,7 +220,7 @@ Item {
             verify(gap !== null);
             compare(item("activityGapTitle", gap).text, "Earlier activity was not kept");
             compare(gap.Accessible.name, "Earlier activity was not kept");
-            compare(gap.Accessible.description, "The log keeps the newest 1,024 events.");
+            compare(gap.Accessible.description, "The log keeps the newest " + count(1024) + " events.");
             verify(!item("activityEmptyState").visible);
         }
 
@@ -306,7 +311,7 @@ Item {
             verify(scroll.visible);
             if (data.filtered) {
                 compare(item("activityEmptyTitle").text, "No matching activity");
-                compare(item("activityEmptyDetail").text, data.gap ? "1,024 events are hidden by the filter." : "1 event is hidden by the filter.");
+                compare(item("activityEmptyDetail").text, data.gap ? count(1024) + " events are hidden by the filter." : "1 event is hidden by the filter.");
             }
             var header = item("activityHeaderScroll");
             var headerBottom = header.mapToItem(screen, 0, header.height).y;
