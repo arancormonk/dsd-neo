@@ -13776,7 +13776,8 @@ Qt Quick frontend (`src/ui/qt`):
     uid is at now. `startSystem(row)` only names the row's uid, so a missing row is refused as removed, not ignored.
     Decided limit: auto-start stays silent for a target removed since it last started (an unattended plug-in, so a
     "removed" banner would be noise; `onAutoStartRequested` returns before the gate), and refuses only an existing
-    avoided site.
+    avoided site. A GPS roaming switch (issue #786) enters the same gate as `startSavedByUid(uid, roam)`, its roam
+    carried through `startWithMap()` and a USB wait (see the GPS site roaming executor).
     A USB grant re-enters it by the waiting start's uid instead of running the map captured at the tap, so a system
     removed, avoided, moved to another row or given another receiver during the permission dialog is refused or
     starts as saved (B6); a scan list's grant goes through `startScanByUid()`, which has the same transition guard and
@@ -14793,6 +14794,24 @@ Qt Quick frontend (`src/ui/qt`):
   busy also needs a slot's call line `ACTIVE`, and the hangtime after an XPT call reads not busy. GPS site roaming
   holds a switch while it reads true; the wait cap lives with the roaming verdict. Tests: `UI_QT_METRICS_MODEL`
   (`test_call_busy_follows_the_voice_channel()`), `CORE_OPTS_TUNED_FREQ`.
+- GPS site roaming decision core (issue #786, `site_roaming.{h,cpp}`, `SiteRoamingCore`): plain C++ with no Qt types and
+  no clock reads; the caller passes every time on one monotonic clock (Qt's, never Android's boot clock). One
+  `evaluate()` judges the latest measurement against the current group's candidates in row order: settings that are not
+  finite numbers above zero pause (`InvalidSettings`); no fix, a fix older than `kMaxFixAgeMs` (60 s) or stamped after
+  the evaluation time, or an accuracy missing or above `kMaxAccuracyM` (1000 m) pause and clear the evidence; the
+  nearest eligible candidate (unavoided, a valid position, roamable; first in row order on a tie, by
+  `site_distance_km()`) must exist (`NoRankableSite`) and lie within `max_km` (`OutOfRange`). It is switch-worthy when
+  the current site is eligible and `d(current) − d(best) ≥ margin_km + 2·accuracy_km`, or when the current site is not
+  eligible (no margin). Evidence for one candidate is {uid, first and latest fix time, count}; only a measurement never
+  seen before (a provider's `elapsedRealtimeNanos` newer than the newest seen from it, so a replayed or reordered fix is
+  not new) that is switch-worthy for the same winner extends it; a different winner or a new measurement that is not
+  worthy restarts it, and timer ticks, list changes and a settings change (which clears it) can only take a verdict
+  away. `Switch` needs a span of at least `kDwellMs` (20 s) and `kMinDwellSamples` (3) measurements; a verdict holds
+  only while each later evaluation derives it again. `reset()` forgets the evidence and every measurement seen (the
+  executor calls it on a foreground loss). `CallWaitClock` is the bounded call wait: it starts at the first busy
+  `callBusy` reading, ends on a free one, and answers `Expired` after `kMaxCallWaitMs` (90 s) of continuous waiting, so
+  a long call, a missed terminator or a follow kept while a CC return is retryable is cut then; the executor resets it
+  whenever the verdict's destination changes. Tests: `UI_QT_SITE_ROAMING`.
 - GPS site roaming executor (issue #786, `site_roaming_controller.{h,cpp}`, context property `siteRoaming`, class
   `SiteRoaming`): decides with `SiteRoamingCore` (`site_roaming.{h,cpp}`) and owns the one roam transaction there can be
   (`WaitingForCall → Stopping → WaitingForUsb → Starting`, then done, cancelled or refused). It arms only for a session
@@ -15426,7 +15445,9 @@ Qt Quick frontend (`src/ui/qt`):
   `measured`, which `rows`, `nearest`, `uncertainNearest` and each row's label read), names the nearest site, exposes
   missing positions and saved-fix/accuracy limitations, and gates the nearest action during a lookup. While Running that
   action emits the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again.
-  Location completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
+  Location completion itself never starts a session. The one exception is GPS roaming (issue #786), and it does not
+  use these requests: its own feed (`LocationStream`, below) drives the roaming verdict, and a switch goes through the
+  saved-start gate as a Stop and switch does. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
   Places: the model keeps the system's `Trs.sState`/`Trs.sCounty` ids in `systemDetails` (`stateIds`, `countyIds`) and
   each site's `TrsSite.siteCtid`; every importable plan, a per-site batch's plans and `performImport()`'s result (and
@@ -15656,7 +15677,8 @@ Qt Quick frontend (`src/ui/qt`):
   `site_distance_km()`: the geodesic on the WGS84 ellipsoid (a = 6378137 m, f = 1/298.257223563) by Vincenty's inverse,
   converged on an absolute λ step under 1e-12 rad within 200 iterations (so a meridian never divides by a zero longitude
   difference), and the spherical haversine (R = 6371.0088 km) only where that fails (near-antipodal points). The sphere
-  is off by up to 0.56 % depending on direction, enough to rank two sites the wrong way round. A group's title is
+  is off by up to 0.56 % depending on direction, enough to rank two sites the wrong way round. `site_roamable()` is
+  the GPS roaming rule for one row (issue #786; spelled out with the roaming executor). A group's title is
   `site_group_title()` of its lead: the name without an exact trailing " — " + its `siteName` (the name a per-site
   import generated), else the name; a custom name lives on the lead row and moves with it. A row's `place` (role
   `place`) is the RadioReference geography an import captured: `{states: [{stid, name?}], counties: [{ctid, stid?,
@@ -17152,6 +17174,41 @@ stream calls and a scripted feed (`testContext.emitLocationStreamUpdate()`). Tes
 → signal, malformed records, synchronous reads, every start status's text, the expectation, retirement, switch stop),
 `UI_QT_SESSION_ARGS` (`test_stop_expectation`), `ANDROID_R8` (keeps and descriptors of the new JNI calls),
 `ANDROID_ENGINE_STOP_JVM` (`start_status_contract`: every `START_*` has its `android/start_status.h` twin).
+
+Location feed, prompt broker and foreground epoch (issue #786, Kotlin): `LocationStream.kt` is GPS roaming's continuous
+feed and never touches the one-shot `LocationSupport` requests. Its JNI entry points (`@JvmStatic`, kept in
+`proguard-rules.pro`) are `startStream(context)`, `stopStream()`, `pollStream()` and `foregroundEpoch()`. A start or
+stop from any thread takes the next call serial under the lock and posts its work to the main looper, so only the
+newest call's work publishes; `stopStream()` clears the record under the lock, so the next poll answers null at once.
+A start registers only while the Activity is visible and its epoch has not moved since the call, and each start that
+registers is a new subscription with its own `generation` (callbacks of an older one are ignored; a second start while
+registered keeps it). With fine permission it registers `GPS_PROVIDER`, plus `FUSED_PROVIDER` on API 31+ when present
+(`LocationRequest` 10 s interval, 10 s minimum update interval, 0 m minimum distance, high accuracy, on the main
+executor); API 29-30 take the legacy `requestLocationUpdates(GPS_PROVIDER, 10000, 0f, listener, mainLooper)`. Present
+providers register even while disabled. State: `noPermission` (no coarse) and `approximateOnly` (coarse without fine)
+register nothing; `providerUnavailable` when no manager, no provider or every registration threw; `locationOff` while
+no registered provider is enabled; else `ok`. Each callback is O(1): per provider it keeps only a newer usable fix
+(finite, in range, accuracy present and above 0, `0 < elapsedRealtimeNanos <= now`; a disabled provider's fix is
+dropped) and publishes an immutable snapshot under the lock. `pollStream()` reads that snapshot under the same lock
+(not `@Synchronized`, as `LocationSupport.pollResult`) and answers JSON {`generation`, `state`} plus, with a fix,
+`provider`, `elapsedRealtimeNanos`, `lat`, `lon`, `accuracyM` and `ageMs` (taken at the poll; the keys are absent,
+not null, without one); it picks the most accurate fix at most 15 s old (the newer on a tie), else the newest, so a
+newer rough fused fix never displaces a fresh GPS fix. `DsdNeoActivity` calls `onActivityStart()` in `onStart`,
+`onActivityStop()` in every `onStop` (outside the `isChangingConfigurations` guard: not visible, `foregroundEpoch`
+advanced, subscription withdrawn and listeners removed, all on the main thread, since Qt's thread is frozen while the
+app is not visible) and `onDestroy()` in `onDestroy`. `LocationPermission.kt` owns the app's one runtime location prompt
+(request code 4303) for `LocationSupport` (`ONE_SHOT`) and the stream (`ROAMING`): an asker that arrives while a prompt
+is open waits for its answer (one place per asker; asking again replaces its wait), every waiter is answered inside
+`onRequestPermissionsResult()` itself (no wait for `onStart`), an answer for another activity or for a prompt
+forgotten in `onDestroy(activity)` is dropped, and every prompt lists coarse first so `grants[0]` is coarse whoever
+opened it. `requestRoamingPermission(activity, id)` asks for coarse and fine even when coarse is granted (Android's
+upgrade dialog), asks nothing when fine is granted, and asks once per id (each user action takes a new id); its answer
+re-registers the current subscription only if that start is still the newest call, so a stop during the prompt
+starts nothing, and empty grants (an interrupted prompt) change nothing. `openAppLocationSettings(activity)` (App info,
+through the `SettingsScreens.kt` intent helper FileBrowser shares) and `openLocationSourceSettings(activity)` post to
+main and swallow a missing screen. `LocationSupport` keeps its behaviour through the broker (an existing coarse grant
+skips its prompt). Tests: `ANDROID_LOCATION_JVM` (`LocationStreamTest.kt`, `LocationPermissionTest.kt`,
+`LocationSupportTest.kt`, and the `location_wiring` source check of `DsdNeoActivity`'s calls).
 
 Session end and the notification (issue #782): `stopSelf()` makes ActiveServices (`bringDownServiceLocked()`) cancel the
 foreground notification and only then schedule `onDestroy()` on the main looper, so a status tick queued in between that

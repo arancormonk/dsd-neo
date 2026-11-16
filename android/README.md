@@ -240,6 +240,26 @@ waits for a more accurate pending provider, up to the 20-second deadline. Accura
 location are visible in the chooser. Existing users can enable precise location in Android's
 app permission settings; background location is never requested.
 Desktop location defaults to unsupported.
+
+GPS roaming (#786; user guide in
+[RadioReference import](../docs/radioreference-import.md#gps-roaming-android)) has its own feed, `LocationStream.kt`,
+which never touches the one-shot requests above. Qt starts it over JNI only while roaming needs a location and stops
+it when it does not, and polls its newest record on the 250 ms tick. It registers only for precise access: the GPS
+provider, plus the fused provider on Android 12 and later, every 10 seconds with no minimum distance (Android 10–11
+take the GPS provider alone). With approximate access only it registers nothing and reports that, so roaming can say
+"Roaming needs precise location". The poll answers the most accurate fix at most 15 seconds old, else the newest, so
+a rough fused fix never pushes out a fresh GPS one. Each start that registers gets its own generation, and callbacks
+from an older one are dropped. `LocationPermission.kt` owns the app's one location prompt for both features: a
+caller that arrives while a prompt is open waits for the same answer, and every waiter is answered inside
+`onRequestPermissionsResult()` itself. Roaming always asks for precise and approximate together, also when
+approximate is already allowed, since that is how Android offers the upgrade to precise; an interrupted prompt
+changes nothing. It also opens App info (**Open app settings**) and Android's location settings (**Turn on
+location**). Lifecycle: the feed starts only while the Activity is visible. `onStop` stops it from Kotlin (Qt's
+thread is frozen then) and advances a foreground epoch that Qt reads over JNI at each step of a switch; a moved
+epoch cancels a switch the service has not taken yet and drops the dwell readings. `onDestroy` stops it too. Qt
+starts it again on return. The manifest is unchanged: no background location and no `location` foreground service
+type, so roaming works only while DSD-neo is on screen. Revoking location, or lowering it from precise to
+approximate, while the app runs makes Android end the process; that stops listening and nothing restarts it.
 USB/lifecycle diagnostics use the runtime log surface, including when no Activity
 exists. The optional last location fix includes accuracy in metres, uses milliseconds since epoch and is deleted
 after 24 hours, on load/read and by a foreground timer. Location producers use
@@ -663,9 +683,9 @@ profiles with their keys, Signal search ranges and permanent avoids, and your se
 decoder arguments and the RadioReference username and application-key override.
 
 It does not carry: call history, call recordings, replay recordings (the files replay systems play), Signal search's
-detection history, diagnostics, the last location fix, the Listen tab the phone opens on and the order Listen sorts
-saved systems in (each phone remembers its own, and a restore keeps them) and first-run state. The RadioReference password is never saved,
-so it is never in a backup.
+detection history, diagnostics, the last location fix, whether GPS roaming is on (its two distances are carried), the
+Listen tab the phone opens on and the order Listen sorts saved systems in (each phone remembers its own, and a restore
+keeps them) and first-run state. The RadioReference password is never saved, so it is never in a backup.
 Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again,
 and neither are temporary files an import left behind in a bundle folder (only when nothing uses them). An imported
 file is carried whatever it is called. A
@@ -1572,7 +1592,8 @@ open. The row appears only where the host supports it (the Android app):
 - **System default** — the phone's own screen timeout, as if DSD-neo set
   nothing.
 - **Always on** — the screen stays on while DSD-neo is on screen, listening or
-  not. This is what the old **Keep screen awake** switch did.
+  not. This is what the old **Keep screen awake** switch did. GPS roaming works only
+  while DSD-neo is on screen, so use this in a car.
 - **Dim between calls** — while listening, the screen dims to minimum
   brightness after the delay with no audible audio or touch, and audio or a tap
   brightens it. While DSD-neo is on screen it never turns off, and it never
@@ -1881,6 +1902,17 @@ module behind it, so androiddeployqt has nothing extra to package.
   DSD-neo runs, a save picker the app stops waiting for (the screen that asked for it closed) is closed too, so it
   makes no file.
 - **arm64-v8a only.** armv7 would run scalar-only DSP and is out of scope.
+- **GPS roaming works only on screen and with precise location** (#786). The app has no
+  location in the background (no background location permission and no `location`
+  foreground service), so leaving DSD-neo or turning the screen off cancels a switch
+  the service has not taken yet. Approximate location is not used. Turning DSD-neo's
+  location permission off, or from precise to approximate, while it runs makes
+  Android close the app, and listening stops. Sites with Extra decoder arguments of
+  their own never roam, and Extra decoder arguments in Settings turn roaming off. A
+  switch resets what was changed only for the old session, as **Stop and switch**
+  does. A session the app took up after its window was recreated does not roam until
+  listening starts again. See
+  [GPS roaming](../docs/radioreference-import.md#gps-roaming-android) for the rest.
 - **One decoder per process.** The service rejects a start unless it is idle.
 - **SoapySDR is not supported** and is not planned.
 - **No mic input in the UI.** The AAudio backend implements capture, but
@@ -2701,7 +2733,9 @@ site coordinates are explained. Avoided sites and sites without coordinates are 
 nearest selection. **Listen to nearest site** starts while Idle; while listening, **Stop and switch to nearest**
 and each site's **Stop and switch** wait for the
 service's Idle acknowledgement before starting the selected site's saved configuration. Any intervening
-user input cancels that pending restart. This is a full session restart, with no live automatic hop.
+user input cancels that pending restart. This is a full session restart, with no live automatic hop. **GPS
+roaming** switches between these sites by the same full restart as you move (see
+[GPS roaming](../docs/radioreference-import.md#gps-roaming-android)); taps and Back never cancel one of its switches.
 See [RadioReference import](../docs/radioreference-import.md#saved-sites-in-qt-and-android) for migration
 and editing behavior.
 
