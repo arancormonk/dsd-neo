@@ -56,6 +56,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - Config path precedence: explicit `--config /path/to/config.ini` or a positional `*.ini` > `DSD_NEO_CONFIG` > default path for bare `--config`.
 - Explicit config paths may be absolute, relative, or use `~`/environment expansion; include paths are resolved relative to the containing config file.
 - `--interactive-setup` runs the wizard even when a config exists.
+- `--no-config` is still accepted, but it does nothing, since a config loads only when asked for. dsd-neo says so:
+  `NOTICE: --no-config has no effect: a config loads only with --config, a single .ini file argument, or
+  DSD_NEO_CONFIG.` To start without a config, leave out `--config` and any `.ini` argument, and unset `DSD_NEO_CONFIG`.
 - `--print-config` prints the effective config as INI after all env/CLI overrides. An `rtl:`/`rtltcp:` input spec's
   tuning (frequency, gain, PPM, DSP bandwidth, squelch, volume) is read into the `rtl_*` keys first, as the engine reads
   it when the input opens.
@@ -107,9 +110,38 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
   (`gain` as for `rtl`: `0` automatic, `1`–`49` manual dB at the nearest step of the server's tuner)
   Connects to an rtl_tcp server (`rtl_tcp` itself, or another server that speaks its protocol) for unsigned 8-bit
-  I/Q, and tunes it over the connection. It is the only network input that carries I/Q: `tcp` and `udp` below carry
-  demodulated PCM audio. For TETRA use `bw` 72 (`-fT -i rtltcp:host:port:freq:gain:ppm:72`).
+  I/Q, and tunes it over the connection. For TETRA use `bw` 72 (`-fT -i rtltcp:host:port:freq:gain:ppm:72`). I/Q from
+  a program that does not speak the rtl_tcp protocol comes in through `iqtcp` or `iqudp` below; `tcp` and `udp` carry
+  demodulated PCM audio.
 - SoapySDR: `-i soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]]`
+- I/Q stream over TCP: `-i iqtcp:HOST:PORT:RATE:FORMAT[:FREQ]`, and over UDP: `-i iqudp:BIND:PORT:RATE:FORMAT[:FREQ]`
+  (issue #743). Raw I/Q that another program streams (SDR++'s IQ Exporter, GNU Radio, a forwarder), with no header:
+  `iqtcp` connects to a TCP server at HOST:PORT, and `iqudp` binds BIND:PORT (`127.0.0.1` unless the sending program
+  runs on another computer) and reads its datagrams. RATE is the stream's complex sample rate (whole Hz with an optional
+  `k` or `M`, at least 8000), FORMAT one of `cu8`, `cs8`, `cs16`, `cs32` or `cf32` (interleaved I then Q,
+  little-endian), and FREQ the frequency the stream is centred on (Hz, or with `k`, `M` or `G`), which TETRA needs to
+  tie trunked calls to their allocations. Every field is required but FREQ; a missing or bad one stops startup with exit
+  status 1 and names the field. Example: `-fT -i iqtcp:127.0.0.1:1234:48k:cs16:426.7M`.
+  - It is a radio input with a fixed channel: dsd-neo decodes what the sending program sends and cannot retune it or set
+    its gain. With a stream, `-T`, `-Y`, `--trunk-scan`, `-U` and `--rtl-udp-control` stop startup with exit status 1
+    (`-T: an I/Q stream cannot retune; it decodes only the channel the sending program streams.`), and so do
+    `--auto-ppm` and `--rtltcp-autotune` (`--auto-ppm: an I/Q stream has no tuner controls; adjust the radio in the
+    sending program.`) and `--iq-capture` (record the stream in the sending program instead).
+  - A loaded config is held to the same rule: when the input that starts is a stream (from `-i` or from the config's
+    own `[input]`), a config whose own `[trunking] enabled`, `[trunking] scanner` or `[trunk_scan] enabled` is on stops
+    startup with exit status 1 before anything connects, even when the command line would have turned that setting
+    off: `[trunking] enabled: an I/Q stream cannot retune; it decodes only the channel the sending program streams.
+    Turn [trunking] enabled off in the config file, or start without that file (no --config, no .ini file argument, and
+    DSD_NEO_CONFIG unset).` This holds for a config loaded through `DSD_NEO_CONFIG` too. `--validate-config` reports
+    the same keys as errors, and a config loaded into a running session that would put a stream beside one of them is
+    not applied.
+  - A start under the rate the decode mode needs warns but runs (TETRA 25 kHz, or 36 kHz when the sending program
+    does not centre the channel exactly; 16 kHz for analog and the other digital modes; 12 kHz for NXDN48 or dPMR
+    alone). A start under `-fT` without FREQ prints a notice.
+  - A TCP stream that cannot connect at start ends with exit status 1; one that drops later reconnects for as long as
+    dsd-neo runs. A UDP port another program holds stops the start. A stream that goes silent is waited for.
+  - Rate chain, setups for sending programs, reconnects, stalls and limits: "Raw I/Q Over The Network" in
+    `docs/iq-capture-replay.md`.
 - TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (bare `tcp` connects to `localhost:7355`; sample rate uses `-s`, default 48000)
   For a LAN host, use the IPv4 address of the computer running the TCP audio producer, and make sure that producer is
   listening on that LAN interface, not just on `localhost`.
@@ -602,8 +634,11 @@ Notes
   `post_driver_cf32_pre_ring`, or `cs16` with one other than `post_mute_pre_widen`), naming its format and stage, and
   `dsd-neo` exits with status 1.
 - `-i iqreplay:...` is intentionally not a supported public input form; use `--iq-replay`.
-- Raw I/Q over the network comes only from an rtl_tcp server (`-i rtltcp:...`); `-i tcp` and `-i udp` carry PCM audio.
-  See "Raw I/Q Over The Network" in `docs/iq-capture-replay.md`.
+- Raw I/Q over the network comes from an rtl_tcp server (`-i rtltcp:...`), which dsd-neo tunes, or from another
+  program's I/Q stream (`-i iqtcp:...`, `-i iqudp:...`), whose channel is fixed; `-i tcp` and `-i udp` carry PCM audio.
+  `--iq-capture` is refused with an I/Q stream (`--iq-capture: an I/Q stream cannot be recorded here; record it in the
+  sending program instead (an SDR++ baseband WAV plays back with --iq-replay).`). See "Raw I/Q Over The Network" in
+  `docs/iq-capture-replay.md`.
 - More details, the rate plan's rules and format notes: `docs/iq-capture-replay.md`.
 
 ## Levels & Audio
@@ -837,10 +872,11 @@ Android session whose saved extra arguments carry one refuses to start the same 
   million in the `ppm` field of the `-i` spec (`-i rtl:dev:freq:gain:ppm`, or `rtl_ppm` in a config), or let
   `--auto-ppm` track an RTL-SDR's error (see Tools & Extras). TETRA base stations hold their frequency to within
   0.2 ppm, so most of the offset a downlink shows is the receiver's.
-  TETRA reads its symbols from an I/Q radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`) or from a symbol
-  capture of them (`-c` writes one; `-i capture.bin`, `.raw` or `.sym` replays it; a float symbol file, `.raw` or
-  `.sym`, holds them as the CQPSK demodulator recovered them, outer levels ±3 and inner ±1, and TETRA reads them as
-  they are, where the other modes scale a float symbol file by 10000): discriminator audio has lost the
+  TETRA reads its symbols from an I/Q radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`, an I/Q stream
+  from `-i iqtcp:` or `-i iqudp:`) or from a symbol capture of them (`-c` writes one; `-i capture.bin`, `.raw` or
+  `.sym` replays it; a float symbol file, `.raw` or `.sym`, holds them as the CQPSK demodulator recovered them, outer
+  levels ±3 and inner ±1, and TETRA reads them as they are, where the other modes scale a float symbol file by
+  10000): discriminator audio has lost the
   phase steps of its pi/4-DQPSK, so `-fT` on a PCM input (Pulse, a WAV file, stdin, TCP or UDP audio) stops at startup
   with `-fT: TETRA needs an I/Q radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from demodulated
   audio`, as `-fM` does. A config whose `[mode] decode = tetra` meets such an input keeps the mode and logs that nothing
@@ -1144,9 +1180,10 @@ Notes
 
 ## Analog reception (`-fA`, `-fM`)
 
-`-fA` is the analog monitor. On a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy or `--iq-replay`) the front end
-demodulates narrowband FM (NFM) through a channel filter and plays what it hears; on PCM input (Pulse, files, UDP or
-TCP audio) the audio arrives already demodulated and is monitored as it is. Broadcast (wideband) FM is out of scope.
+`-fA` is the analog monitor. On a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay` or an I/Q stream
+from `-i iqtcp:` or `-i iqudp:`) the front end demodulates narrowband FM (NFM) through a channel filter and plays what
+it hears; on PCM input (Pulse, files, UDP or TCP audio) the audio arrives already demodulated and is monitored as it
+is. Broadcast (wideband) FM is out of scope.
 `-fM` runs the same monitor with an AM envelope detector in place of the FM discriminator, on radio inputs only
 ([Native AM](#native-am--fm) below). Each has its own channel width; the rules below are written for NFM and hold for
 AM too, apart from its range, its default and what is said of the default there.
@@ -1304,6 +1341,7 @@ visit.
 | Decode mode to or from Analog or AM (`-fA`, `-fM`, the NFM and AM chips, `[mode] decode`) | Live: the front end switches receive family, or between FM and AM, between DSP blocks. A switch to Analog with an explicit NFM width, or to AM with an AM width (its default included), the DSP rate cannot filter is refused, naming both, and the mode stays (under a scan row too); one the front end refuses where it lands (a retune moved the rate) puts the mode back, with the message. A switch made while a scan row runs a digital protocol reaches the front end when the scan stops; should a DSP-menu CQPSK toggle made before the front end took that return decide instead, or the scan go on (a channel map imported with the scanner on leaves the row, and the next row's tune decides, also when it lands before the front end took that return, which then never runs), the mode stays with no message (a refusal only logged), whether the front end stayed on the digital family or on the analog family (where an `-fA` session runs a typed row), and the next return to the monitor the front end refuses while it runs another family or kind, such as CQPSK toggled off or the scanner stopped on an `am` row, puts it back. A switch between FM and AM that a scan stop puts back this way asks the front end for the mode it restores, and when the rate a row's retune left cannot filter that mode's width either (NFM 16 kHz after a switch to AM under an NXDN48 row, left at 7.5 kHz), the width is settled as for any refused scan stop (the NFM or AM width row above): the width a monitor of that kind kept, else the kind's default, which the monitor then runs, and the message says so (`Refused: NFM 16 kHz does not fit the 7.5 kHz DSP rate; the monitor is back on the NFM default`; an AM default that rate cannot filter either leaves the AM width as it was). |
 | DSP bandwidth (`bw`, `rtl_bw_khz`, DSP bandwidth...) | Reopens the device. On an I/Q replay it re-plans the replay's rate chain for the bandwidth and reopens the replay where it stopped, about a chunk later, with the decode clock kept on the capture; the bandwidth asked for is kept as asked (under TETRA the replay runs at 72 kHz and returns to it when TETRA ends), a bandwidth that plans the chain already running reopens nothing, and one no chain reaches is refused with the replay running as before (see "Run-time Re-plan" in `docs/iq-capture-replay.md`). On a radio input (RTL-SDR, rtl_tcp, SoapySDR or Airspy, each of which runs at its DSP bandwidth) a bandwidth the explicit NFM width, or the AM width (its default included), in use cannot run at is refused, naming both, from the DSP bandwidth... row and from a loaded config alike. The width in use is the configured one under `-fA` or `-fM`, the configured width of a kind on any session while the scan has an analog row or target of that kind without a width of its own, and the own width of an analog scan row on air (`DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP bandwidth` from the DSP bandwidth... row). A loaded config is checked at the bandwidth its `[input]` reopens a radio at (its `rtl_bw_khz`, or 48 kHz for a value that is not a DSP bandwidth, as at startup), from whatever input runs now, a SoapySDR or Airspy device included (an Airspy source over a running Airspy reopens it for a new sample rate, serial or DSP bandwidth); one that builds the input already running (an rtl_tcp source without `rtl_freq` for the host and port in use) reopens nothing and changes no rate. An Airspy source that changes only the volume also reopens the running Airspy, but at the rate it runs now, so the running front end checks the width first, as when nothing reopens, and checks the configured width even when the config leaves it as it was, since the reopened stream opens on it (also while a digital scan row runs, which leaves it unused): a width it cannot filter leaves the config unapplied. A bandwidth from the DSP bandwidth... row whose reopen does not start anyway (a device that does not open, or a SoapySDR device with no rate dsd-neo can resample to that bandwidth) puts the bandwidth that ran back and starts the input again, and says why: `Failed: the RTL-SDR input did not start (see log)`; with `--iq-capture` that restart runs without the capture (see IQ Capture And Replay). |
 | Decode mode switch, or a loaded config's `[mode]` or `[input]` `rtl_bw_khz`, during an I/Q replay | When the new settings plan another rate chain (a switch to TETRA on a 48 kHz replay, or back), the replay reopens at it where it stopped, about a chunk later, with the decode clock kept on the capture, before the new mode runs (`Decoding TETRA: replay resampled to 72 kHz`). A plan no chain reaches is refused: the mode, symbol profile and DSP bandwidth go back and the replay keeps running (`Failed: TETRA -> ...`, `Config not applied: ...`). Otherwise nothing reopens. |
+| A DSP bandwidth, a decode mode switch, or a loaded config's `[mode]` or `[input]` `rtl_bw_khz`, during an I/Q stream (`-i iqtcp:`, `-i iqudp:`) | When the new settings plan another rate chain (a switch to TETRA on a 48 kHz stream, or back), the stream restarts at it: TCP reconnects to the sending program and UDP binds again, which the decoder takes as a gap (`Decoding TETRA: I/Q stream reconnected at 72 kHz`). A plan no chain reaches is refused before anything stops: the mode, symbol profile and DSP bandwidth go back and the stream keeps running. A loaded config's gain or PPM restarts nothing: the sending program runs the radio. Otherwise nothing restarts. |
 | A loaded config whose `[input]` reopens the running radio input | Reopens the device. When the reopened stream does not start (the device does not open, or its start refuses a width), the config is not applied to the receive side: the input and its device settings, the tuning, `[mode]` (the decoders and their timing, the EDACS variant, the extra LRRP ports), `[demod]` and `[analog]` (both widths and the tone filter) go back to what ran, that input is started again, and the message says why (`Config not applied: the rtl_tcp input did not start (see log)`). With `--iq-capture` that restart runs without the capture, which stops for the session, so it never writes over the recording (see IQ Capture And Replay for when the failed start already had). Under a scan row, the reopened stream opens on the configured settings, so its start checks the configured width at its DSP rate even while a digital row runs (the scan stops back onto that monitor), and the input put back after a rollback starts again on what its stream ran, the row's profile (a typed digital row's, whose rate need not fit the configured width); either stream is asked for the row's profile once the row is back. A row's own width the reopen bandwidth cannot filter leaves the config unapplied before anything reopens (see the DSP bandwidth row above); a reopened stream that still cannot run the analog row on air is rolled back the same way, with the message naming the width and the rate. A config that turns the scanner off (`[trunking] scanner = false`) leaves the row instead, so the reopened stream is not held to it. The config's other sections (output, trunking, logging, alerts, recording, DSP, a group list) stay applied. With no stream running before the load, the config's input is still opened; when that start fails there is nothing to put back, so the config stays applied with no input running, and the message says why (`Config applied; no input running: the SoapySDR input did not start (see log)`); an input it opens that cannot run the scan row on air is kept, with the whole config (its `[mode]` and `[analog]` widths too, even the width a row without its own runs and the new input refuses), and the message says so (`Config applied; the scan row cannot run: ...`). |
 | Input > Switch source > RTL-SDR or Airspy | RTL-SDR reopens the input as an RTL-SDR, rtl_tcp or SoapySDR device at the DSP bandwidth, and Airspy opens the Airspy at it (a SoapySDR or Airspy device's own rate is resampled to the bandwidth). An explicit NFM width, or the AM width in use, that bandwidth cannot filter, the configured one (under `-fA` or `-fM`, or while the scan has an analog row or target of its kind without a width of its own) or that of an analog scan row on air, is refused, naming both and the DSP bandwidths that fit, and the running input stays; `DSD_NEO_CHANNEL_LPF=0` is checked first over the same widths. The start then checks the width it opens on, the one in force (the configured one under `-fA` or `-fM`, or that of an analog scan row on air). The switch leaves the scan row on air in place, so under a row that runs a digital protocol it opens on that row's digital profile and checks no analog width, and a configured width the bandwidth cannot filter that the switch did not hold is left to the scan: its return to the monitor when the scan stops is refused and settled as the NFM or AM width row above describes, and its analog rows or targets that run that width are skipped at every visit. A switch whose start fails anyway (a device that does not open) puts the input it replaced back, restarting it when it was a running radio stream (a PCM input was never closed; a radio stream that ran behind it stays stopped), and says why: `Failed: the Airspy input did not start (see log)`. With `--iq-capture` the restart runs without the capture, which stops for the session, so it never writes over the recording (see IQ Capture And Replay for when the failed start already had). Once the input it replaced runs again, a device error the failed start reported (an Airspy that did not open) is dropped, so the session's exit status is what it was before the switch; a DSP bandwidth, a loaded config and an Airspy setting that roll back do the same. |
 | A radio stream restart while a scan row is on air: Input > Switch source, a DSP bandwidth, an Airspy setting, a gain, Device index..., Restart stream, or the restart of the input one of these puts back when its start fails | The new stream opens on the row's settings, but an open picks CQPSK or the FSK discriminator the way it does at startup (as `DSD_NEO_CQPSK` says when set), while the row's own tune ran the row's modulation. So the stream is asked for the row's profile as soon as it runs, timed for the rate it runs the row at: under `DSD_NEO_CQPSK=1` a P25 C4FM row is back on the FSK discriminator, under `DSD_NEO_CQPSK=0` a CQPSK row back on CQPSK, and an `nfm` or `am` row keeps the monitor it opened on. The decoder keeps its acquisition, and a restart that puts an input back resets nothing as for a new input. A loaded config under a scan row asks the same once the row is back (its row above). |
@@ -1516,9 +1554,10 @@ decode preset (`[mode] decode = am` in a config, "AM" in the terminal decoder pi
 of the setup wizard): the analog monitor with an AM envelope detector in place of the FM discriminator.
 
 - Inputs: only inputs that deliver I/Q to DSD-neo's own front end run it: RTL-SDR (`-i rtl`), `rtl_tcp`
-  (`-i rtltcp`), SoapySDR (`-i soapy`), Airspy (`-i airspy`) and `--iq-replay`. A replay that keeps a sidecar's
-  recorded chain decimating after the demodulator (`post_downsample` above 1) runs AM too: the channel filter and the
-  detector run ahead of that decimator, at the rate they are designed for.
+  (`-i rtltcp`), SoapySDR (`-i soapy`), Airspy (`-i airspy`), `--iq-replay` and an I/Q stream (`-i iqtcp`,
+  `-i iqudp`). A replay that keeps a sidecar's recorded chain decimating after the demodulator (`post_downsample`
+  above 1) runs AM too: the channel filter and the detector run ahead of that decimator, at the rate they are designed
+  for.
   PCM inputs (Pulse, WAV and
   other files, stdin, symbol files, TCP and UDP audio) arrive already demodulated, so `-fM` on one stops at startup
   with `AM demodulation needs an I/Q radio input; monitor externally demodulated AM audio with -fA`. That is the

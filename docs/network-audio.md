@@ -5,6 +5,10 @@ intentionally simple: they are headerless streams/datagrams with no framing meta
 
 If you just want “what flag do I type”, start with `docs/cli.md`.
 
+These inputs carry demodulated PCM audio, not I/Q, so they cannot feed TETRA, AM or any other mode that needs I/Q.
+For raw I/Q that another program streams over the network (SDR++'s IQ Exporter, GNU Radio, a forwarder), use
+`-i iqtcp:...` or `-i iqudp:...`; see "Raw I/Q Over The Network" in `docs/iq-capture-replay.md`.
+
 ## PCM Input (`-i tcp`, `-i udp`, `-i -`)
 
 DSD-neo accepts raw PCM input in three equivalent ways:
