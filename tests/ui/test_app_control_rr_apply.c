@@ -1302,9 +1302,9 @@ test_apply_replay_replan_refused_before_commit(void) {
     tetra_payload(&p);
     p.trunking = 0U;
     p.tune_hz = 0U;
-    rc |= expect_refused_import("tetra on a 150 MS/s stream", &opts, &state, &p,
-                                "Failed: RR import -> DSP rate 96 kHz is no multiple of 18 kHz, and this I/Q stream "
-                                "cannot be resampled to one");
+    rc |= expect_refused_import(
+        "tetra on a 150 MS/s stream", &opts, &state, &p,
+        "Failed: RR import -> TETRA cannot use this I/Q stream's rate; send 48 or 96 kHz instead");
     rc |= expect_int("stream: no replay check or reopen", g_replan_check_calls == 0 && g_replan_calls == 0, 1);
     state.rtl_ctx = NULL;
     freeState(&state);
@@ -1318,9 +1318,9 @@ test_apply_replay_replan_refused_before_commit(void) {
     tetra_payload(&p);
     p.trunking = 0U;
     p.tune_hz = 0U;
-    rc |= expect_refused_import("tetra on a stopped 150 MS/s stream", &opts, &state, &p,
-                                "Failed: RR import -> DSP rate 96 kHz is no multiple of 18 kHz, and this I/Q stream "
-                                "cannot be resampled to one");
+    rc |= expect_refused_import(
+        "tetra on a stopped 150 MS/s stream", &opts, &state, &p,
+        "Failed: RR import -> TETRA cannot use this I/Q stream's rate; send 48 or 96 kHz instead");
     rc |= expect_int("stopped stream: no replay check or reopen", g_replan_check_calls == 0 && g_replan_calls == 0, 1);
     freeState(&state);
     reset_replay_script();

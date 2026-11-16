@@ -608,7 +608,7 @@ test_replay_and_stream_advice(void) {
     timed_level low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, -80.0, -40.0, 0.0, 1);
     dsd_input_level_classify(&low.level, -40.0);
     assert(dsd_input_level_format_advisory_for(&low.level, 1, msg, sizeof msg) == 0);
-    assert(strstr(msg, "recorded weak; use more gain next time") != NULL);
+    assert(strstr(msg, "recorded too quietly; use more gain next time") != NULL);
     assert(strcmp(dsd_input_level_advice(&low.level, 0), "raise RF gain if signal is present") == 0);
 
     /* A stream counts as live RF (staleness, label, notify mask) and names its sender. */
@@ -618,10 +618,10 @@ test_replay_and_stream_advice(void) {
     timed_level hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_NET_IQ, -15.0, -0.1, 0.2, 400);
     publish(opts, state, &hot, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
-    assert(strstr(state->ui_msg, "lower sending program's gain") != NULL);
+    assert(strstr(state->ui_msg, "lower the gain in the sending program") != NULL);
     timed_level quiet = snapshot_for(DSD_INPUT_LEVEL_SOURCE_NET_IQ, -80.0, -40.0, 0.0, 1);
     dsd_input_level_classify(&quiet.level, -40.0);
-    assert(strcmp(dsd_input_level_advice(&quiet.level, 0), "raise sending program's gain if signal is present") == 0);
+    assert(strcmp(dsd_input_level_advice(&quiet.level, 0), "raise the gain in the sending program") == 0);
     quiet.level.status = DSD_INPUT_LEVEL_OK;
     assert(dsd_input_level_advice(&quiet.level, 0) == NULL);
 

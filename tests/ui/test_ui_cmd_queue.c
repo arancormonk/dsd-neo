@@ -3141,7 +3141,7 @@ init_radio_context(dsd_opts* opts, dsd_state* state, const char* audio_in_dev) {
  */
 static int
 test_replay_refuses_tunes_and_release(void) {
-    static const char kReason[] = "An I/Q replay cannot retune.";
+    static const char kReason[] = "An I/Q replay cannot retune: it plays the tuning it recorded.";
     static const char kReplay[] = "iqreplay:capture.iq.json";
     int rc = 0;
     static dsd_opts opts;
@@ -4843,7 +4843,7 @@ test_fixed_tuning_refuses_rigctl_connect(void) {
         const char* dev;
         const char* reason;
     } inputs[] = {
-        {"iqreplay:capture.iq.json", "An I/Q replay cannot retune."},
+        {"iqreplay:capture.iq.json", "An I/Q replay cannot retune: it plays the tuning it recorded."},
         {"iqtcp:127.0.0.1:5000:240k:cs16", "An I/Q stream cannot retune: change the channel in the sending program."},
         {"iqudp:0.0.0.0:5000:240k:cu8", "An I/Q stream cannot retune: change the channel in the sending program."},
     };
@@ -5015,6 +5015,12 @@ test_iq_stream_refuses_trunking_and_scans(void) {
         rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
         rc |= expect_int(what, state.lcn_scan_paused, 1);
         rc |= expect_contains(what, state.ui_msg, kReason);
+        DSD_SNPRINTF(what, sizeof what, "scan resume with nothing paused, %s", dev);
+        state.lcn_scan_paused = 0U;
+        rc |= drain_stream_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_SCAN_RESUME), what);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_contains(what, state.ui_msg, "Not scanning: no paused scan to resume");
+        state.lcn_scan_paused = 1U;
         DSD_SNPRINTF(what, sizeof what, "scanner resume, %s", dev);
         rc |= drain_stream_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE), what);
         rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
@@ -6308,7 +6314,7 @@ test_scan_avoid_targets_the_row_heard(void) {
  */
 static int
 test_replay_refuses_channel_cycle_and_return_cc(void) {
-    static const char kReason[] = "An I/Q replay cannot retune.";
+    static const char kReason[] = "An I/Q replay cannot retune: it plays the tuning it recorded.";
     static const char kReplay[] = "iqreplay:capture.iq.json";
     int rc = 0;
     static dsd_opts opts;
@@ -7176,7 +7182,8 @@ test_channel_cycle_prev_refusals_and_trunk_scan(void) {
     init_manual_walk_context(&opts, &state, kRows, 2);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "prev refused: replay");
-    rc |= expect_contains("prev refused: the replay's reason", state.ui_msg, "An I/Q replay cannot retune.");
+    rc |= expect_contains("prev refused: the replay's reason", state.ui_msg,
+                          "An I/Q replay cannot retune: it plays the tuning it recorded.");
     rc |= expect_int("prev refused: replay fails the press", dsd_app_command_test_last_failed(), 1);
     rc |= expect_true("prev refused: replay tunes nothing", g_manual_leg_calls == 0 && state.lcn_freq_roll == 0);
     disarm_manual_leg();
@@ -29364,8 +29371,11 @@ end_running_radio(dsd_state* state) {
     freeState(state);
 }
 
+/* What a tuner control asked of a replay answers, the same for each (issue #743: one replay vocabulary). */
+static const char k_replay_tuner[] = "An I/Q replay has no tuner controls: it plays what was recorded.";
+
 /* Issue #743 B2: an I/Q replay has no tuner. Its gain, device index, PPM (set and step), bias tee, rtl_tcp autotune and
-   auto-PPM commands are refused with their "Unsupported" toasts before anything changes: no option moves, the replay
+   auto-PPM commands are refused with the replay's reason before anything changes: no option moves, the replay
    is not restarted (which rewound it onto the system clock), and no PPM request is recorded ("Applied: RTL PPM" said a
    correction landed that nothing applied). The tuner autogain toggle is refused too and leaves the supervisor's
    setting as it was, so the replay's toggle is never the setting a later radio opens with. */
@@ -29379,13 +29389,10 @@ test_replay_refuses_tuner_controls(void) {
         int32_t value;
         const char* toast;
     } k_cases[] = {
-        {DSD_APP_CMD_RTL_SET_GAIN, 20, "Unsupported: gain control not available on active backend"},
-        {DSD_APP_CMD_RTL_SET_DEV, 1, "Unsupported: device index is not available for current radio source"},
-        {DSD_APP_CMD_RTL_SET_PPM, 5, "Unsupported: PPM correction not available on active backend"},
-        {DSD_APP_CMD_PPM_DELTA, 1, "Unsupported: PPM correction not available on active backend"},
-        {DSD_APP_CMD_RTL_SET_BIAS_TEE, 1, "Unsupported: bias tee control not available on active backend"},
-        {DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, 1, "Unsupported: RTL-TCP autotune not available on active backend"},
-        {DSD_APP_CMD_RTL_SET_AUTO_PPM, 1, "Unsupported: Auto PPM not available on active backend"},
+        {DSD_APP_CMD_RTL_SET_GAIN, 20, k_replay_tuner},    {DSD_APP_CMD_RTL_SET_DEV, 1, k_replay_tuner},
+        {DSD_APP_CMD_RTL_SET_PPM, 5, k_replay_tuner},      {DSD_APP_CMD_PPM_DELTA, 1, k_replay_tuner},
+        {DSD_APP_CMD_RTL_SET_BIAS_TEE, 1, k_replay_tuner}, {DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, 1, k_replay_tuner},
+        {DSD_APP_CMD_RTL_SET_AUTO_PPM, 1, k_replay_tuner},
     };
 
     int rc = 0;
@@ -29424,8 +29431,7 @@ test_replay_refuses_tuner_controls(void) {
                      dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &toggle, sizeof toggle), DSD_APP_COMMAND_SUBMIT_QUEUED);
     state.ui_msg[0] = '\0';
     rc |= expect_int("replay autogain toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("replay autogain toggle toast", state.ui_msg,
-                     "Unsupported: gain control not available on active backend");
+    rc |= expect_str("replay autogain toggle toast", state.ui_msg, k_replay_tuner);
     rc |= expect_int("replay autogain toggle changes nothing", rtl_stream_get_tuner_autogain(), 0);
     end_running_radio(&state);
     return rc;
@@ -29675,6 +29681,14 @@ test_recovery_without_a_report_notes_the_capture(void) {
                          reported ? "Refused: target gain -> 30" : "Refused: target gain -> 30; I/Q capture stopped");
         end_running_radio(&state);
     }
+    /* A toast that says it already keeps it, rather than giving way to the capture's own. */
+    init_running_radio(&opts, &state, "rtl:0:851375000:22:0:48:0:2");
+    opts.iq_capture_requested = 1;
+    ui_toast_for_test(&state, "Applied: RTL gain -> 20; I/Q capture stopped");
+    dsd_app_note_capture_stopped_at_restart();
+    rc |= expect_int("note already shown", dsd_app_drain_cmds(&opts, &state), 0);
+    rc |= expect_str("note already shown", state.ui_msg, "Applied: RTL gain -> 20; I/Q capture stopped");
+    end_running_radio(&state);
     return rc;
 }
 

@@ -524,12 +524,13 @@ ui_cmd_refuse_fixed_tuning(const dsd_opts* opts, dsd_state* state) {
     return 1;
 }
 
-/* A tuner control (gain, PPM, bias tee, device, the automatic ones) asked of an I/Q stream: the sending program runs
-   the radio, so nothing here would apply it (issue #743). Returns 1, with the stream's reason toasted, on a stream; the
-   caller answers the command as unsupported. A replay's controls keep their own "Unsupported:" toasts. */
+/* A tuner control (gain, PPM, bias tee, device, the automatic ones) asked of an input with fixed tuning: a replay
+   plays what was recorded and a stream's sending program runs the radio, so nothing here would apply it (issue #743).
+   Returns 1, with the input's reason toasted (svc_fixed_tuner_reason()); the caller answers the command as
+   unsupported. */
 static int
-ui_cmd_refuse_stream_tuner_control(const dsd_opts* opts, dsd_state* state) {
-    const char* why = svc_iq_stream_tuner_reason(opts);
+ui_cmd_refuse_fixed_tuner_control(const dsd_opts* opts, dsd_state* state) {
+    const char* why = svc_fixed_tuner_reason(opts);
     if (!why) {
         return 0;
     }
@@ -2091,7 +2092,7 @@ ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct dsd_app
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
-        if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
             return UI_CMD_APPLY_UNSUPPORTED;
         }
         const int capture_before = opts && opts->iq_capture_requested;
@@ -2479,7 +2480,7 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
-        if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
             return UI_CMD_APPLY_UNSUPPORTED;
         }
         const int capture_before = opts && opts->iq_capture_requested;
@@ -2502,19 +2503,6 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     return result;
 }
 
-/* A PPM correction on an input with fixed tuning (an I/Q replay or stream): nothing applies it, so it is refused with a
-   toast before the request is recorded, a stream's naming its sending program. Returns 1 when refused. */
-static int
-ui_cmd_refuse_fixed_source_ppm(const dsd_opts* opts, dsd_state* state) {
-    if (!dsd_opts_input_has_fixed_tuning(opts)) {
-        return 0;
-    }
-    if (!ui_cmd_refuse_stream_tuner_control(opts, state)) {
-        ui_set_toast(state, 3, "Unsupported: PPM correction not available on active backend");
-    }
-    return 1;
-}
-
 static int
 ui_cmd_handle_rtl_set_ppm(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
@@ -2522,7 +2510,7 @@ ui_cmd_handle_rtl_set_ppm(dsd_opts* opts, dsd_state* state, const struct dsd_app
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
         /* The correction applies later, on the controller; a receiver that cannot take it now refuses it here, so the
            toast never claims a change that will not land. A fixed source (an I/Q replay) never takes one. */
-        if (ui_cmd_refuse_fixed_source_ppm(opts, state)) {
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
             return UI_CMD_APPLY_UNSUPPORTED;
         }
         const char* unavailable = svc_radio_control_unavailable_text(0);
@@ -2655,7 +2643,7 @@ ui_cmd_handle_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, const struct ds
     int32_t on = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
-        if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
             return UI_CMD_APPLY_UNSUPPORTED;
         }
         int rc = svc_rtl_set_bias_tee(opts, state, on);
@@ -2676,7 +2664,7 @@ ui_cmd_handle_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, const struct
     int32_t on = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
-        if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
             return UI_CMD_APPLY_UNSUPPORTED;
         }
         int rc = svc_rtltcp_set_autotune(opts, state, on);
@@ -2697,7 +2685,7 @@ ui_cmd_handle_rtl_set_auto_ppm(dsd_opts* opts, dsd_state* state, const struct ds
     int32_t on = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
-        if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
             return UI_CMD_APPLY_UNSUPPORTED;
         }
         int rc = svc_rtl_set_auto_ppm(opts, state, on);
@@ -2807,8 +2795,9 @@ ui_cmd_handle_rigctl_set_mod_bw(dsd_opts* opts, dsd_state* state, const struct d
     if (!state || !ui_cmd_parse_i32_payload(c, &hz)) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    /* No rigctl peer runs beside an I/Q stream (issue #743): its sending program sets the passband. */
-    if (ui_cmd_refuse_stream_tuner_control(opts, state)) {
+    /* No rigctl peer runs beside an I/Q stream (issue #743): its sending program sets the passband. A replay may run
+       beside a peer its start connected. */
+    if (dsd_opts_input_is_iq_stream(opts) && ui_cmd_refuse_fixed_tuner_control(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
     char why[96];
@@ -3594,12 +3583,9 @@ apply_cmd_dsp(const struct dsd_app_command* c, const dsd_opts* opts, dsd_state* 
         && p.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE) {
         return UI_CMD_APPLY_UNSUPPORTED;
     }
-    /* A fixed source (an I/Q replay) has no tuner gain to supervise: the toggle is refused, and never recorded as the
-       operator's setting for the radio a later open runs (rtl_stream_set_tuner_autogain()). */
-    if (p.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE && dsd_opts_input_has_fixed_tuning(opts)) {
-        if (!ui_cmd_refuse_stream_tuner_control(opts, state)) {
-            ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
-        }
+    /* A fixed source (an I/Q replay or stream) has no tuner gain to supervise: the toggle is refused, and never recorded
+       as the operator's setting for the radio a later open runs (rtl_stream_set_tuner_autogain()). */
+    if (p.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE && ui_cmd_refuse_fixed_tuner_control(opts, state)) {
         return UI_CMD_APPLY_UNSUPPORTED;
     }
     apply_dsp_op(&p, opts, state);
@@ -10682,7 +10668,7 @@ apply_cmd_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
 static int
 ui_cmd_dispatch_available(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
 #ifdef USE_RADIO
-    if (c->id == DSD_APP_CMD_PPM_DELTA && ui_cmd_refuse_fixed_source_ppm(opts, state)) {
+    if (c->id == DSD_APP_CMD_PPM_DELTA && ui_cmd_refuse_fixed_tuner_control(opts, state)) {
         return UI_CMD_APPLY_UNSUPPORTED;
     }
     if (c->id == DSD_APP_CMD_PPM_DELTA && ui_cmd_radio_unavailable_toast(state, 0)) {
@@ -11868,14 +11854,19 @@ dsd_app_stream_notice_clear(void) {
 
 /* A restart that turned the I/Q capture off (issue #743 B16) did so for the command whose toast is showing ("Applied:
    RTL gain -> 20", a rollback's "Refused: ..."): the note goes on the end of that toast, as a rollback's does, so the
-   command's answer and the capture's both stay on screen. Returns 0, changing nothing, when no toast is showing, it
-   has the note already, or the two do not fit: the caller shows the capture's own toast. */
+   command's answer and the capture's both stay on screen. Returns 1 when the toast showing says it (now, or already),
+   0, changing nothing, when no toast is showing or the two do not fit: the caller shows the capture's own toast. */
 static int
 ui_toast_note_capture_stopped(dsd_state* state) {
     static const char k_note[] = "; I/Q capture stopped";
     const size_t len = strlen(state->ui_msg);
-    if (len == 0U || state->ui_msg_expire <= dsd_realtime_time() || strstr(state->ui_msg, k_note) != NULL
-        || len + sizeof k_note > sizeof state->ui_msg) {
+    if (len == 0U || state->ui_msg_expire <= dsd_realtime_time()) {
+        return 0;
+    }
+    if (strstr(state->ui_msg, k_note) != NULL) {
+        return 1;
+    }
+    if (len + sizeof k_note > sizeof state->ui_msg) {
         return 0;
     }
     char text[sizeof state->ui_msg];

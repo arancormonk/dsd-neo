@@ -207,7 +207,7 @@ Item {
                     verify(!button.visible, "a replay offered to explore from here")
                     verify(!screen.tuneTo(spectrum.centerFreqHz + 100000), "tuneTo() asked a replay to retune")
                     verify(reason !== null && reason.visible, "a replay did not say why it is view-only")
-                    compare(reason.text, "An I/Q replay cannot retune.")
+                    compare(reason.text, "An I/Q replay cannot retune: it plays the tuning it recorded.")
 
                     mouseClick(tc.area, tc.xOf(testContext.spectrumPeakHz()), tc.area.height * 0.75)
                     tc.wait(50)

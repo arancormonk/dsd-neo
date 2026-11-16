@@ -177,6 +177,13 @@ trunk_scan_is_paused(const dsd_opts* opts, const dsd_state* state) {
     return opts->trunk_scan_enabled == 1 && state->trunk_scan_paused;
 }
 
+/* Whether SCAN_RESUME would move a scan on: one paused, a -Y resume waiting on its row, or a scan held on an entry. */
+static int
+scan_resume_would_tune(const dsd_opts* opts, const dsd_state* state) {
+    return trunk_scan_is_paused(opts, state) || state->lcn_scan_paused || state->lcn_scan_resume_pending
+           || state->lcn_scan_entry_hold || state->trunk_scan_entry_hold;
+}
+
 /* The save a -Y start leaves (svc_check_next_start()): the scanner on, trunking off. */
 static void
 scanner_on_next_start(dsdneoUserConfig* save, const void* ctx) {
@@ -262,7 +269,9 @@ ui_handle_scan_resume(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     if (!state) {
         return TRUNK_ACTION_DONE;
     }
-    if (tuning_refused_on_iq_stream(opts, state)) {
+    /* On a stream a resume or an entry hold's release could only ask for tunes it cannot make; with nothing paused or
+       held the answer stays the no-scan one below. */
+    if (scan_resume_would_tune(opts, state) && tuning_refused_on_iq_stream(opts, state)) {
         return TRUNK_ACTION_REFUSED;
     }
     if (svc_scan_entry_continue(opts, state)) {

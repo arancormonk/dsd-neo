@@ -458,16 +458,18 @@ svc_fixed_tuning_reason(const dsd_opts* opts) {
         return NULL;
     }
     return dsd_opts_input_is_iq_replay(opts)
-               ? "An I/Q replay cannot retune."
+               ? "An I/Q replay cannot retune: it plays the tuning it recorded."
                : "An I/Q stream cannot retune: change the channel in the sending program.";
 }
 
 const char*
-svc_iq_stream_tuner_reason(const dsd_opts* opts) {
-    if (!opts || !dsd_opts_input_is_iq_stream(opts)) {
+svc_fixed_tuner_reason(const dsd_opts* opts) {
+    if (!opts || !dsd_opts_input_has_fixed_tuning(opts)) {
         return NULL;
     }
-    return "An I/Q stream has no tuner controls: adjust the radio in the sending program.";
+    return dsd_opts_input_is_iq_replay(opts)
+               ? "An I/Q replay has no tuner controls: it plays what was recorded."
+               : "An I/Q stream has no tuner controls: adjust the radio in the sending program.";
 }
 
 const char*

@@ -966,14 +966,11 @@ test_tetra_rate_rules(void) {
        reaches the advice, which names the sending program's rate as the fix, never a DSP bandwidth in a spec. */
     opts.audio_in_type = AUDIO_IN_RTL;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:1234:240000:cs16");
-    rc |=
-        expect_tetra_advice("stream at 48 kHz", &opts, 48000, 0,
-                            "TETRA needs a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz, not 48 kHz: this "
-                            "I/Q stream's rate cannot be resampled to a TETRA rate; change the sample rate in the "
-                            "sending program");
-    rc |=
-        expect_tetra_advice("stream at 48 kHz, brief", &opts, 48000, 1,
-                            "DSP rate 48 kHz is no multiple of 18 kHz, and this I/Q stream cannot be resampled to one");
+    rc |= expect_tetra_advice("stream at 48 kHz", &opts, 48000, 0,
+                              "TETRA cannot decode at this I/Q stream's sample rate; set the sending program's sample "
+                              "rate to 48 or 96 kHz");
+    rc |= expect_tetra_advice("stream at 48 kHz, brief", &opts, 48000, 1,
+                              "TETRA cannot use this I/Q stream's rate; send 48 or 96 kHz instead");
     rc |= expect_tetra_advice("stream at 72 kHz", &opts, 72000, 0, "");
     opts.audio_in_type = AUDIO_IN_PULSE;
     /* Issue #743 (B14): a session started as a replay keeps its replay flags after a config apply moves it onto a live

@@ -53,7 +53,7 @@ Item {
     // channel. Both are a radio input DSD-neo cannot tune, which the model says
     // through the predicate the engine refuses every tune on.
     readonly property bool fixedInput: metrics ? (metrics.replayInput === true || (metrics.radioInput === true && metrics.tunable === false)) : false
-    readonly property string fixedReason: screen.replayInput ? qsTr("An I/Q replay cannot retune.") : qsTr("An I/Q stream cannot retune: change the channel in the sending program.")
+    readonly property string fixedReason: screen.replayInput ? qsTr("An I/Q replay cannot retune: it plays the tuning it recorded.") : qsTr("An I/Q stream cannot retune: change the channel in the sending program.")
     readonly property bool viewOnly: !screen.exploring || screen.tunerHeld || screen.fixedInput
 
     // A scan running, and one the operator paused (issue #671). Read apart from
