@@ -1228,6 +1228,9 @@ init_test_runtime(dsd_opts** opts_out, dsd_state** state_out) {
 static void
 free_test_runtime(dsd_opts* opts, dsd_state* state) {
     if (state != NULL) {
+        /* A Retevis AP key's context (retevis_rc2_keystream_creation()), which freeState() leaves. */
+        free(state->rc2_context);
+        state->rc2_context = NULL;
         freeState(state);
     }
     free(state);
@@ -3837,6 +3840,121 @@ test_dmr_hold_forced_key_plays(char frame[4][24]) {
     return rc;
 }
 
+/* The vendor keys and the generic keystream, each applied to every voice frame whatever the call says. */
+static void
+dmr_hold_anytone_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    char key[] = "1234";
+    anytone_bp_keystream_creation(state, key, 0);
+}
+
+static void
+dmr_hold_tyt_basic_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    state->tyt_bp = 1;
+    state->H = 0x1234ULL;
+}
+
+static void
+dmr_hold_tyt_ap_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    tyt_ap_pc4_keystream_creation(state, "0123456789ABCDEF0123456789ABCDEF", 0);
+}
+
+static void
+dmr_hold_retevis_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    retevis_rc2_keystream_creation(state, "0123456789ABCDEF0123456789ABCDEF", 0);
+}
+
+static void
+dmr_hold_tyt_ep_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    tyt_ep_aes_keystream_creation(state, "0123456789ABCDEF 0123456789ABCDEF", 0);
+}
+
+static void
+dmr_hold_kenwood_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    char key[] = "12345";
+    ken_dmr_scrambler_keystream_creation(state, key, 0);
+}
+
+static void
+dmr_hold_baofeng_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    (void)baofeng_ap_pc5_keystream_creation(state, "0123456789ABCDEF0123456789ABCDEF", 0);
+}
+
+static void
+dmr_hold_csi_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    (void)connect_systems_ee72_key_creation(state, "0123456789ABCDEF01", 0);
+}
+
+/* -4 -H: a Hytera Basic Privacy key forced onto every frame. */
+static void
+dmr_hold_force_hytera_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    state->M = 1;
+    state->K1 = 0x0123456789ABCDEFULL;
+    state->hytera_key_segments = 1U;
+}
+
+static void
+dmr_hold_straight_keystream(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    straight_mod_xor_keystream_creation(state, "49:123456789ABC80", 0);
+}
+
+/* Every key forced onto every frame plays a held slot's frames as a fresh decoder plays them, the vendor keys (-A,
+   -2, -!, -@, -5, -9, --dmr-baofeng-pc5, --dmr-csi-ee72), a Hytera key under -4 and the generic -S keystream alike:
+   the call need not say it is encrypted for them. The TYT Basic and Connect Systems keys key the frame before the vocoder, so this frame
+   reaches it as it came; the others key it in the vocoder. */
+static int
+test_dmr_hold_vendor_keys_play(char frame[4][24]) {
+    static const struct {
+        const char* name;
+        void (*setup)(dsd_opts*, dsd_state*);
+        int keys_in_vocoder;
+    } kinds[] = {
+        {"-A (AnyTone)", dmr_hold_anytone_key, 1},        {"-2 (TYT Basic)", dmr_hold_tyt_basic_key, 0},
+        {"-! (TYT AP)", dmr_hold_tyt_ap_key, 1},          {"-@ (Retevis AP)", dmr_hold_retevis_key, 1},
+        {"-5 (TYT EP)", dmr_hold_tyt_ep_key, 1},          {"-9 (Kenwood)", dmr_hold_kenwood_key, 1},
+        {"--dmr-baofeng-pc5", dmr_hold_baofeng_key, 1},   {"--dmr-csi-ee72", dmr_hold_csi_key, 0},
+        {"-4 -H (Hytera)", dmr_hold_force_hytera_key, 1}, {"-S", dmr_hold_straight_keystream, 1},
+    };
+
+    char as_it_came[49] = {0};
+    int rc = expect_true("vendor keys: a fresh decoder records the frame as it came without a key",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    char what[192];
+    for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+        char reference[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "%s: a fresh decoder records the frame%s", kinds[k].name,
+                     kinds[k].keys_in_vocoder ? ", keyed" : "");
+        rc |= expect_true(what, dmr_hold_fresh_frame(kinds[k].setup, frame, reference)
+                                    && (memcmp(reference, as_it_came, sizeof reference) != 0)
+                                           == (kinds[k].keys_in_vocoder != 0));
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        kinds[k].setup(opts, state);
+        char recorded[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "%s after a hop: a frame before the call says plays as on a fresh decoder",
+                     kinds[k].name);
+        rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                                    && state->dmr_enc_class_held[0] == 1U
+                                    && memcmp(recorded, reference, sizeof recorded) == 0);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* What follows a hop on slot 1 before the frame: a PI header naming no cipher the decoder knows (ALG 0x30, zeroed),
    then a clear voice LC header. The PI says the call is encrypted with nothing to judge its frames by: they stay
    held. Its LC ends the hold. */
@@ -4273,6 +4391,7 @@ test_dmr_hold_edges(void) {
     char frame[4][24];
     int rc = expect_true("an active voice frame", dmr_hop_active_frame(frame) == 0);
     rc |= test_dmr_hold_forced_key_plays(frame);
+    rc |= test_dmr_hold_vendor_keys_play(frame);
     rc |= test_dmr_hold_pi_naming_no_cipher(frame);
     rc |= test_dmr_hold_failed_embedded_lc(frame);
     rc |= test_dmr_hold_failed_embedded_lc_privacy_bit(frame);

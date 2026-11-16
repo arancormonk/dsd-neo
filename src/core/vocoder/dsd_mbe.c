@@ -2076,12 +2076,21 @@ typedef struct {
     int crypto_unknown;         // the owner has not said yet (an X2-TDMA call's opening frames, a DMR call's held ones)
 } mbe_frame_judgement;
 
-// A key forced onto every frame of the slot, whatever its call says: forced clear (dsd_key_dmr_forced_clear()), the -S
-// keystream, or Basic or Hytera Privacy forced with -4 (M 1). A key the frame got because its service options or ALG ID
-// asked for it is not forced.
+// A vendor key applied to every DMR voice frame whatever its call says: the forced-clear keys
+// (dsd_key_dmr_forced_clear(): Baofeng AP, Connect Systems EE72, Kenwood) and the TYT Basic (-2), TYT AP (-!),
+// Retevis AP (-@), TYT EP (-5) and AnyTone (-A) keys. Their verdict stays as dsd_key_dmr_forced_clear() decides it.
+static int
+mbe_dmr_vendor_key_forced(const dsd_state* state) {
+    return dsd_key_dmr_forced_clear(state) || state->tyt_bp == 1 || state->tyt_ap == 1 || state->tyt_ep == 1
+           || (state->retevis_ap == 1 && state->rc2_context != NULL) || state->any_bp == 1;
+}
+
+// A key forced onto every frame of the slot, whatever its call says: a vendor key (mbe_dmr_vendor_key_forced()), the
+// -S keystream, or Basic or Hytera Privacy forced with -4 (M 1). A key the frame got because its service options or
+// ALG ID asked for it is not forced.
 static int
 mbe_dmr_slot_key_forced(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
-    return dsd_key_dmr_forced_clear(state) || frame_ctx->straight_ks[slot]
+    return mbe_dmr_vendor_key_forced(state) || frame_ctx->straight_ks[slot]
            || (frame_ctx->slot_keyed[slot] && state->M == 1);
 }
 

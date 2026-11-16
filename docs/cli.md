@@ -435,7 +435,8 @@ Windows console runs:
   the control channel, a `-Y` step, a trunk-scan switch, a frequency you enter, a signal search step, a replay retune.
   So does the release of a call on the same channel, including a return to the control channel when none is known.
   With encrypted audio unmuted and without `-q` the held frames play, and a key forced onto every frame (`-4` with a
-  Basic Privacy or Hytera key, or `-S`) decrypts them, as before. A key the call's own signalling selects waits for that
+  Basic Privacy or Hytera key, `-S`, or a vendor key: `-A`, `-2`, `-!`, `-@`, `-5`, `-9`, `--dmr-baofeng-pc5`,
+  `--dmr-csi-ee72`) decrypts them, as before. A key the call's own signalling selects waits for that
   signalling to pass its check. On a rigctl peer, audio still inside the radio software right after a retune can end
   that wait early (see `-U`). YSF frames are captured once a FICH has verified the transmission on the carrier.
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file

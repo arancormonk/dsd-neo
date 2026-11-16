@@ -3345,8 +3345,9 @@ suite runs under this compiler.
   A DMR frame on a held slot is unknown there (`mbe_dmr_slot_judge()`, `dsd_state::dmr_enc_class_held`), with X2-TDMA's
   rule below, whatever class its privacy bit or ALG ID reads: an embedded LC whose checksum failed still sets the live
   service options, and the key they select keys nothing until the hold ends. Only a key forced onto every frame keys it
-  as before (`mbe_dmr_slot_key_forced()`): forced clear (`dsd_key_dmr_forced_clear()`), the `-S` keystream, or `-4` with
-  a Basic or Hytera key. On the single-slot decoder under trunking (`-fr -T`), whose voice runs on both slots, an LC
+  as before (`mbe_dmr_slot_key_forced()`): a vendor key (`mbe_dmr_vendor_key_forced()`: the forced-clear keys of
+  `dsd_key_dmr_forced_clear()`, and the TYT Basic, TYT AP, Retevis AP, TYT EP and AnyTone keys, whose class stays as
+  before), the `-S` keystream, or `-4` with a Basic or Hytera key. On the single-slot decoder under trunking (`-fr -T`), whose voice runs on both slots, an LC
   decoded on its own stays on the slot its burst's CACH proved, as on the dual-slot decoder
   (`dmr_mono_folds_standalone_burst()`): its call, terminator, crypto, keys and release are that slot's. Without
   trunking the single-slot decoder folds a slot 2 LC and its PI header alike onto lane 0, where its voice is decoded, so
