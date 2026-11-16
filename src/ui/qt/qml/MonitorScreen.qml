@@ -606,7 +606,10 @@ Item {
                         scanTimingRow.quietSaid = key;
                         return scanTimingRow.text + ". " + metrics.scanQuietText;
                     }
-                    // A new rotation says it again.
+                    // A new rotation says it again. Only that clears the key: a sheet
+                    // opened over the Monitor stops the pacer but leaves the line
+                    // visible, so the key persists across the sheet and an unchanged
+                    // status is not said again once it closes.
                     onVisibleChanged: {
                         if (!visible)
                             quietSaid = "";
