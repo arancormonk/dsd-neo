@@ -277,6 +277,15 @@ dsd_rdio_upload_worker_init(void) {
     }
 }
 
+/* The jobs still queued keep their place, but no copy of the API key or URL: for a worker that may still run after a
+ * failed join, which pops a job only under the queue's mutex (held here) and then finds nothing to upload with. */
+static void
+dsd_rdio_wipe_queued_secrets_locked(void) {
+    for (dsd_rdio_upload_job* job = g_rdio_upload_head; job != NULL; job = job->next) {
+        DSD_SECURE_ZERO(&job->api, sizeof job->api);
+    }
+}
+
 static void
 dsd_rdio_clear_upload_queue_locked(void) {
     while (g_rdio_upload_head != NULL) {
@@ -324,7 +333,15 @@ dsd_rdio_upload_shutdown(void) {
     dsd_mutex_unlock(&g_rdio_upload_mutex);
 
     if (dsd_thread_join(g_rdio_upload_worker) != 0) {
+        /* Not expected: the handle comes from the create that set the state to 2, only the shutdown that moved it to 4
+           joins, and the worker never joins itself. If it happens the worker may still be running, so nothing it can
+           reach unlocked is touched: the job in flight and the worker's own stack copy of the endpoint keep the key and
+           URL until it ends them, and the queued jobs are not freed. Only their API copies are wiped, under the mutex
+           the worker pops them under. */
         LOG_ERROR("Rdio export: failed to join upload worker during shutdown\n");
+        dsd_mutex_lock(&g_rdio_upload_mutex);
+        dsd_rdio_wipe_queued_secrets_locked();
+        dsd_mutex_unlock(&g_rdio_upload_mutex);
         atomic_store(&g_rdio_upload_state, 3);
         atomic_store(&g_rdio_upload_cancel, 0);
         return;
@@ -1122,22 +1139,10 @@ dsd_rdio_upload_attempt_outcome(CURLcode res, long http_code) {
     return 1;
 }
 
+/* The upload's attempts to @p endpoint (built from the API URL), as dsd_rdio_upload_trunk_recorder() returns them. */
 static int
-dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path) {
-    if (!api || !wav_path || !meta_path) {
-        return -1;
-    }
-
-    if (dsd_rdio_validate_api_config(api) != 0) {
-        return -1;
-    }
-
-    char endpoint[1024];
-    if (dsd_rdio_build_api_endpoint(api, endpoint, sizeof(endpoint)) != 0) {
-        LOG_ERROR("Rdio API upload: endpoint too long\n");
-        return -1;
-    }
-
+dsd_rdio_upload_attempts(const dsd_rdio_api_config* api, const char* endpoint, const char* wav_path,
+                         const char* meta_path) {
     int timeout_ms = 0;
     int attempts = 0;
     if (dsd_rdio_normalize_upload_options(api, &timeout_ms, &attempts) != 0) {
@@ -1175,6 +1180,28 @@ dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_p
     }
 
     return -1;
+}
+
+static int
+dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path) {
+    if (!api || !wav_path || !meta_path) {
+        return -1;
+    }
+
+    if (dsd_rdio_validate_api_config(api) != 0) {
+        return -1;
+    }
+
+    /* Built from the API URL, which can carry credentials: wiped on every exit. */
+    char endpoint[1024];
+    int rc = -1;
+    if (dsd_rdio_build_api_endpoint(api, endpoint, sizeof(endpoint)) != 0) {
+        LOG_ERROR("Rdio API upload: endpoint too long\n");
+    } else {
+        rc = dsd_rdio_upload_attempts(api, endpoint, wav_path, meta_path);
+    }
+    DSD_SECURE_ZERO(endpoint, sizeof endpoint);
+    return rc;
 }
 #endif
 

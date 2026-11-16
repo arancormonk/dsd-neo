@@ -4687,7 +4687,11 @@ suite runs under this compiler.
     the process (the worker's condition variable is still created and destroyed with the worker; a failed mutex init
     is final: no worker starts and nothing is held). Every upload job, sent, dropped or still queued at the stop, has
     its copies of the API key and URL wiped (`DSD_SECURE_ZERO`) before it is freed (`dsd_rdio_upload_job_free()`;
-    test: `RUNTIME_RDIO_EXPORT`). Uploads are kept while a journal is set:
+    test: `RUNTIME_RDIO_EXPORT`), and the worker wipes the endpoint it builds from the URL after each upload. Should the
+    shutdown's join of the worker fail (not expected: one shutdown joins, and the worker never joins itself), the
+    worker may still run, so only the queued jobs' API copies are wiped, under the queue's mutex; the queued jobs are
+    not freed, and the job in flight and the worker's endpoint copy are left to the worker. Uploads are kept while a
+    journal is set:
     `dsd_rdio_journal_keeps_uploads()` reads 1 in a run that names a recording journal and turns
     `rdio_api_delete_after_upload` on, and `dsd_rdio_export_call_ex()` then queues the job without the delete (the
     decision travels in the job, so the worker never reads the options). The option value is unchanged, so the exit's
