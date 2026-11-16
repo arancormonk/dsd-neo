@@ -492,24 +492,27 @@ quiet_input_detail(const dsd_opts* opts) {
 #endif
 }
 
-/* Whether the -Y row on air carried a call on this visit (issue #834 A4, "unsynced HANGTIME"): content a protocol's
-   CRC/FEC gate passed, or a frame of a protocol with no such gate (X2-TDMA, ProVoice, TETRA), since its landing. A
-   call explains the visit, so no no-check status is shown on it; a check under way still is (D8). A raw sync, which
-   NXDN48 and dPMR pass on noise several times a second, is no call, and neither is the scan's own re-arm of the
-   hangtime anchor (a landing, a hold released). */
+/* Whether a -Y no-check status has a row visit to describe (issue #834 A4, "unsynced HANGTIME"): a row landing in
+   force whose row has carried no call on this visit, that is no content a protocol's CRC/FEC gate passed and no frame
+   of a protocol with no such gate (X2-TDMA, ProVoice, TETRA) since its landing. A call explains the visit, so no
+   no-check status is shown on it; a check under way still is (D8). A raw sync, which NXDN48 and dPMR pass on noise
+   several times a second, is no call, and neither is the scan's own re-arm of the hangtime anchor (a landing, a hold
+   released). With no row landing in force (a step that forgot the landing and then failed, an input switch) there is
+   no row visit, so nothing is said, as on a session the check supports, whose checks name only landed visits. */
 static int
-quiet_y_visit_synced(const dsd_state* state) {
+quiet_y_visit_unexplained(const dsd_state* state) {
     const dsd_engine_scan_owner* owner = quiet_owner_const(state);
     return owner && owner->landing.by == DSD_ENGINE_SCAN_LANDING_ROW
-           && (state->scan_y_content_seq != owner->landing.y_content_seq
-               || state->scan_y_unchecked_seq != owner->landing.y_unchecked_seq);
+           && state->scan_y_content_seq == owner->landing.y_content_seq
+           && state->scan_y_unchecked_seq == owner->landing.y_unchecked_seq;
 }
 
-/* NO_CHECK for @p reason on @p report, when its stay shows the status: not on a -Y visit that synced. */
+/* NO_CHECK for @p reason on @p report, when its stay shows the status: on a -Y stay, only on a landed row's visit that
+   has carried no call. */
 static void
 quiet_fill_no_check(const dsd_state* state, const scan_quiet_visit_ref* ref, dsd_scan_timing_publication* report,
                     uint8_t reason) {
-    if (ref->shows_status && !(ref->owner == SCAN_QUIET_OWNER_Y && quiet_y_visit_synced(state))) {
+    if (ref->shows_status && (ref->owner != SCAN_QUIET_OWNER_Y || quiet_y_visit_unexplained(state))) {
         report->quiet_status = (uint8_t)DSD_SCAN_QUIET_STATUS_NO_CHECK;
         report->quiet_reason = reason;
     }

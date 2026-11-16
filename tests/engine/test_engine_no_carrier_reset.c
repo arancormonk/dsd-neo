@@ -14879,6 +14879,46 @@ yq_cause_case(int which) {
     return rc;
 }
 
+/* issue #834: on audio input a -Y session has no check, so the row on air shows "No check: input" only until it hears a
+   call. With no row landing in force (a step whose rigctl leg failed after it forgot the landing, an input switch)
+   there is no row visit to describe: nothing is said of the check, idle or during a decoded call, as on an RTL
+   session, whose checks name only landed visits. The next row landing shows the status again. */
+static int
+test_y_quiet_input_no_landing_says_nothing(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 581012500L) == 0);
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "audio input, the row landed", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_INPUT);
+    /* The landing is forgotten and the receiver stays where it was. */
+    dsd_engine_scan_landing_forget(state);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "audio input, no row landing", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
+                          DSD_SCAN_QUIET_REASON_NONE);
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "audio input, no row landing, a decoded call", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    /* The row lands again: its visit has heard no call yet. */
+    dsd_engine_scan_landing_note_row(state, 0, 581012500L, 0U);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "audio input, the row landed again", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y on audio input with no row landing\n");
+    }
+    return rc;
+}
+
 /* issue #834 A5: a -Y row refused for its width starts again on the same visit once the width is edited, through the
    frame boundary's owed republication (syncs that keep the frame loop running let no noCarrier() publish it), owed
    once per change. */
@@ -15919,6 +15959,7 @@ test_scan_quiet_decisions(void) {
     for (int which = YQ_CAUSE_INPUT; which < YQ_CAUSE_COUNT; which++) {
         rc |= yq_cause_case(which);
     }
+    rc |= test_y_quiet_input_no_landing_says_nothing();
     rc |= test_y_quiet_refused_row_restarts_after_an_edit();
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);

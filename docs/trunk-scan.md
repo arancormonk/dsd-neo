@@ -1135,7 +1135,8 @@ app show where the check stands, in place of `Idle dwell`, the voice gate's `Qua
   the channel reads busy, the usual phrase comes back and the channel keeps its normal timing.
 - `No check: input`, `No check: tuner`, `No check: rate`, `No check: width` or `No check: modes`: this channel cannot
   be checked, for the reason named in the list above, and keeps its normal timing. On a `-Y` row it shows only until
-  the row hears a call.
+  the row hears a call, and not at all while the scan has not landed on a row (for example after a channel change
+  that failed, or after you switch the input).
 
 The countdown beside the phrase is the same either way. A trunked target shows neither. In the Qt and Android app a
 screen reader also hears what the phrase means, once each time it changes, for example "Skip silent channels can't

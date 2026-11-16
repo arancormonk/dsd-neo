@@ -728,7 +728,10 @@ Generated (do not edit/commit):
       only while the row has carried no call this visit (A4's unsynced hangtime: `dsd_state::scan_y_content_seq`,
       checked content, and `scan_y_unchecked_seq`, an X2-TDMA, ProVoice or TETRA frame dispatched, against the values
       the landing recorded, `dsd_engine_scan_landing::y_content_seq`, `y_unchecked_seq`), since under the legacy rule
-      HANGTIME is the stay a call publishes from start to end. A raw sync, which NXDN48 and dPMR pass on noise, is no
+      HANGTIME is the stay a call publishes from start to end; with no row landing in force (a step that forgot the
+      landing and then failed, an input switch) never, as there is no row visit to describe (`quiet_fill_no_check()`,
+      the INPUT reason included, which an RTL session's checks, naming only landed visits, already left unsaid). A raw
+      sync, which NXDN48 and dPMR pass on noise, is no
       call, and neither is the hangtime anchor: the scan stamps it itself at a landing and when a hold is released, and
       X2-TDMA never stamps it. Never for a trunked target. CHECKING covers every phase of a check under way:
       WAIT_CAPTURE (its capture wait, the frame-boundary settle and a retry's wait), REQUESTED, and READY, a quiet
