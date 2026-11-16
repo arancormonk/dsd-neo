@@ -1141,6 +1141,11 @@ dsd_engine_receiver_hz(const dsd_opts* opts, const dsd_state* state) {
     return opts->rtlsdr_center_freq;
 }
 
+uint32_t
+dsd_engine_receiver_frequency(const dsd_opts* opts, const dsd_state* state) {
+    return (opts && state) ? dsd_engine_receiver_hz(opts, state) : 0U;
+}
+
 /* After an accepted tune from @p from_hz (dsd_engine_receiver_hz() before it) to @p freq: when the tune moved the
    receiver off its carrier, the per-call audio no call owns closes, so the next carrier's never joins it (issue #809
    B4), and the P25 patch table's listening clock breaks continuity, so the time away from the control channel, however

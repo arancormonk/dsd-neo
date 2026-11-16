@@ -348,6 +348,14 @@ void dmr_sm_note_carrier_tune(dsd_state* state, long receiver_hz, long freq_hz);
  *  the carrier the receiver is on keeps everything. */
 void dmr_sm_note_operator_leave(dsd_opts* opts, dsd_state* state, long receiver_hz, long freq_hz);
 
+/** @brief An operator's move on the io_control leg under trunking another protocol owns (P25, NXDN), with DMR decoding
+ *  on, from @p receiver_hz (the engine's reading before the tune, dsd_engine_receiver_frequency(); 0 unknown) to
+ *  @p freq_hz. Called once the move ended the left calls: judged as the engine's tune hook judges another machine's
+ *  tune, by that reading, never the machine's own, so a move that left the carrier forgets the left calls' privacy bit,
+ *  FID and per-slot talkgroup key and holds the next carrier's voice until its calls say whether they are encrypted.
+ *  The machine, which does not own the trunk, is left as it is. */
+void dmr_sm_note_foreign_operator_leave(dsd_state* state, long receiver_hz, long freq_hz);
+
 /** @brief The DMR machine's own tunes: dsd_trunk_tuning_hook_tune_to_freq() / _to_cc() (no TED SPS override) inside a
  *  dsd_trunk_tuning_caller_judges_begin() / _end() pair, so the engine's tune hook leaves the judgement of a leave, for
  *  the DMR calls' privacy and the hold, to the machine (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()). */

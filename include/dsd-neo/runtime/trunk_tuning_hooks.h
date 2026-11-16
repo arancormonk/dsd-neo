@@ -242,9 +242,11 @@ dsd_trunk_tune_result dsd_trunk_tuning_hook_return_to_cc(dsd_opts* opts, dsd_sta
  * caller decides whether such a tune left the carrier, for the DMR calls' privacy and the hold on the next carrier's
  * voice, so the engine's tune hook leaves both to it and every move is judged once. The DMR machine's own tunes
  * (dmr_sm_tune_to_freq(), dmr_sm_tune_to_cc(): dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()), a trunk-scan
- * park's (the target restore), a return to the control channel's (its release) and an operator's manual tune the caller
- * judges (its carrier boundary, or the DMR machine's dmr_sm_note_operator_leave()) take it. Any other tune (another
- * trunk machine's, P25 or NXDN) is judged by the engine's own reading of the tuner.
+ * park's (its target restore, or within a walk or a resume its switch once the retune is accepted), a forced advance's
+ * release (the park's), a return to the control channel's (its release), a carrier boundary's release of a followed
+ * call (the boundary) and an operator's manual tune the caller judges (its carrier boundary, or the DMR machine's
+ * dmr_sm_note_operator_leave()) take it. Any other tune (another trunk machine's, P25 or NXDN) is judged by the
+ * engine's own reading of the tuner.
  */
 void dsd_trunk_tuning_caller_judges_begin(void);
 void dsd_trunk_tuning_caller_judges_end(void);

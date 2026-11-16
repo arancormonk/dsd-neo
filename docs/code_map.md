@@ -3290,13 +3290,14 @@ suite runs under this compiler.
   After the receiver moves off a carrier or releases its call (`dmr_enc_class_hold()`, each move judged once, but for
   the two cases after this list: every carrier boundary but a stream gap, the release of a followed call inside it
   leaving the judgement to the boundary; a trunk-scan park, judged by its target restore, or, in a walk (an advance, a
-  go-to), by its switch once its retune is accepted, so an attempt that fails, which the walk goes on from or rolls back
-  from, judges nothing; its trunked target's control-channel tune, a forced advance's release and, after a fallback park
-  onto the original, the release after the walk leave it to that judge, and a forced advance rolled back is judged by
-  that release (a walk rolled back with no release moved nothing and judges nothing); the release of a return to the
-  control channel, the return's control-channel tune leaving it to the release; every DMR tune the DMR machine judges to
-  leave its carrier, `dmr_sm_leave_carrier()` and `dmr_sm_note_carrier_tune()`, which forget the left calls' privacy by
-  the same judgement, never the engine's own reading of the tuner (the machine's tunes run inside
+  go-to) or a resume, by its switch once its retune is accepted, so an attempt that fails, which the walk or resume goes
+  on from or rolls back from, judges nothing (the start and a retry, which do not roll back, keep the restore's judge);
+  its trunked target's control-channel tune, a forced advance's release and, after a fallback park onto the original,
+  the release after the walk leave it to that judge, and a forced advance rolled back is judged by that release (a walk
+  or resume rolled back with no release moved nothing and judges nothing); the release of a return to the control
+  channel, the return's control-channel tune leaving it to the release; every DMR tune the DMR machine judges to leave
+  its carrier, `dmr_sm_leave_carrier()` and `dmr_sm_note_carrier_tune()`, which forget the left calls' privacy by the
+  same judgement, never the engine's own reading of the tuner (the machine's tunes run inside
   `dsd_trunk_tuning_caller_judges_begin()`, through `dmr_sm_tune_to_freq()` and `dmr_sm_tune_to_cc()`, as every tune
   judged by its caller does), so a grant on a composite control channel's carrier holds and forgets nothing; an
   operator's manual move under DMR trunking, or before the trunk's owner is known (the default every-protocol mode until
@@ -3305,42 +3306,46 @@ suite runs under this compiler.
   retune through io_control past every other hook, or through the P25 hook leg marked as the caller's to judge); and a
   tune another trunk machine makes (P25, NXDN), or an operator's manual move under P25 or NXDN trunking on that hook
   leg, judged by the engine's reading of the tuner, which also forgets the DMR calls' privacy bit and talkgroup keys
-  there; with trunking off a manual move's own carrier boundary judges it). The two cases: a lockout or skip under DMR
+  there; an operator's manual move under P25 or NXDN trunking with DMR decoding on that takes the io_control leg, judged
+  by the same reading of the receiver before the tune (`dsd_engine_receiver_frequency()`, no rigctl round trip) once the
+  move ended the left calls (`dmr_sm_note_foreign_operator_leave()`), since under `-fa` DMR voice can play on both ends
+  of it; with trunking off a manual move's own carrier boundary judges it). The two cases: a lockout or skip under DMR
   trunking forgets the privacy bit once more in its no-carrier pass, which holds nothing, as every no-carrier pass; and
-  an operator's manual move under P25 or NXDN trunking, or with DMR decoding off, on the io_control leg (no P25
-  control-channel context) is judged by nobody, the DMR machine reading no receiver on a run another protocol owns. Then
-  each slot's encryption is unknown until that slot's call says: an LC that passed its check (`CRCCorrect`, a RAS
-  acceptance under `-F` included, header or embedded; a shape the decoder reads no privacy from, such as Tait FID 0x58
-  or an unknown FID, says as much as such a call ever says), a PI header naming a cipher the decoder knows (one that
-  leaves the ALG ID 0 keeps the slot held, a Kirisun one forcing no classification either), or a forced classification.
-  A DMR frame judged clear only because nothing has said otherwise is unknown there (`mbe_dmr_slot_judge()`,
-  `dsd_state::dmr_enc_class_held`), with X2-TDMA's rule below. A key forced onto every frame keys it as before: forced
-  clear (`dsd_key_dmr_forced_clear()`) or a keyed transform the frame got with nothing asking for it (`-4` with a Basic
-  or Hytera key). On the single-slot decoder under trunking (`-fr -T`), whose voice runs on both slots, an LC decoded on
-  its own stays on the slot its burst's CACH proved, as on the dual-slot decoder (`dmr_mono_folds_standalone_burst()`):
-  its call, terminator, crypto, keys and release are that slot's. Without trunking the single-slot decoder folds a slot
-  2 LC and its PI header alike onto lane 0, where its voice is decoded, so a slot 2 encrypted call's ALG ID, key ID and
-  MI reach that voice (`dmr_pi()`). A run's first landing is never held, whatever an earlier run on the same state left
-  (Android reuses its state): the run start clears the hold, and so does the run's first radio stream start after its
-  source boundary (`dsd_engine_note_run_stream_source()`), which still forgets the earlier run's carrier when the device
-  differs or the stream is an I/Q replay. A later source change in the run holds as before. The exemption is the run's
-  first landing, keyed on nothing having landed yet in the run (`dsd_state::run_landed`, set by any landing: the run's
-  first stream, a tune, a scan's row entry or park). A run starts landed, its first stream being that landing, unless a
-  scan configured for it (`-Y`, `--trunk-scan`) makes it: then that scan's first row entry or park forgets what the
-  state held but holds nothing (`dsd_engine_note_run_start()`), and every later one holds. A park uses the exemption up
-  only once its tune is confirmed (`trunk_scan_note_landing()`; a tune still PENDING has not landed), so after a failed
-  or still pending one the next park is still the run's first landing. A scan started from the menu after the receiver
-  landed in the run holds at its first landing, as any carrier move does. A no-carrier pass or a terminator on the
-  carrier holds nothing and leaves a hold standing. A call whose voice LC header comes first loses nothing. One joined
-  mid-call is held until the first embedded LC its superframes complete: on the dual-slot BS path 9 to 12 frames (180 to
-  240 ms) on a call whose every superframe carries its voice LC; on MS 12 frames, since the MS decoder assembles the
-  embedded LC after burst F's frames; and each superframe whose embedded LC fails its check or carries something else (a
-  talker alias, a GPS position) adds one superframe (18 frames, 360 ms). A protected LC never ends the hold. Tests:
+  an operator's manual move with DMR decoding off on the io_control leg is judged by nobody, as no DMR frame is decoded
+  to read the left calls' privacy. Then each slot's encryption is unknown until that slot's call says: an LC that passed
+  its check (`CRCCorrect`, a RAS acceptance under `-F` included, header or embedded; a shape the decoder reads no
+  privacy from, such as Tait FID 0x58 or an unknown FID, says as much as such a call ever says), a PI header naming a
+  cipher the decoder knows (one that leaves the ALG ID 0 keeps the slot held, a Kirisun one forcing no classification
+  either), or a forced classification. A DMR frame judged clear only because nothing has said otherwise is unknown there
+  (`mbe_dmr_slot_judge()`, `dsd_state::dmr_enc_class_held`), with X2-TDMA's rule below. A key forced onto every frame
+  keys it as before: forced clear (`dsd_key_dmr_forced_clear()`) or a keyed transform the frame got with nothing asking
+  for it (`-4` with a Basic or Hytera key). On the single-slot decoder under trunking (`-fr -T`), whose voice runs on
+  both slots, an LC decoded on its own stays on the slot its burst's CACH proved, as on the dual-slot decoder
+  (`dmr_mono_folds_standalone_burst()`): its call, terminator, crypto, keys and release are that slot's. Without
+  trunking the single-slot decoder folds a slot 2 LC and its PI header alike onto lane 0, where its voice is decoded, so
+  a slot 2 encrypted call's ALG ID, key ID and MI reach that voice (`dmr_pi()`). A run's first landing is never held,
+  whatever an earlier run on the same state left (Android reuses its state): the run start clears the hold, and so does
+  the run's first radio stream start after its source boundary (`dsd_engine_note_run_stream_source()`), which still
+  forgets the earlier run's carrier when the device differs or the stream is an I/Q replay. A later source change in the
+  run holds as before. The exemption is the run's first landing, keyed on nothing having landed yet in the run
+  (`dsd_state::run_landed`, set by any landing: the run's first stream, a tune, a scan's row entry or park). A run
+  starts landed, its first stream being that landing, unless a scan configured for it (`-Y`, `--trunk-scan`) makes it:
+  then that scan's first row entry or park forgets what the state held but holds nothing
+  (`dsd_engine_note_run_start()`), and every later one holds. A park uses the exemption up only once its tune is
+  confirmed (`trunk_scan_note_landing()`; a tune still PENDING has not landed), so after a failed or still pending one
+  the next park is still the run's first landing. A scan started from the menu after the receiver landed in the run
+  holds at its first landing, as any carrier move does. A no-carrier pass or a terminator on the carrier holds nothing
+  and leaves a hold standing. A call whose voice LC header comes first loses nothing. One joined mid-call is held until
+  the first embedded LC its superframes complete: on the dual-slot BS path 9 to 12 frames (180 to 240 ms) on a call
+  whose every superframe carries its voice LC; on MS 12 frames, since the MS decoder assembles the embedded LC after
+  burst F's frames; and each superframe whose embedded LC fails its check or carries something else (a talker alias, a
+  GPS position) adds one superframe (18 frames, 360 ms). A protected LC never ends the hold. Tests:
   `ENGINE_NO_CARRIER_RESET` (`test_dmr_voice_held_until_the_call_says()`, `test_dmr_hold_edges()`,
   `test_run_first_landing_is_never_held()`, `test_scan_first_landing_is_never_held()`,
   `test_dmr_manual_moves_forget_and_hold()`, `test_trunk_scan_park_judged_once()`, `test_return_to_cc_judged_once()`,
-  `test_manual_hook_leg_judged_once()`, `park_judge_advance_falls_back()`, `park_judge_pending_first_park()`),
-  `ENGINE_TRUNK_SCAN`, `ENGINE_RUN_SETUP`, `ENGINE_REPLAY_DECODE_CLOCK`, `DMR_FLCO_PRIVACY_MODES`.
+  `test_manual_hook_leg_judged_once()`, `park_judge_advance_falls_back()`, `park_judge_pending_first_park()`,
+  `park_judge_rotation_rolls_back()`, `park_judge_resume_fails_everywhere()`), `ENGINE_TRUNK_SCAN`, `ENGINE_RUN_SETUP`,
+  `ENGINE_REPLAY_DECODE_CLOCK`, `DMR_FLCO_PRIVACY_MODES`.
   P25 Phase 1 and Phase 2 use `p25_crypto_audio_output_permitted()`; Phase 2 also needs its decode gate. NXDN and
   dPMR use `nxdn_cipher_type` and the key the vocoder applies
   (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). X2-TDMA is judged per timeslot and
@@ -12494,7 +12499,9 @@ Private per-protocol modules worth knowing about:
     or candidate cycle) retunes through io_control, which reaches neither the tune hooks nor a carrier boundary, or
     through the P25 hook leg, marked as its caller's to judge; once the move ended the left calls,
     `dmr_sm_note_operator_leave()` judges it from the receiver the machine read before the tune (unknown, as at a
-    timed-out walk's late landing, counts as leaving) and leaves the carrier as a follow does. Tests:
+    timed-out walk's late landing, counts as leaving) and leaves the carrier as a follow does. Under P25 or NXDN
+    trunking the machine does not judge an operator's move: on the io_control leg the engine's reading of the receiver
+    does (`dmr_sm_note_foreign_operator_leave()`), and on the P25 hook leg the engine's tune hook. Tests:
     `ENGINE_NO_CARRIER_RESET` (`test_dmr_trunk_hop_leaves_no_call_crypto()`,
     `test_dmr_rest_move_leaves_no_call_crypto()`, `test_dmr_composite_cc_grant_holds_nothing()`). A follow of the
     carrier the receiver is already on (a grant for the composite control channel's own payload, a Cap+ status naming

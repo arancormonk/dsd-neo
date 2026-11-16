@@ -11872,24 +11872,35 @@ dmr_manual_done(dsd_opts* opts, dsd_state* state) {
 static const char* const k_dmr_manual_names[] = {"a manual Return to CC", "a trunked channel cycle", "a lockout",
                                                  "a skip"};
 
-/* One manual @p move off the followed call's voice channel. With @p owner_unknown the run decodes every protocol (the
-   default mode) and no CRC-valid DMR CSBK has named the trunk's owner yet: no other judge runs on the io_control leg,
-   so the DMR machine judges the move then too. */
+/* The trunk's owner a manual move case runs under: the DMR machine's (as dmr_manual_setup() leaves it), or, with every
+   protocol decoded (-fa, the default mode), none known yet, P25's or NXDN's. */
+enum { DMR_MANUAL_OWNER_DMR = 0, DMR_MANUAL_OWNER_UNKNOWN, DMR_MANUAL_OWNER_P25, DMR_MANUAL_OWNER_NXDN };
+
+static const char* const k_dmr_manual_owner_names[] = {"", " (owner not known yet)", " (P25 owns the trunk)",
+                                                       " (NXDN owns the trunk)"};
+
+/* One manual @p move off the followed call's voice channel, a DMR sync current, under @p owner. With the owner not
+   known yet (no CRC-valid DMR CSBK has named it) the DMR machine judges the move. With P25 or NXDN the owner, the
+   last control channel decoded, the receiver can still have reached a DMR carrier sending no CSBK (a conventional
+   repeater, a traffic channel): DMR voice is decoded on both ends of the move, which takes the io_control leg, so
+   the engine's judge, by its own reading of the receiver, judges it. Each way the move is judged once. */
 static int
-dmr_manual_move_case(int move, int owner_unknown) {
+dmr_manual_move_case(int move, int owner) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
     int rc = dmr_manual_setup(opts, state, DMR_MANUAL_VC);
-    if (owner_unknown) {
+    if (owner != DMR_MANUAL_OWNER_DMR) {
+        static const dsd_trunk_recovery_protocol owners[] = {DSD_TRUNK_RECOVERY_DMR, DSD_TRUNK_RECOVERY_UNKNOWN,
+                                                             DSD_TRUNK_RECOVERY_P25, DSD_TRUNK_RECOVERY_NXDN};
         opts->frame_p25p1 = opts->frame_p25p2 = 1;
         opts->frame_nxdn48 = opts->frame_nxdn96 = 1;
-        state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_UNKNOWN;
+        state->trunk_recovery_protocol = owners[owner];
     }
     char name[96];
-    DSD_SNPRINTF(name, sizeof name, "%s%s", k_dmr_manual_names[move], owner_unknown ? " (owner not known yet)" : "");
+    DSD_SNPRINTF(name, sizeof name, "%s%s", k_dmr_manual_names[move], k_dmr_manual_owner_names[owner]);
     char what[192];
     g_rtl_tune_calls = 0;
     g_dmr_holds = 0;
@@ -11913,14 +11924,15 @@ dmr_manual_move_case(int move, int owner_unknown) {
    neither the engine's tune hook nor a carrier boundary. Judged by the DMR machine as its own follows are, each move
    that leaves the followed call's carrier ends the call (its row keeping the FID), then forgets its privacy bit, FID,
    class and talkgroup key and holds both slots' voice until the next carrier's calls say. So it does in the default
-   every-protocol mode before a CRC-valid DMR CSBK names the trunk's owner. A Return to CC with the receiver already on
-   the control channel leaves nothing behind. */
+   every-protocol mode before a CRC-valid DMR CSBK names the trunk's owner, and, judged by the engine's reading of the
+   receiver, under P25 or NXDN trunking. A Return to CC with the receiver already on the control channel leaves nothing
+   behind. */
 static int
 test_dmr_manual_moves_forget_and_hold(void) {
     int rc = 0;
-    for (int owner_unknown = 0; owner_unknown <= 1; owner_unknown++) {
+    for (int owner = DMR_MANUAL_OWNER_DMR; owner <= DMR_MANUAL_OWNER_NXDN; owner++) {
         for (int move = DMR_MANUAL_RETURN_CC; move <= DMR_MANUAL_SKIP; move++) {
-            rc |= dmr_manual_move_case(move, owner_unknown);
+            rc |= dmr_manual_move_case(move, owner);
         }
     }
     dsd_opts* opts = NULL;
@@ -12075,6 +12087,91 @@ park_judge_advance_falls_back(int all_fail) {
     return rc;
 }
 
+/* Before a rollback: the first park landed, and the carrier the receiver is on has said its call is Basic Privacy
+   (dmr_so 0x40), with slot 1's hold ended by its call and slot 0's still standing. The counts start from here. */
+static void
+park_judge_seed_carrier(dsd_state* state) {
+    state->dmr_so = 0x40U;
+    dmr_enc_class_hold(state);
+    dmr_enc_class_release_hold(state, 1U);
+    g_dmr_holds = g_dmr_forgets = 0;
+}
+
+/* After a rollback onto the carrier the receiver never left: nothing judged, its call's privacy back, and the holds
+   as they stood. */
+static int
+park_judge_expect_rolled_back(const char* label, const dsd_state* state) {
+    char what[224];
+    DSD_SNPRINTF(what, sizeof what,
+                 "%s judges nothing: privacy kept, holds as they stood (holds %d, forgets %d, so 0x%02X, held %u,%u)",
+                 label, g_dmr_holds, g_dmr_forgets, (unsigned)state->dmr_so, (unsigned)state->dmr_enc_class_held[0],
+                 (unsigned)state->dmr_enc_class_held[1]);
+    return expect_true(what, g_dmr_holds == 0 && g_dmr_forgets == 0 && state->dmr_so == 0x40U
+                                 && state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 0U);
+}
+
+/* A dwell rotation is no forced advance: it releases nothing. When every retune it tries fails, the walk rolls back
+   onto the carrier the receiver never left, which is no move at all. */
+static int
+park_judge_rotation_rolls_back(void) {
+    static const uint64_t k_t0_ns = 7000ULL * 1000000000ULL;
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_decode_clock_use_test(k_t0_ns);
+    char path[DSD_TEST_PATH_MAX];
+    int rc = park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_LANDS);
+    park_judge_seed_carrier(state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    g_rtl_tune_calls = 0;
+    dsd_decode_clock_test_set_ns(k_t0_ns + 2ULL * 1000000000ULL); // past the 250 ms dwell
+    dsd_engine_trunk_scan_tick(opts, state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    char tried[160];
+    DSD_SNPRINTF(
+        tried, sizeof tried,
+        "a dwell rotation tries the alternate, then the original, and every retune fails (tunes %d, last %u Hz)",
+        g_rtl_tune_calls, (unsigned)g_rtl_tune_freq);
+    rc |= expect_true(tried, g_rtl_tune_calls == 2 && g_rtl_tune_freq == 451000000U);
+    rc |= park_judge_expect_rolled_back("a dwell rotation rolled back", state);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/* A resume rolls back as a walk does when every retune it tries fails: the scan stays paused on the carrier the
+   operator was hearing, which keeps its call's privacy and holds nothing more. */
+static int
+park_judge_resume_fails_everywhere(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    int rc = park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_LANDS);
+    p25_sm_tick_guard_enter();
+    rc |= expect_true("the park judge scan pauses in place",
+                      dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) == 0
+                          && state->trunk_scan_paused == 1U);
+    p25_sm_tick_guard_leave();
+    park_judge_seed_carrier(state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    p25_sm_tick_guard_enter();
+    const int resumed = dsd_engine_trunk_scan_resume_locked(opts, state);
+    p25_sm_tick_guard_leave();
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_true("a resume whose every retune fails is refused and stays paused",
+                      resumed == -3 && state->trunk_scan_paused == 1U);
+    rc |= park_judge_expect_rolled_back("a resume rolled back", state);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* A trunk-scan park is judged once, by its restore, never again by the engine's tune hook its trunked target's
    control-channel tune goes through. A run that starts with its trunk scan makes its first landing at the first
    park: it holds nothing. Each later park holds both slots, once. A run that landed before its scan was started holds
@@ -12132,6 +12229,8 @@ test_trunk_scan_park_judged_once(void) {
     rc |= park_judge_pending_first_park();
     rc |= park_judge_advance_falls_back(0);
     rc |= park_judge_advance_falls_back(1);
+    rc |= park_judge_rotation_rolls_back();
+    rc |= park_judge_resume_fails_everywhere();
     return rc;
 }
 
@@ -12177,13 +12276,18 @@ test_return_to_cc_judged_once(void) {
 }
 
 /* A manual Return to CC that takes the P25 hook leg (a P25 control channel context) is judged once. Under DMR
-   trunking the DMR machine judges it (dmr_sm_note_operator_leave(): its privacy bit before the rows end and the FID
-   after, two forgets, one hold), the engine's tune hook leaving it to the caller; under P25 trunking the engine's tune
-   hook judges it (one forget, one hold), and the DMR machine reads and judges nothing. */
+   trunking, and with the owner not known yet while P25 and NXDN decode, the DMR machine judges it
+   (dmr_sm_note_operator_leave(): its privacy bit before the rows end and the FID after, two forgets, one hold), the
+   engine's tune hook leaving it to the caller; under P25 trunking the engine's tune hook judges it (one forget, one
+   hold), and the DMR machine reads and judges nothing. */
 static int
 test_manual_hook_leg_judged_once(void) {
+    static const dsd_trunk_recovery_protocol owners[] = {DSD_TRUNK_RECOVERY_DMR, DSD_TRUNK_RECOVERY_UNKNOWN,
+                                                         DSD_TRUNK_RECOVERY_P25};
+    static const char* const owner_names[] = {"DMR trunking", "owner not known yet", "P25 trunking"};
     int rc = 0;
-    for (int dmr_owns = 1; dmr_owns >= 0; dmr_owns--) {
+    for (int o = 0; o < 3; o++) {
+        const int dmr_owns = owners[o] != DSD_TRUNK_RECOVERY_P25;
         dsd_opts* opts = NULL;
         dsd_state* state = NULL;
         if (init_test_runtime(&opts, &state) != 0) {
@@ -12199,13 +12303,14 @@ test_manual_hook_leg_judged_once(void) {
         state->lastsynctype = DSD_SYNC_P25P1_POS;
         state->p25_cc_is_tdma = 0;
         state->p25_cc_freq = DMR_MANUAL_CC;
-        state->trunk_recovery_protocol = dmr_owns ? DSD_TRUNK_RECOVERY_DMR : DSD_TRUNK_RECOVERY_P25;
+        state->trunk_recovery_protocol = owners[o];
+        opts->frame_nxdn48 = owners[o] == DSD_TRUNK_RECOVERY_UNKNOWN;
         g_dmr_holds = g_dmr_forgets = 0;
         const int drained = dmr_manual_press(opts, state, DMR_MANUAL_RETURN_CC);
         char what[192];
         DSD_SNPRINTF(what, sizeof what,
-                     "%s: a manual Return to CC on the hook leg is judged once (holds %d, forgets %d)",
-                     dmr_owns ? "DMR trunking" : "P25 trunking", g_dmr_holds, g_dmr_forgets);
+                     "%s: a manual Return to CC on the hook leg is judged once (holds %d, forgets %d)", owner_names[o],
+                     g_dmr_holds, g_dmr_forgets);
         rc |= expect_true(what, drained == 1 && g_dmr_holds == 1 && g_dmr_forgets == (dmr_owns ? 2 : 1)
                                     && state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
         dmr_manual_done(opts, state);

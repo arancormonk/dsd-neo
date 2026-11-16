@@ -333,9 +333,10 @@ typedef struct {
     /* One-shot: the switch this coordinator is about to perform is a forced eviction, so the
      * outgoing carrier is released before its snapshot is saved (#507). Consumed in the switch. */
     int forced_visit_release;
-    /* Set by a walk around each attempt (trunk_scan_walk_to()): the switch judges the park for the DMR calls' privacy
-       and voice hold once its retune is accepted, not at the restore, so a failed attempt the walk goes on from, or
-       rolls back from, judges nothing (trunk_scan_judge_park()). */
+    /* Set by a walk and a resume around each attempt (trunk_scan_walk_to(), trunk_scan_resume_attempt()): the switch
+       judges the park for the DMR calls' privacy and voice hold once its retune is accepted, not at the restore, so a
+       failed attempt the walk or resume goes on from, or rolls back from, judges nothing (trunk_scan_judge_park()). The
+       start and a retry, which do not roll back, keep the restore's judge. */
     int judge_on_accept;
     int saved_trunk_enable;
     int saved_trunk_is_tuned;
@@ -2509,8 +2510,8 @@ trunk_scan_next_chan_map_seq(dsd_trunk_scan_coord* coord, uint64_t restored_seq)
    next call key from the talkgroups the target's or the left target's calls keyed from. Until each slot's call there
    says whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()), unless nothing has
    landed yet in the run (dsd_state::run_landed): the first park of a scan the run started with. A park lands, and uses
-   that up, once its tune is confirmed (trunk_scan_note_landing()). Only when @p judges: the restore's, or a walk's
-   switch's once its retune is accepted (dsd_trunk_scan_coord::judge_on_accept). */
+   that up, once its tune is confirmed (trunk_scan_note_landing()). Only when @p judges: the restore's, or a walk's or
+   a resume's switch's once its retune is accepted (dsd_trunk_scan_coord::judge_on_accept). */
 static void
 trunk_scan_judge_park(dsd_state* state, int judges) {
     if (!judges) {
@@ -2544,7 +2545,7 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     // A new visit is a new reception: the old call's vendor evidence cannot suppress this visit's SB/MI decoding, nor
     // can a PI the old reception held for a call its lost voice LC header would have opened (trunk_scan_judge_park()).
     // The raw snapshot keeps the service options and vendor evidence only for rollback to a carrier that a failed
-    // switch never left (issue #657). A walk's attempt is judged by its switch once its retune is accepted instead.
+    // switch never left (issue #657). A walk's or resume's attempt is judged by its switch once its retune is accepted.
     trunk_scan_judge_park(state, !coord || !coord->judge_on_accept);
     state->trunk_chan_map_seq = trunk_scan_next_chan_map_seq(coord, state->trunk_chan_map_seq);
     rt->snapshot.site.trunk_chan_map_seq = state->trunk_chan_map_seq;
@@ -3312,9 +3313,9 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
         return dsd_engine_scan_tune_to_freq(opts, state, freq, ted_sps, out_request_id);
     }
     /* Trunk targets re-park on their control channel; only the two axes differ per type. The park judges the move
-       for the DMR calls' privacy and voice hold itself (trunk_scan_judge_park(): its restore, or a walk's switch once
-       this retune is accepted), so the engine's tune hook leaves it to the park (dsd_trunk_tuning_caller_judges()), as
-       the conventional tunes above run no judge. */
+       for the DMR calls' privacy and voice hold itself (trunk_scan_judge_park(): its restore, or a walk's or
+       resume's switch once this retune is accepted), so the engine's tune hook leaves it to the park
+       (dsd_trunk_tuning_caller_judges()), as the conventional tunes above run no judge. */
     state->p25_cc_freq = trunk_scan_type_anchors_p25_cc_freq(rt->target.type) ? freq : 0;
     state->trunk_cc_freq = freq;
     const int cc_sps = trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state)
@@ -6879,6 +6880,18 @@ trunk_scan_resume_rollback(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coor
     return monitor_request;
 }
 
+/* One park a resume tries (a revisit, save_current 0). A resume that fails everywhere rolls back as a walk does
+   (trunk_scan_resume_rollback()), so, as a walk's, the attempt is judged by its switch once its retune is accepted,
+   never at the restore: a failed one judges nothing, and the carrier the receiver stays on keeps its calls' privacy and
+   holds nothing (trunk_scan_judge_park()). */
+static int
+trunk_scan_resume_attempt(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next) {
+    coord->judge_on_accept = 1;
+    const int rc = trunk_scan_park_noting(opts, state, coord, next, 0);
+    coord->judge_on_accept = 0;
+    return rc;
+}
+
 /*
  * A resume's park (issue #671): the target coord->active names, the one the scan paused at or a go-to's (issue #644),
  * as a revisit (trunk_scan_park_noting(), save_current 0). One out of the rotation (issue #697: its list was switched
@@ -6898,7 +6911,7 @@ trunk_scan_resume_park(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     coord->park_tried_hz = 0;
     if (!trunk_scan_active_out_of_rotation(coord)
         || !trunk_scan_visit_alternate_is_eligible(opts, state, coord, now_m)) {
-        const int rc = trunk_scan_park_noting(opts, state, coord, original, 0);
+        const int rc = trunk_scan_resume_attempt(opts, state, coord, original);
         *installed = rc != TRUNK_SCAN_PREPARE_FAILED ? original : coord->count;
         if (trunk_scan_active_out_of_rotation(coord)) {
             /* Out of the rotation with nowhere to go yet: it owes the departure once somewhere is. */
@@ -6914,7 +6927,7 @@ trunk_scan_resume_park(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
             continue;
         }
         *tried = next;
-        rc = trunk_scan_park_noting(opts, state, coord, next, 0);
+        rc = trunk_scan_resume_attempt(opts, state, coord, next);
         if (rc == 0) {
             return 0;
         }

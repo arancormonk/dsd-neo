@@ -162,6 +162,11 @@ void dsd_engine_legacy_tune_caches_forget(void);
  */
 void dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state);
 
+/** @brief Where the receiver is, as the engine's own judge of a tune reads it: the frequency the RTL stream last
+ *  applied, else the decoder's tuner frequency (opts->rtlsdr_center_freq, which a rigctl tune sets once it is done).
+ *  It makes no rigctl round trip. */
+uint32_t dsd_engine_receiver_frequency(const dsd_opts* opts, const dsd_state* state);
+
 /**
  * Retire failed tune requests once no tune owner is active (trunking, trunk scan, signal search, a typed -Y list), so
  * a failure nobody will roll back cannot gate frames (issue #703). An asynchronous RTL retune staged the decoder's
