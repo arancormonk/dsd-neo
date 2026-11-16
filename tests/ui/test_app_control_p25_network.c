@@ -76,6 +76,17 @@ test_rows_carry_names(void) {
     dsd_source_alias_install(st, radios);
     n = dsd_app_p25_affiliated_rids(st, a, 4);
     assert(n == 2 && strlen(row_of(a, n, 7654321U)->name) == 47U);
+
+    /* A lead byte whose next byte is no continuation byte starts no character: the name ends before it. */
+    radios = dsd_source_alias_store_create();
+    dsd_source_alias_entry broken = {.id_start = 7654321U, .id_end = 7654321U};
+    DSD_SNPRINTF(broken.name, sizeof broken.name, "%s",
+                 "AB\xC3"
+                 "A");
+    assert(radios != NULL && dsd_source_alias_store_append(radios, &broken) == 0);
+    dsd_source_alias_install(st, radios);
+    n = dsd_app_p25_affiliated_rids(st, a, 4);
+    assert(n == 2 && strcmp(row_of(a, n, 7654321U)->name, "AB") == 0);
     dsd_state_ext_free_all(st);
     free(st);
 }

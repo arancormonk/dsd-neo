@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/unit_activity.h>
+#include <dsd-neo/core/utf16.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <math.h>
@@ -227,21 +228,12 @@ ua_scope_from_rxid(const dsd_received_identity* rx, dsd_ua_scope* out) {
     out->valid = 1U;
 }
 
-/* Copy @p in (any bytes) into zeroed @p out as a NUL-terminated UTF-8 string: up to its NUL, or cut to the field at a
- * character boundary when it fills the field. */
+/* Copy @p in (any bytes) into zeroed @p out as a NUL-terminated UTF-8 string: up to its NUL, whole characters only
+ * (dsd_utf8_whole_prefix_len()), cut to the field when it fills it. */
 static void
 ua_name_copy(char* out, size_t out_sz, const char* in, size_t in_sz) {
     const char* nul = memchr(in, '\0', in_sz);
-    size_t len = nul ? (size_t)(nul - in) : in_sz;
-    if (len >= out_sz) {
-        len = out_sz - 1U;
-        /* Drop a trailing character the cut left incomplete: back over its continuation bytes to its lead byte. */
-        size_t lead = len;
-        while (lead > 0U && ((unsigned char)in[lead] & 0xC0U) == 0x80U) {
-            --lead;
-        }
-        len = lead;
-    }
+    const size_t len = dsd_utf8_whole_prefix_len(in, nul ? (size_t)(nul - in) : in_sz, out_sz - 1U);
     DSD_MEMCPY(out, in, len);
 }
 

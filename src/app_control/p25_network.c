@@ -132,21 +132,12 @@ dsd_app_p25_patches(const dsd_state* state, dsd_app_p25_patch* out, int capacity
     return n;
 }
 
-/* Cut @p s before a character its end leaves incomplete: a list's name can be cut mid-character (49 bytes). */
+/* Keep the whole, well-formed characters of @p s (dsd_utf8_whole_prefix_len()): a list's name can be cut
+ * mid-character (49 bytes), and a byte that starts no character ends it. */
 static void
 keep_whole_characters(char* s) {
     const size_t n = strlen(s);
-    size_t i = 0;
-    while (i < n) {
-        unsigned char lo;
-        unsigned char hi;
-        const size_t length = dsd_utf8_lead((unsigned char)s[i], &lo, &hi);
-        if (length == 0U || n - i < length) {
-            s[i] = '\0';
-            return;
-        }
-        i += length;
-    }
+    s[dsd_utf8_whole_prefix_len(s, n, n)] = '\0';
 }
 
 /* A row's names from the held snapshot's lists: the radio's in the current reception's scope, the talkgroup's label. */

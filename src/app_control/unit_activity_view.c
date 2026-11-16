@@ -37,26 +37,6 @@ enum {
 
 /* ---- Text ---- */
 
-/* The length of the UTF-8 sequence @p s starts (at most @p avail bytes), or 0 when it is not a complete, well-formed
- * one (RFC 3629: no overlong form, no surrogate, nothing above U+10FFFF). */
-static size_t
-ua_utf8_sequence(const unsigned char* s, size_t avail) {
-    unsigned char lo = 0U;
-    unsigned char hi = 0U;
-    const size_t len = dsd_utf8_lead(s[0], &lo, &hi);
-    if (len == 0U || len > avail) {
-        return 0U;
-    }
-    for (size_t i = 1U; i < len; i++) {
-        const unsigned char min = i == 1U ? lo : 0x80U;
-        const unsigned char max = i == 1U ? hi : 0xBFU;
-        if (s[i] < min || s[i] > max) {
-            return 0U;
-        }
-    }
-    return len;
-}
-
 /* 1 when the sequence of @p len bytes at @p s is a C0 or C1 control character or DEL. */
 static int
 ua_is_control(const unsigned char* s, size_t len) {
@@ -76,7 +56,7 @@ ua_text_append(char* dst, size_t cap, const char* src) {
     size_t left = strlen(src);
     int whole = 1;
     while (left > 0U) {
-        const size_t len = ua_utf8_sequence(s, left);
+        const size_t len = dsd_utf8_sequence_len(s, left);
         if (len == 0U) {
             s++;
             left--;

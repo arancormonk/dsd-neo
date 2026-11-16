@@ -31,21 +31,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/* The length of @p name cut to fit @p cap bytes with its NUL, at a UTF-8 character boundary: a continuation byte
- * never starts the cut-off tail. */
-static size_t
-alias_learn_name_len(const char* name, size_t cap) {
-    size_t len = strlen(name);
-    if (len < cap) {
-        return len;
-    }
-    len = cap - 1U;
-    while (len > 0U && (((unsigned char)name[len]) & 0xC0U) == 0x80U) {
-        len--;
-    }
-    return len;
-}
-
 /**
  * Learn an over-the-air alias as the source's policy row of the reception's scope, and give a new scoped row its
  * group file line (<dsd-neo/core/alias_learn.h>).
@@ -63,7 +48,7 @@ dsd_alias_learn_radio(const dsd_opts* opts, dsd_state* state, const dsd_alias_sc
     if (!state || rid == 0 || !utf8_name) {
         return DSD_TG_POLICY_LEARN_FAILED;
     }
-    const size_t len = alias_learn_name_len(utf8_name, sizeof name);
+    const size_t len = dsd_utf8_whole_prefix_len(utf8_name, strlen(utf8_name), sizeof name - 1U);
     DSD_MEMCPY(name, utf8_name, len);
     name[len] = '\0';
     if (dsd_tg_policy_make_exact_entry(rid, "D", name, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &entry) != 0) {
