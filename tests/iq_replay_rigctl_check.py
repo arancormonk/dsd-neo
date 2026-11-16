@@ -7,12 +7,14 @@ went on playing the control channel. A fake rigctl peer logs every command it re
 refuse the retunes it decodes (its notice says so), and send it no frequency.
 """
 import argparse
-from pathlib import Path
 import re
 import socket
 import subprocess
 import tempfile
 import threading
+from pathlib import Path
+
+from iq_stream_live_check import isolated_env
 
 FIXTURE = "p25p1_cqpsk_cc"
 REFUSED = re.compile(r"Retune ignored during IQ replay")
@@ -98,8 +100,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="dsd-replay-rigctl-") as temporary, FakeRigctl() as peer:
         result = subprocess.run([binary, "--frontend", "none", "--iq-replay", str(fixture), "-f1", "-mq", "-T", "-U",
                                  str(peer.port), "-o", "null"],
-                                cwd=temporary, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120,
-                                check=False)
+                                cwd=temporary, env=isolated_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                timeout=120, check=False)
     log = result.stdout.decode(errors="replace")
     assert not SANITIZER.search(log), log
     assert result.returncode == 0, log

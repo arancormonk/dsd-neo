@@ -30,7 +30,7 @@ import threading
 import time
 from pathlib import Path
 
-from iq_stream_live_check import Output, free_port, start, stop, stop_after
+from iq_stream_live_check import Output, free_port, isolated_env, start, stop, stop_after
 
 DEADLINE_S = 60.0
 # A run that has met its counts gets this long to finish what it is decoding before it is stopped.
@@ -415,7 +415,7 @@ def run_analog(binary, cwd, name, mode, rate_hz, payload, level_dbfs, measure, c
     with TcpSender(payload, byte_rate // 100, byte_rate) as sender, audio_path.open("wb") as audio:
         spec = f"iqtcp:127.0.0.1:{sender.port}:{rate_hz}:cs16"
         process = subprocess.Popen([binary, "--no-config", "--frontend", "none"] + mode + ["-i", spec, "-o", "-"],
-                                   cwd=cwd, stdout=audio, stderr=subprocess.PIPE)
+                                   cwd=cwd, env=isolated_env(), stdout=audio, stderr=subprocess.PIPE)
         output = StderrOutput(process)
 
         def body():
