@@ -12220,6 +12220,8 @@ test_iq_stream_refuses_tuning_options(void) {
     return rc;
 }
 
+#endif
+
 /* Bootstrap "dsd-neo" with the @p nargs arguments @p args, a "{ini}" among them standing for a temporary config file
    holding @p ini; returns what the bootstrap returns, and the stderr it printed in @p err. */
 static int
@@ -12257,6 +12259,7 @@ bootstrap_with_ini(const char* ini, const char* const* args, int nargs, int* exi
     return boot;
 }
 
+#ifdef USE_RADIO
 /* Issue #743 (D8): a config that runs an I/Q stream with [trunking] enabled, [trunking] scanner or [trunk_scan] enabled
    is refused at startup with exit 1, naming the key and the fix, before anything opens: the bootstrap returns before
    the engine runs. The config's keys count as it wrote them, whether the stream is the config's own input or the
@@ -12336,6 +12339,80 @@ test_bootstrap_refuses_config_tuning_on_iq_stream(void) {
     return rc;
 }
 #endif
+
+/* Issue #743: a config whose [input] source is iqtcp or iqudp but whose keys build no stream spec is refused at startup
+   with exit 1, naming the key and the parser's reason, as a bad -i spec is, rather than starting on the input from
+   before the config. A -i on the command line runs instead, another input or the very one the config load left (the
+   default, as the config's [input] builds nothing); a config whose keys build one starts. */
+static int
+test_bootstrap_refuses_config_iq_stream_without_spec(void) {
+    static char k_default_input[64];
+    static const char* const k_alone[] = {"{ini}"};
+    static const char* const k_cli_input[] = {"--config", "{ini}", "-i", "udp:127.0.0.1:17356"};
+    static const char* const k_cli_same[] = {"--config", "{ini}", "-i", k_default_input};
+
+    static const struct {
+        const char* input;
+        const char* const* args;
+        int nargs;
+        const char* want; /* NULL: the start goes on */
+    } cases[] = {
+        {"source = \"iqtcp\"\niq_host = \"127.0.0.1\"\niq_port = 0\niq_rate = \"240k\"\niq_format = \"cs16\"\n",
+         k_alone, 1, "Invalid I/Q stream input: [input] iq_port: iqtcp: PORT '0' is not a port number from 1 to 65535"},
+        {"source = \"iqtcp\"\niq_port = 1234\niq_rate = \"240k\"\niq_format = \"cs16\"\n", k_alone, 1,
+         "Invalid I/Q stream input: [input] iq_host: iqtcp: HOST is empty"},
+        {"source = \"iqudp\"\niq_host = \"0.0.0.0\"\niq_port = 7356\niq_rate = \"7k\"\niq_format = \"cs16\"\n", k_alone,
+         1, "Invalid I/Q stream input: [input] iq_rate: iqudp: RATE '7k' is outside"},
+        {"source = \"iqudp\"\niq_host = \"0.0.0.0\"\niq_port = 7356\niq_rate = \"240k\"\n", k_alone, 1,
+         "Invalid I/Q stream input: [input] iq_format: iqudp: FORMAT"},
+        {"source = \"iqtcp\"\niq_host = \"127.0.0.1\"\niq_port = 0\niq_rate = \"240k\"\niq_format = \"cs16\"\n",
+         k_cli_input, 4, NULL},
+        {"source = \"iqtcp\"\niq_host = \"127.0.0.1\"\niq_port = 0\niq_rate = \"240k\"\niq_format = \"cs16\"\n",
+         k_cli_same, 4, NULL},
+        {"source = \"iqtcp\"\niq_host = \"127.0.0.1\"\niq_port = 1234\niq_rate = \"240k\"\niq_format = \"cs16\"\n",
+         k_alone, 1, NULL},
+    };
+
+    dsd_opts* probe = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    if (!probe) {
+        return 1;
+    }
+    initOpts(probe);
+    DSD_SNPRINTF(k_default_input, sizeof k_default_input, "%s", probe->audio_in_dev);
+    free(probe);
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char ini[1024];
+        DSD_SNPRINTF(ini, sizeof ini, "[input]\n%s", cases[i].input);
+        int exit_rc = -1;
+        char err[4096];
+        const int boot = bootstrap_with_ini(ini, cases[i].args, cases[i].nargs, &exit_rc, err, sizeof err, opts, state);
+        int fail = 0;
+        if (cases[i].want != NULL) {
+            fail = boot != DSD_BOOTSTRAP_ERROR || exit_rc != 1 || strstr(err, cases[i].want) == NULL;
+        } else {
+            fail = boot != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0;
+        }
+        if (fail) {
+            DSD_FPRINTF(stderr, "FAIL: stream config without a spec, case %zu: boot=%d exit=%d stderr:\n%s\n", i, boot,
+                        exit_rc, err);
+            rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return rc;
+}
 
 /* [analog] nfm_bandwidth_hz sets the configured width before the CLI runs, and --nfm-bandwidth-hz
  * overrides it; an out-of-range INI value is refused with a warning and leaves the default. */
@@ -13274,6 +13351,7 @@ main(void) {
     rc |= test_iq_stream_refuses_tuning_options();
     rc |= test_bootstrap_refuses_config_tuning_on_iq_stream();
 #endif
+    rc |= test_bootstrap_refuses_config_iq_stream_without_spec();
     rc |= test_iq_stream_spec_on_the_command_line();
     rc |= test_bootstrap_analog_config_and_cli_override();
     rc |= test_input_source_tcp_ipv4_roundtrip();

@@ -448,6 +448,8 @@ struct dsd_opts {
     uint8_t persist_tg_lockouts; // Save quick user lockouts to the configured global group list.
     /* Flag set when any CLI explicitly enables or disables trunking (e.g., -T, -Y). */
     uint8_t trunk_cli_seen;
+    /* Flag set when the command line names the input (-i), which replaces a loaded config's [input] (issue #743). */
+    uint8_t input_cli_seen;
     uint8_t p25_lcw_retune;
     uint8_t p25_prefer_candidates;
     uint8_t use_dsp_output;

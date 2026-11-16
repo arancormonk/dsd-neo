@@ -15151,7 +15151,8 @@ test_stream_starts_say_their_rate_notes(void) {
  * A config applied to a running stream: a [mode] decode = tetra, and an [input] naming the same stream with a new
  * rtl_bw_khz, each restart it once at the new plan; one naming it with a gain alone restarts nothing and applies no
  * gain (the sender tunes). An [input] naming another stream over a running RTL-SDR reopens on it, with no tuner key;
- * one whose keys build no spec, or whose rate no plan reaches, is refused before anything changes.
+ * one whose keys build no spec, or whose rate no plan reaches, is refused whole before anything changes, its [mode]
+ * too.
  */
 static int
 test_stream_config_apply_replans(void) {
@@ -15230,9 +15231,13 @@ test_stream_config_apply_replans(void) {
         stream_input_config(&cfg, refused[i].rate, "cs16");
         cfg.iq_port = refused[i].port;
         cfg.rtl_bw_khz = refused[i].bw_khz;
+        /* Refused whole: the config's other sections apply no more than its input. */
+        cfg.has_mode = 1;
+        cfg.decode_mode = DSDCFG_MODE_TETRA;
         rc |= submit_config(&opts, &state, &cfg, refused[i].label);
         rc |= expect_int(refused[i].label, g_config_rtl_creates, 0);
         rc |= expect_str(refused[i].label, opts.audio_in_dev, k_stream_240k);
+        rc |= expect_int(refused[i].label, opts.frame_tetra, 0);
         rc |= expect_toast(refused[i].label, &state, refused[i].toast);
         rc |= expect_int(refused[i].label, dsd_app_command_test_last_failed(), 1);
         freeState(&state);

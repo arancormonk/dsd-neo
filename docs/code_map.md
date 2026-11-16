@@ -3895,19 +3895,21 @@ suite runs under this compiler.
     `-C` is refused (issue #697): two maps would merge, the second one's channel numbers and EDACS LCN slots shadowing
     the first's, while only the last path is saved (`RUNTIME_CLI_PARSE`).
     `-i iqtcp:` / `-i iqudp:` (issue #743) is read as it is parsed (`cli_read_iq_stream_spec()`): a field the spec
-    parser refuses fails with exit 1 naming it, a build without radio support refuses the input, and the spec is kept
-    in its canonical form. Once every option is read, `cli_refuse_tuning_on_iq_stream()` refuses `-T`, `-Y`,
+    parser refuses fails with exit 1 naming it, a build without radio support refuses the input, and the spec is kept in
+    its canonical form. Once every option is read, `cli_refuse_tuning_on_iq_stream()` refuses `-T`, `-Y`,
     `--trunk-scan`, `-U`, `--rtl-udp-control`, `--auto-ppm`, `--rtltcp-autotune` (argv's, by their seen bits) and
-    `--iq-capture` beside a stream, naming the flag (D5, D8); bootstrap then refuses a loaded config's trunking, `-Y`
-    scanner or trunk scan beside one, the stream the config's or the command line's
+    `--iq-capture` beside a stream, naming the flag (D5, D8); bootstrap then refuses a loaded config whose `iqtcp` or
+    `iqudp` `[input]` keys build no spec, naming the key, unless the command line names the input (`-i`, recorded as
+    `dsd_opts::input_cli_seen`, or `--iq-replay`) (`bootstrap_refuse_config_iq_stream_without_spec()`), and a loaded
+    config's trunking, `-Y` scanner or trunk scan beside a stream, the config's or the command line's
     (`bootstrap_refuse_config_tuning_on_iq_stream()`, on the config's own keys, which the command line's trunking
-    override and its `-i` trunk-scan drop do not hide; after the one-shot actions, before anything opens). The engine's
-    setup (`dsd_engine_setup_parse_iq_stream_input()`) reads the spec
-    of any origin again, refuses a RATE no plan takes to the mode's target, says where a TCP stream connects, warns a
-    RATE under what the mode decodes from (TETRA 25 kHz, 12.5 kHz channels 16 kHz, 6.25 kHz ones 12 kHz) and notes a
-    TETRA start without FREQ. `--no-config` is still accepted from old command lines but does nothing (config loading
-    is opt-in): bootstrap logs one NOTICE saying so, and the test harnesses that pass it clear `DSD_NEO_CONFIG` as well
-    (`RUNTIME_CLI_NO_CONFIG_NOTICE`).
+    override and its `-i` trunk-scan drop do not hide); both after the one-shot actions, before anything opens. The
+    engine's setup (`dsd_engine_setup_parse_iq_stream_input()`) reads the spec of any origin again, refuses a RATE no
+    plan takes to the mode's target (one above the 3.2 MS/s ceiling among them), says where a TCP stream connects, warns
+    a RATE under what the mode decodes from (TETRA 25 kHz, 12.5 kHz channels 16 kHz, 6.25 kHz ones 12 kHz) and notes a
+    TETRA start without FREQ; every later start says those rate notes again (`note_iq_stream_started()`). `--no-config`
+    is still accepted from old command lines but does nothing (config loading is opt-in): bootstrap logs one NOTICE
+    saying so, and the test harnesses that pass it clear `DSD_NEO_CONFIG` as well (`RUNTIME_CLI_NO_CONFIG_NOTICE`).
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits

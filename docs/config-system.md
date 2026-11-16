@@ -755,17 +755,20 @@ Output format:
   the input to UDP PCM audio (PCM16LE datagrams). Sample rate uses the
   global `-s` CLI setting (default 48000).
 
-- **I/Q stream (`source = "iqtcp"` or `"iqudp"`)**: Raw I/Q that another program streams over the network
-  (see "Raw I/Q Over The Network" in `docs/iq-capture-replay.md`). `iq_host`, `iq_port`, `iq_rate` and `iq_format`
-  build the spec `iqtcp:iq_host:iq_port:iq_rate:iq_format[:iq_freq]` (or `iqudp:...`) that `-i` takes, and all four
-  are needed; `iq_freq` is optional. Fields that build no spec leave the input as it was, with a warning, and
-  `--validate-config` reports an error on the key at fault (`[input] iq_port: iqtcp: PORT '0' is not a port number
-  from 1 to 65535 ...`), as it does for an `iq_rate` no rate chain reaches at the DSP bandwidth the config runs
-  (TETRA's under `[mode] decode = "tetra"`). `rtl_bw_khz` is the DSP bandwidth request, and the squelch keys and
-  `rtl_volume` apply as on any radio input. `rtl_gain`, `rtl_ppm`, `auto_ppm` and `rtl_freq` are not used, since the
-  sending program runs the radio; `--validate-config` warns about each. A stream cannot run beside
-  `[trunking] enabled`, `[trunking] scanner` or `[trunk_scan] enabled` (see "Config Discovery and Locations"). A save
-  writes the stream's fields as it runs them (`iq_rate` and `iq_freq` in Hz) and no gain, PPM or frequency key.
+- **I/Q stream (`source = "iqtcp"` or `"iqudp"`)**: Raw I/Q that another program streams over the network (see "Raw I/Q
+  Over The Network" in `docs/iq-capture-replay.md`). `iq_host`, `iq_port`, `iq_rate` and `iq_format` build the spec
+  `iqtcp:iq_host:iq_port:iq_rate:iq_format[:iq_freq]` (or `iqudp:...`) that `-i` takes, and all four are needed;
+  `iq_freq` is optional. Fields that build no spec stop startup with exit status 1, naming the key at fault, as a bad
+  `-i` spec does
+  (`Invalid I/Q stream input: [input] iq_port: iqtcp: PORT '0' is not a port number from 1 to 65535 ...`), unless `-i`
+  or `--iq-replay` on the command line names the input to run, whichever it names. A config loaded into a running
+  session with such fields is not applied at all, and `--validate-config` reports an error on the same key, as it does
+  for an `iq_rate` no rate chain reaches at the DSP bandwidth the config runs (TETRA's under `[mode] decode = "tetra"`).
+  `rtl_bw_khz` is the DSP bandwidth request, and the squelch keys and `rtl_volume` apply as on any radio input.
+  `rtl_gain`, `rtl_ppm`, `auto_ppm` and `rtl_freq` are not used, since the sending program runs the radio;
+  `--validate-config` warns about each. A stream cannot run beside `[trunking] enabled`, `[trunking] scanner` or
+  `[trunk_scan] enabled` (see "Config Discovery and Locations"). A save writes the stream's fields as it runs them
+  (`iq_rate` and `iq_freq` in Hz) and no gain, PPM or frequency key.
 
 - **File (`source = "file"`)**: Set `file_path` to switch the input to a file
   input (WAV/BIN/RAW/SYM). Use `file_sample_rate` for PCM16 WAV/RAW inputs that

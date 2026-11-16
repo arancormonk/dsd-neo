@@ -3474,6 +3474,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             }                                                                                                          \
             DSD_STRNCPY(opts->audio_in_dev, optarg, 2047);                                                             \
             opts->audio_in_dev[2047] = '\0';                                                                           \
+            opts->input_cli_seen = 1;                                                                                  \
             if (cli_read_iq_stream_spec(opts, out_exit_rc) != 0) {                                                     \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \

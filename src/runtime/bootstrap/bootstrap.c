@@ -10,6 +10,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -779,6 +780,36 @@ bootstrap_refuse_config_tuning_on_iq_stream(const dsd_opts* opts, const dsdneoUs
     return DSD_BOOTSTRAP_ERROR;
 }
 
+/* A loaded config whose [input] source is iqtcp or iqudp but whose keys build no stream spec (issue #743) is refused at
+   startup with exit 1, naming the key and the parser's reason, as a bad -i spec is: the session would otherwise run the
+   input from before the config. Not when the command line names the input (-i, --iq-replay), which the session runs
+   instead of the config's, whatever it names. --validate-config reports the same key, and a runtime config apply
+   refuses the config whole. @p cfg is the loaded config, NULL for none. */
+static int
+bootstrap_refuse_config_iq_stream_without_spec(const dsd_opts* opts, const dsdneoUserConfig* cfg, int* out_exit_rc) {
+    const char* key = cfg ? dsd_user_config_iq_stream_bad_key(cfg) : NULL;
+    if (!key || opts->input_cli_seen || opts->iq_replay_requested) {
+        return DSD_BOOTSTRAP_CONTINUE;
+    }
+    char spec[sizeof opts->audio_in_dev];
+    char why[DSD_IQ_NET_SPEC_TEXT_MAX + 128];
+    (void)dsd_user_config_iq_stream_input_spec(cfg, spec, sizeof spec, why, sizeof why);
+    LOG_ERROR("Invalid I/Q stream input: [input] %s: %s\n", key, why);
+    bootstrap_set_exit_rc(out_exit_rc, 1);
+    return DSD_BOOTSTRAP_ERROR;
+}
+
+/* The loaded config's refusals around an I/Q stream (issue #743): an [input] that builds none, then trunking or a scan
+   beside one. */
+static int
+bootstrap_refuse_config_on_iq_stream(const dsd_opts* opts, const dsdneoUserConfig* cfg, int* out_exit_rc) {
+    const int rc = bootstrap_refuse_config_iq_stream_without_spec(opts, cfg, out_exit_rc);
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        return rc;
+    }
+    return bootstrap_refuse_config_tuning_on_iq_stream(opts, cfg, out_exit_rc);
+}
+
 static void
 bootstrap_log_startup_banner(void) {
     LOG_INFO("NOTICE: ------------------------------------------------------------------------------\n");
@@ -884,7 +915,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
         return boot_rc;
     }
-    boot_rc = bootstrap_refuse_config_tuning_on_iq_stream(opts, user_cfg_loaded ? &user_cfg : NULL, out_exit_rc);
+    boot_rc = bootstrap_refuse_config_on_iq_stream(opts, user_cfg_loaded ? &user_cfg : NULL, out_exit_rc);
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
         return boot_rc;
     }
