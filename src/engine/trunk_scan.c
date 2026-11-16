@@ -3499,6 +3499,15 @@ trunk_scan_release_active_carrier(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
     rt->last_allowed_activity_m = 0.0;
 }
 
+/* A forced advance's release of the carrier it leaves (#507): the park's restore that follows judges the move for the DMR
+   calls' privacy and voice hold, once, so the release leaves both to it (dsd_trunk_tuning_caller_judges()). */
+static void
+trunk_scan_release_for_park(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
+    dsd_trunk_tuning_caller_judges_begin();
+    trunk_scan_release_active_carrier(opts, state, rt);
+    dsd_trunk_tuning_caller_judges_end();
+}
+
 /* The idle dwell runs from the park's landing, as the visit does (discussion #717): the retune armed it when it was
    asked for, and a tune that blocks (rigctl) or completes later would otherwise count its latency as listening time.
    A dwell disarmed since (an operator's hold toggled, activity reported) stays disarmed, so the next tick grants it
@@ -3842,10 +3851,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
          * call the receiver then stays on, and before the snapshot, so the saved state is idle by
          * construction and revisiting the target cannot restore a call that ended a rotation ago. */
         if (coord->forced_visit_release) {
-            /* The park's restore below judges this move for the DMR calls' privacy and voice hold, once. */
-            dsd_trunk_tuning_caller_judges_begin();
-            trunk_scan_release_active_carrier(opts, state, outgoing);
-            dsd_trunk_tuning_caller_judges_end();
+            trunk_scan_release_for_park(opts, state, outgoing);
             /* Rollback must preserve this release too. Restoring the pre-release call and
              * ending it again duplicates its history event if every park fails. */
             trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
@@ -3920,9 +3926,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
 
     trunk_scan_arm_tune_completion(opts, state, coord, rt, tune_result, tune_request_id);
     rt->retry_until_m = 0.0;
-    /* The receiver landed on the target: the run's first landing is used up (dsd_state::run_landed). A retune that
-       failed above leaves it for the retry. */
-    state->run_landed = 1U;
+    state->run_landed = 1U; // landed: the run's first landing is used up; a failed retune above leaves it for the retry
     LOG_INFO("NOTICE: Trunk scan target '%s' at %ld Hz\n", rt->target.id, trunk_scan_retune_freq(state, &rt->target));
     return 0;
 }
