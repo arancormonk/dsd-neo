@@ -257,6 +257,31 @@ private fun onStopEndsTheFeed() {
     }
 }
 
+// #786 r4: Qt's tick reads the new epoch the moment onStop publishes it, and asks for the feed again at once. That start
+// must survive the rest of onStop: it waits while the app is hidden and registers on onStart.
+private fun aStartThatSawTheNewEpochSurvivesTheStop() {
+    onSdk(30) {
+        val first = precise()
+        start(first)
+        val asked = precise()
+        var reads = 0
+        ForegroundEpoch.afterAdvance = {
+            reads += 1
+            LocationStream.startStream(asked)
+        }
+        try {
+            LocationStream.onActivityStop()
+        } finally {
+            ForegroundEpoch.afterAdvance = null
+        }
+        Handler.drain()
+        check(reads == 1 && asked.manager.updates.isEmpty()) { "nothing registers while hidden" }
+        LocationStream.onActivityStart()
+        check(asked.manager.updates.keys == setOf(GPS)) { "the start Qt asked for in the new epoch registers on onStart" }
+        check(record().optString("state") == "ok") { "and the poll reads it" }
+    }
+}
+
 // The return to the foreground after Qt asked for the feed between onStop and its thread's freeze (D1 of the emulator
 // run): the start waits for onStart and registers then; a stop or a newer start in between replaces it, and an onStop
 // or onDestroy in between drops it.
@@ -337,9 +362,10 @@ fun main() {
     generations()
     onStopEndsTheFeed()
     startWhileHiddenRunsOnStart()
+    aStartThatSawTheNewEpochSurvivesTheStop()
     pollSharesTheWritersLock()
     println(
-        "PASS: location feed providers, provider state, best fresh fix, generations, onStop, a start while hidden " +
-            "and the poll's lock"
+        "PASS: location feed providers, provider state, best fresh fix, generations, onStop, a start while hidden, " +
+            "a start in the new epoch and the poll's lock"
     )
 }

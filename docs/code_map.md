@@ -17252,9 +17252,12 @@ dropped) and publishes an immutable snapshot under the lock. `pollStream()` read
 `provider`, `elapsedRealtimeNanos`, `lat`, `lon`, `accuracyM` and `ageMs` (taken at the poll; the keys are absent,
 not null, without one); it picks the most accurate fix at most 15 s old (the newer on a tie), else the newest, so a
 newer rough fused fix never displaces a fresh GPS fix. `DsdNeoActivity` calls `onActivityStart()` in `onStart`,
-`onActivityStop()` in every `onStop` (outside the `isChangingConfigurations` guard: not visible, `foregroundEpoch`
-advanced, subscription withdrawn and listeners removed, all on the main thread, since Qt's thread is frozen while the
-app is not visible) and `onDestroy()` in `onDestroy`. `LocationPermission.kt` owns the app's one runtime location prompt
+`onActivityStop()` in every `onStop` (outside the `isChangingConfigurations` guard: not visible, subscription
+withdrawn, `foregroundEpoch` advanced and listeners removed, all on the main thread, since Qt's thread is frozen while
+the app is not visible) and `onDestroy()` in `onDestroy`. Rule: the withdrawal and the epoch advance are one step under
+the stream's lock, withdrawal first, and `startStream()` reads the epoch and takes its call serial in one step under the
+same lock: a Qt tick that sees the new epoch asks for a feed the stop can no longer make stale, so it registers on
+`onStart` (`ForegroundEpoch.afterAdvance` is the JVM test's window for that tick). `LocationPermission.kt` owns the app's one runtime location prompt
 (request code 4303) for `LocationSupport` (`ONE_SHOT`) and the stream (`ROAMING`): an asker that arrives while a prompt
 is open waits for its answer (one place per asker; asking again replaces its wait), every waiter is answered inside
 `onRequestPermissionsResult()` itself (no wait for `onStart`), a prompt that cannot open (`requestPermissions()` throws)

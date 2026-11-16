@@ -87,8 +87,10 @@ object LocationStream {
      * `onStart` when the app is hidden. A start asked for before the latest `onStop` is dropped.
      */
     @JvmStatic fun startStream(context: Context) {
-        val startedIn = ForegroundEpoch.current()
-        val call = synchronized(lock) { ++serial }
+        // One step under the lock onActivityStop() withdraws and advances under: a start either comes before that
+        // stop entirely (its epoch is the old one, so it is dropped, and Qt asks again once it sees the epoch move)
+        // or after it (the new epoch, and a call the stop's withdrawal can no longer make stale).
+        val (startedIn, call) = synchronized(lock) { ForegroundEpoch.current() to ++serial }
         main.post {
             if (ForegroundEpoch.current() != startedIn) return@post
             if (visible) {
@@ -143,8 +145,12 @@ object LocationStream {
     @JvmStatic fun onActivityStop() {
         visible = false
         deferred = null
-        ForegroundEpoch.advance()
-        withdraw()
+        // The old feed is withdrawn before the new epoch is published, in one step under the lock (#786): a Qt tick that
+        // reads the new epoch asks for a feed that this withdrawal cannot make stale, so it registers on onStart.
+        synchronized(lock) {
+            withdraw()
+            ForegroundEpoch.advance()
+        }
         unsubscribe()
     }
 

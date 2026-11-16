@@ -12,9 +12,12 @@ import java.util.concurrent.atomic.AtomicLong
 internal object ForegroundEpoch {
     private val epoch = AtomicLong(0)
 
+    /** Runs right after each [advance], on its thread: the JVM tests' window for a reader that sees the new epoch. */
+    @Volatile internal var afterAdvance: (() -> Unit)? = null
+
     /** The epoch now, from any thread. */
     fun current(): Long = epoch.get()
 
     /** The app left the foreground: the next epoch. */
-    fun advance(): Long = epoch.incrementAndGet()
+    fun advance(): Long = epoch.incrementAndGet().also { afterAdvance?.invoke() }
 }
