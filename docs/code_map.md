@@ -14850,14 +14850,15 @@ Qt Quick frontend (`src/ui/qt`):
   stopped (`m_noticeSessionId`), and `onHostSession()` withdraws it when that session shows Running again (a stop the
   host gave up on after the roam was cancelled); a new start clears it as before. Tests:
   `check_executor_end_precedence()`, `check_executor_notice_withdrawn()`, `tst_site_roaming.qml` `test_07j`, `test_07l`.
-  Rule: an operator barrier (`operatorBarrier()`: a command still pending, or the snapshot showing a held talkgroup,
-  an operator tune or trunking off) ends a switch in every stage before the destination's start: an accepted command
-  ends it at once (`noteOperatorIntent()`, cause "intent", ranked below the user's stop and own choice), a barrier the
-  snapshot shows during the stop ends it at the next evaluation, and the checks before each step refuse one. A drain can
-  keep the old session taking commands for minutes, so the stop is no fence by itself. The destination's start is its
-  own session's: it completes, and that session arms only once its barrier is gone. Tests:
-  `check_executor_operator_barriers()` (each barrier × call wait, stop, destination start), `tst_site_roaming.qml`
-  `test_24b`.
+  Rule: an operator command (`noteOperatorIntent()`: Hold TG, a manual tune, a tuner release, trunking on or off)
+  accepted before the destination's start ends the switch at once (cause "intent", ranked below the user's stop and own
+  choice; Home's notice once the stop was issued), and the checks before each step refuse while one is pending. A drain
+  can keep the old session taking commands for minutes, so the stop is no fence by itself. A decoder snapshot value
+  alone (a held talkgroup, an operator tune, trunking off) is a barrier only through arming, in the call wait: once the
+  stop is issued the snapshot is the old session's last publication (the ENGINE_OUT publish in `src/engine/engine.c`,
+  then a cleanup that publishes nothing), so it never ends the switch. The destination's start is its own session's: it
+  completes, and that session arms only once its barrier is gone. Tests: `check_executor_operator_barriers()` (commands
+  and snapshot values × call wait, stop, destination start), `tst_site_roaming.qml` `test_24b`.
   Rule: before the destination's start, `progressStop()` reads the host's phase: Failed cancels; Running after the
   stop showed (Stopping) and before it went idle (`startPlan()` asks only at Idle) is a stop the host gave up on (its
   2 s stop grace), so the switch ends refused with no notice, the evidence is revoked and roaming shows "Could not

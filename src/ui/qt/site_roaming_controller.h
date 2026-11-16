@@ -394,7 +394,6 @@ class SiteRoaming : public QObject {
     void clearIntents();
     void clearAppliedIntents();
     bool intentPending() const;
-    bool operatorBarrier() const;
     void noteQualification();
     void revoke(qint64 nowMs);
     void ensureStream(bool need);

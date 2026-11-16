@@ -274,11 +274,6 @@ SiteRoaming::evaluateOnce() {
     clearAppliedIntents();
     if (active() && m_tx.stage != Stage::WaitingForCall) {
         progressTransaction();
-        if (active() && m_tx.stage == Stage::Stopping && operatorBarrier()) {
-            // #786 r6: the old session follows something else now (a command it applied, or one still pending): the
-            // switch ends before its stop lets a start through.
-            cancelTransaction(QStringLiteral("intent"));
-        }
         if (active()) {
             feedTransaction(t);
             ensureStream(true); // the checks before the destination starts derive the verdict again
@@ -451,7 +446,7 @@ SiteRoaming::settingsFailure() const {
     if (!enabled()) {
         return QStringLiteral("disabled");
     }
-    if (operatorBarrier()) {
+    if (intentPending()) {
         return QStringLiteral("intent");
     }
     return globalExtras() ? QStringLiteral("extras") : QString();
@@ -943,7 +938,9 @@ SiteRoaming::noteOperatorIntent(const QString& kind) {
     }
     // #786 r6: a command accepted before the destination's start ends the switch, in its call wait or in its stop (a
     // drain can keep the old session taking commands for minutes); the destination's own start is not the old
-    // session's to fence, and its edge then waits for the command as any session does.
+    // session's to fence, and its edge then waits for the command as any session does. This is the only barrier past
+    // the call wait: once the stop is issued the decoder snapshot is the old session's last publication (engine.c's
+    // ENGINE_OUT publish, then a teardown that publishes nothing), so a snapshot value alone never ends the switch.
     if (active() && m_tx.stage != Stage::Starting) {
         cancelTransaction(QStringLiteral("intent"));
     }
@@ -954,16 +951,6 @@ SiteRoaming::noteOperatorIntent(const QString& kind) {
 bool
 SiteRoaming::intentPending() const {
     return m_holdIntent.pending || m_tunerIntent.pending || m_trunkingIntent.pending;
-}
-
-/* #786 r6: what holds a switch back from its stop on: an operator command still pending, or the session's snapshot
- * showing a held talkgroup, an operator tune or trunking off (the switch began with none of them). */
-bool
-SiteRoaming::operatorBarrier() const {
-    if (intentPending()) {
-        return true;
-    }
-    return m_sessionLive && m_facts.optionsKnown && (m_facts.heldTg != 0 || m_facts.operatorTuned || !m_facts.trunking);
 }
 
 void

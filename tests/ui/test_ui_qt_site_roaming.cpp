@@ -1594,9 +1594,11 @@ check_executor_notice_withdrawn() {
     }
 }
 
-/* #786 r6: every operator barrier (a pending command, or a held talkgroup, an operator tune or trunking off the snapshot
- * shows) in every stage of a switch: before the destination's start it ends the switch and nothing starts; the
- * destination's start is its own session's, which arms only once the barrier is gone. */
+/* #786 r6: every operator barrier in every stage of a switch. An operator command (pending or since applied) ends the
+ * switch before the destination's start and nothing starts. A snapshot value alone (a held talkgroup, an operator tune,
+ * trunking off, a cleared snapshot) ends it only in the call wait, where it is the running session's: once the stop is
+ * issued it may be the teardown's, and the switch goes on. The destination's start is its own session's, which arms
+ * only once the barrier is gone. */
 void
 check_executor_operator_barriers() {
     using Phase = dsd_qt::DecoderHost::SessionState;
@@ -1605,17 +1607,25 @@ check_executor_operator_barriers() {
         const char* name;
         std::function<void(Rig&)> apply;
         SiteRoaming::Reason after; // what the destination shows after its edge
+        bool command;              // an operator command; else a snapshot value alone
     };
 
     const QList<Barrier> barriers = {
-        {"Hold TG pending", [](Rig& rig) { rig.roaming.noteOperatorIntent("hold"); }, SiteRoaming::PendingChange},
+        {"Hold TG pending", [](Rig& rig) { rig.roaming.noteOperatorIntent("hold"); }, SiteRoaming::PendingChange, true},
+        {"Hold TG applied",
+         [](Rig& rig) {
+             rig.roaming.noteOperatorIntent("hold");
+             rig.set("heldTg", 5);
+         },
+         SiteRoaming::TalkgroupHeld, true},
         {"manual tune pending", [](Rig& rig) { rig.roaming.noteOperatorIntent("manualTune"); },
-         SiteRoaming::PendingChange},
+         SiteRoaming::PendingChange, true},
         {"trunking off pending", [](Rig& rig) { rig.roaming.noteOperatorIntent("trunkingOff"); },
-         SiteRoaming::PendingChange},
-        {"a talkgroup held", [](Rig& rig) { rig.set("heldTg", 5); }, SiteRoaming::TalkgroupHeld},
-        {"an operator tune", [](Rig& rig) { rig.set("operatorTuned", true); }, SiteRoaming::OperatorTune},
-        {"trunking off", [](Rig& rig) { rig.set("trunking", false); }, SiteRoaming::NotTrunking},
+         SiteRoaming::PendingChange, true},
+        {"a talkgroup held", [](Rig& rig) { rig.set("heldTg", 5); }, SiteRoaming::TalkgroupHeld, false},
+        {"an operator tune", [](Rig& rig) { rig.set("operatorTuned", true); }, SiteRoaming::OperatorTune, false},
+        {"trunking off", [](Rig& rig) { rig.set("trunking", false); }, SiteRoaming::NotTrunking, false},
+        {"a cleared snapshot", [](Rig& rig) { rig.set("optionsKnown", false); }, SiteRoaming::SessionStarting, false},
     };
     const QString notice = QStringLiteral("Roaming did not switch to Lake. Listening stopped.");
     for (const Barrier& b : barriers) {
@@ -1642,12 +1652,20 @@ check_executor_operator_barriers() {
             rig.nearB(1000);
             rig.nearB(10000);
             rig.nearB(10000);
-            const bool ended =
-                !rig.roaming.transactionActive() && rig.ended == QStringList{QStringLiteral("cancelled")};
-            rig.host.setPhase(Phase::Idle);
-            check(ended && !rig.roaming.startPlan(1).value("ok").toBool() && rig.host.switchStops == 1
-                      && rig.roaming.recoveryNotice() == notice,
-                  label("in the stop, the switch ends and Idle starts nothing").constData());
+            if (b.command) {
+                const bool ended =
+                    !rig.roaming.transactionActive() && rig.ended == QStringList{QStringLiteral("cancelled")};
+                rig.host.setPhase(Phase::Idle);
+                check(ended && !rig.roaming.startPlan(1).value("ok").toBool() && rig.host.switchStops == 1
+                          && rig.roaming.recoveryNotice() == notice,
+                      label("in the stop, the switch ends and Idle starts nothing").constData());
+            } else {
+                // Teardown-like: not the operator's, so the switch goes on to its start.
+                const bool going = rig.roaming.transactionActive() && rig.ended.isEmpty();
+                rig.host.setPhase(Phase::Idle);
+                check(going && rig.roaming.startPlan(rig.roamId()).value("ok").toBool(),
+                      label("in the stop, a snapshot value alone does not end the switch").constData());
+            }
         }
         {
             Rig rig; // the destination starting
