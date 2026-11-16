@@ -118,12 +118,13 @@ int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
  * Per backend:
  * - PulseAudio (Linux, macOS), a best effort: what the client holds from the server (the rest of the record fragment
  *   being read, the queue behind it) is read and dropped until a read waits for audio; that read's frames go too. At
- *   most 2 s of frames at the stream's rate, no read begun after 250 ms on the monotonic clock, and the last read waits
- *   up to one record block (about 100 ms) on top of that.
+ *   most 2 s of frames at the stream's rate, exact to one 32-frame read (the cap is checked before each read, so up to
+ *   31 frames past it), no read begun after 250 ms on the monotonic clock, and the last read waits up to one record
+ *   block (about 100 ms) on top of that.
  * - PortAudio (Windows): one snapshot of the frames the stream reports available at the call
  *   (Pa_GetStreamReadAvailable(), at most its input buffer), read without a wait; no frame or time cap of its own.
- * - AAudio (Android): the frames reads with no wait return, at most 96000 frames (2 s at 48 kHz), no read begun after
- *   250 ms.
+ * - AAudio (Android): the frames reads with no wait return, at most 96000 frames (2 s at 48 kHz), exact to one
+ *   256-frame read (up to 255 frames past it), no read begun after 250 ms.
  * Audio still on its way to DSD-neo (in the producer, or in the sound server) arrives after the call and is kept. The
  * stream object itself is not changed, only what its device holds.
  *

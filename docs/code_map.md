@@ -7251,14 +7251,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   far as seen (`dsd_frame_sync_forget_unflushed_retunes()`): such a retune moved the peer before the new stream
   began, while a count posted after the replacement is taken as usual. Off the decoder thread (the P25
   watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` (an atomic count,
-  `frame_sync_unflushed.c`) before its tune notice. The decoder's next read takes it
+  `frame_sync_unflushed.c`; the input-replacement side, `dsd_frame_sync_forget_unflushed_retunes()`, is declared in
+  `include/dsd-neo/dsp/unflushed_retune.h`, which `<dsd-neo/core/opts.h>` includes for
+  `dsd_opts_reset_pcm_input_state()`) before its tune notice. The decoder's next read takes it
   (`frame_sync_take_unflushed_retunes()`, inline in `frame_sync_unflushed.h`: one relaxed load per symbol read and per
   EDACS triplet, with no measurable cost on a 120 s DMR decode), moving the epoch and asking for the drop there, so
   the watchdog's tunes drop at the next read after the post; the notice's reconcile
   (`dsd_frame_sync_apply_off_thread_tunes()`) takes a count no read met yet. What one drop takes is bounded: the
   sound-card input (`dsd_audio_discard_input()`, per backend: PulseAudio on Linux and macOS, a best effort, at most
-  2 s of frames at the stream's rate, no read begun after 250 ms, and its last read waits up to one record block;
-  PortAudio on Windows, one snapshot of what is available; AAudio on Android, at most 96000 frames and no read begun
+  2 s of frames at the stream's rate, exact to one 32-frame read (up to 31 frames past it), no read begun after
+  250 ms, and its last read waits up to one record block; PortAudio on Windows, one snapshot of what is available;
+  AAudio on Android, at most 96000 frames, exact to one 256-frame read (up to 255 frames past it), and no read begun
   after 250 ms; see the platform audio entry), the UDP ring (what it holds: at least 1 s at 48 kHz) and the TCP reader
   and socket (the
   `udp_discard_pending` and `tcp_discard_pending` network-audio hooks), and stdin when it is a pipe or socket
@@ -10696,17 +10699,18 @@ Notes:
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
   `dsd_audio_discard_input()` (a `const` stream: it changes what the device holds, never the stream object) drops what
   an input stream holds unread (issue #834, at the decoder's next read after a rigctl retune). PulseAudio (Linux,
-  macOS), a best effort, at most 2 s of frames at the stream's rate with no read begun after 250 ms on the monotonic
-  clock: it reads the record fragment `pa_simple` keeps, and the queue behind it, in 32-frame reads until one waits for
-  audio (more than 1 ms), and drops that read too, so the read path is unchanged; the waiting read lasts until the
-  server's next record block (about one 100 ms fragment). There is no exact way through `pa_simple`:
+  macOS), a best effort, at most 2 s of frames at the stream's rate (exact to one read: the cap is checked before each
+  32-frame read, so up to 31 frames past it) with no read begun after 250 ms on the monotonic clock: it reads the
+  record fragment `pa_simple` keeps, and the queue behind it, in 32-frame reads until one waits for audio (more than
+  1 ms), and drops that read too, so the read path is unchanged; the waiting read lasts until the server's next record
+  block (about one 100 ms fragment). There is no exact way through `pa_simple`:
   `pa_simple_get_latency()` can read 0 on a sink monitor while the client holds a whole fragment, and
   `pa_simple_flush()` flushes the server side only, not the client's queue or the fragment `pa_simple` holds;
   `pa_stream_readable_size()` is exact but needs the input on the `pa_stream` API. A read of held data that is
   preempted for over 1 ms ends the drop early, and the last read waits up to one record block on top of the 250 ms.
   PortAudio (Windows) reads one snapshot of what `Pa_GetStreamReadAvailable()` reports (at most its input buffer, with
-  no cap of its own; an error count is an error). AAudio (Android) reads with no wait, at most 96000 frames and no
-  read begun after 250 ms. The null backend holds nothing.
+  no cap of its own; an error count is an error). AAudio (Android) reads with no wait, at most 96000 frames (exact to
+  one 256-frame read, up to 255 frames past it) and no read begun after 250 ms. The null backend holds nothing.
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`). `udp_input_read_sample_wait()` gives up after a timeout with no sample, so the decoder can
   apply a queued command while the input is silent (issue #634). The UDP input counts packets, bytes and dropped samples
