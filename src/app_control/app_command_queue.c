@@ -1554,11 +1554,16 @@ ui_set_rollback_toast(dsd_state* state, const char* prefix, const char* why, int
 }
 
 /* A failed command whose restart has no rollback after it (RTL_RESTART, RTL_SET_GAIN, RTL_SET_DEV): "Failed: " and
-   @p what, with the note of a capture the restart turned off before its start (issue #743 B16), which is the capture
-   the command found on (@p capture_before) and that is off now. */
+   @p what for 4 s, as before; with the note of a capture the restart turned off before its start (issue #743 B16),
+   which is the capture the command found on (@p capture_before) and that is off now, for the 5 s a rollback's note
+   takes. */
 static void
 ui_set_failed_restart_toast(dsd_state* state, const dsd_opts* opts, int capture_before, const char* what) {
-    ui_set_rollback_toast(state, "Failed: ", what, capture_before && opts && !opts->iq_capture_requested);
+    if (capture_before && opts && !opts->iq_capture_requested) {
+        ui_set_rollback_toast(state, "Failed: ", what, 1);
+        return;
+    }
+    ui_set_toast(state, 4, "Failed: %s", what);
 }
 
 /* The receive input a stream start reads, as a change that rewrites it finds it (issue #578): the device string and
@@ -11861,6 +11866,24 @@ dsd_app_stream_notice_clear(void) {
     atomic_store(&g_capture_stopped_notice, CAPTURE_STOPPED_NONE);
 }
 
+/* A restart that turned the I/Q capture off (issue #743 B16) did so for the command whose toast is showing ("Applied:
+   RTL gain -> 20", a rollback's "Refused: ..."): the note goes on the end of that toast, as a rollback's does, so the
+   command's answer and the capture's both stay on screen. Returns 0, changing nothing, when no toast is showing, it
+   has the note already, or the two do not fit: the caller shows the capture's own toast. */
+static int
+ui_toast_note_capture_stopped(dsd_state* state) {
+    static const char k_note[] = "; I/Q capture stopped";
+    const size_t len = strlen(state->ui_msg);
+    if (len == 0U || state->ui_msg_expire <= dsd_realtime_time() || strstr(state->ui_msg, k_note) != NULL
+        || len + sizeof k_note > sizeof state->ui_msg) {
+        return 0;
+    }
+    char text[sizeof state->ui_msg];
+    DSD_SNPRINTF(text, sizeof text, "%s%s", state->ui_msg, k_note);
+    ui_set_toast(state, 5, "%s", text);
+    return 1;
+}
+
 /* The stream's I/Q capture stopped recording at a retune that changed the device's sample rate (issue #806 X9): the
    file keeps what it recorded until then. The capture stays off for the rest of the session, so no later start writes
    over that file, and the options and the toast say so. The drain takes it before every command and the stream start
@@ -11879,10 +11902,12 @@ dsd_app_take_capture_stopped(dsd_opts* opts, dsd_state* state) {
     opts->iq_capture_requested = 0;
     dsd_telemetry_publish_opts_snapshot(opts);
     if (state) {
-        ui_set_toast(state, 5, "%s",
-                     why == CAPTURE_STOPPED_RESTART
-                         ? "I/Q capture stopped: the stream restarted; what was recorded is kept"
-                         : "I/Q capture stopped: the device sample rate changed; what was recorded is kept");
+        if (why != CAPTURE_STOPPED_RESTART || !ui_toast_note_capture_stopped(state)) {
+            ui_set_toast(state, 5, "%s",
+                         why == CAPTURE_STOPPED_RESTART
+                             ? "I/Q capture stopped: the stream restarted; what was recorded is kept"
+                             : "I/Q capture stopped: the device sample rate changed; what was recorded is kept");
+        }
         dsd_telemetry_publish_snapshot(state);
     }
 }

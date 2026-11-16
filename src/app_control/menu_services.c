@@ -2295,8 +2295,9 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_sto
     /* The restart that failed may have turned the capture off itself, before its start (svc_rtl_restart_locked()):
        the capture the change found on and is off now stopped during the change. */
     const int stopped_here = svc_recovery_stop_capture(opts, stream_stopped);
-    if (out_capture_stopped && (stopped_here || (capture_before && !opts->iq_capture_requested))) {
-        *out_capture_stopped = 1;
+    const int capture_stopped = stopped_here || (capture_before && !opts->iq_capture_requested);
+    if (out_capture_stopped) {
+        *out_capture_stopped = capture_stopped;
     }
     /* The input that ran runs again, so a failure the failed change latched is not the session's: the latch goes back
        to the one from before the change once the stream the change left is gone and before the restart starts
@@ -2324,6 +2325,12 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_sto
         if (dsd_input_failure_generation() == put_back_generation || now.kind == DSD_INPUT_FAILURE_NONE) {
             dsd_input_failure_report((dsd_input_failure_kind)failed.kind, failed.native_code);
         }
+    }
+    if (capture_stopped && !out_capture_stopped) {
+        /* A caller with no toast of its own for it (a scan-row gain edit, a trunk-scan gain settle): the drain says it,
+           on the end of the toast it leaves showing (dsd_app_take_capture_stopped()). Posted after the start above,
+           which takes a notice before it opens. */
+        dsd_app_note_capture_stopped_at_restart();
     }
     return rc;
 }

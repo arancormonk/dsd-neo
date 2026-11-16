@@ -24653,7 +24653,7 @@ test_airspy_setting_rollback_reports_the_iq_capture_stop(void) {
     rc |= expect_int("airspy rate fails: the Airspy runs", state.rtl_ctx != NULL, 1);
     rc |= expect_str("airspy rate fails toast", state.ui_msg, "Failed: Airspy setting; I/Q capture stopped");
 
-    /* One that starts says it applied, and the next drain that the capture stopped. */
+    /* One that starts says it applied, and the next drain that the capture stopped, on the end of that toast. */
     opts.iq_capture_requested = 1;
     reset_config_rtl_wrap();
     g_config_rtl_open_ok = 1;
@@ -24662,8 +24662,7 @@ test_airspy_setting_rollback_reports_the_iq_capture_stop(void) {
                      g_config_rtl_create_capture == 0 && !opts.iq_capture_requested, 1);
     rc |= expect_str("airspy rate starts toast", state.ui_msg, "Applied: Airspy setting");
     rc |= expect_int("airspy rate starts: the next drain", dsd_app_drain_cmds(&opts, &state), 0);
-    rc |= expect_str("airspy rate starts: capture toast", state.ui_msg,
-                     "I/Q capture stopped: the stream restarted; what was recorded is kept");
+    rc |= expect_str("airspy rate starts: capture toast", state.ui_msg, "Applied: Airspy setting; I/Q capture stopped");
 
     /* With no stream running (none to stop, so the restart keeps the capture on), a reopen whose start opened the
        capture and then failed has written the file anew: the rollback's log says so rather than claim it was kept, and
@@ -29527,8 +29526,9 @@ static const char k_restart_capture_toast[] = "I/Q capture stopped: the stream r
    used to start the stream again with the capture still requested, reopening its file for writing and emptying what
    it had recorded (reproduced over rtl_tcp: 8.9 MB down to 4.5 MB). The stop closes the file with what it recorded and
    the capture goes off for the rest of the session before the start: no start is handed it, the log names the file,
-   and the next drain shows the toast after the command's own. A restart whose start fails goes back to the input that
-   ran without the capture, and its rollback toast says the capture stopped. */
+   and the next drain puts "; I/Q capture stopped" on the end of the command's own toast, so both stay (the capture's
+   full toast when none is showing). A restart whose start fails goes back to the input that ran without the capture,
+   and its rollback toast says the capture stopped. */
 static int
 test_restart_stops_the_iq_capture(void) {
     static dsd_opts opts;
@@ -29564,11 +29564,27 @@ test_restart_stops_the_iq_capture(void) {
         rc |= expect_true(tag, strstr(g_capture_log, "I/Q capture stopped: the stream restarted") != NULL
                                    && strstr(g_capture_log, "reopening cap.iq") != NULL
                                    && strstr(g_capture_log, "which is kept") != NULL);
-        rc |= expect_true(tag, strstr(state.ui_msg, "I/Q capture") == NULL);
+        rc |= expect_true(tag, strstr(state.ui_msg, "I/Q capture") == NULL && state.ui_msg[0] != '\0');
+        /* The command's own answer stays, the capture's note on its end (as a rollback's), not replaced by it. */
+        char own[sizeof state.ui_msg];
+        DSD_SNPRINTF(own, sizeof own, "%s; I/Q capture stopped", state.ui_msg);
         rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 0);
-        rc |= expect_str(tag, state.ui_msg, k_restart_capture_toast);
+        rc |= expect_str(tag, state.ui_msg, own);
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 0);
+        rc |= expect_str(tag, state.ui_msg, own);
         end_running_radio(&state);
     }
+
+    /* With no toast of the command's showing, the capture's own says it in full. */
+    init_running_radio(&opts, &state, "rtl:0:851375000:22:0:48:0:2");
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+    rc |= expect_int("restart with no toast left", post_empty(DSD_APP_CMD_RTL_RESTART), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("restart with no toast left", dsd_app_drain_cmds(&opts, &state), 1);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("restart with no toast left", dsd_app_drain_cmds(&opts, &state), 0);
+    rc |= expect_str("restart with no toast left", state.ui_msg, k_restart_capture_toast);
+    end_running_radio(&state);
 
     /* The start fails once: the input that ran starts again, without the capture, and the rollback says so. */
     init_running_radio(&opts, &state, "rtl:0:851375000:22:0:48:0:2");
@@ -29621,6 +29637,42 @@ test_restart_stops_the_iq_capture(void) {
         rc |= expect_str(tag, state.ui_msg, k_failed[i].toast);
         rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 0);
         rc |= expect_str(tag, state.ui_msg, k_failed[i].toast);
+        end_running_radio(&state);
+    }
+    return rc;
+}
+
+/* Issue #743 B16 follow-through: a recovery whose caller has no toast of its own for a stopped capture (a scan-row gain
+   edit, a trunk-scan gain settle: they pass no report) used to say so only in the log. The drain now puts the note on
+   the end of the toast the caller left; a caller that takes the report says it itself, so no note is posted twice. */
+/* A toast as a command posts one: shown for 5 s from now. */
+static void
+ui_toast_for_test(dsd_state* state, const char* text) {
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", text);
+    dsd_state_toast_publish(state, dsd_realtime_time() + 5);
+}
+
+static int
+test_recovery_without_a_report_notes_the_capture(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int reported = 0; reported < 2; reported++) {
+        const char* tag = reported ? "recovery with a report" : "recovery without a report";
+        init_running_radio(&opts, &state, "rtl:0:851375000:22:0:48:0:2");
+        opts.iq_capture_requested = 1;
+        DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+        dsd_input_failure failure;
+        dsd_input_failure_get(&failure);
+        int stopped = 0;
+        rc |= expect_int(tag,
+                         svc_rtl_restart_recovery_locked(&opts, &state, 1, 1, &failure, reported ? &stopped : NULL), 0);
+        rc |= expect_int(tag, opts.iq_capture_requested, 0);
+        rc |= expect_int(tag, stopped, reported);
+        ui_toast_for_test(&state, "Refused: target gain -> 30");
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 0);
+        rc |= expect_str(tag, state.ui_msg,
+                         reported ? "Refused: target gain -> 30" : "Refused: target gain -> 30; I/Q capture stopped");
         end_running_radio(&state);
     }
     return rc;
@@ -31673,6 +31725,7 @@ main(void) {
     rc |= test_iq_stream_refuses_tuner_controls();
     rc |= test_iq_stream_refuses_signal_search();
     rc |= test_restart_stops_the_iq_capture();
+    rc |= test_recovery_without_a_report_notes_the_capture();
     rc |= test_same_source_restart_takes_a_stream_gap();
 #endif
     rc |= test_stale_notice_post_stays_in_its_session();
