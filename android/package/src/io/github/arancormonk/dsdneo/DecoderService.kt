@@ -462,17 +462,31 @@ class DecoderService : Service() {
      * [kind] is the attempt's failure kind for the record's "failureKind" (a wire value
      * android/run_status.h's attempt_failure_from_wire() reads), or "" when the message
      * alone says it.
+     *
+     * A start a user stop superseded while it was set up (#786) ends superseded instead, as one cancelled at a
+     * check point does: the user stopped, so its setup failure is no failure card.
      */
     private fun failStart(reason: String, userMessage: String, kind: String = "") {
         Log.e(TAG, reason)
         DsdNative.nativeHostDiagnostic(reason)
         // Released before IDLE, for the same reason as the engine thread does it.
         releaseWakeLock()
-        synchronized(lock) {
+        val supersededAttempt = synchronized(lock) {
             state = State.IDLE
+            if (userStoppedSinceExpectation()) {
+                terminalReason = DsdNative.RUN_CANCELLED
+                superseded = true
+                return@synchronized attemptId
+            }
             lastError = userMessage
             terminalReason = DsdNative.RUN_FAILED
             failureKind = kind
+            null
+        }
+        if (supersededAttempt != null) {
+            DsdNative.nativeHostDiagnostic(
+                "service: start attempt $supersededAttempt superseded by a user stop; its setup failure is not shown"
+            )
         }
         // No stopStatusPolling() here: leaveForeground() does it first thing, and it has
         // to, because stopIfIdle() reaches it by a path that does not come through here.

@@ -399,6 +399,50 @@ private fun roamSupersededJustBeforePublication() {
     supersededDuringConfigure(service, attempt, id, "before publication")
 }
 
+// A roam start's setup can still fail after the user's Stop superseded it (the destination's channel CSV is bad, its
+// receiver will not open): the user stopped, so the record says superseded with no failure, never a failure card. The
+// same failure of a roam start nobody stopped is still a failure.
+private fun roamSupersededThenSetupFails() {
+    val failing = newService()
+    val (held, heldIntent) = roamStart(failing, RTL)
+    DsdNative.configureCode = -3
+    val heldId = deliver(failing, heldIntent)
+    val failed = record()
+    check(
+        failed.optLong("attemptId") == held && !failed.optBoolean("superseded") &&
+            failed.optLong("reason") == DsdNative.RUN_FAILED.toLong() && failed.optString("lastError") != ""
+    ) { "a roam start nobody stopped still fails: $failed" }
+    endsQuietly(failing, heldId, "unsuperseded configure failure")
+
+    val configuring = newService()
+    val (attempt, intent) = roamStart(configuring, RTL)
+    DsdNative.configureCode = -3
+    DsdNative.configureHook = { DecoderService.stopDecoder(configuring) }
+    val id = deliver(configuring, intent)
+    neverRan("configure failure")
+    check(DsdNative.discards == 0) { "a configuration that failed left nothing to give up" }
+    supersededRecord(attempt, "configure failure")
+    check(DsdNative.diagnostics.any {
+        it.startsWith("service: start attempt $attempt superseded by a user stop; its setup failure is not shown")
+    }) { DsdNative.diagnostics }
+    var generation = DecoderService.userStopGeneration()
+    endsQuietly(configuring, id, "configure failure")
+    theQueuedStopFindsNothing(configuring, generation, "configure failure")
+
+    val taking = newService()
+    val (taken, takeIntent) = roamStart(taking, RTL)
+    UsbSourceManager.answer = {
+        DecoderService.stopDecoder(taking)
+        UsbSessionTake.failed(UsbSessionTake.USB_OPEN_FAILED, "open failed")
+    }
+    val takeId = deliver(taking, takeIntent)
+    check(DsdNative.configured.isEmpty()) { "a start whose receiver failed was configured" }
+    supersededRecord(taken, "receiver failure")
+    generation = DecoderService.userStopGeneration()
+    endsQuietly(taking, takeId, "receiver failure")
+    theQueuedStopFindsNothing(taking, generation, "receiver failure")
+}
+
 // The host cancels its roam (the user disabled roaming or chose a site) while the destination configures: the existing
 // retirement cancels it, and the record says retired, not superseded, since no user stop came.
 private fun roamRetiredBeforeCommit() {
@@ -512,6 +556,7 @@ fun main(args: Array<String>) {
         "roam_superseded_before_configure" to ::roamSupersededBeforeConfigure,
         "roam_superseded_during_configure" to ::roamSupersededDuringConfigure,
         "roam_superseded_before_publication" to ::roamSupersededJustBeforePublication,
+        "roam_superseded_then_setup_fails" to ::roamSupersededThenSetupFails,
         "roam_retired_before_commit" to ::roamRetiredBeforeCommit,
         "roam_unchanged_generation_runs" to ::roamWithAnUnchangedGenerationRuns,
         "start_status" to ::theStartStatusSaysWhetherItWasHandedOver

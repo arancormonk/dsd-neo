@@ -17136,7 +17136,9 @@ record alone (unreachable today: only the Qt host sends START, and it hands one 
 every earlier attempt retired; a second START sender would break that, and the host then settles such a start as
 superseded when its grace runs out, below); one that finds it IDLE opens a session of its own, so the record names the attempt), before configure (with the retirement checks, around the
 receiver take) and at the STARTING → RUNNING commit beside `cancelRequested`: a mismatch at the commit discards the
-configured session (`nativeDiscardConfigured()`) and starts no worker. Each ends the attempt cancelled with the record's
+configured session (`nativeDiscardConfigured()`) and starts no worker. A setup failure between them (`nativeInit()`,
+the receiver take, `nativeConfigure()`) checks the generation too in `failStart()`: a superseded start's failure is not
+published, the user stopped. Each ends the attempt cancelled with the record's
 `superseded` true, which `retireAttempts()` reports as taken (its record says how). When a retirement and a user
 stop both apply at a check, the attempt ends retired. Known limit (accepted): the notification's Stop and a Recents
 swipe are delivered on the main thread, which runs a whole START inside one `onStartCommand()`, so one pressed while a

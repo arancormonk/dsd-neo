@@ -324,7 +324,9 @@ earlier process left undelivered, which carries that process's token, runs nothi
 the new host's first start runs. The #786 cases send roaming STARTs that expect the user stop generation: a user Stop before
 the START is accepted (the service IDLE), during the receiver take, during `nativeConfigure()` and just before the worker
 would be published each ends the attempt unrun and `superseded` (a configured one discarded), and the Stop's own queued
-intent then finds nothing and is not counted again; a retirement during configure ends it retired, not superseded; an
+intent then finds nothing and is not counted again; a Stop during `nativeConfigure()` or the receiver take followed by
+that step failing ends `superseded` with no failure (`roam_superseded_then_setup_fails`), while the same failure with no
+Stop is still `RUN_FAILED`; a retirement during configure ends it retired, not superseded; an
 unchanged generation runs; a superseded START that finds the service still STOPPING is turned away with no busy
 failure on the running session's record, while an unsuperseded one is refused busy as before. The before-acceptance
 case also checks no `nativeInit`, no startup-diagnostics arm and no wake lock. `start_status` throws each refusal from
