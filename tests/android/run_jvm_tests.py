@@ -288,11 +288,25 @@ def stop_callers_carry_their_cause():
     for name, pattern, what in expected:
         if not re.search(pattern, texts.get(name, "")):
             return f"{APP_SOURCES / name}: {what}; expected /{pattern}/"
-    # Every stop intent the app sends is the user's: the Qt host's Stop listening and the notification's Stop action.
+    # Every stop intent the app sends names its cause: the notification's Stop action is the user's, and the Qt host's
+    # one sender passes the cause of its entry point, Stop listening the user's and a roaming switch's its own (#786).
     service = texts.get("DecoderService.kt", "")
-    senders = re.findall(r"\.setAction\(ACTION_STOP\)(\s*\.putExtra\(EXTRA_STOP_CAUSE, StopCause\.USER\.wire\))?", service)
-    if len(senders) != 2 or not all(senders):
-        return f"{APP_SOURCES / 'DecoderService.kt'}: both ACTION_STOP senders must put EXTRA_STOP_CAUSE = StopCause.USER.wire"
+    senders = re.findall(r"\.setAction\(ACTION_STOP\)(?:\s*\.putExtra\(EXTRA_STOP_CAUSE, ([\w.]+)\))?", service)
+    if sorted(senders) != ["StopCause.USER.wire", "cause.wire"]:
+        return (
+            f"{APP_SOURCES / 'DecoderService.kt'}: the ACTION_STOP senders must be the notification's "
+            f"(StopCause.USER.wire) and requestStop()'s (cause.wire); found {senders}"
+        )
+    entries = (
+        (r"fun stopDecoder\(context: Context\?\) = requestStop\(context, StopCause\.USER\)", "Stop listening is the user's"),
+        (
+            r"fun stopDecoderForSwitch\(context: Context\?\) = requestStop\(context, StopCause\.SWITCH\)",
+            "a roaming switch drains",
+        ),
+    )
+    for pattern, what in entries:
+        if not re.search(pattern, service):
+            return f"{APP_SOURCES / 'DecoderService.kt'}: {what}; expected /{pattern}/"
     return None
 
 

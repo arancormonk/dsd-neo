@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package io.github.arancormonk.dsdneo
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.NotificationManager
 import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -34,6 +36,22 @@ private fun hostStart(service: DecoderService, args: Array<String>): Pair<Long, 
     val attempt = nextAttempt++
     DecoderService.retireAttempts(attempt - 1)
     DecoderService.startDecoder(service, args, attempt)
+    return attempt to service.intents.remove()
+}
+
+/**
+ * #786: what the host's roaming start does: hostStart() with the user stop generation its transaction captured
+ * ([expected], by default the one now).
+ */
+private fun roamStart(
+    service: DecoderService,
+    args: Array<String>,
+    expected: Long = DecoderService.userStopGeneration()
+): Pair<Long, Intent> {
+    val attempt = nextAttempt++
+    DecoderService.retireAttempts(attempt - 1)
+    val status = DecoderService.startDecoder(service, args, attempt, expected)
+    check(status == DecoderService.START_HANDED_OVER) { "the roaming start was not handed over: $status" }
     return attempt to service.intents.remove()
 }
 
@@ -237,6 +255,211 @@ private fun anEarlierProcessStartIsRejected() {
     finish(host)
 }
 
+// #786: the record a start a user stop superseded leaves: its own attempt, ended cancelled with "superseded" set and
+// nothing to report as a failure, so the host follows it to Idle instead of showing a failure card or waiting out its
+// grace.
+private fun supersededRecord(attempt: Long, what: String) {
+    val superseded = record()
+    check(
+        superseded.optLong("attemptId") == attempt && superseded.optBoolean("superseded") &&
+            superseded.optLong("reason") == DsdNative.RUN_CANCELLED.toLong() &&
+            superseded.optString("lastError") == "" && superseded.optString("failureKind") == ""
+    ) { "$what: the attempt ends superseded: $superseded" }
+    check(DecoderService.retireAttempts(attempt)) { "$what: the host's retirement finds the attempt ended on its own" }
+}
+
+/**
+ * The stop the user's request queued on [stopped] arrives once the superseded start is done, at the instance the
+ * platform creates for it: nothing is left to stop, and its delivery is not counted again.
+ */
+private fun theQueuedStopFindsNothing(stopped: DecoderService, generation: Long, what: String) {
+    val intent = stopped.intents.remove()
+    check(stopped.intents.isEmpty()) { "$what: more than the user's Stop was queued" }
+    val service = DecoderService().also { it.onCreate() }
+    DsdNative.diagnostics.clear()
+    val id = deliver(service, intent)
+    check(DsdNative.stops.isEmpty()) { "$what: the queued Stop found a run: ${DsdNative.stops}" }
+    check(DecoderService.userStopGeneration() == generation) { "$what: the delivered Stop was counted twice" }
+    check(DsdNative.diagnostics.any { it.endsWith("cause=user state=IDLE: no run to cancel") }) { DsdNative.diagnostics }
+    endsQuietly(service, id, "$what, queued Stop")
+}
+
+// #786: the user stopped listening after the roaming transaction read the stop generation, and before the service
+// took its START (the service was IDLE, so the Stop had nothing to cancel). The START never configures anything.
+private fun roamSupersededBeforeAcceptance() {
+    val service = newService()
+    val generation = DecoderService.userStopGeneration()
+    val (attempt, intent) = roamStart(service, RTL, generation)
+    DecoderService.stopDecoder(service)
+    check(DecoderService.userStopGeneration() == generation + 1) { "a Stop while IDLE still moves the generation" }
+    val before = record()
+    val id = deliver(service, intent)
+    check(DsdNative.configured.isEmpty() && UsbSourceManager.takes.isEmpty()) { "a superseded START took the service" }
+    neverRan("superseded before acceptance")
+    check(record().optLong("sessionId") == before.optLong("sessionId") + 1) { "the attempt has a record of its own" }
+    supersededRecord(attempt, "before acceptance")
+    check(
+        "service: start attempt $attempt superseded by a user stop before it was accepted; nothing ran" in
+            DsdNative.diagnostics
+    ) { DsdNative.diagnostics }
+    endsQuietly(service, id, "before acceptance")
+    theQueuedStopFindsNothing(service, generation + 1, "before acceptance")
+}
+
+// The user's Stop lands while the service takes the start's receiver, before configuration: nothing is configured.
+private fun roamSupersededBeforeConfigure() {
+    val service = newService()
+    val (attempt, intent) = roamStart(service, RTL)
+    UsbSourceManager.answer = {
+        DecoderService.stopDecoder(service)
+        UsbSessionTake()
+    }
+    val id = deliver(service, intent)
+    check(UsbSourceManager.takes.toList() == listOf(UsbReceiverKind.RTL)) { "the receiver take is where the Stop lands" }
+    check(DsdNative.configured.isEmpty() && DsdNative.discards == 0) { "a superseded start was configured" }
+    supersededRecord(attempt, "before configure")
+    check("service: start attempt $attempt superseded by a user stop before configuration; cancelled" in DsdNative.diagnostics) {
+        DsdNative.diagnostics
+    }
+    val generation = DecoderService.userStopGeneration()
+    endsQuietly(service, id, "before configure")
+    theQueuedStopFindsNothing(service, generation, "before configure")
+}
+
+private fun supersededDuringConfigure(service: DecoderService, attempt: Long, id: Int, what: String) {
+    neverRan(what)
+    check(DsdNative.configured.size == 1 && DsdNative.discards == 1) { "$what: the configured session was not given up" }
+    check(DsdNative.stops.isEmpty()) { "$what: nothing was running to stop" }
+    supersededRecord(attempt, what)
+    check(DsdNative.diagnostics.any {
+        it.startsWith("service: start attempt $attempt superseded by a user stop during configuration; cancelled")
+    }) { DsdNative.diagnostics }
+    val generation = DecoderService.userStopGeneration()
+    endsQuietly(service, id, what)
+    theQueuedStopFindsNothing(service, generation, what)
+}
+
+// The user's Stop lands while nativeConfigure() runs: the service is STARTING, so the Stop is only counted and ordered
+// behind the start. The configured session is discarded at the RUNNING commit; its worker never starts.
+private fun roamSupersededDuringConfigure() {
+    val service = newService()
+    val (attempt, intent) = roamStart(service, RTL)
+    DsdNative.configureHook = {
+        DecoderService.stopDecoder(service)
+        check(DecoderService.stateName() == "STARTING") { "configuration runs while STARTING" }
+    }
+    val id = deliver(service, intent)
+    supersededDuringConfigure(service, attempt, id, "during configure")
+}
+
+// The user's Stop lands after nativeConfigure() returned, just before the worker would be published.
+private fun roamSupersededJustBeforePublication() {
+    val service = newService()
+    val (attempt, intent) = roamStart(service, RTL)
+    DsdNative.diagnosticHook = { line ->
+        if (line.startsWith("service: engine configuration returned")) {
+            DecoderService.stopDecoder(service)
+        }
+    }
+    val id = deliver(service, intent)
+    supersededDuringConfigure(service, attempt, id, "before publication")
+}
+
+// The host cancels its roam (the user disabled roaming or chose a site) while the destination configures: the existing
+// retirement cancels it, and the record says retired, not superseded, since no user stop came.
+private fun roamRetiredBeforeCommit() {
+    val service = newService()
+    val generation = DecoderService.userStopGeneration()
+    val (attempt, intent) = roamStart(service, RTL, generation)
+    DsdNative.configureHook = {
+        check(!DecoderService.retireAttempts(attempt)) { "a configuring roam start can still be cancelled" }
+    }
+    val id = deliver(service, intent)
+    neverRan("retired roam")
+    check(DsdNative.discards == 1) { "the retired roam's configuration was not given up" }
+    val cancelled = record()
+    check(
+        cancelled.optLong("attemptId") == attempt && !cancelled.optBoolean("superseded") &&
+            cancelled.optLong("reason") == DsdNative.RUN_CANCELLED.toLong()
+    ) { "a retired roam ends cancelled, not superseded: $cancelled" }
+    check(DsdNative.diagnostics.any { it.startsWith("service: start attempt $attempt retired during configuration") }) {
+        DsdNative.diagnostics
+    }
+    check(DecoderService.userStopGeneration() == generation) { "a retirement is no user stop" }
+    endsQuietly(service, id, "retired roam")
+}
+
+// A roam start whose generation still holds runs as any start does, and a superseded attempt before it leaves nothing
+// behind in its record. A user Stop after it published RUNNING stops the run, as for any run.
+private fun roamWithAnUnchangedGenerationRuns() {
+    val service = newService()
+    val (attempt, intent) = roamStart(service, RTL)
+    deliver(service, intent)
+    await(DsdNative.enteredRun)
+    check(DecoderService.stateName() == "RUNNING")
+    val running = record()
+    check(running.optLong("attemptId") == attempt && !running.optBoolean("superseded")) {
+        "the roam start runs, unsuperseded: $running"
+    }
+    DecoderService.stopDecoder(service)
+    check(DsdNative.stops == listOf(true)) { "a user Stop after the commit stops the run" }
+    check(DecoderService.stateName() == "STOPPING")
+    finish(service)
+    check(!record().optBoolean("superseded")) { "a run the user stopped was not superseded: ${record()}" }
+}
+
+// #786 B2: a START the platform refuses never reaches the service, and the host is told at once.
+private fun theStartStatusSaysWhetherItWasHandedOver() {
+    val service = newService()
+    check(DecoderService.startDecoder(service, RTL) == DecoderService.START_HANDED_OVER)
+    val manual = service.intents.remove()
+    check(manual.getLongExtra(DecoderService.EXTRA_EXPECTED_STOP_GENERATION, 0L) == DecoderService.NO_STOP_EXPECTATION) {
+        "a manual start carries no stop-generation expectation"
+    }
+    check(DecoderService.startDecoder(service, RTL, 0L, 7L) == DecoderService.START_HANDED_OVER)
+    check(service.intents.remove().getLongExtra(DecoderService.EXTRA_EXPECTED_STOP_GENERATION, 0L) == 7L) {
+        "a roaming start carries its expectation"
+    }
+    val sdk = Build.VERSION.SDK_INT
+    try {
+        Build.VERSION.SDK_INT = Build.VERSION_CODES.S
+        val refusals = listOf(
+            ForegroundServiceStartNotAllowedException("background") to DecoderService.START_NOT_ALLOWED,
+            IllegalStateException("not allowed") to DecoderService.START_ILLEGAL_STATE,
+            SecurityException("refused") to DecoderService.START_SECURITY,
+        )
+        for ((failure, expected) in refusals) {
+            service.dispatchFailure = failure
+            DsdNative.diagnostics.clear()
+            val status = DecoderService.startDecoder(service, RTL, 41L)
+            check(status == expected) { "${failure.javaClass.simpleName}: status $status, expected $expected" }
+            check("service: start attempt 41 could not be handed over (status $expected)" in DsdNative.diagnostics) {
+                DsdNative.diagnostics
+            }
+        }
+        service.dispatchFailure = null
+        service.dispatchReturnsNull = true
+        check(DecoderService.startDecoder(service, RTL, 42L) == DecoderService.START_NO_SERVICE) {
+            "a start no service received was not handed over"
+        }
+        service.dispatchReturnsNull = false
+    } finally {
+        Build.VERSION.SDK_INT = sdk
+        service.dispatchFailure = null
+        service.dispatchReturnsNull = false
+    }
+    check(service.intents.isEmpty()) { "a refused START was queued" }
+    check(
+        listOf(
+            DecoderService.START_NOT_ALLOWED,
+            DecoderService.START_ILLEGAL_STATE,
+            DecoderService.START_SECURITY,
+            DecoderService.START_NO_SERVICE
+        ).distinct().size == 4 && DecoderService.START_HANDED_OVER == 0
+    ) { "each refusal has a status of its own, and only a handed-over START is 0" }
+    service.onDestroy()
+}
+
 fun main(args: Array<String>) {
     val tests = linkedMapOf<String, () -> Unit>(
         "timeout_dismiss" to ::timeoutThenDismiss,
@@ -246,7 +469,14 @@ fun main(args: Array<String>) {
         "retire_before_publication" to ::retireJustBeforeWorkerPublication,
         "stale_idle_snapshot" to ::timeoutFromAnEarlierIdleSnapshot,
         "record" to ::theRecordNamesTheAttempt,
-        "earlier_process" to ::anEarlierProcessStartIsRejected
+        "earlier_process" to ::anEarlierProcessStartIsRejected,
+        "roam_superseded_before_acceptance" to ::roamSupersededBeforeAcceptance,
+        "roam_superseded_before_configure" to ::roamSupersededBeforeConfigure,
+        "roam_superseded_during_configure" to ::roamSupersededDuringConfigure,
+        "roam_superseded_before_publication" to ::roamSupersededJustBeforePublication,
+        "roam_retired_before_commit" to ::roamRetiredBeforeCommit,
+        "roam_unchanged_generation_runs" to ::roamWithAnUnchangedGenerationRuns,
+        "start_status" to ::theStartStatusSaysWhetherItWasHandedOver
     )
     for ((name, test) in tests) {
         if (args.isNotEmpty() && name !in args) continue

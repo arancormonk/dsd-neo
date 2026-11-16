@@ -56,11 +56,11 @@ expect_end_causes(void) {
     using namespace dsd_android;
     int rc = 0;
 
-    rc |=
-        expect("wire causes",
-               end_cause_from_wire("user") == kEndUser && end_cause_from_wire("detached") == kEndDetached
-                   && end_cause_from_wire("lifecycle") == kEndLifecycle && end_cause_from_wire("USER") == kEndLifecycle
-                   && end_cause_from_wire("") == kEndLifecycle && end_cause_from_wire(nullptr) == kEndLifecycle);
+    rc |= expect("wire causes",
+                 end_cause_from_wire("user") == kEndUser && end_cause_from_wire("detached") == kEndDetached
+                     && end_cause_from_wire("lifecycle") == kEndLifecycle
+                     && end_cause_from_wire("USER") == kEndLifecycle && end_cause_from_wire("") == kEndLifecycle
+                     && end_cause_from_wire(nullptr) == kEndLifecycle && end_cause_from_wire("switch") == kEndSwitch);
 
     // The user's Stop, then the reader's report of the unplug during cleanup: still the user's stop.
     RunStatus status = running_session(60);
@@ -107,6 +107,31 @@ expect_end_causes(void) {
     rc |= expect("a finished run takes no later cause", status.end_cause == kEndReceiverFailed);
     status.begin(65);
     rc |= expect("a new session starts with no ending", status.end_cause == kEndNone);
+    dsd_input_failure_clear();
+
+    // #786: a roaming switch, then the user's Stop during its drain: the user's. The user's Stop first stays the user's.
+    status = running_session(66);
+    note_stop_cause(status, kEndSwitch);
+    rc |= expect("a switch is its own ending", status.end_cause == kEndSwitch);
+    note_stop_cause(status, kEndUser);
+    rc |= expect("a Stop during a switch's drain is the user's", status.end_cause == kEndUser);
+    collect_run_result(status, 0, true);
+    rc |= expect("and its result keeps it", status.end_cause == kEndUser && status.reason == kRunCancelled);
+    status = running_session(67);
+    note_stop_cause(status, kEndUser);
+    note_stop_cause(status, kEndSwitch);
+    rc |= expect("a switch after the user's Stop stays the user's", status.end_cause == kEndUser);
+    // Only the user's Stop upgrades a switch: a detach or a committed receiver ending during its drain does not.
+    status = running_session(68);
+    note_stop_cause(status, kEndSwitch);
+    note_stop_cause(status, kEndDetached);
+    note_stop_cause(status, kEndLifecycle);
+    dsd_input_failure_commit_receiver_end();
+    note_receiver_fact(status);
+    rc |= expect("a switch stays a switch past a detach or an unplug", status.end_cause == kEndSwitch);
+    collect_run_result(status, 0, true);
+    note_stop_cause(status, kEndUser);
+    rc |= expect("a finished switch takes no later Stop", status.end_cause == kEndSwitch);
     dsd_input_failure_clear();
     return rc;
 }

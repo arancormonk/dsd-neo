@@ -60,6 +60,9 @@ open class Service : Context() {
     }
 }
 
+// API 31's refusal of a background foreground-service start, an IllegalStateException as on the platform.
+class ForegroundServiceStartNotAllowedException(message: String) : IllegalStateException(message)
+
 class Notification(val actions: List<Action> = emptyList()) {
     class Builder(context: Context, channel: String) {
         private val actions = mutableListOf<Action>()

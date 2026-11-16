@@ -20,7 +20,8 @@ enum RunEndCause {
     kEndUser = 1,           // StopCause.USER
     kEndDetached = 2,       // StopCause.DEVICE_DETACHED: the USB detach broadcast stopped it
     kEndReceiverFailed = 3, // the radio layer committed the receiver's ending (dsd_input_failure_receiver_ended())
-    kEndLifecycle = 4       // StopCause.LIFECYCLE, and any cause a stop did not name
+    kEndLifecycle = 4,      // StopCause.LIFECYCLE, and any cause a stop did not name
+    kEndSwitch = 5          // StopCause.SWITCH: GPS roaming ended the session to start a nearer site (#786)
 };
 
 /** The local receiver a session was configured with; rtl_tcp and every non-radio input are kReceiverNone. */
@@ -90,6 +91,9 @@ end_cause_from_wire(const char* wire) {
     }
     if (strcmp(wire, "detached") == 0) {
         return kEndDetached;
+    }
+    if (strcmp(wire, "switch") == 0) {
+        return kEndSwitch;
     }
     return kEndLifecycle;
 }
@@ -182,9 +186,16 @@ struct RunStatus {
  * nativeStop: latch the stop's @p cause before the exit flag is raised. A user Stop latched here wins over a receiver
  * ending the radio layer commits later (a stop and an unplug report can cross in rtl_device_end_for_receiver()), and
  * an ending committed earlier wins over the stop. The caller holds the lifecycle-status lock.
+ *
+ * The one upgrade (#786): a user Stop during a roaming switch's drain replaces the switch, as it also abandons the
+ * uploads the switch was draining, so the run reads as ended by the user. Nothing else replaces a latched cause.
  */
 inline void
 note_stop_cause(RunStatus& status, RunEndCause cause) {
+    if (cause == kEndUser && status.end_cause == kEndSwitch && status.reason == kRunPending) {
+        status.end_cause = kEndUser;
+        return;
+    }
     status.note_end(cause, dsd_input_failure_receiver_ended() != 0);
 }
 

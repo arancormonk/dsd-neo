@@ -286,8 +286,9 @@ kind the broker writes is one `android/local_device_state.h` maps (`refused` to 
 `ANDROID_ENGINE_STOP_JVM` (the `engine_stop` suite) runs `EngineStop.kt` with no stubs: only `StopCause.USER` hands
 `nativeStop` `userRequested = true` (abandoning pending rdio uploads), and a stop intent with a missing or unknown cause
 drains. Its source check first pins the cause every production caller passes: each `nativeStop` call goes through
-`EngineStop.request`, a USB detach and the Activity and service teardowns drain, and both `ACTION_STOP` senders (the Qt
-host's Stop listening and the notification's Stop action) say `USER`. A second source check reads `DsdNative.kt` against
+`EngineStop.request`, a USB detach and the Activity and service teardowns drain, and the two `ACTION_STOP` senders name
+their cause: the notification's Stop action says `USER`, and the Qt host's one sender passes its entry point's
+(`stopDecoder()` `USER`, `stopDecoderForSwitch()` `SWITCH`, #786). A second source check reads `DsdNative.kt` against
 `android/*.cpp` (the binding never compiles on the JVM): every `external fun` has its JNI definition, `nativeStop` takes
 the cause's wire value and latches it with its stop flag under the lifecycle-status lock, `nativeConfigure` clears that
 flag in the same block as the new run record (so a stop it discards leaves no cause), and `nativeInit` installs the
@@ -314,7 +315,16 @@ leaves it alone when the old START arrives; a retirement during `nativeConfigure
 published cancels the configured session (no run, one `nativeDiscardConfigured()`, a cancelled record); a retirement
 computed from an IDLE record the service has since left finds the run published and leaves it running; a START an
 earlier process left undelivered, which carries that process's token, runs nothing and leaves the attempt ids alone, so
-the new host's first start runs.
+the new host's first start runs. The #786 cases send roaming STARTs that expect the user stop generation: a user Stop before
+the START is accepted (the service IDLE), during the receiver take, during `nativeConfigure()` and just before the worker
+would be published each ends the attempt unrun and `superseded` (a configured one discarded), and the Stop's own queued
+intent then finds nothing and is not counted again; a retirement during configure ends it retired, not superseded; an
+unchanged generation runs. `start_status` throws each refusal from the context stub (`ForegroundServiceStartNotAllowedException`
+at API 31, `IllegalStateException`, `SecurityException`, no component) and checks the status `startDecoder()` returns.
+In `DecoderServiceStopTest.kt`, `switch_drain` checks a switch drains and is no user stop, and a user Stop during its drain
+abandons; `stop_generation` checks which requests move the generation (Stop listening while IDLE, RUNNING, STARTING and
+with no context, the notification's Stop, Recents) and which do not (deliveries of counted stops, switches, lifecycle and
+cause-less stops, the idle teardown).
 `DecoderServiceUsbTest.kt` (#782) scripts the USB broker's take (a stub `UsbSourceManager` in `ServiceNative.kt`): an
 RTL-SDR or Airspy start takes its receiver while STARTING and before configure, and its record names the connection;
 an rtl_tcp start takes none; a failed take ends the start before configure with its kind and text; a retirement before

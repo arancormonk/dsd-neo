@@ -542,7 +542,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static QString platformTakeRecordingShareFailure();
     /**
      * @brief DecoderService.startDecoder() with @p argv for start attempt @p attempt; returns why it could not be
-     * handed over, or empty.
+     * handed over (no context, the arguments, or the platform's refusal of the START, #786 B2), or empty.
      */
     static QString platformStartDecoder(const QStringList& argv, uint64_t attempt);
     /**

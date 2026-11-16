@@ -680,8 +680,10 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeStop(JNIEnv* env, jclass clazz
          * Under the lock with the cause, so nativeConfigure's reset keeps or drops both. */
         g_stop_requested.store(true);
     }
-    /* #718 D4: the user's Stop does not wait for the rdio upload backlog. Device detach and lifecycle teardowns pass
-     * false and drain, so a normal end still uploads its last calls. Takes no lock. */
+    /* #718 D4: the user's Stop does not wait for the rdio upload backlog. Device detach, lifecycle teardowns and a
+     * roaming switch (#786) pass false and drain, so a normal end still uploads its last calls. A user Stop that
+     * follows a drain already under way is a stop of its own and abandons what is left: the upgrade is this call
+     * (and note_stop_cause() names the user over a switch). Takes no lock. */
     if (user_requested == JNI_TRUE) {
         dsd_rdio_upload_cancel();
     }

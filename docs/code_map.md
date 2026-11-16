@@ -17015,6 +17015,27 @@ handed to) with its locked start/reject decision; the worker captures it under t
 with its session id, to `routeSessionEnd()`, so completion cannot read and stop a newer start. `ANDROID_ENGINE_STOP_JVM`
 now runs the actual service against a deferred-intent transport, a controlled native worker and platform stubs.
 
+Start status, roaming switch and stop generation (issue #786): `DecoderService.startDecoder(context, args, attempt,
+expectedStopGeneration)` returns an `Int` (B2): `START_HANDED_OVER` (0), or why the platform refused the START
+(`START_NOT_ALLOWED` for API 31's `ForegroundServiceStartNotAllowedException`, `START_ILLEGAL_STATE`,
+`START_SECURITY`, `START_NO_SERVICE` when no component took it); `platformStartDecoder()` reads it and returns a start
+error, so the failure card shows instead of a start grace running out. `stopDecoderForSwitch()` stops with
+`StopCause.SWITCH` (wire `switch`): it drains rdio uploads like the other causes the user did not ask for, and a user
+Stop during that drain is an ordinary repeated USER stop that abandons what is left (`note_stop_cause()` then names the
+user over the switch, `RunEndCause::kEndSwitch`; nothing else replaces a latched cause). `userStopGeneration()` counts
+user stop requests for the process: `stopDecoder()` (counted under the service lock as it asks, its intent carrying
+`EXTRA_USER_STOP_GENERATION` so the delivery is not counted again), the notification's Stop (counted on delivery) and
+`onTaskRemoved()`, in any state, IDLE included; a switch, a detach and a lifecycle stop never count. A START carries
+`EXTRA_EXPECTED_STOP_GENERATION` (`NO_STOP_EXPECTATION`, -1, for every manual start). The service compares it with the
+generation under its lock when it accepts the START (after the foreign, retired and busy checks; a mismatch still
+opens a session of its own, so the record names the attempt), before configure (with the retirement checks, around the
+receiver take) and at the STARTING → RUNNING commit beside `cancelRequested`: a mismatch at the commit discards the
+configured session (`nativeDiscardConfigured()`) and starts no worker. Each ends the attempt cancelled with the record's
+`superseded` true, which `retireAttempts()` reports as taken (its record says how). When a retirement and a user
+stop both apply at a check, the attempt ends retired. Tests: `ANDROID_ENGINE_STOP_JVM` (`DecoderServiceAttemptTest.kt` roam and
+`start_status` cases, `DecoderServiceStopTest.kt` `switch_drain` and `stop_generation`, `EngineStopTest.kt`),
+`IO_RTL_RUN_RESULT` (switch causes), `ANDROID_R8` (the four-argument `startDecoder` descriptor).
+
 Session end and the notification (issue #782): `stopSelf()` makes ActiveServices (`bringDownServiceLocked()`) cancel the
 foreground notification and only then schedule `onDestroy()` on the main looper, so a status tick queued in between that
 called `notify()` posted an ordinary ongoing "Stopping…" that nothing removed. The cancel itself is asynchronous:

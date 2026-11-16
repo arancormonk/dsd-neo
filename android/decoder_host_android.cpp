@@ -599,11 +599,17 @@ DecoderHostAndroid::platformStartDecoder(const QStringList& argv, uint64_t attem
         return QStringLiteral("Could not marshal arguments");
     }
 
-    // Must match DecoderService.kt: @JvmStatic fun startDecoder(context: Context, args: Array<String>, attempt: Long)
-    QJniObject::callStaticMethod<void>(kServiceClass, "startDecoder",
-                                       "(Landroid/content/Context;[Ljava/lang/String;J)V", context.object(), args,
-                                       static_cast<jlong>(attempt));
+    // Must match DecoderService.kt: @JvmStatic fun startDecoder(context: Context, args: Array<String>, attempt: Long,
+    // expectedStopGeneration: Long): Int. -1 is NO_STOP_EXPECTATION: a manual start. The status is START_HANDED_OVER
+    // (0) or why Android refused the START (#786 B2); a refused one never reaches the service.
+    const jint handed = QJniObject::callStaticMethod<jint>(
+        kServiceClass, "startDecoder", "(Landroid/content/Context;[Ljava/lang/String;JJ)I", context.object(), args,
+        static_cast<jlong>(attempt), static_cast<jlong>(-1));
+    const bool threw = env.checkAndClearExceptions();
     env->DeleteLocalRef(args);
+    if (threw || handed != 0) {
+        return QStringLiteral("Android did not let DSD-neo start listening (status %1)").arg(threw ? -1 : handed);
+    }
     return {};
 }
 

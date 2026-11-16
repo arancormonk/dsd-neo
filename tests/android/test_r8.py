@@ -14,8 +14,9 @@ import check_android_r8 as r8
 
 DEX_XML = """<api><package name="io.github.arancormonk.dsdneo">
 <class name="DecoderService">
-  <method name="startDecoder" return="void" static="true" native="false">
+  <method name="startDecoder" return="int" static="true" native="false">
     <parameter type="android.content.Context"/><parameter type="java.lang.String[]"/><parameter type="long"/>
+    <parameter type="long"/>
   </method>
   <method name="lifecycleStatus" return="java.lang.String" static="true" native="false"/>
 </class>
@@ -60,7 +61,7 @@ def kept_static_methods(class_name):
 
 
 START = (r8.APP_PACKAGE + "DecoderService", "startDecoder",
-         "(Landroid/content/Context;[Ljava/lang/String;J)V")
+         "(Landroid/content/Context;[Ljava/lang/String;JJ)I")
 NATIVE = (r8.APP_PACKAGE + "DsdNative", "nativeRun")
 # The app hands Qt a new display density through Qt's own registered native (display size).
 QT_DENSITY = (r8.QT_PACKAGE + "QtDisplayManager", "handleScreenDensityChanged", "(D)V")
