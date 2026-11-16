@@ -359,6 +359,28 @@ Item {
             sheet.sessionState = 2
             verify(pin.visible && pin.enabled, "offered while a session runs")
         }
+        // #786: each row's actions name their site for a screen reader (the
+        // same words on screen for every row); the site alone, no distance.
+        function test_row_actions_name_their_site() {
+            prefs.setLocationFix(41.1, -91, Date.now(), 100)
+            waitForRendering(sheet)
+            var edit = findChild(sheet, "siteEdit0"), avoid = findChild(sheet, "siteAvoid0")
+            verify(edit !== null && avoid !== null)
+            compare(edit.text, "Edit site")
+            compare(edit.Accessible.name, "Edit North")
+            compare(findChild(sheet, "siteEdit1").Accessible.name, "Edit South")
+            compare(avoid.text, "Avoid site")
+            compare(avoid.Accessible.name, "Avoid North")
+            compare(findChild(sheet, "siteAvoid1").Accessible.name, "Avoid South")
+            sheet.sessionState = 2
+            var north = findChild(sheet, "siteSwitch0"), south = findChild(sheet, "siteSwitch1")
+            verify(north !== null && south !== null && north.visible)
+            compare(north.text, "Stop and switch")
+            compare(north.Accessible.name, "Stop and switch to North")
+            compare(south.Accessible.name, "Stop and switch to South")
+            verify(findChild(sheet, "sitePin0").accessibleName !== findChild(sheet, "sitePin1").accessibleName,
+                   "the pins name theirs too")
+        }
         // Without RadioReference in this build there is no update to offer: no button (so no Tab stop), and the
         // note does not send the user to one.
         function test_no_coordinates_without_radioreference() {

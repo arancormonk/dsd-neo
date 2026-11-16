@@ -688,9 +688,13 @@ ModalSheet {
                 font.pixelSize: Theme.fontSize(14)
                 color: Theme.textSecondary
             }
+            // A screen reader hears which site each row's actions are for
+            // (#786); the name alone, never the moving distance.
             OutlineButton {
+                objectName: "siteEdit" + siteRow.row
                 width: parent.width
                 text: qsTr("Edit site")
+                accessibleName: qsTr("Edit %1").arg(siteRow.name)
                 visible: sheet.sessionState === 0
                 onClicked: {
                     sheet.userAction();
@@ -725,6 +729,7 @@ ModalSheet {
             PlexToggle {
                 objectName: "siteAvoid" + siteRow.row
                 text: qsTr("Avoid site")
+                Accessible.name: qsTr("Avoid %1").arg(siteRow.name)
                 checked: !!siteRow.site.avoidSite
                 // Shows what is saved, also when the save failed.
                 onToggled: {
@@ -744,8 +749,10 @@ ModalSheet {
                 color: Theme.alert
             }
             OutlineButton {
+                objectName: "siteSwitch" + siteRow.row
                 width: parent.width
                 text: qsTr("Stop and switch")
+                accessibleName: qsTr("Stop and switch to %1").arg(siteRow.name)
                 visible: sheet.sessionState === 2
                 enabled: !siteRow.site.avoidSite
                 onClicked: sheet.stopAndSwitch(siteRow.row)
