@@ -1906,13 +1906,72 @@ test_every_error_has_text() {
             g_failures++;
         }
     }
-    expect("the last error value is TETRA where it cannot decode",
-           dsd_qt::SessionArgsErrorLast == SessionArgsError::TetraRate);
+    expect("the last error value is an I/Q stream in the extra options",
+           dsd_qt::SessionArgsErrorLast == SessionArgsError::IqStreamExtra);
     expect("a value past the last one has no text",
            dsd_qt::session_args_error_text(static_cast<SessionArgsError>(last + 1)).isEmpty());
 }
 
 } // namespace
+
+/* Issue #743 (D4 a): extra options that pick an I/Q stream input are refused with their own reason, whichever source
+   the system saves: every check before the extras judges that saved source (its frequency, TETRA's bandwidth, -T and
+   --auto-ppm the stream refuses), so the start would be judged, or die, as the wrong input. Both kinds, both spellings
+   of -i, a system's own and the app-wide extras; another -i is not this refusal, nor is a spec that is an option's
+   value rather than -i's. The start screen shows the reason. */
+static void
+test_iq_stream_extra_refused() {
+    static const char* const k_extras[] = {
+        "-i iqtcp:127.0.0.1:1234:240k:cs16",
+        "-iiqudp:0.0.0.0:7355:48k:cu8",
+        "-f1 -i iqudp:0.0.0.0:7355:48k:cu8:426.7M",
+    };
+    for (const char* extra : k_extras) {
+        auto sys = usb_system();
+        sys["extraArgs"] = QString::fromLatin1(extra);
+        SessionArgsError error = SessionArgsError::None;
+        expect(extra, session_args_build(sys, SessionArgPrefs(), &error).isEmpty()
+                          && error == SessionArgsError::IqStreamExtra);
+        SessionArgPrefs prefs;
+        prefs.extraArgs = QString::fromLatin1(extra);
+        sys.remove("extraArgs");
+        error = SessionArgsError::None;
+        expect("app-wide extras",
+               session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::IqStreamExtra);
+    }
+    auto network = usb_system();
+    network["sourceType"] = "tcp";
+    network["host"] = "127.0.0.1";
+    network["port"] = 7355;
+    network["extraArgs"] = "-i iqtcp:127.0.0.1:1234:240k:cs16";
+    SessionArgsError error = SessionArgsError::None;
+    expect("a network system's extras", session_args_build(network, SessionArgPrefs(), &error).isEmpty()
+                                            && error == SessionArgsError::IqStreamExtra);
+
+    auto sys = usb_system();
+    sys["extraArgs"] = "-i rtl:0:851.375M";
+    error = SessionArgsError::None;
+    (void)session_args_build(sys, SessionArgPrefs(), &error);
+    expect("another -i is not refused as a stream", error != SessionArgsError::IqStreamExtra);
+    sys["extraArgs"] = "-w iqtcp:capture.wav";
+    error = SessionArgsError::None;
+    (void)session_args_build(sys, SessionArgPrefs(), &error);
+    expect("an option's value is no -i", error != SessionArgsError::IqStreamExtra);
+
+    expect("the reason says what to do",
+           dsd_qt::session_args_error_text(SessionArgsError::IqStreamExtra)
+               == QStringLiteral("An I/Q stream input is not available from saved systems yet. Run dsd-neo from the "
+                                 "command line, or remove the -i option from the extra decoder arguments."));
+    dsd_qt::AppPrefs appPrefs;
+    appPrefs.setExtraArgs(QStringLiteral("-i iqtcp:127.0.0.1:1234:240k:cs16"));
+    const dsd_qt::SessionArgsBuilder builder(&appPrefs);
+    const auto result = builder.build(usb_system());
+    expect("the builder names the refusal for the start screen",
+           !result.value("ok").toBool() && result.value("error").toString() == QStringLiteral("iq-stream-extra")
+               && result.value("errorText").toString()
+                      == dsd_qt::session_args_error_text(SessionArgsError::IqStreamExtra));
+    appPrefs.setExtraArgs(QString());
+}
 
 static void
 test_radio_settings_args() {
@@ -2390,6 +2449,7 @@ main(int argc, char** argv) {
     test_past_int_range();
     test_explore_system();
     test_radio_settings_args();
+    test_iq_stream_extra_refused();
     test_grouped_hex_keys();
     test_scan_lists_argv();
     test_scan_join_conflict();

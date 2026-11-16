@@ -6784,6 +6784,8 @@ class Setup : public QObject {
         metrics[QStringLiteral("radioInput")] = true;
         // Whether the input in force is an I/Q replay (issue #575): live input at rest, so tuning stays offered.
         metrics[QStringLiteral("replayInput")] = false;
+        // Whether DSD-neo tunes the radio (issue #743): a live tuner at rest; an I/Q replay or stream is not.
+        metrics[QStringLiteral("tunable")] = true;
         metrics[QStringLiteral("streamActive")] = false;
         metrics[QStringLiteral("snrValid")] = false;
         metrics[QStringLiteral("snrDb")] = 0.0;

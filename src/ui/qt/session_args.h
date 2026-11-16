@@ -153,12 +153,15 @@ enum class SessionArgsError {
     CallRecordingNoStorage,
     /* Issue #803: a TETRA system (-fT) on a radio whose DSP bandwidth is not a TETRA rate
        (session_args_tetra_runs_on()). */
-    TetraRate
+    TetraRate,
+    /* Issue #743 (D4 a): extra options that pick an I/Q stream input (-i iqtcp:... / -i iqudp:...). Every check before
+       the extras describes the saved source, so a start would be judged, and argued, as that source. */
+    IqStreamExtra
 };
 
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
-constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::TetraRate;
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::IqStreamExtra;
 
 /**
  * @brief Why the extra options @p tokens conflict with the app's call recording (issue #708), or None.

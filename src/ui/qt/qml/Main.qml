@@ -1776,7 +1776,8 @@ Window {
                 mainRoot.startError = qsTr("The session contains a prohibited extra option or grouped short options. Remove prohibited options and write each short option separately.");
             } else if (built.error === "am-needs-radio") {
                 mainRoot.startError = qsTr("“%1” decodes AM, which needs a radio source: network and file audio arrives already demodulated. Edit the source to correct it.").arg(sys.name);
-            } else if (built.error === "call-recording-option" || built.error === "call-recording-static-wav") {
+            } else if (built.error === "call-recording-option" || built.error === "call-recording-static-wav"
+                       || built.error === "iq-stream-extra") {
                 mainRoot.startError = built.errorText;
             } else if (built.error === "recording-missing") {
                 mainRoot.startError = qsTr("The recording for “%1” is missing. Edit the system and choose its recording again.").arg(sys.name);

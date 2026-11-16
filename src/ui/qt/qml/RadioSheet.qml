@@ -88,6 +88,10 @@ ModalSheet {
 
     // What each control steps from and displays.
     readonly property bool airspyActive: metrics.airspy !== undefined && metrics.airspy.gain_mode !== undefined
+    // A radio input DSD-neo cannot tune has no tuner rows (issue #743): an I/Q
+    // replay plays what was recorded, and an I/Q stream's sending program runs
+    // its radio. The engine refuses each of those controls there too.
+    readonly property bool fixedInput: metrics.replayInput === true || (metrics.radioInput === true && metrics.tunable === false)
     // Under --trunk-scan a target can carry its own rtl_gain. While it is on air the
     // reading is the target's, and the buttons edit the configured gain beneath it,
     // the one every other target runs and the scan restores at each switch.
@@ -665,7 +669,7 @@ ModalSheet {
     AirspyControls {
         objectName: "radioAirspy"
         width: parent.width
-        visible: sheet.airspyActive
+        visible: sheet.airspyActive && !sheet.fixedInput
         // The device's own settings, gain stages included: held while "This
         // channel" is chosen, as the scope note leaves the defaults alone.
         enabled: !sheet.rowScope
@@ -675,8 +679,20 @@ ModalSheet {
                 commands.setAirspy(key, value);
         }
     }
+    // Where the gain and PPM rows would be, why there are none.
+    ReadableText {
+        objectName: "radioTunerNote"
+        visible: sheet.fixedInput
+        width: parent.width
+        wrapMode: Text.WordWrap
+        text: metrics.replayInput === true ? qsTr("An I/Q replay has no tuner controls: it plays what was recorded.")
+                                           : qsTr("An I/Q stream has no tuner controls: adjust the radio in the sending program.")
+        color: Theme.textSecondary
+        font.pixelSize: Theme.fontSize(12)
+    }
     Column {
-        visible: !sheet.airspyActive
+        objectName: "radioGainRows"
+        visible: !sheet.airspyActive && !sheet.fixedInput
         width: parent.width
         spacing: 8
         ReadableText {
@@ -929,7 +945,8 @@ ModalSheet {
     }
 
     Column {
-        visible: !sheet.airspyActive
+        objectName: "radioPpmRows"
+        visible: !sheet.airspyActive && !sheet.fixedInput
         width: parent.width
         spacing: 8
         ReadableText {

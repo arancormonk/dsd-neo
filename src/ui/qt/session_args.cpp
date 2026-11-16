@@ -97,9 +97,11 @@ long_option_tokens(const QStringList& split, QStringList* options) {
     return rest;
 }
 
-/* option_tokens()' second pass: getopt's reading of @p rest, its options appended to @p options. */
+/* option_tokens()' second pass: getopt's reading of @p rest, its options appended to @p options, and with @p values the
+   values getopt hands option @p wanted, in order. */
 void
-short_option_tokens(const QStringList& rest, QStringList* options) {
+short_option_tokens(const QStringList& rest, QStringList* options, QChar wanted = QChar(),
+                    QStringList* values = nullptr) {
     for (qsizetype i = 0; i < rest.size(); ++i) {
         const QString& token = rest.at(i);
         if (token == QLatin1String("--")) {
@@ -119,7 +121,11 @@ short_option_tokens(const QStringList& rest, QStringList* options) {
             }
             options->append(QLatin1Char('-') + letter);
             if (short_takes_value(letter)) {
-                if (at + 1 == token.size()) {
+                const bool separate = at + 1 == token.size();
+                if (values != nullptr && letter == wanted && (!separate || i + 1 < rest.size())) {
+                    values->append(separate ? rest.at(i + 1) : token.mid(at + 1));
+                }
+                if (separate) {
                     ++i;
                 }
                 break;
@@ -150,6 +156,20 @@ option_tokens(const QString& tokens) {
     const QStringList rest = long_option_tokens(split, &options);
     short_option_tokens(rest, &options);
     return options;
+}
+
+/* Whether the extra options @p tokens pick an I/Q stream input (issue #743): an -i the decoder reads whose value is an
+   iqtcp: or iqudp: spec, read as option_tokens() reads the options. */
+bool
+extra_names_iq_stream(const QString& tokens) {
+    const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    QStringList options;
+    QStringList inputs;
+    short_option_tokens(long_option_tokens(split, &options), &options, QLatin1Char('i'), &inputs);
+    return std::any_of(inputs.cbegin(), inputs.cend(), [](const QString& input) {
+        const QByteArray spec = input.toUtf8();
+        return dsd_opts_audio_in_dev_is_iq_stream_spec(spec.constData()) != 0;
+    });
 }
 
 /** @brief Whether @p token is the long option @p name, alone or in its "=value" form. */
@@ -854,6 +874,8 @@ constexpr SessionArgsErrorText k_error_texts[] = {
      "arguments to listen without recording."},
     {SessionArgsError::TetraRate, "TETRA needs a bandwidth of 72 kHz: no other bandwidth decodes it. Set the bandwidth "
                                   "to 72 kHz, or choose another decode mode."},
+    {SessionArgsError::IqStreamExtra, "An I/Q stream input is not available from saved systems yet. Run dsd-neo from "
+                                      "the command line, or remove the -i option from the extra decoder arguments."},
 };
 
 constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
@@ -1158,11 +1180,15 @@ session_args_source_error(const QVariantMap& system, const QString& sourceType, 
                : SessionArgsError::None;
 }
 
-/* What the extra options refuse: one that could reveal keys (WP-F5), then a call recording option (issue #708). */
+/* What the extra options refuse: one that could reveal keys (WP-F5), an I/Q stream input, which every check before the
+   extras would judge as the saved source (issue #743, D4), then a call recording option (issue #708). */
 static SessionArgsError
 session_args_extra_error(const QString& tokens, const SessionArgPrefs& prefs) {
     if (!session_args_extra_safe(tokens)) {
         return SessionArgsError::UnsafeOption;
+    }
+    if (extra_names_iq_stream(tokens)) {
+        return SessionArgsError::IqStreamExtra;
     }
     return session_args_recording_extra_error(tokens, prefs.recordCalls, prefs.recordingUnavailable);
 }
@@ -1342,6 +1368,7 @@ error_category(SessionArgsError error) {
            : error == SessionArgsError::CallRecordingOption || error == SessionArgsError::CallRecordingNoStorage
                ? QStringLiteral("call-recording-option")
            : error == SessionArgsError::CallRecordingStaticWav ? QStringLiteral("call-recording-static-wav")
+           : error == SessionArgsError::IqStreamExtra          ? QStringLiteral("iq-stream-extra")
            : error == SessionArgsError::None                   ? QString()
                                                                : QStringLiteral("encryption");
 }

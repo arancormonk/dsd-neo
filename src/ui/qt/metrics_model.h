@@ -205,6 +205,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool tunerControlled READ tunerControlled NOTIFY controlChanged)
     /* Issue #575: an I/Q replay refuses every tune, as an owner of the tuner does; it rides the same group. */
     Q_PROPERTY(bool replayInput READ replayInput NOTIFY controlChanged)
+    /* Issue #743: whether DSD-neo can tune the radio feeding it; an I/Q replay or stream cannot. Same group. */
+    Q_PROPERTY(bool tunable READ tunable NOTIFY controlChanged)
     Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
     Q_PROPERTY(bool scannerMode READ scannerMode NOTIFY controlChanged)
     Q_PROPERTY(bool optionsKnown READ optionsKnown NOTIFY controlChanged)
@@ -918,6 +920,18 @@ class MetricsModel : public QObject {
     bool
     replayInput() const {
         return m_view.replay_input;
+    }
+
+    /**
+     * @brief Whether DSD-neo can tune the radio that feeds the session (issue #743): a live RTL-SDR, rtl_tcp, SoapySDR
+     * or Airspy input. False on a radio input with fixed tuning, an I/Q replay (replayInput()) or an I/Q stream, whose
+     * sending program picks the channel, and on audio input. Read through the predicate app-control refuses every tuner
+     * command on (dsd_opts_radio_can_tune()), from the same options snapshot as radioInput(), so a view that hides its
+     * tuner controls while radioInput() && !tunable() never offers one the command queue turns down.
+     */
+    bool
+    tunable() const {
+        return m_view.tunable;
     }
 
     /**
@@ -2467,6 +2481,7 @@ class MetricsModel : public QObject {
         bool audio_muted = false;
         bool tuner_controlled = false;
         bool replay_input = false;
+        bool tunable = false;
         bool trunking_enabled = false;
         bool scanner_mode = false;
         bool options_known = false;
@@ -2707,12 +2722,17 @@ class MetricsModel : public QObject {
         bool
         controlEquals(const View& other) const {
             return receive_status == other.receive_status && audio_muted == other.audio_muted
-                   && held_tg == other.held_tg && enc_lockout_count == other.enc_lockout_count
-                   && tuner_controlled == other.tuner_controlled && replay_input == other.replay_input
+                   && held_tg == other.held_tg && enc_lockout_count == other.enc_lockout_count && inputKindEquals(other)
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
                    && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
                    && decryptionEquals(other) && radioControlsEqual(other) && tgLockoutsEqual(other)
                    && relaxedCrcEquals(other);
+        }
+
+        bool
+        inputKindEquals(const View& other) const {
+            return tuner_controlled == other.tuner_controlled && replay_input == other.replay_input
+                   && tunable == other.tunable;
         }
 
         bool
