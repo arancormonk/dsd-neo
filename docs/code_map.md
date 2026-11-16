@@ -790,10 +790,11 @@ Generated (do not edit/commit):
       whose sync the decoder accepts but that carry no check of their own, so a key-up just after a quiet reading
       waits for its first verdict: dPMR FS1, FS3 and FS4 (`dpmr_confirm_note_unchecked_frame()` from
       `dsd_dispatch_handle_dpmr()`, 320 ms) and an M17 packet frame before the end-of-transmission frame whose CRC
-      covers the packet (`m17_confirm_note_unchecked_frame()`, 80 ms). The runtime
-      wrapper returns on one load with the setting off, before any owner lookup, and the engine's note makes no scan
-      owner. The notes feed the quiet check alone: CRC provenance flags, history, events, Signal search evidence and
-      the trunk scan's allowed activity are unchanged.
+      covers the packet (`m17_confirm_note_unchecked_frame()`, 80 ms). Whatever the setting, the runtime wrapper
+      first stores the note for the -Y frame-boundary step (up to three plain stores: `scan_y_content_seq` for PROVEN,
+      `scan_y_partial_seq` and `scan_y_partial_hold_ms` for PARTIAL); with the setting off it then returns on one load,
+      before any owner lookup, and the engine's note makes no scan owner. The notes feed the quiet check alone: CRC
+      provenance flags, history, events, Signal search evidence and the trunk scan's allowed activity are unchanged.
     - A sync awaiting its verdict (`dsd_engine_scan_owner::frame_pending`, `frame_evidence`, `frame_hold_ms`,
       `pending_until_m`): `live_scanner_frame_sync()` sets `frame_pending` for a returned sync
       (`dsd_engine_scan_quiet_note_frame_sync()`), and the frame's end (`dsd_engine_scan_quiet_frame_end()`, after
@@ -4899,12 +4900,13 @@ only with the setting on, once per 300 symbols. NONE with nothing installed.
 `content_evidence` (`dsd_frame_sync_hook_content_evidence()`, #834 D8) is how protocol code tells the scan quiet check
 what its CRC/FEC gate made of the frame being decoded (`DSD_CONTENT_EVIDENCE_PROVEN`, or `DSD_CONTENT_EVIDENCE_PARTIAL`
 with the protocol's hold for the frame that completes it; the sites are in the Engine section's scan quiet check). The
-wrapper takes `opts` and returns on one load with `opts->scan_skip_silent` off (or `opts` NULL), before any owner
-lookup, so the protocol confirm modules that report it take `opts` too (`nxdn_confirm_end_frame()`,
-`dpmr_confirm_end_frame()`, `m17_confirm_note_evidence()`, `dstar_confirm_note_evidence()`,
-`dstar_confirm_end_frame()`, `dmr_confidence_note_voice_burst()`, `dmr_confidence_note_data_burst()`; NULL is no
-check). The engine installs `dsd_engine_scan_quiet_note_evidence()`, which makes no scan owner. A no-op with nothing
-installed.
+wrapper first stores the note for the -Y frame-boundary step whatever the setting (up to three plain stores per frame,
+`dsd_state::scan_y_content_seq`, `scan_y_partial_seq`, `scan_y_partial_hold_ms`), then takes `opts` and returns on one
+load with `opts->scan_skip_silent` off (or `opts` NULL), before any owner lookup, so the protocol confirm modules that
+report it take `opts` too (`nxdn_confirm_end_frame()`, `dpmr_confirm_end_frame()`, `m17_confirm_note_evidence()`,
+`dstar_confirm_note_evidence()`, `dstar_confirm_end_frame()`, `dmr_confidence_note_voice_burst()`,
+`dmr_confidence_note_data_burst()`; NULL is no check). The engine installs `dsd_engine_scan_quiet_note_evidence()`,
+which makes no scan owner. A no-op with nothing installed.
 `analog_call_block` hands the engine's NFM call every processed conventional monitor block as a `dsd_analog_call_block`
 descriptor (issues #756, #668; see `dsd_symbol.c` in the DSP section), borrowed for the synchronous call.
 

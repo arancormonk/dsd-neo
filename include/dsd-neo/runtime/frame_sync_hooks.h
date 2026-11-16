@@ -185,14 +185,16 @@ int dsd_frame_sync_hook_scan_quiet_service(const dsd_opts* opts, dsd_state* stat
 /**
  * Protocol code reports what its CRC/FEC gate made of the frame being decoded (issue #834): @p level
  * DSD_CONTENT_EVIDENCE_PROVEN for content that passed the gate, or DSD_CONTENT_EVIDENCE_PARTIAL with @p hold_ms, the
- * protocol's bound for the later frame that completes it. A PROVEN note, whatever the setting, moves
- * dsd_state::scan_y_content_seq, the checked content a -Y row's frame-boundary step reads; that one store is all of it
- * with the setting off. Beyond that only a scan quiet check hears it: PROVEN is activity that ends the
- * visit's check, and PARTIAL holds a quiet result back until the verdict or the hold's end. It moves no hold, other
- * activity stamp, CRC flag, history or event, and reaches no Signal search (which hears
- * dsd_signal_search_note_evidence()). With the skip-silent setting off (or @p opts NULL) it is that store and one load
- * and nothing else, making no scan owner; a no-op beyond the store when nothing is installed. Decoder thread, inside
- * the frame's decode.
+ * protocol's bound for the later frame that completes it. Whatever the setting, the note is stored for a -Y row's
+ * frame-boundary step: a PROVEN note moves dsd_state::scan_y_content_seq, the checked content that step reads, and a
+ * PARTIAL one moves dsd_state::scan_y_partial_seq and raises dsd_state::scan_y_partial_hold_ms to @p hold_ms, the
+ * verdict still open that the step waits out. With the setting off those stores (up to three) are all of it. Beyond
+ * that only a scan quiet check hears it: PROVEN is activity that ends the visit's check, and PARTIAL holds a quiet
+ * result back until the verdict or the hold's end. It moves no hold, other activity stamp, CRC flag, history or
+ * event, and reaches no Signal search (which hears dsd_signal_search_note_evidence()). With the skip-silent setting
+ * off (or @p opts NULL) it is those stores and one load and nothing else: no clock read, no scan owner looked up or
+ * made, no hook called; nothing beyond the stores when nothing is installed. Decoder thread, inside the frame's
+ * decode.
  */
 void dsd_frame_sync_hook_content_evidence(const dsd_opts* opts, dsd_state* state, int level, uint32_t hold_ms);
 
