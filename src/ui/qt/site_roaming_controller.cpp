@@ -1241,6 +1241,11 @@ SiteRoaming::systemName() const {
     return rows.isEmpty() ? QString() : site_group_title(m_systems->get(rows.first().toInt()));
 }
 
+QString
+SiteRoaming::globalExtraArgsText() const {
+    return tr(kReasonTexts[GlobalExtraArgs]);
+}
+
 SiteRoaming::Action
 SiteRoaming::action() const {
     switch (m_view.reason) {

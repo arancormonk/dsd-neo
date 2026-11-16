@@ -14862,7 +14862,7 @@ Qt Quick frontend (`src/ui/qt`):
   `statusText` (the sentence), `headerText` / `headerShortText` (the Monitor line, "WAITING FOR CALL END · GPS ROAMING"
   / "WAITING"; a session's wait for its first fix reads "LOCATING · GPS ROAMING" / "LOCATING" for up to 60 s from its
   first wait, and only a fix lost later, or none in that minute, reads "PAUSED: NO FIX"), `systemName` (the group's card
-  title). The UI
+  title) and `globalExtraArgsText` (the chooser's reason the switch cannot go on with extra options in Settings). The UI
   (all hidden while `available` is false): the site chooser's "GPS roaming" switch (`setEnabledByUser()`; switching on
   needs two roamable sites on the card and no extra
   options in Settings, the reason on the switch's accessible description), its disclosure, and for the card of the

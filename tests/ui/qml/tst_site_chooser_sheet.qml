@@ -607,6 +607,8 @@ Item {
                 compare(line("siteRoamingUnavailable").text, "GPS roaming is off while extra options are set in Settings")
                 compare(toggle.Accessible.description, "GPS roaming is off while extra options are set in Settings",
                         "a screen reader hears why on the switch")
+                compare(line("siteRoamingUnavailable").text, siteRoaming.globalExtraArgsText,
+                        "one sentence, the executor's, for the chooser and the roaming state")
                 prefs.extraArgs = ""
                 verify(toggle.enabled)
                 compare(toggle.Accessible.description, "")

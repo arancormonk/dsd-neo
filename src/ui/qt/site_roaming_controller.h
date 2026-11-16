@@ -71,6 +71,8 @@ class SiteRoaming : public QObject {
     Q_PROPERTY(QString headerText READ headerText NOTIFY changed)
     /* The state alone ("WAITING", "LOCATING"), for a header too narrow for headerText; empty while Off or Idle. */
     Q_PROPERTY(QString headerShortText READ headerShortText NOTIFY changed)
+    /* GlobalExtraArgs' sentence, for a screen that says why roaming cannot be switched on (the site chooser). */
+    Q_PROPERTY(QString globalExtraArgsText READ globalExtraArgsText CONSTANT)
     /* What the reason's button does (performAction()). */
     Q_PROPERTY(Action action READ action NOTIFY changed)
     /* The site group of the session roaming follows ("<rrSid>|<receiver>", site_group_key()); empty with none. */
@@ -211,6 +213,7 @@ class SiteRoaming : public QObject {
     QString statusText() const;
     QString headerText() const;
     QString headerShortText() const;
+    QString globalExtraArgsText() const;
     Action action() const;
     QString groupKey() const;
     QString systemName() const;

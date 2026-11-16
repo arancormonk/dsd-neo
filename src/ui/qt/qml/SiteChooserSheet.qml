@@ -122,8 +122,9 @@ ModalSheet {
     readonly property int roamableCount: (revision, rows.filter(function (row) { return savedSystems.roamable(row); }).length)
     // Roaming also needs the extra options in Settings to be empty.
     readonly property bool globalExtraArgs: String(prefs.extraArgs || "").trim().length > 0
-    // Why roaming cannot be switched on for this card; empty when it can.
-    readonly property string roamingBlockedReason: globalExtraArgs ? qsTr("GPS roaming is off while extra options are set in Settings")
+    // Why roaming cannot be switched on for this card; empty when it can. The
+    // extra-options sentence is the executor's own (its GlobalExtraArgs reason).
+    readonly property string roamingBlockedReason: globalExtraArgs ? siteRoaming.globalExtraArgsText
         : roamableCount < 2 ? qsTr("Needs two or more sites in this system that GPS roaming can use: trunking on, a receiver it can tune, and no extra options.") : ""
     readonly property bool roamingHere: siteRoaming.currentUid.length > 0 && order.indexOf(siteRoaming.currentUid) >= 0
     readonly property int roamingState: siteRoaming.state
