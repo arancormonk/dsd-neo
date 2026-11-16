@@ -14,7 +14,8 @@ SIGINT, as Ctrl-C, and must exit 0 with no sanitizer report.
   udp     (d) in 1472-byte datagrams (GNU Radio's UDP Sink size, under macOS's 9216-byte default limit) with three
               empty datagrams among them, sent once the decoder says it is receiving.
   analog  nfm_tone_synth and am_tone_synth as cs16 under -fA / -fM at a fixed gain: the monitor's 48 kHz audio
-              carries the 1 kHz tone at the level a replay plays it.
+              carries the 1 kHz tone at the level a replay plays it; and the NFM tone at 24 kHz, which the input
+              resamples to 48 kHz, the same.
 """
 import argparse
 import array
@@ -56,6 +57,36 @@ def cu8_to_cs16(data):
 def cu8_to_cf32(data):
     """cu8 as the floats the cu8 reader makes of it: (b - 127.5) / 127.5."""
     out = array.array("f", ((value - 127.5) / 127.5 for value in data))
+    if sys.byteorder == "big":
+        out.byteswap()
+    return out.tobytes()
+
+
+def cs16_halve_rate(data):
+    """cs16 I/Q at half its rate: a 31-tap Hamming-windowed sinc low-pass cut at 10/48 of the rate (flat to about 7 kHz
+    at 48 kHz, which holds an NFM channel), then every second sample."""
+    taps = 31
+    cut = 10.0 / 48.0
+    middle = taps // 2
+    kernel = []
+    for n in range(taps):
+        x = n - middle
+        ideal = 2.0 * cut if x == 0 else math.sin(2.0 * math.pi * cut * x) / (math.pi * x)
+        kernel.append(ideal * (0.54 - 0.46 * math.cos(2.0 * math.pi * n / (taps - 1))))
+    gain = sum(kernel)
+    kernel = [k / gain for k in kernel]
+    samples = array.array("h")
+    samples.frombytes(data)
+    if sys.byteorder == "big":
+        samples.byteswap()
+    i_in = samples[0::2].tolist()
+    q_in = samples[1::2].tolist()
+    out = array.array("h")
+    for first in range(0, len(i_in) - taps + 1, 2):
+        for channel in (i_in, q_in):
+            window = channel[first:first + taps]
+            value = round(sum(k * v for k, v in zip(kernel, window)))
+            out.append(max(-32768, min(32767, value)))
     if sys.byteorder == "big":
         out.byteswap()
     return out.tobytes()
@@ -104,7 +135,8 @@ def paced(payload, chunk, byte_rate, done):
 class TcpSender:
     """An I/Q server, as SDR++'s IQ Exporter in TCP (Server) mode: sends the payload to the first connection at real
     time, then keeps that connection open and quiet, as a sender with nothing more to send does. Counts the
-    connections it accepts: a stream that reconnected would show in a second one."""
+    connections it accepts, while the payload is sent and up to the stop: a stream that reconnected would show in a
+    second one."""
 
     def __init__(self, payload, chunk, byte_rate):
         self.payload = payload
@@ -120,22 +152,36 @@ class TcpSender:
         self.done = threading.Event()
         self.thread = threading.Thread(target=self.serve)
 
+    def send(self, connection):
+        try:
+            for _, piece in paced(self.payload, self.chunk, self.byte_rate, self.done):
+                connection.sendall(piece)
+        except OSError:
+            pass
+        self.sent.set()
+
     def serve(self):
         held = []
+        sender = None
         while not self.done.is_set():
             try:
                 connection, _ = self.server.accept()
-            except TimeoutError:
+            except socket.timeout:
                 continue
-            self.connections += 1
             held.append(connection)
-            if self.connections == 1:
-                try:
-                    for _, piece in paced(self.payload, self.chunk, self.byte_rate, self.done):
-                        connection.sendall(piece)
-                except OSError:
-                    pass
-                self.sent.set()
+            if sender is None:
+                sender = threading.Thread(target=self.send, args=(connection,))
+                sender.start()
+        # A connection made just before the stop is still in the backlog: count it too.
+        self.server.setblocking(False)
+        while True:
+            try:
+                held.append(self.server.accept()[0])
+            except OSError:
+                break
+        if sender is not None:
+            sender.join()
+        self.connections = len(held)
         for connection in held:
             connection.close()
         self.server.close()
@@ -274,23 +320,34 @@ def run_tcp(binary, cwd, case, measure):
     assert sender.connections == 1, f"TCP {case.name}: {sender.connections} connections, want 1:\n{log}"
 
 
-# The UDP stream's NOTICE once its socket is bound and read, and its refusal of a port it cannot bind: matched by the
-# port alone, so a rewording of either keeps the check.
+# The UDP stream's NOTICE once its socket is bound and read.
+def udp_receiving(port):
+    return rf"I/Q stream: receiving on 127\.0\.0\.1:{port}\b"
+
+
+# Its refusal of a port it cannot bind, matched by the port alone: any line of the stream's that names the port.
 def udp_port_line(port):
     return rf"I/Q stream: [^\n]*127\.0\.0\.1:{port}\b"
 
 
+# How long a decoder that said it is receiving must stay up before the payload is sent to it.
+UDP_SETTLE_S = 0.3
+
+
 def start_udp(binary, cwd, case, args):
-    """Start the decoder on a free UDP port and wait until it says it is receiving there. The port is free when it is
-    picked but can be taken before the decoder binds it; the decoder then exits refusing it, and a new port is
-    tried."""
+    """Start the decoder on a free UDP port and wait until it says it is receiving there and is still running a moment
+    later. The port is free when it is picked but can be taken before the decoder binds it; the decoder then exits
+    refusing it, and a new port is tried."""
     for _ in range(5):
         port = free_port(socket.SOCK_DGRAM)
         process, output = start(binary, cwd, case.mode + args + ["-i", case.spec("iqudp", port)])
         deadline = time.monotonic() + DEADLINE_S
         while time.monotonic() < deadline and process.poll() is None:
-            if re.search(udp_port_line(port), output.text()):
-                return port, process, output
+            if re.search(udp_receiving(port), output.text()):
+                time.sleep(UDP_SETTLE_S)
+                if process.poll() is None:
+                    return port, process, output
+                break
             time.sleep(0.05)
         if process.poll() is None:
             stop(process, output)
@@ -350,12 +407,13 @@ def tone_measures(pcm):
     return level, frequency, len(samples)
 
 
-def run_analog(binary, cwd, name, mode, payload, level_dbfs, measure):
-    """Stream @p payload (cs16 at 48 kHz) to -fA/-fM with the monitor on stdout, until its audio stops growing."""
+def run_analog(binary, cwd, name, mode, rate_hz, payload, level_dbfs, measure, chain=None):
+    """Stream @p payload (cs16 at @p rate_hz) to -fA/-fM with the monitor on stdout, until its audio stops growing;
+    the log must match @p chain when given."""
     audio_path = Path(cwd) / (name + ".raw")
-    byte_rate = AUDIO_HZ * BYTES_PER_SAMPLE["cs16"]
-    with TcpSender(payload, 1920, byte_rate) as sender, audio_path.open("wb") as audio:
-        spec = f"iqtcp:127.0.0.1:{sender.port}:{AUDIO_HZ}:cs16"
+    byte_rate = rate_hz * BYTES_PER_SAMPLE["cs16"]
+    with TcpSender(payload, byte_rate // 100, byte_rate) as sender, audio_path.open("wb") as audio:
+        spec = f"iqtcp:127.0.0.1:{sender.port}:{rate_hz}:cs16"
         process = subprocess.Popen([binary, "--no-config", "--frontend", "none"] + mode + ["-i", spec, "-o", "-"],
                                    cwd=cwd, stdout=audio, stderr=subprocess.PIPE)
         output = StderrOutput(process)
@@ -377,6 +435,7 @@ def run_analog(binary, cwd, name, mode, payload, level_dbfs, measure):
     print(f"ANALOG {name}: {samples} samples ({samples / AUDIO_HZ:.2f} s), RMS {level} dBFS, tone {frequency} Hz")
     if measure:
         return
+    assert chain is None or re.search(chain, log), f"ANALOG {name}: no /{chain}/ in the output:\n{log}"
     assert len(pcm) % 2 == 0, f"ANALOG {name}: {len(pcm)} bytes of audio, not whole s16 samples:\n{log}"
     # The 1.5 s fixtures play at least 1.2 s; a replay plays about 1.5 s.
     assert samples >= int(1.2 * AUDIO_HZ), f"ANALOG {name}: {samples} samples of audio, want 1.2 s:\n{log}"
@@ -446,8 +505,11 @@ def main():
         else:
             nfm = cu8_to_cs16((fixtures / "nfm_tone_synth.iq").read_bytes())
             am = cu8_to_cs16((fixtures / "am_tone_synth.iq").read_bytes())
-            run_analog(binary, temporary, "nfm_tone", ["-fA", "-n", "50"], nfm, -15.06, args.measure)
-            run_analog(binary, temporary, "am_tone", ["-fM", "-n", "50"], am, -15.0, args.measure)
+            run_analog(binary, temporary, "nfm_tone", ["-fA", "-n", "50"], 48000, nfm, -15.06, args.measure)
+            run_analog(binary, temporary, "am_tone", ["-fM", "-n", "50"], 48000, am, -15.0, args.measure)
+            # The NFM tone at 24 kHz, which the input resamples to the monitor's 48 kHz: the same level and tone.
+            run_analog(binary, temporary, "nfm_tone_24k", ["-fA", "-n", "50"], 24000, cs16_halve_rate(nfm), -15.06,
+                       args.measure, chain=r"Rate chain: capture=24000 Hz resampled to 48000 Hz")
     print("IQ NET " + args.check.upper() + " OK")
 
 

@@ -21540,8 +21540,9 @@ if(DSD_HAS_RADIO)
     # sent at real time to -i iqtcp: / -i iqudp: (tests/iq_net_decode_check.py). TCP: the 50 kHz cs16 capture in
     # SDR++'s 1024-byte writes, the 72 kHz call as cf32 with its FREQ (published on its carrier), the 48254 Hz WAV as
     # cs16 and dmr_voice as cs8. UDP: dmr_voice in 1472-byte datagrams with empty ones among them, sent once the
-    # decoder says it is receiving. Analog: the NFM and AM tones as cs16, the monitor's 48 kHz audio at the replay's
-    # level. A live stream has no end, so each run is stopped with SIGINT: POSIX only.
+    # decoder says it is receiving. Analog: the NFM and AM tones as cs16, and the NFM tone at 24 kHz resampled to
+    # 48 kHz, the monitor's 48 kHz audio at the replay's level. A live stream has no end, so each run is stopped with
+    # SIGINT: POSIX only.
     if(Python3_Interpreter_FOUND AND NOT WIN32)
         add_test(
             NAME DECODE_IQ_NET_TCP
