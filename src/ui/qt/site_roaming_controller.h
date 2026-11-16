@@ -372,6 +372,7 @@ class SiteRoaming : public QObject {
     };
 
     void evaluate();
+    void evaluateSoon();
     void evaluateOnce();
     void judge(qint64 nowMs);
     void onVerdict(qint64 nowMs, const SiteRoamingVerdict& verdict);
@@ -415,7 +416,9 @@ class SiteRoaming : public QObject {
     void beginTransaction(const QString& uid);
     void cancelTransaction(const QString& why);
     void finishTransaction(const QString& outcome, bool notice);
-    void refuseTransaction(bool notice);
+    void endTransaction(const QString& why, bool listeningStopped, bool refusal);
+    QString endCause(const QString& why) const;
+    bool leftStopped() const;
     bool active() const;
 
     void setView(State shown, Reason why, const QString& arg = QString());
@@ -469,6 +472,8 @@ class SiteRoaming : public QObject {
     QString m_verdictUid;
 
     bool m_evaluating = false;
+    /* An evaluation is queued for the next turn of the event loop (evaluateSoon()). */
+    bool m_evaluateQueued = false;
     bool m_again = false;
     View m_pending;
     View m_view;

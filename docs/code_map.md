@@ -14833,6 +14833,21 @@ Qt Quick frontend (`src/ui/qt`):
   started (and read again when a candidate begins to qualify), so a user stop the app has not shown yet is never
   absorbed. A cancel once the start is handed over retires the host's attempt (`retireRoamAttempt()`); a switch
   cancelled after the session it left stopped, other than by the user's own action, leaves `recoveryNotice` for Home. A
+  Rule: a fix the host delivers (`locationStreamUpdate`, emitted inside its refresh, which `UiController::tick()` runs
+  before the tick's model refresh) is stored at once and judged as the event loop turns (`evaluateSoon()`, one queued
+  call), so the decision reads that tick's decoder snapshot (`facts`): a call that began between polls holds the
+  switch. The initialization edge, also signalled inside the host's refresh, revokes the evidence (`revoke()` in
+  `noteSessionInitialized()`), so nothing judged before it (a roam's destination is judged while it starts) can make a
+  switch due on the facts from before it. Every other trigger (a facts change, roaming's own 1 s timer, Main's calls)
+  runs with the snapshot already current. Tests: `check_executor_same_tick()`, `tst_site_roaming.qml` `test_07k`.
+  Rule: every end of a roam but "done" goes through `endTransaction(why, listeningStopped, refusal)`, which lets
+  `endCause()` pick the strongest cause present now, in one precedence (`end_rank()`): the user's stop (or an
+  unreadable generation), the user's own choice (another start, Retry, a restore, a close, a dismissal, an operator
+  command), roaming turned off, the foreground lost, then the rest (a revoked verdict, the checks before a step, a stop
+  the host gave up on, a failed or refused start). Home's notice shows only when the session the roam left stays
+  stopped (`leftStopped()`: Idle or Stopping) and the cause is not one the user's action or a card explains; a refusal
+  ("Could not switch to %1") stands only when its own cause is the strongest. Tests: `check_executor_end_precedence()`,
+  `tst_site_roaming.qml` `test_07j`.
   Rule: before the destination's start, `progressStop()` reads the host's phase: Failed cancels; Running after the
   stop showed (Stopping) and before it went idle (`startPlan()` asks only at Idle) is a stop the host gave up on (its
   2 s stop grace), so the switch ends refused with no notice, the evidence is revoked and roaming shows "Could not

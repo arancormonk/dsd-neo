@@ -9,6 +9,7 @@
  * hold for any accurate distance formula.
  */
 #include <QCoreApplication>
+#include <QEvent>
 #include <QList>
 #include <QObject>
 #include <QPair>
@@ -21,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <string>
 #include <vector>
@@ -810,9 +812,16 @@ struct Rig {
         }
     }
 
-    /* A new fix at @p lat, @p lon, @p after ms from the last moment, stamped then. */
+    /* A new fix at @p lat, @p lon, @p after ms from the last moment, stamped then, judged as the event loop turns. */
     void
     fix(double lat, double lon, qint64 after = 0, double accuracy = 10) {
+        fixHeld(lat, lon, after, accuracy);
+        QCoreApplication::sendPostedEvents(&roaming, QEvent::MetaCall);
+    }
+
+    /* The same, as the host's poll delivers it inside a UI tick: the loop has not turned yet. */
+    void
+    fixHeld(double lat, double lon, qint64 after = 0, double accuracy = 10) {
         now += after;
         ns += 1000;
         Q_EMIT host.locationStreamUpdate({{"generation", 1},
@@ -839,6 +848,12 @@ struct Rig {
                                           {"lon", lon},
                                           {"accuracyM", 10.0},
                                           {"fixAtMs", now}});
+        QCoreApplication::sendPostedEvents(&roaming, QEvent::MetaCall);
+    }
+
+    void
+    nearA(qint64 after) {
+        fix(10.01, 20.0, after);
     }
 
     void
@@ -1396,6 +1411,162 @@ check_executor_stop_edges() {
     }
 }
 
+/* #786 r5: a fix the host's poll delivers inside a UI tick is judged after that tick's decoder snapshot, so a call that
+ * began between polls holds the switch. Fixes judged while a roam's destination started count for nothing at its
+ * initialization edge, which the host also signals before the tick's snapshot. */
+void
+check_executor_same_tick() {
+    {
+        Rig rig;
+        rig.running();
+        rig.nearB(0);
+        rig.nearB(10000);
+        rig.fixHeld(10.49, 20.0, 10000); // the qualifying fix, polled at the start of the tick
+        rig.set("callBusy", true);       // the same tick's snapshot: a call began since the last poll
+        QCoreApplication::sendPostedEvents(&rig.roaming, QEvent::MetaCall);
+        check(rig.host.switchStops == 0 && rig.roaming.state() == SiteRoaming::WaitingForCall,
+              "same tick: the fix and a new busy snapshot wait for the call");
+        rig.set("callBusy", false);
+        check(rig.host.switchStops == 1, "same tick: and the call's end switches");
+    }
+    {
+        Rig rig;
+        rig.qualifyB();
+        rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+        rig.roaming.startPlan(rig.roamId());
+        rig.roaming.noteStartResult(rig.roamId(), {{"ok", true}, {"started", true}});
+        rig.host.setPhase(dsd_qt::DecoderHost::Starting);
+        rig.roaming.noteSessionStart("saved", rig.uids[1], rig.roamId());
+        rig.host.setPhase(dsd_qt::DecoderHost::Running);
+        rig.set("savedUid", rig.uids[1]);
+        rig.nearC(0);
+        rig.nearC(10000);
+        rig.nearC(10000); // Ridge qualifies from Lake while Lake starts
+        rig.roaming.noteSessionInitialized();
+        check(rig.host.switchStops == 1 && rig.ended == QStringList{QStringLiteral("done")}
+                  && !rig.roaming.transactionActive(),
+              "init edge: what was judged before Lake's edge does not switch at it");
+    }
+}
+
+/* #786 r5: one precedence decides how a roam ends when several causes are present: the user's stop, then the user's
+ * own choice, then roaming turned off, then the foreground lost, then the rest (a revoked verdict, a stop the host gave
+ * up on, a failure). A pair of causes, in either order of arrival, ends as the stronger one says. */
+void
+check_executor_end_precedence() {
+    using Phase = dsd_qt::DecoderHost::SessionState;
+    const QString notice = QStringLiteral("Roaming did not switch to Lake. Listening stopped.");
+
+    struct Case {
+        const char* name;
+        std::function<void(Rig&)> causes;
+        QString outcome;
+        bool notice;
+    };
+
+    const QList<Case> cases = {
+        {"user stop, then the foreground lost",
+         [](Rig& rig) {
+             rig.host.generation = 1;
+             rig.host.epochValue = 1;
+             rig.tick(500);
+         },
+         "cancelled", false},
+        {"user stop, then roaming off",
+         [](Rig& rig) {
+             rig.host.generation = 1;
+             rig.prefs.setRoamingEnabled(false);
+         },
+         "cancelled", false},
+        {"user stop, then the stop given up",
+         [](Rig& rig) {
+             rig.host.generation = 1;
+             rig.host.setPhase(Phase::Running);
+         },
+         "cancelled", false},
+        {"user stop, then the checks at Idle",
+         [](Rig& rig) {
+             rig.host.generation = 1;
+             rig.host.setPhase(Phase::Idle);
+             rig.roaming.startPlan(rig.roamId());
+         },
+         "cancelled", false},
+        {"the foreground lost, then another start",
+         [](Rig& rig) {
+             rig.host.epochValue = 1;
+             rig.roaming.cancel("start");
+         },
+         "cancelled", false},
+        {"the foreground lost, then roaming off",
+         [](Rig& rig) {
+             rig.host.epochValue = 1;
+             rig.prefs.setRoamingEnabled(false);
+         },
+         "cancelled", true},
+        {"the foreground lost, then the stop given up",
+         [](Rig& rig) {
+             rig.host.epochValue = 1;
+             rig.host.setPhase(Phase::Running);
+         },
+         "cancelled", false},
+        {"the foreground lost, then a failure",
+         [](Rig& rig) {
+             rig.host.epochValue = 1;
+             rig.host.setPhase(Phase::Failed);
+         },
+         "cancelled", false},
+        {"the verdict revoked, then the foreground lost",
+         [](Rig& rig) {
+             rig.nearA(1000);
+             rig.host.epochValue = 1;
+             rig.host.setPhase(Phase::Idle);
+             rig.roaming.startPlan(rig.roamId());
+         },
+         "cancelled", true},
+        {"the stop given up alone", [](Rig& rig) { rig.host.setPhase(Phase::Running); }, "refused", false},
+    };
+    for (const Case& c : cases) {
+        Rig rig;
+        rig.qualifyB();
+        c.causes(rig);
+        const bool shown = rig.roaming.recoveryNotice() == notice;
+        check(rig.ended == QStringList{c.outcome} && shown == c.notice
+                  && (c.outcome == QLatin1String("refused")) == (rig.roaming.reason() == SiteRoaming::SwitchFailed),
+              QStringLiteral("precedence: %1").arg(QLatin1String(c.name)).toUtf8().constData());
+    }
+    {
+        // In the destination's start: the user's stop beside a foreground retirement is silent too.
+        Rig rig;
+        rig.qualifyB();
+        rig.host.setPhase(Phase::Idle);
+        rig.roaming.startPlan(rig.roamId());
+        rig.roaming.noteStartResult(rig.roamId(), {{"ok", true}, {"started", true}});
+        rig.host.setPhase(Phase::Starting);
+        rig.roaming.noteSessionStart("saved", rig.uids[1], rig.roamId());
+        rig.host.generation = 1;
+        rig.host.epochValue = 1;
+        rig.tick(500);
+        check(rig.ended == QStringList{QStringLiteral("cancelled")} && rig.roaming.recoveryNotice().isEmpty(),
+              "precedence: a user stop beside a foreground retirement is silent");
+    }
+    {
+        // The destination failed after the app left the foreground: no "Could not switch", the card says why.
+        Rig rig;
+        rig.qualifyB();
+        rig.host.setPhase(Phase::Idle);
+        rig.roaming.startPlan(rig.roamId());
+        rig.roaming.noteStartResult(rig.roamId(), {{"ok", true}, {"started", true}});
+        rig.host.setPhase(Phase::Starting);
+        rig.roaming.noteSessionStart("saved", rig.uids[1], rig.roamId());
+        rig.host.retireWins = false;
+        rig.host.epochValue = 1;
+        rig.host.setPhase(Phase::Failed);
+        check(rig.ended == QStringList{QStringLiteral("cancelled")} && rig.roaming.reason() != SiteRoaming::SwitchFailed
+                  && rig.roaming.recoveryNotice().isEmpty(),
+              "precedence: a failure after the foreground loss is no refusal");
+    }
+}
+
 /* Asked for a start out of turn (the session it leaves still stopping), no one asks again: the roam ends, with the
  * notice, rather than sit in its stop. */
 void
@@ -1619,6 +1790,8 @@ main(int argc, char** argv) {
     check_executor_manual_hold();
     check_executor_plan_out_of_turn();
     check_executor_stop_edges();
+    check_executor_same_tick();
+    check_executor_end_precedence();
     check_executor_adopted_and_retune();
     check_executor_timer();
     check_executor_header_text();

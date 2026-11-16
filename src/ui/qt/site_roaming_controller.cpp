@@ -7,6 +7,7 @@
 
 #include <QAbstractItemModel>
 #include <QLatin1String>
+#include <QMetaObject>
 #include <QStringList>
 #include <QVariant>
 #include <QVariantList>
@@ -93,15 +94,39 @@ const char* const kPauseWords[] = {
 static_assert(sizeof(kPauseWords) / sizeof(kPauseWords[0]) == SiteRoaming::ManualHold + 1,
               "one pause word per Reason, in the enum's order");
 
-/* The reasons the user's own action stands behind: cancelling for one leaves no notice, since what they did follows. */
+/* The reasons the user's own action stands behind, and the ends that need no word: cancelling for one leaves no notice,
+ * since what they did follows (a failed session's card, an unrun start's own cause, a session that runs on). */
 bool
 silent_reason(const QString& reason) {
     static const QStringList silent = {
-        QStringLiteral("userStop"),  QStringLiteral("start"),   QStringLiteral("retry"),  QStringLiteral("restore"),
-        QStringLiteral("close"),     QStringLiteral("dismiss"), QStringLiteral("failed"), QStringLiteral("revoked"),
-        QStringLiteral("unarmable"), QStringLiteral("intent"),
+        QStringLiteral("userStop"), QStringLiteral("start"),      QStringLiteral("retry"),
+        QStringLiteral("restore"),  QStringLiteral("close"),      QStringLiteral("dismiss"),
+        QStringLiteral("failed"),   QStringLiteral("revoked"),    QStringLiteral("unarmable"),
+        QStringLiteral("intent"),   QStringLiteral("superseded"), QStringLiteral("unreadable"),
     };
     return silent.contains(reason);
+}
+
+/*
+ * The one precedence of every reason a roam ends for (#786 r5), strongest first: the user's stop (a generation that
+ * cannot be read counts as one), the user's own choice (another start, Retry, a restore, a close, a dismissal, an
+ * operator command), roaming turned off, the foreground lost, and then everything else (the verdict revoked, a stop the
+ * host gave up on, a failed or refused start, the checks before a step). Lower is stronger.
+ */
+int
+end_rank(const QString& reason) {
+    static const QStringList manual = {QStringLiteral("start"), QStringLiteral("retry"),   QStringLiteral("restore"),
+                                       QStringLiteral("close"), QStringLiteral("dismiss"), QStringLiteral("intent")};
+    if (reason == QLatin1String("userStop") || reason == QLatin1String("unreadable")) {
+        return 0;
+    }
+    if (manual.contains(reason)) {
+        return 1;
+    }
+    if (reason == QLatin1String("disabled")) {
+        return 2;
+    }
+    return reason == QLatin1String("foreground") ? 3 : 4;
 }
 
 SiteRoaming::State
@@ -450,8 +475,8 @@ SiteRoaming::progressTransaction() {
     }
     m_tx.startShown = m_tx.startShown || phase != DecoderHost::Idle;
     if (phase == DecoderHost::Failed) {
-        // A user stop never fails a session, so this is the destination's own failure.
-        refuseTransaction(false);
+        // A user stop never fails a session, so this is the destination's own failure (its card says why).
+        endTransaction(QStringLiteral("failed"), false, true);
     } else if (phase == DecoderHost::Idle && (m_host->startSuperseded() || userStoppedSince(m_tx.stopGeneration))) {
         // The destination ended unrun because the user stopped listening or the app left the foreground while it
         // started (superseded), or the user stopped it after its start committed and before its initialization edge
@@ -459,7 +484,7 @@ SiteRoaming::progressTransaction() {
         finishUnrunStart();
     } else if (phase == DecoderHost::Idle && m_tx.startShown) {
         // The destination ended without ever listening (a bootstrap that exits) and without failing.
-        refuseTransaction(true);
+        endTransaction(QStringLiteral("noListen"), true, true);
     } else if (m_session.initialized && m_session.id == m_tx.destSessionId) {
         finishTransaction(QStringLiteral("done"), false);
     }
@@ -475,7 +500,7 @@ SiteRoaming::progressTransaction() {
 void
 SiteRoaming::progressStop(int phase) {
     if (phase == DecoderHost::Failed) {
-        finishTransaction(QStringLiteral("cancelled"), false);
+        endTransaction(QStringLiteral("failed"), false, false);
         return;
     }
     if (phase == DecoderHost::Stopping) {
@@ -483,7 +508,8 @@ SiteRoaming::progressStop(int phase) {
     } else if (phase == DecoderHost::Idle) {
         m_tx.stopDone = true;
     } else if (phase == DecoderHost::Running && m_tx.stage == Stage::Stopping && m_tx.stopShown && !m_tx.stopDone) {
-        refuseTransaction(false);
+        // The session runs on, so no cause leaves listening stopped: never the notice.
+        endTransaction(QStringLiteral("timeout"), false, true);
         revoke(now());
     }
 }
@@ -506,8 +532,7 @@ SiteRoaming::leftForegroundSince(qint64 epoch) const {
  * listening stopped with the notice (as a switch the foreground loss cancelled before the start). Never a refusal. */
 void
 SiteRoaming::finishUnrunStart() {
-    const bool notice = !userStoppedSince(m_tx.stopGeneration) && leftForegroundSince(m_tx.epoch);
-    finishTransaction(QStringLiteral("cancelled"), notice);
+    endTransaction(QStringLiteral("superseded"), true, false);
 }
 
 /* The app left the foreground while the destination's start is on its way: it is retired unless it committed. One
@@ -521,7 +546,7 @@ SiteRoaming::retireStartForForeground() {
     m_evaluating = evaluating;
     m_again = true;
     if (retired) {
-        finishTransaction(QStringLiteral("cancelled"), true);
+        endTransaction(QStringLiteral("foreground"), true, false);
     }
 }
 
@@ -627,7 +652,25 @@ SiteRoaming::onStreamUpdate(const QVariantMap& record) {
             m_sessionHadFix = true;
         }
     }
-    evaluate();
+    // #786 r5: judged once the event loop turns, not here. The host polls the feed inside the UI tick before that tick
+    // refreshes the decoder snapshot (UiController::tick()), so a fix judged here would act on the facts of the tick
+    // before (a call that began since read as none). The tick's model refresh judges it at once if any fact changed.
+    evaluateSoon();
+}
+
+void
+SiteRoaming::evaluateSoon() {
+    if (m_evaluateQueued) {
+        return;
+    }
+    m_evaluateQueued = true;
+    QMetaObject::invokeMethod(
+        this,
+        [this] {
+            m_evaluateQueued = false;
+            evaluate();
+        },
+        Qt::QueuedConnection);
 }
 
 void
@@ -863,7 +906,7 @@ SiteRoaming::noteOperatorIntent(const QString& kind) {
         return;
     }
     if (active() && m_tx.stage == Stage::WaitingForCall) {
-        finishTransaction(QStringLiteral("cancelled"), false);
+        endTransaction(QStringLiteral("intent"), false, false);
     }
     revoke(now());
     evaluate();
@@ -919,9 +962,9 @@ SiteRoaming::cancelTransaction(const QString& why) {
     if (!active()) {
         return;
     }
-    const bool notice = !silent_reason(why);
+    const bool notice = !silent_reason(endCause(why));
     switch (m_tx.stage) {
-        case Stage::WaitingForCall: finishTransaction(QStringLiteral("cancelled"), false); return;
+        case Stage::WaitingForCall: endTransaction(why, false, false); return;
         case Stage::Starting: {
             // Handed to the host: its attempt is retired, unless it already went past that point and runs. The Idle a
             // winning retirement shows is this cancel's, not the destination ending unstarted: it is judged after.
@@ -933,14 +976,56 @@ SiteRoaming::cancelTransaction(const QString& why) {
             finishTransaction(retired ? QStringLiteral("cancelled") : QStringLiteral("done"), retired && notice);
             return;
         }
-        default: finishTransaction(QStringLiteral("cancelled"), notice); return;
+        // Stopping or waiting for USB access: the session it left stays stopped, unless the host shows it running
+        // again (a stop it gave up on) or failed (its card says why).
+        default: endTransaction(why, leftStopped(), false); return;
     }
 }
 
+/* Whether the session a roam left shows stopped (stopping or idle), the premise of Home's notice. */
+bool
+SiteRoaming::leftStopped() const {
+    const int phase = m_host != nullptr ? m_host->sessionState() : DecoderHost::Idle;
+    return phase == DecoderHost::Idle || phase == DecoderHost::Stopping;
+}
+
+/* What endCause() makes of @p why now: a stronger cause present (a user stop, roaming off, the foreground lost) wins. */
+QString
+SiteRoaming::endCause(const QString& why) const {
+    QString cause = why;
+    const auto stronger = [&cause](const QString& other) {
+        if (end_rank(other) < end_rank(cause)) {
+            cause = other;
+        }
+    };
+    if (active() && userStoppedSince(m_tx.stopGeneration)) {
+        stronger(QStringLiteral("userStop"));
+    }
+    if (!enabled()) {
+        stronger(QStringLiteral("disabled"));
+    }
+    if (active() && leftForegroundSince(m_tx.epoch)) {
+        stronger(QStringLiteral("foreground"));
+    }
+    return cause;
+}
+
+/*
+ * Every end of a roam but "done" comes here (#786 r5). @p why is what ended it at this point; endCause() lets a
+ * stronger cause present now win. @p listeningStopped is whether the session the roam left stays stopped because of
+ * it, the premise of Home's notice, which then shows unless the cause is one the user's action or a card already
+ * explains. @p refusal makes it a refusal (roaming pauses on the site: "Could not switch to %1") when its own cause
+ * stands; a stronger one makes it a cancel.
+ */
 void
-SiteRoaming::refuseTransaction(bool notice) {
-    m_failedUid = m_tx.toUid;
-    finishTransaction(QStringLiteral("refused"), notice);
+SiteRoaming::endTransaction(const QString& why, bool listeningStopped, bool refusal) {
+    const QString cause = endCause(why);
+    if (refusal && cause == why) {
+        m_failedUid = m_tx.toUid;
+        finishTransaction(QStringLiteral("refused"), listeningStopped);
+        return;
+    }
+    finishTransaction(QStringLiteral("cancelled"), listeningStopped && !silent_reason(cause));
 }
 
 void
@@ -1019,7 +1104,7 @@ SiteRoaming::noteWaitingForUsb(qint64 roamId) {
 void
 SiteRoaming::noteUsbDenied(qint64 roamId) {
     if (active() && m_tx.roamId == roamId && m_tx.stage == Stage::WaitingForUsb) {
-        refuseTransaction(false);
+        endTransaction(QStringLiteral("usbDenied"), false, true);
         evaluate();
     }
 }
@@ -1034,7 +1119,7 @@ SiteRoaming::noteStartResult(qint64 roamId, const QVariantMap& result) {
         finishUnrunStart();
     } else if (!result.value(QStringLiteral("ok")).toBool() || !result.value(QStringLiteral("started")).toBool()) {
         // Main shows the failure card, as for any refused start.
-        refuseTransaction(false);
+        endTransaction(QStringLiteral("startRefused"), false, true);
     } else {
         m_tx.stage = Stage::Starting;
     }
@@ -1088,6 +1173,10 @@ SiteRoaming::noteSessionInitialized() {
     if (active() && m_tx.stage == Stage::Starting && m_tx.destSessionId == m_session.id) {
         finishTransaction(QStringLiteral("done"), false);
     }
+    // #786 r5: roaming arms at this edge, which the host signals inside its refresh, before the tick's decoder snapshot:
+    // nothing judged before it counts (a roam's destination was judged while it started), so no switch is due on
+    // facts from before the edge. The fixes already seen stay seen.
+    revoke(now());
     evaluate();
 }
 

@@ -41,6 +41,7 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QEvent>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
@@ -5404,6 +5405,14 @@ class Setup : public QObject {
     /** @brief #786: the location feed's next update, as the host emits it from a poll. */
     Q_INVOKABLE void
     emitLocationStreamUpdate(const QVariantMap& record) {
+        Q_EMIT m_lifecycle_host->locationStreamUpdate(record);
+        // Roaming judges a fix as the event loop turns (after the UI tick's model refresh): deliver that one call here.
+        QCoreApplication::sendPostedEvents(m_site_roaming, QEvent::MetaCall);
+    }
+
+    /** @brief #786: the feed's next update as the host's poll delivers it inside a UI tick, the loop not turned yet. */
+    Q_INVOKABLE void
+    emitLocationStreamUpdateHeld(const QVariantMap& record) {
         Q_EMIT m_lifecycle_host->locationStreamUpdate(record);
     }
 

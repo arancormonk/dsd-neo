@@ -399,6 +399,43 @@ Item {
             verify(siteRoaming.transactionActive);
         }
 
+        // #786 r5: Stop listening during the switch's drain, then the app
+        // leaves the foreground before the drain ends: the user's Stop wins.
+        // Nothing starts and Home shows no recovery notice.
+        function test_07j_stop_then_background_during_the_drain_is_silent() {
+            qualifyB();
+            tryCompare(app, "monitorMode", true);
+            var stop = findChild(findChild(app, "monitorScreen"), "stopListeningButton");
+            verify(stop.enabled);
+            mouseClick(stop);
+            testContext.setForegroundEpoch(1);
+            tick(500);
+            testContext.setLifecyclePhase(0);
+            wait(20);
+            compare(decoderHost.sessionState, 0, "nothing restarts");
+            verify(!siteRoaming.transactionActive);
+            verify(!roamNotice().visible, "the user's Stop: no notice");
+            compare(siteRoaming.recoveryNotice, "");
+        }
+
+        // #786 r5: the poll's qualifying fix and a snapshot showing a new call
+        // arrive in the same UI tick: the switch waits for the call.
+        function test_07k_a_call_in_the_same_tick_as_the_fix_holds_the_switch() {
+            startSite(0);
+            nearB(0);
+            nearB(10000);
+            testContext.setRoamingNow(now() + 10000);
+            ns += 1000;
+            testContext.emitLocationStreamUpdateHeld({generation: 1, state: "ok", hasFix: true, provider: "gps",
+                measurementNs: ns, lat: 10.49, lon: 20.0, accuracyM: 10, fixAtMs: now()});
+            testContext.setMetric("callBusy", true);
+            wait(0);
+            compare(calls().switchStops, 0, "no stop over the new call");
+            compare(siteRoaming.state, SiteRoaming.WaitingForCall);
+            testContext.setMetric("callBusy", false);
+            compare(calls().switchStops, 1, "the call's end switches");
+        }
+
         function test_08_disable_during_stopping_leaves_listening_stopped_with_the_notice() {
             qualifyB();
             prefs.roamingEnabled = false;
