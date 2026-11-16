@@ -1612,6 +1612,11 @@ struct dsd_state {
        span measured across two epochs is no span. */
     uint32_t symbol_clock_epoch;
     uint32_t symbol_clock_input; /* dsd_opts::pcm_input_generation the last symbol was read under (DSP's) */
+    /* A rigctl peer confirmed a retune (issue #834): the audio input still holds the frequency left's samples, which
+       the decoder thread drops at its next input read (dsd_symbol_apply_input_drop()), as an RTL retune's flush
+       drops them. Decoder-thread owned: a tune off it posts the request, which the decoder thread sets here when it
+       reconciles that tune (dsd_frame_sync_apply_off_thread_tunes()). */
+    uint8_t input_drop_pending;
     /* Set while the DSP sync anchor (state-ext slot 12, src/dsp/symbol_anchor.c) records or holds a move for the grid;
        the grid looks the anchor up only then. */
     uint8_t symbol_anchor_hot;

@@ -468,6 +468,17 @@ ssize_t dsd_read(int fd, void* buf, size_t count);
 int dsd_fd_wait_readable(int fd, unsigned int timeout_ms);
 
 /**
+ * @brief Whether a descriptor is a stream another program feeds: a pipe, FIFO or socket (on Windows a pipe).
+ *
+ * Only such a descriptor's readiness (dsd_fd_wait_readable()) says data is there: a regular file, a console or a
+ * terminal reports ready whether or not a read would wait.
+ *
+ * @param fd File descriptor.
+ * @return 1 for a pipe, FIFO or socket, 0 otherwise and on failure.
+ */
+int dsd_fd_is_stream(int fd);
+
+/**
  * @brief Write to a file descriptor.
  *
  * @param fd        File descriptor.

@@ -1420,9 +1420,11 @@ legacy_rigctl_leg_present(const dsd_opts* opts) {
  * the session runs the peer's own passband (-B 0, or the FM monitor with neither a width nor -B) it asks for FM at 0,
  * best-effort: that undoes a passband this client set (a session width before a switch to a digital mode, say) with
  * the passband read before it, and is a no-op for a peer back on its own or never asked. The frequency the peer is on
- * afterwards is the one last sent (dsd_opts::rigctl_sent_freq_hz). */
+ * afterwards is the one last sent (dsd_opts::rigctl_sent_freq_hz). A frequency the peer confirmed starts a new symbol
+ * timeline and drops the input's queued samples (dsd_engine_note_rigctl_retune()) unless @p rtl_leg_follows: an RTL
+ * leg that retunes the stream after this one flushes it (issue #834). */
 static dsd_trunk_tune_result
-no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq) {
+no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq, int rtl_leg_follows) {
     if (!legacy_rigctl_leg_present(opts)) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
@@ -1454,8 +1456,9 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq
         }
         s_last_rigctl_freq = freq;
         opts->rigctl_sent_freq_hz = (uint32_t)freq;
-        if (opts->audio_in_type != AUDIO_IN_RTL) {
-            /* No RTL leg follows (the untyped step's RTL leg retunes the stream it flushes; issue #834). */
+        if (!rtl_leg_follows) {
+            /* Nothing flushes the stream after this leg (issue #834): the untyped step's RTL leg, where one follows,
+               retunes the stream, which flushes it; the direct control-channel return has none. */
             dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, freq);
         }
     }
@@ -1588,7 +1591,8 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int w
     /* The output generation before any leg moves: only a newer capture can be the row's (issue #834). */
     dsd_engine_scan_landing_note_tune(state);
     if (legacy_rigctl_leg_present(opts)) {
-        if (no_carrier_tune_rigctl_if_needed(opts, state, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
+        if (no_carrier_tune_rigctl_if_needed(opts, state, freq, opts->audio_in_type == AUDIO_IN_RTL)
+            != DSD_TRUNK_TUNE_RESULT_OK) {
             return DSD_UNTYPED_STEP_FAILED;
         }
         *moved = 1;
@@ -2683,7 +2687,7 @@ no_carrier_helper_result_is_deferred(int helper_attempted, dsd_trunk_tune_result
 static int
 no_carrier_apply_direct_cc_return(dsd_opts* opts, dsd_state* state, long cc, int helper_attempted) {
     if (legacy_rigctl_leg_present(opts)) {
-        if (no_carrier_tune_rigctl_if_needed(opts, state, cc) != DSD_TRUNK_TUNE_RESULT_OK) {
+        if (no_carrier_tune_rigctl_if_needed(opts, state, cc, 0) != DSD_TRUNK_TUNE_RESULT_OK) {
             return 0;
         }
         state->dmr_rest_channel = -1;

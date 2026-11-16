@@ -51,12 +51,14 @@ void dsd_engine_set_decoder_thread(int is_decoder);
  * dsd_state::symbol_clock_epoch. The audio a rigctl peer sends goes on across its retune, so this is that flush for it
  * (issue #834): unless the peer was on @p freq_hz already (@p sent_before_hz, dsd_opts::rigctl_sent_freq_hz before the
  * tune; 0 when none was sent), the epoch moves, so no span the decoders measure on the symbol clock (a DMR slot's MI
- * chain, a P25 Phase 1 terminator's place, the DMR polarity run) reaches across the tune. Off the decoder thread (the
- * P25 watchdog) the epoch moves when the decoder thread reconciles the tune (dsd_frame_sync_apply_off_thread_tunes()).
+ * chain, a P25 Phase 1 terminator's place, the DMR polarity run) reaches across the tune, and the input's queued
+ * samples are dropped at the decoder thread's next input read (dsd_state::input_drop_pending,
+ * dsd_symbol_apply_input_drop()). Off the decoder thread (the P25 watchdog) both happen when the decoder thread
+ * reconciles the tune (dsd_frame_sync_apply_off_thread_tunes()).
  * Called by each rigctl leg, once its frequency request was answered RPRT 0: the backend tune
  * (dsd_engine_tune_with_backend()), the legacy -Y step and control-channel return, and app-control's io_control leg.
  */
-void dsd_engine_note_rigctl_retune(dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz);
+void dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz);
 /**
  * @brief Tune a scanner row or target (the -Y channel scan, --trunk-scan).
  *

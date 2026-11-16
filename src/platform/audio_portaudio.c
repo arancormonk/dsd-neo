@@ -1004,15 +1004,19 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 #define PORTAUDIO_DISCARD_MAX_CHANNELS 8
 
 int
-dsd_audio_discard_input(dsd_audio_stream* stream) {
+dsd_audio_discard_input(const dsd_audio_stream* stream) {
     if (!stream || !stream->handle || !stream->is_input || stream->channels <= 0
         || stream->channels > PORTAUDIO_DISCARD_MAX_CHANNELS) {
         set_error("Invalid arguments");
         return -1;
     }
     int16_t chunk[PORTAUDIO_DISCARD_CHUNK_FRAMES * PORTAUDIO_DISCARD_MAX_CHANNELS];
-    /* What the stream has available now, read without a wait; later frames are kept. */
+    /* What the stream has available now, read without a wait; later frames are kept. A negative count is an error. */
     signed long available = Pa_GetStreamReadAvailable(stream->handle);
+    if (available < 0) {
+        set_error_pa((PaError)available);
+        return -1;
+    }
     int dropped = 0;
     while (available > 0) {
         const unsigned long frames =

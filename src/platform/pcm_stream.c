@@ -8,6 +8,7 @@
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/timing.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -19,9 +20,10 @@
 /* How the stream stands: open, at its end, or ended by a read error. */
 enum { PCM_STREAM_OPEN = 0, PCM_STREAM_EOF = 1, PCM_STREAM_FAILED = 2 };
 
-/* The most refills one discard takes (dsd_pcm_stream_discard_ready()): about 2 s of 48 kHz stereo, so a sender that
-   outruns the reader cannot hold it there. */
+/* The most one discard (dsd_pcm_stream_discard_ready()) takes: 20 refills, about 2 s of 48 kHz stereo, and 250 ms on
+   the monotonic clock, so a sender that outruns the reader cannot hold it there. */
 #define DSD_PCM_STREAM_DISCARD_MAX_FILLS 20U
+#define DSD_PCM_STREAM_DISCARD_MAX_MS    250U
 
 /* What a failed read means: an interrupted call to repeat, a read that would block (a socket's receive timeout ran out,
    or the readiness it followed was spurious), or a failure. */
@@ -175,15 +177,19 @@ pcm_stream_wait(const dsd_pcm_stream* stream, unsigned int timeout_ms) {
 
 long
 dsd_pcm_stream_discard_ready(dsd_pcm_stream* stream) {
-    if (stream == NULL) {
+    /* A descriptor nothing feeds (a regular file, a console) reports ready whatever a read would do: it holds no
+       queued stream, and a read could wait or take the rest of a file. */
+    if (stream == NULL || (stream->sock == DSD_INVALID_SOCKET && !dsd_fd_is_stream(stream->fd))) {
         return 0;
     }
+    const uint64_t start_ms = dsd_time_monotonic_ms();
     long dropped = 0;
     for (unsigned int fills = 0U; stream->ended == PCM_STREAM_OPEN; fills++) {
         const size_t whole = (stream->len - stream->pos) & ~(size_t)1U;
         stream->pos += whole;
         dropped += (long)(whole / 2U);
-        if (fills == DSD_PCM_STREAM_DISCARD_MAX_FILLS || pcm_stream_wait(stream, 0U) <= 0
+        if (fills == DSD_PCM_STREAM_DISCARD_MAX_FILLS
+            || dsd_time_monotonic_ms() - start_ms >= DSD_PCM_STREAM_DISCARD_MAX_MS || pcm_stream_wait(stream, 0U) <= 0
             || pcm_stream_fill(stream) <= 0) {
             break;
         }

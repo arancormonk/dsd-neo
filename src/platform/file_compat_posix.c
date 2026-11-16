@@ -130,6 +130,15 @@ dsd_ftell64(FILE* fp) {
 }
 
 int
+dsd_fd_is_stream(int fd) {
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0) {
+        return 0;
+    }
+    return (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode)) ? 1 : 0;
+}
+
+int
 dsd_stat_is_regular(const dsd_stat_t* st) {
     return st && S_ISREG(st->st_mode);
 }

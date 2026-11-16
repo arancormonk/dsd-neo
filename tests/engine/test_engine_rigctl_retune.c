@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -46,16 +47,22 @@
 #include <string.h>
 #include "commands_internal.h"
 #include "dmr_vcrypt.h"
+#include "edacs_internal.h"
 #include "engine_hooks_install.h"
 #include "p25p1_terminator_end.h"
 #include "test_support.h"
 
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/pcm_stream.h>
 #if DSD_PLATFORM_WIN_NATIVE
+#include <fcntl.h>
+#include <io.h>
 #include <winsock2.h>
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 #define CC_HZ  451012500L
@@ -191,6 +198,8 @@ fake_rig_open(fake_rig* rig, dsd_opts* opts) {
         return -1;
     }
     RigctlRebindPeer(DSD_INVALID_SOCKET, opts->rigctl_sockfd, 0);
+    /* A new connection, as rigctl_connect.c makes one: the engine's legacy legs forget what they last sent. */
+    dsd_engine_legacy_tune_caches_forget();
     opts->use_rigctl = 1;
     opts->rigctl_sent_freq_hz = 0U;
     return 0;
@@ -315,15 +324,17 @@ test_off_thread_tune(void) {
     rc |= expect_epoch("off the decoder thread the tune leaves the epoch alone", c.state, e, 0);
     rc |= expect_true("the decoder thread reconciles the tune", dsd_frame_sync_apply_off_thread_tunes(c.opts, c.state));
     rc |= expect_epoch("and the epoch moves then", c.state, e, 1);
+    rc |= expect_true("with the input drop asked for", c.state->input_drop_pending == 1U);
     rig_case_close(&c);
     return rc;
 }
 
-/* The no-carrier pass's own control-channel return (the legacy rigctl leg) moves the epoch. */
+/* The no-carrier pass's own control-channel return (the legacy rigctl leg) moves the epoch: on audio input, and on an
+   RTL input rigctl alone retunes, since no RTL leg follows that return and nothing flushes the stream. */
 static int
-test_legacy_cc_return(void) {
+test_legacy_cc_return_on(int audio_in_type) {
     rig_case c;
-    if (rig_case_open(&c, AUDIO_IN_WAV) != 0) {
+    if (rig_case_open(&c, audio_in_type) != 0) {
         return expect_true("legacy return: the peer", 0);
     }
     dsd_opts* opts = c.opts;
@@ -335,9 +346,17 @@ test_legacy_cc_return(void) {
     noCarrier(opts, state);
     int rc = expect_true("the pass returned to the control channel by rigctl",
                          atomic_load(&c.rig.f_taken) == 1 && opts->rigctl_sent_freq_hz == (uint32_t)CC_HZ);
-    rc |= expect_epoch("the legacy return moves the epoch", state, e, 1);
+    rc |=
+        expect_epoch(audio_in_type == AUDIO_IN_RTL ? "the legacy return on an RTL input rigctl retunes moves the epoch"
+                                                   : "the legacy return moves the epoch",
+                     state, e, 1);
     rig_case_close(&c);
     return rc;
+}
+
+static int
+test_legacy_cc_return(void) {
+    return test_legacy_cc_return_on(AUDIO_IN_WAV) | test_legacy_cc_return_on(AUDIO_IN_RTL);
 }
 
 /* App-control's io_control leg: a trunked manual return (no P25 control channel, so not the trunk hook) moves the
@@ -545,7 +564,10 @@ test_udp_backlog(void) {
     rc |= expect_true("the old channel's audio is queued", udp_queue(tx, port, opts, old_audio, 4U));
     rc |= expect_true("hop",
                       dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
-    rc |= expect_true("send after the confirmation", udp_send(tx, port, new_audio, 2U) == 0);
+    rc |= expect_true("the tune asks for the drop, and does not carry it out", state->input_drop_pending == 1U);
+    dsd_symbol_apply_input_drop(opts, state); /* the decoder thread's next input read */
+    rc |= expect_true("which carries it out once", state->input_drop_pending == 0U);
+    rc |= expect_true("send after the drop", udp_send(tx, port, new_audio, 2U) == 0);
     rc |= expect_true("the samples queued before the confirmation are not read after it", udp_next(opts) == 9);
     rc |= expect_true("the samples after it are read", udp_next(opts) == 10);
 
@@ -553,6 +575,7 @@ test_udp_backlog(void) {
     rc |= expect_true("queued again", udp_queue(tx, port, opts, same, 2U));
     rc |= expect_true("same carrier",
                       dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_symbol_apply_input_drop(opts, state);
     rc |= expect_true("a tune to the carrier the peer is on drops nothing", udp_next(opts) == 6);
 
     const int16_t refused[] = {7, 8};
@@ -560,18 +583,23 @@ test_udp_backlog(void) {
     atomic_store(&c.rig.f_mode, RIG_REFUSES);
     rc |= expect_true("refused", dsd_engine_trunk_tune_to_freq_request(opts, state, VC3_HZ, 0, 0U)
                                      == DSD_TRUNK_TUNE_RESULT_FAILED);
+    dsd_symbol_apply_input_drop(opts, state);
     rc |= expect_true("a refused request drops nothing", udp_next(opts) == 8);
     atomic_store(&c.rig.f_mode, RIG_TAKES);
 
     const int16_t watchdog[] = {30, 31};
+    const int16_t after_watchdog[] = {40};
     rc |= expect_true("queued for the watchdog", udp_queue(tx, port, opts, watchdog, 2U));
     dsd_frame_sync_off_thread_tunes_reset(state);
     dsd_engine_set_decoder_thread(0);
     rc |= expect_true("watchdog tune",
                       dsd_engine_trunk_tune_to_freq_request(opts, state, VC3_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     dsd_engine_set_decoder_thread(1);
+    rc |= expect_true("the watchdog's tune leaves the input to the decoder thread", state->input_drop_pending == 0U);
     (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
-    rc |= expect_true("a tune off the decoder thread drops nothing", udp_next(opts) == 31);
+    dsd_symbol_apply_input_drop(opts, state);
+    rc |= expect_true("send after it", udp_send(tx, port, after_watchdog, 1U) == 0);
+    rc |= expect_true("a tune off the decoder thread drops at the decoder's next read", udp_next(opts) == 40);
 
     if (tx != DSD_INVALID_SOCKET) {
         (void)dsd_socket_close(tx);
@@ -618,6 +646,7 @@ test_tcp_backlog(void) {
     rc |= expect_true("its first sample", tcp_input_read_sample_wait(opts->tcp_in_ctx, &s, 1000U) == 1 && s == 1);
     rc |= expect_true("hop",
                       dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_symbol_apply_input_drop(opts, state); /* the decoder thread's next input read */
     const uint8_t new_audio[] = {0x09U, 0x00U};
     rc |= expect_true("send after the confirmation",
                       dsd_socket_send(server, new_audio, sizeof new_audio, 0) == (int)sizeof new_audio);
@@ -628,6 +657,81 @@ test_tcp_backlog(void) {
     (void)dsd_socket_close(server);
     (void)dsd_socket_close(client);
     (void)dsd_socket_close(listener);
+    rig_case_close(&c);
+    return rc;
+}
+
+static int
+make_pipe(int fds[2]) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return _pipe(fds, 65536U, _O_BINARY);
+#else
+    return pipe(fds);
+#endif
+}
+
+/* stdin from another program (a pipe): what the pipe and the reader hold at the confirmation go at the next read. */
+static int
+test_stdin_backlog(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_STDIN) != 0) {
+        return expect_true("stdin: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    int fds[2] = {-1, -1};
+    int rc = expect_true("pipe", make_pipe(fds) == 0);
+    opts->audio_in_stdin = dsd_pcm_stream_open_fd(fds[0]);
+    rc |= expect_true("stdin reader", opts->audio_in_stdin != NULL);
+    rc |= expect_true("on a voice channel",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC1_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_symbol_apply_input_drop(opts, state);
+    const uint8_t old_audio[] = {0x01U, 0x00U, 0x02U, 0x00U, 0x03U, 0x00U};
+    rc |= expect_true("the old channel's audio",
+                      dsd_write(fds[1], old_audio, sizeof old_audio) == (ssize_t)sizeof old_audio);
+    int16_t s = 0;
+    rc |= expect_true("its first sample", dsd_pcm_stream_read_wait(opts->audio_in_stdin, &s, 1000U) == 1 && s == 1);
+    rc |= expect_true("more of it, still in the pipe",
+                      dsd_write(fds[1], old_audio, sizeof old_audio) == (ssize_t)sizeof old_audio);
+    rc |= expect_true("hop",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_symbol_apply_input_drop(opts, state);
+    const uint8_t new_audio[] = {0x09U, 0x00U};
+    rc |=
+        expect_true("send after the drop", dsd_write(fds[1], new_audio, sizeof new_audio) == (ssize_t)sizeof new_audio);
+    rc |= expect_true("what the reader and the pipe held is not read after it",
+                      dsd_pcm_stream_read_wait(opts->audio_in_stdin, &s, 1000U) == 1 && s == 9);
+    dsd_pcm_stream_close(opts->audio_in_stdin);
+    opts->audio_in_stdin = NULL;
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+    rig_case_close(&c);
+    return rc;
+}
+
+/* Every input reader carries out a pending drop before it reads: the symbol reader and EDACS analog voice. */
+static int
+test_readers_carry_out_the_drop(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_PULSE) != 0) {
+        return expect_true("readers: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    opts->audio_in_stream = NULL; /* reads return at once */
+    int rc = expect_true("hop",
+                         dsd_engine_trunk_tune_to_freq_request(opts, state, VC1_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("a drop is pending", state->input_drop_pending == 1U);
+    (void)getSymbol(opts, state, 0);
+    rc |= expect_true("the symbol reader carries it out", state->input_drop_pending == 0U);
+    rc |= expect_true("hop again",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    short a1[960];
+    short a2[960];
+    short a3[960];
+    double pwr = 0.0;
+    (void)edacs_collect_analog_triplet(opts, state, NULL, a1, a2, a3, &pwr);
+    rc |= expect_true("EDACS analog voice carries it out", state->input_drop_pending == 0U);
     rig_case_close(&c);
     return rc;
 }
@@ -691,6 +795,8 @@ main(void) {
     rc |= test_dmr_follow_end_to_end();
     rc |= test_udp_backlog();
     rc |= test_tcp_backlog();
+    rc |= test_stdin_backlog();
+    rc |= test_readers_carry_out_the_drop();
     rc |= test_wav_input_unchanged();
     dsd_socket_cleanup();
     if (rc == 0) {

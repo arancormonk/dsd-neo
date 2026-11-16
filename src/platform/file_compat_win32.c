@@ -1262,6 +1262,15 @@ dsd_fd_wait_readable(int fd, unsigned int timeout_ms) {
     }
 }
 
+int
+dsd_fd_is_stream(int fd) {
+    if (dsd_fd_is_negative(fd)) {
+        return 0;
+    }
+    const HANDLE handle = (HANDLE)_get_osfhandle(fd);
+    return (handle != INVALID_HANDLE_VALUE && GetFileType(handle) == FILE_TYPE_PIPE) ? 1 : 0;
+}
+
 ssize_t
 dsd_write(int fd, const void* buf, size_t count) {
     if (dsd_fd_is_negative(fd)) {

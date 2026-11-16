@@ -213,8 +213,7 @@ dsd_audio_close(dsd_audio_stream* stream) {
 }
 
 int
-// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/platform/audio.h
-dsd_audio_discard_input(dsd_audio_stream* stream) {
+dsd_audio_discard_input(const dsd_audio_stream* stream) {
     if (!stream || !stream->is_input) {
         set_error("Invalid arguments");
         return -1;

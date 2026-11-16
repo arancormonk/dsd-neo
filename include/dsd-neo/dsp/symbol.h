@@ -23,6 +23,19 @@ extern "C" {
 float getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
 
 /**
+ * @brief Carry out a pending input drop (dsd_state::input_drop_pending, issue #834): a rigctl peer confirmed a retune
+ * while the audio input still held the frequency left's samples. Drops what the input holds now, as an RTL retune's
+ * flush does: PulseAudio, PortAudio or AAudio input (dsd_audio_discard_input()), the UDP ring and the TCP connection
+ * (the network-audio hooks), and stdin when it is a pipe or socket (dsd_pcm_stream_discard_ready()). Files and RTL
+ * streams hold nothing to drop. Every input reader runs it before it reads (getSymbol(), EDACS analog voice), on the
+ * decoder thread, outside the tune. No-op when nothing is pending.
+ *
+ * @param opts Decoder options (the input).
+ * @param state Decoder state holding the request.
+ */
+void dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state);
+
+/**
  * @brief Forget which matched filter the symbol grid was reading through.
  *
  * Pairs with init_rrc_filter_memory(): a cleared filter that the grid still

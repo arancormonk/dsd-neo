@@ -270,7 +270,8 @@ void dsd_frame_sync_note_off_thread_tune(const dsd_p25p1_decision* read);
  * @brief Note, before that tune's notice (dsd_frame_sync_note_off_thread_tune()), that a tune made off the decoder
  * thread moved a radio whose samples no retune flushes: a rigctl peer heard through an audio input. The decoder thread
  * moves dsd_state::symbol_clock_epoch when it reconciles the notice (dsd_frame_sync_apply_off_thread_tunes()), as the
- * RTL readers move it at a stream flush. Safe from any thread.
+ * RTL readers move it at a stream flush, and asks for the input's queued samples to be dropped at its next read
+ * (dsd_state::input_drop_pending). Safe from any thread.
  */
 void dsd_frame_sync_note_off_thread_unflushed_retune(void);
 

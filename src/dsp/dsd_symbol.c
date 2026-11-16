@@ -3714,8 +3714,31 @@ symbol_search_yields(const dsd_opts* opts, dsd_state* state) {
     return (state->symbolcnt & 63) == 0 && dsd_frame_sync_hook_signal_search_should_yield(opts, state);
 }
 
+void
+dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || !state->input_drop_pending) {
+        return;
+    }
+    state->input_drop_pending = 0U;
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_PULSE:
+            if (opts->audio_in_stream) {
+                (void)dsd_audio_discard_input(opts->audio_in_stream);
+            }
+            break;
+        case AUDIO_IN_UDP: (void)dsd_net_audio_input_hook_udp_discard_pending(opts); break;
+        case AUDIO_IN_TCP: (void)dsd_net_audio_input_hook_tcp_discard_pending(opts->tcp_in_ctx); break;
+        case AUDIO_IN_STDIN: (void)dsd_pcm_stream_discard_ready(opts->audio_in_stdin); break;
+        default: break;
+    }
+}
+
 static float
 symbol_read(dsd_opts* opts, dsd_state* state, int have_sync) {
+    /* A rigctl peer's confirmed retune left the frequency left's samples queued in the input (issue #834). */
+    if (state->input_drop_pending) {
+        dsd_symbol_apply_input_drop(opts, state);
+    }
     /* Long protocol readers also leave a search visit at its deadline, or once a read gave up on a stalled input, and
        leave the frame a gap in the radio stream cut. Completing their bounded frame with unusable symbols lets the
        engine regain its tick guard safely. The recorded interruption marks them on every input: the frame decoders

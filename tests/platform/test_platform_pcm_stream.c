@@ -254,6 +254,50 @@ test_socket_discard_ready(void) {
     socket_pair_close(&pair);
 }
 
+/* Issue #834: stdin from another program (a pipe) drops what it holds; a regular file, which nothing feeds, drops
+   nothing. */
+static void
+test_fd_discard_ready(void) {
+    int fds[2] = {-1, -1};
+    if (make_pipe(fds) != 0) {
+        check(0, "pipe for the discard");
+        return;
+    }
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_fd(fds[0]);
+    check(stream != NULL, "open on the pipe for the discard");
+    const uint8_t held[] = {0x01U, 0x00U, 0x02U, 0x00U, 0x03U};
+    put_bytes(fds[1], held, sizeof held);
+    check(dsd_pcm_stream_discard_ready(stream) == 2, "a pipe drops its two whole samples");
+    const uint8_t after[] = {0x00U, 0x07U, 0x00U};
+    put_bytes(fds[1], after, sizeof after);
+    int16_t s = 0;
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 3, "the part sample is kept");
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 7, "and what came after");
+    dsd_pcm_stream_close(stream);
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-pcm-discard");
+    check(fd >= 0, "temp file for the discard");
+    if (fd < 0) {
+        return;
+    }
+    const uint8_t file_bytes[] = {0x05U, 0x00U, 0x06U, 0x00U};
+    put_bytes(fd, file_bytes, sizeof file_bytes);
+    (void)dsd_close(fd);
+    FILE* file = dsd_fopen_existing_regular_file(path, "rb");
+    check(file != NULL, "reopen the file for the discard");
+    dsd_pcm_stream* file_stream = file ? dsd_pcm_stream_open_fd(dsd_fileno(file)) : NULL;
+    check(dsd_pcm_stream_discard_ready(file_stream) == 0, "a regular file drops nothing");
+    check(dsd_pcm_stream_read_wait(file_stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 5, "it reads on");
+    dsd_pcm_stream_close(file_stream);
+    if (file) {
+        (void)fclose(file);
+    }
+    (void)remove(path);
+}
+
 static void
 test_no_stream(void) {
     int16_t s = 7;
@@ -276,6 +320,7 @@ main(void) {
     test_regular_file();
     test_socket_idle_then_close();
     test_socket_discard_ready();
+    test_fd_discard_ready();
     dsd_socket_cleanup();
     if (g_failures != 0) {
         return 1;

@@ -8931,6 +8931,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/engine
         ${PROJECT_SOURCE_DIR}/src/app_control
         ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+        ${PROJECT_SOURCE_DIR}/src/protocol/edacs
         ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1
 )
 if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))

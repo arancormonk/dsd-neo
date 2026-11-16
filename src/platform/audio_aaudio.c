@@ -1514,14 +1514,16 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     return (int)frames;
 }
 
-/* Frames per read of an input discard, the most channels it reads, and the most input it drops (frames): a producer
-   that outruns the reader cannot hold it there. */
+/* Frames per read of an input discard, the most channels it reads, and the most it drops: about 2 s of frames, and
+   250 ms on the monotonic clock, so a producer that outruns the reader cannot hold it there. */
 #define DSD_AAUDIO_DISCARD_CHUNK_FRAMES 256
 #define DSD_AAUDIO_DISCARD_MAX_CHANNELS 8
 #define DSD_AAUDIO_DISCARD_MAX_FRAMES   (2 * 48000)
+#define DSD_AAUDIO_DISCARD_MAX_NS       250000000ULL
 
+/* The frames dropped are not counted in device_frames: the decoder never had them. */
 int
-dsd_audio_discard_input(dsd_audio_stream* stream) {
+dsd_audio_discard_input(const dsd_audio_stream* stream) {
     if (!stream || !stream->is_input || stream->channels <= 0 || stream->channels > DSD_AAUDIO_DISCARD_MAX_CHANNELS) {
         set_error("Invalid arguments");
         return -1;
@@ -1530,9 +1532,10 @@ dsd_audio_discard_input(dsd_audio_stream* stream) {
         return 0; /* between a disconnect and a reopen nothing is held */
     }
     int16_t chunk[DSD_AAUDIO_DISCARD_CHUNK_FRAMES * DSD_AAUDIO_DISCARD_MAX_CHANNELS];
+    const uint64_t start_ns = dsd_time_monotonic_ns();
     int dropped = 0;
     /* A read that does not wait returns what the stream holds now; later frames are kept. */
-    while (dropped < DSD_AAUDIO_DISCARD_MAX_FRAMES) {
+    while (dropped < DSD_AAUDIO_DISCARD_MAX_FRAMES && dsd_time_monotonic_ns() - start_ns < DSD_AAUDIO_DISCARD_MAX_NS) {
         const aaudio_result_t res = AAudioStream_read(stream->handle, chunk, DSD_AAUDIO_DISCARD_CHUNK_FRAMES, 0);
         if (res <= 0) {
             if (res < 0) {
@@ -1541,7 +1544,6 @@ dsd_audio_discard_input(dsd_audio_stream* stream) {
             }
             break;
         }
-        stream->device_frames += (uint64_t)res;
         dropped += (int)res;
     }
     return dropped;

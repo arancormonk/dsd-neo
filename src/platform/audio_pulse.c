@@ -949,18 +949,6 @@ dsd_audio_open_output(const dsd_audio_params* params) {
     return stream;
 }
 
-/* The frames a discard kept (dsd_audio_discard_input()), up to @p samples of them, into @p buffer: how many samples. */
-static size_t
-pulse_input_take_carry(dsd_audio_stream* stream, int16_t* buffer, size_t samples) {
-    const size_t held = stream->input_carry_len - stream->input_carry_pos;
-    const size_t take = held < samples ? held : samples;
-    if (take > 0U) {
-        DSD_MEMCPY(buffer, &stream->input_carry[stream->input_carry_pos], take * sizeof(int16_t));
-        stream->input_carry_pos += take;
-    }
-    return take;
-}
-
 int
 dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     if (!stream || !stream->handle || !buffer) {
@@ -973,14 +961,10 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
         return -1;
     }
 
-    const size_t samples = frames * (size_t)stream->channels;
-    const size_t carried = pulse_input_take_carry(stream, buffer, samples);
-    if (carried == samples) {
-        return (int)frames;
-    }
+    size_t bytes = frames * (size_t)stream->channels * sizeof(int16_t);
     int err = 0;
 
-    if (pa_simple_read(stream->handle, buffer + carried, (samples - carried) * sizeof(int16_t), &err) < 0) {
+    if (pa_simple_read(stream->handle, buffer, bytes, &err) < 0) {
         set_error_pa(err);
         return -1;
     }
@@ -988,38 +972,48 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     return (int)frames;
 }
 
-/* A read of a discard that took longer than this waited for audio: what the client held is gone. */
-#define PULSE_DISCARD_WAITED_NS 1000000ULL
-/* The most input one discard drops, in seconds: a producer that outruns the reader cannot hold it there. */
-#define PULSE_DISCARD_MAX_S     2U
+/* An input discard (dsd_audio_discard_input()) reads 32-frame chunks, of at most 8 channels; a read that took longer
+   than 1 ms waited for audio. It stops there, after about 2 s of frames, or after 250 ms on the monotonic clock. */
+#define PULSE_DISCARD_CHUNK_FRAMES 32U
+#define PULSE_DISCARD_MAX_CHANNELS 8U
+#define PULSE_DISCARD_WAITED_NS    1000000ULL
+#define PULSE_DISCARD_MAX_S        2U
+#define PULSE_DISCARD_MAX_NS       250000000ULL
 
+/* A best effort, ended by timing. pa_simple keeps the record fragment it read last and returns the rest of it, and what
+   the client already queued behind it, at once, so the discard reads until a read has to wait for audio: what the
+   client held is gone then. That read's frames go too (the sound server captured them before they arrived). A read of
+   held data preempted for over 1 ms ends it early and keeps the rest (the audio it would have kept anyway).
+
+   pa_simple offers no exact way. pa_simple_get_latency() is the whole record pipeline's latency, which on a sink
+   monitor (a radio program played into a virtual sink: the usual rigctl setup) can read 0 while the client holds a
+   whole fragment. pa_simple_flush() flushes the server side only, not the client's queue or the fragment pa_simple
+   holds. The exact measure, pa_stream_readable_size(), needs the input on the pa_stream API, which pa_simple hides.
+
+   The pa_simple_read() that waits has no timeout: a source that stops delivering holds it as it holds every read. */
 int
-dsd_audio_discard_input(dsd_audio_stream* stream) {
+dsd_audio_discard_input(const dsd_audio_stream* stream) {
     if (!stream || !stream->handle || !stream->is_input || stream->channels <= 0
-        || (unsigned int)stream->channels > DSD_PULSE_DISCARD_MAX_CHANNELS) {
+        || (unsigned int)stream->channels > PULSE_DISCARD_MAX_CHANNELS) {
         set_error("Invalid arguments");
         return -1;
     }
-    const size_t channels = (size_t)stream->channels;
-    size_t dropped = (stream->input_carry_len - stream->input_carry_pos) / channels;
-    stream->input_carry_len = 0U;
-    stream->input_carry_pos = 0U;
+    int16_t chunk[PULSE_DISCARD_CHUNK_FRAMES * PULSE_DISCARD_MAX_CHANNELS];
+    const size_t chunk_bytes = (size_t)PULSE_DISCARD_CHUNK_FRAMES * (size_t)stream->channels * sizeof(int16_t);
     const size_t limit = (size_t)(stream->sample_rate > 0 ? stream->sample_rate : 48000) * PULSE_DISCARD_MAX_S;
-    const size_t chunk_samples = (size_t)DSD_PULSE_DISCARD_CHUNK_FRAMES * channels;
-    /* pa_simple keeps the record fragment it read last and returns the rest of it, and what the client already
-       queued, at once; the first read that waits is for audio that arrived after the call, and is kept. */
-    while (dropped < limit) {
+    const uint64_t start_ns = dsd_time_monotonic_ns();
+    size_t dropped = 0U;
+    while (dropped < limit && dsd_time_monotonic_ns() - start_ns < PULSE_DISCARD_MAX_NS) {
         int err = 0;
-        const uint64_t start_ns = dsd_time_monotonic_ns();
-        if (pa_simple_read(stream->handle, stream->input_carry, chunk_samples * sizeof(int16_t), &err) < 0) {
+        const uint64_t read_ns = dsd_time_monotonic_ns();
+        if (pa_simple_read(stream->handle, chunk, chunk_bytes, &err) < 0) {
             set_error_pa(err);
             return -1;
         }
-        if (dsd_time_monotonic_ns() - start_ns > PULSE_DISCARD_WAITED_NS) {
-            stream->input_carry_len = chunk_samples;
+        dropped += PULSE_DISCARD_CHUNK_FRAMES;
+        if (dsd_time_monotonic_ns() - read_ns > PULSE_DISCARD_WAITED_NS) {
             break;
         }
-        dropped += DSD_PULSE_DISCARD_CHUNK_FRAMES;
     }
     return dropped > (size_t)INT32_MAX ? INT32_MAX : (int)dropped;
 }

@@ -22,7 +22,6 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
-#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
@@ -33,7 +32,6 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
-#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/tuner_owner.h>
@@ -186,36 +184,20 @@ dsd_engine_set_decoder_thread(int is_decoder) {
     s_decoder_thread = is_decoder ? 1 : 0;
 }
 
-/* The samples the audio input holds now are the peer's from before its retune: they go, as an RTL stream flush drops
-   the frequency left's (issue #834). Only what DSD-neo holds: the PulseAudio client's record data, the UDP ring, the
-   TCP reader's buffer and the socket's ready bytes. A file holds no other channel, and stdin may be one. */
-static void
-dsd_engine_drop_rigctl_input_backlog(dsd_opts* opts) {
-    switch (opts->audio_in_type) {
-        case AUDIO_IN_PULSE:
-            if (opts->audio_in_stream) {
-                (void)dsd_audio_discard_input(opts->audio_in_stream);
-            }
-            break;
-        case AUDIO_IN_UDP: (void)dsd_net_audio_input_hook_udp_discard_pending(opts); break;
-        case AUDIO_IN_TCP: (void)dsd_net_audio_input_hook_tcp_discard_pending(opts->tcp_in_ctx); break;
-        default: break;
-    }
-}
-
 void
-dsd_engine_note_rigctl_retune(dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz) {
+dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz) {
     if (!opts || !state || opts->use_rigctl != 1 || (sent_before_hz != 0U && (long int)sent_before_hz == freq_hz)) {
         return;
     }
     if (!s_decoder_thread) {
-        /* The decoder thread may be reading the input meanwhile: what it holds cannot be told from what came after the
-           peer's answer, so nothing is dropped. */
+        /* The decoder thread moves the epoch and asks for the drop when it reconciles this tune. */
         dsd_frame_sync_note_off_thread_unflushed_retune();
         return;
     }
     state->symbol_clock_epoch++;
-    dsd_engine_drop_rigctl_input_backlog(opts);
+    /* The input still holds the frequency left's samples: the decoder thread drops them at its next input read
+       (dsd_symbol_apply_input_drop()), outside this tune. */
+    state->input_drop_pending = 1U;
 }
 
 /* Off the decoder thread, a tune request's one read of the P25p1 decision the decoder publishes

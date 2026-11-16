@@ -29,12 +29,6 @@ typedef AAudioStream dsd_audio_backend_handle;
 typedef void dsd_audio_backend_handle;
 #endif
 
-#if defined(DSD_NEO_AUDIO_BACKEND_PULSE)
-/* Frames per read of a PulseAudio input discard (dsd_audio_discard_input()), and the most channels its carry holds. */
-#define DSD_PULSE_DISCARD_CHUNK_FRAMES 32U
-#define DSD_PULSE_DISCARD_MAX_CHANNELS 8U
-#endif
-
 struct dsd_audio_stream {
     dsd_audio_backend_handle* handle;
     int is_input;
@@ -80,14 +74,6 @@ struct dsd_audio_stream {
     int has_device_name;
     char app_name[64];
     dsd_audio_output_recovery recovery;
-#endif
-
-#if defined(DSD_NEO_AUDIO_BACKEND_PULSE)
-    /* Input: the frames of the read that ended a discard (dsd_audio_discard_input()) by waiting for audio. They arrived
-     * after it, so dsd_audio_read() returns them first. */
-    int16_t input_carry[DSD_PULSE_DISCARD_CHUNK_FRAMES * DSD_PULSE_DISCARD_MAX_CHANNELS];
-    size_t input_carry_len;
-    size_t input_carry_pos;
 #endif
 
 #ifdef DSD_NEO_AUDIO_BACKEND_AAUDIO

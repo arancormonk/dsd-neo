@@ -152,9 +152,15 @@ Pa_GetDefaultOutputDevice(void) {
     return 0;
 }
 
+/* The input the discard test opens (paNoDevice: none), the frames its stream reports available (a negative value is
+   the error the availability call returns), and the frames read from it. */
+static PaDeviceIndex g_default_input = paNoDevice;
+static signed long g_read_available;
+static unsigned long g_frames_read;
+
 PaDeviceIndex
 Pa_GetDefaultInputDevice(void) {
-    return paNoDevice;
+    return g_default_input;
 }
 
 const PaDeviceInfo*
@@ -247,14 +253,17 @@ PaError
 Pa_ReadStream(PaStream* stream, void* buffer, unsigned long frames) {
     (void)stream;
     (void)buffer;
-    (void)frames;
+    g_frames_read += frames;
+    if (g_read_available > 0) {
+        g_read_available -= (signed long)frames < g_read_available ? (signed long)frames : g_read_available;
+    }
     return paNoError;
 }
 
 signed long
 Pa_GetStreamReadAvailable(PaStream* stream) {
     (void)stream;
-    return 0;
+    return g_read_available;
 }
 
 /*============================================================================
@@ -415,11 +424,35 @@ test_streams_on_two_threads_never_overlap_in_portaudio(void) {
     assert(atomic_load(&g_lifecycle_overlap) == 0);
 }
 
+/* Issue #834: an input discard reads exactly the frames the stream reports available, in chunks, and no more; an
+   availability error is an error. */
+static void
+test_input_discard_reads_what_is_available(void) {
+    g_default_input = 0;
+    const dsd_audio_params params = {48000, 1, 16, NULL, "test", 0};
+    dsd_audio_stream* in = dsd_audio_open_input(&params);
+    assert(in != NULL);
+    g_read_available = 600;
+    g_frames_read = 0U;
+    assert(dsd_audio_discard_input(in) == 600);
+    assert(g_frames_read == 600U);
+    g_read_available = 0;
+    assert(dsd_audio_discard_input(in) == 0);
+    assert(g_frames_read == 600U);
+    g_read_available = (signed long)paUnanticipatedHostError;
+    assert(dsd_audio_discard_input(in) < 0);
+    assert(g_frames_read == 600U);
+    g_read_available = 0;
+    dsd_audio_close(in);
+    g_default_input = paNoDevice;
+}
+
 int
 main(void) {
     assert(dsd_audio_init() == 0);
     test_async_recovery_on_the_opening_thread();
     test_streams_on_two_threads_never_overlap_in_portaudio();
+    test_input_discard_reads_what_is_available();
     dsd_audio_cleanup();
     printf("PLATFORM_AUDIO_PORTAUDIO_RECOVERY: OK\n");
     return 0;

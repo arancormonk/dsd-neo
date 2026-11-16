@@ -131,6 +131,8 @@ apply_off_thread_unflushed_retunes(dsd_state* state) {
     if (unflushed != s_off_thread_unflushed_seen) {
         s_off_thread_unflushed_seen = unflushed;
         state->symbol_clock_epoch++;
+        /* And the input's queued samples go at the next read (dsd_symbol_apply_input_drop()). */
+        state->input_drop_pending = 1U;
     }
 }
 
