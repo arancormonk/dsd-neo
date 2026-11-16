@@ -2608,6 +2608,21 @@ channel is delayed.
     reduced key its own) is locked out instead of followed, and a followed call that turns out so is left.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532; `0` is the default too, and a port over 65535 is an error)
+  - When the radio software confirms a tune to another frequency (a trunked call followed, a return to the control
+    channel, a `-Y` step, a frequency you enter), DSD-neo drops the audio it already holds from the old channel: on
+    PulseAudio input what the sound server has handed over but DSD-neo has not read yet, on UDP input its receive
+    buffer, and on TCP input its read buffer and what the connection already holds. It also starts its timing over, so
+    nothing measured on the old channel carries onto the new one (a DMR call's encryption sequence, the place of a P25
+    end-of-call). An RTL-family input does the same already, because a retune clears its stream. A tune to the
+    frequency the radio software is already on, one it refuses, and one it does not answer drop nothing. Audio from
+    stdin or a file is never dropped.
+  - What DSD-neo cannot drop is audio that is still inside the radio software, or in the sound system on its way to
+    DSD-neo, when the tune is confirmed. It arrives after the retune and is read as the new channel's. So for the
+    first moments after a retune, the old channel can still be heard: an end-of-call there can end the call just
+    followed, and a call header there can show the old channel's call on the new one. How long this lasts depends on
+    how much audio the radio software and the audio path between it and DSD-neo hold back. A low-latency audio path
+    shortens it: keep the radio software's audio buffering small, and prefer a direct network audio stream (UDP or
+    TCP) over a virtual sound card.
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode), the FM passband the peer is asked for wherever it
   does not demodulate the analog monitor: on digital modes, and on an RTL-family input, where the peer only follows the
   frequency and is asked for `-B` alone. On audio input, where the peer demodulates, the analog monitor asks for its own

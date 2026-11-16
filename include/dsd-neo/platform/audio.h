@@ -112,6 +112,20 @@ dsd_audio_stream* dsd_audio_open_output(const dsd_audio_params* params);
 int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
 
 /**
+ * @brief Drop the input samples the stream holds now, unread (issue #834: a rigctl peer's audio from before its
+ * retune).
+ *
+ * PulseAudio: what the client holds from the server (the record fragment being read, the queue behind it), read and
+ * dropped until a read waits for audio, whose frames are kept for the next dsd_audio_read(). PortAudio: the frames the
+ * stream has available. AAudio: the frames a read with no wait returns. Audio still on its way to DSD-neo (in the
+ * producer, or in the sound server) arrives after the call and is kept.
+ *
+ * @param stream    Input stream handle.
+ * @return Frames dropped, or negative on error (an output stream included).
+ */
+int dsd_audio_discard_input(dsd_audio_stream* stream);
+
+/**
  * @brief Write audio samples to output stream.
  *
  * May block until buffer space is available.

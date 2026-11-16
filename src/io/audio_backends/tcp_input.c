@@ -71,6 +71,14 @@ tcp_input_read_sample_wait(tcp_input_ctx* ctx, int16_t* out, unsigned int timeou
     return got == DSD_PCM_STREAM_SAMPLE ? 1 : -1;
 }
 
+long
+tcp_input_discard_pending(tcp_input_ctx* ctx) {
+    if (!ctx || !ctx->valid) {
+        return 0;
+    }
+    return dsd_pcm_stream_discard_ready(ctx->stream);
+}
+
 int
 tcp_input_is_valid(const tcp_input_ctx* ctx) {
     if (!ctx) {

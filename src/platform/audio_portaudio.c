@@ -999,6 +999,35 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     return (int)frames;
 }
 
+/* Frames per read of an input discard, and the most channels it reads. */
+#define PORTAUDIO_DISCARD_CHUNK_FRAMES 256
+#define PORTAUDIO_DISCARD_MAX_CHANNELS 8
+
+int
+dsd_audio_discard_input(dsd_audio_stream* stream) {
+    if (!stream || !stream->handle || !stream->is_input || stream->channels <= 0
+        || stream->channels > PORTAUDIO_DISCARD_MAX_CHANNELS) {
+        set_error("Invalid arguments");
+        return -1;
+    }
+    int16_t chunk[PORTAUDIO_DISCARD_CHUNK_FRAMES * PORTAUDIO_DISCARD_MAX_CHANNELS];
+    /* What the stream has available now, read without a wait; later frames are kept. */
+    signed long available = Pa_GetStreamReadAvailable(stream->handle);
+    int dropped = 0;
+    while (available > 0) {
+        const unsigned long frames =
+            available < PORTAUDIO_DISCARD_CHUNK_FRAMES ? (unsigned long)available : PORTAUDIO_DISCARD_CHUNK_FRAMES;
+        const PaError err = Pa_ReadStream(stream->handle, chunk, frames);
+        if (err != paNoError && err != paInputOverflowed) {
+            set_error_pa(err);
+            return -1;
+        }
+        dropped += (int)frames;
+        available -= (signed long)frames;
+    }
+    return dropped;
+}
+
 /* An async stream's device is down: once a reopen is due, close the failed device and open it again, on the writer's
    thread, which opened it (the pump only waits meanwhile and touches no handle). Called and returns with the lock held;
    drops it around the device calls. 0 when the device is back. */

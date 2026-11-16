@@ -1514,6 +1514,39 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     return (int)frames;
 }
 
+/* Frames per read of an input discard, the most channels it reads, and the most input it drops (frames): a producer
+   that outruns the reader cannot hold it there. */
+#define DSD_AAUDIO_DISCARD_CHUNK_FRAMES 256
+#define DSD_AAUDIO_DISCARD_MAX_CHANNELS 8
+#define DSD_AAUDIO_DISCARD_MAX_FRAMES   (2 * 48000)
+
+int
+dsd_audio_discard_input(dsd_audio_stream* stream) {
+    if (!stream || !stream->is_input || stream->channels <= 0 || stream->channels > DSD_AAUDIO_DISCARD_MAX_CHANNELS) {
+        set_error("Invalid arguments");
+        return -1;
+    }
+    if (!stream->handle) {
+        return 0; /* between a disconnect and a reopen nothing is held */
+    }
+    int16_t chunk[DSD_AAUDIO_DISCARD_CHUNK_FRAMES * DSD_AAUDIO_DISCARD_MAX_CHANNELS];
+    int dropped = 0;
+    /* A read that does not wait returns what the stream holds now; later frames are kept. */
+    while (dropped < DSD_AAUDIO_DISCARD_MAX_FRAMES) {
+        const aaudio_result_t res = AAudioStream_read(stream->handle, chunk, DSD_AAUDIO_DISCARD_CHUNK_FRAMES, 0);
+        if (res <= 0) {
+            if (res < 0) {
+                set_error_aaudio(res);
+                return -1;
+            }
+            break;
+        }
+        stream->device_frames += (uint64_t)res;
+        dropped += (int)res;
+    }
+    return dropped;
+}
+
 int
 dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
     /* A NULL handle is legal here: output tolerates a stream being recovered. */

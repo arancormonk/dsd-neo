@@ -37,6 +37,9 @@ typedef struct {
     /* A UDP read that gives up after timeout_ms with no sample (-1), so the decoder can apply a queued command while
        the input is silent (issue #634). */
     int (*udp_read_sample_wait)(dsd_opts* opts, int16_t* out, unsigned int timeout_ms);
+    /* Drop the samples the input holds now (issue #834): a rigctl peer's audio from before its retune. */
+    long (*tcp_discard_pending)(tcp_input_ctx* ctx);
+    long (*udp_discard_pending)(dsd_opts* opts);
     /* A bounded, cancellable TCP connect (ConnectBounded()), for the TCP audio reconnect. */
     dsd_socket_t (*tcp_connect)(const char* host, int port, int resolve, dsd_socket_cancel_fn cancelled, void* context);
 } dsd_net_audio_input_hooks;
@@ -54,6 +57,9 @@ int dsd_net_audio_input_hook_udp_read_sample(dsd_opts* opts, int16_t* out);
 /** 1 with a sample, 0 on stop, -1 when none arrived within @p timeout_ms. Without the hook it waits as
     dsd_net_audio_input_hook_udp_read_sample() does, and never returns -1. */
 int dsd_net_audio_input_hook_udp_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms);
+/** The samples the input dropped (tcp_input_discard_pending(), udp_input_discard_pending()); 0 without the hook. */
+long dsd_net_audio_input_hook_tcp_discard_pending(tcp_input_ctx* ctx);
+long dsd_net_audio_input_hook_udp_discard_pending(dsd_opts* opts);
 /** The connected socket, or DSD_INVALID_SOCKET (also without the hook). */
 dsd_socket_t dsd_net_audio_input_hook_tcp_connect(const char* host, int port, int resolve,
                                                   dsd_socket_cancel_fn cancelled, void* context);

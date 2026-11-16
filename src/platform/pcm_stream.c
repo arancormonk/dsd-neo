@@ -19,6 +19,10 @@
 /* How the stream stands: open, at its end, or ended by a read error. */
 enum { PCM_STREAM_OPEN = 0, PCM_STREAM_EOF = 1, PCM_STREAM_FAILED = 2 };
 
+/* The most refills one discard takes (dsd_pcm_stream_discard_ready()): about 2 s of 48 kHz stereo, so a sender that
+   outruns the reader cannot hold it there. */
+#define DSD_PCM_STREAM_DISCARD_MAX_FILLS 20U
+
 /* What a failed read means: an interrupted call to repeat, a read that would block (a socket's receive timeout ran out,
    or the readiness it followed was spurious), or a failure. */
 enum { PCM_STREAM_RETRY = 0, PCM_STREAM_WOULD_BLOCK = 1, PCM_STREAM_FAILURE = 2 };
@@ -167,6 +171,24 @@ pcm_stream_wait(const dsd_pcm_stream* stream, unsigned int timeout_ms) {
         return ready < 0 ? -1 : (ready != 0);
     }
     return dsd_fd_wait_readable(stream->fd, timeout_ms);
+}
+
+long
+dsd_pcm_stream_discard_ready(dsd_pcm_stream* stream) {
+    if (stream == NULL) {
+        return 0;
+    }
+    long dropped = 0;
+    for (unsigned int fills = 0U; stream->ended == PCM_STREAM_OPEN; fills++) {
+        const size_t whole = (stream->len - stream->pos) & ~(size_t)1U;
+        stream->pos += whole;
+        dropped += (long)(whole / 2U);
+        if (fills == DSD_PCM_STREAM_DISCARD_MAX_FILLS || pcm_stream_wait(stream, 0U) <= 0
+            || pcm_stream_fill(stream) <= 0) {
+            break;
+        }
+    }
+    return dropped;
 }
 
 int

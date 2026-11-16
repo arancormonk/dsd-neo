@@ -10,7 +10,9 @@
  * return (on and off the decoder thread), the legacy control-channel return of the no-carrier pass, and app-control's
  * io_control leg of a trunked manual return. A tune to the frequency the peer is on, a refused request and a lost
  * reply move nothing. The spans the timeline guards are checked through their own readers: a DMR slot's MI chain after
- * a return, and a P25 Phase 1 terminator's place.
+ * a return, and a P25 Phase 1 terminator's place. At the same confirmation the audio input drops what it holds from
+ * before the retune (the UDP ring, the TCP reader and socket), and keeps what arrives after it; a WAV file is read on
+ * as it was.
  */
 
 #include <dsd-neo/app_control/commands.h>
@@ -25,15 +27,19 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
+#include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +48,7 @@
 #include "dmr_vcrypt.h"
 #include "engine_hooks_install.h"
 #include "p25p1_terminator_end.h"
+#include "test_support.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
 #include <winsock2.h>
@@ -463,6 +470,209 @@ test_dmr_follow_end_to_end(void) {
     return rc;
 }
 
+/* ---- The input's queued samples (issue #834) ---- */
+
+static int
+bound_port(dsd_socket_t sock) {
+    struct sockaddr_in sa;
+    DSD_MEMSET(&sa, 0, sizeof sa);
+#if DSD_PLATFORM_WIN_NATIVE
+    int len = (int)sizeof sa;
+#else
+    socklen_t len = (socklen_t)sizeof sa;
+#endif
+    return getsockname(sock, (struct sockaddr*)&sa, &len) == 0 ? (int)ntohs(sa.sin_port) : -1;
+}
+
+static int
+udp_send(dsd_socket_t tx, int port, const int16_t* samples, size_t count) {
+    uint8_t buf[64];
+    if (count * 2U > sizeof buf) {
+        return -1;
+    }
+    for (size_t i = 0; i < count; i++) {
+        buf[i * 2U] = (uint8_t)((uint16_t)samples[i] & 0xFFU);
+        buf[i * 2U + 1U] = (uint8_t)((uint16_t)samples[i] >> 8);
+    }
+    struct sockaddr_in dst;
+    DSD_MEMSET(&dst, 0, sizeof dst);
+    if (dsd_socket_resolve("127.0.0.1", port, &dst) != 0) {
+        return -1;
+    }
+    return dsd_socket_sendto(tx, buf, count * 2U, 0, (struct sockaddr*)&dst, (int)sizeof dst) == (int)(count * 2U) ? 0
+                                                                                                                   : -1;
+}
+
+/* The next UDP sample, waiting up to a second for it (-32768 for none). */
+static int16_t
+udp_next(dsd_opts* opts) {
+    int16_t s = 0;
+    for (int tries = 0; tries < 50; tries++) {
+        if (udp_input_read_sample_wait(opts, &s, 20U) == 1) {
+            return s;
+        }
+    }
+    return INT16_MIN;
+}
+
+/* A datagram's first sample read, the rest still queued: @p first must come first. */
+static int
+udp_queue(dsd_socket_t tx, int port, dsd_opts* opts, const int16_t* samples, size_t count) {
+    return udp_send(tx, port, samples, count) == 0 && udp_next(opts) == samples[0];
+}
+
+/* UDP: the samples the ring holds at the peer's confirmation go, and those sent after it are read. A tune to the
+   frequency the peer is on, a refused request and a tune off the decoder thread (whose place in the stream is not
+   known) drop nothing. */
+static int
+test_udp_backlog(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_UDP) != 0) {
+        return expect_true("udp: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    dsd_engine_net_audio_input_hooks_install();
+    int rc = expect_true("udp input", udp_input_start(opts, "127.0.0.1", 0, 48000) == 0);
+    const int port = bound_port(opts->udp_in_sockfd);
+    dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    rc |= expect_true("sender", tx != DSD_INVALID_SOCKET && port > 0);
+    rc |= expect_true("on a voice channel",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC1_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+
+    const int16_t old_audio[] = {1, 2, 3, 4};
+    const int16_t new_audio[] = {9, 10};
+    rc |= expect_true("the old channel's audio is queued", udp_queue(tx, port, opts, old_audio, 4U));
+    rc |= expect_true("hop",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("send after the confirmation", udp_send(tx, port, new_audio, 2U) == 0);
+    rc |= expect_true("the samples queued before the confirmation are not read after it", udp_next(opts) == 9);
+    rc |= expect_true("the samples after it are read", udp_next(opts) == 10);
+
+    const int16_t same[] = {5, 6};
+    rc |= expect_true("queued again", udp_queue(tx, port, opts, same, 2U));
+    rc |= expect_true("same carrier",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("a tune to the carrier the peer is on drops nothing", udp_next(opts) == 6);
+
+    const int16_t refused[] = {7, 8};
+    rc |= expect_true("queued for a refusal", udp_queue(tx, port, opts, refused, 2U));
+    atomic_store(&c.rig.f_mode, RIG_REFUSES);
+    rc |= expect_true("refused", dsd_engine_trunk_tune_to_freq_request(opts, state, VC3_HZ, 0, 0U)
+                                     == DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_true("a refused request drops nothing", udp_next(opts) == 8);
+    atomic_store(&c.rig.f_mode, RIG_TAKES);
+
+    const int16_t watchdog[] = {30, 31};
+    rc |= expect_true("queued for the watchdog", udp_queue(tx, port, opts, watchdog, 2U));
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    dsd_engine_set_decoder_thread(0);
+    rc |= expect_true("watchdog tune",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC3_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_engine_set_decoder_thread(1);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    rc |= expect_true("a tune off the decoder thread drops nothing", udp_next(opts) == 31);
+
+    if (tx != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(tx);
+    }
+    udp_input_stop(opts);
+    rig_case_close(&c);
+    return rc;
+}
+
+/* TCP: what the reader buffered and what the socket has ready at the confirmation go; what is sent after it is read. */
+static int
+test_tcp_backlog(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_TCP) != 0) {
+        return expect_true("tcp: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    dsd_engine_net_audio_input_hooks_install();
+    dsd_socket_t listener = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    dsd_socket_t client = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr;
+    DSD_MEMSET(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int rc = expect_true("tcp sockets", listener != DSD_INVALID_SOCKET && client != DSD_INVALID_SOCKET
+                                            && dsd_socket_bind(listener, (struct sockaddr*)&addr, sizeof addr) == 0
+                                            && dsd_socket_listen(listener, 1) == 0);
+    struct sockaddr_in bound;
+    DSD_MEMSET(&bound, 0, sizeof bound);
+    bound.sin_family = AF_INET;
+    bound.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bound.sin_port = htons((uint16_t)bound_port(listener));
+    rc |= expect_true("tcp connect", dsd_socket_connect(client, (struct sockaddr*)&bound, sizeof bound) == 0);
+    dsd_socket_t server = dsd_socket_accept(listener, NULL, NULL);
+    opts->tcp_in_ctx = tcp_input_open(client, 48000);
+    rc |= expect_true("tcp input", server != DSD_INVALID_SOCKET && opts->tcp_in_ctx != NULL);
+    rc |= expect_true("on a voice channel",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC1_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    const uint8_t old_audio[] = {0x01U, 0x00U, 0x02U, 0x00U, 0x03U, 0x00U};
+    rc |= expect_true("send the old channel's audio",
+                      dsd_socket_send(server, old_audio, sizeof old_audio, 0) == (int)sizeof old_audio);
+    int16_t s = 0;
+    rc |= expect_true("its first sample", tcp_input_read_sample_wait(opts->tcp_in_ctx, &s, 1000U) == 1 && s == 1);
+    rc |= expect_true("hop",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    const uint8_t new_audio[] = {0x09U, 0x00U};
+    rc |= expect_true("send after the confirmation",
+                      dsd_socket_send(server, new_audio, sizeof new_audio, 0) == (int)sizeof new_audio);
+    rc |= expect_true("the samples held before the confirmation are not read after it",
+                      tcp_input_read_sample_wait(opts->tcp_in_ctx, &s, 1000U) == 1 && s == 9);
+    tcp_input_close(opts->tcp_in_ctx);
+    opts->tcp_in_ctx = NULL;
+    (void)dsd_socket_close(server);
+    (void)dsd_socket_close(client);
+    (void)dsd_socket_close(listener);
+    rig_case_close(&c);
+    return rc;
+}
+
+/* A WAV file holds no other channel: the confirmation leaves its read position where it was. */
+static int
+test_wav_input_unchanged(void) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-rigctl-retune");
+    if (fd < 0) {
+        return expect_true("wav: temp file", 0);
+    }
+    (void)dsd_close(fd);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof info);
+    info.samplerate = 48000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    short samples[64] = {0};
+    SNDFILE* out = sf_open(path, SFM_WRITE, &info);
+    int rc = expect_true("wav written", out != NULL && sf_write_short(out, samples, 64) == 64);
+    if (out != NULL) {
+        sf_close(out);
+    }
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_WAV) != 0) {
+        (void)remove(path);
+        return expect_true("wav: the peer", 0);
+    }
+    DSD_MEMSET(&info, 0, sizeof info);
+    c.opts->audio_in_file = sf_open(path, SFM_READ, &info);
+    rc |= expect_true("wav opened", c.opts->audio_in_file != NULL);
+    if (c.opts->audio_in_file != NULL) {
+        rc |= expect_true("ten read", sf_read_short(c.opts->audio_in_file, samples, 10) == 10);
+        rc |= expect_true("tune", dsd_engine_trunk_tune_to_freq_request(c.opts, c.state, VC1_HZ, 0, 0U)
+                                      == DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_true("the file reads on where it was", sf_seek(c.opts->audio_in_file, 0, SEEK_CUR) == 10);
+        sf_close(c.opts->audio_in_file);
+        c.opts->audio_in_file = NULL;
+    }
+    rig_case_close(&c);
+    (void)remove(path);
+    return rc;
+}
+
 int
 main(void) {
     if (dsd_socket_init() != 0) {
@@ -479,6 +689,9 @@ main(void) {
     rc |= test_dmr_chain_after_return();
     rc |= test_p25p1_terminator_after_tune();
     rc |= test_dmr_follow_end_to_end();
+    rc |= test_udp_backlog();
+    rc |= test_tcp_backlog();
+    rc |= test_wav_input_unchanged();
     dsd_socket_cleanup();
     if (rc == 0) {
         DSD_FPRINTF(stderr, "ENGINE_RIGCTL_RETUNE: OK\n");

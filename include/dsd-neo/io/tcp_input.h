@@ -58,6 +58,15 @@ void tcp_input_close(tcp_input_ctx* ctx);
 int tcp_input_read_sample_wait(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms);
 
 /**
+ * @brief Drop the samples the connection holds now, buffered or ready on the socket (dsd_pcm_stream_discard_ready()):
+ * what a rigctl peer sent before its retune (issue #834). Bytes that arrive later are kept.
+ *
+ * @param ctx TCP input context (may be NULL).
+ * @return The samples dropped.
+ */
+long tcp_input_discard_pending(tcp_input_ctx* ctx);
+
+/**
  * @brief Check if TCP input context is valid and connected.
  *
  * @param ctx TCP input context (may be NULL).

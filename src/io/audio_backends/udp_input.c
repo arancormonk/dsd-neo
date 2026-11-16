@@ -375,6 +375,19 @@ udp_input_read_sample(dsd_opts* opts, int16_t* out) {
     }
 }
 
+long
+udp_input_discard_pending(dsd_opts* opts) {
+    if (!opts || !opts->udp_in_ctx) {
+        return 0;
+    }
+    udp_input_ctx* ctx = (udp_input_ctx*)opts->udp_in_ctx;
+    dsd_mutex_lock(&ctx->ring.m);
+    const size_t dropped = ring_used(&ctx->ring);
+    ctx->ring.tail = ctx->ring.head;
+    dsd_mutex_unlock(&ctx->ring.m);
+    return (long)dropped;
+}
+
 /**
  * @brief Read one sample from the UDP ring, waiting at most @p timeout_ms for one.
  *

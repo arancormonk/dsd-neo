@@ -70,6 +70,16 @@ dsd_net_audio_input_hook_udp_read_sample_wait(dsd_opts* opts, int16_t* out, unsi
     return g_net_audio_input_hooks.udp_read_sample_wait(opts, out, timeout_ms);
 }
 
+long
+dsd_net_audio_input_hook_tcp_discard_pending(tcp_input_ctx* ctx) {
+    return g_net_audio_input_hooks.tcp_discard_pending ? g_net_audio_input_hooks.tcp_discard_pending(ctx) : 0;
+}
+
+long
+dsd_net_audio_input_hook_udp_discard_pending(dsd_opts* opts) {
+    return g_net_audio_input_hooks.udp_discard_pending ? g_net_audio_input_hooks.udp_discard_pending(opts) : 0;
+}
+
 dsd_socket_t
 dsd_net_audio_input_hook_tcp_connect(const char* host, int port, int resolve, dsd_socket_cancel_fn cancelled,
                                      void* context) {

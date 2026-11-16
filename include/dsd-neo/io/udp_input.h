@@ -54,6 +54,15 @@ int udp_input_read_sample(dsd_opts* opts, int16_t* out);
  */
 int udp_input_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms);
 
+/**
+ * @brief Drop the samples the ring holds now: what a rigctl peer sent before its retune (issue #834). Datagrams the
+ * receive thread takes after the call are kept.
+ *
+ * @param opts Decoder options containing UDP context.
+ * @return The samples dropped.
+ */
+long udp_input_discard_pending(dsd_opts* opts);
+
 #ifdef __cplusplus
 }
 #endif

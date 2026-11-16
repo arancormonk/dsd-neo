@@ -10,6 +10,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <errno.h>
 #if !DSD_PLATFORM_WIN_NATIVE
@@ -438,6 +439,54 @@ test_counters_race_free_under_snapshots(void) {
     return rc;
 }
 
+/* Issue #834: a rigctl peer's confirmed retune drops the samples the ring holds, and the samples sent after it are
+   read. */
+static int
+test_discard_pending(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.wav_sample_rate = 48000;
+    rc |= expect_int("a discard with no input", (int)udp_input_discard_pending(&opts), 0);
+    if (udp_input_start(&opts, "127.0.0.1", 0, 48000) != 0) {
+        DSD_FPRINTF(stderr, "udp_input_start failed for the discard\n");
+        return 1;
+    }
+    const int port = get_bound_port(opts.udp_in_sockfd);
+    dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    const int16_t before[] = {11, 12, 13};
+    const int16_t after[] = {21, 22};
+    if (tx == DSD_INVALID_SOCKET || send_pcm16le(tx, "127.0.0.1", port, before, 3) != 0) {
+        DSD_FPRINTF(stderr, "failed to send the samples before the discard\n");
+        rc = 1;
+    } else {
+        /* The datagram may still be on its way to the ring: discards until it has gone, nothing sent meanwhile. */
+        long dropped = 0;
+        for (int tries = 0; tries < 100 && dropped < 3; tries++) {
+            dropped += udp_input_discard_pending(&opts);
+            if (dropped < 3) {
+                dsd_sleep_ms(10U);
+            }
+        }
+        rc |= expect_int("the queued samples go", (int)dropped, 3);
+        rc |= expect_int("send after the discard", send_pcm16le(tx, "127.0.0.1", port, after, 2), 0);
+        for (int i = 0; i < 2; i++) {
+            int16_t sample = 0;
+            int got = -1;
+            for (int tries = 0; tries < 50 && got < 0; tries++) {
+                got = udp_input_read_sample_wait(&opts, &sample, 20U);
+            }
+            rc |= expect_int("a sample after the discard", got, 1);
+            rc |= expect_int("is one sent after it", sample, after[i]);
+        }
+    }
+    if (tx != DSD_INVALID_SOCKET) {
+        dsd_socket_close(tx);
+    }
+    udp_input_stop(&opts);
+    return rc;
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -460,6 +509,9 @@ main(void) {
         goto cleanup;
     }
     if (test_counters_race_free_under_snapshots() != 0) {
+        goto cleanup;
+    }
+    if (test_discard_pending() != 0) {
         goto cleanup;
     }
 

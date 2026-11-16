@@ -1756,7 +1756,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     is never the end: the read waits for readiness first, and a read that would block is a TIMEOUT. On
     sockets it waits with `dsd_socket_wait()`. On descriptors it waits with `dsd_fd_wait_readable()` (`file_compat.h`):
     `poll()` on POSIX, and on Windows `PeekNamedPipe()` in 5 ms sleeps for an anonymous pipe. A Windows console or
-    regular file reports ready at once and its read blocks. `PLATFORM_PCM_STREAM` drives real pipes, sockets and files.
+    regular file reports ready at once and its read blocks. `dsd_pcm_stream_discard_ready()` drops the whole samples
+    the reader holds and those the descriptor has ready, read without a wait (at most about 2 s of them), and keeps a
+    part sample so the next is whole (issue #834: the TCP input at a rigctl retune). `PLATFORM_PCM_STREAM` drives real
+    pipes, sockets and files.
   - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in
     `include/dsd-neo/platform/fp_opaque.h` hide a value's origin from the optimizer (a round trip through a volatile
     object, one store and one load) before an IEEE translation unit tests it for NaN or infinity, so Clang's link-time
@@ -7161,7 +7164,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   leg (`svc_io_control_tune()`, also a trunked manual return or channel walk, which runs no carrier boundary). A tune
   to the frequency the peer is on, a refused request and a lost reply move nothing. Off the decoder thread (the P25
   watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` before its tune notice, and the decoder
-  thread moves the epoch when it reconciles the notice (`dsd_frame_sync_apply_off_thread_tunes()`). It changes no
+  thread moves the epoch when it reconciles the notice (`dsd_frame_sync_apply_off_thread_tunes()`). On the decoder
+  thread the same call drops what the audio input holds from before the retune, as the RTL flush drops the old
+  frequency's samples (`dsd_engine_drop_rigctl_input_backlog()`): PulseAudio's record data
+  (`dsd_audio_discard_input()`), the UDP ring and the TCP reader and socket (the `udp_discard_pending` and
+  `tcp_discard_pending` network-audio hooks).
+  stdin (it may be a recording) and files are left alone, and `pcm_input_generation` and the analog and scan-quiet keys
+  do not move: the input is the same stream. A tune off the decoder thread drops nothing, since the decoder may be
+  reading the input meanwhile. Audio the peer itself still holds (its demodulator and audio path, the sound server)
+  arrives after the drop and is read as the new carrier's: a documented limit (`docs/cli.md`, `-U`). It changes no
   carrier count, privacy or crypto field, so the carrier boundary's order and the DMR forget's (the FID kept until the
   left calls' rows are final) stand. Carrier changes are compared on `carrier_seq` by the reader. DMR voice crypto
   measures missed superframes on it, the BS loop's polarity run its adjacency and a P25 Phase 1 terminator its place
@@ -10587,6 +10598,11 @@ Notes:
     has no gain to adjust, so its real-time windows log nothing there (`stream_open_enable_default_autogain()`,
     `demod_autogain_update()`; `IO_RTL_REPLAY_EOF_AND_CF32`).
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
+  `dsd_audio_discard_input()` drops what an input stream holds unread (issue #834, at a rigctl retune): PulseAudio
+  reads the record fragment `pa_simple` keeps, and the queue behind it, in 32-frame reads until one waits for audio
+  (more than 1 ms), whose frames it keeps for the next `dsd_audio_read()` (`input_carry`); `pa_simple_flush()` does
+  not drop that fragment. That wait lasts until the server's next record block (about one 100 ms fragment). PortAudio
+  reads what `Pa_GetStreamReadAvailable()` reports, AAudio reads with no wait, and the null backend holds nothing.
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`). `udp_input_read_sample_wait()` gives up after a timeout with no sample, so the decoder can
   apply a queued command while the input is silent (issue #634). The UDP input counts packets, bytes and dropped samples
@@ -10608,7 +10624,9 @@ Notes:
   with keepalive on (`connect_apply_options()`, `DSD_SOCKET_KEEPALIVE_*`): since a receive timeout keeps the
   connection, it is what fails a read on a sender that vanished without a FIN or RST, so the reconnect runs within
   about 35 s (`IO_RIGCTL_CONTROL` asserts the call, `ENGINE_PCM_INPUT_WAIT` the options on real connections). The engine
-  installs them in the network-audio hook table (`udp_read_sample_wait`, `tcp_read_sample_wait`, `tcp_connect`). The
+  installs them in the network-audio hook table (`udp_read_sample_wait`, `tcp_read_sample_wait`, `tcp_connect`, and
+  `udp_discard_pending`/`tcp_discard_pending`, which drop what the ring, or the TCP reader and socket, hold at a rigctl
+  retune, issue #834). The
   stdin input is not a network backend: `dsd_audio.c` opens one `dsd_pcm_stream` on fd 0 (`dsd_opts::audio_in_stdin`,
   raw PCM16LE as libsndfile read it), which the symbol path and the M17 encoder share, both in bounded waits, and an
   input switch holds and closes like the other handles.

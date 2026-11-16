@@ -1572,6 +1572,33 @@ test_trunk_follow_closes_only_orphaned_recordings(void) {
     return rc;
 }
 
+/* An RTL trunk tune is left to the stream it retunes (issue #834): its flush starts the next symbol timeline when the
+   decoder reads past it, so the engine moves no epoch at the tune, as before rigctl's confirmed retunes moved one. */
+static int
+test_rtl_trunk_tune_leaves_the_timeline_to_the_stream(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->use_rigctl = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    const uint32_t epoch = state->symbol_clock_epoch;
+    int rc = expect_true("an RTL grant", dsd_engine_trunk_tune_to_freq_request(opts, state, 943237500L, 0, 0U)
+                                             == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("an RTL hop", dsd_engine_trunk_tune_to_freq_request(opts, state, 943262500L, 0, 0U)
+                                        == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("moves no epoch in the engine: the stream's flush does", state->symbol_clock_epoch == epoch);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* A typed scanner step whose rigctl leg moved the radio before its RTL leg failed: the row did not land, but the
    receiver left the carrier, so it is a carrier boundary (the carrier count moves, the sync histories and the frame
    sync's carried history are forgotten). A step whose rigctl leg itself failed moved nothing: no boundary. */
@@ -16403,6 +16430,7 @@ main(void) {
     rc |= test_scan_walk_landing_forgets_dmr_call_privacy();
     rc |= test_trunk_follow_forgets_dmr_call_privacy();
     rc |= test_typed_scan_partial_move_is_a_carrier_boundary();
+    rc |= test_rtl_trunk_tune_leaves_the_timeline_to_the_stream();
     rc |= test_typed_scan_async_move_is_a_carrier_boundary();
     rc |= test_typed_step_completes_across_a_learned_channel();
     rc |= test_refused_scan_tune_reports_no_stale_move();

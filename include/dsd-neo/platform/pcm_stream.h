@@ -44,6 +44,13 @@ void dsd_pcm_stream_close(dsd_pcm_stream* stream);
 /** Read one sample, waiting at most @p timeout_ms for it: DSD_PCM_STREAM_SAMPLE, _TIMEOUT or _END. */
 int dsd_pcm_stream_read_wait(dsd_pcm_stream* stream, int16_t* out, unsigned int timeout_ms);
 
+/**
+ * Drop the whole samples the stream holds now: those the reader buffered and those the descriptor or socket has
+ * ready, read without waiting. A part of a sample is kept, so the samples after it stay whole. Bytes that arrive
+ * after the call are kept. Returns the samples dropped (0 for NULL or an ended stream).
+ */
+long dsd_pcm_stream_discard_ready(dsd_pcm_stream* stream);
+
 /** Whether the stream ended on a read error rather than its end. */
 int dsd_pcm_stream_failed(const dsd_pcm_stream* stream);
 

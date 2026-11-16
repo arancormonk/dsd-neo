@@ -251,6 +251,12 @@ Pa_ReadStream(PaStream* stream, void* buffer, unsigned long frames) {
     return paNoError;
 }
 
+signed long
+Pa_GetStreamReadAvailable(PaStream* stream) {
+    (void)stream;
+    return 0;
+}
+
 /*============================================================================
  * Tests
  *============================================================================*/

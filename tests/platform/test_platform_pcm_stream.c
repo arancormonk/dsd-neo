@@ -224,6 +224,36 @@ test_socket_idle_then_close(void) {
     socket_pair_close(&pair);
 }
 
+/* Issue #834: a discard drops the whole samples the reader holds and those the socket has ready, without a wait, keeps
+   a part of a sample so the samples after it stay whole, and keeps what arrives after it. */
+static void
+test_socket_discard_ready(void) {
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the discard");
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_socket(pair.client);
+    check(stream != NULL, "open on the socket for the discard");
+    check(dsd_pcm_stream_discard_ready(NULL) == 0, "a NULL discard drops nothing");
+    const uint64_t idle_start = dsd_time_monotonic_ms();
+    check(dsd_pcm_stream_discard_ready(stream) == 0, "nothing ready: nothing dropped");
+    check(dsd_time_monotonic_ms() - idle_start < 50U, "and no wait");
+    /* 1, 2, 3, then the low byte of 0x0504: one sample the reader buffers, two and a half ready on the socket. */
+    const uint8_t before[] = {0x01U, 0x00U, 0x02U, 0x00U, 0x03U, 0x00U, 0x04U};
+    check(dsd_socket_send(pair.server, before, 2U, 0) == 2, "send the first sample");
+    int16_t s = 0;
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 1, "the first sample");
+    check(dsd_socket_send(pair.server, before + 2U, sizeof before - 2U, 0) == (int)(sizeof before - 2U), "send");
+    check(dsd_socket_wait(pair.client, DSD_SOCKET_WAIT_READ, 1000U) > 0, "the bytes arrived");
+    check(dsd_pcm_stream_discard_ready(stream) == 2, "the two whole samples ready go");
+    const uint8_t after[] = {0x05U, 0x06U, 0x00U};
+    check(dsd_socket_send(pair.server, after, sizeof after, 0) == (int)sizeof after, "send after the discard");
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 0x0504,
+          "the part of a sample is kept: the next sample is whole");
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 6,
+          "and what came after is kept");
+    dsd_pcm_stream_close(stream);
+    socket_pair_close(&pair);
+}
+
 static void
 test_no_stream(void) {
     int16_t s = 7;
@@ -245,6 +275,7 @@ main(void) {
     test_pipe_samples_then_end();
     test_regular_file();
     test_socket_idle_then_close();
+    test_socket_discard_ready();
     dsd_socket_cleanup();
     if (g_failures != 0) {
         return 1;
