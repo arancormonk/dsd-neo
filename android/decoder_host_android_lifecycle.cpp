@@ -303,6 +303,17 @@ DecoderHostAndroid::noteStartExpiry(const QByteArray& service_state, uint64_t no
     if (platformRetireAttempts(m_attempt)) {
         hostDiagnostic(QStringLiteral("Start attempt %1 was taken by the decoder service after all").arg(m_attempt));
         m_phase.note_start_taken(now_ms);
+    } else if (m_roam_attempt != 0 && m_roam_attempt == m_attempt
+               && platformUserStopGeneration() != m_roam_expectation) {
+        /* #786: a roam's START a user stop superseded that the service turned away unrecorded (it found the service
+         * busy): the user's own stop, never "did not respond". The attempt is dropped as a won retirement is, and the
+         * session on screen winds down to Idle with startSuperseded(). */
+        hostDiagnostic(
+            QStringLiteral("Start attempt %1 was superseded by a user stop before the service took it").arg(m_attempt));
+        m_roam_attempt = 0;
+        m_attempt = 0;
+        m_phase.note_attempt_retired(now_ms);
+        setStartSuperseded(true);
     } else {
         setAttemptFailure(kAttemptUndelivered, QStringLiteral("The decoder service did not respond to the start"));
     }
@@ -485,26 +496,47 @@ DecoderHostAndroid::refuseStart(uint64_t attempt, const QByteArray& service_stat
 
 bool
 DecoderHostAndroid::start(const QStringList& argv) {
-    return startAttempt(argv, -1);
+    return startAttempt(argv, false, -1);
 }
 
 bool
 DecoderHostAndroid::startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration) {
-    return startAttempt(argv, expectedStopGeneration < 0 ? -1 : expectedStopGeneration);
+    return startAttempt(argv, true, expectedStopGeneration);
 }
 
 bool
-DecoderHostAndroid::startAttempt(const QStringList& argv, qint64 expectedStopGeneration) {
-    setStartSuperseded(false);
-    if (!m_primed) {
-        refresh();
+DecoderHostAndroid::refuseUnexpectedStart(qint64 expectedStopGeneration) {
+    /* #786: an expectation of a generation the host could not read. "No expectation" would start over a user stop. */
+    if (expectedStopGeneration < 0) {
+        hostDiagnostic(QStringLiteral("Start refused: its stop generation could not be read"));
+        // A run on screen stays as it is, as for refuseStart(): the refusal is this start's.
+        if (m_published_phase != kSessionStarting && m_published_phase != kSessionRunning) {
+            clearAttemptFailure();
+            setAttemptFailure(0, stopGenerationUnreadableText());
+        }
+        return true;
     }
-    /* #786: a user stop since the expectation was read wins at once; the service checks again where it decides the
-     * start, for one that comes after this read. Superseded is no failure: nothing is published but the flag. */
-    if (expectedStopGeneration >= 0 && platformUserStopGeneration() != expectedStopGeneration) {
+    /* A user stop since the expectation was read wins at once (a read that failed counts as one); the service checks
+     * again where it decides the start, for one that comes after this read. Superseded is no failure: nothing is
+     * published but the flag. */
+    if (platformUserStopGeneration() != expectedStopGeneration) {
         hostDiagnostic(QStringLiteral("Start refused: a user stop came after its expected stop generation %1")
                            .arg(expectedStopGeneration));
         setStartSuperseded(true);
+        return true;
+    }
+    return false;
+}
+
+bool
+DecoderHostAndroid::startAttempt(const QStringList& argv, bool expects, qint64 expectedStopGeneration) {
+    setStartSuperseded(false);
+    // Whatever this start comes to, an earlier roam's attempt is no longer the one retireRoamAttempt() may retire.
+    m_roam_attempt = 0;
+    if (!m_primed) {
+        refresh();
+    }
+    if (expects && refuseUnexpectedStart(expectedStopGeneration)) {
         return false;
     }
     const uint64_t attempt = next_attempt_id();
@@ -541,22 +573,21 @@ DecoderHostAndroid::startAttempt(const QStringList& argv, qint64 expectedStopGen
         }
     }
     m_attempt = attempt;
-    // A roam start on its way was retired above: this one supersedes it.
-    m_roam_attempt = 0;
     clearAttemptFailure();
     m_initialized_session = last_session;
     // The new session replaces the last one, and with it any receiver ending, seen yet or not.
     clearReceiverHealth(qMax(last_session, m_health_session));
 
-    const int handover = platformStartDecoder(argv, attempt, expectedStopGeneration);
+    const int handover = platformStartDecoder(argv, attempt, expects ? expectedStopGeneration : -1);
     if (handover != kStartHandedOver) {
         hostDiagnostic(QStringLiteral("Start attempt %1 was not handed to the decoder service (status %2)")
                            .arg(attempt)
                            .arg(handover));
         return failStart(startRefusalText(handover));
     }
-    if (expectedStopGeneration >= 0) {
+    if (expects) {
         m_roam_attempt = attempt;
+        m_roam_expectation = expectedStopGeneration;
     }
 
     setSessionPhase(m_phase.phase());
@@ -576,8 +607,10 @@ DecoderHostAndroid::startRefusalText(int status) {
         case kStartSecurity:
             return tr("Android did not let DSD-neo start listening because a permission it needs is missing.");
         case kStartNoService: return tr("Android could not find the part of DSD-neo that listens.");
+        case kStartUnexpected: return tr("Android could not start DSD-neo listening. Try again.");
         case kStartCallFailed: return tr("DSD-neo could not ask Android to start listening.");
-        default: return tr("Android did not let DSD-neo start listening (status %1).").arg(status);
+        // A status this build does not know; the host diagnostic names it.
+        default: return tr("Android did not let DSD-neo start listening. Try again.");
     }
 }
 
@@ -713,9 +746,6 @@ void
 DecoderHostAndroid::refresh() {
     refreshPresentation();
     refreshLocation();
-    if (m_location_stream) {
-        refreshLocationStream();
-    }
     const bool running = readEngineRunning();
     const auto status = readLifecycleStatus();
     applyLifecycleStatus(status, running);
@@ -726,5 +756,9 @@ DecoderHostAndroid::refresh() {
     refreshDocumentPicks();
     refreshIncomingDocuments();
     refreshFileBrowser();
+    // Last: a roaming slot sees this tick's session state, and anything it starts or stops comes after the tick.
+    if (m_location_stream) {
+        refreshLocationStream();
+    }
 }
 } // namespace dsd_android

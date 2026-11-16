@@ -17042,7 +17042,9 @@ user stop requests for the process: `stopDecoder()` (counted under the service l
 `EXTRA_EXPECTED_STOP_GENERATION` (`NO_STOP_EXPECTATION`, -1, for every manual start). The service compares it with the
 generation under its lock when it accepts the START (after the foreign and retired checks and before the busy one:
 a mismatch that finds the service busy is turned away silently, as a retired START is, leaving the running session's
-record alone; one that finds it IDLE opens a session of its own, so the record names the attempt), before configure (with the retirement checks, around the
+record alone (unreachable today: only the Qt host sends START, and it hands one over only after a fresh IDLE read with
+every earlier attempt retired; a second START sender would break that, and the host then settles such a start as
+superseded when its grace runs out, below); one that finds it IDLE opens a session of its own, so the record names the attempt), before configure (with the retirement checks, around the
 receiver take) and at the STARTING → RUNNING commit beside `cancelRequested`: a mismatch at the commit discards the
 configured session (`nativeDiscardConfigured()`) and starts no worker. Each ends the attempt cancelled with the record's
 `superseded` true, which `retireAttempts()` reports as taken (its record says how). When a retirement and a user
@@ -17056,8 +17058,9 @@ once under the lock and wins at every check point. Tests: `ANDROID_ENGINE_STOP_J
 
 Host API for GPS roaming (issue #786): `DecoderHost` (`src/ui/qt/decoder_host.h`) adds non-pure virtuals whose defaults
 are a host with no roaming, so every subclass and the QML test host compile unchanged: `startWithStopExpectation(argv,
-expectedStopGeneration)` (default: `start()`; a negative expectation is none), `startSuperseded()` (property, its own
-`startSupersededChanged()`; the latest start ended unrun because a user stop came after its expectation; the next start
+expectedStopGeneration)` (default: `start()`; a negative expectation is a read that failed, never "no expectation", and
+is refused: `stopGenerationUnreadableText()`), `startSuperseded()` (property, its own `startSupersededChanged()`; only
+the Android host and the QML test host ever set it; the latest start ended unrun because a user stop came after its expectation; the next start
 clears it), `stopForSwitch()` (default `stop()`), `retireRoamAttempt()` (true when the roam's start never runs;
 default false, a start the base host accepted runs), `userStopGeneration()` and `foregroundEpoch()` (synchronous reads,
 default 0, negative when unreadable), `startLocationStream()`, `stopLocationStream()`, `requestRoamingPermission(id)`,
@@ -17065,17 +17068,23 @@ default 0, negative when unreadable), `startLocationStream()`, `stopLocationStre
 {generation, state, hasFix} and with a fix {provider, measurementNs, lat, lon, accuracyM, fixAtMs}. `fixAtMs` is the
 poll's `dsd_realtime_mono_ms()` less the record's `ageMs`, so it is on the frontend's monotonic clock; Android's
 `elapsedRealtimeNanos` (boot time, which runs on through deep sleep) is passed only as `measurementNs`, the measurement's
-identity with `provider`, never as a time. `SessionArgsBuilder::start(system, host, kind, expectedStopGeneration = -1)`
-routes a start with an expectation to `startWithStopExpectation()` and adds `superseded` to its result (only for the
-host's answer to that start). `DecoderHostAndroid` (`decoder_host_android_lifecycle.cpp`, JNI in
-`decoder_host_android.cpp`): a start with an expectation reads `DecoderService.userStopGeneration()` first and refuses
-itself superseded (no failure, nothing sent) when it moved, else passes the expectation to `startDecoder()`; a record of
+identity with `provider`, never as a time. `SessionArgsBuilder::start(system, host, kind)` is a manual start (`start()`);
+its overload with `expectedStopGeneration` routes to `startWithStopExpectation()` and adds `superseded` to its result
+(only for the host's answer to that start), and refuses a negative expectation before the host is asked (`error`
+`stop-generation`). `DecoderHostAndroid` (`decoder_host_android_lifecycle.cpp`, JNI in
+`decoder_host_android.cpp`): a start with a negative expectation is a start error (the failure card, nothing sent); one
+with an expectation reads `DecoderService.userStopGeneration()` first and refuses itself superseded (no failure,
+nothing sent) when it moved or cannot be read, else passes the expectation to `startDecoder()`; a record of
 the host's own attempt with `superseded` sets the flag before the phase it carries is published, so the Idle edge already
-reads superseded. `retireRoamAttempt()` retires the attempt the latest start with an expectation handed over (any later
-accepted start supersedes it); a retirement that wins drops the attempt and winds a start on screen down (Stopping, then
-Idle on the next record) like a dismissed undelivered start, so no start grace brings a failure back.
+reads superseded. `retireRoamAttempt()` retires the attempt the latest start with an expectation handed over (every later
+start attempt, refused or not, forgets it); a retirement that wins drops the attempt and winds a start on screen down (Stopping, then
+Idle on the next record) like a dismissed undelivered start, so no start grace brings a failure back. Rule: a roam's
+start the service never recorded (turned away busy) whose generation moved by the time its start grace runs out is the
+user's own stop: the host drops the attempt the same way and sets `startSuperseded()`, never the undelivered failure;
+one whose generation held is undelivered as before.
 `stopForSwitch()` is `stop()`'s bookkeeping with `DecoderService.stopDecoderForSwitch()`. `LocationStream` is started
-and stopped over JNI and polled on `refresh()` only while started; `location_stream_update()` (`android/location_record.h`)
+and stopped over JNI and polled last in `refresh()` (after the tick's session record is applied, so a slot sees this
+tick's phase) only while started; `location_stream_update()` (`android/location_record.h`)
 reads a record (an integer generation, a known state, the fix fields all there and in range or none) and the host emits
 only when the record, less `fixAtMs`, differs from the last one it emitted (a null poll, a stop or a start forgets it).
 The QML test host (`tests/ui/qml_test_context.h`, `ImportOnlyHost`) plays all of it: settable generation and epoch, a

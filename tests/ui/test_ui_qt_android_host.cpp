@@ -926,8 +926,8 @@ check_start_status_mapping() {
         {kStartIllegalState, "Android would not let DSD-neo start listening just now. Try again."},
         {kStartSecurity, "Android did not let DSD-neo start listening because a permission it needs is missing."},
         {kStartNoService, "Android could not find the part of DSD-neo that listens."},
-        {kStartUnexpected, "Android did not let DSD-neo start listening (status 6)."},
-        {7, "Android did not let DSD-neo start listening (status 7)."},
+        {kStartUnexpected, "Android could not start DSD-neo listening. Try again."},
+        {7, "Android did not let DSD-neo start listening. Try again."},
         {kStartNoContext, "No Android context"},
         {kStartBadArguments, "Could not marshal arguments"},
     };
@@ -990,13 +990,29 @@ check_start_expectation() {
     running = false;
     host.refresh();
 
-    const int reads = roaming().generationReads;
+    int reads = roaming().generationReads;
     check(host.start(argv) && lastStartExpectation == -1, "a manual start carries no expectation");
     check(roaming().generationReads == reads, "and reads no stop generation");
     endAttempt();
-    check(host.startWithStopExpectation(argv, -7) && lastStartExpectation == -1 && roaming().generationReads == reads,
-          "a negative expectation is none");
-    endAttempt();
+    /* A negative expectation is a read that failed, never "no expectation": a start error, with nothing sent. */
+    int dispatchedBefore = startDispatches;
+    check(!host.startWithStopExpectation(argv, -7), "a negative expectation is refused");
+    check(startDispatches == dispatchedBefore && roaming().generationReads == reads && !host.startSuperseded(),
+          "before anything reaches the service, and not as a supersede");
+    check(host.sessionState() == DecoderHost::Failed
+              && host.failureText() == DecoderHost::stopGenerationUnreadableText() && host.inputFailureKind() == 0,
+          "it shows its start error");
+    host.stop();
+    check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "Dismiss clears it");
+
+    /* A generation read that fails at the start is a user stop: fail-safe. */
+    roaming().stopGeneration = -1;
+    dispatchedBefore = startDispatches;
+    check(!host.startWithStopExpectation(argv, 5) && host.startSuperseded() && startDispatches == dispatchedBefore,
+          "a start whose generation cannot be read is superseded");
+    check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "and is no failure");
+    roaming().stopGeneration = 5;
+    reads = roaming().generationReads;
 
     check(host.startWithStopExpectation(argv, 5), "a start whose generation still holds is handed over");
     check(lastStartExpectation == 5 && roaming().generationReads == reads + 1,
@@ -1006,6 +1022,7 @@ check_start_expectation() {
     check(!host.startSuperseded(), "a cancelled end alone is not superseded");
 
     /* A user stop after Qt's read: the host refuses the start itself. */
+    supersededSignals = 0;
     roaming().stopGeneration = 6;
     const int dispatched = startDispatches;
     const int retired = retirements.size();
@@ -1130,10 +1147,87 @@ check_roam_attempt_retirement() {
         check(host.start(argv), "a manual start");
         const int calls = retirements.size();
         check(host.retireRoamAttempt() && retirements.size() == calls, "leaves no roam start to retire");
+
+        /* A roam start that ran, then a later roam start refused before it began: the finished one is not retired. */
+        retained_record() = {{"sessionId", 162},
+                             {"state", "IDLE"},
+                             {"reason", kRunCancelled},
+                             {"attemptId", static_cast<qint64>(lastStartAttempt)}};
+        host.refresh();
+        check(host.startWithStopExpectation(argv, 3), "another roam start");
+        retained_record() = {{"sessionId", 163},
+                             {"state", "RUNNING"},
+                             {"reason", kRunPending},
+                             {"attemptId", static_cast<qint64>(lastStartAttempt)}};
+        running = true;
+        host.refresh();
+        host.stopForSwitch();
+        retained_record() = {{"sessionId", 163},
+                             {"state", "IDLE"},
+                             {"reason", kRunCancelled},
+                             {"attemptId", static_cast<qint64>(lastStartAttempt)}};
+        running = false;
+        host.refresh();
+        roaming().stopGeneration = 4;
+        check(!host.startWithStopExpectation(argv, 3) && host.startSuperseded(), "the next roam start is superseded");
+        const int before = retirements.size();
+        serviceTookAttempt = true;
+        check(host.retireRoamAttempt() && retirements.size() == before,
+              "and a retirement after it finds no stale roam attempt to call committed");
+        serviceTookAttempt = false;
+        roaming().stopGeneration = 3;
     }
     roaming().stopGeneration = 0;
     retained_record() = QJsonObject();
     running = false;
+}
+
+/* #786: a roam's START the service turned away unrecorded (it found the service busy; DecoderService rejects a
+ * superseded START silently then) settles as the user's stop when its start grace runs out, never as undelivered. A
+ * START whose generation still holds keeps the undelivered failure. */
+static void
+check_busy_superseded_start() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    const QStringList argv{QStringLiteral("-i"), QStringLiteral("rtl:0")};
+    for (const bool stopped : {true, false}) {
+        DecoderHostAndroid host;
+        retirements.clear();
+        serviceTookAttempt = false;
+        roaming().stopGeneration = 8;
+        nowMs = 730000;
+        retained_record() = {{"sessionId", 200}, {"state", "IDLE"}, {"attemptId", qint64(1)}};
+        running = false;
+        host.refresh();
+        check(host.startWithStopExpectation(argv, 8), "the roam start is handed over");
+        if (stopped) {
+            roaming().stopGeneration = 9;
+        }
+        for (uint64_t waited = 250; waited <= 2000; waited += 250) {
+            nowMs = 730000 + waited;
+            host.refresh();
+        }
+        if (stopped) {
+            check(host.inputFailureKind() == 0 && host.failureText().isEmpty() && host.startSuperseded(),
+                  "a superseded start the service never recorded is the user's stop, not undelivered");
+            check(host.sessionState() == DecoderHost::Idle || host.sessionState() == DecoderHost::Stopping,
+                  "and it winds down");
+            nowMs += 250;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty() && host.startSuperseded(),
+                  "to Idle");
+            nowMs += 5000;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Idle && host.inputFailureKind() == 0, "and stays there");
+        } else {
+            check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptUndelivered
+                      && !host.startSuperseded(),
+                  "one whose generation held is still undelivered");
+        }
+    }
+    roaming().stopGeneration = 0;
+    retained_record() = QJsonObject();
 }
 
 /* #786: a roaming switch is a stop the user did not ask for: the switch call, with stop()'s Stopping at once. */
@@ -1314,6 +1408,20 @@ check_location_stream() {
     host.startLocationStream();
     host.refresh();
     check(roaming().streamStarts == 2 && updates.size() == 5, "a feed started again reports its record again");
+
+    /* The update comes after the tick's session record is applied: a slot sees this tick's phase. */
+    int phaseAtUpdate = -1;
+    const auto seen = QObject::connect(
+        &host, &dsd_qt::DecoderHost::locationStreamUpdate,
+        [&host, &phaseAtUpdate](const QVariantMap&) { phaseAtUpdate = static_cast<int>(host.sessionState()); });
+    retained_record() = {{"sessionId", 191}, {"state", "RUNNING"}, {"reason", dsd_android::kRunPending}};
+    running = true;
+    roaming().streamRecord = fix.arg(5);
+    host.refresh();
+    QObject::disconnect(seen);
+    check(updates.size() == 6 && phaseAtUpdate == dsd_qt::DecoderHost::Running,
+          "the update's slot sees the session the same tick published");
+    running = false;
     host.stopLocationStream();
     roaming() = PlatformRoaming();
     retained_record() = QJsonObject();
@@ -4630,6 +4738,7 @@ main(int argc, char** argv) {
     check_start_status_mapping();
     check_start_expectation();
     check_roam_attempt_retirement();
+    check_busy_superseded_start();
     check_stop_for_switch();
     check_document_pick_record();
     check_document_requests();

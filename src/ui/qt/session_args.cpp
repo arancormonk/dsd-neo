@@ -1393,8 +1393,27 @@ SessionArgsBuilder::endUnstartedRecording(bool recording, bool started, const De
 }
 
 QVariantMap
+SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QString& kind) const {
+    return startSession(system, host, kind, false, -1);
+}
+
+QVariantMap
 SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QString& kind,
                           qint64 expectedStopGeneration) const {
+    return startSession(system, host, kind, true, expectedStopGeneration);
+}
+
+QVariantMap
+SessionArgsBuilder::startSession(const QVariantMap& system, DecoderHost* host, const QString& kind, bool expects,
+                                 qint64 expectedStopGeneration) const {
+    if (expects && expectedStopGeneration < 0) {
+        // A stop generation that could not be read: guessing "no user stop" could start over the user's Stop.
+        return {{QStringLiteral("ok"), false},
+                {QStringLiteral("error"), QStringLiteral("stop-generation")},
+                {QStringLiteral("errorText"), DecoderHost::stopGenerationUnreadableText()},
+                {QStringLiteral("started"), false},
+                {QStringLiteral("superseded"), false}};
+    }
     SessionArgsError error = SessionArgsError::None;
     bool recording = false;
     const QStringList args = buildForStart(system, host, kind, &error, &recording);
@@ -1403,7 +1422,6 @@ SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QS
     if (error == SessionArgsError::None && host) {
         host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
     }
-    const bool expects = expectedStopGeneration >= 0;
     const bool asked = error == SessionArgsError::None && host;
     const bool started =
         asked && (expects ? host->startWithStopExpectation(args, expectedStopGeneration) : host->start(args));

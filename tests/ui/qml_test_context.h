@@ -253,14 +253,15 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     bool
     start(const QStringList& argv) override {
-        return beginStart(argv, -1);
+        return beginStart(argv, false, -1);
     }
 
     /* #786: a roam's start, refused superseded, as Android's host refuses it, when the case moved userStopGeneration
-     * past the expectation or asked for it (supersedeNextStart). */
+     * past the expectation or asked for it (supersedeNextStart); one with a negative expectation (a read that failed)
+     * fails, as Android's shows a start error. */
     bool
     startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration) override {
-        return beginStart(argv, expectedStopGeneration < 0 ? -1 : expectedStopGeneration);
+        return beginStart(argv, true, expectedStopGeneration);
     }
 
     bool
@@ -269,11 +270,17 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     }
 
     bool
-    beginStart(const QStringList& argv, qint64 expectedStopGeneration) {
+    beginStart(const QStringList& argv, bool expects, qint64 expectedStopGeneration) {
         lastArgv = argv;
-        lastStopExpectation = expectedStopGeneration;
+        lastStopExpectation = expects ? expectedStopGeneration : -1;
         setSuperseded(false);
-        if (expectedStopGeneration >= 0 && (supersedeNextStart || stopGeneration != expectedStopGeneration)) {
+        if (expects && expectedStopGeneration < 0) {
+            phase = Failed;
+            failure = stopGenerationUnreadableText();
+            Q_EMIT sessionStateChanged();
+            return false;
+        }
+        if (expects && (supersedeNextStart || stopGeneration != expectedStopGeneration)) {
             supersedeNextStart = false;
             setSuperseded(true);
             return false;

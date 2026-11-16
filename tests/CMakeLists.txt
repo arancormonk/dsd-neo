@@ -25150,6 +25150,12 @@ if(Python3_Interpreter_FOUND)
             TIMEOUT 90
             RESOURCE_LOCK android_kotlin_jvm
     )
+    # The two longest suites: beside parallel QML suites engine_stop ran past 90 s (47 s alone) and location took 61 s.
+    set_tests_properties(
+        ANDROID_ENGINE_STOP_JVM
+        ANDROID_LOCATION_JVM
+        PROPERTIES TIMEOUT 180
+    )
     add_test(
         NAME ANDROID_DIAGNOSTICS_SHARE_PATHS
         COMMAND

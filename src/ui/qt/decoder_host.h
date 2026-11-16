@@ -847,13 +847,19 @@ class DecoderHost : public QObject {
      * A host that tracks user stops compares @p expectedStopGeneration with its userStopGeneration() before it hands
      * the start over and again where the platform decides the start. A start a user stop superseded never runs and is
      * no failure: startSuperseded() turns true, at once (the call returns false) or later (the session goes back to
-     * Idle without running). A negative @p expectedStopGeneration is no expectation, as start(). The default ignores
-     * the expectation and calls start().
+     * Idle without running). A negative @p expectedStopGeneration is a read that failed, never "no expectation": the
+     * start is refused (a host that shows failures shows stopGenerationUnreadableText()). A manual start calls start(),
+     * which carries no expectation. The default refuses a negative one and otherwise calls start().
      */
     virtual bool
     startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration) {
-        (void)expectedStopGeneration;
-        return start(argv);
+        return expectedStopGeneration >= 0 && start(argv);
+    }
+
+    /** @brief Why a start with an expectation was refused for a stop generation that could not be read. */
+    static QString
+    stopGenerationUnreadableText() {
+        return tr("DSD-neo could not tell whether listening had been stopped, so it did not start. Try again.");
     }
 
     /** @brief Whether the latest start ended unrun because a user stop superseded it; the next start clears it. */

@@ -148,8 +148,9 @@ hooks), so a share queued behind an export is shown held in the store until its 
 (#786) runs there too: the `LocationStream` record polled only while the feed is started, reported once per change with
 `fixAtMs` on the host's clock and malformed records refused; the stop generation and foreground epoch read at each call,
 never on a poll; each start status's own failure text (`platformStartDecoder()` returns the status); a start with an
-expectation refused superseded at once or by the service's record, never as a failure; `retireRoamAttempt()` before
-and after the commit; and `stopForSwitch()`. The `ANDROID_*_JVM`
+expectation refused superseded at once, by the service's record or, unrecorded, at its grace, never as a failure; a
+negative expectation refused as a start error; `retireRoamAttempt()` before and after the commit and never on a stale
+attempt; the stream update emitted after the tick's session record; and `stopForSwitch()`. The `ANDROID_*_JVM`
 tests run production Android Kotlin on the plain JVM, without an Android build or emulator, one suite of
 `tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by
 default): `ANDROID_LOCATION_JVM` runs the location broker and geocoder queue with deterministic platform stubs,

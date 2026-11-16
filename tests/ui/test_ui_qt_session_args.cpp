@@ -767,7 +767,18 @@ test_stop_expectation(void) {
     expect("a start the build refused is no supersede",
            !invalid.value("started").toBool() && !invalid.value("superseded").toBool());
 
+    roaming.calls.clear();
+    const QVariantMap unread = builder.start(sys, &roaming, QStringLiteral("saved"), -1);
+    expect("a negative expectation is a failed read, refused before the host is asked",
+           !unread.value("started").toBool() && !unread.value("ok").toBool() && roaming.calls.isEmpty());
+    expect("with its own error, and no supersede",
+           unread.value("error").toString() == QStringLiteral("stop-generation")
+               && unread.value("errorText").toString() == dsd_qt::DecoderHost::stopGenerationUnreadableText()
+               && !unread.value("superseded").toBool());
+
     plain.calls.clear();
+    expect("the base host refuses a negative expectation",
+           !plain.startWithStopExpectation({}, -1) && plain.calls.isEmpty());
     expect("the base host starts a roam's start through start()",
            builder.start(sys, &plain, QStringLiteral("saved"), 0).value("started").toBool()
                && plain.calls == QStringList{QStringLiteral("start")});
@@ -777,6 +788,9 @@ test_stop_expectation(void) {
                                                           && !plain.startSuperseded()
                                                           && !plain.property("startSuperseded").toBool());
     expect("and a start it accepted runs: a retirement never wins", !plain.retireRoamAttempt());
+    expect("QML can start with no expectation",
+           dsd_qt::SessionArgsBuilder::staticMetaObject.indexOfMethod("start(QVariantMap,dsd_qt::DecoderHost*,QString)")
+               >= 0);
     expect("QML can pass the expectation", dsd_qt::SessionArgsBuilder::staticMetaObject.indexOfMethod(
                                                "start(QVariantMap,dsd_qt::DecoderHost*,QString,qint64)")
                                                >= 0);
