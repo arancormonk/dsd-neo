@@ -742,23 +742,46 @@ bootstrap_handle_post_parse_actions(const bootstrap_cli_args* args, dsd_opts* op
     return bootstrap_handle_list_profiles(args, config_env, out_exit_rc);
 }
 
-/* The [trunking] or [trunk_scan] key that turns on trunking or a scan beside the stream, or NULL. The loaded config's
-   own keys count as it wrote them, before the command line's trunking override or its -i drops them for the session
-   (bootstrap_apply_trunk_cli_gating(), bootstrap_apply_trunk_scan_pre_cli_gating()): the rule is the config's, as
-   --validate-config and the next-start rules judge it. The session's flags are asked too, for a config the profile
-   composed. The command line's own -T, -Y and --trunk-scan were refused while it was parsed. */
-static const char*
-bootstrap_config_tuning_key(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
-    if ((cfg && cfg->has_trunking && cfg->trunk_enabled) || opts->trunk_enable == 1) {
-        return "[trunking] enabled";
+/* The trunking, -Y scanner and trunk-scan flags @p judged carries for bootstrap_config_tuning_key(): the loaded
+   config's (@p cfg, NULL for none) or the session's. */
+static void
+bootstrap_config_tuning_flags(const dsd_opts* opts, const dsdneoUserConfig* cfg, dsdneoUserConfig* judged) {
+    const int trunking = cfg && cfg->has_trunking;
+    const int trunk_scan = cfg && cfg->has_trunk_scan;
+    judged->has_trunking = 1;
+    judged->trunk_enabled = ((trunking && cfg->trunk_enabled) || opts->trunk_enable == 1) ? 1 : 0;
+    judged->trunk_scanner = ((trunking && cfg->trunk_scanner) || opts->scanner_mode == 1) ? 1 : 0;
+    judged->has_trunk_scan = 1;
+    judged->trunk_scan_enabled = ((trunk_scan && cfg->trunk_scan_enabled) || opts->trunk_scan_enabled == 1) ? 1 : 0;
+}
+
+/* The [trunking] or [trunk_scan] key that turns on trunking or a scan beside the stream, written "[section] key" into
+   @p out; 0 for none, -1 out of memory. The loaded config's own keys count as it wrote them, before the command line's
+   trunking override or its -i drops them for the session (bootstrap_apply_trunk_cli_gating(),
+   bootstrap_apply_trunk_scan_pre_cli_gating()): the rule is the config's, as --validate-config and the next-start rules
+   judge it. The session's flags are asked too, for a config the profile composed. The command line's own -T, -Y and
+   --trunk-scan were refused while it was parsed. Which key is the next-start rule table's
+   (dsd_user_config_iq_stream_refused_key()), asked of a config of the stream with those flags
+   (bootstrap_config_tuning_flags()). */
+static int
+bootstrap_config_tuning_key(const dsd_opts* opts, const dsdneoUserConfig* cfg, char* out, size_t out_size) {
+    dsdneoUserConfig* judged = (dsdneoUserConfig*)calloc(1, sizeof *judged);
+    if (!judged) {
+        return -1;
     }
-    if ((cfg && cfg->has_trunking && cfg->trunk_scanner) || opts->scanner_mode == 1) {
-        return "[trunking] scanner";
+    judged->has_input = 1;
+    judged->input_source =
+        dsd_opts_audio_in_dev_is_iqudp_spec(opts->audio_in_dev) ? DSDCFG_INPUT_IQUDP : DSDCFG_INPUT_IQTCP;
+    bootstrap_config_tuning_flags(opts, cfg, judged);
+    const char* section = NULL;
+    const char* key = NULL;
+    const int refused = dsd_user_config_iq_stream_refused_key(judged, &section, &key);
+    free(judged);
+    if (!refused) {
+        return 0;
     }
-    if ((cfg && cfg->has_trunk_scan && cfg->trunk_scan_enabled) || opts->trunk_scan_enabled == 1) {
-        return "[trunk_scan] enabled";
-    }
-    return NULL;
+    DSD_SNPRINTF(out, out_size, "[%s] %s", section, key);
+    return 1;
 }
 
 /* An I/Q stream input decodes the one channel its sending program streams (issue #743, D8): a loaded config that turns
@@ -767,10 +790,18 @@ bootstrap_config_tuning_key(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
    apply refuse it (the next-start rules, issue #671). @p cfg is the loaded config, NULL for none. */
 static int
 bootstrap_refuse_config_tuning_on_iq_stream(const dsd_opts* opts, const dsdneoUserConfig* cfg, int* out_exit_rc) {
-    const char* key =
-        dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev) ? bootstrap_config_tuning_key(opts, cfg) : NULL;
-    if (!key) {
+    if (!dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)) {
         return DSD_BOOTSTRAP_CONTINUE;
+    }
+    char key[64];
+    const int found = bootstrap_config_tuning_key(opts, cfg, key, sizeof key);
+    if (found == 0) {
+        return DSD_BOOTSTRAP_CONTINUE;
+    }
+    if (found < 0) {
+        LOG_ERROR("Out of memory checking the config beside the I/Q stream.\n");
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return DSD_BOOTSTRAP_ERROR;
     }
     LOG_ERROR(
         "%s: an I/Q stream cannot retune; it decodes only the channel the sending program streams. Turn %s off in "

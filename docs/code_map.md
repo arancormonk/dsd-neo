@@ -3903,7 +3903,9 @@ suite runs under this compiler.
     `dsd_opts::input_cli_seen`, or `--iq-replay`) (`bootstrap_refuse_config_iq_stream_without_spec()`), and a loaded
     config's trunking, `-Y` scanner or trunk scan beside a stream, the config's or the command line's
     (`bootstrap_refuse_config_tuning_on_iq_stream()`, on the config's own keys, which the command line's trunking
-    override and its `-i` trunk-scan drop do not hide); both after the one-shot actions, before anything opens. The
+    override and its `-i` trunk-scan drop do not hide, plus the session's flags; the key it names is the next-start
+    rule table's, through `dsd_user_config_iq_stream_refused_key()`); both after the one-shot actions, before anything
+    opens. The
     engine's setup (`dsd_engine_setup_parse_iq_stream_input()`) reads the spec of any origin again, refuses a RATE no
     plan takes to the mode's target (one above the 3.2 MS/s ceiling among them), says where a TCP stream connects, warns
     a RATE under what the mode decodes from (TETRA 25 kHz, 12.5 kHz channels 16 kHz, 6.25 kHz ones 12 kHz) and notes a
@@ -9574,7 +9576,11 @@ Key public headers:
     sender); empty datagrams are ignored and are no sign of life; the first valid sender is locked and others dropped
     with one notice; a stall releases the lock: the same sender then resumes (RESUME), another is a RECONNECT. Stall =
     no valid sample for 2 s on the injectable clock (`dsd_iq_net_reader_config.clock_ms`, NULL =
-    `dsd_realtime_mono_ms()`); waits and backoff always run on real time.
+    `dsd_realtime_mono_ms()`), checked at each slice and again when data ends a wait, so a pause a wait spanned past
+    the deadline is still a stall and a resume; waits and backoff always run on real time. A host name (anything but an IPv4
+    address in `inet_pton()` form) is looked up on a detached helper thread (`iq_net_resolve()`, `dsd_thread_detach()`) the reader waits on
+    in 20 ms slices: a stop or exit leaves the lookup to finish on its own, so a resolver that does not answer never
+    holds up a stop (`IO_IQ_NET_RESOLVE`, POSIX, through `fake_getaddrinfo.c`'s hold).
   - Socket handle: published under the leaf `sock_lock` (never held across a wait, recv, connect, backoff or callback);
     a stop latches the flag and shuts down only the published socket; the reader unpublishes before it closes.
   - Availability (`dsd_iq_net_state`, one atomic): STOPPED, CONNECTING, WAITING (up, nothing written since it came

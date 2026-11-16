@@ -1243,6 +1243,28 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
     return diags->error_count > 0 ? -1 : rc;
 }
 
+int
+dsd_user_config_iq_stream_refused_key(const dsdneoUserConfig* cfg, const char** section, const char** key) {
+    if (cfg == nullptr) {
+        return 0;
+    }
+    /* The I/Q stream rows are the ones with a turn_off, first broken in table order: trunking before the -Y scanner it
+       outranks, then a trunk scan. */
+    const trunk_scan_start_rule* broken =
+        std::find_if(std::begin(k_trunk_scan_start_rules), std::end(k_trunk_scan_start_rules),
+                     [cfg](const trunk_scan_start_rule& rule) { return rule.turn_off != nullptr && rule.breaks(cfg); });
+    if (broken == std::end(k_trunk_scan_start_rules)) {
+        return 0;
+    }
+    if (section != nullptr) {
+        *section = broken->section;
+    }
+    if (key != nullptr) {
+        *key = broken->key;
+    }
+    return 1;
+}
+
 void
 dsd_user_config_turn_off_beside_iq_stream(dsdneoUserConfig* cfg) {
     if (cfg == nullptr) {

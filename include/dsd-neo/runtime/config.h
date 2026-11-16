@@ -1170,6 +1170,19 @@ int dsd_user_config_check_trunk_scan_startable(const dsdneoUserConfig* cfg, cons
                                                size_t why_size);
 
 /**
+ * @brief The first key an I/Q stream [input] cannot start beside that @p cfg turns on (issue #743, D8).
+ *
+ * The same rules as dsd_user_config_check_trunk_scan_startable() and dsd_user_config_turn_off_beside_iq_stream():
+ * with @p cfg's [input] a raw I/Q stream (iqtcp or iqudp), `trunking.enabled`, else `trunking.scanner` (trunking off),
+ * else `trunk_scan.enabled`. Startup names it in its refusal.
+ *
+ * @param section [out] The rule's section, such as "trunking" (may be NULL).
+ * @param key [out] The rule's key, such as "enabled" (may be NULL).
+ * @return 1 when @p cfg breaks one (@p section and @p key set); 0 otherwise.
+ */
+int dsd_user_config_iq_stream_refused_key(const dsdneoUserConfig* cfg, const char** section, const char** key);
+
+/**
  * @brief Turn off in a config each key an I/Q stream [input] cannot start beside (issue #743, D8).
  *
  * When @p cfg's [input] is a raw I/Q stream (iqtcp or iqudp), every key the stream's next-start rule refuses
