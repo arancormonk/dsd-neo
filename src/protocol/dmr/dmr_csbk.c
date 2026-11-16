@@ -1711,8 +1711,8 @@ dmr_cspdu_pf0_is_standard_only(const dsd_state* state, int csbk_o) {
 }
 
 // The standard-only handlers run for FID 0x00. Under another FID the opcode is the manufacturer's and prints as a
-// manufacturer CSBK. No vendor dispatcher below decodes any of these opcodes; one that comes to must also take its
-// opcode out of dmr_cspdu_pf0_is_standard_only(), or both lines print.
+// manufacturer CSBK. No vendor dispatcher below decodes any of these opcodes; a vendor dispatcher that starts decoding
+// one must also take its opcode out of dmr_cspdu_pf0_is_standard_only(), or both lines print.
 static void
 dmr_cspdu_pf0_handle_standard_only(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
     if (csbk_fid != 0) {
