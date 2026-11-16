@@ -178,8 +178,8 @@ test_full_length_alias(dsd_opts* opts, dsd_state* st) {
         text[i * 3U] = 0xE3U;
         text[(i * 3U) + 1U] = 0x81U;
         text[(i * 3U) + 2U] = (uint8_t)(0x82U + (i * 2U)); /* U+3042, U+3044, ... */
-        want[w++] = (char)0xE3;
-        want[w++] = (char)0x81;
+        want[w++] = '\xE3';
+        want[w++] = '\x81';
         want[w++] = (char)(0x82U + (i * 2U));
     }
     want[w++] = ';';

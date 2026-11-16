@@ -481,7 +481,8 @@ test_scope_and_protocol_text(void) {
     }
     /* No system named yet (rx_id empty): no scope text. */
     const dsd_unit_activity r = mk(DSD_UA_PROTO_P25P1, DSD_UA_STATUS, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA, 5U);
-    assert(view_of(st, &cursor, &r).scope_text[0] == '\0');
+    const dsd_app_unit_activity_row unnamed = view_of(st, &cursor, &r);
+    assert(unnamed.scope_text[0] == '\0');
     free_state(st);
 }
 

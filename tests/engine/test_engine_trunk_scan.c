@@ -2044,7 +2044,7 @@ test_assoc_trunk_scan_restore(void) {
     static dsd_opts opts;
     static dsd_state state;
     static p25_aff_assoc_t target0_owners[P25_AFF_MAX];
-    static const p25_aff_assoc_t no_owners[P25_AFF_MAX];
+    static p25_aff_assoc_t no_owners[P25_AFF_MAX]; /* all zero: no owner */
     reset_scan_opts_state(&opts, &state);
     DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
     opts.trunk_scan_list_count = 1;

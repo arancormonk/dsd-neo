@@ -70,7 +70,7 @@ test_rows_carry_names(void) {
     dsd_source_alias_store* radios = dsd_source_alias_store_create();
     dsd_source_alias_entry cut = {.id_start = 7654321U, .id_end = 7654321U};
     DSD_MEMSET(cut.name, 'A', 47);
-    cut.name[47] = (char)0xC3; /* the first byte of a two-byte character, its second cut off */
+    cut.name[47] = '\xC3'; /* the first byte of a two-byte character, its second cut off */
     cut.name[48] = '\0';
     assert(radios != NULL && dsd_source_alias_store_append(radios, &cut) == 0);
     dsd_source_alias_install(st, radios);

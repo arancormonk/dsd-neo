@@ -654,8 +654,8 @@ test_name_frozen_terminated_at_a_character(void) {
     /* 30 ASCII bytes then a two-byte character in bytes 30-31: the character would be cut, so it goes. */
     dsd_unit_activity accented = row_for(2U);
     DSD_MEMSET(accented.name_frozen, 'b', 30U);
-    accented.name_frozen[30] = (char)0xC3;
-    accented.name_frozen[31] = (char)0xA9;
+    accented.name_frozen[30] = '\xC3';
+    accented.name_frozen[31] = '\xA9';
     assert(dsd_unit_activity_push(st, &accented) == 1);
     dsd_unit_activity out[2];
     dsd_unit_activity_read_meta meta;

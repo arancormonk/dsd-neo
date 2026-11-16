@@ -1210,9 +1210,9 @@ mbt_command(uint8_t* m, uint8_t opcode, uint16_t value) {
     m[23] = 0x03;
     m[24] = 0x02;
     m[25] = (uint8_t)(SERVING_WACN >> 12); /* Target SUID */
-    m[26] = (uint8_t)(SERVING_WACN >> 4);
+    m[26] = (uint8_t)((SERVING_WACN >> 4) & 0xFFU);
     m[27] = (uint8_t)(((SERVING_WACN & 0x0FU) << 4) | ((SERVING_SYS >> 8) & 0x0FU));
-    m[28] = (uint8_t)SERVING_SYS;
+    m[28] = (uint8_t)(SERVING_SYS & 0xFFU);
     m[29] = 0x00; /* Target ID 0x000202 */
     m[30] = 0x02;
     m[31] = 0x02;
