@@ -4888,6 +4888,56 @@ test_fixed_tuning_refuses_rigctl_connect(void) {
 }
 
 /*
+ * Issue #743: the shared refusal turns away every tune a replay refuses on an I/Q stream too, each a failed command
+ * with the stream's reason that reaches no tuner and leaves the voice channel tuned: the tap, the frequency entry, the
+ * tuner release and the channel cycle both ways.
+ */
+static int
+test_iq_stream_refuses_tunes_and_release(void) {
+    static const char kReason[] = "An I/Q stream cannot retune: change the channel in the sending program.";
+
+    static const struct {
+        int cmd;
+        int u32; /* submitted with a frequency, else as an action */
+        const char* tag;
+    } cmds[] = {
+#ifdef USE_RADIO
+        {DSD_APP_CMD_MANUAL_TUNE, 1, "manual tune"},
+        {DSD_APP_CMD_RTL_SET_FREQ, 1, "rtl set freq"},
+#endif
+        {DSD_APP_CMD_TUNER_RELEASE, 0, "tuner release"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, 0, "channel cycle"},
+        {DSD_APP_CMD_CHANNEL_CYCLE_PREV, 0, "channel cycle back"},
+    };
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    char what[128];
+    for (size_t i = 0; i < sizeof cmds / sizeof cmds[0]; i++) {
+        init_radio_context(&opts, &state, "iqtcp:127.0.0.1:5000:240k:cs16");
+        seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+        state.lcn_freq_count = 2;
+        state.lcn_freq_roll = 0;
+        state.trunk_lcn_freq[0] = 857000000L;
+        state.trunk_lcn_freq[1] = 858000000L;
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+        DSD_SNPRINTF(what, sizeof what, "%s on an I/Q stream", cmds[i].tag);
+        rc |= expect_int(
+            what, cmds[i].u32 ? dsd_app_command_set_u32(cmds[i].cmd, 853125000U) : dsd_app_command_action(cmds[i].cmd),
+            DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_int(what, g_cc_tune_calls + g_io_control_tune_calls, 0);
+        rc |= expect_contains(what, state.ui_msg, kReason);
+        rc |= expect_int(what, opts.trunk_is_tuned, 1);
+        rc |= expect_true(what, state.p25_vc_freq[0] == 852000000L);
+        freeState(&state);
+    }
+    return rc;
+}
+
+/*
  * Stopping a playback onto a Pulse input that does not open leaves the playback running (issue #634): a failed switch
  * changes nothing, so the file stays open, its tone stays, and no new stream begins.
  */
@@ -31090,6 +31140,7 @@ main(void) {
     rc |= test_tcp_connect_clears_received_tone();
     rc |= test_rigctl_reconnect_key_uses_the_connect_service();
     rc |= test_fixed_tuning_refuses_rigctl_connect();
+    rc |= test_iq_stream_refuses_tunes_and_release();
     rc |= test_stop_playback_pulse_failure_keeps_the_playback();
     rc |= test_stop_playback_reopens_pulse_as_a_new_stream();
     rc |= test_output_reconfigure_failure_keeps_the_switch();

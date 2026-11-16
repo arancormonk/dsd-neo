@@ -2746,7 +2746,8 @@ test_stream_source_key_moves_off_a_replay(void) {
    Next walk and the direct control-channel return send the peer nothing, and the frequency last sent stays. */
 static int
 test_fixed_tuning_legacy_legs_send_the_peer_nothing(void) {
-    static const char* const kInputs[] = {"iqreplay:capture.iq.json", "iqtcp:127.0.0.1:5000:240k:cs16"};
+    static const char* const kInputs[] = {"iqreplay:capture.iq.json", "iqtcp:127.0.0.1:5000:240k:cs16",
+                                          "iqudp:0.0.0.0:5000:240k:cu8"};
     int rc = 0;
     for (size_t i = 0; i < sizeof kInputs / sizeof kInputs[0]; i++) {
         dsd_opts* opts = NULL;
@@ -2759,8 +2760,9 @@ test_fixed_tuning_legacy_legs_send_the_peer_nothing(void) {
             return 1;
         }
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", kInputs[i]);
+        /* A connected peer: the SetFreq stub counts every ask, whatever socket it is handed. */
         opts->use_rigctl = 1;
-        opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+        opts->rigctl_sockfd = (dsd_socket_t)5;
         opts->setmod_bw = 0;
         opts->rigctl_sent_freq_hz = 940012500U;
         g_rigctl_setfreq_ok = 1;
