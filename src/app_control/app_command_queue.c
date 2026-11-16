@@ -4006,8 +4006,6 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
         /* The return left the blocked call's carrier: the no-carrier pass below forgets its privacy, but only the DMR
            machine's judgement holds the next carrier's voice. */
         dmr_sm_note_operator_leave(opts, state, receiver, cc_freq);
-    }
-    if (cc_freq != 0) {
         /* Before the no-carrier pass, which would tick a machine that still owns the return. */
         hand_tetra_sm_home(opts, state, tetra_home);
     }
