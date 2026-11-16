@@ -33,6 +33,7 @@ target_sources(
         frame_sync_p25p2_anchor.c
         frame_sync_p25p1_compare.c
         frame_sync_unflushed.c
+        unflushed_retune.c
         frame_sync_policy.c
         sync_hamming.c
         dmr_sync.c

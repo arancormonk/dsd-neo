@@ -7266,11 +7266,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`dsd_opts_reset_pcm_input_state()`, the Pulse open, the TCP reconnect) also marks every watchdog count posted so
   far as seen (`dsd_frame_sync_forget_unflushed_retunes()`): such a retune moved the peer before the new stream
   began, while a count posted after the replacement is taken as usual. Off the decoder thread (the P25
-  watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` (an atomic count,
-  `frame_sync_unflushed.c`; the input-replacement side, `dsd_frame_sync_forget_unflushed_retunes()`, is declared in
-  `include/dsd-neo/dsp/unflushed_retune.h`, which `<dsd-neo/core/opts.h>` includes for
+  watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` (an atomic count in
+  `unflushed_retune.c`, beside the input-replacement side, `dsd_frame_sync_forget_unflushed_retunes()`, which is
+  declared in `include/dsd-neo/dsp/unflushed_retune.h`; `<dsd-neo/core/opts.h>` includes it for
   `dsd_opts_reset_pcm_input_state()`) before its tune notice. The decoder's next read takes it
-  (`frame_sync_take_unflushed_retunes()`, inline in `frame_sync_unflushed.h`: one relaxed load per symbol read and per
+  (`frame_sync_take_unflushed_retunes()`, inline in `frame_sync_unflushed.h`, with the take itself in
+  `frame_sync_unflushed.c`: one relaxed load per symbol read and per
   EDACS triplet, with no measurable cost on a 120 s DMR decode), moving the epoch and asking for the drop there, so
   the watchdog's tunes drop at the next read after the post; the notice's reconcile
   (`dsd_frame_sync_apply_off_thread_tunes()`) takes a count no read met yet. What one drop takes is bounded: the

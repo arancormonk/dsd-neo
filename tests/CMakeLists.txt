@@ -9737,6 +9737,7 @@ target_sources(
         ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
         ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
         ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_unflushed.c
+        ${PROJECT_SOURCE_DIR}/src/dsp/unflushed_retune.c
         ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 add_test(
@@ -9841,6 +9842,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/dsp/analog_tone_policy.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_unflushed.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/unflushed_retune.c
     # The scan quiet check (issue #834), over a fake signal tap.
     ${PROJECT_SOURCE_DIR}/src/engine/scan_quiet.c
     # The session's unit activity log across a target switch, read through the view every frontend shows.
