@@ -72,12 +72,14 @@ typedef struct {
     /** What was heard: "Registration accepted", "Joined talkgroup", "Denied", "Queued", "Inhibit sent", ... A frontend
      * shows it through dsd_app_unit_activity_headline(), which adds a deny or queued row's reason. */
     char kind_label[48];
-    /** The affected radio or group as an ID ("1234567", "TG 100"); a status or message report's reporting unit. */
+    /** The affected radio or group as an ID ("1234567", "TG 100", a TETRA terminal's whole TEI "Equipment 0x..."); a
+     * status or message report's reporting unit. */
     char subject_text[64];
     /** The subject's name (see the file comment), else "". */
     char subject_name[64];
-    /** The rest of the message, ", "-separated: its talkgroup (with its label), value, assigned identity ("as n"),
-     * recipient ("to n") and requester ("from n"). Each part is whole: a long talkgroup label is shortened first
+    /** The rest of the message, ", "-separated: its talkgroup (with its label), value, second value where it means
+     * something (a DMR ARS "device" / "user", a P25 deny's "for n", an NXDN "visitor TG n" / "parameter 0xNNNN", a
+     * TETRA "update type n"), assigned identity ("as n"), recipient ("to n") and requester ("from n"). Each part is whole: a long talkgroup label is shortened first
      * (ending "…"), and a part that still does not fit is left out with those after it (the text ends ", …"), so an
      * ID is never cut. */
     char target_text[128];

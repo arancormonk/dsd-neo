@@ -556,6 +556,64 @@ test_subject_and_target_text(void) {
     free_state(st);
 }
 
+/* Rows that differ only in value2 (a keyed field) read differently: each value2 is shown where it has a meaning. */
+static void
+test_value2_tells_rows_apart(void) {
+    dsd_state* st = new_state();
+    dsd_app_unit_activity_cursor cursor = {0, 0};
+
+    /* Motorola ARS device (PDU type 0x00) and user (0x05) registrations of one radio. */
+    dsd_unit_activity r = mk(DSD_UA_PROTO_DMR, DSD_UA_REGISTRATION, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA, 1234U);
+    r.value2 = 0x00U;
+    r.value2_valid = 1U;
+    dsd_app_unit_activity_row device = view_of(st, &cursor, &r);
+    r.value2 = 0x05U;
+    dsd_app_unit_activity_row user = view_of(st, &cursor, &r);
+    assert(strcmp(device.target_text, user.target_text) != 0);
+    assert(strcmp(device.target_text, "device") == 0);
+    assert(strcmp(user.target_text, "user") == 0);
+    r = mk(DSD_UA_PROTO_DMR, DSD_UA_DEREGISTRATION, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA, 1234U);
+    r.value2 = 0x06U;
+    r.value2_valid = 1U;
+    assert(strcmp(view_of(st, &cursor, &r).target_text, "user") == 0);
+
+    /* Two P25 denies differing only in the Additional Information (the request's target). */
+    r = mk(DSD_UA_PROTO_P25P1, DSD_UA_DENY, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_DENIED, 1234567U);
+    r.value = 0x04U;
+    r.value_valid = 1U;
+    r.value2 = 2345U;
+    r.value2_valid = 1U;
+    assert(strcmp(view_of(st, &cursor, &r).target_text, "service 0x04, for 2345") == 0);
+    r.value2 = 2346U;
+    assert(strcmp(view_of(st, &cursor, &r).target_text, "service 0x04, for 2346") == 0);
+
+    /* NXDN: a visitor's group, a remote control command's parameter. */
+    r = mk(DSD_UA_PROTO_NXDN, DSD_UA_GROUP_AFFILIATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_ACCEPTED, 1001U);
+    r.group = 200U;
+    r.group_valid = 1U;
+    r.value2 = 400U;
+    r.value2_valid = 1U;
+    assert(strcmp(view_of(st, &cursor, &r).target_text, "TG 200, visitor TG 400") == 0);
+    r = mk(DSD_UA_PROTO_NXDN, DSD_UA_STUN, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA, 2002U);
+    r.value2 = 0x8000U;
+    r.value2_valid = 1U;
+    assert(strcmp(view_of(st, &cursor, &r).target_text, "parameter 0x8000") == 0);
+
+    /* TETRA: a rejected location update's type; an equipment command's whole TEI. */
+    r = mk(DSD_UA_PROTO_TETRA, DSD_UA_LOCATION_REGISTRATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_REFUSED, 2001U);
+    r.value2 = 3U;
+    r.value2_valid = 1U;
+    assert(strcmp(view_of(st, &cursor, &r).target_text, "update type 3") == 0);
+    r = mk(DSD_UA_PROTO_TETRA, DSD_UA_STUN, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA, 0U);
+    set_identity(&r.subject, 0x12345678U, DSD_UA_ID_TEI_PARTIAL);
+    r.value2 = 0x0ABCDEF0U;
+    r.value2_valid = 1U;
+    dsd_app_unit_activity_row tei = view_of(st, &cursor, &r);
+    assert(strcmp(tei.subject_text, "Equipment 0xABCDEF012345678") == 0);
+    assert(tei.target_text[0] == '\0');
+    free_state(st);
+}
+
 /* A status report is attributed to the unit that sent it: the source is the subject, the target its recipient. */
 static void
 test_status_report_subject_is_source(void) {
@@ -1046,6 +1104,7 @@ main(void) {
     test_reason_text();
     test_scope_and_protocol_text();
     test_subject_and_target_text();
+    test_value2_tells_rows_apart();
     test_status_report_subject_is_source();
     test_p25_message_value_hex();
     test_name_text_is_clean();

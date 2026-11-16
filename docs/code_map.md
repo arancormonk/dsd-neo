@@ -6256,7 +6256,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     a status or message report's subject is its reporting unit. `target_text` (128 bytes) joins the group with its
     label, the value (status, message, service type, DMR mask, TETRA accept type; a P25 status as "status A1/0B", User
     then Unit Status in hex, and a P25 message as "message 1234", the 16-bit value in hex, as the P25 prints show
-    them), the assigned identity ("as n"), the
+    them), the keyed second value where it means something, so rows that differ only there read apart (a DMR ARS
+    report's "device" / "user", a P25 deny or queued response's Additional Information "for n", an NXDN "visitor TG
+    n" or remote control "parameter 0xNNNN", a TETRA rejected location update's "update type n"; a TETRA TEI's high
+    bits complete the subject text, "Equipment 0x" and the whole TEI in hex), the assigned identity ("as n"), the
     recipient ("to n") and the requester or gateway ("from System 0xFFFECF": a gateway is never the subject). Each part
     is whole: a long group label is shortened first (ending "…"), then a part that still does not fit is left out with
     those after it and the text ends ", …", so an ID is never cut. `scope_text` names the row's system ("WACN BEE00

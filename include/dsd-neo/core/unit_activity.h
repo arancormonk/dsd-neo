@@ -178,10 +178,11 @@ typedef struct {
  *   gateway or other party when the message carries one (a gateway is INFRASTRUCTURE, never the subject); assigned:
  *   the identity assigned to the subject (P25 assigned WUID, TETRA assigned SSI); recipient: a report's target.
  * - group/group_valid, value/value_valid, value2/value2_valid: payload fields (the message's group, its status value,
- *   command argument, accept type or service type, and a second field such as deny additional info, an NXDN visitor
- *   group or a TETRA assigned flag). Read a value only while its valid flag is set. A P25 status row's value is the
- *   16-bit Status field (User Status << 8 | Unit Status, TIA-102.AABC-D §2.3.29), a P25 message row's the 16-bit
- *   message.
+ *   command argument, accept type or service type, and a second field). Read a value only while its valid flag is
+ *   set. A P25 status row's value is the 16-bit Status field (User Status << 8 | Unit Status, TIA-102.AABC-D
+ *   §2.3.29), a P25 message row's the 16-bit message. value2 is a P25 deny or queued response's Additional
+ *   Information, a DMR ARS report's PDU type (0x00 / 0x01 device, 0x05 / 0x06 user), an NXDN visitor group or remote
+ *   control parameter, a TETRA rejected location update's type, or the high 28 bits of a TETRA TEI_PARTIAL subject.
  * - reason_code with reason_set (a dsd_ua_reason_set, <dsd-neo/core/unit_activity_reason.h>): text is resolved at
  *   view time.
  * - stage: a step within one command (a dsd_ua_stage: TETRA intent vs authenticated confirm), 0 when the message has

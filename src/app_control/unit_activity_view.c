@@ -420,6 +420,76 @@ ua_value_part(const dsd_unit_activity* r, char* out, size_t cap) {
     }
 }
 
+/* Motorola ARS PDU types (dsd_unit_activity::value2 of a DMR ARS report): device and user (de)registration. */
+enum {
+    UA_ARS_DEVICE_REG = 0x00,
+    UA_ARS_DEVICE_DEREG = 0x01,
+    UA_ARS_USER_REG = 0x05,
+    UA_ARS_USER_DEREG = 0x06,
+};
+
+static int
+ua_is_command_kind(uint8_t kind) {
+    return kind == DSD_UA_STUN || kind == DSD_UA_REVIVE || kind == DSD_UA_KILL || kind == DSD_UA_RADIO_MONITOR;
+}
+
+static void
+ua_dmr_value2_part(const dsd_unit_activity* r, unsigned v, char* out, size_t cap) {
+    if (r->role != DSD_UA_ROLE_REPORT || (r->kind != DSD_UA_REGISTRATION && r->kind != DSD_UA_DEREGISTRATION)) {
+        return;
+    }
+    if (v == UA_ARS_DEVICE_REG || v == UA_ARS_DEVICE_DEREG) {
+        DSD_SNPRINTF(out, cap, "%s", "device");
+    } else if (v == UA_ARS_USER_REG || v == UA_ARS_USER_DEREG) {
+        DSD_SNPRINTF(out, cap, "%s", "user");
+    }
+}
+
+/* The second payload field where it means something to a reader (it is keyed, so two rows that differ only there read
+ * apart): a DMR ARS report's device or user, a P25 deny or queued response's Additional Information, an NXDN visitor
+ * group or remote control parameter, a TETRA rejected location update's type. A TETRA TEI's high bits go in the
+ * subject text instead. */
+static void
+ua_value2_part(const dsd_unit_activity* r, char* out, size_t cap) {
+    out[0] = '\0';
+    if (!r->value2_valid) {
+        return;
+    }
+    const unsigned v = (unsigned)r->value2;
+    switch (r->protocol) {
+        case DSD_UA_PROTO_DMR: ua_dmr_value2_part(r, v, out, cap); break;
+        case DSD_UA_PROTO_P25P1:
+        case DSD_UA_PROTO_P25P2:
+            if (r->kind == DSD_UA_DENY || r->kind == DSD_UA_QUEUED) {
+                DSD_SNPRINTF(out, cap, "for %u", v);
+            }
+            break;
+        case DSD_UA_PROTO_NXDN:
+            if (r->kind == DSD_UA_REGISTRATION || r->kind == DSD_UA_GROUP_AFFILIATION) {
+                DSD_SNPRINTF(out, cap, "visitor TG %u", v);
+            } else if (ua_is_command_kind(r->kind)) {
+                DSD_SNPRINTF(out, cap, "parameter 0x%04X", v);
+            }
+            break;
+        case DSD_UA_PROTO_TETRA:
+            if (r->kind == DSD_UA_LOCATION_REGISTRATION) {
+                DSD_SNPRINTF(out, cap, "update type %u", v);
+            }
+            break;
+        default: break;
+    }
+}
+
+/* The subject's text: its identity, with a TETRA TEI piece made whole again from its high bits (value2). */
+static void
+ua_subject_text(const dsd_unit_activity* r, char* out, size_t cap) {
+    if (r->subject.valid && r->subject.subtype == DSD_UA_ID_TEI_PARTIAL && r->value2_valid) {
+        DSD_SNPRINTF(out, cap, "Equipment 0x%X%08X", (unsigned)r->value2, (unsigned)r->subject.id);
+        return;
+    }
+    ua_identity_text(&r->subject, out, cap);
+}
+
 /* An identity part with its lead word ("as 100", "to 2345", "from System 0xFFFECC"). */
 static void
 ua_identity_part(const char* lead, const dsd_ua_identity* id, char* out, size_t cap) {
@@ -432,7 +502,7 @@ ua_identity_part(const char* lead, const dsd_ua_identity* id, char* out, size_t 
 }
 
 /* The parts of a target text after its group, in display order. */
-enum { UA_TARGET_VALUE, UA_TARGET_AS, UA_TARGET_TO, UA_TARGET_FROM, UA_TARGET_PARTS };
+enum { UA_TARGET_VALUE, UA_TARGET_VALUE2, UA_TARGET_AS, UA_TARGET_TO, UA_TARGET_FROM, UA_TARGET_PARTS };
 
 enum { UA_TARGET_PART_SIZE = 80 };
 
@@ -500,6 +570,7 @@ ua_target_text(const ua_naming* n, const dsd_unit_activity* r, char* out, size_t
     char parts[UA_TARGET_PARTS][UA_TARGET_PART_SIZE];
     char group[UA_TARGET_PART_SIZE];
     ua_value_part(r, parts[UA_TARGET_VALUE], sizeof parts[0]);
+    ua_value2_part(r, parts[UA_TARGET_VALUE2], sizeof parts[0]);
     ua_identity_part("as", &r->assigned, parts[UA_TARGET_AS], sizeof parts[0]);
     ua_identity_part("to", &r->recipient, parts[UA_TARGET_TO], sizeof parts[0]);
     ua_identity_part("from", &r->actor, parts[UA_TARGET_FROM], sizeof parts[0]);
@@ -619,7 +690,7 @@ ua_row_from(const dsd_state* snapshot, const dsd_unit_activity* r, dsd_app_unit_
     out->filters = ua_filters(r);
     out->tone = ua_tone(r);
     ua_text_set(out->kind_label, sizeof out->kind_label, ua_kind_label(r));
-    ua_identity_text(&r->subject, out->subject_text, sizeof out->subject_text);
+    ua_subject_text(r, out->subject_text, sizeof out->subject_text);
     ua_subject_name(&naming, r, out->subject_name, sizeof out->subject_name);
     ua_target_text(&naming, r, out->target_text, sizeof out->target_text);
     ua_reason_text(r, out->reason_text, sizeof out->reason_text);
