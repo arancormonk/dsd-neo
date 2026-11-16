@@ -9,11 +9,13 @@
  */
 #include <assert.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stddef.h>
@@ -267,6 +269,7 @@ MUTATOR(m_scope_c, r->scope.c = DSD_UA_SCOPE_SITE_KNOWN | 0x0102U)
 MUTATOR(m_scope_kind, r->scope.kind = DSD_UA_SCOPE_P25_NAC)
 MUTATOR(m_scope_category, r->scope.category = 1U)
 MUTATOR(m_scope_invalid, r->scope.valid = 0U) /* rx_id is empty here: an unknown scope */
+MUTATOR(m_subject_nonlocal, r->subject_nonlocal = 1U)
 MUTATOR(m_freq, r->freq_hz = 851012500)
 
 /* Fields outside the key, or held only while a valid flag is set: the pair merges. */
@@ -313,6 +316,7 @@ test_pairs_differing_in_one_key_field(void) {
         {"scope kind", m_scope_kind, 0},
         {"scope category", m_scope_category, 0},
         {"scope unknown", m_scope_invalid, 0},
+        {"subject nonlocal", m_subject_nonlocal, 0},
         {"freq", m_freq, 0},
         {"slot", n_slot, 1},
         {"name", n_name, 1},
@@ -659,6 +663,66 @@ test_name_frozen_terminated_at_a_character(void) {
     free_state(st);
 }
 
+/* subject_nonlocal belongs to the subject: a row with no valid subject never keeps it. */
+static void
+test_nonlocal_needs_a_subject(void) {
+    dsd_state* st = new_state();
+    clock_at_ms(T0_MS);
+    dsd_unit_activity row = base_row();
+    row.subject_nonlocal = 1U;
+    assert(dsd_unit_activity_push(st, &row) == 1);
+    row = base_row();
+    row.subject.valid = 0U;
+    row.subject_nonlocal = 1U;
+    assert(dsd_unit_activity_push(st, &row) == 1);
+    dsd_unit_activity out[2];
+    dsd_unit_activity_read_meta meta;
+    assert(dsd_unit_activity_read(st, 0U, 0U, out, 2, &meta) == 2);
+    assert(out[0].subject_nonlocal == 1U);
+    assert(out[1].subject_nonlocal == 0U && !out[1].subject.valid);
+    free_state(st);
+}
+
+/* dsd_unit_activity_freeze_name(): a nonlocal subject is never named from the local lists (its assigned identity
+ * still is), and a GROUP subject keeps its talkgroup label, so another system's group row still shows it. */
+static void
+test_freeze_name_nonlocal_and_group(void) {
+    dsd_state* st = new_state();
+    dsd_rxid_note_p25_network(st, 0xBEE00U, 0x123U);
+    assert(dsd_alias_learn_radio(NULL, st, NULL, 1234567U, "Local namesake", NULL) == DSD_TG_POLICY_LEARN_ADDED);
+    dsd_tg_policy_entry entry;
+    assert(dsd_tg_policy_make_exact_entry(300U, "A", "Fire", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
+    assert(dsd_tg_policy_upsert_exact(st, &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) >= 0);
+
+    dsd_unit_activity row = base_row();
+    row.subject.home_valid = 0U;
+    row.assigned.valid = 0U;
+    dsd_unit_activity_freeze_name(st, &row);
+    assert(strcmp(row.name_frozen, "Local namesake") == 0);
+
+    row = base_row();
+    row.subject.home_valid = 0U;
+    row.assigned.valid = 0U;
+    row.subject_nonlocal = 1U;
+    dsd_unit_activity_freeze_name(st, &row);
+    assert(row.name_frozen[0] == '\0');
+
+    assert(dsd_alias_learn_radio(NULL, st, NULL, 100U, "Serving", NULL) == DSD_TG_POLICY_LEARN_ADDED);
+    row = base_row();
+    row.subject_nonlocal = 1U;
+    dsd_unit_activity_freeze_name(st, &row);
+    assert(strcmp(row.name_frozen, "Serving") == 0);
+
+    row = base_row();
+    row.subject.id = 300U;
+    row.subject.subtype = DSD_UA_ID_GROUP;
+    row.subject.home_valid = 0U;
+    row.assigned.valid = 0U;
+    dsd_unit_activity_freeze_name(st, &row);
+    assert(strcmp(row.name_frozen, "Fire") == 0);
+    free_state(st);
+}
+
 static void
 test_rejects_bad_rows_and_args(void) {
     dsd_state* st = new_state();
@@ -934,6 +998,8 @@ main(void) {
     test_stamps_from_floored_decode_wall();
     test_scope_from_rx_id();
     test_name_frozen_terminated_at_a_character();
+    test_nonlocal_needs_a_subject();
+    test_freeze_name_nonlocal_and_group();
     test_rejects_bad_rows_and_args();
     test_push_allocation_failure();
     test_snapshot_copies_only_changed_rows();

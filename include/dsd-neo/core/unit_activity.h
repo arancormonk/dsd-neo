@@ -108,9 +108,9 @@ typedef enum {
     DSD_UA_STAGE_AUTHENTICATED = 2, /**< The command's authenticated (confirm) stage. */
 } dsd_ua_stage;
 
-/** dsd_ua_identity::subtype. Only RADIO identities are ever named as radios; TEI_PARTIAL (a TETRA equipment identity
- * piece) and UNKNOWN (an address of unknown kind, a TETRA SMI or event label) are never named. The values are
- * stable. */
+/** dsd_ua_identity::subtype. Only RADIO identities are ever named as radios, and a GROUP subject by its talkgroup
+ * label; INFRASTRUCTURE, TEI_PARTIAL (a TETRA equipment identity piece) and UNKNOWN (an address of unknown kind, a
+ * TETRA SMI or event label) are never named. The values are stable. */
 typedef enum {
     DSD_UA_ID_RADIO = 1,
     DSD_UA_ID_GROUP,
@@ -187,6 +187,11 @@ typedef struct {
  * - stage: a step within one command (a dsd_ua_stage: TETRA intent vs authenticated confirm), 0 when the message has
  *   none.
  * - slot: the TDMA slot heard on (0/1); freq_hz: the carrier heard on (0 unknown).
+ * - subject_nonlocal: 1 when the subject's number is known not to be a local radio's although no home system says
+ *   whose it is (a TETRA USSI, a migrating MS's home-network SSI; a P25 Message Update source that waits for its Source
+ *   ID Extension; a P25 roamer's home ID heard before the site's WACN): the local lists never name it, at push
+ *   (dsd_unit_activity_freeze_name()) or in the view, though its assigned identity may be named. Keyed with the
+ *   subject. Push clears it on a row with no valid subject.
  * - name_frozen: the latest pushed name: the subject's name as the producer resolved it at the push that inserted
  *   the row, replaced by each merge that pushes a non-empty one (UTF-8, NUL-terminated; push cuts it at a character
  *   boundary when it fills the field). It is "frozen" only against later alias changes: nothing rewrites it but a
@@ -210,6 +215,7 @@ typedef struct dsd_unit_activity {
     uint8_t stage, reason_set, slot, value_valid;
     uint8_t group_valid;
     uint8_t value2_valid;
+    uint8_t subject_nonlocal;
     char name_frozen[32];
 } dsd_unit_activity;
 
@@ -249,7 +255,7 @@ typedef struct dsd_unit_activity_read_meta {
  *
  * Merge key: every field but seq, rev, first_ms, last_ms, wall_s, repeat, slot and name_frozen (protocol, kind,
  * role, result, stage, reason set and code, the four identities with their home systems, group, value, value2 and
- * their valid flags, scope and freq_hz). One exception: a DEREGISTRATION push with no assigned identity
+ * their valid flags, subject_nonlocal, scope and freq_hz). One exception: a DEREGISTRATION push with no assigned identity
  * matches a held row whatever its assigned identity (the producer reads that identity from the registration the first
  * acknowledgement removed, so a repeat finds none). A merge keeps the row's slot and every key field the row holds,
  * and takes the pushed name when it is not empty, so name_frozen holds the latest pushed name.
@@ -304,11 +310,10 @@ int dsd_unit_activity_identity_at_home(const dsd_state* state, const dsd_ua_iden
  * view's live ones).
  *
  * The name is the row's assigned identity's when it is a valid RADIO with a name (the local ID a visiting radio was
- * given), else the subject's when it is a valid RADIO at home (dsd_unit_activity_identity_at_home()): the order the
- * view names a live row in. Each name is the current
- * reception's (dsd_source_label_lookup_scoped() with the current scope: a learned alias of another system never names
- * it). Groups, infrastructure, TEI pieces and identities of unknown kind are never named. A producer that knows a
- * subject number belongs to another network without a home to say so (a TETRA USSI) does not call this. name_frozen is
+ * given), else the subject's when it is a valid RADIO at home (dsd_unit_activity_identity_at_home()) and not marked
+ * subject_nonlocal, else the talkgroup label of a GROUP subject: the order the view names a live row in. Each radio
+ * name is the current reception's (dsd_source_label_lookup_scoped() with the current scope: a learned alias of another
+ * system never names it). Infrastructure, TEI pieces and identities of unknown kind are never named. name_frozen is
  * left as it is when nothing is named; a name longer than the field is cut by the push at a character boundary.
  */
 void dsd_unit_activity_freeze_name(const dsd_state* state, dsd_unit_activity* row);

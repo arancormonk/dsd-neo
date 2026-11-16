@@ -353,9 +353,11 @@ ua_subject_name(const ua_naming* n, const dsd_unit_activity* r, char* out, size_
     }
     int found = 0;
     if (n->live && r->subject.subtype == DSD_UA_ID_RADIO) {
-        /* The assigned (serving) ID names the radio first: a home identity is known there by it. */
+        /* The assigned (serving) ID names the radio first: a home identity is known there by it. A nonlocal subject
+           (a TETRA USSI, a P25 source awaiting its extension) is another network's number: never named here. */
         found = ua_radio_name(n, &r->assigned, name, sizeof name)
-                || (ua_identity_is_local(n, &r->subject) && ua_radio_name(n, &r->subject, name, sizeof name));
+                || (!r->subject_nonlocal && ua_identity_is_local(n, &r->subject)
+                    && ua_radio_name(n, &r->subject, name, sizeof name));
     } else if (n->live) {
         found = dsd_tg_policy_lookup_group_label(n->snapshot, r->subject.id, NULL, 0U, name, sizeof name);
     }

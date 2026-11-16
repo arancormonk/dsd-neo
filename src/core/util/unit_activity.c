@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -291,6 +292,7 @@ ua_normalize(const dsd_state* state, const dsd_unit_activity* in, dsd_unit_activ
     out->slot = in->slot;
     out->freq_hz = in->freq_hz;
     ua_identity_normalize(&in->subject, &out->subject);
+    out->subject_nonlocal = (in->subject.valid && in->subject_nonlocal) ? 1U : 0U;
     ua_identity_normalize(&in->actor, &out->actor);
     ua_identity_normalize(&in->assigned, &out->assigned);
     ua_identity_normalize(&in->recipient, &out->recipient);
@@ -354,8 +356,9 @@ ua_assigned_equal(const dsd_unit_activity* held, const dsd_unit_activity* rec) {
 static int
 ua_key_equal(const dsd_unit_activity* held, const dsd_unit_activity* rec) {
     return ua_header_equal(held, rec) && ua_payload_equal(held, rec) && ua_reception_equal(held, rec)
-           && ua_identity_equal(&held->subject, &rec->subject) && ua_identity_equal(&held->actor, &rec->actor)
-           && ua_assigned_equal(held, rec) && ua_identity_equal(&held->recipient, &rec->recipient);
+           && ua_identity_equal(&held->subject, &rec->subject) && held->subject_nonlocal == rec->subject_nonlocal
+           && ua_identity_equal(&held->actor, &rec->actor) && ua_assigned_equal(held, rec)
+           && ua_identity_equal(&held->recipient, &rec->recipient);
 }
 
 /* The row @p rec merges into: the most recently revised of the lookback rows with its key, when the clock has not gone
@@ -568,21 +571,37 @@ dsd_unit_activity_identity_at_home(const dsd_state* state, const dsd_ua_identity
     return here.valid && here.kind == id->home_kind && here.a == id->home_a && here.b == id->home_b;
 }
 
+/* A radio's name in the current reception's scope; 1 when found. */
+static int
+ua_freeze_radio(const dsd_state* state, const dsd_ua_identity* id, char* name, size_t cap) {
+    char mode[8];
+    return id->valid && id->subtype == DSD_UA_ID_RADIO
+           && dsd_source_label_lookup_scoped(state, NULL, id->id, mode, sizeof mode, name, cap);
+}
+
+/* The name the view gives a live row (ua_subject_name()), in the same order: the assigned identity first; when it has
+ * none, the subject radio while it is at home and not nonlocal, or a group subject's talkgroup label. */
+static int
+ua_freeze_lookup(const dsd_state* state, const dsd_unit_activity* row, char* name, size_t cap) {
+    if (ua_freeze_radio(state, &row->assigned, name, cap)) {
+        return 1;
+    }
+    if (!row->subject.valid || row->subject_nonlocal) {
+        return 0;
+    }
+    if (row->subject.subtype == DSD_UA_ID_GROUP) {
+        return dsd_tg_policy_lookup_group_label(state, row->subject.id, NULL, 0U, name, cap);
+    }
+    return dsd_unit_activity_identity_at_home(state, &row->subject) && ua_freeze_radio(state, &row->subject, name, cap);
+}
+
 void
 dsd_unit_activity_freeze_name(const dsd_state* state, dsd_unit_activity* row) {
     if (state == NULL || row == NULL) {
         return;
     }
-    char mode[8];
     char name[DSD_SOURCE_ALIAS_NAME_MAX];
-    /* The assigned identity first; when it has no name, the subject at home (as the view names a live row). */
-    const int found =
-        (row->assigned.valid && row->assigned.subtype == DSD_UA_ID_RADIO
-         && dsd_source_label_lookup_scoped(state, NULL, row->assigned.id, mode, sizeof mode, name, sizeof name))
-        || (row->subject.valid && row->subject.subtype == DSD_UA_ID_RADIO
-            && dsd_unit_activity_identity_at_home(state, &row->subject)
-            && dsd_source_label_lookup_scoped(state, NULL, row->subject.id, mode, sizeof mode, name, sizeof name));
-    if (!found) {
+    if (!ua_freeze_lookup(state, row, name, sizeof name)) {
         return;
     }
     /* A name that fills the field is copied unterminated; the push cuts it at a character boundary. */

@@ -2510,12 +2510,19 @@ suite runs under this compiler.
     value of a TETRA location registration row. Test: `CORE_UNIT_ACTIVITY_REASON` (every 8-bit P25 code against
     the prints' former table, kept in the test).
   - Protocol producers (`src/protocol/<name>/<name>_unit_activity.c`): one row per checked message, `freq_hz` the
-    tuned frequency. Every producer names the row through
-    the one core rule, `dsd_unit_activity_freeze_name()`: the assigned identity when it is a RADIO, else the subject
-    RADIO only while `dsd_unit_activity_identity_at_home()` (no home, or the home is the current reception's scope;
-    the scope kinds are static-asserted equal to the alias scope's), looked up in the current scope; groups,
-    infrastructure, TEI pieces and UNKNOWN identities are never named. Test: `DMR_UNIT_ACTIVITY` (`test_naming`),
-    `NXDN_UNIT_ACTIVITY` (`test_naming`), `TETRA_UNIT_ACTIVITY` (`test_naming`).
+    tuned frequency. Every producer names the row through the one core rule, `dsd_unit_activity_freeze_name()`: the
+    assigned identity when it is a RADIO, else the subject RADIO only while `dsd_unit_activity_identity_at_home()` (no
+    home, or the home is the current reception's scope; the scope kinds are static-asserted equal to the alias
+    scope's) and not `subject_nonlocal`, looked up in the current scope, else a GROUP subject's talkgroup label;
+    infrastructure, TEI pieces and UNKNOWN identities are never named. Test: `CORE_UNIT_ACTIVITY`
+    (`test_freeze_name_nonlocal_and_group`), `DMR_UNIT_ACTIVITY` (`test_naming`), `NXDN_UNIT_ACTIVITY`
+    (`test_naming`), `TETRA_UNIT_ACTIVITY` (`test_naming`, `test_ussi_never_named_locally`).
+  - Nonlocal subjects: `subject_nonlocal` marks a subject number that is known not to be a local radio's although no
+    home system says whose it is: a TETRA USSI (a migrating MS's home-network SSI), a P25 LC 0x5B Message Update
+    source (its Source ID waits for the Source ID Extension that qualifies it; the row shows the ID only and is not
+    corrected when the extension arrives), and a P25 abbreviated registration response's unit of another System ID
+    heard before the site's WACN. Neither the push nor the view names it from the local lists; its assigned identity
+    still names it. It is keyed with the subject, and push clears it on a row with no valid subject.
     - DMR (`dmr_unit_activity.c`; standard FID 0x00 CSBKs that passed their own CRC, never one `-F` accepted as RAS):
       C_ACKD 0x62 from REGI is REGISTRATION / ACK / ACKNOWLEDGED with no reason (a deregistration is answered alike, TS
       102 361-4 clause 6.4.6), 0x2A / 0x2B from REGI REGISTRATION refused / denied, 0x65 from REGI GROUP_AFFILIATION
@@ -2541,7 +2548,7 @@ suite runs under this compiler.
       for a remote monitor answer. Unit IDs FFF0-FFFF are infrastructure. Test: `NXDN_UNIT_ACTIVITY`.
     - TETRA (`tetra_unit_activity.c`; clear or decrypted MM only): LU ACCEPT / REJECT for the MAC-addressed MS (an SMI
       is UNKNOWN; an event label, no address or an encrypted short identity adds no row, since rows of different MSs
-      would merge; a USSI, a migrating MS's home-network SSI, is never named from the local lists; the address's
+      would merge; a USSI, a migrating MS's home-network SSI, is a `subject_nonlocal` subject; the address's
       MCC/MNC is the cell's, never a home), the accept type as the value and the SSI element as `assigned`, the reject
       cause as the reason and the update type in `value2`; D-DISABLE temporary / permanent and D-ENABLE as STUN / KILL /
       REVIVE commands at the INTENT or AUTHENTICATED stage, the subscription SSI with its ITSI network as the home, an
@@ -6257,11 +6264,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     9999 LA 12"). Every text is well-formed UTF-8 cut at a character boundary, C0 and C1 controls as spaces.
   - Names: only RADIO and GROUP subjects are named. While the row's scope is the snapshot's current one
     (`dsd_alias_scope_equal()` on the learned-alias scope), the name comes from the snapshot's lists in that scope
-    (`dsd_source_label_lookup_scoped()`: the assigned ID first, then the subject unless its home is another system; a
-    group's label); a row of another system shows `name_frozen`, because the current lists (a trunk-scan target's own)
-    say nothing about another system's radio. So a later alias renames only rows of its own system, and A -> B -> A
-    shows each system's names; the scope alone tells the systems apart. `dsd_app_unit_activity_name_key()` (`dsd_alias_name_key()`) changes whenever a
-    name could change; a frontend then reads again from `{instance, 0}` and updates its rows by seq.
+    (`dsd_source_label_lookup_scoped()`: the assigned ID first, then the subject unless its home is another system or
+    it is `subject_nonlocal`; a group's label); a row of another system shows `name_frozen` (a radio's name or a
+    group's label as its producer stored it), because the current lists (a trunk-scan target's own) say nothing about
+    another system's radio. So a later alias renames only rows of its own system, and A -> B -> A shows each system's
+    names; the scope alone tells the systems apart. `dsd_app_unit_activity_name_key()` (`dsd_alias_name_key()`)
+    changes whenever a name could change; a frontend then reads again from `{instance, 0}` and updates its rows by
+    seq.
   - Frontends: the Qt Activity screen (`UnitActivityModel`, under UI, Qt).
   - Test: `APP_CONTROL_UNIT_ACTIVITY`.
   - Terminal: the Unit Activity section (`frontend_display.show_unit_activity`, Display -> Sections -> Unit activity,
