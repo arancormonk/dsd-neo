@@ -725,8 +725,8 @@ resize_term(int lines, int columns) {
 }
 
 /* Issue #743: a submenu row that renders its label titles its frame (the breadcrumb) with that label, as the radio
-   submenu names its input; before, the frame took the row's id ("Main Menu > Input > input.rtl"). A row with a static
-   label keeps it. */
+   submenu names its input; before, the frame took the row's id ("Main Menu > Input > input.rtl"). The title is drawn
+   anew each tick, so an input switched with the submenu open renames it. A row with a static label keeps it. */
 static void
 test_rendered_label_titles_its_submenu(const dsd_opts* opts, const dsd_state* state) {
     static const char* const k_names[] = {"RTL-SDR", "I/Q stream", "I/Q replay"};
@@ -739,6 +739,16 @@ test_rendered_label_titles_its_submenu(const dsd_opts* opts, const dsd_state* st
         assert(strcmp(g_layout_title, k_names[i]) == 0);
         ui_overlays_shutdown();
     }
+    /* The input switched while the submenu is open (from Qt or the API): the next draw renames it. */
+    g_fixture = 6;
+    g_rendered_title = "I/Q stream";
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    assert(strcmp(g_layout_title, "I/Q stream") == 0);
+    g_rendered_title = "RTL-SDR";
+    ui_menu_tick(opts, state);
+    assert(strcmp(g_layout_title, "RTL-SDR") == 0);
+    ui_overlays_shutdown();
     g_fixture = 6;
     ui_menu_open_async(opts, state);
     assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);

@@ -375,7 +375,8 @@
     X(provoice_active)                                                                                                 \
     X(group_list_reload_offered)                                                                                       \
     X(input_freq_offered)                                                                                              \
-    X(rigctl_rows_offered)                                                                                             \
+    X(rigctl_connect_offered)                                                                                          \
+    X(rigctl_setmod_offered)                                                                                           \
     X(rr_feature_available)                                                                                            \
     X(rr_imports_available_and_feature)                                                                                \
     X(rr_key_prompt_offered_and_feature)                                                                               \

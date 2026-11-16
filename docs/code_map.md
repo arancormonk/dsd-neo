@@ -14054,9 +14054,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     rtl_tcp`) follow `tuner_rows_offered()`: hidden on an Airspy (rows of its own) and on a radio input DSD-neo cannot
     tune (`dsd_opts_radio_can_tune()`), kept on audio input, where they set up the RTL-SDR a switch opens. A submenu
     row with a `label_fn` titles its frame with the label it renders (`ui_menu_push_submenu()`, the frame's
-    `title_buf`), so the breadcrumb reads `Input > I/Q stream`, never the row's id. The rigctl rows (`input.rigctl`,
-    `input.setmod`) are hidden on a stream (`rigctl_rows_offered()`), which refuses a peer and its passband; a replay
-    keeps them. The Visual Aids header names a stream or replay (`I/Q Stream Visual Aids`, `I/Q Replay Visual Aids`).
+    `title_buf`, rendered again at every draw from the frame's `owner` row, so an input switched with the submenu open
+    renames it), so the breadcrumb reads `Input > I/Q stream`, never the row's id. Rigctl connect (`input.rigctl`) is
+    hidden on any input with fixed tuning (`rigctl_connect_offered()`), which refuses a connect; Rigctl setmod
+    bandwidth (`input.setmod`) only on a stream (`rigctl_setmod_offered()`), since a replay's start may have connected
+    a peer that still takes a passband. The Visual Aids header names a stream or replay (`I/Q Stream Visual Aids`, `I/Q Replay Visual Aids`).
     Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`, `UI_MENU_TREE_AUDIT{,_NO_RADIO}`,
     `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`.
   - Analog channel width (issue #525): the Input menu's `input.nfm_bw` row, right after `input.sql` (`NFM bandwidth...

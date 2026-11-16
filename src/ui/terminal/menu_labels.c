@@ -168,10 +168,18 @@ input_freq_offered(const void* ctx) {
     return c && freq_entry_offered(c->opts);
 }
 
-/* The rigctl rows (connect, setmod bandwidth): not on an I/Q stream, whose sending program runs the radio and which
-   refuses a peer and its passband (issue #743). A replay keeps them: its start may connect a peer. */
+/* The rigctl connect row: not on an input with fixed tuning (an I/Q replay or stream), which refuses a connect, since
+   a peer beside it would move a radio the session does not hear (issue #743 B12). */
 bool
-rigctl_rows_offered(const void* ctx) {
+rigctl_connect_offered(const void* ctx) {
+    const UiCtx* c = (const UiCtx*)ctx;
+    return !c || !c->opts || !dsd_opts_input_has_fixed_tuning(c->opts);
+}
+
+/* The rigctl setmod bandwidth row: not on an I/Q stream, whose sending program sets the passband (issue #743). A
+   replay keeps it: its start may have connected a peer, which still takes a passband. */
+bool
+rigctl_setmod_offered(const void* ctx) {
     const UiCtx* c = (const UiCtx*)ctx;
     return !c || !c->opts || !dsd_opts_input_is_iq_stream(c->opts);
 }

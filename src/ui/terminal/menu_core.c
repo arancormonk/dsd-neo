@@ -260,6 +260,31 @@ ui_menu_modal_handle_key(int ch) {
     return -1;
 }
 
+/* A frame's title is the label of the row that opened it. A row that renders its label names its frame the same way
+   (Input > I/Q stream), never by its id, and again at every draw: an input switched while the submenu is open (from
+   Qt or the API) renames it. */
+static void
+ui_frame_title_refresh(UiMenuFrame* f, const UiCtx* ctx) {
+    const NcMenuItem* it = f->owner;
+    if (!it) {
+        return;
+    }
+    f->title = it->label ? it->label : it->id;
+    if (it->label_fn) {
+        const char* got = it->label_fn(ctx, f->title_buf, sizeof f->title_buf);
+        if (got && *got) {
+            f->title = got;
+        }
+    }
+}
+
+static void
+ui_menu_refresh_titles(const UiCtx* ctx) {
+    for (int i = 1; i < g_depth; i++) {
+        ui_frame_title_refresh(&g_stack[i], ctx);
+    }
+}
+
 static void
 ui_menu_push_submenu(const NcMenuItem* it, const UiCtx* ctx) {
     if (!it || !it->submenu || it->submenu_len == 0) {
@@ -274,14 +299,8 @@ ui_menu_push_submenu(const NcMenuItem* it, const UiCtx* ctx) {
     nf->n = it->submenu_len;
     nf->hi = ui_first_selectable_idx(nf->items, nf->n, ctx);
     nf->top = 0;
-    nf->title = it->label ? it->label : it->id;
-    /* A row that renders its label names its frame the same way (Input > I/Q stream), never by its id. */
-    if (it->label_fn) {
-        const char* got = it->label_fn(ctx, nf->title_buf, sizeof nf->title_buf);
-        if (got && *got) {
-            nf->title = got;
-        }
-    }
+    nf->owner = it;
+    ui_frame_title_refresh(nf, ctx);
     ui_overlay_layout(nf, ctx);
 }
 
@@ -633,6 +652,7 @@ ui_menu_tick(const dsd_opts* opts, const dsd_state* state) {
         scan_list_modal_render();
         return;
     }
+    ui_menu_refresh_titles(ctx);
     UiMenuFrame* f = &g_stack[g_depth - 1];
     if (f->items && f->n > 0 && !ui_is_selectable(&f->items[f->hi], ctx)) {
         f->hi = ui_next_selectable(f->items, f->n, ctx, f->hi, +1);
