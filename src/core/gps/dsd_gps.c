@@ -494,7 +494,8 @@ lip_extension_label(uint8_t extension) {
 }
 
 /* The protocol that carried a LIP PDU: DMR (a UDT block, a DMR data PDU's UDP port 5017), or P25 Phase 1, whose
-   packet data reaches UDP port 5017 through decode_ip_pdu() too. The frame that carried it set state->lastsynctype. */
+   packet data reaches UDP port 5017 through decode_ip_pdu() too. The frame that carried it set state->lastsynctype,
+   which the other PDU writers (dmr_pdu.c, p25p1_pdu_data.c) name their protocol by as well. */
 static int
 lip_pdu_protocol(const dsd_state* state) {
     return DSD_SYNC_IS_P25(state->lastsynctype) ? DSD_SYNC_P25P1_POS : DSD_SYNC_DMR_BS_DATA_POS;
