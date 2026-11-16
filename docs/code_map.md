@@ -3895,9 +3895,11 @@ suite runs under this compiler.
     parser refuses fails with exit 1 naming it, a build without radio support refuses the input, and the spec is kept
     in its canonical form. Once every option is read, `cli_refuse_tuning_on_iq_stream()` refuses `-T`, `-Y`,
     `--trunk-scan`, `-U`, `--rtl-udp-control`, `--auto-ppm`, `--rtltcp-autotune` (argv's, by their seen bits) and
-    `--iq-capture` beside a stream, naming the flag (D5, D8); bootstrap then refuses a config's trunking, `-Y` scanner
-    or trunk scan beside one (`bootstrap_refuse_config_tuning_on_iq_stream()`, after the trunk gating and the one-shot
-    actions, before anything opens). The engine's setup (`dsd_engine_setup_parse_iq_stream_input()`) reads the spec
+    `--iq-capture` beside a stream, naming the flag (D5, D8); bootstrap then refuses a loaded config's trunking, `-Y`
+    scanner or trunk scan beside one, the stream the config's or the command line's
+    (`bootstrap_refuse_config_tuning_on_iq_stream()`, on the config's own keys, which the command line's trunking
+    override and its `-i` trunk-scan drop do not hide; after the one-shot actions, before anything opens). The engine's
+    setup (`dsd_engine_setup_parse_iq_stream_input()`) reads the spec
     of any origin again, refuses a RATE no plan takes to the mode's target, says where a TCP stream connects, warns a
     RATE under what the mode decodes from (TETRA 25 kHz, 12.5 kHz channels 16 kHz, 6.25 kHz ones 12 kHz) and notes a
     TETRA start without FREQ.
@@ -9488,7 +9490,8 @@ Key public headers:
     (`rtl_stream_get_request_rate_hz()`) restarts nothing, and a failed start restarts the previous chain, then takes
     the caller's start-failure path. `svc_replay_planned_rate_hz()` answers for a stream too, so the width checks and
     `cfg_radio_reopen()` (`CFG_REOPEN_AT_REPLAY_RATE`) hold widths to the rate it will run at; the RR import's dry
-    check is `rr_apply_check_iq_stream()`. A config's gain restarts no stream. Tests: `APP_COMMAND_QUEUE`
+    check is `rr_apply_check_iq_stream()`, and its receiver verdict reads a stream as `DSD_APP_RR_INPUT_IQ_STREAM`,
+    which re-plans to TETRA's rate as a replay does. A config's gain restarts no stream. Tests: `APP_COMMAND_QUEUE`
     (`test_stream_*`).
   - No tuner (issue #743 B2, B9): every tuner setter of a replay device, and of a raw I/Q stream's (frequency, sample
     rate, gain and nearest gain, PPM, direct sampling, offset tuning, tuner bandwidth, bias tee, rtl_tcp autotune,
@@ -9508,7 +9511,9 @@ Key public headers:
   would make a link cycle. It knows nothing of the input ring, resampler or decoder.
   - Spec: `dsd_iq_net_spec_parse()` reads `iqtcp:HOST:PORT:RATE:FORMAT[:FREQ]` / `iqudp:BIND:PORT:RATE:FORMAT[:FREQ]`
     with its own splitter that keeps empty fields, fields checked in order so the message names the first bad one
-    (and the expected shape); PORT 1..65535, RATE whole Hz with k/M (>= 8000), FREQ Hz with k/M/G rounded half up
+    (and the expected shape), which `dsd_iq_net_spec_parse_field()` also returns (`dsd_iq_net_field`) for the config
+    to name its key by (`dsd_user_config_iq_stream_bad_key()`); PORT 1..65535, RATE whole Hz with k/M (>= 8000), FREQ
+    Hz with k/M/G rounded half up
     (uint32, 0 or empty = unknown), plain decimal only. `dsd_iq_net_spec_format()` writes the canonical text (plain Hz,
     FREQ left out at 0) that parses back to the same struct. A reader takes UDP port 0 through the API (tests read
     the bound port back with `dsd_iq_net_reader_local_port()`); the parser and the text never do.
