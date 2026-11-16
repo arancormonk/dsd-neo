@@ -2946,8 +2946,8 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
                 DSD_FPRINTF(stderr, "Error, couldn't Reconnect to TCP audio input\n");
                 return 0;
             }
-            /* A new stream, whatever the old one's resampler tail still returns first (issue #628), and none of a
-               watchdog retune posted before it is this stream's drop (issue #834). */
+            /* A new stream, whatever the old one's resampler tail still returns first (issue #628). A watchdog retune
+               posted before it existed is not its drop; one posted since it was opened is (issue #834). */
             dsd_opts_note_pcm_stream(opts);
             dsd_frame_sync_forget_unflushed_retunes();
             LOG_INFO("TCP Socket Reconnected Successfully.\n");
@@ -2990,6 +2990,12 @@ symbol_tcp_reconnect_read(dsd_opts* opts, dsd_state* state, float* sample_out, c
     }
     if (reconnected) {
         dsd_opts_reset_pcm_input_state(opts);
+        /* A retune the watchdog posted once the new connection existed is its drop (the post was measured on it when
+           it opened): taken before its first sample is read, not at the next symbol. */
+        frame_sync_take_unflushed_retunes(opts, state);
+        if (state->input_drop_pending) {
+            dsd_symbol_apply_input_drop(opts, state);
+        }
     }
     /* The new connection is waited on as any other: one that stays quiet, or sends a part of a sample, leaves the
        hunt for the engine's tick, which ends the reception the reconnect cut (dsd_engine_analog_call_due()). */

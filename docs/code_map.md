@@ -7285,9 +7285,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `frame_sync_unflushed.h`, with the take itself in `frame_sync_unflushed.c`: one relaxed load per symbol read and per
   EDACS triplet, with no measurable cost on a 120 s DMR decode), moving the epoch and asking for the drop with the
   post's mark, so the watchdog's tunes drop at the next read after the post; the notice's reconcile
-  (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet. Replacing the input
-  (`dsd_opts_reset_pcm_input_state()`, the Pulse open, the TCP reconnect) retires a held post that was not measured on
-  the queue attached then (`dsd_frame_sync_forget_unflushed_retunes()`, declared in
+  (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet. A post made while no queue is attached (an
+  input being opened, a TCP reconnect) is measured on the next queue that attaches, so a retune confirmed once the new
+  connection existed drops what it held then; the TCP reconnect takes such a post before the connection's first read.
+  Replacing the input (`dsd_opts_reset_pcm_input_state()`, the Pulse open, the TCP reconnect) retires a held post that
+  was not measured on the queue attached then (`dsd_frame_sync_forget_unflushed_retunes()`, declared in
   `include/dsd-neo/dsp/unflushed_retune.h`, which `<dsd-neo/core/opts.h>` includes for
   `dsd_opts_reset_pcm_input_state()`; it calls `dsd_input_backlog_forget()`): such a retune moved the peer before the
   new stream began. What one drop takes is bounded: the sound-card input (per backend: PulseAudio on Linux and macOS, a

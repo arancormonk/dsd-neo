@@ -64,6 +64,14 @@ dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived) {
     s_seq++;
     s_queue = queue;
     s_arrived = arrived;
+    /* Posted while the input was being opened, with no queue attached: it is measured on this queue, the input it was
+       posted for. What the queue holds now reached it before the post, or in the moment between its opening and this
+       call. */
+    if (s_post_held && !s_post.measured) {
+        s_post.seq = s_seq;
+        s_post.arrived = arrived(queue);
+        s_post.measured = 1U;
+    }
     backlog_unlock();
 }
 
@@ -134,7 +142,9 @@ dsd_input_backlog_take(dsd_input_cut* out) {
 void
 dsd_input_backlog_forget(void) {
     backlog_lock();
-    s_post_held = 0;
+    if (s_post_held && !(s_post.measured && s_queue != NULL && s_post.seq == s_seq)) {
+        s_post_held = 0;
+    }
     backlog_unlock();
 }
 

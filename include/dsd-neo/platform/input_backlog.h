@@ -17,8 +17,9 @@
  * (dsd_input_cut_age_ns(), dsd_audio_discard_input()).
  *
  * The retune the P25 watchdog confirms off the decoder thread is held here until the decoder takes it
- * (dsd_input_backlog_post(), dsd_input_backlog_take()). An input replacement (dsd_input_backlog_forget()) and a run
- * boundary (dsd_input_backlog_retire()) retire a held post.
+ * (dsd_input_backlog_post(), dsd_input_backlog_take()). One posted while no queue is attached (a stream being opened)
+ * is measured when the next queue attaches. An input replacement (dsd_input_backlog_forget()) retires a post that was
+ * not measured on the queue attached then, and a run boundary (dsd_input_backlog_retire()) any post.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_INPUT_BACKLOG_H_
@@ -41,7 +42,8 @@ typedef struct dsd_input_cut {
     uint8_t measured;   /**< whether a queue was attached to count */
 } dsd_input_cut;
 
-/** @p queue is the input the decoder reads from now on, its count read by @p arrived. */
+/** @p queue is the input the decoder reads from now on, its count read by @p arrived. A post no queue measured yet is
+ * measured on it now. */
 void dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived);
 
 /** @p queue goes away: detached before it is freed, if it is the one attached. */
@@ -62,7 +64,7 @@ void dsd_input_backlog_post(void);
 /** The decoder takes the held post into @p out: 1 when one was held and not retired, else 0. */
 int dsd_input_backlog_take(dsd_input_cut* out);
 
-/** The input was replaced: a held post is retired. Decoder thread. */
+/** The input was replaced: a held post not measured on the queue attached now is retired. Decoder thread. */
 void dsd_input_backlog_forget(void);
 
 /** A run boundary: a held post is retired. */

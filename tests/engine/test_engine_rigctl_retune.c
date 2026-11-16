@@ -38,6 +38,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
 #include <sndfile.h>
@@ -934,6 +935,120 @@ test_watchdog_post_drops_only_what_was_queued(void) {
     return rc;
 }
 
+/* ---- A watchdog retune posted while the TCP input reconnects (issue #834) ---- */
+
+/* A server the reconnect reaches: the new connection holds the old channel's audio as soon as it is made, and the
+   watchdog confirms a retune while the decoder opens it. The connection counts what it took in and what was read, as
+   tcp_input's reader does, and attaches itself when opened. */
+static struct {
+    int ctx;
+    int old_queued; /* the old channel's samples the new connection holds */
+    int old_read;   /* of those, the samples the decoder read */
+    int ended;      /* the first read ends the old connection */
+    uint64_t taken; /* samples the connection took in */
+    uint64_t gone;  /* samples read or dropped */
+} g_reconnect;
+
+static uint64_t
+reconnect_arrived(const void* queue) {
+    (void)queue;
+    return g_reconnect.taken;
+}
+
+static dsd_socket_t
+reconnect_connect(const char* host, int port, int resolve, dsd_socket_cancel_fn cancelled, void* context) {
+    (void)host;
+    (void)port;
+    (void)resolve;
+    (void)cancelled;
+    (void)context;
+    g_reconnect.old_queued = 300;
+    g_reconnect.taken = 300U;
+    return (dsd_socket_t)999999;
+}
+
+static tcp_input_ctx*
+reconnect_open(dsd_socket_t sockfd, int samplerate) {
+    (void)sockfd;
+    (void)samplerate;
+    dsd_frame_sync_note_off_thread_unflushed_retune();
+    dsd_input_backlog_attach(&g_reconnect.ctx, reconnect_arrived);
+    return (tcp_input_ctx*)&g_reconnect.ctx;
+}
+
+static void
+reconnect_close(tcp_input_ctx* ctx) {
+    dsd_input_backlog_detach(ctx);
+}
+
+static int
+reconnect_read(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms) {
+    (void)ctx;
+    (void)timeout_ms;
+    if (!g_reconnect.ended) {
+        g_reconnect.ended = 1;
+        return 0;
+    }
+    if (g_reconnect.old_queued > 0) {
+        g_reconnect.old_queued--;
+        g_reconnect.old_read++;
+        *out = 1;
+    } else {
+        g_reconnect.taken++;
+        *out = 1000;
+    }
+    g_reconnect.gone++;
+    return 1;
+}
+
+static long
+reconnect_discard(tcp_input_ctx* ctx, const dsd_input_cut* cut) {
+    if (!dsd_input_backlog_cut_applies(cut, ctx) || cut->arrived <= g_reconnect.gone) {
+        return 0;
+    }
+    const uint64_t owed = cut->arrived - g_reconnect.gone;
+    const long n = owed < (uint64_t)g_reconnect.old_queued ? (long)owed : g_reconnect.old_queued;
+    g_reconnect.old_queued -= (int)n;
+    g_reconnect.gone += (uint64_t)n;
+    return n;
+}
+
+/* The replacement stream's own drop: a retune the watchdog posts once the new connection exists, while the decoder
+   opens it, drops what that connection held when it was posted. None of it is read. */
+static int
+test_watchdog_post_while_tcp_reconnects(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_TCP) != 0) {
+        return expect_true("reconnect: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    DSD_MEMSET(&g_reconnect, 0, sizeof g_reconnect);
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.tcp_connect = reconnect_connect,
+                                                              .tcp_open = reconnect_open,
+                                                              .tcp_close = reconnect_close,
+                                                              .tcp_read_sample_wait = reconnect_read,
+                                                              .tcp_discard_through = reconnect_discard});
+    opts->tcp_in_ctx = (tcp_input_ctx*)&g_reconnect.ctx;
+    opts->tcp_sockfd = DSD_INVALID_SOCKET;
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    state->symbol_clock_input = opts->pcm_input_generation;
+    (void)getSymbol(opts, state, 0); /* the connection ends, the reconnect opens the new one */
+    (void)getSymbol(opts, state, 0);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label,
+                 "a retune posted while the new connection opens drops what it held: none of it is read (read %d, "
+                 "still queued %d)",
+                 g_reconnect.old_read, g_reconnect.old_queued);
+    int rc = expect_true(label, g_reconnect.old_read == 0 && g_reconnect.old_queued == 0);
+    reconnect_close(opts->tcp_in_ctx);
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    opts->tcp_in_ctx = NULL;
+    opts->tcp_sockfd = DSD_INVALID_SOCKET;
+    rig_case_close(&c);
+    return rc;
+}
+
 /* A watchdog retune posted before the input is replaced moved the peer before the new stream began: the new stream
    holds nothing of the channel it left, so the post is never taken. One posted after the replacement is. */
 static int
@@ -1205,6 +1320,7 @@ main(void) {
     rc |= test_udp_backlog();
     rc |= test_watchdog_tune_drops_at_the_next_read();
     rc |= test_watchdog_post_drops_only_what_was_queued();
+    rc |= test_watchdog_post_while_tcp_reconnects();
     rc |= test_watchdog_post_and_an_input_switch();
     rc |= test_drop_belongs_to_its_input();
     rc |= test_tcp_backlog();
