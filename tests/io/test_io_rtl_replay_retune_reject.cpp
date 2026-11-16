@@ -222,8 +222,8 @@ recorded_log(void) {
 
 /* Issue #743 B9: a replay has no tuner, so its start asks it for no tuner control and says nothing about one: no
  * "Setting RTL Autogain." for a capture made under automatic gain, no control named unsupported for the bias tee, the
- * PPM correction or the environment's direct sampling, xtal, test mode and IF gains, and no PPM request fails. The
- * tuner gain published is the capture's: automatic. */
+ * PPM correction or the environment's direct sampling, xtal, test mode and IF gains, no PPM request fails, and no
+ * line says the device takes no PPM correction. The tuner gain published is the capture's: automatic. */
 static int
 test_replay_start_asks_no_tuner_control(void) {
     int rc = 0;
@@ -268,6 +268,7 @@ test_replay_start_asks_no_tuner_control(void) {
     rc |= expect_true("no autogain line", log.find("Autogain") == std::string::npos);
     rc |= expect_true("no control named unsupported", log.find("unsupported") == std::string::npos);
     rc |= expect_true("no failed PPM request", log.find("PPM correction request") == std::string::npos);
+    rc |= expect_true("no PPM capability line", log.find("(PPM) correction") == std::string::npos);
     if (rc != 0) {
         DSD_FPRINTF(stderr, "log:\n%s", log.c_str());
     }

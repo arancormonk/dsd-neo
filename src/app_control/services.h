@@ -1167,12 +1167,15 @@ int svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* r
  *
  * @param stream_stopped 1 when a radio stream ran before the change (state->rtl_ctx), which the change stopped: the
  *                       input's own, or one running behind a PCM input.
+ * @param capture_before 1 when the I/Q capture was on before the change (dsd_opts::iq_capture_requested): a restart of
+ *                       a stream that ran turns it off before its start (svc_rtl_restart_locked(), issue #743 B16),
+ *                       so one the change found on and that is off now stopped during the change.
  * @param failure_before The input failure latched before the change started anything (dsd_input_failure_get()); NULL
  *                       leaves the latch alone.
- * @param out_capture_stopped Set to 1 when the capture was turned off here, else 0 (may be NULL).
+ * @param out_capture_stopped Set to 1 when the capture was turned off here or during the change, else 0 (may be NULL).
  * @return 0 when the input runs again; nonzero otherwise, as svc_rtl_restart_locked().
  */
-int svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+int svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped, int capture_before,
                                     const dsd_input_failure* failure_before, int* out_capture_stopped);
 /**
  * @brief Select the Airspy with @p config and reopen it, without acquiring; caller holds the P25 SM tick guard.

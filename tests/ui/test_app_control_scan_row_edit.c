@@ -205,10 +205,11 @@ svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
 }
 
 int
-svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped, int capture_before,
                                 const dsd_input_failure* failure_before, int* out_capture_stopped) {
     (void)opts;
     (void)state;
+    (void)capture_before;
     assert(failure_before != NULL);
     g_recovery_calls++;
     g_recovery_stream_stopped = stream_stopped;

@@ -131,9 +131,9 @@ int __real_svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const 
 int __wrap_svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
                                         svc_replay_profile_restore_fn restore, const void* restore_ctx,
                                         uint32_t* out_dsp_rate_hz, int* out_resampled, char* why, size_t why_size);
-int __real_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+int __real_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped, int capture_before,
                                            const dsd_input_failure* failure_before, int* out_capture_stopped);
-int __wrap_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+int __wrap_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped, int capture_before,
                                            const dsd_input_failure* failure_before, int* out_capture_stopped);
 int __real_rtl_stream_check_analog_profile(int family, int kind, int width_hz);
 int __wrap_rtl_stream_check_analog_profile(int family, int kind, int width_hz);
@@ -200,14 +200,16 @@ __wrap_svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char
 }
 
 int
-__wrap_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+__wrap_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped, int capture_before,
                                        const dsd_input_failure* failure_before, int* out_capture_stopped) {
     if (g_replan_result == RR_SCRIPT_REAL) {
-        return __real_svc_rtl_restart_recovery_locked(opts, state, stream_stopped, failure_before, out_capture_stopped);
+        return __real_svc_rtl_restart_recovery_locked(opts, state, stream_stopped, capture_before, failure_before,
+                                                      out_capture_stopped);
     }
     (void)opts;
     (void)state;
     (void)stream_stopped;
+    (void)capture_before;
     (void)failure_before;
     g_recovery_calls++;
     if (out_capture_stopped) {

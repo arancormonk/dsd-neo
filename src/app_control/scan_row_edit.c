@@ -294,6 +294,7 @@ scan_row_edit_restart_gain(dsd_opts* opts, dsd_state* state, const dsd_app_scan_
     dsd_input_failure failure_before;
     dsd_input_failure_get(&failure_before);
     const int stream_stopped = state->rtl_ctx != NULL;
+    const int capture_before = opts->iq_capture_requested;
     if (svc_rtl_restart_locked(opts, state) == 0) {
         p25_sm_tick_guard_leave();
         return 0;
@@ -301,7 +302,7 @@ scan_row_edit_restart_gain(dsd_opts* opts, dsd_state* state, const dsd_app_scan_
     dsd_scan_row_edit_result undo;
     (void)dsd_engine_trunk_scan_restore_target_edit_locked(opts, state, p->session, p->target_id,
                                                            DSD_SCAN_ROW_FIELD_GAIN, &result->previous, &undo);
-    (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, &failure_before, NULL);
+    (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, capture_before, &failure_before, NULL);
     p25_sm_tick_guard_leave();
     return -1;
 }

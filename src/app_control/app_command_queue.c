@@ -1531,6 +1531,14 @@ ui_set_rollback_toast(dsd_state* state, const char* prefix, const char* why, int
     }
 }
 
+/* A failed command whose restart has no rollback after it (RTL_RESTART, RTL_SET_GAIN, RTL_SET_DEV): "Failed: " and
+   @p what, with the note of a capture the restart turned off before its start (issue #743 B16), which is the capture
+   the command found on (@p capture_before) and that is off now. */
+static void
+ui_set_failed_restart_toast(dsd_state* state, const dsd_opts* opts, int capture_before, const char* what) {
+    ui_set_rollback_toast(state, "Failed: ", what, capture_before && opts && !opts->iq_capture_requested);
+}
+
 /* The receive input a stream start reads, as a change that rewrites it finds it (issue #578): the device string and
    input type, the rtl_tcp endpoint, the RTL device index, the tuning and front-end settings a start copies, the Airspy
    and SoapySDR settings, and the digital resample policy. These are what Input > Switch source, a config's [input] and
@@ -1541,10 +1549,12 @@ ui_set_rollback_toast(dsd_state* state, const char* prefix, const char* why, int
    which a switch to PCM leaves running, recording. The start stops that stream either way, closing its I/Q capture,
    which the rollback accounts for even when it only puts PCM back. @c failure is the input failure the session had
    latched then, which the failed start can have replaced with its own and which comes back once this input runs again
-   (svc_rtl_restart_recovery_locked()). */
+   (svc_rtl_restart_recovery_locked()). @c iq_capture_requested is whether the I/Q capture was on then, for the
+   rollback to tell a stop the change made (issue #743 B16); nothing puts it back. */
 typedef struct {
     int running;
     int stream_running;
+    int iq_capture_requested;
     dsd_audio_in_type audio_in_type;
     char audio_in_dev[sizeof(((dsd_opts*)0)->audio_in_dev)];
     int rtltcp_enabled;
@@ -1585,6 +1595,7 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     }
     out->stream_running = state && state->rtl_ctx != NULL;
     out->running = opts->audio_in_type != AUDIO_IN_RTL || out->stream_running;
+    out->iq_capture_requested = opts->iq_capture_requested;
     out->audio_in_type = opts->audio_in_type;
     DSD_MEMCPY(out->audio_in_dev, opts->audio_in_dev, sizeof out->audio_in_dev);
     out->rtltcp_enabled = opts->rtltcp_enabled;
@@ -1796,8 +1807,8 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     ui_cfg_restore_mode_extras(opts, state, &before->mode);
     ui_restore_radio_input(opts, &before->input);
     int capture_stopped = 0;
-    if (svc_rtl_restart_recovery_locked(opts, state, before->input.stream_running, &before->input.failure,
-                                        &capture_stopped)
+    if (svc_rtl_restart_recovery_locked(opts, state, before->input.stream_running, before->input.iq_capture_requested,
+                                        &before->input.failure, &capture_stopped)
         != 0) {
         LOG_ERROR("Config: the input it replaced did not restart either; no radio input is running.\n");
     }
@@ -1843,7 +1854,8 @@ ui_radio_start_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_in
     const int refused = svc_describe_start_failure(opts, why, why_size);
     if (before->running) {
         ui_restore_radio_input(opts, before);
-        if (svc_rtl_restart_recovery_locked(opts, state, before->stream_running, &before->failure, out_capture_stopped)
+        if (svc_rtl_restart_recovery_locked(opts, state, before->stream_running, before->iq_capture_requested,
+                                            &before->failure, out_capture_stopped)
             != 0) {
             LOG_ERROR("The input the change replaced did not restart either; no radio input is running.\n");
         }
@@ -1989,6 +2001,7 @@ ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app
     (void)c;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state) {
+        const int capture_before = opts && opts->iq_capture_requested;
         int rc = svc_rtl_restart(opts, state);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -1996,7 +2009,7 @@ ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: active radio backend cannot restart stream");
         } else {
-            ui_set_toast(state, 4, "Failed: RTL stream restart");
+            ui_set_failed_restart_toast(state, opts, capture_before, "RTL stream restart");
         }
     }
     return result;
@@ -2007,6 +2020,7 @@ ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct dsd_app
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
+        const int capture_before = opts && opts->iq_capture_requested;
         int rc = svc_rtl_set_dev_index(opts, state, v);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2014,7 +2028,9 @@ ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct dsd_app
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: device index is not available for current radio source");
         } else {
-            ui_set_toast(state, 4, "Failed: RTL device index -> %d", (int)v);
+            char what[48];
+            DSD_SNPRINTF(what, sizeof what, "RTL device index -> %d", (int)v);
+            ui_set_failed_restart_toast(state, opts, capture_before, what);
         }
     }
     return result;
@@ -2389,6 +2405,7 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
+        const int capture_before = opts && opts->iq_capture_requested;
         int rc = svc_rtl_set_gain(opts, state, v);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2400,7 +2417,9 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
         } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
-            ui_set_toast(state, 4, "Failed: RTL gain -> %d", (int)v);
+            char what[32];
+            DSD_SNPRINTF(what, sizeof what, "RTL gain -> %d", (int)v);
+            ui_set_failed_restart_toast(state, opts, capture_before, what);
         }
     }
     return result;

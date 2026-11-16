@@ -2557,6 +2557,44 @@ test_preconfig_backlog_discarded(void) {
     assert(dsd_test_remove_temp_dir(r.dir, kCaptureFiles) == 0);
 }
 
+/* restart_without_capture_keeps_the_file (issue #743 B16, the stream's half): a stream that recorded to the capture
+ * stops, and the stream after it starts with the capture off, as app-control restarts a recording stream
+ * (svc_rtl_restart_locked()), the path still set. The second stream runs on samples and never opens the path: the file
+ * the first one recorded and its sidecar keep every byte. */
+void
+test_restart_without_capture_keeps_the_file(void) {
+    conn_script big;
+    /* Large chunks: the second stream's samples below take a few dozen sleeps, not the thousand a slow runner's timer
+       stretches past the wait (macOS). */
+    big.chunks = {65536U};
+    server_reset(big);
+    stream_rig r;
+    stream_open(r, 1, 1);
+    assert(wait_until([&] { return r.reader.samples.load() > 4096U; }, kWaitMs));
+    stream_close(r);
+    const std::vector<unsigned char> data = read_file(r.data_path);
+    const std::vector<unsigned char> meta = read_file(r.meta_path);
+    assert(data.size() > 4096U && !meta.empty());
+
+    stream_rig again;
+    stream_opts(again, 0);
+    DSD_SNPRINTF(again.opts->iq_capture_path, sizeof again.opts->iq_capture_path, "%s", r.data_path);
+    dsd_input_failure_clear();
+    dsd_exitflag_store(0);
+    assert(rtl_stream_create(again.opts.get(), &again.ctx) == 0 && again.ctx != nullptr);
+    assert(rtl_stream_start(again.ctx) == 0);
+    again.dev = rtl_stream_test_device();
+    again.reader.ctx = again.ctx;
+    start_thread(&again.reader.thread, read_output, &again.reader);
+    again.reader.started = 1;
+    assert(wait_until([&] { return again.reader.samples.load() > 65536U; }, kWaitMs));
+    stream_close(again);
+
+    assert(read_file(r.data_path) == data);
+    assert(read_file(r.meta_path) == meta);
+    assert(dsd_test_remove_temp_dir(r.dir, kCaptureFiles) == 0);
+}
+
 /* stop_with_handoff_queued_and_claimed: a stop with the hand-off queued behind a retune, and one with the hand-off
  * taken (the controller inside its stream boundary), joins; the reconnected connection is closed. */
 std::atomic<int> g_stop_at_gate{0};
@@ -2971,6 +3009,7 @@ const named_test kTests[] = {
     {"unavailable_server_command_applies", test_unavailable_server_command_applies},
     {"tcp_gain_stream_copy_follows_reconnect", test_tcp_gain_stream_copy_follows_reconnect},
     {"preconfig_backlog_discarded", test_preconfig_backlog_discarded},
+    {"restart_without_capture_keeps_the_file", test_restart_without_capture_keeps_the_file},
     {"stop_with_handoff_queued_and_claimed", test_stop_with_handoff_queued_and_claimed},
     {"stop_waits_for_demod_block_before_retune", test_stop_waits_for_demod_block_before_retune},
     {"full_output_write_gives_up_on_stop", test_full_output_write_gives_up_on_stop},

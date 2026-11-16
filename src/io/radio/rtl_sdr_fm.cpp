@@ -9585,11 +9585,12 @@ stream_open_validate_device_capture_rate(RadioSourceKind source_kind) {
     return -1;
 }
 
+/* Whether the device takes a PPM correction; a fixed source never does, and has no tuner to say so about. */
 static void
-stream_open_note_ppm_capability(void) {
+stream_open_note_ppm_capability(RadioSourceKind source_kind) {
     int supported = rtl_device_supports_ppm(rtl_device_handle) ? 1 : 0;
     g_ppm_control_supported.store(supported, std::memory_order_relaxed);
-    if (!supported) {
+    if (!supported && !radio_source_has_fixed_tuning(source_kind)) {
         LOG_INFO("Device does not support frequency (PPM) correction; auto-PPM is disabled.\n");
     }
 }
@@ -9599,16 +9600,16 @@ stream_open_apply_requested_ppm(const dsd_opts* opts, RadioSourceKind source_kin
     if (!opts) {
         return;
     }
+    if (radio_source_has_fixed_tuning(source_kind)) {
+        /* Nothing applies a correction to a fixed source, nor says so: it has no tuner. */
+        store_dongle_ppm_error(0);
+        g_auto_ppm_controller.reset(0, opts->rtlsdr_center_freq);
+        return;
+    }
     RtlRequestedPpmState initial_ppm_request = snapshot_requested_ppm_state(opts);
     if (initial_ppm_request.ppm != 0 && !g_ppm_control_supported.load(std::memory_order_relaxed)) {
         LOG_INFO("Device does not support frequency (PPM) correction; configured ppm %d will have no effect.\n",
                  initial_ppm_request.ppm);
-    }
-    if (radio_source_has_fixed_tuning(source_kind)) {
-        /* Nothing applies a correction to a fixed source. */
-        store_dongle_ppm_error(0);
-        g_auto_ppm_controller.reset(0, opts->rtlsdr_center_freq);
-        return;
     }
     int ppm_rc = apply_ppm_setting(initial_ppm_request.ppm);
     if (ppm_rc == 0) {
@@ -10078,7 +10079,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     stream_open_apply_runtime_controls(opts, source_kind);
     stream_open_apply_audio_filters_from_config();
     stream_open_apply_initial_gain(source_kind);
-    stream_open_note_ppm_capability();
+    stream_open_note_ppm_capability(source_kind);
     stream_open_apply_requested_ppm(opts, source_kind);
 
     if (stream_open_finalize_rate_chain(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {

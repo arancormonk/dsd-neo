@@ -925,6 +925,13 @@ call_active(const dsd_state* state) {
     return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
 }
 
+/* The slot 0 call ended, as a boundary ends it, rather than cleared. */
+static int
+call_ended(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED;
+}
+
 /*
  * Issue #575: a config that replaces the radio source moves the receiver to another carrier even where the configured
  * centre stays: a replay that opened at 851.375 MHz and recorded a retune to 860 MHz, replaced by a live RTL-SDR at
@@ -986,7 +993,7 @@ test_config_source_change_is_a_carrier_boundary(void) {
     dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     (void)dsd_app_drain_cmds(opts, state);
     rc |= expect_true("the same RTL-SDR reopened for a gain", strstr(opts->audio_in_dev, ":30:") != NULL);
-    rc |= expect_true("a gain-only reopen ends the call at the gap", !call_active(state));
+    rc |= expect_true("a gain-only reopen ends the call at the gap", call_ended(state));
     rc |= expect_carrier_codes("a gain-only reopen keeps the codes", state, 0);
 
     free_test_runtime(&runtime);
@@ -1024,7 +1031,7 @@ test_stream_restart_on_another_source_is_a_carrier_boundary(void) {
     opts->rtl_gain_value = 30;
     dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U);
     (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_true("a same-source restart ends the call at the gap", !call_active(state));
+    rc |= expect_true("a same-source restart ends the call at the gap", call_ended(state));
     rc |= expect_carrier_codes("a same-source restart keeps the codes", state, 0);
 
     const int32_t device = 1;

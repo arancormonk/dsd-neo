@@ -4136,10 +4136,11 @@ suite runs under this compiler.
     stopped capture has a slot of its own, which `dsd_app_take_capture_stopped()` applies on the decoder thread: it
     turns `iq_capture_requested` off for the session, publishes the options and shows its toast last. The drain takes it
     before every command and every stream start (`svc_rtl_start_locked()`) before it opens, so a retune a command made
-    that sealed the capture never lets a later restart reopen and empty its file; NULL at session end); with no sink it is dropped, and nothing is latched in the input
-    failure. The same slot carries a restart's stop of the capture (issue #743 B16,
-    `dsd_app_note_capture_stopped_at_restart()`, see App Control, "rollback"), whose toast names the restart. A capture-stopped notice not shown before the session ended is dropped with the rest: the next session is
-    a new run and keeps its own `--iq-capture`. The sink runs under the hook's lock,
+    that sealed the capture never lets a later restart reopen and empty its file; NULL at session end); with no sink it
+    is dropped, and nothing is latched in the input failure. The same slot carries a successful restart's stop of the
+    capture (issue #743 B16, `dsd_app_note_capture_stopped_at_restart()`, see App Control, "rollback"), whose toast
+    names the restart. A capture-stopped notice not shown before the session ended is dropped with the rest: the next
+    session is a new run and keeps its own `--iq-capture`. The sink runs under the hook's lock,
     so a post that took a session's sink has delivered before the sink's removal returns; the slot is cleared after
     that removal and again at session start, so a late post never reaches the next session. A failed notice-mutex initialization
     leaves the sink disabled without accessing an uninitialized lock (`RUNTIME_STREAM_NOTICE_INIT_FAILURE`).
@@ -5786,13 +5787,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   config apply's reopen; a gain, device index or explicit stream restart that fails still leaves no stream. Any
   restart (`svc_rtl_restart_locked()`) of a stream that ran while `--iq-capture` was on turns the capture off before
   its start, whether the start then succeeds or not (issue #743 B16): the stop closed the file with what it recorded,
-  and the start would open it for writing again and empty it. It logs a WARN naming the file and, after the start,
-  posts the capture-stopped notice (`dsd_app_note_capture_stopped_at_restart()`), so the next drain's toast follows
-  the command's own; a recovery after a failed restart reports the stop to its rollback toast. On an input with fixed
-  tuning (`dsd_opts_input_has_fixed_tuning()`), the gain, device index, bias tee, rtl_tcp autotune and auto-PPM
-  services, the PPM commands (RTL_SET_PPM, PPM_DELTA) and the tuner autogain DSP toggle refuse with
-  `DSD_ERR_NOT_SUPPORTED` and their "Unsupported" toasts before any option changes or any restart (issue #743 B2: a
-  gain edit rewound a replay); the toggle is never recorded as the operator's autogain setting. Every one
+  and the start would open it for writing again and empty it. It logs a WARN naming the file and, after a start that
+  worked, posts the capture-stopped notice (`dsd_app_note_capture_stopped_at_restart()`), so the next drain's toast
+  follows the command's own. A start that failed posts nothing: no stream restarted. A rollback reports the stop in its
+  toast (`svc_rtl_restart_recovery_locked()` takes the capture the change found on, `capture_before`), and a command
+  with no rollback (RTL_RESTART, RTL_SET_GAIN, RTL_SET_DEV) ends its "Failed:" toast with "; I/Q capture stopped". On
+  an input with fixed tuning (`dsd_opts_input_has_fixed_tuning()`), the gain, device index, bias tee, rtl_tcp
+  autotune and auto-PPM services, the PPM commands (RTL_SET_PPM, PPM_DELTA) and the tuner autogain DSP toggle refuse
+  with `DSD_ERR_NOT_SUPPORTED` and their "Unsupported" toasts before any option changes or any restart (issue #743 B2:
+  a gain edit rewound a replay); the toggle is never recorded as the operator's autogain setting. Every one
   of these rollback restarts, and the config apply's below, goes through `svc_rtl_restart_recovery_locked()`: the failed change already stopped the stream that ran,
   which closed its I/Q capture with what it had recorded, and a start reopens the capture file for writing, so the
   restart runs with `iq_capture_requested` cleared and leaves the capture off for the session. A PCM input put back
@@ -9405,8 +9408,8 @@ Key public headers:
     returns `DSD_ERR_NOT_SUPPORTED` before it changes or caches anything, an unchanged value included
     (`rtl_device_source_is_fixed()`); the getters report the capture. The stream's open asks a fixed source
     (`radio_source_has_fixed_tuning()`) for none of them: no runtime controls, no initial gain (no "Setting RTL
-    Autogain."; the capture's gain is published), no PPM correction (the applied one is 0), so nothing is logged as
-    unsupported. Tests: `IO_RTL_CAPTURE_WRITES` (`capture_records_gain_mode`),
+    Autogain."; the capture's gain is published), no PPM correction (the applied one is 0, and no line says the source
+    takes none), so nothing is logged as unsupported. Tests: `IO_RTL_CAPTURE_WRITES` (`capture_records_gain_mode`),
     `IO_RTL_REPLAY_RETUNE_REJECT`.
 - Network I/Q input core (issue #743): `include/dsd-neo/io/iq_net.h`, `src/io/radio/iq_net_{spec,format,rate,reader}.c`
   (private `iq_net_internal.h`), object target `dsd-neo_io_iq_net` folded into `dsd-neo_io_radio`; radio builds
@@ -11497,7 +11500,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     (`DSD_CARRIER_BOUNDARY_STREAM_GAP`, issue #743 B19): calls end and assemblies go, codes and identity stay. A replay
     that resumes at its checkpoint (issue #701) runs neither.
   - A config apply that leaves the same radio source on another frequency as `dsd_opts_tuned_freq_hz()` reads it
-    (`apply_cfg_radio_input()`), when no start or retune inside it ran the boundary already (`carrier_seq` unmoved).
+    (`apply_cfg_radio_input()`), unless the apply left the carrier already (`apply_cfg_left_carrier()`): a start on
+    another source, or the live Airspy retune, which moves `carrier_seq` with no stream start. A reopen of the same
+    source moves `carrier_seq` too, through its stream gap (issue #743 B19), which stays on the carrier, so the TUNE
+    boundary still runs.
   - A channel cycle with trunking off: its LCN list and its P25 candidate list name no system the receiver follows.
   - A RadioReference import that tunes its channel on a session that owns a tuner: it runs the boundary first, before
     `decode_mode_apply_value()` and `rr_apply_reacquire()` end the calls with `reset_call_tracking()`, so the followed

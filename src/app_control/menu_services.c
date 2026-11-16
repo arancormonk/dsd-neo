@@ -2044,10 +2044,6 @@ svc_rtl_scans_stream_reopened(const dsd_opts* opts, const dsd_state* state, int 
     dsd_engine_trunk_scan_stream_reopened(opts, state, opened);
 }
 
-/* Whether the last restart turned the I/Q capture off and then failed to start (svc_rtl_restart_locked()), for the
-   recovery that follows it to report the stop (svc_rtl_restart_recovery_locked()). Decoder thread only. */
-static int g_svc_failed_restart_stopped_capture;
-
 /* After a restart stopped a stream (@p stream_ran) that was recording to --iq-capture: the stop closed the file with
    what it recorded, and the start would open it for writing again and empty it (issue #743 B16). The capture goes off
    for the rest of the session before the start, and the log names the file. Returns 1 when it turned the capture off. */
@@ -2075,11 +2071,12 @@ svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
     svc_rtl_stop_locked(opts, state);
     const int capture_stopped = svc_restart_stop_capture(opts, stream_ran);
     const int rc = svc_rtl_start_locked(opts, state);
-    /* Said after the start, which takes a notice before it opens: the toast follows the command's own. */
-    if (capture_stopped) {
+    /* A restart that worked says so after the start, which takes a notice before it opens: the toast follows the
+       command's own. One that failed did not restart anything: the command's failure toast reports the stop, or the
+       recovery that follows does, from the capture the change found on (svc_rtl_restart_recovery_locked()). */
+    if (capture_stopped && rc == 0) {
         dsd_app_note_capture_stopped_at_restart();
     }
-    g_svc_failed_restart_stopped_capture = capture_stopped && rc != 0;
     /* A start that failed leaves the note to the recovery a failed change runs next, whose start may open on the tune's
        target (it puts back the centre the input ran, which a pending tune's timeout cached as its target). With no
        recovery, the note dies with the drop: the poll and the service take it, which ends what it names. */
@@ -2209,7 +2206,7 @@ svc_rtl_start_on_the_profile_that_ran_locked(dsd_opts* opts, dsd_state* state) {
 }
 
 int
-svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped, int capture_before,
                                 const dsd_input_failure* failure_before, int* out_capture_stopped) {
     if (out_capture_stopped) {
         *out_capture_stopped = 0;
@@ -2217,10 +2214,10 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_sto
     if (!opts || !state) {
         return -1;
     }
-    /* The restart that failed may have turned the capture off itself, before its start (svc_rtl_restart_locked()). */
-    const int restart_stopped_capture = g_svc_failed_restart_stopped_capture;
-    g_svc_failed_restart_stopped_capture = 0;
-    if ((svc_recovery_stop_capture(opts, stream_stopped) || restart_stopped_capture) && out_capture_stopped) {
+    /* The restart that failed may have turned the capture off itself, before its start (svc_rtl_restart_locked()):
+       the capture the change found on and is off now stopped during the change. */
+    const int stopped_here = svc_recovery_stop_capture(opts, stream_stopped);
+    if (out_capture_stopped && (stopped_here || (capture_before && !opts->iq_capture_requested))) {
         *out_capture_stopped = 1;
     }
     /* The input that ran runs again, so a failure the failed change latched is not the session's: the latch goes back
@@ -2286,12 +2283,14 @@ svc_airspy_reopen_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config
     dsd_input_failure failure_before;
     dsd_input_failure_get(&failure_before);
     const int stream_stopped = state->rtl_ctx != NULL;
+    const int capture_before = opts->iq_capture_requested;
     svc_airspy_select(opts, config);
     const int rc = svc_rtl_restart_locked(opts, state);
     if (rc != 0) {
         svc_airspy_select(opts, previous);
         svc_airspy_restore_tuning(opts, previous_tuning);
-        (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, &failure_before, out_capture_stopped);
+        (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, capture_before, &failure_before,
+                                              out_capture_stopped);
     }
     if (!guard_held) {
         p25_sm_tick_guard_leave();
@@ -2804,8 +2803,9 @@ svc_trunk_scan_settle_gain(dsd_opts* opts, dsd_state* state, const dsd_trunk_sca
     dsd_input_failure failure_before;
     dsd_input_failure_get(&failure_before);
     const int stream_stopped = state->rtl_ctx != NULL;
+    const int capture_before = opts->iq_capture_requested;
     if (svc_rtl_restart_locked(opts, state) != 0) {
-        (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, &failure_before, NULL);
+        (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, capture_before, &failure_before, NULL);
     }
 #else
     (void)opts;
