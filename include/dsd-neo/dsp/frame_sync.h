@@ -275,6 +275,14 @@ void dsd_frame_sync_note_off_thread_tune(const dsd_p25p1_decision* read);
  */
 void dsd_frame_sync_note_off_thread_unflushed_retune(void);
 
+/**
+ * @brief On the decoder thread, take an unflushed retune posted off it
+ * (dsd_frame_sync_note_off_thread_unflushed_retune()) at once: the epoch moves and the input drop is asked for. Every
+ * input reader runs it before it reads (the symbol reader inline, EDACS analog voice through this), so a watchdog
+ * tune's drop comes at the next read after its post. One relaxed load when nothing is posted.
+ */
+void dsd_frame_sync_take_off_thread_unflushed_retunes(const dsd_opts* opts, dsd_state* state);
+
 /** @brief Whether a tune off the decoder thread awaits dsd_frame_sync_apply_off_thread_tunes(). Decoder thread. */
 int dsd_frame_sync_off_thread_tune_pending(void);
 
@@ -290,9 +298,10 @@ int dsd_frame_sync_apply_off_thread_tunes(const dsd_opts* opts, dsd_state* state
 
 /**
  * @brief A run boundary (a new session on @p state, or its end): seed the published decision from @p state (or with
- * nothing learned for NULL) and drop the notices posted so far, before the P25 watchdog starts. Decoder thread.
+ * nothing learned for NULL) and drop the notices posted so far, and @p state's pending input drop, before the P25
+ * watchdog starts. Decoder thread.
  */
-void dsd_frame_sync_off_thread_tunes_reset(const dsd_state* state);
+void dsd_frame_sync_off_thread_tunes_reset(dsd_state* state);
 
 /**
  * @brief Return the symbol rate, in Hz, of the SPS hunt profile currently selected.

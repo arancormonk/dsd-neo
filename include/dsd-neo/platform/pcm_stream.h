@@ -46,7 +46,8 @@ int dsd_pcm_stream_read_wait(dsd_pcm_stream* stream, int16_t* out, unsigned int 
 
 /**
  * Drop the whole samples the stream holds now: those the reader buffered and those the descriptor or socket has
- * ready, read without waiting, at most about 2 s of them and 250 ms on the monotonic clock. A part of a sample is
+ * ready, read without waiting: at most 21 buffers of 19200 bytes (about 4 s of 48 kHz mono), and no refill after
+ * 250 ms on the monotonic clock. A part of a sample is
  * kept, so the samples after it stay whole. Bytes that arrive after the call are kept. A descriptor that is not a
  * pipe, FIFO or socket (dsd_fd_is_stream(): a regular file, a console) drops nothing. Returns the samples dropped (0
  * for NULL or an ended stream).

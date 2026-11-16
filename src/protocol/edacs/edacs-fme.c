@@ -689,6 +689,7 @@ edacs_collect_analog_triplet_lanes(dsd_opts* opts, dsd_state* state, dsd_rate_co
 #endif
     /* A rigctl peer's confirmed retune left the frequency left's samples queued in the input (issue #834): this
        reader is the decoder thread's next input read on an EDACS voice channel. */
+    dsd_frame_sync_take_off_thread_unflushed_retunes(opts, state);
     if (state->input_drop_pending) {
         dsd_symbol_apply_input_drop(opts, state);
     }

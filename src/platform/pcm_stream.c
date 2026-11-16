@@ -20,8 +20,9 @@
 /* How the stream stands: open, at its end, or ended by a read error. */
 enum { PCM_STREAM_OPEN = 0, PCM_STREAM_EOF = 1, PCM_STREAM_FAILED = 2 };
 
-/* The most one discard (dsd_pcm_stream_discard_ready()) takes: 20 refills, about 2 s of 48 kHz stereo, and 250 ms on
-   the monotonic clock, so a sender that outruns the reader cannot hold it there. */
+/* The most one discard (dsd_pcm_stream_discard_ready()) takes: the buffer and 20 refills of it, about 4 s of 48 kHz
+   mono (2 s of stereo), and no refill after 250 ms on the monotonic clock, so a sender that outruns the reader cannot
+   hold it there. */
 #define DSD_PCM_STREAM_DISCARD_MAX_FILLS 20U
 #define DSD_PCM_STREAM_DISCARD_MAX_MS    250U
 

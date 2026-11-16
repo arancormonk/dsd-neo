@@ -1757,10 +1757,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     sockets it waits with `dsd_socket_wait()`. On descriptors it waits with `dsd_fd_wait_readable()` (`file_compat.h`):
     `poll()` on POSIX, and on Windows `PeekNamedPipe()` in 5 ms sleeps for an anonymous pipe. A Windows console or
     regular file reports ready at once and its read blocks. `dsd_pcm_stream_discard_ready()` drops the whole samples
-    the reader holds and those the descriptor has ready, read without a wait (at most about 2 s of them and 250 ms on
-    the monotonic clock), and keeps a part sample so the next is whole (issue #834: the TCP and stdin inputs at a
-    rigctl retune). A descriptor that is not a pipe, FIFO or socket (`dsd_fd_is_stream()`: a regular file, a console)
-    drops nothing, since its readiness says nothing. `PLATFORM_PCM_STREAM` drives real pipes, sockets and files.
+    the reader holds and those the descriptor has ready, read without a wait (at most 21 buffers of 19200 bytes: about
+    4 s of 48 kHz mono, 2 s of stereo; and no refill after 250 ms on the monotonic clock), and keeps a part sample so
+    the next is whole (issue #834: the TCP and stdin inputs at a rigctl retune). A descriptor that is not a pipe, FIFO
+    or socket (`dsd_fd_is_stream()`: a regular file, a console) drops nothing, since its readiness says nothing.
+    `PLATFORM_PCM_STREAM` drives real pipes, sockets and files.
   - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in
     `include/dsd-neo/platform/fp_opaque.h` hide a value's origin from the optimizer (a round trip through a volatile
     object, one store and one load) before an IEEE translation unit tests it for NaN or infinity, so Clang's link-time
@@ -7168,14 +7169,21 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the frequency the peer is on, a refused request and a lost reply move nothing. The epoch moves at once, and the
   input's queued samples are asked to go: `dsd_state::input_drop_pending`, which the decoder thread carries out at its
   next input read (`dsd_symbol_apply_input_drop()` in `dsd_symbol.c`, called before the symbol reader reads and before
-  EDACS analog voice reads a triplet), never inside the tune or a tick. Off the decoder thread (the P25 watchdog) the
-  tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` before its tune notice, and the decoder thread moves
-  the epoch and sets the request when it reconciles the notice (`dsd_frame_sync_apply_off_thread_tunes()`), so the
-  watchdog's tunes drop too (with what the decoder read meanwhile, captured before the drop as well). The drop takes
-  what DSD-neo holds, at most about 2 s of it and 250 ms on the monotonic clock: the sound-card input
-  (`dsd_audio_discard_input()`: PulseAudio on Linux as a best effort, PortAudio on Windows and macOS, AAudio on
-  Android; see the platform audio entry), the UDP ring and the TCP reader and socket (the `udp_discard_pending` and
-  `tcp_discard_pending` network-audio hooks), and stdin when it is a pipe or socket (`dsd_pcm_stream_discard_ready()`).
+  EDACS analog voice reads a triplet), never inside the tune or a tick. The request is tagged with
+  `dsd_opts::pcm_input_generation` (`input_drop_generation`): one asked for on an input since replaced is cleared
+  unrun, and a run boundary (`dsd_frame_sync_off_thread_tunes_reset()`) clears it too. Off the decoder thread (the P25
+  watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` (an atomic count,
+  `frame_sync_unflushed.c`) before its tune notice. The decoder's next read takes it
+  (`frame_sync_take_unflushed_retunes()`, inline in `frame_sync_unflushed.h`: one relaxed load per symbol read and per
+  EDACS triplet, with no measurable cost on a 120 s DMR decode), moving the epoch and asking for the drop there, so
+  the watchdog's tunes drop at the next read after the post; the notice's reconcile
+  (`dsd_frame_sync_apply_off_thread_tunes()`) takes a count no read met yet. What one drop takes is bounded: the
+  sound-card input (`dsd_audio_discard_input()`: PulseAudio on Linux and macOS as a best effort, PortAudio on
+  Windows, AAudio on Android; about 2 s of frames at the stream's rate, no read begun after 250 ms, and PulseAudio's
+  last read waits up to one record block; see the platform audio entry), the UDP ring (what it holds: at least 1 s
+  at 48 kHz) and the TCP reader and socket (the
+  `udp_discard_pending` and `tcp_discard_pending` network-audio hooks), and stdin when it is a pipe or socket
+  (`dsd_pcm_stream_discard_ready()`: 21 buffers of 19200 bytes, about 4 s of 48 kHz mono, and no refill after 250 ms).
   Files, stdin from a file and RTL-family streams are left alone, and `pcm_input_generation` and the analog and
   scan-quiet keys do not move: the input is the same stream. The RTL flush also restarts the symbol path's span
   (`symbol_rtl_span_restart()`: jitter, matched-filter seam, timing trace, sync anchor); a rigctl retune does not
@@ -10609,15 +10617,17 @@ Notes:
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
   `dsd_audio_discard_input()` (a `const` stream: it changes what the device holds, never the stream object) drops what
   an input stream holds unread (issue #834, at the decoder's next read after a rigctl retune), at most about 2 s of
-  frames and 250 ms on the monotonic clock. PulseAudio, a best effort: it reads the record fragment `pa_simple` keeps,
+  frames at the stream's rate, with no read begun after 250 ms on the monotonic clock. PulseAudio (Linux, macOS), a
+  best effort: it reads the record fragment `pa_simple` keeps,
   and the queue behind it, in 32-frame reads until one waits for audio (more than 1 ms), and drops that read too, so
   the read path is unchanged; the waiting read lasts until the server's next record block (about one 100 ms
   fragment). There is no exact way through `pa_simple`: `pa_simple_get_latency()` can read 0 on a sink monitor while
   the client holds a whole fragment, and `pa_simple_flush()` flushes the server side only, not the client's queue or
   the fragment `pa_simple` holds; `pa_stream_readable_size()` is exact but needs the input on the `pa_stream` API. A
-  read of held data that is preempted for over 1 ms ends the drop early. PortAudio reads what
-  `Pa_GetStreamReadAvailable()` reports (an error count is an error), AAudio reads with no wait, and the null backend
-  holds nothing.
+  read of held data that is preempted for over 1 ms ends the drop early, and the last read waits up to one record
+  block on top of the 250 ms. PortAudio (Windows) reads what
+  `Pa_GetStreamReadAvailable()` reports (an error count is an error), AAudio (Android) reads with no wait, and the null
+  backend holds nothing.
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`). `udp_input_read_sample_wait()` gives up after a timeout with no sample, so the decoder can
   apply a queued command while the input is silent (issue #634). The UDP input counts packets, bytes and dropped samples

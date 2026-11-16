@@ -5361,7 +5361,8 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
     /* This thread decodes the run: its accepted retunes drop the received identity's access code at once. */
     dsd_engine_set_decoder_thread(1);
     /* A run boundary, before the P25 watchdog starts: its tunes read the decision this state publishes, not one an
-       earlier session left, and no notice the earlier session's watchdog posted is reconciled into this one. */
+       earlier session left, and no notice the earlier session's watchdog posted is reconciled into this one, nor an
+       input drop an earlier session asked for carried out on this one's input. */
     dsd_frame_sync_off_thread_tunes_reset(state);
 
     /* An I/Q replay decodes on its capture's clock (issue #572). Selected first, before common setup writes its first

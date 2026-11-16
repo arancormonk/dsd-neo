@@ -198,6 +198,7 @@ dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t s
     /* The input still holds the frequency left's samples: the decoder thread drops them at its next input read
        (dsd_symbol_apply_input_drop()), outside this tune. */
     state->input_drop_pending = 1U;
+    state->input_drop_generation = opts->pcm_input_generation;
 }
 
 /* Off the decoder thread, a tune request's one read of the P25p1 decision the decoder publishes

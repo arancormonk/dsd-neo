@@ -65,6 +65,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
+#include "frame_sync_unflushed.h"
 #include "pcm_input_staging.h"
 #include "symbol_anchor_internal.h"
 
@@ -3720,6 +3721,10 @@ dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
         return;
     }
     state->input_drop_pending = 0U;
+    /* Asked for on an input since replaced (an input switch, a reopened stream): the new input holds no old channel. */
+    if (state->input_drop_generation != opts->pcm_input_generation) {
+        return;
+    }
     switch (opts->audio_in_type) {
         case AUDIO_IN_PULSE:
             if (opts->audio_in_stream) {
@@ -3735,7 +3740,9 @@ dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
 
 static float
 symbol_read(dsd_opts* opts, dsd_state* state, int have_sync) {
-    /* A rigctl peer's confirmed retune left the frequency left's samples queued in the input (issue #834). */
+    /* A rigctl peer's confirmed retune left the frequency left's samples queued in the input (issue #834): this
+       decoder thread's, or one the P25 watchdog posted, taken here at the next read after it. */
+    frame_sync_take_unflushed_retunes(opts, state);
     if (state->input_drop_pending) {
         dsd_symbol_apply_input_drop(opts, state);
     }

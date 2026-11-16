@@ -115,12 +115,13 @@ int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
  * @brief Drop the input samples the stream holds now, unread (issue #834: a rigctl peer's audio from before its
  * retune).
  *
- * PulseAudio (Linux), a best effort: what the client holds from the server (the rest of the record fragment being
- * read, the queue behind it) is read and dropped until a read waits for audio; that read's frames go too. PortAudio
- * (Windows, macOS): the frames the stream reports available. AAudio (Android): the frames a read with no wait returns.
- * At most about 2 s of frames and 250 ms on the monotonic clock. Audio still on its way to DSD-neo (in the producer,
- * or in the sound server) arrives after the call and is kept. The stream object itself is not changed, only what its
- * device holds.
+ * PulseAudio (Linux, macOS), a best effort: what the client holds from the server (the rest of the record fragment
+ * being read, the queue behind it) is read and dropped until a read waits for audio; that read's frames go too.
+ * PortAudio (Windows): the frames the stream reports available. AAudio (Android): the frames a read with no wait
+ * returns. At most about 2 s of frames at the stream's rate, and no read begins after 250 ms on the monotonic clock;
+ * PulseAudio's last read waits up to one record block (about 100 ms) on top of that. Audio still on its way to
+ * DSD-neo (in the producer, or in the sound server) arrives after the call and is kept. The stream object itself is
+ * not changed, only what its device holds.
  *
  * @param stream    Input stream handle.
  * @return Frames dropped, or negative on error (an output stream included).

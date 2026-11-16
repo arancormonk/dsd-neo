@@ -8951,10 +8951,7 @@ else()
         PRIVATE dsd-neo_engine dsd-neo_app_control ${LIBS} dsd-neo_test_support
     )
 endif()
-add_test(
-    NAME ENGINE_RIGCTL_RETUNE
-    COMMAND dsd-neo_test_engine_rigctl_retune
-)
+add_test(NAME ENGINE_RIGCTL_RETUNE COMMAND dsd-neo_test_engine_rigctl_retune)
 
 add_executable(
     dsd-neo_test_engine_no_carrier_reset
@@ -9733,6 +9730,7 @@ target_sources(
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
         ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
+        ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_unflushed.c
         ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 add_test(
@@ -9836,6 +9834,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_trunk_diag.c
     ${PROJECT_SOURCE_DIR}/src/dsp/analog_tone_policy.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_unflushed.c
     # The scan quiet check (issue #834), over a fake signal tap.
     ${PROJECT_SOURCE_DIR}/src/engine/scan_quiet.c
     # The session's unit activity log across a target switch, read through the view every frontend shows.

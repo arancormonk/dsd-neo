@@ -2609,16 +2609,19 @@ channel is delayed.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532; `0` is the default too, and a port over 65535 is an error)
   - When the radio software confirms a tune to another frequency (a trunked call followed, a return to the control
-    channel, a `-Y` step, a frequency you enter), DSD-neo drops the audio it already holds from the old channel just
-    before it reads the next sample: on sound-card input (PulseAudio on Linux, PortAudio on Windows and macOS, AAudio
-    on Android) what the sound system has handed over but DSD-neo has not read yet, on UDP input its receive buffer,
-    on TCP input its read buffer and what the connection already holds, and on stdin fed by another program what the
-    pipe already holds. At most about 2 seconds of audio, or a quarter of a second of waiting, goes at one retune. On
-    PulseAudio this is a best effort: DSD-neo reads until the sound server has nothing more ready, which a busy computer
-    can stop a little early. It also starts its timing over, so nothing measured on the old channel carries onto the
-    new one (a DMR call's encryption sequence, the place of a P25 end-of-call). An RTL-family input does the same
-    already, because a retune clears its stream. A tune to the frequency the radio software is already on, one it
-    refuses, and one it does not answer drop nothing. A file, or stdin read from a file, is never dropped.
+    channel, a `-Y` step, a frequency you enter, or a return the trunking watchdog makes), DSD-neo drops the audio it
+    already holds from the old channel just before it reads the next sample: on sound-card input (PulseAudio on Linux
+    and macOS, PortAudio on Windows, AAudio on Android) what the sound system has handed over but DSD-neo has not read
+    yet, on UDP input its receive buffer, on TCP input its read buffer and what the connection already holds, and on
+    stdin fed by another program what the pipe already holds. What one retune drops is bounded: on TCP and stdin about
+    4 seconds of 48 kHz mono audio, on UDP what its buffer holds (about 1 second at 48 kHz), and on sound-card input
+    about 2 seconds; no drop spends more than a quarter of a second reading. On PulseAudio this is a best effort:
+    DSD-neo reads until a read has to wait for the sound server, which a busy computer can stop a little early, and
+    that last read waits up to one more record block (about 0.1 seconds). It also starts its timing over, so nothing
+    measured on the old channel carries onto the new one (a DMR call's encryption sequence, the place of a P25
+    end-of-call). An RTL-family input does the same already, because a retune clears its stream. A tune to the
+    frequency the radio software is already on, one it refuses, and one it does not answer drop nothing. A file, or
+    stdin read from a file, is never dropped.
   - What DSD-neo cannot drop is audio that is still inside the radio software, or in the sound system on its way to
     DSD-neo, when the tune is confirmed. It arrives after the retune and is read as the new channel's. So for the
     first moments after a retune, the old channel can still be heard: an end-of-call there can end the call just

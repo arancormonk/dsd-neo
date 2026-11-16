@@ -609,6 +609,127 @@ test_udp_backlog(void) {
     return rc;
 }
 
+/* A sender that waits, then sends a datagram: what a source delivers after the decoder already waits on it. */
+typedef struct {
+    dsd_socket_t tx;
+    int port;
+    int16_t first;
+    size_t count;
+    unsigned int delay_ms;
+} late_sender;
+
+static int
+udp_send_ramp(dsd_socket_t tx, int port, int16_t first, size_t count) {
+    uint8_t buf[1024];
+    if (count * 2U > sizeof buf) {
+        return -1;
+    }
+    for (size_t i = 0; i < count; i++) {
+        const uint16_t v = (uint16_t)(first + (int16_t)i);
+        buf[i * 2U] = (uint8_t)(v & 0xFFU);
+        buf[i * 2U + 1U] = (uint8_t)(v >> 8);
+    }
+    struct sockaddr_in dst;
+    DSD_MEMSET(&dst, 0, sizeof dst);
+    if (dsd_socket_resolve("127.0.0.1", port, &dst) != 0) {
+        return -1;
+    }
+    return dsd_socket_sendto(tx, buf, count * 2U, 0, (struct sockaddr*)&dst, (int)sizeof dst) == (int)(count * 2U) ? 0
+                                                                                                                   : -1;
+}
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    late_sender_main(void* arg) {
+    const late_sender* ls = (const late_sender*)arg;
+    dsd_sleep_ms(ls->delay_ms);
+    (void)udp_send_ramp(ls->tx, ls->port, ls->first, ls->count);
+    DSD_THREAD_RETURN;
+}
+
+/* The P25 watchdog's tune: the decoder's next read, before any reconcile of the tune's notice, moves the epoch and
+   drops what the input holds of the old channel. */
+static int
+test_watchdog_tune_drops_at_the_next_read(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_UDP) != 0) {
+        return expect_true("watchdog read: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    dsd_engine_net_audio_input_hooks_install();
+    int rc = expect_true("udp input", udp_input_start(opts, "127.0.0.1", 0, 48000) == 0);
+    const int port = bound_port(opts->udp_in_sockfd);
+    dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    rc |= expect_true("sender", tx != DSD_INVALID_SOCKET && port > 0);
+    rc |= expect_true("on a voice channel",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC1_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_symbol_apply_input_drop(opts, state);
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    /* The old channel's audio: more than a symbol of it queued once its first sample was read. */
+    rc |= expect_true("the old channel's audio", udp_send_ramp(tx, port, 30, 300U) == 0 && udp_next(opts) == 30);
+    /* The symbol reader has met this input already: its first symbol moves no epoch for an input switch. */
+    state->symbol_clock_input = opts->pcm_input_generation;
+    const uint32_t e = state->symbol_clock_epoch;
+    dsd_engine_set_decoder_thread(0);
+    rc |= expect_true("watchdog tune",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_engine_set_decoder_thread(1);
+    rc |= expect_epoch("the watchdog's tune leaves the epoch to the decoder thread", state, e, 0);
+    /* The new channel's audio comes once the decoder waits on the input. No reconcile runs before the read. */
+    late_sender ls = {tx, port, 1000, 300U, 50U};
+    dsd_thread_t th;
+    rc |= expect_true("late sender", dsd_thread_create(&th, late_sender_main, &ls) == 0);
+    (void)getSymbol(opts, state, 0);
+    (void)dsd_thread_join(th);
+    rc |= expect_epoch("the next read moves the epoch", state, e, 1);
+    rc |= expect_true("and the read drops the old channel's queued audio: what follows is the new channel's",
+                      udp_next(opts) >= 1000);
+    if (tx != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(tx);
+    }
+    udp_input_stop(opts);
+    rig_case_close(&c);
+    return rc;
+}
+
+/* A drop belongs to the input and the run it was asked for: one asked for before an input switch, or before a run
+   boundary, drops nothing of the input that follows. */
+static int
+test_drop_belongs_to_its_input(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_UDP) != 0) {
+        return expect_true("drop input: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    dsd_engine_net_audio_input_hooks_install();
+    int rc = expect_true("udp input", udp_input_start(opts, "127.0.0.1", 0, 48000) == 0);
+    const int port = bound_port(opts->udp_in_sockfd);
+    dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    rc |= expect_true("on a voice channel",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC1_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("a drop is asked for", state->input_drop_pending == 1U);
+    dsd_opts_note_pcm_stream(opts); /* the input is replaced before the next read */
+    rc |= expect_true("the new input's audio", udp_queue(tx, port, opts, (const int16_t[]){50, 51}, 2U));
+    dsd_symbol_apply_input_drop(opts, state);
+    rc |= expect_true("a drop asked for on the input replaced drops nothing of the new one",
+                      state->input_drop_pending == 0U && udp_next(opts) == 51);
+    rc |= expect_true("hop",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, VC2_HZ, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("asked again", state->input_drop_pending == 1U);
+    dsd_frame_sync_off_thread_tunes_reset(state); /* a run boundary: Stop, then Start */
+    rc |= expect_true("a run boundary clears it", state->input_drop_pending == 0U);
+    if (tx != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(tx);
+    }
+    udp_input_stop(opts);
+    rig_case_close(&c);
+    return rc;
+}
+
 /* TCP: what the reader buffered and what the socket has ready at the confirmation go; what is sent after it is read. */
 static int
 test_tcp_backlog(void) {
@@ -794,6 +915,8 @@ main(void) {
     rc |= test_p25p1_terminator_after_tune();
     rc |= test_dmr_follow_end_to_end();
     rc |= test_udp_backlog();
+    rc |= test_watchdog_tune_drops_at_the_next_read();
+    rc |= test_drop_belongs_to_its_input();
     rc |= test_tcp_backlog();
     rc |= test_stdin_backlog();
     rc |= test_readers_carry_out_the_drop();

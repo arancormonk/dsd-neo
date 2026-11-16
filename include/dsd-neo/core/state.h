@@ -1617,6 +1617,9 @@ struct dsd_state {
        drops them. Decoder-thread owned: a tune off it posts the request, which the decoder thread sets here when it
        reconciles that tune (dsd_frame_sync_apply_off_thread_tunes()). */
     uint8_t input_drop_pending;
+    /* dsd_opts::pcm_input_generation when the drop was asked for: a drop meant for an input since replaced (an input
+       switch, a reopened stream) is cleared unrun. */
+    uint32_t input_drop_generation;
     /* Set while the DSP sync anchor (state-ext slot 12, src/dsp/symbol_anchor.c) records or holds a move for the grid;
        the grid looks the anchor up only then. */
     uint8_t symbol_anchor_hot;
