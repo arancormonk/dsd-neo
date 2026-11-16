@@ -4674,7 +4674,9 @@ suite runs under this compiler.
     `dsd_rdio_upload_names_same_file()` in `src/runtime/rdio_export_internal.h`, which takes the platform's rules as a
     flag), so another spelling of the folder still matches, under the queue's mutex, which for that reason lives for
     the process (the worker's condition variable is still created and destroyed with the worker; a failed mutex init
-    is final: no worker starts and nothing is held). Uploads are kept while a journal is set:
+    is final: no worker starts and nothing is held). Every upload job, sent, dropped or still queued at the stop, has
+    its copies of the API key and URL wiped (`DSD_SECURE_ZERO`) before it is freed (`dsd_rdio_upload_job_free()`;
+    test: `RUNTIME_RDIO_EXPORT`). Uploads are kept while a journal is set:
     `dsd_rdio_journal_keeps_uploads()` reads 1 in a run that names a recording journal and turns
     `rdio_api_delete_after_upload` on, and `dsd_rdio_export_call_ex()` then queues the job without the delete (the
     decision travels in the job, so the worker never reads the options). The option value is unchanged, so the exit's

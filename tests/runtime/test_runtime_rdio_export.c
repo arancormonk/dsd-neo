@@ -2487,9 +2487,29 @@ rdio_test_cancel_later_thread(void* arg) {
 }
 #endif
 
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+// Upload jobs released, and how many of them still held a byte of their API key or URL copy when they were freed.
+static int g_rdio_jobs_released = 0;
+static int g_rdio_jobs_released_with_secrets = 0;
+
+static void
+rdio_count_job_release(const char* api_key, size_t api_key_size, const char* api_url, size_t api_url_size) {
+    g_rdio_jobs_released++;
+    int left = 0;
+    for (size_t i = 0; i < api_key_size; ++i) {
+        left |= api_key[i] != '\0';
+    }
+    for (size_t i = 0; i < api_url_size; ++i) {
+        left |= api_url[i] != '\0';
+    }
+    g_rdio_jobs_released_with_secrets += left;
+}
+#endif
+
 // The user's Stop against a stalled endpoint: cancel, then the cleanup's shutdown. Without the cancel the drain would
 // run 4 jobs x 3 attempts x 3 s; with it the attempt in flight is aborted and the rest are never tried, well inside one
-// attempt's timeout, and nothing is deleted.
+// attempt's timeout, and nothing is deleted. Every job, the one in flight and the ones still queued at the stop, has
+// its copies of the API key and URL wiped before it is freed.
 static int
 test_api_cancel_before_shutdown_skips_backlog(void) {
 #if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
@@ -2506,6 +2526,8 @@ test_api_cancel_before_shutdown_skips_backlog(void) {
     }
     rdio_cancel_opts(opts, api_url, 3000, 3);
 
+    g_rdio_jobs_released = g_rdio_jobs_released_with_secrets = 0;
+    dsd_rdio_upload_set_release_observer(rdio_count_job_release);
     rdio_cancel_jobs jobs;
     int rc = rdio_cancel_jobs_queue(&jobs, "dsdneo_rdio_cancel_before", 4, opts);
     // Let the worker get into its first transfer, so the cancel has one to abort.
@@ -2515,8 +2537,14 @@ test_api_cancel_before_shutdown_skips_backlog(void) {
     dsd_rdio_upload_cancel();
     dsd_rdio_upload_shutdown();
     const uint64_t elapsed = dsd_realtime_mono_ms() - t0;
+    dsd_rdio_upload_set_release_observer(NULL);
     if (elapsed >= 2000U) {
         DSD_FPRINTF(stderr, "cancel before shutdown: shutdown took %llu ms\n", (unsigned long long)elapsed);
+        rc = 1;
+    }
+    if (g_rdio_jobs_released != 4 || g_rdio_jobs_released_with_secrets != 0) {
+        DSD_FPRINTF(stderr, "cancel before shutdown: %d of 4 jobs released, %d still holding the API key or URL\n",
+                    g_rdio_jobs_released, g_rdio_jobs_released_with_secrets);
         rc = 1;
     }
     rc |= rdio_cancel_jobs_expect_files(&jobs, 1, "cancel before shutdown");

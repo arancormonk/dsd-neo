@@ -11,6 +11,8 @@
 #ifndef DSD_NEO_RUNTIME_RDIO_EXPORT_INTERNAL_H
 #define DSD_NEO_RUNTIME_RDIO_EXPORT_INTERNAL_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,6 +24,15 @@ extern "C" {
  * names no file and matches nothing.
  */
 int dsd_rdio_upload_names_same_file(const char* job_path, const char* path, int win);
+
+/*
+ * For tests: @p observer (NULL for none) sees every upload job as it is released, sent, dropped or abandoned at the
+ * stop, with what is left of its API key and URL copies after their wipe, just before the job is freed. A build with
+ * no libcurl queues no jobs and never calls it.
+ */
+typedef void (*dsd_rdio_upload_release_observer)(const char* api_key, size_t api_key_size, const char* api_url,
+                                                 size_t api_url_size);
+void dsd_rdio_upload_set_release_observer(dsd_rdio_upload_release_observer observer);
 
 #ifdef __cplusplus
 }
