@@ -2375,7 +2375,10 @@ suite runs under this compiler.
   records which of the header and blocks 1-3 arrived, each with a checked embedded LC checksum, while the slot's call
   was the ACTIVE one with that epoch and source on that tuning generation. A header of another format, length, text or
   binding restarts it; a block under another binding, or one that differs from the block held, ends it until the next
-  header; a failed checksum (`dmr_talker_alias_lc_invalidate()`) clears it. The alias is learned once per assembly, as
+  header; a failed checksum (`dmr_talker_alias_lc_invalidate()`) clears it. The pieces live in `dmr_pdu_sf`, which
+  other decoders clear or reuse (`dmr_reset_blocks()` after a data error on either slot, the data assembler, NXDN and
+  P25 on slot 0), so the assembly keeps each piece's bits as stored and a learn whose pieces no longer hold them ends
+  it (test `DMR_ALIAS_LEARN` `test_buffer_reset_between_pieces`). The alias is learned once per assembly, as
   the call source's alias of the reception's scope, only when the header and every block up to the one decoded
   arrived and the text visibly ended inside them: a padding unit (all zeros or all ones, never a space) follows its
   last character, all three blocks are there, or the text exactly fills what arrived and the header's Data Length is

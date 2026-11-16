@@ -1091,6 +1091,43 @@ dmr_talker_alias_same_binding(const dmr_talker_alias_assembly* a, const dmr_talk
     return a->source == b->source && a->epoch == b->epoch && a->tune_generation == b->tune_generation;
 }
 
+// Pack @p count (at most 56) bit entries of @p bits into @p out (7 bytes, MSB first, the rest zero).
+static void
+dmr_talker_alias_pack(const uint8_t* bits, size_t count, uint8_t out[7]) {
+    DSD_MEMSET(out, 0, 7U);
+    for (size_t i = 0; i < count && i < 56U; i++) {
+        out[i / 8U] = (uint8_t)(out[i / 8U] | ((bits[i] & 1U) << (7U - (i % 8U))));
+    }
+}
+
+// Where piece @p piece (0 the header, 1-3 the blocks) of a @p char_size-bit alias lives in dmr_pdu_sf, and its bits.
+static size_t
+dmr_talker_alias_piece_at(uint8_t char_size, uint8_t piece, size_t* bits) {
+    const size_t header = char_size == 7U ? 49U : 48U;
+    *bits = piece == 0U ? header : 56U;
+    return piece == 0U ? 0U : header + ((size_t)(piece - 1U) * 56U);
+}
+
+// 1 when every piece in @p pieces still holds, in dmr_pdu_sf, the bits it was stored with.
+static int
+dmr_talker_alias_pieces_intact(const dsd_state* state, uint8_t slot, uint8_t pieces) {
+    const dmr_talker_alias_assembly* const a = &state->dmr_alias_assembly[slot];
+    const uint8_t char_size = state->dmr_alias_char_size[slot];
+    for (uint8_t piece = 0; piece < 4U; piece++) {
+        if ((pieces & (1U << piece)) == 0U) {
+            continue;
+        }
+        size_t count = 0;
+        const size_t at = dmr_talker_alias_piece_at(char_size, piece, &count);
+        uint8_t now[7];
+        dmr_talker_alias_pack(state->dmr_pdu_sf[slot] + at, count, now);
+        if (memcmp(now, a->piece[piece], sizeof now) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 // A checked header about to be stored: the same header again keeps what arrived with it, anything else starts over.
 // The header's text bits are compared before they are overwritten.
 static void
@@ -1105,6 +1142,7 @@ dmr_talker_alias_note_header(dsd_state* state, uint8_t slot, uint8_t format, uin
         *a = now;
     }
     a->mask = (uint8_t)(a->mask | 1U);
+    dmr_talker_alias_pack(text, text_bits, a->piece[0]);
 }
 
 // A checked block @p block (1-3) about to be stored at bit @p ptr: it joins the assembly only under the header's
@@ -1123,6 +1161,7 @@ dmr_talker_alias_note_block(dsd_state* state, uint8_t slot, uint8_t block, uint1
         return;
     }
     a->mask = (uint8_t)(a->mask | bit);
+    dmr_talker_alias_pack(bits, 56U, a->piece[block]);
 }
 
 // The most code units an alias of @p char_size bits can have: the header and three blocks hold 31 7-bit characters,
@@ -1168,7 +1207,8 @@ dmr_talker_alias_text_ended(const uint8_t* bits, uint8_t char_size, uint8_t bloc
 // six-character callsign in the header alone). The Data Length alone is not trusted to say where the text ends
 // (radios understate it: a learned name would be cut and the group file would keep it); a space never counts as an
 // end, since names contain spaces. Every piece from the header to @p block_num must have arrived under the assembly's
-// binding (dmr_talker_alias_note_header() / _note_block()). An empty alias and one with a U+FFFD are not learned.
+// binding (dmr_talker_alias_note_header() / _note_block()) and still hold, in dmr_pdu_sf, the bits it arrived with (a
+// buffer another decoder cleared or reused ends the assembly). An empty alias and one with a U+FFFD are not learned.
 static void
 dmr_talker_alias_maybe_learn(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, uint16_t end,
                              uint16_t max_chars, const char* alias_string) {
@@ -1178,6 +1218,11 @@ dmr_talker_alias_maybe_learn(const dsd_opts* opts, dsd_state* state, uint8_t slo
     const uint8_t pieces = (uint8_t)((1U << (block_num + 1U)) - 1U);
     if (a->learned || a->source == 0U || char_size == 0U || block_num > 3U || (a->mask & pieces) != pieces
         || block_len == 0U || block_len > dmr_talker_alias_max_units(char_size)) {
+        return;
+    }
+    // Another decoder cleared or reused the buffer since a piece arrived: what it holds now is not what was sent.
+    if (!dmr_talker_alias_pieces_intact(state, slot, pieces)) {
+        DSD_MEMSET(a, 0, sizeof *a);
         return;
     }
     if (!dmr_talker_alias_text_ended(state->dmr_pdu_sf[slot], char_size, block_len, block_num, end, max_chars)

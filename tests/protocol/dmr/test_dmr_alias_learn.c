@@ -395,6 +395,33 @@ test_learn_through_flco(dsd_opts* opts) {
     }
 }
 
+/* The talker alias shares dmr_pdu_sf with the data assembler (and the NXDN / P25 decoders on slot 0): a buffer
+   cleared or reused between the header and a block leaves pieces that no longer hold what arrived. A data error on
+   the other slot runs dmr_reset_blocks(), which clears both slots' buffers; the block after it must not be learned
+   with a header that is gone (it read as seven spaces and "7"), and the next whole alias is learned as sent. */
+static void
+test_buffer_reset_between_pieces(dsd_opts* opts) {
+    dsd_state* st = new_state();
+    seed_active_call(st, 0U, 1234567U);
+    send_header(opts, st, 0U, 1U, 8U, "ENGINE");
+    dmr_reset_blocks(opts, st);
+    send_block(opts, st, 0U, 0U, " 7");
+    expect_learned(st, 1234567U, NULL, "a block after the buffer reset is not learned with the cleared header");
+    send_header(opts, st, 0U, 1U, 8U, "ENGINE");
+    send_block(opts, st, 0U, 0U, " 7");
+    expect_learned(st, 1234567U, "ENGINE 7", "the next whole alias after the reset");
+    free_state(st);
+
+    /* Another decoder reusing the buffer (here, writing into the header's bits) between the pieces. */
+    st = new_state();
+    seed_active_call(st, 1U, 2345678U);
+    send_header(opts, st, 1U, 1U, 8U, "ENGINE");
+    DSD_MEMSET(st->dmr_pdu_sf[1], 1, 16U);
+    send_block(opts, st, 1U, 0U, " 7");
+    expect_learned(st, 2345678U, NULL, "a header overwritten by another user of the buffer is not learned");
+    free_state(st);
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -408,6 +435,7 @@ main(void) {
     test_learn_utf8(opts);
     test_learn_scope(opts);
     test_learn_through_flco(opts);
+    test_buffer_reset_between_pieces(opts);
     free(opts);
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DMR_ALIAS_LEARN: %d failure(s)\n", g_failures);
