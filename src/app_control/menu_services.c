@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/app_control/analog_width_view.h>
+#include <dsd-neo/app_control/radio_source_view.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
@@ -1849,18 +1850,8 @@ svc_check_input_analog_width_at(const dsd_opts* opts, const dsd_state* state, in
 
 void
 svc_rtl_row_destination(const dsd_opts* opts, char* out, size_t out_size) {
-    if (!out || out_size == 0U) {
-        return;
-    }
-    const char* dev = "rtl";
-    if (opts && dsd_opts_audio_in_dev_is_radio_spec(opts->audio_in_dev)
-        && !dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
-        dev = opts->audio_in_dev;
-    } else if (opts && dsd_opts_audio_in_dev_is_radio_spec(opts->radio_in_dev)
-               && !dsd_opts_audio_in_dev_is_airspy_spec(opts->radio_in_dev)) {
-        dev = opts->radio_in_dev;
-    }
-    DSD_SNPRINTF(out, out_size, "%s", dev);
+    /* The terminal's row names the same device (dsd_app_radio_source_name()), so the rule lives in the view. */
+    dsd_app_radio_row_destination(opts, out, out_size);
 }
 
 int

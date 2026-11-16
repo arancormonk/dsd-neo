@@ -171,6 +171,16 @@ int dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_st
  */
 int dsd_app_frontend_input_level(const dsd_opts* opts, dsd_input_level_snapshot* out);
 
+/**
+ * @brief Where an I/Q stream input stands (issue #743), as every frontend names it: "connecting", "reconnecting",
+ * "connected" (TCP) or "opening", "receiving" (UDP), then "waiting for data" once up with no samples yet, "no input"
+ * once samples stopped coming, "stopped" while no stream runs. From the stream's published state
+ * (dsd_iq_net_published_state()), so any thread may ask with only an options snapshot.
+ *
+ * @return The words, or NULL when the input in @p opts is not an I/Q stream (dsd_opts_input_is_iq_stream()).
+ */
+const char* dsd_app_frontend_iq_stream_state(const dsd_opts* opts);
+
 /** @brief One SNR reading, and whether an estimator actually produced it. */
 typedef struct {
     double snr_db; /**< Reading in dB. Only meaningful while @c valid is nonzero. */

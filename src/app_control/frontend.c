@@ -16,6 +16,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RADIO
+#include <dsd-neo/io/iq_net.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
@@ -132,6 +133,26 @@ dsd_app_frontend_input_level(const dsd_opts* opts, dsd_input_level_snapshot* out
     dsd_input_level_classify(&level, opts->input_warn_db);
     *out = level;
     return 1;
+}
+
+const char*
+dsd_app_frontend_iq_stream_state(const dsd_opts* opts) {
+    if (!opts || !dsd_opts_input_is_iq_stream(opts)) {
+        return NULL;
+    }
+#ifdef USE_RADIO
+    const int udp = dsd_opts_audio_in_dev_is_iqudp_spec(opts->audio_in_dev);
+    int reconnecting = 0;
+    switch (dsd_iq_net_published_state(&reconnecting)) {
+        case DSD_IQ_NET_STATE_CONNECTING: return udp ? "opening" : (reconnecting ? "reconnecting" : "connecting");
+        case DSD_IQ_NET_STATE_WAITING: return "waiting for data";
+        case DSD_IQ_NET_STATE_STREAMING: return udp ? "receiving" : "connected";
+        case DSD_IQ_NET_STATE_STALLED: return "no input";
+        default: return "stopped";
+    }
+#else
+    return "stopped";
+#endif
 }
 
 static void

@@ -882,6 +882,14 @@ dsd_app_frontend_input_level(const dsd_opts* opts, dsd_input_level_snapshot* out
     return g_presented_level_result;
 }
 
+/* Where the I/Q stream stands, as app-control names it (dsd_app_frontend_iq_stream_state()); NULL off a stream. */
+static const char* g_iq_stream_state = "connected";
+
+const char*
+dsd_app_frontend_iq_stream_state(const dsd_opts* opts) {
+    return dsd_opts_input_is_iq_stream(opts) ? g_iq_stream_state : NULL;
+}
+
 int
 dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
                                           unsigned int snr_fallbacks) { // NOLINT(misc-use-internal-linkage)
@@ -1760,6 +1768,82 @@ test_receiver_rows_fixed_width(void) {
     g_tuner_gain_tenth_db = 0;
 #endif
     g_stub_max_x = 80;
+}
+
+/* Issue #743 (B5): rtl_tcp, an I/Q replay and an I/Q stream name themselves on a row of their own, as an Airspy does,
+   where every radio input once read "| RTL: N;" with an RTL-SDR's gain and PPM. A replay and a stream show no gain,
+   PPM, Auto PPM or External RTL Tuning row: their capture or sending program set those. The stream's row is its
+   endpoint, its samples and where it stands, last. At 80 columns both rows fit whole, the tuned frequency included;
+   a host too long for the row is cut at a field, and the readings row below keeps its own. */
+static void
+test_radio_input_identity_rows(void) {
+    g_unicode_stub = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_volume_multiplier = 2;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.rtlsdr_center_freq = 851012500;
+    opts.rtl_gain_value = 21;
+    opts.rtl_udp_port = 5555;
+    DSD_SNPRINTF(opts.rtl_udp_bindaddr, sizeof(opts.rtl_udp_bindaddr), "127.0.0.1");
+    g_requested_ppm = 0;
+    g_stub_max_x = 80;
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtltcp:radio.example:1234");
+    DSD_SNPRINTF(opts.rtltcp_hostname, sizeof(opts.rtltcp_hostname), "radio.example");
+    opts.rtltcp_portno = 1234;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_equals("| rtl_tcp: radio.example:1234;\n"
+                          "| G:  21dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ:  851.012500 MHz;\n"
+                          "| SQL: off;\n"
+                          "| Auto PPM: Off\n"
+                          "| External RTL Tuning on UDP: 127.0.0.1:5555\n");
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "iqreplay:/data/captures/capture.iq.json");
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_equals("| I/Q replay: capture.iq.json;\n"
+                          "| Mon: 2X; DSP-BW: 48 kHz; FRQ:  851.012500 MHz;\n"
+                          "| SQL: off;\n");
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "iqtcp:127.0.0.1:1234:240000:cs16:851012500");
+    static const char* const k_tcp_states[] = {"connecting",       "reconnecting", "connected",
+                                               "waiting for data", "no input",     "stopped"};
+    for (size_t i = 0; i < sizeof k_tcp_states / sizeof k_tcp_states[0]; i++) {
+        g_iq_stream_state = k_tcp_states[i];
+        char want[256];
+        DSD_SNPRINTF(want, sizeof want,
+                     "| I/Q stream: 127.0.0.1:1234; cs16, 240 kHz; %s\n"
+                     "| Mon: 2X; DSP-BW: 48 kHz; FRQ:  851.012500 MHz;\n"
+                     "| SQL: off;\n",
+                     k_tcp_states[i]);
+        reset_printw_capture();
+        ui_render_rtl_input_source(&opts, &state);
+        assert_capture_equals(want);
+    }
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "iqudp:0.0.0.0:7355:48000:cu8");
+    opts.rtlsdr_center_freq = 0;
+    g_iq_stream_state = "receiving";
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_equals("| I/Q stream: UDP :7355; cu8, 48 kHz; receiving\n"
+                          "| Mon: 2X; DSP-BW: 48 kHz; FRQ:           - MHz;\n"
+                          "| SQL: off;\n");
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev),
+                 "iqtcp:a-sending-program-host-with-a-long-name.example.internal:1234:240000:cs16");
+    g_iq_stream_state = "waiting for data";
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_equals("| I/Q stream: a-sending-program-host-with-a-long-name.example.internal:1234;...\n"
+                          "| Mon: 2X; DSP-BW: 48 kHz; FRQ:           - MHz;\n"
+                          "| SQL: off;\n");
+    g_iq_stream_state = "connected";
 }
 
 /* Issue #669: the input level row keeps its columns while the status word and the readings change, and a reading that
@@ -5412,6 +5496,7 @@ main(void) {
     test_analog_channel_status_rendering();
     test_rtl_auto_ppm_status_rendering();
     test_receiver_rows_fixed_width();
+    test_radio_input_identity_rows();
     test_input_level_row_fixed_width();
     test_input_level_row_no_input();
     test_output_rows_fixed_width();

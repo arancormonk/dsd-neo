@@ -114,6 +114,9 @@ typedef struct {
      *  connect timeouts and backoff always run on real time. */
     dsd_iq_net_clock_fn clock_ms;
     void* clock_ctx;
+    /** Nonzero for the session's stream: every state it takes is also published for dsd_iq_net_published_state(),
+     *  which frontends read with no reader in hand. One reader at a time publishes; 0 for any other. */
+    int publish_state;
 } dsd_iq_net_reader_config;
 
 /**
@@ -211,6 +214,14 @@ void dsd_iq_net_reader_destroy(dsd_iq_net_reader* reader);
 
 /** The reader's dsd_iq_net_state, from any thread. */
 dsd_iq_net_state dsd_iq_net_reader_state(const dsd_iq_net_reader* reader);
+
+/**
+ * The state of the reader created with dsd_iq_net_reader_config::publish_state, as it last moved, from any thread with
+ * no reader in hand: a frontend's snapshot outlives the reader a restart frees (issue #743). DSD_IQ_NET_STATE_STOPPED
+ * before one opens and after it ends. @p out_reconnecting (may be NULL) is set to 1 when a CONNECTING state is a TCP
+ * reconnect after a lost connection, 0 for the first connect.
+ */
+dsd_iq_net_state dsd_iq_net_published_state(int* out_reconnecting);
 
 /** 1 when the state is DSD_IQ_NET_STATE_STREAMING, else 0 (NULL included). Any thread; one load. */
 int dsd_iq_net_reader_available(const dsd_iq_net_reader* reader);

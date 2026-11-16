@@ -3170,6 +3170,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
     ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
     # A typed frequency's go-to names its outcome (issue #644); the engine side is stubbed.
     ${PROJECT_SOURCE_DIR}/src/app_control/scan_entry_toast.c
@@ -3194,10 +3195,10 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/ui/terminal
 )
 target_compile_definitions(dsd-neo_test_ui_menu_services PRIVATE USE_RADIO)
-# The squelch contract's dB conversion is a header inline over exp().
+# The squelch contract's dB conversion is a header inline over exp(); the radio-source view parses stream specs.
 target_link_libraries(
     dsd-neo_test_ui_menu_services
-    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE dsd-neo_io_iq ${DSD_NEO_TEST_MATH_LIB}
 )
 target_link_libraries(dsd-neo_test_ui_menu_services PRIVATE dsd-neo_runtime)
 target_sources(
@@ -3217,6 +3218,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
@@ -3261,6 +3263,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
@@ -4058,6 +4061,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
@@ -4083,6 +4087,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${_target}
             PRIVATE
                 dsd-neo_test_call_state_support
+                dsd-neo_io_iq
                 ${CURSES_LIBRARIES}
                 ${DSD_NEO_TEST_MATH_LIB}
         )

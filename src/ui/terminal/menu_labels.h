@@ -118,6 +118,8 @@ const char* lbl_key_hytera(const void* v, char* b, size_t n);
 
 // Input / Audio
 const char* lbl_current_input(const void* vctx, char* b, size_t n);
+const char* lbl_src_rtl(const void* vctx, char* b, size_t n);
+const char* lbl_input_rtl(const void* vctx, char* b, size_t n);
 const char* lbl_current_output(const void* vctx, char* b, size_t n);
 const char* lbl_input_volume(const void* vctx, char* b, size_t n);
 const char* lbl_input_warn(const void* v, char* b, size_t n);

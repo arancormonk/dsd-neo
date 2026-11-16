@@ -92,6 +92,12 @@ struct dsd_iq_net_reader {
     iq_net_counter_set counters;
 };
 
+/* The publishing reader's state (dsd_iq_net_published_state()): only the session's stream publishes, and a restart
+   stops the old reader, which publishes STOPPED as it ends, before the new one opens. */
+static atomic_int g_published_state = DSD_IQ_NET_STATE_STOPPED;
+/* Whether the publishing reader's last CONNECTING followed a lost connection (iq_net_tcp_lost()), not its open. */
+static atomic_int g_published_reconnecting = 0;
+
 /* ---- Small helpers ------------------------------------------------------------------------------------------- */
 
 /* The cancellation token every wait, connect and backoff checks: a stop, or the process exiting, which latches the
@@ -122,6 +128,9 @@ iq_net_count(dsd_atomic_u64* counter, uint64_t n) {
 static void
 iq_net_set_state(dsd_iq_net_reader* r, dsd_iq_net_state next) {
     atomic_store(&r->state, (int)next);
+    if (r->cfg.publish_state) {
+        atomic_store(&g_published_state, (int)next);
+    }
 }
 
 static void
@@ -470,6 +479,9 @@ dsd_iq_net_reader_open(dsd_iq_net_reader* reader, dsd_iq_net_open_error* err) {
         return -1;
     }
     reader->opened = 1;
+    if (reader->cfg.publish_state) {
+        atomic_store(&g_published_reconnecting, 0);
+    }
     iq_net_set_state(reader, DSD_IQ_NET_STATE_CONNECTING);
     iq_net_failure f = {DSD_INPUT_FAILURE_NONE, 0};
     const dsd_socket_t sock =
@@ -537,6 +549,8 @@ dsd_iq_net_reader_destroy(dsd_iq_net_reader* reader) {
     }
     dsd_iq_net_reader_stop(reader);
     iq_net_close_socket(reader);
+    /* An opened reader whose loop never ran ends here, not in its loop. */
+    iq_net_set_state(reader, DSD_IQ_NET_STATE_STOPPED);
     (void)dsd_mutex_destroy(&reader->sock_lock);
     free(reader->rx);
     free(reader->out);
@@ -561,7 +575,18 @@ dsd_iq_net_reader_note_written(dsd_iq_net_reader* reader) {
         return;
     }
     int expected = DSD_IQ_NET_STATE_WAITING;
-    (void)atomic_compare_exchange_strong(&reader->state, &expected, (int)DSD_IQ_NET_STATE_STREAMING);
+    if (atomic_compare_exchange_strong(&reader->state, &expected, (int)DSD_IQ_NET_STATE_STREAMING)
+        && reader->cfg.publish_state) {
+        atomic_store(&g_published_state, (int)DSD_IQ_NET_STATE_STREAMING);
+    }
+}
+
+dsd_iq_net_state
+dsd_iq_net_published_state(int* out_reconnecting) {
+    if (out_reconnecting) {
+        *out_reconnecting = atomic_load(&g_published_reconnecting);
+    }
+    return (dsd_iq_net_state)atomic_load(&g_published_state);
 }
 
 void
@@ -740,6 +765,9 @@ iq_net_tcp_lost(dsd_iq_net_reader* r, int code) {
     r->up = 0;
     r->stalled = 0;
     iq_net_rate_pause(&r->rate);
+    if (r->cfg.publish_state) {
+        atomic_store(&g_published_reconnecting, 1);
+    }
     iq_net_set_state(r, DSD_IQ_NET_STATE_CONNECTING);
     if (r->carry.len > 0) {
         /* A new connection starts on the sender's next whole block: the old partial sample has no other half. */

@@ -334,6 +334,8 @@ rtl_net_iq_create(const struct rtl_net_iq_config* cfg, struct input_ring_state* 
     rcfg.on_samples = net_iq_on_samples;
     rcfg.on_event = net_iq_on_event;
     rcfg.ctx = n;
+    rcfg.publish_state =
+        1; /* the session's stream: its state is the one frontends show (dsd_iq_net_published_state()) */
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
     rcfg.clock_ctx = g_test_clock_ctx.load(std::memory_order_relaxed);
     rcfg.clock_ms = g_test_clock.load(std::memory_order_acquire);

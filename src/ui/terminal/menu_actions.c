@@ -1861,6 +1861,7 @@ act_set_freq(void* v) {
 static const char k_freq_key_needs_rigctl[] =
     "Nothing to tune: this input needs a connected rigctl peer (key 9, or Input > Rigctl).";
 static const char k_freq_key_replay[] = "An I/Q replay cannot retune: it plays the tuning it recorded.";
+static const char k_freq_key_stream[] = "An I/Q stream cannot retune: change the channel in the sending program.";
 
 /* '=' decides on the frame's published options, as the row's predicate does. Where the row would be hidden the reason
    opens, rather than a prompt whose answer the command then refuses. */
@@ -1872,7 +1873,13 @@ act_freq_key(void* v) {
         ui_open_freq_prompt(c, NULL);
         return;
     }
-    ui_help_open((opts && dsd_opts_input_is_iq_replay(opts)) ? k_freq_key_replay : k_freq_key_needs_rigctl);
+    const char* why = k_freq_key_needs_rigctl;
+    if (opts && dsd_opts_input_is_iq_replay(opts)) {
+        why = k_freq_key_replay;
+    } else if (opts && dsd_opts_input_is_iq_stream(opts)) {
+        why = k_freq_key_stream;
+    }
+    ui_help_open(why);
 }
 
 // ---- RTL-SDR actions ----
@@ -1899,6 +1906,19 @@ is_airspy_input(const void* v) {
 bool
 is_non_airspy_input(const void* v) {
     return !is_airspy_input(v);
+}
+
+/* The tuner rows (gain, PPM, tuner autogain, bias tee, device index, auto-PPM and rtl_tcp tuning): never an Airspy's,
+   which has rows of its own, nor those of a radio input DSD-neo cannot tune (dsd_opts_radio_can_tune()), an I/Q replay
+   or an I/Q stream, whose program or capture set them (issue #743). An audio input keeps them: they set up the RTL-SDR
+   a switch opens. */
+bool
+tuner_rows_offered(const void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    if (is_airspy_input(v)) {
+        return false;
+    }
+    return !c || !c->opts || !dsd_opts_input_is_radio(c->opts) || dsd_opts_radio_can_tune(c->opts);
 }
 
 // NcMenuItem action callbacks require a mutable context signature.

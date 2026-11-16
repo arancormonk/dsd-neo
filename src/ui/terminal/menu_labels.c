@@ -13,6 +13,7 @@
 #include <dsd-neo/app_control/crc_policy_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/radio_source_view.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
@@ -82,15 +83,6 @@ onoff(int on) {
 }
 
 // ---- Visibility/predicate functions ----
-
-static int
-menu_audio_in_is_soapy(const dsd_opts* opts) {
-    const char* dev = opts ? opts->audio_in_dev : NULL;
-    if (!dev) {
-        return 0;
-    }
-    return (strcmp(dev, "soapy") == 0) || (strncmp(dev, "soapy:", 6) == 0);
-}
 
 bool
 io_rtl_active(const void* ctx) {
@@ -1007,20 +999,49 @@ lbl_current_input_file_like(const dsd_opts* opts, char* b, size_t n) {
     return b;
 }
 
+/* A radio input by its own kind (issue #743, B5): "Source: RTL-SDR dev 0", "Source: rtl_tcp radio.example:1234",
+   "Source: Airspy", "Source: SoapySDR [driver=lime]", "Source: I/Q replay capture.iq.json", "Source: I/Q stream
+   127.0.0.1:1234 (cs16, 240 kHz)" (dsd_app_radio_source_name()). */
 static const char*
 lbl_current_input_rtl(const dsd_opts* opts, char* b, size_t n) {
-    if (menu_audio_in_is_soapy(opts)) {
-        if (strncmp(opts->audio_in_dev, "soapy:", 6) == 0 && opts->audio_in_dev[6] != '\0') {
-            size_t prefix = strlen("Source: SoapySDR []") - 2;
-            int m = (n > prefix) ? (int)(n - prefix) : 0;
-            DSD_SNPRINTF(b, n, "Source: SoapySDR [%.*s]", m, opts->audio_in_dev + 6);
-        } else {
-            DSD_SNPRINTF(b, n, "Source: SoapySDR");
-        }
+    static const char k_prefix[] = "Source: ";
+    char name[DSD_APP_RADIO_SOURCE_NAME_MAX];
+    const size_t room = n > sizeof k_prefix ? n - (sizeof k_prefix - 1U) : 1U;
+    dsd_app_radio_source_name(opts, opts->audio_in_dev, name, room < sizeof name ? room : sizeof name);
+    DSD_SNPRINTF(b, n, "%s%s", k_prefix, name);
+    return b;
+}
+
+/* Input's radio submenu, by the input it sets up (issue #743): an I/Q stream or replay keeps only its DSP rows there,
+   so it is not named an RTL-SDR. */
+const char*
+lbl_input_rtl(const void* vctx, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)vctx;
+    const dsd_opts* opts = c ? c->opts : NULL;
+    const char* name = "RTL-SDR";
+    if (opts && dsd_opts_input_is_iq_stream(opts)) {
+        name = "I/Q stream";
+    } else if (opts && dsd_opts_input_is_iq_replay(opts)) {
+        name = "I/Q replay";
+    }
+    DSD_SNPRINTF(b, n, "%s", name);
+    return b;
+}
+
+/* Input > Switch source's radio row names the device it opens (svc_rtl_row_destination()): "RTL-SDR" for an RTL-SDR,
+   else the remembered or running input by its kind, so a row that brings back an I/Q stream or rtl_tcp server says
+   which (issue #743). */
+const char*
+lbl_src_rtl(const void* vctx, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)vctx;
+    char dev[sizeof(((dsd_opts*)0)->audio_in_dev)];
+    dsd_app_radio_row_destination(c ? c->opts : NULL, dev, sizeof dev);
+    if (!dsd_opts_audio_in_dev_is_iq_stream_spec(dev) && !dsd_opts_audio_in_dev_is_iqreplay_spec(dev)
+        && !dsd_opts_audio_in_dev_is_rtltcp_spec(dev) && !dsd_opts_audio_in_dev_is_soapy_spec(dev)) {
+        DSD_SNPRINTF(b, n, "RTL-SDR");
         return b;
     }
-
-    DSD_SNPRINTF(b, n, "Source: RTL-SDR dev %d", opts->rtl_dev_index);
+    dsd_app_radio_source_name(c ? c->opts : NULL, dev, b, n);
     return b;
 }
 
