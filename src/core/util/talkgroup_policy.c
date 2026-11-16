@@ -114,6 +114,9 @@ typedef struct {
     double start_mono_s;
     double last_seen_mono_s;
     double last_preempt_mono_s;
+    /* The reception the call was evaluated in (dsd_alias_scope_current() when it was noted): a private call's
+       endpoints are read in it again when the table changes, as evaluation read them. */
+    dsd_alias_scope scope;
 } dsd_tg_policy_active_call;
 
 typedef struct {
@@ -1733,10 +1736,11 @@ tg_policy_refresh_active_priorities(dsd_tg_policy_context* ctx) {
         dsd_tg_policy_lookup lookup = {0};
         int matched = 0;
         if (call->private_call) {
-            // As private evaluation: the target's row, else the source's; an endpoint of 0 is unknown. No reception
-            // is at hand here, so a learned alias of any scope counts (every learned row has priority 0).
-            matched = (call->tg != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->tg, NULL, &lookup))
-                      || (call->src != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->src, NULL, &lookup));
+            // As private evaluation (tg_policy_lookup_private_endpoint(), tg_policy_choose_private_entry()): the
+            // target's row, else the source's, each read in the reception the call was evaluated in, so a learned
+            // alias of another system never decides; an endpoint of 0 is unknown.
+            matched = (call->tg != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->tg, &call->scope, &lookup))
+                      || (call->src != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->src, &call->scope, &lookup));
         } else {
             matched = tg_policy_lookup_group_in_ctx(ctx, call->tg, &lookup);
         }
@@ -3359,6 +3363,18 @@ tg_policy_note_active_slot(dsd_tg_policy_context* ctx, int slot, const dsd_tg_po
     tg_policy_active_call_assign_from_route(c, route, decision, now_mono_s);
 }
 
+/* Stamp the slot(s) @p slot (-1: both) with the reception @p state decodes now, the scope the call was evaluated in. */
+static void
+tg_policy_stamp_active_scope(const dsd_state* state, dsd_tg_policy_context* ctx, int slot) {
+    dsd_alias_scope scope;
+    (void)dsd_alias_scope_current(state, &scope);
+    for (int i = 0; i < 2; i++) {
+        if (slot == -1 || slot == i) {
+            ctx->active.calls[i].scope = scope;
+        }
+    }
+}
+
 int
 dsd_tg_policy_note_active_call(dsd_state* state, const dsd_tg_policy_call_route* route,
                                const dsd_tg_policy_decision* decision, double now_mono_s) {
@@ -3375,6 +3391,7 @@ dsd_tg_policy_note_active_call(dsd_state* state, const dsd_tg_policy_call_route*
     } else {
         tg_policy_note_active_slot(ctx, route->slot, route, decision, now_mono_s);
     }
+    tg_policy_stamp_active_scope(state, ctx, route->slot);
     return 0;
 }
 
@@ -3412,6 +3429,7 @@ dsd_tg_policy_describe_followed_call(dsd_state* state, const dsd_tg_policy_call_
     } else {
         tg_policy_describe_slot(ctx, route->slot, route, decision, start_mono_s, now_mono_s);
     }
+    tg_policy_stamp_active_scope(state, ctx, route->slot);
     return 0;
 }
 

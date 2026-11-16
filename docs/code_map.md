@@ -2715,8 +2715,11 @@ suite runs under this compiler.
   imported row, and the held-list mirror stores it as an imported row so the held list ranks it as its reload would.
   Limits: two conventional P25 channels on one NAC (0x293, the default, is common) share their aliases, and so do two
   Capacity Plus systems with the same site number and colour code (dsd-neo's own received site identity stands in for a
-  system number Capacity Plus does not send; not a protocol rule). The active-call priority refresh has no reception and
-  reads a learned row of any scope (every learned row has priority 0). `dsd_alias_name_key()` hashes the group list's
+  system number Capacity Plus does not send; not a protocol rule). The active-call priority refresh reads a private
+  call's endpoints in the reception the call was evaluated in (stored on the held call when it is noted or described),
+  with evaluation's precedence (the target's row, else the source's), so a learned alias of another system never
+  replaces the row evaluation chose (test `CORE_TALKGROUP_POLICY` `test_private_refresh_keeps_reception_scope`).
+  `dsd_alias_name_key()` hashes the group list's
   context identity and generation, the radio list's identity and generation and the current scope: a frontend
   re-resolves retained names when it changes. Tests: `CORE_SCOPED_ALIAS`.
 - Invariant (the group file stands for the list, discussion #748, `<dsd-neo/core/talkgroup_policy.h>`): dsd-neo writes
