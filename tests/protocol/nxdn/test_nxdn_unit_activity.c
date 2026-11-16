@@ -18,6 +18,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
@@ -458,6 +459,17 @@ test_naming(dsd_opts* opts) {
     if (one_row(st, &r, "roaming radio")) {
         expect_true(r.subject.home_valid && r.subject.home_b == 78U, "home system 78");
         expect_true(r.name_frozen[0] == '\0', "a radio away from home is not named by its home ID");
+    }
+    /* A group-addressed stun keeps its talkgroup's label, so the row still shows it once another system is heard. */
+    dsd_tg_policy_entry fire;
+    expect_true(dsd_tg_policy_make_exact_entry(300U, "A", "Fire", DSD_TG_POLICY_SOURCE_IMPORTED, &fire) == 0,
+                "a group label row");
+    (void)dsd_tg_policy_upsert_exact(st, &fire, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    build_rem_con(e, 0x34U, 0U, 0U, 1001U, 300U, 0U);
+    run_cac(opts, st, e);
+    if (one_row(st, &r, "group stun")) {
+        expect_true(r.subject.subtype == DSD_UA_ID_GROUP && strcmp(r.name_frozen, "Fire") == 0,
+                    "a group subject is stored with its talkgroup label");
     }
     dsd_state_ext_free_all(st);
     free(st);
