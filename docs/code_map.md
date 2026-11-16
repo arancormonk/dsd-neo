@@ -16984,7 +16984,9 @@ External dependencies (resolved via CMake):
 
 Release APK/AAB builds enable R8 in `android/package/build.gradle`.
 `proguard-rules.pro` owns the named C++ → Kotlin interface contract and `DsdNative`
-bindings; update it when adding a `QJniObject` upcall. `qt-rules.pro` owns the pinned
+bindings; update it when adding a `QJniObject` upcall. The artifact check reads the contract from the C++: literal
+`QJniObject::callStatic*` calls and `read_static_counter(owner, "name")` (a checked static `()J` call, #786); a JNI
+call in any other form must extend `jni_contract()`, which refuses a form it cannot read. `qt-rules.pro` owns the pinned
 Qt kit's JNI keep rules, including unannotated native registration/teardown paths and
 `QtApkFileEngine.JFileInfo`'s `relativePath`, `size` and `isDir` fields, which native plugin discovery reads from
 Play's APK splits. The artifact check validates these fields' names, descriptors and instance storage;

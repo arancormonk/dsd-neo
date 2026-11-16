@@ -389,7 +389,8 @@ Kotlin compiler plus Java; missing tools skip the CTest entries. Android CI runs
 persistence tests use disposable directories and do not require a writable home on Linux.
 
 `ANDROID_R8` tests the optimized-artifact checker, including removed/renamed JNI
-methods, changed descriptors, lost native bindings and disabled optimization.
+methods, changed descriptors, lost native bindings and disabled optimization, and the contract scanner's reading of
+`read_static_counter()` calls (#786; a form it cannot read is an error).
 Android CI also runs `tools/check_android_r8.py` on the real release APK and AAB,
 checking the app's C++ JNI contract, Qt entry points and embedded R8 metadata.
 It checks the Android resource table for Qt's named loader resources and retains

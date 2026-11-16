@@ -5,6 +5,7 @@
 from pathlib import Path
 import re
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -182,6 +183,25 @@ class R8ArtifactTests(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.assertIn((r8.APP_PACKAGE + owner, name, signature), upcalls)
+
+    def test_counter_helper_counts_as_a_static_long_upcall(self):
+        # #786: the roaming counters are read through read_static_counter(), a checked static ()J call.
+        definition = 'qint64\nread_static_counter(const char* owner, const char* name) {\n    return -1;\n}\n'
+        export = "extern \"C\" void Java_io_github_arancormonk_dsdneo_DsdNative_nativeRun(JNIEnv*, jclass) {}\n"
+        owner = 'constexpr const char* kService = "io/github/arancormonk/dsdneo/DecoderService";\n'
+        with tempfile.TemporaryDirectory(prefix="dsd-r8-src-") as temp:
+            root = Path(temp)
+            (root / "android").mkdir()
+            source = root / "android/host.cpp"
+            source.write_text(owner + definition + export +
+                              'qint64 g() { return read_static_counter(kService, "userStopGeneration"); }\n')
+            upcalls, _ = r8.jni_contract(root)
+            self.assertEqual(upcalls, {(r8.APP_PACKAGE + "DecoderService", "userStopGeneration", "()J")})
+            # A call the scanner cannot read fails loudly instead of dropping the method from the contract.
+            source.write_text(owner + definition + export +
+                              "qint64 g(const char* n) { return read_static_counter(kService, n); }\n")
+            with self.assertRaisesRegex(ValueError, "Unrecognized read_static_counter"):
+                r8.jni_contract(root)
 
     def test_import_copy_entry_points_are_kept(self):
         # DecoderHostAndroid calls these by literal name and descriptor from the import worker (#832, #831).
