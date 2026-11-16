@@ -356,6 +356,20 @@ iq_net_parse_fields(const iq_net_parse_ctx* ctx, char** fields, size_t n, dsd_iq
     return iq_net_parse_freq(ctx, n > 5U ? fields[5] : NULL, spec);
 }
 
+/* The kind a spec parses as: its prefix's, or, for a bare "iqtcp" or "iqudp", which every input check takes for a stream
+   (dsd_opts_audio_in_dev_is_iqtcp_spec()), that kind, so the refusal (every field missing) shows the form it takes. */
+static dsd_iq_net_kind
+iq_net_parse_kind(const char* text) {
+    const dsd_iq_net_kind kind = dsd_iq_net_spec_kind(text);
+    if (kind != DSD_IQ_NET_KIND_NONE || !text) {
+        return kind;
+    }
+    if (strcmp(text, "iqtcp") == 0) {
+        return DSD_IQ_NET_KIND_TCP;
+    }
+    return strcmp(text, "iqudp") == 0 ? DSD_IQ_NET_KIND_UDP : DSD_IQ_NET_KIND_NONE;
+}
+
 int
 dsd_iq_net_spec_parse(const char* text, dsd_iq_net_spec* out, char* err, size_t err_size) {
     return dsd_iq_net_spec_parse_field(text, out, err, err_size, NULL);
@@ -370,7 +384,7 @@ dsd_iq_net_spec_parse_field(const char* text, dsd_iq_net_spec* out, char* err, s
     if (bad_field) {
         *bad_field = DSD_IQ_NET_FIELD_SPEC;
     }
-    const dsd_iq_net_kind kind = dsd_iq_net_spec_kind(text);
+    const dsd_iq_net_kind kind = iq_net_parse_kind(text);
     iq_net_parse_ctx ctx = {iq_net_kind_prefix(kind), err, err_size, bad_field};
     if (!out || kind == DSD_IQ_NET_KIND_NONE) {
         if (err && err_size > 0) {

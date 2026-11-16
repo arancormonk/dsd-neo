@@ -193,6 +193,10 @@ test_spec_parse_refusals(void) {
         {"tcp:127.0.0.1:1234", "not an iqtcp: or iqudp: spec"},
         {"IQTCP:h:1:48k:cs16", "not an iqtcp: or iqudp: spec"},
         {"iqtcp:", "iqtcp: HOST is empty"},
+        /* A bare kind name is taken for a stream everywhere, so its refusal shows the form a stream takes. */
+        {"iqtcp", "iqtcp: HOST is missing (expected iqtcp:HOST:PORT:RATE:FORMAT[:FREQ])"},
+        {"iqudp", "iqudp: BIND is missing (expected iqudp:BIND:PORT:RATE:FORMAT[:FREQ])"},
+        {"iqtcpx", "not an iqtcp: or iqudp: spec"},
         {"iqtcp::1234:48k:cs16", "HOST is empty"},
         {"iqudp::1234:48k:cs16", "iqudp: BIND is empty"},
         {long_host, "HOST is longer than 255 characters"},
@@ -259,12 +263,20 @@ test_spec_parse_names_the_field(void) {
         const char* text;
         dsd_iq_net_field field;
     } rows[] = {
-        {"iqtcp:h:12:48k:cs16:851M", DSD_IQ_NET_FIELD_NONE}, {"tcp:h:1", DSD_IQ_NET_FIELD_SPEC},
-        {"iqtcp:h:12:48k:cs16:1:2", DSD_IQ_NET_FIELD_SPEC},  {"iqtcp:", DSD_IQ_NET_FIELD_HOST},
-        {"iqudp::12:48k:cs16", DSD_IQ_NET_FIELD_HOST},       {"iqtcp:h", DSD_IQ_NET_FIELD_PORT},
-        {"iqtcp:h:0:48k:cs16", DSD_IQ_NET_FIELD_PORT},       {"iqtcp:h:12", DSD_IQ_NET_FIELD_RATE},
-        {"iqtcp:h:12:7999:cs16", DSD_IQ_NET_FIELD_RATE},     {"iqtcp:h:12:48k", DSD_IQ_NET_FIELD_FORMAT},
-        {"iqtcp:h:12:48k:s16", DSD_IQ_NET_FIELD_FORMAT},     {"iqtcp:h:12:48k:cs16:5G", DSD_IQ_NET_FIELD_FREQ},
+        {"iqtcp:h:12:48k:cs16:851M", DSD_IQ_NET_FIELD_NONE},
+        {"tcp:h:1", DSD_IQ_NET_FIELD_SPEC},
+        {"iqtcp:h:12:48k:cs16:1:2", DSD_IQ_NET_FIELD_SPEC},
+        {"iqtcp:", DSD_IQ_NET_FIELD_HOST},
+        {"iqudp::12:48k:cs16", DSD_IQ_NET_FIELD_HOST},
+        {"iqtcp:h", DSD_IQ_NET_FIELD_PORT},
+        {"iqtcp:h:0:48k:cs16", DSD_IQ_NET_FIELD_PORT},
+        {"iqtcp:h:12", DSD_IQ_NET_FIELD_RATE},
+        {"iqtcp:h:12:7999:cs16", DSD_IQ_NET_FIELD_RATE},
+        {"iqtcp:h:12:48k", DSD_IQ_NET_FIELD_FORMAT},
+        {"iqtcp:h:12:48k:s16", DSD_IQ_NET_FIELD_FORMAT},
+        {"iqtcp:h:12:48k:cs16:5G", DSD_IQ_NET_FIELD_FREQ},
+        {"iqtcp", DSD_IQ_NET_FIELD_HOST},
+        {"iqudp", DSD_IQ_NET_FIELD_HOST},
     };
 
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
