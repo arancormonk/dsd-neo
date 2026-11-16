@@ -72,7 +72,10 @@ Item {
             verify(item("activityEmptyDetail").text.indexOf("control channel") >= 0);
             var limits = item("activityEmptyLimits");
             verify(limits.visible);
-            verify(limits.text.indexOf("voice channel") >= 0);
+            // The single-tuner limit is the control channel unheard during a
+            // call, not the voice channel's own messages, which do show.
+            verify(limits.text.indexOf("control channel sends while the receiver follows a voice call") >= 0, limits.text);
+            verify(limits.text.indexOf("nothing shows") < 0, limits.text);
             verify(limits.text.indexOf("logging off") >= 0);
             verify(limits.text.indexOf("carried out a command") >= 0);
             verify(!item("activityShowAll").visible);
