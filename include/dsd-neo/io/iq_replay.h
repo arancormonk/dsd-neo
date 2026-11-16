@@ -15,8 +15,6 @@
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/iq_wav.h>
 #include <dsd-neo/io/rate_plan.h>
-#include <dsd-neo/runtime/analog_channel.h>
-#include <dsd-neo/runtime/tetra_rate.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -368,38 +366,6 @@ typedef enum {
  */
 int dsd_iq_plan_general_rate(dsd_iq_plan_source source, uint32_t source_rate_hz, uint32_t target_dsp_hz,
                              dsd_iq_replay_rate_plan* out_plan, char* err_buf, size_t err_buf_size);
-
-/**
- * @brief The DSP rate D a source with no device of its own (an I/Q replay, a raw I/Q stream) is planned for
- *        (issues #701, #743).
- *
- * @p dsp_bw_khz when it is an explicit request (@p explicit_request: an input spec's field, INI rtl_bw_khz, a menu or
- * API set), else the bandwidth the source recorded (@p recorded_dsp_bw_khz: a sidecar's; 0 for a WAV or a stream,
- * which record none), else @p dsp_bw_khz as it stands (a mode preset: TETRA's 72 kHz, EDACS's and ProVoice's 24 kHz;
- * or the default), and DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ when that is 0 or less. A mode preset does not beat a recorded
- * bandwidth, as the capture's chain is what a replay reproduces. Under TETRA (@p frame_tetra) a target TETRA cannot
- * time its symbols at (dsd_tetra_dsp_rate_runs()) becomes DSD_TETRA_DSP_BW_KHZ.
- *
- * Inline so the runtime's rate policy (dsd_input_dsp_rate_policy()), which callers link without this library, plans
- * the same target.
- *
- * @return D in Hz.
- */
-static inline uint32_t
-dsd_iq_dsp_target_hz(int dsp_bw_khz, int explicit_request, int recorded_dsp_bw_khz, int frame_tetra) {
-    int khz = dsp_bw_khz;
-    if (explicit_request == 0 && recorded_dsp_bw_khz > 0) {
-        khz = recorded_dsp_bw_khz;
-    }
-    if (khz <= 0) {
-        khz = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
-    }
-    uint32_t target_hz = (uint32_t)khz * 1000U;
-    if (frame_tetra != 0 && dsd_tetra_dsp_rate_runs((int)target_hz) == 0) {
-        target_hz = (uint32_t)DSD_TETRA_DSP_BW_KHZ * 1000U;
-    }
-    return target_hz;
-}
 
 /** @brief Whether @p a and @p b are the same rate chain, field for field (the planner's message aside). */
 int dsd_iq_replay_rate_plan_equal(const dsd_iq_replay_rate_plan* a, const dsd_iq_replay_rate_plan* b);

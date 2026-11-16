@@ -23,8 +23,8 @@
  * whatever rate the device then delivers; before a stream has published it, the view predicts it as a start makes it
  * (DSD_NEO_CHANNEL_LPF, else a rate of 20 kHz or more). That rate is the
  * running stream's demod rate or, with no stream, the rate the next start runs at where the input's RTL DSP bandwidth
- * sets it (dsd_app_analog_rtl_bw_rate_hz()), which also bounds the widths the controls offer. On PCM input no channel
- * filter runs, so no width is in force.
+ * sets it (dsd_app_analog_rtl_bw_rate_hz(), a raw I/Q stream's planned rate included), which also bounds the widths
+ * the controls offer. On PCM input no channel filter runs, so no width is in force.
  *
  * On PCM audio input with a rigctl peer (-U) that demodulates it (dsd_opts_rigctl_peer_demodulates(), issue #621) the
  * width is the passband the peer is asked for, and no DSP rate bounds it. There is a reading whenever the controls
@@ -207,10 +207,12 @@ int dsd_app_analog_width_unset_hz(const dsd_app_analog_width_view* view, int kin
  * It does on every live radio (dsd_input_dsp_rate_policy()): an "rtl", "rtltcp", "soapy" or "airspy" spec, a SoapySDR
  * or Airspy device's capture rate being stepped to the bandwidth exactly (issue #806), and also any other device string
  * on an RTL input (@p audio_in_type AUDIO_IN_RTL), which the stream opens as an RTL-SDR: the terminal's Input > Switch
- * source > RTL-SDR row, say, leaves "pulse" there. The result is 0 elsewhere: an I/Q replay runs at its capture's, and
- * PCM input has none. It is 0 too for @p rtl_bw_khz <= 0. A value too
- * large for a rate in Hz (a loaded config keeps any integer) saturates at INT_MAX, a rate no channel width can be
- * filtered at.
+ * source > RTL-SDR row, say, leaves "pulse" there. A raw I/Q stream ("iqtcp" or "iqudp" spec, issue #743) runs at the
+ * target its rate plan lands on (dsd_input_dsp_rate_planned(): the bandwidth, the 48 kHz default for one of 0 or less),
+ * or 0 when its spec does not parse or no plan reaches the target. The result is 0 elsewhere: an I/Q replay runs at its
+ * capture's, and PCM input has none. On a live radio it is 0 too for @p rtl_bw_khz <= 0. A value too large for a rate
+ * in Hz (a loaded config keeps any integer) saturates at INT_MAX on a live radio, a rate no channel width can be
+ * filtered at, and is no plan on a stream.
  *
  * @param audio_in_dev  The input's device string (dsd_opts.audio_in_dev); NULL reads as an RTL-SDR, as the stream reads
  *                      it.

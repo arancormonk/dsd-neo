@@ -17,6 +17,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -417,8 +418,16 @@ test_input_dsp_rate_policy(void) {
         {"iqtcp:127.0.0.1:1234:240k:cs16", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 48000},
         {"iqudp:0.0.0.0:7355:48000:cf32:851M", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 24000},
         {"iqtcp:host:1234:12.5k:cu8", AUDIO_IN_NULL, 0, 16, DSD_ANALOG_RATE_PLANNED, 16000},
-        {"iqudp", AUDIO_IN_RTL, 0, 0, DSD_ANALOG_RATE_PLANNED, 48000},
-        {"iqtcp:127.0.0.1:1234:240k:cs16", AUDIO_IN_RTL, 0, INT_MAX, DSD_ANALOG_RATE_PLANNED, INT_MAX},
+        {"iqtcp:host:1234:12.5k:cu8", AUDIO_IN_RTL, 0, 0, DSD_ANALOG_RATE_PLANNED, 48000},
+        {"iqtcp:h:1:8000:cs16", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 48000},
+        /* Its RATE decides whether a plan reaches the target: a spec that does not parse, or a rate no plan takes
+           there, has no rate, which its start refuses. */
+        {"iqudp:0.0.0.0:7355:49151999:cu8", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 24000},
+        {"iqudp:0.0.0.0:7355:49152000:cu8", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqtcp:h:1:7999:cs16", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqtcp:h:1:fast:cs16", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqudp", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqtcp:127.0.0.1:1234:240k:cs16", AUDIO_IN_RTL, 0, INT_MAX, DSD_ANALOG_RATE_PLANNED, 0},
         {"iqtcp:127.0.0.1:1234:240k:cs16", AUDIO_IN_RTL, 1, 48, DSD_ANALOG_RATE_CAPTURE, 0},
     };
 
@@ -470,6 +479,54 @@ test_input_dsp_rate_policy(void) {
     opts.rtl_dsp_bw_khz = 144;
     got = dsd_input_dsp_rate_policy(&opts);
     expect_int("opts: a stream under TETRA keeps a TETRA rate", got.rate_hz, 144000);
+    /* 8 kHz reaches TETRA's 72 kHz (9x) but not 144 kHz. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqudp:0.0.0.0:7355:8000:cs16");
+    got = dsd_input_dsp_rate_policy(&opts);
+    expect_int("opts: an 8 kHz stream cannot reach TETRA at 144 kHz", got.rate_hz, 0);
+    expect_int("opts: it is still planned", got.source, DSD_ANALOG_RATE_PLANNED);
+    opts.rtl_dsp_bw_khz = 48;
+    got = dsd_input_dsp_rate_policy(&opts);
+    expect_int("opts: an 8 kHz stream reaches TETRA at 72 kHz", got.rate_hz, 72000);
+    expect_int("the analog form plans it with TETRA off",
+               dsd_input_dsp_rate_for(opts.audio_in_dev, opts.audio_in_type, 0, opts.rtl_dsp_bw_khz).rate_hz, 48000);
+}
+
+/* The DSP target a replay or a stream is planned for: an explicit request, else the recorded bandwidth, else the
+   request in force (a mode preset or the default), the 48 kHz default for none, TETRA's 72 kHz where TETRA cannot run
+   at it. */
+static void
+test_input_dsp_target(void) {
+    static const struct {
+        const char* name;
+        int bw_khz;
+        int explicit_request;
+        int recorded_khz;
+        int tetra;
+        uint32_t want_hz;
+    } k_cases[] = {
+        {"the default", 48, 0, 0, 0, 48000U},
+        {"no bandwidth", 0, 0, 0, 0, 48000U},
+        {"a negative bandwidth", -3, 1, 0, 0, 48000U},
+        {"EDACS's preset", 24, 0, 0, 0, 24000U},
+        {"an explicit 16 kHz", 16, 1, 0, 0, 16000U},
+        {"TETRA's preset", 72, 0, 0, 1, 72000U},
+        {"TETRA at an explicit 48 kHz", 48, 1, 0, 1, 72000U},
+        {"TETRA at an explicit 36 kHz", 36, 1, 0, 1, 36000U},
+        {"TETRA at an explicit 144 kHz", 144, 1, 0, 1, 144000U},
+        {"TETRA at 162 kHz, out of its range", 162, 1, 0, 1, 72000U},
+        {"TETRA with no bandwidth", 0, 0, 0, 1, 72000U},
+        {"a recorded 24 kHz beats the request in force", 48, 0, 24, 0, 24000U},
+        {"an explicit 48 kHz beats a recorded 24 kHz", 48, 1, 24, 0, 48000U},
+        {"a recorded 24 kHz under TETRA", 72, 0, 24, 1, 72000U},
+        {"a recorded 144 kHz under TETRA", 72, 0, 144, 1, 144000U},
+    };
+
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        expect_int(k_cases[i].name,
+                   (int)dsd_input_dsp_target_hz(k_cases[i].bw_khz, k_cases[i].explicit_request, k_cases[i].recorded_khz,
+                                                k_cases[i].tetra),
+                   (int)k_cases[i].want_hz);
+    }
 }
 
 /* The PLANNED policy (issue #743): a raw I/Q stream at its spec's RATE runs at the DSP target when the general plan
@@ -657,6 +714,7 @@ main(void) {
     test_check_messages();
     test_check_at_rate_source_messages();
     test_input_dsp_rate_policy();
+    test_input_dsp_target();
     test_input_dsp_rate_planned();
     test_channel_lpf_off_check();
     test_rtl_bandwidth_helpers();

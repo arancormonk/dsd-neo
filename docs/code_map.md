@@ -3984,17 +3984,19 @@ suite runs under this compiler.
     the stream start read: every live radio (RTL-SDR, rtl_tcp, SoapySDR, Airspy) runs at its DSP bandwidth, known before
     it opens (a SoapySDR or Airspy device's capture rate is stepped to it exactly, or the open refuses; whether a
     SoapySDR device can deliver such a rate is known only at open), and an I/Q replay's rate only once it starts. A raw
-    I/Q stream (`iqtcp:` / `iqudp:`, issue #743) is PLANNED: the general rate plan always lands on its DSP target
-    (`dsd_input_dsp_stream_target_hz()`, the inline `dsd_iq_dsp_target_hz()` for a source that records no bandwidth;
-    TETRA's 72 kHz under `opts->frame_tetra` in `dsd_input_dsp_rate_policy()`), so that rate is known before it opens;
-    `dsd_input_dsp_rate_planned()` adds the stream's RATE for a caller holding its parsed spec (0 where no plan reaches
-    the target), and is built apart in `src/runtime/planned_dsp_rate.c` because it runs the io_iq planner, which the
-    tests that build `analog_channel.c` on its own do not link. `dsd_analog_width_check_at()` words a rate refusal for
-    what sets the rate (`dsd_analog_rate_source` from that policy, fix text from `dsd_analog_width_rate_fix()`): the DSP
-    bandwidths that fit, called the RTL DSP bandwidth on an RTL-SDR or rtl_tcp input and the DSP bandwidth on a SoapySDR
-    or Airspy device, an I/Q replay and a raw I/Q stream, whose rate plans follow it (issues #701, #743).
-    `dsd_analog_channel_lpf_off_check()` is the `DSD_NEO_CHANNEL_LPF=0` rule (an explicit width, or the AM default,
-    cannot run), taking that state as an argument.
+    I/Q stream (`iqtcp:` / `iqudp:`, issue #743) is PLANNED: the policy reads the spec's RATE
+    (`dsd_iq_net_spec_parse()`) and `dsd_input_dsp_rate_planned()` plans it to the DSP target
+    (`dsd_input_dsp_stream_target_hz()`, the inline `dsd_input_dsp_target_hz()` for a source that records no bandwidth;
+    TETRA's 72 kHz under `opts->frame_tetra` in `dsd_input_dsp_rate_policy()`, TETRA off in `dsd_input_dsp_rate_for()`,
+    whose callers are analog checks), so the rate is known before it opens: the target, or 0 for a spec that does not
+    parse or a RATE no plan takes there. These four functions are built apart in `src/runtime/input_dsp_rate.c` because
+    they run the io_iq spec parser and planner, which the tests that build `analog_channel.c` on its own do not link
+    (the terminal menu tests that build `analog_width_view.c` add `input_dsp_rate.c` and `dsd-neo_io_iq`).
+    `dsd_analog_width_check_at()` words a rate refusal for what sets the rate (`dsd_analog_rate_source` from that
+    policy, fix text from `dsd_analog_width_rate_fix()`): the DSP bandwidths that fit, called the RTL DSP bandwidth on
+    an RTL-SDR or rtl_tcp input and the DSP bandwidth on a SoapySDR or Airspy device, an I/Q replay and a raw I/Q
+    stream, whose rate plans follow it (issues #701, #743). `dsd_analog_channel_lpf_off_check()` is the
+    `DSD_NEO_CHANNEL_LPF=0` rule (an explicit width, or the AM default, cannot run), taking that state as an argument.
     It is pure integer arithmetic so callers need not link the DSP;
     `src/dsp/demod_pipeline.cpp` static-asserts its design constants against the ones here. Tests:
     `RUNTIME_ANALOG_CHANNEL`, `DSP_CHANNEL_FILTERS` (validator and design agree across a width/rate grid; the
@@ -9350,21 +9352,23 @@ Key public headers:
     domain; (ii) a recorded step, to `dsp_rate_hz`; (iii) a forced post-1 chain, its passes kept, stepped to D through
     `dsd_rate_plan_compute()` (backend REPLAY_KEEP, request D x 2^p, so the planner sees it forced); (iv) folds of a
     chain that does not step: a power-of-two post into base under a requirement, then half-band passes down into the
-    domain. Only KEEP steps: otherwise the general rule plans it, `dsd_iq_plan_general_rate()`, the source-neutral
-    planner a raw I/Q stream runs too (issue #743; `dsd_iq_plan_source` SIDECAR, WAV or STREAM sets the origin and the
-    refusals' words): the source decimates by 2^k when it is D x 2^k, else it is resampled to the largest D x 2^k at or
-    below its rate (or up to D), step off, forced; a stream plans what an explicit request on a sidecar at its rate
-    plans. The recorded chain is read and checked in `metadata_finalize()` before any plan (`dsd_iq_rate_chain_check()`,
+    domain. Only KEEP steps: otherwise the general rule plans it, `dsd_iq_plan_general_rate()`
+    (`src/io/iq/iq_rate_plan_general.c`, with the plan helpers it shares with KEEP in private `iq_rate_plan_internal.h`,
+    apart from `iq_replay.c` so a stream's planner links without the replay's file code), the source-neutral planner a
+    raw I/Q stream runs too (issue #743; `dsd_iq_plan_source` SIDECAR, WAV or STREAM sets the origin and the refusals'
+    words): the source decimates by 2^k when it is D x 2^k, else it is resampled to the largest D x 2^k at or below its
+    rate (or up to D), step off, forced; a stream plans what an explicit request on a sidecar at its rate plans. The
+    recorded chain is read and checked in `metadata_finalize()` before any plan (`dsd_iq_rate_chain_check()`,
     `src/io/iq/iq_rate_chain.c`, which the capture writer runs too before it writes the scalars). The caller's filter
     domain is `replay_max_complex_rate_hz()` in `rtl_sdr_fm.cpp`: none for the analog monitor and for TETRA where its
     own filter would run at the recorded rate (`replay_tetra_channel_runs()`: TETRA's domain, the channel filter not
     forced off, an override that times that rate, or the uplink), else `DSD_DIGITAL_CHANNEL_MAX_RATE_HZ`;
     `rtl_stream_replay_request::analog_family` carries the family a pending mode change will run. The plan refuses a
     capture below 8 kHz, an upsample past 9x and a capture at 2 x 2^10 x D or faster. Stream open
-    (`stream_open_plan_replay_rate()`) plans at every start for the target `dsd_iq_dsp_target_hz()` picks (inline in
-    `iq_replay.h`, source-neutral: an EXPLICIT request, else the recorded bandwidth, else the request in force; under
-    TETRA 72 kHz for a target outside 36-144 kHz in 18 kHz steps) and refuses a start whose plan fails; the stream runs
-    the planned bandwidth while opts keeps the request, and the plan in force is kept for
+    (`stream_open_plan_replay_rate()`) plans at every start for the target `dsd_input_dsp_target_hz()` picks (inline in
+    `runtime/analog_channel.h`, source-neutral: an EXPLICIT request, else the recorded bandwidth, else the request in
+    force; under TETRA 72 kHz for a target outside 36-144 kHz in 18 kHz steps) and refuses a start whose plan fails; the
+    stream runs the planned bandwidth while opts keeps the request, and the plan in force is kept for
     `rtl_stream_replay_replan_check()`; the replay device resamples with `dsd_iq_resampler` (protected band 0.45 x D) in
     the reader thread only when `dsp_input_rate_hz` differs from the capture's, clears it at a RETUNE, RESET, MUTE and
     loop rewind, hands event callbacks the DSP input rate, and counts pacing and media time in capture samples

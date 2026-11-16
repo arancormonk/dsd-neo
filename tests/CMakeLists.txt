@@ -3225,6 +3225,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_dsp_rate.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/fp_mode.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
@@ -3243,7 +3244,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_menu_labels
-        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+        PRIVATE dsd-neo_io_iq ${DSD_NEO_TEST_MATH_LIB}
     )
     target_sources(
         dsd-neo_test_ui_menu_labels
@@ -3268,6 +3269,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_dsp_rate.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/fp_mode.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
@@ -3286,7 +3288,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_menu_labels_radio
-        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+        PRIVATE dsd-neo_io_iq ${DSD_NEO_TEST_MATH_LIB}
     )
     target_compile_definitions(
         dsd-neo_test_ui_menu_labels_radio
@@ -4140,6 +4142,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_dsp_rate.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
@@ -4160,7 +4163,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     target_compile_definitions(dsd-neo_test_ui_menu_actions PRIVATE USE_RADIO)
     target_link_libraries(
         dsd-neo_test_ui_menu_actions
-        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+        PRIVATE dsd-neo_io_iq ${DSD_NEO_TEST_MATH_LIB}
     )
     target_sources(
         dsd-neo_test_ui_menu_actions

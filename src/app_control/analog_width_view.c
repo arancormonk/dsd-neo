@@ -20,7 +20,8 @@
 int
 dsd_app_analog_rtl_bw_rate_hz(const char* audio_in_dev, int audio_in_type, int rtl_bw_khz) {
     /* Every live radio runs at its DSP bandwidth (an RTL-SDR's cascade lands on it, a SoapySDR or Airspy device is
-       stepped to it, issue #806); an I/Q replay's rate is known only once it starts, and PCM has none. */
+       stepped to it, issue #806), and so does a raw I/Q stream whose rate its plan takes there (issue #743); an I/Q
+       replay's rate is known only once it starts, and PCM has none. */
     return dsd_input_dsp_rate_for(audio_in_dev, audio_in_type, 0, rtl_bw_khz).rate_hz;
 }
 

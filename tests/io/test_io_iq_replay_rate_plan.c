@@ -855,46 +855,6 @@ test_general_planner_refusals(void) {
     return rc;
 }
 
-/* The DSP target a replay or a stream is planned for: an explicit request, else the recorded bandwidth, else the
-   request in force (a mode preset or the default), the 48 kHz default for none, TETRA's 72 kHz where TETRA cannot run
-   at it. */
-static int
-test_dsp_target(void) {
-    static const struct {
-        const char* name;
-        int bw_khz;
-        int explicit_request;
-        int recorded_khz;
-        int tetra;
-        uint32_t want_hz;
-    } k_cases[] = {
-        {"the default", 48, 0, 0, 0, 48000U},
-        {"no bandwidth", 0, 0, 0, 0, 48000U},
-        {"a negative bandwidth", -3, 1, 0, 0, 48000U},
-        {"EDACS's preset", 24, 0, 0, 0, 24000U},
-        {"an explicit 16 kHz", 16, 1, 0, 0, 16000U},
-        {"TETRA's preset", 72, 0, 0, 1, 72000U},
-        {"TETRA at an explicit 48 kHz", 48, 1, 0, 1, 72000U},
-        {"TETRA at an explicit 36 kHz", 36, 1, 0, 1, 36000U},
-        {"TETRA at an explicit 144 kHz", 144, 1, 0, 1, 144000U},
-        {"TETRA at 162 kHz, out of its range", 162, 1, 0, 1, 72000U},
-        {"TETRA with no bandwidth", 0, 0, 0, 1, 72000U},
-        {"a recorded 24 kHz beats the request in force", 48, 0, 24, 0, 24000U},
-        {"an explicit 48 kHz beats a recorded 24 kHz", 48, 1, 24, 0, 48000U},
-        {"a recorded 24 kHz under TETRA", 72, 0, 24, 1, 72000U},
-        {"a recorded 144 kHz under TETRA", 72, 0, 144, 1, 144000U},
-    };
-
-    int rc = 0;
-    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
-        rc |= expect_u32(k_cases[i].name,
-                         dsd_iq_dsp_target_hz(k_cases[i].bw_khz, k_cases[i].explicit_request, k_cases[i].recorded_khz,
-                                              k_cases[i].tetra),
-                         k_cases[i].want_hz);
-    }
-    return rc;
-}
-
 /* A live source's demod block (issue #743): the replay chunk's 16/3 ms at the DSP input rate, 1 to 8192 samples. */
 static int
 test_live_block_samples(void) {
@@ -971,7 +931,6 @@ main(void) {
     rc |= test_general_planner_is_the_replays();
     rc |= test_stream_plans();
     rc |= test_general_planner_refusals();
-    rc |= test_dsp_target();
     rc |= test_live_block_samples();
     if (rc == 0) {
         printf("IO_IQ_REPLAY_RATE_PLAN: OK\n");

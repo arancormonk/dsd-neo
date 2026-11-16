@@ -1381,8 +1381,9 @@ svc_analog_width_fits_rtl_rate(int kind, int width_hz, int rate_hz, char* why, s
 
 #ifdef USE_RADIO
 /* The DSP rate an RTL DSP bandwidth gives this input: the bandwidth itself on every live radio, an RTL-SDR, rtl_tcp,
-   SoapySDR or Airspy one (dsd_app_analog_rtl_bw_rate_hz(), dsd_input_dsp_rate_policy()). 0 elsewhere: an I/Q replay
-   runs at its capture's, and PCM has none. */
+   SoapySDR or Airspy one, and the planned target on a raw I/Q stream (dsd_app_analog_rtl_bw_rate_hz(),
+   dsd_input_dsp_rate_policy()). 0 elsewhere: an I/Q replay runs at its capture's, a stream no plan takes to the
+   target has none, and PCM has none. */
 static int
 svc_rtl_bw_dsp_rate_hz(const dsd_opts* opts, int rtl_bw_khz) {
     return dsd_app_analog_rtl_bw_rate_hz(opts->audio_in_dev, opts->audio_in_type, rtl_bw_khz);

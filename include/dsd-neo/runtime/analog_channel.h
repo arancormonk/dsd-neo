@@ -30,6 +30,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_ANALOG_CHANNEL_H_
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -234,27 +235,30 @@ typedef enum dsd_analog_rate_source {
  * stream refuses to open. So an analog width is held to that bandwidth before the stream opens, on every live radio.
  * Whether a SoapySDR device can deliver a rate the step takes to the bandwidth is a separate question, known only when
  * it opens, which refuses one it cannot. An I/Q replay's rate comes from its sidecar and the plan its start makes, so
- * none is known before it starts. A raw I/Q stream records nothing: its plan (dsd_iq_plan_general_rate()) always lands
- * on the DSP target (dsd_iq_dsp_target_hz(): the DSP bandwidth, TETRA's 72 kHz under TETRA), so that rate is known
- * before it opens. PCM input has no DSP rate.
+ * none is known before it starts. A raw I/Q stream records nothing: its spec names its rate, and its plan
+ * (dsd_iq_plan_general_rate()) always lands on the DSP target (dsd_input_dsp_target_hz(): the DSP bandwidth, TETRA's
+ * 72 kHz under TETRA) when it reaches it, so that rate is known before it opens. PCM input has no DSP rate.
  */
 typedef struct dsd_input_dsp_rate {
     int source;  /**< dsd_analog_rate_source: what sets the rate, which picks the fix a width refusal names. */
     int rate_hz; /**< The DSP rate in Hz, known before the stream opens: the DSP bandwidth on every live radio
                       (saturated, never overflowed, for an out-of-range bandwidth), the planned target on a raw I/Q
-                      stream (its 48 kHz default for a bandwidth of 0 or less, saturated likewise); 0 for an I/Q
-                      replay, PCM input, a live radio's bandwidth of 0 or less, or a stream no plan reaches. */
+                      stream (its 48 kHz default for a bandwidth of 0 or less); 0 for an I/Q replay, PCM input, a live
+                      radio's bandwidth of 0 or less, or a stream whose spec does not parse or whose rate no plan
+                      takes to the target. */
 } dsd_input_dsp_rate;
 
 /**
  * @brief dsd_input_dsp_rate_policy() for an input named by its device string @p audio_in_dev and @p audio_in_type,
  * classified as the stream start classifies it (detect_radio_source()): an I/Q replay spec, or @p iq_replay_active,
- * is a replay; an `iqtcp:` or `iqudp:` spec is a raw I/Q stream (PLANNED, at the target for @p rtl_bw_khz with TETRA
- * off); a SoapySDR or Airspy spec is that device; an RTL-SDR or rtl_tcp spec, and any other device string under
- * AUDIO_IN_RTL, is an RTL-SDR; anything else is PCM input. @p rtl_bw_khz is the DSP bandwidth it runs at.
+ * is a replay; an `iqtcp:` or `iqudp:` spec is a raw I/Q stream (PLANNED: dsd_input_dsp_rate_planned() for the
+ * spec's RATE and @p rtl_bw_khz); a SoapySDR or Airspy spec is that device; an RTL-SDR or rtl_tcp spec, and any other
+ * device string under AUDIO_IN_RTL, is an RTL-SDR; anything else is PCM input. @p rtl_bw_khz is the DSP bandwidth it
+ * runs at.
  *
- * A stream's own rate decides only whether it opens at all, which a caller holding its parsed spec asks
- * dsd_input_dsp_rate_planned().
+ * It plans a stream with TETRA off, so it suits the analog checks that call it. A caller that may run TETRA asks
+ * dsd_input_dsp_rate_policy(), which plans with the session's TETRA setting (72 kHz where the bandwidth is not a
+ * TETRA rate), or dsd_input_dsp_rate_planned() with its own.
  */
 dsd_input_dsp_rate dsd_input_dsp_rate_for(const char* audio_in_dev, int audio_in_type, int iq_replay_active,
                                           int rtl_bw_khz);
@@ -264,8 +268,40 @@ dsd_input_dsp_rate dsd_input_dsp_rate_for(const char* audio_in_dev, int audio_in
 dsd_input_dsp_rate dsd_input_dsp_rate_policy(const dsd_opts* opts);
 
 /**
+ * @brief The DSP rate D a source with no device of its own (an I/Q replay, a raw I/Q stream) is planned for
+ *        (issues #701, #743).
+ *
+ * @p dsp_bw_khz when it is an explicit request (@p explicit_request: an input spec's field, INI rtl_bw_khz, a menu or
+ * API set), else the bandwidth the source recorded (@p recorded_dsp_bw_khz: a sidecar's; 0 for a WAV or a stream,
+ * which record none), else @p dsp_bw_khz as it stands (a mode preset: TETRA's 72 kHz, EDACS's and ProVoice's 24 kHz;
+ * or the default), and DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ when that is 0 or less. A mode preset does not beat a recorded
+ * bandwidth, as the capture's chain is what a replay reproduces. Under TETRA (@p frame_tetra) a target TETRA cannot
+ * time its symbols at (dsd_tetra_dsp_rate_runs()) becomes DSD_TETRA_DSP_BW_KHZ.
+ *
+ * Inline, as dsd_tetra_dsp_rate_runs() is, so the radio stream's replay open plans the same target as the input rate
+ * policy without linking this library.
+ *
+ * @return D in Hz.
+ */
+static inline uint32_t
+dsd_input_dsp_target_hz(int dsp_bw_khz, int explicit_request, int recorded_dsp_bw_khz, int frame_tetra) {
+    int khz = dsp_bw_khz;
+    if (explicit_request == 0 && recorded_dsp_bw_khz > 0) {
+        khz = recorded_dsp_bw_khz;
+    }
+    if (khz <= 0) {
+        khz = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
+    }
+    uint32_t target_hz = (uint32_t)khz * 1000U;
+    if (frame_tetra != 0 && dsd_tetra_dsp_rate_runs((int)target_hz) == 0) {
+        target_hz = (uint32_t)DSD_TETRA_DSP_BW_KHZ * 1000U;
+    }
+    return target_hz;
+}
+
+/**
  * @brief The DSP target a raw I/Q stream is planned for at the DSP bandwidth @p dsp_bw_khz, with TETRA on when
- *        @p frame_tetra: dsd_iq_dsp_target_hz() for a source that records no bandwidth.
+ *        @p frame_tetra: dsd_input_dsp_target_hz() for a source that records no bandwidth.
  *
  * @return The target in Hz, or 0 for a bandwidth whose rate in Hz an int does not hold.
  */
@@ -277,8 +313,11 @@ uint32_t dsd_input_dsp_stream_target_hz(int dsp_bw_khz, int frame_tetra);
  *
  * The rate is the target (dsd_input_dsp_stream_target_hz()) when the general plan (dsd_iq_plan_general_rate()) reaches
  * it from @p stream_rate_hz, else 0: the stream start refuses the same rate with the plan's reason. A bandwidth above
- * what a rate in Hz holds is no plan either. It runs the I/Q rate planner, so it is built apart from the rest of this
- * header's functions (src/runtime/planned_dsp_rate.c).
+ * what a rate in Hz holds is no plan either.
+ *
+ * This function, dsd_input_dsp_stream_target_hz(), dsd_input_dsp_rate_for() and dsd_input_dsp_rate_policy() read the
+ * stream spec and run the I/Q rate planner (dsd-neo_io_iq), so they are built apart from the rest of this header's
+ * functions (src/runtime/input_dsp_rate.c).
  *
  * @return source DSD_ANALOG_RATE_PLANNED, with the rate.
  */
