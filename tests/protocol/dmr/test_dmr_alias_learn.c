@@ -422,6 +422,42 @@ test_buffer_reset_between_pieces(dsd_opts* opts) {
     free_state(st);
 }
 
+/* The alias shown and written into the call's history row (generic_talker_alias, the event row's alias) after the
+   same buffer reset: a block whose header was cleared shows nothing new and the last whole alias stays; the next whole
+   alias replaces it. */
+static void
+test_display_after_buffer_reset(dsd_opts* opts) {
+    dsd_state* st = new_state();
+    Event_History_I* history = calloc(2U, sizeof *history);
+    assert(history != NULL);
+    init_event_history(&history[0], 0, 255);
+    init_event_history(&history[1], 0, 255);
+    st->event_history_s = history;
+    seed_active_call(st, 0U, 1234567U);
+    send_header(opts, st, 0U, 1U, 8U, "ENGINE");
+    if (strcmp(st->generic_talker_alias[0], "ENGINE; ") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: header shown as '%s', want 'ENGINE; '\n", st->generic_talker_alias[0]);
+        g_failures++;
+    }
+    dmr_reset_blocks(opts, st);
+    send_block(opts, st, 0U, 0U, " 7");
+    if (strcmp(st->generic_talker_alias[0], "ENGINE; ") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a block after the buffer reset shown as '%s', want the last whole 'ENGINE; '\n",
+                    st->generic_talker_alias[0]);
+        g_failures++;
+    }
+    send_header(opts, st, 0U, 1U, 8U, "ENGINE");
+    send_block(opts, st, 0U, 0U, " 7");
+    if (strcmp(st->generic_talker_alias[0], "ENGINE 7; ") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: the next whole alias shown as '%s', want 'ENGINE 7; '\n",
+                    st->generic_talker_alias[0]);
+        g_failures++;
+    }
+    st->event_history_s = NULL;
+    free_state(st);
+    free(history);
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -436,6 +472,7 @@ main(void) {
     test_learn_scope(opts);
     test_learn_through_flco(opts);
     test_buffer_reset_between_pieces(opts);
+    test_display_after_buffer_reset(opts);
     free(opts);
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DMR_ALIAS_LEARN: %d failure(s)\n", g_failures);

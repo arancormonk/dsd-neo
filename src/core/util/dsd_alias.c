@@ -1361,6 +1361,16 @@ dmr_talker_alias_lc_blocks(const dsd_opts* opts, dsd_state* state, uint8_t slot,
             max_chars = ptr / 16;
         }
 
+        // Shown, written into the history row and learned only as one alias: the header and every block up to this
+        // one arrived in this assembly and still hold what arrived. Else the buffer mixes pieces of different times
+        // (a cleared or reused dmr_pdu_sf, a missed block); nothing new is shown and the last whole alias stays.
+        const uint8_t pieces = (uint8_t)((1U << (block_num + 2U)) - 1U);
+        if ((state->dmr_alias_assembly[slot].mask & pieces) != pieces
+            || !dmr_talker_alias_pieces_intact(state, slot, pieces)) {
+            DSD_FPRINTF(stderr, " Slot %d - Talker Alias Block %d; Talker Alias: (incomplete);", slot + 1,
+                        block_num + 1);
+            return;
+        }
         dmr_talker_alias_lc_decode(opts, state, slot, block_num + 1, char_size, max_chars);
     }
 }

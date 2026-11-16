@@ -585,7 +585,8 @@ typedef struct nxdn_alias_assembly {
  * the Data Length agrees (dmr_talker_alias_lc_decode(); the Data Length alone is not trusted for where the text ends).
  * The pieces live in dmr_pdu_sf, which other decoders clear and reuse (dmr_reset_blocks(), the data assembler, NXDN
  * and P25 on slot 0), so each piece's bits are kept here as they were stored: a learn whose pieces no longer hold them
- * ends the assembly instead.
+ * ends the assembly instead, and a block is shown and written into the history row only while the header and every
+ * block up to it arrived here and still hold what arrived (else the last whole alias stays).
  */
 typedef struct dmr_talker_alias_assembly {
     uint8_t mask;    /* bit 0 the header, bit n block n; 0: no assembly */

@@ -2378,7 +2378,10 @@ suite runs under this compiler.
   header; a failed checksum (`dmr_talker_alias_lc_invalidate()`) clears it. The pieces live in `dmr_pdu_sf`, which
   other decoders clear or reuse (`dmr_reset_blocks()` after a data error on either slot, the data assembler, NXDN and
   P25 on slot 0), so the assembly keeps each piece's bits as stored and a learn whose pieces no longer hold them ends
-  it (test `DMR_ALIAS_LEARN` `test_buffer_reset_between_pieces`). The alias is learned once per assembly, as
+  it. A block is shown and written into the history row (`generic_talker_alias`, the event row's alias) only when
+  the header and every block up to it arrived in this assembly and still hold what arrived; otherwise the decode
+  line says `(incomplete)`, nothing new is shown and the last whole alias stays (tests `DMR_ALIAS_LEARN`
+  `test_buffer_reset_between_pieces` / `test_display_after_buffer_reset`). The alias is learned once per assembly, as
   the call source's alias of the reception's scope, only when the header and every block up to the one decoded
   arrived and the text visibly ended inside them: a padding unit (all zeros or all ones, never a space) follows its
   last character, all three blocks are there, or the text exactly fills what arrived and the header's Data Length is
