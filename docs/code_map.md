@@ -14833,6 +14833,11 @@ Qt Quick frontend (`src/ui/qt`):
   started (and read again when a candidate begins to qualify), so a user stop the app has not shown yet is never
   absorbed. A cancel once the start is handed over retires the host's attempt (`retireRoamAttempt()`); a switch
   cancelled after the session it left stopped, other than by the user's own action, leaves `recoveryNotice` for Home. A
+  Rule: every value QML reads on `changed()` is in the published `View` and derived in `publish()` (the site and
+  system names, `statusText`, `headerText`, `headerShortText`, `action`, the reason's site or distance argument), so a
+  change of a name alone (a site renamed by an RR update) or of the unit shown is a change of the view and is
+  announced; the recovery notice is derived again from its two sites' names (`refreshNotice()`, its own signal). Tests:
+  `check_executor_metadata_changes()`, `tst_site_roaming.qml` `test_24c`.
   Rule: a fix the host delivers (`locationStreamUpdate`, emitted inside its refresh, which `UiController::tick()` runs
   before the tick's model refresh) is stored at once and judged as the event loop turns (`evaluateSoon()`, one queued
   call), so the decision reads that tick's decoder snapshot (`facts`): a call that began between polls holds the

@@ -1689,6 +1689,59 @@ check_executor_operator_barriers() {
     }
 }
 
+/* #786 r7: every value QML reads is part of the published view, so a change of a name alone (a site renamed by an RR
+ * update, same coordinates) or of the unit shown is announced, and the recovery notice follows a rename too. */
+void
+check_executor_metadata_changes() {
+    {
+        Rig rig;
+        rig.running();
+        rig.nearB(0);
+        check(rig.roaming.state() == SiteRoaming::Candidate
+                  && rig.roaming.statusText() == QStringLiteral("Lake is closer. Checking before switching"),
+              "metadata: Lake is the candidate");
+        int changes = 0;
+        QObject::connect(&rig.roaming, &SiteRoaming::changed, &rig.roaming, [&changes] { ++changes; });
+        rig.systems.update(1, {{"siteName", "Lakeside"}});
+        check(changes == 1 && rig.roaming.state() == SiteRoaming::Candidate
+                  && rig.roaming.candidateName() == QStringLiteral("Lakeside")
+                  && rig.roaming.statusText() == QStringLiteral("Lakeside is closer. Checking before switching"),
+              "metadata: a candidate renamed alone is announced");
+        rig.systems.update(0, {{"siteName", "Hilltop"}, {"name", "Upland — Hilltop"}});
+        check(changes == 2 && rig.roaming.currentName() == QStringLiteral("Hilltop")
+                  && rig.roaming.systemName() == QStringLiteral("Upland"),
+              "metadata: the current site and its system renamed are announced");
+    }
+    {
+        Rig rig;
+        rig.running();
+        rig.fix(30.0, 20.0, 1000);
+        check(rig.roaming.statusText() == QStringLiteral("No saved site within 100 km"), "metadata: out of range");
+        int changes = 0;
+        QObject::connect(&rig.roaming, &SiteRoaming::changed, &rig.roaming, [&changes] { ++changes; });
+        rig.prefs.setMetricUnits(false);
+        // Unset, the range is the unit's own default (60 mi).
+        check(changes == 1 && rig.roaming.statusText() == QStringLiteral("No saved site within 60 mi"),
+              "metadata: the unit shown changes the distance and is announced");
+    }
+    {
+        Rig rig;
+        rig.qualifyB();
+        rig.prefs.setRoamingEnabled(false); // during the stop: the notice
+        check(rig.roaming.recoveryNotice() == QStringLiteral("Roaming did not switch to Lake. Listening stopped."),
+              "metadata: the notice");
+        int notices = 0;
+        QObject::connect(&rig.roaming, &SiteRoaming::recoveryNoticeChanged, &rig.roaming, [&notices] { ++notices; });
+        rig.systems.update(1, {{"siteName", "Lakeside"}});
+        rig.systems.update(0, {{"siteName", "Hilltop"}});
+        check(notices == 2
+                  && rig.roaming.recoveryNotice()
+                         == QStringLiteral("Roaming did not switch to Lakeside. Listening stopped.")
+                  && rig.roaming.recoveryActionText() == QStringLiteral("Listen to Hilltop"),
+              "metadata: the notice follows a rename");
+    }
+}
+
 /* Asked for a start out of turn (the session it leaves still stopping), no one asks again: the roam ends, with the
  * notice, rather than sit in its stop. */
 void
@@ -1916,6 +1969,7 @@ main(int argc, char** argv) {
     check_executor_end_precedence();
     check_executor_notice_withdrawn();
     check_executor_operator_barriers();
+    check_executor_metadata_changes();
     check_executor_adopted_and_retune();
     check_executor_timer();
     check_executor_header_text();

@@ -948,6 +948,26 @@ Item {
             verify(roamNotice().visible, "listening stayed stopped: Home's notice");
         }
 
+        // #786 r7: an RR update renames Lake (same coordinates): the chooser's
+        // state line and the status follow at once, with no other change.
+        function test_24c_a_rename_alone_updates_the_chooser_and_status() {
+            startSite(0);
+            nearB(0);
+            compare(siteRoaming.state, SiteRoaming.Candidate);
+            var chooser = findChild(app, "siteChooserSheet");
+            chooser.openFor(0);
+            var line = findChild(chooser, "siteRoamingState");
+            compare(line.text, "Lake is closer. Checking before switching");
+            savedSystems.update(1, {siteName: "Lakeside"});
+            compare(siteRoaming.state, SiteRoaming.Candidate, "nothing else changed");
+            compare(siteRoaming.candidateName, "Lakeside");
+            compare(line.text, "Lakeside is closer. Checking before switching");
+            var context = findChild(chooser, "siteRoamingContext");
+            savedSystems.update(0, {siteName: "Hilltop"});
+            verify(context.spoken.indexOf("Listening to Hilltop") === 0, context.spoken);
+            chooser.requestDismiss();
+        }
+
         function test_25_hold_survives_roaming_off_and_on() {
             startSite(0);
             nearB(0);

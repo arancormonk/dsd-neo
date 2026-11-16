@@ -367,8 +367,20 @@ class SiteRoaming : public QObject {
         bool available = false;
         /* Waiting for the session's first fix, within kLocatingMs of its first wait: the header says LOCATING. */
         bool locating = false;
+        /* Everything QML reads that derives from the above and the saved systems (#786 r7): computed in publish(), so
+         * a change of a name alone (a site renamed by an RR update) or of the unit shown is a change of the view. */
+        QString currentName;
+        QString candidateName;
+        QString destinationName;
+        QString systemName;
+        QString statusText;
+        QString headerText;
+        QString headerShortText;
+        Action action = NoAction;
 
         bool operator==(const View& other) const;
+        bool sameState(const View& other) const;
+        bool sameLabels(const View& other) const;
     };
 
     void evaluate();
@@ -429,7 +441,14 @@ class SiteRoaming : public QObject {
     QString siteName(const QString& uid) const;
     double distanceTo(const QVariantMap& at, const QString& uid) const;
     QString distanceText(double km) const;
-    QString reasonText() const;
+    QString reasonText(const View& view) const;
+    QString statusTextOf(const View& view) const;
+    QString headerShortTextOf(const View& view) const;
+    QString headerTextOf(const View& view) const;
+    QString systemNameOf(const QString& key) const;
+    static Action actionOf(Reason reason);
+    void refreshNotice();
+    void deriveLabels(View& view) const;
     qint64 now() const;
 
     AppPrefs* m_prefs = nullptr;
@@ -483,6 +502,8 @@ class SiteRoaming : public QObject {
     QString m_noticeText;
     QString m_noticeAction;
     QString m_noticeUid;
+    /* The site the notice says roaming did not switch to; its text is derived again when names change. */
+    QString m_noticeToUid;
     /* The session the notice says stopped (the roam's own session id; 0: no notice). */
     qint64 m_noticeSessionId = 0;
 };

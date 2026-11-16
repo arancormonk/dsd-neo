@@ -150,12 +150,25 @@ same_km(double a, double b) {
 
 bool
 SiteRoaming::View::operator==(const View& other) const {
+    return sameState(other) && sameLabels(other);
+}
+
+bool
+SiteRoaming::View::sameState(const View& other) const {
     return state == other.state && reason == other.reason && reasonArg == other.reasonArg
            && currentUid == other.currentUid && same_km(currentKm, other.currentKm)
            && candidateUid == other.candidateUid && same_km(candidateKm, other.candidateKm)
            && destinationUid == other.destinationUid && groupKey == other.groupKey
            && transactionActive == other.transactionActive && fix == other.fix && available == other.available
            && locating == other.locating;
+}
+
+bool
+SiteRoaming::View::sameLabels(const View& other) const {
+    return currentName == other.currentName && candidateName == other.candidateName
+           && destinationName == other.destinationName && systemName == other.systemName
+           && statusText == other.statusText && headerText == other.headerText
+           && headerShortText == other.headerShortText && action == other.action;
 }
 
 SiteRoaming::SiteRoaming(AppPrefs* prefs, SavedSystemsModel* systems, QObject* parent)
@@ -168,8 +181,8 @@ SiteRoaming::SiteRoaming(AppPrefs* prefs, SavedSystemsModel* systems, QObject* p
         connect(m_prefs, &AppPrefs::roamingEnabledChanged, this, &SiteRoaming::onEnabledChanged);
         connect(m_prefs, &AppPrefs::roamingDistancesChanged, this, &SiteRoaming::evaluate);
         connect(m_prefs, &AppPrefs::extraArgsChanged, this, &SiteRoaming::evaluate);
-        // The distance in "No saved site within %1" is in the unit shown.
-        connect(m_prefs, &AppPrefs::metricUnitsChanged, this, &SiteRoaming::changed);
+        // The distance in "No saved site within %1" is in the unit shown: publish() derives it again.
+        connect(m_prefs, &AppPrefs::metricUnitsChanged, this, &SiteRoaming::evaluate);
     }
     if (m_systems != nullptr) {
         connect(m_systems, &QAbstractItemModel::dataChanged, this, &SiteRoaming::evaluate);
@@ -1077,6 +1090,7 @@ SiteRoaming::finishTransaction(const QString& outcome, bool notice) {
         m_noticeText = tr("Roaming did not switch to %1. Listening stopped.").arg(siteName(tx.toUid));
         m_noticeAction = tr("Listen to %1").arg(siteName(tx.fromUid));
         m_noticeUid = tx.fromUid;
+        m_noticeToUid = tx.toUid;
         m_noticeSessionId = tx.sessionId;
         Q_EMIT recoveryNoticeChanged();
     }
@@ -1285,6 +1299,7 @@ SiteRoaming::clearRecoveryNotice() {
     m_noticeText.clear();
     m_noticeAction.clear();
     m_noticeUid.clear();
+    m_noticeToUid.clear();
     m_noticeSessionId = 0;
     Q_EMIT recoveryNoticeChanged();
 }
@@ -1347,9 +1362,45 @@ SiteRoaming::publish() {
     next.locating = next.state == Paused && next.reason == NoFix && locating(t);
     next.currentKm = distanceTo(next.fix, next.currentUid);
     next.candidateKm = distanceTo(next.fix, next.candidateUid);
+    deriveLabels(next);
     if (!(next == m_view)) {
         m_view = next;
         Q_EMIT changed();
+    }
+    refreshNotice();
+}
+
+/* What QML reads that derives from @p view's identities and the saved systems: the names saved now, the unit shown. */
+void
+SiteRoaming::deriveLabels(View& view) const {
+    // The reason's argument names a site or a distance.
+    if (view.reason == SwitchFailed) {
+        view.reasonArg = siteName(m_failedUid);
+    } else if (view.reason == OutOfRange) {
+        view.reasonArg = distanceText(settings().max_km);
+    }
+    view.currentName = siteName(view.currentUid);
+    view.candidateName = siteName(view.candidateUid);
+    view.destinationName = siteName(view.destinationUid);
+    view.systemName = systemNameOf(view.groupKey);
+    view.statusText = statusTextOf(view);
+    view.headerShortText = headerShortTextOf(view);
+    view.headerText = headerTextOf(view);
+    view.action = actionOf(view.reason);
+}
+
+/* The recovery notice names two sites: derived again from the names saved now, announced only when it changed. */
+void
+SiteRoaming::refreshNotice() {
+    if (m_noticeUid.isEmpty()) {
+        return;
+    }
+    const QString text = tr("Roaming did not switch to %1. Listening stopped.").arg(siteName(m_noticeToUid));
+    const QString listen = tr("Listen to %1").arg(siteName(m_noticeUid));
+    if (text != m_noticeText || listen != m_noticeAction) {
+        m_noticeText = text;
+        m_noticeAction = listen;
+        Q_EMIT recoveryNoticeChanged();
     }
 }
 
@@ -1391,9 +1442,9 @@ SiteRoaming::distanceText(double km) const {
 }
 
 QString
-SiteRoaming::reasonText() const {
-    const QString text = tr(kReasonTexts[m_view.reason]);
-    return text.contains(QLatin1String("%1")) ? text.arg(m_view.reasonArg) : text;
+SiteRoaming::reasonText(const View& view) const {
+    const QString text = tr(kReasonTexts[view.reason]);
+    return text.contains(QLatin1String("%1")) ? text.arg(view.reasonArg) : text;
 }
 
 SiteRoaming::State
@@ -1408,47 +1459,68 @@ SiteRoaming::reason() const {
 
 QString
 SiteRoaming::statusText() const {
-    switch (m_view.state) {
+    return m_view.statusText;
+}
+
+QString
+SiteRoaming::statusTextOf(const View& view) const {
+    switch (view.state) {
         case Off: return QString();
         case Following: return tr("Staying on this site until another is clearly closer");
-        case Candidate: return tr("%1 is closer. Checking before switching").arg(candidateName());
+        case Candidate: return tr("%1 is closer. Checking before switching").arg(view.candidateName);
         case WaitingForCall:
-            return tr("Waiting for this call to end before switching to %1 (up to 90 seconds)").arg(destinationName());
-        case Switching: return tr("Switching to %1…").arg(destinationName());
-        default: return reasonText();
+            return tr("Waiting for this call to end before switching to %1 (up to 90 seconds)")
+                .arg(view.destinationName);
+        case Switching: return tr("Switching to %1…").arg(view.destinationName);
+        default: return reasonText(view);
     }
 }
 
 QString
 SiteRoaming::headerShortText() const {
-    switch (m_view.state) {
+    return m_view.headerShortText;
+}
+
+QString
+SiteRoaming::headerShortTextOf(const View& view) const {
+    switch (view.state) {
         case Following: return tr("STAYING");
         case Candidate: return tr("CHECKING");
         case WaitingForCall: return tr("WAITING");
         case Switching: return tr("SWITCHING");
         case Holding: return tr("HOLDING");
-        case Paused: return m_view.locating ? tr("LOCATING") : tr("PAUSED");
+        case Paused: return view.locating ? tr("LOCATING") : tr("PAUSED");
         default: return QString();
     }
 }
 
 QString
 SiteRoaming::headerText() const {
-    QString words = headerShortText();
-    if (m_view.state == WaitingForCall) {
+    return m_view.headerText;
+}
+
+QString
+SiteRoaming::headerTextOf(const View& view) const {
+    QString words = headerShortTextOf(view);
+    if (view.state == WaitingForCall) {
         words = tr("WAITING FOR CALL END");
-    } else if (m_view.state == Paused && !m_view.locating && kPauseWords[m_view.reason][0] != '\0') {
-        words = tr("PAUSED: %1").arg(tr(kPauseWords[m_view.reason]));
+    } else if (view.state == Paused && !view.locating && kPauseWords[view.reason][0] != '\0') {
+        words = tr("PAUSED: %1").arg(tr(kPauseWords[view.reason]));
     }
     return words.isEmpty() ? QString() : tr("%1 · GPS ROAMING").arg(words);
 }
 
 QString
 SiteRoaming::systemName() const {
-    if (m_systems == nullptr || m_view.groupKey.isEmpty()) {
+    return m_view.systemName;
+}
+
+QString
+SiteRoaming::systemNameOf(const QString& key) const {
+    if (m_systems == nullptr || key.isEmpty()) {
         return QString();
     }
-    const QVariantList rows = m_systems->groupRows(m_view.groupKey);
+    const QVariantList rows = m_systems->groupRows(key);
     return rows.isEmpty() ? QString() : site_group_title(m_systems->get(rows.first().toInt()));
 }
 
@@ -1459,7 +1531,12 @@ SiteRoaming::globalExtraArgsText() const {
 
 SiteRoaming::Action
 SiteRoaming::action() const {
-    switch (m_view.reason) {
+    return m_view.action;
+}
+
+SiteRoaming::Action
+SiteRoaming::actionOf(Reason reason) {
+    switch (reason) {
         case PermissionOff:
         case ApproximateOnly: return OpenAppSettings;
         case LocationOff: return TurnOnLocation;
@@ -1480,7 +1557,7 @@ SiteRoaming::currentUid() const {
 
 QString
 SiteRoaming::currentName() const {
-    return siteName(m_view.currentUid);
+    return m_view.currentName;
 }
 
 double
@@ -1495,7 +1572,7 @@ SiteRoaming::candidateUid() const {
 
 QString
 SiteRoaming::candidateName() const {
-    return siteName(m_view.candidateUid);
+    return m_view.candidateName;
 }
 
 double
@@ -1510,7 +1587,7 @@ SiteRoaming::destinationUid() const {
 
 QString
 SiteRoaming::destinationName() const {
-    return siteName(m_view.destinationUid);
+    return m_view.destinationName;
 }
 
 bool
