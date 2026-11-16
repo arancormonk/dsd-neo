@@ -202,6 +202,7 @@ class DecoderService : Service() {
     ) {
         var rejectedIn: State? = null
         var foreign = false
+        var supersededWhileBusy = false
         var supersededAtAcceptance = false
         val session = synchronized(lock) {
             // Publish the id with the decision to start or reject. Doing this before
@@ -217,6 +218,15 @@ class DecoderService : Service() {
             }
             // Before the busy check: a start the host has given up on is nothing to the run that holds the service.
             if (attempt != 0L && (attempt <= retiredThrough || attempt <= newestAttempt)) {
+                rejectedIn = state
+                return@synchronized 0L
+            }
+            // Before the busy check too (#786): a start the user's Stop superseded is no failure of the run that holds
+            // the service, so it is turned away silently, as a retired one is. Found IDLE, it is decided below.
+            if (state != State.IDLE && expectedStopGeneration != NO_STOP_EXPECTATION &&
+                expectedStopGeneration != userStopGeneration
+            ) {
+                supersededWhileBusy = true
                 rejectedIn = state
                 return@synchronized 0L
             }
@@ -264,6 +274,8 @@ class DecoderService : Service() {
             DsdNative.nativeHostDiagnostic(
                 if (foreign) {
                     "service: start attempt $attempt rejected: sent by an earlier process (state $found)"
+                } else if (supersededWhileBusy) {
+                    "service: start attempt $attempt rejected: superseded by a user stop (state $found)"
                 } else {
                     "service: start attempt $attempt rejected as retired or superseded (state $found)"
                 }
@@ -1093,19 +1105,24 @@ class DecoderService : Service() {
         const val NO_STOP_EXPECTATION = -1L
 
         /*
-         * What [startDecoder] answers (#786 B2): whether the START was handed to the platform. A nonzero status means
+         * What [startDecoder] answers (#786 B2): whether the START was handed to the platform. Any other status means
          * the service will never see it, so the host reports the start as failed instead of waiting out its grace.
+         * Handed over is nonzero on purpose: a JNI call that fails (a pending exception Qt clears, a method R8 removed
+         * or a descriptor mismatch) answers 0, which must read as not handed over. android/decoder_host_android.cpp
+         * keeps the same value as kStartHandedOver.
          */
         /** The START was handed to the platform; the service decides it when it arrives. */
-        const val START_HANDED_OVER = 0
+        const val START_HANDED_OVER = 1
         /** Android refused to start a foreground service from the background (ForegroundServiceStartNotAllowedException). */
-        const val START_NOT_ALLOWED = 1
+        const val START_NOT_ALLOWED = 2
         /** Android refused the start in the app's current state (IllegalStateException). */
-        const val START_ILLEGAL_STATE = 2
+        const val START_ILLEGAL_STATE = 3
         /** Android refused the start for want of a permission (SecurityException). */
-        const val START_SECURITY = 3
+        const val START_SECURITY = 4
         /** The platform found no service to start. */
-        const val START_NO_SERVICE = 4
+        const val START_NO_SERVICE = 5
+        /** The platform failed the start with an exception nothing above names. */
+        const val START_UNEXPECTED = 6
 
         /**
          * This process's token, never 0, sent with every START it dispatches (#782). Attempt ids count from 1 in every
@@ -1351,6 +1368,9 @@ class DecoderService : Service() {
                 }
             } catch (e: SecurityException) {
                 START_SECURITY
+            } catch (e: RuntimeException) {
+                // Last: a vendor build's own refusal is still a start that did not happen, never a pending JNI exception.
+                START_UNEXPECTED
             }
             if (status != START_HANDED_OVER) {
                 stopDiagnostic("service: start attempt $attempt could not be handed over (status $status)")

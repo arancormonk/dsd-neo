@@ -310,6 +310,35 @@ def stop_callers_carry_their_cause():
     return None
 
 
+def start_status_contract():
+    """#786 B2: startDecoder()'s status crosses JNI as a plain int, and 0 is what a failed JNI call answers.
+
+    So handed over must be nonzero and the same on both sides, every status distinct, and the host must treat
+    anything but handed over as a start error.
+    """
+    kotlin_path = REPO / APP_SOURCES / "DecoderService.kt"
+    host_path = REPO / "android/decoder_host_android.cpp"
+    try:
+        kotlin = kotlin_path.read_text(encoding="utf-8")
+        host = host_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the start status sources: {error}"
+    statuses = {name: int(value) for name, value in re.findall(r"const val (START_[A-Z_]+) = (-?\d+)\b", kotlin)}
+    handed = statuses.get("START_HANDED_OVER")
+    if handed is None or len(statuses) < 2:
+        return f"{APP_SOURCES / 'DecoderService.kt'}: no START_HANDED_OVER and refusal statuses"
+    if 0 in statuses.values():
+        return f"{APP_SOURCES / 'DecoderService.kt'}: no start status may be 0, a failed JNI call's answer: {statuses}"
+    if len(set(statuses.values())) != len(statuses):
+        return f"{APP_SOURCES / 'DecoderService.kt'}: the start statuses must be distinct: {statuses}"
+    native = re.search(r"constexpr jint kStartHandedOver = (-?\d+);", host)
+    if not native or int(native.group(1)) != handed:
+        return f"android/decoder_host_android.cpp: kStartHandedOver must equal START_HANDED_OVER ({handed})"
+    if not re.search(r"if \(status != kStartHandedOver\) \{\s*return QStringLiteral\(", host):
+        return "android/decoder_host_android.cpp: platformStartDecoder must fail every status but kStartHandedOver"
+    return None
+
+
 def native_lifecycle_contract():
     """DsdNative.kt never compiles here (it loads the app library), so its JNI pairing is read from the sources."""
     kotlin_path = REPO / APP_SOURCES / "DsdNative.kt"
@@ -1441,7 +1470,7 @@ SUITES = {
                        "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt", "SuppressLint.kt"),
             ),
         ),
-        checks=(stop_callers_carry_their_cause, native_lifecycle_contract),
+        checks=(stop_callers_carry_their_cause, native_lifecycle_contract, start_status_contract),
     ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure

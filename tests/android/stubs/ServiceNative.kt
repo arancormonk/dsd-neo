@@ -34,6 +34,9 @@ object DsdNative {
     val configured = CopyOnWriteArrayList<List<String>>()
     /** Configured sessions the service gave up (nativeDiscardConfigured). */
     @Volatile var discards = 0
+    /** nativeInit and nativeArmStartupDiagnostics calls: a start that took the service as far as opening a device. */
+    @Volatile var inits = 0
+    @Volatile var startupArms = 0
     /** Runs on every diagnostics line as it is logged, on the thread logging it: a boundary inside a start. */
     @Volatile var diagnosticHook: ((String) -> Unit)? = null
     fun prepareRun() {
@@ -52,10 +55,12 @@ object DsdNative {
         diagnostics.clear()
         configured.clear()
         discards = 0
+        inits = 0
+        startupArms = 0
         diagnosticHook = null
         UsbSourceManager.reset()
     }
-    fun nativeInit(config: String) = initCode
+    fun nativeInit(config: String): Int { inits++; return initCode }
     fun nativeConfigure(args: Array<String>, id: Long): Int {
         configured += args.toList()
         configureHook?.invoke()
@@ -81,7 +86,7 @@ object DsdNative {
         diagnostics += line
         diagnosticHook?.invoke(line)
     }
-    fun nativeArmStartupDiagnostics() {}
+    fun nativeArmStartupDiagnostics() { startupArms++ }
     fun nativeFlushDiagnostics() {}
     fun nativeNotificationStatus(): String? = notificationStatus
 }

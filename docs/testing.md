@@ -319,8 +319,13 @@ the new host's first start runs. The #786 cases send roaming STARTs that expect 
 the START is accepted (the service IDLE), during the receiver take, during `nativeConfigure()` and just before the worker
 would be published each ends the attempt unrun and `superseded` (a configured one discarded), and the Stop's own queued
 intent then finds nothing and is not counted again; a retirement during configure ends it retired, not superseded; an
-unchanged generation runs. `start_status` throws each refusal from the context stub (`ForegroundServiceStartNotAllowedException`
-at API 31, `IllegalStateException`, `SecurityException`, no component) and checks the status `startDecoder()` returns.
+unchanged generation runs; a superseded START that finds the service still STOPPING is turned away with no busy
+failure on the running session's record, while an unsuperseded one is refused busy as before. The before-acceptance
+case also checks no `nativeInit`, no startup-diagnostics arm and no wake lock. `start_status` throws each refusal from
+the context stub (`ForegroundServiceStartNotAllowedException` at API 31, `IllegalStateException`, `SecurityException`,
+another `RuntimeException`, no component) and checks the status `startDecoder()` returns; every status is nonzero and
+distinct. The suite's `start_status_contract` source check pins `START_HANDED_OVER` to the host's `kStartHandedOver`,
+no status at 0 (a failed JNI call's answer) and `platformStartDecoder()` failing every other status.
 In `DecoderServiceStopTest.kt`, `switch_drain` checks a switch drains and is no user stop, and a user Stop during its drain
 abandons; `stop_generation` checks which requests move the generation (Stop listening while IDLE, RUNNING, STARTING and
 with no context, the notification's Stop, Recents) and which do not (deliveries of counted stops, switches, lifecycle and

@@ -47,6 +47,8 @@ namespace dsd_android {
 namespace {
 
 constexpr const char* kServiceClass = "io/github/arancormonk/dsdneo/DecoderService";
+/** DecoderService.START_HANDED_OVER (#786 B2). Nonzero, so the 0 a failed JNI call answers is never a handover. */
+constexpr jint kStartHandedOver = 1;
 constexpr const char* kSupportClass = "io/github/arancormonk/dsdneo/AppSupport";
 constexpr const char* kLocationClass = "io/github/arancormonk/dsdneo/LocationSupport";
 constexpr const char* kUsbClass = "io/github/arancormonk/dsdneo/UsbSourceManager";
@@ -601,14 +603,14 @@ DecoderHostAndroid::platformStartDecoder(const QStringList& argv, uint64_t attem
 
     // Must match DecoderService.kt: @JvmStatic fun startDecoder(context: Context, args: Array<String>, attempt: Long,
     // expectedStopGeneration: Long): Int. -1 is NO_STOP_EXPECTATION: a manual start. The status is START_HANDED_OVER
-    // (0) or why Android refused the START (#786 B2); a refused one never reaches the service.
-    const jint handed = QJniObject::callStaticMethod<jint>(
+    // or why Android refused the START (#786 B2); a refused one never reaches the service. A call that fails answers
+    // 0 (Qt clears a pending exception and returns the default), which is not kStartHandedOver.
+    const jint status = QJniObject::callStaticMethod<jint>(
         kServiceClass, "startDecoder", "(Landroid/content/Context;[Ljava/lang/String;JJ)I", context.object(), args,
         static_cast<jlong>(attempt), static_cast<jlong>(-1));
-    const bool threw = env.checkAndClearExceptions();
     env->DeleteLocalRef(args);
-    if (threw || handed != 0) {
-        return QStringLiteral("Android did not let DSD-neo start listening (status %1)").arg(threw ? -1 : handed);
+    if (status != kStartHandedOver) {
+        return QStringLiteral("Android did not let DSD-neo start listening (status %1)").arg(status);
     }
     return {};
 }

@@ -295,6 +295,8 @@ private fun roamSupersededBeforeAcceptance() {
     val before = record()
     val id = deliver(service, intent)
     check(DsdNative.configured.isEmpty() && UsbSourceManager.takes.isEmpty()) { "a superseded START took the service" }
+    check(DsdNative.inits == 0 && DsdNative.startupArms == 0) { "a superseded START went on to open a device" }
+    check(service.power.created.isEmpty()) { "a superseded START took a wake lock" }
     neverRan("superseded before acceptance")
     check(record().optLong("sessionId") == before.optLong("sessionId") + 1) { "the attempt has a record of its own" }
     supersededRecord(attempt, "before acceptance")
@@ -304,6 +306,38 @@ private fun roamSupersededBeforeAcceptance() {
     ) { DsdNative.diagnostics }
     endsQuietly(service, id, "before acceptance")
     theQueuedStopFindsNothing(service, generation + 1, "before acceptance")
+}
+
+// The roam START arrives while the service is still busy, after the user's Stop moved the generation: it is turned
+// away silently, as a retired one is, with no busy failure on the record of the run that holds the service.
+private fun roamSupersededWhileBusy() {
+    val service = newService()
+    val (manual, manualIntent) = hostStart(service, RTL)
+    deliver(service, manualIntent)
+    await(DsdNative.enteredRun)
+    val generation = DecoderService.userStopGeneration()
+    val (attempt, intent) = roamStart(service, RTL, generation)
+    DecoderService.stopDecoder(service)
+    check(DecoderService.stateName() == "STOPPING")
+    // Its own intent only repeats the stop; the run is already STOPPING.
+    check(service.intents.remove().action == DecoderService.ACTION_STOP)
+    val before = record()
+    deliver(service, intent)
+    val after = record()
+    check(DsdNative.configured.size == 1) { "a superseded START was configured: ${DsdNative.configured}" }
+    check(
+        after.optLong("sessionId") == before.optLong("sessionId") && after.optLong("attemptId") == manual &&
+            after.optString("lastError") == "" && !after.optBoolean("superseded")
+    ) { "the busy run's record is left alone: $after" }
+    check("service: start attempt $attempt rejected: superseded by a user stop (state STOPPING)" in DsdNative.diagnostics) {
+        DsdNative.diagnostics
+    }
+    // Without the stop, the same START is the busy failure it always was.
+    val (late, lateIntent) = roamStart(service, RTL)
+    deliver(service, lateIntent)
+    check(record().optString("lastError") != "") { "a START that finds the service busy, unsuperseded, is refused busy: ${record()}" }
+    check(late > attempt)
+    finish(service)
 }
 
 // The user's Stop lands while the service takes the start's receiver, before configuration: nothing is configured.
@@ -427,6 +461,7 @@ private fun theStartStatusSaysWhetherItWasHandedOver() {
             ForegroundServiceStartNotAllowedException("background") to DecoderService.START_NOT_ALLOWED,
             IllegalStateException("not allowed") to DecoderService.START_ILLEGAL_STATE,
             SecurityException("refused") to DecoderService.START_SECURITY,
+            UnsupportedOperationException("vendor refusal") to DecoderService.START_UNEXPECTED,
         )
         for ((failure, expected) in refusals) {
             service.dispatchFailure = failure
@@ -449,14 +484,16 @@ private fun theStartStatusSaysWhetherItWasHandedOver() {
         service.dispatchReturnsNull = false
     }
     check(service.intents.isEmpty()) { "a refused START was queued" }
-    check(
-        listOf(
-            DecoderService.START_NOT_ALLOWED,
-            DecoderService.START_ILLEGAL_STATE,
-            DecoderService.START_SECURITY,
-            DecoderService.START_NO_SERVICE
-        ).distinct().size == 4 && DecoderService.START_HANDED_OVER == 0
-    ) { "each refusal has a status of its own, and only a handed-over START is 0" }
+    // A failed JNI call answers 0, so 0 must never read as handed over: every status is nonzero and distinct.
+    val statuses = listOf(
+        DecoderService.START_HANDED_OVER,
+        DecoderService.START_NOT_ALLOWED,
+        DecoderService.START_ILLEGAL_STATE,
+        DecoderService.START_SECURITY,
+        DecoderService.START_NO_SERVICE,
+        DecoderService.START_UNEXPECTED
+    )
+    check(statuses.distinct().size == statuses.size && 0 !in statuses) { "start statuses: $statuses" }
     service.onDestroy()
 }
 
@@ -471,6 +508,7 @@ fun main(args: Array<String>) {
         "record" to ::theRecordNamesTheAttempt,
         "earlier_process" to ::anEarlierProcessStartIsRejected,
         "roam_superseded_before_acceptance" to ::roamSupersededBeforeAcceptance,
+        "roam_superseded_while_busy" to ::roamSupersededWhileBusy,
         "roam_superseded_before_configure" to ::roamSupersededBeforeConfigure,
         "roam_superseded_during_configure" to ::roamSupersededDuringConfigure,
         "roam_superseded_before_publication" to ::roamSupersededJustBeforePublication,
