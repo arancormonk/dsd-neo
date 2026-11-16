@@ -127,7 +127,19 @@ int dsd_input_level_metrics_from_cs16(const int16_t* samples, size_t count, doub
                                       dsd_input_level_source source, dsd_input_level_snapshot* out);
 int dsd_input_level_metrics_from_cf32(const float* samples, size_t count, dsd_input_level_source source,
                                       dsd_input_level_snapshot* out);
+/**
+ * @brief What to do about @p snapshot's level, or NULL for a status that needs nothing (OK, unknown).
+ *
+ * The one text the warning (dsd_input_level_format_advisory_for()) and the terminal's level row both show. An I/Q
+ * replay (@p replay nonzero) says the level was fixed when the capture was recorded; a live radio names its RF gain,
+ * and an audio input its volume.
+ */
+const char* dsd_input_level_advice(const dsd_input_level_snapshot* snapshot, int replay);
+/** @brief dsd_input_level_format_advisory_for() for a live input (@p replay 0). */
 int dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, char* out, size_t out_size);
+/** @brief The warning line for @p snapshot: its label, status and reading, then dsd_input_level_advice(). */
+int dsd_input_level_format_advisory_for(const dsd_input_level_snapshot* snapshot, int replay, char* out,
+                                        size_t out_size);
 /**
  * @brief Classify @p snapshot into @p state, and print and toast an advisory when @p notify_mask allows its status.
  *

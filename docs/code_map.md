@@ -9018,11 +9018,13 @@ Key public headers:
     `dsd_input_level_publish()` replaces its stale RF level with a fresh producer snapshot before classifying
     warnings; with no fresh measurement it keeps the old level and warns about nothing. An I/Q replay in force
     (`dsd_opts_input_is_iq_replay()`) keeps every warning its capture calls for, so a paused replay prints the same
-    advisories in every run. PCM inputs keep the decoder's level. Tests: `IO_INPUT_LEVEL_METRICS`,
-    `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`. CU8 moments keep 64-bit totals while
-    accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening reduces its byte
-    extrema in registers and maps the four clipping-edge values to one unsigned interval. These integer reductions leave
-    both the sample values and the statistics exact (`DSP_SIMD_WIDEN`, `IO_INPUT_LEVEL_METRICS`).
+    advisories in every run. PCM inputs keep the decoder's level. The warning and the terminal's level row give one
+    advice text, `dsd_input_level_advice()`: a replay's says its level was set when the capture was recorded (issue
+    #743 B8), a live radio's names its RF gain, an audio input's its volume. Tests: `IO_INPUT_LEVEL_METRICS`,
+    `CORE_INPUT_LEVEL`, `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`. CU8 moments keep 64-bit
+    totals while accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening reduces
+    its byte extrema in registers and maps the four clipping-edge values to one unsigned interval. These integer
+    reductions leave both the sample values and the statistics exact (`DSP_SIMD_WIDEN`, `IO_INPUT_LEVEL_METRICS`).
   - USB identity and reset (`radio/rtl_usb_identity.{h,cpp}`, module-private, the only includer of `libusb.h`, which
     `cmake/arch_rules.cmake` enforces): which USB device a stalled dongle is, so a USB port reset reaches it and never a
     second dongle another program streams from. `rtl_usb_identity_resolve()` runs before `rtlsdr_open()`: it takes the

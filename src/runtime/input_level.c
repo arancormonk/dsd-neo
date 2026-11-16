@@ -510,18 +510,40 @@ input_level_should_suppress_tcp_pcm_toast(const dsd_opts* opts, const dsd_state*
     return state->carrier == 0 || (snapshot->status == DSD_INPUT_LEVEL_LOW && input_level_is_digital_silence(snapshot));
 }
 
+const char*
+dsd_input_level_advice(const dsd_input_level_snapshot* snapshot, int replay) {
+    if (!snapshot) {
+        return NULL;
+    }
+    const int low = snapshot->status == DSD_INPUT_LEVEL_LOW;
+    if (!low && snapshot->status != DSD_INPUT_LEVEL_HOT && snapshot->status != DSD_INPUT_LEVEL_CLIPPING) {
+        return NULL;
+    }
+    if (replay) {
+        /* The capture fixed the level when it was recorded: nothing here can change it (B8). */
+        return low ? "recorded at a low level; record with more gain next time"
+                   : "recorded too strong; record with less gain next time";
+    }
+    if (dsd_input_level_source_is_rf(snapshot->source)) {
+        return low ? "raise RF gain if signal is present" : "lower RF gain or add filtering/attenuation";
+    }
+    return low ? "raise source/input volume if signal is present" : "lower source/input volume";
+}
+
 int
 dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, char* out, size_t out_size) {
+    return dsd_input_level_format_advisory_for(snapshot, 0, out, out_size);
+}
+
+int
+dsd_input_level_format_advisory_for(const dsd_input_level_snapshot* snapshot, int replay, char* out, size_t out_size) {
     if (!snapshot || !out || out_size == 0U) {
         return -1;
     }
     const char* label = dsd_input_level_display_label(snapshot->source);
     const char* status = dsd_input_level_status_label(snapshot->status);
-    const char* advice = dsd_input_level_source_is_rf(snapshot->source) ? "lower RF gain or add filtering/attenuation"
-                                                                        : "lower source/input volume";
+    const char* advice = dsd_input_level_advice(snapshot, replay);
     if (snapshot->status == DSD_INPUT_LEVEL_LOW) {
-        advice = dsd_input_level_source_is_rf(snapshot->source) ? "raise RF gain if signal is present"
-                                                                : "raise source/input volume if signal is present";
         char rms[32];
         (void)dsd_number_text(rms, sizeof rms, snapshot->rms_dbfs, 0, 1, 0);
         DSD_SNPRINTF(out, out_size, "%s %s %s dBFS: %s", label, status, rms, advice);
@@ -631,7 +653,7 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
     }
 
     char msg[sizeof(state->ui_msg)];
-    if (dsd_input_level_format_advisory(&next, msg, sizeof(msg)) != 0) {
+    if (dsd_input_level_format_advisory_for(&next, dsd_opts_input_is_iq_replay(opts), msg, sizeof(msg)) != 0) {
         return;
     }
     LOG_WARN("WARNING: %s\n", msg);

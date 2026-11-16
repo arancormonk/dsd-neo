@@ -509,6 +509,23 @@ dsd_input_level_source_is_rf(dsd_input_level_source source) { // NOLINT(misc-use
     return source != DSD_INPUT_LEVEL_SOURCE_PCM;
 }
 
+/* The real advice (runtime/input_level.c): a replay's level was set when it was recorded (B8). */
+const char*
+dsd_input_level_advice(const dsd_input_level_snapshot* snapshot, int replay) { // NOLINT(misc-use-internal-linkage)
+    const int low = snapshot->status == DSD_INPUT_LEVEL_LOW;
+    if (!low && snapshot->status != DSD_INPUT_LEVEL_HOT && snapshot->status != DSD_INPUT_LEVEL_CLIPPING) {
+        return NULL;
+    }
+    if (replay) {
+        return low ? "recorded at a low level; record with more gain next time"
+                   : "recorded too strong; record with less gain next time";
+    }
+    if (snapshot->source != DSD_INPUT_LEVEL_SOURCE_PCM) {
+        return low ? "raise RF gain if signal is present" : "lower RF gain or add filtering/attenuation";
+    }
+    return low ? "raise source/input volume if signal is present" : "lower source/input volume";
+}
+
 int
 getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) { // NOLINT(misc-use-internal-linkage)
     (void)state;
@@ -1803,6 +1820,14 @@ test_input_level_row_fixed_width(void) {
     ui_render_input_level_status(opts, &state);
     assert_capture_equals("| RF Level: CLIP    rms   -3.0 dBFS peak    0.0 dBFS clip 100.0% lower RF gain or add "
                           "filtering/attenuation\n");
+    /* B8: a replay's row gives the capture's advice, never the tuner's. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
+    reset_printw_capture();
+    ui_render_input_level_status(opts, &state);
+    assert_capture_equals(
+        "| RF Level: CLIP    rms   -3.0 dBFS peak    0.0 dBFS clip 100.0% recorded too strong; record "
+        "with less gain next time\n");
+    opts->audio_in_dev[0] = '\0';
     g_presented_level_result = 0;
     g_stub_max_x = 80;
     free(opts);

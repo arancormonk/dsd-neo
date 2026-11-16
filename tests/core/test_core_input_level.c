@@ -584,6 +584,39 @@ test_live_radio_after_a_replay_reads_live_levels(void) {
     free(opts);
 }
 
+/* B8: a replay's warning says its level was set when the capture was recorded, where nothing can change it, never
+   to move a tuner gain the replay does not have. It warns as its RF source does. */
+static void
+test_replay_and_stream_advice(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+    opts->input_warn_db = -40.0;
+    opts->input_warn_cooldown_sec = 10;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq.json");
+
+    timed_level clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -15.0, -0.1, 0.2, 300);
+    publish(opts, state, &clip, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
+    assert(strstr(state->ui_msg, "RF gain") == NULL);
+    assert(strstr(state->ui_msg, "recorded too strong; record with less gain next time") != NULL);
+
+    char msg[128];
+    timed_level low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, -80.0, -40.0, 0.0, 1);
+    dsd_input_level_classify(&low.level, -40.0);
+    assert(dsd_input_level_format_advisory_for(&low.level, 1, msg, sizeof msg) == 0);
+    assert(strstr(msg, "recorded at a low level; record with more gain next time") != NULL);
+    assert(strcmp(dsd_input_level_advice(&low.level, 0), "raise RF gain if signal is present") == 0);
+
+    low.level.status = DSD_INPUT_LEVEL_OK;
+    assert(dsd_input_level_advice(&low.level, 0) == NULL);
+
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     test_lagging_decoder_uses_fresh_receiver_level();
@@ -603,5 +636,6 @@ main(void) {
     test_non_tcp_silence_low_still_notifies();
     test_advisory_text_selection();
     test_publish_without_state_and_default_cooldown_paths();
+    test_replay_and_stream_advice();
     return 0;
 }

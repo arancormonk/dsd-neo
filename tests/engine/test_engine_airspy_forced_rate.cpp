@@ -361,8 +361,22 @@ clock_throttled(const std::string& l) {
     return l.size() >= from && l.compare(from, 4U, " SLC") == 0 && l.find("(single)", from) != std::string::npos;
 }
 
+/* @p l with an input-level warning's advice cut off after its reading: a live run's advice names the tuner's RF gain,
+   and a replay's says the level was set when the capture was recorded (issue #743 B8), so only the reading compares. */
+std::string
+without_level_advice(const std::string& l) {
+    static const char kWarning[] = "WARNING: RF Level ";
+    const size_t at = l.find(kWarning);
+    if (at == std::string::npos) {
+        return l;
+    }
+    const size_t advice = l.find(": ", at + sizeof kWarning - 1U);
+    return advice == std::string::npos ? l : l.substr(0U, advice);
+}
+
 /* The stable decoded fields: every decoder record (a line stamped HH:MM:SS, its stamp left out, and the indented lines
-   that go on with it) and the lines holding one of @p c's stable texts, leaving out the clock-throttled lines. */
+   that go on with it) and the lines holding one of @p c's stable texts, leaving out the clock-throttled lines and any
+   level advice (without_level_advice()). */
 std::vector<std::string>
 stable_lines(const std::vector<std::string>& lines, const Case& c) {
     std::vector<std::string> out;
@@ -376,7 +390,7 @@ stable_lines(const std::vector<std::string>& lines, const Case& c) {
             keep = keep || (t && l.find(t) != std::string::npos);
         }
         if (keep && !clock_throttled(l)) {
-            out.push_back(stamped ? l.substr(9U) : l);
+            out.push_back(without_level_advice(stamped ? l.substr(9U) : l));
         }
     }
     return out;

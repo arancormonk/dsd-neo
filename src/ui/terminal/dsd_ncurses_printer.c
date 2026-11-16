@@ -678,14 +678,10 @@ ui_render_input_level_status(const dsd_opts* opts, const dsd_state* state) {
     ui_row_field(&row, " rms %s dBFS", ui_num(rms, sizeof rms, level->rms_dbfs, 6, 1, 0));
     ui_row_field(&row, " peak %s dBFS", ui_num(peak, sizeof peak, level->peak_dbfs, 6, 1, 0));
     ui_row_field(&row, " clip %s%%", ui_num(clip, sizeof clip, level->clip_pct, 5, 1, 0));
-    if (level->status == DSD_INPUT_LEVEL_LOW) {
-        ui_row_field(&row, " %s",
-                     dsd_input_level_source_is_rf(level->source) ? "raise RF gain if signal is present"
-                                                                 : "raise source/input volume if signal is present");
-    } else if (level->status == DSD_INPUT_LEVEL_HOT || level->status == DSD_INPUT_LEVEL_CLIPPING) {
-        ui_row_field(&row, " %s",
-                     dsd_input_level_source_is_rf(level->source) ? "lower RF gain or add filtering/attenuation"
-                                                                 : "lower source/input volume");
+    /* The warning's own advice (B8: a replay's level was set when it was recorded). */
+    const char* advice = dsd_input_level_advice(level, dsd_opts_input_is_iq_replay(opts));
+    if (advice) {
+        ui_row_field(&row, " %s", advice);
     }
     ui_row_end(&row);
 }
