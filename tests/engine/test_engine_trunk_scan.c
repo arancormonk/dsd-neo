@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_channel.h>

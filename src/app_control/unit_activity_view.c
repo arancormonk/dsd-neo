@@ -56,7 +56,7 @@ ua_text_append(char* dst, size_t cap, const char* src) {
     size_t left = strlen(src);
     int whole = 1;
     while (left > 0U) {
-        const size_t len = dsd_utf8_sequence_len(s, left);
+        const size_t len = dsd_utf8_sequence_len((const char*)s, left);
         if (len == 0U) {
             s++;
             left--;

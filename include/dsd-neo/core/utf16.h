@@ -257,20 +257,21 @@ dsd_utf8_lead(unsigned char c, unsigned char* lo, unsigned char* hi) {
  * as dsd_utf8_lead() bounds it), or 0 when @p avail is 0 or @p s starts none.
  */
 static inline size_t
-dsd_utf8_sequence_len(const unsigned char* s, size_t avail) {
+dsd_utf8_sequence_len(const char* s, size_t avail) {
     if (avail == 0U) {
         return 0;
     }
     unsigned char lo;
     unsigned char hi;
-    const size_t len = dsd_utf8_lead(s[0], &lo, &hi);
+    const size_t len = dsd_utf8_lead((unsigned char)s[0], &lo, &hi);
     if (len == 0U || len > avail) {
         return 0;
     }
     for (size_t i = 1; i < len; i++) {
+        const unsigned char c = (unsigned char)s[i];
         const unsigned char min = i == 1U ? lo : 0x80U;
         const unsigned char max = i == 1U ? hi : 0xBFU;
-        if (s[i] < min || s[i] > max) {
+        if (c < min || c > max) {
             return 0;
         }
     }
@@ -284,10 +285,9 @@ dsd_utf8_sequence_len(const unsigned char* s, size_t avail) {
  */
 static inline size_t
 dsd_utf8_whole_prefix_len(const char* s, size_t len, size_t max) {
-    const unsigned char* u = (const unsigned char*)s;
     size_t at = 0;
     while (at < len) {
-        const size_t n = dsd_utf8_sequence_len(u + at, len - at);
+        const size_t n = dsd_utf8_sequence_len(s + at, len - at);
         if (n == 0U || at + n > max) {
             break;
         }

@@ -184,16 +184,16 @@ test_utf8_validation(void) {
    before a byte that starts none. */
 static void
 test_utf8_sequence_and_whole_prefix(void) {
-    assert(dsd_utf8_sequence_len((const unsigned char*)"A", 1) == 1U);
-    assert(dsd_utf8_sequence_len((const unsigned char*)"\xC3\xA9", 2) == 2U);
-    assert(dsd_utf8_sequence_len((const unsigned char*)"\xC3\xA9", 1) == 0U); /* cut short */
-    assert(dsd_utf8_sequence_len((const unsigned char*)"\xC3"
-                                                       "A",
+    assert(dsd_utf8_sequence_len("A", 1) == 1U);
+    assert(dsd_utf8_sequence_len("\xC3\xA9", 2) == 2U);
+    assert(dsd_utf8_sequence_len("\xC3\xA9", 1) == 0U); /* cut short */
+    assert(dsd_utf8_sequence_len("\xC3"
+                                 "A",
                                  2)
-           == 0U);                                                                /* no continuation byte */
-    assert(dsd_utf8_sequence_len((const unsigned char*)"\xE0\x9F\xBF", 3) == 0U); /* overlong */
-    assert(dsd_utf8_sequence_len((const unsigned char*)"\xF0\x9F\x9A\x92", 4) == 4U);
-    assert(dsd_utf8_sequence_len((const unsigned char*)"A", 0) == 0U);
+           == 0U);                                          /* no continuation byte */
+    assert(dsd_utf8_sequence_len("\xE0\x9F\xBF", 3) == 0U); /* overlong */
+    assert(dsd_utf8_sequence_len("\xF0\x9F\x9A\x92", 4) == 4U);
+    assert(dsd_utf8_sequence_len("A", 0) == 0U);
     const char* text = "ab\xC3\xA9"
                        "cd";
     assert(dsd_utf8_whole_prefix_len(text, 6, 6) == 6U);
