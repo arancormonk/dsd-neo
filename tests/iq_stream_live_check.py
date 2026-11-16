@@ -124,7 +124,7 @@ class Sender:
         while not self.done.is_set():
             try:
                 connection, _ = self.server.accept()
-            except TimeoutError:
+            except socket.timeout:
                 continue
             with self.lock:
                 self.connections += 1
@@ -181,7 +181,7 @@ class Listener:
         while not self.done.is_set():
             try:
                 connection, _ = self.server.accept()
-            except TimeoutError:
+            except socket.timeout:
                 continue
             self.connections += 1
             connection.close()
