@@ -1328,6 +1328,74 @@ check_executor_starting() {
     }
 }
 
+/* #786 r4: the transaction against each phase edge the host can show before the destination's start. */
+void
+check_executor_stop_edges() {
+    using Phase = dsd_qt::DecoderHost::SessionState;
+    {
+        // The host gave up waiting for the stop's acknowledgement (2 s) and shows the old session running again.
+        Rig rig;
+        rig.qualifyB();
+        check(rig.host.phase == Phase::Stopping && rig.roaming.transactionActive(), "stop edges: the switch stops");
+        rig.host.setPhase(Phase::Running);
+        check(!rig.roaming.transactionActive() && rig.ended == QStringList{QStringLiteral("refused")}
+                  && rig.roaming.recoveryNotice().isEmpty() && rig.roaming.reason() == SiteRoaming::SwitchFailed
+                  && rig.roaming.statusText() == QStringLiteral("Could not switch to Lake"),
+              "stop edges: running again ends the switch refused, no notice, paused on it");
+        for (int i = 0; i < 70; ++i) {
+            rig.tick(1000);
+        }
+        rig.nearB(1000); // the fix gone stale: one fresh fix starts the count again
+        check(rig.host.switchStops == 1 && rig.roaming.state() == SiteRoaming::Candidate,
+              "stop edges: the old evidence is gone; a fresh fix qualifies anew");
+        rig.nearB(10000);
+        rig.nearB(10000);
+        check(rig.host.switchStops == 2 && rig.roaming.transactionActive(),
+              "stop edges: a later valid verdict switches again");
+    }
+    {
+        // After the stop went idle, Running is the destination's own start, even when Main acted on the Idle edge
+        // before roaming saw it (its restart runs from a queued call): nothing ends.
+        Rig rig;
+        rig.qualifyB();
+        rig.host.blockSignals(true);
+        rig.host.setPhase(Phase::Idle);
+        rig.host.blockSignals(false);
+        const QVariantMap plan = rig.roaming.startPlan(rig.roamId());
+        rig.host.setPhase(Phase::Running); // a host that runs the destination at once, before the start's result
+        check(plan.value("ok").toBool() && rig.roaming.transactionActive() && rig.ended.isEmpty(),
+              "stop edges: the roam's own start running is no stop given up");
+        rig.roaming.noteStartResult(rig.roamId(), {{"ok", true}, {"started", true}});
+        rig.roaming.noteSessionStart("saved", rig.uids[1], rig.roamId());
+        rig.roaming.noteSessionInitialized();
+        check(rig.ended == QStringList{QStringLiteral("done")}, "stop edges: and it completes");
+    }
+    {
+        // Failed while waiting for USB access: the failure card says why; the switch is cancelled.
+        Rig rig;
+        rig.qualifyB();
+        rig.host.setPhase(Phase::Idle);
+        rig.roaming.startPlan(rig.roamId());
+        rig.roaming.noteWaitingForUsb(rig.roamId());
+        rig.host.setPhase(Phase::Failed);
+        check(rig.ended == QStringList{QStringLiteral("cancelled")} && !rig.roaming.transactionActive(),
+              "stop edges: failed during the USB wait cancels");
+    }
+    {
+        // Waiting for a call, the session stops (the user's Stop from the notification): the switch never starts.
+        Rig rig;
+        rig.running();
+        rig.set("callBusy", true);
+        rig.nearB(0);
+        rig.nearB(10000);
+        rig.nearB(10000);
+        rig.host.setPhase(Phase::Stopping);
+        rig.set("callBusy", false);
+        check(rig.host.switchStops == 0 && rig.ended == QStringList{QStringLiteral("cancelled")},
+              "stop edges: a session stopping during the call wait ends the switch");
+    }
+}
+
 /* Asked for a start out of turn (the session it leaves still stopping), no one asks again: the roam ends, with the
  * notice, rather than sit in its stop. */
 void
@@ -1550,6 +1618,7 @@ main(int argc, char** argv) {
     check_executor_starting();
     check_executor_manual_hold();
     check_executor_plan_out_of_turn();
+    check_executor_stop_edges();
     check_executor_adopted_and_retune();
     check_executor_timer();
     check_executor_header_text();

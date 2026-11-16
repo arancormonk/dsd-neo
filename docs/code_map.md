@@ -14833,6 +14833,12 @@ Qt Quick frontend (`src/ui/qt`):
   started (and read again when a candidate begins to qualify), so a user stop the app has not shown yet is never
   absorbed. A cancel once the start is handed over retires the host's attempt (`retireRoamAttempt()`); a switch
   cancelled after the session it left stopped, other than by the user's own action, leaves `recoveryNotice` for Home. A
+  Rule: before the destination's start, `progressStop()` reads the host's phase: Failed cancels; Running after the
+  stop showed (Stopping) and before it went idle (`startPlan()` asks only at Idle) is a stop the host gave up on (its
+  2 s stop grace), so the switch ends refused with no notice, the evidence is revoked and roaming shows "Could not
+  switch to %1" over the live session until a fresh fix starts a new qualification (`onVerdict()`); Starting and
+  Running after the stop went idle are the roam's own start, which `noteStartResult()` moves on. Tests:
+  `check_executor_stop_edges()`, `tst_site_roaming.qml` `test_07i`.
   Rule: every measurement and tick reaches the core in every transaction stage (`feedTransaction()` past the call
   wait: from the session the switch leaves, then from the destination's), so the evidence stays continuous and the start
   boundary derives the verdict from all of it; a fix favouring the old site or a fix gone stale during the stop leaves the

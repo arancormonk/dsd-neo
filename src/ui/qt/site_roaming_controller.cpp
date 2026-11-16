@@ -306,6 +306,15 @@ SiteRoaming::onVerdict(qint64 nowMs, const SiteRoamingVerdict& verdict) {
         m_callWait.reset();
         m_verdictUid = awaited;
     }
+    if (!m_failedUid.isEmpty()) {
+        // A switch the old session's stop never let through (progressStop()): paused on it until a fresh fix starts a
+        // new qualification, which the evidence cleared then needs.
+        if (verdict.kind != Kind::Candidate && verdict.kind != Kind::Switch) {
+            setView(Paused, SwitchFailed, siteName(m_failedUid));
+            return;
+        }
+        m_failedUid.clear();
+    }
     if (verdict.kind == Kind::Switch) {
         onSwitchVerdict(nowMs, uid);
         return;
@@ -436,10 +445,7 @@ SiteRoaming::progressTransaction() {
     }
     const int phase = m_host->sessionState();
     if (m_tx.stage != Stage::Starting) {
-        // Failed while the session it leaves stops: the failure card says why.
-        if (phase == DecoderHost::Failed) {
-            finishTransaction(QStringLiteral("cancelled"), false);
-        }
+        progressStop(phase);
         return;
     }
     m_tx.startShown = m_tx.startShown || phase != DecoderHost::Idle;
@@ -456,6 +462,29 @@ SiteRoaming::progressTransaction() {
         refuseTransaction(true);
     } else if (m_session.initialized && m_session.id == m_tx.destSessionId) {
         finishTransaction(QStringLiteral("done"), false);
+    }
+}
+
+/*
+ * Before the destination's start (Stopping, WaitingForUsb), from the phase the host shows. Failed: the failure card says
+ * why. Running again after the stop showed and before it went idle: the host gave up waiting for the service to
+ * acknowledge the stop (its 2 s stop grace), so the old session runs on: the switch ends refused with no notice (nothing
+ * stopped), its evidence goes, and roaming pauses on it until a fresh fix starts a new qualification. Idle is Main's to
+ * act on (startPlan()); the Starting or Running of the roam's own start, which follows that, is noteStartResult()'s.
+ */
+void
+SiteRoaming::progressStop(int phase) {
+    if (phase == DecoderHost::Failed) {
+        finishTransaction(QStringLiteral("cancelled"), false);
+        return;
+    }
+    if (phase == DecoderHost::Stopping) {
+        m_tx.stopShown = true;
+    } else if (phase == DecoderHost::Idle) {
+        m_tx.stopDone = true;
+    } else if (phase == DecoderHost::Running && m_tx.stage == Stage::Stopping && m_tx.stopShown && !m_tx.stopDone) {
+        refuseTransaction(false);
+        revoke(now());
     }
 }
 
@@ -965,6 +994,7 @@ SiteRoaming::startPlan(qint64 roamId) {
         evaluate();
         return refused;
     }
+    m_tx.stopDone = true; // the start that follows may show Running before noteStartResult() moves the stage on
     noteForeground();
     const QString failure = turn() ? boundaryFailure(now()) : QStringLiteral("foreground");
     if (!failure.isEmpty()) {

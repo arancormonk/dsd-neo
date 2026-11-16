@@ -278,6 +278,8 @@ What pauses, holds or cancels roaming:
   stopped and Home says "Roaming did not switch to …. Listening stopped." with **Listen to …** for the site it left.
 - A switch that cannot start shows the usual failure card, and roaming pauses with "Could not switch to …". It does
   not try again by itself.
+- If the old site does not stop when asked, it keeps listening and roaming shows "Could not switch to …". The
+  readings collected so far are dropped; a switch needs fresh ones, so it can happen again later.
 
 Limits:
 

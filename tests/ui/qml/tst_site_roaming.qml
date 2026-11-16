@@ -379,6 +379,26 @@ Item {
             verify(roamNotice().visible);
         }
 
+        // #786 r4: the host gave up waiting for the stop (2 s) and shows Hill
+        // running again. The switch ends: no restart, no Home notice (nothing
+        // stopped), "Could not switch to Lake" until fresh fixes qualify again.
+        function test_07i_a_stop_the_host_gave_up_on_ends_the_switch() {
+            qualifyB();
+            compare(decoderHost.sessionState, 3);
+            testContext.setLifecyclePhase(2);
+            compare(app.pendingRestart, null, "the roam's restart is gone");
+            verify(!siteRoaming.transactionActive);
+            verify(!roamNotice().visible, "nothing stopped: no notice");
+            compare(siteRoaming.statusText, "Could not switch to Lake");
+            compare(calls().switchStops, 1);
+            nearB(1000);
+            compare(siteRoaming.state, SiteRoaming.Candidate, "a fresh fix starts a new qualification");
+            nearB(10000);
+            nearB(10000);
+            compare(calls().switchStops, 2, "a later valid verdict switches again");
+            verify(siteRoaming.transactionActive);
+        }
+
         function test_08_disable_during_stopping_leaves_listening_stopped_with_the_notice() {
             qualifyB();
             prefs.roamingEnabled = false;

@@ -346,6 +346,10 @@ class SiteRoaming : public QObject {
         Stage stage = Stage::None;
         /* The destination's start showed on the host (Starting or later): an Idle after that is its end. */
         bool startShown = false;
+        /* The session the switch leaves showed its stop (Stopping), and then went idle (startPlan() asks only then):
+         * a Running between the two is a stop the host gave up on, one after them the destination's own start. */
+        bool stopShown = false;
+        bool stopDone = false;
     };
 
     struct View {
@@ -374,6 +378,7 @@ class SiteRoaming : public QObject {
     void onSwitchVerdict(qint64 nowMs, const QString& uid);
     void attemptStop(qint64 nowMs);
     void progressTransaction();
+    void progressStop(int phase);
     void feedTransaction(qint64 nowMs);
     bool userStoppedSince(qint64 generation) const;
     bool leftForegroundSince(qint64 epoch) const;
