@@ -10,9 +10,9 @@
  * return (on and off the decoder thread), the legacy control-channel return of the no-carrier pass, and app-control's
  * io_control leg of a trunked manual return. A tune to the frequency the peer is on, a refused request and a lost
  * reply move nothing. The spans the timeline guards are checked through their own readers: a DMR slot's MI chain after
- * a return, and a P25 Phase 1 terminator's place. At the same confirmation the audio input drops what it holds from
- * before the retune (the UDP ring, the TCP reader and socket), and keeps what arrives after it; a WAV file is read on
- * as it was.
+ * a return, and a P25 Phase 1 terminator's place. The confirmation also asks the audio input to drop what it holds from
+ * before the retune (the UDP ring, the TCP reader and socket), which the decoder thread's next input read carries out,
+ * keeping what arrives after it; a WAV file is read on as it was.
  */
 
 #include <dsd-neo/app_control/commands.h>
@@ -254,7 +254,7 @@ rig_case_close(rig_case* c) {
     free(c->opts);
 }
 
-/* Whether the tune @p tune moves the symbol clock epoch, which it must when @p moves. */
+/* Whether a tune moved the symbol clock epoch from @p before, which it must when @p moves. */
 static int
 expect_epoch(const char* what, const dsd_state* state, uint32_t before, int moves) {
     return expect_true(what, moves ? state->symbol_clock_epoch != before : state->symbol_clock_epoch == before);
@@ -541,9 +541,9 @@ udp_queue(dsd_socket_t tx, int port, dsd_opts* opts, const int16_t* samples, siz
     return udp_send(tx, port, samples, count) == 0 && udp_next(opts) == samples[0];
 }
 
-/* UDP: the samples the ring holds at the peer's confirmation go, and those sent after it are read. A tune to the
-   frequency the peer is on, a refused request and a tune off the decoder thread (whose place in the stream is not
-   known) drop nothing. */
+/* UDP: the samples the ring holds at the peer's confirmation go at the decoder's next read, and those sent after it are
+   read. A tune to the frequency the peer is on and a refused request drop nothing. A tune off the decoder thread (the
+   P25 watchdog's) asks for nothing itself: the decoder thread takes its post and drops at its next read. */
 static int
 test_udp_backlog(void) {
     rig_case c;
@@ -785,7 +785,8 @@ test_drop_belongs_to_its_input(void) {
     return rc;
 }
 
-/* TCP: what the reader buffered and what the socket has ready at the confirmation go; what is sent after it is read. */
+/* TCP: what the reader buffered and what the socket has ready at the confirmation go at the decoder's next read; what
+   is sent after it is read. */
 static int
 test_tcp_backlog(void) {
     rig_case c;
