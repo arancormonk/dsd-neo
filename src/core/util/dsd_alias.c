@@ -1075,14 +1075,15 @@ dmr_talker_alias_format_name(uint8_t format) {
 
 // ---- DMR talker alias learning (dmr_talker_alias_assembly) ----
 
-// The slot's ACTIVE call and the tuning generation: the binding a piece of the alias arriving now belongs to.
+// The slot's ACTIVE DMR call and the tuning generation: the binding a piece of the alias arriving now belongs to. A
+// slot keeps another protocol's call whose end never decoded; a DMR alias is never its talker's.
 static dmr_talker_alias_assembly
 dmr_talker_alias_binding_now(const dsd_state* state, uint8_t slot) {
     dmr_talker_alias_assembly now;
     DSD_MEMSET(&now, 0, sizeof now);
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-        && call.ota_source_id <= UINT32_MAX) {
+        && DSD_SYNC_IS_DMR(call.protocol) && call.ota_source_id <= UINT32_MAX) {
         now.source = (uint32_t)call.ota_source_id;
         now.epoch = call.epoch;
     }

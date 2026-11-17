@@ -2647,7 +2647,8 @@ suite runs under this compiler.
   as UTF-8, whole sequences only (`generic_talker_alias`, the event row). Learning
   (`dsd_alias_learn_radio()`, metadata `DMR TA`): `dsd_state::dmr_alias_assembly[slot]` (`dmr_talker_alias_assembly`)
   records which of the header and blocks 1-3 arrived, each with a checked embedded LC checksum, while the slot's call
-  was the ACTIVE one with that epoch and source on that tuning generation. A header of another format, length, text or
+  was the ACTIVE DMR call with that epoch and source on that tuning generation (another protocol's call the slot keeps,
+  its end never decoded, binds nothing, as no call does). A header of another format, length, text or
   binding restarts it; a block under another binding, or one that differs from the block held, ends it until the next
   header; a failed checksum (`dmr_talker_alias_lc_invalidate()`) clears it. The pieces live in `dmr_pdu_sf`, which
   other decoders clear or reuse (`dmr_reset_blocks()` after a data error on either slot, the data assembler, NXDN and
@@ -2706,7 +2707,8 @@ suite runs under this compiler.
   count in octet 4 and four octets of text. Only a count of four is assembled (SDRTrunk and DSD-FME agree on four
   fragments and on 14 text octets: the last two of fragment 4 are not text); another count is printed raw and ends the
   assembly in progress. The assembly (`dsd_state::nxdn_alias_prop`, `nxdn_alias_assembly`) stores fragments by number
-  and is bound to the slot, the call epoch (canonical slot 0's current or retained ended call), that call's source and
+  and is bound to the slot, the call epoch (canonical slot 0's current or retained ended NXDN call; another protocol's
+  call the slot keeps binds nothing, as no call does), that call's source and
   the tuning generation of its first stored fragment; a fragment under another binding, or one that differs from the
   fragment already held under its number, restarts it, and a repeat keeps it. The alias is published (display and the
   open call's history row) only by the fragment that completes the assembly (`nxdn_alias_complete()`), so a partial,

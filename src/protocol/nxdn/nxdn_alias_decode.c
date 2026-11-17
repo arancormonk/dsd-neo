@@ -200,13 +200,14 @@ nxdn_alias_log_prop_unassembled(const dsd_opts* opts, const uint8_t fragment[4])
                 (unsigned)fragment[2], (unsigned)fragment[3]);
 }
 
-/* The binding a fragment arriving now belongs to: canonical slot 0's call, its current one or the ended one it
- * retains, and the tuning generation. */
+/* The binding a fragment arriving now belongs to: canonical slot 0's NXDN call, its current one or the ended one it
+ * retains, and the tuning generation. The slot also keeps another protocol's call whose end never decoded; an NXDN
+ * alias is never its talker's, so such a call binds nothing, as no call does. */
 static void
 nxdn_alias_binding_now(const dsd_state* state, nxdn_alias_assembly* binding) {
     DSD_MEMSET(binding, 0, sizeof(*binding));
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) > 0
+    if (dsd_call_state_get(state, 0U, &call) > 0 && DSD_SYNC_IS_NXDN(call.protocol)
         && (call.phase == DSD_CALL_PHASE_ACTIVE || call.phase == DSD_CALL_PHASE_ENDED)) {
         binding->epoch = call.epoch;
         binding->source = (uint32_t)call.ota_source_id;

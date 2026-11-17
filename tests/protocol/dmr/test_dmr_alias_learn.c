@@ -255,6 +255,28 @@ test_binding_breaks(dsd_opts* opts) {
     free_state(st);
 }
 
+/* A slot keeps another protocol's call whose end never decoded (a P25 or NXDN call on canonical slot 0): a DMR alias
+   decoded before its own call opened is no alias of that call's talker. */
+static void
+test_other_protocols_call(dsd_opts* opts) {
+    static const int k_protocols[] = {DSD_SYNC_P25P1_POS, DSD_SYNC_NXDN_POS};
+    for (size_t i = 0; i < sizeof k_protocols / sizeof k_protocols[0]; i++) {
+        dsd_state* st = new_state();
+        const dsd_call_observation other = {
+            .protocol = k_protocols[i],
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 9U,
+            .policy_target_id = 9U,
+            .ota_source_id = 6666666U,
+        };
+        assert(dsd_call_state_observe(st, &other, DSD_CALL_BOUNDARY_BEGIN) >= 0);
+        send_header(opts, st, 0U, 1U, 4U, "DISP");
+        expect_learned(st, 6666666U, NULL, "another protocol's open call takes no DMR alias");
+        free_state(st);
+    }
+}
+
 /* No call, an empty alias, a malformed UTF-8 one and an impossible length are never learned. */
 static void
 test_not_learned(dsd_opts* opts) {
@@ -467,6 +489,7 @@ main(void) {
     test_understated_length(opts);
     test_missing_and_out_of_order(opts);
     test_binding_breaks(opts);
+    test_other_protocols_call(opts);
     test_not_learned(opts);
     test_learn_utf8(opts);
     test_learn_scope(opts);
