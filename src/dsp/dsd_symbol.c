@@ -40,6 +40,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
+#include <dsd-neo/platform/input_backlog_opening.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_tones.h>

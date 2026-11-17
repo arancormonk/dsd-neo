@@ -10,6 +10,7 @@
 
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
+#include <dsd-neo/platform/input_backlog_opening.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>

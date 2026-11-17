@@ -7331,7 +7331,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   post's mark, so the watchdog's tunes drop at the next read after the post; the notice's reconcile
   (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet. Every mark is measured when it is taken:
   the cutoff is what had arrived on the input then, nothing later. The TCP reconnect makes its new connection the
-  measured input as soon as `tcp_connect` returns it (`dsd_input_backlog_opening()`, counted by
+  measured input as soon as `tcp_connect` returns it (`dsd_input_backlog_opening()` in
+  `<dsd-neo/platform/input_backlog_opening.h>`, apart from `input_backlog.h` because it takes a socket:
+  `input_backlog.h` is on `state.h`'s include path and must bring in no system socket or Windows header, which
+  `PLATFORM_HEADERS_NO_SYSTEM_SOCKETS` checks; counted by
   `dsd_pcm_stream_socket_arrived()`: the bytes the socket holds ready, since nothing has read it yet), before its reader
   exists. The backlog keeps the socket itself, by value, never the address of the options field it came from, so a
   replaced or freed `dsd_opts` leaves it nothing to read; the attach, the forget and the run boundary clear it. The

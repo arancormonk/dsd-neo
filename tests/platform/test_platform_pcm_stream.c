@@ -10,6 +10,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
+#include <dsd-neo/platform/input_backlog_opening.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>

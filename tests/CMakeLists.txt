@@ -18244,6 +18244,21 @@ target_link_libraries(
 )
 add_test(NAME PLATFORM_PCM_STREAM COMMAND dsd-neo_test_platform_pcm_stream)
 
+# The headers nearly every translation unit includes (state.h and the input backlog's) bring in no system socket or
+# Windows header, whose near and far macros broke tests on Windows (issue #834): this one fails to compile if they do.
+add_executable(
+    dsd-neo_test_platform_headers_no_system_sockets
+    platform/test_platform_headers_no_system_sockets.c
+)
+target_include_directories(
+    dsd-neo_test_platform_headers_no_system_sockets
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME PLATFORM_HEADERS_NO_SYSTEM_SOCKETS
+    COMMAND dsd-neo_test_platform_headers_no_system_sockets
+)
+
 # A backlog mark taken while the decoder refills the reader (issue #834), its readiness query wrapped through a GNU ld
 # --wrap seam so the refill runs inside it, and the monotonic clock wrapped so a drop can pause past its time cap.
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
