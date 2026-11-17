@@ -1043,10 +1043,11 @@ portaudio_discard_owed(const dsd_audio_stream* stream, signed long owed) {
     return dropped;
 }
 
-int
-dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
+/* dsd_audio_discard_input(), with the monotonic clock it reads after the count as @p now_ns (a test drives its own). */
+static int
+portaudio_discard_input_timed(const dsd_audio_stream* stream, uint64_t marked_ns, uint64_t (*now_ns)(void)) {
     if (!stream || !stream->handle || !stream->is_input || !stream->input_carry || stream->channels <= 0
-        || stream->channels > PORTAUDIO_DISCARD_MAX_CHANNELS) {
+        || stream->channels > PORTAUDIO_DISCARD_MAX_CHANNELS || !now_ns) {
         set_error("Invalid arguments");
         return -1;
     }
@@ -1060,10 +1061,15 @@ dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
         return -1;
     }
     const uint64_t held = (uint64_t)available + audio_input_carry_left(stream->input_carry);
-    const uint64_t keep = audio_input_keep_since(marked_ns, dsd_time_monotonic_ns(), stream->sample_rate, held);
+    const uint64_t keep = audio_input_keep_since(marked_ns, now_ns(), stream->sample_rate, held);
     const size_t from_carry = audio_input_carry_drop(stream->input_carry, (size_t)(held - keep));
     const int dropped = portaudio_discard_owed(stream, (signed long)(held - keep - from_carry));
     return dropped < 0 ? -1 : dropped + (int)from_carry;
+}
+
+int
+dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
+    return portaudio_discard_input_timed(stream, marked_ns, dsd_time_monotonic_ns);
 }
 
 /* An async stream's device is down: once a reopen is due, close the failed device and open it again, on the writer's
