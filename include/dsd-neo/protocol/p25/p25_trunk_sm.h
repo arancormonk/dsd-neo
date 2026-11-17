@@ -85,6 +85,31 @@ typedef enum {
 } p25_sm_grant_provenance_e;
 
 /* ============================================================================
+ * Identity provenance (issue #800, spec 2.19)
+ * ============================================================================ */
+
+/* Which identity fields came from content whose own check passed: the source, the target (talkgroup or destination)
+ * and the kind (group or private). A field keeps the bit of the message that set it, also when a later message
+ * inherits it; anything never set, released or reset is unchecked (0). */
+enum {
+    P25_SM_IDENTITY_CHECKED_SOURCE = 0x01,
+    P25_SM_IDENTITY_CHECKED_TARGET = 0x02,
+    P25_SM_IDENTITY_CHECKED_KIND = 0x04,
+    P25_SM_IDENTITY_CHECKED_ALL = 0x07,
+};
+
+/* The identity the state machine last published for a slot's canonical call, and which of its fields are checked. */
+typedef struct {
+    uint64_t epoch;   // Canonical call epoch the identity was published under; 0 = none
+    uint32_t source;  // Source RID, 0 = none
+    uint32_t target;  // Talkgroup (group) or destination RID (private)
+    uint8_t kind;     // dsd_call_kind of the published call
+    uint8_t is_group; // 1 when target is a talkgroup
+    uint8_t checked;  // P25_SM_IDENTITY_CHECKED_* bits
+    uint8_t reserved;
+} p25_sm_published_identity;
+
+/* ============================================================================
  * Events
  * ============================================================================ */
 
@@ -127,6 +152,10 @@ typedef struct {
     uint32_t grant_seq;                                // IDLE: the slot's grant_seq when the IDLE was observed
     int grant_seq_valid;                               // 1 when grant_seq is set
     int preempt_only; // GRANT announced on a voice channel for another carrier: considered only as a preemption
+    // P25_SM_IDENTITY_CHECKED_* bits for src, tg/dst and is_group. The identity builders below set all three: every
+    // producer dispatches only messages that passed their own check, except a Phase 2 MAC_SIGNAL whose CRC failed
+    // (-F), whose grants clear them (it still drives the follow, as documented for -F).
+    uint8_t identity_checked;
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -206,6 +235,8 @@ typedef struct {
     double last_enc_suppress_m; // Monotonic timestamp of the last enc-lockout suppression action on this slot.
                                 // The suppressed transmission occupies the carrier with no assignment, epoch,
                                 // or audio trace, so this is the only evidence of it that survives the teardown.
+    uint8_t identity_checked;   // P25_SM_IDENTITY_CHECKED_* bits for src, ota_tg/dst and is_group (assignment)
+    p25_sm_published_identity published; // Identity last published for this slot's canonical call
 } p25_sm_slot_ctx_t;
 
 typedef struct {
@@ -661,6 +692,20 @@ int p25_sm_slot_grant_since(int slot, uint32_t grant_seq);
 uint32_t p25_sm_slot_grant_seq(int slot);
 
 /**
+ * @brief The checked identity of a slot's ACTIVE canonical call (issue #800, spec 2.19).
+ *
+ * The identity counts only while the slot's canonical call is ACTIVE, is the epoch the state machine last published
+ * an identity for, still has that identity's source, target and kind, all three came from checked content (a field
+ * inherited from an earlier assignment keeps that assignment's verdict), and it names a source.
+ *
+ * @param state Decoder state (canonical call state).
+ * @param slot Slot index (0 or 1).
+ * @param[out] out The published identity; zeroed when none counts.
+ * @return 1 when the call's source, target and kind are checked provenance, 0 otherwise.
+ */
+int p25_sm_checked_call_identity(const dsd_state* state, int slot, p25_sm_published_identity* out);
+
+/**
  * @brief Check whether a voice-user observation re-describes a call that just ended.
  *
  * After an accepted MAC_END_PTT the FNE keeps describing the completed call
@@ -961,6 +1006,7 @@ p25_sm_ev_group_grant(int channel, long freq_hz, int tg, int src, int svc_bits) 
     ev.svc_bits = svc_bits;
     ev.is_group = 1;
     ev.grant_provenance = P25_SM_GRANT_PROVENANCE_ASSIGNMENT;
+    ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
     return ev;
 }
 
@@ -983,6 +1029,7 @@ p25_sm_ev_indiv_grant(int channel, long freq_hz, int dst, int src, int svc_bits)
     ev.svc_bits = svc_bits;
     ev.is_group = 0;
     ev.grant_provenance = P25_SM_GRANT_PROVENANCE_ASSIGNMENT;
+    ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
     return ev;
 }
 
@@ -1025,6 +1072,7 @@ p25_sm_ev_ptt_call(int slot, int tg, int dst, int src, int is_group, int svc_bit
     ev.is_group = is_group ? 1 : 0;
     ev.svc_bits = svc_bits;
     ev.identity_valid = 1;
+    ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
     return ev;
 }
 
@@ -1046,6 +1094,7 @@ p25_sm_ev_active_call(int slot, int tg, int dst, int src, int is_group, int svc_
     ev.is_group = is_group ? 1 : 0;
     ev.svc_bits = svc_bits;
     ev.identity_valid = 1;
+    ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
     return ev;
 }
 

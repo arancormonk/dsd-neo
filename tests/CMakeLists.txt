@@ -12516,6 +12516,38 @@ else()
 endif()
 add_test(NAME P25_P1_HARRIS_GPS COMMAND dsd-neo_test_p25_p1_harris_gps)
 
+# P25 P2 L3Harris GPS through the real MAC dispatch, trunk SM identity verdicts, decoder, admission and -L (issue #800)
+add_executable(
+    dsd-neo_test_p25_p2_harris_gps
+    protocol/p25/test_p25_p2_harris_gps.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_harris_gps
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p2_harris_gps
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_harris_gps
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME P25_P2_HARRIS_GPS COMMAND dsd-neo_test_p25_p2_harris_gps)
+
 # P25 P1 TDULC should not force immediate CC return
 add_executable(
     dsd-neo_test_p25_p1_tdulc_no_cc_bounce
