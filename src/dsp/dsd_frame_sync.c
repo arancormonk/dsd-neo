@@ -849,9 +849,8 @@ frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* lab
 #endif
     frame_sync_set_basic_lock(ctx);
     frame_sync_p25p1_mark_frame_span(state);
-    state->dmrburstR = 17;
-    state->payload_algidR = 0;
-    state->dmr_stereo = 1;
+    /* The frame's single-slot setup (the second slot's burst and algorithm) is its dispatch's, under the P25 SM tick
+       guard: a watchdog release clears the same fields (dsd_dispatch_handle_p25p1()). */
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "P25 Phase 1");
     if (opts->errorbars == 1) {
         printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);

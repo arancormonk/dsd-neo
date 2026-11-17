@@ -198,12 +198,13 @@ test_expected_position_threshold(void) {
     assert(state.p25_p1_sync_anchor.valid == 0U);
     assert(state.p25_p1_sync_anchor.frame_valid == 1U);
     assert(state.p25_p1_sync_anchor.frame.sync_clock == EXPECTED);
-    /* What an accept sets that is no credit is set as for an exact word: the lock, the frame's span flag, its labels. */
+    /* What an accept sets that is no credit is set as for an exact word: the lock, the frame's span flag, its labels.
+       The second slot's fields are the frame's dispatch's, under the P25 SM tick guard (dsd_dispatch_handle_p25p1()). */
     assert(state.lastsynctype == DSD_SYNC_P25P1_POS);
     assert(state.carrier == 1);
     assert(state.p25_p1_c4fm_frame_valid == 0);
     assert(strcmp(state.ftype, "P25 Phase 1") == 0);
-    assert(state.dmrburstR == 17);
+    assert(state.dmrburstR == 0);
     teardown(&state);
 
     setup(&opts, &state);

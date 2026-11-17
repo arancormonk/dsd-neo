@@ -1288,6 +1288,8 @@ the decoder merges into `dsd_state`, newest wins, when it next takes the guard (
 decoder thread is the one that started the watchdog. The no-carrier pass's reset (`dsd_engine_reset_no_carrier_state()`:
 the NAC and the carrier's other codes, the sync type, crypto and call state) and its identity step run under one hold of
 the guard, and the frame sync's notes to the machine (a voice channel's sync, a pass without one) wait for the guard.
+A Phase 1 frame's single-slot setup (`dmrburstR`, `payload_algidR`, `dmr_stereo`), which a watchdog release also writes,
+is set in its dispatch (`dsd_dispatch_handle_p25p1()`), not at the hunt's accept.
 `ENGINE_P25_WATCHDOG_ACQUISITION_RACE` runs the real watchdog thread beside those writes (tsan-debug). A retune the
 watchdog makes still writes the chain and the stamps from its own thread (`trunk_tuning.c`), as an off-thread tune.
 DMR owns its decoded
