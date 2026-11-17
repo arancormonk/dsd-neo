@@ -3756,7 +3756,7 @@ dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
     switch (opts->audio_in_type) {
         case AUDIO_IN_PULSE:
             if (opts->audio_in_stream) {
-                (void)dsd_audio_discard_input(opts->audio_in_stream, dsd_input_cut_age_ns(cut));
+                (void)dsd_audio_discard_input(opts->audio_in_stream, cut->marked_ns);
             }
             break;
         case AUDIO_IN_UDP: (void)dsd_net_audio_input_hook_udp_discard_through(opts, cut); break;

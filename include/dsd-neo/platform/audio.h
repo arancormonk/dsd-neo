@@ -112,11 +112,13 @@ dsd_audio_stream* dsd_audio_open_output(const dsd_audio_params* params);
 int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
 
 /**
- * @brief Drop the input samples the stream holds now, unread, but for the newest @p keep_ns of them (issue #834: a
+ * @brief Drop the input samples the stream holds now, unread, but for those captured since @p marked_ns (issue #834: a
  * rigctl peer's audio from before its retune; the audio captured since the retune was confirmed is kept).
  *
- * A device captures in real time, so the newest @p keep_ns of what it holds is the audio captured since then. Per
- * backend:
+ * A device captures in real time, so the newest frames it holds, as many as the time since the mark lasts, are the
+ * audio captured since then. That time is read after the backend counts what it holds (or, on PulseAudio, after its
+ * last read), so audio captured while the caller waited before the count is kept, and the frame count rounds up: a
+ * drop keeps more rather than less. Per backend:
  * - PulseAudio (Linux, macOS), a best effort: what the client holds from the server (the rest of the record fragment
  *   being read, the queue behind it) is read until a read waits for audio; that read's frames count as held too. At
  *   most 2 s of frames at the stream's rate, exact to one 32-frame read (the cap is checked before each read, so up to
@@ -131,11 +133,12 @@ int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
  *   begun after 250 ms.
  * Audio still on its way to DSD-neo (in the producer, or in the sound server) arrives after the call and is kept.
  *
- * @param stream    Input stream handle.
- * @param keep_ns   The newest audio to keep, in nanoseconds of capture (0 drops all held).
+ * @param stream     Input stream handle.
+ * @param marked_ns  The retune's mark on the monotonic clock (dsd_time_monotonic_ns(), dsd_input_cut::marked_ns): the
+ *                   audio captured since is kept (a mark later than the count keeps nothing).
  * @return Frames dropped, or negative on error (an output stream included).
  */
-int dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t keep_ns);
+int dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns);
 
 /**
  * @brief Write audio samples to output stream.

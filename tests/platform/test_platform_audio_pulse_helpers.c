@@ -77,9 +77,19 @@ reset_pa_simple_fakes(void) {
 
 /* The device recovery's clock (audio_output_recovery.h), set by the tests. */
 static uint64_t g_now_ns = 1000000000ULL;
+/* The next clock read is late (issue #834): the clock moves this far first, while the capture holds
+   g_late_clock_frames more, once. */
+static uint64_t g_late_clock_ns;
+static size_t g_late_clock_frames;
 
 uint64_t
 dsd_time_monotonic_ns(void) {
+    if (g_late_clock_ns > 0U) {
+        g_now_ns += g_late_clock_ns;
+        g_pa_capture_held += g_late_clock_frames;
+        g_late_clock_ns = 0U;
+        g_late_clock_frames = 0U;
+    }
     return g_now_ns;
 }
 
@@ -871,8 +881,8 @@ test_pulse_enum_callbacks_and_guards(void) {
 }
 
 /* Issue #834: an input discard reads what the client holds, up to the read that waits, and keeps the newest of it for
-   the reads that follow: what was captured since the mark, the time before the discard (1 ms at 48 kHz is 48 frames)
-   and the time the discard took. The fake's read that waits takes 2 ms, so a discard keeping 1 ms keeps 3 ms, 144
+   the reads that follow: what was captured since the mark, the time before the discard (a mark 1 ms before it: 48
+   frames at 48 kHz) and the time the discard took. The fake's read that waits takes 2 ms, so a discard keeping 1 ms keeps 3 ms, 144
    frames, and one keeping none keeps 2 ms, 96 frames. */
 static void
 test_pulse_input_discard_keeps_the_newest(void) {
@@ -888,7 +898,7 @@ test_pulse_input_discard_keeps_the_newest(void) {
     g_pa_capture_on = 1;
     /* Held: frames 0..299. The discard reads 32 at a time; its tenth read waits and brings frames 288..319. */
     g_pa_capture_held = 300U;
-    assert(dsd_audio_discard_input(in, 1000000U) == 176);
+    assert(dsd_audio_discard_input(in, g_now_ns - 1000000U) == 176);
     int16_t frames[50];
     assert(dsd_audio_read(in, frames, 1) == 1 && frames[0] == 176);
     assert(dsd_audio_read(in, frames, 50) == 50);
@@ -898,15 +908,15 @@ test_pulse_input_discard_keeps_the_newest(void) {
     /* What a discard kept and no read took (227..319) is the oldest of what the next discard drops: with the read
        that waits (320..351), 125 frames, of which it keeps 96. */
     g_pa_capture_held = 0U;
-    assert(dsd_audio_discard_input(in, 0U) == 29);
+    assert(dsd_audio_discard_input(in, g_now_ns) == 29);
     assert(dsd_audio_read(in, frames, 1) == 1 && frames[0] == 256);
     /* A held carry (257..351), then a discard keeping 144 of 127 frames: nothing goes. */
     g_pa_capture_held = 10U;
-    assert(dsd_audio_discard_input(in, 1000000U) == 0);
+    assert(dsd_audio_discard_input(in, g_now_ns - 1000000U) == 0);
     assert(dsd_audio_read(in, frames, 1) == 1 && frames[0] == 257);
     /* The carry goes first. */
     g_pa_capture_held = 200U;
-    const int dropped = dsd_audio_discard_input(in, 1000000U);
+    const int dropped = dsd_audio_discard_input(in, g_now_ns - 1000000U);
     assert(dsd_audio_read(in, frames, 1) == 1);
     assert(dropped > 0 && frames[0] == (int16_t)(258 + dropped));
     /* Kept: the newest 144 of the carry (258..383) and the reads (384..607). */
@@ -932,13 +942,44 @@ test_pulse_input_discard_keeps_what_its_wait_brought(void) {
     g_pa_capture_on = 1;
     g_pa_capture_held = 0U;
     g_pa_capture_next = 101;
-    const int dropped = dsd_audio_discard_input(in, 0U);
+    const int dropped = dsd_audio_discard_input(in, g_now_ns);
     int16_t frame = 0;
     assert(dsd_audio_read(in, &frame, 1) == 1);
     if (dropped != 0 || frame != 101) {
         DSD_FPRINTF(stderr, "an empty input's discard: dropped %d, next %d (expected 0 and 101)\n", dropped, frame);
     }
     assert(dropped == 0 && frame == 101);
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+}
+
+/* Issue #834: the decoder was descheduled after the retune's mark, before the discard began (its first clock read is
+   late by 100 ms): frames 0..239 were held at the mark and 240..5039 (100 ms at 48 kHz) captured meanwhile. Only the
+   old frames go: the next frame read is at most 240. */
+static void
+test_pulse_input_discard_keeps_what_came_before_it_began(void) {
+    reset_pa_simple_fakes();
+    dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
+    params.sample_rate = 48000;
+    params.channels = 1;
+    params.bits_per_sample = 16;
+    params.app_name = "dsd-neo-test";
+    dsd_audio_stream* in = dsd_audio_open_input(&params);
+    assert(in != NULL);
+    g_pa_capture_on = 1;
+    g_pa_capture_held = 240U;
+    g_pa_capture_next = 0;
+    g_late_clock_ns = 100000000ULL;
+    g_late_clock_frames = 4800U;
+    const int dropped = dsd_audio_discard_input(in, g_now_ns);
+    int16_t frame = -1;
+    assert(dsd_audio_read(in, &frame, 1) == 1);
+    if (dropped < 0 || dropped > 240 || frame != dropped) {
+        DSD_FPRINTF(stderr, "a late discard dropped %d, next %d (expected at most 240, the next the first kept)\n",
+                    dropped, frame);
+    }
+    assert(dropped >= 0 && dropped <= 240 && frame == dropped);
     dsd_audio_close(in);
     reset_pa_simple_fakes();
 }
@@ -957,6 +998,7 @@ main(void) {
     test_pulse_enum_callbacks_and_guards();
     test_pulse_input_discard_keeps_what_its_wait_brought();
     test_pulse_input_discard_keeps_the_newest();
+    test_pulse_input_discard_keeps_what_came_before_it_began();
     return 0;
 }
 

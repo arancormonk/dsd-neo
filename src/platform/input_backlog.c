@@ -119,15 +119,6 @@ dsd_input_backlog_cut_applies(const dsd_input_cut* cut, const void* queue) {
     return applies;
 }
 
-uint64_t
-dsd_input_cut_age_ns(const dsd_input_cut* cut) {
-    if (cut == NULL) {
-        return 0U;
-    }
-    const uint64_t now = dsd_time_monotonic_ns();
-    return now > cut->marked_ns ? now - cut->marked_ns : 0U;
-}
-
 /* The connection an opening attached is no input any more (its open failed, or the run ended): detached. */
 static void
 backlog_end_opening_locked(void) {

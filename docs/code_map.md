@@ -7286,7 +7286,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   count, and only on that attachment (`dsd_input_backlog_cut_applies()`): `dsd_pcm_stream_discard_through()` and the
   `udp_discard_through` and `tcp_discard_through` network-audio hooks. A device input attaches nothing, since neither
   thread can count what it holds (`pa_simple` hides it): its drop keeps the newest audio, as much as the time since the
-  mark (`dsd_input_cut_age_ns()`, `dsd_audio_discard_input()`, below). The request is also tagged with
+  mark (`dsd_input_cut::marked_ns`, `dsd_audio_discard_input()`, below). The request is also tagged with
   `dsd_opts::pcm_input_generation` (`input_drop_generation`): one asked for on an input since replaced is cleared unrun,
   and a run boundary (`dsd_frame_sync_off_thread_tunes_reset()`) clears it too. Off the decoder thread (the P25
   watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` (`unflushed_retune.c`) before its tune
@@ -10751,17 +10751,20 @@ Notes:
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
   `dsd_audio_discard_input()` (a `const` stream: it changes what the device holds, and on PulseAudio the carry the
   stream points to) drops what an input stream holds unread (issue #834, at the decoder's next read after a rigctl
-  retune), but for the newest audio, as much as the time since the retune's mark (`keep_ns`): a device captures in real
-  time, so that is the audio captured since (`audio_input_keep_frames()` in `audio_stream_internal.h`). PulseAudio
+  retune), but for the newest audio, as much as the time since the retune's mark (`marked_ns`): a device captures in
+  real time, so that is the audio captured since (`audio_input_keep_since()` in `audio_stream_internal.h`, rounded up).
+  Every backend reads that time after it counts what the stream holds (PulseAudio after its last read), so audio
+  captured while the decoder waited between the mark and the count is kept: PulseAudio, PortAudio and AAudio keep by
+  the same rule. PulseAudio
   (Linux, macOS), a best effort, at most 2 s of frames at the stream's rate (exact to one read: the cap is checked
   before each 32-frame read, so up to 31 frames past it) with no read begun after 250 ms on the monotonic clock: it
   reads the record fragment `pa_simple` keeps, and the queue behind it, in 32-frame reads until one waits for audio
   (more than 1 ms), that read included, and keeps the newest of it in the stream's carry (`struct pulse_input_carry`,
   allocated with the input stream), which `dsd_audio_read()` returns before the device's; the waiting read lasts until
   the server's next record block (about one 100 ms fragment). It keeps as much as was captured from the mark to its
-  end, `keep_ns` plus the time it took, the waiting read included: the audio that read waited for was captured after
-  the mark. PortAudio and AAudio read only the snapshot they counted, with no wait, so audio captured while they read
-  is left in the stream. There is no exact way through `pa_simple`:
+  end, the time before it began and its waiting read included: the audio that read waited for was captured after the
+  mark. PortAudio and AAudio read only the snapshot they counted, with no wait, so audio captured while they read is
+  left in the stream. There is no exact way through `pa_simple`:
   `pa_simple_get_latency()` can read 0 on a sink monitor while the client holds a whole fragment, and
   `pa_simple_flush()` flushes the server side only, not the client's queue or the fragment `pa_simple` holds;
   `pa_stream_readable_size()` is exact but needs the input on the `pa_stream` API. A read of held data that is preempted

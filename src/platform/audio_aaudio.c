@@ -1522,9 +1522,11 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 #define DSD_AAUDIO_DISCARD_MAX_NS       250000000ULL
 
 /* The frames an input discard drops into @p owed: what the stream holds now (the frames the device wrote that no read
-   took) less the newest keep_ns of it, at most DSD_AAUDIO_DISCARD_MAX_FRAMES. 0, or -1 when a count failed. */
+   took) less what was captured since @p marked_ns, at most DSD_AAUDIO_DISCARD_MAX_FRAMES. The time since the mark is
+   read after the counts, so frames written before them, while the decoder waited, are kept too. 0, or -1 when a count
+   failed. */
 static int
-aaudio_input_discard_owed(const dsd_audio_stream* stream, uint64_t keep_ns, uint64_t* owed) {
+aaudio_input_discard_owed(const dsd_audio_stream* stream, uint64_t marked_ns, uint64_t* owed) {
     const int64_t written = AAudioStream_getFramesWritten(stream->handle);
     const int64_t read = AAudioStream_getFramesRead(stream->handle);
     if (written < 0 || read < 0) {
@@ -1532,14 +1534,14 @@ aaudio_input_discard_owed(const dsd_audio_stream* stream, uint64_t keep_ns, uint
         return -1;
     }
     const uint64_t held = written > read ? (uint64_t)(written - read) : 0U;
-    const uint64_t drop = held - audio_input_keep_frames(keep_ns, stream->sample_rate, held);
+    const uint64_t drop = held - audio_input_keep_since(marked_ns, dsd_time_monotonic_ns(), stream->sample_rate, held);
     *owed = drop < (uint64_t)DSD_AAUDIO_DISCARD_MAX_FRAMES ? drop : (uint64_t)DSD_AAUDIO_DISCARD_MAX_FRAMES;
     return 0;
 }
 
 /* The frames dropped are not counted in device_frames: the decoder never had them. */
 int
-dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t keep_ns) {
+dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
     if (!stream || !stream->is_input || stream->channels <= 0 || stream->channels > DSD_AAUDIO_DISCARD_MAX_CHANNELS) {
         set_error("Invalid arguments");
         return -1;
@@ -1548,7 +1550,7 @@ dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t keep_ns) {
         return 0; /* between a disconnect and a reopen nothing is held */
     }
     uint64_t owed = 0U;
-    if (aaudio_input_discard_owed(stream, keep_ns, &owed) != 0) {
+    if (aaudio_input_discard_owed(stream, marked_ns, &owed) != 0) {
         return -1;
     }
     int16_t chunk[DSD_AAUDIO_DISCARD_CHUNK_FRAMES * DSD_AAUDIO_DISCARD_MAX_CHANNELS];

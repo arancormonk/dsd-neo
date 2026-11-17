@@ -157,6 +157,10 @@ Pa_GetDefaultOutputDevice(void) {
 static PaDeviceIndex g_default_input = paNoDevice;
 static signed long g_read_available;
 static unsigned long g_frames_read;
+/* The next availability query is late (issue #834): it sleeps this long first, while the device captures
+   g_available_late_frames more, once. */
+static int g_available_late_ms;
+static signed long g_available_late_frames;
 
 PaDeviceIndex
 Pa_GetDefaultInputDevice(void) {
@@ -263,6 +267,12 @@ Pa_ReadStream(PaStream* stream, void* buffer, unsigned long frames) {
 signed long
 Pa_GetStreamReadAvailable(PaStream* stream) {
     (void)stream;
+    if (g_available_late_ms > 0) {
+        usleep((useconds_t)g_available_late_ms * 1000U);
+        g_read_available += g_available_late_frames;
+        g_available_late_ms = 0;
+        g_available_late_frames = 0;
+    }
     return g_read_available;
 }
 
@@ -424,9 +434,28 @@ test_streams_on_two_threads_never_overlap_in_portaudio(void) {
     assert(atomic_load(&g_lifecycle_overlap) == 0);
 }
 
+/* An input discard on the real monotonic clock, with @p available frames reported at the mark @p marked_ns and nothing
+   captured meanwhile: it drops at least what a count timed at its return would, and at most what one timed at its call
+   would (the frames captured since the mark are kept, timed after the count, rounded up), and reads exactly what it
+   drops. */
+static int
+discard_counted(dsd_audio_stream* in, uint64_t marked_ns, signed long available) {
+    const unsigned long read_before = g_frames_read;
+    const uint64_t called_ns = dsd_time_monotonic_ns();
+    const int dropped = dsd_audio_discard_input(in, marked_ns);
+    const uint64_t returned_ns = dsd_time_monotonic_ns();
+    const uint64_t most =
+        (uint64_t)available - audio_input_keep_since(marked_ns, called_ns, 48000, (uint64_t)available);
+    const uint64_t least =
+        (uint64_t)available - audio_input_keep_since(marked_ns, returned_ns, 48000, (uint64_t)available);
+    assert(dropped >= 0 && (uint64_t)dropped >= least && (uint64_t)dropped <= most);
+    assert(g_frames_read - read_before == (unsigned long)dropped);
+    return dropped;
+}
+
 /* Issue #834: an input discard reads exactly the frames the stream reports available, in chunks, and no more, less
-   the newest frames it keeps (the audio captured since the mark: 5 ms at 48 kHz is 240 frames, and a keep longer than
-   what is held keeps it all); an availability error is an error. */
+   the newest frames it keeps (the audio captured since the mark: 5 ms at 48 kHz is 240 frames, and a mark longer ago
+   than what is held keeps it all); an availability error is an error. */
 static void
 test_input_discard_reads_what_is_available(void) {
     g_default_input = 0;
@@ -435,19 +464,42 @@ test_input_discard_reads_what_is_available(void) {
     assert(in != NULL);
     g_read_available = 600;
     g_frames_read = 0U;
-    assert(dsd_audio_discard_input(in, 0U) == 600);
-    assert(g_frames_read == 600U);
+    (void)discard_counted(in, dsd_time_monotonic_ns(), 600);
     g_read_available = 0;
-    assert(dsd_audio_discard_input(in, 0U) == 0);
-    assert(g_frames_read == 600U);
+    assert(discard_counted(in, dsd_time_monotonic_ns(), 0) == 0);
     g_read_available = 600;
-    assert(dsd_audio_discard_input(in, 5000000U) == 360);
-    assert(g_frames_read == 960U && g_read_available == 240);
-    assert(dsd_audio_discard_input(in, 1000000000U) == 0);
-    assert(g_frames_read == 960U);
+    (void)discard_counted(in, dsd_time_monotonic_ns() - 5000000U, 600);
+    g_read_available = 600;
+    assert(discard_counted(in, dsd_time_monotonic_ns() - 1000000000U, 600) == 0);
+    assert(g_read_available == 600);
+    const unsigned long read_before = g_frames_read;
     g_read_available = (signed long)paUnanticipatedHostError;
-    assert(dsd_audio_discard_input(in, 0U) < 0);
-    assert(g_frames_read == 960U);
+    assert(dsd_audio_discard_input(in, dsd_time_monotonic_ns()) < 0);
+    assert(g_frames_read == read_before);
+    g_read_available = 0;
+    dsd_audio_close(in);
+    g_default_input = paNoDevice;
+}
+
+/* Issue #834: the decoder was descheduled after the retune's mark, before the discard sampled the stream (the query
+   is late by 100 ms): 240 frames were held at the mark, and 4800 more (100 ms at 48 kHz) captured meanwhile. Only the
+   240 may go. */
+static void
+test_input_discard_keeps_what_was_captured_before_its_snapshot(void) {
+    g_default_input = 0;
+    const dsd_audio_params params = {48000, 1, 16, NULL, "test", 0};
+    dsd_audio_stream* in = dsd_audio_open_input(&params);
+    assert(in != NULL);
+    g_read_available = 240;
+    g_frames_read = 0U;
+    g_available_late_ms = 100;
+    g_available_late_frames = 4800;
+    const int dropped = dsd_audio_discard_input(in, dsd_time_monotonic_ns());
+    if (dropped < 0 || dropped > 240 || g_read_available < 4800) {
+        fprintf(stderr, "a late snapshot's discard dropped %d frames, %ld left (expected at most 240, 4800 kept)\n",
+                dropped, g_read_available);
+    }
+    assert(dropped >= 0 && dropped <= 240 && g_read_available >= 4800);
     g_read_available = 0;
     dsd_audio_close(in);
     g_default_input = paNoDevice;
@@ -459,6 +511,7 @@ main(void) {
     test_async_recovery_on_the_opening_thread();
     test_streams_on_two_threads_never_overlap_in_portaudio();
     test_input_discard_reads_what_is_available();
+    test_input_discard_keeps_what_was_captured_before_its_snapshot();
     dsd_audio_cleanup();
     printf("PLATFORM_AUDIO_PORTAUDIO_RECOVERY: OK\n");
     return 0;

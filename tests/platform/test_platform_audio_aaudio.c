@@ -102,6 +102,10 @@ static struct {
     /* Fake monotonic clock, so "was the decoder producing just now" is decided
      * by the test rather than by how fast it happens to run. */
     uint64_t now_ns;
+    /* The next AAudioStream_getFramesWritten() is late (issue #834): the fake clock moves this far first, while the
+       device writes written_late_frames more, once. */
+    uint64_t written_late_ns;
+    int64_t written_late_frames;
     int16_t captured[FAKE_CAPTURE_SAMPLES];
     size_t captured_samples;
 } g;
@@ -475,6 +479,12 @@ AAudioStream_getFramesWritten(AAudioStream* stream) {
     (void)stream;
     if (g.mutex_depth > 0) {
         g.queries_under_mutex++;
+    }
+    if (g.written_late_ns > 0U) {
+        g.now_ns += g.written_late_ns;
+        g.frames_written += g.written_late_frames;
+        g.written_late_ns = 0U;
+        g.written_late_frames = 0;
     }
     return g.frames_written;
 }
@@ -997,7 +1007,7 @@ test_input_stream(void) {
     dsd_audio_close(stream);
 
     /* Issue #834: an input discard reads the frames the device wrote and no read took, less the newest it keeps (the
-       audio captured since the mark: 5 ms at 48 kHz is 240 frames); a keep longer than what is held keeps it all. */
+       audio captured since the mark: 5 ms at 48 kHz is 240 frames); a mark longer ago than what is held keeps it all. */
     reset_fakes();
     g.device_rate = 48000;
     g.device_channels = 1;
@@ -1006,14 +1016,36 @@ test_input_stream(void) {
     g.frames_read_step = 0; /* the fake's reads leave the read count where the test puts it */
     g.frames_written = 600;
     g.frames_read = 0;
-    assert(dsd_audio_discard_input(stream, 0U) == 600);
+    assert(dsd_audio_discard_input(stream, g.now_ns) == 600);
     assert(g.input_frames_taken == 600);
     g.frames_written = 1200; /* 600 more held */
     g.frames_read = 600;
-    assert(dsd_audio_discard_input(stream, 5000000U) == 360);
+    assert(dsd_audio_discard_input(stream, g.now_ns - 5000000U) == 360);
     assert(g.input_frames_taken == 960);
-    assert(dsd_audio_discard_input(stream, 1000000000U) == 0);
+    assert(dsd_audio_discard_input(stream, g.now_ns - 1000000000U) == 0);
     assert(g.input_frames_taken == 960);
+    dsd_audio_close(stream);
+
+    /* Issue #834: the decoder was descheduled after the retune's mark, before the discard counted the stream (the count
+       is late by 100 ms): 240 frames were held at the mark and 4800 more (100 ms at 48 kHz) written meanwhile. Only
+       the 240 go. */
+    reset_fakes();
+    g.device_rate = 48000;
+    g.device_channels = 1;
+    stream = dsd_audio_open_input(&params);
+    assert(stream != NULL);
+    g.frames_read_step = 0;
+    g.frames_written = 240;
+    g.frames_read = 0;
+    g.written_late_ns = 100000000U;
+    g.written_late_frames = 4800;
+    {
+        const int dropped = dsd_audio_discard_input(stream, g.now_ns);
+        if (dropped != 240) {
+            DSD_FPRINTF(stderr, "a late count's discard dropped %d frames (expected 240)\n", dropped);
+        }
+        assert(dropped == 240 && g.input_frames_taken == 240);
+    }
     dsd_audio_close(stream);
 
     /* Input is never resampled: a mismatched grant is a clean failure. */

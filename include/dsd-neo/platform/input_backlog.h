@@ -13,8 +13,8 @@
  * The PCM stream reader (stdin, TCP) counts bytes and the UDP ring samples. A mark (dsd_input_backlog_mark()) records
  * that count and the time; the queue's drop discards input up to the count (dsd_pcm_stream_discard_through(),
  * udp_input_discard_through()) and only on the attachment it was measured on (dsd_input_backlog_cut_applies()). A
- * device input (PulseAudio, PortAudio, AAudio) attaches nothing: its drop keeps the audio captured since the mark
- * (dsd_input_cut_age_ns(), dsd_audio_discard_input()).
+ * device input (PulseAudio, PortAudio, AAudio) attaches nothing: its drop keeps the audio captured since the mark's
+ * time (dsd_input_cut::marked_ns, dsd_audio_discard_input()).
  *
  * The retune the P25 watchdog confirms off the decoder thread is held here until the decoder takes it
  * (dsd_input_backlog_post(), dsd_input_backlog_take()), measured when it is posted: the cutoff is what had arrived on
@@ -66,9 +66,6 @@ void dsd_input_backlog_mark(dsd_input_cut* out);
 
 /** Whether @p cut counted @p queue, attached since without a break. */
 int dsd_input_backlog_cut_applies(const dsd_input_cut* cut, const void* queue);
-
-/** Nanoseconds since @p cut was marked (0 for NULL or a mark in the future). */
-uint64_t dsd_input_cut_age_ns(const dsd_input_cut* cut);
 
 /** A retune confirmed off the decoder thread: marked and held for the decoder (the latest post wins). */
 void dsd_input_backlog_post(void);

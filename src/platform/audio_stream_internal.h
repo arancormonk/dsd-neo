@@ -42,6 +42,15 @@ audio_input_keep_frames(uint64_t keep_ns, int rate, uint64_t limit) {
     return frames < limit ? frames : limit;
 }
 
+/* The frames an input discard keeps (dsd_audio_discard_input()): those captured from the mark @p marked_ns until
+   @p now_ns, both on the monotonic clock, rounded up and at most @p limit. @p now_ns is read after the backend counted
+   what it holds, so the audio captured while the caller waited before that count is kept too. A mark after @p now_ns
+   keeps nothing. */
+static inline uint64_t
+audio_input_keep_since(uint64_t marked_ns, uint64_t now_ns, int rate, uint64_t limit) {
+    return audio_input_keep_frames(now_ns > marked_ns ? now_ns - marked_ns : 0U, rate, limit);
+}
+
 struct dsd_audio_stream {
     dsd_audio_backend_handle* handle;
     int is_input;
