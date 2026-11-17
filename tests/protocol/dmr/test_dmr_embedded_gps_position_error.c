@@ -464,12 +464,15 @@ test_nxdn_gps_report_paths(const dsd_opts* opts, dsd_state* st) {
                sizeof st->event_history_s[0].Event_History_Items[0].gps_s);
     reset_watchdog_capture();
 
-    nxdn_gps_report(opts, st, bits, 900003U);
+    nxdn_gps_report(opts, st, bits, sizeof bits, 900003U, NULL);
 
-    rc |= expect_has_substr(st->event_history_s[0].Event_History_Items[0].gps_s, "41.", "nxdn-gps-lat");
-    rc |= expect_has_substr(st->event_history_s[0].Event_History_Items[0].gps_s, "87.", "nxdn-gps-lon");
+    /* A data report goes to its own notice row only: the same radio's active call row is left alone. */
+    rc |= expect_i("nxdn-gps-not-on-call-row", st->event_history_s[0].Event_History_Items[0].gps_s[0], '\0');
+    rc |= expect_has_substr(g_watchdog_gps, "41.", "nxdn-gps-lat");
+    rc |= expect_has_substr(g_watchdog_gps, "87.", "nxdn-gps-lon");
     rc |= expect_i("nxdn-watchdog-calls", g_watchdog_calls, 1);
-    rc |= expect_u32("nxdn-watchdog-src", g_watchdog_src, 1234U);
+    /* The notice names the source of the header bound to the report (the caller's), as the record does. */
+    rc |= expect_u32("nxdn-watchdog-src", g_watchdog_src, 900003U);
     rc |= expect_u32("nxdn-watchdog-dst", g_watchdog_dst, 5678U);
     rc |= expect_u32("nxdn-watchdog-slot", g_watchdog_slot, 0U);
     rc |= expect_u32("nxdn-source-reset", st->dmr_lrrp_source[0], 0U);
@@ -480,7 +483,7 @@ test_nxdn_gps_report_paths(const dsd_opts* opts, dsd_state* st) {
     st->dmr_lrrp_source[0] = 1234U;
     st->dmr_lrrp_target[0] = 5678U;
     reset_watchdog_capture();
-    nxdn_gps_report(opts, st, bits, 900004U);
+    nxdn_gps_report(opts, st, bits, sizeof bits, 900004U, NULL);
     rc |= expect_has_substr(g_watchdog_gps, "41.", "mismatched-nxdn-data-event-lat");
     rc |= expect_has_substr(g_watchdog_gps, "87.", "mismatched-nxdn-data-event-lon");
     rc |= expect_i("mismatched-nxdn-preserves-active-gps",
@@ -492,7 +495,7 @@ test_nxdn_gps_report_paths(const dsd_opts* opts, dsd_state* st) {
     st->dmr_lrrp_source[0] = 1234U;
     st->dmr_lrrp_target[0] = 5678U;
     reset_watchdog_capture();
-    nxdn_gps_report(opts, st, bits, 900003U);
+    nxdn_gps_report(opts, st, bits, sizeof bits, 900003U, NULL);
     rc |= expect_has_substr(g_watchdog_gps, "41.", "standalone-nxdn-data-event-lat");
     rc |= expect_has_substr(g_watchdog_gps, "87.", "standalone-nxdn-data-event-lon");
     rc |= expect_i("standalone-nxdn-does-not-stage-gps", st->event_history_s[0].Event_History_Items[0].gps_s[0], '\0');
@@ -501,7 +504,7 @@ test_nxdn_gps_report_paths(const dsd_opts* opts, dsd_state* st) {
     set_bits_msb(bits, (int)sizeof bits, 184, 9900U, 16);
     st->dmr_lrrp_source[0] = 4444U;
     st->dmr_lrrp_target[0] = 5555U;
-    nxdn_gps_report(opts, st, bits, 0U);
+    nxdn_gps_report(opts, st, bits, sizeof bits, 0U, NULL);
     rc |= expect_u32("nxdn-invalid-source-reset", st->dmr_lrrp_source[0], 0U);
     rc |= expect_u32("nxdn-invalid-target-reset", st->dmr_lrrp_target[0], 0U);
 
@@ -599,7 +602,7 @@ main(void) {
         if (st.event_history_s != NULL) {
             dsd_event_stage_text(&st, 0, "");
         }
-        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
+        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes, 1, NULL);
         rc |= expect_u8("nmea-valid", ok, 1U);
         if (st.event_history_s != NULL) {
             rc |= expect_has_substr(dsd_event_staged_text(&st, 0), "$GPRMC,TEST*71", "nmea-valid-text");
@@ -622,7 +625,7 @@ main(void) {
         if (st.event_history_s != NULL) {
             dsd_event_stage_text(&st, 0, "");
         }
-        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
+        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes, 1, NULL);
         rc |= expect_u8("nmea-invalid", ok, 0U);
         if (st.event_history_s != NULL) {
             rc |= expect_i("nmea-invalid-text-empty", dsd_event_staged_text(&st, 0)[0], 0);
@@ -646,7 +649,7 @@ main(void) {
         if (st.event_history_s != NULL) {
             dsd_event_stage_text(&st, 0, "");
         }
-        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
+        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes, 1, NULL);
         rc |= expect_u8("nmea-missing-star", ok, 0U);
         rc |= expect_i("nmea-missing-star-watchdog", g_watchdog_calls, 0);
         if (st.event_history_s != NULL) {
@@ -669,7 +672,7 @@ main(void) {
         st.event_history_s = NULL;
         st.dmr_lrrp_source[0] = 777U;
         st.dmr_lrrp_target[0] = 888U;
-        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
+        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes, 1, NULL);
         rc |= expect_u8("nmea-no-events-valid", ok, 1U);
         rc |= expect_u32("nmea-no-events-src-reset", st.dmr_lrrp_source[0], 0U);
         rc |= expect_u32("nmea-no-events-tgt-reset", st.dmr_lrrp_target[0], 0U);

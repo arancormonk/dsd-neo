@@ -552,6 +552,9 @@ nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
     } else {
         DSD_FPRINTF(stderr, "        ");
         state->nxdn_part_of_frame = 0;
+        /* A data call's header or block may be what failed: what follows is no longer the bound header's assembly
+           (issue #800 B6). */
+        nxdn_data_call_drop_header(state);
     }
 
     DSD_FPRINTF(stderr, "%s", KYEL);
@@ -1020,6 +1023,8 @@ nxdn_print_facch3_udch2_name(uint8_t type) {
 static void
 nxdn_decode_facch3_udch2_content(dsd_opts* opts, dsd_state* state, const struct nxdn_facch3_udch2_message* message) {
     if (!nxdn_facch3_udch2_crc_ok(message)) {
+        /* As a failed FACCH2/UDCH: the bound data call header's assembly is interrupted (issue #800 B6). */
+        nxdn_data_call_drop_header(state);
         return;
     }
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);

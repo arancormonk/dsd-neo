@@ -251,6 +251,8 @@ static void
 nxdn_element_handle_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     if (elements_bits < 79U) {
         DSD_FPRINTF(stderr, " SDCALL Header Too Short (%zu bits); ", elements_bits);
+        /* A rejected header replaces the one before it: no payload may assemble under the old one. */
+        nxdn_data_call_drop_header(state);
         return;
     }
     nxdn_sdcall_header(opts, state, elements);
@@ -857,6 +859,7 @@ nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Messag
     // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
     // --dmr-tg-key-csv lookup treat this address as one.
     state->dmr_data_target_is_group[0] = 0;
+    nxdn_data_call_bind_header(opts, state);
 
     nxdn_data_header_report_scan_activity(opts, state, call_type, source, target, cipher);
 }
@@ -986,7 +989,7 @@ nxdn_dcall_header_print(const struct nxdn_dcall_header_info* info, const dsd_sta
 }
 
 static void
-nxdn_dcall_header_apply(dsd_state* state, const struct nxdn_dcall_header_info* info) {
+nxdn_dcall_header_apply(const dsd_opts* opts, dsd_state* state, const struct nxdn_dcall_header_info* info) {
     DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
     state->data_header_blocks[0] = (info->block_count > 0U) ? (int)info->block_count : 1;
     state->data_header_padding[0] = info->pad_bytes;
@@ -997,6 +1000,7 @@ nxdn_dcall_header_apply(dsd_state* state, const struct nxdn_dcall_header_info* i
     state->dmr_lrrp_target[0] = info->target;
     // Not a DMR talkgroup -- see the sibling header handler above.
     state->dmr_data_target_is_group[0] = 0;
+    nxdn_data_call_bind_header(opts, state);
 }
 
 static void
@@ -1006,6 +1010,8 @@ nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message
     }
 
     if (message_bits < 88U) {
+        /* A rejected header replaces the one before it: no payload may assemble under the old one. */
+        nxdn_data_call_drop_header(state);
         return;
     }
 
@@ -1015,7 +1021,7 @@ nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message
     struct nxdn_dcall_header_info info;
     nxdn_dcall_header_parse(&info, state, Message, message_bits);
     nxdn_dcall_header_print(&info, state);
-    nxdn_dcall_header_apply(state, &info);
+    nxdn_dcall_header_apply(opts, state, &info);
     nxdn_data_header_report_scan_activity(opts, state, info.call_type, info.source, info.target, info.cipher);
 }
 
@@ -1073,6 +1079,12 @@ nxdn_dcall_prepare(dsd_state* state, const uint8_t* Message, size_t message_bits
 
     if (state->data_header_valid[0] == 0U) {
         DSD_FPRINTF(stderr, "Missing or Invalid Header; ");
+        return -1;
+    }
+    /* The payload belongs to the header that opened its assembly only while nothing came between them. */
+    if (!nxdn_data_call_header_bound(state)) {
+        DSD_FPRINTF(stderr, "Header No Longer Bound (Reception, Carrier or Time); ");
+        nxdn_data_call_drop_header(state);
         return -1;
     }
     if ((int)ctx->blk_num > ctx->header_blocks) {
@@ -1226,7 +1238,9 @@ nxdn_dcall_handle_reverse_gps(const dsd_opts* opts, dsd_state* state, const stru
     DSD_MEMSET(reverse_bits, 0, sizeof(reverse_bits));
     DSD_UNPACK_ARRAY_TO_BITS(reverse_bytes, reverse_bits, core_len);
     if (core_len >= 2 && (uint16_t)convert_bits_into_output(reverse_bits, 16) == 0xFFFCU) {
-        nxdn_gps_report(opts, state, reverse_bits + 16, (uint32_t)state->dmr_lrrp_source[0]);
+        /* The report after its marker: only the octets the payload carried (a short report gives no position). */
+        nxdn_gps_report(opts, state, reverse_bits + 16, ((size_t)core_len * 8U) - 16U,
+                        (uint32_t)state->dmr_lrrp_source[0], &state->nxdn_data_origin);
     }
 }
 
@@ -1237,9 +1251,12 @@ nxdn_dcall_handle_crc_ok(dsd_opts* opts, dsd_state* state, const struct nxdn_dca
     const uint32_t reverse = (uint32_t)convert_bits_into_output(state->dmr_pdu_sf[0], 24);
 
     if (opcode == 0x06U && (nmea == (uint8_t)'$' || nmea == (uint8_t)'!')) {
-        if (ctx->total_bytes > 1) {
+        /* The sentences run from the octet after the opcode to the CRC32, which is not part of them. */
+        const int nmea_len = ctx->total_bytes - 1 - 4;
+        if (nmea_len > 0) {
             DSD_FPRINTF(stderr, "\n ");
-            nmea_sentence_checker(opts, state, state->dmr_pdu_sf[0] + 8, 0, ctx->total_bytes - 1);
+            (void)nmea_sentence_checker(opts, state, state->dmr_pdu_sf[0] + 8, 0, nmea_len, 1,
+                                        &state->nxdn_data_origin);
         }
     } else if (reverse == 0U && ctx->total_bytes > 8) {
         nxdn_dcall_handle_reverse_gps(opts, state, ctx);

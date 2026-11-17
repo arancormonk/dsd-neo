@@ -44,6 +44,10 @@ void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
 
 static int g_alias_prop_calls;
+static int g_nmea_calls;
+static int g_nmea_len;
+static int g_nmea_verified;
+static const dsd_position_origin* g_nmea_origin;
 static int g_alias_arib_calls;
 static int g_channel_to_frequency_calls;
 static int g_channel_to_frequency_quiet_calls;
@@ -131,21 +135,28 @@ nxdn_channel_to_frequency_display(const dsd_state* state, uint16_t channel) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_gps_report(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src) {
+nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t input_bits, uint32_t src,
+                const dsd_position_origin* origin) {
     (void)opts;
     (void)state;
     (void)input;
+    (void)input_bits;
     (void)src;
+    (void)origin;
 }
 
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_sentence_checker(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t slot, int len_bytes) {
+nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
+                      int packet_verified, const dsd_position_origin* origin) {
     (void)opts;
     (void)state;
     (void)input;
     (void)slot;
-    (void)len_bytes;
+    g_nmea_calls++;
+    g_nmea_len = len_bytes;
+    g_nmea_verified = packet_verified;
+    g_nmea_origin = origin;
     return 0U;
 }
 
@@ -1636,6 +1647,62 @@ test_sdcall_des_imported_zero_key(void) {
         rc |= expect_int(imported ? "sdcall-zero-des-decrypts" : "sdcall-absent-des-refused", g_des_calls, imported);
     }
     free(state->event_history_s);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+uint32_t nxdn_crc32_bits(const uint8_t* bits, size_t bit_count);
+
+/* NMEA in a data call (format 0x06): the sentences end where the packet's CRC32 begins, so the checker is handed the
+   octets between the opcode and the CRC32 (issue #800 2.4), with the packet verified and the header's reception. */
+static int
+test_dcall_nmea_length_excludes_crc32(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(state);
+        free(opts);
+        return 1;
+    }
+    static const char sentence[] = "$GPTXT*4F\r\n";
+    uint8_t payload[16];
+    DSD_MEMSET(payload, 0, sizeof(payload));
+    payload[0] = 0x06U;
+    DSD_MEMCPY(payload + 1, sentence, sizeof(sentence) - 1U);
+    uint8_t crc_bits[12 * 8];
+    for (size_t i = 0U; i < 12U; i++) {
+        write_bits_u64(crc_bits, i * 8U, payload[i], 8U);
+    }
+    const uint32_t crc = nxdn_crc32_bits(crc_bits, sizeof(crc_bits));
+    payload[12] = (uint8_t)(crc >> 24);
+    payload[13] = (uint8_t)(crc >> 16);
+    payload[14] = (uint8_t)(crc >> 8);
+    payload[15] = (uint8_t)crc;
+
+    uint8_t header_bits[96];
+    uint8_t first_bits[80];
+    uint8_t final_bits[80];
+    DSD_MEMSET(header_bits, 0, sizeof(header_bits));
+    DSD_MEMSET(first_bits, 0, sizeof(first_bits));
+    DSD_MEMSET(final_bits, 0, sizeof(final_bits));
+    write_data_call_header_fields(header_bits, 0x09U, 0U, 0U, 0x0102U, 0x0304U, 1U, 0U);
+    NXDN_Elements_Content_decode(opts, state, header_bits, sizeof(header_bits));
+    state->data_header_format[0] = 3U;
+    write_data_payload_frame(first_bits, 0x0BU, 1U, 1U, payload, 8U);
+    write_data_payload_frame(final_bits, 0x0BU, 0U, 0U, payload + 8U, 8U);
+    g_nmea_calls = 0;
+    g_nmea_len = -1;
+    g_nmea_verified = -1;
+    g_nmea_origin = NULL;
+    NXDN_Elements_Content_decode(opts, state, first_bits, sizeof(first_bits));
+    NXDN_Elements_Content_decode(opts, state, final_bits, sizeof(final_bits));
+
+    int rc = 0;
+    rc |= expect_int("dcall-nmea-calls", g_nmea_calls, 1);
+    rc |= expect_int("dcall-nmea-len-excludes-crc32", g_nmea_len, 16 - 1 - 4);
+    rc |= expect_int("dcall-nmea-verified", g_nmea_verified, 1);
+    rc |= expect_int("dcall-nmea-origin", g_nmea_origin == &state->nxdn_data_origin, 1);
     free(state);
     free(opts);
     return rc;
@@ -3428,6 +3495,7 @@ main(void) {
     rc |= test_sdcall_des_data_decrypts_and_resets();
     rc |= test_dcall_aes_data_decrypts_with_manual_key_and_iv();
     rc |= test_sdcall_des_imported_zero_key();
+    rc |= test_dcall_nmea_length_excludes_crc32();
     rc |= test_arib_vcall_uses_shifted_fields();
     rc |= test_vcall_des_keyloader_and_iv_signal();
     rc |= test_vcall_scrambler_keyloader_uses_active_nxdn48_profile();

@@ -944,7 +944,8 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
     }
 
     uint8_t nmea_valid = 0;
-    if (payload[0] == (uint8_t)'$' || payload[0] == (uint8_t)'!') {
+    const int nmea_shaped = payload[0] == (uint8_t)'$' || payload[0] == (uint8_t)'!';
+    if (nmea_shaped) {
         uint8_t payload_bits[P25_PDU_MAX_DECODE_BYTES * 8];
         DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
         dsd_unpack_bytes_to_bits(payload, (size_t)span, payload_bits, sizeof(payload_bits), (size_t)span);
@@ -955,12 +956,16 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
         // --dmr-tg-key-csv lookup treat this address as one.
         state->dmr_data_target_is_group[slot] = 0;
-        nmea_valid = nmea_sentence_checker(opts, state, payload_bits, slot, span);
+        /* The packet's verdict: the MDPU decodes this packet inside its CRC scope on slot 0 (p25p1_mdpu.c). */
+        const int packet_verified = state->event_crc_invalid[0] == 0U;
+        nmea_valid = nmea_sentence_checker(opts, state, payload_bits, slot, span, packet_verified, NULL);
         status.data_notice_emitted = nmea_valid != 0U;
     }
 
     if (!nmea_valid) {
-        uint8_t write_history = (state != NULL && state->event_history_s != NULL) ? 1U : 0U;
+        /* A payload shaped as NMEA whose sentences failed their checksums is shown, never kept as history text: its
+           coordinates were not checked (issue #800 2.4). */
+        uint8_t write_history = (!nmea_shaped && state != NULL && state->event_history_s != NULL) ? 1U : 0U;
         utf8_to_text(state, write_history, (uint16_t)span, payload);
     }
     p25_store_lrrp_text_for_history(state);

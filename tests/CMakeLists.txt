@@ -2534,6 +2534,58 @@ foreach(
     endif()
 endforeach()
 
+# Position reports in NXDN and ASCII NMEA data (issue #800): the NMEA sentence parser and producer with the P25 SAP 48
+# packet path, and the NXDN GPS report through the data call dispatch (header binding, field bounds). Both reach the
+# real event layer, feed and -L writer through the same library group as the NXDN tests above.
+add_executable(dsd-neo_test_core_nmea_sentence core/test_core_nmea_sentence.c)
+target_include_directories(
+    dsd-neo_test_core_nmea_sentence
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/core/gps
+)
+add_test(NAME CORE_NMEA_SENTENCE COMMAND dsd-neo_test_core_nmea_sentence)
+
+add_executable(
+    dsd-neo_test_nxdn_gps_dispatch
+    protocol/nxdn/test_nxdn_gps_dispatch.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_gps_dispatch
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
+)
+add_test(NAME NXDN_GPS_DISPATCH COMMAND dsd-neo_test_nxdn_gps_dispatch)
+
+foreach(
+    _dsd_position_target
+    IN
+    ITEMS dsd-neo_test_core_nmea_sentence dsd-neo_test_nxdn_gps_dispatch
+)
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            ${_dsd_position_target}
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_proto_nxdn
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                "-Wl,--end-group"
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            ${_dsd_position_target}
+            PRIVATE
+                dsd-neo_proto_nxdn
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                dsd-neo_test_support
+        )
+    endif()
+endforeach()
+
 add_executable(
     dsd-neo_test_nxdn_alias_fallback
     protocol/nxdn/test_nxdn_alias_fallback.c
@@ -15976,6 +16028,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
+    test_support/data_event_position_stub.c
 )
 target_include_directories(
     dsd-neo_test_dmr_embedded_gps_position_error
@@ -16016,6 +16070,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
+    test_support/data_event_position_stub.c
 )
 target_include_directories(
     dsd-neo_test_core_gps_lrrp_crc_gating

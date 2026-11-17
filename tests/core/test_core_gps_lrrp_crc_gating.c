@@ -630,7 +630,7 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         }
         state->event_crc_invalid[0] = invalid;
         state->dmr_lrrp_source[0] = 345678;
-        nxdn_gps_report(opts, state, nxdn, 345678);
+        nxdn_gps_report(opts, state, nxdn, sizeof(nxdn), 345678, NULL);
         if (!expect_rows(path, !invalid, "00345678", "-22.000000", "-45.000000", 20, 0, "1999/01/02", "NXDN")) {
             return 15 + (1 - invalid);
         }
