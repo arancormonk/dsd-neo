@@ -4,9 +4,10 @@
  */
 
 /*
- * The position data notice (issue #800) for tests that compile dsd_gps.c directly and capture notices through their
- * own dsd_event_emit_data_notice_with_gps(): the admitted record's GPS text goes there; the position itself is not
- * modelled. An unadmitted record or no text is refused as the real writer refuses it.
+ * The position data notice (issue #800) for tests that compile position producers directly and capture notices through
+ * dsd_event_emit_data_notice_with_gps() (their own, or the one in data_event_gps_shim.c): the admitted record's GPS
+ * text goes there; the position itself is not modelled. An unadmitted record or no text is refused as the real writer
+ * refuses it.
  */
 
 #include <dsd-neo/core/call_state.h>

@@ -15540,6 +15540,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_time_fallback
     protocol/dmr/test_dmr_lrrp_time_fallback.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15572,6 +15573,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_time_valid
     protocol/dmr/test_dmr_lrrp_time_valid.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15601,6 +15603,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_token_alignment
     protocol/dmr/test_dmr_lrrp_token_alignment.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15632,6 +15635,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_response_token_lengths
     protocol/dmr/test_dmr_lrrp_response_token_lengths.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15663,6 +15667,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_resync_prefix
     protocol/dmr/test_dmr_lrrp_resync_prefix.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15694,6 +15699,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_position_token_precedence
     protocol/dmr/test_dmr_lrrp_position_token_precedence.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15726,6 +15732,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_crc_gating
     protocol/dmr/test_dmr_lrrp_crc_gating.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15755,6 +15762,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_empty_payload_type
     protocol/dmr/test_dmr_lrrp_empty_payload_type.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15787,6 +15795,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_wrapped_document
     protocol/dmr/test_dmr_lrrp_wrapped_document.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15819,6 +15828,7 @@ add_executable(
     dsd-neo_test_dmr_pdu_utf16_text
     protocol/dmr/test_dmr_pdu_utf16_text.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15848,6 +15858,7 @@ add_executable(
     dsd-neo_test_dmr_tms_utf16le
     protocol/dmr/test_dmr_tms_utf16le.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15961,6 +15972,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_coordinate_formulas
     protocol/dmr/test_dmr_lrrp_coordinate_formulas.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
@@ -15989,6 +16001,7 @@ add_executable(
     dsd-neo_test_dmr_locn_time_fallback
     protocol/dmr/test_dmr_locn_time_fallback.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
