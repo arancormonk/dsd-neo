@@ -522,6 +522,31 @@ test_embedded_attribution(const dsd_opts* opts, dsd_state* state, const char* pa
             return 26 + (int)i;
         }
     }
+    // A fix admission refuses ((0, 0) here) prints no coordinates and leaves no text and no -L row.
+    {
+        uint8_t zero_lc[96] = {0};
+        set_bits_msb(zero_lc, 20, 3, 1);
+        state->dmr_embedded_gps[1][0] = '\0';
+        if (!truncate_output(path)) {
+            return 100;
+        }
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "embedded_refused") != 0) {
+            return 100;
+        }
+        dmr_embedded_gps(opts, state, zero_lc);
+        dsd_test_capture_stderr_end(&cap);
+        char output[2048];
+        if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
+            return 100;
+        }
+        if (!strstr(output, "Position: (refused)") || strstr(output, "Lat:") != NULL
+            || state->dmr_embedded_gps[1][0] != '\0'
+            || !expect_rows(path, 0, NULL, NULL, NULL, 0, 0, NULL, "refused embedded GPS")) {
+            DSD_FPRINTF(stderr, "refused embedded GPS: state=%s; console=%s\n", state->dmr_embedded_gps[1], output);
+            return 29;
+        }
+    }
     (void)dsd_call_state_end(state, 1U, 0.0);
     state->dmr_lc_checked_transmission[1] = 0U;
     state->dmr_lc_checked_source[1] = 0U;
