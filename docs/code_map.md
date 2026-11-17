@@ -2533,7 +2533,8 @@ suite runs under this compiler.
     document type 0x13; a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
     parse, and a resync-guessed position is never published. UDT NMEA needs Q=1. These go to their own data notice
     (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no
-    specification).
+    specification); a valid `A` date and time is its fix time (`fix_time_s`, read as UTC), else the fix time is
+    unknown, so two reports that differ only in time are not folded as a repeat.
   - DMR USBD LIP (`dmr_dburst.c`): the burst CRC and an MS-sourced repeater-mode data sync (`dmr_burst_origin`,
     `dmr_data_burst_handler_origin()`): a BS-sourced burst is a Poll Request (no position), a direct-mode or unknown
     one is not decoded. The source is an 8-bit hash (`SOURCE_HASHED`): its own anonymous notice

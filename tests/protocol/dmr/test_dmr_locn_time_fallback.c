@@ -17,6 +17,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/runtime/unicode.h>
@@ -218,6 +219,48 @@ run_locn_date_cases(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Issue #800: a valid `A` date and time is the report's fix time (Unix seconds, UTC); a missing or impossible one leaves
+ * it unknown. Two reports that differ only in their time are two reports, not a repeat. */
+static int
+run_locn_fix_time_cases(dsd_opts* opts, dsd_state* st) {
+    static const struct {
+        const char* text;
+        int64_t fix_time_s;
+    } cases[] = {
+        {"A120000290224N2230.0000E04500.0000", 1709208000}, // 2024-02-29 12:00:00
+        {"A120030290224N2230.0000E04500.0000", 1709208030}, // the same place, 30 s later
+        {"N2230.0000E04500.0000", 0},                       // no time field
+        {"A120000310224N2240.0000E04500.0000", 0},          // 31 February does not exist
+    };
+
+    if (dsd_position_feed_start(st) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_event_stage_clear(st, 0);
+        uint8_t pdu[64];
+        const size_t len = strlen(cases[i].text);
+        DSD_MEMCPY(pdu, cases[i].text, len);
+        dmr_locn(opts, st, (uint16_t)len, pdu);
+        const dsd_position_fix* fix = dsd_event_staged_position(st, 0);
+        if (fix->rev == 0U || fix->fix_time_s != cases[i].fix_time_s) {
+            DSD_FPRINTF(stderr, "LOCN fix time %s: rev %llu fix_time %lld, want %lld\n", cases[i].text,
+                        (unsigned long long)fix->rev, (long long)fix->fix_time_s, (long long)cases[i].fix_time_s);
+            rc = 1;
+        }
+    }
+    dsd_position_fix kept[8];
+    dsd_position_feed_meta meta;
+    const int n = dsd_position_feed_copy_since(st, 0U, kept, 8U, &meta);
+    if (n != 4 || kept[0].fix_time_s != 1709208000 || kept[1].fix_time_s != 1709208030) {
+        DSD_FPRINTF(stderr, "LOCN fix time: %d reports kept, want 4 (the later time is no repeat)\n", n);
+        rc = 1;
+    }
+    dsd_state_ext_free_all(st);
+    return rc;
+}
+
 static int
 run_locn_cases(dsd_opts* opts) {
     static dsd_state st;
@@ -254,6 +297,9 @@ run_locn_cases(dsd_opts* opts) {
         DSD_FPRINTF(stderr, "group target: flags %04X target %u\n", (unsigned)fix->flags, (unsigned)fix->target_id);
         rc = 1;
     }
+    st.dmr_lrrp_target[0] = 0;
+    st.dmr_data_target_is_group[0] = 0;
+    rc |= run_locn_fix_time_cases(opts, &st);
     free(st.event_history_s);
     st.event_history_s = NULL;
     return rc;

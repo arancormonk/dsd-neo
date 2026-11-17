@@ -1972,6 +1972,28 @@ dmr_locn_emit(dsd_state* state, uint8_t slot, uint32_t source, const dmr_locn_da
     DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "%s%s", locnstr, posstr);
 }
 
+// The report a checked, in-range LOCN gives: its coordinates, its date and time when the `A` field held a valid one
+// (read as UTC, the NMEA convention the format follows; unknown otherwise), the data header's source and target.
+static void
+dmr_locn_fill_fix(const dsd_state* state, uint8_t slot, uint32_t source, const dmr_locn_data* d,
+                  dsd_position_fix* fix) {
+    fix->kind = DSD_POS_DMR_LOCN;
+    fix->protocol = dmr_pdu_position_protocol(state);
+    fix->slot = slot;
+    fix->lat_e7 = d->lat_e7;
+    fix->lon_e7 = d->lon_e7;
+    if (d->time) {
+        fix->fix_time_s =
+            dmr_pdu_unix_time((uint16_t)(2000U + d->year), d->month, d->day, d->hour, d->minute, d->second);
+    }
+    fix->flags = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
+    fix->source_id = source;
+    fix->target_id = (uint32_t)state->dmr_lrrp_target[slot];
+    if (DSD_SYNC_IS_DMR(state->lastsynctype) && state->dmr_data_target_is_group[slot] != 0U) {
+        fix->flags |= (uint16_t)DSD_POS_FLAG_TARGET_GROUP;
+    }
+}
+
 void
 dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU) {
     if (DMR_PDU == NULL) {
@@ -1996,17 +2018,7 @@ dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DM
     } else if (!(d.lat_valid && d.lon_valid)) {
         withheld = "invalid";
     } else {
-        fix.kind = DSD_POS_DMR_LOCN;
-        fix.protocol = dmr_pdu_position_protocol(state);
-        fix.slot = slot;
-        fix.lat_e7 = d.lat_e7;
-        fix.lon_e7 = d.lon_e7;
-        fix.flags = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
-        fix.source_id = source;
-        fix.target_id = (uint32_t)state->dmr_lrrp_target[slot];
-        if (DSD_SYNC_IS_DMR(state->lastsynctype) && state->dmr_data_target_is_group[slot] != 0U) {
-            fix.flags |= (uint16_t)DSD_POS_FLAG_TARGET_GROUP;
-        }
+        dmr_locn_fill_fix(state, slot, source, &d, &fix);
         // The packet's checks passed; its data header names the source and the target.
         if (dsd_position_admit(opts, state, &fix, 1, 1, dmr_pdu_position_origin(state, slot)) == DSD_POSITION_REFUSED) {
             withheld = "not usable";
