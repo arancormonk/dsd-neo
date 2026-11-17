@@ -1694,6 +1694,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_position
+  HEADERS_PUBLIC_CORE_POSITION
+  dsd-neo/core/position.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_position_cxx
+  HEADERS_PUBLIC_CORE_POSITION_CXX
+  dsd-neo/core/position.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_unit_activity
   HEADERS_PUBLIC_CORE_UNIT_ACTIVITY
   dsd-neo/core/unit_activity.h
@@ -7980,6 +7992,22 @@ target_link_libraries(
         ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME CORE_UNIT_ACTIVITY COMMAND dsd-neo_test_core_unit_activity)
+
+# The verified position feed (issue #800): admission, scopes and labels, the repeat rule, the ring and its stream.
+add_executable(dsd-neo_test_core_position_feed core/test_core_position_feed.c)
+target_include_directories(
+    dsd-neo_test_core_position_feed
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_position_feed
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_runtime
+        dsd-neo_platform
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME CORE_POSITION_FEED COMMAND dsd-neo_test_core_position_feed)
 
 # The unit activity reason tables; the P25 ones against the P25 prints' former table.
 add_executable(

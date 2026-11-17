@@ -209,6 +209,12 @@ int dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, 
 /** dsd_tg_policy_lookup_label() for a reception of @p scope (NULL: the current one) instead of the current one. */
 int dsd_tg_policy_lookup_label_scoped(const dsd_state* state, const dsd_alias_scope* scope, uint32_t id, char* mode,
                                       size_t mode_sz, char* name, size_t name_sz);
+/** The name of radio @p id's learned alias row of exactly @p scope (a valid scope): never a talkgroup or user row, an
+ * imported row without a scope, a row learned with no scope or in another scope, or the radio list. For a sender heard
+ * away from its own system, whose number a local list may give to another radio. Returns 1 only with a non-empty name;
+ * otherwise 0 with @p name empty (NULL @p name is accepted). */
+int dsd_tg_policy_lookup_learned_label(const dsd_state* state, const dsd_alias_scope* scope, uint32_t id, char* name,
+                                       size_t name_sz);
 /**
  * @brief Talkgroup label: the mode and name of the row that decides talkgroup @p tg (dsd_tg_policy_lookup_group():
  * a talkgroup exact row, else the narrowest range, else the most specific pattern).

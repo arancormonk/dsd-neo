@@ -70,6 +70,7 @@ target_sources(
         file/source_alias_csv.c
         file/p25_sm_log.c
         gps/dsd_gps.c
+        gps/position_feed.c
 )
 
 # The two-level reliability rejects NaN and infinite symbols, which fast-math would

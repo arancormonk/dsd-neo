@@ -46,7 +46,8 @@ Generated (do not edit/commit):
     `dsd_engine_run_with_lifecycle()` commits the session's last calls (`dsd_engine_finalize_calls()`: end the slots
     as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry before it calls the
     frontends' stop hooks, so a frontend that records calls gets the final transmission; `dsd_engine_cleanup()`
-    repeats the step, which then finds nothing left to do
+    repeats the step, which then finds nothing left to do. At the start of every run the engine also starts the run's
+    position feed (`dsd_position_feed_start()`, below), beside the debug start time
   - Output files of a session that never runs (#782): the bootstrap opens the `-c` symbol capture, `-w` static WAV
     and `-6` raw WAV while it parses, and only `dsd_engine_cleanup()` closed them. `-P` opens its per-call WAVs only
     at the run's start (issue #708), so a configure leaves none. `dsd_engine_release_outputs()` closes them (and any
@@ -2466,13 +2467,33 @@ suite runs under this compiler.
 - State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 and 14
   (taken from the io range): 13 is `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and
   the reception it runs for, the talkers both slots remember, and the DMR superframe mixer's one-channel limiter (issue
-  #518), and 14 `DSD_STATE_EXT_CORE_UNIT_ACTIVITY`, the session's unit activity ring (below);
+  #518), and 14 `DSD_STATE_EXT_CORE_UNIT_ACTIVITY`, the session's unit activity ring (below), and 17 (taken from the ui
+  range): `DSD_STATE_EXT_CORE_POSITION_FEED`, the run's verified position feed (below);
   runtime 6, and 15 (taken from the io range): `DSD_STATE_EXT_RUNTIME_CONFIG_INPUT`, the loaded config's `[input]` an
   I/Q replay session saves (issue #743); DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is
   `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
-  its tune (issue #644). `CORE_STATE_EXT` pins these six.
+  its tune (issue #644). `CORE_STATE_EXT` pins these seven.
+- API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
+  17, issue #800). Producers fill one `dsd_position_fix` (from `dsd_position_fix_init()`'s unknown sentinels; fixed
+  point: degrees x 1e7, decimetres, 0.1 km/h, 0.1 degree) and call `dsd_position_admit()` with the verdicts of the
+  checks they ran: `pos_verified` (the position's own CRC/FEC check) and `source_verified` (source, target and
+  group/private from checked provenance). Admission refuses without `pos_verified`, when the receive policy rejects
+  the protocol and slot, when a multi-fragment report's first fragment was heard under another reception generation
+  (`dsd_position_origin_capture()`/`_matches()`: the received identity's epoch with the trunk tuning generation), or
+  for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays),
+  freezes the reception scope (the alias scope, else a feed-only EDACS, control-channel or tuned-frequency scope;
+  none for M17/D-STAR), the sender scope (TETRA's calling party network when sent), the identity discriminator (the
+  tuned frequency for a P25 NAC scope) and the label (a local sender through the scoped lookup; a foreign sender only
+  through a label learned in its own scope, `dsd_tg_policy_lookup_learned_label()`; none for a feed-only scope), and
+  stamps the process-wide `rev`, `proc_instance`, `rx_time_s` and `rx_clock`. Only an admitted report may reach `-L`
+  or history. The feed keeps an admitted report unless it repeats its track's last kept one (every observable field
+  equal, kept less than 30 s ago on the decode clock; anonymous sources never fold; 256 tracks, the least recently
+  kept forgotten). The ring holds 1,024 records by seq, created by `dsd_position_feed_start()` at every run start
+  (never on the decode path; a new `stream_id`, seq from 1) and freed with the extensions; without one admission
+  still works and nothing is kept. `dsd_position_feed_copy_since()` is the allocation-free read by seq (stream, held
+  seqs, `more`, `lost`). Test: `CORE_POSITION_FEED`.
 - API note: the unit activity ring (`<dsd-neo/core/unit_activity.h>`, `src/core/util/unit_activity.c`, state
   extension 14) is the session's log of trunking unit events: registrations, deregistrations, talkgroup joins, denies,
   queued and waiting responses, radio commands, status and message reports. Protocol producers push one plain record

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
@@ -5182,6 +5183,9 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
     }
 
     dsd_engine_run_record_start_time_if_debug(state);
+    /* The run's position feed: a new stream, allocated here and never on the decode path. A failed allocation leaves
+       the feed off for the run; admission, history and -L do not depend on it. */
+    (void)dsd_position_feed_start(state);
     dsd_engine_run_install_hooks();
 
     if (dsd_engine_run_common_setup(opts, state, &early_exit) != 0) {
