@@ -636,47 +636,66 @@ holdsKeyLabel(const QString& text) {
     return withoutMeasurementFields(withoutSyncLabels(text)).contains(keyLabel());
 }
 
+/*
+ * Issue #800, D10: what marks a record that holds a received position, or belongs to a PDU that carries one. Each entry
+ * names the decoder paths whose print text it matches (at the time of writing); keep it in step when they change. A
+ * record matching any entry is removed whole, its raw payload bytes with it when the path prints them on that line.
+ * Dumps that do not say what they carry (the -Z payload lines "DMR PDU Payload", "P25 MBT Payload", "Short Data Raw",
+ * D-STAR "SD:", M17 "LSF:"/"pkt:"/"PKT:", CSBK and voice bytes) are kept: they come before the decode that names the
+ * PDU, and most carry no position. A contiguous run of ten or more hex digits is redacted anyway (redact()).
+ */
+// One QRegularExpression fragment per entry; the comment names the decoder paths whose print text it matches.
+const char* const kPositionMarkers[] = {
+    // dsd_gps.c LIP, DMR embedded, APX, NXDN; dmr_pdu.c LRRP details; dstar_slow_data.c GPS-A/APRS
+    "\\b(?:Lat|Lon|Latitude|Longitude|Altitude)\\s*:",
+    // dsd_gps.c GPS:/Harris GPS:/Embedded GPS:/NXDN GPS:; m17.c GNSS GPS:; p25_lcw.c (Harris) GPS Block;
+    // p25p2_vpdu.c L3Harris GPS Location
+    "\\bGPS\\b",
+    // m17.c META and packet GNSS
+    "\\bGNSS\\b",
+    // dmr_pdu.c LRRP; and Wrapped LRRP; dmr_block.c MNIS LRRP
+    "\\bLRRP\\b",
+    // dmr_pdu.c NMEA / LOCN; dmr_block.c MNIS LOCN
+    "\\bLOCN\\b",
+    // dsd_gps.c UDT and ASCII NMEA; dmr_block.c UDT NMEA
+    "\\bNMEA\\b",
+    // dsd_gps.c raw NMEA sentences (P25 SAP 48, NXDN, DMR)
+    "\\$[A-Z]{2}(?:RMC|GGA|GLL|GNS|VTG),",
+    // dsd_gps.c LIP; dmr_dburst.c USBD service 0 ("Location Information Protocol") with its payload; TETRA SDS LIP
+    "\\bLIP\\b|Location Information Protocol|Location Report",
+    // dmr_pdu.c P25 Tier 2 Location Service
+    "Location Service",
+    // dsd_gps.c Position Error and Position Calculation Error; dmr_pdu.c Position: (suppressed)
+    "\\bPosition\\b",
+    // dstar_slow_data.c APRS, DPRS and GPS-A ($$CRC)
+    "\\bAPRS\\b|\\bDPRS\\b|\\$\\$CRC",
+    // dmr_pdu.c and dsd_gps.c Cellocator time and location
+    "\\bCellocator\\b",
+};
+
 /**
  * @brief Whether @p text holds a position received over the air (issue #800, D10), which no log or export keeps.
  *
- * Judged by what every producer prints with one, not by each template, so a decoder line that changes or a new one
- * (a new report format) is still covered: a position label ("Lat:", "GPS", "LRRP", "LIP", "NMEA", "APRS", ...), a raw
- * NMEA sentence or APRS/DPRS text, a pair of decimal degrees with at least four places (the producers print five or
- * six; a frequency or a measurement with its unit is no coordinate), or a degrees-and-minutes pair (NMEA, APRS). A
- * label can stand on a record with no coordinates ("LIP: truncated;"); the record goes too, which costs a line of
- * diagnostics and keeps the rule simple. The device's own location is never logged.
+ * A record matching kPositionMarkers, or holding a pair of decimal degrees with at least four places (the producers
+ * print five or six; a frequency or a measurement with its unit is no coordinate), or a degrees-and-minutes pair (NMEA,
+ * APRS), so a line a decoder adds later is still covered by its numbers. A marker can stand on a record with no
+ * coordinates ("LIP: truncated;"); the record goes too. The device's own location is never logged.
  */
 bool
 holdsReceivedPosition(const QString& text) {
-    static const QRegularExpression labels(
-        QStringLiteral("\\b(?:Lat|Lon|Latitude|Longitude|Altitude)\\s*:"
-                       "|\\b(?:GPS|GNSS|LRRP|LOCN|NMEA|LIP|APRS|DPRS|USBD|Cellocator)\\b"
-                       "|Location Information Protocol|Location Report|Location Service|\\bPosition\\b"
-                       "|\\$\\$CRC|\\$[A-Z]{2}(?:RMC|GGA|GLL|GNS|VTG),"));
+    static const QRegularExpression markers([]() {
+        QStringList alternatives;
+        for (const char* marker : kPositionMarkers) {
+            alternatives.append(QStringLiteral("(?:") + QString::fromUtf8(marker) + QLatin1Char(')'));
+        }
+        return QRegularExpression(alternatives.join(QLatin1Char('|')));
+    }());
     static const QRegularExpression degrees(
         QStringLiteral("(?<![0-9.])[-+]?[0-9]{1,3}\\.[0-9]{4,}(?![0-9])\\s*(?:\\x{00B0}|deg)?\\s*[NSns]?\\s*[,/;]?\\s*"
                        "[-+]?[0-9]{1,3}\\.[0-9]{4,}(?![0-9.])(?!\\s*(?:[kMG]?Hz|dB|ppm|ms\\b|s\\b|%))"));
     static const QRegularExpression minutes(QStringLiteral(
         "(?<![0-9])[0-9]{4}\\.[0-9]+\\s*,?\\s*[NS]\\b.{0,3}?(?<![0-9])[0-9]{5}\\.[0-9]+\\s*,?\\s*[EW]\\b"));
-    return text.contains(labels) || text.contains(degrees) || text.contains(minutes);
-}
-
-/**
- * @brief @p text with its raw byte dumps replaced (issue #800, D10): runs of four or more bracketed bytes ("[0D][1A]")
- * or of space-separated byte pairs ("0D 1A 2B 3C").
- *
- * A dump does not say what it carries, and the PDUs that carry positions (USBD, LRRP, LOCN, UDT, MDPU, NXDN, M17,
- * D-STAR, TETRA) dump through the same printers as every other, so every dump goes, as a run of ten or more hex digits
- * always has (redact()).
- */
-QString
-withoutByteDumps(QString text) {
-    static const QRegularExpression bracketed(QStringLiteral("(?:\\[[0-9A-Fa-f]{1,2}\\] ?){3,}\\[[0-9A-Fa-f]{1,2}\\]"));
-    static const QRegularExpression spaced(
-        QStringLiteral("(?<![0-9A-Za-z])(?:[0-9A-Fa-f]{2} ){3,}[0-9A-Fa-f]{2}(?![0-9A-Za-z])"));
-    text.replace(bracketed, QStringLiteral("[redacted]"));
-    text.replace(spaced, QStringLiteral("[redacted]"));
-    return text;
+    return text.contains(markers) || text.contains(degrees) || text.contains(minutes);
 }
 
 QString
@@ -1079,7 +1098,6 @@ DiagnosticsLog::redact(QString text) {
     if (holdsReceivedPosition(text)) {
         return QLatin1String(kPositionRecord);
     }
-    text = withoutByteDumps(std::move(text));
     static const QRegularExpression hex(QStringLiteral("(?i)[0-9a-f]{10,}"));
     text.replace(hex, QStringLiteral("[redacted]"));
     text.replace(QChar('\r'), QChar(' '));

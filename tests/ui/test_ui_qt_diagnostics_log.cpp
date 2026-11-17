@@ -1796,8 +1796,9 @@ measurementCorpusSurvives() {
  * through the stream capture or stored, and a tail an older build stored with positions in it is redacted as it is
  * loaded. Every producer's position line (the measurement templates', which still leave the key scan, so a key beside
  * one still drops the record as a key), a label line with no coordinates, raw NMEA and APRS text, and a bare pair of
- * decimal degrees or of degrees and minutes. Raw byte dumps, bracketed or spaced, are replaced whatever they carry.
- * Lines that hold no position (a frequency, a site's location ID, slicer statistics) are kept as they were. */
+ * decimal degrees or of degrees and minutes; the USBD LIP line goes with its payload bytes. Lines that hold no position
+ * (a frequency, a site's location ID, slicer statistics) and byte dumps of PDUs that carry none (CSBK, voice, a USBD of
+ * another service) are kept as they were. */
 static void
 receivedPositionsAreRemoved() {
     static const char kPosition[] = "[redacted position]";
@@ -1827,7 +1828,8 @@ receivedPositionsAreRemoved() {
             + QStringLiteral(" N Lon: 45.00000") + deg + QStringLiteral(" E (22.50000, 45.00000); Spd: 0 km/h;"),
         QStringLiteral("  Position Error: Less than 20m"),
         QStringLiteral("LIP: truncated;"),
-        QStringLiteral(" USBD - Service: LIP (0) - Payload: [0D][00][1A][2B][3C][4D][5E][6F][70][81][92][A]"),
+        QStringLiteral(" USBD - Service: Location Information Protocol (0) - Payload: [0D][00][1A][2B][3C][4D][5E][6F]"
+                       "[70][81][92][A]"),
         QStringLiteral(" L3Harris GPS Location"),
         QStringLiteral("$GPRMC,120000,A,2230.000,N,04500.000,E,0.0,0.0,171126,,,A*6C"),
         QStringLiteral(" APRS - N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test"),
@@ -1874,14 +1876,14 @@ receivedPositionsAreRemoved() {
         }
         check(text.contains(kept), "the reload dropped a line with no position");
     }
-    // Raw byte dumps go whatever they carry; a short run of bracketed fields stays.
-    check(DiagnosticsLog::redact(QStringLiteral("[stderr] [info]  Short Data Raw: [0D][00][1A][2B][3C]"))
-              == QStringLiteral("[stderr] [info]  Short Data Raw: [redacted]"),
-          "a bracketed dump was kept");
-    check(DiagnosticsLog::redact(QStringLiteral("[stderr] [info]  pkt:  0D 00 1A 2B 3C 4D"))
-              == QStringLiteral("[stderr] [info]  pkt:  [redacted]"),
-          "a spaced dump was kept");
+    // Byte dumps that belong to no position-bearing PDU are kept: CSBK and voice bytes, a USBD of another service,
+    // the -Z payload lines that come before any decode.
     const QStringList keptLines = {
+        QStringLiteral(" CSBK 3D 00 1A 2B 3C 4D 5E 6F 70 81"),
+        QStringLiteral(" DMR PDU Payload [01][02][03][04][05][06][07][08][09][0A][0B][0C]"),
+        QStringLiteral(" USBD - Service: Standard Service 1 (1) - Payload: [0D][00][1A][2B][3C][4D][5E][6F][70][81]"
+                       "[92][A]"),
+        QStringLiteral(" pkt:  0D 00 1A 2B 3C 4D"),
         QStringLiteral("WARNING: Scan channel 3 (851.012500 MHz): --squelch-db"),
         QStringLiteral("Retune 146.520000 MHz to 146.540000 MHz."),
         QStringLiteral("Location ID [000123] SVC [0001] RST [000000] "),
