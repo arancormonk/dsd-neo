@@ -14,6 +14,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
@@ -238,8 +239,16 @@ test_packed_nmea_formats(const dsd_opts* opts, dsd_state* st) {
 
         rc |= expect_has_substr(st->dmr_embedded_gps[0], "41.500000", "nmea-iec-lat");
         rc |= expect_has_substr(st->dmr_embedded_gps[0], "87.250000", "nmea-iec-lon");
-        rc |= expect_has_substr(st->event_history_s[0].Event_History_Items[0].gps_s, "41.500000", "nmea-iec-event-lat");
-        rc |= expect_i("nmea-iec-history-revision", st->event_history_s[0].revision == revision + 1U, 1);
+        // The UDT's own notice takes the admitted report (staged with its text); the speaker's call row is left alone.
+        const dsd_position_fix* staged = dsd_event_staged_position(st, 0U);
+        rc |= expect_i("nmea-iec-staged",
+                       staged->rev != 0U && staged->lat_e7 == 415000000 && staged->lon_e7 == 872500000
+                           && staged->source_id == 900001U && staged->heading_ddeg == 1230U,
+                       1);
+        rc |= expect_has_substr(dsd_event_staged_gps(st, 0U), "41.500000", "nmea-iec-staged-text");
+        rc |= expect_i("nmea-iec-call-row-untouched", st->event_history_s[0].Event_History_Items[0].gps_s[0], '\0');
+        rc |= expect_i("nmea-iec-history-revision", st->event_history_s[0].revision == revision, 1);
+        dsd_event_stage_clear(st, 0U);
     }
 
     {
@@ -319,7 +328,13 @@ test_lip_and_vendor_gps(const dsd_opts* opts, dsd_state* st) {
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "S", "lip-south");
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "W", "lip-west");
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "Err: 2000m", "lip-position-error");
-        rc |= expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "090; LIP:", "lip-event");
+        // A hashed reply never enriches the slot's call (spec 2.14): it waits for the burst's own notice, anonymous.
+        rc |= expect_i("lip-event-not-on-call", st->event_history_s[1].Event_History_Items[0].gps_s[0], '\0');
+        const dsd_position_fix* staged = dsd_event_staged_position(st, 1U);
+        rc |= expect_i("lip-staged-hashed",
+                       staged->rev != 0U && staged->kind == DSD_POS_LIP_USBD && staged->source_id == 0U
+                           && (staged->flags & DSD_POS_FLAG_SOURCE_HASHED) != 0U && staged->age_class == 2U,
+                       1);
         set_bits_msb(bits, (int)sizeof bits, 65, 1U, 4);
         lip_protocol_decoder(opts, st, bits);
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "Dir: 22", "T3 direction=1");
@@ -364,8 +379,14 @@ test_lip_ownership(const dsd_opts* opts, dsd_state* st) {
     set_bits_msb(bits, sizeof bits, 68, 32, 8);
     st->currentslot = 1;
     seed_active_call(st, 1, 123456);
+    dsd_event_stage_clear(st, 1U);
+    st->event_history_s[1].Event_History_Items[0].gps_s[0] = '\0';
     lip_pdu_decoder(opts, st, bits, sizeof bits, 123456);
-    int rc = expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "LIP:", "T3 matching LIP owner");
+    // One history writer: the carrier's notice (staged here), not the speaker's call row.
+    int rc = expect_i("T3 matching LIP owner staged", dsd_event_staged_position(st, 1U)->source_id == 123456U, 1);
+    rc |= expect_has_substr(dsd_event_staged_gps(st, 1U), "LIP:", "T3 matching LIP owner text");
+    rc |= expect_i("T3 matching LIP owner call row", st->event_history_s[1].Event_History_Items[0].gps_s[0], '\0');
+    dsd_event_stage_clear(st, 1U);
     seed_active_call(st, 1, 999);
     DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
                  sizeof st->event_history_s[1].Event_History_Items[0].gps_s, "%s", "existing call GPS");
@@ -373,6 +394,7 @@ test_lip_ownership(const dsd_opts* opts, dsd_state* st) {
     lip_pdu_decoder(opts, st, bits, sizeof bits, 123456);
     rc |= expect_i("T3 foreign LIP owner",
                    strcmp(st->event_history_s[1].Event_History_Items[0].gps_s, "existing call GPS"), 0);
+    rc |= expect_i("T3 CRC-failed LIP stages nothing", dsd_event_staged_position(st, 1U)->rev == 0U, 1);
     st->event_crc_invalid[1] = 0;
     seed_active_call(st, 1, 987654);
     DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
@@ -389,6 +411,7 @@ test_lip_position_errors(const dsd_opts* opts, dsd_state* st) {
     const char* expected[] = {"Err: 2m", "Err: 200000m", "Err: >200km", "Unknown Pos Err"};
     uint8_t bits[96] = {0};
     set_bits_msb(bits, sizeof bits, 69, 5U, 3);
+    set_bits_msb(bits, sizeof bits, 31, 0x200000U, 24); // 22.5 N: (0, 0) is no position
     int rc = 0;
     for (size_t i = 0; i < sizeof codes; ++i) {
         set_bits_msb(bits, sizeof bits, 55, codes[i], 3);
@@ -403,6 +426,11 @@ test_lip_position_errors(const dsd_opts* opts, dsd_state* st) {
             return 1;
         }
         rc |= expect_has_substr(st->dmr_embedded_gps[st->currentslot], expected[i], "T3 LIP position error");
+        // D11: code 7 may be an old fix (validity unknown); 6 is a lower bound.
+        const uint16_t flags = dsd_event_staged_position(st, (uint8_t)(st->currentslot & 1))->flags;
+        rc |=
+            expect_i("T3 LIP position error 7 validity", (flags & DSD_POS_FLAG_VALIDITY_UNKNOWN) != 0U, codes[i] == 7);
+        rc |= expect_i("T3 LIP position error 6 bound", (flags & DSD_POS_FLAG_ERR_LOWER_BOUND) != 0U, codes[i] == 6);
         if (codes[i] == 5) {
             rc |= expect_has_substr(output, "Less than or equal to 200000m", "T3 LIP code-5 console");
             rc |= expect_has_substr(output, "Reserved (5)", "T3 USBD reason");
@@ -507,6 +535,17 @@ main(void) {
     uint8_t lc_bits[80];
     DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
     st.currentslot = 0;
+    set_bits_msb(lc_bits, (int)sizeof lc_bits, 48, 0x200000U, 24); // 22.5 N, 0 E: (0, 0) is no position
+    // The slot's call 900001's source was named by a checked full LC of this transmission: the embedded fix is its.
+    {
+        seed_active_call(&st, 0U, 900001U);
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(&st, 0U, &call) <= 0) {
+            return 100;
+        }
+        st.dmr_lc_checked_epoch[0] = call.epoch;
+        st.dmr_lc_checked_source[0] = 900001U;
+    }
 
     // pos_err == 5: less than or equal to 200km (200000m)
     {
@@ -540,6 +579,13 @@ main(void) {
         set_pos_err(lc_bits, 7);
         dmr_embedded_gps(&opts, &st, lc_bits);
         rc |= expect_has_substr(st.dmr_embedded_gps[0], "Unknown Pos Err", "pos_err=7");
+        // D11: the call's row keeps the fix with its validity unknown, on the weak 5-bit check.
+        const Event_History* row = &st.event_history_s[0].Event_History_Items[0];
+        rc |=
+            expect_i("pos_err=7 row", row->pos.valid == 1U && row->pos.lat_e7 == 225000000 && row->pos.lon_e7 == 0, 1);
+        rc |=
+            expect_i("pos_err=7 flags", row->pos.flags, (int)(DSD_POS_FLAG_WEAK_CHECK | DSD_POS_FLAG_VALIDITY_UNKNOWN));
+        rc |= expect_has_substr(row->gps_s, "fix may be old or invalid", "pos_err=7 row text");
     }
 
     // NMEA sentence checker: valid sentence

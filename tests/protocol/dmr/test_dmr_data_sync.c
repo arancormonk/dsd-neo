@@ -50,6 +50,7 @@ static uint8_t g_live_reliability[64];
 static int g_cach_calls;
 static int g_debug_format_calls;
 static uint8_t g_handler_burst;
+static dmr_burst_origin g_handler_origin;
 static uint8_t g_handler_info[196];
 static uint8_t g_handler_reliab[98];
 /* The received identity as a snapshot published while the burst is dispatched would carry it. */
@@ -82,6 +83,7 @@ reset_fixture(void) {
     g_cach_calls = 0;
     g_debug_format_calls = 0;
     g_handler_burst = 0;
+    g_handler_origin = (dmr_burst_origin)-1;
     g_confidence_result = DMR_CONFIDENCE_LOCKED;
     g_boundary_at = -1;
     for (size_t i = 0; i < 64U; i++) {
@@ -154,10 +156,11 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
-                       const uint8_t* reliab98) {
+dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                              const uint8_t* reliab98, dmr_burst_origin origin) {
     (void)opts;
     g_handler_calls++;
+    g_handler_origin = origin;
     g_handler_slot = state->currentslot;
     g_handler_mono_slot = state->dmr_mono_rx_slot;
     if (g_handler_moves_carrier) {
@@ -998,6 +1001,54 @@ test_connect_plus_idle_bursts_clear_tuned_sync_times(void) {
     assert(state.last_vc_sync_time_m == 0.0);
 }
 
+/* The burst's own sync word names its sender (spec 2.13, TS 102 361-1 Table 9.2): the BS- and MS-sourced data syncs,
+   each direct-mode slot's, or none. Read at the received polarity's correction, so an inverted carrier's sync names
+   the same sender; read from the single-slot path's corrected payload (MS mode) and from the two-slot path's cached
+   dibits alike. */
+static void
+test_burst_origin_from_sync(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    static dsd_dibit_soft_t reliab[90];
+
+    static const struct {
+        const char* sync;
+        dmr_burst_origin origin;
+    } cases[] = {
+        {DMR_BS_DATA_SYNC, DMR_BURST_ORIGIN_BS},
+        {DMR_MS_DATA_SYNC, DMR_BURST_ORIGIN_MS},
+        {DMR_DIRECT_MODE_TS1_DATA_SYNC, DMR_BURST_ORIGIN_DIRECT_TS1},
+        {DMR_DIRECT_MODE_TS2_DATA_SYNC, DMR_BURST_ORIGIN_DIRECT_TS2},
+        {DMR_MS_VOICE_SYNC, DMR_BURST_ORIGIN_UNKNOWN},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        for (int path = 0; path < 3; path++) {
+            /* 0: the single-slot path's corrected payload; 1, 2: the cached dibits at normal and inverted polarity. */
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            prepare_state(&state, payload, reliab);
+            reset_fixture();
+            fill_sync_payload(payload, cases[i].sync);
+            if (path == 0) {
+                state.dmr_ms_mode = 1;
+                for (size_t k = 0; k < 24U; k++) {
+                    state.dmr_stereo_payload[66U + k] = payload[66U + k];
+                }
+            } else {
+                state.dmr_stereo = 0;
+                opts.inverted_dmr = path == 2;
+                for (size_t k = 0; k < 24U && path == 2; k++) {
+                    payload[66U + k] ^= 2;
+                }
+            }
+            dmr_data_sync(&opts, &state);
+            assert(g_handler_calls == 1);
+            assert(g_handler_origin == cases[i].origin);
+        }
+    }
+}
+
 int
 main(void) {
     test_data_sync_dispatches_burst_and_reliability();
@@ -1015,6 +1066,7 @@ main(void) {
     test_slot_type_split_by_a_carrier_boundary_notes_nothing();
     test_live_reliability_is_forwarded_unscaled();
     test_direct_mode_sync_overrides_cach_slot();
+    test_burst_origin_from_sync();
     test_confidence_pending_and_reject_gate_dispatch();
     test_connect_plus_idle_bursts_clear_tuned_sync_times();
     DSD_FPRINTF(stdout, "DMR_DATA_SYNC: OK\n");

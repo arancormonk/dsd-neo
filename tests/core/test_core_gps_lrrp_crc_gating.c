@@ -5,7 +5,9 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
@@ -173,8 +175,8 @@ test_usbd_lip(const dsd_opts* opts, dsd_state* state, const char* path) {
             DSD_FPRINTF(stderr, "T1 reason: missing Response to an immediate location request in %s\n", output);
             rc = 1;
         }
-        if (!expect_rows(path, i == 1 ? 0 : 1, "00000218", "-22.500000", "-45.000000", 20, 0, "19990102",
-                         lip_tags[i])) {
+        // The hash is no radio ID: a USBD reply never reaches the location file (decision D8).
+        if (!expect_rows(path, 0, NULL, NULL, NULL, 0, 0, NULL, lip_tags[i])) {
             rc = 1;
         }
         const char* gps = state->dmr_embedded_gps[1];
@@ -185,8 +187,9 @@ test_usbd_lip(const dsd_opts* opts, dsd_state* state, const char* path) {
                 rc = 1;
             }
             DSD_MEMCPY(clean_lip, gps, sizeof clean_lip);
-        } else if (memcmp(clean_lip, gps, sizeof clean_lip) != 0) {
-            DSD_FPRINTF(stderr, "\n%s: decoded state changed: %s\n", lip_tags[i], gps);
+        } else if (i == 1 ? gps[0] != '\0' : memcmp(clean_lip, gps, sizeof clean_lip) != 0) {
+            // A CRC-failed reply leaves no position text (spec 2.11); the other slot's scope and the CRC bit do not count.
+            DSD_FPRINTF(stderr, "\n%s: unexpected decoded state: %s\n", lip_tags[i], gps);
             rc = 1;
         }
     }
@@ -245,6 +248,70 @@ test_short_lip(dsd_opts* opts, dsd_state* state, const char* path) {
     return rc;
 }
 
+/* Spec 2.3 (TS 100 392-18-1 Tables 6.51 and 6.45): velocity 126 is "more than 1043 km/h", 127 "not known"; direction
+   15 is "337.5 or not known". None is printed or written as an exact value: the location file takes the bound for 126
+   and its placeholder 0 for an unknown speed or an ambiguous heading. Position error 7 (D11) is still written. */
+static int
+test_short_lip_codes(dsd_opts* opts, dsd_state* state, const char* path) {
+    static const struct {
+        uint8_t velocity;
+        uint8_t direction;
+        uint8_t pos_err;
+        int speed_column;
+        int azimuth_column;
+        const char* text;    // the row's and the display's text
+        const char* console; // printed
+    } cases[] = {
+        {125, 14, 1, 1042, 315, "Spd: 1042 km/h; Dir: 315", "Spd: 1042 km/h; Dir: 315"},
+        {126, 1, 1, 1043, 22, "Spd: >1043 km/h; Dir: 22", "Spd: >1043 km/h; Dir: 22"},
+        {127, 0, 1, 0, 0, "Spd: unknown; Dir: 0", "Spd: unknown; Dir: 0"},
+        {28, 15, 1, 28, 0, "Spd: 28 km/h; Dir: 337.5 or unknown", "Spd: 28 km/h; Dir: 337.5 or unknown"},
+        {29, 2, 7, 29, 45, "Unknown Pos Err (fix may be old or invalid); Spd: 29 km/h; Dir: 45",
+         "Position Error: Unknown or Invalid"},
+    };
+
+    int rc = 0;
+    state->currentslot = 1;
+    state->event_crc_invalid[1] = 0;
+    opts->lrrp_file_output = 1;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        uint8_t bits[76] = {0};
+        set_bits_msb(bits, 4, 1, 1);
+        set_bits_msb(bits, 5, 24, 0xC00000);
+        set_bits_msb(bits, 29, 1, 1);
+        set_bits_msb(bits, 30, 23, 0x600000);
+        set_bits_msb(bits, 53, 3, cases[i].pos_err);
+        set_bits_msb(bits, 56, 7, cases[i].velocity);
+        set_bits_msb(bits, 63, 4, cases[i].direction);
+        if (!truncate_output(path)) {
+            return 100;
+        }
+        char output[2048];
+        if (capture_lip_pdu(opts, state, bits, sizeof bits, output)) {
+            return 100;
+        }
+        if (!expect_rows(path, 1, "00123456", "-22.500000", "-45.000000", cases[i].speed_column,
+                         cases[i].azimuth_column, NULL, "2.3 LIP codes")
+            || !strstr(state->dmr_embedded_gps[1], cases[i].text) || !strstr(output, cases[i].console)) {
+            DSD_FPRINTF(stderr, "2.3 LIP code case %zu: state=%s; console=%s\n", i, state->dmr_embedded_gps[1], output);
+            rc = 1;
+        }
+    }
+    lip_short_report r;
+    uint8_t bits[76] = {0};
+    set_bits_msb(bits, 56, 7, 127);
+    set_bits_msb(bits, 63, 4, 15);
+    set_bits_msb(bits, 53, 3, 7);
+    if (lip_parse_short_report(bits, sizeof bits, &r) != 1 || r.speed_dkmh != 0xFFFFU || r.heading_ddeg != 3375U
+        || r.flags != (DSD_POS_FLAG_HEADING_AMBIGUOUS | DSD_POS_FLAG_VALIDITY_UNKNOWN) || r.err_m != 0U
+        || lip_parse_short_report(bits, 75U, &r) != 0) {
+        DSD_FPRINTF(stderr, "2.3 LIP parse: unexpected speed %u heading %u flags %u\n", r.speed_dkmh, r.heading_ddeg,
+                    r.flags);
+        rc = 1;
+    }
+    return rc;
+}
+
 static int
 test_unsupported_lip(const dsd_opts* opts, dsd_state* state, const char* path) {
     const struct {
@@ -285,6 +352,165 @@ test_unsupported_lip(const dsd_opts* opts, dsd_state* state, const char* path) {
     return rc;
 }
 
+/* One long or short UDT NMEA report through the decoder: Table B.7 bounds (spec 2.5, V3, V4). */
+typedef struct {
+    int type;
+    uint8_t q;
+    uint8_t speed;
+    uint8_t ndeg, nmin;
+    uint16_t nminf;
+    uint8_t edeg, emin;
+    uint16_t eminf;
+    uint8_t hh, mm, ss;
+    uint16_t cog;
+    int rows;      // 1 when the position reaches -L
+    int speed_col; // -L speed column (km/h)
+    int az_col;    // -L azimuth column (0 = unknown)
+    const char* lat;
+    const char* lon;
+    const char* console; // must appear on the console
+    const char* tag;
+} udt_nmea_case;
+
+static int
+run_udt_nmea_case(const dsd_opts* opts, dsd_state* state, const char* path, const udt_nmea_case* c) {
+    uint8_t nmea[192] = {0};
+    set_bits_msb(nmea, 1, 1, 1); // north
+    set_bits_msb(nmea, 2, 1, 0); // west
+    set_bits_msb(nmea, 3, 1, c->q);
+    set_bits_msb(nmea, 4, 7, c->speed);
+    set_bits_msb(nmea, 11, 7, c->ndeg);
+    set_bits_msb(nmea, 18, 6, c->nmin);
+    set_bits_msb(nmea, 24, 14, c->nminf);
+    set_bits_msb(nmea, 38, 8, c->edeg);
+    set_bits_msb(nmea, 46, 6, c->emin);
+    set_bits_msb(nmea, 52, 14, c->eminf);
+    set_bits_msb(nmea, 66, 5, c->hh);
+    set_bits_msb(nmea, 71, 6, c->mm);
+    set_bits_msb(nmea, 77, c->type == 1 ? 3U : 6U, c->ss);
+    set_bits_msb(nmea, 103, 9, c->cog);
+    if (!truncate_output(path)) {
+        return 0;
+    }
+    state->dmr_embedded_gps[0][0] = '\0';
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "udt_nmea") != 0) {
+        return 0;
+    }
+    nmea_iec_61162_1(opts, state, nmea, 123456, c->type);
+    dsd_test_capture_stderr_end(&cap);
+    char output[2048];
+    if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
+        return 0;
+    }
+    const int text_ok = c->rows ? state->dmr_embedded_gps[0][0] != '\0' : state->dmr_embedded_gps[0][0] == '\0';
+    if (!expect_rows(path, c->rows, "00123456", c->lat, c->lon, c->speed_col, c->az_col, NULL, c->tag) || !text_ok
+        || strstr(output, c->console) == NULL) {
+        DSD_FPRINTF(stderr, "%s: state=%s; console=%s\n", c->tag, state->dmr_embedded_gps[0], output);
+        return 0;
+    }
+    return 1;
+}
+
+static int
+test_udt_nmea_bounds(const dsd_opts* opts, dsd_state* state, const char* path) {
+    static const udt_nmea_case cases[] = {
+        {2, 1, 20, 22, 30, 0, 45, 0, 0, 11, 22, 33, 90, 1, 37, 90, "22.500000", "-45.000000", "11:22:33 UTC", "valid"},
+        {2, 0, 20, 22, 30, 0, 45, 0, 0, 11, 22, 33, 90, 0, 0, 0, NULL, NULL, "no fix", "Q=0 no fix"},
+        {2, 1, 0, 89, 59, 9999, 179, 59, 9999, 0, 0, 0, 0, 1, 0, 0, "89.999998", "-179.999998", "COG: 0", "max"},
+        {2, 1, 0, 90, 0, 0, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, "invalid position", "NDEG 90"},
+        {2, 1, 0, 22, 60, 0, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, "invalid position", "NMIN 60"},
+        {2, 1, 0, 22, 0, 10000, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, "invalid position", "NMINF 10000"},
+        {2, 1, 0, 22, 0, 0, 180, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, "invalid position", "EDEG 180"},
+        {2, 1, 0, 22, 0, 0, 45, 60, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, "invalid position", "EMIN 60"},
+        {2, 1, 0, 22, 0, 0, 45, 0, 10000, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, "invalid position", "EMINF 10000"},
+        {2, 1, 127, 22, 30, 0, 45, 0, 0, 0, 0, 0, 359, 1, 233, 359, "22.500000", "-45.000000", "SPD > 126", "speed"},
+        {2, 1, 0, 22, 30, 0, 45, 0, 0, 0, 0, 0, 360, 1, 0, 0, "22.500000", "-45.000000", "COG: unknown", "COG 360"},
+        {2, 1, 0, 22, 30, 0, 45, 0, 0, 23, 59, 59, 0, 1, 0, 0, "22.500000", "-45.000000", "23:59:59 UTC", "time max"},
+        {2, 1, 0, 22, 30, 0, 45, 0, 0, 24, 0, 0, 0, 1, 0, 0, "22.500000", "-45.000000", "time unknown", "hour 24"},
+        {2, 1, 0, 22, 30, 0, 45, 0, 0, 0, 60, 0, 0, 1, 0, 0, "22.500000", "-45.000000", "time unknown", "minute 60"},
+        {2, 1, 0, 22, 30, 0, 45, 0, 0, 0, 0, 60, 0, 1, 0, 0, "22.500000", "-45.000000", "time unknown", "second 60"},
+        {1,
+         1,
+         0,
+         22,
+         30,
+         0,
+         45,
+         0,
+         0,
+         31,
+         63,
+         7,
+         0,
+         1,
+         0,
+         0,
+         "22.500000",
+         "-45.000000",
+         "time unknown",
+         "short 31:63:7"},
+        {1, 1, 0, 22, 30, 0, 45, 0, 0, 12, 0, 5, 0, 1, 0, 0, "22.500000", "-45.000000", "12:00:50 UTC", "short code 5"},
+        {1, 1, 0, 22, 30, 0, 45, 0, 0, 12, 0, 6, 0, 1, 0, 0, "22.500000", "-45.000000", "time unknown", "short code 6"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        if (!run_udt_nmea_case(opts, state, path, &cases[i])) {
+            return 30 + (int)i;
+        }
+    }
+    return 0;
+}
+
+/* Spec 2.2: the embedded GPS LC's source is the slot's ACTIVE call's only while a checked full LC of that call (voice
+   header or late entry, not RAS: dmr_flco) named it in this transmission; otherwise the fix is written unattributed. */
+static int
+test_embedded_attribution(const dsd_opts* opts, dsd_state* state, const char* path, const uint8_t* dmr_lc) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 1U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1201U,
+        .policy_target_id = 1201U,
+        .ota_source_id = 777U,
+    };
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0) {
+        return 100;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 1U, &call) <= 0) {
+        return 100;
+    }
+
+    static const struct {
+        int epoch_matches;
+        uint32_t checked_source;
+        const char* src;
+        const char* tag;
+    } cases[] = {
+        {1, 777U, "00000777", "checked LC named the call's source"},
+        {1, 778U, "00000000", "checked LC named another source"},
+        {0, 777U, "00000000", "checked LC of an earlier transmission"},
+    };
+
+    state->currentslot = 1;
+    state->event_crc_invalid[1] = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        state->dmr_lc_checked_epoch[1] = cases[i].epoch_matches ? call.epoch : call.epoch + 1U;
+        state->dmr_lc_checked_source[1] = cases[i].checked_source;
+        if (!truncate_output(path)) {
+            return 100;
+        }
+        dmr_embedded_gps(opts, state, dmr_lc);
+        if (!expect_rows(path, 1, cases[i].src, "-22.500000", "-45.000000", 0, 0, NULL, cases[i].tag)) {
+            return 26 + (int)i;
+        }
+    }
+    (void)dsd_call_state_end(state, 1U, 0.0);
+    state->dmr_lc_checked_epoch[1] = 0U;
+    state->dmr_lc_checked_source[1] = 0U;
+    return 0;
+}
+
 static int
 run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
     uint8_t nmea[192] = {0};
@@ -308,10 +534,16 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         if (!expect_rows(path, !invalid, "00123456", "-22.500000", "-45.000000", 0, 0, NULL, "UDT NMEA")) {
             return 7 + invalid * 2;
         }
-        if (strncmp(state->dmr_embedded_gps[0], "GPS: (", 6) != 0) {
-            DSD_FPRINTF(stderr, "\nUDT NMEA: missing decoded GPS state\n");
+        // A CRC-failed report leaves no position text (spec 2.11).
+        if (invalid ? state->dmr_embedded_gps[0][0] != '\0' : strncmp(state->dmr_embedded_gps[0], "GPS: (", 6) != 0) {
+            DSD_FPRINTF(stderr, "\nUDT NMEA: unexpected decoded GPS state: %s\n", state->dmr_embedded_gps[0]);
             return 8 + invalid * 2;
         }
+    }
+    state->event_crc_invalid[0] = 0;
+    int udt_rc = test_udt_nmea_bounds(opts, state, path);
+    if (udt_rc != 0) {
+        return udt_rc;
     }
 
     uint8_t harris[192] = {0};
@@ -381,10 +613,14 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         if (!expect_rows(path, !invalid, "00000000", "-22.500000", "-45.000000", 0, 0, "19990102", "DMR voice LC")) {
             return 18 + (1 - invalid) * 2;
         }
-        if (strcmp(state->dmr_embedded_gps[1], "GPS: 22.50000S 45.00000W Err: 20m") != 0) {
+        if (strcmp(state->dmr_embedded_gps[1], invalid ? "" : "GPS: 22.50000S 45.00000W Err: 20m") != 0) {
             DSD_FPRINTF(stderr, "\nDMR voice LC: unexpected decoded GPS state: %s\n", state->dmr_embedded_gps[1]);
             return 19 + (1 - invalid) * 2;
         }
+    }
+    int embedded_rc = test_embedded_attribution(opts, state, path, dmr_lc);
+    if (embedded_rc != 0) {
+        return embedded_rc;
     }
 
     uint8_t apx_lc[96] = {0};
@@ -474,6 +710,7 @@ main(void) {
     opts.lrrp_file_output = 1;
     int rc = test_usbd_lip(&opts, &state, path);
     rc |= test_short_lip(&opts, &state, path);
+    rc |= test_short_lip_codes(&opts, &state, path);
     rc |= test_unsupported_lip(&opts, &state, path);
     rc |= run_cases(&opts, &state, path);
     rc |= test_cellocator_short_payloads(&opts, &state);

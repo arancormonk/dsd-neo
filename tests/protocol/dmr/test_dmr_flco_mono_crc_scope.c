@@ -157,7 +157,8 @@ test_gps_scope(dsd_opts* opts, dsd_state* state, const char* path, uint8_t outer
     char expected[256];
     DSD_SNPRINTF(expected, sizeof expected, "GPS: 22.50000%sS 45.00000%sW Err: 20m", dsd_degrees_glyph(),
                  dsd_degrees_glyph());
-    CHECK(strcmp(state->dmr_embedded_gps[0], expected) == 0);
+    // A failed scope withholds the position everywhere, its text included (spec 2.11).
+    CHECK(strcmp(state->dmr_embedded_gps[0], outer || burst ? "" : expected) == 0);
     CHECK(state->dmr_embedded_gps[1][0] == '\0');
     CHECK(state->event_crc_invalid[0] == outer && state->event_crc_invalid[1] == burst);
     return failed;

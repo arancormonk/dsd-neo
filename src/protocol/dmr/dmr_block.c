@@ -19,6 +19,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -654,6 +655,8 @@ dmr_dheader_classified(dsd_opts* opts, dsd_state* state, uint8_t* dheader, uint8
         state->dmr_lrrp_source[slot] = f.source;
         state->dmr_lrrp_target[slot] = f.target;
         state->dmr_data_target_is_group[slot] = (uint8_t)(f.gi == 1);
+        // The assembly's first fragment: where a position report it carries was heard (spec 2.3 step 3).
+        dsd_position_origin_capture(opts, state, &state->dmr_data_origin[slot & 1U]);
     } else {
         // A proprietary header keeps the previous transmission's source/target on purpose, but
         // that pair must not go on selecting a decryption key: drop the group qualifier so the
@@ -1080,12 +1083,8 @@ dmr_udt_finalize(dmr_udt_ctx* ctx) {
     DSD_FPRINTF(stderr, "%s", KNRM);
     const dsd_call_observation observation =
         dsd_call_observation_data(ctx->state->lastsynctype, ctx->slot, ctx->udt_source, ctx->udt_target);
-    if (ctx->event_gps[0] != '\0') {
-        (void)dsd_event_emit_data_notice_with_gps(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string,
-                                                  ctx->event_gps);
-    } else {
-        (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string);
-    }
+    // A position report the UDT carried (LIP, binary NMEA) was staged with its text when admitted; the notice takes it.
+    (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string);
 }
 
 static void DSD_ATTR_USED

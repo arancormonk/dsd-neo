@@ -62,6 +62,8 @@ typedef struct dmr_data_sync_ctx_s {
     /* The slot (DSD_DMR_MONO_RX_TS1/TS2) a checked TACT names for a standalone burst the single-slot output folds onto
        lane 0; DSD_DMR_MONO_RX_NONE otherwise (issue #637). */
     uint8_t folded_slot;
+    /* Who sent the burst, by its own sync word (dmr_data_collect_sync()), for a service with a direction (spec 2.13). */
+    dmr_burst_origin origin;
 } dmr_data_sync_ctx;
 
 static void
@@ -207,6 +209,25 @@ dmr_data_collect_slot_type_prefix(dmr_data_sync_ctx* ctx) {
     ctx->SlotType[9] = (unsigned char)(1 & dibit);
 }
 
+/* The sender a data sync word names (TS 102 361-1 Table 9.2). The dibits were read at the received polarity's
+   correction (opts->inverted_dmr), so an inverted carrier's sync reads as its own pattern here. */
+static dmr_burst_origin
+dmr_data_sync_origin(const char* sync) {
+    if (strcmp(sync, DMR_BS_DATA_SYNC) == 0) {
+        return DMR_BURST_ORIGIN_BS;
+    }
+    if (strcmp(sync, DMR_MS_DATA_SYNC) == 0) {
+        return DMR_BURST_ORIGIN_MS;
+    }
+    if (strcmp(sync, DMR_DIRECT_MODE_TS1_DATA_SYNC) == 0) {
+        return DMR_BURST_ORIGIN_DIRECT_TS1;
+    }
+    if (strcmp(sync, DMR_DIRECT_MODE_TS2_DATA_SYNC) == 0) {
+        return DMR_BURST_ORIGIN_DIRECT_TS2;
+    }
+    return DMR_BURST_ORIGIN_UNKNOWN;
+}
+
 static void
 dmr_data_collect_sync(dmr_data_sync_ctx* ctx) {
     int i;
@@ -218,6 +239,7 @@ dmr_data_collect_sync(dmr_data_sync_ctx* ctx) {
         ctx->sync[i] = (char)((dibit | 1) + 48);
     }
     ctx->sync[24] = 0;
+    ctx->origin = dmr_data_sync_origin(ctx->sync);
 
     if (strcmp(ctx->sync, DMR_BS_DATA_SYNC) == 0) {
         if (ctx->state->currentslot == 0) {
@@ -333,7 +355,7 @@ dmr_data_dispatch_burst(dmr_data_sync_ctx* ctx) {
     if (ctx->burst == 6 || ctx->burst == 7 || ctx->burst == 8 || ctx->burst == 10) {
         dmr_sm_emit_data_sync(ctx->opts, ctx->state, ctx->state->currentslot);
     }
-    dmr_data_burst_handler(ctx->opts, ctx->state, ctx->info, ctx->burst, ctx->rel98);
+    dmr_data_burst_handler_origin(ctx->opts, ctx->state, ctx->info, ctx->burst, ctx->rel98, ctx->origin);
     if (ctx->state->dmr_ms_mode == 0) {
         (void)dmr_cach(ctx->opts, ctx->state, ctx->cachdata);
     }

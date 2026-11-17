@@ -910,6 +910,20 @@ dmr_flco_forget_replaced_crypto_continuity(dsd_state* state, uint8_t slot) {
     }
 }
 
+/* A full LC whose own check passed (not a RAS acceptance) named the slot's ACTIVE call's source: the embedded GPS LC
+   that follows in this transmission is that radio's (spec 2.2). Any other LC leaves the record alone, so it names a
+   source only while the call stays the epoch and source it recorded. */
+static void
+dmr_flco_note_checked_source(const dmr_flco_ctx* ctx, uint8_t slot) {
+    dsd_call_snapshot call;
+    if (!dmr_flco_crc_checked(ctx) || ctx->source == 0U || dsd_call_state_get(ctx->state, slot, &call) <= 0
+        || call.phase != DSD_CALL_PHASE_ACTIVE || call.ota_source_id != ctx->source) {
+        return;
+    }
+    ctx->state->dmr_lc_checked_epoch[slot] = call.epoch;
+    ctx->state->dmr_lc_checked_source[slot] = ctx->source;
+}
+
 static void
 dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -950,6 +964,7 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     (void)dsd_call_state_observe(ctx->state, &observation, boundary);
     // The checked LC names the slot's call for the trunk state machine: what a preemption candidate is compared with.
     dmr_sm_note_lc_identity(ctx->opts, ctx->state, (int)slot, observation.kind, ctx->target, ctx->source);
+    dmr_flco_note_checked_source(ctx, slot);
     dsd_call_snapshot after;
     const int have_after = dsd_call_state_get(ctx->state, slot, &after) > 0;
     const int epoch_forked = was_active && have_after && after.epoch != before.epoch;

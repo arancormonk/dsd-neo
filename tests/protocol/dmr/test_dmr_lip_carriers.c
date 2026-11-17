@@ -4,6 +4,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -112,6 +113,13 @@ short_report(uint8_t bytes[12]) {
     }
 }
 
+// The notice row a carrier committed carries the admitted report: its text and its position (the report's own source).
+static int
+notice_has_position(const Event_History* notice, uint32_t source) {
+    return strstr(notice->gps_s, "LIP:") != NULL && notice->pos.valid == 1U && notice->pos.kind == DSD_POS_LIP
+           && notice->pos.lat_e7 == -225000000 && notice->pos.lon_e7 == -450000000 && notice->source_id == source;
+}
+
 static void
 send_udt(dsd_opts* opts, dsd_state* state, int corrupt) {
     uint8_t hdr[12] = {0, 0x0B, 0, 0, 42, 0x01, 0xE2, 0x40, 0x08, 0, 0, 0};
@@ -134,11 +142,23 @@ test_udt(dsd_opts* opts, dsd_state* state, const char* path) {
     send_udt(opts, state, 0);
     CHECK(strncmp(state->dmr_embedded_gps[0], "LIP: 22.50000", 12) == 0);
     CHECK(expect_rows(path, 1, "00123456", "-22.500000", "-45.000000", 20, 0, "T8a UDT LIP"));
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 123456U));
     char saved[sizeof state->dmr_embedded_gps[0]];
     DSD_SNPRINTF(saved, sizeof saved, "%s", state->dmr_embedded_gps[0]);
     CHECK(truncate_output(path));
     send_udt(opts, state, 1);
     CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8a invalid UDT"));
+    CHECK(strcmp(state->dmr_embedded_gps[0], saved) == 0);
+    // Under -F the CRC-failed UDT is decoded and its notice committed, marked, without the position (spec 2.11).
+    opts->dmr_crc_relaxed_default = 1;
+    CHECK(truncate_output(path));
+    send_udt(opts, state, 1);
+    opts->dmr_crc_relaxed_default = 0;
+    const Event_History* failed_notice = &state->event_history_s[0].Event_History_Items[1];
+    CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8a relaxed invalid UDT"));
+    CHECK(strstr(failed_notice->event_string, "CRC ERR") != NULL);
+    CHECK(strstr(failed_notice->event_string, "LIP;") != NULL);
+    CHECK(failed_notice->gps_s[0] == '\0' && failed_notice->pos.valid == 0U);
     CHECK(strcmp(state->dmr_embedded_gps[0], saved) == 0);
     return failed;
 }
@@ -172,12 +192,19 @@ test_udp(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(expect_rows(path, 1, "00000111", "-22.500000", "-45.000000", 20, 0, "T8b UDP LIP"));
     CHECK(strncmp(state->dmr_embedded_gps[0], "LIP:", 4) == 0);
     // Explicit data notices are committed to row 1; row 0 is restored to the active voice call.
-    CHECK(strstr(state->event_history_s[0].Event_History_Items[1].gps_s, "LIP:") != NULL);
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 111U));
     CHECK(strstr(state->event_history_s[0].Event_History_Items[1].event_string, "LIP SRC: 111; DST: 222;") != NULL);
-    state->event_crc_invalid[0] = 1;
-    CHECK(truncate_output(path));
-    decode_ip_pdu(opts, state, sizeof packet, packet);
-    CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8b CRC-invalid UDP"));
+    // A packet whose checks failed (CRC ERR, or RAS) gives no position anywhere; its notice stays (spec 2.11).
+    for (uint8_t flags = 1U; flags <= 2U; flags++) {
+        state->event_crc_invalid[0] = flags;
+        CHECK(truncate_output(path));
+        decode_ip_pdu(opts, state, sizeof packet, packet);
+        CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8b CRC-invalid UDP"));
+        const Event_History* unchecked = &state->event_history_s[0].Event_History_Items[1];
+        CHECK(strstr(unchecked->event_string, "LIP SRC: 111;") != NULL);
+        CHECK(unchecked->gps_s[0] == '\0' && unchecked->pos.valid == 0U);
+        CHECK(dsd_event_staged_position(state, 0U)->rev == 0U);
+    }
     state->event_crc_invalid[0] = 0;
     char saved[sizeof state->dmr_embedded_gps[0]];
     DSD_SNPRINTF(saved, sizeof saved, "%s", state->dmr_embedded_gps[0]);
@@ -201,7 +228,9 @@ test_compressed(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(truncate_output(path));
     dmr_udp_comp_pdu(opts, state, sizeof packet, packet);
     CHECK(expect_rows(path, 1, "00000777", "-22.500000", "-45.000000", 20, 0, "T8c indexed LIP"));
-    CHECK(strstr(state->event_history_s[0].Event_History_Items[1].gps_s, "LIP:") != NULL);
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 777U));
+    // The notice consumed the staged report: the slot's next notice takes nothing.
+    CHECK(dsd_event_staged_position(state, 0U)->rev == 0U);
     return failed;
 }
 
@@ -287,8 +316,10 @@ test_active_call_ownership(dsd_opts* opts, dsd_state* state, const char* path, i
     CHECK(seed_active_call(opts, state));
     CHECK(truncate_output(path));
     send_carrier_report(opts, state, carrier, 111, 0);
+    // One history writer per report: the carrier's own notice takes it, the speaker's voice row is left alone.
     Event_History* active = &state->event_history_s[0].Event_History_Items[0];
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
+    CHECK(active->gps_s[0] == '\0' && active->pos.valid == 0U);
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 111U));
     CHECK(expect_rows(path, 1, "00000111", "-22.500000", "-45.000000", 20, 0, "X1 positive report"));
     char saved[sizeof active->gps_s];
     DSD_SNPRINTF(saved, sizeof saved, "%s", active->gps_s);
@@ -302,7 +333,6 @@ test_active_call_ownership(dsd_opts* opts, dsd_state* state, const char* path, i
         CHECK(strstr(notice->event_string, "SRC: 222;") != NULL);
     }
     CHECK(notice->gps_s[0] == '\0');
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
     CHECK(strcmp(active->gps_s, saved) == 0);
     CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "X1 unsupported report"));
     return failed;
@@ -316,7 +346,7 @@ test_truncated_ownership(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(truncate_output(path));
     send_carrier_report(opts, state, 1, 111, 0);
     Event_History* active = &state->event_history_s[0].Event_History_Items[0];
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 111U));
     char saved[sizeof active->gps_s];
     DSD_SNPRINTF(saved, sizeof saved, "%s", active->gps_s);
     uint8_t packet[38];
@@ -332,7 +362,6 @@ test_truncated_ownership(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(notice->source_id == 222);
     CHECK(strstr(notice->event_string, "LIP SRC: 222;") != NULL);
     CHECK(notice->gps_s[0] == '\0');
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
     CHECK(strcmp(active->gps_s, saved) == 0);
     CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "X1 truncated report"));
     return failed;
@@ -382,7 +411,7 @@ test_icmp_enclosed_report(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(truncate_output(path));
     send_carrier_report(opts, state, 1, 111, 0);
     const Event_History* active = &state->event_history_s[0].Event_History_Items[0];
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 111U));
     CHECK(expect_rows(path, 1, "00000111", "-22.500000", "-45.000000", 20, 0, "X2 active call seed"));
     char saved[sizeof active->gps_s];
     DSD_SNPRINTF(saved, sizeof saved, "%s", active->gps_s);
@@ -403,14 +432,12 @@ test_icmp_enclosed_report(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(expect_rows(path, 2, "00000111", "-22.500000", "-45.000000", 20, 0, "X2 ICMP enclosure"));
     const Event_History* outer = &state->event_history_s[0].Event_History_Items[1];
     const Event_History* inner = &state->event_history_s[0].Event_History_Items[2];
-    CHECK(inner->source_id == 111);
+    CHECK(notice_has_position(inner, 111U));
     CHECK(strstr(inner->event_string, "LIP SRC: 111;") != NULL);
-    CHECK(strstr(inner->gps_s, "LIP:") != NULL);
     CHECK(outer->source_id == 999);
     DSD_FPRINTF(stderr, "\nX2 ICMP: inner source=%u GPS='%s'; outer source=%u GPS='%s'\n", inner->source_id,
                 inner->gps_s, outer->source_id, outer->gps_s);
-    CHECK(outer->gps_s[0] == '\0');
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
+    CHECK(outer->gps_s[0] == '\0' && outer->pos.valid == 0U);
     CHECK(strcmp(active->gps_s, saved) == 0);
     CHECK(strstr(state->dmr_embedded_gps[0], "LIP:") != NULL);
     CHECK(strcmp(state->dmr_embedded_gps[0], inner->gps_s) == 0);

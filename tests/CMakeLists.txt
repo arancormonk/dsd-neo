@@ -10693,7 +10693,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_engine_manual_tune_supersede"
             "LINKER:--wrap=dsd_engine_legacy_tune_caches_forget"
             "LINKER:--wrap=dsd_engine_signal_search_active"
-            "LINKER:--wrap=dmr_data_burst_handler"
+            "LINKER:--wrap=dmr_data_burst_handler_origin"
             "LINKER:--wrap=dsd_audio_write"
             "LINKER:--wrap=dsd_audio_output_health_get"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
@@ -15837,10 +15837,20 @@ add_test(
 )
 
 # DMR embedded GPS: position error mapping (ETSI 7.2.15) matches SDRTrunk
+# dsd_gps.c admits every position report (position_feed.c), whose label freeze reads the source-alias and
+# talkgroup-policy lookups; their own dependencies follow.
 add_executable(
     dsd-neo_test_dmr_embedded_gps_position_error
     protocol/dmr/test_dmr_embedded_gps_position_error.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15867,10 +15877,20 @@ add_test(
 )
 
 # Core GPS: CRC-failed location rows are suppressed while decoded state is retained (#550)
+# dsd_gps.c admits every position report (position_feed.c), whose label freeze reads the source-alias and
+# talkgroup-policy lookups; their own dependencies follow.
 add_executable(
     dsd-neo_test_core_gps_lrrp_crc_gating
     core/test_core_gps_lrrp_crc_gating.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )

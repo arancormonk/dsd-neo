@@ -268,10 +268,10 @@ int __real_rtl_stream_set_bias_tee(int on);
 int __wrap_rtl_stream_set_bias_tee(int on);
 int __wrap_rtl_stream_control_unavailable(void);
 #endif
-void __real_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
-                                   const uint8_t* reliab98);
-void __wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
-                                   const uint8_t* reliab98);
+void __real_dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                                          const uint8_t* reliab98, dmr_burst_origin origin);
+void __wrap_dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                                          const uint8_t* reliab98, dmr_burst_origin origin);
 int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
 int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
 int __real_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
@@ -527,10 +527,10 @@ __wrap_dsd_frame_sync_reset_mod_state(void) {
 /* A DMR data burst the decode gate let through (issue #575): counted, and handled for real unless a test armed the
    count alone. */
 void
-__wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
-                              const uint8_t* reliab98) {
+__wrap_dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                                     const uint8_t* reliab98, dmr_burst_origin origin) {
     if (!g_dmr_burst_handler_armed) {
-        __real_dmr_data_burst_handler(opts, state, info, databurst, reliab98);
+        __real_dmr_data_burst_handler_origin(opts, state, info, databurst, reliab98, origin);
         return;
     }
     g_dmr_burst_handler_calls++;
