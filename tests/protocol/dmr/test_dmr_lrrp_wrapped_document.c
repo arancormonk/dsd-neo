@@ -225,7 +225,23 @@ main(void) {
         rc |= expect_exact(st.dmr_lrrp_gps[0], "LRRP SRC: 123; Unknown Format 03; TGT: 456;", "empty inner");
     }
 
-    // 5. The prefix search is bounded: the document at offset 9 is out of reach.
+    // 5. The inner document length is a uintvar: the same document with its length sent in two bytes (80 18) is
+    //    found and decodes as the one-byte form does.
+    {
+        uint8_t pdu[32];
+        DSD_MEMCPY(pdu, k_wrapped[0], k_prefix + 1u);
+        pdu[k_prefix + 1u] = 0x80;
+        pdu[k_prefix + 2u] = 0x18;
+        DSD_MEMCPY(pdu + k_prefix + 3u, k_wrapped[0] + k_prefix + 2u, n - k_prefix - 2u);
+        decode(&opts, &st, k_wrapped[0], n);
+        char one_byte[sizeof st.dmr_lrrp_gps[0]];
+        DSD_SNPRINTF(one_byte, sizeof one_byte, "%s", st.dmr_lrrp_gps[0]);
+        decode(&opts, &st, pdu, sizeof pdu);
+        rc |= expect_exact(st.dmr_lrrp_gps[0], one_byte, "two-byte inner length");
+        rc |= expect_point(st.dmr_lrrp_gps[0], 12.0, 34.0, "two-byte inner length");
+    }
+
+    // 6. The prefix search is bounded: the document at offset 9 is out of reach.
     {
         uint8_t pdu[35];
         DSD_MEMSET(pdu, 0, sizeof pdu);

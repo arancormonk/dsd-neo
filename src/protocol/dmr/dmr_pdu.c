@@ -1239,6 +1239,7 @@ typedef struct {
     uint8_t have_speed;
     uint8_t heading_units; // horizontal direction in 2-degree steps, below 180
     uint8_t have_heading;
+    uint8_t heading_seen; // a 0x56 was read, in range or not: only the first counts
 } dmr_lrrp_parse_result;
 
 static void
@@ -1393,45 +1394,50 @@ dmr_lrrp_opaque_token_len(uint8_t token) {
     }
 }
 
-// The motion tokens: horizontal direction (0x56, 2-degree steps; 180 or more is no direction) and horizontal speed in
-// m/s (0x6B integer, 0x6C float). The first of each counts. Returns the bytes taken, 0 when the token is not one of
-// them or is malformed or cut.
+// The motion tokens: horizontal direction (0x56, 2-degree steps; 180 or more is no direction), horizontal speed in
+// m/s (0x6B integer, 0x6C float) and vertical speed (0x70, sfloatvar: real reports carry it; no output uses it). The
+// first direction and the first horizontal speed count. Returns the bytes taken, 0 when the token is not one of them or
+// is malformed or cut.
 static size_t
 dmr_lrrp_parse_motion_token(const uint8_t* p, size_t avail, dmr_lrrp_parse_result* r) {
     if (p[0] == 0x56) {
         if (avail < 2U) {
             return 0U;
         }
-        if (!r->have_heading && p[1] < 180U) {
+        if (!r->heading_seen) {
+            r->heading_seen = 1U;
             r->heading_units = p[1];
-            r->have_heading = 1U;
+            r->have_heading = (uint8_t)(p[1] < 180U);
         }
         return 2U;
     }
-    if (p[0] != 0x6B && p[0] != 0x6C) {
+    if (p[0] != 0x6B && p[0] != 0x6C && p[0] != 0x70) {
         return 0U;
     }
     dmr_lrrp_number speed;
-    const size_t n = dmr_lrrp_read_number(p + 1, avail - 1U, 0, p[0] == 0x6C, &speed);
+    const size_t n = dmr_lrrp_read_number(p + 1, avail - 1U, p[0] == 0x70, p[0] != 0x6B, &speed);
     if (n == 0U) {
         return 0U;
     }
-    if (!r->have_speed) {
+    if (p[0] != 0x70 && !r->have_speed) {
         r->speed = speed;
         r->have_speed = 1U;
     }
     return n + 1U;
 }
 
-// The tokens that carry a value (request ID, time, result, motion). Returns the bytes taken, 0 when the token is not
-// one of them or is malformed or cut.
+// The tokens that carry a value (request ID, time, result, level of confidence, motion). Returns the bytes taken, 0
+// when the token is not one of them or is malformed or cut.
 static size_t
 dmr_lrrp_parse_value_token(const uint8_t* p, size_t avail, dmr_lrrp_parse_result* r) {
     uint32_t ignored = 0U;
     size_t n = 0U;
     switch (p[0]) {
-        case 0x22: // request ID: a length, then that many bytes
-            return (avail >= 2U && (size_t)p[1] + 2U <= avail) ? (size_t)p[1] + 2U : 0U;
+        case 0x22: { // request ID: a uintvar length, then that many bytes
+            uint32_t id_len = 0U;
+            n = dmr_lrrp_read_uintvar(p + 1, avail - 1U, &id_len);
+            return (n != 0U && (size_t)id_len <= avail - 1U - n) ? 1U + n + (size_t)id_len : 0U;
+        }
         case 0x34:
             if (avail < 6U) {
                 return 0U;
@@ -1439,6 +1445,7 @@ dmr_lrrp_parse_value_token(const uint8_t* p, size_t avail, dmr_lrrp_parse_result
             dmr_lrrp_parse_timestamp_token(p, r);
             return 6U;
         case 0x37: // result code
+        case 0x65: // level of confidence (a percentage; real reports carry it)
             n = dmr_lrrp_read_uintvar(p + 1, avail - 1U, &ignored);
             return n == 0U ? 0U : n + 1U;
         default: return dmr_lrrp_parse_motion_token(p, avail, r);
@@ -1586,7 +1593,8 @@ dmr_lrrp_fill_extras(const dmr_lrrp_parse_result* best, dsd_position_fix* fix) {
         }
     }
     if (best->have_rad && best->radius.whole < UINT32_MAX) {
-        // A radius is an uncertainty: a fraction rounds up.
+        // A radius is an uncertainty: a fraction rounds up. A radius of 0 (an integer 0x53 radius, or 0.0) is
+        // DSD_POSITION_ERR_UNKNOWN: the record has no "exact" error.
         fix->err_m = best->radius.whole + (uint32_t)(best->radius.frac_bytes != 0U && best->radius.frac != 0U);
     }
     if (best->have_speed) {
@@ -1806,9 +1814,8 @@ dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, 
         dmr_lrrp_parse_tokens(DMR_PDU, start, token_len, &best);
         guessed = (uint8_t)(!best.have_pos && dmr_lrrp_resync_finds_position(DMR_PDU, start, token_len));
     }
-    if (!source) {
-        source = (uint32_t)state->dmr_lrrp_source[slot];
-    }
+    // The source is the caller's: every caller passes the source its notice observation names (IPv4 source address,
+    // MNIS or compressed-header data header source), so the record and its notice agree even when it is 0.
     const uint8_t pos_verified = (uint8_t)(pdu_crc_ok == 1U);
     dmr_lrrp_emit_context emit_ctx = {
         .source = source,
@@ -1977,10 +1984,11 @@ dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DM
     const char* withheld = NULL;
     dsd_position_fix fix;
     dsd_position_fix_init(&fix);
-    if (!(d.lat_valid && d.lon_valid)) {
-        withheld = "invalid";
-    } else if (scope != 0U) {
+    if (scope != 0U) {
+        // The failed check is the reason even when a damaged field is also out of range.
         withheld = (!dsd_crc_is_failed(scope) && (scope & DSD_CRC_RAS_UNVERIFIED) != 0U) ? "RAS" : "CRC ERR";
+    } else if (!(d.lat_valid && d.lon_valid)) {
+        withheld = "invalid";
     } else {
         fix.kind = DSD_POS_DMR_LOCN;
         fix.protocol = dmr_pdu_position_protocol(state);

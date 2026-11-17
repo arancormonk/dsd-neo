@@ -40,7 +40,7 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-// Minimal stubs for direct link with dmr_pdu.c
+// Minimal stubs for direct link with dmr_pdu.c (the LIP and Cellocator services: dsd-neo_test_dmr_decoder_stubs)
 const char*
 dsd_degrees_glyph(void) {
     return "";
@@ -49,25 +49,6 @@ dsd_degrees_glyph(void) {
 int
 dsd_unicode_supported(void) {
     return 0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
-    (void)bit_count;
-    (void)src;
-    (void)opts;
-    (void)state;
-    (void)bits;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-decode_cellocator(dsd_opts* opts, dsd_state* state, const uint8_t* input, int len) {
-    (void)opts;
-    (void)state;
-    (void)input;
-    (void)len;
 }
 
 int

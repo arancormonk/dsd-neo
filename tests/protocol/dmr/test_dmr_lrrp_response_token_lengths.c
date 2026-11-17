@@ -265,6 +265,29 @@ static const encoding_case k_encoding_cases[] = {
      "1FA0BA0000"
      "66" LL,
      1, ALT_NONE, 0U, SPD_NONE, HDG_NONE, 1709164800, "0.000\t 0"},
+    // The sign is bit 6 of a sintvar's first byte: integer -1 m, and float -0 - 76/128 m.
+    {"negative altitude integer", "070A67" LL "41", 1, -10, 0U, SPD_NONE, HDG_NONE, 0, "0.000\t 0"},
+    {"negative altitude float", "070B69" LL "404C", 1, -6, 0U, SPD_NONE, HDG_NONE, 0, "0.000\t 0"},
+    // The largest altitude the record holds (214748364 m), and one metre more: unknown, the position stays.
+    {"altitude limit", "070E67" LL "80E6B3994C", 1, 2147483640, 0U, SPD_NONE, HDG_NONE, 0, "0.000\t 0"},
+    {"altitude overflow", "070E67" LL "80E6B3994D", 1, ALT_NONE, 0U, SPD_NONE, HDG_NONE, 0, "0.000\t 0"},
+    // The largest speed the record holds (1820 m/s = 6552.0 km/h), and one more: unknown.
+    {"speed limit", "070C66" LL "6B8E1C", 1, ALT_NONE, 0U, 65520U, HDG_NONE, 0, "6552.000\t 0"},
+    {"speed overflow", "070C66" LL "6B8E1D", 1, ALT_NONE, 0U, SPD_NONE, HDG_NONE, 0, "0.000\t 0"},
+    // Vertical speed (0x70) and level of confidence (0x65), from real reports, are stepped over.
+    {"vertical speed and confidence",
+     "071366" LL "70404C"
+     "653C"
+     "6C0067"
+     "5669",
+     1, ALT_NONE, 0U, 29U, 2100U, 0, "2.900\t 210"},
+    // The request ID's length is a uintvar (80 02 = 2).
+    {"request id uintvar length", "070E228002ABCD66" LL, 1, ALT_NONE, 0U, SPD_NONE, HDG_NONE, 0, "0.000\t 0"},
+    // Only the first heading counts, even when it is out of range.
+    {"first heading counts",
+     "070D66" LL "56B4"
+     "5610",
+     1, ALT_NONE, 0U, SPD_NONE, HDG_NONE, 0, "0.000\t 0"},
     // A cut altitude (continuation bit on the last byte) is no position.
     {"cut altitude", "070B69" LL "8300", 0, ALT_NONE, 0U, SPD_NONE, HDG_NONE, 0, ""},
 };

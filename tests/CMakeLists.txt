@@ -339,12 +339,14 @@ target_link_libraries(
 )
 
 # No-op DMR unit activity producers and the core reason tables, for tests that compile the DMR CSBK or data decoders
-# (dmr_csbk.c, dmr_ars.c) without the core ring; DMR_UNIT_ACTIVITY links the real producers. The targets that need it
-# are listed once, after they are defined (_dsd_dmr_decoder_stub_targets).
+# (dmr_csbk.c, dmr_ars.c) without the core ring; DMR_UNIT_ACTIVITY links the real producers. Also no-op LIP and
+# Cellocator service decoders for tests that compile dmr_pdu.c and define neither. The targets that need it are listed
+# once, after they are defined (_dsd_dmr_decoder_stub_targets).
 add_library(
     dsd-neo_test_dmr_decoder_stubs
     STATIC
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_unit_activity_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_pdu_service_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
 )
 target_include_directories(

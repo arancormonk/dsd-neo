@@ -165,7 +165,8 @@ run_locn_case(dsd_opts* opts, dsd_state* st, const locn_case* c) {
     if (c->published) {
         const uint16_t want_flags = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
         if (fix->rev == 0U || fix->kind != DSD_POS_DMR_LOCN || fix->lat_e7 != c->lat_e7 || fix->lon_e7 != c->lon_e7
-            || fix->flags != want_flags || fix->source_id != 0x123456U || file[0] == '\0') {
+            || (fix->flags & (uint16_t)~(uint16_t)DSD_POS_FLAG_TARGET_GROUP) != want_flags
+            || fix->source_id != 0x123456U || file[0] == '\0') {
             DSD_FPRINTF(stderr, "%s: rev %llu kind %u (%d, %d) flags %04X, row '%s'\n", c->tag,
                         (unsigned long long)fix->rev, (unsigned)fix->kind, (int)fix->lat_e7, (int)fix->lon_e7,
                         (unsigned)fix->flags, file);
@@ -231,6 +232,28 @@ run_locn_cases(dsd_opts* opts) {
         rc |= run_locn_case(opts, &st, &k_locn_cases[i]);
     }
     rc |= run_locn_date_cases(opts, &st);
+
+    // A failed check is the reason a damaged report is withheld, even when a field is also out of range.
+    st.event_crc_invalid[0] = 1;
+    static const locn_case damaged = {"damaged and out of range",
+                                      "N4560.0000E04500.0000",
+                                      0,
+                                      0,
+                                      0,
+                                      "NMEA / LOCN; Source: 1193046 Position suppressed (CRC ERR);"};
+    rc |= run_locn_case(opts, &st, &damaged);
+    st.event_crc_invalid[0] = 0;
+
+    // A DMR data packet addressed to its header's group target is a group report.
+    st.dmr_lrrp_target[0] = 777;
+    st.dmr_data_target_is_group[0] = 1;
+    static const locn_case group = {"group target", "N2230.0000E04500.0000", 1, 225000000, 450000000, NULL};
+    rc |= run_locn_case(opts, &st, &group);
+    const dsd_position_fix* fix = dsd_event_staged_position(&st, 0);
+    if ((fix->flags & (uint16_t)DSD_POS_FLAG_TARGET_GROUP) == 0U || fix->target_id != 777U) {
+        DSD_FPRINTF(stderr, "group target: flags %04X target %u\n", (unsigned)fix->flags, (unsigned)fix->target_id);
+        rc = 1;
+    }
     free(st.event_history_s);
     st.event_history_s = NULL;
     return rc;
