@@ -26516,13 +26516,24 @@ test_scan_quiet_trunk_publishes_each_cause(void) {
                          DSD_ANALOG_DEMOD_FM, 13500U);
     g_tap.analog_ok = 1;
 
-    /* An input with no check outranks everything; it is logged once. */
-    opts.iq_replay_requested = 1;
+    /* An input with no check outranks everything; it is logged once. The input in force says so (its spec), not the
+       replay flags a session keeps from its start (issue #743). */
+    char live_dev[sizeof opts.audio_in_dev];
+    DSD_SNPRINTF(live_dev, sizeof live_dev, "%s", opts.audio_in_dev);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
     qt_decode_at(50U);
     qt_pass(&opts, &state);
     qt_pass(&opts, &state);
     rc |= qt_expect_quiet(&state, "an I/Q replay", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
     rc |= qt_expect_warn("an I/Q replay: one line", 4, DSD_SCAN_QUIET_REASON_INPUT, SCAN_QUIET_WARN_REPLAY, 0U, NULL,
+                         0U, 0, 0U);
+    /* An I/Q stream (issue #743) has no check either, and its line names it, never a replay. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:5000:240000:cs16");
+    qt_decode_at(55U);
+    qt_pass(&opts, &state);
+    qt_pass(&opts, &state);
+    rc |= qt_expect_quiet(&state, "an I/Q stream", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
+    rc |= qt_expect_warn("an I/Q stream: one line", 5, DSD_SCAN_QUIET_REASON_INPUT, SCAN_QUIET_WARN_STREAM, 0U, NULL,
                          0U, 0, 0U);
 
     /* A trunked target is never checked: nothing to say, even on this input. */
@@ -26530,8 +26541,8 @@ test_scan_quiet_trunk_publishes_each_cause(void) {
     qt_decode_at(60U);
     qt_pass(&opts, &state);
     rc |= qt_expect_quiet(&state, "a trunked target", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
-    rc |= qt_expect("no line for a trunked target", g_qt_warns == 4);
-    opts.iq_replay_requested = 0;
+    rc |= qt_expect("no line for a trunked target", g_qt_warns == 5);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", live_dev);
     quiet_rig_finish(&opts, &state, dir, path);
     return rc;
 }
@@ -26828,8 +26839,10 @@ test_scan_quiet_input_has_no_check(void) {
     trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0;
 #ifdef USE_RADIO
-    /* A replay asked for under a running scan (the scan itself refuses to start on one). */
-    opts.iq_replay_requested = 1;
+    /* A replay in force under a running scan (the scan itself refuses to start on one): its spec, which the session
+       judges (issue #743), on the radio input it is. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
     const int detail = SCAN_QUIET_WARN_REPLAY;
 #else
     const int detail = SCAN_QUIET_WARN_NO_RADIO;

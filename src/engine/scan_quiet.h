@@ -207,7 +207,7 @@ void scan_quiet_timing_fill(const dsd_opts* opts, dsd_state* state, const scan_q
                             dsd_scan_timing_publication* report);
 
 /** Format the WARN line for @p reason into @p out (the one table of its wording). The receiver's reasons take @p detail
- * (SCAN_QUIET_WARN_AUDIO .. _CENTRED), and RATE the capture rate @p rate_hz; the channel's take @p name (NULL or empty:
+ * (SCAN_QUIET_WARN_AUDIO .. _STREAM), and RATE the capture rate @p rate_hz; the channel's take @p name (NULL or empty:
  * -Y row @p row, 0-based), the frequency @p hz, @p detail (scan_quiet_channel_detail()), and for WIDTH the analog
  * @p kind and @p width_hz. Returns the snprintf result. */
 int scan_quiet_format_warn(char* out, size_t out_size, uint8_t reason, int detail, uint32_t rate_hz, const char* name,
@@ -224,6 +224,7 @@ enum {
     SCAN_QUIET_WARN_NO_RADIO = 2, /**< INPUT: a build without radio support */
     SCAN_QUIET_WARN_AIRSPY = 3,   /**< TUNER: a native Airspy input */
     SCAN_QUIET_WARN_CENTRED = 4,  /**< TUNER: offset tuning, or the Fs/4 shift off */
+    SCAN_QUIET_WARN_STREAM = 5,   /**< INPUT: an I/Q stream (iqtcp:, iqudp:) */
 };
 
 /** The channel detail scan_quiet_format_warn() takes (bits): what in the session gives MODES (the ProVoice, X2-TDMA

@@ -1117,11 +1117,11 @@ typedef enum {
 } dsd_scan_quiet_status;
 
 /** Why a scan visit gets no silent-channel check (DSD_SCAN_QUIET_STATUS_NO_CHECK). The receiver's reasons (INPUT,
- * TUNER, RATE) outrank the channel's (MODES, then WIDTH and NO_WIDTH). INPUT: audio input, an I/Q replay, or a build
- * without radio support. TUNER: a centred capture, with no Fs/4 shift (a native Airspy, offset tuning, the shift off).
- * RATE: a capture rate the calibration did not cover. MODES: an untyped -Y row under decoders with no known channel
- * width (ProVoice, X2-TDMA, TETRA). WIDTH: an analog width the calibration did not cover. NO_WIDTH: an NFM channel with
- * no width set, so no definite channel to judge. */
+ * TUNER, RATE) outrank the channel's (MODES, then WIDTH and NO_WIDTH). INPUT: audio input, an I/Q replay or I/Q stream,
+ * or a build without radio support. TUNER: a centred capture, with no Fs/4 shift (a native Airspy, offset tuning, the
+ * shift off). RATE: a capture rate the calibration did not cover. MODES: an untyped -Y row under decoders with no known
+ * channel width (ProVoice, X2-TDMA, TETRA). WIDTH: an analog width the calibration did not cover. NO_WIDTH: an NFM
+ * channel with no width set, so no definite channel to judge. */
 typedef enum {
     DSD_SCAN_QUIET_REASON_NONE = 0,
     DSD_SCAN_QUIET_REASON_INPUT = 1,

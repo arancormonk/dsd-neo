@@ -280,6 +280,10 @@ quiet_format_receiver_warn(char* out, size_t out_size, int detail, uint32_t rate
             return DSD_SNPRINTF(out, out_size,
                                 "WARNING: scan: silent channel skip cannot check channels in an I/Q replay; it needs a "
                                 "live radio input. Normal scan timing applies.\n");
+        case SCAN_QUIET_WARN_STREAM:
+            return DSD_SNPRINTF(out, out_size,
+                                "WARNING: scan: silent channel skip cannot check channels on an I/Q stream; it needs a "
+                                "radio input DSD-neo tunes. Normal scan timing applies.\n");
         case SCAN_QUIET_WARN_NO_RADIO:
             return DSD_SNPRINTF(out, out_size,
                                 "WARNING: scan: silent channel skip cannot check channels: this build has no radio "
@@ -483,8 +487,11 @@ quiet_warn_receiver_forget(dsd_state* state) {
 static int
 quiet_input_detail(const dsd_opts* opts) {
 #ifdef USE_RADIO
+    if (dsd_opts_input_is_iq_stream(opts)) {
+        return SCAN_QUIET_WARN_STREAM;
+    }
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        return SCAN_QUIET_WARN_REPLAY; /* an RTL-family input the session refuses is an I/Q replay */
+        return SCAN_QUIET_WARN_REPLAY; /* any other RTL-family input the session refuses is an I/Q replay */
     }
     return SCAN_QUIET_WARN_AUDIO;
 #else

@@ -738,13 +738,15 @@ Generated (do not edit/commit):
       X2-TDMA never stamps it. Never for a trunked target. CHECKING covers every phase of a check under way:
       WAIT_CAPTURE (its capture wait, the frame-boundary settle and a retry's wait), REQUESTED, and READY, a quiet
       result held for a frame's pending verdict or past a lost tick guard included. NO_CHECK: the session's reason first
-      (INPUT: the session refuses the input, in a radio-off build every input; then TUNER, RATE from the visit's own
-      capture; a TUNER verdict the last capture read gave, `scan_quiet_check::receiver_reason`, kept with the input
-      kind, a hash of the input spec and the stream session (`rtl_stream_session_generation()`) it was read in, also
-      stands for a visit still waiting for its own capture or one that never reads one: the rotation comes from offset
-      tuning, centred I/Q and the shift (`capture_fs4_shift_active()`), which the stream sets when it opens, offset
-      tuning and direct sampling included, and never per tune, so a list mixing direct-sampled and tuner rows has one
-      rotation for the session; RATE does not carry over, since a list's DSP bandwidth sets each visit's rate), then the
+      (INPUT: the session refuses the input, in a radio-off build every input, its WARN line naming audio input, an I/Q
+      replay or an I/Q stream (`dsd_opts_input_is_iq_stream()`, which a scan refuses to start on, so only a check run
+      under such an input says so); then TUNER, RATE from the visit's own capture; a TUNER verdict the last capture read
+      gave, `scan_quiet_check::receiver_reason`, kept with the input kind, a hash of the input spec and the stream
+      session (`rtl_stream_session_generation()`) it was read in, also stands for a visit still waiting for its own
+      capture or one that never reads one: the rotation comes from offset tuning, centred I/Q and the shift
+      (`capture_fs4_shift_active()`), which the stream sets when it opens, offset tuning and direct sampling included,
+      and never per tune, so a list mixing direct-sampled and tuner rows has one rotation for the session; RATE does not
+      carry over, since a list's DSP bandwidth sets each visit's rate), then the
       channel's (MODES: an untyped -Y row under a set with ProVoice, X2-TDMA, TETRA, the M17 encoder or no mode of a
       class; WIDTH at the capture; NO_WIDTH: an NFM channel or -8 monitor with no width), which the owners hand over
       with their facts (`scan_quiet_eligibility::reason`, `scan_quiet_facts_reason()`) and a publication records on its

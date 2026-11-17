@@ -1121,7 +1121,8 @@ brackets below), and the log says how to fix it; see
   1.6, 1.8, 1.92, 2.048 and 2.4 Msps, and an Airspy's 2.5, 3, 6 and 10 MS/s, exactly. An RTL-SDR or rtl_tcp stream
   runs 1.024, 1.152 or 1.536 Msps at every DSP bandwidth; a SoapySDR device picks its own rate and gets no check at
   any other.
-- Audio inputs (rigctl with TCP, UDP or Pulse audio, files), I/Q replay, and builds without radio support (`input`).
+- Audio inputs (rigctl with TCP, UDP or Pulse audio, files), I/Q replay, an I/Q stream (`-i iqtcp:`, `-i iqudp:`,
+  which no scan starts on), and builds without radio support (`input`).
 - An analog width the calibration did not cover (`width`). Checked NFM widths are 8, 10, 11.25, 12, 12.5, 15, 16, 20
   and 25 kHz; checked AM widths are 5, 6, 8, 8.333 (8333 Hz), 10, 15 and 20 kHz, exactly. Any other width gets no
   check, for example NFM 13.5 kHz or AM 12.5 kHz.
@@ -1159,7 +1160,8 @@ setting off and on logs them again. `<channel>` is a target's label (or its id w
 `-Y` row, counted from 1:
 
 - `input`: `... channels on audio input; it needs a radio input (rtl, rtltcp or soapy).`,
-  `... channels in an I/Q replay; it needs a live radio input.`, or
+  `... channels in an I/Q replay; it needs a live radio input.`,
+  `... channels on an I/Q stream; it needs a radio input DSD-neo tunes.`, or
   `... channels: this build has no radio support.` Use a radio input, live.
 - `tuner`: `... channels on a native Airspy input; open the Airspy through SoapySDR (-i soapy:driver=airspy) to have
   them checked.`, or `... channels while offset tuning is on or DSD_NEO_DISABLE_FS4_SHIFT is set; set
