@@ -35,6 +35,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "nmea_sentence.h"
 
 /* Enrich the slot's ACTIVE call's row with GPS text: with an admitted position report (@p fix, from
  * dsd_position_admit()) the text and the position go in together under the writer's typed-source rule
@@ -382,83 +383,6 @@ lip_report(const dsd_opts* opts, dsd_state* state, const lip_fields* f, uint32_t
         gps_write_lrrp_compact(opts, state, slot, src, lat_sf * latitude, lon_sf * longitude, vt, dt);
     } else {
         DSD_FPRINTF(stderr, " Position Calculation Error;");
-    }
-}
-
-static uint8_t
-nmea_validate_checksum(const uint8_t* input, int len_bytes, uint8_t* end_value, uint8_t* checksum_calc,
-                       uint8_t* checksum_ext) {
-    uint8_t start_value = (uint8_t)convert_bits_into_output(input, 8);
-    if (start_value != (uint8_t)'$' && start_value != (uint8_t)'!') {
-        return 0U;
-    }
-
-    int star_pos = -1;
-    *end_value = 0U;
-    *checksum_calc = 0U;
-    *checksum_ext = 0U;
-
-    for (int i = 1; i < len_bytes; i++) {
-        uint8_t value = (uint8_t)convert_bits_into_output(input + ((size_t)i * 8U), 8);
-        if (value == (uint8_t)'*') {
-            *end_value = value;
-            star_pos = i;
-            break;
-        }
-        if (value >= 0x20U && value < 0x7FU) {
-            *checksum_calc ^= value;
-        } else {
-            break;
-        }
-    }
-
-    if (star_pos < 0 || (star_pos + 2) >= len_bytes) {
-        return 0U;
-    }
-
-    uint8_t h0 = (uint8_t)convert_bits_into_output(input + ((size_t)(star_pos + 1) * 8U), 8);
-    uint8_t h1 = (uint8_t)convert_bits_into_output(input + ((size_t)(star_pos + 2) * 8U), 8);
-    int n0 = dsd_hex_nibble_value(h0);
-    int n1 = dsd_hex_nibble_value(h1);
-    if (n0 < 0 || n1 < 0) {
-        return 0U;
-    }
-    *checksum_ext = (uint8_t)((n0 << 4) | n1);
-    return (uint8_t)(*checksum_ext == *checksum_calc);
-}
-
-static void
-nmea_copy_printable_sentence(const uint8_t* input, int len_bytes, char* out, size_t out_cap) {
-    size_t w = 0U;
-    int i = 0;
-    while (i < len_bytes && w + 1U < out_cap) {
-        uint8_t ascii = (uint8_t)convert_bits_into_output(input + ((size_t)i * 8U), 8);
-        uint16_t crlf = 0xFFFFU;
-        if ((i + 1) < len_bytes) {
-            crlf = (uint16_t)convert_bits_into_output(input + ((size_t)i * 8U), 16);
-        }
-
-        if (ascii >= 0x20U && ascii < 0x7FU) {
-            out[w++] = (char)ascii;
-            i++;
-        } else if (crlf == 0x0D0AU) {
-            out[w++] = ' ';
-            i += 2;
-        } else {
-            break;
-        }
-    }
-    out[w] = '\0';
-}
-
-static void
-nmea_print_invalid_reason(uint8_t start_value, uint8_t end_value, uint8_t checksum_calc, uint8_t checksum_ext) {
-    if (start_value != (uint8_t)'$' && start_value != (uint8_t)'!') {
-        DSD_FPRINTF(stderr, " Not an NMEA Sentence Structure;");
-    } else if (end_value != (uint8_t)'*') {
-        DSD_FPRINTF(stderr, " Possible NMEA Sentence, Missing Ending *;");
-    } else {
-        DSD_FPRINTF(stderr, " NMEA Checksum Error (%02X / %02X);", checksum_calc, checksum_ext);
     }
 }
 
@@ -967,117 +891,377 @@ decode_cellocator(dsd_opts* opts, dsd_state* state, const uint8_t* input, int le
     //will need to establish a len value for data and contents
 }
 
-uint8_t
-nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes) {
-    if (opts == NULL || state == NULL || input == NULL || len_bytes <= 0) {
-        return 0U;
-    }
+/* ---- ASCII NMEA 0183 (P25 SAP 48, NXDN data call format 0x06) ---- */
 
-    uint8_t slot_idx = (slot >= 2U) ? 1U : slot;
-    int have_events = (state->event_history_s != NULL);
-    uint8_t start_value = (uint8_t)convert_bits_into_output(input, 8);
-    uint8_t end_value = 0U;
-    uint8_t checksum_calc = 0U;
-    uint8_t checksum_ext = 0U;
-    uint8_t valid = nmea_validate_checksum(input, len_bytes, &end_value, &checksum_calc, &checksum_ext);
+enum {
+    NMEA_PAYLOAD_MAX_BYTES = 1024, /* octets of a payload read for sentences */
+    NMEA_TEXT_MAX = 256,           /* the checked sentences kept as text */
+};
 
-    char local_out[256];
-    DSD_MEMSET(local_out, 0, sizeof(local_out));
-    if (valid) {
-        nmea_copy_printable_sentence(input, len_bytes, local_out, sizeof(local_out));
+/* A packet's sentences: the checked ones joined by one space, and its position report (the first RMC with a measured
+ * fix, else the first such GGA). */
+typedef struct {
+    char text[NMEA_TEXT_MAX];
+    size_t text_len;
+    int checked;
+    int have_fix;
+    nmea_fix fix;
+    const char* refusal; /* why the first RMC or GGA gave no fix; NULL when none was refused */
+} nmea_packet;
 
-        if (local_out[0] != '\0') {
-            DSD_FPRINTF(stderr, "%s", local_out);
-        }
+static void
+nmea_print_sentence_error(const nmea_sentence_span* s) {
+    if (s->status == NMEA_SENTENCE_NO_STAR) {
+        DSD_FPRINTF(stderr, " Possible NMEA Sentence, Missing Ending *;");
+    } else if (s->status == NMEA_SENTENCE_BAD_HEX) {
+        DSD_FPRINTF(stderr, " NMEA Checksum Digits Invalid;");
     } else {
-        nmea_print_invalid_reason(start_value, end_value, checksum_calc, checksum_ext);
+        DSD_FPRINTF(stderr, " NMEA Checksum Error (%02X / %02X);", s->calc, s->received);
     }
+}
 
-    if (have_events) {
-        dsd_event_stage_text(state, slot_idx, local_out);
+static void
+nmea_packet_append_text(nmea_packet* pkt, const uint8_t* bytes, const nmea_sentence_span* s) {
+    if (pkt->text_len > 0U && pkt->text_len + 1U < sizeof(pkt->text)) {
+        pkt->text[pkt->text_len++] = ' ';
+    }
+    for (size_t i = 0U; i < s->len && pkt->text_len + 1U < sizeof(pkt->text); i++) {
+        pkt->text[pkt->text_len++] = (char)bytes[s->start + i];
+    }
+    pkt->text[pkt->text_len] = '\0';
+}
 
-        if (valid) {
-            uint32_t source = (uint32_t)state->dmr_lrrp_source[slot_idx];
-            uint32_t target = (uint32_t)state->dmr_lrrp_target[slot_idx];
+/* One sentence that passed its checksum: its text, and its fix when it is the packet's report. */
+static void
+nmea_packet_take(nmea_packet* pkt, const uint8_t* bytes, const nmea_sentence_span* s) {
+    pkt->checked++;
+    nmea_packet_append_text(pkt, bytes, s);
+    nmea_fix f;
+    nmea_parse_fix((const char*)bytes + s->start, s->len, &f);
+    if (f.type == NMEA_TYPE_OTHER) {
+        return;
+    }
+    if (!f.measured_fix || !f.has_position) {
+        if (pkt->refusal == NULL) {
+            pkt->refusal = f.refusal;
+        }
+        return;
+    }
+    if (!pkt->have_fix || (pkt->fix.type == NMEA_TYPE_GGA && f.type == NMEA_TYPE_RMC)) {
+        pkt->fix = f;
+        pkt->have_fix = 1;
+    }
+}
+
+static void
+nmea_packet_scan(const uint8_t* bytes, size_t len, nmea_packet* pkt) {
+    size_t pos = 0U;
+    int seen = 0;
+    for (;;) {
+        nmea_sentence_span s;
+        const int r = nmea_next_sentence(bytes, len, &pos, &s);
+        if (r == 0) {
+            return;
+        }
+        if (r < 0) {
+            DSD_FPRINTF(stderr, seen ? " Data After NMEA Sentence;" : " Not an NMEA Sentence Structure;");
+            return;
+        }
+        seen = 1;
+        if (s.status != NMEA_SENTENCE_OK) {
+            nmea_print_sentence_error(&s);
+            continue;
+        }
+        nmea_packet_take(pkt, bytes, &s);
+    }
+}
+
+static uint8_t
+gps_fix_protocol(const dsd_state* state) {
+    return (state->lastsynctype >= 0 && state->lastsynctype < (int)DSD_POSITION_PROTOCOL_NONE)
+               ? (uint8_t)state->lastsynctype
+               : (uint8_t)DSD_POSITION_PROTOCOL_NONE;
+}
+
+/* The history text of an admitted position: "(lat, lon)" as the NXDN report has always written it. */
+static void
+gps_format_position_text(const dsd_position_fix* fix, char* out, size_t out_size) {
+    const char* deg = dsd_degrees_glyph();
+    DSD_SNPRINTF(out, out_size, "(%.6f%s, %.6f%s)", (double)fix->lat_e7 / 1e7, deg, (double)fix->lon_e7 / 1e7, deg);
+}
+
+/* Write the -L row of an admitted report (km/h and degrees as whole numbers; 0 stands for an unknown one). */
+static void
+gps_write_admitted_row(const dsd_opts* opts, const dsd_state* state, int slot, const dsd_position_fix* fix) {
+    if (fix->source_id == 0U) {
+        return;
+    }
+    const int speed = (fix->speed_dkmh != DSD_POSITION_SPEED_UNKNOWN) ? (int)(fix->speed_dkmh / 10U) : 0;
+    const int heading = (fix->heading_ddeg <= DSD_POSITION_HEADING_MAX) ? (int)(fix->heading_ddeg / 10U) : 0;
+    gps_write_lrrp_slash_colon(opts, state, slot, fix->source_id, (double)fix->lat_e7 / 1e7, (double)fix->lon_e7 / 1e7,
+                               speed, heading);
+}
+
+static void
+nmea_print_fix(const dsd_position_fix* fix) {
+    char text[96];
+    gps_format_position_text(fix, text, sizeof(text));
+    DSD_FPRINTF(stderr, "\n NMEA Fix: %s;", text);
+    if (fix->speed_dkmh != DSD_POSITION_SPEED_UNKNOWN) {
+        DSD_FPRINTF(stderr, " Speed: %.1f km/h;", (double)fix->speed_dkmh / 10.0);
+    }
+    if (fix->heading_ddeg <= DSD_POSITION_HEADING_MAX) {
+        DSD_FPRINTF(stderr, " Course: %.1f%s;", (double)fix->heading_ddeg / 10.0, dsd_degrees_glyph());
+    }
+    if (fix->alt_dm != DSD_POSITION_ALT_UNKNOWN) {
+        DSD_FPRINTF(stderr, " Altitude: %.1f m;", (double)fix->alt_dm / 10.0);
+    }
+    if (fix->sats != DSD_POSITION_SATS_NONE) {
+        DSD_FPRINTF(stderr, " Satellites: %u;", (unsigned)fix->sats);
+    }
+}
+
+/* Admit the packet's report: the position and the packet's source (the slot's dmr_lrrp_source) only from a packet
+ * whose own check passed (both verdicts are the packet's). */
+static dsd_position_admit_result
+nmea_admit_packet(const dsd_opts* opts, dsd_state* state, uint8_t slot, const nmea_packet* pkt, int packet_verified,
+                  const dsd_position_origin* origin, dsd_position_fix* fix) {
+    if (!pkt->have_fix) {
+        if (pkt->refusal != NULL && packet_verified == 1) {
+            DSD_FPRINTF(stderr, "\n NMEA: no measured fix (%s);", pkt->refusal);
+        }
+        return DSD_POSITION_REFUSED;
+    }
+    dsd_position_fix_init(fix);
+    fix->kind = (uint8_t)DSD_POS_NMEA;
+    fix->protocol = gps_fix_protocol(state);
+    fix->slot = slot;
+    fix->lat_e7 = pkt->fix.lat_e7;
+    fix->lon_e7 = pkt->fix.lon_e7;
+    fix->alt_dm = pkt->fix.alt_dm;
+    fix->speed_dkmh = pkt->fix.speed_dkmh;
+    fix->heading_ddeg = pkt->fix.heading_ddeg;
+    fix->sats = pkt->fix.sats;
+    fix->fix_time_s = pkt->fix.fix_time_s;
+    fix->source_id = (uint32_t)state->dmr_lrrp_source[slot];
+    const dsd_position_admit_result r = dsd_position_admit(opts, state, fix, packet_verified, packet_verified, origin);
+    if (r != DSD_POSITION_REFUSED) {
+        nmea_print_fix(fix);
+    } else if (packet_verified == 1) {
+        DSD_FPRINTF(stderr, "\n NMEA: position not admitted;");
+    }
+    return r;
+}
+
+/* History and -L: the checked sentences' text (none from a packet whose check failed), the data notice, and with an
+ * admitted report its position (staged just before the notice) and its -L row. */
+static void
+nmea_publish(const dsd_opts* opts, dsd_state* state, uint8_t slot, const nmea_packet* pkt, int packet_verified,
+             dsd_position_admit_result result, const dsd_position_fix* fix) {
+    const int admitted = result != DSD_POSITION_REFUSED;
+    if (state->event_history_s != NULL) {
+        const char* text = (pkt->checked > 0 && packet_verified != 1) ? "NMEA withheld (CRC ERR)" : pkt->text;
+        dsd_event_stage_text(state, slot, text);
+        if (pkt->checked > 0) {
+            const uint32_t source = admitted ? fix->source_id : (uint32_t)state->dmr_lrrp_source[slot];
+            const uint32_t target = (uint32_t)state->dmr_lrrp_target[slot];
             char comp_string[128];
             DSD_SNPRINTF(comp_string, sizeof(comp_string), "NMEA SRC: %u; TGT: %u;", source, target);
             const dsd_call_observation observation =
-                dsd_call_observation_data(state->lastsynctype, slot_idx, source, target);
-            (void)dsd_event_emit_data_notice((dsd_opts*)opts, state, slot_idx, &observation, comp_string);
+                dsd_call_observation_data(state->lastsynctype, slot, source, target);
+            if (admitted) {
+                char gps_text[96];
+                gps_format_position_text(fix, gps_text, sizeof(gps_text));
+                (void)dsd_event_stage_position(state, slot, fix, gps_text);
+            }
+            (void)dsd_event_emit_data_notice((dsd_opts*)opts, state, slot, &observation, comp_string);
         }
     }
+    if (admitted) {
+        gps_write_admitted_row(opts, state, slot, fix);
+    }
+}
+
+uint8_t
+nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
+                      int packet_verified, const dsd_position_origin* origin) {
+    if (opts == NULL || state == NULL || input == NULL || len_bytes <= 0) {
+        return 0U;
+    }
+    const uint8_t slot_idx = (slot >= 2U) ? 1U : slot;
+    uint8_t bytes[NMEA_PAYLOAD_MAX_BYTES];
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    const size_t n = ((size_t)len_bytes < sizeof(bytes)) ? (size_t)len_bytes : sizeof(bytes);
+    for (size_t i = 0U; i < n; i++) {
+        bytes[i] = (uint8_t)convert_bits_into_output(input + (i * 8U), 8);
+    }
+
+    nmea_packet pkt;
+    DSD_MEMSET(&pkt, 0, sizeof(pkt));
+    nmea_packet_scan(bytes, n, &pkt);
+    if (pkt.checked > 0 && packet_verified == 1) {
+        DSD_FPRINTF(stderr, "%s", pkt.text);
+    } else if (pkt.checked > 0) {
+        DSD_FPRINTF(stderr, " NMEA Withheld (CRC ERR);");
+    }
+
+    dsd_position_fix fix;
+    dsd_position_fix_init(&fix);
+    const dsd_position_admit_result result =
+        (pkt.checked > 0) ? nmea_admit_packet(opts, state, slot_idx, &pkt, packet_verified, origin, &fix)
+                          : DSD_POSITION_REFUSED;
+    nmea_publish(opts, state, slot_idx, &pkt, packet_verified, result, &fix);
 
     state->dmr_lrrp_source[slot_idx] = 0U;
     state->dmr_lrrp_target[slot_idx] = 0U;
-    return valid;
+    return (uint8_t)(pkt.checked > 0);
 }
 
-void
-nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32_t src) {
-    if (opts == NULL || state == NULL || input == NULL) {
-        return;
+/* ---- NXDN GPS ---- */
+
+/* The NXDN GPS report has no official source: its layout is SDRTrunk's (nxdn/layer3/data/GPS.java), whose offsets count
+ * from the 0xFFFC marker, so they are 16 more than these: elevation 56 (16 bits, unit unknown), speed 74 (14, 0.1 km/h),
+ * heading 92 (12, 0.1 degree; 0xFFF none), date 136 (7, year - 2000) / 143 (4, month) / 147 (5, day - 1), longitude
+ * 152 (16, DDDMM) / 183 (hemisphere), latitude 184 (16, DDMM) / 200 (15, 1/10000 minute) / 215 (hemisphere), time 247
+ * (5, hour) / 252 (6, minute) / 258 (6, second). The longitude's fraction is not read: its offset rests on that one
+ * source (a decided limit), so the longitude keeps whole minutes. */
+typedef struct {
+    int32_t lat_e7;
+    int32_t lon_e7;
+    uint16_t speed_dkmh;
+    uint16_t heading_ddeg; /* DSD_POSITION_HEADING_UNKNOWN when out of range */
+    int16_t elevation;
+    uint16_t year;
+    uint8_t month, day, hour, minute, second;
+    uint8_t date_ok, time_ok;
+    int64_t fix_time_s;
+} nxdn_gps_fields;
+
+/* DDMM / DDDMM with a 1/10000-minute fraction, checked before it is converted: degrees <= @p max_deg, minutes <= 59,
+ * fraction <= 9999, the boundary degree only with zero minutes and fraction. */
+static int
+nxdn_gps_coordinate(uint16_t degmin, uint16_t frac, uint8_t west_or_south, uint32_t max_deg, int32_t* out_e7) {
+    const uint32_t deg = (uint32_t)degmin / 100U;
+    const uint32_t min = (uint32_t)degmin % 100U;
+    if (deg > max_deg || min > 59U || frac > 9999U || (deg == max_deg && (min != 0U || frac != 0U))) {
+        return 0;
     }
-    int have_events = (state->event_history_s != NULL);
+    const int64_t min_e7 = ((int64_t)min * 10000000) + ((int64_t)frac * 1000);
+    const int64_t e7 = ((int64_t)deg * 10000000) + ((min_e7 + 30) / 60);
+    *out_e7 = (int32_t)(west_or_south ? -e7 : e7);
+    return 1;
+}
 
-    const char* deg_glyph = dsd_degrees_glyph();
+static void
+nxdn_gps_read_time(const uint8_t* input, nxdn_gps_fields* g) {
+    g->year = (uint16_t)(convert_bits_into_output(input + 136, 7) + 2000U);
+    g->month = (uint8_t)convert_bits_into_output(input + 143, 4);
+    g->day = (uint8_t)(convert_bits_into_output(input + 147, 5) + 1U);
+    g->hour = (uint8_t)convert_bits_into_output(input + 247, 5);
+    g->minute = (uint8_t)convert_bits_into_output(input + 252, 6);
+    g->second = (uint8_t)convert_bits_into_output(input + 258, 6);
+    g->date_ok = (uint8_t)nmea_civil_date_valid(g->year, g->month, g->day);
+    g->time_ok = (uint8_t)(g->hour <= 23U && g->minute <= 59U && g->second <= 59U);
+    const int64_t t = nmea_utc_seconds(g->year, g->month, g->day, g->hour, g->minute, g->second);
+    g->fix_time_s = (t > 0) ? t : 0;
+}
 
-    int16_t elevation = (int16_t)convert_bits_into_output(input + 56, 16);
-    uint16_t speed_raw = (uint16_t)convert_bits_into_output(input + 74, 14);
-    uint16_t heading_raw = (uint16_t)convert_bits_into_output(input + 92, 12);
-    double speed_kph = (double)speed_raw / 10.0;
-    double heading = (double)heading_raw / 10.0;
-
-    uint16_t year = (uint16_t)(convert_bits_into_output(input + 136, 7) + 2000U);
-    uint8_t month = (uint8_t)convert_bits_into_output(input + 143, 4);
-    uint8_t day = (uint8_t)(convert_bits_into_output(input + 147, 5) + 1U);
-    uint8_t hour = (uint8_t)convert_bits_into_output(input + 247, 5);
-    uint8_t minute = (uint8_t)convert_bits_into_output(input + 252, 6);
-
-    uint16_t lon_degmin = (uint16_t)convert_bits_into_output(input + 152, 16);
-    uint16_t lon_frac = (uint16_t)convert_bits_into_output(input + 16, 15);
-    uint8_t lon_hem = (uint8_t)convert_bits_into_output(input + 183, 1);
-    double lon_minutes = (double)(lon_degmin % 100U) + ((double)lon_frac / 10000.0);
-    double lon_decimal = ((double)lon_degmin / 100.0) + (lon_minutes / 60.0);
-    double longitude = (lon_hem == 0U) ? lon_decimal : -lon_decimal;
-
-    uint16_t lat_degmin = (uint16_t)convert_bits_into_output(input + 184, 16);
-    uint16_t lat_frac = (uint16_t)convert_bits_into_output(input + 200, 15);
-    uint8_t lat_hem = (uint8_t)convert_bits_into_output(input + 215, 1);
-    double lat_minutes = (double)(lat_degmin % 100U) + ((double)lat_frac / 10000.0);
-    double lat_decimal = ((double)lat_degmin / 100.0) + (lat_minutes / 60.0);
-    double latitude = (lat_hem == 0U) ? lat_decimal : -lat_decimal;
-
-    if (fabs(latitude) > 90.0 || fabs(longitude) > 180.0) {
-        DSD_FPRINTF(stderr, " GPS: Invalid NXDN position report;");
-        state->dmr_lrrp_source[0] = 0U;
-        state->dmr_lrrp_target[0] = 0U;
-        return;
+/* 1 with @p g filled when the position is valid; an invalid date or time only leaves the fix time unknown. */
+static int
+nxdn_gps_read(const uint8_t* input, nxdn_gps_fields* g) {
+    DSD_MEMSET(g, 0, sizeof(*g));
+    const uint16_t lon_degmin = (uint16_t)convert_bits_into_output(input + 152, 16);
+    const uint8_t lon_hem = (uint8_t)convert_bits_into_output(input + 183, 1);
+    const uint16_t lat_degmin = (uint16_t)convert_bits_into_output(input + 184, 16);
+    const uint16_t lat_frac = (uint16_t)convert_bits_into_output(input + 200, 15);
+    const uint8_t lat_hem = (uint8_t)convert_bits_into_output(input + 215, 1);
+    if (!nxdn_gps_coordinate(lat_degmin, lat_frac, lat_hem, 90U, &g->lat_e7)
+        || !nxdn_gps_coordinate(lon_degmin, 0U, lon_hem, 180U, &g->lon_e7)) {
+        return 0;
     }
+    g->elevation = (int16_t)convert_bits_into_output(input + 56, 16);
+    g->speed_dkmh = (uint16_t)convert_bits_into_output(input + 74, 14);
+    const uint16_t heading = (uint16_t)convert_bits_into_output(input + 92, 12);
+    g->heading_ddeg = (heading <= DSD_POSITION_HEADING_MAX) ? heading : DSD_POSITION_HEADING_UNKNOWN;
+    nxdn_gps_read_time(input, g);
+    return 1;
+}
 
-    DSD_FPRINTF(stderr, "\n GPS: (%.6f%s, %.6f%s) ", latitude, deg_glyph, longitude, deg_glyph);
-    DSD_FPRINTF(stderr, "Speed: %.1f k/h; ", speed_kph);
-    DSD_FPRINTF(stderr, "COG: %.1f; ", heading);
-    DSD_FPRINTF(stderr, "Elevation: %d; ", (int)elevation);
-    DSD_FPRINTF(stderr, "Date: %04u/%02u/%02u; ", (unsigned)year, (unsigned)month, (unsigned)day);
-    DSD_FPRINTF(stderr, "Time: %02u:%02u;", (unsigned)hour, (unsigned)minute);
+static void
+nxdn_gps_print(const nxdn_gps_fields* g, const dsd_position_fix* fix) {
+    char text[96];
+    gps_format_position_text(fix, text, sizeof(text));
+    DSD_FPRINTF(stderr, "\n GPS: %s ", text);
+    DSD_FPRINTF(stderr, "Speed: %.1f k/h; ", (double)g->speed_dkmh / 10.0);
+    if (g->heading_ddeg <= DSD_POSITION_HEADING_MAX) {
+        DSD_FPRINTF(stderr, "COG: %.1f; ", (double)g->heading_ddeg / 10.0);
+    } else {
+        DSD_FPRINTF(stderr, "COG: unknown; ");
+    }
+    DSD_FPRINTF(stderr, "Elevation: %d; ", (int)g->elevation);
+    if (g->date_ok) {
+        DSD_FPRINTF(stderr, "Date: %04u/%02u/%02u; ", (unsigned)g->year, (unsigned)g->month, (unsigned)g->day);
+    } else {
+        DSD_FPRINTF(stderr, "Date: unknown; ");
+    }
+    if (g->time_ok) {
+        DSD_FPRINTF(stderr, "Time: %02u:%02u:%02u;", (unsigned)g->hour, (unsigned)g->minute, (unsigned)g->second);
+    } else {
+        DSD_FPRINTF(stderr, "Time: unknown;");
+    }
+}
 
-    if (have_events) {
-        char gps_string[256];
-        DSD_SNPRINTF(gps_string, sizeof(gps_string), "(%.6f%s, %.6f%s)", latitude, deg_glyph, longitude, deg_glyph);
-        (void)gps_enrich_active_call(state, 0U, src, gps_string, NULL, NULL);
+static void
+nxdn_gps_publish(const dsd_opts* opts, dsd_state* state, const dsd_position_fix* fix) {
+    if (state->event_history_s != NULL) {
+        char gps_string[96];
+        gps_format_position_text(fix, gps_string, sizeof(gps_string));
+        (void)gps_enrich_active_call(state, 0U, fix->source_id, gps_string, fix, NULL);
 
-        uint32_t source = (uint32_t)state->dmr_lrrp_source[0];
-        uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
+        /* The notice names the checked header bound to this assembly: its source is the record's. */
+        const uint32_t source = fix->source_id;
+        const uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
         char comp_string[128];
         DSD_SNPRINTF(comp_string, sizeof(comp_string), "GPS SRC: %u; TGT: %u;", source, target);
         const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, source, target);
-        (void)dsd_event_emit_data_notice_with_gps((dsd_opts*)opts, state, 0U, &observation, comp_string, gps_string);
+        (void)dsd_event_emit_data_notice_with_position((dsd_opts*)opts, state, 0U, &observation,
+                                                       DSD_EVENT_CATEGORY_DATA, comp_string, fix, gps_string);
     }
+    gps_write_admitted_row(opts, state, 0, fix);
+}
 
-    if (src != 0U) {
-        gps_write_lrrp_slash_colon(opts, state, 0, src, latitude, longitude, (int)speed_kph, (int)heading);
+void
+nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t input_bits, uint32_t src,
+                const dsd_position_origin* origin) {
+    if (opts == NULL || state == NULL || input == NULL) {
+        return;
     }
-
+    nxdn_gps_fields g;
+    if (input_bits < DSD_NXDN_GPS_REPORT_BITS) {
+        DSD_FPRINTF(stderr, " GPS: NXDN position report too short;");
+    } else if (!nxdn_gps_read(input, &g)) {
+        DSD_FPRINTF(stderr, " GPS: Invalid NXDN position report;");
+    } else {
+        dsd_position_fix fix;
+        dsd_position_fix_init(&fix);
+        fix.kind = (uint8_t)DSD_POS_NXDN_GPS;
+        fix.protocol = gps_fix_protocol(state);
+        fix.slot = 0U;
+        fix.lat_e7 = g.lat_e7;
+        fix.lon_e7 = g.lon_e7;
+        fix.speed_dkmh = g.speed_dkmh;
+        fix.heading_ddeg = g.heading_ddeg;
+        fix.fix_time_s = g.fix_time_s;
+        fix.source_id = src;
+        fix.flags = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
+        /* Called only for a data call whose CRC32 passed, with the header bound to its assembly (nxdn_element.c). */
+        if (dsd_position_admit(opts, state, &fix, 1, 1, origin) == DSD_POSITION_REFUSED) {
+            DSD_FPRINTF(stderr, " GPS: NXDN position report not admitted;");
+        } else {
+            nxdn_gps_print(&g, &fix);
+            nxdn_gps_publish(opts, state, &fix);
+        }
+    }
     state->dmr_lrrp_source[0] = 0U;
     state->dmr_lrrp_target[0] = 0U;
 }

@@ -74,21 +74,27 @@ printFrameSync(const dsd_opts* opts, const dsd_state* state, const char* framety
 /* GPS reports are not under test; the stubs keep the link free of their library. */
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_gps_report(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src) {
+nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t input_bits, uint32_t src,
+                const dsd_position_origin* origin) {
     (void)opts;
     (void)state;
     (void)input;
+    (void)input_bits;
     (void)src;
+    (void)origin;
 }
 
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_sentence_checker(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t slot, int len_bytes) {
+nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
+                      int packet_verified, const dsd_position_origin* origin) {
     (void)opts;
     (void)state;
     (void)input;
     (void)slot;
     (void)len_bytes;
+    (void)packet_verified;
+    (void)origin;
     return 0U;
 }
 

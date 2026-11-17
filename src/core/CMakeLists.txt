@@ -70,6 +70,7 @@ target_sources(
         file/source_alias_csv.c
         file/p25_sm_log.c
         gps/dsd_gps.c
+        gps/nmea_sentence.c
         gps/position_feed.c
 )
 

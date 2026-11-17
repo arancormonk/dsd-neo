@@ -1894,6 +1894,13 @@ struct dsd_state {
      * (CAC, FACCH2/UDCH, SACCH, site information) writes it. Every write of a value sets it (the (unsigned)-1 resets
      * need not), and only a RAN is read as the carrier's access code (issue #575). */
     uint8_t nxdn_last_ran_stand_in;
+    /* The NXDN data call header bound to the assembly in dmr_pdu_sf[0] (src/protocol/nxdn/nxdn_data_call.c, issue
+     * #800 B6): the reception (origin) and carrier (carrier_seq) the checked header was heard on, and when (decode
+     * clock). A payload assembles under the header only while all three still hold; a failed FACCH2/UDCH or
+     * FACCH3/UDCH2 CRC and a rejected header drop it. origin.valid is 0 when no header is bound. */
+    dsd_position_origin nxdn_data_origin;
+    uint64_t nxdn_data_header_ms;
+    uint32_t nxdn_data_carrier_seq;
     unsigned int nxdn_cipher_type;
     unsigned int nxdn_key;
 

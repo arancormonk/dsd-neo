@@ -108,8 +108,11 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
 
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes) {
+nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
+                      int packet_verified, const dsd_position_origin* origin) {
     (void)opts;
+    (void)packet_verified;
+    (void)origin;
     (void)state;
     (void)slot;
     if (input == NULL || len_bytes < 6) {

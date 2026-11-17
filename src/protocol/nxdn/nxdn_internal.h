@@ -35,6 +35,17 @@ int nxdn_ran_from_trellis(const uint8_t* trellis_buf);
 void nxdn_reset_payload_seed_if_forced(dsd_state* state);
 /* Forget a data call's header, packet assembly, crypto and LRRP identities (nxdn_data_call.c). */
 void nxdn_reset_data_call_state(dsd_state* state);
+
+/* How long a checked data call header stays bound to the assembly it opens, on the decode clock: a whole data call
+   (a header and at most 16 blocks, one 80 ms frame each) fits with room to spare (issue #800 B6). */
+enum { NXDN_DATA_HEADER_HOLD_MS = 2000 };
+
+/* Bind the checked data call header just accepted to the assembly it opens: the reception, carrier and time. */
+void nxdn_data_call_bind_header(const dsd_opts* opts, dsd_state* state);
+/* 1 while a header is valid and still bound: same reception and carrier, within NXDN_DATA_HEADER_HOLD_MS. */
+int nxdn_data_call_header_bound(const dsd_state* state);
+/* Drop the header and its binding (a failed channel CRC, a rejected header): no payload assembles under it. */
+void nxdn_data_call_drop_header(dsd_state* state);
 void nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
 
 /* Whether the canonical call on slot 0 is an NXDN call: the only one an NXDN message may end or give crypto. Another
