@@ -225,10 +225,11 @@ test_socket_idle_then_close(void) {
     socket_pair_close(&pair);
 }
 
-/* Wait until @p sock holds @p bytes ready to read (up to a second). */
+/* Wait until @p sock holds @p bytes ready to read. The bytes were sent already: the bound (10 s) only turns a lost send
+   into a failure, never a slow host. */
 static int
 socket_holds(dsd_socket_t sock, long bytes) {
-    for (int tries = 0; tries < 100; tries++) {
+    for (int tries = 0; tries < 1000; tries++) {
         if (dsd_socket_readable_bytes(sock) >= bytes) {
             return 1;
         }
@@ -250,11 +251,9 @@ test_socket_discard_through(void) {
     dsd_input_backlog_mark(&cut);
     check(cut.measured == 1U && cut.arrived == 0U, "the stream is the input marked on, holding nothing");
     check(dsd_pcm_stream_discard_through(NULL, &cut) == 0, "a NULL discard drops nothing");
-    const uint64_t idle_start = dsd_time_monotonic_ms();
+    /* Nothing held at the mark: nothing dropped, and no read made. A discard that waited would block on the idle socket
+       for good (it has no receive timeout), so the test would not end: no bound on the clock decides it. */
     check(dsd_pcm_stream_discard_through(stream, &cut) == 0, "nothing held at the mark: nothing dropped");
-    /* A discard that waited would block on the idle socket far past this bound, which is loose so that a loaded host
-       does not fail it. */
-    check(dsd_time_monotonic_ms() - idle_start < 2000U, "and no wait");
     /* 1, 2, 3, then the low byte of 0x0504: one sample the reader buffers, two and a half ready on the socket. */
     const uint8_t before[] = {0x01U, 0x00U, 0x02U, 0x00U, 0x03U, 0x00U, 0x04U};
     check(dsd_socket_send(pair.server, before, 2U, 0) == 2, "send the first sample");

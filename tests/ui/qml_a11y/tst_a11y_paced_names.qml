@@ -270,7 +270,9 @@ Item {
         // The silent-channel skip's status (#834) is the scan timing line's phrase, but no step: it comes and goes
         // within one stay, so it is heard at the line's pace. Its sentence follows the line's words once, at the first
         // rename after the status or its reason changes: on a session that cannot check, every hop renames the line,
-        // and the same 15-word sentence on each would drown the readings.
+        // and the same 15-word sentence on each would drown the readings. Nothing here hangs on how fast the host
+        // runs: what is said at once is checked with the period an hour long, so only a step can have said it, and
+        // what the period brings with the short period; every bound only turns a hang into a failure.
         function test_b2_the_quiet_status_is_no_step() {
             var timing = item(monitor, "scanTimingRow");
             var tuner = "Skip silent channels can't check channels with this tuner as it is set up. Normal scan timing "
@@ -278,33 +280,40 @@ Item {
             var width = "Skip silent channels can't check this channel at its channel width. Normal scan timing applies.";
             var noCheck = {scanStayReason: 8, scanStayPhrase: "No check: tuner", scanQuietStatus: 2, scanQuietReason: 2,
                 scanQuietText: tuner};
+            var hour = 3600000;
+            var hang = 10000;
             stepPace();
+            Ui.Navigation.speechPeriodMs = hour;
             set({scanStayReason: 8, scanStayPhrase: "Idle dwell"});
-            tryVerify(function () { return nameOf(timing) === timing.text; }, 100, "a new stay is said at once");
+            tryVerify(function () { return nameOf(timing) === timing.text; }, hang, "a new stay is said at once");
             set(noCheck);
             compare(timing.text.indexOf("No check: tuner"), 0, "the line shows the status at once");
             wait(50);
             verify(nameOf(timing).indexOf("No check") < 0, "the status alone waits: " + nameOf(timing));
-            tryVerify(function () { return nameOf(timing) === timing.text + ". " + tuner; }, stepPeriod + 500,
+            Ui.Navigation.speechPeriodMs = period;
+            tryVerify(function () { return nameOf(timing) === timing.text + ". " + tuner; }, hang,
                       "then it is said in full: " + nameOf(timing));
             // Hops on a session that cannot check: each stay is said at once, the sentence not again.
+            Ui.Navigation.speechPeriodMs = hour;
             for (var hop = 0; hop < 3; ++hop) {
                 set({scanStayReason: 1, scanStayPhrase: "Retune pending", scanQuietStatus: 0, scanQuietReason: 0,
                     scanQuietText: ""});
-                tryVerify(function () { return nameOf(timing) === timing.text; }, 100, "hop " + hop + ": the tune");
+                tryVerify(function () { return nameOf(timing) === timing.text; }, hang, "hop " + hop + ": the tune");
                 set(noCheck);
-                tryVerify(function () { return nameOf(timing) === timing.text; }, 100,
+                tryVerify(function () { return nameOf(timing) === timing.text; }, hang,
                           "hop " + hop + ": the same status, without its sentence: " + nameOf(timing));
             }
-            wait(stepPeriod + 200);
-            compare(nameOf(timing), timing.text, "a period on, still without it");
+            // Periods on (at least five, however long the wait takes), still without it.
+            Ui.Navigation.speechPeriodMs = period;
+            wait(5 * period);
+            compare(nameOf(timing), timing.text, "periods on, still without it");
             // Another reason is said in full, once.
             set({scanStayPhrase: "No check: width", scanQuietReason: 5, scanQuietText: width});
-            tryVerify(function () { return nameOf(timing) === timing.text + ". " + width; }, stepPeriod + 500,
+            tryVerify(function () { return nameOf(timing) === timing.text + ". " + width; }, hang,
                       "another reason is said in full: " + nameOf(timing));
             // Back to the plain phrase on the same stay: named by the line alone again.
             set({scanStayPhrase: "Idle dwell", scanQuietStatus: 0, scanQuietReason: 0, scanQuietText: ""});
-            tryVerify(function () { return nameOf(timing) === timing.text; }, stepPeriod + 500, nameOf(timing));
+            tryVerify(function () { return nameOf(timing) === timing.text; }, hang, nameOf(timing));
         }
 
         // A recording's position, while it plays: the time's name, the seek bar's description and value move at the

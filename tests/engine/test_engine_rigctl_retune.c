@@ -557,11 +557,12 @@ udp_send(dsd_socket_t tx, int port, const int16_t* samples, size_t count) {
                                                                                                                    : -1;
 }
 
-/* The next UDP sample, waiting up to a second for it (-32768 for none). */
+/* The next UDP sample, waiting for it (-32768 for none). Every caller sent it already: the bound (10 s) only turns a lost
+   datagram into a failure, never a slow receive thread. */
 static int16_t
 udp_next(dsd_opts* opts) {
     int16_t s = 0;
-    for (int tries = 0; tries < 50; tries++) {
+    for (int tries = 0; tries < 500; tries++) {
         if (udp_input_read_sample_wait(opts, &s, 20U) == 1) {
             return s;
         }
@@ -805,11 +806,12 @@ wait_src_send(const wait_src* src, int16_t first, size_t count) {
     return dsd_write(src->fd, buf, count * 2U) == (ssize_t)(count * 2U) ? 0 : -1;
 }
 
-/* The input's next sample, waiting up to half a second for it (INT16_MIN for none). */
+/* The input's next sample, waiting for it (INT16_MIN for none). Every caller sent it already: the bound (10 s) only
+   turns lost audio into a failure, never a slow host. */
 static int16_t
 wait_input_next(dsd_opts* opts) {
     int16_t s = 0;
-    for (int tries = 0; tries < 25; tries++) {
+    for (int tries = 0; tries < 500; tries++) {
         int got = 0;
         if (opts->audio_in_type == AUDIO_IN_UDP) {
             got = udp_input_read_sample_wait(opts, &s, 20U);
@@ -826,7 +828,8 @@ wait_input_next(dsd_opts* opts) {
 }
 
 /* The P25 watchdog, once the decoder waits on the empty input: it confirms a retune, and the new channel's first
-   audio arrives after it. */
+   audio arrives after it. The 150 ms is when that is likely, not a condition: a post made before the decoder's read
+   began is taken at its start, before the new audio is sent, and the case ends the same. */
 typedef struct {
     const wait_src* src;
     int sent;
@@ -842,6 +845,21 @@ static DSD_THREAD_RETURN_TYPE
     watchdog_retune_now();
     wp->sent = wait_src_send(wp->src, 1000, 300U) == 0;
     DSD_THREAD_RETURN;
+}
+
+/* Wait until a mark of the input counts @p arrived (samples on UDP, bytes on TCP and stdin): all the audio sent so far
+   reached it. The bound (10 s) only turns lost audio into a failure, never a slow host. */
+static int
+input_counts(uint64_t arrived) {
+    for (int tries = 0; tries < 1000; tries++) {
+        dsd_input_cut cut;
+        dsd_input_backlog_mark(&cut);
+        if (cut.measured && cut.arrived >= arrived) {
+            return cut.arrived == arrived;
+        }
+        dsd_sleep_ms(10U);
+    }
+    return 0;
 }
 
 /* The decoder thread's next read after a post: what symbol_read() does first. */
@@ -861,7 +879,8 @@ watchdog_queue_case(dsd_opts* opts, dsd_state* state, const wait_src* src, const
     state->symbol_clock_input = opts->pcm_input_generation;
     DSD_SNPRINTF(label, sizeof label, "%s: the old channel's audio, its first sample read", what);
     int rc = expect_true(label, wait_src_send(src, 30, 300U) == 0 && wait_input_next(opts) == 30);
-    dsd_sleep_ms(50U); /* all of it queued */
+    DSD_SNPRINTF(label, sizeof label, "%s: all of it reached the input", what);
+    rc |= expect_true(label, input_counts(src->kind == AUDIO_IN_UDP ? 300U : 600U));
     watchdog_retune_now();
     take_at_the_next_read(opts, state);
     rc |= expect_true("send after the drop", wait_src_send(src, 500, 2U) == 0);
@@ -1005,8 +1024,8 @@ static struct {
     dsd_input_cut mark;  /* a retune's mark, taken before it is confirmed (RECONNECT_MARK_*) */
 } g_reconnect;
 
-/* Send @p count samples of @p value to the new connection and wait up to a second until @p client holds @p held bytes
-   ready. */
+/* Send @p count samples of @p value to the new connection and wait until @p client holds @p held bytes ready (the bound,
+   10 s, only turns a lost send into a failure). */
 static int
 reconnect_send(dsd_socket_t client, int16_t value, int count, long held) {
     uint8_t bytes[2U * RECONNECT_OLD_SAMPLES];
@@ -1020,7 +1039,7 @@ reconnect_send(dsd_socket_t client, int16_t value, int count, long held) {
     if (dsd_socket_send(g_reconnect.server, bytes, (size_t)count * 2U, 0) != count * 2) {
         return -1;
     }
-    for (int tries = 0; tries < 100; tries++) {
+    for (int tries = 0; tries < 1000; tries++) {
         if (dsd_socket_readable_bytes(client) >= held) {
             return 0;
         }

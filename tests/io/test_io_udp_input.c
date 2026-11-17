@@ -466,8 +466,9 @@ test_discard_through(void) {
         DSD_FPRINTF(stderr, "failed to send the samples before the discard\n");
         rc = 1;
     } else {
-        /* The datagram may still be on its way to the ring: marks until the ring has it. */
-        for (int tries = 0; tries < 100; tries++) {
+        /* The datagram may still be on its way to the ring: marks until the ring has it. Here and below the bounds (10 s)
+           only turn a lost datagram into a failure, never a slow receive thread. */
+        for (int tries = 0; tries < 1000; tries++) {
             dsd_input_backlog_mark(&cut);
             if (cut.arrived >= 3U) {
                 break;
@@ -478,7 +479,7 @@ test_discard_through(void) {
         /* One more written after the mark, before the discard: the new channel's. */
         rc |= expect_int("send after the mark", send_pcm16le(tx, "127.0.0.1", port, late, 1), 0);
         dsd_input_cut now;
-        for (int tries = 0; tries < 100; tries++) {
+        for (int tries = 0; tries < 1000; tries++) {
             dsd_input_backlog_mark(&now);
             if (now.arrived >= 4U) {
                 break;
@@ -489,14 +490,14 @@ test_discard_through(void) {
         rc |= expect_int("send after the discard", send_pcm16le(tx, "127.0.0.1", port, after, 2), 0);
         int16_t first = 0;
         int got_first = -1;
-        for (int tries = 0; tries < 50 && got_first < 0; tries++) {
+        for (int tries = 0; tries < 500 && got_first < 0; tries++) {
             got_first = udp_input_read_sample_wait(&opts, &first, 20U);
         }
         rc |= expect_int("the sample written after the mark is read", got_first == 1 && first == late[0], 1);
         for (int i = 0; i < 2; i++) {
             int16_t sample = 0;
             int got = -1;
-            for (int tries = 0; tries < 50 && got < 0; tries++) {
+            for (int tries = 0; tries < 500 && got < 0; tries++) {
                 got = udp_input_read_sample_wait(&opts, &sample, 20U);
             }
             rc |= expect_int("a sample after the discard", got, 1);
@@ -510,12 +511,13 @@ test_discard_through(void) {
     return rc;
 }
 
-/* The ring's count of samples written, once it reaches @p want (waiting up to 2 s for the receive thread). */
+/* The ring's count of samples written, once it reaches @p want (waiting up to 10 s for the receive thread: the bound
+   only turns a lost datagram into a failure). */
 static uint64_t
 ring_written_reaches(uint64_t want) {
     dsd_input_cut cut;
     DSD_MEMSET(&cut, 0, sizeof cut);
-    for (int tries = 0; tries < 200; tries++) {
+    for (int tries = 0; tries < 1000; tries++) {
         dsd_input_backlog_mark(&cut);
         if (cut.arrived >= want) {
             break;
