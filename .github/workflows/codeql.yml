@@ -106,7 +106,7 @@ jobs:
 
       - name: Build C/C++ database
         if: matrix.language == 'c-cpp'
-        run: cmake --build --preset dev-debug -j
+        run: cmake --build --preset dev-debug -j "$(nproc)"
 
       # A traced C/C++ build analyzes every file it compiles, paths-ignore or
       # not, so the results are filtered against the config before upload.
