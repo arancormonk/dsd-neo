@@ -109,6 +109,9 @@ int m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t prot
 int m17_pkt_ptr_clamped(int pbc_count);
 void m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end);
 void m17_ip_dispatch_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, int len);
+/** Decode an LSF this station transmits (@p m17_rnd_bits, the randomized on-air payload) through the receive path, to
+ * monitor it: its call is shown, but nothing in it is received identity, META or a position. */
+void m17_monitor_encoded_lsf(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_rnd_bits);
 
 #ifdef __cplusplus
 }

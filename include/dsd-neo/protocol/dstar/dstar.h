@@ -44,7 +44,8 @@ int processDSTAR_HD(dsd_opts* opts, dsd_state* state);
 void processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd);
 
 /**
- * @brief Forget the evidence gathered for the current D-STAR transmission.
+ * @brief Forget the evidence gathered for the current D-STAR transmission, and the D-PRS record
+ * its slow data was collecting.
  *
  * Defined in src/protocol/dstar/dstar_confirm.c and declared here so the engine can clear
  * it with the carrier; the rest of that module's interface is private to the protocol.

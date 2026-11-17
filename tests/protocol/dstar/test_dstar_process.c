@@ -550,6 +550,32 @@ test_header_split_by_a_carrier_boundary_decodes_nothing(void) {
     assert(slow_data_calls == 0);
 }
 
+/* Issue #800 2.10: a verified header opens a transmission, so a D-PRS record the one before it left half collected is
+ * forgotten; a header whose CRC failed proves nothing and leaves it. */
+static void
+test_verified_header_forgets_a_half_collected_dprs_record(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int verified = 0; verified <= 1; verified++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        header_decode_soft_result = verified;
+        state.dstar_dprs.collecting = 1U;
+        state.dstar_dprs.len = 12U;
+        state.dstar_dprs.epoch = 7U;
+        DSD_MEMCPY(state.dstar_dprs.text, "$$CRC9E3E,N0", 12U);
+
+        assert(processDSTAR_HD(&opts, &state) == verified);
+        assert(state.dstar_dprs.collecting == (verified ? 0U : 1U));
+        assert(state.dstar_dprs.len == (verified ? 0U : 12U));
+        assert(state.dstar_dprs.epoch == (verified ? 0U : 7U));
+    }
+    header_decode_soft_result = 1;
+}
+
 int
 main(void) {
     test_voice_process_without_telemetry();
@@ -563,6 +589,7 @@ main(void) {
     test_voice_superframe_cut_by_an_input_interruption_is_dropped();
     test_header_cut_by_an_input_interruption_decodes_nothing();
     test_header_split_by_a_carrier_boundary_decodes_nothing();
+    test_verified_header_forgets_a_half_collected_dprs_record();
     printf("DSTAR_PROCESS: OK\n");
     return 0;
 }

@@ -7,7 +7,8 @@
  * Unit coverage for the D-STAR transmission confirmation gate (issue #421).
  *
  * The gate decides whether the 1992 symbols a voice superframe consumes bought the hunt
- * profile anything. A CRC-16/X.25 -- the RF header, or the header rebroadcast in slow data --
+ * profile anything. A CRC-16/X.25 -- the RF header, the header rebroadcast in slow data, or a
+ * whole D-PRS record whose CRC matches (issue #800, tests/protocol/dstar/test_dstar_dprs.c) --
  * is proof by itself; a superframe that carries only filler has to repeat, because one
  * arriving at all means a second exact 24-symbol sync word was matched.
  *
@@ -65,8 +66,15 @@ main(void) {
     run_frame(state, 0);
     expect("confirmation survives empty frames", dstar_confirm_is_confirmed(state), 1);
 
+    /* The reset forgets the transmission whole: a D-PRS record its slow data was collecting too (issue #800 2.10). */
+    state->dstar_dprs.collecting = 1U;
+    state->dstar_dprs.len = 12U;
+    state->dstar_dprs.epoch = 7U;
     dstar_confirm_reset(state);
     expect("reset clears confirmation", dstar_confirm_is_confirmed(state), 0);
+    expect("reset forgets the D-PRS record", state->dstar_dprs.collecting, 0);
+    expect("reset empties the D-PRS record", state->dstar_dprs.len, 0);
+    expect("reset unbinds the D-PRS record", state->dstar_dprs.epoch != 0U, 0);
 
     /* One unchecked superframe is not enough; the second running is. */
     run_frame(state, DSTAR_EVIDENCE_WEAK);

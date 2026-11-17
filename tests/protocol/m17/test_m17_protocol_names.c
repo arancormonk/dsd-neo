@@ -73,7 +73,9 @@ main(void) {
     rc |= expect_name("otakd", 0x69U, "OTA Key Delivery");
     rc |= expect_name("meta-text", 0x80U, "Meta Text Data V2");
     rc |= expect_name("meta-text-v3", 0x83U, "Meta Text Data V3");
-    rc |= expect_name("pdu-gnss", 0x91U, "PDU GNSS Position Data");
+    rc |= expect_name("meta-gnss", 0x81U, "Meta GNSS Position Data");
+    /* Issue #800 D13: no M17 source defines a GNSS packet protocol; 0x91 is an unknown protocol. */
+    rc |= expect_name("no-pdu-gnss", 0x91U, NULL);
     rc |= expect_name("arb-data-fme", 0x99U, "1600 Arbitrary Data");
     rc |= expect_name("unknown", 0x7FU, NULL);
 

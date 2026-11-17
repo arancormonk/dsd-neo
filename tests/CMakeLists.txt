@@ -2059,6 +2059,16 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_dstar_confirm PRIVATE dsd-neo_platform)
 add_test(NAME DSTAR_CONFIRM COMMAND dsd-neo_test_dstar_confirm)
 
+# Issue #800 2.10: a D-PRS position only from a whole GPS-A record whose CRC-16/X.25 matches, collected across
+# superframes, bounded and bound to its call; real slow-data decoder, call state, history and feed.
+add_executable(dsd-neo_test_dstar_dprs protocol/dstar/test_dstar_dprs.c)
+target_include_directories(
+    dsd-neo_test_dstar_dprs
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_dstar_dprs PRIVATE dsd-neo_proto_dstar)
+add_test(NAME DSTAR_DPRS COMMAND dsd-neo_test_dstar_dprs)
+
 add_executable(
     dsd-neo_test_dstar_sync_dispatch
     protocol/dstar/test_dstar_sync_dispatch.c
@@ -13374,6 +13384,24 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_m17_confirm PRIVATE dsd-neo_platform)
 add_test(NAME M17_CONFIRM COMMAND dsd-neo_test_m17_confirm)
+
+# Issue #800 2.2, N1, D13: an M17 position only from the GNSS META of a checked link setup (RF LSF, LICH LSD, IP stream
+# frame, MPKT), never from a monitored local transmission, a -F decoded LSF or a packet; real decoder, call state,
+# history and feed.
+add_executable(
+    dsd-neo_test_m17_gnss_position
+    protocol/m17/test_m17_gnss_position.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_convolution.c
+)
+target_include_directories(
+    dsd-neo_test_m17_gnss_position
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/m17
+)
+target_link_libraries(
+    dsd-neo_test_m17_gnss_position
+    PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
+)
+add_test(NAME M17_GNSS_POSITION COMMAND dsd-neo_test_m17_gnss_position)
 
 # M17 frames an input interruption cut, read through GNU ld --wrap seams around the symbol readers, like the YSF DCH
 # test, and decoded by the real FEC.

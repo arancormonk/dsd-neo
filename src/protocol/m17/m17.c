@@ -22,6 +22,7 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
@@ -76,8 +77,10 @@ static void M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_can
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
 static void M17logLSFSummary(const struct m17_lsf_result* res);
 static void M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
-static void M17decodeMetaPayload(dsd_state* state, uint8_t identifier);
-static void M17decodeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
+static void M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res);
+static void m17_decode_pkt_print_extended_csd(const uint8_t* input, int len);
+static void m17_decode_pkt_print_meta_or_arb(dsd_state* state, const uint8_t* input, int len, uint32_t protocol);
+static void m17_print_gnss(const struct m17_gnss_result* gnss);
 static void M17logLSFTrailer(const dsd_state* state, const struct m17_lsf_result* res);
 static int m17_can_matches_state(const dsd_state* state);
 static int m17_load_aes_key(const dsd_state* state, uint8_t subtype, uint8_t key[32]);
@@ -328,6 +331,16 @@ m17_note_key_selection(dsd_state* state, dsd_call_crypto_state classification) {
     }
 }
 
+/* The M17 sync type an LSF just decoded belongs to. */
+static int
+m17_received_protocol(const dsd_state* state) {
+    int protocol = DSD_SYNC_IS_M17(state->synctype) ? state->synctype : state->lastsynctype;
+    if (!DSD_SYNC_IS_M17(protocol)) {
+        protocol = DSD_SYNC_M17_LSF_POS;
+    }
+    return protocol;
+}
+
 static void
 m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
     const int is_voice = res->packet_stream != 0U && (res->dt == 2U || res->dt == 3U);
@@ -335,12 +348,8 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
     if (!is_voice && !is_data) {
         return;
     }
-    int protocol = DSD_SYNC_IS_M17(state->synctype) ? state->synctype : state->lastsynctype;
-    if (!DSD_SYNC_IS_M17(protocol)) {
-        protocol = DSD_SYNC_M17_LSF_POS;
-    }
     dsd_call_observation observation = {
-        .protocol = protocol,
+        .protocol = m17_received_protocol(state),
         .slot = 0U,
         .kind = is_voice ? DSD_CALL_KIND_VOICE : DSD_CALL_KIND_DATA,
         .ota_target_id = res->dst,
@@ -391,9 +400,12 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical) {
     if (m17_apply_lsf_result(state, &res) == 1) {
         if (publish_canonical != 0) {
             m17_publish_lsf(opts, state, &res);
-            /* Only an LSF whose CRC passed names the carrier's CAN: -F decodes one that failed, never as identity. */
+            /* Only an LSF whose CRC passed names the carrier's CAN: -F decodes one that failed, never as identity. Its
+               META is read only then too, and never from what this station transmits (issue #800 2.2): a META
+               position is the received station's, and the call it describes is the one just published. */
             if (!s_m17_monitoring_local_tx) {
                 dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, (uint16_t)res.cn);
+                M17decodeLSFMeta(opts, state, &res);
             }
         }
         M17logLSFTrailer(state, &res);
@@ -482,34 +494,123 @@ m17_encode_packet_protocol_id(uint32_t identifier, uint8_t* out) {
     return 4U;
 }
 
+/* Round a 24-bit META coordinate (+-8388607 = +-@p full_e7) to degrees x 1e7. */
+static int32_t
+m17_gnss_coord_e7(int32_t raw, int64_t full_e7) {
+    const int64_t magnitude = raw < 0 ? -(int64_t)raw : (int64_t)raw;
+    const int64_t scaled = ((magnitude * full_e7) + 4194303) / 8388607;
+    return (int32_t)(raw < 0 ? -scaled : scaled);
+}
+
+/* The parts of a checked GNSS META the position record carries; each only when marked valid and in range. */
 static void
-M17decodeMetaPayload(dsd_state* state, uint8_t identifier) {
-    uint8_t meta[4U + M17_META_BYTES];
-    DSD_MEMSET(meta, 0, sizeof(meta));
-    const size_t protocol_len = m17_encode_packet_protocol_id(identifier, meta);
-    if (protocol_len == 0U) {
+m17_gnss_fill_fix(const struct m17_gnss_result* gnss, dsd_position_fix* fix) {
+    fix->lat_e7 = m17_gnss_coord_e7(gnss->latitude_raw, 900000000);
+    fix->lon_e7 = m17_gnss_coord_e7(gnss->longitude_raw, 1800000000);
+    if ((gnss->validity & M17_GNSS_VALID_ALTITUDE) != 0U) {
+        fix->alt_dm = ((int32_t)gnss->altitude_raw * 5) - 5000; /* 0.5 m steps above -500 m */
+    }
+    if ((gnss->validity & M17_GNSS_VALID_VELOCITY) != 0U) {
+        fix->speed_dkmh = (uint16_t)(gnss->speed_raw * 5U); /* 0.5 km/h steps */
+        if ((gnss->out_of_range_fields & M17_GNSS_VALID_VELOCITY) == 0U) {
+            fix->heading_ddeg = (uint16_t)(gnss->bearing_deg * 10U);
+        }
+    }
+    if ((gnss->validity & M17_GNSS_VALID_RADIUS) != 0U) {
+        /* The smallest n whose 2^n m the radius does not exceed; 7 also stands for every radius above 128 m, so it
+           only says "more than 64 m". */
+        if (gnss->radius_exponent >= 7U) {
+            fix->err_m = 64U;
+            fix->flags |= (uint16_t)DSD_POS_FLAG_ERR_LOWER_BOUND;
+        } else {
+            fix->err_m = 1U << gnss->radius_exponent;
+        }
+    }
+}
+
+/* The row text of an admitted GNSS META position. */
+static void
+m17_gnss_row_text(const dsd_position_fix* fix, char* out, size_t cap) {
+    int n = DSD_SNPRINTF(out, cap, "GPS: (%.6f, %.6f)", (double)fix->lat_e7 / 1e7, (double)fix->lon_e7 / 1e7);
+    if (n > 0 && (size_t)n < cap && fix->alt_dm != DSD_POSITION_ALT_UNKNOWN) {
+        n += DSD_SNPRINTF(out + n, cap - (size_t)n, " Alt: %.1f m", (double)fix->alt_dm / 10.0);
+    }
+    if (n > 0 && (size_t)n < cap && fix->speed_dkmh != DSD_POSITION_SPEED_UNKNOWN) {
+        n += DSD_SNPRINTF(out + n, cap - (size_t)n, " Spd: %.1f km/h", (double)fix->speed_dkmh / 10.0);
+    }
+    if (n > 0 && (size_t)n < cap && fix->heading_ddeg != DSD_POSITION_HEADING_UNKNOWN) {
+        (void)DSD_SNPRINTF(out + n, cap - (size_t)n, " Brg: %u", (unsigned)(fix->heading_ddeg / 10U));
+    }
+}
+
+/*
+ * A GNSS META position from an LSF (or a stream's LSD) whose CRC passed, decoded from what this station received
+ * (issue #800 2.2). Its check is that CRC (an IP stream frame's or MPKT's own CRC for the network carriers), and the
+ * source is the same LSF's: the callsign of the call m17_publish_lsf() just observed. Nothing else in M17 carries a
+ * position (D13).
+ */
+static void
+m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
+                          const struct m17_gnss_result* gnss) {
+    if ((gnss->validity & M17_GNSS_VALID_LATLON) == 0U || (gnss->out_of_range_fields & M17_GNSS_VALID_LATLON) != 0U) {
         return;
     }
-    DSD_MEMCPY(meta + protocol_len, state->m17_meta, M17_META_BYTES);
-    LOG_INFO("\n ");
-    //Note: We don't have opts here, so in the future, if we need it, we will need to pass it here
-    decodeM17PKT(NULL, state, meta, (int)(protocol_len + M17_META_BYTES)); //decode META
+    dsd_position_fix fix;
+    dsd_position_fix_init(&fix);
+    fix.kind = (uint8_t)DSD_POS_M17_GNSS;
+    fix.protocol = (uint8_t)m17_received_protocol(state);
+    fix.slot = 0U;
+    m17_gnss_fill_fix(gnss, &fix);
+    char callsign[DSD_CALL_IDENTITY_TEXT_SIZE];
+    m17_format_address(res->src, 1, callsign);
+    DSD_SNPRINTF(fix.source_text, sizeof(fix.source_text), "%s", callsign);
+    if (dsd_position_admit(opts, state, &fix, 1, 1, NULL) == DSD_POSITION_REFUSED) {
+        return;
+    }
+    char text[128];
+    m17_gnss_row_text(&fix, text, sizeof(text));
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        (void)dsd_event_enrich_position(state, 0U, call.epoch, &fix, text);
+    }
 }
 
 static void
-M17decodeLSFMeta(dsd_state* state, const struct m17_lsf_result* res) {
+M17decodeMetaGnss(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
+    struct m17_gnss_result gnss;
+    if (m17_parse_gnss_meta(state->m17_meta, M17_META_BYTES, &gnss) != 0) {
+        DSD_FPRINTF(stderr, " Invalid GNSS META;");
+        return;
+    }
+    m17_print_gnss(&gnss);
+    m17_publish_gnss_position(opts, state, res, &gnss);
+}
+
+/* The META field of an LSF whose CRC passed, decoded by its subtype straight from the 14 META bytes (issue #800 N1:
+ * no packet protocol specifier stands in front of them). */
+static void
+M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
     //Decode Meta Data when not ENC (if meta field is populated with something)
-    if (res->et == 0U && res->has_meta != 0U) {
-        if (!m17_can_matches_state(state)) {
-            LOG_INFO(" META CAN Filtered;");
-            return;
-        }
-        const uint8_t identifier = m17_null_meta_protocol_for_subtype(res->es);
-        if (identifier != 0U) {
-            M17decodeMetaPayload(state, identifier);
-        } else {
-            LOG_INFO(" Reserved META subtype;");
-        }
+    if (res->et != 0U || res->has_meta == 0U) {
+        return;
+    }
+    if (!m17_can_matches_state(state)) {
+        LOG_INFO(" META CAN Filtered;");
+        return;
+    }
+    const uint8_t identifier = m17_null_meta_protocol_for_subtype(res->es);
+    if (identifier == 0U) {
+        LOG_INFO(" Reserved META subtype;");
+        return;
+    }
+    LOG_INFO("\n ");
+    DSD_FPRINTF(stderr, " Protocol: %s;", m17_packet_protocol_name_u32(identifier));
+    if (identifier == 0x81U) {
+        M17decodeMetaGnss(opts, state, res);
+    } else if (identifier == 0x82U) {
+        m17_decode_pkt_print_extended_csd(state->m17_meta, (int)M17_META_BYTES);
+    } else {
+        m17_decode_pkt_print_meta_or_arb(state, state->m17_meta, (int)M17_META_BYTES, identifier);
     }
 }
 
@@ -990,7 +1091,6 @@ m17_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res) {
     M17decodeLSFFields(state, res);
     M17logLSFSummary(res);
     M17storeLSFMeta(state, res);
-    M17decodeLSFMeta(state, res);
     return 1;
 }
 
@@ -1431,7 +1531,7 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
     return (crc_err == 0 || m17_confirm_is_confirmed(state)) ? 1 : 0;
 } //end processM17LSF
 
-static void
+void
 m17_monitor_encoded_lsf(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_rnd_bits) {
     uint8_t m17_bits[M17_PAYLOAD_BITS];
     uint16_t m17_soft_bits[M17_PAYLOAD_BITS];
@@ -3170,36 +3270,33 @@ m17_decode_pkt_print_station_type(uint8_t station_type) {
 }
 
 static void
-m17_decode_pkt_print_gnss(const uint8_t* input, int len) {
-    struct m17_gnss_result gnss;
-    const size_t input_len = (len > 0) ? (size_t)len : 0U;
-    if (m17_parse_gnss_v2(input, input_len, &gnss) != 0) {
-        DSD_FPRINTF(stderr, " Invalid GNSS packet;");
-        return;
-    }
-
-    if ((gnss.validity & 0x8U) != 0U) {
-        DSD_FPRINTF(stderr, "\n GPS: (%f, %f);", gnss.latitude_deg, gnss.longitude_deg);
+m17_print_gnss(const struct m17_gnss_result* gnss) {
+    if ((gnss->validity & M17_GNSS_VALID_LATLON) != 0U && (gnss->out_of_range_fields & M17_GNSS_VALID_LATLON) == 0U) {
+        DSD_FPRINTF(stderr, "\n GPS: (%f, %f);", gnss->latitude_deg, gnss->longitude_deg);
     } else {
         DSD_FPRINTF(stderr, "\n GPS Not Valid;");
     }
 
-    if ((gnss.validity & 0x4U) != 0U) {
-        DSD_FPRINTF(stderr, " Altitude: %.1f m;", gnss.altitude_m);
+    if ((gnss->validity & M17_GNSS_VALID_ALTITUDE) != 0U) {
+        DSD_FPRINTF(stderr, " Altitude: %.1f m;", gnss->altitude_m);
     }
-    if ((gnss.validity & 0x2U) != 0U) {
-        DSD_FPRINTF(stderr, " Speed: %.1f km/h;", gnss.speed_kmh);
-        DSD_FPRINTF(stderr, " Bearing: %u Degrees;", gnss.bearing_deg);
+    if ((gnss->validity & M17_GNSS_VALID_VELOCITY) != 0U) {
+        DSD_FPRINTF(stderr, " Speed: %.1f km/h;", gnss->speed_kmh);
+        if ((gnss->out_of_range_fields & M17_GNSS_VALID_VELOCITY) == 0U) {
+            DSD_FPRINTF(stderr, " Bearing: %u Degrees;", gnss->bearing_deg);
+        } else {
+            DSD_FPRINTF(stderr, " Bearing: Invalid;");
+        }
     }
-    if ((gnss.validity & 0x1U) != 0U) {
-        DSD_FPRINTF(stderr, "\n      Radius: %.1f;", gnss.radius_m);
+    if ((gnss->validity & M17_GNSS_VALID_RADIUS) != 0U) {
+        DSD_FPRINTF(stderr, "\n      Radius: %.1f;", gnss->radius_m);
     }
-    if (gnss.invalid_zero_fields != 0U) {
-        DSD_FPRINTF(stderr, " Nonzero Invalid Fields: %X;", gnss.invalid_zero_fields);
+    if (gnss->invalid_zero_fields != 0U) {
+        DSD_FPRINTF(stderr, " Nonzero Invalid Fields: %X;", gnss->invalid_zero_fields);
     }
 
-    m17_decode_pkt_print_gnss_source(gnss.data_source);
-    m17_decode_pkt_print_station_type(gnss.station_type);
+    m17_decode_pkt_print_gnss_source(gnss->data_source);
+    m17_decode_pkt_print_station_type(gnss->station_type);
 }
 
 static void
@@ -3283,14 +3380,14 @@ m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol
 }
 
 static void
-m17_decode_pkt_dispatch_payload(dsd_state* state, const uint8_t* input, int len, const uint8_t* payload,
-                                int payload_len, uint32_t protocol) {
+m17_decode_pkt_dispatch_payload(dsd_state* state, const uint8_t* payload, int payload_len, uint32_t protocol) {
     switch (protocol) {
         case 0x05: m17_decode_pkt_print_text("\n SMS: ", payload, payload_len); break;
         case 0x07: m17_decode_pkt_print_text(" TLE:\n", payload, payload_len); break;
-        case 0x82: m17_decode_pkt_print_extended_csd(input, len); break;
-        case 0x81:
-        case 0x91: m17_decode_pkt_print_gnss(input, len); break;
+        /* An ECD in a packet carries the META layout behind its specifier. GNSS position data has no packet protocol
+           (M17 reserves only 0x00-0x06; 0x81 names META here and 0x91 nothing): such a packet is shown, never read
+           as a position (issue #800 D13). */
+        case 0x82: m17_decode_pkt_print_extended_csd(payload, payload_len); break;
         case 0x80:
         case 0x83:
         case 0x89:
@@ -3335,7 +3432,7 @@ decodeM17PKT(const dsd_opts* opts, dsd_state* state, const uint8_t* input, int l
         return;
     }
 
-    m17_decode_pkt_dispatch_payload(state, input, len, payload, payload_len, protocol);
+    m17_decode_pkt_dispatch_payload(state, payload, payload_len, protocol);
 }
 
 static void

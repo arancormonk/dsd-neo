@@ -598,6 +598,24 @@ typedef struct dmr_talker_alias_assembly {
     uint8_t piece[4][7]; /* each piece's bits as stored (header 48 or 49, a block 56), packed MSB first */
 } dmr_talker_alias_assembly;
 
+/** The longest D-STAR D-PRS (GPS-A) record kept, "$$CRC" through its closing CR. */
+#define DSTAR_DPRS_RECORD_MAX 300U
+
+/**
+ * One D-STAR D-PRS (GPS-A) record being collected from the GPS blocks (type 3) of the slow data
+ * (src/protocol/dstar/dstar_slow_data.c): from "$$CRC" through the CR that ends it (JARL STD 6.0 section 6.8.1). It
+ * spans superframes, so it is bound to the slot 0 call it began in (epoch 0: none was active) and to the reception
+ * captured with its first byte. A record that grows past DSTAR_DPRS_RECORD_MAX bytes is dropped; a new call, a
+ * verified RF header or the carrier's end (dstar_confirm_reset()) clears it.
+ */
+typedef struct dstar_dprs_assembly {
+    uint8_t text[DSTAR_DPRS_RECORD_MAX]; /* until "$$CRC" matched: the last bytes seen, at most five */
+    uint16_t len;
+    uint8_t collecting; /* 1 once "$$CRC" began a record */
+    uint64_t epoch;     /* the slot 0 call's epoch when the record began; 0 = no active D-STAR call */
+    dsd_position_origin origin;
+} dstar_dprs_assembly;
+
 typedef struct {
     uint8_t mask;
     char last_alias[40];
@@ -2884,6 +2902,9 @@ struct dsd_state {
     uint8_t dstar_confirmed;
     uint8_t dstar_confirm_weak_streak;
     uint8_t dstar_confirm_frame_evidence;
+    /* The D-PRS record being collected from slow data; only a complete one whose CRC-16/X.25 matches is evidence or a
+     * position (issue #800 2.10). */
+    dstar_dprs_assembly dstar_dprs;
 
     //M17 Storage
     uint8_t m17_lsf[360];

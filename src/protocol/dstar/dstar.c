@@ -124,6 +124,8 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
         /* A CRC-16/X.25 over 39 octets: proof on its own, and it opens the transmission the
          * voice superframe below belongs to. */
         dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
+        /* A header opens a transmission: a D-PRS record the one before it left unfinished is not this one's. */
+        DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
         /* The capture of the transmission before it ends here (issue #661). */
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DSTAR_HD_POS);
     }
