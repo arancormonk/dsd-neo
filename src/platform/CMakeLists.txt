@@ -56,7 +56,7 @@ if(DSD_AUDIO_BACKEND STREQUAL "portaudio")
         PUBLIC ${PORTAUDIO_INCLUDE_DIRS}
     )
 elseif(DSD_AUDIO_BACKEND STREQUAL "pulse")
-    target_sources(dsd-neo_platform PRIVATE audio_pulse.c)
+    target_sources(dsd-neo_platform PRIVATE audio_pulse.c audio_pulse_record.c)
     target_link_libraries(
         dsd-neo_platform
         PUBLIC ${PULSEAUDIO_LIBRARY} ${PULSEAUDIO_SIMPLE_LIBRARY}

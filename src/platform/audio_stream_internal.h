@@ -54,9 +54,9 @@ audio_input_keep_since(uint64_t marked_ns, uint64_t now_ns, int rate, uint64_t l
 }
 
 /* The frames an input discard kept (dsd_audio_discard_input()), interleaved, which dsd_audio_read() returns before the
-   device's, and the next one it returns. PulseAudio keeps the newest frames it read there (pa_simple says nothing of
-   what it holds); PortAudio and AAudio the chunk a device overrun made them stop at, since it may hold audio captured
-   after the mark. */
+   device's, and the next one it returns. PulseAudio keeps the newest frames it read there (it reads all the client
+   holds, and only the time since the mark says how much of it came after); PortAudio and AAudio the chunk a device
+   overrun made them stop at, since it may hold audio captured after the mark. */
 struct audio_input_carry {
     int16_t* frames;
     size_t len;
@@ -172,6 +172,12 @@ struct dsd_audio_stream {
     int has_device_name;
     char app_name[64];
     dsd_audio_output_recovery recovery;
+#endif
+
+#if defined(DSD_NEO_AUDIO_BACKEND_PULSE)
+    /* An input stream's record stream (audio_pulse_record.h), which reads what the client holds without waiting: an
+       input discard must never wait for the source. Output streams use `handle` (pa_simple), inputs this. */
+    struct pulse_record* record;
 #endif
 
 #ifdef DSD_NEO_AUDIO_BACKEND_AAUDIO

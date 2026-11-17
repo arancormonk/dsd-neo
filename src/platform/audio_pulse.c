@@ -9,7 +9,8 @@
  *
  * This file provides the PulseAudio implementation of the cross-platform
  * audio API defined in dsd-neo/platform/audio.h. It wraps the pa_simple API
- * for stream I/O and uses the mainloop API for device enumeration.
+ * for output, records input through a threaded-mainloop record stream
+ * (audio_pulse_record.h), and uses the mainloop API for device enumeration.
  */
 
 #include <dsd-neo/core/safe_api.h>
@@ -36,6 +37,7 @@
 #define DSD_NEO_AUDIO_BACKEND_PULSE 1
 #include "audio_error_internal.h"
 #include "audio_output_recovery.h"
+#include "audio_pulse_record.h"
 #include "audio_stream_internal.h"
 
 #if DSD_PLATFORM_POSIX
@@ -767,9 +769,9 @@ dsd_audio_open_input(const dsd_audio_params* params) {
         free(stream);
         return NULL;
     }
-    stream->handle = pa_simple_new(NULL, app, PA_STREAM_RECORD, dev, "Audio Input", &ss, NULL, &attr, &err);
+    stream->record = pulse_record_open(app, dev, &ss, &attr, &err);
 
-    if (!stream->handle) {
+    if (!stream->record) {
         set_error_pa(err);
         free(stream->input_carry);
         free(stream);
@@ -958,13 +960,18 @@ dsd_audio_open_output(const dsd_audio_params* params) {
 
 int
 dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
-    if (!stream || !stream->handle || !buffer) {
+    if (!stream || !buffer) {
         set_error("Invalid arguments");
         return -1;
     }
 
     if (!stream->is_input) {
         set_error("Cannot read from output stream");
+        return -1;
+    }
+
+    if (!stream->record) {
+        set_error("Invalid arguments");
         return -1;
     }
 
@@ -975,7 +982,7 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     size_t bytes = (frames - carried) * (size_t)stream->channels * sizeof(int16_t);
     int err = 0;
 
-    if (pa_simple_read(stream->handle, buffer + carried * (size_t)stream->channels, bytes, &err) < 0) {
+    if (pulse_record_read(stream->record, buffer + carried * (size_t)stream->channels, bytes, &err) < 0) {
         set_error_pa(err);
         return -1;
     }
@@ -983,11 +990,11 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     return (int)frames;
 }
 
-/* An input discard (dsd_audio_discard_input()) reads 32-frame chunks, of at most 8 channels; a read that took longer
-   than 1 ms waited for audio. It stops there, after about 2 s of frames, or after 250 ms on the monotonic clock. */
+/* An input discard (dsd_audio_discard_input()) reads 32-frame chunks, of at most 8 channels, of what the client holds,
+   never waiting for more. It stops when the client holds no more, after about 2 s of frames, or after 250 ms on the
+   monotonic clock. */
 #define PULSE_DISCARD_CHUNK_FRAMES 32U
 #define PULSE_DISCARD_MAX_CHANNELS 8U
-#define PULSE_DISCARD_WAITED_NS    1000000ULL
 #define PULSE_DISCARD_MAX_S        2U
 #define PULSE_DISCARD_MAX_NS       250000000ULL
 
@@ -1029,39 +1036,34 @@ pulse_keep_to_carry(struct audio_input_carry* carry, const pulse_keep_ring* ring
     return failed ? -1 : 0;
 }
 
-/* A best effort, ended by timing. pa_simple keeps the record fragment it read last and returns the rest of it, and what
-   the client already queued behind it, at once, so the discard reads until a read has to wait for audio: what the
-   client held is gone then. That read's frames go too (the sound server captured them before they arrived). A read of
-   held data preempted for over 1 ms ends it early and keeps the rest (the audio it would have kept anyway).
+/* What the client holds is read without a wait (pulse_record_read_held()): the fragment the stream handed over and
+   what it queued behind it. A source that stops delivering ends the discard at once: it never waits for one. What the
+   server has not sent the client yet stays there, read after the discard as new audio (it was captured last).
 
-   pa_simple offers no exact way. pa_simple_get_latency() is the whole record pipeline's latency, which on a sink
-   monitor (a radio program played into a virtual sink: the usual rigctl setup) can read 0 while the client holds a
-   whole fragment. pa_simple_flush() flushes the server side only, not the client's queue or the fragment pa_simple
-   holds. The exact measure, pa_stream_readable_size(), needs the input on the pa_stream API, which pa_simple hides.
-   So the frames captured after the mark cannot be told apart before they are read: the discard reads everything and
-   keeps the newest of it in the stream's carry, which reads return first: as much as was captured from the mark to
-   the end of its last read, the time before the discard began (the decoder may have waited) and its waiting read
-   included (the frames that read waited for were captured during it).
-
-   The pa_simple_read() that waits has no timeout: a source that stops delivering holds it as it holds every read. */
-/* Read what the client holds into @p ring, up to the read that waits, at most @p limit frames, no read begun after
-   the time cap from @p start_ns: the frames read, or -1 on a read error. */
+   The client cannot say when a frame it holds was captured, so the frames captured after the mark cannot be told
+   apart before they are read: the discard reads everything and keeps the newest of it in the stream's carry, which
+   reads return first: as much as was captured from the mark until the end of the discard, the time before the discard
+   began (the decoder may have waited) included. A server overrun throws the oldest audio away, so what remains is the
+   newest, and the keep holds. */
+/* Read what the client holds into @p ring, at most @p limit frames, no read begun after the time cap from @p start_ns:
+   the frames read, or -1 on a read error. */
 static long
 pulse_discard_read_held(const dsd_audio_stream* stream, pulse_keep_ring* ring, size_t limit, uint64_t start_ns) {
     int16_t chunk[PULSE_DISCARD_CHUNK_FRAMES * PULSE_DISCARD_MAX_CHANNELS];
-    const size_t chunk_bytes = (size_t)PULSE_DISCARD_CHUNK_FRAMES * ring->ch * sizeof(int16_t);
+    const size_t frame_bytes = ring->ch * sizeof(int16_t);
     size_t read_frames = 0U;
     while (read_frames < limit && dsd_time_monotonic_ns() - start_ns < PULSE_DISCARD_MAX_NS) {
         int err = 0;
-        const uint64_t read_ns = dsd_time_monotonic_ns();
-        if (pa_simple_read(stream->handle, chunk, chunk_bytes, &err) < 0) {
+        const long got = pulse_record_read_held(stream->record, chunk, PULSE_DISCARD_CHUNK_FRAMES * frame_bytes, &err);
+        if (got < 0) {
             set_error_pa(err);
             return -1;
         }
-        pulse_keep_push(ring, chunk, PULSE_DISCARD_CHUNK_FRAMES);
-        read_frames += PULSE_DISCARD_CHUNK_FRAMES;
-        if (dsd_time_monotonic_ns() - read_ns > PULSE_DISCARD_WAITED_NS) {
-            break;
+        const size_t frames = (size_t)got / frame_bytes;
+        pulse_keep_push(ring, chunk, frames);
+        read_frames += frames;
+        if (frames < PULSE_DISCARD_CHUNK_FRAMES) {
+            break; /* the client holds no more */
         }
     }
     return (long)read_frames;
@@ -1081,7 +1083,7 @@ pulse_keep_ring_open(const struct audio_input_carry* carry, size_t keep, size_t 
 
 static int
 pulse_discard_input_valid(const dsd_audio_stream* stream) {
-    return stream && stream->handle && stream->is_input && stream->input_carry && stream->channels > 0
+    return stream && stream->record && stream->is_input && stream->input_carry && stream->channels > 0
            && (unsigned int)stream->channels <= PULSE_DISCARD_MAX_CHANNELS;
 }
 
@@ -1100,8 +1102,8 @@ dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
     const uint64_t waited_ns = start_ns > marked_ns ? start_ns - marked_ns : 0U;
     const size_t rate = (size_t)(stream->sample_rate > 0 ? stream->sample_rate : 48000);
     const size_t limit = rate * PULSE_DISCARD_MAX_S;
-    /* The most it can keep: what was captured from the mark until the last read began (none begins past the time cap)
-       and that read's chunk. */
+    /* The most it can keep: what was captured from the mark until the time cap (no read begins past it), and a chunk
+       more for the time the last read took. */
     const size_t room = (size_t)audio_input_keep_frames(pulse_ns_sum(waited_ns, PULSE_DISCARD_MAX_NS), (int)rate, limit)
                         + PULSE_DISCARD_CHUNK_FRAMES;
     struct audio_input_carry* carry = stream->input_carry;
@@ -1274,6 +1276,7 @@ dsd_audio_close(dsd_audio_stream* stream) {
     if (stream->handle) {
         pa_simple_free(stream->handle);
     }
+    pulse_record_free(stream->record);
 
     audio_input_carry_free(stream->input_carry);
     free(stream);

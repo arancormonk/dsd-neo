@@ -113,22 +113,22 @@ int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
 
 /**
  * @brief Drop the input samples the stream holds now, unread, but for those captured since @p marked_ns (issue #834: a
- * rigctl peer's audio from before its retune; the audio captured since the retune was confirmed is kept).
+ * rigctl peer's audio from before its retune; the audio captured since the retune was asked for is kept).
  *
  * A device captures in real time, so the newest frames it holds, as many as the time since the mark lasts, are the
  * audio captured since then. That time is read after the backend counts what it holds (or, on PulseAudio, after its
- * last read), so audio captured while the caller waited before the count is kept, and the frame count rounds up: a
+ * reads), so audio captured while the caller waited before the count is kept, and the frame count rounds up: a
  * drop keeps more rather than less. Frames an earlier drop kept and no read took are the oldest the stream holds. A
  * drop may lose only audio held before the mark: once it cannot tell old audio from new (the device overran and threw
- * audio away), it stops, and keeps what it holds. Per backend:
- * - PulseAudio (Linux, macOS), a best effort: what the client holds from the server (the rest of the record fragment
- *   being read, the queue behind it) is read until a read waits for audio; that read's frames count as held too. At
+ * audio away), it stops, and keeps what it holds. No backend waits for audio: a source that stops delivering (one
+ * suspended during the retune) ends the drop at once. Per backend:
+ * - PulseAudio (Linux, macOS): everything the client holds now (the rest of the record fragment being read, the queue
+ *   behind it) is read without a wait; what the server has not sent yet stays there and is read after the drop. At
  *   most 2 s of frames at the stream's rate, exact to one 32-frame read (the cap is checked before each read, so up to
- *   31 frames past it), no read begun after 250 ms on the monotonic clock, and the last read waits up to one record
- *   block (about 100 ms) on top of that. pa_simple says nothing of what it holds before it is read, so the newest
- *   frames read are kept in the stream and returned first by dsd_audio_read(). The keep is counted by time, not from a
- *   count taken first, so a server overrun (which throws the oldest audio away before it is read) loses no audio
- *   captured after the mark.
+ *   31 frames past it), no read begun after 250 ms on the monotonic clock. The client cannot say when a frame it holds
+ *   was captured, so the newest frames read are kept in the stream and returned first by dsd_audio_read(). The keep is
+ *   counted by time, not from a count taken first, so a server overrun (which throws the oldest audio away before it
+ *   is read) loses no audio captured after the mark.
  * - PortAudio (Windows): one snapshot of the frames the stream reports available at the call
  *   (Pa_GetStreamReadAvailable(), at most its input buffer), less those kept, read without a wait; no frame or time
  *   cap of its own. A read that reports an overrun (paInputOverflowed) ends it: its frames are kept, returned first by
