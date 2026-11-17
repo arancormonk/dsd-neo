@@ -645,15 +645,8 @@ gps_report_print_prefix(const dsd_gps_report_ctx* ctx) {
 static void
 gps_report_write_history(dsd_state* state, uint8_t slot, const dsd_gps_report_ctx* ctx, const dsd_position_fix* fix,
                          const char* text) {
-    if (ctx->call_closing == 1U && ctx->call_epoch != 0U) {
-        dsd_event_closing_call closing;
-        DSD_MEMSET(&closing, 0, sizeof closing);
-        closing.epoch = ctx->call_epoch;
-        closing.source_id = ctx->source_id;
-        closing.protocol = ctx->protocol;
-        closing.slot = slot;
-        closing.valid = 1U;
-        (void)dsd_event_enrich_position_closing(state, &closing, fix, text);
+    if (ctx->closing != NULL && ctx->closing->valid) {
+        (void)dsd_event_enrich_position_closing(state, ctx->closing, fix, text);
     } else if (ctx->call_epoch != 0U) {
         (void)dsd_event_enrich_position(state, slot, ctx->call_epoch, fix, text);
     } else {

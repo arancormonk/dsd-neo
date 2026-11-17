@@ -884,7 +884,7 @@ p25_lcw_handle_unknown_standard(const p25_lcw_ctx* ctx) {
 typedef struct {
     uint64_t epoch; /* 0: no call */
     uint32_t source;
-    uint8_t closing;
+    const dsd_event_closing_call* closing; /* the terminator's closing call when bound to it */
 } p25_lcw_gps_call;
 
 static void
@@ -893,7 +893,7 @@ p25_lcw_gps_call_get(const p25_lcw_ctx* ctx, p25_lcw_gps_call* out) {
     if (ctx->closing != NULL && ctx->closing->valid) {
         out->epoch = ctx->closing->epoch;
         out->source = ctx->closing->source_id <= UINT32_MAX ? (uint32_t)ctx->closing->source_id : 0U;
-        out->closing = 1U;
+        out->closing = ctx->closing;
         return;
     }
     dsd_call_snapshot call;
@@ -912,7 +912,7 @@ p25_lcw_gps_report_ctx(const p25_lcw_ctx* ctx, const p25_lcw_gps_call* call, int
     DSD_MEMSET(out, 0, sizeof(*out));
     out->origin = origin;
     out->call_epoch = call->epoch;
-    out->call_closing = call->closing;
+    out->closing = call->closing;
     out->source_id = call->source;
     out->protocol = DSD_SYNC_IS_P25P1(ctx->state->lastsynctype) ? ctx->state->lastsynctype : DSD_SYNC_P25P1_POS;
     out->slot = 0U;
@@ -1122,6 +1122,10 @@ static const char*
 p25_lcw_harris_gps_unpaired(const p25_p1_harris_gps_part_a* a, const p25_lcw_gps_call* call, uint8_t even) {
     if (!a->valid) {
         return "Missing GPS Part A";
+    }
+    // Both halves must come from one transmission of one source (spec 2.2): with no call open, nothing binds them.
+    if (a->epoch == 0U) {
+        return "GPS Part A outside a call";
     }
     if (a->even != even) {
         return "GPS Part A of another update";

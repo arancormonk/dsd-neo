@@ -14,7 +14,6 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_LCW_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_LCW_H_
 
-#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -23,6 +22,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+struct dsd_event_closing_call;
 
 /** Decode an LCW carried by an active-call data unit such as LDU1. */
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
@@ -37,7 +38,7 @@ void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrec
  * (issue #800, spec N2). NULL when none was captured.
  */
 void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
-                        const dsd_event_closing_call* closing);
+                        const struct dsd_event_closing_call* closing);
 
 #ifdef __cplusplus
 }

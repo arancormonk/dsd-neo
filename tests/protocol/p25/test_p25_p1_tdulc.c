@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -107,13 +108,20 @@ static int g_gps_calls = 0;
 static dsd_gps_report_ctx g_gps_ctx;
 static uint8_t g_gps_lcw_soft = 0;
 static uint8_t g_gps_body[DSD_HARRIS_GPS_BODY_OCTETS];
+/* The epoch of the valid closing call the context carried (it lives on processTDULC()'s stack); 0 for none. */
+static uint64_t g_gps_closing_epoch = 0;
 
 static void
 note_gps_call(const dsd_state* state, const dsd_gps_report_ctx* ctx) {
     g_gps_calls++;
     DSD_MEMSET(&g_gps_ctx, 0, sizeof(g_gps_ctx));
+    g_gps_closing_epoch = 0;
     if (ctx) {
         g_gps_ctx = *ctx;
+        if (ctx->closing != NULL && ctx->closing->valid) {
+            g_gps_closing_epoch = ctx->closing->epoch;
+        }
+        g_gps_ctx.closing = NULL;
     }
     g_gps_lcw_soft = state->p25_p1_lcw_soft;
 }
@@ -476,7 +484,7 @@ expect_gps_of_closing_call(const char* tag, uint64_t epoch) {
     DSD_SNPRINTF(label, sizeof(label), "%s: one GPS dispatch", tag);
     rc |= expect_eq_int(label, g_gps_calls, 1);
     DSD_SNPRINTF(label, sizeof(label), "%s: the closing call", tag);
-    rc |= expect_true(label, g_gps_ctx.call_closing == 1U && g_gps_ctx.call_epoch == epoch && epoch != 0U);
+    rc |= expect_true(label, g_gps_closing_epoch == epoch && g_gps_ctx.call_epoch == epoch && epoch != 0U);
     DSD_SNPRINTF(label, sizeof(label), "%s: checked identity", tag);
     rc |= expect_true(label, g_gps_ctx.source_verified == 1U && g_gps_ctx.source_id == 0x010203U
                                  && g_gps_ctx.target_id == 0x1234U && g_gps_ctx.target_group == 1U);
@@ -511,7 +519,7 @@ test_terminator_gps(void) {
                     (uint16_t)((apx[5] << 8) | apx[6]));
     processTDULC(&opts, &state);
     rc |= expect_eq_int("after the end: GPS dispatched", g_gps_calls, 1);
-    rc |= expect_true("after the end: no call, unverified", g_gps_ctx.call_epoch == 0U && g_gps_ctx.call_closing == 0U
+    rc |= expect_true("after the end: no call, unverified", g_gps_ctx.call_epoch == 0U && g_gps_closing_epoch == 0U
                                                                 && g_gps_ctx.source_verified == 0U
                                                                 && g_gps_ctx.source_id == 0U);
 
@@ -538,7 +546,7 @@ test_terminator_gps(void) {
     rc |= expect_eq_int("soft terminator: GPS dispatched", g_gps_calls, 1);
     rc |= expect_true("soft terminator: marked soft while dispatched", g_gps_lcw_soft == 1U);
     rc |= expect_true("soft terminator: position unchecked", g_gps_ctx.pos_verified == 0U);
-    rc |= expect_true("soft terminator: still the closing call", g_gps_ctx.call_epoch == epoch);
+    rc |= expect_true("soft terminator: still the closing call", g_gps_closing_epoch == epoch);
     rc |= expect_eq_int("soft terminator: mark cleared after", state.p25_p1_lcw_soft, 0);
     g_rs_hard_result = 0;
     g_rs_soft_result = 1;

@@ -11,7 +11,7 @@
  * fraction and minutes; Part B (LCO 43, or 45) the longitude degrees, a 17-bit time of day (the T bit is Part B octet 8
  * bit 7), a 12-bit heading in tenths of a degree, a 12-bit velocity in tenths of a knot, the emergency bit, a 2-bit
  * quality and the satellites in view. A report is checked only when both halves passed a hard RS decode, pair by parity
- * on one call epoch and source within the pairing window, and carry quality %01 or %10; its source only when a
+ * on one call epoch (never outside a call) and source within the pairing window, and carry quality %01 or %10; its source only when a
  * hard-decoded voice-user link control of the same ACTIVE call named it. All coordinates and IDs are made up.
  */
 
@@ -70,6 +70,11 @@ typedef struct {
 static void
 set_clock_s(int64_t s) {
     dsd_decode_clock_test_set_ns((uint64_t)s * NS_PER_S);
+}
+
+static void
+set_clock_ms(int64_t s, uint64_t ms) {
+    dsd_decode_clock_test_set_ns(((uint64_t)s * NS_PER_S) + (ms * UINT64_C(1000000)));
 }
 
 static void
@@ -343,7 +348,8 @@ test_alias_between_halves(void) {
     fixture_close(&f);
 }
 
-/* N2: an update heard after the call ended names no source; halves split by the end never pair. */
+/* N2: an update heard after the call ended belongs to no call: with nothing binding the halves to one transmission
+ * of one source (spec 2.2) they never pair, and neither do halves split by the end. */
 static void
 test_ended_call(void) {
     fixture f;
@@ -355,21 +361,89 @@ test_ended_call(void) {
     make_body(&b, body);
     send_update(&f, LCO_A_ODD, LCO_B_ODD, body);
     dsd_position_fix fix;
-    expect_true("after the end: location row without the ended call's source",
-                last_row_is(&f, "00000000", "22.500000", "45.000000", 0, 90));
-    expect_true("after the end: unverified record",
-                feed_next(&f, &fix) && fix.source_id == 0U && (fix.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) != 0U);
+    char last[256];
+    expect_true("after the end: no location row", lrrp_rows(&f, last) == 0);
+    expect_true("after the end: no feed record", !feed_next(&f, &fix));
     expect_true("after the end: the ended call's row untouched",
                 f.st->event_history_s[0].Event_History_Items[1].gps_s[0] == '\0'
                     && f.st->event_history_s[0].Event_History_Items[1].pos.valid == 0U);
 
-    char last[256];
     (void)start_call(&f, TG_A, SRC_B);
     send_lc(&f, LCO_A_ODD, MFID_HARRIS, body, 0);
     end_call(&f);
     send_lc(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, 0);
-    expect_true("Part A of an ended call: no fix", lrrp_rows(&f, last) == 1 && !feed_next(&f, &fix));
+    expect_true("Part A of an ended call: no fix", lrrp_rows(&f, last) == 0 && !feed_next(&f, &fix));
     fixture_close(&f);
+}
+
+/* Dispatch a link control as the TDULC that ended @p closing's call does (processTDULC() captures it first). */
+static void
+send_terminator_lc(fixture* f, uint8_t format, uint8_t mfid, const uint8_t octets[PART_OCTETS],
+                   const dsd_event_closing_call* closing) {
+    uint8_t bytes[9] = {format, mfid, octets[0], octets[1], octets[2], octets[3], octets[4], octets[5], octets[6]};
+    uint8_t lcw[72];
+    for (int i = 0; i < 72; i++) {
+        lcw[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1U);
+    }
+    p25_lcw_from_tdulc(f->opts, f->st, lcw, 0, closing);
+}
+
+/* The call's committed row: the one that names @p src, wherever the end pushed it. */
+static const Event_History*
+row_of(const fixture* f, uint32_t src) {
+    for (int i = 0; i < 4; i++) {
+        const Event_History* item = &f->st->event_history_s[0].Event_History_Items[i];
+        if (item->source_id == src) {
+            return item;
+        }
+    }
+    return NULL;
+}
+
+/* N2 terminator exception: the TDULC ends the call before its own link control is dispatched, and an L3Harris Part B
+ * or a Motorola APX report in it belongs to that call: its ENDED row takes the position, and -L keeps its checked
+ * source. Through the real decoders, admission, history writer and location file. */
+static void
+test_terminator(void) {
+    for (int apx = 0; apx <= 1; apx++) {
+        fixture f;
+        fixture_open(&f);
+        const uint64_t epoch = start_call(&f, TG_A, SRC_A);
+        body_fields b = fields_default();
+        uint8_t body[BODY_OCTETS];
+        make_body(&b, body);
+        if (!apx) {
+            send_lc(&f, LCO_A_ODD, MFID_HARRIS, body, 0);
+        }
+        dsd_event_closing_call closing;
+        expect_true("terminator: call captured", dsd_event_capture_closing_call(f.st, 0U, &closing) == 1);
+        end_call(&f);
+        dsd_call_snapshot call;
+        expect_true("terminator: call ended", dsd_call_state_get(f.st, 0U, &call) > 0
+                                                  && call.phase == DSD_CALL_PHASE_ENDED && call.epoch == epoch);
+        // APX: latitude magnitude 0x200000 (22.500003 N), longitude magnitude 0x300000 (67.500008 E).
+        const uint8_t apx_lc[PART_OCTETS] = {0x00, 0x20, 0x00, 0x00, 0x30, 0x00, 0x00};
+        if (apx) {
+            send_terminator_lc(&f, 0x06, 0x90, apx_lc, &closing);
+        } else {
+            send_terminator_lc(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, &closing);
+        }
+        const char* tag = apx ? "terminator APX" : "terminator Harris";
+        const char* lat = apx ? "22.500003" : "22.500000";
+        const char* lon = apx ? "67.500008" : "45.000000";
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "%s: -L keeps the closing call's source", tag);
+        expect_true(label, last_row_is(&f, "00003001", lat, lon, 0, apx ? 0 : 90));
+        dsd_position_fix fix;
+        DSD_SNPRINTF(label, sizeof label, "%s: checked record", tag);
+        expect_true(label, feed_next(&f, &fix) && fix.source_id == SRC_A && fix.target_id == TG_A
+                               && (fix.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) == 0U);
+        const Event_History* item = row_of(&f, SRC_A);
+        DSD_SNPRINTF(label, sizeof label, "%s: the ended call's row takes it", tag);
+        expect_true(label, item != NULL && item->pos.valid == 1U && item->pos.rev == fix.rev
+                               && strstr(item->gps_s, lat) != NULL && strstr(item->gps_s, lon) != NULL);
+        fixture_close(&f);
+    }
 }
 
 /* Only hard-decoded halves within the window; a source the link control did not name is unverified. */
@@ -399,6 +473,15 @@ test_checks(void) {
     set_clock_s(T0_S + 4);
     send_lc(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, 0);
     expect_true("within the window: fix", lrrp_rows(&f, last) == 1 && feed_next(&f, &fix));
+    // The window's edge: 2000 ms pairs, 2001 ms does not (a repeat of the same report, so only -L counts it).
+    send_lc(&f, LCO_A_ODD, MFID_HARRIS, body, 0);
+    set_clock_ms(T0_S + 6, 0U);
+    send_lc(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, 0);
+    expect_true("2000 ms: fix", lrrp_rows(&f, last) == 2);
+    send_lc(&f, LCO_A_ODD, MFID_HARRIS, body, 0);
+    set_clock_ms(T0_S + 8, 1U);
+    send_lc(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, 0);
+    expect_true("2001 ms: expired", lrrp_rows(&f, last) == 2);
 
     // A call whose source no checked voice-user link control named.
     const dsd_call_observation observation = {
@@ -466,7 +549,12 @@ test_fields(void) {
     b.lat_deg = -10;
     b.lat_min = 7;
     b.lat_frac = 5000;
-    expect_true("minutes convert, rounded", decode(&f, &b, &fix) && fix.lat_e7 == -101250000);
+    expect_true("minutes convert exactly", decode(&f, &b, &fix) && fix.lat_e7 == -101250000);
+    b.lat_min = 0;
+    b.lat_frac = 1;
+    expect_true("0.0001 min = 16.67 units rounds up", decode(&f, &b, &fix) && fix.lat_e7 == -100000017);
+    b.lat_frac = 2;
+    expect_true("0.0002 min = 33.33 units rounds down", decode(&f, &b, &fix) && fix.lat_e7 == -100000033);
 
     b = fields_default();
     b.heading = 3599U;
@@ -524,6 +612,7 @@ main(void) {
     test_parity();
     test_alias_between_halves();
     test_ended_call();
+    test_terminator();
     test_checks();
     test_fields();
     dsd_decode_clock_use_system();

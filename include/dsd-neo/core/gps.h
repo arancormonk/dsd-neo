@@ -24,6 +24,7 @@ extern "C" {
 #endif
 
 struct dsd_position_origin;
+struct dsd_event_closing_call;
 
 /** Octets in an L3Harris GPS update body: Part A octets 2-8, then Part B octets 2-8 (TIA-102.AABF-D-1 §7.3.35-36). */
 #define DSD_HARRIS_GPS_BODY_OCTETS 14
@@ -37,8 +38,12 @@ typedef struct dsd_gps_report_ctx {
     /** The reception captured with the report's first fragment (L3Harris Part A); NULL for a single message, which
      * takes the current reception. */
     const struct dsd_position_origin* origin;
+    /** The call the message carrying the report has just ended, captured before it did (dsd_event_capture_closing_call();
+     * a P25 Phase 1 TDULC, spec N2): when valid, the history row is written through
+     * dsd_event_enrich_position_closing(). NULL otherwise (Phase 2). */
+    const struct dsd_event_closing_call* closing;
     /** The call the report belongs to: its epoch (dsd_call_snapshot::epoch); 0 enriches the slot's ACTIVE call, if
-     * any. */
+     * any. Ignored when @c closing is valid. */
     uint64_t call_epoch;
     uint32_t source_id;      /**< the call's source; 0 = none */
     uint32_t target_id;      /**< the call's target; 0 = none */
@@ -47,9 +52,6 @@ typedef struct dsd_gps_report_ctx {
     uint8_t pos_verified;    /**< 1 when the message's own check passed (hard RS decode, MAC CRC, whole segment) */
     uint8_t source_verified; /**< 1 when source, target and group flag came from checked provenance */
     uint8_t target_group;    /**< 1 when @c target_id is a talkgroup */
-    /** 1 when @c call_epoch is the call the message carrying the report has just ended (a P25 Phase 1 TDULC, spec N2):
-     * the history row is written through dsd_event_enrich_position_closing(). */
-    uint8_t call_closing;
 } dsd_gps_report_ctx;
 
 void dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]);
