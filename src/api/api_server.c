@@ -200,6 +200,7 @@ dsd_api_topic_name(uint32_t bit) {
         case DSD_API_TOPIC_QUALITY: return "quality";
         case DSD_API_TOPIC_STATUS: return "status";
         case DSD_API_TOPIC_RESULT: return "result";
+        case DSD_API_TOPIC_POSITIONS: return "positions";
         default: return NULL;
     }
 }

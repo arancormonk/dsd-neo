@@ -120,7 +120,7 @@ On connect the server sends:
 
 ```json
 {"type":"welcome","protocol":1,"auth_required":false,
- "topics":["call","event","system","metrics","quality","status","result"],
+ "topics":["call","event","system","metrics","quality","status","result","positions"],
  "commands":184,"max_line":262144}
 ```
 
@@ -203,8 +203,8 @@ match responses by `id`.
 | `get` | `{what}`: `status` (default), `snapshot` (same), `call`, `system`, `metrics`, `quality`; `scan_avoids` with optional `offset` and `limit`; or `scan_list_results` with optional `after` and `limit` | `{what, data}`: the latest record of that topic, `null` until the first telemetry update (see below); for `scan_avoids`, one page of the avoided scan channels (see [Scan avoids](#scan-avoids)); for `scan_list_results`, the `scan_list_set` results after a sequence number (see [Scan lists](#scan-lists)) |
 | `list_commands` | – | `{commands:[{name,id,params}, ...]}` |
 
-Topics: `call`, `event`, `system`, `metrics`, `quality`, `status`, `result`, or
-`all`. An unknown topic name is `invalid_params`. `get` works without a
+Topics: `call`, `event`, `system`, `metrics`, `quality`, `status`, `result`,
+`positions`, or `all`. An unknown topic name is `invalid_params`. `get` works without a
 subscription.
 
 The unit activity log (registrations, talkgroup joins, denies and radio
@@ -226,7 +226,8 @@ that update runs at the decoder's next publish.
 Subscribed topics stream objects with a `type` and a `seq` that increases by one
 per telemetry line across all topics. `call`, `status`, `system`, `metrics` and
 `quality` are sent at most every 250 ms. `event` lines are sent as rows are
-committed to the event history.
+committed to the event history, and `position` lines (topic `positions`) as
+position reports are kept.
 
 ### `call`: per-slot calls
 
@@ -449,6 +450,51 @@ applied, `-1` invalid, `-2` stale, `-3` unavailable, `-4` file error, `-5`
 busy, `-6` cancelled). A request still queued when the decoder stops is
 reported as cancelled (a `tg_list_export` as `"ok":false`) before the server
 closes the connections.
+
+### `positions`: verified position reports
+
+```json
+{"type":"position","seq":57,"pos_stream":"8141360775346327461","pos_seq":12,"rev":40,"kind":1,
+ "protocol":10,"slot":0,"flags":4,"lat":22.5000000,"lon":45.0000000,"alt_dm":1234,"err_m":10,
+ "speed_dkmh":500,"heading_ddeg":900,"age_class":null,"sats":null,"fix_time":1700000000,
+ "source_id":1234,"target_id":99,"source_text":"","label":"Unit 12",
+ "sender_scope":{"kind":2,"a":0,"b":0},"reception_scope":{"kind":2,"a":0,"b":0},
+ "identity_freq_hz":0,"freq_hz":0,"rx_time":1700000003,"rx_clock":0}
+```
+
+One line per position report the decoder kept in its position feed: the same
+reports `-L` and the History screens use, so only reports whose own check (CRC,
+FEC or checksum) passed. A report that repeats its radio's last kept one
+unchanged within 30 s is not kept again.
+
+* `pos_stream` names the decoder run (a decimal string, like every 64-bit
+  identifier) and `pos_seq` numbers the run's kept reports from `1`. A new run is
+  a new `pos_stream`, numbered from `1` again.
+* A subscriber is sent every report kept after its `subscribe` response (and
+  possibly one kept in the instant before it), never the reports from before:
+  there is no backlog, and `get` does not serve positions.
+* A gap in `pos_seq` means reports this connection was not sent: kept while it
+  was not subscribed, or, during a burst of more than 1,024 reports between two
+  decoder publishes, overwritten before the server read them. A client that does
+  not read fast enough is disconnected rather than sent a stream with holes in it
+  (see above).
+* `seq` is the global telemetry sequence, as on every other line.
+
+| Field | Meaning |
+| --- | --- |
+| `rev` | Increases with every report the decoder admitted since it started, kept or not; orders reports across runs of one process. |
+| `kind` | The report format: `1` DMR LRRP, `2` DMR LOCN, `3` DMR embedded GPS, `4` DMR USBD LIP, `5` LIP over DMR or UDP, `6` NMEA, `7` P25 Motorola APX, `8` P25 L3Harris, `9` NXDN GPS, `10` D-STAR DPRS, `11` M17 GNSS, `12` TETRA LIP. The values never change. |
+| `protocol`, `slot` | The protocol it was heard on (a `DSD_SYNC_*` value, as the event rows' `systype`) and its TDMA slot (`0` or `1`; `0` otherwise). |
+| `flags` | Bits: `1` the source is a hash, not a radio ID (DMR USBD), cleared as for `2`; `2` the source could not be checked, so `source_id`, `target_id`, `source_text` and `label` are cleared, and so is bit `4`; `4` `target_id` is a talkgroup (clear: a radio); `8` the position's check is weak (DMR embedded GPS: a 5-bit checksum); `16` `speed_dkmh` is a lower bound; `32` `err_m` is a lower bound; `64` the heading is ambiguous; `128` the radio may have had no fix, so the position may be old; `256` the format rests on fewer than two sources; `512` the report carried an emergency indication. |
+| `lat`, `lon` | Degrees, seven decimals, north and east positive. |
+| `alt_dm`, `err_m`, `speed_dkmh`, `heading_ddeg` | Altitude in decimetres, position error in metres, speed in 0.1 km/h, heading in 0.1 degree (`0`-`3599`). `null` when the report did not carry it. |
+| `age_class`, `sats` | The LIP "time elapsed" code and the satellites in use; `null` when not sent. |
+| `fix_time` | The report's own UTC time (Unix seconds), `null` when it carried none. |
+| `source_id`, `target_id`, `source_text` | The sending radio (`0` for none), the target (`0` for none), and the callsign for D-STAR and M17 (empty otherwise). |
+| `label` | The source's name from the imported lists or a learned alias when the report was kept; empty when none. |
+| `sender_scope`, `reception_scope`, `identity_freq_hz` | The sender's system and the system the report was heard on: `kind` `0` none, `1` P25 (`a` WACN, `b` system ID), `2` DMR, `3` NXDN, `4` TETRA (`a` MCC, `b` MNC), `5` P25 NAC only (`a` NAC), `64` EDACS (`a` is `65536` plus the site, `b` `65536` plus the system, each `0` when not known), `65` a control channel (`a` its frequency in Hz), `66` a tuned frequency (`a` in Hz). They differ only for a TETRA radio of another network. `identity_freq_hz` is the tuned frequency when the sender scope is a NAC only (two systems can share a NAC), else `0`. A track is the protocol family, `sender_scope`, `identity_freq_hz` and `source_id` or `source_text`. |
+| `freq_hz` | The tuned frequency it was heard on, `0` when unknown. |
+| `rx_time`, `rx_clock` | When it was kept (Unix seconds) and on which clock: `0` the system clock, `1` an I/Q replay's capture clock. |
 
 ## Command reference
 
