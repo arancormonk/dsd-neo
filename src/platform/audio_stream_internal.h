@@ -133,6 +133,10 @@ struct dsd_audio_stream {
        the device's. Allocated with the stream. In the part every backend's layout shares, so a stream sized without
        the backend's own fields still holds it. */
     struct audio_input_carry* input_carry;
+    /* PulseAudio input streams (NULL elsewhere): the record stream (audio_pulse_record.h), which reads what the client
+       holds without waiting, since an input discard must never wait for the source. Output streams use `handle`
+       (pa_simple), inputs this. In the shared part for the same reason as `input_carry`. */
+    struct pulse_record* record;
 
     /* Async output pump (playback streams only) */
     int use_async;
@@ -172,12 +176,6 @@ struct dsd_audio_stream {
     int has_device_name;
     char app_name[64];
     dsd_audio_output_recovery recovery;
-#endif
-
-#if defined(DSD_NEO_AUDIO_BACKEND_PULSE)
-    /* An input stream's record stream (audio_pulse_record.h), which reads what the client holds without waiting: an
-       input discard must never wait for the source. Output streams use `handle` (pa_simple), inputs this. */
-    struct pulse_record* record;
 #endif
 
 #ifdef DSD_NEO_AUDIO_BACKEND_AAUDIO
