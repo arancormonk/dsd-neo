@@ -57,6 +57,15 @@ pcm_stream_arrived(const void* queue) {
     return arrived;
 }
 
+uint64_t
+dsd_pcm_stream_socket_arrived(const void* sock) {
+    if (sock == NULL) {
+        return 0U;
+    }
+    const long ready = dsd_socket_readable_bytes(*(const dsd_socket_t*)sock);
+    return ready > 0 ? (uint64_t)ready : 0U;
+}
+
 static dsd_pcm_stream*
 pcm_stream_alloc(int fd, dsd_socket_t sock) {
     dsd_pcm_stream* stream = (dsd_pcm_stream*)calloc(1, sizeof(*stream));

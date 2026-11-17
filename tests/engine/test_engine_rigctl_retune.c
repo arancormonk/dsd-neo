@@ -940,25 +940,58 @@ test_watchdog_post_drops_only_what_was_queued(void) {
 
 /* ---- A watchdog retune posted while the TCP input reconnects (issue #834) ---- */
 
-/* A server the reconnect reaches: the new connection holds audio as soon as it is made. The watchdog confirms a
-   retune while the decoder opens it (the connection then holds the old channel's audio), or during the backoff before
-   it (it then holds the new channel's). The connection counts what it took in and what was read, as tcp_input's reader
-   does, and attaches itself when opened. */
+/* When the watchdog posts its retune against the reconnect. */
+enum {
+    RECONNECT_POST_IN_BACKOFF = 0,  /* before the connection is made */
+    RECONNECT_POST_IN_OPEN = 1,     /* once it is made, before its reader attaches */
+    RECONNECT_POST_IN_OPEN_LATE = 2 /* the same, and new audio reaches the connection before its reader attaches */
+};
+
+#define RECONNECT_OLD_SAMPLES   300
+#define RECONNECT_LATE_SAMPLES  50
+#define RECONNECT_AFTER_SAMPLES 200
+#define RECONNECT_OLD_VALUE     1
+#define RECONNECT_NEW_VALUE     1000
+
+/* A server the reconnect reaches on a loopback socket: the new connection holds RECONNECT_OLD_SAMPLES as soon as it is
+   made. The watchdog confirms a retune during the backoff before it (those samples then are the new channel's), or
+   while the decoder opens it (they are the old channel's; with RECONNECT_POST_IN_OPEN_LATE the new channel's first
+   samples reach it too before its reader attaches). The new channel's audio follows once the reader attaches. The real
+   TCP reader reads it. */
 static struct {
-    int ctx;
-    int post_in_backoff; /* the retune is posted before the connection is made */
-    int old_queued;      /* the samples the new connection holds when it is made */
-    int old_read;        /* of those, the samples the decoder read */
-    int dropped;         /* of those, the samples a drop took */
-    int ended;           /* the first read ends the old connection */
-    uint64_t taken;      /* samples the connection took in */
-    uint64_t gone;       /* samples read or dropped */
+    int ctx;  /* the old connection, which the first read ends */
+    int when; /* RECONNECT_POST_* */
+    int ended;
+    dsd_socket_t listener;
+    dsd_socket_t server; /* the peer's end of the new connection */
+    int first_value;     /* the first sample read on the new connection (-1: none yet) */
+    int old_read;        /* samples read that the connection held when it was made */
+    int new_read;        /* samples read that were sent after the post */
+    long dropped;        /* samples a drop took */
 } g_reconnect;
 
-static uint64_t
-reconnect_arrived(const void* queue) {
-    (void)queue;
-    return g_reconnect.taken;
+/* Send @p count samples of @p value to the new connection and wait up to a second until @p client holds @p held bytes
+   ready. */
+static int
+reconnect_send(dsd_socket_t client, int16_t value, int count, long held) {
+    uint8_t bytes[2U * RECONNECT_OLD_SAMPLES];
+    if (count < 0 || count > RECONNECT_OLD_SAMPLES) {
+        return -1;
+    }
+    for (int i = 0; i < count; i++) {
+        bytes[2 * i] = (uint8_t)((uint16_t)value & 0xFFU);
+        bytes[2 * i + 1] = (uint8_t)((uint16_t)value >> 8);
+    }
+    if (dsd_socket_send(g_reconnect.server, bytes, (size_t)count * 2U, 0) != count * 2) {
+        return -1;
+    }
+    for (int tries = 0; tries < 100; tries++) {
+        if (dsd_socket_readable_bytes(client) >= held) {
+            return 0;
+        }
+        dsd_sleep_ms(10U);
+    }
+    return -1;
 }
 
 static dsd_socket_t
@@ -968,69 +1001,97 @@ reconnect_connect(const char* host, int port, int resolve, dsd_socket_cancel_fn 
     (void)resolve;
     (void)cancelled;
     (void)context;
-    if (g_reconnect.post_in_backoff) {
+    if (g_reconnect.when == RECONNECT_POST_IN_BACKOFF) {
         dsd_frame_sync_note_off_thread_unflushed_retune();
     }
-    g_reconnect.old_queued = 300;
-    g_reconnect.taken = 300U;
-    return (dsd_socket_t)999999;
+    g_reconnect.listener = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    dsd_socket_t client = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr;
+    DSD_MEMSET(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (g_reconnect.listener == DSD_INVALID_SOCKET || client == DSD_INVALID_SOCKET
+        || dsd_socket_bind(g_reconnect.listener, (struct sockaddr*)&addr, sizeof addr) != 0
+        || dsd_socket_listen(g_reconnect.listener, 1) != 0) {
+        if (client != DSD_INVALID_SOCKET) {
+            (void)dsd_socket_close(client);
+        }
+        return DSD_INVALID_SOCKET;
+    }
+    addr.sin_port = htons((uint16_t)bound_port(g_reconnect.listener));
+    if (dsd_socket_connect(client, (struct sockaddr*)&addr, sizeof addr) != 0) {
+        (void)dsd_socket_close(client);
+        return DSD_INVALID_SOCKET;
+    }
+    g_reconnect.server = dsd_socket_accept(g_reconnect.listener, NULL, NULL);
+    if (g_reconnect.server == DSD_INVALID_SOCKET
+        || reconnect_send(client, RECONNECT_OLD_VALUE, RECONNECT_OLD_SAMPLES, 2L * RECONNECT_OLD_SAMPLES) != 0) {
+        (void)dsd_socket_close(client);
+        return DSD_INVALID_SOCKET;
+    }
+    return client;
 }
 
 static tcp_input_ctx*
 reconnect_open(dsd_socket_t sockfd, int samplerate) {
-    (void)sockfd;
-    (void)samplerate;
-    if (!g_reconnect.post_in_backoff) {
+    long held = 2L * RECONNECT_OLD_SAMPLES;
+    if (g_reconnect.when != RECONNECT_POST_IN_BACKOFF) {
         dsd_frame_sync_note_off_thread_unflushed_retune();
     }
-    dsd_input_backlog_attach(&g_reconnect.ctx, reconnect_arrived);
-    return (tcp_input_ctx*)&g_reconnect.ctx;
+    if (g_reconnect.when == RECONNECT_POST_IN_OPEN_LATE) {
+        held += 2L * RECONNECT_LATE_SAMPLES;
+        if (reconnect_send(sockfd, RECONNECT_NEW_VALUE, RECONNECT_LATE_SAMPLES, held) != 0) {
+            return NULL;
+        }
+    }
+    tcp_input_ctx* reader = tcp_input_open(sockfd, samplerate);
+    if (reader != NULL
+        && reconnect_send(sockfd, RECONNECT_NEW_VALUE, RECONNECT_AFTER_SAMPLES, held + 2L * RECONNECT_AFTER_SAMPLES)
+               != 0) {
+        tcp_input_close(reader);
+        return NULL;
+    }
+    return reader;
 }
 
 static void
 reconnect_close(tcp_input_ctx* ctx) {
-    dsd_input_backlog_detach(ctx);
+    if (ctx != NULL && ctx != (tcp_input_ctx*)&g_reconnect.ctx) {
+        tcp_input_close(ctx);
+    }
 }
 
 static int
 reconnect_read(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms) {
-    (void)ctx;
-    (void)timeout_ms;
-    if (!g_reconnect.ended) {
+    if (ctx == (tcp_input_ctx*)&g_reconnect.ctx) {
         g_reconnect.ended = 1;
         return 0;
     }
-    if (g_reconnect.old_queued > 0) {
-        g_reconnect.old_queued--;
-        g_reconnect.old_read++;
-        *out = 1;
-    } else {
-        g_reconnect.taken++;
-        *out = 1000;
+    const int got = tcp_input_read_sample_wait(ctx, out, timeout_ms);
+    if (got == 1) {
+        if (g_reconnect.first_value < 0) {
+            g_reconnect.first_value = *out;
+        }
+        g_reconnect.old_read += *out == RECONNECT_OLD_VALUE;
+        g_reconnect.new_read += *out == RECONNECT_NEW_VALUE;
     }
-    g_reconnect.gone++;
-    return 1;
+    return got;
 }
 
 static long
 reconnect_discard(tcp_input_ctx* ctx, const dsd_input_cut* cut) {
-    if (!dsd_input_backlog_cut_applies(cut, ctx) || cut->arrived <= g_reconnect.gone) {
-        return 0;
-    }
-    const uint64_t owed = cut->arrived - g_reconnect.gone;
-    const long n = owed < (uint64_t)g_reconnect.old_queued ? (long)owed : g_reconnect.old_queued;
-    g_reconnect.old_queued -= (int)n;
-    g_reconnect.dropped += (int)n;
-    g_reconnect.gone += (uint64_t)n;
+    const long n = tcp_input_discard_through(ctx, cut);
+    g_reconnect.dropped += n;
     return n;
 }
 
-/* The replacement stream's own drop: a retune the watchdog posts once the new connection exists, while the decoder
-   opens it, drops what that connection held when it was posted. None of it is read. One posted during the backoff,
-   before the connection was made, moved the peer before it began: what the connection holds is the new channel's,
-   and none of it is dropped. */
+/* The replacement stream's own drop. A retune the watchdog posts once the new connection exists, while the decoder
+   opens it, drops what that connection held when it was posted: none of it is read, and audio that reached the
+   connection after the post (before its reader attached, or after) is read, none of it dropped. One posted during the
+   backoff, before the connection was made, moved the peer before it began: what the connection holds is the new
+   channel's, and none of it is dropped. */
 static int
-watchdog_post_while_tcp_reconnects(int post_in_backoff) {
+watchdog_post_while_tcp_reconnects(int when) {
     rig_case c;
     if (rig_case_open(&c, AUDIO_IN_TCP) != 0) {
         return expect_true("reconnect: the peer", 0);
@@ -1038,7 +1099,10 @@ watchdog_post_while_tcp_reconnects(int post_in_backoff) {
     dsd_opts* opts = c.opts;
     dsd_state* state = c.state;
     DSD_MEMSET(&g_reconnect, 0, sizeof g_reconnect);
-    g_reconnect.post_in_backoff = post_in_backoff;
+    g_reconnect.when = when;
+    g_reconnect.listener = DSD_INVALID_SOCKET;
+    g_reconnect.server = DSD_INVALID_SOCKET;
+    g_reconnect.first_value = -1;
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.tcp_connect = reconnect_connect,
                                                               .tcp_open = reconnect_open,
                                                               .tcp_close = reconnect_close,
@@ -1050,33 +1114,49 @@ watchdog_post_while_tcp_reconnects(int post_in_backoff) {
     state->symbol_clock_input = opts->pcm_input_generation;
     (void)getSymbol(opts, state, 0); /* the connection ends, the reconnect opens the new one */
     (void)getSymbol(opts, state, 0);
-    char label[192];
-    int rc = 0;
-    if (post_in_backoff) {
+    char label[256];
+    int rc = expect_true("reconnect: the old connection ended and the new one was read",
+                         g_reconnect.ended && g_reconnect.first_value >= 0);
+    if (when == RECONNECT_POST_IN_BACKOFF) {
         DSD_SNPRINTF(label, sizeof label,
                      "a retune posted during the backoff drops nothing of the new connection: it is read from its "
-                     "first sample (read %d, dropped %d)",
-                     g_reconnect.old_read, g_reconnect.dropped);
-        rc |= expect_true(label, g_reconnect.dropped == 0 && g_reconnect.old_read > 0);
+                     "first sample (first %d, dropped %ld)",
+                     g_reconnect.first_value, g_reconnect.dropped);
+        rc |= expect_true(label, g_reconnect.dropped == 0 && g_reconnect.first_value == RECONNECT_OLD_VALUE);
         rc |= expect_true("and the post is not taken later", dsd_input_backlog_take(NULL) == 0);
     } else {
         DSD_SNPRINTF(label, sizeof label,
-                     "a retune posted while the new connection opens drops what it held: none of it is read (read %d, "
-                     "still queued %d)",
-                     g_reconnect.old_read, g_reconnect.old_queued);
-        rc |= expect_true(label, g_reconnect.old_read == 0 && g_reconnect.old_queued == 0);
+                     "a retune posted while the new connection opens drops what it held when posted, and nothing "
+                     "that came after (%s; read %d old, %d new, first %d, dropped %ld of %d)",
+                     when == RECONNECT_POST_IN_OPEN_LATE ? "new audio before its reader attached"
+                                                         : "no new audio before",
+                     g_reconnect.old_read, g_reconnect.new_read, g_reconnect.first_value, g_reconnect.dropped,
+                     RECONNECT_OLD_SAMPLES);
+        rc |= expect_true(label, g_reconnect.old_read == 0 && g_reconnect.dropped == RECONNECT_OLD_SAMPLES
+                                     && g_reconnect.first_value == RECONNECT_NEW_VALUE);
     }
     reconnect_close(opts->tcp_in_ctx);
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
     opts->tcp_in_ctx = NULL;
-    opts->tcp_sockfd = DSD_INVALID_SOCKET;
+    if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(opts->tcp_sockfd);
+        opts->tcp_sockfd = DSD_INVALID_SOCKET;
+    }
+    if (g_reconnect.server != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(g_reconnect.server);
+    }
+    if (g_reconnect.listener != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(g_reconnect.listener);
+    }
     rig_case_close(&c);
     return rc;
 }
 
 static int
 test_watchdog_post_while_tcp_reconnects(void) {
-    return watchdog_post_while_tcp_reconnects(0) | watchdog_post_while_tcp_reconnects(1);
+    return watchdog_post_while_tcp_reconnects(RECONNECT_POST_IN_OPEN)
+           | watchdog_post_while_tcp_reconnects(RECONNECT_POST_IN_OPEN_LATE)
+           | watchdog_post_while_tcp_reconnects(RECONNECT_POST_IN_BACKOFF);
 }
 
 /* A watchdog retune posted before the input is replaced moved the peer before the new stream began: the new stream

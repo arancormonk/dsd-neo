@@ -25,11 +25,9 @@ static dsd_input_arrived_fn s_arrived;
 static uint64_t s_seq; /* moves at every attach and every detach of the attached queue */
 static dsd_input_cut s_post;
 static int s_post_held;
-/* An input is being opened (dsd_input_backlog_opening()) and no queue has attached since. */
+/* An input is being opened (dsd_input_backlog_opening()): its connection is the attached input, counted until its
+   queue attaches. */
 static int s_opening;
-/* The held post was made while an input was being opened and no queue was attached: the queue that attaches next is
-   the one it was posted for. */
-static int s_post_opening;
 
 static void
 backlog_lock(void) {
@@ -66,19 +64,19 @@ dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived) {
         return;
     }
     backlog_lock();
+    const uint64_t opened = s_seq;
+    const int continues = s_opening;
     s_seq++;
     s_queue = queue;
     s_arrived = arrived;
-    /* Posted while this input was being opened, with no queue attached: it is measured on this queue, the input it was
-       posted for. What the queue holds now reached it before the post, or in the moment between the post and this
-       call. One posted before the opening began (or with no opening) moved the peer before this input existed, so
-       what it holds arrived after the post: it is retired. */
-    if (s_post_held && !s_post.measured) {
-        if (s_post_opening) {
+    if (s_post_held) {
+        if (continues && s_post.measured && s_post.seq == opened) {
+            /* Measured when it was posted, on the connection this queue reads: nothing read the connection before its
+               queue attached, so the queue's count goes on from the connection's and the post stands on it. */
             s_post.seq = s_seq;
-            s_post.arrived = arrived(queue);
-            s_post.measured = 1U;
-        } else {
+        } else if (!s_post.measured) {
+            /* Posted while no input was attached: the peer moved before this input existed, so nothing it holds was
+               queued before the post. */
             s_post_held = 0;
         }
     }
@@ -130,14 +128,31 @@ dsd_input_cut_age_ns(const dsd_input_cut* cut) {
     return now > cut->marked_ns ? now - cut->marked_ns : 0U;
 }
 
+/* The connection an opening attached is no input any more (its open failed, or the run ended): detached. */
+static void
+backlog_end_opening_locked(void) {
+    if (s_opening) {
+        s_queue = NULL;
+        s_arrived = NULL;
+        s_seq++;
+        s_opening = 0;
+    }
+}
+
 void
-dsd_input_backlog_opening(void) {
+dsd_input_backlog_opening(const void* conn, dsd_input_arrived_fn arrived) {
     backlog_lock();
-    /* Posted while no queue was attached, before this input began: retired, as at the attach. */
+    /* Posted while no input was attached, before this connection existed: nothing it holds was queued before the post,
+       as at an attach. */
     if (s_post_held && !s_post.measured) {
         s_post_held = 0;
     }
-    s_opening = 1;
+    if (conn != NULL && arrived != NULL) {
+        s_seq++;
+        s_queue = conn;
+        s_arrived = arrived;
+        s_opening = 1;
+    }
     backlog_unlock();
 }
 
@@ -146,7 +161,6 @@ dsd_input_backlog_post(void) {
     backlog_lock();
     backlog_mark_locked(&s_post);
     s_post_held = 1;
-    s_post_opening = s_opening && !s_post.measured;
     backlog_unlock();
 }
 
@@ -165,10 +179,11 @@ dsd_input_backlog_take(dsd_input_cut* out) {
 void
 dsd_input_backlog_forget(void) {
     backlog_lock();
-    if (s_post_held && !(s_post.measured && s_queue != NULL && s_post.seq == s_seq)) {
+    /* A connection still opening has no queue: a post measured on it is no input's drop. */
+    if (s_post_held && !(s_post.measured && s_queue != NULL && s_post.seq == s_seq && !s_opening)) {
         s_post_held = 0;
     }
-    s_opening = 0;
+    backlog_end_opening_locked();
     backlog_unlock();
 }
 
@@ -176,6 +191,6 @@ void
 dsd_input_backlog_retire(void) {
     backlog_lock();
     s_post_held = 0;
-    s_opening = 0;
+    backlog_end_opening_locked();
     backlog_unlock();
 }

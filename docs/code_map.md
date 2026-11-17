@@ -1767,7 +1767,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     regular file reports ready at once and its read blocks. A reader attaches itself to the input backlog when it opens
     and detaches when it closes (`<dsd-neo/platform/input_backlog.h>`, `input_backlog.c`, issue #834): its count, safe
     from any thread, is the bytes it read in plus those its descriptor or socket holds ready (`dsd_fd_readable_bytes()`,
-    `dsd_socket_readable_bytes()`: `FIONREAD`, or `PeekNamedPipe()` on a Windows pipe). The count and each refill (the
+    `dsd_socket_readable_bytes()`: `FIONREAD`, or `PeekNamedPipe()` on a Windows pipe), and before a socket's reader
+    exists `dsd_pcm_stream_socket_arrived()` counts the socket as the reader will start from it (a TCP reconnect's
+    opening). The count and each refill (the
     read and the bytes-read-in update) take the reader's own lock, so a count never sees a refill's bytes on both sides
     or on neither; a sample read from the buffer takes no lock. `PLATFORM_PCM_STREAM_MARK` runs a refill inside the
     count's readiness query (a GNU ld `--wrap` seam).
@@ -7293,13 +7295,18 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `frame_sync_unflushed.h`, with the take itself in `frame_sync_unflushed.c`: one relaxed load per symbol read and per
   EDACS triplet, with no measurable cost on a 120 s DMR decode), moving the epoch and asking for the drop with the
   post's mark, so the watchdog's tunes drop at the next read after the post; the notice's reconcile
-  (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet. A post made while no queue is attached is
-  measured on the next queue that attaches only when it was made once that input began opening
-  (`dsd_input_backlog_opening()`, which the TCP reconnect calls when its connection is made), so a retune confirmed once
-  the new connection existed drops what it held then; the TCP reconnect takes such a post before the connection's first
-  read. One made before (during the reconnect's backoff, or with no opening) moved the peer before the input existed,
-  so what it holds arrived after the post: the opening or the attach retires it. A failed open ends the opening
-  (`dsd_frame_sync_forget_unflushed_retunes()`).
+  (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet. Every post is measured when it is made: the
+  cutoff is what had arrived on the input then, nothing later. The TCP reconnect makes its new connection the measured
+  input as soon as `tcp_connect` returns it (`dsd_input_backlog_opening()`, counted by
+  `dsd_pcm_stream_socket_arrived()`: the bytes the socket holds ready, since nothing has read it yet), before its reader
+  exists; the reader that attaches next goes on from that count (`dsd_input_backlog_attach()`), so a retune confirmed
+  while the connection opens drops what it held at the post, and audio that reached it after the post, before the
+  reader attached or after, is kept. The TCP reconnect takes such a post before the connection's first read. A post
+  made while no input is attached (during the reconnect's backoff) moved the peer before the next input existed, so
+  nothing on it was queued before the post: the opening or the attach retires it. A failed open ends the opening, with
+  the connection detached and a post measured on it retired (`dsd_frame_sync_forget_unflushed_retunes()`). The UDP
+  ring attaches before its receive thread starts (nothing counted yet) and stdin's reader when it opens, so neither
+  has a moment in which a post waits for its input to be measured.
   Replacing the input (`dsd_opts_reset_pcm_input_state()`, the Pulse open, the TCP reconnect) retires a held post that
   was not measured on the queue attached then (`dsd_frame_sync_forget_unflushed_retunes()`, declared in
   `include/dsd-neo/dsp/unflushed_retune.h`, which `<dsd-neo/core/opts.h>` includes for

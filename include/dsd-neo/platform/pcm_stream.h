@@ -40,6 +40,11 @@ dsd_pcm_stream* dsd_pcm_stream_open_fd(int fd);
 /** A reader on the connected socket @p sock (not taken over), or NULL when it is invalid or memory runs out. */
 dsd_pcm_stream* dsd_pcm_stream_open_socket(dsd_socket_t sock);
 
+/** The count a reader on the connected socket that @p sock points to (a `const dsd_socket_t*`) starts from, before the
+ * reader exists: the bytes the socket holds ready, as nothing has read it yet. A TCP reconnect's opening counts the new
+ * connection by it (dsd_input_backlog_opening()) until its reader attaches and goes on from it. Any thread. */
+uint64_t dsd_pcm_stream_socket_arrived(const void* sock);
+
 /** Detach and free the reader (NULL is fine). The descriptor or socket stays open. */
 void dsd_pcm_stream_close(dsd_pcm_stream* stream);
 
