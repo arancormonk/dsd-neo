@@ -7,7 +7,7 @@ Required license/notice files in every shipped asset:
 - `THIRD_PARTY.md`
 - `legal/` (component inventory, current findings, review history and source-delivery status)
 - `licenses/ISC.txt`, `licenses/Unlicense.txt`, `licenses/gqrx-scanner-MIT.txt`,
-  `licenses/LicenseRef-Simon-Rockliff.txt` and
+  `licenses/BSL-1.0.txt` (SoapySDR), `licenses/LicenseRef-Simon-Rockliff.txt` and
   `licenses/LicenseRef-BCH3-Noncommercial.txt`
 - `licenses/mbelib-neo/` (the complete notice directory from the selected mbelib
   installation, including ISC/PFFFT/ETSI texts and `legal/status.md`/`patents.md`)
@@ -40,7 +40,17 @@ resource bundle, so they travel with the binary rather than as a separate file.
 ### Windows (ZIP)
 
 - [ ] Download `dsd-neo-msvc-x86_64-native-*.zip`.
-  - [ ] Unzip and confirm `share/doc/dsd-neo/` contains all required files.
+  - [ ] Unzip and confirm `share/doc/dsd-neo/` contains all required files, plus the notices of the SoapySDR load
+        path: `licenses/SoapyAirspy-MIT.txt`, `licenses/SoapyHackRF-MIT.txt`, `licenses/SoapyAirspyHF-MIT.txt`,
+        `licenses/libhackrf-BSD-3-Clause.txt`, `licenses/libairspyhf-BSD-3-Clause.txt`,
+        `licenses/libusb-LGPL-2.1-or-later.txt`, `licenses/PThreads4W-Apache-2.0.txt` and
+        `licenses/PThreads4W-NOTICE.txt` (`tools/windows/stage_release_tree.ps1` refuses a tree without them).
+  - [ ] Confirm `lib/SoapySDR/modules0.8/` holds exactly `airspySupport.dll`, `HackRFSupport.dll` and
+        `airspyhfSupport.dll`, and that `bin/` holds `hackrf.dll`, `airspyhf.dll` and `SoapySDRUtil.exe` beside
+        `SoapySDR.dll`, `airspy.dll`, `libusb-1.0.dll` and `pthreadVC3.dll`.
+  - [ ] On a Windows machine, if one is at hand, `bin\SoapySDRUtil.exe --info` from a fresh unzip lists the three
+        modules and `Available factories... airspy, airspyhf, hackrf` (`tools/windows/verify_release_tree.ps1` checks
+        this in CI).
 
 ### Android (APK)
 

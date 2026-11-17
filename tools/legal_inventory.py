@@ -18,7 +18,8 @@ PLATFORMS = ("linux", "macos", "windows", "android")
 REQUIRED = {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay",
             "mixed-origins", "ezpwd", "tiny-aes", "pffft", "tetra-crypto",
             "mbelib", "android-libusb", "android-rtl", "desktop-rtl", "airspy", "ibm-plex", "recordings",
-            "gqrx-scanner"}
+            "gqrx-scanner", "soapysdr", "soapy-airspy", "soapy-hackrf", "soapy-airspyhf", "libhackrf",
+            "libairspyhf", "windows-libusb", "pthreads4w"}
 
 
 def read_inventory(root=ROOT):

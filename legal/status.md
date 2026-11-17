@@ -31,7 +31,7 @@ was rewritten, and this review does not authorize publication.
 | MBELIB-ETSI | mbelib-neo 2.6.11 retains TETRA ACELP table data with unresolved copyright permission and GPL compatibility under its `ETSI-RETAIN-1` disclosure. Its GPLv2-or-later project grant and conformance tests do not resolve those data rights. | Follow the pinned dependency's [status](https://github.com/arancormonk/mbelib-neo/blob/v2.6.11/legal/status.md). Carry its notices and `NOASSERTION` conclusions downstream. No new exception or permission is inferred here. |
 | FIXTURE-PERMISSION | Signal Identification Wiki recordings and derivatives are tracked under `tests/fixtures/iq`; no explicit redistribution license has been established. Attribution, short duration and off-air origin alone do not establish permission. Other contributed audio needs asset-specific evidence as well. | Obtain permission for the particular recordings, replace them with synthetic or expressly licensed fixtures, or remove them from public distribution. Keep acquisition URLs and hashes, but do not treat those as authorization. |
 | CORRESPONDING-SOURCE | Current GitHub source snapshots omit downloaded PFFFT and TETRA_crypto source. Portable binaries also bundle mbelib and platform-dependent libraries. No verified, complete corresponding-source delivery for each binary is established by the current workflow. | Assemble the exact source, modifications, build scripts and applicable installation information for each distributed binary; verify a fresh offline rebuild and provide the source through an appropriate distribution method. See [source delivery](source-delivery.md). |
-| RUNTIME-NOTICES | The existing license-file checklist covers only selected dependencies. Copying mbelib's notices fixes that omission, but does not establish notice/source coverage for every Homebrew, vcpkg, AppImage or Qt runtime library. | Compare each final binary's actual dependency closure and SBOM with its notice and source inventory, including Qt modules/plugins and their selected license terms. |
+| RUNTIME-NOTICES | The existing license-file checklist covers only selected dependencies. Copying mbelib's notices fixes that omission, but does not establish notice/source coverage for every Homebrew, vcpkg, AppImage or Qt runtime library. The Windows ZIP's SoapySDR load path is now recorded with its notices: SoapySDR and SoapySDRUtil (also SoapySDR for the AppImage), the SoapyAirspy, SoapyHackRF and SoapyAirspyHF modules, libhackrf, libairspyhf, and the libusb and PThreads4W the radio libraries load. The rest of each closure is not. | Compare each final binary's actual dependency closure and SBOM with its notice and source inventory, including Qt modules/plugins and their selected license terms. |
 
 These findings remain open. The audit checks enforce faithful records and
 notice delivery, not a release waiver. In particular, BCH-NONCOMMERCIAL is an
@@ -51,6 +51,12 @@ rights and distribution issues before claiming GPL-compliant redistribution.
   mbelib's ISC, PFFFT and ETSI notices and its unresolved disclosures.
 - Add curated component records to binary SBOMs before upload/attestation,
   preserving `NOASSERTION` for unresolved components and the combined artifact.
+- Record the Windows ZIP's SoapySDR load path (SoapySDR, SoapySDRUtil, three
+  device modules, libhackrf, libairspyhf, libusb and PThreads4W) in the
+  component inventory, and ship each one's notice in `licenses/`; the Windows
+  release job refuses a tree that lacks one. SoapySDR's BSL-1.0 text is
+  `LICENSES/BSL-1.0.txt`. Corresponding source for the LGPL libusb build stays
+  under CORRESPONDING-SOURCE.
 - Separate workflow concurrency by event and explicitly gate downstream
   Android, nightly and AUR jobs on successful prerequisites plus
   `!cancelled()`, so a skipped PR-only classifier does not suppress publication.

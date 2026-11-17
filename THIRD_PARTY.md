@@ -189,7 +189,11 @@ license texts currently include the ezpwd, pinned PFFFT and pinned TETRA_crypto 
 `share/doc/dsd-neo/licenses/`, plus the IBM Plex font notice for builds that bundle the Qt frontend and the
 librtlsdr/libusb notices for the Android package. The Windows, AppImage and macOS release packages, which bundle a
 librtlsdr built with `0002` and `0003`, carry its GPL text as `licenses/librtlsdr-GPL-2.0-or-later.txt` and
-`packaging/librtlsdr-PATCHES.txt`, naming those patches, as `licenses/librtlsdr-PATCHES.txt`.
+`packaging/librtlsdr-PATCHES.txt`, naming those patches, as `licenses/librtlsdr-PATCHES.txt`. The Windows release
+package also carries the notices of its SoapySDR load path (below): `licenses/SoapyAirspy-MIT.txt`,
+`licenses/SoapyHackRF-MIT.txt`, `licenses/SoapyAirspyHF-MIT.txt`, `licenses/libhackrf-BSD-3-Clause.txt`,
+`licenses/libairspyhf-BSD-3-Clause.txt`, `licenses/libusb-LGPL-2.1-or-later.txt`,
+`licenses/PThreads4W-Apache-2.0.txt` and `licenses/PThreads4W-NOTICE.txt`.
 
 Packages also carry `legal/`, the full notices in `LICENSES/` under `licenses/`,
 and the selected mbelib installation's documentation under `licenses/mbelib-neo/`.
@@ -197,3 +201,39 @@ This does not close the separate complete-runtime-notice or corresponding-source
 findings in `legal/status.md`.
 
 Native Airspy support links libairspy (BSD-3-Clause for `airspy.c`, `airspy.h`, and `airspy_commands.h`; MIT for `filters.h` and `iqconverter_*`), from https://github.com/airspy/airspyone_host. Android library sources, Windows overlay builds, AppImage builds and macOS DMG builds are pinned to `bd15be38e91ebaa3e0bebb1e320255bde4ccf059`; the upstream notice, prefixed with the copyright lines from the source headers, is retained in `android/third_party/libairspy/LICENSE` and distributed as `licenses/libairspy-LICENSE.txt`. The Android copy (`android/third_party/libairspy`) carries one project patch, kept in `android/third_party/patches/`: `0001-libairspy-wait-for-cancelled-transfers.patch` makes stop, close, restart and a packing change wait until libusb has called back every cancelled transfer before freeing or resubmitting any. Windows overlay, AppImage and macOS DMG builds apply the same patch (`tools/usb_dependency_patches.sh`); builds against a system libairspy use it unpatched.
+
+## Windows SoapySDR Load Path
+
+The Windows release ZIP runs SoapySDR devices through modules it carries in `lib\SoapySDR\modules0.8\`, with
+their libraries in `bin\`. Each is built by a vcpkg overlay in `vcpkg-ports/` from the commit and archive hash pinned
+in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
+
+- **SoapySDR** and **SoapySDRUtil** (Josh Blum and contributors, https://github.com/pothosware/SoapySDR) -
+  BSL-1.0; license text `LICENSES/BSL-1.0.txt`, installed as `licenses/BSL-1.0.txt`. The Windows ZIP and the AppImage
+  build the 0.8.1 release commit (`SOAPY_SDR_SHA`). The ZIP's `SoapySDRUtil.exe` comes from the `soapysdr` overlay's
+  `tools` feature; its MSVC `getopt.h` is mingw-w64's public-domain file. The macOS DMG bundles Homebrew's SoapySDR.
+- **SoapyAirspy** (Charles J. Cliffe, https://github.com/pothosware/SoapyAirspy) - MIT; release 0.2.1, built against
+  the patched libairspy above, so the module and the native Airspy input share one `airspy.dll`. Notice
+  `vcpkg-ports/soapy-airspy/copyright`, shipped as `licenses/SoapyAirspy-MIT.txt`.
+- **SoapyHackRF** (Wei Jiang, Josh Blum, Kevin Mehall, https://github.com/pothosware/SoapyHackRF) - MIT; release
+  0.3.6. Its LICENSE names no holder, so the notice `vcpkg-ports/soapy-hackrf/copyright` adds the source headers'
+  holders; shipped as `licenses/SoapyHackRF-MIT.txt`.
+- **SoapyAirspyHF** (Charles J. Cliffe, Corey Stotts, https://github.com/pothosware/SoapyAirspyHF) - MIT; release
+  0.2.1. Notice `vcpkg-ports/soapy-airspyhf/copyright`, shipped as `licenses/SoapyAirspyHF-MIT.txt`.
+- **libhackrf** (Great Scott Gadgets, Jared Boone, Benjamin Vernoux, https://github.com/greatscottgadgets/hackrf) -
+  BSD-3-Clause for the library sources; release v2026.01.3, library only (`host/libhackrf/src`). The repository's
+  GPL-2.0 firmware and tools are not built. HackRF is a trademark of Great Scott Gadgets. Notice, with every
+  source-header holder and the trademark notice, `vcpkg-ports/hackrf/copyright`, shipped as
+  `licenses/libhackrf-BSD-3-Clause.txt`.
+- **libairspyhf** (Youssef Touil, Ian Gilmour, Benjamin Vernoux, Michael Ossmann, Jared Boone, Leif Asbrink,
+  https://github.com/airspy/airspyhf) - BSD-3-Clause for the library sources; a `master` commit that reports 1.8.1
+  (the only release tag, 1.6.8, is from 2020), library only (`libairspyhf/src`). The repository's GPL-2.0 tools and
+  their LGPL getopt are not built. Notice, with every source-header holder and `LICENSE.BSD`,
+  `vcpkg-ports/airspyhf/copyright`, shipped as `licenses/libairspyhf-BSD-3-Clause.txt`.
+- **libusb** (https://github.com/libusb/libusb) - LGPL-2.1-or-later; vcpkg's 1.0.30 port at the manifest baseline,
+  `libusb-1.0.dll`, which librtlsdr, libairspy, libhackrf and libairspyhf load. Its COPYING is the one retained in
+  `android/third_party/libusb/COPYING`, shipped as `licenses/libusb-LGPL-2.1-or-later.txt`.
+- **PThreads4W** (John E. Bossom and the Pthreads4w contributors, https://sourceforge.net/projects/pthreads4w/) -
+  Apache-2.0; vcpkg's 3.0.0 port at the manifest baseline, `pthreadVC3.dll`, which the same libraries load. Its
+  LICENSE and NOTICE from that release's archive are kept in `packaging/windows/` and shipped as
+  `licenses/PThreads4W-Apache-2.0.txt` and `licenses/PThreads4W-NOTICE.txt`.
