@@ -23264,13 +23264,17 @@ qt_seam_clock(void) {
     return g_quiet_rt_ms;
 }
 
-/* The rig with no link wrap: landed on the real realtime clock, then the check's clock frozen there. */
+/* The rig with no link wrap: landed on the real realtime clock, then the check's clock frozen at the landing's own
+   stamp, the origin its capture wait counts from. However long the host took to finish the start after the landing,
+   no time has passed for the check. */
 static int
 qt_portable_start(dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* path, size_t path_sz) {
     g_qt_real_clock = 1;
     const int rc = quiet_rig_start_body(opts, state, dir, dir_sz, path, path_sz, k_qt_dwell_targets);
     g_qt_real_clock = 0;
-    g_quiet_rt_ms = dsd_realtime_mono_ms();
+    const dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
+    g_quiet_rt_ms =
+        owner && owner->landing.landed_realtime_ms != 0U ? owner->landing.landed_realtime_ms : dsd_realtime_mono_ms();
     scan_quiet_test_realtime_ms = qt_seam_clock;
     return rc;
 }
