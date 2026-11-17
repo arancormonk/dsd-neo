@@ -312,6 +312,27 @@ test_scopes(void) {
     free_state(st);
 }
 
+/* A sender scope the producer did not name as an alias scope is unknown: the sender is taken as heard here. */
+static void
+test_unnamed_sender_scope(void) {
+    dsd_state* st = new_state();
+    clock_at_ms(T0_MS);
+    set_tetra_net(st, 100U, 20U);
+    const dsd_position_scope given[] = {
+        {0x99U, {0U, 0U, 0U}, 7U, 0U},                         /* an undefined kind */
+        {DSD_POS_SCOPE_NONE, {0U, 0U, 0U}, 0U, 30U},           /* NONE carrying a value */
+        {DSD_POS_SCOPE_FEED_TUNED_FREQ, {0U, 0U, 0U}, 1U, 0U}, /* a feed-only kind names no network */
+    };
+    for (size_t i = 0; i < sizeof given / sizeof given[0]; i++) {
+        dsd_position_fix f = base_fix();
+        f.protocol = DSD_SYNC_TETRA_NDB_POS;
+        f.sender_scope = given[i];
+        assert(dsd_position_admit(NULL, st, &f, 1, 1, NULL) == DSD_POSITION_ADMITTED_NOT_KEPT);
+        assert(f.sender_scope.kind == DSD_POS_SCOPE_TETRA && f.sender_scope.a == 100U && f.sender_scope.b == 20U);
+    }
+    free_state(st);
+}
+
 /* One SSI in the local network and in a foreign one, with a populated local radio list (spec 2.3 step 5). */
 static void
 test_labels_local_and_foreign(void) {
@@ -727,6 +748,7 @@ main(void) {
     test_identity_clearing();
     test_values();
     test_scopes();
+    test_unnamed_sender_scope();
     test_labels_local_and_foreign();
     test_repeats();
     test_anonymous_never_fold();

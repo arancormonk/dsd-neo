@@ -189,8 +189,9 @@ typedef struct dsd_position_fix {
     uint8_t slot;          /**< producer: the lane (0 or 1) of a two-slot protocol, else 0 */
     /** admission: where the report was heard (D7: the alias scope, else a feed-only scope; none for M17/D-STAR). */
     dsd_position_scope reception_scope;
-    /** producer (TETRA only: the calling party's own network when sent) or admission: the sender's system, equal to
-     * the reception scope unless the producer set it. The track key uses it. */
+    /** producer (TETRA only: the calling party's own network when sent, an alias scope kind) or admission: the
+     * sender's system, equal to the reception scope unless the producer set an alias scope (any other kind, or NONE
+     * with values, is taken as unset). The track key uses it. */
     dsd_position_scope sender_scope;
     char source_text[DSD_POSITION_SOURCE_TEXT_SIZE]; /**< producer: callsign (D-STAR MY 8+4, M17); "" = none */
     char label[DSD_POSITION_LABEL_SIZE];             /**< admission: the source's label at acceptance; "" = none */
@@ -231,7 +232,8 @@ typedef struct {
  * NULL does nothing. */
 void dsd_position_fix_init(dsd_position_fix* fix);
 
-/** This process's instance: 64 random bits (never 0) drawn once, at the first call. Any thread. */
+/** This process's instance: 64 random bits (never 0) drawn once, by the first dsd_position_feed_start() (or the first
+ * call, for a caller that never starts a feed). Any thread. */
 uint64_t dsd_position_proc_instance(void);
 
 /** The latest revision admission stamped in this process (0 before the first admitted report). Any thread. */
@@ -254,7 +256,7 @@ int dsd_position_origin_matches(const dsd_state* state, const dsd_position_origi
  * @brief Admit one position report (the file comment lists the steps).
  *
  * @param opts Decoder options (receive policy, tuned frequency); may be NULL.
- * @param state Decoder state; NULL refuses. The feed it appends to lives in the state's extension slot.
+ * @param state Decoder state; NULL refuses. A kept report is appended to the feed in its extension slot.
  * @param fix In: the producer's report. Out, when admitted: the admitted record (identity cleared without checked
  *        provenance, scopes, label, stamps; stream_id and seq when kept). Left unchanged when refused.
  * @param pos_verified 1 when the producer's own check of the position passed.
@@ -263,7 +265,7 @@ int dsd_position_origin_matches(const dsd_state* state, const dsd_position_origi
  *        matches, dsd_position_origin_matches()); NULL for a single-burst report, which takes the current reception.
  * @return a dsd_position_admit_result. A report with no kind or protocol is refused.
  */
-dsd_position_admit_result dsd_position_admit(const dsd_opts* opts, const dsd_state* state, dsd_position_fix* fix,
+dsd_position_admit_result dsd_position_admit(const dsd_opts* opts, dsd_state* state, dsd_position_fix* fix,
                                              int pos_verified, int source_verified, const dsd_position_origin* origin);
 
 /** 1 when @p a and @p b are reports of the same track: neither anonymous (hashed, unverified, or neither a source ID
@@ -273,8 +275,8 @@ int dsd_position_same_track(const dsd_position_fix* a, const dsd_position_fix* b
 
 /**
  * @brief Start the run's feed: a new stream (a new stream_id, seq restarting at 1, no remembered tracks) in @p state's
- * extension slot, allocated when the slot has none. The engine calls it at the start of every run, never on the
- * decode path. Returns 0, or -1 for NULL @p state or a failed allocation (the feed then stays off for the run and
+ * extension slot, allocated when the slot has none, and draw the process instance if no call drew it yet. The engine
+ * calls it at the start of every run, never on the decode path. Returns 0, or -1 for NULL @p state or a failed allocation (the feed then stays off for the run and
  * admission still works).
  */
 int dsd_position_feed_start(dsd_state* state);

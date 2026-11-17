@@ -329,6 +329,12 @@ pos_freeze_label(const dsd_state* state, dsd_position_fix* r) {
     DSD_MEMCPY(r->label, name, len);
 }
 
+/* Whether a producer set the sender's own network: an alias scope kind (1..5). */
+static int
+pos_sender_scope_named(const dsd_position_scope* s) {
+    return s->kind != DSD_POS_SCOPE_NONE && s->kind <= DSD_ALIAS_SCOPE_LAST;
+}
+
 /* Step 5: the scopes of the reception the report came from, the identity discriminator and the label. */
 static void
 pos_freeze(const dsd_state* state, dsd_position_fix* r, const dsd_position_origin* origin) {
@@ -339,7 +345,9 @@ pos_freeze(const dsd_state* state, dsd_position_fix* r, const dsd_position_origi
         DSD_MEMSET(&r->sender_scope, 0, sizeof(r->sender_scope));
     } else {
         r->reception_scope = origin->scope;
-        if (r->sender_scope.kind == DSD_POS_SCOPE_NONE) {
+        /* Only a producer-set alias scope names the sender's own network; none, a feed-only or an undefined kind (and
+         * a NONE carrying values) is unknown: the sender is taken as heard here. */
+        if (!pos_sender_scope_named(&r->sender_scope)) {
             r->sender_scope = r->reception_scope;
         }
     }
@@ -387,10 +395,12 @@ pos_track_take(pos_feed* f) {
     return oldest;
 }
 
-/* Step 8. A repeat needs the clock not to have gone back past the kept record (as the unit activity merge). */
+/* Step 8. A repeat needs the clock not to have gone back past the kept record (as the unit activity merge). With
+ * unsigned readings a backward step already wraps now_ms - kept_ms past the window; the explicit guard keeps the rule
+ * if this ever moves to signed arithmetic. The ring is written here, so its slot is read through the mutable state. */
 static dsd_position_admit_result
-pos_feed_keep(const dsd_state* state, dsd_position_fix* r) {
-    pos_feed* f = DSD_STATE_EXT_GET_AS(pos_feed, state, DSD_STATE_EXT_CORE_POSITION_FEED);
+pos_feed_keep(dsd_state* state, dsd_position_fix* r) {
+    pos_feed* f = (pos_feed*)state->state_ext[DSD_STATE_EXT_CORE_POSITION_FEED];
     if (!f) {
         return DSD_POSITION_ADMITTED_NOT_KEPT;
     }
@@ -415,8 +425,8 @@ pos_feed_keep(const dsd_state* state, dsd_position_fix* r) {
 }
 
 dsd_position_admit_result
-dsd_position_admit(const dsd_opts* opts, const dsd_state* state, dsd_position_fix* fix, int pos_verified,
-                   int source_verified, const dsd_position_origin* origin) {
+dsd_position_admit(const dsd_opts* opts, dsd_state* state, dsd_position_fix* fix, int pos_verified, int source_verified,
+                   const dsd_position_origin* origin) {
     if (!state || !fix || pos_verified != 1 || !pos_well_formed(fix)) {
         return DSD_POSITION_REFUSED;
     }
@@ -472,6 +482,8 @@ dsd_position_feed_start(dsd_state* state) {
     do {
         f->stream_id = dsd_atomic_u64_fetch_add_relaxed(&g_next_stream, 1U);
     } while (f->stream_id == 0U);
+    /* The process instance is drawn here, at run start, so no report pays for the draw on the decode path. */
+    (void)dsd_position_proc_instance();
     return 0;
 }
 
