@@ -968,6 +968,9 @@ static int g_frame_candidate_frames = 0;
    sync its protocol's gate rejected), with g_frame_evidence_hold_ms for PARTIAL. */
 static int g_frame_evidence = 0;
 static uint32_t g_frame_evidence_hold_ms = 0U;
+/* The fixed TEST decode clock of a case whose decode-clock deadlines (a hangtime, a PARTIAL verdict's hold, a dwell)
+   must not run out while the host pauses between its steps; ahead of any stamp a system read leaves. */
+#define FROZEN_DECODE_T0_NS 1800000000000000000ULL
 /* Whether each scripted frame is of a protocol with no content check (X2-TDMA, ProVoice, TETRA): processFrame()'s
    dispatch notes one for the -Y step (issue #834), as ENGINE_PROTOCOL_DISPATCH pins. */
 static int g_frame_unchecked = 0;
@@ -2501,7 +2504,7 @@ static time_t
 step_into_a_timed_out_tune(dsd_opts* opts, dsd_state* state) {
     g_rtl_timeout_outstanding = 1;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
-    const time_t deadline = time(NULL) - 11;
+    const time_t deadline = dsd_decode_time() - 11;
     state->last_cc_sync_time = deadline;
     noCarrier(opts, state);
     g_rtl_timeout_outstanding = 0;
@@ -4753,6 +4756,8 @@ test_live_loop_counts_only_checked_frames(void) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
+    /* The PARTIAL holds run on the decode clock: frozen, a host pause cannot end one before it is looked at. */
+    dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
     int rc = expect_true("a scan owner", owner != NULL);
     static const int k_types[] = {DSD_SYNC_YSF_POS, DSD_SYNC_DSTAR_VOICE_POS, DSD_SYNC_DMR_BS_DATA_POS};
@@ -4789,6 +4794,7 @@ test_live_loop_counts_only_checked_frames(void) {
     g_frame_sync_type = DSD_SYNC_NXDN_POS;
     opts->scan_skip_silent = 0;
     free_test_runtime(opts, state);
+    dsd_decode_clock_use_system();
     return rc;
 }
 
@@ -4854,14 +4860,18 @@ test_legacy_step_landing_ends_the_reception_on_it(void) {
         return 1;
     }
     int rc = 0;
+    /* The 1 s hangtime runs on the decode clock, and a frame boundary past it yields: frozen, a host pause between the
+       landing and the frames cannot cut the reception. */
+    dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
     if (setup_untyped_keyed_list(opts, state, 995012500, 996012500) != 0
         || dsd_state_trunk_lcn_name_set(state, 0U, "ALPHA") != 0
         || dsd_state_trunk_lcn_name_set(state, 1U, "BRAVO") != 0) {
         free_test_runtime(opts, state);
+        dsd_decode_clock_use_system();
         return 1;
     }
     /* Row 0 lands at once: the reception on it decodes under ALPHA and its keys. */
-    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_cc_sync_time = dsd_decode_time() - 11;
     noCarrier(opts, state);
     run_synced_frames(opts, state, 1, -1);
     rc |= expect_true("mid-reception-row-0-frames", g_frame_count == 2);
@@ -4887,6 +4897,7 @@ test_legacy_step_landing_ends_the_reception_on_it(void) {
     rc |= frame_was("mid-reception-after-landing", 0, "BRAVO", 0ULL);
     rc |= frame_was("mid-reception-after-landing", 1, "BRAVO", 0ULL);
     free_test_runtime(opts, state);
+    dsd_decode_clock_use_system();
     return rc;
 }
 
@@ -11860,7 +11871,7 @@ test_held_scan_steps_off_an_avoided_row(void) {
    finds @p syncs more frames after the first. Returns the frames decoded before the loop yielded. */
 static int
 carrier_frames(dsd_opts* opts, dsd_state* state, int syncs) {
-    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time = dsd_decode_time();
     run_synced_frames(opts, state, syncs, -1);
     return g_frame_count;
 }
@@ -11893,9 +11904,13 @@ untyped_departure_case(int held) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
+    /* The carrier's fresh anchor holds the 1 s hangtime on the decode clock: frozen, a host pause cannot end it
+       between the step and the frames that decode through. */
+    dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
     const long int base_hz = 1270012500L + (long int)held * 3000000L;
     if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
         teardown_walk_list(opts, state);
+        dsd_decode_clock_use_system();
         return 1;
     }
     int rc = sit_on_an_avoided_row(opts, state, held, what);
@@ -11908,6 +11923,7 @@ untyped_departure_case(int held) {
     rc |= expect_case(what, "the hold is as it was", state->lcn_scan_hold == (uint8_t)held);
     rc |= expect_case(what, "the carrier on row 2 decodes through", carrier_frames(opts, state, 20) == 21);
     teardown_walk_list(opts, state);
+    dsd_decode_clock_use_system();
     return rc;
 }
 
@@ -12469,11 +12485,14 @@ test_dmr_manual_moves_forget_and_hold(void) {
    (an RTL stream) at 433 MHz, away from both. @p landed is the run's landing at its start (dsd_engine_note_run_start()
    leaves 0 for a run that starts with its trunk scan; 1 is a run that landed before the scan was started from the
    menu). The first park's retune (the first target's) fails once with PARK_JUDGE_FIRST_FAILS, and the start parks the
-   second target instead; with PARK_JUDGE_FIRST_PENDING it times out, its RTL tune left outstanding (PENDING). */
+   second target instead; with PARK_JUDGE_FIRST_PENDING it times out, its RTL tune left outstanding (PENDING). The
+   targets' 250 ms dwell runs on the decode clock, frozen at FROZEN_DECODE_T0_NS from here to park_judge_done(), so a
+   host pause cannot rotate a park before the case acts on it. */
 enum { PARK_JUDGE_FIRST_LANDS = 0, PARK_JUDGE_FIRST_FAILS = 1, PARK_JUDGE_FIRST_PENDING = 2 };
 
 static int
 park_judge_start(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, uint8_t landed, int first_park) {
+    dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
     const int fd = dsd_test_mkstemp(path, path_size, "park-judge-");
     if (fd < 0) {
         path[0] = '\0';
@@ -12524,6 +12543,7 @@ park_judge_done(dsd_opts* opts, dsd_state* state, const char* path) {
     if (path[0] != '\0') {
         (void)remove(path);
     }
+    dsd_decode_clock_use_system();
 }
 
 /* A first park whose RTL tune is still PENDING has not landed: it leaves the run's first landing for the park that
@@ -12627,19 +12647,17 @@ park_judge_expect_rolled_back(const char* label, const dsd_state* state) {
    onto the carrier the receiver never left, which is no move at all. */
 static int
 park_judge_rotation_rolls_back(void) {
-    static const uint64_t k_t0_ns = 7000ULL * 1000000000ULL;
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    dsd_decode_clock_use_test(k_t0_ns);
     char path[DSD_TEST_PATH_MAX];
     int rc = park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_LANDS);
     park_judge_seed_carrier(state);
     g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
     g_rtl_tune_calls = 0;
-    dsd_decode_clock_test_set_ns(k_t0_ns + 2ULL * 1000000000ULL); // past the 250 ms dwell
+    dsd_decode_clock_test_set_ns(FROZEN_DECODE_T0_NS + 2ULL * 1000000000ULL); // past the 250 ms dwell
     dsd_engine_trunk_scan_tick(opts, state);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     char tried[160];
@@ -12651,7 +12669,6 @@ park_judge_rotation_rolls_back(void) {
     rc |= park_judge_expect_rolled_back("a dwell rotation rolled back", state);
     park_judge_done(opts, state, path);
     free_test_runtime(opts, state);
-    dsd_decode_clock_use_system();
     return rc;
 }
 
@@ -14850,7 +14867,13 @@ yq_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
     }
 }
 
-/* The fake tap on (answering @p quiet), its stream generation hook, a fixed fake realtime clock and the NOTICE tap. */
+/* Set while a yq case runs on the TEST decode clock yq_start() put it on; yq_finish() returns it to SYSTEM. */
+static int g_yq_owns_decode_clock = 0;
+
+/* The fake tap on (answering @p quiet), its stream generation hook, a fixed fake realtime clock, a fixed TEST decode
+   clock and the NOTICE tap. The hangtime, a PARTIAL verdict's hold, the voice gate's qualification and hold and a
+   trunk target's dwell run on the decode clock, so with it frozen a host pause anywhere in a case runs none of them
+   out. A live session's own TEST decode clock (live_session_start()) is left as it is. */
 static void
 yq_start(int quiet) {
     DSD_MEMSET(&g_yq, 0, sizeof g_yq);
@@ -14861,6 +14884,10 @@ yq_start(int quiet) {
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     g_live_realtime_ms = 5000000U;
     g_live_fake_realtime = 1;
+    g_yq_owns_decode_clock = dsd_decode_clock_source() != DSD_DECODE_CLOCK_TEST;
+    if (g_yq_owns_decode_clock) {
+        dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
+    }
     dsd_neo_log_set_tap(yq_count_notice, NULL);
 }
 
@@ -14920,7 +14947,7 @@ yq_list(dsd_opts* opts, dsd_state* state, int rows, int typed, int on, long int 
     }
     state->lcn_freq_roll = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
-    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_cc_sync_time = dsd_decode_time() - 11;
     noCarrier(opts, state);
     /* The stream generation stays where the landing's tune left it while the tune count starts again from 0. */
     g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
@@ -14936,6 +14963,10 @@ yq_finish(dsd_opts* opts, dsd_state* state) {
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
     dsd_trunk_tuning_requests_reset();
+    if (g_yq_owns_decode_clock) {
+        dsd_decode_clock_use_system();
+        g_yq_owns_decode_clock = 0;
+    }
 }
 
 /* -Y: a landed row is measured as it lands (issue #834 R3): the noCarrier() whose step landed it leaves its check
@@ -15239,7 +15270,7 @@ test_y_quiet_input_shows_until_a_call(void) {
     state->lcn_freq_roll = 0;
     dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U); /* an earlier run's call */
     dsd_engine_note_run_start(opts, state);
-    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time = dsd_decode_time();
     yq_timing_tick(opts, state);
     int rc = expect_true("no row has landed", !dsd_engine_scan_landing_is_row(state, 0));
     rc |= yq_expect_quiet(state, "audio input, idle before the first landing", DSD_SCAN_STAY_HANGTIME,
@@ -15720,7 +15751,7 @@ yq_keep_stay(dsd_opts* opts, dsd_state* state, int which, long int base_hz, doub
         dsd_engine_manual_tune_note_lcn_cycle(state, 4243U, (uint32_t)(base_hz + 1000000L), (uint32_t)base_hz, 1, 1, 1);
     } else if (which == YQ_STEP_IN_FLIGHT) {
         g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
-        state->last_cc_sync_time = time(NULL) - 11;
+        state->last_cc_sync_time = dsd_decode_time() - 11;
         noCarrier(opts, state);
         g_rtl_tune_result = RTL_STREAM_TUNE_OK;
         g_rtl_tune_calls = 0;
@@ -15826,7 +15857,7 @@ test_y_quiet_open_analog_carrier_stays(void) {
     state->trunk_lcn_freq[1] = 154665000L;
     int rc = expect_true("nfm row 0", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
     rc |= expect_true("nfm row 1", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
-    state->last_cc_sync_time = time(NULL) - 40;
+    state->last_cc_sync_time = dsd_decode_time() - 40;
     noCarrier(opts, state);
     g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
     g_rtl_tune_calls = 0;
@@ -16118,7 +16149,7 @@ enum {
 static void
 yc_age(dsd_state* state, int anchor_too) {
     if (anchor_too) {
-        state->last_cc_sync_time = time(NULL) - 11;
+        state->last_cc_sync_time = dsd_decode_time() - 11;
         state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 11.0;
     }
     state->scan_y_content_m = dsd_decode_now_mono_s() - 11.0;
