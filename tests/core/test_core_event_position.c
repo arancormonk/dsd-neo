@@ -318,6 +318,26 @@ test_declined_position_keeps_crc_marking(void) {
     assert((call.crc_invalid & DSD_CRC_RAS_UNVERIFIED) != 0U);
     assert((row(0)->crc_invalid & DSD_CRC_RAS_UNVERIFIED) != 0U);
     expect_row_fix(row(0), &newer, "newer");
+
+    /* On a committed row (the closing call's), a declined position that adds a marking is a committed-row change. */
+    reset_fixture();
+    (void)observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_closing_call closing;
+    assert(dsd_event_capture_closing_call(&g_state, 0U, &closing) == 1);
+    end_call(DSD_CALL_END_TERMINATOR);
+    const dsd_position_fix first = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
+    const dsd_position_fix second = admitted(DSD_SYNC_P25P1_POS, 111U, 100000000, 200000000);
+    assert(dsd_event_enrich_position_closing(&g_state, &closing, &second, "second") == 1);
+    const uint64_t commit_rev = history[0].commit_rev;
+    g_state.event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    assert(dsd_event_enrich_position_closing(&g_state, &closing, &first, "first") == 0);
+    assert((row(1)->crc_invalid & DSD_CRC_RAS_UNVERIFIED) != 0U);
+    assert(history[0].commit_rev == commit_rev + 1U);
+    /* Nothing new to mark: no committed-row change. */
+    assert(dsd_event_enrich_position_closing(&g_state, &closing, &first, "first") == 0);
+    assert(history[0].commit_rev == commit_rev + 1U);
+    g_state.event_crc_invalid[0] = 0U;
+    expect_row_fix(row(1), &second, "second");
 }
 
 /* The sender scope is only the track key: a TETRA radio of a foreign network, heard here, enriches its own call. */

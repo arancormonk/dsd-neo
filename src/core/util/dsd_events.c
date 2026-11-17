@@ -3994,11 +3994,15 @@ dsd_event_enrich_position_locked(dsd_state* state, uint8_t slot, dsd_call_state_
     /* The transmission's CRC provenance marks the call and its row whether or not the row takes the position, as
        every enrichment of a found row does. */
     const uint8_t crc_flags = state->event_crc_invalid[slot];
+    const uint8_t crc_before = item->crc_invalid;
     if (crc_flags) {
         dsd_event_enrich_mark_crc(ext, call, item, crc_flags);
     }
     if (!dsd_event_pos_row_takes(item, call, fix)) {
-        if (crc_flags) {
+        if (item->crc_invalid != crc_before) {
+            if (history_index != 0U) {
+                event_struct->commit_rev++; /* the committed row's marking changed */
+            }
             dsd_event_history_mark_dirty(event_struct);
         }
         return 0;
