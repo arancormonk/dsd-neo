@@ -1427,6 +1427,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/history_tap.h
   CXX
 )
+# Issue #800: the published position feed's cursor view, read by the Qt app.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_position_view
+  HEADERS_PUBLIC_APP_CONTROL_POSITION_VIEW
+  dsd-neo/app_control/position_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_position_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_POSITION_VIEW_CXX
+  dsd-neo/app_control/position_view.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_wav_journal
   HEADERS_PUBLIC_CORE_WAV_JOURNAL
@@ -6510,6 +6523,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
@@ -6557,6 +6572,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
@@ -6586,6 +6603,67 @@ add_test(
     COMMAND dsd-neo_test_app_control_snapshot_unit_activity
 )
 
+# Issue #800: the published position ring and its cursor view: drains, gaps, stream restarts, the clock sample, copy
+# counts, no allocation (counted through GNU ld --wrap where it links) and concurrent readers (run it under tsan too).
+add_executable(
+    dsd-neo_test_app_control_position_view
+    ui/test_app_control_position_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_position_view
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_position_view
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_position_view
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_audio_activity
+        dsd-neo_platform
+        dsd-neo_runtime
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+if(NOT APPLE AND NOT WIN32 AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_definitions(
+        dsd-neo_test_app_control_position_view
+        PRIVATE DSD_TEST_POSITION_ALLOC_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_app_control_position_view
+        PRIVATE
+            "LINKER:--wrap=malloc"
+            "LINKER:--wrap=calloc"
+            "LINKER:--wrap=realloc"
+    )
+endif()
+add_test(
+    NAME APP_CONTROL_POSITION_VIEW
+    COMMAND dsd-neo_test_app_control_position_view
+)
+
 # Issue #708: the History tap, the second reader of the published history, against a racing publisher and the single
 # consumer (run it under the tsan preset too).
 add_executable(
@@ -6608,6 +6686,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
@@ -15841,6 +15921,14 @@ add_executable(
     dsd-neo_test_dmr_embedded_gps_position_error
     protocol/dmr/test_dmr_embedded_gps_position_error.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15871,6 +15959,14 @@ add_executable(
     dsd-neo_test_core_gps_lrrp_crc_gating
     core/test_core_gps_lrrp_crc_gating.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
