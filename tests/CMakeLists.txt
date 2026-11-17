@@ -26100,6 +26100,24 @@ if(Python3_Interpreter_FOUND)
         )
         set_tests_properties(TOOLS_AIRSPY_PACKAGING PROPERTIES TIMEOUT 120)
     endif()
+    # tools/windows/stage_runtime_dlls.ps1 under pwsh, with fake dumpbin and objdump
+    # tools. The fakes are POSIX scripts, so this registers off Windows wherever pwsh
+    # is installed; the Windows release jobs run the script with the real dumpbin.
+    find_program(DSD_NEO_PWSH_FOR_TESTS pwsh)
+    if(NOT WIN32 AND DSD_NEO_PWSH_FOR_TESTS)
+        add_test(
+            NAME TOOLS_STAGE_RUNTIME_DLLS
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_stage_runtime_dlls.py
+        )
+        set_tests_properties(
+            TOOLS_STAGE_RUNTIME_DLLS
+            PROPERTIES
+                TIMEOUT 120
+                ENVIRONMENT "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS}"
+        )
+    endif()
     # tools/noise_squelch_model.py's report on canned results (issue #518 follow-up).
     # The model imports numpy and scipy, so it registers only where the tests' Python
     # has them.
