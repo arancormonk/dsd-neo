@@ -289,7 +289,7 @@ run_locn_cases(dsd_opts* opts) {
 
     // A DMR data packet addressed to its header's group target is a group report.
     st.dmr_lrrp_target[0] = 777;
-    st.dmr_data_target_is_group[0] = 1;
+    st.dmr_data_checked_group[0] = 1;
     static const locn_case group = {"group target", "N2230.0000E04500.0000", 1, 225000000, 450000000, NULL};
     rc |= run_locn_case(opts, &st, &group);
     const dsd_position_fix* fix = dsd_event_staged_position(&st, 0);
@@ -298,7 +298,7 @@ run_locn_cases(dsd_opts* opts) {
         rc = 1;
     }
     st.dmr_lrrp_target[0] = 0;
-    st.dmr_data_target_is_group[0] = 0;
+    st.dmr_data_checked_group[0] = 0;
     rc |= run_locn_fix_time_cases(opts, &st);
     free(st.event_history_s);
     st.event_history_s = NULL;

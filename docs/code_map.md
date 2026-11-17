@@ -2528,9 +2528,10 @@ suite runs under this compiler.
   month, times of day): a bad coordinate refuses the report, any other bad field becomes unknown and is never folded
   (a heading outside 0-3599 tenths of a degree, a time past 23:59:59). Per kind, position check / source check:
   - DMR LRRP and LOCN (`dmr_pdu.c`), LIP over UDT or UDP and binary UDT NMEA (`dsd_gps.c`): the data packet's header,
-    CRC32 and block CRCs, or the UDT's CRCs, and not RAS / the same packet. LRRP reads its numeric fields as
-    variable-length (uintvar, ufloatvar, sfloatvar) and decodes tokens 0x51, 0x53, 0x55, 0x67, 0x69, 0x6B, 0x6C and
-    document type 0x13; a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
+    CRC32 and block CRCs, or the UDT's CRCs, and not RAS / the same packet (its source, target and G/I bit as the
+    checked standard header gave them: `dmr_data_checked_group`, which an MNIS DPF 15 header leaves alone). LRRP
+    reads its numeric fields as variable-length (uintvar, ufloatvar, sfloatvar) and decodes tokens 0x51, 0x53, 0x55,
+    0x67, 0x69, 0x6B, 0x6C and document type 0x13; a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
     parse, and a resync-guessed position is never published. UDT NMEA needs Q=1. These go to their own data notice
     (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no
     specification); a valid `A` date and time is its fix time (`fix_time_s`, read as UTC), else the fix time is

@@ -13186,6 +13186,8 @@ main(void) {
     state->dmr_lrrp_target[1] = 5678U;
     state->dmr_data_target_is_group[0] = 1U;
     state->dmr_data_target_is_group[1] = 1U;
+    state->dmr_data_checked_group[0] = 1U;
+    state->dmr_data_checked_group[1] = 1U;
     // NXDN's CRC evidence is per-transmission: carrying it across a carrier loss would let
     // the next channel's first noise frame stop a scan and unmute (issue #398).
     state->nxdn_confirmed = 1;
@@ -13250,7 +13252,8 @@ main(void) {
                           && state->data_header_bit_padding[0] == 0U && state->data_header_bit_padding[1] == 0U);
     rc |= expect_true("dmr-data-target-reset", state->dmr_lrrp_target[0] == 0U && state->dmr_lrrp_target[1] == 0U);
     rc |= expect_true("dmr-data-target-group-flag-reset",
-                      state->dmr_data_target_is_group[0] == 0U && state->dmr_data_target_is_group[1] == 0U);
+                      state->dmr_data_target_is_group[0] == 0U && state->dmr_data_target_is_group[1] == 0U
+                          && state->dmr_data_checked_group[0] == 0U && state->dmr_data_checked_group[1] == 0U);
 
     for (int i = 0; i < 200; i++) {
         if (state->dmr_payload_buf[i] != 0) {

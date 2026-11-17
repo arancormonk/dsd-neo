@@ -1640,7 +1640,7 @@ dmr_lrrp_fill_fix(const dsd_state* state, const dmr_lrrp_parse_result* best, con
     // The data header's group flag names the header's target; a DMR packet addressed to it is a group report.
     if (DSD_SYNC_IS_DMR(state->lastsynctype) && ctx->dest != 0U
         && (uint64_t)state->dmr_lrrp_target[ctx->slot] == (uint64_t)ctx->dest
-        && state->dmr_data_target_is_group[ctx->slot] != 0U) {
+        && state->dmr_data_checked_group[ctx->slot] != 0U) {
         fix->flags |= (uint16_t)DSD_POS_FLAG_TARGET_GROUP;
     }
 }
@@ -1989,7 +1989,7 @@ dmr_locn_fill_fix(const dsd_state* state, uint8_t slot, uint32_t source, const d
     fix->flags = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
     fix->source_id = source;
     fix->target_id = (uint32_t)state->dmr_lrrp_target[slot];
-    if (DSD_SYNC_IS_DMR(state->lastsynctype) && state->dmr_data_target_is_group[slot] != 0U) {
+    if (DSD_SYNC_IS_DMR(state->lastsynctype) && state->dmr_data_checked_group[slot] != 0U) {
         fix->flags |= (uint16_t)DSD_POS_FLAG_TARGET_GROUP;
     }
 }

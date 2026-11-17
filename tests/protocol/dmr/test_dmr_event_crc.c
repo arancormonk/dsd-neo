@@ -9,6 +9,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -689,12 +690,12 @@ send_lrrp_packet(dsd_opts* opts, dsd_state* state, int retune) {
 
 // The same for an MNIS LOCN report: a standard header, the DPF 15 MNIS extension, then three data blocks.
 static void
-send_locn_packet(dsd_opts* opts, dsd_state* state, int retune) {
+send_locn_packet_to(dsd_opts* opts, dsd_state* state, int retune, int group) {
     static const uint8_t locn[] = "A123456070826N2230.0000E04500.0000";
     uint8_t pdu[46] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x00, 0x01};
     DSD_MEMCPY(pdu + 7, locn, sizeof locn - 1U);
     // 46 octets less the 7-octet MNIS header, the report and the CRC32: one pad octet.
-    uint8_t hdr[12] = {0x02, 0x91, 0, 0, 42, 0, 0, 24, 0x84, 0, 0, 0};
+    uint8_t hdr[12] = {(uint8_t)(group ? 0x82U : 0x02U), 0x91, 0, 0, 42, 0, 0, 24, 0x84, 0, 0, 0};
     uint8_t ext[12] = {0};
     // The MNIS CRC32 leaves out the first three octets and the one before the CRC (dmr_block_type1_update_crc()).
     uint8_t span[42] = {0};
@@ -710,6 +711,76 @@ send_locn_packet(dsd_opts* opts, dsd_state* state, int retune) {
         }
         dmr_block_assembler(opts, state, pdu + 10U + b * 12U, 12, 0x07, 1);
     }
+}
+
+static void
+send_locn_packet(dsd_opts* opts, dsd_state* state, int retune) {
+    send_locn_packet_to(opts, state, retune, 0);
+}
+
+/* The newest kept position report, or a zeroed one. */
+static dsd_position_fix
+newest_kept_position(dsd_state* state) {
+    static dsd_position_fix kept[64];
+    dsd_position_feed_meta meta;
+    const int n = dsd_position_feed_copy_since(state, 0U, kept, 64U, &meta);
+    dsd_position_fix none;
+    DSD_MEMSET(&none, 0, sizeof none);
+    return n > 0 ? kept[n - 1] : none;
+}
+
+// Issue #800: a position report's group flag is the checked data header's G/I bit. The MNIS extension header (DPF 15)
+// that follows a group-addressed header clears the decryption-key lookup's group qualifier; the LOCN report still
+// names its talkgroup as a group. So does an LRRP report whose qualifier was cleared after its header.
+static int
+test_position_group_from_checked_header(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    state->currentslot = 0;
+    if (dsd_position_feed_start(state) != 0) {
+        return 1;
+    }
+    for (int group = 0; group <= 1; group++) {
+        send_locn_packet_to(opts, state, 0, group);
+        const dsd_position_fix locn = newest_kept_position(state);
+        const int marked = (locn.flags & DSD_POS_FLAG_TARGET_GROUP) != 0U;
+        if (locn.kind != DSD_POS_DMR_LOCN || locn.target_id != 42U || marked != group) {
+            DSD_FPRINTF(stderr, "\nMNIS LOCN %s: kind %u target %u group flag %d\n", group ? "group" : "individual",
+                        (unsigned)locn.kind, (unsigned)locn.target_id, marked);
+            rc = 1;
+        }
+    }
+    // A group-addressed LRRP header, its decryption-key qualifier cleared before the blocks arrive.
+    static const uint8_t lrrp_doc[] = {0x07, 12, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x30, 0, 0, 0};
+    uint8_t pdu[36] = {0x00, 0x20, 0x00, 0x3F, 0x00, 0x0F, 0xA1};
+    DSD_MEMCPY(pdu + 7, lrrp_doc, sizeof lrrp_doc);
+    const uint8_t poc = (uint8_t)(sizeof pdu - 4U - 7U - sizeof lrrp_doc);
+    uint8_t hdr[12] = {(uint8_t)(0x82U | ((poc & 0x10U) ? 0x10U : 0U)),
+                       (uint8_t)(0x30U | (poc & 0x0FU)),
+                       0,
+                       0,
+                       42,
+                       0,
+                       0,
+                       24,
+                       0x83,
+                       0,
+                       0,
+                       0};
+    crc32(pdu, sizeof pdu);
+    header(opts, state, hdr, 1);
+    state->dmr_data_target_is_group[0] = 0U;
+    for (size_t b = 0; b < 3U; ++b) {
+        dmr_block_assembler(opts, state, pdu + b * 12U, 12, 0x07, 1);
+    }
+    const dsd_position_fix lrrp = newest_kept_position(state);
+    if (lrrp.kind != DSD_POS_DMR_LRRP || lrrp.target_id != 42U || (lrrp.flags & DSD_POS_FLAG_TARGET_GROUP) == 0U) {
+        DSD_FPRINTF(stderr, "\nLRRP group header: kind %u target %u flags %04X\n", (unsigned)lrrp.kind,
+                    (unsigned)lrrp.target_id, (unsigned)lrrp.flags);
+        rc = 1;
+    }
+    return rc;
 }
 
 static int
@@ -928,6 +999,7 @@ main(void) {
     rc |= test_sap3_ars_real_path(opts, state);
     rc |= test_sap3_lrrp_location_rows(opts, state);
     rc |= test_position_origin_across_retune(opts, state);
+    rc |= test_position_group_from_checked_header(opts, state);
     rc |= test_confirmed_127_blocks(opts, state);
     rc |= test_t3_mbc_grant_channel_provenance(opts, state);
     dsd_state_ext_free_all(state);

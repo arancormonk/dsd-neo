@@ -655,6 +655,7 @@ dmr_dheader_classified(dsd_opts* opts, dsd_state* state, uint8_t* dheader, uint8
         state->dmr_lrrp_source[slot] = f.source;
         state->dmr_lrrp_target[slot] = f.target;
         state->dmr_data_target_is_group[slot] = (uint8_t)(f.gi == 1);
+        state->dmr_data_checked_group[slot] = (uint8_t)(f.gi == 1);
         // The assembly's first fragment: where a position report it carries was heard (spec 2.3 step 3).
         dsd_position_origin_capture(opts, state, &state->dmr_data_origin[slot & 1U]);
     } else {
@@ -1905,6 +1906,7 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     // no_carrier_reset_dmr_data_blocks(). A stale group flag left behind a cleared target would
     // qualify whatever target is written next, including one a non-DMR protocol wrote.
     DSD_MEMSET(state->dmr_data_target_is_group, 0, sizeof(state->dmr_data_target_is_group));
+    DSD_MEMSET(state->dmr_data_checked_group, 0, sizeof(state->dmr_data_checked_group));
     DSD_MEMSET(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
     DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
     DSD_MEMSET(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));

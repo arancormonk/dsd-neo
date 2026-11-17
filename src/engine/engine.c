@@ -3137,6 +3137,8 @@ no_carrier_reset_dmr_data_blocks(dsd_state* state) {
     // substitute for clearing it here.
     state->dmr_data_target_is_group[0] = 0;
     state->dmr_data_target_is_group[1] = 0;
+    state->dmr_data_checked_group[0] = 0;
+    state->dmr_data_checked_group[1] = 0;
     state->data_header_blocks[0] = 1;
     state->data_header_blocks[1] = 1;
     state->data_header_padding[0] = 0;

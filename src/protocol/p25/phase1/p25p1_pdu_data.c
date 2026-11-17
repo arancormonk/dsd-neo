@@ -957,6 +957,7 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
         // --dmr-tg-key-csv lookup treat this address as one.
         state->dmr_data_target_is_group[slot] = 0;
+        state->dmr_data_checked_group[slot] = 0;
         /* The packet's verdict: the MDPU decodes this packet inside its CRC scope on slot 0 (p25p1_mdpu.c). */
         const int packet_verified = state->event_crc_invalid[0] == 0U;
         /* The reception the MDPU's header was heard on (processMPDU()); none for a packet that did not come through

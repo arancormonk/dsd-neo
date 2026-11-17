@@ -2174,6 +2174,11 @@ struct dsd_state {
        on, captured with that first fragment (dsd_position_origin_capture()). A position report the assembly carries
        (LIP, binary UDT NMEA) is admitted against it, so a retune or target switch before the last block refuses it. */
     dsd_position_origin dmr_data_origin[2];
+    /* Per slot: the group/individual bit of the standard data header that began the assembly, as its check left it
+       (issue #800). Position producers (LRRP, LOCN) qualify the header's target by it. dmr_data_target_is_group is
+       not it: a Motorola proprietary header (MNIS) clears that one for the decryption-key lookup. Cleared with the
+       header's source and target. */
+    uint8_t dmr_data_checked_group[2];
     /* The reception the current P25 Phase 1 multi-block packet (processMPDU()) began on, captured when its header
        block was read. A position report the packet carries (LRRP, SAP 48 NMEA) is admitted against it, so a retune or
        received-identity change before the last block refuses it. */

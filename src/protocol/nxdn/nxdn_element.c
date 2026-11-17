@@ -859,6 +859,7 @@ nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Messag
     // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
     // --dmr-tg-key-csv lookup treat this address as one.
     state->dmr_data_target_is_group[0] = 0;
+    state->dmr_data_checked_group[0] = 0;
     nxdn_data_call_bind_header(opts, state);
 
     nxdn_data_header_report_scan_activity(opts, state, call_type, source, target, cipher);
@@ -1000,6 +1001,7 @@ nxdn_dcall_header_apply(const dsd_opts* opts, dsd_state* state, const struct nxd
     state->dmr_lrrp_target[0] = info->target;
     // Not a DMR talkgroup -- see the sibling header handler above.
     state->dmr_data_target_is_group[0] = 0;
+    state->dmr_data_checked_group[0] = 0;
     nxdn_data_call_bind_header(opts, state);
 }
 

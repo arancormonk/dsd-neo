@@ -169,7 +169,7 @@ static int
 run_target_kind(const dsd_opts* opts, dsd_state* st) {
     int rc = 0;
     st->dmr_lrrp_target[0] = 5678;
-    st->dmr_data_target_is_group[0] = 1;
+    st->dmr_data_checked_group[0] = 1;
     static const int protocols[2] = {DSD_SYNC_DMR_BS_DATA_POS, DSD_SYNC_P25P1_POS};
     for (size_t i = 0; i < 2U; i++) {
         st->lastsynctype = protocols[i];
@@ -181,7 +181,7 @@ run_target_kind(const dsd_opts* opts, dsd_state* st) {
             rc = 1;
         }
     }
-    st->dmr_data_target_is_group[0] = 0;
+    st->dmr_data_checked_group[0] = 0;
     st->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     return rc;
 }
