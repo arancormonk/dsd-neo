@@ -25,7 +25,6 @@ extern "C" {
 
 struct dsd_position_fix;
 struct dsd_position_origin;
-struct dsd_event_closing_call;
 
 /** Octets in an L3Harris GPS update body: Part A octets 2-8, then Part B octets 2-8 (TIA-102.AABF-D-1 §7.3.35-36). */
 #define DSD_HARRIS_GPS_BODY_OCTETS 14

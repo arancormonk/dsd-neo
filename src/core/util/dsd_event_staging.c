@@ -9,6 +9,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "dsd-neo/core/position.h"
 #include "dsd_event_staging.h"
 
 static int

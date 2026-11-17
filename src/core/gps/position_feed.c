@@ -31,6 +31,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 _Static_assert((int)DSD_STATE_EXT_CORE_POSITION_FEED < (int)DSD_STATE_EXT_MAX,
                "the position feed slot is in the table");

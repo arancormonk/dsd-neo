@@ -18,7 +18,6 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
