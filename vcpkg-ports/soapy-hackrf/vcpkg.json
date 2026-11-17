@@ -1,0 +1,16 @@
+{
+  "name": "soapy-hackrf",
+  "version": "0.3.6",
+  "description": "SoapySDR module for HackRF receivers",
+  "homepage": "https://github.com/pothosware/SoapyHackRF",
+  "license": "MIT",
+  "supports": "windows & !uwp & !static",
+  "dependencies": [
+    "hackrf",
+    "soapysdr",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    }
+  ]
+}

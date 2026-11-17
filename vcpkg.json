@@ -24,6 +24,21 @@
     },
     {
       "name": "soapysdr",
+      "platform": "windows",
+      "features": [
+        "tools"
+      ]
+    },
+    {
+      "name": "soapy-airspy",
+      "platform": "windows"
+    },
+    {
+      "name": "soapy-hackrf",
+      "platform": "windows"
+    },
+    {
+      "name": "soapy-airspyhf",
       "platform": "windows"
     },
     {

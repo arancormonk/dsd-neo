@@ -1,0 +1,41 @@
+libhackrf (https://github.com/greatscottgadgets/hackrf, host/libhackrf/src) copyright
+notices and license terms, reproduced from the source file headers so that binary
+distributions carry them. Only the BSD-3-Clause library is built; the repository's
+GPL-2.0 firmware and tools are not.
+
+  hackrf.c, hackrf.h
+    Copyright (c) 2012-2022 Great Scott Gadgets <info@greatscottgadgets.com>
+    Copyright (c) 2012, Jared Boone <jared@sharebrained.com>
+    Copyright (c) 2013, Benjamin Vernoux <titanmkd@gmail.com>
+  hackrf.h (the transmit example in its documentation)
+    Copyright (c) 2022 László Baráth "Uncle Dino" HA7DN <https://github.com/Sasszem>
+
+The license terms below are the hackrf.c and hackrf.h header text, unmodified
+apart from trailing spaces:
+
+Copyright (c) 2012-2022 Great Scott Gadgets <info@greatscottgadgets.com>
+Copyright (c) 2012, Jared Boone <jared@sharebrained.com>
+Copyright (c) 2013, Benjamin Vernoux <titanmkd@gmail.com>
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+    Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+    Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the
+	documentation and/or other materials provided with the distribution.
+    Neither the name of Great Scott Gadgets nor the names of its contributors may be used to endorse or promote products derived from this software
+	without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+HackRF trademark notice (upstream TRADEMARK file, unmodified):
+
+"HackRF" is a trademark of Great Scott Gadgets.  Permission to use the trademark
+with attribution to Great Scott Gadgets is granted to all licensees of HackRF for
+the sole purpose of naming or describing copies or derived works.  (See COPYING.)

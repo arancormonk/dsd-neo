@@ -361,17 +361,21 @@ class AirspyPackaging(unittest.TestCase):
         shutil.copytree(PATCHES, self.work / "android/third_party/patches")
         command = ["bash", str(self.work / "tools/check_vcpkg_overlay_pins.sh")]
         self.assert_success(run(command, cwd=self.work))
-        port = self.work / "vcpkg-ports/airspy/portfile.cmake"
-        original = port.read_text()
-        for key, length in (("REF", 40), ("SHA512", 128)):
-            with self.subTest(key=key):
-                port.write_text(re.sub(rf"(?m)^(\s*{key} )\S+", rf"\g<1>{'0' * length}", original))
-                rejected = run(command, cwd=self.work)
-                self.assertEqual(rejected.returncode, 1, rejected.stdout)
-                self.assertIn(f"airspy/portfile.cmake: {key}", rejected.stdout)
-                self.assert_success(run(command + ["--fix"], cwd=self.work))
-                self.assertEqual(port.read_text(), original)
-                self.assert_success(run(command, cwd=self.work))
+        for port_name in ("airspy", "rtlsdr", "soapysdr", "soapy-airspy", "hackrf", "airspyhf", "soapy-hackrf",
+                          "soapy-airspyhf"):
+            port = self.work / "vcpkg-ports" / port_name / "portfile.cmake"
+            original = port.read_text()
+            for key, length in (("REF", 40), ("SHA512", 128)):
+                with self.subTest(port=port_name, key=key):
+                    drifted = re.sub(rf"(?m)^(\s*{key} )\S+", rf"\g<1>{'0' * length}", original)
+                    self.assertNotEqual(drifted, original)
+                    port.write_text(drifted)
+                    rejected = run(command, cwd=self.work)
+                    self.assertEqual(rejected.returncode, 1, rejected.stdout)
+                    self.assertIn(f"vcpkg-ports/{port_name}/portfile.cmake: {key}", rejected.stdout)
+                    self.assert_success(run(command + ["--fix"], cwd=self.work))
+                    self.assertEqual(port.read_text(), original)
+                    self.assert_success(run(command, cwd=self.work))
         # A changed patch: its port's recorded digest is stale until --fix records the new one.
         for port_name, patch_name in (("airspy", "0001-libairspy-wait-for-cancelled-transfers.patch"),
                                       ("rtlsdr", "0003-librtlsdr-account-for-every-transfer.patch")):

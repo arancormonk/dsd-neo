@@ -1,0 +1,16 @@
+{
+  "name": "soapy-airspy",
+  "version": "0.2.1",
+  "description": "SoapySDR module for Airspy R2 and Mini receivers",
+  "homepage": "https://github.com/pothosware/SoapyAirspy",
+  "license": "MIT",
+  "supports": "windows & !uwp & !static",
+  "dependencies": [
+    "airspy",
+    "soapysdr",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    }
+  ]
+}

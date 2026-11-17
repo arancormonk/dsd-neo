@@ -1,0 +1,16 @@
+{
+  "name": "soapy-airspyhf",
+  "version": "0.2.1",
+  "description": "SoapySDR module for Airspy HF+ receivers",
+  "homepage": "https://github.com/pothosware/SoapyAirspyHF",
+  "license": "MIT",
+  "supports": "windows & !uwp & !static",
+  "dependencies": [
+    "airspyhf",
+    "soapysdr",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    }
+  ]
+}

@@ -86,6 +86,24 @@ tools/check_vcpkg_overlay_pins.sh
 
 Run the affected vcpkg build or packaging workflow. Use the same process for `arancormonk/codec2`.
 
+`tools/check_vcpkg_overlay_pins.sh` covers every overlay with a GitHub source: `mbe-neo` (and its PFFFT),
+`codec2`, `rtlsdr`, `airspy`, and the SoapySDR load path the Windows ZIP ships:
+
+| Overlay | Upstream | Pins | Pinned to |
+| --- | --- | --- | --- |
+| `soapysdr` | `pothosware/SoapySDR` | `SOAPY_SDR_SHA`, `SOAPY_SDR_TARBALL_SHA512` | the `soapy-sdr-0.8.1` tag (the AppImage builds the same commit) |
+| `soapy-airspy` | `pothosware/SoapyAirspy` | `SOAPY_AIRSPY_SHA`, `SOAPY_AIRSPY_TARBALL_SHA512` | the `soapy-airspy-0.2.1` tag |
+| `soapy-hackrf` | `pothosware/SoapyHackRF` | `SOAPY_HACKRF_SHA`, `SOAPY_HACKRF_TARBALL_SHA512` | the `soapy-hackrf-0.3.6` tag |
+| `soapy-airspyhf` | `pothosware/SoapyAirspyHF` | `SOAPY_AIRSPYHF_SHA`, `SOAPY_AIRSPYHF_TARBALL_SHA512` | the `soapy-airspyhf-0.2.1` tag |
+| `hackrf` | `greatscottgadgets/hackrf` | `HACKRF_SHA`, `HACKRF_TARBALL_SHA512` | the `v2026.01.3` release |
+| `airspyhf` | `airspy/airspyhf` | `AIRSPYHF_SHA`, `AIRSPYHF_TARBALL_SHA512` | a `master` commit (version 1.8.1); the only tag, `1.6.8`, is from 2020 |
+
+For a tag, pin the commit it points to (`git ls-remote https://github.com/<repo> 'refs/tags/<tag>^{}'`, or the plain
+tag ref for a lightweight tag) and hash that commit's archive with the recipe above. The `hackrf` and `airspyhf`
+overlays build the library with their own `CMakeLists.txt` instead of upstream's; when `HACKRF_SHA` moves, update
+the `LIBRARY_VERSION` and `LIBRARY_RELEASE` values in `vcpkg-ports/hackrf/CMakeLists.txt` as well, and recheck both
+libraries' source lists and the notices in each overlay's `copyright`, which the Windows ZIP ships.
+
 ### Patched USB libraries
 
 The `airspy` and `rtlsdr` overlays also apply dsd-neo's USB transfer patches from
