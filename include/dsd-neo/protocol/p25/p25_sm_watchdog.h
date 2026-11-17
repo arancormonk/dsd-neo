@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <time.h>
 #ifdef DSD_NEO_TEST_HOOKS
 #include <dsd-neo/platform/threading.h>
 #endif
@@ -25,6 +26,28 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * @brief What frame acquisition found, as the watchdog's tick reads it.
+ *
+ * The frame-sync hunt writes these dsd_state fields at every accepted sync, outside the P25 SM tick guard. The decoder
+ * thread (the one that started the watchdog) copies them here each time it leaves the guard, after the dispatch that
+ * follows every accept, so the watchdog's tick reads this copy and never the fields. A stamp the tick writes is merged
+ * back into dsd_state, newest wins, the next time the decoder takes the guard. Read and written under the guard only.
+ */
+typedef struct {
+    int lastsynctype;            /**< dsd_state::lastsynctype */
+    time_t last_cc_sync_time;    /**< dsd_state::last_cc_sync_time */
+    double last_cc_sync_time_m;  /**< dsd_state::last_cc_sync_time_m */
+    int cc_sync_written_by_tick; /**< the tick wrote the stamp: the decoder merges it at its next guard entry */
+} p25_sm_acquisition;
+
+/**
+ * @brief The acquisition copy on the watchdog's thread; NULL on every other thread, which reads dsd_state itself.
+ *
+ * Only meaningful under the tick guard.
+ */
+p25_sm_acquisition* p25_sm_watchdog_acquisition(void);
 
 /**
  * @brief Attempt to run one P25 state-machine tick when idle.

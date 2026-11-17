@@ -1278,7 +1278,19 @@ untyped FDMA entry with a typed peer entry at trust 1 (`trunk_scan_share_peer_id
 Recovery ownership is checked at the P25 watchdog, DMR tick and engine frame-sync callback boundaries. Runtime trunk-scan
 hooks identify the parked protocol. Outside trunk scan, validated control/grant evidence retains a protocol owner
 across sync loss; unrelated protocol decodes and raw sync cannot evict it. Ownership writes and watchdog reads share the decoder/SM guard, so the
-watchdog predicate does not read the sync or CC-format hints modified by frame acquisition. DMR owns its decoded
+watchdog predicate does not read the sync or CC-format hints modified by frame acquisition. Nor does the tick: the
+frame-sync hunt writes `lastsynctype` and the control channel's sync stamp (`last_cc_sync_time`, `_m`) at every accepted
+sync, outside the guard, so on the watchdog's thread the P25 machine reads them from the copy the decoder thread hands
+over each time it leaves the guard (`p25_sm_acquisition`, `p25_sm_watchdog_acquisition()`; the dispatch after every
+accept is such a hold), and a stamp the tick writes (the grace after a control-channel tune) goes into that copy, which
+the decoder merges into `dsd_state`, newest wins, when it next takes the guard (`p25_sm_seen_synctype()`,
+`p25_sm_seen_cc_sync_m()`, `p25_sm_set_cc_sync()` in `p25_trunk_sm.c`; every other thread reads the fields). The
+decoder thread is the one that started the watchdog. The no-carrier pass's reset (`dsd_engine_reset_no_carrier_state()`:
+the NAC and the carrier's other codes, the sync type, crypto and call state) and its identity step run under one hold of
+the guard, and the frame sync's notes to the machine (a voice channel's sync, a pass without one) wait for the guard.
+`ENGINE_P25_WATCHDOG_ACQUISITION_RACE` runs the real watchdog thread beside those writes (tsan-debug). A retune the
+watchdog makes still writes the chain and the stamps from its own thread (`trunk_tuning.c`), as an off-thread tune.
+DMR owns its decoded
 CC heartbeat, six-second loss grace, two-second probe window and five-second backend deadline inside each
 target's `dmr_sm_ctx_t`. In single-system sessions the engine ticks admitted DMR recovery between synced frames,
 including withheld frames, after startup acquisition has ended too. Data-only or unvalidated syncs need not enter a
@@ -13186,7 +13198,8 @@ Key public headers (selection):
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
   a stop joins only a thread that started; `p25_sm_watchdog_set_thread_create_for_test()`, compiled only with
-  `DSD_NEO_TEST_HOOKS`, injects the failure, `P25_SM_WATCHDOG_START`)
+  `DSD_NEO_TEST_HOOKS`, injects the failure, `P25_SM_WATCHDOG_START`; `p25_sm_acquisition`, the frame-acquisition
+  facts the decoder thread hands the watchdog's tick at each guard release, see Single-Tuner Trunk Scan)
 - NXDN: `<dsd-neo/protocol/nxdn/nxdn_const.h>`, `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>`
   (the movable missing-channel ledger and its exit summary, so trunk scan can park one per target)
 - D‑STAR: `<dsd-neo/protocol/dstar/dstar_const.h>`, `<dsd-neo/protocol/dstar/dstar_header.h>`

@@ -69,12 +69,29 @@ p25_sm_release_from_frame_sync(dsd_opts* opts, dsd_state* state) {
     p25_sm_tick_guard_leave();
 }
 
+/* The tick guard for a P25p1 chain step of the frame sync, re-entrant: the watchdog's tunes run under it, so a step
+   taken under it cannot interleave with one (frame_sync_p25p1_compare.c). */
+static int
+engine_tick_guard_enter(void) {
+    if (p25_sm_tick_guard_held_by_caller()) {
+        return 0;
+    }
+    p25_sm_tick_guard_enter();
+    return 1;
+}
+
+/* The frame sync's notes to the P25 machine (a voice channel's sync, a pass without one) read and count what the
+   watchdog's tick writes: under the tick guard, waiting out a tick as a frame dispatch does, so no note is lost. */
 static void
 p25_sm_vc_sync_from_frame_sync(dsd_opts* opts, const dsd_state* state) {
     if (!dsd_trunk_p25_recovery_allowed(opts, state)) {
         return;
     }
+    const int taken = engine_tick_guard_enter();
     p25_sm_note_vc_frame_sync(p25_sm_get_ctx(), opts, state);
+    if (taken) {
+        p25_sm_tick_guard_leave();
+    }
 }
 
 static void
@@ -82,9 +99,13 @@ p25_sm_vc_no_sync_from_frame_sync(dsd_opts* opts, const dsd_state* state) {
     if (!dsd_trunk_p25_recovery_allowed(opts, state)) {
         return;
     }
+    const int taken = engine_tick_guard_enter();
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     p25_sm_note_cc_no_sync_pass(ctx, opts, state);
     p25_sm_note_vc_no_sync_pass(ctx, opts, state);
+    if (taken) {
+        p25_sm_tick_guard_leave();
+    }
 }
 
 /* Decoder-thread trunking timers a silent UDP input must not starve (issue #703): a startup control-channel hunt, armed
@@ -144,17 +165,6 @@ engine_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
         p25_sm_tick_guard_leave();
     }
     return s_p25_probe_last_answer;
-}
-
-/* The tick guard for a P25p1 chain step of the frame sync, re-entrant: the watchdog's tunes run under it, so a step
-   taken under it cannot interleave with one (frame_sync_p25p1_compare.c). */
-static int
-engine_tick_guard_enter(void) {
-    if (p25_sm_tick_guard_held_by_caller()) {
-        return 0;
-    }
-    p25_sm_tick_guard_enter();
-    return 1;
 }
 
 void

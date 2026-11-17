@@ -11335,6 +11335,26 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
+# Frame acquisition's sync type and control-channel stamp, written by the hunt outside the P25 SM tick guard, and the
+# no-carrier pass's resets, beside the real P25 watchdog thread's control-channel tick (run it under tsan-debug too).
+add_executable(
+    dsd-neo_test_engine_p25_watchdog_acquisition_race
+    engine/test_engine_p25_watchdog_acquisition_race.c
+)
+target_include_directories(
+    dsd-neo_test_engine_p25_watchdog_acquisition_race
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+)
+target_link_libraries(
+    dsd-neo_test_engine_p25_watchdog_acquisition_race
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_P25_WATCHDOG_ACQUISITION_RACE
+    COMMAND dsd-neo_test_engine_p25_watchdog_acquisition_race
+)
+set_tests_properties(ENGINE_P25_WATCHDOG_ACQUISITION_RACE PROPERTIES TIMEOUT 60)
+
 # Compile the queue here to enable private storage-erasure probes without adding
 # diagnostic accessors to the production library or public frontend API.
 add_executable(

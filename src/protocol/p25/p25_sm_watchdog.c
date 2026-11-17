@@ -3,6 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -42,6 +44,43 @@ static int g_p25_sm_wd_ms = 0; // 0 => unset (use defaults per UI mode)
 #endif
 /* Whether the calling thread holds the tick guard (p25_sm_tick_guard_held_by_caller()). */
 static P25_SM_THREAD_LOCAL int s_tick_guard_held_here = 0;
+/* The watchdog's own thread, whose tick reads frame acquisition's facts from g_p25_sm_acquisition. */
+static P25_SM_THREAD_LOCAL int s_watchdog_thread_here = 0;
+/* The decoder thread: the one that started the watchdog, which owns g_state and hands its facts over. */
+static P25_SM_THREAD_LOCAL int s_decoder_thread_here = 0;
+/* Frame acquisition's facts as the decoder last handed them over (p25_sm_acquisition). Tick guard. */
+static p25_sm_acquisition g_p25_sm_acquisition;
+
+/* The decoder thread took the guard: a stamp the watchdog's tick wrote reaches dsd_state, unless the hunt has noted a
+   newer sync since. */
+static void
+p25_sm_acquisition_take_back(void) {
+    if (!s_decoder_thread_here || !g_state || !g_p25_sm_acquisition.cc_sync_written_by_tick) {
+        return;
+    }
+    if (g_state->last_cc_sync_time_m < g_p25_sm_acquisition.last_cc_sync_time_m) {
+        g_state->last_cc_sync_time = g_p25_sm_acquisition.last_cc_sync_time;
+        g_state->last_cc_sync_time_m = g_p25_sm_acquisition.last_cc_sync_time_m;
+    }
+    g_p25_sm_acquisition.cc_sync_written_by_tick = 0;
+}
+
+/* The decoder thread is about to leave the guard (or start the watchdog): what the hunt and this hold wrote is what the
+   watchdog's next tick reads. */
+static void
+p25_sm_acquisition_hand_over(void) {
+    if (!s_decoder_thread_here || !g_state) {
+        return;
+    }
+    g_p25_sm_acquisition.lastsynctype = g_state->lastsynctype;
+    g_p25_sm_acquisition.last_cc_sync_time = g_state->last_cc_sync_time;
+    g_p25_sm_acquisition.last_cc_sync_time_m = g_state->last_cc_sync_time_m;
+}
+
+p25_sm_acquisition*
+p25_sm_watchdog_acquisition(void) {
+    return s_watchdog_thread_here ? &g_p25_sm_acquisition : NULL;
+}
 
 int
 p25_sm_tick_guard_try_enter(void) {
@@ -50,6 +89,7 @@ p25_sm_tick_guard_try_enter(void) {
         return 0;
     }
     s_tick_guard_held_here = 1;
+    p25_sm_acquisition_take_back();
     return 1;
 }
 
@@ -62,6 +102,7 @@ p25_sm_tick_guard_enter(void) {
 
 void
 p25_sm_tick_guard_leave(void) {
+    p25_sm_acquisition_hand_over();
     s_tick_guard_held_here = 0;
     atomic_store(&g_p25_sm_tick_lock, 0);
 }
@@ -103,6 +144,7 @@ static DSD_THREAD_RETURN_TYPE
     p25_sm_watchdog_thread(void* arg) {
     dsd_runtime_fp_mode_apply_thread("p25_watchdog");
     (void)arg;
+    s_watchdog_thread_here = 1;
     while (atomic_load(&g_p25_sm_wd_running) && !dsd_exitflag_load()) {
         if (g_opts && g_state) {
             p25_sm_try_tick(g_opts, g_state);
@@ -146,6 +188,11 @@ p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
     if (!atomic_compare_exchange_strong(&g_p25_sm_wd_running, &expected, 1)) {
         return;
     }
+    /* This thread decodes: from here it hands frame acquisition's facts over at each guard release, starting now,
+       before the thread that reads them exists. */
+    s_decoder_thread_here = 1;
+    DSD_MEMSET(&g_p25_sm_acquisition, 0, sizeof(g_p25_sm_acquisition));
+    p25_sm_acquisition_hand_over();
 #ifdef DSD_NEO_TEST_HOOKS
     const p25_sm_watchdog_thread_create_fn create = g_p25_sm_wd_create_for_test;
     const int rc = create ? create(&g_p25_sm_wd_thread, p25_sm_watchdog_thread, NULL)
@@ -155,6 +202,7 @@ p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
 #endif
     if (rc != 0) {
         /* No watchdog this run: the decoder's own ticks keep the state machine going. A later start tries again. */
+        s_decoder_thread_here = 0;
         atomic_store(&g_p25_sm_wd_running, 0);
         LOG_WARN("P25 watchdog thread did not start (%d); trunking ticks only with the decoder.\n", rc);
         return;
@@ -169,6 +217,10 @@ p25_sm_watchdog_stop(void) {
         dsd_thread_join(g_p25_sm_wd_thread);
         g_p25_sm_wd_thread_created = 0;
     }
+    /* The state may be freed once the run ends: nothing is handed over from it again until the next start. */
+    s_decoder_thread_here = 0;
+    g_opts = NULL;
+    g_state = NULL;
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
