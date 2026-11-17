@@ -1835,6 +1835,11 @@ receivedPositionsAreRemoved() {
         QStringLiteral(" APRS - N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test"),
         QStringLiteral(" TIME: 12:00:00 UTC; (22.500000, 45.000000)"),
         QStringLiteral(" Report 7: !2230.00N/04500.00E>"),
+        // dmr_block.c MNIS LOCN: the report's own text, the hemisphere before each number.
+        QStringLiteral(" UTF8 Text: A123456070826N2230.0000E04500.0000"),
+        // dstar_slow_data.c GPS data blocks, a part of a D-PRS record or NMEA sentence each.
+        QStringLiteral(" DATA: N/04500.00E>test"),
+        QStringLiteral(" _UNK:  DATA: .00N/04500.00E>test"),
     };
     QTemporaryDir dir;
     {
@@ -1891,6 +1896,11 @@ receivedPositionsAreRemoved() {
         QStringLiteral("[SYNC] range:[-2.9,2.9] dc:-0.05 ratio(1:3)=2400:2400"),
         QStringLiteral("  IDEN [1] Type [1] Base Freq [34040000] (170200000 Hz) TX Offset [-25] Spacing [100]"),
         QStringLiteral("  Location ID [012345] CC1 [001][0001] CC2 [002][0002] Status: "),
+        // TETRA SDS data notices, NXDN's -Z data call dump and M17 arbitrary data are not D-STAR GPS data.
+        QStringLiteral("SDS SRC: 1001; TGT: 2002; DATA: 0x0A0B;"),
+        QStringLiteral("SDS SRC: 1001; TGT: 2002; DATA: 12 bits;"),
+        QStringLiteral(" DATA: 0A1B2C3D"),
+        QStringLiteral(" A_DATA: 01 02 03"),
     };
     for (const auto& line : keptLines) {
         const QString record = QStringLiteral("[stderr] [info] ") + line;

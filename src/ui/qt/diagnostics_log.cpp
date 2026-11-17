@@ -671,6 +671,11 @@ const char* const kPositionMarkers[] = {
     "\\bAPRS\\b|\\bDPRS\\b|\\$\\$CRC",
     // dmr_pdu.c and dsd_gps.c Cellocator time and location
     "\\bCellocator\\b",
+    // dmr_pdu.c LOCN text, the hemisphere before each number (dmr_block.c MNIS LOCN prints it as UTF8 Text)
+    "[NS][0-9]{4}\\.[0-9]+\\s*[EW][0-9]{5}\\.[0-9]+",
+    // dstar_slow_data.c GPS data blocks as they arrive, a part of a record at a time; not TETRA's "DATA: 0x...;" or
+    // "DATA: N bits;" notice, NXDN's -Z "DATA: <hex>" dump or M17's A_DATA
+    "(?<!\\w)DATA: (?!0x|[0-9A-F]{2,}(?:\\s|$))",
 };
 
 /**
