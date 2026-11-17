@@ -712,9 +712,17 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     }
 }
 
+// Motorola Capacity Max sets bit 0x10 on the standard FLCO under FID 0x10 (0x10 group voice, 0x14..0x17 talker alias,
+// which dmr_flco_store_flco_and_normalize() maps back), so FLCO 0x13 is its unit-to-unit voice call user.
+static int
+dmr_flco_is_capmax_private(const dmr_flco_ctx* ctx) {
+    return ctx->fid == 0x10 && ctx->flco == 0x13;
+}
+
 static dsd_call_kind
 dmr_flco_call_kind(const dmr_flco_ctx* ctx) {
-    if (ctx->flco == 0x03 || ctx->flco == 0x05 || ctx->flco == 0x07 || ctx->flco == 0x23) {
+    if (ctx->flco == 0x03 || ctx->flco == 0x05 || ctx->flco == 0x07 || ctx->flco == 0x23
+        || dmr_flco_is_capmax_private(ctx)) {
         return DSD_CALL_KIND_PRIVATE_VOICE;
     }
     return DSD_CALL_KIND_GROUP_VOICE;
@@ -1208,7 +1216,7 @@ dmr_flco_print_call_class(const dmr_flco_ctx* ctx) {
         } else {
             DSD_FPRINTF(stderr, "Private ");
         }
-    } else if (ctx->flco == 0x3) {
+    } else if (ctx->flco == 0x3 || dmr_flco_is_capmax_private(ctx)) {
         DSD_FPRINTF(stderr, "Private ");
     } else {
         DSD_FPRINTF(stderr, "Group ");

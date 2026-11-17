@@ -3,8 +3,10 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* BPTC(16,2), the single-burst and reverse-channel code (ETSI TS 102 361-1 B.2.2.2): a Hamming(16,11,4) row the
- * decoder cannot correct leaves the output as received, and the call reports the failure.
+/* BPTC(16,2), the single-burst and reverse-channel code (ETSI TS 102 361-1 B.2.2.1 and B.2.2.2): both rows are
+ * Hamming(16,11,4) codewords (the parity row repeats or complements the information row), so each is decoded with its
+ * parity bits written back. Every single error is corrected; two or three errors are corrected or rejected, never
+ * decoded wrong. A row the decoder cannot correct leaves the output as received, and the call reports the failure.
  *
  * The Hamming decoder leaves its output unwritten when it fails. The extractor used to copy that output anyway, so the
  * 11 data bits came from whatever its stack held: the burst's printed payload and CRC changed from run to run, and the
@@ -51,21 +53,10 @@ ones(const uint8_t bits[32]) {
     return n;
 }
 
-/* Whether input bit @p a lands in the Hamming(16,11,4) row: alone, it is an error the row corrects. A data bit is then
- * gone from the output; a row parity bit stays where it was received (the row's parity is not copied back), among the
- * first 16. A bit of the parity row stays there, past them. */
+/* Whether input bit @p a lands in the information row (deinterleaved bits 0..15) rather than the parity row. */
 static int
 in_hamming_row(int a) {
-    uint8_t in[32] = {0};
-    uint8_t out[32];
-    in[a] = 1;
-    (void)BPTC_16x2_Extract_Data(in, out, 1);
-    for (int i = 16; i < 32; i++) {
-        if (out[i] != 0) {
-            return 0;
-        }
-    }
-    return 1;
+    return DeInterleaveReverseChannelBptcPlacement[DeInterleaveReverseChannelBptc[a]] < 16U;
 }
 
 /* Two input bits in the Hamming row: two errors, which Hamming(16,11,4) detects and cannot correct. The call reports
@@ -104,10 +95,77 @@ test_failed_row_keeps_the_received_bits(void) {
     assert(pairs == 16 * 15 / 2);
 }
 
+/* The information row's codeword for the 11 bits 1,1,0,1,0,1,0,1,1,1,0, and the input that carries it with the parity
+ * row repeated (even) or complemented (odd). */
+static const uint8_t k_codeword[16] = {1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0};
+
+static void
+interleave(uint32_t odd, uint8_t in[32]) {
+    uint8_t matrix[32];
+    for (int i = 0; i < 16; i++) {
+        matrix[i] = k_codeword[i];
+        matrix[16 + i] = (uint8_t)(k_codeword[i] ^ odd);
+    }
+    for (int i = 0; i < 32; i++) {
+        in[i] = matrix[DeInterleaveReverseChannelBptcPlacement[DeInterleaveReverseChannelBptc[i]]];
+    }
+}
+
+/* Decodes @p in with up to three bits flipped: a success must carry the codeword sent. Returns whether it succeeded. */
+static int
+decodes_right(const uint8_t in[32], uint32_t odd) {
+    uint8_t copy[32];
+    uint8_t out[32];
+    DSD_MEMCPY(copy, in, sizeof copy);
+    if (BPTC_16x2_Extract_Data(copy, out, odd) != 0U) {
+        return 0;
+    }
+    for (int i = 0; i < 16; i++) {
+        assert(out[i] == k_codeword[i]);
+        assert(out[16 + i] == (uint8_t)(k_codeword[i] ^ odd));
+    }
+    return 1;
+}
+
+/* Every single error is corrected, in either row: the parity row and the information row's parity bits used to be
+ * left as received and fail the parity check (21 of the 32 positions). Two errors are corrected when they fall in
+ * different rows (16 * 16 of the 496 pairs) and rejected otherwise; three are always rejected; none decodes wrong. */
+static void
+test_errors_corrected_or_rejected(void) {
+    for (uint32_t odd = 0; odd < 2U; odd++) {
+        uint8_t clean[32];
+        interleave(odd, clean);
+        assert(decodes_right(clean, odd));
+        unsigned pairs_corrected = 0;
+        for (int a = 0; a < 32; a++) {
+            uint8_t one[32];
+            DSD_MEMCPY(one, clean, sizeof one);
+            one[a] ^= 1U;
+            assert(decodes_right(one, odd));
+            for (int b = a + 1; b < 32; b++) {
+                uint8_t two[32];
+                DSD_MEMCPY(two, one, sizeof two);
+                two[b] ^= 1U;
+                const int corrected = decodes_right(two, odd);
+                assert(corrected == (in_hamming_row(a) != in_hamming_row(b)));
+                pairs_corrected += (unsigned)corrected;
+                for (int c = b + 1; c < 32; c++) {
+                    uint8_t three[32];
+                    DSD_MEMCPY(three, two, sizeof three);
+                    three[c] ^= 1U;
+                    assert(!decodes_right(three, odd));
+                }
+            }
+        }
+        assert(pairs_corrected == 16U * 16U);
+    }
+}
+
 int
 main(void) {
     InitAllFecFunction();
     test_failed_row_keeps_the_received_bits();
+    test_errors_corrected_or_rejected();
     printf("FEC BPTC 16x2 tests passed.\n");
     return 0;
 }

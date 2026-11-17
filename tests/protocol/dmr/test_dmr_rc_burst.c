@@ -183,15 +183,33 @@ test_rc_pdu_corrects_single_data_bit_error(void) {
 }
 
 static void
-test_rc_pdu_rejects_parity_row_error(void) {
+test_rc_pdu_corrects_parity_row_error(void) {
     uint8_t interleaved[32];
+    uint8_t out_cmd = 0xFF;
     encode_rc_pdu(4, 0x7A, interleaved);
 
-    /* A flipped parity-row bit (matrix positions 16..31) is not correctable
-     * and must be reported as an FEC failure. */
+    /* The odd-parity row (matrix positions 16..31) is the complement of the
+     * information row, itself a Hamming(16,11,4) codeword, so one flipped bit
+     * there is corrected like one in the information row. */
     const int idx = interleaved_index_for_matrix_position(20);
     assert(idx >= 0);
     interleaved[idx] ^= 1U;
+    assert(dmr_rc_decode_pdu(interleaved, &out_cmd, NULL) == DMR_RC_DECODE_OK);
+    assert(out_cmd == 4);
+}
+
+static void
+test_rc_pdu_rejects_parity_row_double_error(void) {
+    uint8_t interleaved[32];
+    encode_rc_pdu(4, 0x7A, interleaved);
+
+    /* Two flipped bits in the parity row are detected, not corrected, and
+     * must be reported as an FEC failure. */
+    const int a = interleaved_index_for_matrix_position(20);
+    const int b = interleaved_index_for_matrix_position(27);
+    assert(a >= 0 && b >= 0);
+    interleaved[a] ^= 1U;
+    interleaved[b] ^= 1U;
     assert(dmr_rc_decode_pdu(interleaved, NULL, NULL) == DMR_RC_DECODE_FEC_ERR);
 }
 
@@ -565,7 +583,8 @@ main(void) {
     test_rc_pdu_round_trip_all_commands();
     test_rc_command_names();
     test_rc_pdu_corrects_single_data_bit_error();
-    test_rc_pdu_rejects_parity_row_error();
+    test_rc_pdu_corrects_parity_row_error();
+    test_rc_pdu_rejects_parity_row_double_error();
     test_rc_pdu_rejects_wrong_crc_mask();
     test_assemble_bits_round_trip();
     test_handler_consumes_trailing_dibits();

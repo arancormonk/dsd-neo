@@ -155,19 +155,19 @@ has(const burst_rig* rig, const char* needle) {
    distance n. */
 static const size_t k_scattered[5] = {4, 20, 36, 52, 68};
 
-/* Noise on a non-RAS control channel: a clean CSBK (R = 0) whose errors the ordinary extractor "corrects" into R = 4
-   with a failed CRC and no irrecoverable error, the shape the old heuristic accepted. The codeword decoder reaches a
-   codeword only at distance 5 (bits 1/12/31/42) or none (1/12/136/162); the 1/2/16/17 miscorrection lands on R = 6 at
-   distance 5. None of them is RAS, and the CSBK is not dispatched. */
+/* Noise on a non-RAS control channel: a clean CSBK (R = 0) with four errors. Bits 1/12/31/42 lead the decoder to a
+   codeword at distance 5 with R = 4 and a failed CRC; 1/2/16/17 to one at distance 5 with R = 6. Neither is RAS, and the
+   CSBK is not dispatched. Bits 1/12/136/162 (two of them in the column-parity rows, which the decoder corrects) reach the
+   original codeword: an ordinary CSBK whose CRC passes, never RAS. */
 static int
 test_noise_csbk_not_ras(void) {
     static const size_t far_bits[4] = {1, 12, 31, 42};
-    static const size_t none[4] = {1, 12, 136, 162};
     static const size_t wrong[4] = {1, 2, 16, 17};
-    const size_t* patterns[3] = {far_bits, none, wrong};
-    static const char* tags[3] = {"noise 1/12/31/42", "noise 1/12/136/162", "noise 1/2/16/17"};
+    static const size_t recovered[4] = {1, 12, 136, 162};
+    const size_t* patterns[2] = {far_bits, wrong};
+    static const char* tags[2] = {"noise 1/12/31/42", "noise 1/2/16/17"};
     int failed = 0;
-    for (size_t p = 0; p < 3; p++) {
+    for (size_t p = 0; p < 2; p++) {
         burst_rig rig;
         if (rig_start(&rig, 1, k_csbk, k_r_none, patterns[p], 4U, 0x03) != 0) {
             return 1;
@@ -177,6 +177,14 @@ test_noise_csbk_not_ras(void) {
         CHECK(tags[p], !has(&rig, "Connect Plus Adjacent Sites"));
         rig_close(&rig);
     }
+    burst_rig rig;
+    if (rig_start(&rig, 1, k_csbk, k_r_none, recovered, 4U, 0x03) != 0) {
+        return 1;
+    }
+    CHECK("noise 1/12/136/162", !has(&rig, "-RAS"));
+    CHECK("noise 1/12/136/162", !has(&rig, "(CRC ERR)"));
+    CHECK("noise 1/12/136/162 recovered", has(&rig, k_csbk_sites));
+    rig_close(&rig);
     return failed;
 }
 
@@ -232,13 +240,11 @@ test_ras_csbk_distance_gate(void) {
     return failed;
 }
 
-/* The candidate's own gate: a codeword the decoder reaches beyond distance 4 never replaces the extractor's payload.
-   The CSBK here passes its standard CRC with R = 4; with bits 7/14/21/104/170 flipped the extractor returns a wrong
-   payload with an irrecoverable error, and the codeword decoder reaches the original at distance 5. Adopted, that
-   codeword's check would pass and the CSBK would dispatch as an ordinary checked one; kept as extracted it keeps its
-   irrecoverable error (FEC ERR), with or without -F. */
+/* A CSBK that passes its standard CRC is an ordinary checked CSBK whatever its R. With bits 7/14/21/104/170 flipped the
+   decoder reaches the original codeword at distance 5, beyond the RAS radius; its CRC passes, so it dispatches with no
+   error and is not RAS, with or without -F. The radius gates only a burst whose check failed. */
 static int
-test_far_codeword_not_adopted(void) {
+test_far_codeword_checked_by_crc(void) {
     static const size_t far_bits[5] = {7, 14, 21, 104, 170};
     int failed = 0;
     for (int relaxed = 0; relaxed <= 1; relaxed++) {
@@ -248,8 +254,9 @@ test_far_codeword_not_adopted(void) {
         }
         const char* tag = relaxed ? "far codeword, -F" : "far codeword, strict";
         CHECK(tag, !has(&rig, "-RAS"));
-        CHECK(tag, has(&rig, "(FEC ERR)"));
-        CHECK(tag, !has(&rig, k_csbk_sites));
+        CHECK(tag, !has(&rig, "(FEC ERR)"));
+        CHECK(tag, !has(&rig, "(CRC ERR)"));
+        CHECK(tag, has(&rig, k_csbk_sites));
         rig_close(&rig);
     }
     return failed;
@@ -459,7 +466,7 @@ main(void) {
     failed |= test_signature_rules();
     failed |= test_noise_csbk_not_ras();
     failed |= test_ras_csbk_distance_gate();
-    failed |= test_far_codeword_not_adopted();
+    failed |= test_far_codeword_checked_by_crc();
     failed |= test_ras_lc_never_rs_corrected();
     failed |= test_layout_rules();
     failed |= test_nearest_codeword_adoption();

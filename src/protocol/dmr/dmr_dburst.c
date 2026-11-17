@@ -404,9 +404,10 @@ dmr_ras_signature(uint8_t databurst, uint8_t confirmed_data, const uint8_t* payl
     }
 }
 
-/* A RAS candidate (reserved bits set, standard check failed): decode the burst to a full codeword. Within
-   DSD_BPTC_196x96_UNIQUE_RADIUS that codeword is the unique nearest one, so its payload, R and check replace the
-   extractor's best effort and its signature is recorded; further away, or none, the burst stays as extracted. */
+/* A RAS candidate (reserved bits set, standard check failed). The extractor and the codeword decoder run the same
+   decode, so the codeword is the payload, R and check the extractor already gave; what the codeword decoder adds is the
+   distance to the received bits. Within DSD_BPTC_196x96_UNIQUE_RADIUS that codeword is the unique nearest one and its
+   signature is recorded; further away, or none, the burst stays as extracted with no signature. */
 static void
 dmr_dburst_decode_ras_candidate(dmr_data_burst_ctx* ctx) {
     uint8_t bits[96];
@@ -415,13 +416,6 @@ dmr_dburst_decode_ras_candidate(dmr_data_burst_ctx* ctx) {
     if (BPTC_196x96_Decode_Codeword(ctx->bptc_deinterleaved, bits, r, &distance) == 0
         || distance > DSD_BPTC_196x96_UNIQUE_RADIUS) {
         return;
-    }
-    // At distance 0 the received word is the codeword, so the extractor already gave its payload, R and check.
-    if (distance != 0U) {
-        DSD_MEMCPY(ctx->bptc_data_bits, bits, sizeof(ctx->bptc_data_bits));
-        DSD_MEMCPY(ctx->r, r, sizeof(ctx->r));
-        ctx->irrecoverable_errors = 0;
-        dmr_dburst_check_bptc_payload(ctx);
     }
     ctx->ras_signature =
         (uint8_t)dmr_ras_signature(ctx->databurst, ctx->state->data_conf_data[ctx->slot], ctx->bptc_data_bytes,
@@ -437,7 +431,7 @@ dmr_dburst_handle_bptc(dmr_data_burst_ctx* ctx) {
     ctx->irrecoverable_errors = BPTC_196x96_Extract_Data(ctx->bptc_deinterleaved, ctx->bptc_data_bits, ctx->r);
     dmr_dburst_check_bptc_payload(ctx);
 
-    // Only bursts with R != 0 whose check failed pay for the full decode; every other burst keeps the extractor's.
+    // Only bursts with R != 0 whose check failed pay for the codeword distance that gates a RAS signature.
     if (ctx->bptc_reserved_bits != 0 && ctx->crc_correct == 0
         && dmr_ras_eligible_type(ctx->databurst, ctx->state->data_conf_data[ctx->slot])) {
         dmr_dburst_decode_ras_candidate(ctx);

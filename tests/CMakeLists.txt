@@ -15079,6 +15079,24 @@ target_link_libraries(
 )
 add_test(NAME DMR_SEARCH_CALL_NOTES COMMAND dsd-neo_test_dmr_search_call_notes)
 
+# Motorola Capacity Max FLCO 0x13 under FID 0x10 is a private voice call; FLCO 0x10 stays a group call.
+add_executable(
+    dsd-neo_test_dmr_flco_capmax_private
+    protocol/dmr/test_dmr_flco_capmax_private.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_flco_capmax_private
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_flco_capmax_private
+    PRIVATE dsd-neo_proto_dmr dsd-neo_app_control dsd-neo_test_support
+)
+add_test(
+    NAME DMR_FLCO_CAPMAX_PRIVATE
+    COMMAND dsd-neo_test_dmr_flco_capmax_private
+)
+
 add_executable(
     dsd-neo_test_dmr_bs_alg_refresh_error
     protocol/dmr/test_dmr_bs_alg_refresh_error.c

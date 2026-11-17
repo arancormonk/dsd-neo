@@ -10322,14 +10322,21 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 - Target: `dsd-neo_fec`
 - Responsibilities: BCH, Golay, Hamming, RS, and BPTC helpers. Protocol-specific CRC/FCS helpers live with the
   corresponding protocol modules under `src/protocol/...`.
-- `bptc.c` / `<dsd-neo/fec/bptc.h>`: `BPTC_196x96_Extract_Data()` is the best-effort DMR payload extractor; a column
-  whose Hamming(13,9) decode fails keeps its received bits (the Hamming(15,11) rows correct every syndrome). It copies
-  back data bits only, so a parity-bit error can still fail its second pass; then it takes the full decoder's codeword
-  if that lies within `DSD_BPTC_196x96_UNIQUE_RADIUS` (4) and reports no irrecoverable error.
-  `BPTC_196x96_Decode_Codeword()` instead decodes a copy with full row and column copy-back (parity included, two
-  passes) and succeeds only on a valid product codeword, returning that codeword's payload, R bits and its distance to
-  the received bits. The decode is iterative, not nearest-codeword (some four-error patterns reach a different
-  codeword at distance 5), so callers gate on the distance.
+- `bptc.c` / `<dsd-neo/fec/bptc.h>`: `BPTC_196x96_Extract_Data()` and `BPTC_196x96_Decode_Codeword()` run one
+  decode: a received codeword stays as it is; any other word gets two passes over all 13 rows (the column-parity rows
+  9..12 included) and 15 columns, each writing every corrected bit back, parity bits included. Only a valid product
+  codeword (every row and column syndrome zero) counts as success: Hamming(15,11) is perfect, so a row decode always
+  "succeeds", and a success count alone would pass miscorrections and noise. The extractor returns 0 with that
+  codeword's payload and R, or the number of rows and columns still off the code with its best effort; the codeword
+  decoder returns the same codeword plus its distance to the received bits, or zeroed outputs. Every pattern of up to
+  three errors is corrected (what the decoder does depends on the error pattern only); the decode is iterative, not
+  nearest-codeword (some four-error patterns reach a different codeword at distance 5), so the RAS path gates on the
+  distance and every other burst on its own CRC. `BPTC_128x77_Extract_Data()` (embedded LC) decodes all 8 rows, row 7
+  included (its even column parity makes it a Hamming(16,11,4) codeword too), with parity bits written back; when
+  exactly one row failed and exactly two columns fail their parity, the two bits where they cross are flipped, and the
+  rows are decoded again. It corrects every pattern of up to two errors and never returns a wrong payload for three.
+  `BPTC_16x2_Extract_Data()` (single burst and reverse channel) decodes both rows the same way: the parity row repeats
+  or complements the information row, and the all-ones word is a codeword, so both rows are codewords.
 - `ez.cpp` / `<dsd-neo/fec/ez.h>`: the P25 Phase 2 Reed-Solomon codes, all RS(63,35) over GF(64) (ezpwd, the only
   file that includes it). The ESS is RS(44,16,29). FACCH and SACCH are shortened at the front and punctured at the
   back: FACCH RS(45,26,20) (symbols 0..8 shortened, payload 9..34, sent parity 35..53, punctured 54..62), SACCH
@@ -11842,24 +11849,22 @@ Key public headers (selection):
 
 Private per-protocol modules worth knowing about:
 
-- RAS burst signature (`dmr_dburst.c`, `dmr_ras_signature()` in `src/protocol/dmr/dmr_crc_provenance.h`). Motorola
-  RAS computes a burst's CRC (RS(12,9) parity for a voice LC) over the payload and a secret, and sets the BPTC
-  reserved bits R(2..0), which ETSI fixes at zero. A BPTC burst whose extractor R is nonzero and whose standard
-  check failed is a candidate: only then does the handler run `BPTC_196x96_Decode_Codeword()`, and when that reaches a
-  codeword within `DSD_BPTC_196x96_UNIQUE_RADIUS` (4, the guaranteed radius of the minimum-distance-9 product code,
-  so the unique nearest codeword) the codeword's payload, R and check replace the extractor's and are dispatched.
-  The signature is that codeword's R nonzero and check failed, on an eligible type (PI with FID 0x10 only, voice LC
-  header and terminator, CSBK, MBC header, data header, confirmed rate-1/2 block, USBD; never the MBC continuation,
-  rate 3/4, rate 1 or idle) and not Hytera (byte 1 0x68 where it is a FID or MFID: CSBK, MBC header, voice LC
-  header and terminator, proprietary DPF 15 data header; never USBD or an ordinary data header). The context's
-  `ras_signature` is computed with or without `-F`; `is_ras` (accept, `crc_correct = 1`, `-RAS`,
-  `DSD_CRC_RAS_UNVERIFIED`, `DMR_DATA_BLOCK_CRC_RAS`) is a signature under `-F`. A voice LC with R nonzero only gets
-  the syndrome check `CheckFullLinkControlCrc()` and is never RS-corrected; R == 0 bursts keep the extractor and
-  ordinary RS paths and pay nothing. The adopted codeword's check decides even when it is not a signature: one that
-  passes is an ordinary checked burst (dispatched, unmarked, may prove TDMA, with or without `-F`), and one whose R is
-  0 is handled as an R == 0 burst (a voice LC goes through ordinary RS(12,9) correction; a failed check is a plain
-  failure, never RAS). Decided limit: the decoder is iterative, correct-or-reject; a RAS burst with
-  more than 4 errors, or one of the few-error patterns it carries beyond 4, is a failure. Tests: `DMR_RAS_SIGNATURE`,
+- RAS burst signature (`dmr_dburst.c`, `dmr_ras_signature()` in `src/protocol/dmr/dmr_crc_provenance.h`). Motorola RAS
+  computes a burst's CRC (RS(12,9) parity for a voice LC) over the payload and a secret, and sets the BPTC reserved
+  bits R(2..0), which ETSI fixes at zero. A BPTC burst whose extractor R is nonzero and whose standard check failed is
+  a candidate: only then does the handler run `BPTC_196x96_Decode_Codeword()` for the distance (it reaches the
+  codeword the extractor already returned), and the codeword counts only within `DSD_BPTC_196x96_UNIQUE_RADIUS` (4,
+  the guaranteed radius of the minimum-distance-9 product code, so the unique nearest codeword). The signature is that
+  codeword's R nonzero and check failed, on an eligible type (PI with FID 0x10 only, voice LC header and terminator,
+  CSBK, MBC header, data header, confirmed rate-1/2 block, USBD; never the MBC continuation, rate 3/4, rate 1 or idle)
+  and not Hytera (byte 1 0x68 where it is a FID or MFID: CSBK, MBC header, voice LC header and terminator, proprietary
+  DPF 15 data header; never USBD or an ordinary data header). The context's `ras_signature` is computed with or
+  without `-F`; `is_ras` (accept, `crc_correct = 1`, `-RAS`, `DSD_CRC_RAS_UNVERIFIED`, `DMR_DATA_BLOCK_CRC_RAS`) is a
+  signature under `-F`. A voice LC with R nonzero only gets the syndrome check `CheckFullLinkControlCrc()` and is
+  never RS-corrected; R == 0 bursts keep the ordinary RS paths and pay nothing. A burst whose decoded codeword passes
+  its check is an ordinary checked burst at any distance and whatever its R (dispatched, unmarked, may prove TDMA,
+  with or without `-F`). Decided limit: the decoder is iterative, correct-or-reject; a RAS burst with more than 4
+  errors, or one of the few-error patterns it carries beyond 4, is a failure. Tests: `DMR_RAS_SIGNATURE`,
   `DMR_DBURST_PROFILE`, `DMR_EVENT_CRC`, `DECODE_IQ_DMR_T3_RAS_CC`.
 - Voice crypto continuity (`dmr_vcrypt.c`, issue #729). Every DMR voice cipher keys a frame by its superframe's IV/MI
   and its position 0..17. Per slot, `dmr_vc_ref_*` holds the symbol-clock position of the voice sync of the superframe

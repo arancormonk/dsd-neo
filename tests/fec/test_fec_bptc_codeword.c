@@ -3,8 +3,10 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* BPTC(196,96): failed column decodes keep the received bits, and the full
- * codeword decoder reports the codeword it reaches and its distance. */
+/* BPTC(196,96): the extractor decodes every row and column, parity rows and
+ * columns included, and reports success only for a valid codeword; the full
+ * codeword decoder runs the same decode and reports that codeword and its
+ * distance. */
 
 #include <assert.h>
 #include <dsd-neo/core/bit_packing.h>
@@ -22,44 +24,6 @@ encode_deinterleaved(const uint8_t payload[96], const uint8_t reserved[3], uint8
     uint8_t info[196];
     dmr_test_encode_bptc_196x96(payload, reserved, info);
     BPTCDeInterleaveDMRData(info, out);
-}
-
-/* Two errors in the column-parity rows of one column give an uncorrectable
- * syndrome on both passes. The extractor must keep that column as received
- * instead of copying the previous column's (or uninitialised) decoder output. */
-static void
-test_extract_keeps_failed_column(void) {
-    static const uint8_t r0[3] = {0, 0, 0};
-    uint8_t payload[96] = {0};
-    uint8_t word[196];
-    uint8_t out[96];
-    uint8_t r[3];
-    payload[8] = 1; // matrix row 1, column 0
-
-    encode_deinterleaved(payload, r0, word);
-    word[137] ^= 1U; // matrix row 9, column 1
-    word[182] ^= 1U; // matrix row 12, column 1
-    uint32_t irr = BPTC_196x96_Extract_Data(word, out, r);
-    assert(irr > 0);
-    assert(out[8] == 1);
-    assert(out[9] == 0); // stale copy of column 0 set this bit
-    assert(memcmp(out, payload, sizeof out) == 0);
-    assert(memcmp(r, r0, sizeof r) == 0);
-
-    // The same pattern in the first column has no previous column to copy: the decoder's output buffer is unwritten
-    // there. Every bit of that column set (R = 4 puts a 1 in row 0), so a zeroed or byte-valued leftover fails.
-    static const uint8_t r4[3] = {0, 0, 1};
-    DSD_MEMSET(payload, 0, sizeof payload);
-    for (size_t row = 1; row < 9; row++) {
-        payload[8U + ((row - 1U) * 11U)] = 1; // matrix row @p row, column 0
-    }
-    encode_deinterleaved(payload, r4, word);
-    word[136] ^= 1U; // matrix row 9, column 0
-    word[181] ^= 1U; // matrix row 12, column 0
-    irr = BPTC_196x96_Extract_Data(word, out, r);
-    assert(irr > 0);
-    assert(memcmp(out, payload, sizeof out) == 0);
-    assert(memcmp(r, r4, sizeof r) == 0);
 }
 
 /* Clean CSBK from the dmr_t3_cc fixture (R = 0) and the RAS reference burst
@@ -85,6 +49,16 @@ build_word(const uint8_t bytes[12], const uint8_t reserved[3], uint8_t payload[9
     encode_deinterleaved(payload, reserved, word);
 }
 
+static uint32_t
+xorshift32(uint32_t* state) {
+    uint32_t x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
+
 /* Decodes and checks that the call left the input alone. */
 static int
 decode(const uint8_t word[196], uint8_t out[96], uint8_t r[3], uint32_t* distance) {
@@ -94,6 +68,78 @@ decode(const uint8_t word[196], uint8_t out[96], uint8_t r[3], uint32_t* distanc
     int ok = BPTC_196x96_Decode_Codeword(word, out, r, distance);
     assert(memcmp(before, word, sizeof before) == 0);
     return ok;
+}
+
+/* Two errors in the column-parity rows (9..12) of one column: each is the only error in its row, which corrects it, so
+ * every such pair decodes. The rows were never decoded before, and the column decode alone failed on some pairs and
+ * "corrected" a data bit on others while reporting success. */
+static void
+test_extract_parity_row_pairs(void) {
+    const uint8_t* bytes[2] = {k_csbk_bytes, k_ras_bytes};
+    const uint8_t* reserved[2] = {k_csbk_r, k_ras_r};
+    for (size_t w = 0; w < 2; w++) {
+        uint8_t payload[96];
+        uint8_t clean[196];
+        build_word(bytes[w], reserved[w], payload, clean);
+        for (size_t col = 0; col < 15; col++) {
+            for (size_t a = 9; a < 13; a++) {
+                for (size_t b = a + 1; b < 13; b++) {
+                    uint8_t word[196];
+                    uint8_t out[96];
+                    uint8_t r[3];
+                    DSD_MEMCPY(word, clean, sizeof word);
+                    word[matrix_bit(a, col)] ^= 1U;
+                    word[matrix_bit(b, col)] ^= 1U;
+                    assert(BPTC_196x96_Extract_Data(word, out, r) == 0);
+                    assert(memcmp(out, payload, sizeof out) == 0);
+                    assert(memcmp(r, reserved[w], sizeof r) == 0);
+                }
+            }
+        }
+    }
+}
+
+/* Decodes @p word with the extractor and checks that it reports success with the payload and R sent. */
+static void
+assert_extract_corrects(const uint8_t word[196], const uint8_t payload[96], const uint8_t reserved[3]) {
+    uint8_t copy[196];
+    uint8_t out[96];
+    uint8_t r[3];
+    DSD_MEMCPY(copy, word, sizeof copy);
+    assert(BPTC_196x96_Extract_Data(copy, out, r) == 0);
+    assert(memcmp(out, payload, sizeof out) == 0);
+    assert(memcmp(r, reserved, sizeof r) == 0);
+}
+
+/* Every decode step works on syndromes, so what the decoder does depends on the error pattern only. Every pattern of
+ * two errors is corrected; so is every pattern of three (checked exhaustively offline, sampled here). */
+static void
+test_extract_corrects_few_errors(void) {
+    uint8_t payload[96];
+    uint8_t clean[196];
+    build_word(k_csbk_bytes, k_csbk_r, payload, clean);
+    for (size_t a = 1; a < 196; a++) {
+        for (size_t b = a + 1; b < 196; b++) {
+            uint8_t word[196];
+            DSD_MEMCPY(word, clean, sizeof word);
+            word[a] ^= 1U;
+            word[b] ^= 1U;
+            assert_extract_corrects(word, payload, k_csbk_r);
+        }
+    }
+    uint32_t state = 0x3E44A11CU;
+    for (unsigned t = 0; t < 20000U; t++) {
+        uint8_t word[196];
+        DSD_MEMCPY(word, clean, sizeof word);
+        for (uint32_t flipped = 0; flipped < 3U;) {
+            const size_t bit = 1U + (xorshift32(&state) % 195U);
+            if (word[bit] == clean[bit]) { // distinct bits
+                word[bit] ^= 1U;
+                flipped++;
+            }
+        }
+        assert_extract_corrects(word, payload, k_csbk_r);
+    }
 }
 
 static void
@@ -160,12 +206,11 @@ test_codeword_column_parity_error(void) {
     assert(memcmp(r, k_csbk_r, sizeof r) == 0);
 }
 
-/* Bits 29/74/75/90 on the R = 4 word: the full decoder returns the original
- * codeword at distance 4 while the extractor's payload differs at 18/51/62. */
+/* Bits 29/74/75/90 on the R = 4 word: the full decoder returns the original codeword at distance 4, and so does the
+ * extractor (which once copied back data bits only and returned payload bits 18/51/62 wrong, reporting success). */
 static void
-test_codeword_differs_from_extractor(void) {
+test_codeword_matches_extractor(void) {
     static const size_t flips[4] = {29, 74, 75, 90};
-    static const size_t extractor_diffs[3] = {18, 51, 62};
     uint8_t payload[96];
     uint8_t word[196];
     uint8_t out[96];
@@ -179,20 +224,7 @@ test_codeword_differs_from_extractor(void) {
     assert(distance == 4);
     assert(memcmp(out, payload, sizeof out) == 0);
     assert(memcmp(r, k_ras_r, sizeof r) == 0);
-
-    uint8_t extracted[96];
-    uint8_t extracted_r[3];
-    uint8_t copy[196];
-    DSD_MEMCPY(copy, word, sizeof copy);
-    (void)BPTC_196x96_Extract_Data(copy, extracted, extracted_r);
-    size_t next = 0;
-    for (size_t i = 0; i < 96; i++) {
-        if (extracted[i] != payload[i]) {
-            assert(next < 3 && extractor_diffs[next] == i);
-            next++;
-        }
-    }
-    assert(next == 3);
+    assert_extract_corrects(word, payload, k_ras_r);
 }
 
 /* Bits 1/2/16/17 (two errors in each of rows 0-1 and columns 0-1) lead the
@@ -218,16 +250,6 @@ test_codeword_wrong_beyond_radius(void) {
         assert(r_value(r) == wrong_r[w]);
         assert(memcmp(out, payload, sizeof out) != 0);
     }
-}
-
-static uint32_t
-xorshift32(uint32_t* state) {
-    uint32_t x = *state;
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    *state = x;
-    return x;
 }
 
 /* The distance the decoder reports is the true one: the 195 product-code bits (1..195; bit 0 is outside the code) that
@@ -313,12 +335,30 @@ test_codeword_random_words(void) {
     printf("random words decoded to a codeword: %u of 10000\n", successes);
 }
 
-/* A row-parity and a column-parity error in one column: the extractor copies
- * back data bits only, so that column still fails on the second pass although
- * the payload is right. The extractor then falls back to the full codeword
- * decoder, whose codeword within the unique radius is the nearest one. */
+/* The extractor and the full decoder run one decode: the extractor succeeds exactly when the full decoder reaches a
+ * codeword, and then returns that codeword's payload and R, at any distance. Checked on the named patterns and on words
+ * up to ten errors from a random codeword. */
 static void
-test_extract_falls_back_to_nearest_codeword(void) {
+assert_extract_is_codeword_decode(const uint8_t word[196]) {
+    uint8_t copy[196];
+    uint8_t extracted[96];
+    uint8_t extracted_r[3];
+    uint8_t out[96];
+    uint8_t r[3];
+    uint32_t distance = 0;
+    DSD_MEMCPY(copy, word, sizeof copy);
+    const uint32_t off_code = BPTC_196x96_Extract_Data(copy, extracted, extracted_r);
+    if (decode(word, out, r, &distance) == 1) {
+        assert(off_code == 0);
+        assert(memcmp(extracted, out, sizeof out) == 0);
+        assert(memcmp(extracted_r, r, sizeof r) == 0);
+    } else {
+        assert(off_code > 0);
+    }
+}
+
+static void
+test_extract_is_the_codeword_decode(void) {
     uint8_t payload[96];
     uint8_t word[196];
     uint8_t out[96];
@@ -326,9 +366,7 @@ test_extract_falls_back_to_nearest_codeword(void) {
     build_word(k_csbk_bytes, k_csbk_r, payload, word);
     word[matrix_bit(4, 11)] ^= 1U; // row-parity bit
     word[matrix_bit(9, 11)] ^= 1U; // column-parity bit
-    assert(BPTC_196x96_Extract_Data(word, out, r) == 0);
-    assert(memcmp(out, payload, sizeof out) == 0);
-    assert(memcmp(r, k_csbk_r, sizeof r) == 0);
+    assert_extract_corrects(word, payload, k_csbk_r);
 
     // Capacity Plus channel status CSBK from the dmr_voice fixture, CRC good:
     // errors at matrix (4,11), (6,10) and (9,11), distance 3.
@@ -347,25 +385,41 @@ test_extract_falls_back_to_nearest_codeword(void) {
     assert(decode(word, out, r, &distance) == 1);
     assert(distance == 3);
     assert(memcmp(out, payload, sizeof out) == 0);
-    assert(BPTC_196x96_Extract_Data(word, out, r) == 0);
-    assert(memcmp(out, payload, sizeof out) == 0);
-    assert(memcmp(r, k_csbk_r, sizeof r) == 0);
+    assert_extract_corrects(word, payload, k_csbk_r);
 
-    // Beyond the radius the extractor keeps its own result and its count:
-    // these five errors fail the second pass and reach a codeword at distance 5.
+    // Beyond the radius as well: these five errors reach the original codeword at distance 5, and the extractor
+    // returns it, so the burst's own CRC decides (it once failed the second pass and was dropped).
     static const size_t flips[5] = {88, 127, 134, 144, 178};
     build_word(k_csbk_bytes, k_csbk_r, payload, word);
     for (size_t i = 0; i < 5; i++) {
         word[flips[i]] ^= 1U;
     }
-    uint8_t codeword_out[96];
-    uint8_t codeword_r[3];
-    assert(decode(word, codeword_out, codeword_r, &distance) == 1);
+    assert(decode(word, out, r, &distance) == 1);
     assert(distance == 5);
-    uint8_t copy[196];
-    DSD_MEMCPY(copy, word, sizeof copy);
-    assert(BPTC_196x96_Extract_Data(copy, out, r) > 0);
-    assert(distance > DSD_BPTC_196x96_UNIQUE_RADIUS);
+    assert_extract_corrects(word, payload, k_csbk_r);
+
+    uint32_t state = 0xD15EA5E5U;
+    for (unsigned t = 0; t < 4000U; t++) {
+        uint8_t reserved[3];
+        uint8_t clean[196];
+        for (size_t i = 0; i < 96; i++) {
+            payload[i] = (uint8_t)(xorshift32(&state) & 1U);
+        }
+        for (size_t i = 0; i < 3; i++) {
+            reserved[i] = (uint8_t)(xorshift32(&state) & 1U);
+        }
+        encode_deinterleaved(payload, reserved, clean);
+        DSD_MEMCPY(word, clean, sizeof word);
+        const uint32_t errors = t % 11U;
+        for (uint32_t flipped = 0; flipped < errors;) {
+            const size_t bit = 1U + (xorshift32(&state) % 195U);
+            if (word[bit] == clean[bit]) { // distinct bits
+                word[bit] ^= 1U;
+                flipped++;
+            }
+        }
+        assert_extract_is_codeword_decode(word);
+    }
 }
 
 /* A word the decoder cannot finish returns 0 with zeroed outputs. */
@@ -401,16 +455,17 @@ int
 main(void) {
     InitAllFecFunction();
     assert(dmr_test_check_reference_burst() == 1);
-    test_extract_keeps_failed_column();
+    test_extract_parity_row_pairs();
+    test_extract_corrects_few_errors();
     test_codeword_clean();
     test_codeword_scattered_errors();
     test_codeword_column_parity_error();
-    test_codeword_differs_from_extractor();
+    test_codeword_matches_extractor();
     test_codeword_wrong_beyond_radius();
     test_codeword_near_words();
     test_codeword_random_words();
     test_codeword_rejects();
-    test_extract_falls_back_to_nearest_codeword();
+    test_extract_is_the_codeword_decode();
     printf("FEC BPTC codeword tests passed.\n");
     return 0;
 }

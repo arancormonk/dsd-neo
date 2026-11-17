@@ -118,22 +118,40 @@ test_bptc_128x77(void) {
         assert(extracted[i] == (data_bits72[i] & 1U));
     }
 
-    // Inject a single-bit error in a data row and ensure correction path yields no irrecoverables
-    uint8_t mat_err[8][16];
-    DSD_MEMCPY(mat_err, mat, sizeof(mat_err));
-    mat_err[1][3] ^= 1U; // single flip in row 1
-    irr = BPTC_128x77_Extract_Data(mat_err, extracted);
-    assert(irr == 0);
+    // Every single and double error is corrected, anywhere in the matrix: a row with one error corrects it, parity bits
+    // included (a parity-bit or row-7 error used to fail the column parity, 51 of the 128 positions), and a row with
+    // two errors is the one failed row whose two failed columns locate them.
+    uint8_t want[77];
+    DSD_MEMCPY(want, extracted, sizeof(want));
+    for (int a = 0; a < 128; a++) {
+        for (int b = a; b < 128; b++) {
+            uint8_t mat_err[8][16];
+            DSD_MEMCPY(mat_err, mat, sizeof(mat_err));
+            mat_err[a / 16][a % 16] ^= 1U;
+            if (b != a) {
+                mat_err[b / 16][b % 16] ^= 1U;
+            }
+            irr = BPTC_128x77_Extract_Data(mat_err, extracted);
+            assert(irr == 0);
+            assert(memcmp(extracted, want, sizeof(want)) == 0);
+        }
+    }
 
-    // An uncorrectable row must retain its received bits, not the previous row's
-    // decoded output. The block remains failed even when its checksum happens to match.
+    // Two rows with two errors each: no row is located, so the block fails and each failed row keeps its received
+    // bits, not the previous row's decoded output.
+    uint8_t mat_err[8][16];
     DSD_MEMCPY(mat_err, mat, sizeof(mat_err));
     mat_err[1][0] ^= 1U;
     mat_err[1][1] ^= 1U;
+    mat_err[3][4] ^= 1U;
+    mat_err[3][9] ^= 1U;
     irr = BPTC_128x77_Extract_Data(mat_err, extracted);
     assert(irr != 0);
     for (int col = 0; col < 11; col++) {
         assert(extracted[11 + col] == mat_err[1][col]);
+    }
+    for (int col = 0; col < 10; col++) {
+        assert(extracted[22 + 10 + col] == mat_err[3][col]);
     }
 
     return 0;
