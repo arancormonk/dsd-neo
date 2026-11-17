@@ -581,10 +581,12 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     dsd_call_snapshot call;
     const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
     /* One report per transmission and META content: an RF stream's call (the one m17_publish_lsf() just observed),
-       or a network stream's ID. */
+       or a network stream's ID within its call. The call epoch is part of both, so however a call ended (stream EOT,
+       EOTX, DISC, an MPKT's end, a timeout, a lost sync) the next one is another transmission. */
     const uint8_t tx_kind = carrier->network ? 2U : 1U;
-    const uint64_t tx_id = carrier->network ? (uint64_t)carrier->stream_id : (active ? call.epoch : 0U);
-    if (state->m17_gnss_tx_kind == tx_kind && state->m17_gnss_tx_id == tx_id
+    const uint64_t epoch = active ? call.epoch : 0U;
+    const uint64_t tx_id = carrier->network ? (uint64_t)carrier->stream_id : epoch;
+    if (state->m17_gnss_tx_kind == tx_kind && state->m17_gnss_tx_id == tx_id && state->m17_gnss_tx_epoch == epoch
         && memcmp(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES) == 0) {
         return;
     }
@@ -594,6 +596,7 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     /* An RF report with no active call has no transmission to repeat within: the next one is admitted again. */
     state->m17_gnss_tx_kind = (carrier->network || tx_id != 0U) ? tx_kind : 0U;
     state->m17_gnss_tx_id = tx_id;
+    state->m17_gnss_tx_epoch = epoch;
     DSD_MEMCPY(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
     char text[128];
     m17_gnss_row_text(&fix, text, sizeof(text));
@@ -3791,6 +3794,8 @@ m17_ip_handle_control_frame(const m17_ip_ctrl_desc* desc, const dsd_opts* opts, 
         if (dsd_call_state_end(state, 0U, 0.0) > 0) {
             dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         }
+        /* The transmission ended (EOTX, DISC): a later stream that reuses its ID is another one, call or not. */
+        state->m17_gnss_tx_kind = 0U;
         state->carrier = 0;
         state->synctype = DSD_SYNC_NONE;
     }

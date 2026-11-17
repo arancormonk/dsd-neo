@@ -25,6 +25,7 @@ set_epoch_records(dsd_state* state) {
     state->dstar_dprs.epoch = 1U;
     state->m17_gnss_tx_kind = 1U;
     state->m17_gnss_tx_id = 1U;
+    state->m17_gnss_tx_epoch = 1U;
     state->m17_gnss_meta_admitted[0] = 0x12U;
 }
 
@@ -33,7 +34,8 @@ epoch_records_set(const dsd_state* state) {
     return state->dmr_lc_checked_transmission[0] == 1U && state->dmr_lc_checked_source[0] == 1001U
            && state->p25_p1_lc_checked_id.epoch == 1U && state->p25_p1_harris_part_a.valid == 1U
            && state->dstar_dprs.collecting == 1U && state->dstar_dprs.epoch == 1U && state->m17_gnss_tx_kind == 1U
-           && state->m17_gnss_tx_id == 1U && state->m17_gnss_meta_admitted[0] == 0x12U;
+           && state->m17_gnss_tx_id == 1U && state->m17_gnss_tx_epoch == 1U
+           && state->m17_gnss_meta_admitted[0] == 0x12U;
 }
 
 static int
@@ -42,7 +44,8 @@ epoch_records_clear(const dsd_state* state) {
            && state->p25_p1_lc_checked_id.epoch == 0U && state->p25_p1_lc_checked_id.source == 0U
            && state->p25_p1_harris_part_a.valid == 0U && state->p25_p1_harris_part_a.epoch == 0U
            && state->dstar_dprs.collecting == 0U && state->dstar_dprs.len == 0U && state->dstar_dprs.epoch == 0U
-           && state->m17_gnss_tx_kind == 0U && state->m17_gnss_tx_id == 0U && state->m17_gnss_meta_admitted[0] == 0U;
+           && state->m17_gnss_tx_kind == 0U && state->m17_gnss_tx_id == 0U && state->m17_gnss_tx_epoch == 0U
+           && state->m17_gnss_meta_admitted[0] == 0U;
 }
 
 int

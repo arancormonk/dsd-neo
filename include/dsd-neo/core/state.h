@@ -3027,11 +3027,14 @@ struct dsd_state {
     uint8_t m17_meta[16]; //packed meta
     /* The last GNSS META admitted as a position (issue #800): a transmission repeats its LSF META (RF: every LICH
      * superframe; IP: every stream frame), and the repeats are one report. Admitted again only for another
-     * transmission (m17_gnss_tx_kind/m17_gnss_tx_id: 1 = RF, the slot 0 call epoch; 2 = network, the stream ID) or
-     * changed META bytes; kind 0 = none yet. A call state that starts over (its epochs restart) forgets it. */
+     * transmission (m17_gnss_tx_kind/m17_gnss_tx_id: 1 = RF, the slot 0 call epoch; 2 = network, the stream ID; and
+     * for both m17_gnss_tx_epoch, the slot 0 call epoch, so any end of the call -- a stream EOT, EOTX, DISC, an MPKT's
+     * end, a timeout or a lost sync -- makes the next call another transmission) or changed META bytes; kind 0 = none
+     * yet. A call state that starts over (its epochs restart) forgets it. */
     uint8_t m17_gnss_meta_admitted[14];
     uint8_t m17_gnss_tx_kind;
     uint64_t m17_gnss_tx_id;
+    uint64_t m17_gnss_tx_epoch;
     uint8_t m17_text_meta_control_or;
     uint8_t m17_text_meta_expected_bitmap;
     uint8_t m17_text_meta_received_bitmap;

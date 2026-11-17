@@ -114,6 +114,7 @@ call_state_forget_epoch_records(dsd_state* state) {
     DSD_MEMSET(state->m17_gnss_meta_admitted, 0, sizeof(state->m17_gnss_meta_admitted));
     state->m17_gnss_tx_kind = 0U;
     state->m17_gnss_tx_id = 0U;
+    state->m17_gnss_tx_epoch = 0U;
 }
 
 /* The extension, created when @p create and missing. A created one restarts the epoch sequence unless @p restore (the

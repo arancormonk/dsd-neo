@@ -360,6 +360,47 @@ test_ip_repeated_meta_is_one_report(void) {
     rig_close(&r);
 }
 
+/* Issue #800: however a network transmission ends -- EOTX, DISC, or a call end with no control frame (a timeout, a
+ * lost stream) -- the next stream is another transmission, even with the same stream ID and META: admitted again, and
+ * its call's row takes the position. */
+static void
+test_ip_stream_end_admits_next_stream(void) {
+    static const uint8_t eotx[10] = {'E', 'O', 'T', 'X', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
+    static const uint8_t disc[10] = {'D', 'I', 'S', 'C', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
+    static const char* const ends[] = {"EOTX", "DISC", "call end"};
+    for (int end = 0; end < 3; end++) {
+        rig r;
+        rig_open(&r);
+        uint8_t meta[M17_META_BYTES];
+        uint8_t bits[LSF_BITS];
+        uint8_t packed[M17_LSF_BYTES];
+        uint8_t frame[54];
+        gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+        (void)build_lsf(bits, packed, 0, 1U, meta);
+        write_bits(bits + 96, m17_compose_frame_info(1U, 1U, 0U, 1U, 5U, 0U, 0U), 16U);
+        for (int stream = 0; stream < 2; stream++) {
+            const uint64_t rev = dsd_position_last_rev();
+            for (uint16_t fn = 1U; fn <= 3U; fn++) {
+                build_ip_stream_frame_fn(frame, bits, 0xBEEFU, fn, 0);
+                m17_ip_dispatch_frame(r.opts, r.state, frame, (int)sizeof(frame));
+            }
+            char label[96];
+            DSD_SNPRINTF(label, sizeof label, "%s: stream %d admitted once", ends[end], stream + 1);
+            expect_int(label, (long long)(dsd_position_last_rev() - rev), 1);
+            DSD_SNPRINTF(label, sizeof label, "%s: stream %d's row takes it", ends[end], stream + 1);
+            expect_true(label, row0(&r)->pos.valid == 1U && row0(&r)->pos.rev == dsd_position_last_rev());
+            if (end == 0) {
+                m17_ip_dispatch_frame(r.opts, r.state, eotx, (int)sizeof(eotx));
+            } else if (end == 1) {
+                m17_ip_dispatch_frame(r.opts, r.state, disc, (int)sizeof(disc));
+            } else {
+                expect_true("the call ends", dsd_call_state_end(r.state, 0U, 0.0) > 0);
+            }
+        }
+        rig_close(&r);
+    }
+}
+
 /* A checked RF LSF on Channel Access Number @p can (build_lsf() sends 5). */
 static void
 rf_lsf_can(rig* r, uint16_t can, const uint8_t meta[M17_META_BYTES]) {
@@ -770,6 +811,7 @@ main(void) {
     test_rf_repeated_meta_is_one_report();
     test_ip_repeated_meta_is_one_report();
     test_can_change_position_on_call_row();
+    test_ip_stream_end_admits_next_stream();
     test_reused_state_admits_meta_again();
     test_relaxed_bad_lsf_gives_nothing();
     test_meta_field_ranges();
