@@ -32,7 +32,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/atomic_compat.h"
 #include "dsd-neo/platform/audio.h"
-#include "dsd-neo/platform/timing.h"
 
 /*============================================================================
  * Fake PortAudio
