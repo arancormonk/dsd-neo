@@ -586,7 +586,8 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     if (dsd_position_admit(opts, state, &fix, 1, 1, NULL) == DSD_POSITION_REFUSED) {
         return;
     }
-    state->m17_gnss_tx_kind = tx_kind;
+    /* An RF report with no active call has no transmission to repeat within: the next one is admitted again. */
+    state->m17_gnss_tx_kind = (carrier->network || tx_id != 0U) ? tx_kind : 0U;
     state->m17_gnss_tx_id = tx_id;
     DSD_MEMCPY(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
     char text[128];
@@ -1572,7 +1573,7 @@ m17_monitor_encoded_lsf(const dsd_opts* opts, dsd_state* state, const uint8_t* m
 }
 
 /* Decode the transmitted frame through the receive path for encoded-audio monitoring and state reporting. */
-static void
+void
 m17_monitor_encoded_stream(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_rnd_bits) {
     uint8_t m17_bits[M17_PAYLOAD_BITS];
     DSD_MEMSET(m17_bits, 0, sizeof(m17_bits));

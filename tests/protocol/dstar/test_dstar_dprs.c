@@ -252,6 +252,8 @@ test_time_stamps(void) {
         expect_int("time stamp case admitted", feed_records(&r, f, 2U), 1);
         expect_int("time stamp case latitude", f[0].lat_e7, cases[i].lat_e7);
         expect_int("time stamp case longitude", f[0].lon_e7, cases[i].lon_e7);
+        /* No month or year (DDHHMMz) or no date at all (HHMMSSh): the fix time stays unknown (report decision 7). */
+        expect_int("time stamp case has no full fix time", (long long)f[0].fix_time_s, 0);
         expect_str("time stamp case display", r.state->dstar_gps, cases[i].display);
         rig_close(&r);
     }
@@ -345,6 +347,126 @@ test_record_bound_to_its_call(void) {
     rig_close(&r);
 }
 
+/* One superframe of 60 slow-data bytes as given. */
+static void
+send_superframe(rig* r, const uint8_t bytes[60]) {
+    uint8_t bits[480];
+    pack_slow_data(bytes, bits);
+    processDSTAR_SD(r->opts, r->state, bits);
+}
+
+/* Issue #800 (report item 10): a superframe that opens with a full GPS block (type 3) that is no "$$CRC" -- an NMEA
+ * sentence or a D-PRS record's continuation -- is GPS data, never the transmission's text message (type 4): neither
+ * the display text nor the history row's text takes its unchecked position text. */
+static void
+test_gps_block_is_never_a_text_message(void) {
+    static const char* firsts[] = {"$GPGGA,092725.00,2230.00000,N,04500.00000,E,1", "N/04500.00E>test continuation"};
+    for (size_t i = 0U; i < sizeof(firsts) / sizeof(firsts[0]); i++) {
+        rig r;
+        rig_open(&r);
+        open_call(&r, "N0CALL");
+        DSD_SNPRINTF(r.state->dstar_txt, sizeof(r.state->dstar_txt), "%s", "EARLIER TEXT");
+        const uint64_t revision = r.history[0].revision;
+        uint8_t bytes[60];
+        DSD_MEMSET(bytes, 0x66, sizeof(bytes));
+        const char* text = firsts[i];
+        const size_t len = strlen(text);
+        for (size_t b = 0U; b < 10U && (b * 5U) < len; b++) {
+            const size_t n = (len - (b * 5U)) < 5U ? (len - (b * 5U)) : 5U;
+            bytes[b * 6U] = (uint8_t)(0x30U | n);
+            DSD_MEMCPY(bytes + (b * 6U) + 1U, text + (b * 5U), n);
+        }
+        send_superframe(&r, bytes);
+        expect_str("GPS block leaves the display text", r.state->dstar_txt, "EARLIER TEXT");
+        expect_str("GPS block is no row text", r.history[0].Event_History_Items[0].text_message, "");
+        expect_int("GPS block does not touch the row", (long long)(r.history[0].revision - revision), 0);
+        rig_close(&r);
+    }
+}
+
+/* "$$CRC" straddling two GPS blocks is found; the record decodes. */
+static void
+test_tag_straddles_blocks(void) {
+    rig r;
+    rig_open(&r);
+    open_call(&r, "N0CALL");
+    char text[128];
+    DSD_SNPRINTF(text, sizeof(text), "ab%s", k_vector);
+    send_gps(&r, text, strlen(text), 2);
+    dsd_position_fix f[2];
+    expect_int("straddling tag: record decodes", feed_records(&r, f, 2U), 1);
+    rig_close(&r);
+}
+
+/* What the record's own format refuses before its position is read: a block that claims more than five bytes (the
+ * record cannot be whole), no comma after the four digits, and lower-case hex. */
+static void
+test_malformed_records(void) {
+    rig r;
+    rig_open(&r);
+    open_call(&r, "N0CALL");
+    const size_t half = 25U;
+    send_gps(&r, k_vector, half, 0);
+    uint8_t bytes[60];
+    DSD_MEMSET(bytes, 0x66, sizeof(bytes));
+    bytes[0] = 0x36U; /* six data bytes: no such block */
+    send_superframe(&r, bytes);
+    expect_int("oversized block drops the record", r.state->dstar_dprs.collecting, 0);
+    uint64_t rev = dsd_position_last_rev();
+    send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
+    expect_int("dropped record admits nothing", (long long)(dsd_position_last_rev() - rev), 0);
+    rig_close(&r);
+
+    static const char no_comma[] = "$$CRC9E3E;N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test\r";
+    static const char lower_hex[] = "$$CRC9e3e,N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test\r";
+    const char* records[2] = {no_comma, lower_hex};
+    for (int i = 0; i < 2; i++) {
+        rig_open(&r);
+        open_call(&r, "N0CALL");
+        rev = dsd_position_last_rev();
+        send_gps(&r, records[i], strlen(records[i]), 0);
+        expect_int("malformed record is no evidence", r.state->dstar_confirmed, 0);
+        expect_int("malformed record admits nothing", (long long)(dsd_position_last_rev() - rev), 0);
+        rig_close(&r);
+    }
+}
+
+/* A record whose CR was lost gives way to the next "$$CRC": only the lost one is gone. */
+static void
+test_lost_cr_costs_only_its_record(void) {
+    rig r;
+    rig_open(&r);
+    open_call(&r, "N0CALL");
+    char text[160];
+    const size_t without_cr = strlen(k_vector) - 1U;
+    DSD_MEMCPY(text, k_vector, without_cr);
+    DSD_MEMCPY(text + without_cr, k_vector, sizeof(k_vector));
+    send_gps(&r, text, strlen(text), 0);
+    dsd_position_fix f[2];
+    expect_int("record after a lost CR decodes", feed_records(&r, f, 2U), 1);
+    expect_int("record after a lost CR is the transmission's", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED, 0);
+    rig_close(&r);
+}
+
+/* Late entry: a record begun before any call was active, whose call opens mid-record, is kept. Its CRC proves the
+ * transmission; its position names no checked source, so the named call's row does not take it. */
+static void
+test_late_entry_record_kept_unverified(void) {
+    rig r;
+    rig_open(&r);
+    const size_t half = 25U;
+    send_gps(&r, k_vector, half, 0);
+    open_call(&r, "N0CALL");
+    send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
+    expect_int("late-entry record proves the transmission", r.state->dstar_confirmed, 1);
+    dsd_position_fix f[2];
+    expect_int("late-entry record admitted", feed_records(&r, f, 2U), 1);
+    expect_int("late-entry record is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
+               DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    expect_int("late-entry record not on the named row", r.history[0].Event_History_Items[0].pos.valid, 0);
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_vector_position();
@@ -354,6 +476,11 @@ main(void) {
     test_out_of_range_components();
     test_bounded_record();
     test_record_bound_to_its_call();
+    test_gps_block_is_never_a_text_message();
+    test_tag_straddles_blocks();
+    test_malformed_records();
+    test_lost_cr_costs_only_its_record();
+    test_late_entry_record_kept_unverified();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSTAR_DPRS: %d failure(s)\n", g_failures);
         return 1;

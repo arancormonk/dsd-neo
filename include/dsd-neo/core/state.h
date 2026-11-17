@@ -605,8 +605,9 @@ typedef struct dmr_talker_alias_assembly {
  * One D-STAR D-PRS (GPS-A) record being collected from the GPS blocks (type 3) of the slow data
  * (src/protocol/dstar/dstar_slow_data.c): from "$$CRC" through the CR that ends it (JARL STD 6.0 section 6.8.1). It
  * spans superframes, so it is bound to the slot 0 call it began in (epoch 0: none was active) and to the reception
- * captured with its first byte. A record that grows past DSTAR_DPRS_RECORD_MAX bytes is dropped; a new call, a
- * verified RF header or the carrier's end (dstar_confirm_reset()) clears it.
+ * captured with its first byte. A record that grows past DSTAR_DPRS_RECORD_MAX bytes is dropped, and one whose CR was
+ * lost gives way to the next "$$CRC". Another call (for a record begun in one), a verified RF header or the carrier's
+ * end (dstar_confirm_reset()) clears it.
  */
 typedef struct dstar_dprs_assembly {
     uint8_t text[DSTAR_DPRS_RECORD_MAX]; /* until "$$CRC" matched: the last bytes seen, at most five */

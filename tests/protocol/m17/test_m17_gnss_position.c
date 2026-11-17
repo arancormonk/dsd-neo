@@ -479,6 +479,39 @@ test_local_tx_monitor_gives_nothing(void) {
     rig_close(&r);
 }
 
+/* The stream monitor: the LSD from the six LICH chunks of transmitted stream frames shows its call, but is no
+ * position. */
+static void
+test_local_tx_stream_monitor_gives_nothing(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    uint8_t bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    uint8_t randomized[M17_PAYLOAD_BITS];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    const uint64_t rev = dsd_position_last_rev();
+    dsd_call_snapshot call;
+    expect_int("no call before the monitored stream", dsd_call_state_get(r.state, 0U, &call), 0);
+    for (uint8_t chunk = 0U; chunk < M17_LICH_CHUNKS; chunk++) {
+        uint8_t content[M17_LICH_CONTENT_BITS];
+        uint8_t decoded[M17_PAYLOAD_BITS];
+        DSD_MEMSET(content, 0, sizeof(content));
+        DSD_MEMSET(decoded, 0, sizeof(decoded));
+        (void)m17_lich_build_content(bits, chunk, content);
+        m17_lich_encode_bits(content, decoded);
+        m17_payload_encode_bits(decoded, randomized);
+        m17_monitor_encoded_stream(r.opts, r.state, randomized);
+    }
+    expect_int("monitored stream shows its call", dsd_call_state_get(r.state, 0U, &call), 1);
+    expect_int("monitored stream admits nothing", (long long)(dsd_position_last_rev() - rev), 0);
+
+    dsd_position_fix f[2];
+    expect_int("monitored stream keeps nothing", feed_records(&r, f, 2U), 0);
+    rig_close(&r);
+}
+
 static void
 build_ip_stream_frame_fn(uint8_t ip_frame[54], const uint8_t lsf_bits[LSF_BITS], uint16_t sid, uint16_t fn,
                          int corrupt) {
@@ -668,6 +701,7 @@ main(void) {
     test_meta_field_ranges();
     test_lich_lsd_position();
     test_local_tx_monitor_gives_nothing();
+    test_local_tx_stream_monitor_gives_nothing();
     test_ip_stream_position();
     test_mpkt_meta_and_0x91_packet();
     test_rf_packet_and_lsf_checked_apart();

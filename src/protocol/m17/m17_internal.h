@@ -112,6 +112,8 @@ void m17_ip_dispatch_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
 /** Decode an LSF this station transmits (@p m17_rnd_bits, the randomized on-air payload) through the receive path, to
  * monitor it: its call is shown, but nothing in it is received identity, META or a position. */
 void m17_monitor_encoded_lsf(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_rnd_bits);
+/** The same for one stream frame this station transmits: its LICH chunk and payload, decoded to monitor them. */
+void m17_monitor_encoded_stream(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_rnd_bits);
 
 #ifdef __cplusplus
 }

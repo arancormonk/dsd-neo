@@ -446,8 +446,20 @@ dstar_dprs_reset(dstar_dprs_assembly* a) {
     DSD_MEMSET(a, 0, sizeof(*a));
 }
 
+/* A record starts at "$$CRC": bound to the call active now and to the reception it was heard on. */
+static void
+dstar_dprs_begin(const dsd_opts* opts, dsd_state* state) {
+    dstar_dprs_assembly* a = &state->dstar_dprs;
+    DSD_MEMCPY(a->text, "$$CRC", DSTAR_DPRS_TAG_LEN);
+    a->len = DSTAR_DPRS_TAG_LEN;
+    a->collecting = 1U;
+    a->epoch = dstar_dprs_call_epoch(state);
+    dsd_position_origin_capture(opts, state, &a->origin);
+}
+
 /* One GPS data byte: until "$$CRC" is seen, the last five bytes are kept to find it; then the record grows through its
- * CR, or is dropped once longer than DSTAR_DPRS_RECORD_MAX. */
+ * CR, or is dropped once longer than DSTAR_DPRS_RECORD_MAX. A "$$CRC" inside a record means the one collected lost
+ * its CR: the new record starts there, so a lost CR costs only its own record. */
 static void
 dstar_dprs_push(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
     dstar_dprs_assembly* a = &state->dstar_dprs;
@@ -460,9 +472,7 @@ dstar_dprs_push(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
         }
         a->text[a->len++] = byte;
         if (a->len == DSTAR_DPRS_TAG_LEN && memcmp(a->text, "$$CRC", DSTAR_DPRS_TAG_LEN) == 0) {
-            a->collecting = 1U;
-            a->epoch = dstar_dprs_call_epoch(state);
-            dsd_position_origin_capture(opts, state, &a->origin);
+            dstar_dprs_begin(opts, state);
         }
         return;
     }
@@ -474,15 +484,20 @@ dstar_dprs_push(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
     if (byte == 0x0DU) {
         dstar_dprs_complete(opts, state);
         dstar_dprs_reset(a);
+    } else if (a->len >= 2U * DSTAR_DPRS_TAG_LEN
+               && memcmp(a->text + a->len - DSTAR_DPRS_TAG_LEN, "$$CRC", DSTAR_DPRS_TAG_LEN) == 0) {
+        DSD_FPRINTF(stderr, " D-PRS (NO CR)");
+        dstar_dprs_begin(opts, state);
     }
 }
 
 /* Feed the superframe's GPS blocks (as received, before any display clean-up) to the record. A record begun in another
- * call is not this one's. */
+ * call is not this one's. One begun before any call was active (late entry: the call opens once the transmission is
+ * confirmed) is kept: it names no checked source, and is published as unverified. */
 static void
 dstar_sd_collect_gps(const dsd_opts* opts, dsd_state* state, const uint8_t* raw) {
     dstar_dprs_assembly* a = &state->dstar_dprs;
-    if (a->collecting && a->epoch != dstar_dprs_call_epoch(state)) {
+    if (a->collecting && a->epoch != 0U && a->epoch != dstar_dprs_call_epoch(state)) {
         dstar_dprs_reset(a);
     }
     for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
