@@ -2881,8 +2881,9 @@ suite runs under this compiler.
   or code it did not hold the block before (a first lock, a lock after none within one carrier too, another value;
   after the DCS precedence, never while one lock holds, never reset; issue #802), and `stale_after_ms`, the real-time
   monotonic deadline
-  (`dsd_realtime_mono_ms()`) past which the publication of an input that may pause (stdin, UDP, TCP, a live RTL-family
-  radio stream) no longer describes the channel, 0 on inputs that never pause: files, Pulse and IQ replay).
+  (`dsd_realtime_mono_ms()`, or the test clock a test build installs: `dsd_analog_rx_clock_s()`) past which the
+  publication of an input that may pause (stdin, UDP, TCP, a live RTL-family radio stream) no longer describes the
+  channel, 0 on inputs that never pause: files, Pulse and IQ replay).
   It rides the `vertex_ks_count..ui_msg` snapshot range beside `scan_timing`, pinned by a `_Static_assert` in
   `ui_snapshot.c`; no float, so the semgrep float-field list is unchanged. Only the DSP tap writes it. `tone_state`
   INACTIVE means nothing has been processed since the last reset, or detection is not running; it is not the
@@ -6684,10 +6685,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   row) and hidden while the publication reads UNAVAILABLE (an input rate the front end cannot use, where an em dash
   would claim no carrier), then `CTCSS 100.0 Hz`, `DCS D023N / D047I`, `detecting`, `none` or an em dash (the terminal
   prints a hyphen without UTF-8). Like the scan timing view it takes the caller's monotonic clock, here the real-time
-  one (`dsd_realtime_mono_s()`) the deadline is stamped on: a publication past its `stale_after_ms` deadline (a stdin,
-  UDP or TCP producer that stopped sending, or a live radio stream whose source stopped, while the decoder waits for
-  samples and cannot say so itself) reads as the em dash. A locked value this build cannot name (an unsupported
-  frequency, a DCS code that is unsupported or not the canonical member of its alias class) reads `detecting`, never a
+  one (`dsd_realtime_mono_s()`) the deadline is stamped on (signal search, on the decoder thread, passes
+  `dsd_analog_rx_clock_s()`, the tap's own clock, which a test build may replace): a publication past its
+  `stale_after_ms` deadline (a stdin, UDP or TCP producer that stopped sending, or a live radio stream whose source
+  stopped, while the decoder waits for samples and cannot say so itself) reads as the em dash. A locked value this build
+  cannot name (an unsupported frequency, a DCS code that is unsupported or not the canonical member of its alias class)
+  reads `detecting`, never a
   value. It carries the publication's `generation` and `lock_epoch` (issue #802), and the locked code and polarity in
   `dcs_code` / `dcs_inverted` beside `ctcss_tenths_hz`, and the same
   signal's other supported spelling in `dcs_alias_code` / `dcs_alias_inverted`: the text names both, canonical first.
@@ -7370,7 +7373,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `dsd_analog_rx_boundaries_current()`: no retune unresolved and the boundaries the tap noted at its last read still
   current, the hard-boundary test the NFM call's block input uses, issue #756), `dsd_analog_rx_carrier_observed_now()`
   (the tap has judged the channel on air, so a closed carrier is a verdict rather than no read yet),
-  `dsd_analog_rx_block_straddles_boundary()`, the monitor playback bracket `dsd_analog_rx_playback_begin()` /
+  `dsd_analog_rx_block_straddles_boundary()`, `dsd_analog_rx_stale_now()` (the publication past its `stale_after_ms`
+  on the clock the tap set it on; the decoder thread's readers -- `dsd_engine_analog_call_due()` and the scanners'
+  carrier probe in `scan_voice_gate.c` -- ask it instead of reading a clock of their own) and `dsd_analog_rx_clock_s()`
+  (that clock, for a decoder-thread reader that hands the time on, as signal search does to the received-tone view),
+  the monitor playback bracket `dsd_analog_rx_playback_begin()` /
   `dsd_analog_rx_playback_end()` and the live input read bracket `dsd_analog_rx_input_wait_begin()` /
   `dsd_analog_rx_input_wait_end()`. The same header holds the CTCSS timing contract in sample time: p95 targets
   `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and per-event ceilings

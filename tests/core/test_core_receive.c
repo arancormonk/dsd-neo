@@ -3487,20 +3487,24 @@ hold_take_one_named(const hold_rig* r, const char* mode) {
     }
 }
 
-/* The monotonic ms the analog tap reads to tell a paused live input. It stays on the real clock's scale, where the
-   tick compares the tap's stale deadline, but a stream moves it only by the blocks it delivers: a runner that stalls
-   the test between two reads is no pause of the input. */
+/* The monotonic ms the analog tap reads to tell a paused live input, on which it sets its stale deadline. A stream
+   moves it only by the blocks it delivers, so a runner that stalls the test between two reads is no pause of the
+   input, and it runs a minute behind the real clock: the tick must compare the deadline on the clock the tap set it
+   on, which a real clock long past it would otherwise end the call on. */
 static uint64_t g_hold_tap_now_ms;
+
+enum { HOLD_TAP_BEHIND_MS = 60000 };
 
 static uint64_t
 hold_tap_now_ms(void) {
     return g_hold_tap_now_ms;
 }
 
-/* A live stream starts delivering now, on the real clock. */
+/* A live stream starts delivering now, on the tap's clock. */
 static void
 hold_tap_stream_starts(void) {
-    g_hold_tap_now_ms = dsd_realtime_mono_ms();
+    const uint64_t real_ms = dsd_realtime_mono_ms();
+    g_hold_tap_now_ms = real_ms > (uint64_t)HOLD_TAP_BEHIND_MS ? real_ms - (uint64_t)HOLD_TAP_BEHIND_MS : 1U;
 }
 
 /* @p blocks RECEPTION blocks of @p value, each read by the real analog tap first, as the symbol path hands it over, so
@@ -3544,16 +3548,19 @@ test_am_call(void) {
     hold_tapped(&r, 1, 1000);
     assert(dsd_engine_analog_call_active(r.state));
     const double last_m = hold_now_m(&r);
-    /* The live stream then gives nothing (the read yields), so no block comes. The tap's deadline is on the real clock
-       (an input that stops is a wait), and the tick leaves the call until it is past. */
+    /* The live stream then gives nothing (the read yields), so no block comes. The tick reads the tap's deadline on the
+       clock the tap set it on (an input that stops is a wait) and leaves the call until that clock is past it: the real
+       clock, a minute ahead, is past it already and ends nothing. */
     const uint64_t deadline_ms = r.state->analog_rx.stale_after_ms;
-    assert(deadline_ms != 0U);
+    assert(deadline_ms != 0U && dsd_realtime_mono_ms() > deadline_ms);
     hold_advance_ms(&r, 5000);
     dsd_engine_analog_call_tick(r.opts, r.state);
-    assert(dsd_engine_analog_call_active(r.state) || dsd_realtime_mono_ms() > deadline_ms);
-    while (dsd_realtime_mono_ms() <= deadline_ms) {
-        dsd_sleep_ms(10U);
-    }
+    assert(dsd_engine_analog_call_active(r.state) && !dsd_engine_analog_call_due(r.state));
+    g_hold_tap_now_ms = deadline_ms;
+    dsd_engine_analog_call_tick(r.opts, r.state);
+    assert(dsd_engine_analog_call_active(r.state));
+    g_hold_tap_now_ms = deadline_ms + 1U;
+    assert(dsd_engine_analog_call_due(r.state));
     dsd_engine_analog_call_tick(r.opts, r.state);
     assert(!dsd_engine_analog_call_active(r.state));
     hold_expect_span(&r, first_m, last_m);
@@ -3566,7 +3573,6 @@ test_am_call(void) {
 
     /* The stream comes back: the tap's read past its deadline starts its reception over, and a new call begins. Its
        first block carries the moved epoch and is dropped (issue #668, B7), so the call needs one block more. */
-    hold_tap_stream_starts();
     hold_tapped(&r, 25, 1000);
     assert(!dsd_engine_analog_call_active(r.state));
     hold_tapped(&r, 1, 1000);

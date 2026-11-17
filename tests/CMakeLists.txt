@@ -27214,7 +27214,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_app_signal_search_provenance
-    PRIVATE dsd-neo_runtime
+    PRIVATE dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(
     NAME APP_SIGNAL_SEARCH_PROVENANCE

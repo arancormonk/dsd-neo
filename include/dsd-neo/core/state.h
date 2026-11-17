@@ -1257,8 +1257,10 @@ struct dsd_analog_rx_publication {
      * monitors (issue #756). Unlike generation, the carrier hangover running out never moves it, so a reader that saw
      * it move since its last block knows the input crossed such a boundary in between, even inside one block. */
     uint32_t boundaries;
-    /** Real monotonic ms (dsd_realtime_mono_ms()) after which this publication no longer describes
-     * the channel if the tap has not run again since. Set only on input that may pause: stdin,
+    /** Monotonic ms on the tap's clock (dsd_realtime_mono_ms(); a test build may install a test clock in its place,
+     * dsd_analog_rx_clock_s()) after which this publication no longer describes the channel if the tap has not run
+     * again since. Decoder-thread readers ask dsd_analog_rx_stale_now(), so the deadline and the time it is compared
+     * with come from one clock. Set only on input that may pause: stdin,
      * UDP and TCP, whose producer may stop sending between transmissions, and live RTL-family
      * radio streams, which stop when their source does (an rtl_tcp server that went away, a
      * stalled device). Then no samples arrive for the sample-time hangover to count, and a

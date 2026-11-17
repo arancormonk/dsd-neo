@@ -186,7 +186,8 @@ dsd_engine_analog_call_due(const dsd_state* state) {
     if (analog_call_epoch_moved(state, call)) {
         return 1;
     }
-    return state->analog_rx.stale_after_ms && dsd_realtime_mono_ms() > state->analog_rx.stale_after_ms;
+    /* On the clock the tap set the deadline on. */
+    return dsd_analog_rx_stale_now(state);
 }
 
 static void

@@ -33,6 +33,7 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/receive_policy.h>
 
 #include <math.h>
@@ -202,6 +203,17 @@ dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
 int
 dsd_analog_rx_rejection_ended_now(const dsd_opts* opts, const dsd_state* state) {
     return (opts && state && state->analog_rx.gate_rejected_ended && dsd_analog_tone_detection_active(opts)) ? 1 : 0;
+}
+
+/* The clock the tap sets the publication's stale deadline on: the real one unless a case sets a test clock, as a test
+   build of the tap may install (0 = the real clock). */
+static uint64_t g_tap_clock_ms = 0U;
+
+/* As dsd_analog_rx_stale_now() reads it, on the tap's clock. */
+int
+dsd_analog_rx_stale_now(const dsd_state* state) {
+    const uint64_t now = g_tap_clock_ms != 0U ? g_tap_clock_ms : dsd_realtime_mono_ms();
+    return state && state->analog_rx.stale_after_ms != 0U && now > state->analog_rx.stale_after_ms;
 }
 
 int
@@ -1737,6 +1749,17 @@ test_analog_carrier_probe(void) {
     CHECK("stale publication", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
     fix.state->analog_rx.stale_after_ms = UINT64_MAX;
     CHECK("fresh publication", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 1);
+    /* The deadline is read on the clock the tap set it on, which a test build may replace: a tap clock behind the real
+       one leaves a deadline the real clock has passed fresh, and one ahead of it makes a deadline still ahead of the
+       real clock stale. */
+    const uint64_t real_ms = dsd_realtime_mono_ms();
+    g_tap_clock_ms = 1000U;
+    fix.state->analog_rx.stale_after_ms = 2000U;
+    CHECK("fresh on the tap's clock behind the real one", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 1);
+    g_tap_clock_ms = real_ms + 7200000U;
+    fix.state->analog_rx.stale_after_ms = real_ms + 3600000U;
+    CHECK("stale on the tap's clock ahead of the real one", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
+    g_tap_clock_ms = 0U;
     fix.state->analog_rx.stale_after_ms = 0U;
     fix.opts->analog_only = 0;
     CHECK("digital row", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);

@@ -115,6 +115,13 @@ dsd_analog_rx_rejection_ended_now(const dsd_opts* opts, const dsd_state* state) 
     return (opts && state && state->analog_rx.gate_rejected_ended && dsd_analog_tone_detection_active(opts)) ? 1 : 0;
 }
 
+/* The publication's stale deadline against the tap's clock, which outside tests is the real one: as the real function
+   reads it. */
+int
+dsd_analog_rx_stale_now(const dsd_state* state) {
+    return state && state->analog_rx.stale_after_ms != 0U && dsd_realtime_mono_ms() > state->analog_rx.stale_after_ms;
+}
+
 /* --- Issue #526: scanner sinks and DSP rate, from engine/trunk_tuning.c and core/audio, which this fixture does not
  * link. The stubs record which sink each row commit asked for. --- */
 static int g_ensure_analog_calls;
