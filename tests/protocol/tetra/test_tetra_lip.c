@@ -1,0 +1,443 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * TETRA location information protocol (TS 100 392-18-1) in SDS: protocol identifier 10 (EN 300 392-2 table 29.21) with
+ * no SDS-TL header, the LIP PDU right after the PID (table 29.49), whole or as a concatenated message (clause
+ * 29.5.14.1). A short location report reaches the event history, the location file (-L) and the position feed only
+ * when it is admitted: the block CRC passed (the MAC delivers nothing else), the LLC FCS too when the PDU carries one,
+ * an earlier CRC-passed block proved the carrier, and a concatenated message was received on one reception. The SDS
+ * sender is the report's source, labelled from the local radio list only when it sends from the network the decoder
+ * is on. Blocks are built field by field (tetra_test_pdu.h) and decoded by the real MAC, LLC, MLE and event layer.
+ * Coordinates are made up.
+ */
+
+#include <assert.h>
+#include <dsd-neo/core/alias_learn.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
+#include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
+#include <dsd-neo/protocol/tetra/tetra_mle.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "test_support.h"
+#include "tetra_confirm.h"
+#include "tetra_state.h"
+#include "tetra_test_log.h"
+#include "tetra_test_pdu.h"
+
+#define SECOND_NS    1000000000ULL
+
+#define HOME_MCC     100u
+#define HOME_MNC     20u
+#define FOREIGN_MCC  200u
+#define FOREIGN_MNC  30u
+#define OTHER_MCC    300u
+#define OTHER_MNC    40u
+#define SENDER_SSI   4242u
+#define ADDRESSED    0x101u
+
+/* Two's complement codes of table 6.1: 22.5 degrees of latitude is 2^21 units of 180/2^24, 45.0 degrees of longitude
+ * 2^22 units of 360/2^25. */
+#define LAT_22_5     0x200000u
+#define LON_45_0     0x400000u
+#define LAT_MINUS_22 (0x1000000u - 0x200000u)
+#define LON_MINUS_45 (0x2000000u - 0x400000u)
+
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    char lfile[DSD_TEST_PATH_MAX];
+    char log[8192];
+} session;
+
+/* A clear SDS on a proved carrier of network HOME_MCC/HOME_MNC, with the event history, the position feed and -L. */
+static session
+session_open(void) {
+    session s;
+    DSD_MEMSET(&s, 0, sizeof s);
+    dsd_decode_clock_use_test(SECOND_NS * 1000ULL);
+    s.opts = (dsd_opts*)calloc(1U, sizeof(*s.opts));
+    s.state = (dsd_state*)calloc(1U, sizeof(*s.state));
+    assert(s.opts != NULL && s.state != NULL);
+    const int fd = dsd_test_mkstemp(s.lfile, sizeof s.lfile, "tetra_lip");
+    assert(fd >= 0 && dsd_close(fd) == 0);
+    DSD_SNPRINTF(s.opts->lrrp_out_file, sizeof s.opts->lrrp_out_file, "%s", s.lfile);
+    s.opts->lrrp_file_output = 1;
+    s.state->event_history_s = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    assert(s.state->event_history_s != NULL);
+    init_event_history(&s.state->event_history_s[0], 0, 255);
+    init_event_history(&s.state->event_history_s[1], 0, 255);
+    tetra_state_t* const ts = tetra_st(s.state);
+    assert(ts != NULL);
+    ts->decode_ok = 1U;
+    ts->net_known = 1U;
+    ts->mcc = HOME_MCC;
+    ts->mnc = HOME_MNC;
+    ts->colour = 25U;
+    s.state->synctype = DSD_SYNC_TETRA_NDB_POS;
+    s.state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
+    tetra_publish(s.state);
+    dsd_rxid_note_tetra_cell(s.state, HOME_MCC, HOME_MNC, 25U); /* the cell's checked BSCH */
+    assert(dsd_position_feed_start(s.state) == 0);
+    tetra_confirm_note_signalling(s.state);
+    return s;
+}
+
+static void
+session_close(session* s) {
+    dsd_state_ext_free_all(s->state);
+    free(s->state->event_history_s);
+    free(s->state);
+    free(s->opts);
+    (void)remove(s->lfile);
+}
+
+/* A LIP short location report (table 6.1): 76 bits. */
+static ttb_block
+lip_short(uint32_t lat, uint32_t lon, uint32_t pos_err, uint32_t velocity, uint32_t direction) {
+    ttb_block b = {0};
+    ttb_put(&b, 0, 2);         /* PDU type: short location report */
+    ttb_put(&b, 0, 2);         /* time elapsed: < 5 s */
+    ttb_put(&b, lon, 25);      /* longitude */
+    ttb_put(&b, lat, 24);      /* latitude */
+    ttb_put(&b, pos_err, 3);   /* position error */
+    ttb_put(&b, velocity, 7);  /* horizontal velocity */
+    ttb_put(&b, direction, 4); /* direction of travel */
+    ttb_put(&b, 0, 1);         /* type of additional data: reason for sending */
+    ttb_put(&b, 0, 8);         /* reason: subscriber unit is powered ON */
+    assert(b.n == (int)LIP_SHORT_REPORT_BITS);
+    return b;
+}
+
+/* D-SDS-DATA (table 14.13) head: calling party of type @p type (1 SSI, 2 SSI and its network's MCC and MNC), user
+ * defined data-4 of @p user_bits. */
+static void
+sds_head(ttb_block* c, uint32_t type, uint32_t ssi, uint32_t mcc, uint32_t mnc, int user_bits) {
+    ttb_put(c, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(c, TETRA_CMCE_D_SDS_DATA, 5);
+    ttb_put(c, type, 2);
+    ttb_put(c, ssi, 24);
+    if (type == 2u) {
+        ttb_put(c, (mcc << 14) | mnc, 24); /* calling party extension (table 14.44) */
+    }
+    ttb_put(c, 3, 2);                    /* short data type identifier: user defined data-4 */
+    ttb_put(c, (uint32_t)user_bits, 11); /* length indicator */
+}
+
+/* A whole SDS message under PID 10 carrying @p lip. */
+static ttb_block
+sds_lip(uint32_t type, uint32_t ssi, uint32_t mcc, uint32_t mnc, const ttb_block* lip) {
+    ttb_block c = {0};
+    sds_head(&c, type, ssi, mcc, mnc, 8 + lip->n);
+    ttb_put(&c, 10, 8); /* protocol identifier: location information protocol, no SDS-TL header */
+    ttb_put_bits(&c, lip->bits, lip->n);
+    ttb_put(&c, 0, 1); /* O-bit */
+    return c;
+}
+
+/* Part @p sequence of 2 of concatenated message @p reference (tables 29.60, 29.62) under PID 12, holding
+ * @p n bits of @p payload from SSI @p ssi; part 1 names payload PID 10. */
+static ttb_block
+sds_concat_part(uint32_t ssi, uint32_t reference, uint32_t sequence, const uint8_t* payload, int n) {
+    ttb_block c = {0};
+    const int head = 8 + 3 + 1 + 4 + 8 + 8 + (sequence == 1u ? 8 : 0);
+    sds_head(&c, 1, ssi, 0, 0, head + n);
+    ttb_put(&c, 12, 8);        /* protocol identifier: concatenated SDS message, no SDS-TL */
+    ttb_put(&c, 0, 3);         /* concatenation control: transfer */
+    ttb_put(&c, 0, 1);         /* no reference extension */
+    ttb_put(&c, reference, 4); /* concatenated message reference */
+    ttb_put(&c, 2, 8);         /* parts */
+    ttb_put(&c, sequence, 8);
+    if (sequence == 1u) {
+        ttb_put(&c, 10, 8); /* PID of the whole message: location information protocol */
+    }
+    ttb_put_bits(&c, payload, n);
+    ttb_put(&c, 0, 1); /* O-bit */
+    return c;
+}
+
+/* A MAC-RESOURCE to ADDRESSED carrying @p cmce in a BL-UDATA, or with @p fcs a BL-UDATA-FCS (table 21.1) whose FCS
+ * (clause 22.3.3) is the right one, or one bit off with @p bad_fcs; decoded as one CRC-passed SCH/F block. */
+static void
+send_sds(session* s, const ttb_block* cmce, int fcs, int bad_fcs) {
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, ADDRESSED);
+    ttb_resource_flags(&b, 0u);
+    ttb_put(&b, fcs ? 6u : 2u, 4); /* LLC PDU type: BL-UDATA-FCS or BL-UDATA */
+    ttb_put_bits(&b, cmce->bits, cmce->n);
+    if (fcs) {
+        uint32_t value = tetra_llc_fcs32(cmce->bits, cmce->n);
+        if (bad_fcs) {
+            value ^= 1u;
+        }
+        ttb_put(&b, value, 32);
+    }
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_test_mac_logged(b.bits, b.n, 1, s->opts, s->state, s->log, sizeof s->log);
+}
+
+static const Event_History*
+notice_row(const session* s) {
+    return &s->state->event_history_s[0].Event_History_Items[1];
+}
+
+/* The -L file's content. */
+static void
+read_lfile(const session* s, char* out, size_t cap) {
+    out[0] = '\0';
+    FILE* f = dsd_fopen_private(s->lfile, "r");
+    assert(f != NULL);
+    const size_t n = fread(out, 1U, cap - 1U, f);
+    out[n] = '\0';
+    fclose(f);
+}
+
+static void
+clear_lfile(const session* s) {
+    FILE* f = dsd_fopen_private(s->lfile, "w");
+    assert(f != NULL);
+    fclose(f);
+}
+
+/* The feed records kept after @p after_seq. */
+static int
+feed_since(const session* s, uint64_t after_seq, dsd_position_fix* out, size_t cap) {
+    dsd_position_feed_meta meta;
+    return dsd_position_feed_copy_since(s->state, after_seq, out, cap, &meta);
+}
+
+/* A short report under PID 10, with and without the LLC FCS: the notice row carries the position and its text, the
+ * location file a row, the feed the record, all as the SDS sender's to the addressed party. A wrong FCS discards the
+ * PDU before the MLE, so nothing of it is published. */
+static void
+test_direct_with_and_without_fcs(void) {
+    for (int fcs = 0; fcs <= 1; fcs++) {
+        session s = session_open();
+        const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
+        const ttb_block c = sds_lip(1, SENDER_SSI, 0, 0, &lip);
+        send_sds(&s, &c, fcs, 0);
+        assert(strstr(s.log, "[TETRA SDS LIP] CC=1 src_SSI=4242 dst_SSI=257 short location report; LIP: 22.50000")
+               != NULL);
+        const Event_History* row = notice_row(&s);
+        assert(row->category == DSD_EVENT_CATEGORY_DATA && row->source_id == SENDER_SSI && row->target_id == ADDRESSED);
+        assert(strstr(row->event_string, "SDS SRC: 4242; TGT: 257; LIP: short location report;") != NULL);
+        assert(row->pos.valid == 1U && row->pos.kind == DSD_POS_TETRA_LIP);
+        assert(row->pos.lat_e7 == 225000000 && row->pos.lon_e7 == 450000000 && row->pos.err_m == 20U);
+        assert((row->pos.flags & (DSD_POS_FLAG_SOURCE_UNVERIFIED | DSD_POS_FLAG_TARGET_GROUP)) == 0U);
+        assert(row->pos.scope.kind == DSD_POS_SCOPE_TETRA && row->pos.scope.a == HOME_MCC
+               && row->pos.scope.b == HOME_MNC);
+        assert(strstr(row->gps_s, "LIP: 22.50000") != NULL && strstr(row->gps_s, "Err: 20m") != NULL
+               && strstr(row->gps_s, "Spd: 10 km/h") != NULL && strstr(row->gps_s, "Dir: 90") != NULL);
+        char lfile[512];
+        read_lfile(&s, lfile, sizeof lfile);
+        assert(strstr(lfile, "\t00004242\t22.500000\t45.000000\t10\t 90\t") != NULL);
+        dsd_position_fix rec[2];
+        assert(feed_since(&s, 0, rec, 2) == 1);
+        assert(rec[0].kind == DSD_POS_TETRA_LIP && DSD_SYNC_IS_TETRA(rec[0].protocol) && rec[0].slot == 0U
+               && rec[0].source_id == SENDER_SSI && rec[0].target_id == ADDRESSED && rec[0].age_class == 0U
+               && rec[0].speed_dkmh == 100U && rec[0].heading_ddeg == 900U);
+        assert(rec[0].sender_scope.kind == DSD_POS_SCOPE_TETRA && rec[0].sender_scope.a == HOME_MCC);
+        assert(dsd_event_staged_position(s.state, 0U)->rev == 0U); /* the notice took it */
+
+        if (fcs) {
+            /* One FCS bit off: the LLC discards the PDU, so no notice, no position, no -L row. */
+            clear_lfile(&s);
+            const ttb_block south = lip_short(LAT_MINUS_22, LON_MINUS_45, 1, 10, 4);
+            const ttb_block bad = sds_lip(1, SENDER_SSI + 1u, 0, 0, &south);
+            const uint64_t rev = row->pos.rev;
+            send_sds(&s, &bad, 1, 1);
+            assert(strstr(s.log, "TETRA SDS LIP") == NULL && strstr(s.log, "D-SDS-DATA") == NULL);
+            assert(notice_row(&s)->pos.rev == rev && notice_row(&s)->source_id == SENDER_SSI);
+            read_lfile(&s, lfile, sizeof lfile);
+            assert(lfile[0] == '\0');
+            assert(feed_since(&s, rec[0].seq, rec, 2) == 0);
+        }
+        session_close(&s);
+    }
+}
+
+/* The south-west quarter, and the codes that are bounds or unknown (tables 6.93, 6.51, 6.45): error 7 keeps the
+ * report with its validity unknown (decision D11), speed 126 is a lower bound, 127 and direction 15 unknown or
+ * ambiguous. */
+static void
+test_codes(void) {
+    session s = session_open();
+    ttb_block lip = lip_short(LAT_MINUS_22, LON_MINUS_45, 7, 127, 15);
+    ttb_block c = sds_lip(1, SENDER_SSI, 0, 0, &lip);
+    send_sds(&s, &c, 0, 0);
+    const Event_History* row = notice_row(&s);
+    assert(row->pos.valid == 1U && row->pos.lat_e7 == -225000000 && row->pos.lon_e7 == -450000000);
+    assert((row->pos.flags & DSD_POS_FLAG_VALIDITY_UNKNOWN) != 0U && (row->pos.flags & DSD_POS_FLAG_HEADING_AMBIGUOUS));
+    assert(row->pos.err_m == DSD_POSITION_ERR_UNKNOWN);
+    assert(strstr(row->gps_s, "fix may be old or invalid") != NULL && strstr(row->gps_s, "Spd: unknown") != NULL
+           && strstr(row->gps_s, "or unknown") != NULL && strstr(row->gps_s, "S ") != NULL);
+    char lfile[512];
+    read_lfile(&s, lfile, sizeof lfile);
+    assert(strstr(lfile, "\t00004242\t-22.500000\t-45.000000\t0\t 0\t") != NULL);
+    dsd_position_fix rec[2];
+    assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].speed_dkmh == DSD_POSITION_SPEED_UNKNOWN);
+
+    clear_lfile(&s);
+    lip = lip_short(LAT_22_5, LON_45_0, 6, 126, 2);
+    c = sds_lip(1, SENDER_SSI, 0, 0, &lip);
+    send_sds(&s, &c, 0, 0);
+    row = notice_row(&s);
+    assert(row->pos.valid == 1U && (row->pos.flags & DSD_POS_FLAG_ERR_LOWER_BOUND) != 0U
+           && (row->pos.flags & DSD_POS_FLAG_SPEED_LOWER_BOUND) != 0U && row->pos.err_m == 200000U);
+    assert(strstr(row->gps_s, "Spd: >1043 km/h") != NULL && strstr(row->gps_s, "Err: >200km") != NULL);
+    read_lfile(&s, lfile, sizeof lfile);
+    assert(strstr(lfile, "\t22.500000\t45.000000\t1043\t 45\t") != NULL);
+    session_close(&s);
+}
+
+/* What is not published: a report at exactly (0, 0) is refused, a report on a carrier no earlier CRC-passed block
+ * proved waits like the notice, and a long report is named, not decoded. None prints coordinates. */
+static void
+test_not_published(void) {
+    session s = session_open();
+    char lfile[512];
+    ttb_block lip = lip_short(0, 0, 1, 0, 0);
+    ttb_block c = sds_lip(1, SENDER_SSI, 0, 0, &lip);
+    send_sds(&s, &c, 0, 0);
+    assert(strstr(s.log, "short location report; Position: (refused)") != NULL && strstr(s.log, "0.00000") == NULL);
+    assert(strstr(notice_row(&s)->event_string, "LIP: short location report;") != NULL
+           && notice_row(&s)->pos.valid == 0U && notice_row(&s)->gps_s[0] == '\0');
+    read_lfile(&s, lfile, sizeof lfile);
+    assert(lfile[0] == '\0');
+
+    /* PDU type 01, extension 0011: a long location report (table 6.92). */
+    ttb_block longrep = {0};
+    ttb_put(&longrep, 1, 2);
+    ttb_put(&longrep, 3, 4);
+    ttb_put(&longrep, 0, 2); /* time elapsed */
+    ttb_put(&longrep, 0, 4); /* location shape: no shape */
+    ttb_put(&longrep, 0, 2);
+    c = sds_lip(1, SENDER_SSI, 0, 0, &longrep);
+    send_sds(&s, &c, 0, 0);
+    assert(strstr(s.log, "long location report (not decoded)") != NULL);
+    assert(strstr(notice_row(&s)->event_string, "LIP: long location report (not decoded);") != NULL
+           && notice_row(&s)->pos.valid == 0U);
+
+    tetra_confirm_reset(s.state);
+    lip = lip_short(LAT_22_5, LON_45_0, 1, 0, 0);
+    c = sds_lip(1, SENDER_SSI, 0, 0, &lip);
+    send_sds(&s, &c, 0, 0);
+    assert(strstr(s.log, "short location report; Position: (carrier not proven)") != NULL
+           && strstr(s.log, "22.5") == NULL);
+    assert(strstr(notice_row(&s)->event_string, "long location report") != NULL); /* no new notice */
+    read_lfile(&s, lfile, sizeof lfile);
+    assert(lfile[0] == '\0');
+    dsd_position_fix rec[2];
+    assert(feed_since(&s, 0, rec, 2) == 0);
+    assert(dsd_event_staged_position(s.state, 0U)->rev == 0U);
+    session_close(&s);
+}
+
+/* A concatenated message (PID 12) whose payload PID is 10 is a LIP PDU once complete. Its parts must come from one
+ * reception: a carrier boundary between them refuses the position (the notice still goes in). */
+static void
+test_concatenated(void) {
+    const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
+    for (int moved = 0; moved <= 1; moved++) {
+        session s = session_open();
+        ttb_block c = sds_concat_part(SENDER_SSI, 5, 2, lip.bits + 40, lip.n - 40);
+        send_sds(&s, &c, 0, 0);
+        assert(strstr(s.log, "TETRA SDS LIP") == NULL);
+        if (moved) {
+            dsd_rxid_reset(s.state); /* the engine saw a carrier boundary */
+            dsd_rxid_note_tetra_cell(s.state, HOME_MCC, HOME_MNC, 25U);
+        }
+        c = sds_concat_part(SENDER_SSI, 5, 1, lip.bits, 40);
+        send_sds(&s, &c, 1, 0);
+        const Event_History* row = notice_row(&s);
+        assert(strstr(row->event_string, "SDS SRC: 4242; TGT: 257; LIP: short location report;") != NULL);
+        dsd_position_fix rec[2];
+        if (moved) {
+            assert(strstr(s.log, "short location report; Position: (refused)") != NULL);
+            assert(row->pos.valid == 0U && feed_since(&s, 0, rec, 2) == 0);
+        } else {
+            assert(strstr(s.log, "short location report; LIP: 22.50000") != NULL);
+            assert(row->pos.valid == 1U && row->pos.lat_e7 == 225000000 && row->source_id == SENDER_SSI);
+            assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].source_id == SENDER_SSI);
+        }
+        session_close(&s);
+    }
+}
+
+/* One SSI in the local network and in foreign ones, with a populated local radio list: a sender of the network the
+ * decoder is on (calling party type 1, or type 2 naming it) takes the radio list's name; a sender naming another
+ * network takes only a name learned in that network, never the local list's (spec 2.3 step 5). */
+static void
+test_sender_network_labels(void) {
+    session s = session_open();
+    dsd_source_alias_store* radios = dsd_source_alias_store_create();
+    assert(radios != NULL);
+    dsd_source_alias_entry radio;
+    DSD_MEMSET(&radio, 0, sizeof radio);
+    radio.id_start = radio.id_end = SENDER_SSI;
+    DSD_SNPRINTF(radio.name, sizeof radio.name, "%s", "Local Radio");
+    assert(dsd_source_alias_store_append(radios, &radio) == 0);
+    dsd_source_alias_install(s.state, radios);
+    const dsd_alias_scope foreign = {DSD_ALIAS_SCOPE_TETRA, FOREIGN_MCC, FOREIGN_MNC, 1U};
+    assert(dsd_alias_learn_radio(NULL, s.state, &foreign, SENDER_SSI, "Foreign Radio", NULL)
+           == DSD_TG_POLICY_LEARN_ADDED);
+
+    const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
+
+    const struct {
+        uint32_t type, mcc, mnc;
+        const char* label;
+    } k_cases[] = {
+        {1, 0, 0, "Local Radio"},
+        {2, HOME_MCC, HOME_MNC, "Local Radio"},
+        {2, FOREIGN_MCC, FOREIGN_MNC, "Foreign Radio"},
+        {2, OTHER_MCC, OTHER_MNC, ""},
+    };
+
+    uint64_t seq = 0;
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        dsd_decode_clock_test_set_ns(SECOND_NS * (1000ULL + 60ULL * (i + 1U))); /* past the repeat window */
+        const ttb_block c = sds_lip(k_cases[i].type, SENDER_SSI, k_cases[i].mcc, k_cases[i].mnc, &lip);
+        send_sds(&s, &c, 0, 0);
+        dsd_position_fix rec[2];
+        assert(feed_since(&s, seq, rec, 2) == 1);
+        seq = rec[0].seq;
+        assert(rec[0].source_id == SENDER_SSI && strcmp(rec[0].label, k_cases[i].label) == 0);
+        assert(rec[0].reception_scope.kind == DSD_POS_SCOPE_TETRA && rec[0].reception_scope.a == HOME_MCC
+               && rec[0].reception_scope.b == HOME_MNC);
+        const uint32_t sender_mcc = k_cases[i].type == 2u ? k_cases[i].mcc : HOME_MCC;
+        const uint32_t sender_mnc = k_cases[i].type == 2u ? k_cases[i].mnc : HOME_MNC;
+        assert(rec[0].sender_scope.kind == DSD_POS_SCOPE_TETRA && rec[0].sender_scope.a == sender_mcc
+               && rec[0].sender_scope.b == sender_mnc);
+        /* The row is the sender's own network's (its track), heard here. */
+        const Event_History* row = notice_row(&s);
+        assert(row->pos.valid == 1U && row->pos.scope.a == sender_mcc && row->rx_scope.scope.a == HOME_MCC);
+    }
+    session_close(&s);
+}
+
+int
+main(void) {
+    test_direct_with_and_without_fcs();
+    test_codes();
+    test_not_published();
+    test_concatenated();
+    test_sender_network_labels();
+    DSD_FPRINTF(stdout, "TETRA_LIP: PASS\n");
+    return 0;
+}
