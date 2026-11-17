@@ -5381,11 +5381,21 @@ test_fragment_texts_follow_the_rows_radio(void) {
         // The core fills the absorbed fragment later with another radio and that radio's fix.
         absorbed->source_id = 8299U;
         with_gps(absorbed, "GPS: radio 8299", 226000000, 451000000, 9U);
+        absorbed->pos.scope.kind = DSD_POS_SCOPE_TETRA;
+        absorbed->pos.scope.a = 901U;
+        absorbed->pos.scope.b = 9U;
+        DSD_SNPRINTF(absorbed->tgt_str, sizeof(absorbed->tgt_str), "%s", "OTHER");
         ring.touchCommitted(0);
         model.refresh(ring.state);
         expect("B2 identity: the row keeps its radio and its radio's fix",
                model.count() == 1 && model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 8203U
                    && detail_of(model, 0) == QStringLiteral("GPS: radio 8203"));
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        const QJsonObject stored = stored_row_with(80203U, 8203U);
+        expect("B2 identity: the other radio's sender system and target are not the row's",
+               !stored.isEmpty() && !stored.contains(QLatin1String("sscope"))
+                   && !stored.contains(QLatin1String("tgtText")));
     }
 }
 
@@ -5445,7 +5455,7 @@ test_callsign_callers_stay_apart(void) {
         // A commit shifts the ring: the older call is at index 2 now.
         Event_History* one = &ring.rings[0].Event_History_Items[2];
         Event_History* two = &ring.rings[0].Event_History_Items[1];
-        const char* callers[2] = {"N0CALL", "N1CALL"};
+        const char* callers[2] = {"N0CALL", "N0CALL-1"};
         Event_History* items[2] = {one, two};
         for (int i = 0; i < 2; i++) {
             items[i]->systype = DSD_SYNC_DSTAR_HD_POS;
@@ -5494,7 +5504,7 @@ test_textual_destinations_under_one_service_stay_apart(void) {
         for (int i = 0; i < 2; i++) {
             Event_History* item = ring.commit(0, 0U, 0U, when + 4 * i, when + 4 * i + 3, destinations[i]);
             item->systype = DSD_SYNC_M17_STR_POS;
-            DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", "AB1CDE");
+            DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", "N0CALL");
             DSD_SNPRINTF(item->service_label, sizeof(item->service_label), "%s", "Club CAN 3");
         }
         model.refresh(ring.state);
@@ -5525,6 +5535,8 @@ test_system_identity_splits_conventional_systems(void) {
         int rows;
     };
 
+    // A Capacity Plus scope (alias_learn.h): a = (trunking system << 8) | colour code, b = site number.
+    constexpr uint32_t kCapPlusCc1 = (static_cast<uint32_t>(DSD_RXID_DMR_TRUNK_CAPACITY_PLUS) << 8) | 1U;
     const Case cases[] = {
         {"B5: two conventional DMR systems", DSD_POS_SCOPE_FEED_TUNED_FREQ, {446006250U, 446093750U}, 0U, {0, 0}, 2},
         {"B5: two conventional P25 channels of one NAC",
@@ -5534,7 +5546,12 @@ test_system_identity_splits_conventional_systems(void) {
          {155100000, 155400000},
          2},
         {"B5: a trunked call on two voice channels", DSD_POS_SCOPE_P25, {0xBEE00U, 0xBEE00U}, 0x1A3U, {0, 0}, 1},
-        {"B5: a Capacity Plus radio across a rest channel move", DSD_POS_SCOPE_DMR, {0x105U, 0x105U}, 0x1U, {0, 0}, 1},
+        {"B5: a Capacity Plus radio across a rest channel move",
+         DSD_POS_SCOPE_DMR,
+         {kCapPlusCc1, kCapPlusCc1},
+         5U,
+         {0, 0},
+         1},
     };
     for (const Case& c : cases) {
         resetStorage();
@@ -5562,22 +5579,28 @@ test_system_identity_splits_conventional_systems(void) {
             expect("B5: the reception system is stored", rx.value(QLatin1String("k")).toInt() == c.kind);
         }
     }
-    // Through the spill: the two conventional systems are two calls there too.
-    resetStorage();
-    RingFixture ring;
-    {
-        CallHistoryModel model;
-        for (int i = 0; i < 2; i++) {
-            with_rx(ring.commit(0, 80602U, 8602U, when + 5 * i, when + 5 * i + 3), DSD_POS_SCOPE_FEED_TUNED_FREQ,
-                    i == 0 ? 446006250U : 446093750U, 0U, 0);
+    // Through the spill: the two conventional cases are two calls there too.
+    for (const Case& c : cases) {
+        if (c.rows != 2) {
+            continue;
         }
-        model.refresh(ring.state);
-        expect("B5 spill: two systems logged", model.count() == 2);
-    }
-    stores_to_spill();
-    {
-        CallHistoryModel spilled;
-        expect("B5 spill: two systems stay two calls through the spill", spilled.count() == 2);
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            for (int i = 0; i < 2; i++) {
+                Event_History* item = ring.commit(0, 80602U, 8602U, when + 5 * i, when + 5 * i + 3);
+                item->systype = c.kind == DSD_POS_SCOPE_P25_NAC ? DSD_SYNC_P25P1_POS : DSD_SYNC_DMR_BS_VOICE_POS;
+                with_rx(item, c.kind, c.a[i], c.b, c.freq[i]);
+            }
+            model.refresh(ring.state);
+            expect(c.what, model.count() == 2);
+        }
+        stores_to_spill();
+        {
+            CallHistoryModel spilled;
+            expect(c.what, spilled.count() == 2);
+        }
     }
     // A row an older build stored knows no system and still merges with a fragment that knows one.
     resetStorage();

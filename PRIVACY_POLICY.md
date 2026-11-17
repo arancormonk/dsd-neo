@@ -139,10 +139,12 @@ Google Drive, that service stores the file under its own terms. The developer ne
 it.
 
 Settings → Diagnostics keeps a short log on your device to help track down problems. Lines
-that could hold a key are removed from it, and so are positions sent over the air and the raw
-data bytes the app received. It can contain your device's maker and model, its Android
-version, and what the app decoded, such as talkgroups and radio IDs. It leaves your device
-only if you copy or share it yourself.
+that could hold a key are removed from it, and so are lines that show a position sent over the
+air, together with the raw bytes of the position message printed on them. It can contain your
+device's maker and model, its Android version, and what the app decoded, such as talkgroups
+and radio IDs. If you turn on raw message printing (the `-Z` option, off by default), the log
+also keeps the raw bytes of received messages, and those can still hold a position in coded
+form. The log leaves your device only if you copy or share it yourself.
 
 ## Permissions
 

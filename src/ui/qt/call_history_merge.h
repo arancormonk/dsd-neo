@@ -381,47 +381,26 @@ call_history_scopes_compatible(const CallHistoryScope& x, const CallHistoryScope
 /**
  * @brief The protocol family of a row's sync type (Event_History::systype), or -1 when it is not known.
  *
- * One value per system type, both polarities and both bursts of it included, as the position feed groups tracks
- * (dsd_position_protocol_family()); YSF, dPMR, X2-TDMA and analog are grouped here as well, since a history row only
- * asks whether two fragments can be one call. Any other sync type is its own family. Rows older builds stored keep no
- * sync type (-1).
+ * The core's family (dsd_sync_protocol_family(), as the position feed groups tracks), extended for History: the YSF,
+ * dPMR and X2-TDMA sync values, which the core leaves one family each, are grouped per system too. A track never mixes
+ * them, but one History call can be decoded in either polarity, and the merge only asks whether two fragments can be
+ * one call. Rows older builds stored keep no sync type (-1).
  */
 inline int
 call_history_protocol_family(int protocol) {
     if (protocol < 0 || protocol >= static_cast<int>(DSD_POSITION_PROTOCOL_NONE)) {
         return -1;
     }
-    if (DSD_SYNC_IS_P25(protocol)) {
-        return 1;
-    }
-    if (DSD_SYNC_IS_DMR(protocol)) {
-        return 2;
-    }
-    if (DSD_SYNC_IS_NXDN(protocol)) {
-        return 3;
-    }
-    if (DSD_SYNC_IS_TETRA(protocol)) {
-        return 4;
-    }
-    if (DSD_SYNC_IS_DSTAR(protocol)) {
-        return 5;
-    }
-    if (DSD_SYNC_IS_M17(protocol)) {
-        return 6;
-    }
-    if (DSD_SYNC_IS_EDACS(protocol)) {
-        return 7;
-    }
     if (DSD_SYNC_IS_YSF(protocol)) {
-        return 8;
+        return 0x200 + DSD_SYNC_YSF_POS;
     }
     if (DSD_SYNC_IS_DPMR(protocol)) {
-        return 9;
+        return 0x200 + DSD_SYNC_DPMR_FS1_POS;
     }
     if (DSD_SYNC_IS_X2TDMA(protocol)) {
-        return 10;
+        return 0x200 + DSD_SYNC_X2TDMA_DATA_POS;
     }
-    return 0x100 + protocol;
+    return dsd_sync_protocol_family(protocol);
 }
 
 /** @brief Whether two sync types may be one call: the same family, or either not known. */
