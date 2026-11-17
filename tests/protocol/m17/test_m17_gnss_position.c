@@ -360,6 +360,46 @@ test_ip_repeated_meta_is_one_report(void) {
     rig_close(&r);
 }
 
+/* A checked RF LSF on Channel Access Number @p can (build_lsf() sends 5). */
+static void
+rf_lsf_can(rig* r, uint16_t can, const uint8_t meta[M17_META_BYTES]) {
+    uint8_t bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    write_bits(bits + 96, m17_compose_frame_info(1U, 2U, 0U, 1U, can, 0U, 0U), 16U);
+    const uint16_t crc = m17_attach_lsf_crc(bits, packed);
+    DSD_MEMCPY(r->state->m17_lsf, bits, sizeof(bits));
+    expect_int("CAN LSF passes", m17_finalize_lsf_crc(r->opts, r->state, packed, crc), 0);
+}
+
+/* Issue #800: the checked LSF's CAN is the reception its call is heard on. The LSF of a transmission on another CAN
+ * names another reception (the received identity's epoch moves), and the call it opens is on that reception from the
+ * start, so the META position of the same LSF lands on that call's row. */
+static void
+test_can_change_position_on_call_row(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    rf_lsf_can(&r, 5U, meta);
+    expect_int("CAN 5: the call row takes the position", row0(&r)->pos.valid, 1);
+    expect_true("CAN 5: the transmission ends", dsd_call_state_end_ex(r.state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0);
+
+    /* The next transmission is on CAN 6. */
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, -RAW_QUARTER, RAW_QUARTER);
+    const uint64_t rev = dsd_position_last_rev();
+    rf_lsf_can(&r, 6U, meta);
+    expect_int("CAN 6: the position is admitted", (long long)(dsd_position_last_rev() - rev), 1);
+    dsd_call_snapshot call;
+    expect_int("CAN 6: a call", dsd_call_state_get(r.state, 0U, &call), 1);
+    expect_int("CAN 6: the call is on the new reception", call.rx_id_epoch, r.state->rx_id.epoch);
+    const Event_History* row = row0(&r);
+    expect_int("CAN 6: the call row takes the position", row->pos.valid, 1);
+    expect_int("CAN 6: the call row's latitude", row->pos.lat_e7, -LAT_QUARTER_E7);
+    expect_int("CAN 6: the call row's revision", (long long)row->pos.rev, (long long)dsd_position_last_rev());
+    rig_close(&r);
+}
+
 /* Issue #800: the next engine run on a reused state (its cleanup frees every extension, so the call epochs restart at
  * 1) forgets which META the last run admitted: the same META on the new run's first call is a new report. */
 static void
@@ -729,6 +769,7 @@ main(void) {
     test_rf_lsf_meta_position();
     test_rf_repeated_meta_is_one_report();
     test_ip_repeated_meta_is_one_report();
+    test_can_change_position_on_call_row();
     test_reused_state_admits_meta_again();
     test_relaxed_bad_lsf_gives_nothing();
     test_meta_field_ranges();

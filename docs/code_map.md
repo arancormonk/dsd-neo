@@ -2560,8 +2560,9 @@ suite runs under this compiler.
     carrier, or 2 s on the decode clock drop it). A payload with no bound header gives no position. Its own notice.
   - M17 GNSS META (`m17.c`; `m17_parse_gnss_meta()` and `m17_parse_extended_callsign_meta()` take the 14 META bytes, no
     packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
-    monitor; one report per transmission and META content. A packet never carries a position (0x91 is shown as an
-    unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
+    monitor; one report per transmission and META content. The LSF's CAN is noted (`dsd_rxid_note_access()`) before
+    its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
+    position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches; its source is the header callsign
     only when the record arrived within that call. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the

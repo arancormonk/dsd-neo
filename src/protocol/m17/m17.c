@@ -409,12 +409,16 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, cons
 
     if (m17_apply_lsf_result(state, &res) == 1) {
         if (publish_canonical != 0) {
-            m17_publish_lsf(opts, state, &res);
-            /* Only an LSF whose CRC passed names the carrier's CAN: -F decodes one that failed, never as identity. Its
-               META is read only then too, and never from what this station transmits (issue #800 2.2): a META
-               position is the received station's, and the call it describes is the one just published. */
+            /* Only an LSF whose CRC passed names the carrier's CAN: -F decodes one that failed, never as identity. It
+               is noted before the call is published, so a CAN that moves the received identity to another epoch
+               opens the call on that reception, the one the same LSF's META position is admitted against. */
             if (!s_m17_monitoring_local_tx) {
                 dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, (uint16_t)res.cn);
+            }
+            m17_publish_lsf(opts, state, &res);
+            /* The META is read only from a checked LSF too, and never from what this station transmits (issue #800
+               2.2): a META position is the received station's, and the call it describes is the one just published. */
+            if (!s_m17_monitoring_local_tx) {
                 M17decodeLSFMeta(opts, state, &res, carrier);
             }
         }
