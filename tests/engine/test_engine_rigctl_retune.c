@@ -54,6 +54,7 @@
 #include "engine_hooks_install.h"
 #include "p25p1_terminator_end.h"
 #include "services.h"
+#include "test_env.h"
 #include "test_support.h"
 
 #include <dsd-neo/platform/file_compat.h>
@@ -1765,6 +1766,13 @@ test_wav_input_unchanged(void) {
 
 int
 main(void) {
+    /* Every tune waits for the fake peer's reply on the rigctl receive timeout, a real socket timer (1.5 s by default):
+       at its longest, a host pause that keeps the peer's thread off the CPU cannot fail a tune. No case waits for it
+       to run out: a peer that drops the connection is seen at once. */
+    if (dsd_test_setenv("DSD_NEO_RIGCTL_RCVTIMEO", "60000", 1) != 0) {
+        DSD_FPRINTF(stderr, "setenv failed\n");
+        return 1;
+    }
     if (dsd_socket_init() != 0) {
         DSD_FPRINTF(stderr, "socket init failed\n");
         return 1;
