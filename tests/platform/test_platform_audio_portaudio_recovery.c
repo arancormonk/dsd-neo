@@ -32,6 +32,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/atomic_compat.h"
 #include "dsd-neo/platform/audio.h"
+#include "dsd-neo/platform/timing.h"
 
 /*============================================================================
  * Fake PortAudio
@@ -496,8 +497,8 @@ test_input_discard_keeps_what_was_captured_before_its_snapshot(void) {
     g_available_late_frames = 4800;
     const int dropped = dsd_audio_discard_input(in, dsd_time_monotonic_ns());
     if (dropped < 0 || dropped > 240 || g_read_available < 4800) {
-        fprintf(stderr, "a late snapshot's discard dropped %d frames, %ld left (expected at most 240, 4800 kept)\n",
-                dropped, g_read_available);
+        DSD_FPRINTF(stderr, "a late snapshot's discard dropped %d frames, %ld left (expected at most 240, 4800 kept)\n",
+                    dropped, g_read_available);
     }
     assert(dropped >= 0 && dropped <= 240 && g_read_available >= 4800);
     g_read_available = 0;

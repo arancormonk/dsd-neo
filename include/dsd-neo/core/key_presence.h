@@ -2,7 +2,7 @@
 #ifndef DSD_NEO_CORE_KEY_PRESENCE_H
 #define DSD_NEO_CORE_KEY_PRESENCE_H
 
-#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/safe_api.h> // IWYU pragma: keep -- the inline hand-back uses secure-zero macros.
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>

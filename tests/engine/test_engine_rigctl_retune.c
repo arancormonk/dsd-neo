@@ -978,9 +978,9 @@ reconnect_send(dsd_socket_t client, int16_t value, int count, long held) {
     if (count < 0 || count > RECONNECT_OLD_SAMPLES) {
         return -1;
     }
-    for (int i = 0; i < count; i++) {
-        bytes[2 * i] = (uint8_t)((uint16_t)value & 0xFFU);
-        bytes[2 * i + 1] = (uint8_t)((uint16_t)value >> 8);
+    for (size_t i = 0; i < (size_t)count; i++) {
+        bytes[2U * i] = (uint8_t)((uint16_t)value & 0xFFU);
+        bytes[2U * i + 1U] = (uint8_t)((uint16_t)value >> 8);
     }
     if (dsd_socket_send(g_reconnect.server, bytes, (size_t)count * 2U, 0) != count * 2) {
         return -1;
