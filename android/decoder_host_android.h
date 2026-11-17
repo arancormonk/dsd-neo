@@ -233,6 +233,57 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     bool start(const QStringList& argv) override;
     void stop() override;
+
+    /*
+     * GPS site roaming (#786; decoder_host_android_lifecycle.cpp, less its JNI). A start with a negative expectation
+     * (a read that failed) is a start error. One with expectations is refused at once, superseded, when
+     * DecoderService.userStopGeneration() or LocationStream.foregroundEpoch() moved since (or cannot be read);
+     * otherwise both go with the START and the service checks them again where it decides the start, and its record's
+     * "superseded" says it ended unrun. A START Android refused after either moved (it refuses a foreground service
+     * start from the background), and one the service turned away unrecorded after either moved when its start grace
+     * runs out, settle superseded too, never as a failure. The location feed is LocationStream: started and stopped
+     * over JNI, polled at the end of refresh() while started. The reads are synchronous JNI calls; -1 when one failed.
+     */
+    bool startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration,
+                                  qint64 expectedForegroundEpoch) override;
+
+    bool
+    startSuperseded() const override {
+        return m_start_superseded;
+    }
+
+    /** @brief DecoderService.stopDecoderForSwitch(), with the phase bookkeeping of stop(). */
+    void stopForSwitch() override;
+
+    /** @brief The Stopping on screen began with stopForSwitch(), and no stop() came since. */
+    bool
+    switchStopping() const override {
+        return m_switch_stop && m_published_phase == kSessionStopping;
+    }
+
+    /**
+     * @brief DecoderService.retireAttempts() for the attempt the latest start handed over, if it was a roam's (any
+     * later start attempt forgets it). A retirement that wins leaves the attempt: the
+     * host winds a start on screen down (Stopping until the service's next record says Idle) and follows no attempt.
+     */
+    bool retireRoamAttempt() override;
+    qint64 userStopGeneration() const override;
+    qint64 foregroundEpoch() const override;
+    void startLocationStream() override;
+    void stopLocationStream() override;
+
+    /** @brief Whether a feed record (with the last fix's coordinates) is held; never once the feed is stopped. */
+    bool
+    holdsStreamRecord() const {
+        return !m_location_stream_last.isEmpty();
+    }
+
+    /** @brief LocationPermission.requestRoamingPermission(), with the Activity; nothing without one. */
+    void requestRoamingPermission(qint64 requestId) override;
+    /** @brief LocationPermission.openAppLocationSettings(), with the Activity; nothing without one. */
+    void openAppLocationSettings() override;
+    /** @brief LocationPermission.openLocationSourceSettings(), with the Activity; nothing without one. */
+    void openLocationSourceSettings() override;
     void dismissFailure() override;
     bool moveToBackground() override;
     void refresh() override;
@@ -506,7 +557,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * ContentResolver or when the call failed.
      */
     static QString platformProbeImportDocument(qint64 request, const QString& reference, qint64 maxCount);
-    void requestServiceStop();
+    /** @brief DecoderService.stopDecoder(), or stopDecoderForSwitch() when @p forSwitch (#786). */
+    void requestServiceStop(bool forSwitch);
     /* Call recordings (#708) over JNI: RecordingShare, RecordingPlayback and RecordingExport. */
     /** @brief RecordingShare.roots(); empty when the call failed. */
     static QStringList platformRecordingRoots();
@@ -541,10 +593,51 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief RecordingShare.takeFailure(): the oldest share that failed after canShare(), or empty. */
     static QString platformTakeRecordingShareFailure();
     /**
-     * @brief DecoderService.startDecoder() with @p argv for start attempt @p attempt; returns why it could not be
-     * handed over, or empty.
+     * @brief DecoderService.startDecoder() with @p argv for start attempt @p attempt, expecting
+     * @p expectedStopGeneration and @p expectedForegroundEpoch (-1: none); returns its status (android/start_status.h):
+     * kStartHandedOver, the platform's refusal of the START (#786 B2), kStartCallFailed, or the host's own
+     * kStartNoContext or kStartBadArguments.
      */
-    static QString platformStartDecoder(const QStringList& argv, uint64_t attempt);
+    static int platformStartDecoder(const QStringList& argv, uint64_t attempt, qint64 expectedStopGeneration,
+                                    qint64 expectedForegroundEpoch);
+    /** @brief What the UI shows for a start that was not handed over with @p status; plain English, translatable. */
+    static QString startRefusalText(int status);
+
+    /** @brief What a GPS roam's start expects to hold until it runs (#786); -1 each for a start with none. */
+    struct RoamExpectation {
+        qint64 stopGeneration = -1;
+        qint64 foregroundEpoch = -1;
+    };
+
+    /** @brief start() and startWithStopExpectation(): @p expects says whether @p expectation applies. */
+    bool startAttempt(const QStringList& argv, bool expects, RoamExpectation expectation);
+    /**
+     * @brief Refuse a start with expectations before it begins: one with a value that could not be read (negative: a
+     * start error), or one a user stop or leaving the foreground superseded (startSuperseded()). True when it refused.
+     */
+    bool refuseUnexpectedStart(RoamExpectation expectation);
+    /** @brief Whether a user stop or leaving the foreground came after @p expectation (a failed read counts), now. */
+    static bool roamSuperseded(RoamExpectation expectation);
+    /**
+     * @brief A start that was not handed over with @p status: a failure, unless it is a roam's (@p roam) superseded
+     * since its expectation, which settles back to @p before with startSuperseded(). Always returns false.
+     */
+    bool refuseHandover(uint64_t attempt, int status, bool roam, RoamExpectation expectation,
+                        const SessionPhaseTracker& before);
+    /** @brief stop() and stopForSwitch(): the request goes to the service as a switch when @p forSwitch. */
+    void stopSession(bool forSwitch);
+    void setStartSuperseded(bool superseded);
+    /** @brief DecoderService.userStopGeneration(); -1 when the call failed. */
+    static qint64 platformUserStopGeneration();
+    /** @brief LocationStream.foregroundEpoch(); -1 when the call failed. */
+    static qint64 platformForegroundEpoch();
+    /** @brief LocationStream.startStream() with the app's context, and stopStream(). */
+    static void platformStartLocationStream();
+    static void platformStopLocationStream();
+    /** @brief LocationStream.pollStream(): its record, empty while it is stopped or when the call failed. */
+    static QString platformPollLocationStream();
+    /** @brief Emit locationStreamUpdate() for the feed's record when it reads and differs from the last one emitted. */
+    void refreshLocationStream();
     /**
      * @brief DecoderService.retireAttempts(): no attempt up to @p through may run any more (#782). Synchronous, from
      * the Qt thread. True when the service had already taken attempt @p through past the point a retirement cancels
@@ -684,6 +777,16 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool m_attempt_failed = false;
     int m_attempt_failure_kind = 0;
     QString m_attempt_failure_text;
+    // #786: the latest start ended unrun, superseded by a user stop; the location feed was started (refresh() polls it)
+    // and the last update emitted from it, less its fixAtMs (empty: none since the start or a record-less poll).
+    bool m_start_superseded = false;
+    // #786: the attempt a start with an expectation handed over, which retireRoamAttempt() retires (0: none).
+    uint64_t m_roam_attempt = 0;
+    RoamExpectation m_roam_expectation;
+    // #786: the Stopping a stop began is a roaming switch's (stopForSwitch()); a user stop() or any other phase ends it.
+    bool m_switch_stop = false;
+    bool m_location_stream = false;
+    QVariantMap m_location_stream_last;
     uint64_t m_adopted_idle_session = 0;
     uint64_t m_initialized_session = 0;
     int m_device_error = 0;

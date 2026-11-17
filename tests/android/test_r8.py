@@ -5,6 +5,7 @@
 from pathlib import Path
 import re
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,8 +15,9 @@ import check_android_r8 as r8
 
 DEX_XML = """<api><package name="io.github.arancormonk.dsdneo">
 <class name="DecoderService">
-  <method name="startDecoder" return="void" static="true" native="false">
+  <method name="startDecoder" return="int" static="true" native="false">
     <parameter type="android.content.Context"/><parameter type="java.lang.String[]"/><parameter type="long"/>
+    <parameter type="long"/><parameter type="long"/>
   </method>
   <method name="lifecycleStatus" return="java.lang.String" static="true" native="false"/>
 </class>
@@ -60,7 +62,7 @@ def kept_static_methods(class_name):
 
 
 START = (r8.APP_PACKAGE + "DecoderService", "startDecoder",
-         "(Landroid/content/Context;[Ljava/lang/String;J)V")
+         "(Landroid/content/Context;[Ljava/lang/String;JJJ)I")
 NATIVE = (r8.APP_PACKAGE + "DsdNative", "nativeRun")
 # The app hands Qt a new display density through Qt's own registered native (display size).
 QT_DENSITY = (r8.QT_PACKAGE + "QtDisplayManager", "handleScreenDensityChanged", "(D)V")
@@ -167,6 +169,39 @@ class R8ArtifactTests(unittest.TestCase):
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeQuitUi"), downcalls)
         self.assertIn(QT_DENSITY, upcalls)
         self.assertIn((r8.APP_PACKAGE + "AppSupport", "activityDensity", "(Landroid/content/Context;)F"), upcalls)
+        # GPS roaming (#786): the switch stop, the stop generation, the location feed and its prompt and settings.
+        for owner, name, signature in (
+            ("DecoderService", "stopDecoderForSwitch", "(Landroid/content/Context;)V"),
+            ("DecoderService", "userStopGeneration", "()J"),
+            ("LocationStream", "startStream", "(Landroid/content/Context;)V"),
+            ("LocationStream", "stopStream", "()V"),
+            ("LocationStream", "pollStream", "()Ljava/lang/String;"),
+            ("LocationStream", "foregroundEpoch", "()J"),
+            ("LocationPermission", "requestRoamingPermission", "(Landroid/app/Activity;J)V"),
+            ("LocationPermission", "openAppLocationSettings", "(Landroid/app/Activity;)V"),
+            ("LocationPermission", "openLocationSourceSettings", "(Landroid/app/Activity;)V"),
+        ):
+            with self.subTest(name=name):
+                self.assertIn((r8.APP_PACKAGE + owner, name, signature), upcalls)
+
+    def test_counter_helper_counts_as_a_static_long_upcall(self):
+        # #786: the roaming counters are read through read_static_counter(), a checked static ()J call.
+        definition = 'qint64\nread_static_counter(const char* owner, const char* name) {\n    return -1;\n}\n'
+        export = "extern \"C\" void Java_io_github_arancormonk_dsdneo_DsdNative_nativeRun(JNIEnv*, jclass) {}\n"
+        owner = 'constexpr const char* kService = "io/github/arancormonk/dsdneo/DecoderService";\n'
+        with tempfile.TemporaryDirectory(prefix="dsd-r8-src-") as temp:
+            root = Path(temp)
+            (root / "android").mkdir()
+            source = root / "android/host.cpp"
+            source.write_text(owner + definition + export +
+                              'qint64 g() { return read_static_counter(kService, "userStopGeneration"); }\n')
+            upcalls, _ = r8.jni_contract(root)
+            self.assertEqual(upcalls, {(r8.APP_PACKAGE + "DecoderService", "userStopGeneration", "()J")})
+            # A call the scanner cannot read fails loudly instead of dropping the method from the contract.
+            source.write_text(owner + definition + export +
+                              "qint64 g(const char* n) { return read_static_counter(kService, n); }\n")
+            with self.assertRaisesRegex(ValueError, "Unrecognized read_static_counter"):
+                r8.jni_contract(root)
 
     def test_import_copy_entry_points_are_kept(self):
         # DecoderHostAndroid calls these by literal name and descriptor from the import worker (#832, #831).
@@ -196,6 +231,8 @@ class R8ArtifactTests(unittest.TestCase):
                              rules)
         self.assertIn("AppSupport", classes)
         self.assertIn("IncomingDocuments", classes)
+        self.assertIn("LocationStream", classes)
+        self.assertIn("LocationPermission", classes)
         for class_name in classes:
             called = {(name, signature) for owner, name, signature in upcalls
                       if owner == r8.APP_PACKAGE + class_name}

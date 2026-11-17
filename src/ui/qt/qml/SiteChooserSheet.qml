@@ -11,7 +11,50 @@ ModalSheet {
     property string groupUid: ""
     property string currentSiteUid: ""
     property int sessionState: decoderHost.sessionState
-    readonly property var rows: (revision, orderedRows())
+    // The fix every distance here is measured from: GPS roaming's own while
+    // it supplies one (#786, `live`), else the one last saved; null with
+    // neither.
+    readonly property var activeFix: {
+        var roaming = siteRoaming.fix;
+        if (roaming && roaming.lat !== undefined)
+            return {lat: roaming.lat, lon: roaming.lon, accuracyM: roaming.accuracyM, live: true};
+        if (prefs.lastFixAt > 0)
+            return {lat: prefs.lastLat, lon: prefs.lastLon, accuracyM: prefs.lastAccuracyM, live: false};
+        return null;
+    }
+    readonly property bool liveFix: activeFix !== null && activeFix.live
+    // The group's sites in row order, each {row, uid, avoid, distance} with
+    // its distance from the fix measured once here (-1 without a fix or a
+    // position); every binding below reads it from here.
+    readonly property var measured: (revision, measure())
+    // The order the sites are shown in, by uid: nearest first while a fix
+    // is there (open sites first, measured before the rest). While GPS
+    // roaming supplies fixes (#786) it stays as it was when the sheet opened
+    // or Use my location answered, and only each row's distance moves: the
+    // rows are made once per uid, so a fix rebuilds none of them and the
+    // keyboard and a screen reader stay on the control they are on. A site
+    // added or gone takes the new order.
+    property var order: []
+    // Whether `order` was ranked from a fix. One taken with none (the sheet
+    // opened before any fix) is ranked once when the first fix comes, then
+    // kept like any other: nothing was in order to keep yet.
+    property bool orderRanked: false
+    readonly property var liveOrder: ranked(measured).map(function (entry) { return entry.uid; })
+    // Reads the fix itself: `liveFix` may not have caught up with it yet
+    // when this runs.
+    onLiveOrderChanged: {
+        var live = activeFix !== null && activeFix.live;
+        if (!live || !orderRanked || !sameSites(order, liveOrder))
+            takeOrder();
+    }
+    // The sites in the order shown, each with its distance now.
+    readonly property var rowModel: {
+        var byUid = {};
+        for (var entry of measured)
+            byUid[entry.uid] = entry;
+        return order.filter(function (uid) { return byUid[uid] !== undefined; }).map(function (uid) { return byUid[uid]; });
+    }
+    readonly property var rows: rowModel.map(function (entry) { return entry.row; })
     property int revision: 0
     property double locationId: 0
     property bool locationUpdated: false
@@ -21,18 +64,40 @@ ModalSheet {
     }
     property string notice: ""
     // Issue #801 B7: the site whose avoid change could not be saved, and the
-    // change asked for, so its row says so. Kept here, not on the row: the
-    // rows are rebuilt on every change.
+    // change asked for, so its row says so. Kept here, not on the row: a
+    // change can rebuild the rows.
     property string avoidFailedUid: ""
     property bool avoidFailedWanted: false
     readonly property int groupRow: (revision, savedSystems.rowForUid(groupUid))
-    readonly property int nearest: (revision, prefs.lastFixAt > 0 ? savedSystems.nearestRow(groupRow, prefs.lastLat, prefs.lastLon) : -1)
+    // The nearest open, measured site, whatever the order shown.
+    readonly property var nearestEntry: {
+        var best = null;
+        for (var entry of measured) {
+            if (!entry.avoid && entry.distance >= 0 && (best === null || closer(entry, best) < 0))
+                best = entry;
+        }
+        return best;
+    }
+    readonly property int nearest: nearestEntry ? nearestEntry.row : -1
     readonly property var nearestSite: (revision, savedSystems.get(nearest))
-    readonly property real nearestDistance: (revision, nearest >= 0 ? savedSystems.distanceKm(nearest, prefs.lastLat, prefs.lastLon) : -1)
+    readonly property real nearestDistance: nearestEntry ? nearestEntry.distance : -1
     readonly property bool listeningToNearest: sessionState === 2 && !!nearestSite.uid && nearestSite.uid === currentSiteUid
-    readonly property string accuracyText: {
-        var meters = prefs.lastAccuracyM;
-        if (prefs.lastFixAt <= 0 || !isFinite(meters) || meters <= 0)
+    readonly property string accuracyText: accuracyFor(activeFix ? activeFix.accuracyM : 0)
+    // What a screen reader hears of it: while GPS roaming moves it with each
+    // fix, only a step to another band (10, 25, 50, 100, 250, 500 m, then
+    // whole km), so a focused line is not read out again on every fix.
+    readonly property string spokenAccuracy: liveFix ? accuracyFor(accuracyBand(activeFix.accuracyM)) : accuracyText
+    function accuracyBand(meters) {
+        if (!isFinite(meters) || meters <= 0)
+            return 0;
+        for (var band of [10, 25, 50, 100, 250, 500, 1000]) {
+            if (meters <= band)
+                return band;
+        }
+        return Math.ceil(meters / 1000) * 1000;
+    }
+    function accuracyFor(meters) {
+        if (!activeFix || !isFinite(meters) || meters <= 0)
             return "";
         if (prefs.metricUnits && meters < 1000)
             return qsTr("Location accuracy: about %1\u00a0m").arg(Math.ceil(meters));
@@ -41,16 +106,44 @@ ModalSheet {
         return qsTr("Location accuracy: about %1").arg(Util.fmtDistanceKm(meters / 1000, prefs.metricUnits).replace(" ", "\u00a0"));
     }
     readonly property bool uncertainNearest: {
-        if (nearest < 0 || prefs.lastAccuracyM <= 0)
+        if (nearest < 0 || !activeFix || !(activeFix.accuracyM > 0))
             return false;
-        for (var row of rows) {
-            if (row === nearest || savedSystems.get(row).avoidSite)
+        for (var entry of measured) {
+            if (entry.row === nearest || entry.avoid)
                 continue;
-            var distance = savedSystems.distanceKm(row, prefs.lastLat, prefs.lastLon);
-            if (distance >= 0 && distance - nearestDistance <= 2 * prefs.lastAccuracyM / 1000)
+            if (entry.distance >= 0 && entry.distance - nearestDistance <= 2 * activeFix.accuracyM / 1000)
                 return true;
         }
         return false;
+    }
+    // #786 GPS roaming, as this sheet shows it. Roaming follows one session
+    // (siteRoaming says which); this card is that session's system when the
+    // site it runs is one of these.
+    readonly property int roamableCount: (revision, rows.filter(function (row) { return savedSystems.roamable(row); }).length)
+    // Roaming also needs the extra options in Settings to be empty.
+    readonly property bool globalExtraArgs: String(prefs.extraArgs || "").trim().length > 0
+    // Why roaming cannot be switched on for this card; empty when it can. The
+    // extra-options sentence is the executor's own (its GlobalExtraArgs reason).
+    readonly property string roamingBlockedReason: globalExtraArgs ? siteRoaming.globalExtraArgsText
+        : roamableCount < 2 ? qsTr("Needs two or more sites in this system that GPS roaming can use: trunking on, a receiver it can tune, and no extra options.") : ""
+    readonly property bool roamingHere: siteRoaming.currentUid.length > 0 && order.indexOf(siteRoaming.currentUid) >= 0
+    readonly property int roamingState: siteRoaming.state
+    // Roaming judges the session (neither Off nor Idle): it follows a site,
+    // checks one, waits, switches, holds or is paused.
+    readonly property bool roamingJudges: roamingState !== SiteRoaming.Off && roamingState !== SiteRoaming.Idle
+    // A state change is read out once (the distances moving are not).
+    readonly property string roamingStep: [roamingState, siteRoaming.reason, siteRoaming.candidateUid, siteRoaming.destinationUid].join("|")
+    onRoamingStepChanged: Qt.callLater(announceRoaming)
+    // Once the bindings have settled, and only while the line shows here.
+    function announceRoaming() {
+        if (visible && isTopModal && roamingStateLine.text.length > 0 && Navigation.presented(roamingStateLine))
+            Navigation.announce(roamingSpeech, roamingStateLine, roamingStateLine.text);
+    }
+    QtObject {
+        id: roamingSpeech
+        objectName: "siteRoamingSpeech"
+        property string announced: ""
+        property int announcements: 0
     }
     signal startSite(int row)
     signal restartSite(string uid)
@@ -75,21 +168,49 @@ ModalSheet {
     // site gone, or the control no longer offered, the first site's, else
     // Update.
     property var keyboardPlace: null
-    function orderedRows() {
-        var siblings = savedSystems.siblingRows(groupRow);
-        if (prefs.lastFixAt <= 0)
-            return siblings;
-        var lat = prefs.lastLat;
-        var lon = prefs.lastLon;
-        return siblings.map(function (row) {
-            return {row: row, avoid: !!savedSystems.get(row).avoidSite, distance: savedSystems.distanceKm(row, lat, lon)};
-        }).sort(function (a, b) {
-            if (a.avoid !== b.avoid)
-                return a.avoid ? 1 : -1;
-            if ((a.distance < 0) !== (b.distance < 0))
-                return a.distance < 0 ? 1 : -1;
-            return a.distance - b.distance || a.row - b.row;
-        }).map(function (entry) { return entry.row; });
+    function measure() {
+        var fix = activeFix;
+        return savedSystems.siblingRows(groupRow).map(function (row) {
+            var site = savedSystems.get(row);
+            return {row: row, uid: site.uid || "", avoid: !!site.avoidSite, distance: fix ? savedSystems.distanceKm(row, fix.lat, fix.lon) : -1};
+        });
+    }
+    // Open sites first, measured ones before the rest, then the nearer; ties
+    // keep row order.
+    function closer(a, b) {
+        if (a.avoid !== b.avoid)
+            return a.avoid ? 1 : -1;
+        if ((a.distance < 0) !== (b.distance < 0))
+            return a.distance < 0 ? 1 : -1;
+        return a.distance - b.distance || a.row - b.row;
+    }
+    function ranked(entries) {
+        return activeFix ? entries.slice().sort(closer) : entries;
+    }
+    function sameSites(a, b) {
+        return a.length === b.length && a.every(function (uid) { return b.indexOf(uid) >= 0; });
+    }
+    // Shows the order as it is now; the rows are remade only when it moved.
+    function takeOrder() {
+        orderRanked = activeFix !== null;
+        var next = liveOrder;
+        if (next.join("\n") !== order.join("\n"))
+            order = next;
+    }
+    function distanceOf(uid) {
+        for (var entry of rowModel) {
+            if (entry.uid === uid)
+                return entry.distance;
+        }
+        return -1;
+    }
+    function setRoaming(on) {
+        userAction();
+        siteRoaming.setEnabledByUser(on);
+    }
+    function roamingAction() {
+        userAction();
+        siteRoaming.performAction();
     }
     function refresh() {
         revision++;
@@ -102,6 +223,7 @@ ModalSheet {
         rrUpdateStarted = false;
         keyboardPlace = null;
         refresh();
+        takeOrder();
         visible = rows.length > 0;
     }
     function choose(row) {
@@ -293,6 +415,8 @@ ModalSheet {
                 prefs.setLocationFix(lat, lon, fixAtMs, accuracyM);
                 sheet.locationUpdated = prefs.lastFixAt > 0;
             }
+            // Asked for: the rows take the order of now, also while GPS roaming holds it.
+            sheet.takeOrder();
             sheet.notice = sheet.locationUpdated ? "" : (prefs.lastFixAt > 0 ? qsTr("Location unavailable. Distances still use your saved location. Try again or choose a site manually.") : qsTr("Location unavailable. Check location access in your device settings, then try again or choose a site manually."));
         }
         // A permission prompt Android closed unanswered (#782): nothing failed, so the sheet just returns to idle.
@@ -317,7 +441,7 @@ ModalSheet {
     ReadableText {
         objectName: "siteLocationNotice"
         width: parent.width
-        text: sheet.locationId ? qsTr("Finding the nearest saved site in this system…") : sheet.notice || (prefs.lastFixAt > 0 ? (sheet.locationUpdated ? qsTr("Sites ordered by distance from your location.") : qsTr("Using your saved location. Refresh if you have moved.")) : qsTr("Use your location to find the nearest saved site in this system."))
+        text: sheet.locationId ? qsTr("Finding the nearest saved site in this system…") : sheet.notice || (sheet.liveFix ? qsTr("Distances follow your location while GPS roaming runs.") : prefs.lastFixAt > 0 ? (sheet.locationUpdated ? qsTr("Sites ordered by distance from your location.") : qsTr("Using your saved location. Refresh if you have moved.")) : qsTr("Use your location to find the nearest saved site in this system."))
         visible: text.length > 0
         wrapMode: Text.Wrap
         textFormat: Text.PlainText
@@ -328,8 +452,11 @@ ModalSheet {
     ReadableText {
         objectName: "nearestSiteSummary"
         width: parent.width
-        visible: prefs.lastFixAt > 0 && !sheet.locationId
+        visible: sheet.activeFix !== null && !sheet.locationId
         text: sheet.nearest >= 0 ? Util.fill(qsTr("Nearest site: %1 · %2"), [sheet.nearestSite.siteName || sheet.nearestSite.name, Util.fmtDistanceKm(sheet.nearestDistance, prefs.metricUnits).replace(" ", "\u00a0")]) : qsTr("No site can be ranked. Check the sites’ coordinates and Avoid settings below.")
+        // While GPS roaming moves the distance with each fix, a screen reader
+        // hears the site alone, so a focused line is not read out again.
+        Accessible.name: !navigationAllowed || !visible ? "" : sheet.liveFix && sheet.nearest >= 0 ? qsTr("Nearest site: %1").arg(sheet.nearestSite.siteName || sheet.nearestSite.name) : text
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans
@@ -341,7 +468,9 @@ ModalSheet {
         objectName: "siteLocationAccuracy"
         width: parent.width
         visible: text.length > 0 && !sheet.locationId
-        text: sheet.accuracyText + (sheet.uncertainNearest ? qsTr(". Nearby sites may change order within this accuracy. For a better fix, enable precise location in your device settings.") : "")
+        readonly property string uncertainText: sheet.uncertainNearest ? qsTr(". Nearby sites may change order within this accuracy. For a better fix, enable precise location in your device settings.") : ""
+        text: sheet.accuracyText + uncertainText
+        Accessible.name: navigationAllowed && visible ? sheet.spokenAccuracy + uncertainText : ""
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans
@@ -354,6 +483,103 @@ ModalSheet {
         text: sheet.listeningToNearest ? qsTr("Listening to nearest site") : sheet.sessionState === 2 ? qsTr("Stop and switch to nearest") : qsTr("Listen to nearest site")
         enabled: (sheet.sessionState === 0 || sheet.sessionState === 2) && sheet.nearest >= 0 && !sheet.locationId && !sheet.listeningToNearest
         onClicked: sheet.chooseNearest()
+    }
+    // #786: GPS roaming, the same switch as Settings' (one for the app). Off
+    // it says what it would do; on, what it is doing for the session it
+    // follows. Hidden where the platform has no location feed.
+    Column {
+        id: roamingBlock
+        objectName: "siteRoamingBlock"
+        width: parent.width
+        spacing: 6
+        // Set apart from the site rows below, whose names are as bold.
+        bottomPadding: 12
+        visible: siteRoaming.available
+        PlexToggle {
+            id: roamingToggle
+            objectName: "siteRoamingToggle"
+            width: parent.width
+            text: qsTr("GPS roaming")
+            checked: siteRoaming.enabled
+            // Always switchable off; on only where this system has two sites
+            // roaming can use and Settings has no extra options. While it
+            // cannot be switched on, a screen reader hears why on the switch.
+            enabled: siteRoaming.enabled || sheet.roamingBlockedReason.length === 0
+            Accessible.description: enabled ? "" : sheet.roamingBlockedReason
+            onToggled: {
+                sheet.setRoaming(checked);
+                checked = Qt.binding(function () { return siteRoaming.enabled; });
+            }
+        }
+        ReadableText {
+            objectName: "siteRoamingDisclosure"
+            width: parent.width
+            text: qsTr("Switch to the nearest saved site of the system you are listening to as you move. Uses precise location while DSD-neo is on screen.")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(14)
+            color: Theme.textSecondary
+        }
+        ReadableText {
+            objectName: "siteRoamingUnavailable"
+            width: parent.width
+            visible: !roamingToggle.enabled
+            text: sheet.roamingBlockedReason
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(14)
+            color: Theme.textSecondary
+        }
+        // The session roaming follows, here: the site it runs and how far it
+        // is (the distance moves with each fix, so a screen reader hears the
+        // site alone). For another system, or nothing roaming can follow,
+        // one line says so instead, and the state line below is left out.
+        ReadableText {
+            id: roamingContextLine
+            objectName: "siteRoamingContext"
+            readonly property string distanceText: Util.fmtDistanceKm(siteRoaming.currentDistanceKm, prefs.metricUnits)
+            readonly property string spoken: {
+                if (!siteRoaming.enabled)
+                    return "";
+                if (sheet.roamingJudges && sheet.roamingHere)
+                    return siteRoaming.currentName.length > 0 ? qsTr("Listening to %1").arg(siteRoaming.currentName) : "";
+                if (sheet.roamingJudges && siteRoaming.systemName.length > 0)
+                    return qsTr("GPS roaming follows %1, the system you are listening to").arg(siteRoaming.systemName);
+                return siteRoaming.state === SiteRoaming.Idle ? siteRoaming.statusText : "";
+            }
+            width: parent.width
+            // Its own paragraph, under what the switch does.
+            topPadding: 6
+            visible: text.length > 0
+            text: sheet.roamingJudges && sheet.roamingHere && spoken.length > 0 && distanceText.length > 0
+                ? Util.fill(qsTr("%1 · %2"), [spoken, distanceText.replace(" ", "\u00a0")]) : spoken
+            Accessible.name: navigationAllowed && visible ? spoken : ""
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(14)
+            color: Theme.textSecondary
+        }
+        ReadableText {
+            id: roamingStateLine
+            objectName: "siteRoamingState"
+            readonly property bool problem: siteRoaming.action === SiteRoaming.OpenAppSettings || siteRoaming.action === SiteRoaming.TurnOnLocation || siteRoaming.reason === SiteRoaming.SwitchFailed
+            width: parent.width
+            visible: text.length > 0
+            text: siteRoaming.enabled && sheet.roamingJudges && sheet.roamingHere ? siteRoaming.statusText : ""
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(15)
+            color: problem ? Theme.alert : Theme.textPrimary
+        }
+        OutlineButton {
+            objectName: "siteRoamingAction"
+            width: parent.width
+            visible: roamingStateLine.visible && text.length > 0
+            text: siteRoaming.action === SiteRoaming.ResumeRoaming ? qsTr("Resume roaming")
+                : siteRoaming.action === SiteRoaming.OpenAppSettings ? qsTr("Open app settings")
+                : siteRoaming.action === SiteRoaming.TurnOnLocation ? qsTr("Turn on location") : ""
+            onClicked: sheet.roamingAction()
+        }
     }
     OutlineButton {
         objectName: "siteRecoverButton"
@@ -397,23 +623,31 @@ ModalSheet {
     }
     Repeater {
         id: siteRows
-        model: sheet.rows
+        // One row per site uid, in the order shown: a fix that only moves
+        // the distances leaves every row as it is (#786).
+        model: sheet.order
         Column {
             id: siteRow
             required property var modelData
             readonly property bool isSiteRow: true
-            readonly property string siteUid: site.uid || ""
+            readonly property string siteUid: modelData
+            readonly property int row: (sheet.revision, savedSystems.rowForUid(modelData))
             width: parent.width
             spacing: 6
-            property var site: (sheet.revision, savedSystems.get(modelData))
-            property real distance: (sheet.revision, prefs.lastFixAt > 0 ? savedSystems.distanceKm(modelData, prefs.lastLat, prefs.lastLon) : -1)
+            property var site: (sheet.revision, savedSystems.getByUid(modelData))
+            readonly property real distance: sheet.distanceOf(modelData)
             readonly property string distanceText: Util.fmtDistanceKm(distance, prefs.metricUnits)
-            readonly property string title: (site.siteName || site.name) + (distanceText.length > 0 ? " · " + distanceText : "")
+            readonly property string name: site.siteName || site.name || ""
+            readonly property string title: name + (distanceText.length > 0 ? " · " + distanceText : "")
+            // While GPS roaming moves the distances, a screen reader hears the
+            // site alone: a focused row is not read out again on every fix.
+            readonly property string spokenTitle: sheet.liveFix ? name : title
             ReadableText {
-                objectName: "siteTitle" + siteRow.modelData
+                objectName: "siteTitle" + siteRow.row
                 width: parent.width
                 visible: sheet.sessionState !== 0
                 text: siteRow.title
+                Accessible.name: navigationAllowed && visible ? siteRow.spokenTitle : ""
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.family: Theme.sans
@@ -422,15 +656,16 @@ ModalSheet {
                 color: Theme.textPrimary
             }
             OutlineButton {
-                objectName: "siteChoice" + siteRow.modelData
+                objectName: "siteChoice" + siteRow.row
                 width: parent.width
                 visible: sheet.sessionState === 0
                 text: siteRow.title
+                accessibleName: siteRow.spokenTitle
                 enabled: sheet.sessionState === 0 && !siteRow.site.avoidSite
-                onClicked: sheet.choose(siteRow.modelData)
+                onClicked: sheet.choose(siteRow.row)
             }
             ReadableText {
-                objectName: "sitePositionNotice" + siteRow.modelData
+                objectName: "sitePositionNotice" + siteRow.row
                 width: parent.width
                 visible: !siteRow.site.hasSitePos
                 text: radioReference.available ? qsTr("No coordinates. Use Update from RadioReference to check for new location data.")
@@ -441,14 +676,30 @@ ModalSheet {
                 font.pixelSize: Theme.fontSize(14)
                 color: Theme.textSecondary
             }
+            // #786 (§2.1): a site with options of its own is never a roaming
+            // destination; while roaming is on, its row says so.
+            ReadableText {
+                objectName: "siteRoamingExtraArgs" + siteRow.row
+                width: parent.width
+                visible: siteRoaming.available && siteRoaming.enabled && String(siteRow.site.extraArgs || "").trim().length > 0
+                text: qsTr("Not used by GPS roaming: this site has extra options")
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(14)
+                color: Theme.textSecondary
+            }
+            // A screen reader hears which site each row's actions are for
+            // (#786); the name alone, never the moving distance.
             OutlineButton {
+                objectName: "siteEdit" + siteRow.row
                 width: parent.width
                 text: qsTr("Edit site")
+                accessibleName: qsTr("Edit %1").arg(siteRow.name)
                 visible: sheet.sessionState === 0
                 onClicked: {
                     sheet.userAction();
                     sheet.visible = false;
-                    sheet.editSite(siteRow.modelData);
+                    sheet.editSite(siteRow.row);
                 }
             }
             // Issue #801 D4: one site pinned to Listen on its own. It re-reads
@@ -456,7 +707,7 @@ ModalSheet {
             // disabled and the line under it says why, here in the chooser.
             OutlineButton {
                 id: sitePin
-                objectName: "sitePin" + siteRow.modelData
+                objectName: "sitePin" + siteRow.row
                 readonly property var action: (listenPins.revision, listenPins.action("site", siteRow.site.uid || ""))
                 width: parent.width
                 text: action.text
@@ -465,7 +716,7 @@ ModalSheet {
                 onClicked: sheet.togglePin(siteRow.site.uid || "", action.pinned)
             }
             ReadableText {
-                objectName: "sitePinReason" + siteRow.modelData
+                objectName: "sitePinReason" + siteRow.row
                 width: parent.width
                 visible: text.length > 0
                 text: sitePin.action.description
@@ -476,13 +727,18 @@ ModalSheet {
                 color: Theme.textSecondary
             }
             PlexToggle {
-                objectName: "siteAvoid" + siteRow.modelData
+                objectName: "siteAvoid" + siteRow.row
                 text: qsTr("Avoid site")
+                Accessible.name: qsTr("Avoid %1").arg(siteRow.name)
                 checked: !!siteRow.site.avoidSite
-                onToggled: sheet.setAvoid(siteRow.modelData, checked)
+                // Shows what is saved, also when the save failed.
+                onToggled: {
+                    sheet.setAvoid(siteRow.row, checked);
+                    checked = Qt.binding(function () { return !!siteRow.site.avoidSite; });
+                }
             }
             ReadableText {
-                objectName: "siteAvoidError" + siteRow.modelData
+                objectName: "siteAvoidError" + siteRow.row
                 width: parent.width
                 visible: sheet.avoidFailedUid.length > 0 && sheet.avoidFailedUid === siteRow.site.uid
                 text: sheet.avoidFailedWanted ? qsTr("Could not avoid this site. Try again.") : qsTr("Could not stop avoiding this site. Try again.")
@@ -493,11 +749,13 @@ ModalSheet {
                 color: Theme.alert
             }
             OutlineButton {
+                objectName: "siteSwitch" + siteRow.row
                 width: parent.width
                 text: qsTr("Stop and switch")
+                accessibleName: qsTr("Stop and switch to %1").arg(siteRow.name)
                 visible: sheet.sessionState === 2
                 enabled: !siteRow.site.avoidSite
-                onClicked: sheet.stopAndSwitch(siteRow.modelData)
+                onClicked: sheet.stopAndSwitch(siteRow.row)
             }
         }
     }

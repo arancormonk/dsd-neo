@@ -18,6 +18,7 @@
 #include "location_record.h"
 #include "presentation_scale.h"
 #include "run_status.h"
+#include "start_status.h"
 
 #include <QCoreApplication>
 #include <QFuture>
@@ -49,6 +50,9 @@ namespace {
 constexpr const char* kServiceClass = "io/github/arancormonk/dsdneo/DecoderService";
 constexpr const char* kSupportClass = "io/github/arancormonk/dsdneo/AppSupport";
 constexpr const char* kLocationClass = "io/github/arancormonk/dsdneo/LocationSupport";
+/* GPS roaming (#786): the continuous feed and its permission prompt and settings screens. */
+constexpr const char* kStreamClass = "io/github/arancormonk/dsdneo/LocationStream";
+constexpr const char* kPermissionClass = "io/github/arancormonk/dsdneo/LocationPermission";
 constexpr const char* kUsbClass = "io/github/arancormonk/dsdneo/UsbSourceManager";
 constexpr const char* kScreenClass = "io/github/arancormonk/dsdneo/ScreenSupport";
 constexpr const char* kDocumentsClass = "io/github/arancormonk/dsdneo/DocumentCopies";
@@ -265,6 +269,29 @@ static_method_available(const char* owner, const char* name, const char* signatu
     QJniEnvironment env;
     jclass found = env.findClass(owner);
     return found != nullptr && env.findStaticMethod(found, name, signature) != nullptr;
+}
+
+/*
+ * A static ()J counter of @p owner (#786), or -1 when it cannot be read. Checked step by step:
+ * QJniObject::callStaticMethod<jlong>() clears a failed lookup's exception and answers 0, a valid count, so a reader
+ * built on it could never report the failure. The counters start at 0 and only grow, so a negative value is no count.
+ */
+qint64
+read_static_counter(const char* owner, const char* name) {
+    QJniEnvironment env;
+    const jclass found = env.findClass(owner);
+    if (found == nullptr) {
+        return -1;
+    }
+    const jmethodID method = env.findStaticMethod(found, name, "()J");
+    if (method == nullptr) {
+        return -1;
+    }
+    const jlong value = env->CallStaticLongMethod(found, method);
+    if (env.checkAndClearExceptions() || value < 0) {
+        return -1;
+    }
+    return static_cast<qint64>(value);
 }
 
 /** @brief A Java float[] returned by a static call into @p values; false when the call or the copy failed. */
@@ -586,25 +613,114 @@ DecoderHostAndroid::setScreenPolicy(int mode, int delaySeconds) {
     });
 }
 
-QString
-DecoderHostAndroid::platformStartDecoder(const QStringList& argv, uint64_t attempt) {
+int
+DecoderHostAndroid::platformStartDecoder(const QStringList& argv, uint64_t attempt, qint64 expectedStopGeneration,
+                                         qint64 expectedForegroundEpoch) {
     QJniObject context = android_context();
     if (!context.isValid()) {
-        return QStringLiteral("No Android context");
+        return kStartNoContext;
     }
 
     QJniEnvironment env;
     jobjectArray args = to_java_string_array(env, argv);
     if (args == nullptr) {
-        return QStringLiteral("Could not marshal arguments");
+        return kStartBadArguments;
     }
 
-    // Must match DecoderService.kt: @JvmStatic fun startDecoder(context: Context, args: Array<String>, attempt: Long)
-    QJniObject::callStaticMethod<void>(kServiceClass, "startDecoder",
-                                       "(Landroid/content/Context;[Ljava/lang/String;J)V", context.object(), args,
-                                       static_cast<jlong>(attempt));
+    // Must match DecoderService.kt: @JvmStatic fun startDecoder(context: Context, args: Array<String>, attempt: Long,
+    // expectedStopGeneration: Long, expectedForegroundEpoch: Long): Int. -1 is NO_STOP_EXPECTATION and
+    // NO_FOREGROUND_EXPECTATION: a manual start. The status is START_HANDED_OVER or why Android refused the START
+    // (#786 B2); a refused one never reaches the service. A call that fails answers kStartCallFailed (Qt clears a
+    // pending exception and returns 0), which is not kStartHandedOver.
+    const jint status = QJniObject::callStaticMethod<jint>(
+        kServiceClass, "startDecoder", "(Landroid/content/Context;[Ljava/lang/String;JJJ)I", context.object(), args,
+        static_cast<jlong>(attempt), static_cast<jlong>(expectedStopGeneration),
+        static_cast<jlong>(expectedForegroundEpoch));
     env->DeleteLocalRef(args);
-    return {};
+    return static_cast<int>(status);
+}
+
+qint64
+DecoderHostAndroid::platformUserStopGeneration() {
+    // Must match DecoderService.kt: @JvmStatic fun userStopGeneration(): Long. Lock-only, like retireAttempts().
+    return read_static_counter(kServiceClass, "userStopGeneration");
+}
+
+qint64
+DecoderHostAndroid::platformForegroundEpoch() {
+    // Must match LocationStream.kt: @JvmStatic fun foregroundEpoch(): Long. An atomic read.
+    return read_static_counter(kStreamClass, "foregroundEpoch");
+}
+
+void
+DecoderHostAndroid::platformStartLocationStream() {
+    const auto context = android_context();
+    if (!context.isValid()) {
+        return;
+    }
+    // Must match LocationStream.kt: @JvmStatic fun startStream(context: Context). It posts to the main looper itself.
+    QJniEnvironment env;
+    QJniObject::callStaticMethod<void>(kStreamClass, "startStream", "(Landroid/content/Context;)V", context.object());
+    env.checkAndClearExceptions();
+}
+
+void
+DecoderHostAndroid::platformStopLocationStream() {
+    // Must match LocationStream.kt: @JvmStatic fun stopStream().
+    QJniEnvironment env;
+    QJniObject::callStaticMethod<void>(kStreamClass, "stopStream", "()V");
+    env.checkAndClearExceptions();
+}
+
+QString
+DecoderHostAndroid::platformPollLocationStream() {
+    // Must match LocationStream.kt: @JvmStatic fun pollStream(): String?, null while the feed is stopped.
+    QJniEnvironment env;
+    const auto record = QJniObject::callStaticObjectMethod(kStreamClass, "pollStream", "()Ljava/lang/String;");
+    if (env.checkAndClearExceptions() || !record.isValid()) {
+        return QString();
+    }
+    return record.toString();
+}
+
+/* LocationPermission takes the Activity and posts to the Android main thread itself, so these return at once. */
+void
+DecoderHostAndroid::requestRoamingPermission(qint64 requestId) {
+    if (!QNativeInterface::QAndroidApplication::isActivityContext()) {
+        return;
+    }
+    const auto context = android_context();
+    // Must match LocationPermission.kt: @JvmStatic fun requestRoamingPermission(activity: Activity, id: Long).
+    QJniEnvironment env;
+    QJniObject::callStaticMethod<void>(kPermissionClass, "requestRoamingPermission", "(Landroid/app/Activity;J)V",
+                                       context.object(), static_cast<jlong>(requestId));
+    env.checkAndClearExceptions();
+}
+
+void
+DecoderHostAndroid::openAppLocationSettings() {
+    if (!QNativeInterface::QAndroidApplication::isActivityContext()) {
+        return;
+    }
+    const auto context = android_context();
+    // Must match LocationPermission.kt: @JvmStatic fun openAppLocationSettings(activity: Activity).
+    QJniEnvironment env;
+    QJniObject::callStaticMethod<void>(kPermissionClass, "openAppLocationSettings", "(Landroid/app/Activity;)V",
+                                       context.object());
+    env.checkAndClearExceptions();
+}
+
+void
+DecoderHostAndroid::openLocationSourceSettings() {
+    if (!QNativeInterface::QAndroidApplication::isActivityContext()) {
+        return;
+    }
+    const auto context = android_context();
+    // Must match LocationPermission.kt: @JvmStatic fun openLocationSourceSettings(activity: Activity).
+    QJniEnvironment env;
+    QJniObject::callStaticMethod<void>(kPermissionClass, "openLocationSourceSettings", "(Landroid/app/Activity;)V",
+                                       context.object());
+    env.checkAndClearExceptions();
 }
 
 bool
@@ -1328,11 +1444,18 @@ DecoderHostAndroid::serviceFailureText() const {
 }
 
 void
-DecoderHostAndroid::requestServiceStop() {
+DecoderHostAndroid::requestServiceStop(bool forSwitch) {
     QJniObject context = android_context();
     // The service can cancel a live run without an Activity context; only its deferred
     // notification bookkeeping needs one. It diagnoses an unavailable dispatch itself.
-    QJniObject::callStaticMethod<void>(kServiceClass, "stopDecoder", "(Landroid/content/Context;)V", context.object());
+    if (forSwitch) {
+        // Must match DecoderService.kt: @JvmStatic fun stopDecoderForSwitch(context: Context?) (#786).
+        QJniObject::callStaticMethod<void>(kServiceClass, "stopDecoderForSwitch", "(Landroid/content/Context;)V",
+                                           context.object());
+    } else {
+        QJniObject::callStaticMethod<void>(kServiceClass, "stopDecoder", "(Landroid/content/Context;)V",
+                                           context.object());
+    }
     setStatus(QStringLiteral("Stopping…"));
 }
 

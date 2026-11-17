@@ -151,6 +151,81 @@ private fun aUserStopEscalatesAnExistingDrain() = withRunningService { service -
     check(DsdNative.stopCauses == listOf("lifecycle", "user")) { "each stop must pass its own cause" }
 }
 
+// #786: a roaming switch drains like every stop the user did not ask for, and is no user stop for the generation. The
+// user's Stop during its drain abandons the uploads left: the service repeats nativeStop for it with the user's cause.
+private fun aSwitchDrainsAndTheUsersStopAbandons() = withRunningService { service ->
+    val generation = DecoderService.userStopGeneration()
+    DecoderService.stopDecoderForSwitch(service)
+    check(DsdNative.stops == listOf(false) && DsdNative.stopCauses == listOf("switch")) {
+        "a switch must reach native code at once and drain: ${DsdNative.stops} ${DsdNative.stopCauses}"
+    }
+    check(DecoderService.stateName() == "STOPPING")
+    check(DecoderService.userStopGeneration() == generation) { "a switch is no user stop" }
+    val queued = service.intents.remove()
+    check(queued.getStringExtra(DecoderService.EXTRA_STOP_CAUSE) == "switch") { "the switch's intent names its cause" }
+    check(queued.getLongExtra(STOP_SESSION, 0) == JSONObject(DecoderService.lifecycleStatus()).optLong("sessionId")) {
+        "the switch's intent is for the session it stops"
+    }
+    check(queued.getLongExtra(DecoderService.EXTRA_USER_STOP_GENERATION, 0L) == 0L) { "a switch counts no user stop" }
+    deliver(service, queued)
+    check(DsdNative.stops == listOf(false, false)) { "the switch's delivery still drains" }
+    check(DecoderService.userStopGeneration() == generation) { "the switch's delivery is no user stop" }
+    DecoderService.stopDecoder(service)
+    check(DsdNative.stops == listOf(false, false, true)) { "the user's Stop must abandon the switch's drain" }
+    check(DsdNative.stopCauses.last() == "user") { "the user's Stop names its own cause: ${DsdNative.stopCauses}" }
+    check(DecoderService.userStopGeneration() == generation + 1) { "the user's Stop is counted" }
+    check(DecoderService.stateName() == "STOPPING")
+}
+
+// #786: every user stop request moves the stop generation once, from any source and in any state; nothing else does.
+private fun everyUserStopMovesTheGeneration() {
+    fun moved(what: String, by: Long, action: () -> Unit) {
+        val before = DecoderService.userStopGeneration()
+        action()
+        val after = DecoderService.userStopGeneration()
+        check(after == before + by) { "$what: the generation moved by ${after - before}, expected $by" }
+    }
+    val idle = newService()
+    moved("Stop listening while IDLE", 1) { DecoderService.stopDecoder(idle) }
+    moved("its delivery", 0) { deliver(idle, idle.intents.remove()) }
+    moved("Stop listening with no Android context", 1) {
+        DecoderService::class.java.getMethod("stopDecoder", Context::class.java).invoke(null, null)
+    }
+    moved("a switch while IDLE", 0) { DecoderService.stopDecoderForSwitch(idle) }
+    moved("its delivery", 0) { deliver(idle, idle.intents.remove()) }
+    moved("the notification's Stop while IDLE", 1) { deliver(idle, stopIntent()) }
+    moved("a stop intent that names no cause", 0) { deliver(idle, stopIntent(null)) }
+    moved("an idle teardown", 0) { idle.onDestroy() }
+    settle(idle)
+
+    withRunningService { service ->
+        moved("the notification's Stop while RUNNING", 1) {
+            deliver(service, checkNotNull(shade.shown[NOTIFICATION_ID]).actions.single().intent.intent)
+        }
+        check(DecoderService.stateName() == "STOPPING")
+    }
+    withRunningService { service ->
+        moved("removing the task from Recents", 1) { service.onTaskRemoved(Intent()) }
+    }
+    withRunningService { service ->
+        moved("Stop listening while RUNNING", 1) { DecoderService.stopDecoder(service) }
+        moved("its delivery while STOPPING", 0) { deliver(service, service.intents.remove()) }
+        moved("a lifecycle stop", 0) { deliver(service, stopIntent(StopCause.LIFECYCLE)) }
+    }
+    // While STARTING the stop is ordered behind the start, but counted at once.
+    val service = newService()
+    DsdNative.configureHook = {
+        moved("Stop listening while STARTING", 1) { DecoderService.stopDecoder(service) }
+    }
+    start(service)
+    try {
+        moved("its delivery behind the start", 0) { deliver(service, service.intents.remove()) }
+        check(DecoderService.stateName() == "STOPPING") { "a manual start's ordered Stop still stops its run" }
+    } finally {
+        finish(service)
+    }
+}
+
 // #647: the session's ending and its receiver ride the lifecycle record, for its own session only.
 private fun theLifecycleRecordCarriesTheReceiverEnding() = withRunningService { _ ->
     val session = JSONObject(DecoderService.lifecycleStatus()).optLong("sessionId")
@@ -515,6 +590,8 @@ fun main(args: Array<String>) {
         "notification" to ::notificationStopPrecedesNotificationWork,
         "task_removed" to ::removingTheTaskStopsWithoutActivityDestruction,
         "drain" to ::aUserStopEscalatesAnExistingDrain,
+        "switch_drain" to ::aSwitchDrainsAndTheUsersStopAbandons,
+        "stop_generation" to ::everyUserStopMovesTheGeneration,
         "receiver_ending" to ::theLifecycleRecordCarriesTheReceiverEnding,
         "native_failure" to ::aRefusedNativeStopRemainsRetryable,
         "stale" to ::aLateStopCannotCancelTheNextRun,

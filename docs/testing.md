@@ -144,7 +144,13 @@ or plain path to the base host's copy, a stale destination is removed before the
 without its file fails. The file browser's dispatch (#830) runs against a `FileBrowser` stub with a record queue: each
 request reaches it with its arguments, records settle their live request once in order, and a retired request is
 cancelled there once and its record dropped. It links the real recording store (`DSD_NEO_TEST_HOOKS` on, for its pass
-hooks), so a share queued behind an export is shown held in the store until its copy is made. The `ANDROID_*_JVM`
+hooks), so a share queued behind an export is shown held in the store until its copy is made. GPS roaming's host API
+(#786) runs there too: the `LocationStream` record polled only while the feed is started, reported once per change with
+`fixAtMs` on the host's clock and malformed records refused; the stop generation and foreground epoch read at each call,
+never on a poll; each start status's own failure text (`platformStartDecoder()` returns the status); a start with an
+expectation refused superseded at once, by the service's record or, unrecorded, at its grace, never as a failure; a
+negative expectation refused as a start error; `retireRoamAttempt()` before and after the commit and never on a stale
+attempt; the stream update emitted after the tick's session record; and `stopForSwitch()`. The `ANDROID_*_JVM`
 tests run production Android Kotlin on the plain JVM, without an Android build or emulator, one suite of
 `tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by
 default): `ANDROID_LOCATION_JVM` runs the location broker and geocoder queue with deterministic platform stubs,
@@ -286,8 +292,9 @@ kind the broker writes is one `android/local_device_state.h` maps (`refused` to 
 `ANDROID_ENGINE_STOP_JVM` (the `engine_stop` suite) runs `EngineStop.kt` with no stubs: only `StopCause.USER` hands
 `nativeStop` `userRequested = true` (abandoning pending rdio uploads), and a stop intent with a missing or unknown cause
 drains. Its source check first pins the cause every production caller passes: each `nativeStop` call goes through
-`EngineStop.request`, a USB detach and the Activity and service teardowns drain, and both `ACTION_STOP` senders (the Qt
-host's Stop listening and the notification's Stop action) say `USER`. A second source check reads `DsdNative.kt` against
+`EngineStop.request`, a USB detach and the Activity and service teardowns drain, and the two `ACTION_STOP` senders name
+their cause: the notification's Stop action says `USER`, and the Qt host's one sender passes its entry point's
+(`stopDecoder()` `USER`, `stopDecoderForSwitch()` `SWITCH`, #786). A second source check reads `DsdNative.kt` against
 `android/*.cpp` (the binding never compiles on the JVM): every `external fun` has its JNI definition, `nativeStop` takes
 the cause's wire value and latches it with its stop flag under the lifecycle-status lock, `nativeConfigure` clears that
 flag in the same block as the new run record (so a stop it discards leaves no cause), and `nativeInit` installs the
@@ -314,7 +321,34 @@ leaves it alone when the old START arrives; a retirement during `nativeConfigure
 published cancels the configured session (no run, one `nativeDiscardConfigured()`, a cancelled record); a retirement
 computed from an IDLE record the service has since left finds the run published and leaves it running; a START an
 earlier process left undelivered, which carries that process's token, runs nothing and leaves the attempt ids alone, so
-the new host's first start runs.
+the new host's first start runs. The #786 cases send roaming STARTs that expect the user stop generation: a user Stop before
+the START is accepted (the service IDLE), during the receiver take, during `nativeConfigure()` and just before the worker
+would be published each ends the attempt unrun and `superseded` (a configured one discarded), and the Stop's own queued
+intent then finds nothing and is not counted again; a Stop during `nativeConfigure()` or the receiver take followed by
+that step failing ends `superseded` with no failure (`roam_superseded_then_setup_fails`), while the same failure with no
+Stop is still `RUN_FAILED`; `roam_cancel_matrix` runs every cell of the class: a user Stop, a host retirement and
+leaving the foreground (`ForegroundEpoch.advance()`), each as the START is accepted, during the receiver take, during a
+`nativeInit()`, receiver take or `nativeConfigure()` that then fails, during a configure that succeeds and just before
+the worker would be published: no worker, a cancelled record with no error or failure kind (`superseded` unless
+retired; a START retired before it arrived opens no session), and only the user's Stop counted;
+`roam_cancelled_while_busy` turns a retired or fenced START away from a busy service with its record untouched;
+`configure_failure_waits_for_the_verdict` checks that no poll during a configure that failed reads a failure before the
+service decides; `manual_start_ignores_the_fences` checks that a manual start runs after the epoch moves; a retirement during configure ends it retired, not superseded; an
+unchanged generation runs; a superseded START that finds the service still STOPPING is turned away with no busy
+failure on the running session's record, while an unsuperseded one is refused busy as before. The before-acceptance
+case also checks no `nativeInit`, no startup-diagnostics arm and no wake lock. `start_status` throws each refusal from
+the context stub (`ForegroundServiceStartNotAllowedException` at API 31, `IllegalStateException`, `SecurityException`,
+another `RuntimeException`, no component) and checks the status `startDecoder()` returns; every status is nonzero and
+distinct. The suite's `start_status_contract` source check pins every `START_*` to its `android/start_status.h` twin
+(`START_NOT_ALLOWED` is `kStartNotAllowed`), no Kotlin status at 0 (a failed JNI call's answer, `kStartCallFailed`),
+`platformStartDecoder()` returning the status as it is and the host failing every status but `kStartHandedOver`.
+Its `counter_reader_contract` pins `platformUserStopGeneration()` and `platformForegroundEpoch()` to
+`read_static_counter()`, which must answer -1 when the class, the method or the call fails (never Qt's
+`callStaticMethod<jlong>()`, which answers 0, a valid count).
+In `DecoderServiceStopTest.kt`, `switch_drain` checks a switch drains and is no user stop, and a user Stop during its drain
+abandons; `stop_generation` checks which requests move the generation (Stop listening while IDLE, RUNNING, STARTING and
+with no context, the notification's Stop, Recents) and which do not (deliveries of counted stops, switches, lifecycle and
+cause-less stops, the idle teardown).
 `DecoderServiceUsbTest.kt` (#782) scripts the USB broker's take (a stub `UsbSourceManager` in `ServiceNative.kt`): an
 RTL-SDR or Airspy start takes its receiver while STARTING and before configure, and its record names the connection;
 an rtl_tcp start takes none; a failed take ends the start before configure with its kind and text; a retirement before
@@ -362,7 +396,8 @@ Kotlin compiler plus Java; missing tools skip the CTest entries. Android CI runs
 persistence tests use disposable directories and do not require a writable home on Linux.
 
 `ANDROID_R8` tests the optimized-artifact checker, including removed/renamed JNI
-methods, changed descriptors, lost native bindings and disabled optimization.
+methods, changed descriptors, lost native bindings and disabled optimization, and the contract scanner's reading of
+`read_static_counter()` calls (#786; a form it cannot read is an error).
 Android CI also runs `tools/check_android_r8.py` on the real release APK and AAB,
 checking the app's C++ JNI contract, Qt entry points and embedded R8 metadata.
 It checks the Android resource table for Qt's named loader resources and retains

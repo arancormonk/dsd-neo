@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1String>
@@ -37,6 +38,7 @@
 #include "../../android/location_record.h"
 #include "../../android/run_status.h"
 #include "../../android/session_state_map.h"
+#include "../../android/start_status.h"
 #include "decoder_host.h"
 #include "diagnostics_log.h"
 #include "document_import_transport.h"
@@ -289,7 +291,13 @@ static int accessRequests;
 // #782: the attempt each start intent carried, why the next dispatch fails ("" hands it over), and the service's side
 // of DecoderService.retireAttempts(): each call's bound, the lifecycle reads made before it, and its answer.
 static uint64_t lastStartAttempt;
-static QString startDispatchFailure;
+// #786: what the next dispatch answers (DecoderService.startDecoder()'s status, or the host's own), and the expected
+// stop generation the last handed-over one carried.
+static int startDispatchStatus = dsd_android::kStartHandedOver;
+static qint64 lastStartExpectation;
+static qint64 lastStartEpochExpectation;
+// #786: runs as a START is handed over, before its status: what the platform does meanwhile.
+static std::function<void()> startDispatchHook;
 static QList<uint64_t> retirements;
 static int lifecycleReadsAtRetire;
 static bool serviceTookAttempt;
@@ -301,6 +309,30 @@ static bool serviceTookAttempt;
 static QJsonObject&
 record_at_retire() {
     static QJsonObject value;
+    return value;
+}
+
+namespace {
+/* #786: the roaming platform calls, each read or call counted, and the answers the test arranged. */
+struct PlatformRoaming {
+    qint64 stopGeneration = 0;
+    qint64 epoch = 0;
+    int generationReads = 0;
+    int epochReads = 0;
+    int switchStops = 0;
+    int streamStarts = 0;
+    int streamStops = 0;
+    int streamPolls = 0;
+    QString streamRecord; // LocationStream.pollStream(): empty is null
+    QList<qint64> permissionRequests;
+    int appSettingsOpens = 0;
+    int locationSettingsOpens = 0;
+};
+} // namespace
+
+static PlatformRoaming&
+roaming() {
+    static PlatformRoaming value;
     return value;
 }
 
@@ -348,9 +380,53 @@ DecoderHostAndroid::serviceFailureText() const {
 }
 
 void
-DecoderHostAndroid::requestServiceStop() {
+DecoderHostAndroid::requestServiceStop(bool forSwitch) {
     ++serviceStops;
+    roaming().switchStops += forSwitch ? 1 : 0;
     phaseAtStopDispatch = static_cast<int>(sessionState());
+}
+
+qint64
+DecoderHostAndroid::platformUserStopGeneration() {
+    ++roaming().generationReads;
+    return roaming().stopGeneration;
+}
+
+qint64
+DecoderHostAndroid::platformForegroundEpoch() {
+    ++roaming().epochReads;
+    return roaming().epoch;
+}
+
+void
+DecoderHostAndroid::platformStartLocationStream() {
+    ++roaming().streamStarts;
+}
+
+void
+DecoderHostAndroid::platformStopLocationStream() {
+    ++roaming().streamStops;
+}
+
+QString
+DecoderHostAndroid::platformPollLocationStream() {
+    ++roaming().streamPolls;
+    return roaming().streamRecord;
+}
+
+void
+DecoderHostAndroid::requestRoamingPermission(qint64 requestId) {
+    roaming().permissionRequests.append(requestId);
+}
+
+void
+DecoderHostAndroid::openAppLocationSettings() {
+    ++roaming().appSettingsOpens;
+}
+
+void
+DecoderHostAndroid::openLocationSourceSettings() {
+    ++roaming().locationSettingsOpens;
 }
 
 void
@@ -396,14 +472,21 @@ DecoderHostAndroid::hostDiagnostic(const QString& line) {
 void
 DecoderHostAndroid::shareDiagnostics(const QString&, const QString&) {}
 
-QString
-DecoderHostAndroid::platformStartDecoder(const QStringList&, uint64_t attempt) {
-    if (!startDispatchFailure.isEmpty()) {
-        return startDispatchFailure;
+int
+DecoderHostAndroid::platformStartDecoder(const QStringList&, uint64_t attempt, qint64 expectedStopGeneration,
+                                         qint64 expectedForegroundEpoch) {
+    /* #786: what Android does when the app left the foreground as the START was asked for. */
+    if (startDispatchHook) {
+        startDispatchHook();
+    }
+    if (startDispatchStatus != kStartHandedOver) {
+        return startDispatchStatus;
     }
     ++startDispatches;
     lastStartAttempt = attempt;
-    return {};
+    lastStartExpectation = expectedStopGeneration;
+    lastStartEpochExpectation = expectedForegroundEpoch;
+    return kStartHandedOver;
 }
 
 bool
@@ -831,6 +914,698 @@ check_engine_busy() {
     check(dsd_android::engine_busy(nullptr, false), "a failed service state read counts as busy");
     service_state() = "IDLE";
     running = false;
+}
+
+/* #786 B2: every start status but a handover is the attempt's own failure, worded for the user; a handover starts. */
+static void
+check_start_status_mapping() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+
+    struct Case {
+        int status;
+        const char* text;
+    };
+
+    static const Case kCases[] = {
+        {kStartCallFailed, "DSD-neo could not ask Android to start listening."},
+        {kStartNotAllowed, "Android did not let DSD-neo start listening while it was in the background. Open DSD-neo "
+                           "and try again."},
+        {kStartIllegalState, "Android would not let DSD-neo start listening just now. Try again."},
+        {kStartSecurity, "Android did not let DSD-neo start listening because a permission it needs is missing."},
+        {kStartNoService, "Android could not find the part of DSD-neo that listens."},
+        {kStartUnexpected, "Android could not start DSD-neo listening. Try again."},
+        {7, "Android did not let DSD-neo start listening. Try again."},
+        {kStartNoContext, "No Android context"},
+        {kStartBadArguments, "Could not marshal arguments"},
+    };
+    QStringList texts;
+    for (const Case& c : kCases) {
+        DecoderHostAndroid host;
+        startDispatches = 0;
+        nowMs = 500000;
+        retained_record() = {{"sessionId", 130}, {"state", "IDLE"}};
+        running = false;
+        host.refresh();
+        startDispatchStatus = c.status;
+        const bool started = host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")});
+        startDispatchStatus = kStartHandedOver;
+        check(!started && startDispatches == 0, "a start that was not handed over fails at once");
+        check(host.sessionState() == DecoderHost::Failed && host.failureText() == QString::fromUtf8(c.text),
+              "it shows the status's own text");
+        check(host.inputFailureKind() == 0 && !host.startSuperseded(), "with no kind the UI words, and no supersede");
+        check(lastHostDiagnostic.endsWith(QStringLiteral("(status %1)").arg(c.status)), "the status is logged");
+        texts.append(host.failureText());
+        host.stop();
+        check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "Dismiss clears it");
+        check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")})
+                  && host.sessionState() == DecoderHost::Starting && startDispatches == 1,
+              "a handover starts");
+    }
+    texts.removeDuplicates();
+    check(texts.size() == static_cast<qsizetype>(sizeof(kCases) / sizeof(kCases[0])), "each status has its own text");
+    retained_record() = QJsonObject();
+}
+
+/* #786: a start with an expectation carries it to the service and is superseded, never failed, by a user stop since
+ * the expectation was read: at once when the host reads it moved, later when the service's record says so. */
+static void
+check_start_expectation() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    const QStringList argv{QStringLiteral("-i"), QStringLiteral("rtl:0")};
+    DecoderHostAndroid host;
+    int supersededSignals = 0;
+    QObject::connect(&host, &DecoderHost::startSupersededChanged, [&supersededSignals] { ++supersededSignals; });
+    qint64 session = 140;
+    /* The service ends the attempt the host follows, cancelled, in a session of its own. */
+    const auto endAttempt = [&host, &session] {
+        retained_record() = {{"sessionId", ++session},
+                             {"state", "IDLE"},
+                             {"reason", kRunCancelled},
+                             {"attemptId", static_cast<qint64>(lastStartAttempt)}};
+        nowMs += 250;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Idle, "the attempt ends");
+    };
+    retirements.clear();
+    serviceTookAttempt = false;
+    startDispatches = 0;
+    nowMs = 600000;
+    roaming().stopGeneration = 5;
+    retained_record() = {{"sessionId", session}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+
+    int reads = roaming().generationReads;
+    check(host.start(argv) && lastStartExpectation == -1 && lastStartEpochExpectation == -1,
+          "a manual start carries no expectation");
+    check(roaming().generationReads == reads, "and reads no stop generation");
+    endAttempt();
+    /* A negative expectation is a read that failed, never "no expectation": a start error, with nothing sent. */
+    int dispatchedBefore = startDispatches;
+    check(!host.startWithStopExpectation(argv, -7, 0), "a negative expectation is refused");
+    check(startDispatches == dispatchedBefore && roaming().generationReads == reads && !host.startSuperseded(),
+          "before anything reaches the service, and not as a supersede");
+    check(host.sessionState() == DecoderHost::Failed
+              && host.failureText() == DecoderHost::stopGenerationUnreadableText() && host.inputFailureKind() == 0,
+          "it shows its start error");
+    host.stop();
+    check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "Dismiss clears it");
+
+    /* A generation read that fails at the start is a user stop: fail-safe. */
+    roaming().stopGeneration = -1;
+    dispatchedBefore = startDispatches;
+    check(!host.startWithStopExpectation(argv, 5, 0) && host.startSuperseded() && startDispatches == dispatchedBefore,
+          "a start whose generation cannot be read is superseded");
+    check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "and is no failure");
+    roaming().stopGeneration = 5;
+    reads = roaming().generationReads;
+
+    check(host.startWithStopExpectation(argv, 5, 0), "a start whose generation still holds is handed over");
+    check(lastStartExpectation == 5 && lastStartEpochExpectation == 0 && roaming().generationReads == reads + 1,
+          "it carries its expectations, read against the generation once");
+    check(host.sessionState() == DecoderHost::Starting && !host.startSuperseded(), "it starts");
+    endAttempt();
+    check(!host.startSuperseded(), "a cancelled end alone is not superseded");
+
+    /* A user stop after Qt's read: the host refuses the start itself. */
+    supersededSignals = 0;
+    roaming().stopGeneration = 6;
+    const int dispatched = startDispatches;
+    const int retired = retirements.size();
+    check(!host.startWithStopExpectation(argv, 5, 0), "a start a user stop superseded is refused");
+    check(startDispatches == dispatched && retirements.size() == retired, "nothing reaches the service");
+    check(host.startSuperseded() && supersededSignals == 1, "it reads superseded, announced once");
+    check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty() && host.inputFailureKind() == 0,
+          "and is no failure");
+    check(host.start(argv) && !host.startSuperseded() && supersededSignals == 2, "the next start clears it");
+    endAttempt();
+
+    /* A user stop the service saw first: its record of the attempt says superseded, set before the Idle edge. */
+    check(host.startWithStopExpectation(argv, 6, 0), "a start handed over");
+    const uint64_t attempt = lastStartAttempt;
+    bool supersededAtIdle = false;
+    const auto edge = QObject::connect(&host, &DecoderHost::sessionStateChanged, [&host, &supersededAtIdle] {
+        if (host.sessionState() == DecoderHost::Idle) {
+            supersededAtIdle = host.startSuperseded();
+        }
+    });
+    const QJsonObject superseded = {{"sessionId", ++session},
+                                    {"state", "IDLE"},
+                                    {"reason", kRunCancelled},
+                                    {"attemptId", static_cast<qint64>(attempt)},
+                                    {"superseded", true}};
+    retained_record() = superseded;
+    nowMs += 250;
+    host.refresh();
+    QObject::disconnect(edge);
+    check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty() && host.inputFailureKind() == 0,
+          "the superseded attempt ends idle, with no failure");
+    check(host.startSuperseded() && supersededAtIdle, "and reads superseded by the time it is idle");
+    nowMs += 3000;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Idle && host.startSuperseded(), "and stays so");
+
+    /* Another attempt's superseded record is none of this one's. */
+    check(host.startWithStopExpectation(argv, 6, 0), "another start");
+    nowMs += 250;
+    host.refresh();
+    check(!host.startSuperseded() && host.sessionState() == DecoderHost::Starting,
+          "the old attempt's superseded record leaves the new start alone");
+    endAttempt();
+    roaming().stopGeneration = 0;
+    retained_record() = QJsonObject();
+}
+
+/* #786: a roam the user cancelled retires its start. A retirement that wins (undelivered or configuring) leaves the
+ * session stopped with no failure, however long after; one that lost (it runs) leaves the run on screen. */
+static void
+check_roam_attempt_retirement() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    const QStringList argv{QStringLiteral("-i"), QStringLiteral("rtl:0")};
+    roaming().stopGeneration = 3;
+    {
+        DecoderHostAndroid host;
+        retirements.clear();
+        check(host.retireRoamAttempt() && retirements.isEmpty(), "with no roam start there is nothing that could run");
+    }
+    for (const bool configuring : {false, true}) {
+        DecoderHostAndroid host;
+        retirements.clear();
+        serviceTookAttempt = false;
+        nowMs = 700000;
+        // The previous session's record names its own attempt, as every record since #782 does.
+        retained_record() = {{"sessionId", 150}, {"state", "IDLE"}, {"attemptId", qint64(1)}};
+        running = false;
+        host.refresh();
+        check(host.startWithStopExpectation(argv, 3, 0), "the roam start is handed over");
+        const uint64_t attempt = lastStartAttempt;
+        if (configuring) {
+            retained_record() = {
+                {"sessionId", 151}, {"state", "STARTING"}, {"reason", kRunPending}, {"attemptId", (qint64)attempt}};
+            nowMs += 250;
+            host.refresh();
+        }
+        check(host.retireRoamAttempt(), "a retirement before the commit wins");
+        check(!retirements.isEmpty() && retirements.last() == attempt, "it retires the roam's attempt");
+        check(host.sessionState() == DecoderHost::Stopping, "the start winds down");
+        if (configuring) {
+            nowMs += 250;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Stopping, "while the service still configures it");
+            retained_record() = {
+                {"sessionId", 151}, {"state", "IDLE"}, {"reason", kRunCancelled}, {"attemptId", (qint64)attempt}};
+        }
+        nowMs += 250;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "to Idle");
+        nowMs += 5000;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Idle && host.inputFailureKind() == 0 && host.failureText().isEmpty(),
+              "and no start grace brings a failure back");
+        check(host.retireRoamAttempt() && retirements.size() == 2, "a second call has nothing left to retire");
+    }
+    {
+        DecoderHostAndroid host;
+        retirements.clear();
+        nowMs = 710000;
+        retained_record() = {{"sessionId", 160}, {"state", "IDLE"}};
+        running = false;
+        host.refresh();
+        check(host.startWithStopExpectation(argv, 3, 0), "a roam start");
+        const uint64_t attempt = lastStartAttempt;
+        retained_record() = {
+            {"sessionId", 161}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)attempt}};
+        running = true;
+        nowMs += 250;
+        host.refresh();
+        serviceTookAttempt = true;
+        check(!host.retireRoamAttempt(), "a retirement after the commit loses");
+        serviceTookAttempt = false;
+        check(host.sessionState() == DecoderHost::Running, "and the run stays on screen");
+
+        /* A manual start replaces the roam's: nothing of the roam is left to retire. */
+        host.stop();
+        retained_record() = {{"sessionId", 161}, {"state", "IDLE"}, {"reason", kRunCancelled}};
+        running = false;
+        host.refresh();
+        check(host.start(argv), "a manual start");
+        const int calls = retirements.size();
+        check(host.retireRoamAttempt() && retirements.size() == calls, "leaves no roam start to retire");
+
+        /* A roam start that ran, then a later roam start refused before it began: the finished one is not retired. */
+        retained_record() = {{"sessionId", 162},
+                             {"state", "IDLE"},
+                             {"reason", kRunCancelled},
+                             {"attemptId", static_cast<qint64>(lastStartAttempt)}};
+        host.refresh();
+        check(host.startWithStopExpectation(argv, 3, 0), "another roam start");
+        retained_record() = {{"sessionId", 163},
+                             {"state", "RUNNING"},
+                             {"reason", kRunPending},
+                             {"attemptId", static_cast<qint64>(lastStartAttempt)}};
+        running = true;
+        host.refresh();
+        host.stopForSwitch();
+        retained_record() = {{"sessionId", 163},
+                             {"state", "IDLE"},
+                             {"reason", kRunCancelled},
+                             {"attemptId", static_cast<qint64>(lastStartAttempt)}};
+        running = false;
+        host.refresh();
+        roaming().stopGeneration = 4;
+        check(!host.startWithStopExpectation(argv, 3, 0) && host.startSuperseded(),
+              "the next roam start is superseded");
+        const int before = retirements.size();
+        serviceTookAttempt = true;
+        check(host.retireRoamAttempt() && retirements.size() == before,
+              "and a retirement after it finds no stale roam attempt to call committed");
+        serviceTookAttempt = false;
+        roaming().stopGeneration = 3;
+    }
+    roaming().stopGeneration = 0;
+    retained_record() = QJsonObject();
+    running = false;
+}
+
+/* #786: a roam's START the service turned away unrecorded (it found the service busy; DecoderService rejects a
+ * superseded START silently then) settles as the user's stop when its start grace runs out, never as undelivered. A
+ * START whose generation still holds keeps the undelivered failure. */
+static void
+check_busy_superseded_start() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    const QStringList argv{QStringLiteral("-i"), QStringLiteral("rtl:0")};
+    /* 0: nothing moved; 1: a user stop; 2: the app left the foreground. */
+    for (const int moved : {1, 2, 0}) {
+        const bool stopped = moved != 0;
+        DecoderHostAndroid host;
+        retirements.clear();
+        serviceTookAttempt = false;
+        roaming().stopGeneration = 8;
+        roaming().epoch = 3;
+        nowMs = 730000;
+        retained_record() = {{"sessionId", 200}, {"state", "IDLE"}, {"attemptId", qint64(1)}};
+        running = false;
+        host.refresh();
+        check(host.startWithStopExpectation(argv, 8, 3), "the roam start is handed over");
+        if (moved == 1) {
+            roaming().stopGeneration = 9;
+        } else if (moved == 2) {
+            roaming().epoch = 4;
+        }
+        for (uint64_t waited = 250; waited <= 2000; waited += 250) {
+            nowMs = 730000 + waited;
+            host.refresh();
+        }
+        if (stopped) {
+            check(host.inputFailureKind() == 0 && host.failureText().isEmpty() && host.startSuperseded(),
+                  "a superseded start the service never recorded is the user's stop, not undelivered");
+            check(host.sessionState() == DecoderHost::Idle || host.sessionState() == DecoderHost::Stopping,
+                  "and it winds down");
+            nowMs += 250;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty() && host.startSuperseded(),
+                  "to Idle");
+            nowMs += 5000;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Idle && host.inputFailureKind() == 0, "and stays there");
+        } else {
+            check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptUndelivered
+                      && !host.startSuperseded(),
+                  "one whose generation held is still undelivered");
+        }
+    }
+    roaming().stopGeneration = 0;
+    roaming().epoch = 0;
+    retained_record() = QJsonObject();
+}
+
+/* #786 r2: a roam's start is fenced on the foreground epoch as on the stop generation. Moved before the handover: it is
+ * refused superseded, nothing sent; a negative one is a start error. Moved as Android refuses the START (it refuses a
+ * foreground service start from the background): superseded too, never the refusal's failure card. A refusal with
+ * nothing moved is the failure it always was. */
+static void
+check_roam_foreground_fence() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    const QStringList argv{QStringLiteral("-i"), QStringLiteral("rtl:0")};
+    DecoderHostAndroid host;
+    nowMs = 740000;
+    roaming().stopGeneration = 2;
+    roaming().epoch = 6;
+    retained_record() = {{"sessionId", 210}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    const int sent = startDispatches;
+    check(!host.startWithStopExpectation(argv, 2, -1) && startDispatches == sent && !host.startSuperseded()
+              && host.sessionState() == DecoderHost::Failed
+              && host.failureText() == DecoderHost::stopGenerationUnreadableText(),
+          "fence: an unreadable epoch is a start error, nothing sent");
+    host.stop();
+    check(!host.startWithStopExpectation(argv, 2, 5) && startDispatches == sent && host.startSuperseded()
+              && host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(),
+          "fence: the epoch moved since the switch: superseded, nothing sent, no failure");
+    check(host.startWithStopExpectation(argv, 2, 6) && lastStartEpochExpectation == 6 && !host.startSuperseded(),
+          "fence: the epoch the switch was decided in goes with the START");
+    retained_record() = {{"sessionId", 211},
+                         {"state", "IDLE"},
+                         {"reason", kRunCancelled},
+                         {"attemptId", static_cast<qint64>(lastStartAttempt)}};
+    nowMs += 250;
+    host.refresh();
+    /* 0: nothing moved; 1: the app left the foreground; 2: a user stop, as the START was refused. */
+    for (const int moved : {1, 2, 0}) {
+        startDispatchStatus = kStartNotAllowed;
+        startDispatchHook = [moved] {
+            if (moved == 1) {
+                roaming().epoch = 7;
+            } else if (moved == 2) {
+                roaming().stopGeneration = 3;
+            }
+        };
+        const bool started = host.startWithStopExpectation(argv, 2, 6);
+        startDispatchStatus = kStartHandedOver;
+        startDispatchHook = nullptr;
+        if (moved != 0) {
+            check(!started && host.startSuperseded() && host.sessionState() == DecoderHost::Idle
+                      && host.failureText().isEmpty() && host.inputFailureKind() == 0,
+                  "fence: refused after the app left the foreground or a user stop: superseded, no failure card");
+            nowMs += 2500;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "fence: and stays idle");
+            roaming().epoch = 6;
+            roaming().stopGeneration = 2;
+        } else {
+            check(!started && !host.startSuperseded() && host.sessionState() == DecoderHost::Failed
+                      && !host.failureText().isEmpty(),
+                  "fence: a refusal with nothing moved is still the start's failure");
+            host.stop();
+        }
+    }
+    roaming().stopGeneration = 0;
+    roaming().epoch = 0;
+    retained_record() = QJsonObject();
+}
+
+/* #786 r2: a poll can read the native record of a configure that failed before the service decided the start
+ * (STARTING, RUN_FAILED). When the service then ends it cancelled (superseded, or the host's retirement), that end is
+ * the verdict: Idle, no failure. A start nobody cancelled still fails. */
+static void
+check_cancel_outranks_native_failure() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    const QStringList argv{QStringLiteral("-i"), QStringLiteral("rtl:0")};
+    /* 0: superseded; 1: cancelled (retired); 2: failed. */
+    for (const int end : {0, 1, 2}) {
+        DecoderHostAndroid host;
+        nowMs = 750000;
+        roaming().stopGeneration = 1;
+        retained_record() = {{"sessionId", 220}, {"state", "IDLE"}};
+        running = false;
+        host.refresh();
+        check(host.startWithStopExpectation(argv, 1, 0), "replay: the roam start is handed over");
+        const auto attempt = static_cast<qint64>(lastStartAttempt);
+        retained_record() = {{"sessionId", 221},
+                             {"state", "STARTING"},
+                             {"reason", kRunFailed},
+                             {"lastError", "Decoder run failed (-1)"},
+                             {"attemptId", attempt}};
+        nowMs += 250;
+        host.refresh();
+        retained_record() = {{"sessionId", 221},
+                             {"state", "IDLE"},
+                             {"reason", end == 2 ? kRunFailed : kRunCancelled},
+                             {"lastError", end == 2 ? "resource-9" : ""},
+                             {"attemptId", attempt},
+                             {"superseded", end == 0}};
+        nowMs += 250;
+        host.refresh();
+        if (end == 2) {
+            check(host.sessionState() == DecoderHost::Failed && !host.failureText().isEmpty(),
+                  "replay: a start nobody cancelled fails");
+        } else {
+            check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty()
+                      && host.startSuperseded() == (end == 0),
+                  "replay: the service's cancelled end outranks the native failure seen before it");
+            nowMs += 3000;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "replay: and stays idle");
+        }
+    }
+    roaming().stopGeneration = 0;
+    retained_record() = QJsonObject();
+}
+
+/* #786: a roaming switch is a stop the user did not ask for: the switch call, with stop()'s Stopping at once. */
+static void
+check_stop_for_switch() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    DecoderHostAndroid host;
+    nowMs = 720000;
+    retained_record() = {{"sessionId", 170}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    retained_record() = {{"sessionId", 171}, {"state", "RUNNING"}, {"reason", kRunPending}};
+    running = true;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running, "a run");
+    serviceStops = 0;
+    roaming().switchStops = 0;
+    host.stopForSwitch();
+    check(serviceStops == 1 && roaming().switchStops == 1, "the switch stop goes to the service as a switch");
+    check(host.sessionState() == DecoderHost::Stopping && phaseAtStopDispatch == DecoderHost::Stopping,
+          "and Stopping shows before it is sent");
+    check(host.switchStopping(), "the Stopping is the switch's");
+    /* Its uploads can keep the service STOPPING for minutes: the user's Stop is still taken through it. */
+    retained_record() = {{"sessionId", 171}, {"state", "STOPPING"}, {"reason", kRunPending}};
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Stopping && host.switchStopping(), "through the switch's drain");
+    int changes = 0;
+    QObject::connect(&host, &DecoderHost::sessionStateChanged, &host, [&changes] { ++changes; });
+    host.stop();
+    check(serviceStops == 2 && roaming().switchStops == 1, "the user's Stop during it is sent, as the user's");
+    check(host.sessionState() == DecoderHost::Stopping && !host.switchStopping() && changes == 1,
+          "and the Stopping on screen is the user's now");
+    retained_record() = {{"sessionId", 171}, {"state", "IDLE"}, {"reason", kRunCancelled}};
+    running = false;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Idle && !host.switchStopping(), "the stop ends");
+
+    /* An ordinary user stop is no switch's: switchStopping() stays false through it. */
+    retained_record() = {{"sessionId", 172}, {"state", "RUNNING"}, {"reason", kRunPending}};
+    running = true;
+    host.refresh();
+    host.stop();
+    check(host.sessionState() == DecoderHost::Stopping && !host.switchStopping(), "a user stop is not a switch's");
+
+    /* A switch's stop the service never acknowledged shows the run again, and a later Stopping that is no stop's (the
+     * receiver ended) is not the switch's. */
+    retained_record() = {{"sessionId", 172}, {"state", "IDLE"}, {"reason", kRunCancelled}};
+    running = false;
+    host.refresh();
+    retained_record() = {{"sessionId", 173}, {"state", "RUNNING"}, {"reason", kRunPending}};
+    running = true;
+    host.refresh();
+    host.stopForSwitch();
+    check(host.switchStopping(), "a second switch");
+    for (int waited = 250; waited <= 2500; waited += 250) {
+        nowMs = 720000 + static_cast<uint64_t>(waited);
+        host.refresh();
+    }
+    check(host.sessionState() == DecoderHost::Running && !host.switchStopping(), "its stop expired");
+    retained_record() = {{"sessionId", 173},
+                         {"state", "RUNNING"},
+                         {"reason", kRunPending},
+                         {"endCause", kEndDetached},
+                         {"receiverSource", kReceiverRtl}};
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Stopping && !host.switchStopping(),
+          "a receiver ending later is not the switch's stop");
+    serviceStops = 0;
+    roaming().switchStops = 0;
+    retained_record() = QJsonObject();
+    running = false;
+}
+
+/* #786: the stop generation and the foreground epoch are read from the platform at each call, never from a poll. */
+static void
+check_roaming_reads() {
+    dsd_android::DecoderHostAndroid host;
+    retained_record() = {{"sessionId", 180}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    const int generationReads = roaming().generationReads;
+    const int epochReads = roaming().epochReads;
+    host.refresh();
+    check(roaming().generationReads == generationReads && roaming().epochReads == epochReads, "a poll reads neither");
+    roaming().stopGeneration = 11;
+    roaming().epoch = 4;
+    check(host.userStopGeneration() == 11 && host.foregroundEpoch() == 4, "each call reads the platform");
+    roaming().stopGeneration = 12;
+    roaming().epoch = 5;
+    check(host.userStopGeneration() == 12 && host.foregroundEpoch() == 5, "with no poll in between");
+    check(roaming().generationReads == generationReads + 2 && roaming().epochReads == epochReads + 2,
+          "one platform read per call");
+    roaming().stopGeneration = -1;
+    check(host.userStopGeneration() == -1, "a failed read is negative");
+    roaming().stopGeneration = 0;
+    roaming().epoch = 0;
+    retained_record() = QJsonObject();
+}
+
+/* #786: LocationStream's record, polled on refresh() while the feed is started, reaches the UI once per change, its
+ * age turned into a time on the host's monotonic clock; a record that does not read is ignored. */
+static void
+check_location_stream() {
+    dsd_android::DecoderHostAndroid host;
+    QList<QVariantMap> updates;
+    QObject::connect(&host, &dsd_qt::DecoderHost::locationStreamUpdate,
+                     [&updates](const QVariantMap& record) { updates.append(record); });
+    roaming() = PlatformRoaming();
+    const QString fix = QStringLiteral("{\"generation\":2,\"state\":\"ok\",\"provider\":\"gps\","
+                                       "\"elapsedRealtimeNanos\":987654321012345,\"lat\":10.0,\"lon\":20.0,"
+                                       "\"accuracyM\":8.5,\"ageMs\":%1}");
+    roaming().streamRecord = fix.arg(1500);
+    nowMs = 800000;
+    retained_record() = {{"sessionId", 190}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    check(roaming().streamPolls == 0 && updates.isEmpty(), "the feed is not polled before it is started");
+
+    host.startLocationStream();
+    check(roaming().streamStarts == 1, "starting it starts LocationStream");
+    host.refresh();
+    check(roaming().streamPolls == 1 && updates.size() == 1, "a poll reports its record");
+    const QVariantMap first = updates.value(0);
+    check(first.value("generation").toLongLong() == 2 && first.value("state").toString() == QStringLiteral("ok")
+              && first.value("hasFix").toBool() && first.value("provider").toString() == QStringLiteral("gps")
+              && first.value("measurementNs").toLongLong() == 987654321012345LL,
+          "with its generation, state and the fix's identity");
+    check(qAbs(first.value("lat").toDouble() - 10.0) < 1e-9 && qAbs(first.value("lon").toDouble() - 20.0) < 1e-9
+              && qAbs(first.value("accuracyM").toDouble() - 8.5) < 1e-9,
+          "and its position and accuracy");
+    check(first.value("fixAtMs").toLongLong() == 800000 - 1500, "fixAtMs is the poll's monotonic time less the age");
+
+    nowMs = 800250;
+    roaming().streamRecord = fix.arg(1750);
+    host.refresh();
+    check(updates.size() == 1, "the same fix polled again, older, is no news");
+
+    const QStringList malformed = {
+        QStringLiteral("not json"),
+        QStringLiteral("{\"state\":\"ok\"}"),
+        QStringLiteral("{\"generation\":\"2\",\"state\":\"ok\"}"),
+        QStringLiteral("{\"generation\":2.5,\"state\":\"ok\"}"),
+        QStringLiteral("{\"generation\":-1,\"state\":\"ok\"}"),
+        QStringLiteral("{\"generation\":2,\"state\":\"lost\"}"),
+        QStringLiteral("{\"generation\":2}"),
+        QStringLiteral("{\"generation\":2,\"state\":\"ok\",\"provider\":\"gps\"}"),
+        QStringLiteral("{\"generation\":2,\"state\":\"ok\",\"provider\":\"\",\"elapsedRealtimeNanos\":5,\"lat\":10.0,"
+                       "\"lon\":20.0,\"accuracyM\":8.5,\"ageMs\":1}"),
+        QStringLiteral(
+            "{\"generation\":2,\"state\":\"ok\",\"provider\":\"gps\",\"elapsedRealtimeNanos\":0,\"lat\":10.0,"
+            "\"lon\":20.0,\"accuracyM\":8.5,\"ageMs\":1}"),
+        QStringLiteral("{\"generation\":2,\"state\":\"ok\",\"provider\":\"gps\",\"elapsedRealtimeNanos\":\"5\","
+                       "\"lat\":10.0,\"lon\":20.0,\"accuracyM\":8.5,\"ageMs\":1}"),
+        QStringLiteral(
+            "{\"generation\":2,\"state\":\"ok\",\"provider\":\"gps\",\"elapsedRealtimeNanos\":5,\"lat\":90.5,"
+            "\"lon\":20.0,\"accuracyM\":8.5,\"ageMs\":1}"),
+        QStringLiteral(
+            "{\"generation\":2,\"state\":\"ok\",\"provider\":\"gps\",\"elapsedRealtimeNanos\":5,\"lat\":10.0,"
+            "\"lon\":-180.5,\"accuracyM\":8.5,\"ageMs\":1}"),
+        QStringLiteral(
+            "{\"generation\":2,\"state\":\"ok\",\"provider\":\"gps\",\"elapsedRealtimeNanos\":5,\"lat\":10.0,"
+            "\"lon\":20.0,\"accuracyM\":0,\"ageMs\":1}"),
+        QStringLiteral(
+            "{\"generation\":2,\"state\":\"ok\",\"provider\":\"gps\",\"elapsedRealtimeNanos\":5,\"lat\":10.0,"
+            "\"lon\":20.0,\"accuracyM\":-3.0,\"ageMs\":1}"),
+        QStringLiteral(
+            "{\"generation\":2,\"state\":\"ok\",\"provider\":\"gps\",\"elapsedRealtimeNanos\":5,\"lat\":10.0,"
+            "\"lon\":20.0,\"accuracyM\":8.5,\"ageMs\":1.5}"),
+        QStringLiteral(
+            "{\"generation\":2,\"state\":\"ok\",\"provider\":\"gps\",\"elapsedRealtimeNanos\":5,\"lat\":10.0,"
+            "\"lon\":20.0,\"accuracyM\":8.5}"),
+        QStringLiteral(
+            "{\"generation\":2,\"state\":\"ok\",\"provider\":\"gps\",\"elapsedRealtimeNanos\":5,\"lat\":10.0,"
+            "\"lon\":20.0,\"accuracyM\":null,\"ageMs\":1}"),
+    };
+    for (const QString& record : malformed) {
+        roaming().streamRecord = record;
+        nowMs += 250;
+        host.refresh();
+        QVariantMap ignored;
+        check(!dsd_android::location_stream_update(QJsonDocument::fromJson(record.toUtf8()).object(), 0, &ignored)
+                  && ignored.isEmpty(),
+              "a record that does not read is refused");
+    }
+    check(updates.size() == 1, "and none reaches the UI");
+    roaming().streamRecord = fix.arg(2000);
+    nowMs += 250;
+    host.refresh();
+    check(updates.size() == 1, "nor does one in between make the same fix news");
+
+    roaming().streamRecord = fix.arg(10).replace(QStringLiteral("987654321012345"), QStringLiteral("987664321012345"));
+    host.refresh();
+    check(updates.size() == 2 && updates.last().value("measurementNs").toLongLong() == 987664321012345LL
+              && updates.last().value("fixAtMs").toLongLong() == static_cast<qint64>(nowMs) - 10,
+          "a new fix is news");
+
+    roaming().streamRecord = QStringLiteral("{\"generation\":2,\"state\":\"locationOff\"}");
+    host.refresh();
+    check(updates.size() == 3 && updates.last().value("state").toString() == QStringLiteral("locationOff")
+              && !updates.last().value("hasFix").toBool() && !updates.last().contains(QStringLiteral("provider"))
+              && !updates.last().contains(QStringLiteral("fixAtMs")),
+          "a state with no fix is news, with no fix fields");
+    roaming().streamRecord = QStringLiteral("{\"generation\":2,\"state\":\"locationOff\",\"provider\":null,"
+                                            "\"lat\":null}");
+    host.refresh();
+    check(updates.size() == 3, "null fix fields are no fix");
+
+    /* Stopped by the Activity: the poll answers null, and the next record is news whatever it says. */
+    const QString off = roaming().streamRecord;
+    roaming().streamRecord.clear();
+    host.refresh();
+    roaming().streamRecord = off;
+    host.refresh();
+    check(updates.size() == 4, "after a null poll the same record is reported again");
+
+    host.stopLocationStream();
+    const int polls = roaming().streamPolls;
+    host.refresh();
+    check(roaming().streamStops == 1 && roaming().streamPolls == polls, "a stopped feed is not polled");
+    host.startLocationStream();
+    host.refresh();
+    check(roaming().streamStarts == 2 && updates.size() == 5, "a feed started again reports its record again");
+
+    /* The update comes after the tick's session record is applied: a slot sees this tick's phase. */
+    int phaseAtUpdate = -1;
+    const auto seen = QObject::connect(
+        &host, &dsd_qt::DecoderHost::locationStreamUpdate,
+        [&host, &phaseAtUpdate](const QVariantMap&) { phaseAtUpdate = static_cast<int>(host.sessionState()); });
+    retained_record() = {{"sessionId", 191}, {"state", "RUNNING"}, {"reason", dsd_android::kRunPending}};
+    running = true;
+    roaming().streamRecord = fix.arg(5);
+    host.refresh();
+    QObject::disconnect(seen);
+    check(updates.size() == 6 && phaseAtUpdate == dsd_qt::DecoderHost::Running,
+          "the update's slot sees the session the same tick published");
+    check(host.holdsStreamRecord(), "a running feed keeps its last record to compare the next one with");
+    running = false;
+    host.stopLocationStream();
+    check(!host.holdsStreamRecord(), "a stopped feed keeps no record, so no coordinates");
+    roaming() = PlatformRoaming();
+    retained_record() = QJsonObject();
 }
 
 /*
@@ -2945,9 +3720,9 @@ check_attempt_identity() {
         {"sessionId", 103}, {"state", "IDLE"}, {"reason", kRunFailed}, {"inputFailure", 1}, {"inputError", 111}};
     host.refresh();
     host.stop();
-    startDispatchFailure = QStringLiteral("No Android context");
+    startDispatchStatus = kStartNoContext;
     check(!host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "an undispatchable start fails");
-    startDispatchFailure.clear();
+    startDispatchStatus = kStartHandedOver;
     check(host.sessionState() == DecoderHost::Failed && host.failureText() == QStringLiteral("No Android context")
               && host.inputFailureKind() == 0 && host.inputFailureCode() == 0,
           "with its own text and no kind");
@@ -4139,6 +4914,15 @@ main(int argc, char** argv) {
     using namespace dsd_android;
     check_engine_busy();
     check_location_record();
+    check_location_stream();
+    check_roaming_reads();
+    check_start_status_mapping();
+    check_start_expectation();
+    check_roam_attempt_retirement();
+    check_busy_superseded_start();
+    check_roam_foreground_fence();
+    check_cancel_outranks_native_failure();
+    check_stop_for_switch();
     check_document_pick_record();
     check_document_requests();
     check_document_reentrant_drain();

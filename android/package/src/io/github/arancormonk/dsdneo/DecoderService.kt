@@ -6,6 +6,7 @@
 package io.github.arancormonk.dsdneo
 
 import android.annotation.SuppressLint
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -53,9 +54,12 @@ class DecoderService : Service() {
         logReceipt(intent, startId)
         // A notification Stop must reach native cancellation before any notification binder
         // calls. The Qt sender has already signalled it; repeating the request is harmless.
+        // A user stop the Qt host sent was counted in the stop generation when it asked; the notification's is
+        // counted here, as it arrives (#786).
         val stopping = intent?.action == ACTION_STOP && requestEngineStop(
             StopCause.fromWire(intent.getStringExtra(EXTRA_STOP_CAUSE)),
-            intent.getLongExtra(EXTRA_STOP_SESSION, 0L).takeIf { it != 0L }
+            intent.getLongExtra(EXTRA_STOP_SESSION, 0L).takeIf { it != 0L },
+            countsUserStop = intent.getLongExtra(EXTRA_USER_STOP_GENERATION, 0L) == 0L
         )
 
         // Unconditional, and before anything that can return early. startDecoder()
@@ -81,13 +85,16 @@ class DecoderService : Service() {
                     args,
                     startId,
                     intent.getLongExtra(EXTRA_ATTEMPT, 0L),
-                    intent.getLongExtra(EXTRA_PROCESS, 0L)
+                    intent.getLongExtra(EXTRA_PROCESS, 0L),
+                    intent.getLongExtra(EXTRA_EXPECTED_STOP_GENERATION, NO_STOP_EXPECTATION),
+                    intent.getLongExtra(EXTRA_EXPECTED_FOREGROUND_EPOCH, NO_FOREGROUND_EXPECTATION)
                 )
             }
             ACTION_STOP -> {
                 synchronized(lock) { lastStart = DeliveredStart(serial, startId) }
-                // Both senders say who asked: the app's Stop listening and the notification's
-                // Stop action are the user (#718 D4). Anything else drains.
+                // Every sender says who asked: the app's Stop listening and the notification's
+                // Stop action are the user (#718 D4), a roaming switch is not (#786). Anything
+                // else drains.
                 if (stopping) showStopping()
                 // A stop aimed at a service that is not running still promoted us
                 // above; drop back out of the foreground rather than sitting there
@@ -183,11 +190,24 @@ class DecoderService : Service() {
     /**
      * Runs one start on the main thread. [attempt] is the host's id for it (0: a start without one): the host retires
      * an attempt it has given up on (retireAttempts()), and a retired or superseded attempt never runs (#782).
-     * [process] is the [processToken] of the process that sent it.
+     * [process] is the [processToken] of the process that sent it. [expectedStopGeneration] is the
+     * [userStopGeneration] its sender last read, or [NO_STOP_EXPECTATION]: a user stop since then wins over the
+     * start, which is checked as the start is accepted, before it is configured, when its setup fails and as its run is
+     * published (#786). [expectedForegroundEpoch] is the [ForegroundEpoch] its sender's switch was decided in, or
+     * [NO_FOREGROUND_EXPECTATION]: leaving the foreground since then wins the same way.
      */
-    private fun startDecoding(args: Array<String>, startId: Int, attempt: Long, process: Long) {
+    private fun startDecoding(
+        args: Array<String>,
+        startId: Int,
+        attempt: Long,
+        process: Long,
+        expectedStopGeneration: Long,
+        expectedForegroundEpoch: Long
+    ) {
         var rejectedIn: State? = null
         var foreign = false
+        var supersededWhileBusy: StartEnd? = null
+        var supersededAtAcceptance: StartEnd? = null
         val session = synchronized(lock) {
             // Publish the id with the decision to start or reject. Doing this before
             // foreground promotion lets an old worker take a new run's id while the
@@ -202,6 +222,16 @@ class DecoderService : Service() {
             }
             // Before the busy check: a start the host has given up on is nothing to the run that holds the service.
             if (attempt != 0L && (attempt <= retiredThrough || attempt <= newestAttempt)) {
+                rejectedIn = state
+                return@synchronized 0L
+            }
+            // Before the busy check too (#786): a start the user's Stop or leaving the foreground superseded is no
+            // failure of the run that holds the service, so it is turned away silently, as a retired one is. Found
+            // IDLE, it is decided below.
+            if (state != State.IDLE) {
+                supersededWhileBusy = supersededEnd(expectedStopGeneration, expectedForegroundEpoch)
+            }
+            if (supersededWhileBusy != null) {
                 rejectedIn = state
                 return@synchronized 0L
             }
@@ -225,13 +255,33 @@ class DecoderService : Service() {
             attemptRan = false
             failureKind = ""
             receiverTake = UsbSessionTake()
+            stopExpectation = expectedStopGeneration
+            epochExpectation = expectedForegroundEpoch
+            superseded = false
+            // A session of its own, so the record the host reads names the attempt and why it never ran (#786).
+            supersededAtAcceptance = supersededEnd(stopExpectation, epochExpectation)
+            if (supersededAtAcceptance != null) {
+                superseded = true
+                terminalReason = DsdNative.RUN_CANCELLED
+                state = State.IDLE
+                return@synchronized 0L
+            }
             sessionId
+        }
+        supersededAtAcceptance?.let { end ->
+            DsdNative.nativeHostDiagnostic(
+                "service: start attempt $attempt ${end.wording} before it was accepted; nothing ran"
+            )
+            stopIfIdle()
+            return
         }
         rejectedIn?.let { found ->
             // The host already shows what became of it, and a later attempt may own the screen.
             DsdNative.nativeHostDiagnostic(
                 if (foreign) {
                     "service: start attempt $attempt rejected: sent by an earlier process (state $found)"
+                } else if (supersededWhileBusy != null) {
+                    "service: start attempt $attempt rejected: ${supersededWhileBusy?.wording} (state $found)"
                 } else {
                     "service: start attempt $attempt rejected as retired or superseded (state $found)"
                 }
@@ -335,19 +385,19 @@ class DecoderService : Service() {
         }, "dsd-neo-engine")
         // Atomic with the host's retirement: a retireAttempts() that found this attempt STARTING latched the
         // cancellation, and one that comes after this block finds it RUNNING and leaves it running. The latch is
-        // not the native stop flag, which nativeConfigure() clears.
-        val cancelled = synchronized(lock) {
-            if (cancelRequested) {
-                true
-            } else {
+        // not the native stop flag, which nativeConfigure() clears. Atomic with a user stop too (#786): one counted
+        // before this block supersedes a start that expected the generation it moved, one after it finds RUNNING
+        // and stops the run.
+        val unpublished = synchronized(lock) {
+            unrunEnd() ?: run {
                 engineThread = thread
                 state = State.RUNNING
                 attemptRan = true
-                false
+                null
             }
         }
-        if (cancelled) {
-            cancelConfigured(attempt)
+        if (unpublished != null) {
+            cancelConfigured(attempt, unpublished)
             return
         }
         updateNotification(getString(R.string.decoder_running))
@@ -356,39 +406,40 @@ class DecoderService : Service() {
     }
 
     /**
-     * Ends a configured start whose attempt the host retired during configuration: no worker starts, the native side
-     * gives up the configuration and the receiver it named, and the session ends cancelled. The host already shows
-     * what became of the attempt.
+     * Ends a configured start whose attempt the host retired, or a user stop superseded ([end]), during
+     * configuration: no worker starts, the native side gives up the configuration and the receiver it named, and the
+     * session ends cancelled. The host already shows what became of a retired attempt; a superseded one's record says
+     * so.
      */
-    private fun cancelConfigured(attempt: Long) {
+    private fun cancelConfigured(attempt: Long, end: StartEnd) {
         val rc = DsdNative.nativeDiscardConfigured()
         DsdNative.nativeHostDiagnostic(
-            "service: start attempt $attempt retired during configuration; cancelled (discard rc=$rc)"
+            "service: start attempt $attempt ${end.wording} during configuration; cancelled (discard rc=$rc)"
         )
-        releaseWakeLock()
-        synchronized(lock) {
-            terminalReason = DsdNative.RUN_CANCELLED
-            state = State.IDLE
-        }
-        finishIdle()
+        endUnstarted(end)
     }
 
     /**
-     * Ends a start whose attempt the host retired before configuration (#782): nothing native was configured, so
-     * there is nothing to discard. Checked under the lock retireAttempts() latches the cancellation under.
+     * Ends a start whose attempt the host retired, or a user stop superseded, before configuration (#782, #786):
+     * nothing native was configured, so there is nothing to discard. Checked under the lock retireAttempts() latches
+     * the cancellation under, and a user stop is counted under.
      */
     private fun cancelledBeforeConfigure(attempt: Long): Boolean {
-        if (!synchronized(lock) { cancelRequested }) {
-            return false
-        }
-        DsdNative.nativeHostDiagnostic("service: start attempt $attempt retired before configuration; cancelled")
+        val end = synchronized(lock) { unrunEnd() } ?: return false
+        DsdNative.nativeHostDiagnostic("service: start attempt $attempt ${end.wording} before configuration; cancelled")
+        endUnstarted(end)
+        return true
+    }
+
+    /** The session of a start that never ran ends cancelled; the wake lock goes first, as on every way to IDLE. */
+    private fun endUnstarted(end: StartEnd) {
         releaseWakeLock()
         synchronized(lock) {
             terminalReason = DsdNative.RUN_CANCELLED
+            superseded = end.superseded
             state = State.IDLE
         }
         finishIdle()
-        return true
     }
 
     /** What the UI shows for a start that could not take its receiver (an [UsbSessionTake] failure kind). */
@@ -407,17 +458,34 @@ class DecoderService : Service() {
      * [kind] is the attempt's failure kind for the record's "failureKind" (a wire value
      * android/run_status.h's attempt_failure_from_wire() reads), or "" when the message
      * alone says it.
+     *
+     * A start the host retired, or a user stop or leaving the foreground superseded, while it was set up (#782,
+     * #786) ends cancelled instead, as one cancelled at a check point does: the start was given up, so its setup
+     * failure is no failure card.
      */
     private fun failStart(reason: String, userMessage: String, kind: String = "") {
         Log.e(TAG, reason)
         DsdNative.nativeHostDiagnostic(reason)
         // Released before IDLE, for the same reason as the engine thread does it.
         releaseWakeLock()
-        synchronized(lock) {
+        var unrun: StartEnd? = null
+        val attempt = synchronized(lock) {
             state = State.IDLE
-            lastError = userMessage
-            terminalReason = DsdNative.RUN_FAILED
-            failureKind = kind
+            unrun = unrunEnd()
+            unrun?.let { end ->
+                terminalReason = DsdNative.RUN_CANCELLED
+                superseded = end.superseded
+            } ?: run {
+                lastError = userMessage
+                terminalReason = DsdNative.RUN_FAILED
+                failureKind = kind
+            }
+            attemptId
+        }
+        unrun?.let { end ->
+            DsdNative.nativeHostDiagnostic(
+                "service: start attempt $attempt ${end.wording}; its setup failure is not shown"
+            )
         }
         // No stopStatusPolling() here: leaveForeground() does it first thing, and it has
         // to, because stopIfIdle() reaches it by a path that does not come through here.
@@ -973,6 +1041,18 @@ class DecoderService : Service() {
 
     private enum class State { IDLE, STARTING, RUNNING, STOPPING }
 
+    /** Why a start that took the service ended before its run was published, as its diagnostics word it. */
+    private enum class StartEnd(val wording: String, val superseded: Boolean) {
+        /** The host retired its attempt (#782). */
+        RETIRED("retired", false),
+
+        /** A user stop came after the stop generation its sender expected (#786). */
+        SUPERSEDED("superseded by a user stop", true),
+
+        /** The app left the foreground after the epoch its sender expected (#786). */
+        FENCED("superseded by leaving the foreground", true)
+    }
+
     /** A start id, with the [serial] of the instance it was handed to. */
     private class DeliveredStart(val service: Long, val id: Int)
 
@@ -1027,6 +1107,45 @@ class DecoderService : Service() {
         const val EXTRA_ATTEMPT = "io.github.arancormonk.dsdneo.extra.ATTEMPT"
         /** The sending process's [processToken], beside [EXTRA_ATTEMPT]. */
         const val EXTRA_PROCESS = "io.github.arancormonk.dsdneo.extra.PROCESS"
+        /**
+         * The [userStopGeneration] a START's sender expects (#786), or absent / [NO_STOP_EXPECTATION]: a start that
+         * expects one never runs once a user stop has moved it.
+         */
+        const val EXTRA_EXPECTED_STOP_GENERATION = "io.github.arancormonk.dsdneo.extra.EXPECTED_STOP_GENERATION"
+        /**
+         * On a user STOP the Qt host sent: the [userStopGeneration] its request was counted as when it asked, so its
+         * delivery does not count it again. Absent (the notification's Stop): counted as it arrives.
+         */
+        const val EXTRA_USER_STOP_GENERATION = "io.github.arancormonk.dsdneo.extra.USER_STOP_GENERATION"
+        /** A start with no stop-generation expectation: every manual start. */
+        const val NO_STOP_EXPECTATION = -1L
+        /**
+         * The [ForegroundEpoch] a START's sender expects (#786), or absent / [NO_FOREGROUND_EXPECTATION]: a roam's
+         * start never runs once the app has left the foreground since its switch was decided.
+         */
+        const val EXTRA_EXPECTED_FOREGROUND_EPOCH = "io.github.arancormonk.dsdneo.extra.EXPECTED_FOREGROUND_EPOCH"
+        /** A start with no foreground-epoch expectation: every manual start. */
+        const val NO_FOREGROUND_EXPECTATION = -1L
+
+        /*
+         * What [startDecoder] answers (#786 B2): whether the START was handed to the platform. Any other status means
+         * the service will never see it, so the host reports the start as failed instead of waiting out its grace.
+         * Handed over is nonzero on purpose: a JNI call that fails (a pending exception Qt clears, a method R8 removed
+         * or a descriptor mismatch) answers 0, which must read as not handed over. android/decoder_host_android.cpp
+         * keeps the same value as kStartHandedOver.
+         */
+        /** The START was handed to the platform; the service decides it when it arrives. */
+        const val START_HANDED_OVER = 1
+        /** Android refused to start a foreground service from the background (ForegroundServiceStartNotAllowedException). */
+        const val START_NOT_ALLOWED = 2
+        /** Android refused the start in the app's current state (IllegalStateException). */
+        const val START_ILLEGAL_STATE = 3
+        /** Android refused the start for want of a permission (SecurityException). */
+        const val START_SECURITY = 4
+        /** The platform found no service to start. */
+        const val START_NO_SERVICE = 5
+        /** The platform failed the start with an exception nothing above names. */
+        const val START_UNEXPECTED = 6
 
         /**
          * This process's token, never 0, sent with every START it dispatches (#782). Attempt ids count from 1 in every
@@ -1082,6 +1201,42 @@ class DecoderService : Service() {
         /** The USB connection the current session took, or none; see [UsbSourceManager.takeForSession]. */
         private var receiverTake = UsbSessionTake()
 
+        /*
+         * The user stop generation (#786). Every stop the user asks for, from the app, the notification or Recents,
+         * advances it, whatever the service is doing (IDLE included), and the host reads it synchronously. A start
+         * that carries the generation its sender read never runs once a user stop has moved it, so the user's Stop
+         * wins over an automatic start that was already on its way.
+         */
+        /** User stop requests so far in this process. */
+        private var userStopGeneration = 0L
+        /** The current attempt's expected [userStopGeneration], or [NO_STOP_EXPECTATION]. */
+        private var stopExpectation = NO_STOP_EXPECTATION
+        /** The current attempt's expected [ForegroundEpoch], or [NO_FOREGROUND_EXPECTATION]. */
+        private var epochExpectation = NO_FOREGROUND_EXPECTATION
+        /**
+         * The current attempt ended unrun because a user stop or leaving the foreground superseded it; published as the
+         * record's "superseded".
+         */
+        private var superseded = false
+
+        /**
+         * Under [lock]: how a start that expects [stopGeneration] and [foregroundEpoch] is superseded now, or null. A
+         * user stop wins over leaving the foreground: the user's own stop is no roam to recover.
+         */
+        private fun supersededEnd(stopGeneration: Long, foregroundEpoch: Long): StartEnd? = when {
+            stopGeneration != NO_STOP_EXPECTATION && stopGeneration != userStopGeneration -> StartEnd.SUPERSEDED
+            foregroundEpoch != NO_FOREGROUND_EXPECTATION && foregroundEpoch != ForegroundEpoch.current() ->
+                StartEnd.FENCED
+            else -> null
+        }
+
+        /**
+         * Under [lock]: why the current attempt may no longer run, at any check point from its acceptance to its
+         * commit and on a setup failure: the host retired it, or a user stop or leaving the foreground superseded it.
+         */
+        private fun unrunEnd(): StartEnd? =
+            if (cancelRequested) StartEnd.RETIRED else supersededEnd(stopExpectation, epochExpectation)
+
         /**
          * The live service instance, which a session's end reaches; null between an
          * instance's onDestroy() and the next one's onCreate(), so it never keeps a destroyed
@@ -1120,8 +1275,20 @@ class DecoderService : Service() {
          * STARTING still uses the ordered intent: nativeConfigure resets the flags, so cancelling
          * it here could be lost. RUNNING is published only after configure has returned; the JNI
          * startup latch covers the interval before nativeRun reaches the decode loop.
+         *
+         * A USER stop advances [userStopGeneration] unless [countsUserStop] is false: the delivery of a stop the Qt
+         * host already counted when it asked.
          */
-        private fun requestEngineStop(cause: StopCause, expectedSession: Long? = null): Boolean = synchronized(lock) {
+        private fun requestEngineStop(
+            cause: StopCause,
+            expectedSession: Long? = null,
+            countsUserStop: Boolean = true
+        ): Boolean = synchronized(lock) {
+            // First, before anything that ignores the stop: a user's request moves the stop generation even when
+            // there is nothing to stop, so a start on its way that expected the old one never runs (#786).
+            if (cause == StopCause.USER && countsUserStop) {
+                userStopGeneration += 1
+            }
             if (expectedSession != null && expectedSession != sessionId) {
                 stopDiagnostic("Ignoring stale stop for session $expectedSession; current session $sessionId")
                 return false
@@ -1210,16 +1377,50 @@ class DecoderService : Service() {
          * The host retires every earlier attempt first ([retireAttempts]), so none of them can run once this one is
          * asked for: before it reads the service state from a published Idle or Failed phase, otherwise once that read
          * accepted the start (the service is IDLE, so an earlier START is not delivered yet).
+         *
+         * [expectedStopGeneration] is the [userStopGeneration] the host read when it decided on an automatic start
+         * (#786), or [NO_STOP_EXPECTATION] (every manual start): a user stop since then wins, and the attempt ends
+         * unrun with its record's "superseded" set. [expectedForegroundEpoch] is the [ForegroundEpoch] of that
+         * decision, or [NO_FOREGROUND_EXPECTATION]: leaving the foreground since then ends it the same way.
+         *
+         * @return [START_HANDED_OVER], or why the platform refused the START (#786 B2): the service will never see a
+         *   refused one, so the host reports the start as failed at once.
          */
         @JvmStatic
-        fun startDecoder(context: Context, args: Array<String>, attempt: Long = 0L) {
+        fun startDecoder(
+            context: Context,
+            args: Array<String>,
+            attempt: Long = 0L,
+            expectedStopGeneration: Long = NO_STOP_EXPECTATION,
+            expectedForegroundEpoch: Long = NO_FOREGROUND_EXPECTATION
+        ): Int {
             val intent = Intent(context, DecoderService::class.java)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_ARGS, args)
                 .putExtra(EXTRA_ATTEMPT, attempt)
                 .putExtra(EXTRA_PROCESS, processToken)
+                .putExtra(EXTRA_EXPECTED_STOP_GENERATION, expectedStopGeneration)
+                .putExtra(EXTRA_EXPECTED_FOREGROUND_EPOCH, expectedForegroundEpoch)
             intent.putExtra(EXTRA_SENT_UPTIME, SystemClock.uptimeMillis())
-            context.startForegroundService(intent)
+            val status = try {
+                if (context.startForegroundService(intent) != null) START_HANDED_OVER else START_NO_SERVICE
+            } catch (e: IllegalStateException) {
+                // API 31's background-start refusal is an IllegalStateException; named apart, as it says why.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is ForegroundServiceStartNotAllowedException) {
+                    START_NOT_ALLOWED
+                } else {
+                    START_ILLEGAL_STATE
+                }
+            } catch (e: SecurityException) {
+                START_SECURITY
+            } catch (e: RuntimeException) {
+                // Last: a vendor build's own refusal is still a start that did not happen, never a pending JNI exception.
+                START_UNEXPECTED
+            }
+            if (status != START_HANDED_OVER) {
+                stopDiagnostic("service: start attempt $attempt could not be handed over (status $status)")
+            }
+            return status
         }
 
         /**
@@ -1253,10 +1454,32 @@ class DecoderService : Service() {
          * site". A user's stop does not wait for pending rdio uploads (#718 D4).
          */
         @JvmStatic
-        fun stopDecoder(context: Context?) {
+        fun stopDecoder(context: Context?) = requestStop(context, StopCause.USER)
+
+        /**
+         * Called from the Qt host when GPS roaming ends the session to start a nearer site (#786): a drain, like the
+         * other stops the user did not ask for, and no user stop for [userStopGeneration]. A user's Stop during the
+         * drain still abandons the uploads left.
+         */
+        @JvmStatic
+        fun stopDecoderForSwitch(context: Context?) = requestStop(context, StopCause.SWITCH)
+
+        /**
+         * The user stop generation, synchronously, also from the Qt thread while the app is paused (#786): it moves
+         * with every user stop request from the app, the notification or Recents, the service IDLE or not.
+         */
+        @JvmStatic
+        fun userStopGeneration(): Long = synchronized(lock) { userStopGeneration }
+
+        /** [stopDecoder] and [stopDecoderForSwitch]: the stop is requested at once, then ordered behind any start. */
+        private fun requestStop(context: Context?, cause: StopCause) {
+            var counted = 0L
             val requestedSession = synchronized(lock) {
                 val current = sessionId.takeIf { state != State.IDLE }
-                requestEngineStop(StopCause.USER, current)
+                requestEngineStop(cause, current)
+                if (cause == StopCause.USER) {
+                    counted = userStopGeneration
+                }
                 current
             }
             // The engine has already been signalled when it is running. The intent is for
@@ -1268,8 +1491,11 @@ class DecoderService : Service() {
             }
             val intent = Intent(context, DecoderService::class.java)
                 .setAction(ACTION_STOP)
-                .putExtra(EXTRA_STOP_CAUSE, StopCause.USER.wire)
+                .putExtra(EXTRA_STOP_CAUSE, cause.wire)
             requestedSession?.let { intent.putExtra(EXTRA_STOP_SESSION, it) }
+            if (counted != 0L) {
+                intent.putExtra(EXTRA_USER_STOP_GENERATION, counted)
+            }
             try {
                 intent.putExtra(EXTRA_SENT_UPTIME, SystemClock.uptimeMillis())
                 if (context.startService(intent) == null) {
@@ -1293,8 +1519,10 @@ class DecoderService : Service() {
             // A native result may arrive before the worker releases its wake lock
             // and publishes IDLE. Preserve it beside the actual service state;
             // the host must keep restart disabled until that state becomes IDLE.
+            // Not while STARTING (#786): a configure that failed is not yet the start's outcome, which the service
+            // decides next (a failure, or a cancelled start that was retired or superseded meanwhile).
             val reason = if (terminalReason != DsdNative.RUN_PENDING) terminalReason
-                         else if (matches) fields[2].toInt() else DsdNative.RUN_PENDING
+                         else if (matches && state != State.STARTING) fields[2].toInt() else DsdNative.RUN_PENDING
             val usbError = if (matches) fields[4].toInt() else deviceError
             val error = if (lastError.isNotEmpty()) lastError
                         else if (reason == DsdNative.RUN_FAILED) "Decoder run failed (${fields[3]})" +
@@ -1311,6 +1539,8 @@ class DecoderService : Service() {
                 .put("endingAcknowledged", endingAcknowledged)
                 // #782: the attempt this session was started for, and its attempt-scoped failure.
                 .put("attemptId", attemptId).put("failureKind", failureKind)
+                // #786: the attempt ended unrun because a user stop came after the stop generation it expected.
+                .put("superseded", superseded)
                 // #782: the USB connection the session took (UsbSessionTake), which its receiver error belongs to.
                 .put("usbDevice", receiverTake.device).put("usbEpoch", receiverTake.epoch)
                 .put("usbConnection", receiverTake.connection).toString()

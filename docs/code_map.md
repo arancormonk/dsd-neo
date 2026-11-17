@@ -1795,8 +1795,9 @@ suite runs under this compiler.
   buffer, a NULL ring is left NULL rather than set up through `&event_history_s[i]`, and `freeState()` releases a
   partial state. Only the DMR soft-metric buffer is optional (its readers take NULL); `write_event_to_log_file()`
   indexes the ring unchecked, so no decoder runs without it. The CLI (`apps/dsd-cli/main.c`) and the Android
-  `nativeInit` refuse to start a state with `init_failed` set. Test builds fail one checked allocation at a time
-  through `dsd_init_test_alloc_fail_after()` (`CORE_INIT_STATE`).
+  `nativeInit` refuse to start a state with `init_failed` set, and so does `nativeConfigure` when the reset it runs
+  before a later configure (`SessionObjects::prepare_for_configure()`, issue #786 B1) sets it. Test builds fail one
+  checked allocation at a time through `dsd_init_test_alloc_fail_after()` (`CORE_INIT_STATE`).
 - Invariant (dibit reliability coordinates, `<dsd-neo/core/dibit.h>`, `src/core/frames/dsd_dibit.c`): a four-level
   dibit's reliability is measured in the coordinates of the slicer that cut it, and every caller of
   `dmr_compute_reliability()` names that slicer (`dsd_dibit_slicer`): `DSD_DIBIT_SLICER_CQPSK_PHASE` for P25's CQPSK
@@ -3879,14 +3880,14 @@ suite runs under this compiler.
     one list of decode stamps `initOpts()`/`initState()` seed with "now"; a sidecar that does not parse fails the run
     there). REPLAY is entered only there, at a run's start, on a state fresh from `initState()`, and the engine enforces
     that: `dsd_state::engine_fresh`, set by `initState()` and cleared by the run once it has made the choice, says no
-    run has used the state. A replay run on a state an earlier run used (the Android service's reuse when a start races
-    `stopSelf()`) stays on SYSTEM with one `LOG_WARN`, since the stamps that run left (such as
-    `slco_sfrag_last`) are on the system clock and no rebase reaches them; its decode times are then not the
-    capture's. The system clock only moves forward, so those stamps stay behind now, with one exception: an earlier
-    replay of a capture stamped ahead of the device's clock (recorded elsewhere, or on a clock that is behind) leaves
-    its protocol stamps at the capture's later time, since leaving REPLAY rebases only the init seeds. The clock
-    returns to
-    SYSTEM with the same rebase once the replay no longer feeds the decoder (`dsd_engine_decode_clock_leave_replay()`):
+    run has used the state. A replay run on a state an earlier run used (no longer the Android service, which resets its
+    objects before every later configure, issue #786 B1) stays on SYSTEM with one `LOG_WARN`, since the stamps that
+    run left (such as `slco_sfrag_last`) are on the system clock and no rebase reaches them; its decode times are then
+    not the capture's. The system clock only moves forward, so those stamps stay behind now, with one exception: an
+    earlier replay of a capture stamped ahead of the device's clock (recorded elsewhere, or on a clock that is behind)
+    leaves its protocol stamps at the capture's later time, since leaving REPLAY rebases only the init seeds. The clock
+    returns to SYSTEM with the same rebase once the replay no longer feeds the decoder
+    (`dsd_engine_decode_clock_leave_replay()`):
     at the end of the run, when app-control stops the stream to restart it (`svc_rtl_stop_locked()`; the replay it
     restarts runs on SYSTEM, which it logs once at that leave when the input is still the replay; a run-time re-plan's
     stop keeps REPLAY instead, as the replay it reopens resumes the media time from the checkpoint's
@@ -14163,7 +14164,8 @@ Qt Quick frontend (`src/ui/qt`):
     uid is at now. `startSystem(row)` only names the row's uid, so a missing row is refused as removed, not ignored.
     Decided limit: auto-start stays silent for a target removed since it last started (an unattended plug-in, so a
     "removed" banner would be noise; `onAutoStartRequested` returns before the gate), and refuses only an existing
-    avoided site.
+    avoided site. A GPS roaming switch (issue #786) enters the same gate as `startSavedByUid(uid, roam)`, its roam
+    carried through `startWithMap()` and a USB wait (see the GPS site roaming executor).
     A USB grant re-enters it by the waiting start's uid instead of running the map captured at the tap, so a system
     removed, avoided, moved to another row or given another receiver during the permission dialog is refused or
     starts as saved (B6); a scan list's grant goes through `startScanByUid()`, which has the same transition guard and
@@ -15172,6 +15174,148 @@ Qt Quick frontend (`src/ui/qt`):
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `UI_QT_METRICS_MODEL` (`test_two_slot_carrier_mirrors_the_decoder()`),
   `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`, `tst_monitor_layout_budget.qml` `test_two_slot_*`),
   `UI_QT_QML_A11Y_CHURN` (`test_d_two_slot_hops_leave_the_monitor_still`).
+- Call busy (issue #786): `MetricsModel::callBusy` (`callBusyChanged`, its own signal) is `dsd_opts_trunk_vc_followed()`
+  on the options snapshot of the same frame as `trunkingEnabled` (`fillCallBusy()`, after `fillSlotCalls()`): trunking
+  on and a voice channel tuned; a tuned flag without trunking is no follow. A Hytera XPT site status raises
+  `trunk_is_tuned` on the rest channel the receiver parks on, trunking on or off, and raises it again after every
+  release (`dmr_cspdu_xpt_update_cc_from_input()`), so on a site the engine brands XPT (`dmr_branding_sub` `"XPT "`)
+  busy also needs a slot's call line `ACTIVE`, and the hangtime after an XPT call reads not busy. GPS site roaming
+  holds a switch while it reads true; the wait cap lives with the roaming verdict. Tests: `UI_QT_METRICS_MODEL`
+  (`test_call_busy_follows_the_voice_channel()`), `CORE_OPTS_TUNED_FREQ`.
+- GPS site roaming decision core (issue #786, `site_roaming.{h,cpp}`, `SiteRoamingCore`): plain C++ with no Qt types and
+  no clock reads; the caller passes every time on one monotonic clock (Qt's, never Android's boot clock). One
+  `evaluate()` judges the latest measurement against the current group's candidates in row order: settings that are not
+  finite numbers above zero pause (`InvalidSettings`); no fix, a fix older than `kMaxFixAgeMs` (60 s) or stamped after
+  the evaluation time, or an accuracy missing or above `kMaxAccuracyM` (1000 m) pause and clear the evidence; the
+  nearest eligible candidate (unavoided, a valid position, roamable; first in row order on a tie, by
+  `site_distance_km()`) must exist (`NoRankableSite`) and lie within `max_km` (`OutOfRange`). It is switch-worthy when
+  the current site is eligible and `d(current) − d(best) ≥ margin_km + 2·accuracy_km`, or when the current site is not
+  eligible (no margin). Evidence for one candidate is {uid, first and latest fix time, count}; only a measurement never
+  seen before (a provider's `elapsedRealtimeNanos` newer than the newest seen from it, so a replayed or reordered fix is
+  not new, and more than `kSameFixNs` (5 ms) from the newest seen from each other provider, so a GPS fix the fused
+  provider re-reports under its own name counts once; this refines the spec's `(provider, elapsedRealtimeNanos)`
+  identity, which let one physical fix count twice) that is switch-worthy for the same winner extends it; a different
+  winner or a new measurement that is not worthy restarts it, and timer ticks, list changes and a settings change (which
+  clears it) can only take a verdict
+  away. `Switch` needs a span of at least `kDwellMs` (20 s) and `kMinDwellSamples` (3) measurements; a verdict holds
+  only while each later evaluation derives it again. `reset()` forgets the evidence and every measurement seen (the
+  executor calls it on a foreground loss). `CallWaitClock` is the bounded call wait: it starts at the first busy
+  `callBusy` reading, ends on a free one, and answers `Expired` after `kMaxCallWaitMs` (90 s) of continuous waiting, so
+  a long call, a missed terminator or a follow kept while a CC return is retryable is cut then; the executor resets it
+  whenever the verdict's destination changes. Tests: `UI_QT_SITE_ROAMING`.
+- GPS site roaming executor (issue #786, `site_roaming_controller.{h,cpp}`, context property `siteRoaming`, class
+  `SiteRoaming`): decides with `SiteRoamingCore` (`site_roaming.{h,cpp}`) and owns the one roam transaction there can be
+  (`WaitingForCall → Stopping → WaitingForUsb → Starting`, then done, cancelled or refused). It arms only for a session
+  Main told it was started as a saved site (`noteSessionStart()`) and that passed the engine's post-initialization edge
+  (`noteSessionInitialized()`), whose row is roamable (`site_roamable()` in `site_groups`,
+  `SavedSystemsModel::roamable(row)`: grouped, trunking, an RTL-SDR, rtl_tcp, Airspy or SoapySDR receiver, no extra
+  options of its own) in a group with two or more roamable rows, with no extra options in Settings (both as the session
+  started, latched in `noteSessionStart()`, and as they are now: an edit while it runs reaches the decoder only at the
+  next start, so it can take roaming away but never give it), and whose decoder
+  snapshot (`facts`, which Main binds to `metrics`) shows trunking, a tunable input, no scan, no operator hold and no
+  held talkgroup. The location feed runs only while armed. Main's start path carries out a switch: `switchRequested()`
+  (Main records `pendingRestart.kind == "roam"`), `DecoderHost::stopForSwitch()`, then at Idle `startPlan()` (the
+  checks: the foreground epoch and user stop generation read from the host now, the verdict derived again, the
+  destination still a roamable, unavoided site of the group captured at the session's start), `noteWaitingForUsb()` /
+  `noteUsbDenied()` and `noteStartResult()`. The destination's start carries the generation read when the session
+  started (and read again when a candidate begins to qualify), so a user stop the app has not shown yet is never
+  absorbed. A cancel once the start is handed over retires the host's attempt (`retireRoamAttempt()`); a switch
+  cancelled after the session it left stopped, other than by the user's own action, leaves `recoveryNotice` for Home. A
+  Rule: every value QML reads on `changed()` is in the published `View` and derived in `publish()` (the site and
+  system names, `statusText`, `headerText`, `headerShortText`, `action`, the reason's site or distance argument), so a
+  change of a name alone (a site renamed by an RR update) or of the unit shown is a change of the view and is
+  announced; the recovery notice is derived again from its two sites' names (`refreshNotice()`, its own signal). Tests:
+  `check_executor_metadata_changes()`, `tst_site_roaming.qml` `test_24c`.
+  Rule: a fix the host delivers (`locationStreamUpdate`, emitted inside its refresh, which `UiController::tick()` runs
+  before the tick's model refresh) is stored at once and judged as the event loop turns (`evaluateSoon()`, one queued
+  call), so the decision reads that tick's decoder snapshot (`facts`): a call that began between polls holds the
+  switch. The initialization edge, also signalled inside the host's refresh, revokes the evidence (`revoke()` in
+  `noteSessionInitialized()`), so nothing judged before it (a roam's destination is judged while it starts) can make a
+  switch due on the facts from before it. Every other trigger (a facts change, roaming's own 1 s timer, Main's calls)
+  runs with the snapshot already current. Tests: `check_executor_same_tick()`, `tst_site_roaming.qml` `test_07k`.
+  Rule: every end of a roam but "done" goes through `endTransaction(why, listeningStopped, refusal)`, which lets
+  `endCause()` pick the strongest cause present now, in one precedence (`end_rank()`): the user's stop (or an
+  unreadable generation), the user's own choice (another start, Retry, a restore, a close, a dismissal), an operator
+  command ("intent"), roaming turned off, the foreground lost, then the rest (a revoked verdict, the checks before a step, a stop
+  the host gave up on, a failed or refused start). Home's notice shows only when the session the roam left stays
+  stopped (`leftStopped()`: Idle or Stopping) and the cause is not one the user's action or a card explains; a refusal
+  ("Could not switch to %1") stands only when its own cause is the strongest. The notice remembers the session it says
+  stopped (`m_noticeSessionId`), and `onHostSession()` withdraws it when that session shows Running again (a stop the
+  host gave up on after the roam was cancelled); a new start clears it as before. Tests:
+  `check_executor_end_precedence()`, `check_executor_notice_withdrawn()`, `tst_site_roaming.qml` `test_07j`, `test_07l`.
+  Rule: an operator command (`noteOperatorIntent()`: Hold TG, a manual tune, a tuner release, trunking on or off)
+  accepted before the destination's start ends the switch at once (cause "intent", ranked below the user's stop and own
+  choice; Home's notice once the stop was issued), and the checks before each step refuse while one is pending. A drain
+  can keep the old session taking commands for minutes, so the stop is no fence by itself. A decoder snapshot value
+  alone (a held talkgroup, an operator tune, trunking off) is a barrier only through arming, in the call wait: once the
+  stop is issued the snapshot is the old session's last publication (the ENGINE_OUT publish in `src/engine/engine.c`,
+  then a cleanup that publishes nothing), so it never ends the switch. The destination's start is its own session's: it
+  completes, and that session arms only once its barrier is gone. Tests: `check_executor_operator_barriers()` (commands
+  and snapshot values × call wait, stop, destination start), `tst_site_roaming.qml` `test_24b`.
+  Rule: before the destination's start, `progressStop()` reads the host's phase: Failed cancels; Running after the
+  stop showed (Stopping) and before it went idle (`startPlan()` asks only at Idle) is a stop the host gave up on (its
+  2 s stop grace), so the switch ends refused with no notice, the evidence is revoked and roaming shows "Could not
+  switch to %1" over the live session until a fresh fix starts a new qualification (`onVerdict()`); Starting and
+  Running after the stop went idle are the roam's own start, which `noteStartResult()` moves on. Tests:
+  `check_executor_stop_edges()`, `tst_site_roaming.qml` `test_07i`.
+  Rule: every measurement and tick reaches the core in every transaction stage (`feedTransaction()` past the call
+  wait: from the session the switch leaves, then from the destination's), so the evidence stays continuous and the start
+  boundary derives the verdict from all of it; a fix favouring the old site or a fix gone stale during the stop leaves the
+  switch unqualified there (cancelled with the notice). A
+  foreground loss (`foregroundEpoch()` moved) cancels a switch the host does not own yet and resets the core; once the
+  destination's start is handed over it is retired (`retireStartForForeground()`): retired, or ended unrun by the
+  service's own epoch fence (`startSuperseded()` with the epoch moved), listening stays stopped with `recoveryNotice`,
+  never "Could not switch"; one that committed runs on. `startPlan()` gives the start the transaction's epoch beside its
+  generation, and `finishUnrunStart()` tells a superseded start's cause apart by reading both again (a user stop:
+  silent; the foreground: the notice). A fix
+  polled again after it, or relayed by another provider (`kSameFixNs`), is never fed. The latest fix's coordinates are
+  dropped from memory whenever the feed stops or the foreground is lost (`holdsLocation()`; the Android host's last
+  stream record likewise in `stopLocationStream()`, `holdsStreamRecord()`), as `PRIVACY_POLICY.md` promises. Every
+  accepted command that changes what the session follows (`CommandBridge::operatorIntentSubmitted(kind)`: Hold TG and
+  its release, a manual tune, a tuner release, trunking on or off) blocks roaming, with no timeout, until the snapshot
+  shows its outcome or the session ends; the intents belong
+  to the session, so switching roaming off and on keeps them. A site the user switches to from a session roaming judges
+  (shown neither Off nor Idle: Stop and switch, Listen to nearest, `noteSiteChoice()` before the stop) holds roaming on
+  the session it starts until `resumeRoaming()`; a pick with nothing running is a start like any other, and a pick whose
+  start is refused or given up (`forgetSiteChoice()`) holds nothing. Limit: a session Main took up without starting it
+  (`adoptReattachedSession()`, a recreated window over a running service, `noteSessionAdopted()`) never arms, since its
+  stop generation and initialization edge were never seen; it idles with "Start listening again to use GPS roaming". The
+  1 s timer runs only while a session is judged (armed or paused) or a switch is under way. Prefs (`AppPrefs`):
+  `roaming/enabled` (device-local), `roaming/maxDistanceKm` and `roaming/marginKm` (portable, in km; a choice of either
+  unit, else the default of the unit shown: 100 km / 2 km or 60 mi / 1 mi). In `Main.qml`, `roamToSite()` records the
+  roam's restart (`pendingRestart = {kind: "roam", roamId, uid}`) and `startRoam()` asks `startPlan()` before
+  `startSavedByUid(uid, roam)`, the one saved-start gate, which carries the roam through `startWithMap()` (the
+  5-argument `sessionArgs.start()`, `pendingStartRoam` across a USB-access wait, a denial (`localDeviceFailureKind` 4)
+  ending it refused, a superseded start showing nothing). `cancelPendingRestart(reason)` takes a reason at every call
+  site: a user decision ("start", "retry", "restore", "close", "dismiss", "failed") cancels a roam through
+  `siteRoaming.cancel()`; incidental navigation ("back", "interaction" from the chooser's `SiteInteractionGuard`,
+  "sites", "navigate", "edit", "window") leaves a roam's restart, so no tap or Back strands or cancels it.
+  `transactionEnded()` drops the roam's restart and USB wait; `autoStartBlocked` also holds during a transaction and
+  while any restart waits; Home shows `recoveryNotice` with its "Listen to …" action (`homeRoamNotice`). Tests:
+  `UI_QT_SITE_ROAMING` (the executor on a scripted host and clock), `UI_QT_QML_CALL_LISTS` (`tst_site_roaming.qml`,
+  through Main on the lifecycle host), `UI_QT_SITE_GROUPS` (`check_roamable()`), `UI_QT_PERSISTENCE`
+  (`test_roaming_prefs()`), `UI_QT_CONTROLLER` (`test_operator_intents()`). Its wording lives here, not in QML:
+  `statusText` (the sentence), `headerText` / `headerShortText` (the Monitor line, "WAITING FOR CALL END · GPS ROAMING"
+  / "WAITING"; a session's wait for its first fix reads "LOCATING · GPS ROAMING" / "LOCATING" for up to 60 s from its
+  first wait, and only a fix lost later, or none in that minute, reads "PAUSED: NO FIX"), `systemName` (the group's card
+  title) and `globalExtraArgsText` (the chooser's reason the switch cannot go on with extra options in Settings). The UI
+  (all hidden while `available` is false): the site chooser's "GPS roaming" switch (`setEnabledByUser()`; switching on
+  needs two roamable sites on the card and no extra
+  options in Settings, the reason on the switch's accessible description), its disclosure, and for the card of the
+  session roaming follows "Listening to <site> · <distance>" (the distance left out of the accessible name) with the
+  state line and its action (`performAction()`), else one line naming the system roaming follows or the idle reason; a
+  row with extra options says it is not used. While `fix` is there the chooser measures from it and keeps its row order
+  (rows keyed by uid, so a fix rebuilds no row) until it opens again or Use my location answers; an order taken with no
+  fix is ranked once at the first fix. While the fix is live the rows, the nearest-site line and the accuracy line (to a
+  band) leave the moving distance out of their accessible names. The Monitor header's heading column has one mono line,
+  state first, measured for the short form against its real width (the header's whole width once it sits below the
+  header actions, as it does on a phone at any font scale, else the column's beside them), kept (blank when idle) for
+  the whole saved session so roaming never changes the header's height (switching roaming on or off mid-session adds or
+  removes the line, by design), and named by `statusText`; Settings has a GPS roaming card (the switch and the two
+  distances as choice sheets in the unit shown, an off-list stored value added as a checked choice,
+  `Util.fmtDistanceSetting()`). State changes, not distance changes, are read out (`Navigation.announce()`, deferred
+  with `Qt.callLater`). Tests: `tst_site_chooser_sheet.qml`, `tst_monitor_roaming.qml`, `tst_settings_roaming.qml`
+  (`UI_QT_QML_CALL_LISTS`).
 - Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's
   recent calls (`homeRecentList`), the Talkgroups grid (`talkgroupGrid`) and the Activity list (`activityList`, keyed by
   seq through `UnitActivityFilterModel::rowForSeq()`) get their models from a `KeepPlace` only
@@ -15743,10 +15887,13 @@ Qt Quick frontend (`src/ui/qt`):
   for coordinates only: fixes must be at most 30 seconds old, a cache must also be within 100 m to finish immediately,
   and current providers compete for accuracy up to the 20-second deadline. GPS participates with fine foreground
   permission; approximate permission remains usable. The new JNI entry point is retained in `proguard-rules.pro`.
-  `SiteChooserSheet` orders eligible saved siblings by distance, names the nearest site, exposes missing positions
-  and saved-fix/accuracy limitations, and gates the nearest action during a lookup. While Running that action emits
-  the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again. Location
-  completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
+  `SiteChooserSheet` orders eligible saved siblings by distance (each measured once per revision or fix into its
+  `measured`, which `rows`, `nearest`, `uncertainNearest` and each row's label read), names the nearest site, exposes
+  missing positions and saved-fix/accuracy limitations, and gates the nearest action during a lookup. While Running that
+  action emits the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again.
+  Location completion itself never starts a session. The one exception is GPS roaming (issue #786), and it does not
+  use these requests: its own feed (`LocationStream`, below) drives the roaming verdict, and a switch goes through the
+  saved-start gate as a Stop and switch does. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
   Places: the model keeps the system's `Trs.sState`/`Trs.sCounty` ids in `systemDetails` (`stateIds`, `countyIds`) and
   each site's `TrsSite.siteCtid`; every importable plan, a per-site batch's plans and `performImport()`'s result (and
@@ -15972,7 +16119,12 @@ Qt Quick frontend (`src/ui/qt`):
   then an Airspy's serial, an rtl_tcp or TCP host without case or blanks and its port, a UDP port or a file path;
   `session_args.cpp` joins scan lists on the same identity), so a system saved for two receivers is two groups.
   `SavedSystemsModel::groupKey(row)` reads that key from the row's fields (no field map built); `siblingRows()`,
-  `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by it. A group's title is
+  `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by it. Every site distance is
+  `site_distance_km()`: the geodesic on the WGS84 ellipsoid (a = 6378137 m, f = 1/298.257223563) by Vincenty's inverse,
+  converged on an absolute λ step under 1e-12 rad within 200 iterations (so a meridian never divides by a zero longitude
+  difference), and the spherical haversine (R = 6371.0088 km) only where that fails (near-antipodal points). The sphere
+  is off by up to 0.56 % depending on direction, enough to rank two sites the wrong way round. `site_roamable()` is
+  the GPS roaming rule for one row (issue #786; spelled out with the roaming executor). A group's title is
   `site_group_title()` of its lead: the name without an exact trailing " — " + its `siteName` (the name a per-site
   import generated), else the name; a custom name lives on the lead row and moves with it. A row's `place` (role
   `place`) is the RadioReference geography an import captured: `{states: [{stid, name?}], counties: [{ctid, stid?,
@@ -16026,40 +16178,44 @@ Qt Quick frontend (`src/ui/qt`):
   `AppPrefs::systemsSort`; `effectiveSort` is the one applied): `name` (natural order from `text_order`), `recent`
   (latest `lastHeard` first, never-listened after by name), `added` (lead row's position, the default), `place`
   (sections: single states by state name, "Several states", "No place"; within a state one county by county name, then
-  several counties, then none, then name) and `nearest` (haversine distance to the nearest non-avoided site that has
+  several counties, then none, then name) and `nearest` (`site_distance_km()` to the nearest non-avoided site that has
   coordinates, then "All sites avoided", then "No coordinates", each by name). Every order ends on `key`. `nearest`
   needs `setLocationSupported(true)` and an unexpired fix; without them `effectiveSort` is `name` and the stored
   preference is untouched. Every rebuild compares the fix with the one the distances were measured from, because
   AppPrefs drops a fix 24 wall-clock hours on at its first read, before its monotonic expiry timer sends
   `locationChanged` (the timer stops while a phone sleeps); that read then queues one `locationChanged` for every
-  other reader (the location line, the site chooser), never inside the read itself. Search (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a
-  number and a following MHz/kHz is one term); a term matches a folded substring of the card's text (members' names
-  and site names, place state and county names, and the protocol label, supplied by `protocolLabels` from `Util.js`)
-  or a frequency of any member (a bare number of three digits or more reads as MHz; a member's own `freqMhz` is read
-  by `session_args_freq_hz()`, the tuner's reading, so every spelling that tunes is found). A row whose frequency or place an
-  edit cleared ranks as unplaced and without coordinates. Rebuilds are coalesced into one `QTimer::singleShot(0)`
-  pass; a query change only refilters and a sort change only re-sorts. Without a screen reader the diff against the
-  old list emits removes, one-row moves (the longest increasing run stays), inserts and one `dataChanged` per card with
-  the roles that changed, so a delegate survives a sort and keeps the keyboard. With `screenReaderActive` the rows are
-  positional (`applyPositional()`): row i shows the i-th card, so a reorder or a filter is one `dataChanged` per row
-  whose card changed (its roles), never a reset, a move or a remove. A shorter list keeps the rows past its end, held:
-  `rowCount()` is `shownCount` plus the held rows, each keeping the card it last showed, `held` true (only that role
-  changes as a row is held); a longer list takes them back first, and a row is inserted only past the most rows there
-  ever were. Under Qt 6.11.3's Android bridge each delegate made or destroyed made Android's main thread walk the list
-  again (`childIdListForAccessibleObject`), so the reset this replaced hung the app for minutes at 300 cards. Turning
-  the screen reader off removes the held rows. A reorder nobody asked for is held while `holdReorders` is set (Home
-  visible on Systems): the cards shown keep their rows and a new one goes after its new-order predecessor, until the
-  hold ends or the user asks for a change (query, sort, the first fix newer than the stored one after
-  `markLocationRequested()`; an expiry meanwhile keeps the mark), so TalkBack's swipe order always matches the screen;
-  the count is read once. A held order can show a section in two runs, so `sectionStart` marks only a section's first
-  card in the shown order. `receiverLabel` is the receiver ("USB", "RTL-TCP host:port", "Airspy SERIAL") of a card
-  whose title another shown card has (one system on two receivers), else empty; TCP, UDP and file cards name their
-  source in the meta already and get none. Home shows it on a line of its own under the source line, which then leaves
-  RTL-TCP's marker out. `rebuilt()` follows every rebuild, changed or not, after its row signals and
-  `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's bridge). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard, frequency and key-configured reads,
-  titles against a real pin, each order and its ties, place and distance labels, search, signals, screen-reader
-  holds and the location mark, one section start in a held order, a fix that lapses with no signal, coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles, `rebuilt()` after
-  the rows, and a 500-row timing check with and without a screen reader).
+  other reader (the location line, the site chooser), never inside the read itself. Each member's distance is measured
+  once per fix: `m_rowDistances` keeps it by UID, emptied when the fix changes, and a rebuild for any other change
+  reuses it while the site's position is unchanged (`distanceCount()` counts the measurements, for tests). Search
+  (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a number and a following MHz/kHz is
+  one term); a term matches a folded substring of the card's text (members' names and site names, place state and county
+  names, and the protocol label, supplied by `protocolLabels` from `Util.js`) or a frequency of any member (a bare
+  number of three digits or more reads as MHz; a member's own `freqMhz` is read by `session_args_freq_hz()`, the tuner's
+  reading, so every spelling that tunes is found). A row whose frequency or place an edit cleared ranks as unplaced and
+  without coordinates. Rebuilds are coalesced into one `QTimer::singleShot(0)` pass; a query change only refilters and a
+  sort change only re-sorts. Without a screen reader the diff against the old list emits removes, one-row moves (the
+  longest increasing run stays), inserts and one `dataChanged` per card with the roles that changed, so a delegate
+  survives a sort and keeps the keyboard. With `screenReaderActive` the rows are positional (`applyPositional()`): row i
+  shows the i-th card, so a reorder or a filter is one `dataChanged` per row whose card changed (its roles), never a
+  reset, a move or a remove. A shorter list keeps the rows past its end, held: `rowCount()` is `shownCount` plus the
+  held rows, each keeping the card it last showed, `held` true (only that role changes as a row is held); a longer list
+  takes them back first, and a row is inserted only past the most rows there ever were. Under Qt 6.11.3's Android bridge
+  each delegate made or destroyed made Android's main thread walk the list again (`childIdListForAccessibleObject`), so
+  the reset this replaced hung the app for minutes at 300 cards. Turning the screen reader off removes the held rows. A
+  reorder nobody asked for is held while `holdReorders` is set (Home visible on Systems): the cards shown keep their
+  rows and a new one goes after its new-order predecessor, until the hold ends or the user asks for a change (query,
+  sort, the first fix newer than the stored one after `markLocationRequested()`; an expiry meanwhile keeps the mark), so
+  TalkBack's swipe order always matches the screen; the count is read once. A held order can show a section in two runs,
+  so `sectionStart` marks only a section's first card in the shown order. `receiverLabel` is the receiver ("USB",
+  "RTL-TCP host:port", "Airspy SERIAL") of a card whose title another shown card has (one system on two receivers), else
+  empty; TCP, UDP and file cards name their source in the meta already and get none. Home shows it on a line of its own
+  under the source line, which then leaves RTL-TCP's marker out. `rebuilt()` follows every rebuild, changed or not,
+  after its row signals and `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's
+  bridge). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard, frequency and
+  key-configured reads, titles against a real pin, each order and its ties, place and distance labels, search, signals,
+  screen-reader holds and the location mark, one section start in a held order, a fix that lapses with no signal,
+  coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles,
+  `rebuilt()` after the rows, and a 500-row timing check with and without a screen reader).
 - `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
   match: `text_fold()` (case and accents folded, by code point), `text_compare_names()` (natural order: leading
   punctuation skipped, digit runs by value, a shorter digit run first on a tie, then the raw text, so different
@@ -17298,7 +17454,9 @@ External dependencies (resolved via CMake):
 
 Release APK/AAB builds enable R8 in `android/package/build.gradle`.
 `proguard-rules.pro` owns the named C++ → Kotlin interface contract and `DsdNative`
-bindings; update it when adding a `QJniObject` upcall. `qt-rules.pro` owns the pinned
+bindings; update it when adding a `QJniObject` upcall. The artifact check reads the contract from the C++: literal
+`QJniObject::callStatic*` calls and `read_static_counter(owner, "name")` (a checked static `()J` call, #786); a JNI
+call in any other form must extend `jni_contract()`, which refuses a form it cannot read. `qt-rules.pro` owns the pinned
 Qt kit's JNI keep rules, including unannotated native registration/teardown paths and
 `QtApkFileEngine.JFileInfo`'s `relativePath`, `size` and `isDir` fields, which native plugin discovery reads from
 Play's APK splits. The artifact check validates these fields' names, descriptors and instance storage;
@@ -17354,6 +17512,29 @@ host diagnostics line. Times are `dsd_realtime_mono_ms()` read through `DecoderH
 Activity maps the service state as before. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST`,
 `tst_monitor_call_actions.qml`.
 
+Fresh decoder objects for every configure (issue #786 B1): a stop then a start can reach the same `DecoderService`
+instance before its `onDestroy()`, so the process keeps one `dsd_opts`/`dsd_state` pair from `nativeInit()` to
+`nativeDestroy()`, owned by `dsd_android::SessionObjects` (`android/session_objects.{h,cpp}`, free of JNI and Qt).
+The bootstrap only adds to what it finds (a `-C` map appends at `lcn_freq_count`, an option sets its flag and nothing
+clears the ones a later argv leaves out) and a run clears `engine_fresh`, so `nativeConfigure()` calls
+`prepare_for_configure()` under `g_lock`, with `g_running` false, before its bootstrap. The first configure after
+`create()` takes the objects as `nativeInit()` made them; every later one, whatever the earlier attempt did (ran,
+failed, exited, was discarded or was configured and left), closes the output files still open
+(`dsd_engine_release_outputs()`), then resets both in place: `freeState()`, both structures erased
+(`DSD_SECURE_ZERO`, so no key outlives its session), `initOpts()`, `initState()`. The allocations are kept, so
+`g_session.opts()`/`state()` and Kotlin's `initialized` stay valid. A reset whose `initState()` sets `init_failed`
+fails that configure; the objects stay marked used, so the next configure resets them again, and `g_configured`, cleared
+at the start of every configure, keeps `nativeRun()` off them. Readers of the objects outside a run: only
+`android/dsdneo_jni.cpp` holds them (configure, run, discard, destroy, all under `g_lock`); the status, notification and
+lifecycle polls read their own records and publishers, never the objects; app-control snapshots and the history tap
+key on `state_instance` and the event-history identity, which `initState()` renews; the USB policy, diagnostics, host
+overrides and history attribution are process-owned and untouched; state-extension owners are freed by `freeState()`
+as on `nativeDestroy()`. Tests: `ANDROID_SESSION_OBJECTS` (a run, a failed and an exiting configure, a discard and an
+unrun configure, each followed by another site's: only its LCN rows and map keys, Hold TG and `-F` back to defaults;
+the unrun outputs closed by the reset and by `destroy()`; an injected `initState()` failure and its retry; a replay
+after a live run on the REPLAY decode clock), `ANDROID_ENGINE_STOP_JVM` (`native_lifecycle_contract`:
+`nativeConfigure()` calls `prepare_for_configure()` before its bootstrap).
+
 Receiver endings (issue #647): `RunStatus` (`android/run_status.h`) keeps, per run, why it ended (`end_cause`: user,
 detached, receiver failed, lifecycle) and the local receiver it was configured on (`receiver_source`, from the last
 `-i` at configure by `receiver_source_for_input()`: `rtl`/`rtl:` and `airspy`/`airspy:`, never rtl_tcp).
@@ -17404,6 +17585,152 @@ a user Stop to abandon a lifecycle drain. A START publishes `lastStart` (its sta
 handed to) with its locked start/reject decision; the worker captures it under the lock publishing IDLE and hands it,
 with its session id, to `routeSessionEnd()`, so completion cannot read and stop a newer start. `ANDROID_ENGINE_STOP_JVM`
 now runs the actual service against a deferred-intent transport, a controlled native worker and platform stubs.
+
+Start status, roaming switch and stop generation (issue #786): `DecoderService.startDecoder(context, args, attempt,
+expectedStopGeneration, expectedForegroundEpoch)` returns an `Int` (B2): `START_HANDED_OVER` (1), or why the platform
+refused the START (`START_NOT_ALLOWED` for API 31's `ForegroundServiceStartNotAllowedException`, `START_ILLEGAL_STATE`,
+`START_SECURITY`, `START_NO_SERVICE` when no component took it, `START_UNEXPECTED` for any other
+`RuntimeException`); `platformStartDecoder()` returns it as it is (`android/start_status.h` names each value, with the
+host's own `kStartNoContext`, `kStartBadArguments` and the failed call's `kStartCallFailed`), and the host fails anything
+but `kStartHandedOver` with the status's own plain-English text (`startRefusalText()`), so the failure card shows
+instead of a start grace running out. Handed over is nonzero because a JNI call that fails
+(Qt clears a pending exception and answers the default; a method R8 removed; a descriptor mismatch) answers 0. `stopDecoderForSwitch()` stops with
+`StopCause.SWITCH` (wire `switch`): it drains rdio uploads like the other causes the user did not ask for, and a user
+Stop during that drain is an ordinary repeated USER stop that abandons what is left (`note_stop_cause()` then names the
+user over the switch, `RunEndCause::kEndSwitch`; nothing else replaces a latched cause). `userStopGeneration()` counts
+user stop requests for the process: `stopDecoder()` (counted under the service lock as it asks, its intent carrying
+`EXTRA_USER_STOP_GENERATION` so the delivery is not counted again), the notification's Stop (counted on delivery) and
+`onTaskRemoved()`, in any state, IDLE included; a switch, a detach and a lifecycle stop never count. A START carries
+`EXTRA_EXPECTED_STOP_GENERATION` (`NO_STOP_EXPECTATION`, -1, for every manual start) and
+`EXTRA_EXPECTED_FOREGROUND_EPOCH` (`ForegroundEpoch.kt`, the app's foreground epoch that `LocationStream` advances in
+every `onStop`; `NO_FOREGROUND_EXPECTATION`, -1, for every manual start): a roam start never runs once the user stopped
+or the app left the foreground since its switch was decided (`supersededEnd()`; a user stop wins over the foreground,
+and both read as the record's `superseded`). The service compares them with the generation and the epoch under its lock
+when it accepts the START (after the foreign and retired checks and before the busy one:
+a mismatch that finds the service busy is turned away silently, as a retired START is, leaving the running session's
+record alone (unreachable today: only the Qt host sends START, and it hands one over only after a fresh IDLE read with
+every earlier attempt retired; a second START sender would break that, and the host then settles such a start as
+superseded when its grace runs out, below); one that finds it IDLE opens a session of its own, so the record names the attempt), before configure (with the retirement checks, around the
+receiver take) and at the STARTING → RUNNING commit beside `cancelRequested`: a mismatch at the commit discards the
+configured session (`nativeDiscardConfigured()`) and starts no worker. A setup failure between them (`nativeInit()`,
+the receiver take, `nativeConfigure()`) makes the same check in `failStart()`, the retirement included (`unrunEnd()`,
+one helper for every check point): a retired or superseded start's failure is not published, it ends cancelled. While
+the service is STARTING, `lifecycleStatus()` publishes no native terminal reason: a configure that failed is not the
+start's outcome until the service decides it, so no poll reads a failure for a start that then ends cancelled. Each
+superseded end is cancelled with the record's
+`superseded` true, which `retireAttempts()` reports as taken (its record says how). When a retirement and a user
+stop both apply at a check, the attempt ends retired. Known limit (accepted): the notification's Stop and a Recents
+swipe are delivered on the main thread, which runs a whole START inside one `onStartCommand()`, so one pressed while a
+roam START configures is counted only after that START's commit: the destination is published RUNNING and the queued
+Stop then stops it as an ordinary user stop (its attempt ran; it is not `superseded`). A Stop from the app counts at
+once under the lock and wins at every check point. Tests: `ANDROID_ENGINE_STOP_JVM` (`DecoderServiceAttemptTest.kt` roam and
+`start_status` cases, `DecoderServiceStopTest.kt` `switch_drain` and `stop_generation`, `EngineStopTest.kt`),
+`IO_RTL_RUN_RESULT` (switch causes), `ANDROID_R8` (the five-argument `startDecoder` descriptor).
+
+Host API for GPS roaming (issue #786): `DecoderHost` (`src/ui/qt/decoder_host.h`) adds non-pure virtuals whose defaults
+are a host with no roaming, so every subclass and the QML test host compile unchanged: `startWithStopExpectation(argv,
+expectedStopGeneration, expectedForegroundEpoch)` (default: `start()`; a negative expectation is a read that failed,
+never "no expectation", and is refused: `stopGenerationUnreadableText()`), `startSuperseded()` (property, its own
+`startSupersededChanged()`; only the Android host and the QML test host ever set it; the latest start ended unrun
+because a user stop or leaving the foreground came after its expectations; the next start clears it),
+`stopForSwitch()` (default `stop()`), `switchStopping()` (property, notified with `sessionStateChanged()`;
+default false: the Stopping on screen began with `stopForSwitch()` and no `stop()` came since), `retireRoamAttempt()` (true when the roam's start never runs;
+default false, a start the base host accepted runs), `userStopGeneration()` and `foregroundEpoch()` (synchronous reads,
+default 0, negative when unreadable), `startLocationStream()`, `stopLocationStream()`, `requestRoamingPermission(id)`,
+`openAppLocationSettings()`, `openLocationSourceSettings()` (no-ops), and the signal `locationStreamUpdate(record)`:
+{generation, state, hasFix} and with a fix {provider, measurementNs, lat, lon, accuracyM, fixAtMs}. `fixAtMs` is the
+poll's `dsd_realtime_mono_ms()` less the record's `ageMs`, so it is on the frontend's monotonic clock; Android's
+`elapsedRealtimeNanos` (boot time, which runs on through deep sleep) is passed only as `measurementNs`, the measurement's
+identity with `provider`, never as a time. `SessionArgsBuilder::start(system, host, kind)` is a manual start (`start()`);
+its overload with `expectedStopGeneration, expectedForegroundEpoch` routes to `startWithStopExpectation()` and adds
+`superseded` to its result
+(only for the host's answer to that start), and refuses a negative expectation before the host is asked (`error`
+`stop-generation`). `DecoderHostAndroid` (`decoder_host_android_lifecycle.cpp`, JNI in
+`decoder_host_android.cpp`): a start with a negative expectation is a start error (the failure card, nothing sent); one
+with expectations reads `DecoderService.userStopGeneration()` and `LocationStream.foregroundEpoch()` first and refuses
+itself superseded (no failure, nothing sent) when either moved or cannot be read (`roamSuperseded()`), else passes both
+to `startDecoder()`; a roam's START the platform refused (`refuseHandover()`) after either moved is superseded too, back
+to the phase before the request (Android refuses a foreground service start from the background, so a START asked for
+as the app leaves the foreground is refused), never the refusal's failure card; a record of
+the host's own attempt with `superseded` sets the flag before the phase it carries is published, so the Idle edge already
+reads superseded. `retireRoamAttempt()` retires the attempt the latest start with an expectation handed over (every later
+start attempt, refused or not, forgets it); a retirement that wins drops the attempt and winds a start on screen down (Stopping, then
+Idle on the next record) like a dismissed undelivered start, so no start grace brings a failure back. Rule: a roam's
+start the service never recorded (turned away busy) whose generation or epoch moved by the time its start grace runs
+out is superseded: the host drops the attempt the same way and sets `startSuperseded()`, never the undelivered failure;
+one whose expectations held is undelivered as before. Rule: the tracker's cancelled terminal record of a session clears
+a failure an earlier record of the same session latched (`terminal_phase()`), as the service's cancelled end is its
+verdict on a start whose configure failed after it was retired or superseded.
+`stopForSwitch()` is `stop()`'s bookkeeping with `DecoderService.stopDecoderForSwitch()`; the Stopping it begins reads
+`switchStopping()` until a `stop()` or any other published phase (`setSessionPhase()` clears it). Rule: the Monitor's
+Stop listening stays enabled while `switchStopping()` (a switch's rdio drain can take minutes), and a `stop()` then is
+sent as the user's: the service abandons the drain and counts the stop, so the roam's `startPlan()` at Idle finds the
+generation moved and cancels silently (no restart, no notice). `LocationStream` is started
+and stopped over JNI and polled last in `refresh()` (after the tick's session record is applied, so a slot sees this
+tick's phase) only while started; `location_stream_update()` (`android/location_record.h`)
+reads a record (an integer generation, a known state, the fix fields all there and in range or none) and the host emits
+only when the record, less `fixAtMs`, differs from the last one it emitted (a null poll, a stop or a start forgets it).
+The QML test host (`tests/ui/qml_test_context.h`, `ImportOnlyHost`) plays all of it: settable generation and epoch, a
+next start refused superseded or a start on its way superseded later, switch stops (with `switchStopping()`; every
+`stop()` moves its generation, as the service counts each user stop), retirements (winning by default),
+stream calls and a scripted feed (`testContext.emitLocationStreamUpdate()`). Tests: `UI_QT_ANDROID_HOST` (stream record
+→ signal, malformed records, synchronous reads, every start status's text, the expectation, retirement, switch stop
+and `switchStopping()` through its drain, a user stop during it, an ordinary user stop and a later receiver ending;
+`check_roam_foreground_fence()`: the epoch at the handover, a refusal after the app left the foreground or a user
+stop;
+`check_cancel_outranks_native_failure()`: a native configure failure then the service's cancelled end;
+`check_busy_superseded_start()` with the epoch), `UI_QT_SITE_ROAMING`
+(`check_executor_starting_foreground()`),
+`UI_QT_SESSION_ARGS` (`test_stop_expectation`), `ANDROID_R8` (keeps and descriptors of the new JNI calls),
+`ANDROID_ENGINE_STOP_JVM` (`start_status_contract`: every `START_*` has its `android/start_status.h` twin;
+`counter_reader_contract`: both counters are read through `read_static_counter()`). Rule: the two counters are read with
+checked JNI steps (class, method, call), each failure answering -1; `QJniObject::callStaticMethod<jlong>()` clears a failed
+lookup's exception and returns 0, a valid count, so it would read an unreadable counter as unchanged.
+
+Location feed, prompt broker and foreground epoch (issue #786, Kotlin): `LocationStream.kt` is GPS roaming's continuous
+feed and never touches the one-shot `LocationSupport` requests. Its JNI entry points (`@JvmStatic`, kept in
+`proguard-rules.pro`) are `startStream(context)`, `stopStream()`, `pollStream()` and `foregroundEpoch()`. A start or
+stop from any thread takes the next call serial under the lock and posts its work to the main looper, so only the
+newest call's work publishes; `stopStream()` clears the record under the lock, so the next poll answers null at once.
+The foreground contract: Qt asks for the feed again after every epoch move it sees, and a start asked for in the current
+epoch always ends up registered once the app is visible. A start whose epoch moved since the call is dropped (Qt asks
+again for the new epoch); one that reaches the main looper while the Activity is hidden (Qt's tick can run between
+`onStop` and its thread's freeze) is kept and registers on the next `onStart`, and a stop, a newer start, an `onStop` or
+`onDestroy` replaces or drops it. Without that, a return from Home, App info or the location settings left roaming
+waiting for a fix with nothing registered. Each start that registers is a new subscription with its own `generation`
+(callbacks of an older one are ignored; a second start while registered keeps it). With fine permission it registers
+`GPS_PROVIDER`, plus `FUSED_PROVIDER` on API 31+ when present
+(`LocationRequest` 10 s interval, 10 s minimum update interval, 0 m minimum distance, high accuracy, on the main
+executor); API 29-30 take the legacy `requestLocationUpdates(GPS_PROVIDER, 10000, 0f, listener, mainLooper)`. Present
+providers register even while disabled. State: `noPermission` (no coarse) and `approximateOnly` (coarse without fine)
+register nothing; `providerUnavailable` when no manager, no provider or every registration threw; `locationOff` while
+no registered provider is enabled; else `ok`. Each callback is O(1): per provider it keeps only a newer usable fix
+(finite, in range, accuracy present and above 0, `0 < elapsedRealtimeNanos <= now`; a disabled provider's fix is
+dropped) and publishes an immutable snapshot under the lock. `pollStream()` reads that snapshot under the same lock
+(not `@Synchronized`, as `LocationSupport.pollResult`) and answers JSON {`generation`, `state`} plus, with a fix,
+`provider`, `elapsedRealtimeNanos`, `lat`, `lon`, `accuracyM` and `ageMs` (taken at the poll; the keys are absent,
+not null, without one); it picks the most accurate fix at most 15 s old (the newer on a tie), else the newest, so a
+newer rough fused fix never displaces a fresh GPS fix. `DsdNeoActivity` calls `onActivityStart()` in `onStart`,
+`onActivityStop()` in every `onStop` (outside the `isChangingConfigurations` guard: not visible, subscription
+withdrawn, `foregroundEpoch` advanced and listeners removed, all on the main thread, since Qt's thread is frozen while
+the app is not visible) and `onDestroy()` in `onDestroy`. Rule: the withdrawal and the epoch advance are one step under
+the stream's lock, withdrawal first, and `startStream()` reads the epoch and takes its call serial in one step under the
+same lock: a Qt tick that sees the new epoch asks for a feed the stop can no longer make stale, so it registers on
+`onStart` (`ForegroundEpoch.afterAdvance` is the JVM test's window for that tick). `LocationPermission.kt` owns the app's one runtime location prompt
+(request code 4303) for `LocationSupport` (`ONE_SHOT`) and the stream (`ROAMING`): an asker that arrives while a prompt
+is open waits for its answer (one place per asker; asking again replaces its wait), every waiter is answered inside
+`onRequestPermissionsResult()` itself (no wait for `onStart`), a prompt that cannot open (`requestPermissions()` throws)
+answers every waiter at once as interrupted (empty grants) and leaves none open, an answer for another activity or for a
+prompt forgotten in `onDestroy(activity)` is dropped, and every prompt lists coarse first so `grants[0]` is coarse
+whoever opened it. `requestRoamingPermission(activity, id)` asks for coarse and fine even when coarse is granted
+(Android's
+upgrade dialog), asks nothing when fine is granted, and asks once per id (each user action takes a new id); its answer
+re-registers the current subscription only if that start is still the newest call, so a stop during the prompt
+starts nothing, and empty grants (an interrupted prompt) change nothing. `openAppLocationSettings(activity)` (App info,
+through the `SettingsScreens.kt` intent helper FileBrowser shares) and `openLocationSourceSettings(activity)` post to
+main and swallow a missing screen. `LocationSupport` keeps its behaviour through the broker (an existing coarse grant
+skips its prompt). Tests: `ANDROID_LOCATION_JVM` (`LocationStreamTest.kt`, `LocationPermissionTest.kt`,
+`LocationSupportTest.kt`, and the `location_wiring` source check of `DsdNeoActivity`'s calls).
 
 Session end and the notification (issue #782): `stopSelf()` makes ActiveServices (`bringDownServiceLocked()`) cancel the
 foreground notification and only then schedule `onDestroy()` on the main looper, so a status tick queued in between that

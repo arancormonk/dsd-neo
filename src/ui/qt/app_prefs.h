@@ -128,6 +128,15 @@ class AppPrefs : public QObject {
      * and live by Settings like the pause hold. */
     Q_PROPERTY(int analogPrerollMs READ analogPrerollMs WRITE setAnalogPrerollMs NOTIFY analogPrerollMsChanged)
     Q_PROPERTY(QVariantList analogPrerollChoices READ analogPrerollChoices CONSTANT)
+    /* Issue #786: GPS site roaming. The switch is device-local, off by default. The two distances are in km and
+     * portable; one never picked reads as the default of the unit shown (100 km / 2 km, or 60 mi / 1 mi), so
+     * roamingDistancesChanged follows metricUnits too. The choices are the unit shown's, in km. */
+    Q_PROPERTY(bool roamingEnabled READ roamingEnabled WRITE setRoamingEnabled NOTIFY roamingEnabledChanged)
+    Q_PROPERTY(double roamingMaxDistanceKm READ roamingMaxDistanceKm WRITE setRoamingMaxDistanceKm NOTIFY
+                   roamingDistancesChanged)
+    Q_PROPERTY(double roamingMarginKm READ roamingMarginKm WRITE setRoamingMarginKm NOTIFY roamingDistancesChanged)
+    Q_PROPERTY(QVariantList roamingMaxDistanceChoices READ roamingMaxDistanceChoices NOTIFY roamingDistancesChanged)
+    Q_PROPERTY(QVariantList roamingMarginChoices READ roamingMarginChoices NOTIFY roamingDistancesChanged)
 
   public:
     /** @brief Appearance follows the OS by default; see the settings screen. */
@@ -357,6 +366,31 @@ class AppPrefs : public QObject {
     /** @brief The pre-rolls offered, in ms: 0 (off), 100, 200, 300, 500 and 1000. */
     static QVariantList analogPrerollChoices();
 
+    /** @brief GPS site roaming (#786) is switched on; off by default. Device-local. */
+    bool roamingEnabled() const;
+    void setRoamingEnabled(bool on);
+
+    /**
+     * @brief The farthest a site may be for roaming to switch to it, in km: a choice of either unit (25, 50, 100, 200
+     * km; 15, 30, 60, 125 mi), else the default of the unit shown (100 km; 60 mi). Portable.
+     */
+    double roamingMaxDistanceKm() const;
+    /** @brief Store @p km if it is one of the choices of either unit; any other value is refused and writes nothing. */
+    void setRoamingMaxDistanceKm(double km);
+
+    /**
+     * @brief How much closer another site must be before roaming switches to it, in km: a choice of either unit (1,
+     * 2, 5 km; 0.5, 1, 3 mi), else the default of the unit shown (2 km; 1 mi). Portable.
+     */
+    double roamingMarginKm() const;
+    /** @brief Store @p km if it is one of the choices of either unit; any other value is refused and writes nothing. */
+    void setRoamingMarginKm(double km);
+
+    /** @brief The maximum distances the unit shown offers, in km. */
+    QVariantList roamingMaxDistanceChoices() const;
+    /** @brief The margins the unit shown offers, in km. */
+    QVariantList roamingMarginChoices() const;
+
   Q_SIGNALS:
     void autoStartOnAttachChanged();
     void lastStartedKindChanged();
@@ -395,6 +429,8 @@ class AppPrefs : public QObject {
     void recordingLimitMbChanged();
     void analogMaxGapMsChanged();
     void analogPrerollMsChanged();
+    void roamingEnabledChanged();
+    void roamingDistancesChanged();
 
   private:
     /** Drop a fix 24 h old (or from the future); true when one was stored. Tells no one: callers do. */
@@ -402,6 +438,8 @@ class AppPrefs : public QObject {
     /** A read's expireLocation(): a fix it drops queues one locationChanged (after the read, never inside it). */
     void expireLocationOnRead() const;
     void armLocationExpiry();
+    /** Store roaming distance @p km under key @p key (the Key enum's) if it is one of the key's choices. */
+    void setRoamingKm(int key, double km);
 
     /** @brief The app's settings file; the single place its scope and names are spelled. */
     class Settings : public QSettings {

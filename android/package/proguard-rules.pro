@@ -5,9 +5,12 @@
 # helpers remain eligible for shrinking and obfuscation. Keep signatures intact
 # while allowing R8 to optimize the method bodies.
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DecoderService {
-    public static void startDecoder(android.content.Context, java.lang.String[], long);
+    public static int startDecoder(android.content.Context, java.lang.String[], long, long, long);
     public static boolean retireAttempts(long);
     public static void stopDecoder(android.content.Context);
+    # GPS roaming (#786): the switch stop and the user stop generation.
+    public static void stopDecoderForSwitch(android.content.Context);
+    public static long userStopGeneration();
     public static java.lang.String lifecycleStatus();
     public static void acknowledgeReceiverEnding(long);
     public static java.lang.String stateName();
@@ -85,6 +88,20 @@
     public static void requestSiteLocation(android.app.Activity, long);
     public static void cancelLocationRequest(long);
     public static java.lang.String pollResult();
+}
+
+# GPS roaming (#786): the continuous location feed, its precise-location prompt and the settings screens.
+-keep,allowoptimization class io.github.arancormonk.dsdneo.LocationStream {
+    public static void startStream(android.content.Context);
+    public static void stopStream();
+    public static java.lang.String pollStream();
+    public static long foregroundEpoch();
+}
+
+-keep,allowoptimization class io.github.arancormonk.dsdneo.LocationPermission {
+    public static void requestRoamingPermission(android.app.Activity, long);
+    public static void openAppLocationSettings(android.app.Activity);
+    public static void openLocationSourceSettings(android.app.Activity);
 }
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DocumentPicker {

@@ -61,6 +61,7 @@
 #include "sign_in_autofill.h"
 #include "signal_search_model.h"
 #include "site_groups.h"
+#include "site_roaming_controller.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
 #include "store_notices.h"
@@ -285,6 +286,9 @@ static void
 register_qml_types() {
     // WP-D4: cancellation observes pointer, keyboard and shortcut input.
     qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
+    // #786: the roaming executor's enums (SiteRoaming.Following, …); its one instance is the siteRoaming property.
+    qmlRegisterUncreatableType<dsd_qt::SiteRoaming>("DsdNeo", 1, 0, "SiteRoaming",
+                                                    QStringLiteral("siteRoaming is the app's one roaming executor"));
     qmlRegisterType<SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
     qmlRegisterType<WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
 }
@@ -371,6 +375,16 @@ publish_listen(QQmlContext* context, ListenPins* pins, SavedSystemsModel* system
     auto* cards = new SavedSystemCards(systems, prefs, importedFiles, owner);
     cards->setLocationSupported(host->locationSupported());
     context->setContextProperty(QStringLiteral("savedSystemCards"), cards);
+}
+
+/* GPS site roaming (#786): its executor, over the host the session runs on. Main.qml feeds it the session and
+   carries out its switches. */
+static void
+publish_site_roaming(QQmlContext* context, DecoderHost* host, AppPrefs* prefs, SavedSystemsModel* systems,
+                     QObject* owner) {
+    auto* roaming = new SiteRoaming(prefs, systems, owner);
+    roaming->setHost(host);
+    context->setContextProperty(QStringLiteral("siteRoaming"), roaming);
 }
 
 ListenPins*
@@ -512,6 +526,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
     publish_listen(context, listenPins, systems, prefs, importedFiles, host, &engine);
+    publish_site_roaming(context, host, prefs, systems, &engine);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     publish_app_context(context, host, radioReference, prefs, &engine);
 

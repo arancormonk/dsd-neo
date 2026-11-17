@@ -22,6 +22,7 @@ qt_add_executable(
     display_scale.cpp
     dsdneo_jni.cpp
     presentation_scale.cpp
+    session_objects.cpp
 )
 
 set_target_properties(dsd-neo-app PROPERTIES AUTOMOC ON)

@@ -274,8 +274,12 @@ CommandBridge::toggleMute() const {
 }
 
 bool
-CommandBridge::holdTalkgroup(unsigned int talkgroup) const {
-    return accepted(dsd_app_command_set_u32(DSD_APP_CMD_TG_HOLD_SET, static_cast<uint32_t>(talkgroup)));
+CommandBridge::holdTalkgroup(unsigned int talkgroup) {
+    const bool queued = accepted(dsd_app_command_set_u32(DSD_APP_CMD_TG_HOLD_SET, static_cast<uint32_t>(talkgroup)));
+    if (queued) {
+        Q_EMIT operatorIntentSubmitted(talkgroup != 0 ? QStringLiteral("hold") : QStringLiteral("release"));
+    }
+    return queued;
 }
 
 bool
@@ -583,20 +587,30 @@ CommandBridge::tuneHz(unsigned int hz) const {
 }
 
 bool
-CommandBridge::manualTuneHz(unsigned int hz) const {
-    return accepted(dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, static_cast<uint32_t>(hz)));
+CommandBridge::manualTuneHz(unsigned int hz) {
+    const bool queued = accepted(dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, static_cast<uint32_t>(hz)));
+    if (queued) {
+        Q_EMIT operatorIntentSubmitted(QStringLiteral("manualTune"));
+    }
+    return queued;
 }
 
 bool
-// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
-CommandBridge::releaseTuner() const {
-    return accepted(dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE));
+CommandBridge::releaseTuner() {
+    const bool queued = accepted(dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE));
+    if (queued) {
+        Q_EMIT operatorIntentSubmitted(QStringLiteral("releaseTuner"));
+    }
+    return queued;
 }
 
 bool
-// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
-CommandBridge::setTrunking(bool on) const {
-    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, on ? 1 : 0));
+CommandBridge::setTrunking(bool on) {
+    const bool queued = accepted(dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, on ? 1 : 0));
+    if (queued) {
+        Q_EMIT operatorIntentSubmitted(on ? QStringLiteral("trunkingOn") : QStringLiteral("trunkingOff"));
+    }
+    return queued;
 }
 
 bool

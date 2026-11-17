@@ -23,7 +23,8 @@
  * Orders are the stored AppPrefs::systemsSort(), each ending on the card key: name, place (sections by state, then
  * "Several states", then "No place"), nearest (by distance to the location fix; then "All sites avoided", then
  * "No coordinates"; name without location support or a fix, the pref unchanged), recent (Last listened, never-listened
- * last) and added (the lead's row).
+ * last) and added (the lead's row). A member's distance (site_distance_km(), on the WGS84 ellipsoid) is measured once
+ * per fix: later rebuilds from the same fix reuse it while the site's position is unchanged.
  *
  * Every source change is coalesced into one queued rebuild, which diffs the shown cards by key into removes, moves,
  * inserts and one dataChanged per card whose roles changed, so surviving delegates stay. While screenReaderActive the
@@ -181,6 +182,12 @@ class SavedSystemCards : public QAbstractListModel {
         return m_rebuildCount;
     }
 
+    /** @brief How many site distances rebuilds measured (the rest came from the cache); for tests. */
+    int
+    distanceCount() const {
+        return m_distanceCount;
+    }
+
   Q_SIGNALS:
     void queryChanged();
     void sortIdChanged();
@@ -223,6 +230,7 @@ class SavedSystemCards : public QAbstractListModel {
         bool avoidSite = false;
         bool hasSitePos = false;
         bool keyConfigured = false;
+        double distanceKm = -1; // from the fix; -1 without one, for an avoided site or one with no position
     };
 
     /** One card: its role values, and what search and the orders read. */
@@ -274,6 +282,13 @@ class SavedSystemCards : public QAbstractListModel {
         qint64 hz = 0;
     };
 
+    /** A row's distance from the fix, kept by uid while its site's position stays the same. */
+    struct RowDistance {
+        double siteLat = 0;
+        double siteLon = 0;
+        double km = -1;
+    };
+
     /** The location fix one rebuild measures from, read once (valid only with location support). */
     struct Fix {
         bool valid = false;
@@ -292,6 +307,8 @@ class SavedSystemCards : public QAbstractListModel {
     static void locateCard(Card& card, const QList<const Member*>& group, const Fix& fix);
     /** @p member's search text and frequency, from the cache while what they are made of is unchanged; kept in @p next. */
     RowText memberText(const Member& member, QHash<QString, RowText>& next) const;
+    /** Each member's distanceKm from @p fix, from the cache while its site's position is unchanged. */
+    void measureMembers(QList<Member>& members, const Fix& fix);
     QHash<QString, bool> radioReferenceFiles() const;
     void sortCards(const Fix& fix);
     QString applicableSort(const Fix& fix) const;
@@ -315,14 +332,16 @@ class SavedSystemCards : public QAbstractListModel {
     QList<Card> m_shown; // what the view shows, in order
     QList<Card> m_held;  // the rows after m_shown, held as they last were (screen reader only)
     QHash<QString, RowText> m_rowTexts;
-    QHash<QString, int> m_nameRanks;  // each card title's place in name order
-    QHash<QString, int> m_placeRanks; // each state and county name's
+    QHash<QString, RowDistance> m_rowDistances; // measured from m_fix: emptied whenever the fix changes
+    QHash<QString, int> m_nameRanks;            // each card title's place in name order
+    QHash<QString, int> m_placeRanks;           // each state and county name's
     QVariantMap m_protocolLabels;
     QString m_query;
     QString m_effectiveSort;
     Fix m_fix; // the fix the cards' distances were measured from
     int m_totalCount = 0;
     int m_rebuildCount = 0;
+    int m_distanceCount = 0;
     bool m_locationSupported = false;
     bool m_screenReaderActive = false;
     bool m_holdReorders = false;

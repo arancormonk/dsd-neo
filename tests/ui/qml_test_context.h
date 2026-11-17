@@ -41,6 +41,7 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QEvent>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
@@ -133,6 +134,7 @@
 #include "screen_reader_state.h"
 #include "session_args.h"
 #include "site_groups.h"
+#include "site_roaming_controller.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
 #include "store_notices.h"
@@ -259,7 +261,41 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     bool
     start(const QStringList& argv) override {
+        return beginStart(argv, false, -1, -1);
+    }
+
+    /* #786: a roam's start, refused superseded, as Android's host refuses it, when the case moved userStopGeneration
+     * or foregroundEpoch past the expectations or asked for it (supersedeNextStart); one with a negative expectation (a
+     * read that failed) fails, as Android's shows a start error. */
+    bool
+    startWithStopExpectation(const QStringList& argv, qint64 expectedStopGeneration,
+                             qint64 expectedForegroundEpoch) override {
+        return beginStart(argv, true, expectedStopGeneration, expectedForegroundEpoch);
+    }
+
+    bool
+    startSuperseded() const override {
+        return superseded;
+    }
+
+    bool
+    beginStart(const QStringList& argv, bool expects, qint64 expectedStopGeneration, qint64 expectedForegroundEpoch) {
         lastArgv = argv;
+        lastStopExpectation = expects ? expectedStopGeneration : -1;
+        lastEpochExpectation = expects ? expectedForegroundEpoch : -1;
+        setSuperseded(false);
+        if (expects && (expectedStopGeneration < 0 || expectedForegroundEpoch < 0)) {
+            phase = Failed;
+            failure = stopGenerationUnreadableText();
+            Q_EMIT sessionStateChanged();
+            return false;
+        }
+        if (expects
+            && (supersedeNextStart || stopGeneration != expectedStopGeneration || epoch != expectedForegroundEpoch)) {
+            supersedeNextStart = false;
+            setSuperseded(true);
+            return false;
+        }
         // #647: as Android's, the start replaces the last session's receiver ending before the platform is asked,
         // so a start the platform then refuses has cleared it too.
         if (health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
@@ -277,6 +313,142 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     /* The argv of the last start asked for, accepted or not: what the session-args builder made of the system. */
     QStringList lastArgv;
+    /* #786: the last start's expected stop generation and foreground epoch, -1 each for a start with none. */
+    qint64 lastStopExpectation = -1;
+    qint64 lastEpochExpectation = -1;
+
+    /*
+     * GPS site roaming (#786), as Android's host plays it: the stop generation and foreground epoch a case sets, a
+     * start a case makes come back superseded, at once (supersedeNextStart) or after it was handed over
+     * (supersedeStart()), the switch stops and retirements, and a location feed the case scripts (testContext's
+     * emitLocationStreamUpdate()), with the calls that start and stop it.
+     */
+    qint64 stopGeneration = 0;
+    qint64 epoch = 0;
+    bool supersedeNextStart = false;
+    bool superseded = false;
+    bool retireWins = true;
+    int retireCalls = 0;
+    int switchStopCalls = 0;
+    int streamStarts = 0;
+    int streamStops = 0;
+    bool streamActive = false;
+    QVariantList permissionRequests;
+    int appSettingsOpens = 0;
+    int locationSettingsOpens = 0;
+
+    void
+    resetRoaming() {
+        stopGeneration = 0;
+        epoch = 0;
+        supersedeNextStart = false;
+        setSuperseded(false);
+        retireWins = true;
+        retireCalls = 0;
+        switchStopCalls = 0;
+        switchStop = false;
+        streamStarts = 0;
+        streamStops = 0;
+        streamActive = false;
+        permissionRequests.clear();
+        appSettingsOpens = 0;
+        locationSettingsOpens = 0;
+        lastStopExpectation = -1;
+        lastEpochExpectation = -1;
+    }
+
+    void
+    setSuperseded(bool value) {
+        if (superseded != value) {
+            superseded = value;
+            Q_EMIT startSupersededChanged();
+        }
+    }
+
+    /* The start on its way ends unrun, superseded, as Android's does when a user stop lands while it configures. */
+    void
+    supersedeStart() {
+        setSuperseded(true);
+        phase = Idle;
+        m_running = false;
+        Q_EMIT runningChanged();
+        Q_EMIT sessionStateChanged();
+    }
+
+    qint64
+    userStopGeneration() const override {
+        return stopGeneration;
+    }
+
+    /* #786: GPS roaming needs a host with a location feed; a case says so (testContext.setLifecycleLocationSupported()),
+     * before it loads Main, since the property is constant. */
+    bool locationSupport = false;
+
+    bool
+    locationSupported() const override {
+        return locationSupport;
+    }
+
+    qint64
+    foregroundEpoch() const override {
+        return epoch;
+    }
+
+    void
+    stopForSwitch() override {
+        ++switchStopCalls;
+        switchStop = true;
+        endSession();
+    }
+
+    /* #786: as Android's host, the Stopping a switch began until a user stop() or another phase. */
+    bool switchStop = false;
+
+    bool
+    switchStopping() const override {
+        return switchStop && phase == Stopping;
+    }
+
+    /* A win while the start is on its way leaves the session stopped, as Android's host winds it down. */
+    bool
+    retireRoamAttempt() override {
+        ++retireCalls;
+        if (retireWins && phase == Starting) {
+            phase = Idle;
+            m_running = false;
+            Q_EMIT runningChanged();
+            Q_EMIT sessionStateChanged();
+        }
+        return retireWins;
+    }
+
+    void
+    startLocationStream() override {
+        ++streamStarts;
+        streamActive = true;
+    }
+
+    void
+    stopLocationStream() override {
+        ++streamStops;
+        streamActive = false;
+    }
+
+    void
+    requestRoamingPermission(qint64 requestId) override {
+        permissionRequests.append(requestId);
+    }
+
+    void
+    openAppLocationSettings() override {
+        ++appSettingsOpens;
+    }
+
+    void
+    openLocationSourceSettings() override {
+        ++locationSettingsOpens;
+    }
+
     qint64 locationRequested = 0;
     qint64 locationCancelRequested = 0;
 
@@ -587,9 +759,21 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return true;
     }
 
+    /* Every user stop moves userStopGeneration(), as DecoderService counts each one (#786; one a case made unreadable
+     * stays so), and ends a switch's stop. */
     void
     stop() override {
         ++m_stop_calls;
+        if (stopGeneration >= 0) {
+            ++stopGeneration;
+        }
+        switchStop = false;
+        endSession();
+    }
+
+    /* stop() and stopForSwitch(): the session ends, at once or (delayedStop) through Stopping. */
+    void
+    endSession() {
         phase = delayedStop ? Stopping : Idle;
         m_running = false;
         Q_EMIT runningChanged();
@@ -1478,6 +1662,7 @@ class CommandRecorder : public QObject {
     manualTuneHz(unsigned int hz) {
         m_manual_tune_calls++;
         m_last_manual_tune_hz = hz;
+        Q_EMIT operatorIntentSubmitted(QStringLiteral("manualTune"));
         return true;
     }
 
@@ -1500,6 +1685,7 @@ class CommandRecorder : public QObject {
     holdTalkgroup(double tg) {
         ++m_hold_calls;
         m_last_hold_tg = tg;
+        Q_EMIT operatorIntentSubmitted(tg > 0 ? QStringLiteral("hold") : QStringLiteral("release"));
         return true;
     }
 
@@ -1747,6 +1933,9 @@ class CommandRecorder : public QObject {
     Q_INVOKABLE bool
     releaseTuner() {
         m_release_tuner_calls++;
+        if (m_release_tuner_accepted) {
+            Q_EMIT operatorIntentSubmitted(QStringLiteral("releaseTuner"));
+        }
         return m_release_tuner_accepted;
     }
 
@@ -1766,6 +1955,7 @@ class CommandRecorder : public QObject {
     setTrunking(bool on) {
         m_set_trunking_calls++;
         m_last_set_trunking = on;
+        Q_EMIT operatorIntentSubmitted(on ? QStringLiteral("trunkingOn") : QStringLiteral("trunkingOff"));
         return true;
     }
 
@@ -2204,6 +2394,10 @@ class CommandRecorder : public QObject {
     lastAllTalkgroupsTag() const {
         return m_last_all_talkgroups_tag;
     }
+
+  Q_SIGNALS:
+    /* #786: as CommandBridge says it of each queued command that changes what the session follows. */
+    void operatorIntentSubmitted(const QString& kind);
 
   private:
     int m_lockout_slot_calls = 0;
@@ -5209,13 +5403,18 @@ class Setup : public QObject {
         if (on) {
             m_lifecycle_host = signals_initialized ? m_initializing_host : m_import_host;
             m_lifecycle_host->acceptStart = true;
+            m_lifecycle_host->resetRoaming();
             if (m_backup != nullptr) {
                 m_backup->setHost(m_lifecycle_host); // the model's session gate follows the host the case runs on
             }
             m_lifecycle_host->startRunning = start_running;
+            // #786: roaming runs over the host the case runs on, from a fresh start each time.
+            m_site_roaming->setHost(nullptr);
+            m_site_roaming->setHost(m_lifecycle_host);
             m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_lifecycle_host);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_app_prefs);
         } else {
+            m_site_roaming->setHost(nullptr);
             m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_prefs);
         }
@@ -5252,6 +5451,103 @@ class Setup : public QObject {
     Q_INVOKABLE QStringList
     lastStartArgs() const {
         return m_lifecycle_host->lastArgv;
+    }
+
+    /** @brief #786: the expected stop generation the lifecycle host's last start carried; -1 for one with none. */
+    Q_INVOKABLE qint64
+    lastStartStopExpectation() const {
+        return m_lifecycle_host->lastStopExpectation;
+    }
+
+    /** @brief #786: the foreground epoch the lifecycle host's last start carried; -1 for one with none. */
+    Q_INVOKABLE qint64
+    lastStartEpochExpectation() const {
+        return m_lifecycle_host->lastEpochExpectation;
+    }
+
+    /** @brief #786: the lifecycle host's userStopGeneration(), as a user stop from anywhere moves it. */
+    Q_INVOKABLE void
+    setUserStopGeneration(qint64 generation) {
+        m_lifecycle_host->stopGeneration = generation;
+    }
+
+    /** @brief #786: the lifecycle host's foregroundEpoch(), as leaving the foreground moves it. */
+    Q_INVOKABLE void
+    setForegroundEpoch(qint64 epoch) {
+        m_lifecycle_host->epoch = epoch;
+    }
+
+    /** @brief #786: the next start with an expectation comes back refused, superseded (a user stop after Qt's read). */
+    Q_INVOKABLE void
+    setNextStartSuperseded(bool superseded) {
+        m_lifecycle_host->supersedeNextStart = superseded;
+    }
+
+    /** @brief #786: the start on its way ends unrun, superseded (a user stop while the service configured it). */
+    Q_INVOKABLE void
+    supersedeStart() {
+        m_lifecycle_host->supersedeStart();
+    }
+
+    /** @brief #786: what the lifecycle host's retireRoamAttempt() answers (true: the retirement wins). */
+    Q_INVOKABLE void
+    setRetireRoamAttemptWins(bool wins) {
+        m_lifecycle_host->retireWins = wins;
+    }
+
+    /** @brief #786: the location feed's next update, as the host emits it from a poll. */
+    Q_INVOKABLE void
+    emitLocationStreamUpdate(const QVariantMap& record) {
+        Q_EMIT m_lifecycle_host->locationStreamUpdate(record);
+        // Roaming judges a fix as the event loop turns (after the UI tick's model refresh): deliver that one call here.
+        QCoreApplication::sendPostedEvents(m_site_roaming, QEvent::MetaCall);
+    }
+
+    /** @brief #786: the feed's next update as the host's poll delivers it inside a UI tick, the loop not turned yet. */
+    Q_INVOKABLE void
+    emitLocationStreamUpdateHeld(const QVariantMap& record) {
+        Q_EMIT m_lifecycle_host->locationStreamUpdate(record);
+    }
+
+    /**
+     * @brief #786: the roaming calls the lifecycle host saw: {switchStops, retirements, streamStarts, streamStops,
+     * streamActive, permissionRequests (the ids, oldest first), appSettingsOpens, locationSettingsOpens}.
+     */
+    Q_INVOKABLE QVariantMap
+    roamingHostCalls() const {
+        const ImportOnlyHost* host = m_lifecycle_host;
+        return {{QStringLiteral("switchStops"), host->switchStopCalls},
+                {QStringLiteral("retirements"), host->retireCalls},
+                {QStringLiteral("streamStarts"), host->streamStarts},
+                {QStringLiteral("streamStops"), host->streamStops},
+                {QStringLiteral("streamActive"), host->streamActive},
+                {QStringLiteral("permissionRequests"), host->permissionRequests},
+                {QStringLiteral("appSettingsOpens"), host->appSettingsOpens},
+                {QStringLiteral("locationSettingsOpens"), host->locationSettingsOpens}};
+    }
+
+    /** @brief #786: whether the lifecycle host the case runs on accepts a start (false: the host refuses it). */
+    Q_INVOKABLE void
+    setLifecycleAcceptStart(bool accept) {
+        m_lifecycle_host->acceptStart = accept;
+    }
+
+    /** @brief #786: whether both lifecycle hosts have a location feed (GPS roaming runs only on one that does). */
+    Q_INVOKABLE void
+    setLifecycleLocationSupported(bool supported) {
+        m_import_host->locationSupport = supported;
+        m_initializing_host->locationSupport = supported;
+    }
+
+    /** @brief #786: the monotonic time in ms GPS roaming reads (its clock in these cases), and the stream's fixAtMs. */
+    Q_INVOKABLE void
+    setRoamingNow(qint64 ms) {
+        m_roaming_now = ms;
+    }
+
+    Q_INVOKABLE qint64
+    roamingNow() const {
+        return m_roaming_now;
     }
 
     Q_INVOKABLE void
@@ -5892,6 +6188,21 @@ class Setup : public QObject {
             .setValue(QStringLiteral("location/lastFixAt"), dsd_qt::realtimeMSecsSinceEpoch() - 25LL * 60 * 60 * 1000);
     }
 
+    /** @brief #786: store GPS roaming distance @p key ("maxDistanceKm", "marginKm") as @p km behind AppPrefs, as a
+     *         restored backup or another unit's pick leaves it; an invalid @p km (undefined) removes it, as on a first
+     *         launch. No signal: a screen loaded after it reads it. */
+    Q_INVOKABLE void
+    storeRoamingDistance(const QString& key, const QVariant& km) {
+        QSettings stored(QSettings::IniFormat, QSettings::UserScope, dsd_qt::AppPrefs::settingsOrganization(),
+                         dsd_qt::AppPrefs::settingsApplication());
+        const QString name = QStringLiteral("roaming/") + key;
+        if (km.isValid() && !km.isNull()) {
+            stored.setValue(name, km.toDouble());
+        } else {
+            stored.remove(name);
+        }
+    }
+
     /** @brief The saved-system cards as a fresh Home finds them: no search, no screen reader, nothing held. Location
      *         support is left as setLocationSupported() last set it on the host and the cards together. */
     Q_INVOKABLE void
@@ -6203,13 +6514,14 @@ class Setup : public QObject {
             {QStringLiteral("backup"), backupKeys},
             {QStringLiteral("rrPlaces"), propertyKeys(RrPlacesFake::staticMetaObject)},
             {QStringLiteral("savedSystemCards"), propertyKeys(dsd_qt::SavedSystemCards::staticMetaObject)},
+            {QStringLiteral("siteRoaming"), propertyKeys(dsd_qt::SiteRoaming::staticMetaObject)},
             {QStringLiteral("recordings"), RecordingsFake::rest()},
             {QStringLiteral("recordingStatus"), m_recording_status}};
         /* Group 3 captures the "(" that marks a call rather than a read. The name must not follow a "." or a word
          * character: `model.recordings.length` is a role's length, not a read of the `recordings` store. */
         static const QRegularExpression read(
             QStringLiteral("(?<![.\\w])(metrics|prefs|decoderHost|radioReference|backup|rrPlaces|savedSystemCards|"
-                           "recordings|recordingStatus)"
+                           "siteRoaming|recordings|recordingStatus)"
                            "\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
 
         QStringList missing;
@@ -6293,6 +6605,8 @@ class Setup : public QObject {
         /* Match ui_load() registrations before parsing QML importers. */
         // WP-D4: cancellation observes pointer, keyboard and shortcut input.
         qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
+        qmlRegisterUncreatableType<dsd_qt::SiteRoaming>(
+            "DsdNeo", 1, 0, "SiteRoaming", QStringLiteral("siteRoaming is the app's one roaming executor"));
         qmlRegisterType<dsd_qt::SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
         qmlRegisterType<dsd_qt::WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
 
@@ -6392,6 +6706,13 @@ class Setup : public QObject {
         /* Issue #668: the NFM pre-roll at AppPrefs' default, with its choices. */
         prefs[QStringLiteral("analogPrerollMs")] = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
         prefs[QStringLiteral("analogPrerollChoices")] = QVariantList({0, 100, 200, 300, 500, 1000});
+        /* Issue #786: GPS roaming off, its distances unset in miles, with the miles choices (in km). */
+        prefs[QStringLiteral("roamingEnabled")] = false;
+        prefs[QStringLiteral("roamingMaxDistanceKm")] = 60 * 1.609344;
+        prefs[QStringLiteral("roamingMarginKm")] = 1.609344;
+        prefs[QStringLiteral("roamingMaxDistanceChoices")] =
+            QVariantList({15 * 1.609344, 30 * 1.609344, 60 * 1.609344, 125 * 1.609344});
+        prefs[QStringLiteral("roamingMarginChoices")] = QVariantList({0.5 * 1.609344, 1.609344, 3 * 1.609344});
         m_prefs = prefs;
         ctx->setContextProperty(QStringLiteral("prefs"), prefs);
 
@@ -6520,6 +6841,8 @@ class Setup : public QObject {
         metrics[QStringLiteral("leadSlot")] = 0;
         // Whether the carrier is two-slot TDMA (dsd_state::tdma_carrier): false at rest, as on an FDMA carrier.
         metrics[QStringLiteral("twoSlotCarrier")] = false;
+        // Issue #786: the engine follows no voice channel at rest.
+        metrics[QStringLiteral("callBusy")] = false;
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
         metrics[QStringLiteral("persistTgLockouts")] = true;
@@ -6709,6 +7032,7 @@ class Setup : public QObject {
         QVariantMap host;
         host[QStringLiteral("running")] = false;
         host[QStringLiteral("transitioning")] = false;
+        host[QStringLiteral("switchStopping")] = false; // #786: no roaming switch is stopping
         host[QStringLiteral("statusText")] = QStringLiteral("idle");
         /* The spectrum view gates production on a live session, so the fixture
          * has to claim one or its frames would never start. */
@@ -6934,6 +7258,11 @@ class Setup : public QObject {
          * cases. Nearest follows setLocationSupported(), off as the host map starts. */
         m_saved_system_cards = new dsd_qt::SavedSystemCards(saved_systems, app_prefs, imported_files, engine);
         ctx->setContextProperty(QStringLiteral("savedSystemCards"), m_saved_system_cards);
+        /* #786: the production roaming executor over the same stores, on a clock the case sets (setRoamingNow()); it
+         * runs over the lifecycle host while a case uses one, and over none otherwise. */
+        m_site_roaming = new dsd_qt::SiteRoaming(app_prefs, saved_systems, engine);
+        m_site_roaming->setClock([this] { return m_roaming_now; });
+        ctx->setContextProperty(QStringLiteral("siteRoaming"), m_site_roaming);
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);
@@ -7045,6 +7374,8 @@ class Setup : public QObject {
     ReplayFilesFake* m_replay_files = nullptr;
     ImportOnlyHost* m_initializing_host = nullptr;
     ImportOnlyHost* m_lifecycle_host = nullptr;
+    dsd_qt::SiteRoaming* m_site_roaming = nullptr;
+    qint64 m_roaming_now = 1000000;
     std::unique_ptr<dsd_opts> m_talkgroup_opts = std::make_unique<dsd_opts>();
     std::unique_ptr<dsd_state> m_talkgroup_state = std::make_unique<dsd_state>();
     /* Issue #782: two scan targets' policy tables (applyTalkgroupTable()), built on first use. */

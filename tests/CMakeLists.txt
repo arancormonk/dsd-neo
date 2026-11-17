@@ -4898,6 +4898,51 @@ target_include_directories(
 )
 add_test(NAME UI_QT_SESSION_STATE COMMAND dsd-neo_test_ui_qt_session_state)
 
+# Issue #786 B1: the Android service's decoder objects (android/session_objects.cpp, free of JNI and Qt) start fresh
+# for every configure, through the real bootstrap and engine. Compiles dsd_init.c with the test hooks for initState()'s
+# allocation-failure seam, as CORE_INIT_STATE does; the replay case needs the radio pipeline.
+add_executable(
+    dsd-neo_test_android_session_objects
+    android/test_android_session_objects.cpp
+    ${PROJECT_SOURCE_DIR}/android/session_objects.cpp
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_init.c
+)
+target_include_directories(
+    dsd-neo_test_android_session_objects
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/android
+)
+target_compile_definitions(
+    dsd-neo_test_android_session_objects
+    PRIVATE
+        DSD_NEO_TEST_HOOKS
+        "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+)
+set(_dsd_session_objects_libs dsd-neo_engine)
+if(DSD_HAS_RADIO)
+    list(APPEND _dsd_session_objects_libs dsd-neo_io_radio dsd-neo_io_iq)
+endif()
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_android_session_objects
+        PRIVATE
+            "-Wl,--start-group"
+            ${_dsd_session_objects_libs}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_android_session_objects
+        PRIVATE ${_dsd_session_objects_libs} ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME ANDROID_SESSION_OBJECTS
+    COMMAND dsd-neo_test_android_session_objects
+)
+set_tests_properties(ANDROID_SESSION_OBJECTS PROPERTIES TIMEOUT 60)
+
 # WP-S2: platform-free attachment policy.
 add_executable(
     dsd-neo_test_ui_qt_auto_start_policy
@@ -5172,6 +5217,40 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_site_groups PROPERTIES AUTOMOC ON)
     dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_site_groups)
     add_test(NAME UI_QT_SITE_GROUPS COMMAND dsd-neo_test_ui_qt_site_groups)
+
+    # #786 site roaming: the decision core, the call wait cap and the executor (arming, the switch transaction, the
+    # operator-intent barrier) on a scripted clock and host.
+    add_executable(
+        dsd-neo_test_ui_qt_site_roaming
+        ui/test_ui_qt_site_roaming.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming_controller.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_site_roaming
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_site_roaming
+        PRIVATE Qt6::Gui Qt6::Qml dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_site_roaming
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_site_roaming PROPERTIES AUTOMOC ON)
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_site_roaming)
+    add_test(NAME UI_QT_SITE_ROAMING COMMAND dsd-neo_test_ui_qt_site_roaming)
 
     # What MetricsModel makes of a decoder snapshot: the readings screens gate
     # on. The sync hold in particular -- a lock that outlives the decoder finding
@@ -6148,6 +6227,9 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+            # Issue #786: GPS roaming's executor and its decision core, which Main drives.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming_controller.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
             # WP-S1: production persistence/generator and starter.
@@ -25595,6 +25677,12 @@ if(Python3_Interpreter_FOUND)
             SKIP_RETURN_CODE 77
             TIMEOUT 90
             RESOURCE_LOCK android_kotlin_jvm
+    )
+    # The two longest suites: beside parallel QML suites engine_stop ran past 90 s (47 s alone) and location took 61 s.
+    set_tests_properties(
+        ANDROID_ENGINE_STOP_JVM
+        ANDROID_LOCATION_JVM
+        PROPERTIES TIMEOUT 180
     )
     add_test(
         NAME ANDROID_DIAGNOSTICS_SHARE_PATHS

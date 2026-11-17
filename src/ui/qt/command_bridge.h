@@ -131,8 +131,8 @@ class CommandBridge : public QObject {
     /** @brief Toggle audio mute. @return true when the command was accepted. */
     Q_INVOKABLE bool toggleMute() const;
 
-    /** @brief Hold decoding on one talkgroup; 0 releases the hold. */
-    Q_INVOKABLE bool holdTalkgroup(unsigned int talkgroup) const;
+    /** @brief Hold decoding on one talkgroup; 0 releases the hold. Accepted, it is an operator intent (below). */
+    Q_INVOKABLE bool holdTalkgroup(unsigned int talkgroup);
 
     /** @brief Lock out the target currently active on @p slot (0 or 1). */
     Q_INVOKABLE bool lockoutSlot(int slot) const;
@@ -256,7 +256,7 @@ class CommandBridge : public QObject {
      * frequency, and the engine refuses the tune outright while trunking owns
      * the tuner.
      */
-    Q_INVOKABLE bool manualTuneHz(unsigned int hz) const;
+    Q_INVOKABLE bool manualTuneHz(unsigned int hz);
 
     /**
      * @brief Stop trunking from moving the tuner, and pause a running scan.
@@ -268,7 +268,7 @@ class CommandBridge : public QObject {
      * A -Y scan or trunk scan pauses rather than stops (issue #671), keeping
      * what resumeScan() picks up again.
      */
-    Q_INVOKABLE bool releaseTuner() const;
+    Q_INVOKABLE bool releaseTuner();
 
     /**
      * @brief Hand the tuner to trunking (@a on true), or stop it following.
@@ -278,7 +278,7 @@ class CommandBridge : public QObject {
      * Off is the narrow half — it leaves scanner mode alone, so releaseTuner()
      * stays the way to ask for the tuner back without knowing what holds it.
      */
-    Q_INVOKABLE bool setTrunking(bool on) const;
+    Q_INVOKABLE bool setTrunking(bool on);
 
     /** @brief Set tuner gain in dB (0 selects automatic gain). */
     Q_INVOKABLE bool setTunerGain(int gain_db) const;
@@ -434,6 +434,15 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool clearKeys() const;
     /** @brief Unload the running session's source radio ID aliases. */
     Q_INVOKABLE bool clearSrcList() const;
+
+  Q_SIGNALS:
+    /**
+     * @brief GPS site roaming (#786): a command that changes what the session follows was queued. @p kind is "hold"
+     * or "release" (holdTalkgroup()), "manualTune" (manualTuneHz()), "releaseTuner" (releaseTuner(), Explore from here
+     * among its callers), "trunkingOn" or "trunkingOff" (setTrunking()). The decoder applies it later, or never; site
+     * roaming waits until the decoder's snapshot shows it before it judges the session again.
+     */
+    void operatorIntentSubmitted(const QString& kind);
 
   private:
     QString submitDecryption(const QVariantMap& fields, int scope, const QVariantMap& context);

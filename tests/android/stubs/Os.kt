@@ -13,7 +13,7 @@ class CancellationSignal {
 class OperationCanceledException(message: String? = null) : RuntimeException(message ?: "The operation has been canceled.")
 object Build {
     object VERSION { var SDK_INT = 30 }
-    object VERSION_CODES { const val Q = 29 }
+    object VERSION_CODES { const val Q = 29; const val S = 31 }
 }
 object SystemClock {
     fun elapsedRealtimeNanos() = Handler.nowMs * 1_000_000L

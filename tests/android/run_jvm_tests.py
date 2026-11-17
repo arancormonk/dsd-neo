@@ -288,11 +288,113 @@ def stop_callers_carry_their_cause():
     for name, pattern, what in expected:
         if not re.search(pattern, texts.get(name, "")):
             return f"{APP_SOURCES / name}: {what}; expected /{pattern}/"
-    # Every stop intent the app sends is the user's: the Qt host's Stop listening and the notification's Stop action.
+    # Every stop intent the app sends names its cause: the notification's Stop action is the user's, and the Qt host's
+    # one sender passes the cause of its entry point, Stop listening the user's and a roaming switch's its own (#786).
     service = texts.get("DecoderService.kt", "")
-    senders = re.findall(r"\.setAction\(ACTION_STOP\)(\s*\.putExtra\(EXTRA_STOP_CAUSE, StopCause\.USER\.wire\))?", service)
-    if len(senders) != 2 or not all(senders):
-        return f"{APP_SOURCES / 'DecoderService.kt'}: both ACTION_STOP senders must put EXTRA_STOP_CAUSE = StopCause.USER.wire"
+    senders = re.findall(r"\.setAction\(ACTION_STOP\)(?:\s*\.putExtra\(EXTRA_STOP_CAUSE, ([\w.]+)\))?", service)
+    if sorted(senders) != ["StopCause.USER.wire", "cause.wire"]:
+        return (
+            f"{APP_SOURCES / 'DecoderService.kt'}: the ACTION_STOP senders must be the notification's "
+            f"(StopCause.USER.wire) and requestStop()'s (cause.wire); found {senders}"
+        )
+    entries = (
+        (r"fun stopDecoder\(context: Context\?\) = requestStop\(context, StopCause\.USER\)", "Stop listening is the user's"),
+        (
+            r"fun stopDecoderForSwitch\(context: Context\?\) = requestStop\(context, StopCause\.SWITCH\)",
+            "a roaming switch drains",
+        ),
+    )
+    for pattern, what in entries:
+        if not re.search(pattern, service):
+            return f"{APP_SOURCES / 'DecoderService.kt'}: {what}; expected /{pattern}/"
+    return None
+
+
+def start_status_contract():
+    """#786 B2: startDecoder()'s status crosses JNI as a plain int, and 0 is what a failed JNI call answers.
+
+    So handed over must be nonzero, every status distinct, android/start_status.h must name each one with the same
+    value (START_NOT_ALLOWED is kStartNotAllowed), the JNI call must pass the status on as it is, and the host must
+    treat anything but handed over as a start error.
+    """
+    kotlin_path = REPO / APP_SOURCES / "DecoderService.kt"
+    header_path = REPO / "android/start_status.h"
+    jni_path = REPO / "android/decoder_host_android.cpp"
+    host_path = REPO / "android/decoder_host_android_lifecycle.cpp"
+    try:
+        kotlin = kotlin_path.read_text(encoding="utf-8")
+        header = header_path.read_text(encoding="utf-8")
+        jni = jni_path.read_text(encoding="utf-8")
+        host = host_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the start status sources: {error}"
+    statuses = {name: int(value) for name, value in re.findall(r"const val (START_[A-Z_]+) = (-?\d+)\b", kotlin)}
+    handed = statuses.get("START_HANDED_OVER")
+    if handed is None or len(statuses) < 2:
+        return f"{APP_SOURCES / 'DecoderService.kt'}: no START_HANDED_OVER and refusal statuses"
+    if 0 in statuses.values():
+        return f"{APP_SOURCES / 'DecoderService.kt'}: no start status may be 0, a failed JNI call's answer: {statuses}"
+    if len(set(statuses.values())) != len(statuses):
+        return f"{APP_SOURCES / 'DecoderService.kt'}: the start statuses must be distinct: {statuses}"
+    native = {name: int(value) for name, value in re.findall(r"constexpr int (kStart\w+) = (-?\d+);", header)}
+    for name, value in statuses.items():
+        twin = "kStart" + "".join(part.capitalize() for part in name[len("START_"):].split("_"))
+        if native.get(twin) != value:
+            return f"android/start_status.h: {twin} must equal {name} ({value})"
+    if native.get("kStartCallFailed") != 0 or len(set(native.values())) != len(native):
+        return f"android/start_status.h: kStartCallFailed must be 0 and every status distinct: {native}"
+    call = re.search(r"DecoderHostAndroid::platformStartDecoder\(.*?\n\}", jni, re.S)
+    if not call or "return static_cast<int>(status);" not in call.group(0):
+        return "android/decoder_host_android.cpp: platformStartDecoder must return startDecoder()'s status as it is"
+    if not re.search(r"if \(handover != kStartHandedOver\) \{\s*return refuseHandover\(attempt, handover,", host):
+        return (
+            "android/decoder_host_android_lifecycle.cpp: every status but kStartHandedOver must go to refuseHandover()"
+        )
+    refusal = re.search(r"DecoderHostAndroid::refuseHandover\(.*?\n\}", host, re.S)
+    if not refusal or "return failStart(startRefusalText(status));" not in refusal.group(0):
+        return "android/decoder_host_android_lifecycle.cpp: refuseHandover() must fail a start it does not supersede"
+    return None
+
+
+def counter_reader_contract():
+    """#786: the roaming counters cross JNI as a plain long, and 0 is both a valid count and what a failed Qt call answers.
+
+    QJniObject::callStaticMethod<jlong>() clears a failed lookup's exception and returns 0, so a reader built on it reads
+    an unreadable counter as the counter's first value. Each reader must go through read_static_counter(), which checks
+    the class, the method and the call one by one and answers -1 on any failure, and the Kotlin side must be the static
+    ()J reader it names.
+    """
+    jni_path = REPO / "android/decoder_host_android.cpp"
+    try:
+        jni = jni_path.read_text(encoding="utf-8")
+        kotlin = {name: (REPO / APP_SOURCES / name).read_text(encoding="utf-8")
+                  for name in ("DecoderService.kt", "LocationStream.kt")}
+    except OSError as error:
+        return f"cannot read the counter reader sources: {error}"
+    readers = (
+        ("platformUserStopGeneration", "kServiceClass", "DecoderService.kt", "userStopGeneration"),
+        ("platformForegroundEpoch", "kStreamClass", "LocationStream.kt", "foregroundEpoch"),
+    )
+    for host_fn, owner, source, method in readers:
+        if not re.search(rf"@JvmStatic\s+fun {method}\(\): Long\b", kotlin[source]):
+            return f"{APP_SOURCES / source}: expected a @JvmStatic fun {method}(): Long for the host to read"
+        body = re.search(rf"DecoderHostAndroid::{host_fn}\(\) \{{(.*?)\n\}}", jni, re.S)
+        if not body or not re.search(rf'return read_static_counter\({owner}, "{method}"\);', body.group(1)):
+            return f"android/decoder_host_android.cpp: {host_fn} must answer read_static_counter({owner}, \"{method}\")"
+    helper = re.search(r"\nread_static_counter\(const char\* owner, const char\* name\) \{(.*?)\n\}", jni, re.S)
+    if not helper:
+        return "android/decoder_host_android.cpp: no read_static_counter(owner, name)"
+    steps = (
+        r"=\s*env\.findClass\(owner\);\s*if \(found == nullptr\) \{\s*return -1;",
+        r'=\s*env\.findStaticMethod\(found, name, "\(\)J"\);\s*if \(method == nullptr\) \{\s*return -1;',
+        r"=\s*env->CallStaticLongMethod\(found, method\);\s*if \(env\.checkAndClearExceptions\(\) \|\| value < 0\) \{"
+        r"\s*return -1;",
+    )
+    for step in steps:
+        if not re.search(step, helper.group(1)):
+            return f"android/decoder_host_android.cpp: read_static_counter must answer -1 on each failure; expected /{step}/"
+    if "callStaticMethod" in helper.group(1):
+        return "android/decoder_host_android.cpp: read_static_counter must not use QJniObject::callStaticMethod (0 on failure)"
     return None
 
 
@@ -324,18 +426,31 @@ def native_lifecycle_contract():
     init = re.search(r"DsdNative_nativeInit\(.*?\n\}", jni, re.S)
     if not init or "dsd_android::install_receiver_policy();" not in init.group(0):
         return "android/dsdneo_jni.cpp: nativeInit must call dsd_android::install_receiver_policy()"
-    # #782 gate r2 H3: only a run's dsd_engine_cleanup() closes the files the bootstrap opens (-c, -w, -P, -6), so
-    # every way a configured session ends without nativeRun() closes them: a discard, a failed or exiting configure (and
-    # the next configure over one never run), and nativeDestroy() before it frees the options.
-    release = "dsd_engine_release_outputs(g_opts, g_state);"
-    for name, count in (("nativeDiscardConfigured", 1), ("nativeConfigure", 2), ("nativeDestroy", 1)):
+    # #782 gate r2 H3: only a run's dsd_engine_cleanup() closes the files the bootstrap opens (-c, -w, -6; -P opens its
+    # per-call WAVs only at the run's start), so every way a configured session ends without nativeRun() closes them:
+    # a discard, a failed or exiting configure, the next configure over one never run
+    # (SessionObjects::prepare_for_configure() releases before its reset), and nativeDestroy()
+    # (SessionObjects::destroy() releases before it frees the objects).
+    release = "g_session.release_outputs();"
+    prepare = "g_session.prepare_for_configure()"
+    for name, call, why in (
+        ("nativeDiscardConfigured", release, "for a session that never ran"),
+        ("nativeConfigure", release, "after a failed or exiting bootstrap"),
+        ("nativeConfigure", prepare, "so each configure starts from fresh objects (#786 B1)"),
+        ("nativeDestroy", "g_session.destroy();", "for a session that never ran"),
+    ):
         body = re.search(rf"DsdNative_{name}\(.*?\n\}}", jni, re.S)
-        if not body or body.group(0).count(release) < count:
-            return f"android/dsdneo_jni.cpp: {name} must call {release} ({count} time(s)) for a session that never ran"
+        if not body or call not in body.group(0):
+            return f"android/dsdneo_jni.cpp: {name} must call {call} {why}"
+    # #786 B1: a start can reach the service instance an earlier one configured or ran on, so every configure resets
+    # the objects (prepare_for_configure()) before its bootstrap, and releases what a failed one opened after it.
     configure = re.search(r"DsdNative_nativeConfigure\(.*?\n\}", jni, re.S).group(0)
-    tail = configure.split("g_configured = false;", 1)
-    if len(tail) != 2 or release not in tail[1] or configure.find(release) > configure.find("dsd_runtime_bootstrap("):
-        return "android/dsdneo_jni.cpp: nativeConfigure must release before the bootstrap and after a failed one"
+    bootstrap = configure.find("dsd_runtime_bootstrap(")
+    if bootstrap < 0 or not 0 <= configure.find(prepare) < bootstrap or configure.rfind(release) < bootstrap:
+        return (
+            "android/dsdneo_jni.cpp: nativeConfigure must call prepare_for_configure() before the bootstrap and "
+            "release after a failed one"
+        )
     return None
 
 
@@ -920,6 +1035,43 @@ def file_browser_wiring():
     return None
 
 
+def location_wiring():
+    """#786: DsdNeoActivity never compiles here, so its forwarding to the location feed and the prompt is read from the
+    source. Every start lets the feed start again; every stop, a recreation's included, advances the foreground epoch and
+    stops the feed, which Qt cannot do once its thread freezes; destroy stops it too; and location permission answers
+    reach the broker that owns the prompt, after the file browser's and the notification's codes."""
+    where = APP_SOURCES / "DsdNeoActivity.kt"
+    try:
+        activity = (REPO / where).read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the activity: {error}"
+
+    def statements(signature):
+        body = method_body(activity, signature)
+        return [line.strip() for line in (body or "").splitlines() if line.strip() and not line.strip().startswith("//")]
+
+    required = (
+        ("override fun onStart(", "LocationStream.onActivityStart()"),
+        ("override fun onDestroy(", "LocationStream.onDestroy()"),
+        (
+            "override fun onRequestPermissionsResult(",
+            "if (!LocationPermission.onRequestPermissionsResult(this, requestCode, grantResults)) {",
+        ),
+    )
+    for signature, statement in required:
+        if statement not in statements(signature):
+            return f"{where}: {signature.split('(')[0].split()[-1]} must call {statement}"
+    stop = statements("override fun onStop(")
+    if "LocationStream.onActivityStop()" not in stop:
+        return f"{where}: onStop must call LocationStream.onActivityStop()"
+    guarded = stop.index("if (!isChangingConfigurations) {") if "if (!isChangingConfigurations) {" in stop else len(stop)
+    if stop.index("LocationStream.onActivityStop()") > guarded:
+        return f"{where}: onStop must call LocationStream.onActivityStop() on every stop, outside the recreation guard"
+    if "LocationSupport.onRequestPermissionsResult(" in activity:
+        return f"{where}: location permission answers go to LocationPermission, which owns the prompt"
+    return None
+
+
 USES_PERMISSION_TAG = re.compile(r"<uses-permission\b([^>]*)>")
 PREFIXED_ATTRIBUTE = re.compile(r'\b(android|tools):(\w+)\s*=\s*"([^"]*)"')
 STORAGE_PERMISSION = "android.permission.{}_EXTERNAL_STORAGE"
@@ -1183,12 +1335,25 @@ INCOMING_INTENT_STUBS = (
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
-    # The location broker and geocoder queue, against deterministic platform stubs.
+    # The one-shot location requests and geocoder queue, the permission prompt they share with GPS roaming, and
+    # roaming's location feed (#786), against deterministic platform stubs. The Activity's forwarding is read from source.
     "location": Suite(
+        checks=(location_wiring,),
         builds=(
             Build(
-                sources=("LocationSupport.kt",),
-                tests=("LocationGeocodeQueueTest.kt", "LocationSupportTest.kt"),
+                sources=(
+                    "LocationSupport.kt",
+                    "LocationPermission.kt",
+                    "LocationStream.kt",
+                    "ForegroundEpoch.kt",
+                    "SettingsScreens.kt",
+                ),
+                tests=(
+                    "LocationGeocodeQueueTest.kt",
+                    "LocationSupportTest.kt",
+                    "LocationPermissionTest.kt",
+                    "LocationStreamTest.kt",
+                ),
                 stubs=(
                     "Activity.kt",
                     "Context.kt",
@@ -1197,6 +1362,8 @@ SUITES = {
                     "Manifest.kt",
                     "Os.kt",
                     "PackageManager.kt",
+                    "Settings.kt",
+                    "Uri.kt",
                 ),
             ),
         ),
@@ -1362,13 +1529,25 @@ SUITES = {
             Build(sources=("EngineStop.kt",), tests=("EngineStopTest.kt",)),
             Build(
                 # UsbSourceManager is the stub in ServiceNative.kt: the service's take of its receiver is scripted.
-                sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt", "UsbReceiverKind.kt", "UsbSessionTake.kt"),
+                sources=(
+                    "EngineStop.kt",
+                    "DecoderService.kt",
+                    "DecoderStatus.kt",
+                    "UsbReceiverKind.kt",
+                    "UsbSessionTake.kt",
+                    "ForegroundEpoch.kt",
+                ),
                 tests=("DecoderServiceStopTest.kt", "DecoderServiceAttemptTest.kt", "DecoderServiceUsbTest.kt"),
                 stubs=("Service.kt", "ServiceContext.kt", "ServicePackageManager.kt", "ServiceNative.kt",
                        "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt", "SuppressLint.kt"),
             ),
         ),
-        checks=(stop_callers_carry_their_cause, native_lifecycle_contract),
+        checks=(
+            stop_callers_carry_their_cause,
+            native_lifecycle_contract,
+            start_status_contract,
+            counter_reader_contract,
+        ),
     ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure
@@ -1450,7 +1629,7 @@ SUITES = {
         builds=(
             Build(sources=("FileListing.kt",), tests=("FileListingTest.kt",)),
             Build(
-                sources=("FileListing.kt", "FileBrowser.kt"),
+                sources=("FileListing.kt", "FileBrowser.kt", "SettingsScreens.kt"),
                 tests=("FileBrowserTest.kt",),
                 stubs=(
                     "AssetFileDescriptor.kt",

@@ -28,7 +28,15 @@ enum class StopCause(val wire: String) {
     DEVICE_DETACHED("detached"),
 
     /** The service or Activity is being torn down. Drain, as the CLI does. */
-    LIFECYCLE("lifecycle");
+    LIFECYCLE("lifecycle"),
+
+    /**
+     * GPS roaming ends the session to start a nearer site of the same system (#786). Not the user's: it drains, so
+     * the calls the old site recorded still upload. A user's Stop during that drain is an ordinary USER stop, which
+     * abandons what is left (the service repeats nativeStop for it), and the native record then names the user.
+     * A switch never counts as a user stop for the stop generation.
+     */
+    SWITCH("switch");
 
     /** Whether this stop abandons the pending rdio uploads instead of waiting for them. */
     val abandonsUploads: Boolean

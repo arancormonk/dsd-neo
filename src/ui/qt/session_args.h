@@ -331,9 +331,20 @@ class SessionArgsBuilder : public QObject {
      *
      * @p kind is what the start is (issue #708): "saved" for a saved system, which records into its own folder;
      * "explore" or "search" for Explore and Signal search, which share one. The map alone cannot tell: an edited
-     * Explore start can carry the uid of the saved system it was copied from.
+     * Explore start can carry the uid of the saved system it was copied from. A start with no stop expectation goes
+     * through DecoderHost::start().
      */
     Q_INVOKABLE QVariantMap start(const QVariantMap& system, DecoderHost* host, const QString& kind) const;
+    /**
+     * As start(), for a GPS roam (#786): @p expectedStopGeneration is the host's userStopGeneration() the roam read
+     * when its destination began to qualify and @p expectedForegroundEpoch the foregroundEpoch() its switch was decided
+     * in, and the start goes to DecoderHost::startWithStopExpectation(), so a user stop or leaving the foreground since
+     * then supersedes it. The result also says "superseded": true when the host refused it for that, which is no
+     * failure. A negative expectation is a read that failed, never "no expectation": the start is refused before the
+     * host is asked, with "error" "stop-generation" and its text.
+     */
+    Q_INVOKABLE QVariantMap start(const QVariantMap& system, DecoderHost* host, const QString& kind,
+                                  qint64 expectedStopGeneration, qint64 expectedForegroundEpoch) const;
 
     /** @brief Frequency validity for the wizard's step gating; see session_args_freq_valid(). */
     Q_INVOKABLE bool freqValid(const QString& freqMhz) const;
@@ -384,6 +395,9 @@ class SessionArgsBuilder : public QObject {
                               SessionArgsError* error, bool* recording) const;
     /* The recording session buildForStart() began ends when the start did not happen and no session runs. */
     void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
+    /* Both start()s: @p expects says whether the expectations are a roam's. */
+    QVariantMap startSession(const QVariantMap& system, DecoderHost* host, const QString& kind, bool expects,
+                             qint64 expectedStopGeneration, qint64 expectedForegroundEpoch) const;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems = nullptr;
     DecryptionProfileProvider* m_profiles = nullptr;

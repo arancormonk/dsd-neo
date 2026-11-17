@@ -1,6 +1,6 @@
 # DSD-neo Privacy Policy
 
-**Effective date: November 11, 2026**
+**Effective date: November 15, 2026**
 
 This policy covers the DSD-neo Android app (package `io.github.arancormonk.dsdneo`)
 distributed on Google Play. The same practices apply to the side-loaded Android APK and the
@@ -78,7 +78,8 @@ password manager you use can fill them in and save them under its own terms.
 
 ## Location
 
-Location is optional and only used in the RadioReference screens and on Listen's Systems tab:
+Location is optional and only used in the RadioReference screens, on Listen's Systems tab and by
+GPS roaming:
 
 - **Use my location** finds your ZIP code so you don't have to type it. The app asks Android
   for your location, then asks Android's geocoder to turn it into a postal code. It sends
@@ -88,9 +89,16 @@ Location is optional and only used in the RadioReference screens and on Listen's
 - **Listen's Nearest order** uses your location to sort your saved systems by distance. The
   app asks Android for your coordinates only, with no postal-code lookup, and sends nothing
   to RadioReference. The distances are worked out on your device.
+- **GPS roaming**, if you turn it on, uses your precise location to switch to the nearest
+  saved site of the system you are listening to as you move. It asks Android for your
+  location about every 10 seconds, only while you are listening to a site it can follow and
+  only while DSD-neo is on screen; leaving the app stops it. The distances are worked out on
+  your device, nothing is sent anywhere, and these locations are never saved: the app keeps
+  only the newest readings in memory while roaming runs.
 
 The first time you use location, the app asks for approximate location (Use my location) or
-for approximate and precise location (the nearby-site chooser and Listen's Nearest order).
+for approximate and precise location (the nearby-site chooser, Listen's Nearest order and GPS
+roaming). GPS roaming works only with precise location.
 The app keeps your location at the precision you allowed, approximate or precise. Once you
 have granted precise location, Use my location can use it too. Getting a location and turning
 it into a postal code are done by your device's location services (on most phones they are
@@ -98,12 +106,12 @@ Google's), which may use Wi-Fi, mobile network and GPS information and contact t
 to do it, under that provider's terms. The app asks for location only while you are using it,
 never in the background.
 
-The last location the app got (latitude, longitude, accuracy and time) is saved on your
-device so it can pick nearby sites and order your saved systems by distance. It stops being
-used after 24 hours and is removed the next time the app checks it, while it is running or
-when you open it again. The app does not write it to its diagnostics log, and it is not part
-of the app's own backup file. If you deny location, ZIP code, browse and system ID searches
-all still work.
+The last location the app got for Use my location, the nearby-site chooser and Listen's
+Nearest order (latitude, longitude, accuracy and time) is saved on your device so it can pick
+nearby sites and order your saved systems by distance. It stops being used after 24 hours
+and is removed the next time the app checks it, while it is running or when you open it
+again. The app does not write it to its diagnostics log, and it is not part of the app's own
+backup file. If you deny location, ZIP code, browse and system ID searches all still work.
 
 ## Files and settings on your device
 
@@ -140,7 +148,8 @@ over the air. It leaves your device only if you copy or share it yourself.
 - **Internet:** used only for the connections described above.
 - **Network state:** lets the app see whether the device is online. It sends nothing.
 - **Location** (optional, approximate or precise, only while the app is in use): only for Use
-  my location, the nearby-site chooser and Listen's Nearest order, as described above.
+  my location, the nearby-site chooser, Listen's Nearest order and GPS roaming, as described
+  above.
 - **Foreground service and notifications:** keep decoding running while the app is in the
   background and show its status.
 - **Wake lock:** keep the device awake during long decode sessions.

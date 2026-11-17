@@ -981,14 +981,23 @@ SavedSystemsModel::groupKey(int row) const {
 
 QVariantList
 SavedSystemsModel::siblingRows(int row) const {
+    return groupRows(groupKey(row));
+}
+
+QVariantList
+SavedSystemsModel::groupRows(const QString& key) const {
     QVariantList rows;
-    const QString key = groupKey(row);
     for (int i = 0; !key.isEmpty() && i < m_rows.size(); ++i) {
         if (groupKey(i) == key) {
             rows.append(i);
         }
     }
     return rows;
+}
+
+bool
+SavedSystemsModel::roamable(int row) const {
+    return row >= 0 && row < m_rows.size() && site_roamable(get(row));
 }
 
 int

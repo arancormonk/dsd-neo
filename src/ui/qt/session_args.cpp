@@ -1394,6 +1394,27 @@ SessionArgsBuilder::endUnstartedRecording(bool recording, bool started, const De
 
 QVariantMap
 SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QString& kind) const {
+    return startSession(system, host, kind, false, -1, -1);
+}
+
+QVariantMap
+SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QString& kind,
+                          qint64 expectedStopGeneration, qint64 expectedForegroundEpoch) const {
+    return startSession(system, host, kind, true, expectedStopGeneration, expectedForegroundEpoch);
+}
+
+QVariantMap
+SessionArgsBuilder::startSession(const QVariantMap& system, DecoderHost* host, const QString& kind, bool expects,
+                                 qint64 expectedStopGeneration, qint64 expectedForegroundEpoch) const {
+    if (expects && (expectedStopGeneration < 0 || expectedForegroundEpoch < 0)) {
+        // A value that could not be read: guessing "no user stop" could start over the user's Stop, and guessing "still
+        // in the foreground" could start while the app is hidden.
+        return {{QStringLiteral("ok"), false},
+                {QStringLiteral("error"), QStringLiteral("stop-generation")},
+                {QStringLiteral("errorText"), DecoderHost::stopGenerationUnreadableText()},
+                {QStringLiteral("started"), false},
+                {QStringLiteral("superseded"), false}};
+    }
     SessionArgsError error = SessionArgsError::None;
     bool recording = false;
     const QStringList args = buildForStart(system, host, kind, &error, &recording);
@@ -1402,9 +1423,17 @@ SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QS
     if (error == SessionArgsError::None && host) {
         host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
     }
-    const bool started = error == SessionArgsError::None && host && host->start(args);
+    const bool asked = error == SessionArgsError::None && host;
+    const bool started =
+        asked
+        && (expects ? host->startWithStopExpectation(args, expectedStopGeneration, expectedForegroundEpoch)
+                    : host->start(args));
     endUnstartedRecording(recording, started, host);
     result.insert(QStringLiteral("started"), started);
+    if (expects) {
+        // Only the host's answer to this start: a flag left from an earlier one says nothing of a build error.
+        result.insert(QStringLiteral("superseded"), asked && !started && host->startSuperseded());
+    }
     if (started && host->sessionActive() && m_profiles) {
         m_profiles->retainForSession(system.value("decryptionProfileUid").toString());
     }

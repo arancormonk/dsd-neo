@@ -87,20 +87,29 @@ def jni_contract(source_root):
     """Read literal QJniObject upcalls and exported downcalls from production C++.
 
     Upcalls into Qt's own package count too: the app calls Qt's registered density native by name (display size).
+    read_static_counter(owner, "name") is a checked static ()J call (GPS roaming's counters, #786): it counts as that
+    upcall.
     """
     upcalls, downcalls = set(), set()
     call = re.compile(
         r'QJniObject::callStatic(?:ObjectMethod|Method(?:<[^>]+>)?)\s*\(\s*'
         r'(\w+|"[^"\n]+")\s*,\s*"([^"\n]+)"\s*,\s*"([^"\n]+)"'
     )
+    counter = re.compile(r'\bread_static_counter\s*\(\s*(\w+|"[^"\n]+")\s*,\s*"([^"\n]+)"\s*\)')
+    counter_definition = re.compile(r'\bread_static_counter\s*\(\s*const\b')
     for path in (source_root / "android").glob("*.cpp"):
         source = re.sub(r'/\*.*?\*/|//[^\n]*', '', path.read_text(), flags=re.S)
         aliases = dict(re.findall(r'const char\*\s+(\w+)\s*=\s*"([^"\n]+)"', source))
         calls = list(call.finditer(source))
         if len(calls) != source.count("QJniObject::callStatic"):
             raise ValueError(f"Unrecognized JNI call syntax in {path}; extend the artifact check")
-        for match in calls:
-            owner, name, signature = match.groups()
+        counters = list(counter.finditer(source))
+        uses = len(re.findall(r'\bread_static_counter\s*\(', source)) - len(counter_definition.findall(source))
+        if len(counters) != uses:
+            raise ValueError(f"Unrecognized read_static_counter() call in {path}; extend the artifact check")
+        found = [match.groups() for match in calls]
+        found += [(owner, name, "()J") for owner, name in (match.groups() for match in counters)]
+        for owner, name, signature in found:
             owner = owner.strip('"') if owner.startswith('"') else aliases[owner]
             if owner.startswith(APP_PACKAGE) or owner.startswith(QT_PACKAGE):
                 upcalls.add((owner, name, signature))

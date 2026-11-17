@@ -164,6 +164,8 @@ Window {
         }
         // The attempt itself, not just its kind: a failed Signal search start
         // is retried as a search, and an Explore-here start as that frequency.
+        // It replaces any restart waiting, a roam's included (#786).
+        cancelPendingRestart("retry");
         pendingRestart = {
             kind: attemptedSource.kind,
             uid: attemptedSource.uid,
@@ -192,7 +194,7 @@ Window {
             dismissFailureCard();
     }
     function editFailedSource() {
-        cancelPendingRestart();
+        cancelPendingRestart("edit");
         if (!attemptedSource)
             return;
         if (attemptedSource.system && attemptedSource.system.signalSearch) {
@@ -238,21 +240,122 @@ Window {
         if (restartStarting && decoderHost.sessionState !== 1)
             restartStarting = false;
     }
-    function cancelPendingRestart() {
+    // #786: why a restart waiting is given up. A user decision -- another
+    // start ("start"), Retry ("retry"), a restore ("restore"), a close for a
+    // restart ("close"), the failure card's X ("dismiss") or a failed session
+    // ("failed") -- replaces any restart, a GPS roam's too, which it cancels
+    // through siteRoaming. Incidental navigation -- Back ("back"), any input
+    // the site chooser's guard sees ("interaction"), opening the sites
+    // ("sites"), moving between screens ("navigate"), Edit source ("edit") or
+    // the window closing ("window") -- gives up a site restart the user asked
+    // for but leaves a roam's, which ends only through siteRoaming. "roamStart"
+    // is the roam's own start, which clears what is left of it. No reason is
+    // a user decision.
+    readonly property var roamCancellingReasons: ["start", "retry", "restore", "close", "dismiss", "failed"]
+    function cancelPendingRestart(reason) {
+        var why = reason || "start";
+        if (roamCancellingReasons.indexOf(why) >= 0)
+            siteRoaming.cancel(why);
+        else if (why !== "roamStart" && pendingRestart && pendingRestart.kind === "roam")
+            return;
+        // A site restart the user asked for, given up: a pick it carried holds nothing.
+        if (pendingRestart && pendingRestart.kind !== "roam")
+            siteRoaming.forgetSiteChoice();
         pendingRestart = null;
         leavingSearch = false;
+    }
+    /**
+     * GPS roaming (#786): the session is about to stop for roam @p roamId's
+     * switch to saved site @p uid. The restart is recorded first (a host that
+     * stops at once reports Idle inside the stop), and runs once the decoder
+     * is idle (startRoam()).
+     */
+    function roamToSite(roamId, uid) {
+        pendingStart = null;
+        pendingStartRow = -1;
+        pendingStartRemember = true;
+        pendingStartRoam = null;
+        awaitingUsbAccess = false;
+        pendingRestart = {
+            kind: "roam",
+            roamId: roamId,
+            uid: uid
+        };
+    }
+    // Roam @p roamId's start, after siteRoaming's checks pass: the site as it
+    // is saved now, carrying the user stop generation and the foreground epoch
+    // the switch was decided under, through the one saved-start gate.
+    function startRoam(roamId) {
+        var plan = siteRoaming.startPlan(roamId);
+        if (plan.ok)
+            startSavedByUid(plan.uid, {
+                roamId: roamId,
+                expectedStopGeneration: plan.expectedStopGeneration,
+                expectedForegroundEpoch: plan.expectedForegroundEpoch
+            });
+    }
+    // The roam a start waiting for USB access belongs to ({roamId,
+    // expectedStopGeneration, expectedForegroundEpoch}), or null: the grant
+    // resumes it through its checks, a refusal ends it.
+    property var pendingStartRoam: null
+    // DecoderHost::DevicePermission (LocalDeviceFailureKind): the user refused USB access.
+    readonly property int usbDevicePermission: 4
+    Connections {
+        target: siteRoaming
+        function onSwitchRequested(roamId, uid) {
+            mainRoot.roamToSite(roamId, uid);
+        }
+        // Whatever ended it (done, cancelled, refused), nothing of it may start later.
+        function onTransactionEnded(roamId, outcome) {
+            if (mainRoot.pendingRestart && mainRoot.pendingRestart.kind === "roam" && mainRoot.pendingRestart.roamId === roamId)
+                mainRoot.pendingRestart = null;
+            if (mainRoot.pendingStartRoam && mainRoot.pendingStartRoam.roamId === roamId) {
+                mainRoot.pendingStartRoam = null;
+                mainRoot.awaitingUsbAccess = false;
+                mainRoot.pendingStart = null;
+                mainRoot.pendingStartRow = -1;
+                mainRoot.pendingStartRemember = true;
+            }
+        }
+    }
+    // What roaming judges the running session by: the saved system it runs
+    // as (none for a scan, Explore or an operator hold) and the decoder's
+    // snapshot. Every operator command that changes what the session follows
+    // reaches it as it is queued.
+    Binding {
+        target: siteRoaming
+        property: "facts"
+        value: ({
+                savedUid: mainRoot.sessionSavedSystemUid,
+                trunking: metrics.trunkingEnabled === true,
+                radioInput: metrics.radioInput === true,
+                replayInput: metrics.replayInput === true,
+                scanKind: metrics.scanKind || 0,
+                operatorTuned: metrics.operatorTuned === true,
+                heldTg: metrics.heldTg || 0,
+                callBusy: metrics.callBusy === true,
+                optionsKnown: metrics.optionsKnown === true
+            })
+    }
+    Connections {
+        target: commands
+        ignoreUnknownSignals: true
+        function onOperatorIntentSubmitted(kind) {
+            siteRoaming.noteOperatorIntent(kind);
+        }
     }
     // Set while Signal search waits for its session to stop before a handoff
     // (leaveSearchFor()). The search screen stays the root until the decoder is
     // idle and says it is stopping. Back cancels the handoff, back to that
     // screen and its controls, so a stop that never finishes cannot lock it.
     property bool leavingSearch: false
+    // Whether the restart was taken.
     function restartSite(uid) {
         // Refused before cancelling: a restart that cannot run leaves a
         // handoff already waiting alone.
         if (decoderHost.sessionState !== 2 || savedSystems.rowForUid(uid) < 0)
-            return;
-        cancelPendingRestart();
+            return false;
+        cancelPendingRestart("start");
         pendingStart = null;
         pendingStartRow = -1;
         pendingStartRemember = true;
@@ -261,6 +364,7 @@ Window {
             uid: uid
         };
         decoderHost.stop();
+        return true;
     }
     // Issue #644: what the channel the operator tuned to can be started as,
     // with its own settings: each scan-list row on it (its list, held on that
@@ -393,7 +497,7 @@ Window {
             commands.tuneHz(action.hz);
             return;
         }
-        cancelPendingRestart();
+        cancelPendingRestart("start");
         pendingStart = null;
         pendingStartRow = -1;
         pendingStartRemember = true;
@@ -433,6 +537,10 @@ Window {
         settleRestartStart();
     }
     function startPendingRestart(request) {
+        if (request.kind === "roam") {
+            startRoam(request.roamId);
+            return;
+        }
         if (request.leaveSearch) {
             // The search has stopped: its screen gives way to what replaces it.
             leavingSearch = false;
@@ -481,7 +589,7 @@ Window {
      * first.
      */
     function refuseStart(message, attempt) {
-        dropPendingStarts();
+        dropPendingStarts("start");
         attemptedSource = attempt ? Object.assign({
             companions: [],
             remember: true
@@ -520,7 +628,7 @@ Window {
             }
         }
         abandonSignalSearchStart();
-        cancelPendingRestart();
+        cancelPendingRestart("start");
         // Pinned open, as Stop pins it: a screen Activity recreation reopened
         // is only bound to status.owned, which the search clears before the
         // decoder is idle, and Back must leave the stopped search on it.
@@ -609,8 +717,12 @@ Window {
     }
     // Issue #580: a restore replaces the systems a waiting start or restart
     // names, so entering one drops both rather than letting them run after it.
-    function dropPendingStarts() {
-        cancelPendingRestart();
+    // @p reason is cancelPendingRestart()'s: "restore", "close" or "start" (a
+    // refused start), each a user decision.
+    function dropPendingStarts(reason) {
+        cancelPendingRestart(reason || "restore");
+        siteRoaming.forgetSiteChoice();
+        mainRoot.pendingStartRoam = null;
         if (mainRoot.pendingStart && mainRoot.pendingStart.signalSearch)
             abandonSignalSearchStart();
         mainRoot.awaitingUsbAccess = false;
@@ -635,7 +747,8 @@ Window {
         // A backup flow counts for its whole length: its system pickers show no sheet.
         // So does a permission prompt of the host's own, until it is answered or expires (#647),
         // and a close for a restart once it has begun, until the app is gone (#830).
-        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || (!!decoderHost && decoderHost.localDeviceRequestPending === true) || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive || restartCloser.active || incomingDocument.busy
+        // #786: so does a GPS roam under way, and a restart the user asked for.
+        value: siteRoaming.transactionActive || mainRoot.pendingRestart !== null || mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || (!!decoderHost && decoderHost.localDeviceRequestPending === true) || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive || restartCloser.active || incomingDocument.busy
     }
     Connections {
         target: uiController
@@ -730,10 +843,10 @@ Window {
     property string sessionDestination: ""
     function requestBack() {
         if (leavingSearch) {
-            cancelPendingRestart();
+            cancelPendingRestart("back");
             return;
         }
-        cancelPendingRestart();
+        cancelPendingRestart("back");
         if (Navigation.back(mainRoot))
             return;
         if (currentTab !== 0 && !monitorMode) {
@@ -975,6 +1088,8 @@ Window {
         if (!mainRoot.awaitingSessionInitialized || !mainRoot.sessionSystem)
             return;
         mainRoot.awaitingSessionInitialized = false;
+        // #786: the edge GPS roaming arms on, and a roam's start is done at.
+        siteRoaming.noteSessionInitialized();
         // Accepted argv is only a request. These writes belong to the engine's
         // post-initialization edge, after file validation and tuner open.
         if (mainRoot.onAndroid && prefs.backgroundListening && !prefs.notificationExplained && decoderHost.notificationPermissionNeeded)
@@ -998,7 +1113,7 @@ Window {
                 // closes onto Home's failure card.
                 if (mainRoot.leavingSearch)
                     mainRoot.signalSearchOpen = false;
-                mainRoot.cancelPendingRestart();
+                mainRoot.cancelPendingRestart("failed");
             }
             if (decoderHost.sessionState === 0 && mainRoot.attemptedSource && mainRoot.attemptedSource.system.sourceType === "file") {
                 var host = decoderHost;
@@ -1106,6 +1221,9 @@ Window {
             }
         }
         mainRoot.syncOperatorHold();
+        // #786: a session this window did not start never arms GPS roaming,
+        // and says so.
+        siteRoaming.noteSessionAdopted(mainRoot.sessionStartKind);
     }
 
     // The receiver an Explore map stands on when the operator takes the tuner:
@@ -1208,7 +1326,9 @@ Window {
     // restart Retry queued for the decoder's next idle turn as well (B13).
     onDismissedFailureChanged: {
         if (dismissedFailure.length > 0) {
-            cancelPendingRestart();
+            cancelPendingRestart("dismiss");
+            siteRoaming.forgetSiteChoice();
+            mainRoot.pendingStartRoam = null;
             awaitingUsbAccess = false;
             mainRoot.pendingStart = null;
             mainRoot.pendingStartRow = -1;
@@ -1222,9 +1342,22 @@ Window {
     Connections {
         target: decoderHost
         function onLocalDeviceChanged() {
+            // #786: access refused for a GPS roam's start ends it refused; its
+            // banner stays, and a later grant starts nothing.
+            if (mainRoot.awaitingUsbAccess && mainRoot.pendingStartRoam && !decoderHost.localDeviceReady
+                && decoderHost.localDeviceFailureKind === mainRoot.usbDevicePermission && !decoderHost.localDeviceRequestPending) {
+                var denied = mainRoot.pendingStartRoam;
+                mainRoot.pendingStartRoam = null;
+                mainRoot.pendingStart = null;
+                mainRoot.pendingStartRow = -1;
+                siteRoaming.noteUsbDenied(denied.roamId);
+                return;
+            }
             if (!mainRoot.awaitingUsbAccess || !decoderHost.localDeviceReady)
                 return;
             mainRoot.awaitingUsbAccess = false;
+            var roam = mainRoot.pendingStartRoam;
+            mainRoot.pendingStartRoam = null;
             var sys = mainRoot.pendingStart;
             var row = mainRoot.pendingStartRow;
             var scan = mainRoot.pendingScanList;
@@ -1244,6 +1377,8 @@ Window {
             if (backup.flowActive) {
                 if (sys && sys.signalSearch)
                     mainRoot.abandonSignalSearchStart();
+                if (roam)
+                    siteRoaming.cancel("restore");
                 return;
             }
             // A start Home left waiting is no search: Signal search opened
@@ -1257,6 +1392,9 @@ Window {
                 // removed during the permission dialog is not started from its
                 // old map.
                 mainRoot.startScanByUid(sys.uid || "", companionUids, hold);
+            } else if (sys && row >= 0 && roam) {
+                // #786: a roam's start resumes through the roam's own checks.
+                mainRoot.startRoam(roam.roamId);
             } else if (sys && row >= 0) {
                 // B6: a saved system the same way, through its start gate: one
                 // removed, avoided, moved to another row or given another
@@ -1321,7 +1459,7 @@ Window {
     onClosing: function (close) {
         // A handoff under way finishes even if the window goes to the background.
         if (!leavingSearch)
-            cancelPendingRestart();
+            cancelPendingRestart("window");
         if (Navigation.back(mainRoot)) {
             close.accepted = false;
             return;
@@ -1337,9 +1475,12 @@ Window {
     /**
      * Start saved system @p uid as it is saved now. The one gate every saved
      * start passes through (card, site chooser, auto-start, Retry, a pin, a
-     * USB grant), so a removed or avoided site is refused alike from each.
+     * USB grant, a GPS roam), so a removed or avoided site is refused alike
+     * from each. @p roam ({roamId, expectedStopGeneration,
+     * expectedForegroundEpoch}) is the GPS roam the start belongs to (#786),
+     * absent for any other.
      */
-    function startSavedByUid(uid) {
+    function startSavedByUid(uid, roam) {
         // Refused before cancelling, as restartSite() is: a USB attachment
         // while a handoff stops must not drop it.
         if (decoderHost.sessionState !== 0 && decoderHost.sessionState !== 4)
@@ -1347,6 +1488,11 @@ Window {
         var row = savedSystems.rowForUid(uid);
         var refusal = savedStartRefusal(uid);
         if (refusal.length) {
+            if (roam)
+                siteRoaming.noteStartResult(roam.roamId, {
+                    ok: false,
+                    started: false
+                });
             // The refused system is the attempt Home's failure card names:
             // Retry asks again, and Edit opens that system.
             mainRoot.refuseStart(refusal, row < 0 ? null : {
@@ -1356,13 +1502,15 @@ Window {
             });
             return;
         }
-        cancelPendingRestart();
-        mainRoot.startWithMap(savedSystems.get(row), row, false);
+        cancelPendingRestart(roam ? "roamStart" : "start");
+        mainRoot.startWithMap(savedSystems.get(row), row, false, roam ? {
+            roam: roam
+        } : undefined);
     }
     // Home's site chooser for the system at @a row, as its card's sites button
     // opens it.
     function openSiteChooser(row) {
-        mainRoot.cancelPendingRestart();
+        mainRoot.cancelPendingRestart("sites");
         siteChooser.openFor(row);
     }
     /**
@@ -1507,7 +1655,7 @@ Window {
     // Issue #644: @a holdTarget, when given, is the list's target the scan
     // starts held on, for this start only.
     function startScanBundle(row, companionUids, holdTarget) {
-        cancelPendingRestart();
+        cancelPendingRestart("start");
         var list = scanLists.get(row);
         if (!list || !list.uid)
             return;
@@ -1534,13 +1682,27 @@ Window {
      * It goes to this start only: through a USB-access wait to the grant, and
      * never into the attempt Retry repeats or anything saved, so a failed or
      * later start of the list scans it as ever.
+     *
+     * @a options.roam ({roamId, expectedStopGeneration,
+     * expectedForegroundEpoch}, #786) makes it a GPS roam's start: it carries
+     * the expectations to the host, through a USB-access wait too, and tells
+     * siteRoaming what came of it. A start a user stop or leaving the
+     * foreground superseded shows nothing: siteRoaming says what follows.
      */
     function startWithMap(sys, row, scan, options) {
-        cancelPendingRestart();
+        var roam = !scan && options && options.roam ? options.roam : null;
+        cancelPendingRestart(roam ? "roamStart" : "start");
         mainRoot.awaitingSessionInitialized = false;
         mainRoot.sessionReachedRunning = false;
-        if (!sys || !sys.sourceType)
+        if (!sys || !sys.sourceType) {
+            if (roam)
+                siteRoaming.noteStartResult(roam.roamId, {
+                    ok: false,
+                    started: false
+                });
+            siteRoaming.forgetSiteChoice();
             return;
+        }
         var remember = !options || options.remember !== false;
         // Issue #697: the other lists a scan starts with, in list order.
         var companions = scan && options && options.companions ? options.companions : [];
@@ -1572,6 +1734,9 @@ Window {
             mainRoot.pendingStartCompanions = companionUids;
             mainRoot.pendingStartRemember = remember;
             mainRoot.pendingStartHold = holdTarget;
+            mainRoot.pendingStartRoam = roam;
+            if (roam)
+                siteRoaming.noteWaitingForUsb(roam.roamId);
             decoderHost.requestLocalDeviceAccessForSource(sys.sourceType, String((sys.airspy || {}).serial || ""));
             return;
         }
@@ -1583,10 +1748,18 @@ Window {
         mainRoot.pendingStartCompanions = [];
         mainRoot.pendingStartRemember = true;
         mainRoot.pendingStartHold = "";
+        mainRoot.pendingStartRoam = null;
         // What the start is, said here and not read off the map: an edited Explore start can carry a saved
         // system's uid, and must not record into that system's call recordings.
         var built = scan ? scanListStarter.startLists([sys].concat(companions), decoderHost, holdTarget)
+            : roam ? sessionArgs.start(sys, decoderHost, "saved", roam.expectedStopGeneration,
+                                       roam.expectedForegroundEpoch)
             : sessionArgs.start(sys, decoderHost, row >= 0 ? "saved" : sys.signalSearch ? "search" : "explore");
+        if (roam)
+            siteRoaming.noteStartResult(roam.roamId, built);
+        // A start that does not happen carries no site choice to a later one.
+        if (!built.ok || !built.started)
+            siteRoaming.forgetSiteChoice();
         if (!built.ok) {
             // Match the rejected field without exposing a prohibited argument or a key.
             if (scan) {
@@ -1612,6 +1785,8 @@ Window {
             } else if (built.error === "tetra-rate") {
                 // Every radio decodes TETRA only at 72 kHz, which App default runs at.
                 mainRoot.startError = qsTr("“%1” decodes TETRA, which needs a bandwidth of 72 kHz. Set the source's bandwidth to 72 kHz, or choose App default.").arg(sys.name);
+            } else if (built.error === "stop-generation") {
+                mainRoot.startError = built.errorText;
             } else if (built.error === "am-bandwidth") {
                 mainRoot.startError = Util.fill(qsTr("“%1” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to %2 kHz."), [sys.name, built.bandwidthChoices]);
             } else {
@@ -1623,6 +1798,12 @@ Window {
         // stamp lastHeard, re-attribute history rows, or hide the previous
         // session's calls from the monitor pane.
         if (!(built.started)) {
+            // #786: superseded by the user's own stop, or by leaving the
+            // foreground, after the roam last read them: nothing failed.
+            if (built.superseded === true) {
+                attemptedSource = previousSource;
+                return;
+            }
             // A host that refuses with nothing to publish over a run on screen
             // (starting or running) leaves that run as it was: its source stays
             // the one a failure names and Retry starts, and no card is put over it.
@@ -1649,6 +1830,8 @@ Window {
         mainRoot.captureSessionTargets();
         prefs.acceptedStartTargets = mainRoot.sessionTargets;
         mainRoot.scanWarnings = scan ? built.warnings.join("\n") : "";
+        // #786: a new session, a roam's own or any other (which ends a roam under way).
+        siteRoaming.noteSessionStart(mainRoot.sessionStartKind, mainRoot.sessionStartUid, roam ? roam.roamId : 0);
         mainRoot.awaitingSessionInitialized = true;
         mainRoot.sessionReachedRunning = decoderHost.sessionState === 2;
         if (mainRoot.sessionReachedRunning && !decoderHost.signalsSessionInitialized)
@@ -1686,7 +1869,7 @@ Window {
      * whether the finished import fills in an open wizard or opens a fresh one.
      */
     function openRadioReference(fromWizard) {
-        cancelPendingRestart();
+        cancelPendingRestart("navigate");
         mainRoot.radioReferenceFromWizard = fromWizard;
         radioReferenceScreen.reset();
         mainRoot.radioReferenceOpen = true;
@@ -1727,7 +1910,7 @@ Window {
 
     /** Start an explore session from the remembered source and frequency. */
     function startExploring() {
-        cancelPendingRestart();
+        cancelPendingRestart("start");
         var source = prefs.exploreSourceType;
         if (source !== "usb" && source !== "airspy" && source !== "rtltcp") {
             // Nothing remembered to start from; ask instead of guessing.
@@ -1826,6 +2009,10 @@ Window {
             localDeviceRelevant: !mainRoot.showFailure || !mainRoot.attemptedSource || mainRoot.attemptedSource.system.sourceType === "usb" || mainRoot.attemptedSource.system.sourceType === "airspy"
             requestedSource: mainRoot.awaitingUsbAccess && mainRoot.pendingStart ? mainRoot.pendingStart.sourceType : decoderHost && decoderHost.localDeviceRequestedSource ? decoderHost.localDeviceRequestedSource : ""
             completionMessage: mainRoot.completionMessage
+            // #786: a GPS roam that left listening stopped, and the site it left.
+            roamNotice: siteRoaming.recoveryNotice
+            roamNoticeAction: siteRoaming.recoveryActionText
+            onRoamNoticeListen: mainRoot.startSavedByUid(siteRoaming.recoveryUid)
             onRetryFailure: mainRoot.retrySource()
             onEditFailure: mainRoot.editFailedSource()
             onDismissFailure: mainRoot.dismissFailureCard()
@@ -1917,7 +2104,7 @@ Window {
             vertical: mainRoot.expanded
             currentIndex: mainRoot.currentTab
             onSelected: function (index) {
-                mainRoot.cancelPendingRestart();
+                mainRoot.cancelPendingRestart("navigate");
                 mainRoot.currentTab = index;
             }
         }
@@ -2030,7 +2217,7 @@ Window {
         otherListCount: mainRoot.operatorHolds ? 0 : Math.max(0, mainRoot.sessionLists.length - 1)
         sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
         onOpenSites: {
-            mainRoot.cancelPendingRestart();
+            mainRoot.cancelPendingRestart("sites");
             siteChooser.openFor(savedSystems.rowForUid(mainRoot.sessionSystem.uid));
         }
         opacity: mainRoot.monitorMode ? 1.0 : 0.0
@@ -2619,10 +2806,12 @@ Window {
         anchors.fill: safeArea
         currentSiteUid: mainRoot.sessionSystem ? (mainRoot.sessionSystem.uid || "") : ""
         // Any input cancels a site restart still waiting; a Signal search
-        // handoff instead takes no input until it finishes (leavingSearch).
+        // handoff instead takes no input until it finishes (leavingSearch). A
+        // GPS roam's restart is no restart the user asked for: input leaves it
+        // (#786).
         onUserAction: {
             if (!mainRoot.leavingSearch)
-                mainRoot.cancelPendingRestart();
+                mainRoot.cancelPendingRestart("interaction");
         }
         onEditSite: function (row) {
             wizard.openForEdit(row);
@@ -2631,8 +2820,13 @@ Window {
         onStartSite: function (row) {
             mainRoot.startSystem(row);
         }
+        // #786: a site the user switches to from a session GPS roaming
+        // follows holds roaming on the session it starts. Noted before the
+        // stop, while that session still runs.
         onRestartSite: function (uid) {
-            mainRoot.restartSite(uid);
+            siteRoaming.noteSiteChoice(uid);
+            if (!mainRoot.restartSite(uid))
+                siteRoaming.forgetSiteChoice();
         }
         onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
     }
@@ -2734,7 +2928,7 @@ Window {
         id: backupFlow
         z: 22
         anchors.fill: safeArea
-        onRestoreBegun: mainRoot.dropPendingStarts()
+        onRestoreBegun: mainRoot.dropPendingStarts("restore")
     }
 
     // ---- DSD-neo's file browser (issue #830) ----
@@ -2762,7 +2956,7 @@ Window {
             return scanListEditor.editUid.length ? "edit" : "add";
         }
         onCloseConfirmed: {
-            mainRoot.dropPendingStarts();
+            mainRoot.dropPendingStarts("close");
             restartCloser.begin();
         }
     }

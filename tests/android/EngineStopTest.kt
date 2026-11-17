@@ -23,12 +23,19 @@ private fun onlyTheUsersStopAbandonsUploads() {
         "a USB detach is a normal end and must drain"
     }
     check(stopsFor(StopCause.LIFECYCLE).map { it.first } == listOf(false)) { "a lifecycle teardown must drain" }
+    // #786: GPS roaming's switch is not the user's; the old site's last calls still upload.
+    check(stopsFor(StopCause.SWITCH).map { it.first } == listOf(false)) { "a roaming switch must drain" }
+    check(StopCause.entries.filter { it.abandonsUploads } == listOf(StopCause.USER)) { "only USER abandons uploads" }
 }
 
 // #647: the native side latches the first cause of a session's ending, so every stop names its own on the wire.
 private fun everyStopNamesItsCause() {
-    check(stopsFor(StopCause.USER, StopCause.DEVICE_DETACHED, StopCause.LIFECYCLE).map { it.second } ==
-        listOf("user", "detached", "lifecycle")) { "nativeStop must receive each stop's own wire cause" }
+    check(stopsFor(StopCause.USER, StopCause.DEVICE_DETACHED, StopCause.LIFECYCLE, StopCause.SWITCH).map { it.second } ==
+        listOf("user", "detached", "lifecycle", "switch")) { "nativeStop must receive each stop's own wire cause" }
+    // A user's Stop during a switch's drain: the second request abandons, under the user's own cause.
+    check(stopsFor(StopCause.SWITCH, StopCause.USER) == listOf(false to "switch", true to "user")) {
+        "a user's Stop after a switch must abandon the drain"
+    }
 }
 
 private fun theReturnCodeIsPassedThrough() {
@@ -44,6 +51,7 @@ private fun theIntentCauseRoundTripsAndDefaultsToDrain() {
     check(StopCause.fromWire(null) == StopCause.LIFECYCLE) { "a missing cause must drain" }
     check(StopCause.fromWire("") == StopCause.LIFECYCLE) { "an empty cause must drain" }
     check(StopCause.fromWire("USER") == StopCause.LIFECYCLE) { "the wire value is exact, not case-folded" }
+    check(StopCause.fromWire("switch") == StopCause.SWITCH) { "the switch's wire value is \"switch\"" }
     check(!StopCause.fromWire("bogus").abandonsUploads) { "an unknown cause must drain" }
 }
 
