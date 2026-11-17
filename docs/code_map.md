@@ -2529,10 +2529,16 @@ suite runs under this compiler.
   without coordinates (`Position: (suppressed; CRC ERR)`, `(suppressed; RAS)`, `(refused)`). Raw fields are checked
   before they are converted (degrees, minutes 0-59, fractions, a boundary degree only with zero minutes, dates per
   month, times of day): a bad coordinate refuses the report, any other bad field becomes unknown and is never folded
-  (a heading outside 0-3599 tenths of a degree, a time past 23:59:59). Per kind, position check / source check:
+  (a heading outside 0-3599 tenths of a degree, a time past 23:59:59). The record names the destination
+  (`target_id`, `DSD_POS_FLAG_TARGET_GROUP`) wherever the same checked carrier that names the source names one, so the
+  same fix sent to two destinations is two records; it stays 0 only where no checked destination exists (a USBD
+  hash, an M17 or D-STAR callsign destination, which the numeric record has no field for, a TETRA SDS whose MAC
+  address does not say group). Per kind, position check / source check:
   - DMR LRRP and LOCN (`dmr_pdu.c`), LIP over UDT or UDP and binary UDT NMEA (`dsd_gps.c`): the data packet's header,
     CRC32 and block CRCs, or the UDT's CRCs, and not RAS / the same packet (its source, target and G/I bit as the
-    checked standard header gave them: `dmr_data_checked_group`, which an MNIS DPF 15 header leaves alone). LRRP
+    checked standard header gave them: `dmr_data_checked_group`, which an MNIS DPF 15 header leaves alone; a UDT
+    report takes the UDT header's source, destination and I/G bit as a `dsd_gps_address`, LIP over UDP the
+    datagram's source and destination, qualified as a group like LRRP's). LRRP
     reads its numeric fields as variable-length (uintvar, ufloatvar, sfloatvar) and decodes tokens 0x51, 0x53, 0x55,
     0x67, 0x69, 0x6B, 0x6C and document type 0x13; a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
     parse, and a resync-guessed position is never published. UDT NMEA needs Q=1. These go to their own data notice
@@ -2546,23 +2552,28 @@ suite runs under this compiler.
     shared with TETRA.
   - DMR embedded GPS (`dmr_embedded_gps()`): the embedded LC checksum (`WEAK_CHECK`) / a checked, non-RAS full LC of
     the same transmission named the call's source (`dmr_lc_checked_transmission`, `dmr_lc_checked_source`, cleared
-    with the reception), else unverified.
+    with the reception), else unverified; the destination and group flag that LC named
+    (`dmr_lc_checked_target`, `dmr_lc_checked_group`) while the call still has that target.
   - P25 Phase 1 L3Harris and Motorola APX (MFID $90 LCO $06, `FORMAT_PROVISIONAL`) link control (`p25_lcw.c`,
     `nmea_harris()`, `apx_embedded_gps()` with a `dsd_gps_report_ctx`): a hard RS decode of the LDU1 or TDULC LC (a
     soft-erasure retry is unchecked); L3Harris pairs Part A (LCO 42 or 44) only with the Part B of its parity (43 or
     45) on the same call epoch and source within 2 s on the decode clock, in storage of its own
     (`p25_p1_harris_gps_part_a`), and needs quality %01 or %10 / a hard-decoded voice-user LC of the same ACTIVE call.
-    A terminator's GPS LC belongs to the call that terminator ended (`dsd_event_capture_closing_call()` before
-    `p25_sm_emit_tdu()`). Phase 2 L3Harris (`p25p2_vpdu.c`): MAC CRC and the whole segment (17 octets; the shifted
-    `80 AA A4 11` form 18, and never from a FACCH) / `p25_sm_checked_call_identity()` (P25 SM below).
+    Every Phase 1 LC verdict (identity events, preemption candidates, the checked-identity record, the GPS position)
+    depends on that hard decode (`p25_lcw_ctx.lc_hard`). A terminator's GPS LC belongs to the call that terminator
+    ended (`dsd_event_capture_closing_call()` before `p25_sm_emit_tdu()`). Phase 2 L3Harris (`p25p2_vpdu.c`): MAC CRC
+    and the whole segment (17 octets; the shifted `80 AA A4 11` form 18, and never from a FACCH) /
+    `p25_sm_checked_call_identity()` (P25 SM below).
   - ASCII NMEA (`nmea_sentence_checker()`, the RMC/GGA parser in the core-private `src/core/gps/nmea_sentence.{h,c}`;
     P25 SAP 48, NXDN data format 0x06): the packet check plus each sentence's own checksum; the first RMC with status
-    A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, is the report / the same packet. A
-    CRC-failed packet keeps no sentence text.
+    A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, is the report / the same packet, whose
+    header also names the destination (`dmr_lrrp_target`; a P25 LLID is a radio, an NXDN header a group for call
+    type 0 or 1, kept in `dmr_data_checked_group`). A CRC-failed packet keeps no sentence text.
   - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data
     call header bound to the same assembly (`nxdn_data_call.c`: `nxdn_data_origin`, `nxdn_data_header_ms`,
     `nxdn_data_carrier_seq`; a failed FACCH2/UDCH or FACCH3/UDCH2 CRC, a rejected header, another reception or
-    carrier, or 2 s on the decode clock drop it). A payload with no bound header gives no position. Its own notice.
+    carrier, or 2 s on the decode clock drop it). A payload with no bound header gives no position. The same header
+    names its destination. Its own notice.
   - M17 GNSS META (`m17.c`; `m17_parse_gnss_meta()` and `m17_parse_extended_callsign_meta()` take the 14 META bytes, no
     packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
     monitor; one report per transmission and META content (keyed by the slot 0 call epoch, plus the stream ID on IP,

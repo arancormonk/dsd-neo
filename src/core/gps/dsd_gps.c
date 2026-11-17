@@ -437,6 +437,8 @@ gps_hemisphere_pair_from_e7(int32_t lat_e7, int32_t lon_e7) {
 typedef struct {
     int hash;
     uint32_t src;
+    uint32_t target;      /* the carrier's destination, 0 = none */
+    uint8_t target_group; /* @c target is a talkgroup */
 } lip_source;
 
 /* Print a LIP report. @p position_note NULL prints its coordinates (an admitted report); otherwise the coordinates are
@@ -517,6 +519,23 @@ gps_packet_origin(const dsd_state* state, int slot) {
     return (origin != NULL && origin->valid != 0U) ? origin : NULL;
 }
 
+/* The destination a checked carrier named, with its group qualifier (a group flag needs a destination). */
+static void
+gps_fill_target(dsd_position_fix* fix, uint32_t target, uint8_t target_group) {
+    fix->target_id = target;
+    if (target != 0U && target_group != 0U) {
+        fix->flags = (uint16_t)(fix->flags | DSD_POS_FLAG_TARGET_GROUP);
+    }
+}
+
+/* The destination the checked data header of @p slot named (dmr_lrrp_target), with that header's own group qualifier
+ * (dmr_data_checked_group: the DMR data header's G/I bit, an NXDN data call's call type; a P25 LLID is a radio). */
+static void
+gps_fill_header_target(const dsd_state* state, uint8_t slot, dsd_position_fix* fix) {
+    const unsigned long long target = state->dmr_lrrp_target[slot & 1U];
+    gps_fill_target(fix, target <= UINT32_MAX ? (uint32_t)target : 0U, state->dmr_data_checked_group[slot & 1U]);
+}
+
 /* Admit a checked LIP report: the record, its kind and source (a USBD reply's hash is never an identity), and the
  * reception it came from (the origin of the DMR or P25 data packet that carried it, gps_packet_origin()). */
 static int
@@ -536,7 +555,8 @@ lip_admit(const dsd_opts* opts, dsd_state* state, const lip_short_report* r, con
         fix->kind = DSD_POS_LIP;
         fix->protocol = (uint8_t)state->lastsynctype;
         fix->source_id = who->src;
-        source_verified = 1; // the same checked packet named it
+        gps_fill_target(fix, who->target, who->target_group);
+        source_verified = 1; // the same checked packet named the source and the destination
         origin = gps_packet_origin(state, slot);
     }
     return dsd_position_admit(opts, state, fix, 1, source_verified, origin) != DSD_POSITION_REFUSED;
@@ -586,7 +606,7 @@ lip_protocol_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* inpu
     lip_fields_from_usbd(input, &f);
     lip_short_report r;
     lip_fields_to_report(&f, &r);
-    const lip_source who = {(int)convert_bits_into_output(input + 72, 8), 0U};
+    const lip_source who = {(int)convert_bits_into_output(input + 72, 8), 0U, 0U, 0U};
     lip_report(opts, state, &r, &who);
 }
 
@@ -615,7 +635,8 @@ lip_extension_label(uint8_t extension) {
 }
 
 void
-lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count,
+                const dsd_gps_address* addr) {
     if (bit_count < 2) {
         DSD_FPRINTF(stderr, "LIP: truncated;");
         return;
@@ -627,7 +648,8 @@ lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, siz
             DSD_FPRINTF(stderr, "LIP: short location report truncated (%zu bits);", bit_count);
             return;
         }
-        const lip_source who = {-1, src};
+        const lip_source who = {-1, addr ? addr->source_id : 0U, addr ? addr->target_id : 0U,
+                                addr ? addr->target_group : 0U};
         lip_report(opts, state, &r, &who);
     } else if (type == 1) {
         if (bit_count < 6) {
@@ -725,13 +747,17 @@ udt_nmea_print_time(const udt_nmea_fields* f, int type, const char* deg_glyph) {
 
 /* The report as a feed record (before admission): Q set and every position field in range, checked by the caller. */
 static void
-udt_nmea_fill_fix(const dsd_state* state, const udt_nmea_fields* f, int type, uint32_t src, int slot,
+udt_nmea_fill_fix(const dsd_state* state, const udt_nmea_fields* f, int type, const dsd_gps_address* addr, int slot,
                   dsd_position_fix* fix) {
     dsd_position_fix_init(fix);
     fix->kind = DSD_POS_NMEA;
     fix->protocol = (uint8_t)state->lastsynctype;
     fix->slot = (uint8_t)slot;
-    fix->source_id = src;
+    if (addr != NULL) {
+        // The UDT header names the source and the destination under the same CRC.
+        fix->source_id = addr->source_id;
+        gps_fill_target(fix, addr->target_id, addr->target_group);
+    }
     fix->lat_e7 = udt_nmea_e7(f->ndeg, f->nmin, f->nminf, f->ns);
     fix->lon_e7 = udt_nmea_e7(f->edeg, f->emin, f->eminf, f->ew);
     const uint8_t knots = f->speed >= 127U ? 126U : f->speed;
@@ -744,7 +770,7 @@ udt_nmea_fill_fix(const dsd_state* state, const udt_nmea_fields* f, int type, ui
     }
 }
 
-/* Admit a checked, in-range UDT NMEA report (the UDT's source, from the same checked header) against the reception
+/* Admit a checked, in-range UDT NMEA report (the UDT's addressing, from the same checked header) against the reception
  * its UDT began on. */
 static int
 udt_nmea_admit(const dsd_opts* opts, dsd_state* state, int slot, dsd_position_fix* fix) {
@@ -770,7 +796,7 @@ udt_nmea_print_position(uint8_t crc_flags, const udt_nmea_fields* f, int in_rang
 }
 
 void
-nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32_t src, int type) {
+nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, const dsd_gps_address* addr, int type) {
     const int slot = state->currentslot & 1;
 
     //NOTE: The Only difference between Short (type == 1) and Long Format (type == 2)
@@ -788,7 +814,7 @@ nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, u
 
     // Q = 0 is "No fix" and the Table B.7 ranges bound every field: neither is a position (spec 2.5).
     dsd_position_fix fix;
-    udt_nmea_fill_fix(state, &f, type, src, slot, &fix);
+    udt_nmea_fill_fix(state, &f, type, addr, slot, &fix);
     const int admitted = crc_flags == 0U && f.q && in_range && udt_nmea_admit(opts, state, slot, &fix);
     udt_nmea_print_position(crc_flags, &f, in_range, admitted, &fix, deg_glyph);
 
@@ -1064,6 +1090,11 @@ dmr_embedded_gps_admit(const dsd_opts* opts, dsd_state* state, uint8_t slot, dmr
     a->has_call = dmr_embedded_gps_call(state, slot, &a->call, &source_verified);
     a->fix.protocol = (uint8_t)(a->has_call ? a->call.protocol : state->lastsynctype);
     a->fix.source_id = source_verified ? (uint32_t)a->call.ota_source_id : 0U;
+    // The same checked LC's destination, while the call still names it.
+    if (source_verified && state->dmr_lc_checked_target[slot] != 0U
+        && a->call.ota_target_id == (uint64_t)state->dmr_lc_checked_target[slot]) {
+        gps_fill_target(&a->fix, state->dmr_lc_checked_target[slot], state->dmr_lc_checked_group[slot]);
+    }
     return dsd_position_admit(opts, state, &a->fix, 1, source_verified, NULL) != DSD_POSITION_REFUSED;
 }
 
@@ -1392,8 +1423,8 @@ nmea_print_fix(const dsd_position_fix* fix) {
     }
 }
 
-/* Admit the packet's report: the position and the packet's source (the slot's dmr_lrrp_source) only from a packet
- * whose own check passed (both verdicts are the packet's). */
+/* Admit the packet's report: the position and the packet's source and destination (the slot's dmr_lrrp_source and
+ * dmr_lrrp_target) only from a packet whose own check passed (both verdicts are the packet's). */
 static dsd_position_admit_result
 nmea_admit_packet(const dsd_opts* opts, dsd_state* state, uint8_t slot, const nmea_packet* pkt, int packet_verified,
                   const dsd_position_origin* origin, dsd_position_fix* fix) {
@@ -1415,6 +1446,7 @@ nmea_admit_packet(const dsd_opts* opts, dsd_state* state, uint8_t slot, const nm
     fix->sats = pkt->fix.sats;
     fix->fix_time_s = pkt->fix.fix_time_s;
     fix->source_id = (uint32_t)state->dmr_lrrp_source[slot];
+    gps_fill_header_target(state, slot, fix);
     const dsd_position_admit_result r = dsd_position_admit(opts, state, fix, packet_verified, packet_verified, origin);
     if (r != DSD_POSITION_REFUSED) {
         nmea_print_fix(fix);
@@ -1626,6 +1658,7 @@ nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, si
         fix.fix_time_s = g.fix_time_s;
         fix.source_id = src;
         fix.flags = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
+        gps_fill_header_target(state, 0U, &fix); // the same bound header's destination
         /* Called only for a data call whose CRC32 passed, with the header bound to its assembly (nxdn_element.c). */
         if (dsd_position_admit(opts, state, &fix, 1, 1, origin) == DSD_POSITION_REFUSED) {
             DSD_FPRINTF(stderr, " GPS: NXDN position report not admitted;");

@@ -507,6 +507,94 @@ test_p25_origin(void) {
     }
 }
 
+/* ---- The report's destination (issue #800): a P25 packet's target LLID or IP destination, never a group ---- */
+
+/* SAP 48 outbound (io 1): the LLID is the destination; the packet names no source. */
+static void
+p25_sap48_to(const char* text, uint32_t llid) {
+    uint8_t pdu[256];
+    DSD_MEMSET(pdu, 0, sizeof pdu);
+    pdu[0] = 0x30; /* fmt 16, io 1: the LLID is the destination */
+    pdu[1] = 48;
+    pdu[3] = (uint8_t)(llid >> 16);
+    pdu[4] = (uint8_t)(llid >> 8);
+    pdu[5] = (uint8_t)llid;
+    pdu[6] = 0x05;
+    const size_t n = strlen(text);
+    DSD_MEMCPY(pdu + 12, text, n);
+    p25_decode_pdu_data(&g_opts, &g_state, pdu, (int)(12U + n + 4U));
+}
+
+/* A LIP short report (22.5 S, 45 W) in IPv4/UDP to port 5017 from 10.0.4.210 to 10.0.0.@p dst_host. */
+static void
+p25_ip_lip(uint8_t dst_host) {
+    uint8_t lip[10];
+    DSD_MEMSET(lip, 0, sizeof lip);
+    uint8_t bits[80];
+    DSD_MEMSET(bits, 0, sizeof bits);
+
+    const struct {
+        size_t off;
+        unsigned width;
+        uint32_t value;
+    } fields[] = {{4, 1, 1}, {5, 24, 0xC00000}, {29, 1, 1}, {30, 23, 0x600000}, {68, 8, 32}};
+
+    for (size_t f = 0; f < sizeof fields / sizeof fields[0]; f++) {
+        for (unsigned i = 0; i < fields[f].width; i++) {
+            bits[fields[f].off + i] = (uint8_t)((fields[f].value >> (fields[f].width - 1U - i)) & 1U);
+        }
+    }
+    for (size_t i = 0; i < sizeof lip; i++) {
+        for (size_t b = 0; b < 8U; b++) {
+            lip[i] = (uint8_t)((lip[i] << 1) | bits[(i * 8U) + b]);
+        }
+    }
+    uint8_t pdu[128];
+    DSD_MEMSET(pdu, 0, sizeof pdu);
+    pdu[0] = 0x10;
+    pdu[4] = 0x04;
+    pdu[5] = 0xD2; /* LLID 1234 */
+    pdu[6] = 0x05;
+    uint8_t* ip = pdu + 12;
+    const uint16_t udp_len = (uint16_t)(8U + sizeof lip);
+    const uint16_t ip_len = (uint16_t)(20U + udp_len);
+    ip[0] = 0x45;
+    ip[3] = (uint8_t)ip_len;
+    ip[8] = 64;
+    ip[9] = 17;
+    ip[12] = 10;
+    ip[14] = 0x04;
+    ip[15] = 0xD2;
+    ip[16] = 10;
+    ip[19] = dst_host;
+    ip[20] = ip[22] = 0x13;
+    ip[21] = ip[23] = 0x99; /* UDP 5017 */
+    ip[25] = (uint8_t)udp_len;
+    DSD_MEMCPY(ip + 28, lip, sizeof lip);
+    p25_decode_pdu_data(&g_opts, &g_state, pdu, (int)(12U + ip_len + 4U));
+}
+
+static void
+test_p25_destination(void) {
+    char s[128];
+    sentence(s, sizeof s, "GPRMC,120000,A,2230.0000,N,04500.0000,E,010.0,090.0,150626,,,A", "\r\n");
+    dsd_position_fix recs[4];
+    reset_fixture();
+    p25_sap48_to(s, 77U);
+    p25_sap48_to(s, 88U);
+    CHECK(feed_records(recs, 4) == 2);
+    CHECK(recs[0].target_id == 77U && (recs[0].flags & DSD_POS_FLAG_TARGET_GROUP) == 0U);
+    CHECK(recs[1].target_id == 88U && (recs[1].flags & DSD_POS_FLAG_TARGET_GROUP) == 0U);
+
+    reset_fixture();
+    p25_ip_lip(77U);
+    p25_ip_lip(88U);
+    CHECK(feed_records(recs, 4) == 2);
+    CHECK(recs[0].kind == DSD_POS_LIP && recs[0].source_id == 1234U && recs[0].target_id == 77U
+          && (recs[0].flags & DSD_POS_FLAG_TARGET_GROUP) == 0U);
+    CHECK(recs[1].kind == DSD_POS_LIP && recs[1].source_id == 1234U && recs[1].target_id == 88U);
+}
+
 int
 main(void) {
     int fd = dsd_test_mkstemp(g_lpath, sizeof g_lpath, "core_nmea_sentence");
@@ -525,6 +613,7 @@ main(void) {
     test_producer_sentence_choice();
     test_p25_sap48();
     test_p25_origin();
+    test_p25_destination();
 
     dsd_state_ext_free_all(&g_state);
     (void)remove(g_lpath);

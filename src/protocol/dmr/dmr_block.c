@@ -719,6 +719,7 @@ typedef struct {
     uint8_t udt_uab;
     uint32_t udt_source;
     uint32_t udt_target;
+    uint8_t udt_group; /* the header's I/G bit: the destination is a talkgroup */
     int payload_bits;
     char udt_string[500];
 } dmr_udt_ctx;
@@ -768,6 +769,7 @@ dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, cons
     // Contract: a UDT block_bytes run spans at least 60 octets.
     dsd_unpack_bytes_to_bits(block_bytes, 60U, ctx->cs_bits, sizeof(ctx->cs_bits), 60U);
     udt_ig = ctx->cs_bits[0];
+    ctx->udt_group = udt_ig;
     udt_a = ctx->cs_bits[1];
     udt_emergency = ctx->cs_bits[2]; // TS 102 361-4 Table 6.31
     udt_option = ctx->cs_bits[3];
@@ -782,7 +784,7 @@ dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, cons
     udt_sf = ctx->cs_bits[72];
     udt_pf = ctx->cs_bits[73];
     udt_op = (uint8_t)convert_bits_into_output(&ctx->cs_bits[74], 6);
-    UNUSED4(udt_ig, udt_a, udt_option, udt_format1);
+    UNUSED3(udt_a, udt_option, udt_format1);
     UNUSED4(udt_sap, udt_zero, udt_sf, udt_pf);
     UNUSED(udt_op);
     ctx->payload_bits = dmr_udt_payload_bits(state, ctx->slot, udt_padnib);
@@ -1004,9 +1006,21 @@ dmr_udt_handle_mixed_utf16(dmr_udt_ctx* ctx) {
     dmr_udt_emit_utf16_text(ctx, 96 + 32, end);
 }
 
+/* The UDT header's addressing: a report it carries is from its source to its destination, under the header's CRC. */
+static dsd_gps_address
+dmr_udt_address(const dmr_udt_ctx* ctx) {
+    const dsd_gps_address addr = {
+        .source_id = ctx->udt_source,
+        .target_id = ctx->udt_target,
+        .target_group = ctx->udt_group,
+    };
+    return addr;
+}
+
 static void
 dmr_udt_handle_nmea(dmr_udt_ctx* ctx) {
     DSD_FPRINTF(stderr, "NMEA");
+    const dsd_gps_address addr = dmr_udt_address(ctx);
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "NMEA; ");
     if (ctx->cs_bits[96] == 1) {
         DSD_FPRINTF(stderr, " Encrypted Format :(");
@@ -1014,7 +1028,7 @@ dmr_udt_handle_nmea(dmr_udt_ctx* ctx) {
         char previous_gps[sizeof(ctx->state->dmr_embedded_gps[ctx->slot])];
         DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
         ctx->state->dmr_embedded_gps[ctx->slot][0] = '\0';
-        nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, ctx->udt_source, 1);
+        nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, &addr, 1);
         if (ctx->state->dmr_embedded_gps[ctx->slot][0] == '\0') {
             DSD_SNPRINTF(ctx->state->dmr_embedded_gps[ctx->slot], sizeof(ctx->state->dmr_embedded_gps[ctx->slot]), "%s",
                          previous_gps);
@@ -1023,7 +1037,7 @@ dmr_udt_handle_nmea(dmr_udt_ctx* ctx) {
         char previous_gps[sizeof(ctx->state->dmr_embedded_gps[ctx->slot])];
         DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
         ctx->state->dmr_embedded_gps[ctx->slot][0] = '\0';
-        nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, ctx->udt_source, 2);
+        nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, &addr, 2);
         if (ctx->state->dmr_embedded_gps[ctx->slot][0] == '\0') {
             DSD_SNPRINTF(ctx->state->dmr_embedded_gps[ctx->slot], sizeof(ctx->state->dmr_embedded_gps[ctx->slot]), "%s",
                          previous_gps);
@@ -1043,7 +1057,8 @@ dmr_udt_handle_lip(dmr_udt_ctx* ctx) {
     char previous_gps[sizeof(ctx->state->dmr_embedded_gps[ctx->slot])];
     DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
     ctx->state->dmr_embedded_gps[ctx->slot][0] = '\0';
-    lip_pdu_decoder(ctx->opts, ctx->state, ctx->cs_bits + 96, (size_t)ctx->payload_bits, ctx->udt_source);
+    const dsd_gps_address addr = dmr_udt_address(ctx);
+    lip_pdu_decoder(ctx->opts, ctx->state, ctx->cs_bits + 96, (size_t)ctx->payload_bits, &addr);
     if (ctx->state->dmr_embedded_gps[ctx->slot][0] == '\0') {
         DSD_SNPRINTF(ctx->state->dmr_embedded_gps[ctx->slot], sizeof(ctx->state->dmr_embedded_gps[ctx->slot]), "%s",
                      previous_gps);

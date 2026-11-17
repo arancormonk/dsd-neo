@@ -834,6 +834,15 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
     return 0;
 }
 
+// Whether the destination @p dest a DMR data packet names is a talkgroup: it is the slot's checked data header target
+// and that header's G/I bit said group (dsd_state::dmr_data_checked_group). Only a DMR header qualifies one.
+static uint8_t
+dmr_pdu_header_target_is_group(const dsd_state* state, uint8_t slot, uint32_t dest) {
+    return (uint8_t)(DSD_SYNC_IS_DMR(state->lastsynctype) && dest != 0U
+                     && (uint64_t)state->dmr_lrrp_target[slot & 1U] == (uint64_t)dest
+                     && state->dmr_data_checked_group[slot & 1U] != 0U);
+}
+
 // `ip_hdr` is the IPv4 header on the IPv4 path and NULL on the compressed one, which carries no
 // addresses; the two P25 services that print them name the radios instead.
 static int DSD_ATTR_USED
@@ -858,7 +867,13 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
             }
             DSD_MEMSET(bits, 0, sizeof(bits));
             dsd_unpack_bytes_to_bits(payload, payload_len, bits, sizeof(bits), decode_len);
-            lip_pdu_decoder(opts, state, bits, (size_t)decode_len * 8U, src24);
+            // The checked packet names the source and the destination, a talkgroup as LRRP qualifies one.
+            const dsd_gps_address addr = {
+                .source_id = src24,
+                .target_id = dst24,
+                .target_group = dmr_pdu_header_target_is_group(state, slot, dst24),
+            };
+            lip_pdu_decoder(opts, state, bits, (size_t)decode_len * 8U, &addr);
             return 1;
         }
         case 9361:
@@ -1637,10 +1652,7 @@ dmr_lrrp_fill_fix(const dsd_state* state, const dmr_lrrp_parse_result* best, con
     }
     fix->source_id = ctx->source;
     fix->target_id = ctx->dest;
-    // The data header's group flag names the header's target; a DMR packet addressed to it is a group report.
-    if (DSD_SYNC_IS_DMR(state->lastsynctype) && ctx->dest != 0U
-        && (uint64_t)state->dmr_lrrp_target[ctx->slot] == (uint64_t)ctx->dest
-        && state->dmr_data_checked_group[ctx->slot] != 0U) {
+    if (dmr_pdu_header_target_is_group(state, ctx->slot, ctx->dest)) {
         fix->flags |= (uint16_t)DSD_POS_FLAG_TARGET_GROUP;
     }
 }

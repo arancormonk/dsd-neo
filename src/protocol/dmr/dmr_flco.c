@@ -911,7 +911,8 @@ dmr_flco_forget_replaced_crypto_continuity(dsd_state* state, uint8_t slot) {
 }
 
 /* A full LC whose own check passed (not a RAS acceptance) named the slot's ACTIVE call's source: the embedded GPS LC
-   that follows in this transmission is that radio's (spec 2.2). Any other LC leaves the record alone, so it names a
+   that follows in this transmission is that radio's (spec 2.2), sent to the target the same LC named while the call
+   still has it. Any other LC leaves the record alone, so it names a
    source only while the call stays the transmission and source it recorded (a fade the call layer heals keeps it). */
 static void
 dmr_flco_note_checked_source(const dmr_flco_ctx* ctx, uint8_t slot) {
@@ -922,6 +923,10 @@ dmr_flco_note_checked_source(const dmr_flco_ctx* ctx, uint8_t slot) {
     }
     ctx->state->dmr_lc_checked_transmission[slot] = dsd_call_snapshot_transmission(&call);
     ctx->state->dmr_lc_checked_source[slot] = ctx->source;
+    const int names_target = ctx->target != 0U && call.ota_target_id == (uint64_t)ctx->target;
+    ctx->state->dmr_lc_checked_target[slot] = names_target ? ctx->target : 0U;
+    ctx->state->dmr_lc_checked_group[slot] =
+        (uint8_t)(names_target && dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE);
 }
 
 static void

@@ -235,7 +235,7 @@ test_packed_nmea_formats(const dsd_opts* opts, dsd_state* st) {
         DSD_MEMSET(st->event_history_s[0].Event_History_Items[0].gps_s, 0,
                    sizeof st->event_history_s[0].Event_History_Items[0].gps_s);
         const uint64_t revision = st->event_history_s[0].revision;
-        nmea_iec_61162_1(opts, st, bits, 900001U, 2);
+        nmea_iec_61162_1(opts, st, bits, &(const dsd_gps_address){.source_id = 900001U}, 2);
 
         rc |= expect_has_substr(st->dmr_embedded_gps[0], "41.500000", "nmea-iec-lat");
         rc |= expect_has_substr(st->dmr_embedded_gps[0], "87.250000", "nmea-iec-lon");
@@ -388,7 +388,7 @@ test_lip_ownership(const dsd_opts* opts, dsd_state* st) {
     seed_active_call(st, 1, 123456);
     dsd_event_stage_clear(st, 1U);
     st->event_history_s[1].Event_History_Items[0].gps_s[0] = '\0';
-    lip_pdu_decoder(opts, st, bits, sizeof bits, 123456);
+    lip_pdu_decoder(opts, st, bits, sizeof bits, &(const dsd_gps_address){.source_id = 123456});
     // One history writer: the carrier's notice (staged here), not the speaker's call row.
     int rc = expect_i("T3 matching LIP owner staged", dsd_event_staged_position(st, 1U)->source_id == 123456U, 1);
     rc |= expect_has_substr(dsd_event_staged_gps(st, 1U), "LIP:", "T3 matching LIP owner text");
@@ -398,7 +398,7 @@ test_lip_ownership(const dsd_opts* opts, dsd_state* st) {
     DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
                  sizeof st->event_history_s[1].Event_History_Items[0].gps_s, "%s", "existing call GPS");
     st->event_crc_invalid[1] = 1;
-    lip_pdu_decoder(opts, st, bits, sizeof bits, 123456);
+    lip_pdu_decoder(opts, st, bits, sizeof bits, &(const dsd_gps_address){.source_id = 123456});
     rc |= expect_i("T3 foreign LIP owner",
                    strcmp(st->event_history_s[1].Event_History_Items[0].gps_s, "existing call GPS"), 0);
     rc |= expect_i("T3 CRC-failed LIP stages nothing", dsd_event_staged_position(st, 1U)->rev == 0U, 1);
@@ -406,7 +406,7 @@ test_lip_ownership(const dsd_opts* opts, dsd_state* st) {
     seed_active_call(st, 1, 987654);
     DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
                  sizeof st->event_history_s[1].Event_History_Items[0].gps_s, "%s", "existing call GPS");
-    lip_pdu_decoder(opts, st, bits, sizeof bits, 0);
+    lip_pdu_decoder(opts, st, bits, sizeof bits, &(const dsd_gps_address){.source_id = 0});
     rc |= expect_i("T3 unknown LIP owner",
                    strcmp(st->event_history_s[1].Event_History_Items[0].gps_s, "existing call GPS"), 0);
     return rc;

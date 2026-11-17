@@ -106,6 +106,8 @@ static void
 call_state_forget_epoch_records(dsd_state* state) {
     DSD_MEMSET(state->dmr_lc_checked_transmission, 0, sizeof(state->dmr_lc_checked_transmission));
     DSD_MEMSET(state->dmr_lc_checked_source, 0, sizeof(state->dmr_lc_checked_source));
+    DSD_MEMSET(state->dmr_lc_checked_target, 0, sizeof(state->dmr_lc_checked_target));
+    DSD_MEMSET(state->dmr_lc_checked_group, 0, sizeof(state->dmr_lc_checked_group));
     DSD_MEMSET(&state->p25_p1_lc_checked_id, 0, sizeof(state->p25_p1_lc_checked_id));
     DSD_MEMSET(&state->p25_p1_harris_part_a, 0, sizeof(state->p25_p1_harris_part_a));
     if (state->dstar_dprs.epoch != 0U) {

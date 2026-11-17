@@ -105,10 +105,10 @@ udch(const uint8_t* elements, int crc_ok) {
 }
 
 static void
-header_elements(uint8_t* e, uint16_t src, uint16_t dst, uint8_t blocks, uint8_t pad) {
+header_elements(uint8_t* e, uint16_t src, uint16_t dst, uint8_t call_type, uint8_t blocks, uint8_t pad) {
     DSD_MEMSET(e, 0, F2_ELEMENTS);
     put_bits(e, 2, 0x09U, 6);
-    put_bits(e, 16, 1U, 3);
+    put_bits(e, 16, call_type, 3);
     put_bits(e, 24, src, 16);
     put_bits(e, 40, dst, 16);
     put_bits(e, 68, blocks, 4);
@@ -120,12 +120,18 @@ blocks_for(size_t total) {
     return (uint8_t)(((total + BLOCK_BYTES - 1U) / BLOCK_BYTES) - 1U);
 }
 
+/* A data call header from @p src to @p dst of call type @p call_type (1 group, 4 private). */
 static void
-send_header(uint16_t src, size_t total, int crc_ok) {
+send_header_to(uint16_t src, uint16_t dst, uint8_t call_type, size_t total, int crc_ok) {
     uint8_t e[F2_ELEMENTS];
     const uint8_t blocks = blocks_for(total);
-    header_elements(e, src, 900U, blocks, (uint8_t)(((size_t)blocks + 1U) * BLOCK_BYTES - total));
+    header_elements(e, src, dst, call_type, blocks, (uint8_t)(((size_t)blocks + 1U) * BLOCK_BYTES - total));
     udch(e, crc_ok);
+}
+
+static void
+send_header(uint16_t src, size_t total, int crc_ok) {
+    send_header_to(src, 900U, 1U, total, crc_ok);
 }
 
 /* The data blocks of @p payload (its CRC32 already in place), highest block number first. */
@@ -577,6 +583,46 @@ test_nmea_data_call(void) {
     CHECK(strlen(g_history[0].Event_History_Items[1].text_message) == n - 2U);
 }
 
+/* The checked data call header names the report's destination and, by its call type, whether that is a group: the same
+ * fix from one source to two destinations within the repeat window is two records (GPS and ASCII NMEA alike). */
+static void
+test_destination_from_header(void) {
+    static const char body[] = "GPRMC,120000,A,1000.0000,N,02000.0000,E,,,150626,,,A";
+    char text[96];
+    uint8_t sum = 0U;
+    for (const char* p = body; *p != '\0'; p++) {
+        sum ^= (uint8_t)*p;
+    }
+    DSD_SNPRINTF(text, sizeof text, "$%s*%02X\r\n", body, sum);
+    for (int nmea = 0; nmea < 2; nmea++) {
+        reset_fixture();
+        uint8_t payload[MAX_PAYLOAD];
+        size_t total = 0U;
+        if (nmea) {
+            DSD_MEMSET(payload, 0, sizeof payload);
+            payload[0] = 0x06U;
+            const size_t n = strlen(text);
+            DSD_MEMCPY(payload + 1, text, n);
+            total = 1U + n + 4U;
+            seal(payload, total);
+        } else {
+            const gps_in g = gps_default();
+            total = gps_payload(payload, &g, GPS_MSG_BYTES);
+        }
+        send_header_to(300U, 900U, 1U, total, 1);
+        send_blocks(payload, total);
+        advance_ms(1000U);
+        send_header_to(300U, 901U, 4U, total, 1);
+        send_blocks(payload, total);
+        dsd_position_fix recs[4];
+        CHECK(feed(recs, 4) == 2);
+        CHECK(recs[0].source_id == 300U && recs[0].target_id == 900U
+              && (recs[0].flags & DSD_POS_FLAG_TARGET_GROUP) != 0U);
+        CHECK(recs[1].source_id == 300U && recs[1].target_id == 901U
+              && (recs[1].flags & DSD_POS_FLAG_TARGET_GROUP) == 0U);
+    }
+}
+
 int
 main(void) {
     int fd = dsd_test_mkstemp(g_lpath, sizeof g_lpath, "nxdn_gps_dispatch");
@@ -597,6 +643,7 @@ main(void) {
     test_binding_reception_and_expiry();
     test_binding_ran_from_every_channel();
     test_nmea_data_call();
+    test_destination_from_header();
 
     dsd_state_ext_free_all(&g_state);
     (void)remove(g_lpath);

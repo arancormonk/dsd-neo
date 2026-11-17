@@ -771,6 +771,13 @@ nxdn_data_header_report_scan_activity(const dsd_opts* opts, const dsd_state* sta
                                                    (cipher != 0U) ? 1 : 0, 1);
 }
 
+/* A data call header's destination is a group for a broadcast (0) or group (1) call type (as nxdn_vcall_kind()); a
+ * position report the call carries is qualified by it (dsd_state::dmr_data_checked_group). */
+static uint8_t
+nxdn_data_call_type_is_group(uint8_t call_type) {
+    return (uint8_t)(call_type == 0U || call_type == 1U);
+}
+
 static void
 nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     if (state == NULL || Message == NULL) {
@@ -859,7 +866,7 @@ nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Messag
     // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
     // --dmr-tg-key-csv lookup treat this address as one.
     state->dmr_data_target_is_group[0] = 0;
-    state->dmr_data_checked_group[0] = 0;
+    state->dmr_data_checked_group[0] = nxdn_data_call_type_is_group(call_type);
     nxdn_data_call_bind_header(opts, state);
 
     nxdn_data_header_report_scan_activity(opts, state, call_type, source, target, cipher);
@@ -1001,7 +1008,7 @@ nxdn_dcall_header_apply(const dsd_opts* opts, dsd_state* state, const struct nxd
     state->dmr_lrrp_target[0] = info->target;
     // Not a DMR talkgroup -- see the sibling header handler above.
     state->dmr_data_target_is_group[0] = 0;
-    state->dmr_data_checked_group[0] = 0;
+    state->dmr_data_checked_group[0] = nxdn_data_call_type_is_group(info->call_type);
     nxdn_data_call_bind_header(opts, state);
 }
 

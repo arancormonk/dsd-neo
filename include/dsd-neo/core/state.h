@@ -2176,23 +2176,29 @@ struct dsd_state {
        on, captured with that first fragment (dsd_position_origin_capture()). A position report the assembly carries
        (LIP, binary UDT NMEA) is admitted against it, so a retune or target switch before the last block refuses it. */
     dsd_position_origin dmr_data_origin[2];
-    /* Per slot: the group/individual bit of the standard data header that began the assembly, as its check left it
-       (issue #800). Position producers (LRRP, LOCN) qualify the header's target by it. dmr_data_target_is_group is
-       not it: a Motorola proprietary header (MNIS) clears that one for the decryption-key lookup. Cleared with the
-       header's source and target. */
+    /* Per slot: whether the target of the data header that began the assembly is a talkgroup, as its check left it
+       (issue #800): the DMR standard data header's G/I bit, an NXDN data call header's call type (broadcast or
+       group); 0 for a P25 data packet (its LLID names a radio). Position producers (LRRP, LOCN, LIP over UDP, ASCII
+       NMEA, NXDN GPS) qualify the header's target by it. dmr_data_target_is_group is not it: a Motorola proprietary
+       header (MNIS) clears that one for the decryption-key lookup, and NXDN and P25 headers keep it 0. Cleared with
+       the header's source and target. */
     uint8_t dmr_data_checked_group[2];
     /* The reception the current P25 Phase 1 multi-block packet (processMPDU()) began on, captured when its header
        block was read. A position report the packet carries (LRRP, SAP 48 NMEA) is admitted against it, so a retune or
        received-identity change before the last block refuses it. */
     dsd_position_origin p25_mdpu_origin;
     /* Per slot: the call transmission (dsd_call_snapshot_transmission()) whose source a checked full LC named (a voice
-       LC header or a late-entry embedded LC whose own check passed, not a RAS acceptance; dmr_flco), and that source.
-       The embedded GPS LC is attributed to the slot's ACTIVE call only while it is still this transmission and source.
+       LC header or a late-entry embedded LC whose own check passed, not a RAS acceptance; dmr_flco), that source, and
+       the target the same LC named for the call (0 when the call's target was not it) with whether it is a talkgroup.
+       The embedded GPS LC is attributed to the slot's ACTIVE call only while it is still this transmission and source,
+       and names the target only while the call still has it.
        Cleared when the call state starts over (a new call-state extension restarts its epochs) and at every carrier
        change (dsd_state_note_carrier_change(): a carrier boundary, a trunk-scan target switch, a scan step, a user's
        move). */
     uint64_t dmr_lc_checked_transmission[2];
     uint32_t dmr_lc_checked_source[2];
+    uint32_t dmr_lc_checked_target[2];
+    uint8_t dmr_lc_checked_group[2];
 
     //Generic Talker Alias String
     char generic_talker_alias[2][500];
@@ -3472,6 +3478,8 @@ dsd_state_note_carrier_change(dsd_state* state) {
     for (int slot = 0; slot < 2; slot++) {
         state->dmr_lc_checked_transmission[slot] = 0U;
         state->dmr_lc_checked_source[slot] = 0U;
+        state->dmr_lc_checked_target[slot] = 0U;
+        state->dmr_lc_checked_group[slot] = 0U;
     }
 }
 

@@ -356,7 +356,8 @@ p25_lcw_offer_preemption(p25_lcw_ctx* ctx, const uint16_t* channels, const uint1
         }
         events[n] = p25_sm_ev_group_grant_update(channels[i], 0, groups[i], 0, svcs[i]);
         events[n].preempt_only = 1;
-        events[n].identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the RS-decoded link control's own fields
+        // The link control's own fields, checked only when it passed a hard RS decode (spec 2.20).
+        events[n].identity_checked = ctx->lc_hard ? P25_SM_IDENTITY_CHECKED_ALL : 0U;
         if (!p25_sm_grant_candidate_rank(ctx->opts, ctx->state, &events[n], &ranks[n])) {
             DSD_MEMSET(&ranks[n], 0, sizeof(ranks[n]));
         }

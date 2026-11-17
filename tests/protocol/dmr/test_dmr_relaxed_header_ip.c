@@ -9,6 +9,7 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -60,6 +61,11 @@ static unsigned int g_lip_calls;
 static unsigned int g_nmea_calls;
 static uint32_t g_nmea_last_src;
 static int g_nmea_last_type;
+/* The addressing the last report decoder was handed (issue #800: the UDT header's source, destination, I/G bit). */
+static dsd_gps_address g_nmea_last_addr;
+static dsd_gps_address g_lip_last_addr;
+/* The I/G bit build_udt_header() writes (1: the destination is a talkgroup). */
+static uint8_t g_udt_header_ig;
 static unsigned int g_utf8_calls;
 static uint16_t g_utf8_last_len;
 static uint8_t g_utf8_first_byte;
@@ -143,12 +149,15 @@ dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t sl
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count,
+                const dsd_gps_address* src) {
     (void)bit_count;
-    (void)src;
     (void)opts;
     (void)bits;
     g_lip_calls++;
+    if (src != NULL) {
+        g_lip_last_addr = *src;
+    }
     DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot], sizeof(state->dmr_embedded_gps[state->currentslot]), "%s",
                  "LIP: 41.500000, -87.250000");
     // An admitted report is staged for the UDT's own notice.
@@ -157,11 +166,14 @@ lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, siz
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int type) {
+nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, const dsd_gps_address* addr, int type) {
     (void)opts;
     (void)input;
     g_nmea_calls++;
-    g_nmea_last_src = src;
+    g_nmea_last_src = addr ? addr->source_id : 0U;
+    if (addr != NULL) {
+        g_nmea_last_addr = *addr;
+    }
     g_nmea_last_type = type;
     DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot], sizeof(state->dmr_embedded_gps[state->currentslot]), "%s",
                  "GPS: (41.500000, -87.250000)");
@@ -367,8 +379,9 @@ static void
 build_udt_header(uint8_t dheader[12], uint8_t bits[196], uint8_t udt_format, uint32_t target, uint32_t source) {
     DSD_MEMSET(dheader, 0, 12);
     DSD_MEMSET(bits, 0, 196);
-    set_bits(bits, 4, 0U, 4); // DPF=0 UDT
-    set_bits(bits, 8, 0U, 4); // SAP=0 UDT
+    set_bits(bits, 0, g_udt_header_ig, 1); // I/G
+    set_bits(bits, 4, 0U, 4);              // DPF=0 UDT
+    set_bits(bits, 8, 0U, 4);              // SAP=0 UDT
     set_bits(bits, 12, udt_format, 4);
     set_bits(bits, 16, target & 0x00FFFFFFU, 24);
     set_bits(bits, 40, source & 0x00FFFFFFU, 24);
@@ -520,6 +533,8 @@ reset_datacall_spy(void) {
     g_nmea_calls = 0;
     g_nmea_last_src = 0;
     g_nmea_last_type = 0;
+    DSD_MEMSET(&g_nmea_last_addr, 0, sizeof(g_nmea_last_addr));
+    DSD_MEMSET(&g_lip_last_addr, 0, sizeof(g_lip_last_addr));
     g_utf8_calls = 0;
     g_utf8_last_len = 0;
     g_utf8_first_byte = 0;
@@ -687,6 +702,26 @@ test_udt_text_and_dispatch_formats(void) {
     assert(g_lip_calls == 1U);
     assert(strstr(g_datacall_last_text, "LIP") != NULL);
     assert(strstr(g_datacall_last_gps, "41.500000") != NULL);
+}
+
+/* A position report a UDT carries is addressed by the UDT header that its CRC covers: source, destination and I/G. */
+static void
+test_udt_reports_carry_header_destination(void) {
+    uint8_t block[12];
+    for (uint8_t ig = 0U; ig < 2U; ig++) {
+        g_udt_header_ig = ig;
+        build_udt_flag_block(block, 0U);
+        run_udt_single_block(0x05U, block, NULL);
+        assert(g_nmea_calls == 1U);
+        assert(g_nmea_last_addr.source_id == 0x000222U && g_nmea_last_addr.target_id == 0x000111U
+               && g_nmea_last_addr.target_group == ig);
+        build_udt_flag_block(block, 0U);
+        run_udt_single_block(0x0BU, block, NULL);
+        assert(g_lip_calls == 1U);
+        assert(g_lip_last_addr.source_id == 0x000222U && g_lip_last_addr.target_id == 0x000111U
+               && g_lip_last_addr.target_group == ig);
+    }
+    g_udt_header_ig = 0U;
 }
 
 static void
@@ -2311,6 +2346,7 @@ main(int argc, char** argv) {
     test_reset_blocks_restores_integer_defaults();
     test_udt_iso7_single_block_dispatches_text_event();
     test_udt_text_and_dispatch_formats();
+    test_udt_reports_carry_header_destination();
     test_udt_binary_addressing_reserved_and_slot1_paths();
     test_crc_valid_type1_pdu_dispatches_in_strict_mode();
     test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps();

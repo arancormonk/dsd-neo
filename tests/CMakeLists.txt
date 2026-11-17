@@ -16209,6 +16209,43 @@ add_test(
     COMMAND dsd-neo_test_core_gps_lrrp_crc_gating
 )
 
+# Issue #800: a position report names the destination its checked carrier named, with its group qualifier
+add_executable(
+    dsd-neo_test_core_gps_destination
+    core/test_core_gps_destination.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    test_support/call_state_stubs.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
+    test_support/data_event_position_stub.c
+)
+target_include_directories(
+    dsd-neo_test_core_gps_destination
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_include_directories(
+    dsd-neo_test_core_gps_destination
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_core_gps_destination
+    PRIVATE
+        dsd-neo_test_receive_support
+        dsd-neo_platform
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME CORE_GPS_DESTINATION COMMAND dsd-neo_test_core_gps_destination)
+
 # DMR embedded talker alias: do not truncate when header length is inconsistent with payload
 add_executable(
     dsd-neo_test_dmr_talker_alias_header_len
@@ -20608,6 +20645,7 @@ add_test(NAME P25_STATUS_SYMBOL COMMAND dsd-neo_test_p25_status_symbol)
 
 set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_core_apx_embedded_alias_utf16
+    dsd-neo_test_core_gps_destination
     dsd-neo_test_core_gps_lrrp_crc_gating
     dsd-neo_test_core_hytera_bp_silence
     dsd-neo_test_core_straight_keystream_validation
@@ -20734,6 +20772,7 @@ set(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS
     # Core, app-control and terminal sources compiled in directly. Some exist only
     # with curses or radio support, hence the TARGET check below.
     dsd-neo_test_app_control_frontend_metrics
+    dsd-neo_test_core_gps_destination
     dsd-neo_test_core_gps_lrrp_crc_gating
     dsd-neo_test_dmr_embedded_gps_position_error
     dsd-neo_test_ui_chooser_navigation

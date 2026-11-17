@@ -110,7 +110,8 @@ void lip_write_location_row(const dsd_opts* opts, const struct dsd_position_fix*
 /**
  * @brief The DMR embedded GPS LC (TS 102 361-2 Table 7.3). The caller (dmr_flco) runs it only for an unprotected LC
  * whose embedded checksum passed. Its source is the slot's ACTIVE call's when a checked full LC of that call named it
- * (dsd_state::dmr_lc_checked_transmission / dmr_lc_checked_source); otherwise the report is unattributed.
+ * (dsd_state::dmr_lc_checked_transmission / dmr_lc_checked_source), and its destination with the group flag when that
+ * LC also named the call's target (dmr_lc_checked_target / dmr_lc_checked_group); otherwise the report is unattributed.
  */
 void dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]);
 /**
@@ -125,19 +126,30 @@ int apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bi
  * and its text left in dsd_state::dmr_embedded_gps; it is never written to the location file (decision D8).
  */
 void lip_protocol_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* input);
+
+/** The addressing the checked carrier of a report gave it (a UDT header, a data packet): its source, its destination
+ *  (0 = none) and whether that destination is a talkgroup. Both IDs are covered by the carrier's own check. */
+typedef struct {
+    uint32_t source_id;
+    uint32_t target_id;
+    uint8_t target_group;
+} dsd_gps_address;
+
 /**
- * @brief A LIP PDU carried by a DMR UDT or a UDP datagram, from @p src. Callers run it inside the carrier's
+ * @brief A LIP PDU carried by a DMR UDT or a UDP datagram, addressed by @p addr (NULL: none). Callers run it inside the carrier's
  * event_crc_invalid scope (the UDT header and continuation CRCs; the data packet's header, CRC32 and CRC9 checks),
  * whose verdict decides whether the report was checked. An admitted short report is staged for the slot's next data
  * notice (dsd_event_stage_position()), its text left in dsd_state::dmr_embedded_gps and written to the location file.
  */
-void lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src);
+void lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count,
+                     const dsd_gps_address* addr);
 /**
  * @brief A binary NMEA report carried by a DMR UDT (TS 102 361-4 Annex B.3.6, Tables B.6/B.7; @p type 1 short, 2 long),
- * from @p src. As lip_pdu_decoder(): inside the UDT's event_crc_invalid scope, an admitted report staged for the slot's
+ * addressed by @p addr (the UDT header's source, destination and I/G bit). As lip_pdu_decoder(): inside the UDT's event_crc_invalid scope, an admitted report staged for the slot's
  * next data notice, its text in dsd_state::dmr_embedded_gps.
  */
-void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32_t src, int type);
+void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, const dsd_gps_address* addr,
+                      int type);
 /**
  * @brief Decode the ASCII NMEA 0183 sentences of a data payload (P25 SAP 48, NXDN data call format 0x06).
  *
@@ -147,8 +159,9 @@ void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
  * @param input The payload, one bit per byte, MSB first; it starts at the first sentence.
  * @param slot The slot whose history the notice goes to.
  * @param len_bytes Octets of payload (no CRC).
- * @param packet_verified 1 when the packet's own check passed: then the position and the packet's source (the slot's
- *        dmr_lrrp_source) may be published; otherwise no position and no sentence text is kept.
+ * @param packet_verified 1 when the packet's own check passed: then the position and the packet's source and
+ *        destination (the slot's dmr_lrrp_source / dmr_lrrp_target, qualified by dmr_data_checked_group) may be
+ *        published; otherwise no position and no sentence text is kept.
  * @param origin The reception the packet's first fragment was heard on (a multi-fragment packet), or NULL.
  * @return 1 when at least one sentence passed its checksum, else 0.
  */
@@ -161,7 +174,8 @@ uint8_t nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint
  *
  * @param input The report after its 0xFFFC marker, one bit per byte.
  * @param input_bits Bits available at @p input; fewer than DSD_NXDN_GPS_REPORT_BITS gives no position.
- * @param src The source of the checked data call header bound to this assembly (0 when none).
+ * @param src The source of the checked data call header bound to this assembly (0 when none); the record's
+ *        destination is that header's (dsd_state::dmr_lrrp_target[0], dmr_data_checked_group[0]).
  * @param origin The reception that header was heard on (the assembly's first fragment), or NULL.
  */
 void nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t input_bits, uint32_t src,

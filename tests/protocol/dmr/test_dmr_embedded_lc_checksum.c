@@ -10,6 +10,7 @@
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -294,6 +295,31 @@ test_failed_lc_holds_no_scan(dsd_opts* opts, dsd_state* state) {
     return failed;
 }
 
+/* The embedded GPS LC names the destination the call's checked voice LC named, with its group flag (issue #800): one
+ * radio's fix sent in a group call and then in a private call is two records. */
+static int
+test_checked_lc_names_destination(dsd_opts* opts, dsd_state* state) {
+    int failed = 0;
+    fixture(opts, state); /* group voice LC: talkgroup 2002, source 1001 */
+    CHECK(dsd_position_feed_start(state) == 0);
+    uint8_t bits[96];
+    build_gps(bits);
+    send_lc(opts, state, bits, 1, 3);
+    build_voice_lc(bits, 3003U, 1001U);
+    set_bits(bits, 2, 6, 0x03U); /* unit to unit voice channel user */
+    send_lc(opts, state, bits, 1, 1);
+    build_gps(bits);
+    send_lc(opts, state, bits, 1, 3);
+    dsd_position_fix recs[4];
+    dsd_position_feed_meta meta;
+    CHECK(dsd_position_feed_copy_since(state, 0U, recs, 4, &meta) == 2);
+    CHECK(recs[0].source_id == 1001U && recs[0].target_id == 2002U
+          && (recs[0].flags & DSD_POS_FLAG_TARGET_GROUP) != 0U);
+    CHECK(recs[1].source_id == 1001U && recs[1].target_id == 3003U
+          && (recs[1].flags & DSD_POS_FLAG_TARGET_GROUP) == 0U);
+    return failed;
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -312,6 +338,7 @@ main(void) {
     failed |= test_checked_utf8_alias_through_flco(opts, state);
     failed |= test_failed_fragment_abandons_assembly(opts, state);
     failed |= test_failed_lc_holds_no_scan(opts, state);
+    failed |= test_checked_lc_names_destination(opts, state);
     dsd_state_ext_free_all(state);
     free(history);
     free(state);
