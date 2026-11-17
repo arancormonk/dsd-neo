@@ -18,10 +18,13 @@
 //TODO: Test UDT NMEA and LIP Decoders with Real World Samples (if/when available)
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -93,12 +96,14 @@ typedef struct {
     uint8_t usbd_st;
     uint8_t dbsn_for_seq;
     int dbsn_valid;
+    dmr_burst_origin origin; // who sent the burst, by its own sync word
 } dmr_data_burst_ctx;
 
 static void
 dmr_dburst_ctx_init(dmr_data_burst_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
-                    const uint8_t* reliab98) {
+                    const uint8_t* reliab98, dmr_burst_origin origin) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->origin = origin;
     ctx->opts = opts;
     ctx->state = state;
     ctx->info = info;
@@ -796,6 +801,39 @@ dmr_dburst_usbd_service_name(uint8_t service) {
     return (service <= 15) ? "Reserved (standard)" : "Manufacturer Specific";
 }
 
+// TS 102 361-4 Table 6.77, the outbound LIP Poll Request: service 0..3, response delay 4..5, PC 6, reserved 7,
+// payload 8..55 and the polled radio (destination LLID) 56..79. It carries no position.
+static void
+dmr_dburst_usbd_lip_request(const dmr_data_burst_ctx* ctx) {
+    const unsigned delay = (unsigned)convert_bits_into_output(&ctx->dmr_pdu_bits[4], 2);
+    const unsigned pc = ctx->dmr_pdu_bits[6] & 1U;
+    const uint32_t target = (uint32_t)convert_bits_into_output(&ctx->dmr_pdu_bits[56], 24);
+    DSD_FPRINTF(stderr, "\n LIP Poll Request; TGT: %u; Response Delay: %u; PC: %u;", target, delay, pc);
+}
+
+// TS 102 361-4 Table 6.79, the inbound LIP Poll Response: a position whose source is an 8-bit hash (spec 2.7, 2.14).
+// An admitted one is its own data notice, anonymous with the hash shown as a hash; the slot's call is left alone.
+static void
+dmr_dburst_usbd_lip_response(dmr_data_burst_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    const uint8_t slot = (uint8_t)(state->currentslot & 1);
+    char previous_gps[sizeof state->dmr_embedded_gps[0]];
+    DSD_SNPRINTF(previous_gps, sizeof previous_gps, "%s", state->dmr_embedded_gps[slot]);
+    state->dmr_embedded_gps[slot][0] = '\0';
+    DSD_FPRINTF(stderr, "\n ");
+    lip_protocol_decoder(ctx->opts, state, ctx->dmr_pdu_bits);
+    if (state->dmr_embedded_gps[slot][0] == '\0') {
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "%s", previous_gps);
+        return;
+    }
+    char notice[64];
+    DSD_SNPRINTF(notice, sizeof notice, "USBD LIP Poll Response; SRC(Hash): %03u;",
+                 (unsigned)convert_bits_into_output(&ctx->dmr_pdu_bits[72], 8));
+    const dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_DMR_MS_DATA, slot, 0U, 0U);
+    // Consumes the report lip_protocol_decoder() just staged.
+    (void)dsd_event_emit_data_notice(ctx->opts, state, slot, &observation, notice);
+}
+
 static void
 dmr_dburst_handle_usbd(dmr_data_burst_ctx* ctx) {
     int b;
@@ -829,8 +867,17 @@ dmr_dburst_handle_usbd(dmr_data_burst_ctx* ctx) {
     // Strict CRC publishes no failed DMR data, the same gate dmr_block.c applies; -F decodes it marked.
     const int crc_rejected =
         ctx->crc_correct == 0 && ctx->opts->aggressive_framesync != 0 && !ctx->opts->dmr_crc_relaxed_default;
-    if (ctx->usbd_st == 0 && !crc_rejected) {
-        lip_protocol_decoder(ctx->opts, ctx->state, ctx->dmr_pdu_bits);
+    if (ctx->usbd_st != 0 || crc_rejected) {
+        return;
+    }
+    // TS 102 361-4 §6.6.11.0: a Poll Request is outbound only and a Poll Response inbound only, and the two share
+    // service type 0 (Tables 6.77 / 6.79). Only the repeater-mode syncs say which way a burst went (spec 2.13).
+    switch (ctx->origin) {
+        case DMR_BURST_ORIGIN_MS: dmr_dburst_usbd_lip_response(ctx); break;
+        case DMR_BURST_ORIGIN_BS: dmr_dburst_usbd_lip_request(ctx); break;
+        default:
+            DSD_FPRINTF(stderr, "\n LIP: undirected USBD (no repeater-mode sync); not decoded as a position;");
+            break;
     }
 }
 
@@ -963,8 +1010,14 @@ dmr_dburst_announce_ras(const dmr_data_burst_ctx* ctx) {
 void
 dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
                        const uint8_t* reliab98) {
+    dmr_data_burst_handler_origin(opts, state, info, databurst, reliab98, DMR_BURST_ORIGIN_UNKNOWN);
+}
+
+void
+dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                              const uint8_t* reliab98, dmr_burst_origin origin) {
     dmr_data_burst_ctx ctx;
-    dmr_dburst_ctx_init(&ctx, opts, state, info, databurst, reliab98);
+    dmr_dburst_ctx_init(&ctx, opts, state, info, databurst, reliab98, origin);
 
     dmr_dburst_apply_profile(&ctx);
 

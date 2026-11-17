@@ -34,6 +34,24 @@ void dmr_data_sync(dsd_opts* opts, dsd_state* state);
 void dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
                             const uint8_t* reliab98);
 
+/**
+ * Who sent a DMR data burst, as its own sync word says (TS 102 361-1 Table 9.2), read by the data path at the
+ * received polarity's correction. The direction of a service that has one (a USBD LIP Poll Request is outbound only,
+ * a Poll Response inbound only: TS 102 361-4 §6.6.11.0) is taken only from the repeater-mode BS and MS syncs.
+ */
+typedef enum {
+    DMR_BURST_ORIGIN_UNKNOWN = 0,    /**< no sync names the sender (an embedded LC, a burst handed in without one) */
+    DMR_BURST_ORIGIN_BS = 1,         /**< BS-sourced data sync: outbound, from a repeater or TSCC */
+    DMR_BURST_ORIGIN_MS = 2,         /**< MS-sourced data sync: inbound, from a radio to its repeater or TSCC */
+    DMR_BURST_ORIGIN_DIRECT_TS1 = 3, /**< direct mode time slot 1 data sync: no direction */
+    DMR_BURST_ORIGIN_DIRECT_TS2 = 4, /**< direct mode time slot 2 data sync: no direction */
+} dmr_burst_origin;
+
+/** dmr_data_burst_handler() for a burst whose sync word the data path read: @p origin says who sent it.
+ * dmr_data_burst_handler() is this with DMR_BURST_ORIGIN_UNKNOWN. */
+void dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                                   const uint8_t* reliab98, dmr_burst_origin origin);
+
 void dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors);
 
 /* Per-slot encryption-classification hysteresis for the DMR service-option privacy bit.

@@ -10777,7 +10777,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_engine_manual_tune_supersede"
             "LINKER:--wrap=dsd_engine_legacy_tune_caches_forget"
             "LINKER:--wrap=dsd_engine_signal_search_active"
-            "LINKER:--wrap=dmr_data_burst_handler"
+            "LINKER:--wrap=dmr_data_burst_handler_origin"
             "LINKER:--wrap=dsd_audio_write"
             "LINKER:--wrap=dsd_audio_output_health_get"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
@@ -14972,6 +14972,35 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
 )
 add_test(NAME DMR_USBD_LIP_LRRP_CRC COMMAND dsd-neo_test_dmr_usbd_lip_lrrp_crc)
+
+# DMR USBD LIP (#800 spec 2.13): a Poll Response only from an inbound (MS-sourced) sync, at either polarity, through the
+# real single-slot data path; the symbol reader is replaced by linker wraps.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        protocol/dmr/test_dmr_usbd_inbound_sync.c
+        test_support/dmr_bptc_test_encoder.c
+    )
+    target_include_directories(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        # The voice path the single-slot reader links reaches the NXDN scrambler (LFSRN) through core's vocoder.
+        PRIVATE dsd-neo_proto_dmr dsd-neo_proto_nxdn dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        PRIVATE
+            "LINKER:--wrap=getDibitSoft"
+            "LINKER:--wrap=get_dibit_and_analog_signal"
+    )
+    add_test(
+        NAME DMR_USBD_INBOUND_SYNC
+        COMMAND dsd-neo_test_dmr_usbd_inbound_sync
+    )
+endif()
 add_executable(
     dsd-neo_test_dmr_flco_mono_crc_scope
     protocol/dmr/test_dmr_flco_mono_crc_scope.c
@@ -15931,6 +15960,8 @@ add_test(
 )
 
 # DMR embedded GPS: position error mapping (ETSI 7.2.15) matches SDRTrunk
+# dsd_gps.c admits every position report (position_feed.c), whose label freeze reads the source-alias and
+# talkgroup-policy lookups; their own dependencies follow.
 add_executable(
     dsd-neo_test_dmr_embedded_gps_position_error
     protocol/dmr/test_dmr_embedded_gps_position_error.c
@@ -15969,6 +16000,8 @@ add_test(
 )
 
 # Core GPS: CRC-failed location rows are suppressed while decoded state is retained (#550)
+# dsd_gps.c admits every position report (position_feed.c), whose label freeze reads the source-alias and
+# talkgroup-policy lookups; their own dependencies follow.
 add_executable(
     dsd-neo_test_core_gps_lrrp_crc_gating
     core/test_core_gps_lrrp_crc_gating.c

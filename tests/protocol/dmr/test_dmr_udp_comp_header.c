@@ -76,6 +76,8 @@ lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, siz
     uint8_t slot = (state->currentslot == 1) ? 1U : 0U;
     DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s",
                  "LIP: 41.500000, -87.250000");
+    // An admitted report is staged for the datagram's own notice.
+    dsd_event_stage_gps(state, slot, state->dmr_embedded_gps[slot]);
 }
 
 void
@@ -99,6 +101,12 @@ dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t 
     (void)slot;
     g_datacall_category = category;
     DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", notice ? notice : "");
+    // The consuming notice takes the staged GPS (an admitted LIP report is staged by its decoder) and consumes it;
+    // the staged text stays readable for the cases that check it.
+    if (dsd_event_staged_gps(state, slot)[0] != '\0') {
+        DSD_SNPRINTF(g_datacall_gps, sizeof(g_datacall_gps), "%s", dsd_event_staged_gps(state, slot));
+        dsd_event_stage_gps(state, slot, "");
+    }
     return 0;
 }
 

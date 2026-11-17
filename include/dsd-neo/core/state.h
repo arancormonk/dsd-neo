@@ -2111,6 +2111,18 @@ struct dsd_state {
     char dmr_embedded_gps[2][600];    //2 slots by 99 char string for string embedded gps
     char dmr_lrrp_gps[2][600];        //2 slots by 99 char string for string lrrp gps
     char dmr_site_parms[200];         //string for site/net info depending on type of DMR system (TIII or Con+)
+    /* Per slot: the reception the last checked or accepted DMR data or UDT header (dmr_dheader()) began its assembly
+       on, captured with that first fragment (dsd_position_origin_capture()). A position report the assembly carries
+       (LIP, binary UDT NMEA) is admitted against it, so a retune or target switch before the last block refuses it. */
+    dsd_position_origin dmr_data_origin[2];
+    /* Per slot: the call transmission (dsd_call_snapshot_transmission()) whose source a checked full LC named (a voice
+       LC header or a late-entry embedded LC whose own check passed, not a RAS acceptance; dmr_flco), and that source.
+       The embedded GPS LC is attributed to the slot's ACTIVE call only while it is still this transmission and source.
+       Cleared when the call state starts over (a new call-state extension restarts its epochs) and at every carrier
+       change (dsd_state_note_carrier_change(): a carrier boundary, a trunk-scan target switch, a scan step, a user's
+       move). */
+    uint64_t dmr_lc_checked_transmission[2];
+    uint32_t dmr_lc_checked_source[2];
 
     //Generic Talker Alias String
     char generic_talker_alias[2][500];
@@ -3369,6 +3381,12 @@ dsd_state_note_carrier_change(dsd_state* state) {
     state->carrier_change_symbol_clock = state->symbol_clock + (state->symbol_read_active != 0U ? 1U : 0U);
     state->carrier_change_seen = 1U;
     dsd_state_forget_sync_join_histories(state);
+    /* The DMR checked-LC source names a radio of the carrier left (another system after a target switch or a move):
+       no embedded GPS fix of the next reception is attributed by it (issue #800). */
+    for (int slot = 0; slot < 2; slot++) {
+        state->dmr_lc_checked_transmission[slot] = 0U;
+        state->dmr_lc_checked_source[slot] = 0U;
+    }
 }
 
 /* Whether a frame whose sync ends on the latest symbol and that reads up to @p lookback symbols back (its sync word

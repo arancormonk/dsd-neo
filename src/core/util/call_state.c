@@ -96,8 +96,11 @@ call_state_ext_allocate(void) {
     return ext;
 }
 
-dsd_call_state_ext*
-dsd_call_state_ext_get(dsd_state* state, int create) {
+/* The extension, created when @p create and missing. A created one restarts the epoch sequence unless @p restore (the
+ * caller copies another state's calls and epoch sequence into it): then a record keyed to the old transmissions (the
+ * DMR checked-LC source for embedded GPS) must not match a call of the new sequence, so it is cleared. */
+static dsd_call_state_ext*
+call_state_ext_obtain(dsd_state* state, int create, int restore) {
     if (!state) {
         return NULL;
     }
@@ -115,9 +118,18 @@ dsd_call_state_ext_get(dsd_state* state, int create) {
             call_state_ext_cleanup(ext);
             ext = NULL;
         }
+        if (ext && !restore) {
+            DSD_MEMSET(state->dmr_lc_checked_transmission, 0, sizeof(state->dmr_lc_checked_transmission));
+            DSD_MEMSET(state->dmr_lc_checked_source, 0, sizeof(state->dmr_lc_checked_source));
+        }
     }
     (void)dsd_mutex_unlock(&g_call_state_alloc_mutex);
     return ext;
+}
+
+dsd_call_state_ext*
+dsd_call_state_ext_get(dsd_state* state, int create) {
+    return call_state_ext_obtain(state, create, 0);
 }
 
 const dsd_call_state_ext*
@@ -1140,7 +1152,7 @@ dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot*
     if (!state || !snapshot) {
         return -1;
     }
-    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
+    dsd_call_state_ext* ext = call_state_ext_obtain(state, 1, 1); // a restore: the snapshot carries its epoch sequence
     if (!ext) {
         return 0;
     }
@@ -1224,7 +1236,7 @@ dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snaps
     if (!state || !snapshot) {
         return -1;
     }
-    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
+    dsd_call_state_ext* ext = call_state_ext_obtain(state, 1, 1); // a restore: the snapshot carries its epoch sequence
     if (!ext) {
         return 0;
     }
@@ -1493,7 +1505,8 @@ dsd_call_state_copy_to_state(dsd_state* dst, const dsd_state* src) {
     DSD_MEMCPY(epoch_sequence, src_ext->epoch_sequence, sizeof(epoch_sequence));
     dsd_call_state_ext_unlock(src_ext);
 
-    dsd_call_state_ext* dst_ext = dsd_call_state_ext_get(dst, 1);
+    // The copy carries the source's epoch sequence: no restart, so the destination's records keyed to it stand.
+    dsd_call_state_ext* dst_ext = call_state_ext_obtain(dst, 1, 1);
     if (!dst_ext) {
         (void)dsd_state_ext_set(dst, DSD_STATE_EXT_CORE_CALL_STATE, NULL, NULL);
         return -1;

@@ -4,6 +4,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -112,6 +113,13 @@ short_report(uint8_t bytes[12]) {
     }
 }
 
+// The notice row a carrier committed carries the admitted report: its text and its position (the report's own source).
+static int
+notice_has_position(const Event_History* notice, uint32_t source) {
+    return strstr(notice->gps_s, "LIP:") != NULL && notice->pos.valid == 1U && notice->pos.kind == DSD_POS_LIP
+           && notice->pos.lat_e7 == -225000000 && notice->pos.lon_e7 == -450000000 && notice->source_id == source;
+}
+
 static void
 send_udt(dsd_opts* opts, dsd_state* state, int corrupt) {
     uint8_t hdr[12] = {0, 0x0B, 0, 0, 42, 0x01, 0xE2, 0x40, 0x08, 0, 0, 0};
@@ -134,11 +142,23 @@ test_udt(dsd_opts* opts, dsd_state* state, const char* path) {
     send_udt(opts, state, 0);
     CHECK(strncmp(state->dmr_embedded_gps[0], "LIP: 22.50000", 12) == 0);
     CHECK(expect_rows(path, 1, "00123456", "-22.500000", "-45.000000", 20, 0, "T8a UDT LIP"));
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 123456U));
     char saved[sizeof state->dmr_embedded_gps[0]];
     DSD_SNPRINTF(saved, sizeof saved, "%s", state->dmr_embedded_gps[0]);
     CHECK(truncate_output(path));
     send_udt(opts, state, 1);
     CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8a invalid UDT"));
+    CHECK(strcmp(state->dmr_embedded_gps[0], saved) == 0);
+    // Under -F the CRC-failed UDT is decoded and its notice committed, marked, without the position (spec 2.11).
+    opts->dmr_crc_relaxed_default = 1;
+    CHECK(truncate_output(path));
+    send_udt(opts, state, 1);
+    opts->dmr_crc_relaxed_default = 0;
+    const Event_History* failed_notice = &state->event_history_s[0].Event_History_Items[1];
+    CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8a relaxed invalid UDT"));
+    CHECK(strstr(failed_notice->event_string, "CRC ERR") != NULL);
+    CHECK(strstr(failed_notice->event_string, "LIP;") != NULL);
+    CHECK(failed_notice->gps_s[0] == '\0' && failed_notice->pos.valid == 0U);
     CHECK(strcmp(state->dmr_embedded_gps[0], saved) == 0);
     return failed;
 }
@@ -172,12 +192,19 @@ test_udp(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(expect_rows(path, 1, "00000111", "-22.500000", "-45.000000", 20, 0, "T8b UDP LIP"));
     CHECK(strncmp(state->dmr_embedded_gps[0], "LIP:", 4) == 0);
     // Explicit data notices are committed to row 1; row 0 is restored to the active voice call.
-    CHECK(strstr(state->event_history_s[0].Event_History_Items[1].gps_s, "LIP:") != NULL);
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 111U));
     CHECK(strstr(state->event_history_s[0].Event_History_Items[1].event_string, "LIP SRC: 111; DST: 222;") != NULL);
-    state->event_crc_invalid[0] = 1;
-    CHECK(truncate_output(path));
-    decode_ip_pdu(opts, state, sizeof packet, packet);
-    CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8b CRC-invalid UDP"));
+    // A packet whose checks failed (CRC ERR, or RAS) gives no position anywhere; its notice stays (spec 2.11).
+    for (uint8_t flags = 1U; flags <= 2U; flags++) {
+        state->event_crc_invalid[0] = flags;
+        CHECK(truncate_output(path));
+        decode_ip_pdu(opts, state, sizeof packet, packet);
+        CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8b CRC-invalid UDP"));
+        const Event_History* unchecked = &state->event_history_s[0].Event_History_Items[1];
+        CHECK(strstr(unchecked->event_string, "LIP SRC: 111;") != NULL);
+        CHECK(unchecked->gps_s[0] == '\0' && unchecked->pos.valid == 0U);
+        CHECK(dsd_event_staged_position(state, 0U)->rev == 0U);
+    }
     state->event_crc_invalid[0] = 0;
     char saved[sizeof state->dmr_embedded_gps[0]];
     DSD_SNPRINTF(saved, sizeof saved, "%s", state->dmr_embedded_gps[0]);
@@ -201,7 +228,9 @@ test_compressed(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(truncate_output(path));
     dmr_udp_comp_pdu(opts, state, sizeof packet, packet);
     CHECK(expect_rows(path, 1, "00000777", "-22.500000", "-45.000000", 20, 0, "T8c indexed LIP"));
-    CHECK(strstr(state->event_history_s[0].Event_History_Items[1].gps_s, "LIP:") != NULL);
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 777U));
+    // The notice consumed the staged report: the slot's next notice takes nothing.
+    CHECK(dsd_event_staged_position(state, 0U)->rev == 0U);
     return failed;
 }
 
@@ -287,8 +316,10 @@ test_active_call_ownership(dsd_opts* opts, dsd_state* state, const char* path, i
     CHECK(seed_active_call(opts, state));
     CHECK(truncate_output(path));
     send_carrier_report(opts, state, carrier, 111, 0);
+    // One history writer per report: the carrier's own notice takes it, the speaker's voice row is left alone.
     Event_History* active = &state->event_history_s[0].Event_History_Items[0];
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
+    CHECK(active->gps_s[0] == '\0' && active->pos.valid == 0U);
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 111U));
     CHECK(expect_rows(path, 1, "00000111", "-22.500000", "-45.000000", 20, 0, "X1 positive report"));
     char saved[sizeof active->gps_s];
     DSD_SNPRINTF(saved, sizeof saved, "%s", active->gps_s);
@@ -302,7 +333,6 @@ test_active_call_ownership(dsd_opts* opts, dsd_state* state, const char* path, i
         CHECK(strstr(notice->event_string, "SRC: 222;") != NULL);
     }
     CHECK(notice->gps_s[0] == '\0');
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
     CHECK(strcmp(active->gps_s, saved) == 0);
     CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "X1 unsupported report"));
     return failed;
@@ -316,7 +346,7 @@ test_truncated_ownership(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(truncate_output(path));
     send_carrier_report(opts, state, 1, 111, 0);
     Event_History* active = &state->event_history_s[0].Event_History_Items[0];
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 111U));
     char saved[sizeof active->gps_s];
     DSD_SNPRINTF(saved, sizeof saved, "%s", active->gps_s);
     uint8_t packet[38];
@@ -332,7 +362,6 @@ test_truncated_ownership(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(notice->source_id == 222);
     CHECK(strstr(notice->event_string, "LIP SRC: 222;") != NULL);
     CHECK(notice->gps_s[0] == '\0');
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
     CHECK(strcmp(active->gps_s, saved) == 0);
     CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "X1 truncated report"));
     return failed;
@@ -382,7 +411,7 @@ test_icmp_enclosed_report(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(truncate_output(path));
     send_carrier_report(opts, state, 1, 111, 0);
     const Event_History* active = &state->event_history_s[0].Event_History_Items[0];
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 111U));
     CHECK(expect_rows(path, 1, "00000111", "-22.500000", "-45.000000", 20, 0, "X2 active call seed"));
     char saved[sizeof active->gps_s];
     DSD_SNPRINTF(saved, sizeof saved, "%s", active->gps_s);
@@ -403,17 +432,86 @@ test_icmp_enclosed_report(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(expect_rows(path, 2, "00000111", "-22.500000", "-45.000000", 20, 0, "X2 ICMP enclosure"));
     const Event_History* outer = &state->event_history_s[0].Event_History_Items[1];
     const Event_History* inner = &state->event_history_s[0].Event_History_Items[2];
-    CHECK(inner->source_id == 111);
+    CHECK(notice_has_position(inner, 111U));
     CHECK(strstr(inner->event_string, "LIP SRC: 111;") != NULL);
-    CHECK(strstr(inner->gps_s, "LIP:") != NULL);
     CHECK(outer->source_id == 999);
     DSD_FPRINTF(stderr, "\nX2 ICMP: inner source=%u GPS='%s'; outer source=%u GPS='%s'\n", inner->source_id,
                 inner->gps_s, outer->source_id, outer->gps_s);
-    CHECK(outer->gps_s[0] == '\0');
-    CHECK(strstr(active->gps_s, "LIP:") != NULL);
+    CHECK(outer->gps_s[0] == '\0' && outer->pos.valid == 0U);
     CHECK(strcmp(active->gps_s, saved) == 0);
     CHECK(strstr(state->dmr_embedded_gps[0], "LIP:") != NULL);
     CHECK(strcmp(state->dmr_embedded_gps[0], inner->gps_s) == 0);
+    return failed;
+}
+
+/* A long binary NMEA UDT (TS 102 361-4 Annex B.3.6: UDT format 5, UAB 01 = two appended blocks) through the real UDT
+   assembly: Q, the fix 22 deg 30 min S, 45 deg W, the UTC hour and the course; the header's own CRC as given. */
+static void
+send_udt_nmea(dsd_opts* opts, dsd_state* state, int header_crc_ok, int q, unsigned hour, unsigned cog) {
+    const uint8_t hdr[12] = {0, 0x05, 0, 0, 42, 0x01, 0xE2, 0x40, 0x01, 0, 0, 0};
+    uint8_t bits[192] = {0};
+    set_bits(bits, 3, 1, (uint32_t)q);
+    set_bits(bits, 11, 7, 22);
+    set_bits(bits, 18, 6, 30);
+    set_bits(bits, 38, 8, 45);
+    set_bits(bits, 66, 5, hour);
+    set_bits(bits, 103, 9, cog);
+    set_bits(bits, 176, 16, dsd_crc_ccitt16_bits(bits, 176));
+    uint8_t blocks[24] = {0};
+    for (size_t i = 0; i < sizeof bits; ++i) {
+        blocks[i / 8] |= (uint8_t)(bits[i] << (7 - i % 8));
+    }
+    uint8_t hdr_bits[96];
+    dsd_unpack_bytes_to_bits(hdr, sizeof hdr, hdr_bits, sizeof hdr_bits, sizeof hdr);
+    dmr_dheader(opts, state, (uint8_t*)hdr, hdr_bits, header_crc_ok ? 1U : 0U, 0);
+    dmr_block_assembler(opts, state, blocks, 12, 0x07, 3);
+    dmr_block_assembler(opts, state, blocks + 12, 12, 0x07, 3);
+}
+
+/* Spec 2.5, V3, V4 and 2.11 through dispatch: a checked fix with an invalid hour and course keeps its position (time
+   and course unknown); Q = 0 is no position; a header whose CRC failed but -F accepted reaches the UDT's CRC verdict,
+   so its fix is no position either. Each notice is still committed. */
+static int
+test_udt_nmea_dispatch(dsd_opts* opts, dsd_state* state, const char* path) {
+    static const struct {
+        int header_crc_ok;
+        int q;
+        int rows;
+        const char* console;
+        const char* tag;
+    } cases[] = {
+        {1, 1, 1, "time unknown; COG: unknown", "UDT NMEA hour 24, course 360"},
+        {1, 0, 0, "GPS: no fix;", "UDT NMEA Q=0"},
+        {0, 1, 0, "Position: (suppressed; CRC ERR)", "UDT NMEA header CRC failed under -F"},
+    };
+
+    int failed = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        reset_carrier_state(state);
+        opts->dmr_crc_relaxed_default = 1;
+        CHECK(truncate_output(path));
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "udt_nmea") != 0) {
+            return 1;
+        }
+        send_udt_nmea(opts, state, cases[i].header_crc_ok, cases[i].q, 24U, 360U);
+        dsd_test_capture_stderr_end(&cap);
+        char output[4096];
+        if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
+            return 1;
+        }
+        opts->dmr_crc_relaxed_default = 0;
+        const Event_History* notice = &state->event_history_s[0].Event_History_Items[1];
+        if (!expect_rows(path, cases[i].rows, "00123456", "-22.500000", "-45.000000", 0, 0, cases[i].tag)
+            || strstr(output, cases[i].console) == NULL || strstr(notice->event_string, "NMEA;") == NULL
+            || (notice->pos.valid == 1U) != (cases[i].rows == 1)
+            || (cases[i].rows == 1 && (notice->pos.lat_e7 != -225000000 || notice->pos.kind != DSD_POS_NMEA))
+            || (cases[i].header_crc_ok == 0 && strstr(notice->event_string, "CRC ERR") == NULL)) {
+            DSD_FPRINTF(stderr, "\n%s: notice '%s' pos %u; console %s\n", cases[i].tag, notice->event_string,
+                        notice->pos.valid, output);
+            failed = 1;
+        }
+    }
     return failed;
 }
 
@@ -450,6 +548,7 @@ main(void) {
     failed |= test_icmp_enclosed_report(&opts, &state, path);
     failed |= test_udp_mixed_ports(&opts, &state);
     failed |= test_compressed_mixed_ports(&opts, &state);
+    failed |= test_udt_nmea_dispatch(&opts, &state, path);
     dsd_state_ext_free_all(&state);
     free(state.event_history_s);
     (void)remove(path);

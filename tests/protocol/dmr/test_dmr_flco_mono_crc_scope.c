@@ -3,6 +3,7 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -157,9 +158,96 @@ test_gps_scope(dsd_opts* opts, dsd_state* state, const char* path, uint8_t outer
     char expected[256];
     DSD_SNPRINTF(expected, sizeof expected, "GPS: 22.50000%sS 45.00000%sW Err: 20m", dsd_degrees_glyph(),
                  dsd_degrees_glyph());
-    CHECK(strcmp(state->dmr_embedded_gps[0], expected) == 0);
+    // A failed scope withholds the position everywhere, its text included (spec 2.11).
+    CHECK(strcmp(state->dmr_embedded_gps[0], outer || burst ? "" : expected) == 0);
     CHECK(state->dmr_embedded_gps[1][0] == '\0');
     CHECK(state->event_crc_invalid[0] == outer && state->event_crc_invalid[1] == burst);
+    return failed;
+}
+
+// The voice LC of a group call (FLCO 0, FID 0): target at bit 24, source at bit 48 (TS 102 361-2 Table 7.1).
+static void
+voice_lc(uint8_t bits[96], uint32_t source) {
+    DSD_MEMSET(bits, 0, 96);
+    set_bits(bits, 24, 24, 2002U);
+    set_bits(bits, 48, 24, source);
+}
+
+// The embedded GPS LC (FLCO 0x08): 20 m, 22.5 S, 45 W.
+static void
+gps_lc(uint8_t bits[96]) {
+    DSD_MEMSET(bits, 0, 96);
+    set_bits(bits, 2, 6, 0x08);
+    set_bits(bits, 20, 3, 1);
+    set_bits(bits, 23, 1, 1);
+    set_bits(bits, 24, 24, 0xC00000);
+    set_bits(bits, 48, 1, 1);
+    set_bits(bits, 49, 23, 0x600000);
+}
+
+/* Spec 2.2 (embedded GPS row): the fix names the call's radio only when a full LC of that transmission whose own
+   check passed named it, through dmr_flco()'s real voice path. A RAS-accepted LC (CRCCorrect 1 under a RAS scope) and
+   an LC whose CRC failed under -F (a failed scope) publish the call but vouch for nothing; nor does a checked LC of
+   another radio's earlier call. */
+static int
+test_checked_lc_attribution(dsd_opts* opts, dsd_state* state, const char* path) {
+    static const struct {
+        int earlier_radio;    // a checked voice LC header of radio 3003's call comes first
+        uint8_t header_scope; // the scope of the voice LC header naming radio 1001
+        const char* src;      // -L source of the following GPS LC
+        int enriched;         // the call's row takes the position
+        const char* tag;
+    } cases[] = {
+        {0, 0, "00001001", 1, "checked voice LC header"},
+        {0, DSD_CRC_RAS_UNVERIFIED, "00000000", 0, "RAS-accepted voice LC header"},
+        {0, DSD_CRC_FAILED, "00000000", 0, "CRC-failed voice LC header under -F"},
+        {1, DSD_CRC_RAS_UNVERIFIED, "00000000", 0, "earlier radio's checked LC, then a RAS LC"},
+    };
+
+    int failed = 0;
+    Event_History_I* history = calloc(2, sizeof *history);
+    if (history == NULL) {
+        return 1;
+    }
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        dsd_state_ext_free_all(state);
+        DSD_MEMSET(state, 0, sizeof *state);
+        DSD_MEMSET(history, 0, 2 * sizeof *history);
+        for (int slot = 0; slot < 2; ++slot) {
+            init_event_history(&history[slot], 0, 255);
+        }
+        state->event_history_s = history;
+        state->currentslot = 0;
+        state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        uint8_t bits[96];
+        uint32_t errors = 0;
+        if (cases[i].earlier_radio) {
+            // Radio 3003's checked header, then its call is replaced (the next header names another radio).
+            voice_lc(bits, 3003U);
+            dmr_flco(opts, state, bits, 1, &errors, 1);
+        }
+        voice_lc(bits, 1001U);
+        state->event_crc_invalid[0] = cases[i].header_scope;
+        dmr_flco(opts, state, bits, 1, &errors, 1);
+        state->event_crc_invalid[0] = 0;
+        dsd_call_snapshot call = {0};
+        CHECK(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+        CHECK(call.ota_source_id == 1001U);
+        gps_lc(bits);
+        CHECK(truncate_output(path));
+        dmr_flco(opts, state, bits, 1, &errors, 3);
+        if (!expect_rows(path, 1, cases[i].src, "-22.500000", "-45.000000", 0, 0, cases[i].tag)) {
+            failed = 1;
+        }
+        const Event_History* row = &history[0].Event_History_Items[0];
+        if ((row->pos.valid == 1U) != cases[i].enriched) {
+            DSD_FPRINTF(stderr, "\n%s: row position %u, want %d\n", cases[i].tag, row->pos.valid, cases[i].enriched);
+            failed = 1;
+        }
+    }
+    dsd_state_ext_free_all(state);
+    state->event_history_s = NULL;
+    free(history);
     return failed;
 }
 
@@ -190,6 +278,7 @@ main(void) {
     failed |= test_gps_scope(&opts, &state, path, 0, DSD_CRC_RAS_UNVERIFIED);
     failed |= test_gps_scope(&opts, &state, path, DSD_CRC_RAS_UNVERIFIED, 0);
     failed |= test_gps_scope(&opts, &state, path, 0, (uint8_t)(DSD_CRC_FAILED | DSD_CRC_RAS_UNVERIFIED));
+    failed |= test_checked_lc_attribution(&opts, &state, path);
     dsd_state_ext_free_all(&state);
     (void)remove(path);
     return failed;

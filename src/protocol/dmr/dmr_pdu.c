@@ -543,12 +543,10 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     const dsd_event_category category =
         by_content ? DSD_EVENT_CATEGORY_CONTROL
                    : dmr_udp_event_category(src.known ? src.port : 0U, dst.known ? dst.port : 0U);
-    if (state->dmr_embedded_gps[slot][0] != '\0') {
-        (void)dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category, comp_string,
-                                                             state->dmr_embedded_gps[slot]);
-        return;
+    if (state->dmr_embedded_gps[slot][0] == '\0') {
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s", previous_gps);
     }
-    DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s", previous_gps);
+    // An admitted LIP report was staged with its text by lip_pdu_decoder(); the notice consumes it.
     (void)dsd_event_emit_data_notice_classified(opts, state, slot, &observation, category, comp_string);
 }
 
@@ -1019,13 +1017,8 @@ decode_ip_pdu_emit_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_
                           uint16_t src_port, uint16_t dst_port, const char* previous_gps) {
     const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
     const dsd_event_category category = decode_ip_pdu_event_category(prot, src_port, dst_port);
-    // An ICMP wrapper never claims a fix produced by its enclosed packet.
-    const int fresh = prot != 1 && state->dmr_embedded_gps[slot][0] != '\0';
-    if (fresh) {
-        return dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category,
-                                                              state->dmr_lrrp_gps[slot], state->dmr_embedded_gps[slot])
-               == 0;
-    }
+    // An admitted LIP report was staged with its text by lip_pdu_decoder() and this notice consumes it. An ICMP
+    // wrapper never claims a fix produced by its enclosed packet: that packet's own notice consumed it.
     if (state->dmr_embedded_gps[slot][0] == '\0') {
         DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "%s", previous_gps);
     }

@@ -123,6 +123,8 @@ dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t 
     g_datacall_last_slot = slot;
     g_datacall_last_category = category;
     DSD_SNPRINTF(g_datacall_last_text, sizeof(g_datacall_last_text), "%s", notice ? notice : "");
+    // The consuming notice takes the staged GPS (a position report the UDT carried stages it).
+    DSD_SNPRINTF(g_datacall_last_gps, sizeof(g_datacall_last_gps), "%s", dsd_event_staged_gps(state, slot));
     return 0;
 }
 
@@ -150,6 +152,8 @@ lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, siz
     g_lip_calls++;
     DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot], sizeof(state->dmr_embedded_gps[state->currentslot]), "%s",
                  "LIP: 41.500000, -87.250000");
+    // An admitted report is staged for the UDT's own notice.
+    dsd_event_stage_gps(state, (uint8_t)state->currentslot, state->dmr_embedded_gps[state->currentslot]);
 }
 
 void
@@ -162,17 +166,7 @@ nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src,
     g_nmea_last_type = type;
     DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot], sizeof(state->dmr_embedded_gps[state->currentslot]), "%s",
                  "GPS: (41.500000, -87.250000)");
-}
-
-// Stubs to avoid linking runtime/core
-int
-dsd_unicode_supported(void) {
-    return 0;
-}
-
-const char*
-dsd_degrees_glyph(void) {
-    return "";
+    dsd_event_stage_gps(state, (uint8_t)state->currentslot, state->dmr_embedded_gps[state->currentslot]);
 }
 
 // FEC RS(12,9) stubs used by dmr_utils.c
