@@ -193,10 +193,12 @@ test_precall_pi_on_both_slots(dsd_opts* opts) {
 
 /* A checked PI while the slot still holds another protocol's open call (its end never decoded: -fa moving to a DMR
    carrier, a -Y step): the PI describes no DMR call, so that call keeps its own crypto and nothing notes it, and the PI
-   is held for the DMR call the next checked LC opens there, as after a lost voice LC header. */
+   is held for the DMR call the next checked LC opens there, as after a lost voice LC header. The PI's 2 s hold runs on
+   the decode clock, frozen here, so a host pause between the PI and the LC cannot let it go stale. */
 static void
 test_pi_leaves_another_protocols_call_alone(dsd_opts* opts) {
     dsd_state* state = fresh_state();
+    dsd_decode_clock_use_test(35000000000ULL);
     const dsd_call_observation nxdn = {
         .protocol = DSD_SYNC_NXDN_POS,
         .slot = 0U,
@@ -218,6 +220,7 @@ test_pi_leaves_another_protocols_call_alone(dsd_opts* opts) {
     assert(DSD_SYNC_IS_DMR(call.protocol) && call.ota_target_id == 1001U);
     assert(received_is(&call, RX_BOTH, 0x21U, 0x05U));
     free_state(state);
+    dsd_decode_clock_use_system();
 }
 
 /* Transmission X's PI is held (its voice LC header lost, no call open), X's voice opens an identity-less DMR epoch, and

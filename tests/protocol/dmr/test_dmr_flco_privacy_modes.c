@@ -1654,7 +1654,9 @@ test_reacquired_epoch_restores_cleared_slot_crypto(void) {
 
 // The heal restores the slot's live crypto and its classification, but it is no check of the call's: a slot whose voice
 // is held (the receiver moved off its carrier) stays held, even when an embedded LC whose checksum failed wrote the
-// FID and service options the heal puts back. A slot a checked LC already released is restored as before.
+// FID and service options the heal puts back. A slot a checked LC already released is restored as before. The heal's
+// 0.25 s reacquire gap runs on the decode clock, frozen here, so a host pause between the terminator and the media
+// mark cannot run it out.
 static void
 test_heal_keeps_a_voice_hold(void) {
     static dsd_opts opts;
@@ -1665,6 +1667,7 @@ test_heal_keeps_a_voice_hold(void) {
         .slot = 0U,
         .kind = DSD_CALL_KIND_VOICE,
     };
+    dsd_decode_clock_use_test(50000000000ULL);
     for (int checked = 0; checked <= 1; checked++) {
         uint32_t irr = 0;
         dsd_state_ext_free_all(&state);
@@ -1688,6 +1691,7 @@ test_heal_keeps_a_voice_hold(void) {
         assert(state.dmr_enc_class_held[1] == 1U);
     }
     dsd_state_ext_free_all(&state);
+    dsd_decode_clock_use_system();
 }
 
 // The heal must put back what the vocoder was actually decrypting with, not what the canonical
