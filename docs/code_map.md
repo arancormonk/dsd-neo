@@ -2571,7 +2571,8 @@ suite runs under this compiler.
   - Origin and `-L`. Multi-fragment producers capture the origin with the first fragment (`dmr_data_origin[slot]` at the
     DMR data header, `p25_mdpu_origin` at a P25 Phase 1 MDPU header block in `p25_mpdu_collect_blocks()`,
     `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA concatenation) and pass it to admission (LRRP
-    and LOCN through `dmr_pdu_position_origin()`, which picks the DMR or the P25 one), which refuses the report when a
+    and LOCN through `dmr_pdu_position_origin()`, LIP over UDT or UDP and UDT NMEA through `dsd_gps.c`'s
+    `gps_packet_origin()`, both picking the DMR or the P25 one by the sync type), which refuses the report when a
     retune, target switch or reception change came in between. `-L` rows: LRRP and LOCN through
     `dmr_pdu_write_location_row()`, LIP through `lip_write_location_row()`, the rest through `dsd_gps.c`'s writers,
     always from the admitted record (its source, 0 when admission cleared it); NMEA and NXDN rows need a source.

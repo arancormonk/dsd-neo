@@ -13,6 +13,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/pdu.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -214,6 +215,48 @@ test_udp(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8b unsupported UDP"));
     CHECK(state->event_history_s[0].Event_History_Items[1].gps_s[0] == '\0');
     CHECK(strcmp(state->dmr_embedded_gps[0], saved) == 0);
+    return failed;
+}
+
+/* Issue #800: a LIP report in a UDP datagram (port 5017) is admitted against the reception the packet carrying it
+ * began on: the DMR data header's origin, or for P25 Phase 1 data (SAP 0/4 through decode_ip_pdu()) the MDPU header's.
+ * A retune between the header and the datagram refuses it; the same reception admits it. */
+static int
+test_udp_packet_origin(dsd_opts* opts, dsd_state* state, const char* path) {
+    static const struct {
+        int synctype;
+        const char* tag;
+    } carriers[] = {{DSD_SYNC_P25P1_POS, "P25 UDP LIP"}, {DSD_SYNC_DMR_BS_DATA_POS, "DMR UDP LIP"}};
+
+    int failed = 0;
+    uint8_t packet[38];
+    build_packet(packet);
+    for (size_t c = 0; c < sizeof carriers / sizeof carriers[0]; c++) {
+        state->lastsynctype = carriers[c].synctype;
+        dsd_position_origin* origin =
+            DSD_SYNC_IS_P25P1(carriers[c].synctype) ? &state->p25_mdpu_origin : &state->dmr_data_origin[0];
+        for (int retune = 1; retune >= 0; retune--) {
+            dsd_position_origin_capture(opts, state, origin);
+            if (retune) {
+                dsd_trunk_tuning_generation_advance();
+            }
+            const uint64_t rev = dsd_position_last_rev();
+            CHECK(truncate_output(path));
+            CHECK(decode_ip_pdu(opts, state, sizeof packet, packet) == 1);
+            const Event_History* notice = &state->event_history_s[0].Event_History_Items[1];
+            if (retune) {
+                CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, carriers[c].tag));
+                CHECK(dsd_position_last_rev() == rev);
+                CHECK(notice->pos.valid == 0U && notice->gps_s[0] == '\0');
+            } else {
+                CHECK(expect_rows(path, 1, "00000111", "-22.500000", "-45.000000", 20, 0, carriers[c].tag));
+                CHECK(dsd_position_last_rev() == rev + 1U);
+                CHECK(notice_has_position(notice, 111U));
+            }
+        }
+        DSD_MEMSET(origin, 0, sizeof(*origin));
+    }
+    state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     return failed;
 }
 
@@ -540,6 +583,7 @@ main(void) {
     DSD_SNPRINTF(opts.lrrp_out_file, sizeof opts.lrrp_out_file, "%s", path);
     int failed = test_udt(&opts, &state, path);
     failed |= test_udp(&opts, &state, path);
+    failed |= test_udp_packet_origin(&opts, &state, path);
     failed |= test_compressed(&opts, &state, path);
     for (int carrier = 0; carrier < 3; ++carrier) {
         failed |= test_active_call_ownership(&opts, &state, path, carrier);

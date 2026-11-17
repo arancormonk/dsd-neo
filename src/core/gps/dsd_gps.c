@@ -502,8 +502,23 @@ gps_suppressed_label(uint8_t crc_flags) {
     return dsd_crc_is_failed(crc_flags) ? "suppressed; CRC ERR" : "suppressed; RAS";
 }
 
+/* The reception the data packet carrying a report began on, captured with its header: the DMR data header's
+ * (dmr_dheader()) for a DMR packet, the P25 Phase 1 MDPU header's (processMPDU()) for a P25 one (decode_ip_pdu() takes
+ * both); NULL when none was captured, which takes the current reception. dmr_pdu.c chooses its LRRP and LOCN origin
+ * the same way (dmr_pdu_position_origin()). */
+static const dsd_position_origin*
+gps_packet_origin(const dsd_state* state, int slot) {
+    const dsd_position_origin* origin = NULL;
+    if (DSD_SYNC_IS_DMR(state->lastsynctype)) {
+        origin = &state->dmr_data_origin[slot & 1];
+    } else if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
+        origin = &state->p25_mdpu_origin;
+    }
+    return (origin != NULL && origin->valid != 0U) ? origin : NULL;
+}
+
 /* Admit a checked LIP report: the record, its kind and source (a USBD reply's hash is never an identity), and the
- * reception it came from (a DMR data assembly's origin, captured with its header). */
+ * reception it came from (the origin of the DMR or P25 data packet that carried it, gps_packet_origin()). */
 static int
 lip_admit(const dsd_opts* opts, dsd_state* state, const lip_short_report* r, const lip_source* who,
           dsd_position_fix* fix) {
@@ -522,9 +537,7 @@ lip_admit(const dsd_opts* opts, dsd_state* state, const lip_short_report* r, con
         fix->protocol = (uint8_t)state->lastsynctype;
         fix->source_id = who->src;
         source_verified = 1; // the same checked packet named it
-        if (DSD_SYNC_IS_DMR(state->lastsynctype) && state->dmr_data_origin[slot].valid) {
-            origin = &state->dmr_data_origin[slot];
-        }
+        origin = gps_packet_origin(state, slot);
     }
     return dsd_position_admit(opts, state, fix, 1, source_verified, origin) != DSD_POSITION_REFUSED;
 }
@@ -735,10 +748,7 @@ udt_nmea_fill_fix(const dsd_state* state, const udt_nmea_fields* f, int type, ui
  * its UDT began on. */
 static int
 udt_nmea_admit(const dsd_opts* opts, dsd_state* state, int slot, dsd_position_fix* fix) {
-    const dsd_position_origin* origin = (DSD_SYNC_IS_DMR(state->lastsynctype) && state->dmr_data_origin[slot].valid)
-                                            ? &state->dmr_data_origin[slot]
-                                            : NULL;
-    return dsd_position_admit(opts, state, fix, 1, 1, origin) != DSD_POSITION_REFUSED;
+    return dsd_position_admit(opts, state, fix, 1, 1, gps_packet_origin(state, slot)) != DSD_POSITION_REFUSED;
 }
 
 /* The console's position of a UDT NMEA report: coordinates only for an admitted one. */
