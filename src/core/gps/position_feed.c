@@ -200,33 +200,11 @@ dsd_position_origin_matches(const dsd_state* state, const dsd_position_origin* o
 
 /* ---- Tracks ---- */
 
-/* The protocol family a track belongs to: one per system type, so P25 Phase 1 and 2, or DMR base and mobile bursts,
- * name one track. A sync type of no listed family is its own. */
+/* The protocol family a track belongs to (dsd_sync_protocol_family()): P25 Phase 1 and 2, or DMR base and mobile
+ * bursts, name one track. */
 static int
 pos_protocol_family(uint8_t protocol) {
-    const int s = protocol;
-    if (DSD_SYNC_IS_P25(s)) {
-        return 1;
-    }
-    if (DSD_SYNC_IS_DMR(s)) {
-        return 2;
-    }
-    if (DSD_SYNC_IS_NXDN(s)) {
-        return 3;
-    }
-    if (DSD_SYNC_IS_TETRA(s)) {
-        return 4;
-    }
-    if (DSD_SYNC_IS_DSTAR(s)) {
-        return 5;
-    }
-    if (DSD_SYNC_IS_M17(s)) {
-        return 6;
-    }
-    if (DSD_SYNC_IS_EDACS(s)) {
-        return 7;
-    }
-    return 0x100 + s;
+    return dsd_sync_protocol_family(protocol);
 }
 
 int

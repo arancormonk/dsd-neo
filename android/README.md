@@ -264,8 +264,13 @@ USB/lifecycle diagnostics use the runtime log surface, including when no Activit
 exists. The optional last location fix includes accuracy in metres, uses milliseconds since epoch and is deleted
 after 24 hours, on load/read and by a foreground timer. Location producers use
 `AppPrefs::setLocationFix` to publish the tuple with one coherent notification; the coordinate
-and timestamp properties are read-only to QML. Coordinates and direct
-key fields must never be included in diagnostic exports. QString/QML secret
+and timestamp properties are read-only to QML. The device's coordinates and direct
+key fields must never be included in diagnostic exports. Received positions are removed
+too: `DiagnosticsLog::redact()` drops every record that shows a decoded position or
+matches a position-message line in `kPositionMarkers`, with any payload bytes printed on
+it, in exports and in stored logs. Raw payload dumps that the payload option (`-Z`, off
+by default) prints under generic prefixes (M17 LSF, DMR PDU and P25 MBT bytes) are kept,
+and can hold an encoded position. QString/QML secret
 copies cannot guarantee erasure; command-owned key bytes are securely erased.
 
 The Monitor keeps its hero fixed and scrolls the rows below it; recent calls have

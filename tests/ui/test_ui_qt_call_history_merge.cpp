@@ -8,12 +8,18 @@
  * header (call_history_merge.h) exactly to be testable here. Issue #799: a
  * fragment's site folds into its row only when the two agree, the seen ratchet
  * reads a site part gained or any channel change as an advance, and the merge
- * order limit (L7) is pinned as documented. */
+ * order limit (L7) is pinned as documented. Issue #800: a merged row's GPS text
+ * and position come from the fragment with the greatest (run, rev) whatever the
+ * order the fragments fold in, a keyed fix beats one with none, the same
+ * fragment read again takes what it says now; protocol families and system
+ * identities agree or are unknown; the digests and the stored-position check. */
 
 #include <algorithm>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_channel.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -25,8 +31,14 @@ using dsd_qt::call_history_call_channel_known;
 using dsd_qt::call_history_duration_secs;
 using dsd_qt::call_history_fold_adopts;
 using dsd_qt::call_history_freq_known;
+using dsd_qt::call_history_gps_adopts;
 using dsd_qt::call_history_merge_within_window;
+using dsd_qt::call_history_position_digest;
+using dsd_qt::call_history_position_values_valid;
+using dsd_qt::call_history_protocol_family;
+using dsd_qt::call_history_protocols_compatible;
 using dsd_qt::call_history_provenance_compare;
+using dsd_qt::call_history_scopes_compatible;
 using dsd_qt::call_history_seen_absorb;
 using dsd_qt::call_history_seen_absorb_fill;
 using dsd_qt::call_history_seen_absorb_site;
@@ -34,7 +46,10 @@ using dsd_qt::call_history_seen_absorb_site_text;
 using dsd_qt::call_history_seen_row_advanced;
 using dsd_qt::call_history_site_fold;
 using dsd_qt::call_history_site_text_digest;
+using dsd_qt::call_history_text_digest;
+using dsd_qt::CallHistoryPositionKey;
 using dsd_qt::CallHistoryProvenance;
+using dsd_qt::CallHistoryScope;
 using dsd_qt::kCallHistoryMaxPlausibleDurationSecs;
 using dsd_qt::kCallMergeWindowSrcMatchedSecs;
 using dsd_qt::kCallMergeWindowSrcUnknownSecs;
@@ -542,6 +557,144 @@ test_site_fold_order_limit(void) {
 
 } // namespace
 
+/* A fragment's GPS unit as the fold sees it: its key, its provenance, and a name to tell it by. */
+struct GpsFragment {
+    const char* name;
+    bool known;
+    CallHistoryPositionKey key;
+    CallHistoryProvenance from;
+};
+
+/* Fold @p count fragments in the order given, as foldRow() does, and name the one the row keeps. */
+const char*
+fold_gps(const GpsFragment* const* order, int count) {
+    const GpsFragment* kept = nullptr;
+    for (int i = 0; i < count; i++) {
+        const GpsFragment* f = order[i];
+        const bool keptKnown = kept != nullptr && kept->known;
+        const CallHistoryPositionKey none = {false, 0, 0U};
+        const CallHistoryProvenance nowhere = {0, 0U, 0};
+        if (call_history_gps_adopts(keptKnown, kept != nullptr ? kept->key : none,
+                                    kept != nullptr ? kept->from : nowhere, f->known, f->key, f->from)) {
+            kept = f;
+        }
+    }
+    return kept != nullptr ? kept->name : "";
+}
+
+/* 2.7: three fragments from two runs, folded in every order, keep the later run's fix though the earlier run's revs
+ * are higher and its stamps later (a backward clock step); a keyed fix beats a newer one with no key, and among
+ * fragments with none the newest wins, as before. */
+void
+test_gps_fold_total_order(void) {
+    const GpsFragment a = {"A", true, {true, 1, 5U}, {200, 1U, 0}};
+    const GpsFragment b = {"B", true, {true, 1, 9U}, {300, 2U, 0}};
+    const GpsFragment c = {"C", true, {true, 2, 2U}, {100, 1U, 0}};
+    const GpsFragment* const perms[6][3] = {{&a, &b, &c}, {&a, &c, &b}, {&b, &a, &c},
+                                            {&b, &c, &a}, {&c, &a, &b}, {&c, &b, &a}};
+    for (const auto& perm : perms) {
+        expect("every order keeps the later run's fix", fold_gps(perm, 3)[0] == 'C', true);
+    }
+    const GpsFragment* const sameRun[2][2] = {{&a, &b}, {&b, &a}};
+    for (const auto& perm : sameRun) {
+        expect("within a run the higher rev wins", fold_gps(perm, 2)[0] == 'B', true);
+    }
+    const GpsFragment text = {"T", true, {false, 2, 0U}, {900, 9U, 1}};
+    const GpsFragment* const keyedFirst[2][2] = {{&a, &text}, {&text, &a}};
+    for (const auto& perm : keyedFirst) {
+        expect("a keyed fix beats a newer text-only line", fold_gps(perm, 2)[0] == 'A', true);
+    }
+    const GpsFragment old1 = {"O", true, {false, 0, 0U}, {100, 1U, 0}};
+    const GpsFragment old2 = {"P", true, {false, 0, 0U}, {200, 2U, 0}};
+    const GpsFragment* const unkeyed[2][2] = {{&old1, &old2}, {&old2, &old1}};
+    for (const auto& perm : unkeyed) {
+        expect("among unkeyed fragments the newest wins", fold_gps(perm, 2)[0] == 'P', true);
+    }
+    const GpsFragment nothing = {"N", false, {false, 0, 0U}, {999, 9U, 1}};
+    const GpsFragment* const empty[1][2] = {{&a, &nothing}};
+    expect("nothing never erases a fix", fold_gps(empty[0], 2)[0] == 'A', true);
+    // The same fragment read again (a text-only write drops its position) takes what it says now.
+    const GpsFragment again = {"S", true, {false, 1, 0U}, {200, 1U, 0}};
+    const GpsFragment* const sameFragment[1][2] = {{&a, &again}};
+    expect("the same fragment read again takes its new text", fold_gps(sameFragment[0], 2)[0] == 'S', true);
+}
+
+void
+test_identity_compatibility(void) {
+    expect("P25 phases are one family", call_history_protocols_compatible(DSD_SYNC_P25P1_POS, DSD_SYNC_P25P2_NEG),
+           true);
+    expect("DMR base and mobile are one family",
+           call_history_protocols_compatible(DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_DMR_MS_VOICE), true);
+    expect("YSF polarities are one family", call_history_protocols_compatible(DSD_SYNC_YSF_POS, DSD_SYNC_YSF_NEG),
+           true);
+    expect("P25 and DMR are two", call_history_protocols_compatible(DSD_SYNC_P25P1_POS, DSD_SYNC_DMR_BS_VOICE_POS),
+           false);
+    expect("an unknown protocol is compatible", call_history_protocols_compatible(-1, DSD_SYNC_NXDN_POS), true);
+    expect("no protocol has no family", call_history_protocol_family(DSD_SYNC_NONE) < 0, true);
+    CallHistoryScope none;
+    CallHistoryScope tuned1;
+    tuned1.kind = DSD_POS_SCOPE_FEED_TUNED_FREQ;
+    tuned1.a = 446006250U;
+    CallHistoryScope tuned2 = tuned1;
+    tuned2.a = 446093750U;
+    CallHistoryScope nac1;
+    nac1.kind = DSD_POS_SCOPE_P25_NAC;
+    nac1.a = 0x293U;
+    nac1.freqHz = 155100000;
+    CallHistoryScope nac2 = nac1;
+    nac2.freqHz = 155400000;
+    expect("an unknown system is compatible with any", call_history_scopes_compatible(none, tuned1), true);
+    expect("one system is compatible with itself", call_history_scopes_compatible(tuned1, tuned1), true);
+    expect("two tuned frequencies are two systems", call_history_scopes_compatible(tuned1, tuned2), false);
+    expect("one NAC on two frequencies is two systems", call_history_scopes_compatible(nac1, nac2), false);
+    CallHistoryScope p25;
+    p25.kind = DSD_POS_SCOPE_P25;
+    p25.a = 0xBEE00U;
+    p25.b = 0x1A3U;
+    CallHistoryScope otherP25 = p25;
+    otherP25.b = 0x1A4U;
+    CallHistoryScope capPlus;
+    capPlus.kind = DSD_POS_SCOPE_DMR;
+    capPlus.a = (static_cast<uint32_t>(DSD_RXID_DMR_TRUNK_CAPACITY_PLUS) << 8);
+    capPlus.b = 0x105U;
+    CallHistoryScope tier3;
+    tier3.kind = DSD_POS_SCOPE_DMR;
+    tier3.a = (static_cast<uint32_t>(DSD_RXID_DMR_TRUNK_TIER3) << 8) | 1U;
+    tier3.b = 0x22U;
+    expect("a NAC joins its system's full scope", call_history_scopes_compatible(nac1, p25), true);
+    expect("a full scope joins a NAC", call_history_scopes_compatible(p25, nac2), true);
+    expect("a tuned frequency joins a full scope", call_history_scopes_compatible(tuned1, p25), true);
+    expect("two full P25 scopes that differ are two systems", call_history_scopes_compatible(p25, otherP25), false);
+    expect("a NAC is no DMR system", call_history_scopes_compatible(nac1, tier3), false);
+    expect("Capacity Plus is a weak DMR scope", dsd_qt::call_history_scope_strength(capPlus) == 2, true);
+    expect("a Tier III network is a full DMR scope", dsd_qt::call_history_scope_strength(tier3) == 3, true);
+    expect("a weak DMR scope joins a full one", call_history_scopes_compatible(capPlus, tier3), true);
+}
+
+void
+test_digests_and_stored_position(void) {
+    expect("no text has digest 0", call_history_text_digest("", 8U) == 0U, true);
+    expect("a text has a digest", call_history_text_digest("GPS", 8U) != 0U, true);
+    expect("two texts differ", call_history_text_digest("GPS: 1", 8U) != call_history_text_digest("GPS: 2", 8U), true);
+    const char unterminated[4] = {'A', 'B', 'C', 'D'};
+    expect("a text is bounded by its field",
+           call_history_text_digest(unterminated, 2U) == call_history_text_digest("AB", 8U), true);
+    expect("no position has digest 0", call_history_position_digest(false, 1, 2, 3U, 0U, 1U, 4U, 5U) == 0U, true);
+    expect("a later rev changes the digest",
+           call_history_position_digest(true, 1, 2, 3U, 0U, 1U, 4U, 5U)
+               != call_history_position_digest(true, 1, 2, 3U, 0U, 1U, 5U, 5U),
+           true);
+    expect("a position in range is valid", call_history_position_values_valid(225000000, -450000000, 3, 0), true);
+    expect("latitude past 90 is no position", call_history_position_values_valid(900000001, 0, 3, 0), false);
+    expect("longitude past 180 is no position", call_history_position_values_valid(0, -1800000001, 3, 0), false);
+    expect("(0, 0) is no position", call_history_position_values_valid(0, 0, 3, 0), false);
+    expect("kind 0 is no position", call_history_position_values_valid(1, 1, 0, 0), false);
+    expect("a kind past the last is no position",
+           call_history_position_values_valid(1, 1, static_cast<int64_t>(DSD_POS_KIND_LAST) + 1, 0), false);
+    expect("an undefined flag is no position",
+           call_history_position_values_valid(1, 1, 3, static_cast<int64_t>(DSD_POS_FLAG_ALL) + 1), false);
+}
+
 int
 main(void) {
     test_merge_window();
@@ -559,6 +712,9 @@ main(void) {
     test_seen_site_ratchet();
     test_seen_site_text_digest();
     test_site_fold_order_limit();
+    test_gps_fold_total_order();
+    test_identity_compatibility();
+    test_digests_and_stored_position();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

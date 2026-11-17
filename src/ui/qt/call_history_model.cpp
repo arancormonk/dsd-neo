@@ -54,6 +54,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include "call_history_merge.h"
+#include "call_history_payload.h"
 #include "call_history_tap.h"
 #include "call_recording_provider.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -80,6 +81,13 @@ constexpr const char kClearPendingKey[] = "callHistory/clear/pending";
 constexpr const char kClearPushSeqKey[2][32] = {"callHistory/clear/pushSeq0", "callHistory/clear/pushSeq1"};
 /* Absent in a mark written before marks named their ring, which then reads 0. */
 constexpr const char kClearRingKey[] = "callHistory/clear/ring";
+/* Issue #800: the session ordinals given to rings (SessionOrdinals): the next to give, and "ring:ordinal" pairs, the ring
+   in hex (a nonce can use all 64 bits). */
+constexpr const char kSessionOrdNextKey[] = "callHistory/sessionOrd/next";
+constexpr const char kSessionOrdRingsKey[] = "callHistory/sessionOrd/rings";
+/* The ordinals set aside for each start of the background tap: it gives one to each new ring it meets while the app is
+   away, which is rarely more than one. Ordinals are 64-bit, so the unused rest of a block costs nothing. */
+constexpr qint64 kTapOrdinalBlock = 1024;
 /* Older builds persisted Clear as a decode-time watermark; read once to retire it. */
 constexpr const char kLegacyClearedThroughKey[] = "callHistory/clearedThrough";
 constexpr int kMaxRows = 1000;
@@ -234,6 +242,7 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
      * Clear must survive an Activity restart while the service's ring still holds the
      * cleared rows. */
     loadSessionState();
+    loadSessionOrdinals();
     m_saveTimer.setSingleShot(true);
     m_saveTimer.setInterval(kSaveDelayMs);
     connect(&m_saveTimer, &QTimer::timeout, this, [this]() { startAsyncSave(); });
@@ -288,6 +297,79 @@ CallHistoryModel::loadSessionState() {
     if (m_settings.contains(QLatin1String(kLegacyClearedThroughKey))) {
         m_settings.remove(QLatin1String(kLegacyClearedThroughKey));
     }
+}
+
+qint64
+CallHistoryModel::sessionOrdinal(quint64 ring) {
+    const qint64 next = m_sessionOrdinals.next;
+    const qint64 ordinal = sessionOrdinalFor(m_sessionOrdinals, ring);
+    if (m_sessionOrdinals.next != next) {
+        saveSessionOrdinals();
+    }
+    return ordinal;
+}
+
+bool
+CallHistoryModel::noteSessionOrdinal(quint64 ring, qint64 ordinal) {
+    if (ring == 0U || ordinal < 1 || m_sessionOrdinals.rings.contains(ring)) {
+        return false;
+    }
+    m_sessionOrdinals.rings.insert(ring, ordinal);
+    if (ordinal < std::numeric_limits<qint64>::max()) {
+        m_sessionOrdinals.next = qMax(m_sessionOrdinals.next, ordinal + 1);
+    }
+    return true;
+}
+
+void
+CallHistoryModel::adoptSessionOrdinals(const QHash<quint64, qint64>& ordinals) {
+    bool changed = false;
+    for (auto it = ordinals.constBegin(); it != ordinals.constEnd(); ++it) {
+        changed = noteSessionOrdinal(it.key(), it.value()) || changed;
+    }
+    if (changed) {
+        bound_session_ordinals(m_sessionOrdinals.rings);
+        saveSessionOrdinals();
+    }
+}
+
+void
+CallHistoryModel::adoptSessionOrdinal(quint64 ring, qint64 ordinal) {
+    if (noteSessionOrdinal(ring, ordinal)) {
+        bound_session_ordinals(m_sessionOrdinals.rings);
+        saveSessionOrdinals();
+    }
+}
+
+void
+CallHistoryModel::saveSessionOrdinals() {
+    QStringList rings;
+    for (auto it = m_sessionOrdinals.rings.constBegin(); it != m_sessionOrdinals.rings.constEnd(); ++it) {
+        rings.append(QString::number(it.key(), 16) + QLatin1Char(':') + QString::number(it.value()));
+    }
+    m_settings.setValue(QLatin1String(kSessionOrdNextKey), m_sessionOrdinals.next);
+    m_settings.setValue(QLatin1String(kSessionOrdRingsKey), rings);
+}
+
+void
+CallHistoryModel::loadSessionOrdinals() {
+    m_sessionOrdinals = SessionOrdinals();
+    m_sessionOrdinals.next = qMax<qint64>(m_settings.value(QLatin1String(kSessionOrdNextKey)).toLongLong(), 1);
+    const QStringList rings = m_settings.value(QLatin1String(kSessionOrdRingsKey)).toStringList();
+    for (const QString& entry : rings) {
+        const qsizetype colon = entry.indexOf(QLatin1Char(':'));
+        bool ringOk = false;
+        bool ordOk = false;
+        const quint64 ring = colon > 0 ? entry.left(colon).toULongLong(&ringOk, 16) : 0U;
+        const qint64 ordinal = colon > 0 ? entry.mid(colon + 1).toLongLong(&ordOk) : 0;
+        if (ringOk && ordOk && ring != 0U && ordinal >= 1) {
+            m_sessionOrdinals.rings.insert(ring, ordinal);
+            if (ordinal < std::numeric_limits<qint64>::max()) {
+                m_sessionOrdinals.next = qMax(m_sessionOrdinals.next, ordinal + 1);
+            }
+        }
+    }
+    bound_session_ordinals(m_sessionOrdinals.rings);
 }
 
 void
@@ -413,7 +495,7 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::DayLabelRole: return day_label(row.when);
         case CallHistoryModel::TimeTextRole: return time_text(row.when);
         case CallHistoryModel::KindRole: return row.kind;
-        case CallHistoryModel::DetailRole: return row.detail;
+        case CallHistoryModel::DetailRole: return row_detail_text(row);
         case CallHistoryModel::ChannelRole: return row.channel;
         case CallHistoryModel::ServiceNameRole: return row.service;
         case CallHistoryModel::ReceivedToneRole: {
@@ -1007,13 +1089,9 @@ row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
          * "LRRP position"); the payload — the decoded message or GPS string —
          * rides in detail so the delegate can show both. */
         row.name = notice_summary(item);
-        if (item->text_message[0] != '\0') {
-            row.detail = QString::fromUtf8(item->text_message);
-        } else if (item->gps_s[0] != '\0') {
-            row.detail = QString::fromUtf8(item->gps_s);
-        }
         if (row.name.isEmpty()) {
-            row.name = !row.detail.isEmpty() ? row.detail : QStringLiteral("Data message");
+            const QString detail = row_detail_text(row);
+            row.name = !detail.isEmpty() ? detail : QStringLiteral("Data message");
         }
     } else if (item->service_label[0] != '\0') {
         row.name = QString::fromUtf8(item->service_label);
@@ -1043,7 +1121,6 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     row.enc = item->enc != 0U;
     row.emergency = item->emergency != 0U;
     row.kind = item->category == DSD_EVENT_CATEGORY_VOICE ? CallHistoryModel::KindVoice : CallHistoryModel::KindNotice;
-    row_take_name(row, item);
     /* The system is the saved entry this session runs, for every row alike, so
      * the system filter keeps listing what the Home screen lists. The scan channel
      * the row was heard on (a -Y row name or a trunk-scan target id) rides its own
@@ -1082,6 +1159,8 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     row.sourceNameWhen = row.when;
     row.sourceNameSeq = seq;
     row.sourceNameSlot = slot;
+    row_take_payload(row, item);
+    row_take_name(row, item);
     row_take_carrier(row, item);
     row_take_site(row, item);
     if (row.kind == CallHistoryModel::KindVoice) {
@@ -1117,6 +1196,45 @@ CallHistoryModel::absorbSeenSite(SeenState& seen, const SeenState& read) {
     const bool texted =
         call_history_seen_absorb_site_text(&seen.siteText, &seen.siteTextKnown, read.siteText, read.siteTextKnown);
     return sited || texted;
+}
+
+// Fold the end, source, crypto verdict, emergency, source label, frequency and access code @p read gained into @p seen,
+// each by its own ratchet; returns whether it gained any.
+bool
+CallHistoryModel::absorbSeenCall(SeenState& seen, const SeenState& read) {
+    int64_t storedEnd = seen.end;
+    uint64_t storedSrc = seen.src;
+    bool storedEnc = seen.enc;
+    const bool advanced = call_history_seen_absorb(&storedEnd, &storedSrc, &storedEnc, read.end, read.src, read.enc,
+                                                   &seen.emergency, read.emergency);
+    const bool labelAdvanced =
+        !read.sourceName.isEmpty() && read.sourceName != seen.sourceName && read.src == storedSrc;
+    int64_t storedFreqHz = seen.freqHz;
+    int storedAcKind = seen.acKind;
+    int storedAc = seen.ac;
+    const bool filled =
+        call_history_seen_absorb_fill(&storedFreqHz, &storedAcKind, &storedAc, read.freqHz, read.acKind, read.ac);
+    if (labelAdvanced) {
+        seen.sourceName = read.sourceName;
+    }
+    seen.end = storedEnd;
+    seen.src = storedSrc;
+    seen.enc = storedEnc;
+    seen.freqHz = storedFreqHz;
+    seen.acKind = storedAcKind;
+    seen.ac = storedAc;
+    return advanced || labelAdvanced || filled;
+}
+
+// Record the GPS text, text message and position @p read carries in @p seen; returns whether any changed (issue #800).
+bool
+CallHistoryModel::absorbSeenTexts(SeenState& seen, const SeenState& read) {
+    const bool changed =
+        read.gpsText != seen.gpsText || read.messageText != seen.messageText || read.position != seen.position;
+    seen.gpsText = read.gpsText;
+    seen.messageText = read.messageText;
+    seen.position = read.position;
+    return changed;
 }
 
 int
@@ -1160,33 +1278,14 @@ CallHistoryModel::noteSeen(SeenMap& seenMap, qint64 session, const QString& key,
     if (!voice) {
         return SeenUnchanged;
     }
-    int64_t storedEnd = seen->end;
-    uint64_t storedSrc = seen->src;
-    bool storedEnc = seen->enc;
-    const bool advanced = call_history_seen_absorb(&storedEnd, &storedSrc, &storedEnc, read.end, read.src, read.enc,
-                                                   &seen->emergency, read.emergency);
-    const bool labelAdvanced =
-        !read.sourceName.isEmpty() && read.sourceName != seen->sourceName && read.src == storedSrc;
-    int64_t storedFreqHz = seen->freqHz;
-    int storedAcKind = seen->acKind;
-    int storedAc = seen->ac;
-    const bool filled =
-        call_history_seen_absorb_fill(&storedFreqHz, &storedAcKind, &storedAc, read.freqHz, read.acKind, read.ac);
+    const bool advanced = absorbSeenCall(*seen, read);
     const bool received = absorbSeenReceive(*seen, read);
     const bool digestAdopted = !seen->siteTextKnown && read.siteTextKnown;
     const bool sited = absorbSeenSite(*seen, read);
-    if (!advanced && !labelAdvanced && !filled && !received && !sited) {
+    const bool texted = absorbSeenTexts(*seen, read);
+    if (!advanced && !received && !sited && !texted) {
         return digestAdopted ? SeenSettled : SeenUnchanged;
     }
-    if (labelAdvanced) {
-        seen->sourceName = read.sourceName;
-    }
-    seen->end = storedEnd;
-    seen->src = storedSrc;
-    seen->enc = storedEnc;
-    seen->freqHz = storedFreqHz;
-    seen->acKind = storedAcKind;
-    seen->ac = storedAc;
     return SeenAdvanced;
 }
 
@@ -1235,6 +1334,11 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         const ItemChannel channel = item_call_channel(item);
         read.callChannel = channel.channel;
         read.callChannelKind = channel.kind;
+        read.gpsText = call_history_text_digest(item->gps_s, sizeof(item->gps_s));
+        read.messageText = call_history_text_digest(item->text_message, sizeof(item->text_message));
+        read.position =
+            call_history_position_digest(item_position_valid(item), item->pos.lat_e7, item->pos.lon_e7, item->pos.err_m,
+                                         item->pos.flags, item->pos.kind, item->pos.rev, item->pos.proc_instance);
         // Must match keyFor() on the equivalent Row, or a relaunched UI would
         // re-ingest every row its predecessor already logged.
         const QString key = seen_key(slot, seq, read.when, item->target_id, kind);
@@ -1251,6 +1355,7 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         FreshRow row;
         row.row = row_from_item(item, walk.sessionLabel, walk.systemUid, slot, seq);
         row.row.session = walk.session;
+        row.row.gpsOrd = walk.sessionOrd;
         row.row.fragments.append(call_history_fragment_key(instance, slot, seq));
         row.isUpdate = verdict == SeenAdvanced;
         row.again = verdict == SeenAgain;
@@ -1276,6 +1381,7 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
             continue;
         }
         walk.clearedThrough = m_clear.pushSeq[slot];
+        walk.sessionOrd = sessionOrdinal(static_cast<quint64>(snapshot->event_history_s[slot].instance));
         walkRing(snapshot->event_history_s[slot], slot, walk, fresh);
     }
     return fresh;
@@ -1337,6 +1443,16 @@ row_textual_destination(const CallHistoryModel::Row& row) {
     return row.name;
 }
 
+/**
+ * @brief A row's destination as a merge compares it: the target text as received (issue #800, B4), else its textual
+ * destination by name (rows older builds stored keep no target text).
+ */
+QString
+row_destination(const CallHistoryModel::Row& row) {
+    const QString raw = row.targetText.simplified();
+    return !raw.isEmpty() ? raw : row_textual_destination(row);
+}
+
 /** @brief Whether two rows with no talkgroup (tg == 0) name the same destination; any rows with one do. */
 bool
 target_less_rows_same_destination(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
@@ -1346,10 +1462,11 @@ target_less_rows_same_destination(const CallHistoryModel::Row& existing, const C
     // Textual targets (M17/D-STAR/YSF callsigns, dPMR dial strings) all share
     // tg == 0, so the numeric check cannot tell two destinations apart;
     // the target text is their identity. A name that is only a label (a service
-    // or channel name) is no destination of its own. Analog rows never get here
-    // (rows_mergeable()).
-    const QString existingTarget = row_textual_destination(existing);
-    const QString rowTarget = row_textual_destination(row);
+    // or channel name) is no destination of its own, but the target text a row
+    // keeps beside it still is (issue #800, B4: one caller's two M17 destinations
+    // under one named CAN). Analog rows never get here (rows_mergeable()).
+    const QString existingTarget = row_destination(existing);
+    const QString rowTarget = row_destination(row);
     if (!existingTarget.isEmpty() && !rowTarget.isEmpty() && existingTarget != rowTarget) {
         return false;
     }
@@ -1358,6 +1475,14 @@ target_less_rows_same_destination(const CallHistoryModel::Row& existing, const C
     // keep a talkgroup, so their retunes still fold.
     return existing.src != 0 || row.src != 0 || existing.freqHz == 0 || row.freqHz == 0
            || existing.freqHz == row.freqHz;
+}
+
+/** @brief Whether two rows were heard on one site under one channel numbering (issue #799) and their known identities
+ * agree (rows_identity_compatible()). */
+bool
+rows_systems_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    return dsd_call_site_compatible(&existing.siteId, existing.callChannelKind, &row.siteId, row.callChannelKind) != 0
+           && rows_identity_compatible(existing, row);
 }
 
 /** @brief Whether two voice rows are one conversation the merge may fold together. */
@@ -1380,7 +1505,8 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
         return false;
     }
     // Two sites, or two channel numberings, are two calls (issue #799): a radio that roams calls again on another site.
-    if (dsd_call_site_compatible(&existing.siteId, existing.callChannelKind, &row.siteId, row.callChannelKind) == 0) {
+    // So are two systems, protocols or callsign callers (issue #800).
+    if (!rows_systems_compatible(existing, row)) {
         return false;
     }
     if (!target_less_rows_same_destination(existing, row)) {
@@ -1459,15 +1585,6 @@ same_reception_row(const QList<CallHistoryModel::Row>& rows, const CallHistoryMo
         }
     }
     return first;
-}
-
-CallHistoryProvenance
-provenance(qint64 when, qulonglong seq, int slot) {
-    CallHistoryProvenance from;
-    from.when = static_cast<int64_t>(when);
-    from.seq = static_cast<uint64_t>(seq);
-    from.slot = slot;
-    return from;
 }
 
 /**
@@ -1573,6 +1690,19 @@ fill_carrier(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
     }
 }
 
+/**
+ * @brief Whether notice @p row is the delivery the logged notice @p existing is, decoded again: field for field, the
+ * fix included (issue #800: the same text with another position is another delivery).
+ */
+bool
+notices_same_delivery(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    return existing.when == row.when && existing.tg == row.tg && existing.src == row.src && existing.name == row.name
+           && row_detail_text(existing) == row_detail_text(row) && positions_same_fix(existing.pos, row.pos)
+           && existing.systemName == row.systemName && existing.systemUid == row.systemUid
+           && existing.channel == row.channel && receive_services_compatible(existing, row)
+           && rows_identity_compatible(existing, row) && !raw_texts_differ(existing.targetText, row.targetText);
+}
+
 } // namespace
 
 int
@@ -1607,6 +1737,9 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     if (existing.src == 0 || row.src == 0 || existing.src == row.src) {
         merge_source_label(existing, row);
     }
+    // Before the source below: what the fragment may give depends on the radio the row named until now.
+    fold_payload(existing, row);
+    fill_identity(existing, row);
     if (receive_adopt_identity(existing, row)) {
         existing.service = row.service;
         /* A service name outranks every other name a row has (row_take_name()). */
@@ -1663,10 +1796,8 @@ int
 CallHistoryModel::findRepeatedNotice(const Row& row) const {
     for (int i = 0; i < m_rows.size(); i++) {
         const Row& existing = m_rows.at(i);
-        if (existing.kind == KindNotice && existing.when == row.when && existing.tg == row.tg && existing.src == row.src
-            && existing.name == row.name && existing.detail == row.detail && existing.systemName == row.systemName
-            && existing.systemUid == row.systemUid && existing.channel == row.channel
-            && receive_services_compatible(existing, row) && !m_noticeTwinsTaken.contains(keyFor(existing))) {
+        if (existing.kind == KindNotice && notices_same_delivery(existing, row)
+            && !m_noticeTwinsTaken.contains(keyFor(existing))) {
             return i;
         }
     }
@@ -1692,11 +1823,18 @@ CallHistoryModel::absorbRepeatedNotice(const Row& row) {
     // A notice logged before rows carried a frequency and access code gains them here, when a fresh ring
     // delivers it again (a replay after an upgrade).
     fill_carrier(logged, row);
+    // A notice an older build stored keeps its detail as one text: the repeat (the same detail) gives it its parts.
+    if (logged.messageText.isEmpty() && !row_gps_known(logged)) {
+        take_message(logged, row);
+        take_gps(logged, row);
+    }
+    fill_identity(logged, row);
     // Its fragment is the logged notice's now, so a spill folded twice finds it there (foldSpill()).
     unionFragments(logged, row.fragments);
     (void)receive_adopt_identity(logged, row);
     const QModelIndex idx = index(repeated);
-    Q_EMIT dataChanged(idx, idx, {SessionRole, FreqHzRole, AccessCodeRole, AccessCodeTextRole, ReceivedToneRole});
+    Q_EMIT dataChanged(idx, idx,
+                       {SessionRole, FreqHzRole, AccessCodeRole, AccessCodeTextRole, ReceivedToneRole, DetailRole});
     return true;
 }
 
@@ -1716,7 +1854,7 @@ CallHistoryModel::settleMerged(int merged) {
                                             DurationSecsRole, DayLabelRole,     TimeTextRole,   EmergencyRole,
                                             SessionRole,      FreqHzRole,       AccessCodeRole, AccessCodeTextRole,
                                             ServiceNameRole,  ReceivedToneRole, NameRole,       RecordingsRole,
-                                            HasRecordingRole, SiteTextRole,     AnalogModeRole};
+                                            HasRecordingRole, SiteTextRole,     AnalogModeRole, DetailRole};
     (void)nameChannel(m_rows[merged]);
     const QModelIndex idx = index(merged);
     Q_EMIT dataChanged(idx, idx, mergeRoles);
@@ -2024,6 +2162,7 @@ CallHistoryModel::clearAll() {
     if (resumeTap) {
         const CallHistoryTap::Result tapped = m_tap->stop();
         takeTapReadPosition(tapped.read, tapped.pushSeq, tapped.ring);
+        adoptSessionOrdinals(tapped.ordinals);
     } else if (tapWasRunning) {
         handOffBackgroundCapture();
     }
@@ -2073,12 +2212,6 @@ CallHistoryModel::clearAll() {
 
 namespace {
 
-/** @brief A stored integer, or @p fallback when the key is missing (a store an older build wrote). */
-qint64
-json_i64_or(const QJsonObject& obj, const char* key, qint64 fallback) {
-    return obj.contains(QLatin1String(key)) ? obj.value(QLatin1String(key)).toVariant().toLongLong() : fallback;
-}
-
 /**
  * @brief A stored access code as {kind, value}, or {0, 0} when it is missing or does not fit the ring's fields.
  *
@@ -2092,25 +2225,6 @@ json_access_code(const QJsonObject& obj, const char* kindKey, const char* codeKe
         return qMakePair(0, 0);
     }
     return qMakePair(static_cast<int>(kind), static_cast<int>(code));
-}
-
-/**
- * @brief A stored integer that fits @p T, or false when the key is missing, holds no integer or does not fit.
- *
- * For values a ring row carries in fields of that width, so a hand-edited store cannot wrap one into another value.
- */
-template <typename T>
-bool
-json_field_fits(const QJsonObject& obj, const char* key, T* out) {
-    constexpr qint64 kNone = std::numeric_limits<qint64>::min();
-    const QJsonValue value = obj.value(QLatin1String(key));
-    const qint64 n = value.isDouble() ? value.toInteger(kNone) : kNone;
-    if (n < static_cast<qint64>(std::numeric_limits<T>::min())
-        || n > static_cast<qint64>(std::numeric_limits<T>::max())) {
-        return false;
-    }
-    *out = static_cast<T>(n);
-    return true;
 }
 
 /* Issue #799: a row's site is stored by its parts (`site`), each key only with its part. The DMR texts are stored as
@@ -2378,7 +2492,6 @@ row_from_json(const QJsonObject& obj) {
     row.systemUid = obj.value(QLatin1String("systemUid")).toString();
     row.kind = obj.value(QLatin1String("kind")).toInt(CallHistoryModel::KindVoice);
     row_end_from_json(row, obj);
-    row.detail = obj.value(QLatin1String("detail")).toString();
     row.channel = obj.value(QLatin1String("channel")).toString();
     row.channelName = obj.value(QLatin1String("channelName")).toString();
     row.service = obj.value(QLatin1String("service")).toString();
@@ -2404,6 +2517,7 @@ row_from_json(const QJsonObject& obj) {
     if (row.kind == CallHistoryModel::KindVoice) {
         row_site_from_json(row, obj);
     }
+    row_payload_from_json(row, obj);
     // Issue #708; absent in stores older builds wrote (a uid is then assigned at load).
     row.uid = qMax<qint64>(json_i64_or(obj, "uid", 0), 0);
     for (const auto& fragment : obj.value(QLatin1String("fr")).toArray()) {
@@ -2456,9 +2570,6 @@ row_to_json(const CallHistoryModel::Row& row) {
     obj.insert(QLatin1String("systemName"), row.systemName);
     obj.insert(QLatin1String("systemUid"), row.systemUid);
     obj.insert(QLatin1String("kind"), row.kind);
-    if (!row.detail.isEmpty()) {
-        obj.insert(QLatin1String("detail"), row.detail);
-    }
     if (!row.channel.isEmpty()) {
         obj.insert(QLatin1String("channel"), row.channel);
     }
@@ -2487,6 +2598,7 @@ row_to_json(const CallHistoryModel::Row& row) {
     obj.insert(QLatin1String("session"), row.session);
     row_carrier_to_json(row, obj);
     row_site_to_json(row, obj);
+    row_payload_to_json(row, obj);
     if (row.uid > 0) {
         obj.insert(QLatin1String("uid"), row.uid);
     }
@@ -2511,6 +2623,10 @@ CallHistoryModel::load() {
         // onto rows already in the log, even if the settings that hold it were lost.
         m_session = qMax(m_session, row.session);
         m_nextUid = qMax(m_nextUid, row.uid + 1);
+        // Likewise the session ordinals (issue #800): never given again to a later run, even if the settings were lost.
+        if (row.gpsOrd < std::numeric_limits<qint64>::max()) {
+            m_sessionOrdinals.next = qMax(m_sessionOrdinals.next, row.gpsOrd + 1);
+        }
         rows.append(row);
     }
     m_nextUid = qMax(m_nextUid, m_settings.value(QLatin1String(kNextUidKey)).toLongLong());
@@ -2526,6 +2642,7 @@ CallHistoryModel::load() {
         // fragment's start, so its seed's key is no ring row's, and a merged call whose seen entries were
         // evicted or lost is logged again as new rows, one per fragment.
         // The seed's site text digest is the text the row shows, as a ring walk reads it: a relaunch re-reads nothing.
+        // So are its GPS text, message and position digests (issue #800).
         m_seen.insert(keyFor(*it), SeenState{it->when,
                                              row_end_secs(*it),
                                              it->src,
@@ -2543,6 +2660,9 @@ CallHistoryModel::load() {
                                              it->callChannelKind,
                                              call_history_site_text_digest(&it->siteId),
                                              true,
+                                             row_text_digest(it->gpsText),
+                                             row_text_digest(it->messageText),
+                                             row_position_digest(it->pos),
                                              it->session,
                                              0U,
                                              QString()});
@@ -2605,6 +2725,14 @@ CallHistoryModel::seenEntryFromJson(const QJsonObject& obj) {
     if (!state.siteTextKnown) {
         state.siteText = 0U;
     }
+    // Issue #800: absent when there is none, and in stores older builds wrote; a value that does not fit reads as none.
+    const auto digest = [&obj](const char* key) {
+        uint32_t value = 0U;
+        return json_field_fits(obj, key, &value) ? value : 0U;
+    };
+    state.gpsText = digest("gpx");
+    state.messageText = digest("msx");
+    state.position = digest("psx");
     if (!json_field_fits(obj, "cch", &state.callChannel) || !json_field_fits(obj, "cchKind", &state.callChannelKind)
         || !call_history_call_channel_known(state.callChannelKind, state.callChannel)) {
         state.callChannel = 0U;
@@ -2718,6 +2846,14 @@ CallHistoryModel::seenEntryToJson(const SeenState& state) {
         obj.insert(QLatin1String("cch"), static_cast<qint64>(state.callChannel));
         obj.insert(QLatin1String("cchKind"), state.callChannelKind);
     }
+    const auto digest = [&obj](const char* key, uint32_t value) {
+        if (value != 0U) {
+            obj.insert(QLatin1String(key), static_cast<qint64>(value));
+        }
+    };
+    digest("gpx", state.gpsText);
+    digest("msx", state.messageText);
+    digest("psx", state.position);
     obj.insert(QLatin1String("session"), state.session);
     obj.insert(QLatin1String("ring"), QString::number(state.ring, 16));
     if (!state.twin.isEmpty()) {
@@ -2890,6 +3026,14 @@ CallHistoryModel::startBackgroundCapture() {
     context.sessionLabel = m_sessionLabel;
     context.sessionUid = m_sessionUid;
     context.clear = m_clear;
+    // A block of ordinals for the rings the tap meets first, set aside and saved before it runs: a process killed while
+    // it is away leaves rows whose ordinals no later run's can come before, however the spill is read back.
+    context.ordinals = m_sessionOrdinals;
+    context.ordinals.limit = m_sessionOrdinals.next <= std::numeric_limits<qint64>::max() - kTapOrdinalBlock
+                                 ? m_sessionOrdinals.next + kTapOrdinalBlock
+                                 : std::numeric_limits<qint64>::max();
+    m_sessionOrdinals.next = context.ordinals.limit;
+    saveSessionOrdinals();
     m_tapClearRev = m_clearRev;
     if (!m_tap->start(std::move(context))) {
         qWarning("call history: the background capture could not start");
@@ -2952,6 +3096,8 @@ CallHistoryModel::stopBackgroundCapture() {
     const CallHistoryTap::Result tapped = m_tap->stop();
     // A clear before the next ingest covers what the tap read.
     takeTapReadPosition(tapped.read, tapped.pushSeq, tapped.ring);
+    // Before any spill line folds: the ordinals the tap gave are the rings' for good.
+    adoptSessionOrdinals(tapped.ordinals);
     // A clear this model made before it had read any ring binds to what the first read finds (settleClear()). The
     // tap made that first read, so its binding is the one: binding later, here, would hide what the ring took in
     // between. A clear made after the tap started supersedes whatever the tap settled.
@@ -3067,6 +3213,8 @@ CallHistoryModel::foldSpillLine(const QByteArray& line, bool cleared, quint64* t
     }
     const Row row = row_from_json(rowObj);
     const SeenState seen = seenEntryFromJson(obj.value(QLatin1String("seen")).toObject());
+    // The ordinal the tap gave the row's ring is that ring's (issue #800): kept as it was, never given again.
+    adoptSessionOrdinal(seen.ring, json_i64_or(obj, "ord", 0));
     if (spilledRowCleared(cleared, row, seen)) {
         // Cleared after the tap found it.
         return false;
@@ -3161,6 +3309,10 @@ CallHistoryModel::spillLine(const FreshRow& fresh) {
     obj.insert(QLatin1String("key"), fresh.key);
     obj.insert(QLatin1String("seen"), seenEntryToJson(fresh.seen));
     obj.insert(QLatin1String("row"), row_to_json(fresh.row));
+    // The session ordinal of the ring the tap read the row from (issue #800), whether or not the row has a position.
+    if (fresh.row.gpsOrd > 0) {
+        obj.insert(QLatin1String("ord"), fresh.row.gpsOrd);
+    }
     if (fresh.isUpdate) {
         obj.insert(QLatin1String("upd"), true);
     }
