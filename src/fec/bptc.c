@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* Define -------------------------------------------------------------------*/
 
@@ -71,49 +72,64 @@ bptc_196x96_fill_matrix(const uint8_t input[196], uint8_t matrix[13][15]) {
     }
 }
 
-static uint32_t
-bptc_196x96_decode_rows(uint8_t matrix[13][15]) {
-    uint8_t line_uncorrected[15];
-    uint8_t line_corrected[11];
-    uint32_t errors = 0;
-    for (uint32_t i = 0; i < 9; i++) {
-        for (uint32_t j = 0; j < 15; j++) {
-            line_uncorrected[j] = matrix[i][j];
-        }
-        if (Hamming_15_11_decode(line_uncorrected, line_corrected, 1) == false) {
-            errors++;
-            // The decoder leaves line_corrected unwritten on failure. Keep the received row rather than uninitialized
-            // or previous-row data. (Hamming(15,11) is perfect, so every syndrome corrects; this keeps it so if the
-            // table ever changes.)
-            continue;
-        }
-        for (uint32_t j = 0; j < 11; j++) {
-            matrix[i][j] = line_corrected[j];
-        }
+/* One row and column pass over the whole matrix, the column-parity rows 9..12 included, that writes every corrected bit
+ * back, parity bits included, so the next pass starts from a consistent matrix. A failed decode leaves its row or
+ * column as received. */
+static void
+bptc_196x96_full_pass(uint8_t matrix[13][15]) {
+    for (uint32_t i = 0; i < 13; i++) {
+        (void)Hamming_15_11_decode(matrix[i], NULL, 1);
     }
-    return errors;
-}
-
-static uint32_t
-bptc_196x96_decode_cols(uint8_t matrix[13][15]) {
-    uint8_t col_uncorrected[13];
-    uint8_t col_corrected[9];
-    uint32_t errors = 0;
+    uint8_t col[13];
     for (uint32_t i = 0; i < 15; i++) {
         for (uint32_t j = 0; j < 13; j++) {
-            col_uncorrected[j] = matrix[j][i];
+            col[j] = matrix[j][i];
         }
-        if (Hamming_13_9_decode(col_uncorrected, col_corrected, 1) == false) {
-            errors++;
-            // The decoder leaves col_corrected unwritten on failure. Keep the
-            // received column rather than uninitialized or previous-column data.
-            continue;
-        }
-        for (uint32_t j = 0; j < 9; j++) {
-            matrix[j][i] = col_corrected[j];
+        (void)Hamming_13_9_decode(col, NULL, 1);
+        for (uint32_t j = 0; j < 13; j++) {
+            matrix[j][i] = col[j];
         }
     }
-    return errors;
+}
+
+/* The rows and columns whose syndrome is not zero: 0 for a valid product codeword. Hamming(15,11) is perfect, so a row
+ * decode always "succeeds"; only a zero syndrome, a decode that changes nothing, shows that a row is on the code. */
+static uint32_t
+bptc_196x96_off_code(uint8_t matrix[13][15]) {
+    uint32_t off = 0;
+    uint8_t line[15];
+    for (uint32_t i = 0; i < 13; i++) {
+        for (uint32_t j = 0; j < 15; j++) {
+            line[j] = matrix[i][j];
+        }
+        if (Hamming_15_11_decode(line, NULL, 1) == false || memcmp(line, matrix[i], sizeof line) != 0) {
+            off++;
+        }
+    }
+    uint8_t col[13];
+    uint8_t received_col[13];
+    for (uint32_t i = 0; i < 15; i++) {
+        for (uint32_t j = 0; j < 13; j++) {
+            col[j] = matrix[j][i];
+            received_col[j] = col[j];
+        }
+        if (Hamming_13_9_decode(col, NULL, 1) == false || memcmp(col, received_col, sizeof col) != 0) {
+            off++;
+        }
+    }
+    return off;
+}
+
+/* Decodes the matrix in place. A received codeword is its own nearest one and stays as it is; any other word gets two
+ * full passes. Returns bptc_196x96_off_code() of the result, 0 when it is a valid codeword. */
+static uint32_t
+bptc_196x96_decode_matrix(uint8_t matrix[13][15]) {
+    if (bptc_196x96_off_code(matrix) == 0U) {
+        return 0;
+    }
+    bptc_196x96_full_pass(matrix);
+    bptc_196x96_full_pass(matrix);
+    return bptc_196x96_off_code(matrix);
 }
 
 static void
@@ -136,106 +152,38 @@ bptc_196x96_extract_payload_and_r(uint8_t matrix[13][15], uint8_t extracted[96],
  * @brief : This function extract the 96 bits of a deinteleaved 196 bits
  *          buffer using BPTC (196,96)
  *
+ * Every row and column, parity rows and columns included, is decoded with
+ * full copy-back (bptc_196x96_decode_matrix()), and the result counts only
+ * when it is a valid product codeword: a row or column decode that reports
+ * success can still leave the matrix off the code, so a success count alone
+ * would pass noise and miscorrections.
+ *
  * @param InputDeInteleavedData : Pointer of DMR input data deinterleaved (196 bytes)
  *
  * @param DMRDataExtracted : Pointer where the DMR data will be written (96 bytes)
  *
- * @return The total number of irrecoverable Hamming check errors of the second
- *         pass, or 0 when BPTC_196x96_Decode_Codeword() then finds a codeword
- *         within DSD_BPTC_196x96_UNIQUE_RADIUS, whose payload and R are written
+ * @return 0 when the decode reached a valid codeword, whose payload and R are
+ *         written; otherwise the number of rows and columns still off the code,
+ *         with the decoder's best-effort payload and R written
  */
 uint32_t
 BPTC_196x96_Extract_Data(uint8_t InputDeInteleavedData[196], uint8_t DMRDataExtracted[96], uint8_t R[3]) {
     uint8_t DataMatrix[13][15];
     bptc_196x96_fill_matrix(InputDeInteleavedData, DataMatrix);
-    (void)bptc_196x96_decode_rows(DataMatrix);
-    (void)bptc_196x96_decode_cols(DataMatrix);
-
-    uint32_t hamming_irrecoverable_error_nb = 0;
-    hamming_irrecoverable_error_nb += bptc_196x96_decode_rows(DataMatrix);
-    hamming_irrecoverable_error_nb += bptc_196x96_decode_cols(DataMatrix);
-
+    const uint32_t off_code = bptc_196x96_decode_matrix(DataMatrix);
     bptc_196x96_extract_payload_and_r(DataMatrix, DMRDataExtracted, R);
-    if (hamming_irrecoverable_error_nb != 0) {
-        // Only data bits are copied back above, so a row- or column-parity error
-        // can still fail the second pass with the payload right. A codeword
-        // within the unique radius is the nearest one: take it instead.
-        uint8_t codeword_bits[96];
-        uint8_t codeword_r[3];
-        uint32_t distance = 0;
-        if (BPTC_196x96_Decode_Codeword(InputDeInteleavedData, codeword_bits, codeword_r, &distance) == 1
-            && distance <= DSD_BPTC_196x96_UNIQUE_RADIUS) {
-            DSD_MEMCPY(DMRDataExtracted, codeword_bits, sizeof codeword_bits);
-            DSD_MEMCPY(R, codeword_r, sizeof codeword_r);
-            return 0;
-        }
-    }
-    return hamming_irrecoverable_error_nb;
+    return off_code;
 } /* End BPTC_196x96_Extract_Data() */
-
-/* One row and column pass that writes every corrected bit back, parity bits
- * included. A failed decode leaves its row or column as received. */
-static void
-bptc_196x96_full_pass(uint8_t matrix[13][15]) {
-    for (uint32_t i = 0; i < 9; i++) {
-        (void)Hamming_15_11_decode(matrix[i], NULL, 1);
-    }
-    uint8_t col[13];
-    for (uint32_t i = 0; i < 15; i++) {
-        for (uint32_t j = 0; j < 13; j++) {
-            col[j] = matrix[j][i];
-        }
-        (void)Hamming_13_9_decode(col, NULL, 1);
-        for (uint32_t j = 0; j < 13; j++) {
-            matrix[j][i] = col[j];
-        }
-    }
-}
-
-/* True when every row and column has a zero syndrome. The column-parity rows
- * 9-12 follow from the others by linearity; they are checked all the same. */
-static bool
-bptc_196x96_is_codeword(uint8_t matrix[13][15]) {
-    uint8_t line[15];
-    for (uint32_t i = 0; i < 13; i++) {
-        for (uint32_t j = 0; j < 15; j++) {
-            line[j] = matrix[i][j];
-        }
-        if (Hamming_15_11_decode(line, NULL, 1) == false) {
-            return false;
-        }
-        for (uint32_t j = 0; j < 15; j++) {
-            if (line[j] != matrix[i][j]) {
-                return false;
-            }
-        }
-    }
-    uint8_t col[13];
-    for (uint32_t i = 0; i < 15; i++) {
-        for (uint32_t j = 0; j < 13; j++) {
-            col[j] = matrix[j][i];
-        }
-        if (Hamming_13_9_decode(col, NULL, 1) == false) {
-            return false;
-        }
-        for (uint32_t j = 0; j < 13; j++) {
-            if (col[j] != matrix[j][i]) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
 
 /*
  * @brief : Decode a deinterleaved 196 bits buffer to a full BPTC (196,96)
- *          codeword, for callers that need the codeword itself rather than
- *          the best-effort payload of BPTC_196x96_Extract_Data().
+ *          codeword, for callers that need the codeword and its distance to
+ *          the received bits rather than BPTC_196x96_Extract_Data()'s verdict.
  *
- * Two row and column passes run on a copy with every corrected bit written
- * back, parity bits included. The decode is iterative, not nearest-codeword:
- * some patterns of few errors reach a different codeword further away, so
- * callers gate on the returned distance.
+ * The decode is BPTC_196x96_Extract_Data()'s: two row and column passes on a
+ * copy with every corrected bit written back. It is iterative, not
+ * nearest-codeword: some patterns of few errors reach a different codeword
+ * further away, so callers gate on the returned distance.
  *
  * @param input196 : DMR data deinterleaved (196 bytes, one bit each, unchanged)
  *
@@ -259,16 +207,8 @@ BPTC_196x96_Decode_Codeword(const uint8_t* input196, uint8_t* out96, uint8_t* r3
     uint8_t received[13][15];
     uint8_t matrix[13][15];
     bptc_196x96_fill_matrix(input196, received);
-    // A received codeword is its own nearest one: the passes would change nothing.
-    if (bptc_196x96_is_codeword(received)) {
-        bptc_196x96_extract_payload_and_r(received, out96, r3);
-        *distance = 0;
-        return 1;
-    }
     DSD_MEMCPY(matrix, received, sizeof matrix);
-    bptc_196x96_full_pass(matrix);
-    bptc_196x96_full_pass(matrix);
-    if (!bptc_196x96_is_codeword(matrix)) {
+    if (bptc_196x96_decode_matrix(matrix) != 0U) {
         DSD_MEMSET(out96, 0, 96);
         DSD_MEMSET(r3, 0, 3);
         *distance = 0;
@@ -286,11 +226,69 @@ BPTC_196x96_Decode_Codeword(const uint8_t* input196, uint8_t* out96, uint8_t* r3
     return 1;
 } /* End BPTC_196x96_Decode_Codeword() */
 
+/* Hamming(16,11,4) decode of one 16-bit row in place, parity bits included, so the row stays a codeword the column
+ * parity can check. A failed decode (an even number of errors) keeps the received row. */
+static bool
+bptc_hamming_16_11_4_row(uint8_t row[16]) {
+    uint8_t line[16];
+    for (uint32_t j = 0; j < 16; j++) {
+        line[j] = row[j] & 1U;
+    }
+    if (Hamming_16_11_4_decode(line, NULL, 1) == false) {
+        return false;
+    }
+    for (uint32_t j = 0; j < 16; j++) {
+        row[j] = line[j];
+    }
+    return true;
+}
+
+/* The columns whose even parity over all 8 rows fails, flagged in @p bad; returns how many. */
+static uint32_t
+bptc_128x77_bad_columns(uint8_t matrix[8][16], uint8_t bad[16]) {
+    uint32_t count = 0;
+    for (uint32_t j = 0; j < 16; j++) {
+        uint8_t parity = 0;
+        for (uint32_t i = 0; i < 8; i++) {
+            parity ^= matrix[i][j];
+        }
+        bad[j] = parity;
+        count += parity;
+    }
+    return count;
+}
+
+/* Parity-guided repair: a row the Hamming code detected but could not correct holds an even number of errors. When it
+ * is the only such row and exactly two columns fail their parity, those two bits are its errors, so both flip. */
+static void
+bptc_128x77_repair_row(uint8_t matrix[8][16], const uint8_t row_failed[8]) {
+    uint32_t failed_rows = 0;
+    uint32_t failed_row = 0;
+    for (uint32_t i = 0; i < 8; i++) {
+        if (row_failed[i]) {
+            failed_rows++;
+            failed_row = i;
+        }
+    }
+    uint8_t bad_columns[16];
+    if (failed_rows != 1U || bptc_128x77_bad_columns(matrix, bad_columns) != 2U) {
+        return;
+    }
+    for (uint32_t j = 0; j < 16; j++) {
+        matrix[failed_row][j] ^= bad_columns[j];
+    }
+}
+
 /*
  * @brief : This function extract the 77 bits of a deinteleaved 128 bits
  *          buffer using BPTC (128,77).
  *
- * @note : See DMR standard ETSI TS 102 361-1 chapter B.2.1 for details
+ * @note : See DMR standard ETSI TS 102 361-1 chapter B.2.1 for details. Rows
+ *         0..6 are Hamming(16,11,4) codewords and row 7 holds the even parity
+ *         of each column, so it is a codeword of the same linear code: every
+ *         row is decoded with its parity bits written back, a single failed
+ *         row with two failed columns is repaired, and the rows are decoded
+ *         again before the column parity is checked.
  *
  * @param InputDeInteleavedData : Pointer of DMR input data deinterleaved (128 bytes
                                   act as a 16 x 8 byte data matrix)
@@ -300,50 +298,30 @@ BPTC_196x96_Decode_Codeword(const uint8_t* input196, uint8_t* out96, uint8_t* r3
  *                           DMRDataExtracted[72..76] = 5 bit of CRC extracted (to be checked)
  *
  * @return 0 = All is OK
- *         Other = Error - Irrecoverable Hamming parity check error number
+ *         Other = Error - rows still failing their Hamming decode plus columns
+ *                 failing their parity; a failed row keeps its received bits
  */
 uint32_t
 BPTC_128x77_Extract_Data(uint8_t InputDataMatrix[8][16], uint8_t DMRDataExtracted[77]) {
-    uint32_t i, j, k;
     uint8_t DataMatrix[8][16];
-    uint8_t LineUncorrected[16];
-    uint8_t LineCorrected[11];
-    uint32_t HammingIrrecoverableErrorNb = 0;
-    uint32_t ParityCheckErrorNb = 0;
+    uint8_t row_failed[8];
+    uint32_t i, j, k;
 
-    /* First step : Reconstitute the BPTC 16x8 matrix */
     for (i = 0; i < 8; i++) {
         for (j = 0; j < 16; j++) {
-            /* Only the LSBit of the byte is stored */
             DataMatrix[i][j] = (InputDataMatrix[i][j] & 1);
         }
     }
 
-    /* Init the Hamming (16,11,4) library
-   * Not needed because it has already been done
-   * in the "InitAllFecFunction()" function */
+    for (i = 0; i < 8; i++) {
+        row_failed[i] = (uint8_t)!bptc_hamming_16_11_4_row(DataMatrix[i]);
+    }
+    bptc_128x77_repair_row(DataMatrix, row_failed);
 
-    /* Process the the Hamming (16,11,4) code
-   * check on each line.
-   * Do not check the last line (line nb 8) */
-    for (i = 0; i < 7; i++) {
-        /* Get a full line */
-        for (j = 0; j < 16; j++) {
-            LineUncorrected[j] = DataMatrix[i][j];
-        }
-
-        /* Apply Hamming (16,11,4) code correction */
-        if (Hamming_16_11_4_decode(LineUncorrected, LineCorrected, 1) == false) {
+    uint32_t HammingIrrecoverableErrorNb = 0;
+    for (i = 0; i < 8; i++) {
+        if (!bptc_hamming_16_11_4_row(DataMatrix[i])) {
             HammingIrrecoverableErrorNb++;
-            // The decoder leaves LineCorrected unwritten on failure. Preserve the
-            // received row rather than copying uninitialized or previous-row data.
-            continue;
-        }
-
-        /* Re-inject the line in the matrix (only the util data [11 bit],
-     * not the Hamming part [4 bit]) */
-        for (j = 0; j < 11; j++) {
-            DataMatrix[i][j] = LineCorrected[j];
         }
     }
 
@@ -372,23 +350,8 @@ BPTC_128x77_Extract_Data(uint8_t InputDataMatrix[8][16], uint8_t DMRDataExtracte
         k++;
     }
 
-    /* Verify the data integrity by checking
-   * all column parity bit */
-    ParityCheckErrorNb = 0;
-    for (i = 0; i < 16; i++) {
-        uint32_t NbOfOne = 0;
-
-        /* Get a full column */
-        for (j = 0; j < 7; j++) {
-            NbOfOne += DataMatrix[j][i];
-        }
-
-        /* Check the parity bit (number of "1"
-     * must be even) */
-        if ((NbOfOne % 2) != DataMatrix[7][i]) {
-            ParityCheckErrorNb++;
-        }
-    }
+    uint8_t bad_columns[16];
+    const uint32_t ParityCheckErrorNb = bptc_128x77_bad_columns(DataMatrix, bad_columns);
 
     /* Return the number of irrecoverable Hamming errors +
    * the number of parity check error */
@@ -400,14 +363,20 @@ BPTC_128x77_Extract_Data(uint8_t InputDataMatrix[8][16], uint8_t DMRDataExtracte
  *          buffer using Reverse Channel Single Burst BPTC.
  *
  * @note : See DMR standard ETSI TS 102 361-1 chapter B.2.2.2 for details
+ *         (and B.2.2.1 for the non-RC form). Both rows are Hamming(16,11,4)
+ *         codewords: the parity row equals the information row (even) or is
+ *         its complement (odd), and the all-ones word is a codeword of this
+ *         code. Each row is decoded with its parity bits written back; a
+ *         failed row keeps its received bits and counts as an error.
  *
  * @param InputInterleavedData : Pointer of DMR input data interleaved (32 bytes
                                  act as a 16 x 2 bits data matrix)
  *
- * @param DMRDataExtracted : Pointer where the DMR data will be written (77 bytes)
+ * @param DMRDataExtracted : Pointer where the DMR data will be written (32 bytes)
  *                           DMRDataExtracted[0..10]  = Util data (Hamming corrected)
- *                           DMRDataExtracted[11..15] = Hamming data
- *                           DMRDataExtracted[16..31] = 16 bits of odd parity (to be checked)
+ *                           DMRDataExtracted[11..15] = Hamming data (corrected)
+ *                           DMRDataExtracted[16..31] = 16 bits of parity (corrected, then checked)
+
  *
  * @param ParityCheckTypeOdd : 0 = Parity to check is even (used in Non-Reverse Channel Single Burst BPTC)
  *                             1 = Parity to check is odd (used in Reverse Channel Single Burst BPTC)
@@ -419,8 +388,6 @@ uint32_t
 BPTC_16x2_Extract_Data(uint8_t InputInterleavedData[32], uint8_t DMRDataExtracted[32], uint32_t ParityCheckTypeOdd) {
     uint32_t i;
     uint8_t DataMatrix[32];
-    uint8_t LineUncorrected[16];
-    uint8_t LineCorrected[11];
     uint32_t HammingIrrecoverableErrorNb = 0;
     uint32_t ParityCheckOddErrorNb = 0;
     uint32_t ParityCheckEvenErrorNb = 0;
@@ -436,19 +403,11 @@ BPTC_16x2_Extract_Data(uint8_t InputInterleavedData[32], uint8_t DMRDataExtracte
         DMRDataExtracted[i] = DataMatrix[i] & 1;
     }
 
-    /* Prepare the line to be corrected */
-    for (i = 0; i < 16; i++) {
-        LineUncorrected[i] = DataMatrix[i] & 1;
-    }
-
-    /* Apply Hamming (16,11,4) code correction. The decoder leaves LineCorrected unwritten on failure: the output keeps
-     * the received bits copied above, and the failure counts in the return value, so the caller takes none of it. */
-    if (Hamming_16_11_4_decode(LineUncorrected, LineCorrected, 1) == false) {
-        HammingIrrecoverableErrorNb++;
-    } else {
-        /* Copy the corrected content to the output buffer */
-        for (i = 0; i < 11; i++) {
-            DMRDataExtracted[i] = LineCorrected[i] & 1;
+    /* Apply Hamming (16,11,4) code correction to both rows. The output keeps the received bits of a row that fails,
+     * and the failure counts in the return value, so the caller takes none of it. */
+    for (size_t row = 0; row < 2U; row++) {
+        if (!bptc_hamming_16_11_4_row(&DMRDataExtracted[row * 16U])) {
+            HammingIrrecoverableErrorNb++;
         }
     }
 
