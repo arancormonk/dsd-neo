@@ -2052,7 +2052,7 @@ struct dsd_state {
     /* The receiver moved off a carrier or released its call, and the slot's call has not said yet whether it is
      * encrypted (dmr_enc_class_hold()): its voice is held, as an X2-TDMA call's opening frames are, until its own LC or
      * PI header says (dmr_enc_class_release_hold()). 0 when a run starts, whatever an earlier run on the same state
-     * left (a host such as Android reuses its state across sessions). */
+     * left (a host may run one state more than once). */
     uint8_t dmr_enc_class_held[2];
     /* Whether the receiver has landed on a carrier yet in this run (any landing: the run's first stream, a tune, a scan
        row or park; dsd_engine_note_run_start()). The run's first landing holds no DMR slot's voice; every later one,

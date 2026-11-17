@@ -3088,9 +3088,10 @@ test_carrier_boundary_forgets_dmr_call_privacy(void) {
     return rc;
 }
 
-/* A run's first stream start on a state an earlier run used (Android reuses its state): its source boundary against
-   the earlier run's stream (another device, or any I/Q replay start) forgets that carrier's evidence, as before, but
-   the run's first landing is never held. A later start in the run on another source holds as any source change does. */
+/* A run's first stream start on a state an earlier run used (a host may run one state twice): its source boundary
+   against the earlier run's stream (another device, or any I/Q replay start) forgets that carrier's evidence, as
+   before, but the run's first landing is never held. A later start in the run on another source holds as any source
+   change does. */
 static int
 test_run_first_landing_is_never_held(void) {
     static const struct {

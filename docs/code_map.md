@@ -3360,8 +3360,8 @@ suite runs under this compiler.
 
   The exemption, the run's first landing, keyed on nothing having landed yet in the run (`dsd_state::run_landed`, set
   by any landing: the run's first stream, a tune, a scan's row entry or park):
-  - It is never held, whatever an earlier run on the same state left (Android reuses its state): the run start clears
-    the hold, and so does the run's first radio stream start after its source boundary
+  - It is never held, whatever an earlier run on the same state left (a host may run one state twice): the run start
+    clears the hold, and so does the run's first radio stream start after its source boundary
     (`dsd_engine_note_run_stream_source()`), which still forgets the earlier run's carrier when the device differs or
     the stream is an I/Q replay. A later source change in the run holds as before.
   - A run starts landed, its first stream being that landing, unless a trunk scan configured for it (`--trunk-scan`)

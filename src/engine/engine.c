@@ -5417,8 +5417,8 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
     /* A state an earlier run used may still say its carrier was two-slot TDMA: this run proves its own. */
     state->tdma_carrier = 0U;
     /* Nor is a DMR slot's voice held for a move the earlier run made (dmr_enc_class_hold()): a host that reuses its
-       state (Android) would hold this run's first landing. The radio stream's first start clears it again after its
-       source boundary (dsd_engine_note_run_stream_source()). Whether the run has landed yet is this run's own. */
+       state would hold this run's first landing. The radio stream's first start clears it again after its source
+       boundary (dsd_engine_note_run_stream_source()). Whether the run has landed yet is this run's own. */
     dsd_engine_note_run_start(opts, state);
     if (enter_rc != 0) {
         rc = 1;
