@@ -73,11 +73,20 @@
 #endif
 
 static void decodeM17PKT(const dsd_opts* opts, dsd_state* state, const uint8_t* input, int len);
-static void M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical);
+
+/* The transmission an LSF belongs to, for the GNSS META repeat rule: RF (the call it publishes), or a network stream. */
+typedef struct {
+    uint8_t network; /* 1 for an IP stream or MPKT frame */
+    uint16_t stream_id;
+} m17_lsf_carrier;
+
+static const m17_lsf_carrier k_m17_rf_carrier = {0U, 0U};
+static void M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
 static void M17logLSFSummary(const struct m17_lsf_result* res);
 static void M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
-static void M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res);
+static void M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
+                             const m17_lsf_carrier* carrier);
 static void m17_decode_pkt_print_extended_csd(const uint8_t* input, int len);
 static void m17_decode_pkt_print_meta_or_arb(dsd_state* state, const uint8_t* input, int len, uint32_t protocol);
 static void m17_print_gnss(const struct m17_gnss_result* gnss);
@@ -253,7 +262,7 @@ M17finalizeLICH(dsd_state* state, const dsd_opts* opts) {
     const uint8_t crc_err = (crc_cmp != crc_ext) ? 1U : 0U;
 
     if (crc_err == 0U || opts->aggressive_framesync == 0) {
-        M17decodeLSF(opts, state, crc_err == 0U);
+        M17decodeLSF(opts, state, crc_err == 0U, &k_m17_rf_carrier);
     }
 
     if (opts->payload == 1) {
@@ -390,7 +399,7 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
 static int s_m17_monitoring_local_tx;
 
 static void
-M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical) {
+M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier) {
     struct m17_lsf_result res;
     if (m17_parse_lsf(state->m17_lsf, sizeof(state->m17_lsf), &res) != 0) {
         LOG_WARN("M17: failed to parse LSF\n");
@@ -405,7 +414,7 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical) {
                position is the received station's, and the call it describes is the one just published. */
             if (!s_m17_monitoring_local_tx) {
                 dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, (uint16_t)res.cn);
-                M17decodeLSFMeta(opts, state, &res);
+                M17decodeLSFMeta(opts, state, &res, carrier);
             }
         }
         M17logLSFTrailer(state, &res);
@@ -551,7 +560,7 @@ m17_gnss_row_text(const dsd_position_fix* fix, char* out, size_t cap) {
  */
 static void
 m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
-                          const struct m17_gnss_result* gnss) {
+                          const struct m17_gnss_result* gnss, const m17_lsf_carrier* carrier) {
     if ((gnss->validity & M17_GNSS_VALID_LATLON) == 0U || (gnss->out_of_range_fields & M17_GNSS_VALID_LATLON) != 0U) {
         return;
     }
@@ -564,32 +573,46 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     char callsign[DSD_CALL_IDENTITY_TEXT_SIZE];
     m17_format_address(res->src, 1, callsign);
     DSD_SNPRINTF(fix.source_text, sizeof(fix.source_text), "%s", callsign);
+    dsd_call_snapshot call;
+    const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    /* One report per transmission and META content: an RF stream's call (the one m17_publish_lsf() just observed),
+       or a network stream's ID. */
+    const uint8_t tx_kind = carrier->network ? 2U : 1U;
+    const uint64_t tx_id = carrier->network ? (uint64_t)carrier->stream_id : (active ? call.epoch : 0U);
+    if (state->m17_gnss_tx_kind == tx_kind && state->m17_gnss_tx_id == tx_id
+        && memcmp(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES) == 0) {
+        return;
+    }
     if (dsd_position_admit(opts, state, &fix, 1, 1, NULL) == DSD_POSITION_REFUSED) {
         return;
     }
+    state->m17_gnss_tx_kind = tx_kind;
+    state->m17_gnss_tx_id = tx_id;
+    DSD_MEMCPY(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
     char text[128];
     m17_gnss_row_text(&fix, text, sizeof(text));
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+    if (active) {
         (void)dsd_event_enrich_position(state, 0U, call.epoch, &fix, text);
     }
 }
 
 static void
-M17decodeMetaGnss(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
+M17decodeMetaGnss(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
+                  const m17_lsf_carrier* carrier) {
     struct m17_gnss_result gnss;
     if (m17_parse_gnss_meta(state->m17_meta, M17_META_BYTES, &gnss) != 0) {
         DSD_FPRINTF(stderr, " Invalid GNSS META;");
         return;
     }
     m17_print_gnss(&gnss);
-    m17_publish_gnss_position(opts, state, res, &gnss);
+    m17_publish_gnss_position(opts, state, res, &gnss, carrier);
 }
 
 /* The META field of an LSF whose CRC passed, decoded by its subtype straight from the 14 META bytes (issue #800 N1:
  * no packet protocol specifier stands in front of them). */
 static void
-M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
+M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
+                 const m17_lsf_carrier* carrier) {
     //Decode Meta Data when not ENC (if meta field is populated with something)
     if (res->et != 0U || res->has_meta == 0U) {
         return;
@@ -606,7 +629,7 @@ M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_re
     LOG_INFO("\n ");
     DSD_FPRINTF(stderr, " Protocol: %s;", m17_packet_protocol_name_u32(identifier));
     if (identifier == 0x81U) {
-        M17decodeMetaGnss(opts, state, res);
+        M17decodeMetaGnss(opts, state, res, carrier);
     } else if (identifier == 0x82U) {
         m17_decode_pkt_print_extended_csd(state->m17_meta, (int)M17_META_BYTES);
     } else {
@@ -1445,7 +1468,7 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
     state->m17_lsf_stream_mode = (uint8_t)((crc_err == 0) ? (lsf_packed[13] & 1U) : 0U);
 
     if (crc_err == 0 || opts->aggressive_framesync == 0) {
-        M17decodeLSF(opts, state, crc_err == 0);
+        M17decodeLSF(opts, state, crc_err == 0, &k_m17_rf_carrier);
     }
 
     if (crc_err == 0) {
@@ -3714,13 +3737,18 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     const uint16_t crc_cmp = m17_crc16(ip_frame, 52);
     const int crc_valid = crc_ext == crc_cmp;
     if (crc_valid) {
-        M17decodeLSF(opts, state, 1);
+        const m17_lsf_carrier carrier = {1U, sid};
+        M17decodeLSF(opts, state, 1, &carrier);
     }
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
     (void)m17_dispatch_stream_payload_internal(opts, state, payload, stream_frame_number, processed_payload, crc_valid);
     // CRC-verified IP-frame EOT: positive end evidence, like the RF stream's end flag above.
     if (crc_valid && eot != 0U && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    }
+    if (crc_valid && eot != 0U) {
+        /* The stream ended: a later stream that reuses its ID is another transmission. */
+        state->m17_gnss_tx_kind = 0U;
     }
 
     if (opts->payload == 1) {
@@ -3782,7 +3810,8 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     DSD_FPRINTF(stderr, "\n M17 IP   MPKT: %04X;", sid);
 
     if (crc_ext == crc_cmp) {
-        M17decodeLSF(opts, state, 1);
+        const m17_lsf_carrier carrier = {1U, sid};
+        M17decodeLSF(opts, state, 1, &carrier);
     }
     if (opts->payload == 1) {
         m17_ip_dump_bytes_spaced(ip_frame, err, 25, "                ");
@@ -3793,6 +3822,8 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
         /* The MPKT trailer is CRC2 only; decodeM17PKT consumes the protocol identifier itself. */
         decodeM17PKT(opts, state, ip_frame + 34, err - 34 - 2);
         m17_end_packet_call(opts, state);
+        /* One MPKT is one whole transmission. */
+        state->m17_gnss_tx_kind = 0U;
     } else {
         DSD_FPRINTF(stderr, " IP CRC ERR");
     }

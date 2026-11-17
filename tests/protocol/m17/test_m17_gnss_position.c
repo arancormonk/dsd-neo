@@ -239,8 +239,119 @@ test_rf_lsf_meta_position(void) {
     expect_int("call row position lat", row->pos.lat_e7, LAT_QUARTER_E7);
     expect_true("call row GPS text", strncmp(row->gps_s, "GPS: (22.500003, 45.000005)", 27) == 0);
 
-    expect_int("repeat LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
-    expect_int("repeat is not kept again", feed_records(&r, f, 4U), 1);
+    rig_close(&r);
+}
+
+static void build_ip_stream_frame_fn(uint8_t ip_frame[54], const uint8_t lsf_bits[LSF_BITS], uint16_t sid, uint16_t fn,
+                                     int corrupt);
+
+/* The size of the -L file @p path. */
+static long
+file_size(const char* path) {
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        return -1;
+    }
+    (void)fseek(fp, 0, SEEK_END);
+    const long size = ftell(fp);
+    (void)fclose(fp);
+    return size;
+}
+
+/* A transmission repeats its LSF META (RF: the LSF, then every LICH superframe; IP: every stream frame): one report,
+ * admitted once (one revision, one feed record, one row write). Changed META bytes in the same transmission are a
+ * new report; the same META in the next transmission is too. M17 writes no -L rows (no -L producer existed for it;
+ * issue #800 report, decision 11), with -L on or not. */
+static void
+test_rf_repeated_meta_is_one_report(void) {
+    rig r;
+    rig_open(&r);
+    char lrrp_path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(lrrp_path, sizeof(lrrp_path), "m17_gnss_lrrp");
+    expect_true("-L file created", fd >= 0);
+    if (fd >= 0) {
+        (void)dsd_close(fd);
+    }
+    r.opts->lrrp_file_output = 1;
+    DSD_SNPRINTF(r.opts->lrrp_out_file, sizeof(r.opts->lrrp_out_file), "%s", lrrp_path);
+
+    uint8_t meta[M17_META_BYTES];
+    dsd_position_fix f[4];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    uint64_t rev = dsd_position_last_rev();
+    for (int i = 0; i < 4; i++) {
+        expect_int("repeated LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
+    }
+    expect_int("repeated META admitted once", (long long)(dsd_position_last_rev() - rev), 1);
+    expect_int("repeated META kept once", feed_records(&r, f, 4U), 1);
+    const uint64_t row_rev = r.history[0].Event_History_Items[0].pos.rev;
+    expect_int("row written once", (long long)row_rev, (long long)f[0].rev);
+
+    /* Changed META mid-transmission: a second report. */
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, -RAW_QUARTER);
+    rev = dsd_position_last_rev();
+    expect_int("changed LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
+    expect_int("changed LSF passes again", rf_lsf(&r, 0, 1U, meta, 0), 0);
+    expect_int("changed META admitted once more", (long long)(dsd_position_last_rev() - rev), 1);
+    expect_int("changed META kept", feed_records(&r, f, 4U), 2);
+    expect_int("changed META longitude", f[1].lon_e7, -LON_QUARTER_E7);
+
+    /* The transmission ends; the next one sends the same META: a new report. */
+    dsd_call_snapshot call;
+    expect_int("first transmission's call", dsd_call_state_get(r.state, 0U, &call), 1);
+    const uint64_t first_epoch = call.epoch;
+    expect_true("transmission ends", dsd_call_state_end_ex(r.state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0);
+    rev = dsd_position_last_rev();
+    expect_int("next transmission's LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
+    expect_int("next transmission's call", dsd_call_state_get(r.state, 0U, &call), 1);
+    expect_true("next transmission is a new epoch", call.epoch != first_epoch);
+    expect_int("same META, next transmission: admitted", (long long)(dsd_position_last_rev() - rev), 1);
+
+    expect_int("no -L rows for M17", file_size(lrrp_path), 0);
+    (void)remove(lrrp_path);
+    rig_close(&r);
+}
+
+/* The IP stream carries the LSF in every frame: one report per stream ID and META content. */
+static void
+test_ip_repeated_meta_is_one_report(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    uint8_t bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    uint8_t frame[54];
+    const uint16_t data_stream = m17_compose_frame_info(1U, 1U, 0U, 1U, 5U, 0U, 0U);
+
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    write_bits(bits + 96, data_stream, 16U);
+    uint64_t rev = dsd_position_last_rev();
+    for (uint16_t fn = 1U; fn <= 5U; fn++) {
+        build_ip_stream_frame_fn(frame, bits, 0xBEEFU, fn, 0);
+        m17_ip_dispatch_frame(r.opts, r.state, frame, (int)sizeof(frame));
+    }
+    expect_int("IP repeated META admitted once", (long long)(dsd_position_last_rev() - rev), 1);
+
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, -RAW_QUARTER, RAW_QUARTER);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    write_bits(bits + 96, data_stream, 16U);
+    rev = dsd_position_last_rev();
+    for (uint16_t fn = 6U; fn <= 8U; fn++) {
+        build_ip_stream_frame_fn(frame, bits, 0xBEEFU, fn, 0);
+        m17_ip_dispatch_frame(r.opts, r.state, frame, (int)sizeof(frame));
+    }
+    expect_int("IP changed META admitted once more", (long long)(dsd_position_last_rev() - rev), 1);
+
+    rev = dsd_position_last_rev();
+    for (uint16_t fn = 1U; fn <= 3U; fn++) {
+        build_ip_stream_frame_fn(frame, bits, 0xCAFEU, fn, 0);
+        m17_ip_dispatch_frame(r.opts, r.state, frame, (int)sizeof(frame));
+    }
+    expect_int("IP same META, new stream: admitted", (long long)(dsd_position_last_rev() - rev), 1);
+    dsd_position_fix f[4];
+    /* The feed folds that last report: the same track's last kept fix, equal in every field, seconds ago. */
+    expect_int("IP stream reports kept", feed_records(&r, f, 4U), 2);
     rig_close(&r);
 }
 
@@ -369,17 +480,23 @@ test_local_tx_monitor_gives_nothing(void) {
 }
 
 static void
-build_ip_stream_frame(uint8_t ip_frame[54], const uint8_t lsf_bits[LSF_BITS], int corrupt) {
+build_ip_stream_frame_fn(uint8_t ip_frame[54], const uint8_t lsf_bits[LSF_BITS], uint16_t sid, uint16_t fn,
+                         int corrupt) {
     uint8_t ip_bits[52U * 8U];
     DSD_MEMSET(ip_bits, 0, sizeof(ip_bits));
     write_bits(ip_bits, ((unsigned long long)'M' << 24U) | ((unsigned long long)'1' << 16U) | ('7' << 8U) | ' ', 32U);
-    write_bits(ip_bits + 32, 0xBEEFU, 16U);
+    write_bits(ip_bits + 32, sid, 16U);
     DSD_MEMCPY(ip_bits + 48, lsf_bits, M17_LSF_LSD_BITS);
-    write_bits(ip_bits + 273, 1U, 15U);
+    write_bits(ip_bits + 273, fn & 0x7FFFU, 15U);
     pack_bits(ip_bits, sizeof(ip_bits), ip_frame);
     const uint16_t crc = m17_crc16(ip_frame, 52U);
     ip_frame[52] = (uint8_t)(crc >> 8U);
     ip_frame[53] = (uint8_t)((crc & 0xFFU) ^ (corrupt ? 1U : 0U));
+}
+
+static void
+build_ip_stream_frame(uint8_t ip_frame[54], const uint8_t lsf_bits[LSF_BITS], int corrupt) {
+    build_ip_stream_frame_fn(ip_frame, lsf_bits, 0xBEEFU, 1U, corrupt);
 }
 
 /* The IP stream carrier: the frame's own CRC is the check. */
@@ -545,6 +662,8 @@ test_extended_callsign_meta_decodes(void) {
 int
 main(void) {
     test_rf_lsf_meta_position();
+    test_rf_repeated_meta_is_one_report();
+    test_ip_repeated_meta_is_one_report();
     test_relaxed_bad_lsf_gives_nothing();
     test_meta_field_ranges();
     test_lich_lsd_position();

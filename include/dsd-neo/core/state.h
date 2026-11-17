@@ -2965,6 +2965,13 @@ struct dsd_state {
     int m17_vox;     //vox enabled via PWR value
 
     uint8_t m17_meta[16]; //packed meta
+    /* The last GNSS META admitted as a position (issue #800): a transmission repeats its LSF META (RF: every LICH
+     * superframe; IP: every stream frame), and the repeats are one report. Admitted again only for another
+     * transmission (m17_gnss_tx_kind/m17_gnss_tx_id: 1 = RF, the slot 0 call epoch; 2 = network, the stream ID) or
+     * changed META bytes; kind 0 = none yet. */
+    uint8_t m17_gnss_meta_admitted[14];
+    uint8_t m17_gnss_tx_kind;
+    uint64_t m17_gnss_tx_id;
     uint8_t m17_text_meta_control_or;
     uint8_t m17_text_meta_expected_bitmap;
     uint8_t m17_text_meta_received_bitmap;
