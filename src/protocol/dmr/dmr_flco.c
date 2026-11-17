@@ -624,6 +624,9 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
             ctx->state->payload_miR = mi;
         }
         dmr_enc_class_force(ctx->state, ctx->slot, 1);
+        // Its own checksum passed and it names the call's cipher, as a PI header does (its FLCO 0x02 is the ALG ID's
+        // low six bits, so the ALG ID is never 0): the slot's voice is held no more.
+        dmr_enc_class_release_hold(ctx->state, ctx->slot);
         dmr_le_vendor_set(ctx->state, ctx->slot, DMR_LE_VENDOR_HYTERA_ENH);
         *ctx->IrrecoverableErrors = 0;
         dmr_flco_note_hytera_rekey(ctx);
@@ -1142,8 +1145,10 @@ dmr_flco_heal_restore(dsd_state* state, uint8_t slot, const dsd_call_snapshot* p
     state->dmr_vc_ref_carrier[idx] = state->dmr_heal_vc_ref_carrier[idx];
     state->dmr_vc_untrusted[idx] = state->dmr_heal_vc_untrusted[idx];
     state->dmr_crypto_pi_verified[idx] = state->dmr_heal_pi_verified[idx];
-    // The stash held live, already-corroborated signaling; restoring it re-establishes the
-    // classification so the resumed transmission is not re-proved from scratch.
+    // Restoring the stash re-establishes the classification, so the resumed transmission is not re-proved from
+    // scratch. It ends no hold on the slot's voice: the stash copies the live fields, which an embedded LC whose
+    // checksum failed also writes (dmr_flco_sync_active_call_state()), so it is no check of the call's. A slot a
+    // checked LC or PI of its call released when it was decoded is not held, and a heal leaves it so.
     dmr_enc_class_force(state, idx, (*live.so & 0x40U) != 0U);
     state->dmr_heal_valid[idx] = 0U;
     // The healed epoch is a new one, seeded with the record's (the call's own) crypto, which leaves out carried live

@@ -45,6 +45,10 @@ enum {
 };
 
 unsigned int dmr_enc_class_observe(dsd_state* state, uint8_t slot, unsigned int so, int strong);
+/** Sets and corroborates the slot's classification from strong out-of-band evidence. It ends no hold on the slot's
+ * voice (dmr_enc_class_hold()): a caller whose evidence is the call's own checked word ends that too, with
+ * dmr_enc_class_release_hold(); one restoring values it holds no check of (the heal of an unverified terminator) does
+ * not. */
 void dmr_enc_class_force(dsd_state* state, uint8_t slot, int encrypted);
 void dmr_enc_class_reset(dsd_state* state, uint8_t slot);
 int dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot);
@@ -65,7 +69,7 @@ int dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot);
  * has the rules in full. */
 void dmr_enc_class_hold(dsd_state* state);
 /** The slot's call said whether it is encrypted, as far as the decoder reads it (an LC that passed its check, a PI
- * header naming a cipher, a forced classification), or a run starts: its voice is held no more. */
+ * header or Hytera Enhanced LC naming a cipher), or a run starts: its voice is held no more. */
 void dmr_enc_class_release_hold(dsd_state* state, uint8_t slot);
 int dmr_enc_class_established_clear(const dsd_state* state, uint8_t slot);
 

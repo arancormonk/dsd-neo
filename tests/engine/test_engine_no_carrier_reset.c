@@ -88,6 +88,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 #include "analog_call_test_support.h"
+#include "dmr_hytera.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -4337,6 +4338,115 @@ test_dmr_hold_kirisun_pi_naming_no_cipher(char frame[4][24]) {
     return rc;
 }
 
+/* A Hytera Enhanced PI header on slot 1 whose own checksum passed, naming ALG ID @p alg (0x02 Hytera Enhanced RC4, 0
+   none), key ID 5. */
+static void
+dmr_hold_hytera_pi(dsd_opts* opts, dsd_state* state, uint8_t alg) {
+    uint8_t pi[10] = {alg, 0x68U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x00U, 0x00U};
+    pi[9] = dmr_hytera_checksum(pi, 9U);
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_pi(opts, state, pi, 0U, 0U);
+}
+
+/* A Hytera Enhanced LC on slot 1 (ALG ID 0x02, FID 0x68, key ID 5) whose own checksum passed, read past the FEC failure
+   its shape always reports. */
+static void
+dmr_hold_hytera_lc(dsd_opts* opts, dsd_state* state) {
+    uint8_t bytes[9] = {0x02U, 0x68U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x00U};
+    bytes[8] = dmr_hytera_checksum(bytes, 8U);
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    for (size_t i = 0; i < sizeof bytes; i++) {
+        dmr_hop_put_bits(bits, i * 8U, bytes[i], 8U);
+    }
+    uint32_t errors = 1U;
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_flco(opts, state, bits, 0U, &errors, 3U);
+}
+
+/* A Hytera Enhanced PI header naming ALG ID 0 says the call is encrypted with no cipher the decoder knows, as a DMRA or
+   Kirisun one does: a held slot stays held. One naming its cipher ends the hold, and so does a Hytera Enhanced LC,
+   which carries what such a PI carries (its FLCO 0x02 is its ALG ID's low six bits, so it never names ALG ID 0). */
+static int
+test_dmr_hold_hytera_pi_and_lc(char frame[4][24]) {
+    int rc = 0;
+    for (int c = 0; c < 3; c++) {
+        static const char* const names[] = {"a Hytera PI with ALG ID 0", "a Hytera PI naming RC4", "a Hytera LC"};
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        dmr_hold_no_key(opts, state);
+        if (c == 2) {
+            dmr_hold_hytera_lc(opts, state);
+        } else {
+            dmr_hold_hytera_pi(opts, state, c == 0 ? 0x00U : 0x02U);
+        }
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what, "%s after a hop: the slot is %s", names[c],
+                     c == 0 ? "still held" : "held no more");
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == (c == 0 ? 1U : 0U));
+        char recorded[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "%s after a hop: the frame is not played or recorded", names[c]);
+        rc |= expect_true(what, !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* A grant-identified call on the carrier the receiver moved to, still held: an embedded LC whose checksum failed writes
+   the slot's live FID 0x10 and service options @p so, then a terminator whose check failed ends the call recoverably
+   and stashes them for the heal. The next voice frame heals the call and the heal puts them back: they are still no
+   check of the call's, so the frame stays held, neither played as clear nor keyed with the -b key the privacy bit asks
+   for. A checked LC then ends the hold. */
+static int
+dmr_hold_heal_case(char frame[4][24], uint8_t so) {
+    const char* how = so != 0U ? "asking for Basic Privacy" : "with no privacy bit";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    if (so != 0U) {
+        dmr_hold_basic_key(opts, state);
+    } else {
+        dmr_hold_no_key(opts, state);
+    }
+    dmr_hop_clock_at(2.0);
+    state->dmr_confidence_voice_open[0] = 1;
+    state->dmr_confidence_voice_m[0] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, 0);
+    dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, so, 202U);
+    dmr_hop_lc_on(opts, state, 0, 2U, 0U, 0x10U, so, 202U);
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what, "an unverified terminator after a failed embedded LC %s: stashed, still held", how);
+    rc |= expect_true(what, state->dmr_heal_valid[0] == 1U && state->dmr_enc_class_held[0] == 1U);
+    char recorded[49] = {0};
+    DSD_SNPRINTF(what, sizeof what, "the frame that heals the call after a failed embedded LC %s stays held", how);
+    rc |= expect_true(what, !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U
+                                && state->dmr_enc_class_held[0] == 1U);
+    DSD_SNPRINTF(what, sizeof what, "the heal after a failed embedded LC %s put its live FID back", how);
+    rc |= expect_true(what, state->dmr_fid == 0x10U && state->dmr_heal_valid[0] == 0U);
+    dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x10U, so, 202U);
+    DSD_SNPRINTF(what, sizeof what, "a checked LC %s ends the hold: the frame plays", how);
+    rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                                && state->dmr_enc_class_held[0] == 0U);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+test_dmr_hold_heal_keeps_hold(char frame[4][24]) {
+    return dmr_hold_heal_case(frame, 0x00U) | dmr_hold_heal_case(frame, 0x40U);
+}
+
 /* The -1 RC4 key the PI header's key ID 5 names. */
 static void
 dmr_fold_rc4_key(dsd_opts* opts, dsd_state* state) {
@@ -4403,6 +4513,8 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_mono_trunked_lc_stays_on_its_slot();
     rc |= test_dmr_composite_cc_grant_holds_nothing(frame);
     rc |= test_dmr_hold_kirisun_pi_naming_no_cipher(frame);
+    rc |= test_dmr_hold_hytera_pi_and_lc(frame);
+    rc |= test_dmr_hold_heal_keeps_hold(frame);
     rc |= test_dmr_mono_folds_slot2_pi_onto_lane0(frame);
     return rc;
 }

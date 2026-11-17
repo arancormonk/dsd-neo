@@ -79,12 +79,14 @@ dmr_enc_class_observe(dsd_state* state, uint8_t slot, unsigned int so, int stron
     return so & ~0x40U;
 }
 
-/* Strong out-of-band evidence (a checksum-verified PI header, the heal of an
- * unverified terminator restoring live crypto): apply and corroborate. */
+/* Strong out-of-band evidence (a checksum-verified PI header or Hytera
+ * Enhanced LC, the heal of an unverified terminator restoring live crypto):
+ * apply and corroborate. The classification only: a hold on the slot's voice
+ * stands, for the caller to end (dmr_enc_class_release_hold()) when its
+ * evidence is the call's own checked word. */
 void
 dmr_enc_class_force(dsd_state* state, uint8_t slot, int encrypted) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
-    dmr_enc_class_release_hold(state, slot);
     state->dmr_enc_class[idx] = encrypted ? DMR_ENC_CLASS_ENC : DMR_ENC_CLASS_CLEAR;
     state->dmr_enc_class_est[idx] = 1U;
     state->dmr_enc_class_pending[idx] = DMR_ENC_CLASS_NONE;

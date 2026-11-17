@@ -3355,8 +3355,14 @@ suite runs under this compiler.
   - an LC that passed its check (`CRCCorrect`, a RAS acceptance under `-F` included, header or embedded; a shape the
     decoder reads no privacy from, such as Tait FID 0x58 or an unknown FID, says as much as such a call ever says);
   - a PI header naming a cipher the decoder knows (one that leaves the ALG ID 0 keeps the slot held, a Kirisun one
-    forcing no classification either);
-  - a forced classification.
+    forcing no classification either, a Hytera Enhanced one too: `dmr_pi_note_verified_first()` ends the hold);
+  - a Hytera Enhanced LC whose own checksum passed, which names its cipher as such a PI header does.
+
+  Setting the classification ends no hold (`dmr_enc_class_force()`): each caller with the call's checked word ends it
+  itself (`dmr_enc_class_release_hold()`). The heal of an unverified terminator (`dmr_flco_heal_restore()`) restores
+  the slot's live crypto and classification and leaves a hold standing: an embedded LC whose checksum failed writes
+  the same live FID and service options the stash copies, so what it restores is no check of the call's. A checked LC
+  or PI header ends the hold as it is decoded, so a slot one of them released is not held when the heal comes.
 
   A DMR frame on a held slot is unknown there (`mbe_dmr_slot_judge()`, `dsd_state::dmr_enc_class_held`), with X2-TDMA's
   rule below, whatever class its privacy bit or ALG ID reads: an embedded LC whose checksum failed still sets the live
@@ -3396,7 +3402,8 @@ suite runs under this compiler.
   `test_manual_hook_leg_judged_once()`, `test_rigctl_reconnect_move_back_leaves()`,
   `test_rigctl_reconnect_hook_tunes_leave()`, `park_judge_advance_falls_back()`, `park_judge_pending_first_park()`,
   `park_judge_rotation_rolls_back()`, `park_judge_resume_fails_everywhere()`),
-  `ENGINE_TRUNK_SCAN`, `ENGINE_RUN_SETUP`, `ENGINE_REPLAY_DECODE_CLOCK`, `DMR_FLCO_PRIVACY_MODES`.
+  `ENGINE_TRUNK_SCAN`, `ENGINE_RUN_SETUP`, `ENGINE_REPLAY_DECODE_CLOCK`, `DMR_FLCO_PRIVACY_MODES`
+  (`test_heal_keeps_a_voice_hold()`), `DMR_ENC_CLASS`.
   P25 Phase 1 and Phase 2 use `p25_crypto_audio_output_permitted()`; Phase 2 also needs its decode gate. NXDN and
   dPMR use `nxdn_cipher_type` and the key the vocoder applies
   (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). X2-TDMA is judged per timeslot and

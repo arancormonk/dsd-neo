@@ -80,8 +80,8 @@ dmr_pi_handle_kirisun(dsd_state* state, const uint8_t pi_byte[]) {
         state->payload_miR = mi;
     }
     // CRC-verified PI header (gated by the caller): strong classification evidence, for a cipher the decoder can name.
-    // One with ALG ID 0 says the call is encrypted with none it knows: it forces nothing, so a hold on the slot's voice
-    // stands (dmr_pi_note_verified_first()).
+    // One with ALG ID 0 says the call is encrypted with none it knows: it forces nothing. dmr_pi_note_verified_first()
+    // ends a hold on the slot's voice, for one naming a cipher only.
     if (alg != 0U) {
         dmr_enc_class_force(state, (uint8_t)(state->currentslot & 1), (so & 0x40U) != 0U);
     }
@@ -139,6 +139,8 @@ dmr_pi_handle_hytera(const dsd_opts* opts, dsd_state* state, const uint8_t pi_by
             state->payload_keyidR = pi_byte[2];
             state->payload_miR = dmr_pi_extract_mi40(pi_byte);
         }
+        // The hold on the slot's voice is dmr_pi_note_verified_first()'s to end: one naming no cipher (ALG ID 0)
+        // keeps it.
         dmr_enc_class_force(state, (uint8_t)(state->currentslot & 1), 1);
 
         DSD_FPRINTF(stderr, " Hytera Enhanced; ");

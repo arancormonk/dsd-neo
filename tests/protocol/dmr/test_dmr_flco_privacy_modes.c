@@ -1652,6 +1652,44 @@ test_reacquired_epoch_restores_cleared_slot_crypto(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// The heal restores the slot's live crypto and its classification, but it is no check of the call's: a slot whose voice
+// is held (the receiver moved off its carrier) stays held, even when an embedded LC whose checksum failed wrote the
+// FID and service options the heal puts back. A slot a checked LC already released is restored as before.
+static void
+test_heal_keeps_a_voice_hold(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    for (int checked = 0; checked <= 1; checked++) {
+        uint32_t irr = 0;
+        dsd_state_ext_free_all(&state);
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.dmr_stereo = 1;
+        state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        state.currentslot = 0;
+        dmr_enc_class_hold(&state);
+        seed_voice_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 101U, 202U);
+        build_regular_flco(bits, 0x00U, 0x10U, 0x00U, 101U, 202U);
+        dmr_flco(&opts, &state, bits, (uint32_t)checked, &irr, 3U);
+        assert(state.dmr_fid == 0x10U && state.dmr_enc_class_held[0] == (checked ? 0U : 1U));
+        build_regular_flco(bits, 0x00U, 0x10U, 0x00U, 101U, 202U);
+        dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+        assert(state.dmr_heal_valid[0] == 1U && state.dmr_fid == 0U);
+        assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        assert(state.dmr_fid == 0x10U && state.dmr_heal_valid[0] == 0U);
+        assert(dmr_enc_class_established_clear(&state, 0U) == 1);
+        assert(state.dmr_enc_class_held[0] == (checked ? 0U : 1U));
+        assert(state.dmr_enc_class_held[1] == 1U);
+    }
+    dsd_state_ext_free_all(&state);
+}
+
 // The heal must put back what the vocoder was actually decrypting with, not what the canonical
 // snapshot last recorded. The superframe machinery (the PI/LE LFSR advances) rolls the live MI
 // forward without publishing a canonical crypto update, and the Basic Privacy decrypt gates in
@@ -4135,6 +4173,7 @@ main(void) {
     test_protected_td_lc_shape_does_not_wipe_data_session();
     test_reacquired_epoch_restores_cleared_slot_crypto();
     test_heal_restores_live_mi_and_basic_privacy_fid();
+    test_heal_keeps_a_voice_hold();
     test_stale_heal_stash_does_not_leak_into_later_call();
     test_terminator_after_sync_loss_end_still_stashes_crypto();
     test_corroborated_terminator_drops_the_heal_stash();

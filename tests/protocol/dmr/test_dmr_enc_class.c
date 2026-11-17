@@ -121,8 +121,13 @@ test_non_privacy_bits_pass_through(void) {
 static void
 test_force_and_reset(void) {
     reset_fixture();
+    dmr_enc_class_hold(&s_state);
     dmr_enc_class_force(&s_state, 1U, 1);
     assert(dmr_enc_class_established_enc(&s_state, 1U) == 1);
+    // Setting the classification ends no hold: only the caller that has the call's checked word ends it.
+    assert(s_state.dmr_enc_class_held[1] == 1U);
+    dmr_enc_class_release_hold(&s_state, 1U);
+    assert(s_state.dmr_enc_class_held[1] == 0U && s_state.dmr_enc_class_held[0] == 1U);
     dmr_enc_class_reset(&s_state, 1U);
     assert(dmr_enc_class_established_enc(&s_state, 1U) == 0);
     assert(s_state.dmr_enc_class[1] == DMR_ENC_CLASS_NONE);
