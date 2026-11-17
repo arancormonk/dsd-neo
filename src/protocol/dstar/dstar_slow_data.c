@@ -8,6 +8,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
@@ -19,8 +20,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dstar_confirm.h"
-
-static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
 //first 24-bits of the larger scramble table
 enum { DSTAR_SLOW_DATA_SCRAMBLER_BITS = 24 };
@@ -42,7 +41,6 @@ typedef struct dstar_sd_ctx_s {
     char str4[13];
     char strf[60];
     char strt[60];
-    char type[7];
     uint16_t crc_ext;
     uint16_t crc_cmp;
     int len;
@@ -153,11 +151,6 @@ dstar_sd_capture_display_strings(dstar_sd_ctx* ctx) {
     }
     ctx->strf[59] = '\0';
     ctx->strt[59] = '\0';
-    DSD_MEMSET(ctx->type, 0, sizeof(ctx->type));
-    for (int i = 0; i < 5; i++) {
-        ctx->type[i] = (char)ctx->sd_bytes[i + 1];
-    }
-    ctx->type[6] = '\0';
 }
 
 static void
@@ -228,119 +221,299 @@ dstar_sd_emit_truncated_ascii(const uint8_t* sd_bytes, char* out, int capture) {
     }
 }
 
+/* ---- D-PRS (GPS-A) records: JARL STD 6.0 section 6.8.1 and Ap2.1, issue #800 2.10 ---- */
+
+enum {
+    DSTAR_SD_BLOCK_BYTES = 6, /* a mini-header and up to five data bytes, over two voice frames */
+    DSTAR_SD_BLOCKS = 10,     /* blocks in one superframe's 60 slow-data bytes */
+    DSTAR_SD_BLOCK_DATA_MAX = 5,
+    DSTAR_DPRS_TAG_LEN = 5,     /* "$$CRC" */
+    DSTAR_DPRS_PREFIX_LEN = 10, /* "$$CRCxxxx," */
+};
+
+/* The mini-header type of a GPS block; its low nibble counts the block's data bytes. */
+#define DSTAR_SD_TYPE_MASK 0xF0U
+#define DSTAR_SD_TYPE_GPS  0x30U
+
+/* An APRS position (APRS 1.0.1 chapter 6, as D-PRS fixes it): latitude ddmm.hh and longitude dddmm.hh, in degrees,
+ * minutes and hundredths of a minute, and the optional time stamp. */
+typedef struct {
+    uint8_t lat_deg;
+    uint8_t lat_min;
+    uint8_t lat_hund;
+    char lat_hemi;
+    uint8_t lon_deg;
+    uint8_t lon_min;
+    uint8_t lon_hund;
+    char lon_hemi;
+    char time_kind; /* 'z' DDHHMM, 'h' HHMMSS, 0 none or not readable */
+    uint8_t time_fields[3];
+} dstar_aprs_position;
+
+static int
+dstar_aprs_digits(const uint8_t* text, int count, unsigned* out) {
+    unsigned value = 0U;
+    for (int i = 0; i < count; i++) {
+        if (text[i] < '0' || text[i] > '9') {
+            return 0;
+        }
+        value = (value * 10U) + (unsigned)(text[i] - '0');
+    }
+    *out = value;
+    return 1;
+}
+
+/* One coordinate, @p deg_digits degree digits then mm.hh and the hemisphere; every part checked before it is used: at
+ * most @p max_deg degrees, at most 59 minutes, and @p max_deg itself only with zero minutes. */
+static int
+dstar_aprs_coordinate(const uint8_t* text, int deg_digits, unsigned max_deg, const char* hemispheres, uint8_t* deg,
+                      uint8_t* min, uint8_t* hund, char* hemi) {
+    unsigned d = 0U;
+    unsigned m = 0U;
+    unsigned h = 0U;
+    if (!dstar_aprs_digits(text, deg_digits, &d) || !dstar_aprs_digits(text + deg_digits, 2, &m)
+        || text[deg_digits + 2] != '.' || !dstar_aprs_digits(text + deg_digits + 3, 2, &h)) {
+        return 0;
+    }
+    const char c = (char)text[deg_digits + 5];
+    if (c != hemispheres[0] && c != hemispheres[1]) {
+        return 0;
+    }
+    if (d > max_deg || m > 59U || (d == max_deg && (m != 0U || h != 0U))) {
+        return 0;
+    }
+    *deg = (uint8_t)d;
+    *min = (uint8_t)m;
+    *hund = (uint8_t)h;
+    *hemi = c;
+    return 1;
+}
+
+/* The time stamp after '/': DDHHMMz (day of month, hours, minutes) or HHMMSSh (JARL STD 6.0 6.8.1(4)). One that does
+ * not read as a time, or a transmitter's "______z" for no time, leaves the time unknown; the position stays. */
 static void
-dstar_sd_collect_aprs_bytes(const uint8_t* sd_bytes, uint8_t* aprs) {
-    int i;
-    int k;
-    for (i = 1, k = 0; i < 60; i++) {
-        if (i % 6 == 0) {
-            continue;
+dstar_aprs_timestamp(const uint8_t* text, dstar_aprs_position* pos) {
+    unsigned f[3];
+    pos->time_kind = 0;
+    for (int i = 0; i < 3; i++) {
+        if (!dstar_aprs_digits(text + (2 * i), 2, &f[i])) {
+            return;
         }
-        aprs[k] = sd_bytes[i];
-        if ((aprs[k] > 0x19) && (aprs[k] < 0x7F)) {
-            aprs[i] = 0x20;
+    }
+    if (text[6] == 'z' && f[0] >= 1U && f[0] <= 31U && f[1] <= 23U && f[2] <= 59U) {
+        pos->time_kind = 'z';
+    } else if (text[6] == 'h' && f[0] <= 23U && f[1] <= 59U && f[2] <= 59U) {
+        pos->time_kind = 'h';
+    } else {
+        return;
+    }
+    for (int i = 0; i < 3; i++) {
+        pos->time_fields[i] = (uint8_t)f[i];
+    }
+}
+
+/* The position in @p body (the record's text after "$$CRCxxxx,", without its CR): the information field follows the
+ * first ':'; '!' starts a position, '/' a 7-character time stamp and then the position. 1 when one was read. */
+static int
+dstar_aprs_parse(const uint8_t* body, size_t len, dstar_aprs_position* pos) {
+    DSD_MEMSET(pos, 0, sizeof(*pos));
+    const uint8_t* colon = (const uint8_t*)memchr(body, ':', len);
+    if (colon == NULL) {
+        return 0;
+    }
+    size_t at = (size_t)(colon - body) + 1U;
+    if (at >= len) {
+        return 0;
+    }
+    if (body[at] == '/') {
+        if (len - at < 8U) {
+            return 0;
         }
-        k++;
+        dstar_aprs_timestamp(body + at + 1U, pos);
+        at += 8U;
+    } else if (body[at] == '!') {
+        at += 1U;
+    } else {
+        return 0;
+    }
+    /* ddmm.hhN, the symbol table, dddmm.hhE, the symbol code. */
+    if (len - at < 19U) {
+        return 0;
+    }
+    return dstar_aprs_coordinate(body + at, 2, 90U, "NS", &pos->lat_deg, &pos->lat_min, &pos->lat_hund, &pos->lat_hemi)
+           && dstar_aprs_coordinate(body + at + 9U, 3, 180U, "EW", &pos->lon_deg, &pos->lon_min, &pos->lon_hund,
+                                    &pos->lon_hemi);
+}
+
+/* Degrees, minutes and hundredths of a minute to degrees x 1e7, rounded. */
+static int32_t
+dstar_aprs_e7(uint8_t deg, uint8_t min, uint8_t hund, int negative) {
+    const int64_t hundredths = ((int64_t)min * 100) + (int64_t)hund; /* of a minute: 6000 per degree */
+    const int64_t e7 = ((int64_t)deg * 10000000) + (((hundredths * 10000000) + 3000) / 6000);
+    return (int32_t)(negative ? -e7 : e7);
+}
+
+static void
+dstar_aprs_text(const dstar_aprs_position* pos, char* out, size_t cap) {
+    const int n =
+        DSD_SNPRINTF(out, cap, "APRS - Lat: %02ud %02u.%02um %c Lon: %03ud %02u.%02um %c", pos->lat_deg, pos->lat_min,
+                     pos->lat_hund, pos->lat_hemi, pos->lon_deg, pos->lon_min, pos->lon_hund, pos->lon_hemi);
+    if (n <= 0 || (size_t)n >= cap) {
+        return;
+    }
+    if (pos->time_kind == 'h') {
+        (void)DSD_SNPRINTF(out + n, cap - (size_t)n, " %02u:%02u:%02uZ", pos->time_fields[0], pos->time_fields[1],
+                           pos->time_fields[2]);
+    } else if (pos->time_kind == 'z') {
+        (void)DSD_SNPRINTF(out + n, cap - (size_t)n, " D%02u %02u:%02uZ", pos->time_fields[0], pos->time_fields[1],
+                           pos->time_fields[2]);
     }
 }
 
 static int
-dstar_sd_find_aprs_start(const uint8_t* aprs) {
-    int i;
-    for (i = 30; i < 40; i++) {
-        if (aprs[i] == 0x21) {
-            return i + 1;
-        }
-    }
-    return -1;
+dstar_dprs_active_call(const dsd_state* state, dsd_call_snapshot* call) {
+    return dsd_call_state_get(state, 0U, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE
+           && DSD_SYNC_IS_DSTAR(call->protocol);
 }
 
-static void
-dstar_sd_print_aprs_lat(dsd_state* state, const uint8_t* aprs, int* start, char* temp) {
-    DSD_MEMCPY(temp, aprs + *start, 2);
-    *start += 2;
-    DSD_FPRINTF(stderr, "Lat: %sd ", temp);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "Lat: ");
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, temp);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "d ");
-
-    DSD_MEMCPY(temp, aprs + *start, 2);
-    *start += 3;
-    DSD_FPRINTF(stderr, "%sm ", temp);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, temp);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "m ");
-
-    DSD_MEMCPY(temp, aprs + *start, 2);
-    *start += 2;
-    DSD_FPRINTF(stderr, "%ss ", temp);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, temp);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "s ");
-
-    DSD_FPRINTF(stderr, "%c", aprs[*start]);
-    if (aprs[*start] == 0x4E) {
-        dsd_append(state->dstar_gps, sizeof state->dstar_gps, "N ");
-    } else if (aprs[*start] == 0x53) {
-        dsd_append(state->dstar_gps, sizeof state->dstar_gps, "S ");
-    }
-    DSD_FPRINTF(stderr, "; ");
+/* The slot 0 call a record is bound to: the ACTIVE D-STAR call's epoch, 0 when there is none. */
+static uint64_t
+dstar_dprs_call_epoch(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dstar_dprs_active_call(state, &call) ? call.epoch : 0U;
 }
 
+/*
+ * An admitted D-PRS position: its check is the record's own CRC; its source is the callsign of the call it was heard
+ * in, which only a header whose CRC-16/X.25 passed names (dstar_header.c and the slow-data header above), and only
+ * when the whole record arrived within that call. A record begun outside an active call has no checked source.
+ */
 static void
-dstar_sd_print_aprs_lon(dsd_state* state, const uint8_t* aprs, int* start, char* temp, char* tempa) {
-    *start += 2;
-    DSD_MEMCPY(tempa, aprs + *start, 3);
-    *start += 3;
-    DSD_FPRINTF(stderr, "Lon: %sd ", tempa);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "Lon: ");
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, tempa);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "d ");
-
-    DSD_MEMCPY(temp, aprs + *start, 2);
-    *start += 3;
-    DSD_FPRINTF(stderr, "%sm ", temp);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, temp);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "m ");
-
-    DSD_MEMCPY(temp, aprs + *start, 2);
-    *start += 2;
-    DSD_FPRINTF(stderr, "%ss ", temp);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, temp);
-    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "s ");
-
-    DSD_FPRINTF(stderr, "%c", aprs[*start]);
-    if (aprs[*start] == 0x45) {
-        dsd_append(state->dstar_gps, sizeof state->dstar_gps, "E ");
-    } else if (aprs[*start] == 0x57) {
-        dsd_append(state->dstar_gps, sizeof state->dstar_gps, "W ");
+dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_aprs_position* pos) {
+    const dstar_dprs_assembly* a = &state->dstar_dprs;
+    dsd_position_fix fix;
+    dsd_position_fix_init(&fix);
+    fix.kind = (uint8_t)DSD_POS_DSTAR_DPRS;
+    fix.protocol = (uint8_t)(DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_VOICE_POS);
+    fix.slot = 0U;
+    fix.lat_e7 = dstar_aprs_e7(pos->lat_deg, pos->lat_min, pos->lat_hund, pos->lat_hemi == 'S');
+    fix.lon_e7 = dstar_aprs_e7(pos->lon_deg, pos->lon_min, pos->lon_hund, pos->lon_hemi == 'W');
+    dsd_call_snapshot call;
+    int source_verified = 0;
+    if (a->epoch != 0U && dstar_dprs_active_call(state, &call) && call.epoch == a->epoch
+        && call.source_text[0] != '\0') {
+        DSD_SNPRINTF(fix.source_text, sizeof(fix.source_text), "%s", call.source_text);
+        source_verified = 1;
     }
-    DSD_FPRINTF(stderr, "; ");
-}
-
-static void
-dstar_sd_handle_aprs(dsd_state* state, const uint8_t* sd_bytes) {
-    uint8_t aprs[60];
-    char temp[8];
-    char tempa[8];
-    int start;
-
-    DSD_FPRINTF(stderr, "\n APRS - ");
-    DSD_SNPRINTF(state->dstar_gps, sizeof(state->dstar_gps), "APRS - ");
-    DSD_MEMSET(aprs, 0, sizeof(aprs));
-    DSD_MEMSET(temp, 0, sizeof(temp));
-    DSD_MEMSET(tempa, 0, sizeof(tempa));
-
-    dstar_sd_collect_aprs_bytes(sd_bytes, aprs);
-    start = dstar_sd_find_aprs_start(aprs);
-    if (start == -1) {
-        // The display keeps the position either way; the history row takes it only through an open
-        // call (a block decoded before the call was observed repeats once it is).
-        (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_GPS, state->dstar_gps);
+    if (dsd_position_admit(opts, state, &fix, 1, source_verified, &a->origin) == DSD_POSITION_REFUSED) {
         return;
     }
+    dstar_aprs_text(pos, state->dstar_gps, sizeof(state->dstar_gps));
+    DSD_FPRINTF(stderr, "\n %s;", state->dstar_gps);
+    // The display keeps the position either way; the history row takes it only through an open call.
+    (void)dsd_event_set_open_call_position(state, 0U, &fix, state->dstar_gps);
+}
 
-    dstar_sd_print_aprs_lat(state, aprs, &start, temp);
-    dstar_sd_print_aprs_lon(state, aprs, &start, temp, tempa);
-    (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_GPS, state->dstar_gps);
+/* A record through its CR: only a CRC-16/X.25 over the text after "$$CRCxxxx," (CR included) that equals the four
+ * upper-case hex digits proves it, and only then is it evidence or a position. */
+static void
+dstar_dprs_complete(const dsd_opts* opts, dsd_state* state) {
+    const dstar_dprs_assembly* a = &state->dstar_dprs;
+    if (a->len <= DSTAR_DPRS_PREFIX_LEN || a->text[DSTAR_DPRS_PREFIX_LEN - 1] != ',') {
+        DSD_FPRINTF(stderr, " D-PRS (FORMAT ERR)");
+        return;
+    }
+    /* dstar_crc16() returns the CRC low byte first, as the header carries it. */
+    const uint16_t wire = dstar_crc16(a->text + DSTAR_DPRS_PREFIX_LEN, (size_t)a->len - DSTAR_DPRS_PREFIX_LEN);
+    const uint16_t crc = (uint16_t)((wire << 8) | (wire >> 8));
+    char hex[5];
+    DSD_SNPRINTF(hex, sizeof(hex), "%04X", (unsigned)crc);
+    if (memcmp(hex, a->text + DSTAR_DPRS_TAG_LEN, 4U) != 0) {
+        DSD_FPRINTF(stderr, " D-PRS (CRC ERR)");
+        return;
+    }
+    dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
+    dstar_aprs_position pos;
+    if (!dstar_aprs_parse(a->text + DSTAR_DPRS_PREFIX_LEN, (size_t)a->len - DSTAR_DPRS_PREFIX_LEN - 1U, &pos)) {
+        DSD_FPRINTF(stderr, " D-PRS (NO POSITION)");
+        return;
+    }
+    dstar_dprs_publish(opts, state, &pos);
+}
+
+static void
+dstar_dprs_reset(dstar_dprs_assembly* a) {
+    DSD_MEMSET(a, 0, sizeof(*a));
+}
+
+/* A record starts at "$$CRC": bound to the call active now and to the reception it was heard on. */
+static void
+dstar_dprs_begin(const dsd_opts* opts, dsd_state* state) {
+    dstar_dprs_assembly* a = &state->dstar_dprs;
+    DSD_MEMCPY(a->text, "$$CRC", DSTAR_DPRS_TAG_LEN);
+    a->len = DSTAR_DPRS_TAG_LEN;
+    a->collecting = 1U;
+    a->epoch = dstar_dprs_call_epoch(state);
+    dsd_position_origin_capture(opts, state, &a->origin);
+}
+
+/* One GPS data byte: until "$$CRC" is seen, the last five bytes are kept to find it; then the record grows through its
+ * CR, or is dropped once longer than DSTAR_DPRS_RECORD_MAX. A "$$CRC" inside a record means the one collected lost
+ * its CR: the new record starts there, so a lost CR costs only its own record. */
+static void
+dstar_dprs_push(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
+    dstar_dprs_assembly* a = &state->dstar_dprs;
+    if (!a->collecting) {
+        if (a->len == DSTAR_DPRS_TAG_LEN) {
+            for (int i = 1; i < DSTAR_DPRS_TAG_LEN; i++) {
+                a->text[i - 1] = a->text[i];
+            }
+            a->len--;
+        }
+        a->text[a->len++] = byte;
+        if (a->len == DSTAR_DPRS_TAG_LEN && memcmp(a->text, "$$CRC", DSTAR_DPRS_TAG_LEN) == 0) {
+            dstar_dprs_begin(opts, state);
+        }
+        return;
+    }
+    if (a->len >= DSTAR_DPRS_RECORD_MAX) {
+        dstar_dprs_reset(a);
+        return;
+    }
+    a->text[a->len++] = byte;
+    if (byte == 0x0DU) {
+        dstar_dprs_complete(opts, state);
+        dstar_dprs_reset(a);
+    } else if (a->len >= 2U * DSTAR_DPRS_TAG_LEN
+               && memcmp(a->text + a->len - DSTAR_DPRS_TAG_LEN, "$$CRC", DSTAR_DPRS_TAG_LEN) == 0) {
+        DSD_FPRINTF(stderr, " D-PRS (NO CR)");
+        dstar_dprs_begin(opts, state);
+    }
+}
+
+/* Feed the superframe's GPS blocks (as received, before any display clean-up) to the record. A record begun in another
+ * call is not this one's. One begun before any call was active (late entry: the call opens once the transmission is
+ * confirmed) is kept: it names no checked source, and is published as unverified. */
+static void
+dstar_sd_collect_gps(const dsd_opts* opts, dsd_state* state, const uint8_t* raw) {
+    dstar_dprs_assembly* a = &state->dstar_dprs;
+    if (a->collecting && a->epoch != 0U && a->epoch != dstar_dprs_call_epoch(state)) {
+        dstar_dprs_reset(a);
+    }
+    for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
+        const uint8_t* block = raw + (b * DSTAR_SD_BLOCK_BYTES);
+        if ((block[0] & DSTAR_SD_TYPE_MASK) != DSTAR_SD_TYPE_GPS) {
+            continue;
+        }
+        const int count = block[0] & 0x0F;
+        if (count > DSTAR_SD_BLOCK_DATA_MAX) {
+            dstar_dprs_reset(a); /* no such block: the record cannot be whole */
+            continue;
+        }
+        for (int i = 1; i <= count; i++) {
+            dstar_dprs_push(opts, state, block[i]);
+        }
+    }
 }
 
 static void
@@ -353,28 +526,20 @@ dstar_sd_handle_text_message(dsd_state* state, dstar_sd_ctx* ctx) {
     (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_TEXT, state->dstar_txt);
 }
 
+/* A superframe that opens with a full GPS block (type 3): GPS data (a D-PRS record or NMEA sentences), shown as it
+ * arrived and never taken for a text message (type 4). The "$$CRC" literal checks nothing: a D-PRS record is evidence
+ * and a position only once it is whole and its CRC matches (dstar_sd_collect_gps()). */
 static void
-dstar_sd_handle_fixed_form(dsd_state* state, dstar_sd_ctx* ctx) {
-    if (strcmp(ctx->type, "$$CRC") == 0) {
-        /* Forty exact bits behind the 0x35 type byte that selected this branch: not a
-         * checksum, but a literal noise does not produce (#421). */
-        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
-        DSD_MEMSET(ctx->strt, 0x20, sizeof(ctx->strt));
-        DSD_FPRINTF(stderr, " DATA: ");
-        dstar_sd_emit_truncated_ascii(ctx->sd_bytes, ctx->strt, 0);
-    }
-
-    if (strcmp(ctx->type, "$$CRC") == 0) {
-        dstar_sd_handle_aprs(state, ctx->sd_bytes);
-    } else {
-        dstar_sd_handle_text_message(state, ctx);
-    }
+dstar_sd_handle_gps_data(dstar_sd_ctx* ctx) {
+    DSD_MEMSET(ctx->strt, 0x20, sizeof(ctx->strt));
+    DSD_FPRINTF(stderr, " DATA: ");
+    dstar_sd_emit_truncated_ascii(ctx->sd_bytes, ctx->strt, 0);
 }
 
 static void
 dstar_sd_handle_non_header(dsd_state* state, dstar_sd_ctx* ctx) {
     if (ctx->sd_bytes[0] == 0x35) {
-        dstar_sd_handle_fixed_form(state, ctx);
+        dstar_sd_handle_gps_data(ctx);
     } else if (ctx->sd_bytes[0] == 0x40) {
         dstar_sd_handle_text_message(state, ctx);
     } else {
@@ -430,18 +595,7 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     } else {
         dstar_sd_handle_non_header(state, &ctx);
     }
+    dstar_sd_collect_gps(opts, state, ctx.payload);
 
     dstar_sd_print_payload(opts, &ctx);
-}
-
-static inline void
-dsd_append(char* dst, size_t dstsz, const char* src) {
-    if (!dst || !src || dstsz == 0) {
-        return;
-    }
-    size_t len = strlen(dst);
-    if (len >= dstsz) {
-        return;
-    }
-    DSD_SNPRINTF(dst + len, dstsz - len, "%s", src);
 }

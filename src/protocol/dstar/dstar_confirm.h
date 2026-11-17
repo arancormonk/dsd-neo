@@ -16,9 +16,9 @@
  * handler consumes (issues #391, #421).
  *
  * Two kinds of evidence answer that. A CRC-16/X.25 is proof on its own, and D-STAR offers
- * two of them: the RF header, and the header rebroadcast that ICOM radios fold into slow
- * data through a transmission. So is the "$$CRC" fixed-form literal, which needs the 0x35
- * type byte and forty more exact bits behind it.
+ * three of them: the RF header, the header rebroadcast that ICOM radios fold into slow
+ * data through a transmission, and a whole D-PRS (GPS-A) record whose "$$CRCxxxx" matches
+ * the CRC of its text. The "$$CRC" literal alone proves nothing (issue #800 2.10).
  *
  * A superframe that carries only filler proves none of that, so it counts as weak evidence
  * and has to repeat. That is a real check rather than a guess about quality: two counted
@@ -47,13 +47,13 @@ extern "C" {
 /** @brief How much a passing check is worth. */
 typedef enum {
     DSTAR_EVIDENCE_WEAK = 1,  /**< A superframe that decoded but checked nothing. */
-    DSTAR_EVIDENCE_STRONG = 2 /**< A CRC-16/X.25: RF header or slow-data header. Also "$$CRC". */
+    DSTAR_EVIDENCE_STRONG = 2 /**< A CRC-16/X.25: RF header, slow-data header or a whole D-PRS record. */
 } dstar_evidence;
 
 /** @brief Frames of weak evidence in a row that together confirm a transmission. */
 #define DSTAR_CONFIRM_WEAK_OBSERVES 2U
 
-/** @brief Forget everything learned about the current transmission. */
+/** @brief Forget everything learned about the current transmission, the D-PRS record being collected included. */
 void dstar_confirm_reset(dsd_state* state);
 
 /** @brief Start a frame's evidence accounting; call once before decoding its contents. */

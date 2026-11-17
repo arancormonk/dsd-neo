@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include "dstar_confirm.h"
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
 
@@ -20,6 +21,8 @@ dstar_confirm_reset(dsd_state* state) {
     state->dstar_confirmed = 0;
     state->dstar_confirm_weak_streak = 0;
     state->dstar_confirm_frame_evidence = 0;
+    /* A D-PRS record half collected belongs to the transmission being forgotten. */
+    DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
 }
 
 void

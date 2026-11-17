@@ -7,6 +7,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
@@ -439,8 +440,10 @@ test_slow_data_text_keeps_byte_after_marker(void) {
     free(history);
 }
 
+/* Issue #800 2.10: a superframe that opens with "$$CRC" and an APRS position, but is no whole record whose CRC
+ * matches, is shown as data and is neither a position nor evidence (DSTAR_DPRS covers the checked record). */
 static void
-test_slow_data_aprs_latitude_uses_compacted_direction(void) {
+test_slow_data_unchecked_aprs_is_no_position(void) {
     static dsd_opts opts;
     static dsd_state state;
     Event_History_I* history;
@@ -457,49 +460,22 @@ test_slow_data_aprs_latitude_uses_compacted_direction(void) {
     DSD_MEMSET(compact, 0x20, sizeof(compact));
 
     bytes[0] = 0x35;
-    compact[0] = '$';
-    compact[1] = '$';
-    compact[2] = 'C';
-    compact[3] = 'R';
-    compact[4] = 'C';
-    compact[30] = '!';
-    compact[31] = '4';
-    compact[32] = '1';
-    compact[33] = '3';
-    compact[34] = '0';
-    compact[35] = '.';
-    compact[36] = '5';
-    compact[37] = '9';
-    compact[38] = 'N';
-    compact[39] = '/';
-    compact[40] = '0';
-    compact[41] = '8';
-    compact[42] = '7';
-    compact[43] = '3';
-    compact[44] = '0';
-    compact[45] = '.';
-    compact[46] = '1';
-    compact[47] = '5';
-    compact[48] = 'W';
+    DSD_MEMCPY(compact, "$$CRC", 5);
+    DSD_MEMCPY(compact + 30, "!2230.00N/04500.00E", 19);
     set_compacted_slow_data_bytes(bytes, compact);
 
-    pack_slow_data_bytes(bytes, bits);
-    uint64_t revision = history[0].revision;
-    processDSTAR_SD(&opts, &state, bits);
-
-    assert(strstr(state.dstar_gps, "Lat: 41d 30m 59s N ") != NULL);
-    assert(strstr(state.dstar_gps, "Lon: 087d 30m 15s W ") != NULL);
-    /* No call is open: the display position is kept, the history row is left alone. */
-    assert(state.event_history_s[0].Event_History_Items[0].gps_s[0] == '\0');
-    assert(history[0].revision == revision);
-
-    /* The decoder descrambles the block in place, so the repeat is packed afresh. */
     open_dstar_call(&opts, &state);
     pack_slow_data_bytes(bytes, bits);
-    revision = history[0].revision;
+    uint64_t revision = history[0].revision;
+    const uint64_t rev = dsd_position_last_rev();
     processDSTAR_SD(&opts, &state, bits);
-    assert(strcmp(state.event_history_s[0].Event_History_Items[0].gps_s, state.dstar_gps) == 0);
-    assert(history[0].revision == revision + 1U);
+
+    assert(strstr(state.dstar_gps, "Lat") == NULL);
+    assert(state.dstar_confirmed == 0);
+    assert(dsd_position_last_rev() == rev);
+    assert(state.event_history_s[0].Event_History_Items[0].gps_s[0] == '\0');
+    assert(state.event_history_s[0].Event_History_Items[0].text_message[0] == '\0');
+    assert(history[0].revision == revision);
     dsd_state_ext_free_all(&state);
     free(history);
 }
@@ -514,6 +490,6 @@ main(void) {
     test_slow_data_header_accepts_wire_crc_order();
     test_slow_data_header_search_evidence_follows_the_published_call();
     test_slow_data_text_keeps_byte_after_marker();
-    test_slow_data_aprs_latitude_uses_compacted_direction();
+    test_slow_data_unchecked_aprs_is_no_position();
     return 0;
 }

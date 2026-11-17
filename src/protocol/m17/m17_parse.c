@@ -37,7 +37,6 @@ m17_packet_protocol_name_u32(uint32_t protocol) {
         {0x82, "Meta Extended CSD"},
         {0x83, "Meta Text Data V3"},
         {0x89, "1600 Arbitrary Data"},
-        {0x91, "PDU GNSS Position Data"},
         {0x99, "1600 Arbitrary Data"},
     };
 
@@ -429,104 +428,93 @@ m17_s24_to_i32(uint32_t raw) {
     return -(int32_t)magnitude;
 }
 
-static int
-m17_gnss_numeric_nonzero(uint32_t value) {
-    return value != 0U;
+/* The one 24-bit coordinate value the specification never uses: -2^23. */
+#define M17_GNSS_COORD_NEVER_USED (-8388608)
+/* The largest bearing, in whole degrees. */
+#define M17_GNSS_BEARING_MAX      359U
+
+/* META byte k is meta[k] (M17 spec v2.0.11, GNSS Position Data). */
+static void
+m17_read_gnss_meta_fields(const uint8_t* meta, struct m17_gnss_result* out) {
+    out->data_source = (uint8_t)(meta[0] >> 4U);
+    out->station_type = (uint8_t)(meta[0] & 0xFU);
+    out->validity = (uint8_t)(meta[1] >> 4U);
+    out->radius_exponent = (uint8_t)((meta[1] >> 1U) & 0x7U);
+    out->bearing_deg = (uint16_t)(((uint16_t)(meta[1] & 0x1U) << 8U) | meta[2]);
+
+    out->latitude_raw = m17_s24_to_i32(((uint32_t)meta[3] << 16U) | ((uint32_t)meta[4] << 8U) | meta[5]);
+    out->longitude_raw = m17_s24_to_i32(((uint32_t)meta[6] << 16U) | ((uint32_t)meta[7] << 8U) | meta[8]);
+    out->altitude_raw = (uint16_t)(((uint16_t)meta[9] << 8U) | meta[10]);
+    out->speed_raw = (uint16_t)(((uint16_t)meta[11] << 4U) | (meta[12] >> 4U));
+    out->reserved = (uint16_t)(((uint16_t)(meta[12] & 0xFU) << 8U) | meta[13]);
 }
 
-struct m17_gnss_raw_fields {
-    uint32_t latitude_raw;
-    uint32_t longitude_raw;
-    uint16_t altitude;
-    uint16_t speed;
-};
+/* Fields marked valid whose value lies outside what the specification allows become unknown, never another value. */
+static void
+m17_check_gnss_meta_ranges(struct m17_gnss_result* out) {
+    if ((out->validity & M17_GNSS_VALID_LATLON) != 0U
+        && (out->latitude_raw == M17_GNSS_COORD_NEVER_USED || out->longitude_raw == M17_GNSS_COORD_NEVER_USED)) {
+        out->out_of_range_fields |= M17_GNSS_VALID_LATLON;
+    }
+    if ((out->validity & M17_GNSS_VALID_VELOCITY) != 0U && out->bearing_deg > M17_GNSS_BEARING_MAX) {
+        out->out_of_range_fields |= M17_GNSS_VALID_VELOCITY;
+    }
+}
 
 static void
-m17_read_gnss_v2_fields(const uint8_t* input, struct m17_gnss_result* out, struct m17_gnss_raw_fields* raw) {
-    out->data_source = (uint8_t)(input[1] >> 4U);
-    out->station_type = (uint8_t)(input[1] & 0xFU);
-    out->validity = (uint8_t)(input[2] >> 4U);
-    out->radius_exponent = (uint8_t)((input[2] >> 1U) & 0x7U);
-    out->bearing_deg = (uint16_t)(((uint16_t)(input[2] & 0x1U) << 8U) | input[3]);
-
-    raw->latitude_raw = ((uint32_t)input[4] << 16U) | ((uint32_t)input[5] << 8U) | input[6];
-    raw->longitude_raw = ((uint32_t)input[7] << 16U) | ((uint32_t)input[8] << 8U) | input[9];
-    raw->altitude = (uint16_t)(((uint16_t)input[10] << 8U) | input[11]);
-    raw->speed = (uint16_t)(((uint16_t)input[12] << 4U) | (input[13] >> 4U));
-
-    const int32_t latitude = m17_s24_to_i32(raw->latitude_raw);
-    const int32_t longitude = m17_s24_to_i32(raw->longitude_raw);
-    out->latitude_deg = ((double)latitude * 90.0) / 8388607.0;
-    out->longitude_deg = ((double)longitude * 180.0) / 8388607.0;
-    out->reserved = (uint16_t)(((uint16_t)(input[13] & 0xFU) << 8U) | input[14]);
-}
-
-static int
-m17_validate_gnss_v2_fields(struct m17_gnss_result* out, const struct m17_gnss_raw_fields* raw) {
-    if (out->reserved != 0U) {
-        return -4;
-    }
-    if (((out->validity & M17_GNSS_VALID_VELOCITY) != 0U) && out->bearing_deg > 359U) {
-        return -5;
-    }
-    if (((out->validity & M17_GNSS_VALID_LATLON) == 0U)
-        && (m17_gnss_numeric_nonzero(raw->latitude_raw) || m17_gnss_numeric_nonzero(raw->longitude_raw))) {
+m17_note_gnss_invalid_nonzero(struct m17_gnss_result* out) {
+    if (((out->validity & M17_GNSS_VALID_LATLON) == 0U) && (out->latitude_raw != 0 || out->longitude_raw != 0)) {
         out->invalid_zero_fields |= M17_GNSS_VALID_LATLON;
     }
-    if (((out->validity & M17_GNSS_VALID_ALTITUDE) == 0U) && raw->altitude != 0U) {
+    if (((out->validity & M17_GNSS_VALID_ALTITUDE) == 0U) && out->altitude_raw != 0U) {
         out->invalid_zero_fields |= M17_GNSS_VALID_ALTITUDE;
     }
-    if (((out->validity & M17_GNSS_VALID_VELOCITY) == 0U) && (out->bearing_deg != 0U || raw->speed != 0U)) {
+    if (((out->validity & M17_GNSS_VALID_VELOCITY) == 0U) && (out->bearing_deg != 0U || out->speed_raw != 0U)) {
         out->invalid_zero_fields |= M17_GNSS_VALID_VELOCITY;
     }
     if (((out->validity & M17_GNSS_VALID_RADIUS) == 0U) && out->radius_exponent != 0U) {
         out->invalid_zero_fields |= M17_GNSS_VALID_RADIUS;
     }
-    return 0;
 }
 
+/* The display values: a field not marked valid, or out of range, reads as zero. */
 static void
-m17_apply_gnss_v2_validity(struct m17_gnss_result* out, const struct m17_gnss_raw_fields* raw) {
-    out->radius_m = (float)(1U << out->radius_exponent);
-    out->speed_kmh = (float)raw->speed * 0.5f;
-    out->altitude_m = ((float)raw->altitude * 0.5f) - 500.0f;
-    if ((out->validity & M17_GNSS_VALID_LATLON) == 0U) {
-        out->latitude_deg = 0.0;
-        out->longitude_deg = 0.0;
+m17_apply_gnss_meta_validity(struct m17_gnss_result* out) {
+    if ((out->validity & M17_GNSS_VALID_LATLON) != 0U && (out->out_of_range_fields & M17_GNSS_VALID_LATLON) == 0U) {
+        out->latitude_deg = ((double)out->latitude_raw * 90.0) / 8388607.0;
+        out->longitude_deg = ((double)out->longitude_raw * 180.0) / 8388607.0;
     }
-    if ((out->validity & M17_GNSS_VALID_ALTITUDE) == 0U) {
-        out->altitude_m = 0.0f;
+    if ((out->validity & M17_GNSS_VALID_ALTITUDE) != 0U) {
+        out->altitude_m = ((float)out->altitude_raw * 0.5f) - 500.0f;
     }
-    if ((out->validity & M17_GNSS_VALID_VELOCITY) == 0U) {
+    if ((out->validity & M17_GNSS_VALID_VELOCITY) != 0U) {
+        out->speed_kmh = (float)out->speed_raw * 0.5f;
+    }
+    if ((out->validity & M17_GNSS_VALID_VELOCITY) == 0U || (out->out_of_range_fields & M17_GNSS_VALID_VELOCITY) != 0U) {
         out->bearing_deg = 0U;
-        out->speed_kmh = 0.0f;
     }
-    if ((out->validity & M17_GNSS_VALID_RADIUS) == 0U) {
-        out->radius_m = 0.0f;
+    if ((out->validity & M17_GNSS_VALID_RADIUS) != 0U) {
+        out->radius_m = (float)(1U << out->radius_exponent);
     }
 }
 
 int
-m17_parse_gnss_v2(const uint8_t* input, size_t len, struct m17_gnss_result* out) {
-    if (input == NULL || out == NULL) {
+m17_parse_gnss_meta(const uint8_t* meta, size_t len, struct m17_gnss_result* out) {
+    if (meta == NULL || out == NULL) {
         return -1;
     }
-    if (len < 15U) {
+    if (len < M17_META_BYTES) {
         return -2;
-    }
-    if (input[0] != 0x81U && input[0] != 0x91U) {
-        return -3;
     }
 
     DSD_MEMSET(out, 0, sizeof(*out));
-
-    struct m17_gnss_raw_fields raw;
-    m17_read_gnss_v2_fields(input, out, &raw);
-    const int validation = m17_validate_gnss_v2_fields(out, &raw);
-    if (validation != 0) {
-        return validation;
+    m17_read_gnss_meta_fields(meta, out);
+    if (out->reserved != 0U) {
+        return -4;
     }
-    m17_apply_gnss_v2_validity(out, &raw);
+    m17_check_gnss_meta_ranges(out);
+    m17_note_gnss_invalid_nonzero(out);
+    m17_apply_gnss_meta_validity(out);
     return 0;
 }
 
@@ -538,24 +526,21 @@ m17_read_be48(const uint8_t* bytes) {
 }
 
 int
-m17_parse_extended_callsign_meta(const uint8_t* input, size_t len, struct m17_extended_callsign_result* out) {
-    if (input == NULL || out == NULL) {
+m17_parse_extended_callsign_meta(const uint8_t* meta, size_t len, struct m17_extended_callsign_result* out) {
+    if (meta == NULL || out == NULL) {
         return -1;
     }
-    if (len < 15U) {
+    if (len < M17_META_BYTES) {
         return -2;
-    }
-    if (input[0] != 0x82U) {
-        return -3;
     }
 
     DSD_MEMSET(out, 0, sizeof(*out));
-    if (input[13] != 0U || input[14] != 0U) {
+    if (meta[12] != 0U || meta[13] != 0U) {
         return -4;
     }
 
-    out->field1 = m17_read_be48(input + 1);
-    out->field2 = m17_read_be48(input + 7);
+    out->field1 = m17_read_be48(meta);
+    out->field2 = m17_read_be48(meta + 6);
     if (m17_address_classify(out->field1) != M17_ADDRESS_STANDARD) {
         return -5;
     }
