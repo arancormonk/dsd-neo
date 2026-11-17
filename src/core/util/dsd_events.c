@@ -11,6 +11,7 @@
 * 2025-05 DSD-FME Florida Man Edition
 *-----------------------------------------------------------------------------*/
 
+#include <ctype.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/audio.h>
@@ -1834,12 +1835,19 @@ watchdog_event_system_direct_mode(uint32_t sys[5], dsd_received_identity* site) 
     DSD_MEMSET(site, 0, sizeof(*site));
 }
 
+/* A TETRA direct mode carrier (mobile to mobile, through a DM-REP or a DM-GATE): no network, no site. */
+static int
+watchdog_event_tetra_direct_mode(const dsd_state* state, int protocol) {
+    const uint8_t mode = state->tetra_pub.mode;
+    return DSD_SYNC_IS_TETRA(protocol) && mode >= DSD_TETRA_MODE_DMO_DIRECT
+           && mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY;
+}
+
 static void
 watchdog_event_system_from_record(const dsd_state* state, const dsd_call_snapshot* call, dsd_rxid_family family,
                                   uint32_t sys[5], dsd_received_identity* site) {
     if (DSD_SYNC_IS_TETRA(call->protocol)) {
-        const uint8_t mode = state->tetra_pub.mode;
-        if (mode >= DSD_TETRA_MODE_DMO_DIRECT && mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY) {
+        if (watchdog_event_tetra_direct_mode(state, call->protocol)) {
             watchdog_event_system_direct_mode(sys, site);
             return;
         }
@@ -1912,25 +1920,29 @@ watchdog_event_rx_scope_take(dsd_event_rx_scope* out, int protocol, const dsd_re
     out->identity_freq_hz = out->scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? (int64_t)tuned_hz : 0;
 }
 
-/* The row's reception identity, by the rule its site follows (watchdog_event_current_load_system()): the live record
- * while the call is active on the carrier it began on (with the tuned frequency), the record as the call ended once it
- * has (with the row's own frequency); nothing playing back files. Pinned once resolved on this epoch's own row. */
+/* The row's reception identity, by the rule its site follows (watchdog_event_current_load_system()). While the call is
+ * active on the carrier it began on, the live record (with the tuned frequency) is read again on every render: the
+ * record fills in without moving its epoch, so a scope learned mid-call (a network after the NAC, an EDACS system after
+ * the site) replaces a weaker one. Otherwise this epoch's row keeps what it read; a row that never read one takes the
+ * record as the call ended, with the frequency this render gives the row (@p row_hz). Nothing playing back files. */
 static void
 watchdog_event_current_load_rx_scope(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
-                                     Event_History* item, int staged_is_own) {
-    if (staged_is_own && item->rx_scope.resolved) {
-        return;
-    }
-    DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
+                                     Event_History* item, int staged_is_own, int64_t row_hz) {
     if (call == NULL || call->epoch == 0U || opts->playfiles != 0) {
+        DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
         return;
     }
     if (call->phase == DSD_CALL_PHASE_ACTIVE && state->rx_id.epoch == call->rx_id_epoch) {
         watchdog_event_rx_scope_take(&item->rx_scope, call->protocol, &state->rx_id, dsd_opts_tuned_freq_hz(opts));
-    } else if (call->phase == DSD_CALL_PHASE_ENDED) {
-        const uint32_t row_hz =
-            (item->freq_hz > 0 && item->freq_hz <= (int64_t)UINT32_MAX) ? (uint32_t)item->freq_hz : 0U;
-        watchdog_event_rx_scope_take(&item->rx_scope, call->protocol, &call->ended_rx_id, row_hz);
+        return;
+    }
+    if (staged_is_own && item->rx_scope.resolved) {
+        return;
+    }
+    DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
+    if (call->phase == DSD_CALL_PHASE_ENDED) {
+        const uint32_t hz = (row_hz > 0 && row_hz <= (int64_t)UINT32_MAX) ? (uint32_t)row_hz : 0U;
+        watchdog_event_rx_scope_take(&item->rx_scope, call->protocol, &call->ended_rx_id, hz);
     }
 }
 
@@ -3281,12 +3293,12 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     // otherwise it is another epoch's, and its label, frequency, code, system and start stamp are not reused.
     const int staged_is_own = lifecycle != NULL && effective_call != NULL && lifecycle->epoch == effective_call->epoch;
     watchdog_event_current_load_system(opts, state, effective_call, &candidate, staged_is_own, &ctx);
-    watchdog_event_current_load_rx_scope(opts, state, effective_call, &candidate, staged_is_own);
 
     watchdog_event_current_apply_protocol_metadata(state, &candidate, &ctx);
     watchdog_event_current_load_labels(opts, state, effective_call, &candidate, staged_is_own, &ctx);
     watchdog_event_current_load_channel_label(opts, state, &candidate, staged_is_own, &ctx);
     watchdog_event_current_load_tuning(opts, state, effective_call, &candidate, staged_is_own, &ctx);
+    watchdog_event_current_load_rx_scope(opts, state, effective_call, &candidate, staged_is_own, ctx.freq_hz);
     watchdog_event_current_apply_code_identity(&ctx);
 
     const char* sys_string = dsd_synctype_to_string(ctx.protocol);
@@ -3885,7 +3897,10 @@ dsd_event_pos_callsign_matches(const char* text, const char* callsign) {
     if (n == 0U || strncmp(subject, mine, n) != 0) {
         return 0;
     }
-    return subject[n] == '\0' || strnlen(callsign, DSD_POSITION_SOURCE_TEXT_SIZE) == DSD_POSITION_SOURCE_TEXT_SIZE - 1U;
+    /* Cut: all DSD_POSITION_SOURCE_TEXT_SIZE - 1 bytes used and the last one part of the callsign, not padding. */
+    const size_t raw = strnlen(callsign, DSD_POSITION_SOURCE_TEXT_SIZE);
+    const int cut = raw == DSD_POSITION_SOURCE_TEXT_SIZE - 1U && !isspace((unsigned char)callsign[raw - 1U]);
+    return subject[n] == '\0' || cut;
 }
 
 /* The typed-source rule (spec 2.7): the report may describe the subject (a call or a notice) of @p protocol, numeric
@@ -3906,16 +3921,23 @@ dsd_event_pos_source_compatible(int protocol, uint64_t source_id, const char* te
     return fix->source_text[0] == '\0' || dsd_event_pos_callsign_matches(text, fix->source_text);
 }
 
-/* The report was heard where the row was (its reception scope and discriminator equal the row's, once the row has
- * one; the sender scope is only the track key), and it is newer than the row's position. */
+/* The report was heard where the row's call was (the sender scope is only the track key):
+ * - on the same reception: the received identity epoch the report came from (the low half of its origin generation)
+ *   is the one the call began on. The record may have learned more between the two reads, so the scopes are not
+ *   compared; or
+ * - on another reception (the record was reset since): the report's reception scope and discriminator equal the row's,
+ *   and the row knows one. An unknown scope matches nothing across receptions.
+ * And it is newer than the row's position. */
 static int
-dsd_event_pos_row_takes(const Event_History* item, const dsd_position_fix* fix) {
-    const dsd_event_rx_scope* rx = &item->rx_scope;
-    const int64_t fix_rx_hz = fix->reception_scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? fix->freq_hz : 0;
-    if (rx->scope.kind != (uint8_t)DSD_POS_SCOPE_NONE
-        && (rx->scope.kind != fix->reception_scope.kind || rx->scope.a != fix->reception_scope.a
-            || rx->scope.b != fix->reception_scope.b || rx->identity_freq_hz != fix_rx_hz)) {
-        return 0;
+dsd_event_pos_row_takes(const Event_History* item, const dsd_call_snapshot* call, const dsd_position_fix* fix) {
+    if ((uint32_t)(fix->origin_gen & 0xFFFFFFFFU) != call->rx_id_epoch) {
+        const dsd_event_rx_scope* rx = &item->rx_scope;
+        const int64_t fix_rx_hz = fix->reception_scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? fix->freq_hz : 0;
+        if (rx->scope.kind == (uint8_t)DSD_POS_SCOPE_NONE || rx->scope.kind != fix->reception_scope.kind
+            || rx->scope.a != fix->reception_scope.a || rx->scope.b != fix->reception_scope.b
+            || rx->identity_freq_hz != fix_rx_hz) {
+            return 0;
+        }
     }
     return !item->pos.valid || fix->rev > item->pos.rev;
 }
@@ -3969,13 +3991,19 @@ dsd_event_enrich_position_locked(dsd_state* state, uint8_t slot, dsd_call_state_
     }
     Event_History_I* event_struct = &state->event_history_s[slot];
     Event_History* item = &event_struct->Event_History_Items[history_index];
-    if (!dsd_event_pos_row_takes(item, fix)) {
+    /* The transmission's CRC provenance marks the call and its row whether or not the row takes the position, as
+       every enrichment of a found row does. */
+    const uint8_t crc_flags = state->event_crc_invalid[slot];
+    if (crc_flags) {
+        dsd_event_enrich_mark_crc(ext, call, item, crc_flags);
+    }
+    if (!dsd_event_pos_row_takes(item, call, fix)) {
+        if (crc_flags) {
+            dsd_event_history_mark_dirty(event_struct);
+        }
         return 0;
     }
     dsd_event_pos_write(item, fix, gps_text);
-    if (state->event_crc_invalid[slot]) {
-        dsd_event_enrich_mark_crc(ext, call, item, state->event_crc_invalid[slot]);
-    }
     if (history_index != 0U) {
         event_struct->commit_rev++; /* late enrichment of a committed row */
     }
@@ -4055,7 +4083,7 @@ dsd_event_set_open_call_position(dsd_state* state, uint8_t slot, const dsd_posit
     Event_History* item = &event_struct->Event_History_Items[0];
     int written = 0;
     if (watchdog_event_slot_call_is_open(call, &ext->events[slot]) && dsd_event_pos_call_compatible(call, fix)
-        && dsd_event_pos_row_takes(item, fix)) {
+        && dsd_event_pos_row_takes(item, call, fix)) {
         dsd_event_pos_write(item, fix, gps_text);
         dsd_event_history_mark_dirty(event_struct);
         written = 1;
@@ -4281,8 +4309,7 @@ watchdog_event_notice_site(const dsd_opts* opts, const dsd_state* state, int pro
         || DSD_SYNC_IS_M17(protocol) || DSD_SYNC_IS_DPMR(protocol)) {
         return;
     }
-    if (DSD_SYNC_IS_TETRA(protocol) && state->tetra_pub.mode >= DSD_TETRA_MODE_DMO_DIRECT
-        && state->tetra_pub.mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY) {
+    if (watchdog_event_tetra_direct_mode(state, protocol)) {
         return;
     }
     watchdog_event_site_take(&state->rx_id, family, site);
@@ -4293,7 +4320,7 @@ watchdog_event_notice_site(const dsd_opts* opts, const dsd_state* state, int pro
 static void
 watchdog_event_notice_stamp_identity(const dsd_opts* opts, const dsd_state* state, Event_History* item,
                                      const dsd_call_observation* observation) {
-    if (!item->rx_scope.resolved && dsd_position_protocol_family(observation->protocol) >= 0) {
+    if (!item->rx_scope.resolved && opts->playfiles == 0 && dsd_position_protocol_family(observation->protocol) >= 0) {
         watchdog_event_rx_scope_take(&item->rx_scope, observation->protocol, &state->rx_id,
                                      dsd_opts_tuned_freq_hz(opts));
     }

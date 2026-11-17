@@ -2507,10 +2507,12 @@ suite runs under this compiler.
   `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol family; the
   report's source ID and callsign, compared as call identity text, equal to the call's or the notice's; an anonymous
   report only where no source is named; a notice given a report whose identity admission cleared drops its own source
-  and target), requires the report's reception scope to equal the row's (`Event_History::rx_scope`, once known; the
-  sender scope in `pos.scope` is only the track key), and lets only a newer `rev` replace a position. A call row takes
-  its reception identity by the `site_id` rule (the live record while active on the carrier it began on, else the
-  record as it ended; pinned once resolved), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
+  and target), requires the report to have been heard where the row was (on the received-identity epoch the call began
+  on, else with a reception scope equal to the row's known `Event_History::rx_scope`; an unknown one matches nothing
+  across receptions; the sender scope in `pos.scope` is only the track key), and lets only a newer `rev` replace a position. A call row takes
+  its reception identity by the `site_id` rule (re-read from the live record on every render while active on the carrier it
+  began on, so a scope learned mid-call replaces a weaker one; else kept, or the record as the call ended with the
+  row's frequency), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
   `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
   move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`.
   Every data notice stamps its reception identity, its sender identity (`pos.scope`, the reception's scope when it has

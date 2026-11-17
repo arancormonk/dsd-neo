@@ -9,7 +9,9 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
@@ -229,13 +231,93 @@ test_same_number_two_scopes(void) {
     end_call(DSD_CALL_END_TERMINATOR);
     assert(row(1)->source_id == 111U && row(1)->rx_scope.resolved == 1U && row(1)->rx_scope.scope.b == 0x111U);
 
-    /* A row with no reception identity yet takes a report heard anywhere. */
+    /* A row that knows no reception scope takes a report from the reception its call began on (as every GPS
+       enrichment did before rows knew one), and none from another: an unknown scope is no wildcard. */
     reset_fixture();
     const uint64_t unknown = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
-    dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x222U);
     assert(row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_NONE);
-    const dsd_position_fix later = admitted(DSD_SYNC_P25P1_POS, 111U, 100000000, 200000000);
-    assert(dsd_event_enrich_position(&g_state, 0U, unknown, &later, "later") == 1);
+    const dsd_position_fix same = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
+    assert(dsd_event_enrich_position(&g_state, 0U, unknown, &same, "same carrier") == 1);
+    dsd_rxid_reset(&g_state);
+    dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x222U);
+    const dsd_position_fix elsewhere = admitted(DSD_SYNC_P25P1_POS, 111U, 100000000, 200000000);
+    assert(dsd_event_enrich_position(&g_state, 0U, unknown, &elsewhere, "elsewhere") == 0);
+    expect_row_fix(row(0), &same, "same carrier");
+}
+
+/* A conventional P25 channel: the call keys up while the record holds only the NAC; the network arrives mid-call
+ * without a new record epoch. The row's reception identity follows (NAC + tuned frequency, then WACN/SYS), and a report
+ * heard after the network was learned still enriches the call. */
+static void
+test_reception_scope_refines_mid_call(void) {
+    reset_fixture();
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = 450000000U;
+    DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+    g_state.rx_id.family = DSD_RXID_FAMILY_P25;
+    g_state.rx_id.valid = DSD_RXID_ACCESS;
+    g_state.rx_id.access_kind = DSD_ACCESS_CODE_NAC;
+    g_state.rx_id.access = 0x293U;
+    const uint64_t epoch = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    assert(row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_P25_NAC && row(0)->rx_scope.identity_freq_hz == 450000000);
+    const uint32_t record_epoch = g_state.rx_id.epoch;
+    dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x111U);
+    assert(g_state.rx_id.epoch == record_epoch);
+    const dsd_position_fix f = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
+    assert(f.reception_scope.kind == DSD_POS_SCOPE_P25);
+    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &f, "GPS") == 1);
+    dsd_event_sync_slot(&g_opts, &g_state, 0U);
+    assert(row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_P25 && row(0)->rx_scope.scope.b == 0x111U);
+    assert(row(0)->rx_scope.identity_freq_hz == 0);
+    end_call(DSD_CALL_END_TERMINATOR);
+    assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_P25);
+}
+
+/* A call that ended before any render takes the record as it ended, with the frequency the row is given (the call's
+ * own), not whatever the staged row held. */
+static void
+test_reception_scope_of_a_call_ended_unseen(void) {
+    reset_fixture();
+    DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+    g_state.rx_id.family = DSD_RXID_FAMILY_P25;
+    g_state.rx_id.valid = DSD_RXID_ACCESS;
+    g_state.rx_id.access_kind = DSD_ACCESS_CODE_NAC;
+    g_state.rx_id.access = 0x293U;
+    history[0].Event_History_Items[0].freq_hz = 123456789; /* a stale staged row */
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1201U,
+        .policy_target_id = 1201U,
+        .ota_source_id = 111U,
+        .frequency_hz = 450000000,
+        .observed_m = 1.0,
+    };
+    assert(dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_end_ex(&g_state, 0U, 1.1, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(&g_opts, &g_state, 0U);
+    assert(row(1)->source_id == 111U && row(1)->freq_hz == 450000000);
+    assert(row(1)->rx_scope.resolved == 1U && row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_P25_NAC);
+    assert(row(1)->rx_scope.identity_freq_hz == 450000000);
+}
+
+/* A position the row declines still leaves the transmission's CRC provenance on the call, as every enrichment does. */
+static void
+test_declined_position_keeps_crc_marking(void) {
+    reset_fixture();
+    const uint64_t epoch = observe(DSD_SYNC_DMR_BS_VOICE_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    const dsd_position_fix older = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 111U, 225000000, 450000000);
+    const dsd_position_fix newer = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 111U, 100000000, 200000000);
+    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &newer, "newer") == 1);
+    g_state.event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &older, "older") == 0);
+    g_state.event_crc_invalid[0] = 0U;
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&g_state, 0U, &call) == 1);
+    assert((call.crc_invalid & DSD_CRC_RAS_UNVERIFIED) != 0U);
+    assert((row(0)->crc_invalid & DSD_CRC_RAS_UNVERIFIED) != 0U);
+    expect_row_fix(row(0), &newer, "newer");
 }
 
 /* The sender scope is only the track key: a TETRA radio of a foreign network, heard here, enriches its own call. */
@@ -290,6 +372,26 @@ test_callsign_sources(void) {
     assert(dsd_event_set_open_call_position(&g_state, 0U, &prefix, "a shorter callsign") == 0);
     assert(dsd_event_set_open_call_position(&g_state, 0U, &f, "DPRS 22.5 45.0") == 1);
     expect_row_fix(row(0), &f, "DPRS 22.5 45.0");
+    /* A callsign the report cut at 15 bytes matches the call's longer one by prefix; padding is not a cut. */
+    reset_fixture();
+    (void)observe(DSD_SYNC_DSTAR_VOICE_POS, 0U, "ABCDEFGHIJKLMNOPQ", DSD_CALL_BOUNDARY_BEGIN);
+    dsd_position_fix cut = f;
+    cut.rev = 0U;
+    DSD_SNPRINTF(cut.source_text, sizeof cut.source_text, "%s", "ABCDEFGHIJKLMNO");
+    assert(dsd_position_admit(&g_opts, &g_state, &cut, 1, 1, NULL) != DSD_POSITION_REFUSED);
+    assert(dsd_event_set_open_call_position(&g_state, 0U, &cut, "cut") == 1);
+    reset_fixture();
+    (void)observe(DSD_SYNC_DSTAR_VOICE_POS, 0U, "ABCDEFGHIJKLMN XYZ", DSD_CALL_BOUNDARY_BEGIN);
+    dsd_position_fix padded = f;
+    padded.rev = 0U;
+    DSD_SNPRINTF(padded.source_text, sizeof padded.source_text, "%s", "ABCDEFGHIJKLMN ");
+    assert(dsd_position_admit(&g_opts, &g_state, &padded, 1, 1, NULL) != DSD_POSITION_REFUSED);
+    assert(strlen(padded.source_text) == 15U);
+    assert(dsd_event_set_open_call_position(&g_state, 0U, &padded, "padded") == 0);
+    reset_fixture();
+    (void)observe(DSD_SYNC_DSTAR_VOICE_POS, 0U, "N0CALL  /ABCD", DSD_CALL_BOUNDARY_BEGIN);
+    assert(dsd_event_set_open_call_position(&g_state, 0U, &f, "DPRS 22.5 45.0") == 1);
+
     /* The text-only open-call GPS drops the position with the text it replaces. */
     assert(dsd_event_set_open_call_detail(&g_state, 0U, DSD_EVENT_DETAIL_GPS, "text only") == 1);
     assert(row(0)->pos.valid == 0U && strcmp(row(0)->gps_s, "text only") == 0);
@@ -420,6 +522,12 @@ test_data_notices(void) {
     assert(row(1)->source_id == 0U && row(1)->target_id == 0U && row(1)->src_str[0] == '\0'
            && row(1)->tgt_str[0] == '\0');
 
+    /* Playing back files, a notice records no reception identity (as call rows and its site). */
+    g_opts.playfiles = 1;
+    assert(dsd_event_emit_data_notice(&g_opts, &g_state, 0U, &theirs, "playback;") == 0);
+    assert(row(1)->rx_scope.resolved == 0U && row(1)->site_id.family == 0U);
+    g_opts.playfiles = 0;
+
     /* A text-only stage clears a staged position. */
     assert(dsd_event_stage_position(&g_state, 0U, &f, "LRRP B") == 1);
     dsd_event_stage_gps(&g_state, 0U, "text only");
@@ -450,6 +558,9 @@ main(void) {
     test_newest_rev_wins();
     test_same_number_two_scopes();
     test_foreign_sender_enriches_its_call();
+    test_reception_scope_refines_mid_call();
+    test_reception_scope_of_a_call_ended_unseen();
+    test_declined_position_keeps_crc_marking();
     test_callsign_sources();
     test_text_only_after_gps();
     test_merge_keeps_text_and_position_together();

@@ -268,18 +268,22 @@ int dsd_event_emit_data_notice_classified_with_gps(dsd_opts* opts, dsd_state* st
  * Commit a data/control notice whose GPS is an admitted position report: the row takes @p gps_text and the report's
  * position together. The staged payload and the active row are left unchanged.
  *
- * The report's typed source must be compatible with the notice's own (@p observation): the same protocol family, and
- * the same numeric source (observation->ota_source_id) or callsign (observation->source_text); an anonymous report
- * (hashed, unverified, or neither ID nor callsign) only with an observation that names no source either. An
- * incompatible report leaves the notice without GPS text and without a position (the notice itself is still
- * committed). Build the observation from the admitted record (ota_source_id = fix->source_id, source_text =
- * fix->source_text) or from the same checked header the report's identity came from.
+ * Build the observation from the same report (ota_source_id = fix->source_id, source_text = fix->source_text, or the
+ * same checked header the report's identity came from), and stage or emit right after admission. The report must be of
+ * the notice's protocol family, and then:
+ * - a report whose identity admission cleared (DSD_POS_FLAG_SOURCE_UNVERIFIED or _HASHED) makes the notice anonymous:
+ *   the row's source and target (IDs and texts) are cleared and it keeps the position. Leave that source out of
+ *   @p notice too;
+ * - otherwise the report's source must be the notice's own: the same numeric source (observation->ota_source_id) when
+ *   it names one, the same callsign (observation->source_text) when it names one, and a report naming neither only
+ *   with an observation naming no source. Any other report leaves the notice without GPS text and without a position
+ *   (the notice itself is still committed).
  *
- * Every data notice (this one, the staged ones and the text-only GPS ones) stamps the row's sender identity
- * (Event_History::pos.scope): the report's sender scope when it carries a position, else the scope of the reception
- * it was heard on (dsd_position_origin_capture(); none for M17 and D-STAR), and the site it was heard on
- * (Event_History::site_id) by the rule a call row's site follows (none playing back files, for M17, dPMR and a TETRA
- * direct mode carrier).
+ * Every data notice (this one, the staged ones and the text-only GPS ones) stamps where it was heard
+ * (Event_History::rx_scope: the report's reception scope when it carries a position, else the live record's scope;
+ * nothing playing back files; none for M17 and D-STAR), its sender identity (Event_History::pos.scope: the report's
+ * sender scope, else the reception scope) and its site (Event_History::site_id) by the rule a call row's site follows
+ * (none playing back files, for M17, dPMR and a TETRA direct mode carrier).
  *
  * @return 0 when handled (committed, or declined by the receive policy), -1 for invalid arguments: those of
  *         dsd_event_emit_data_notice_classified_with_gps(), a NULL @p fix or @p gps_text, or a report that was not
@@ -315,20 +319,28 @@ int dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const 
  * @brief Enrich the row of the slot's ACTIVE call of epoch @p epoch with an admitted position report: the row's GPS
  * text becomes @p gps_text and its position the report's, in one step.
  *
- * Written only when all of these hold (else declined, nothing changes):
+ * Written only when all of these hold (else declined: only the CRC provenance below may change):
  * - the slot's canonical call is epoch @p epoch, ACTIVE, and not held or rejected by the receive policy;
  * - the epoch has a row: its staged row once a sync opened the epoch, or the row it already committed (a mid-call
  *   notice). An epoch no sync has opened yet takes only the CRC provenance, as dsd_event_enrich_gps() does;
  * - the report's typed source is compatible with the call's: the same protocol family; the same numeric source
- *   (dsd_call_snapshot::ota_source_id) when the report names one, the same callsign (dsd_call_snapshot::source_text,
- *   compared over the report's DSD_POSITION_SOURCE_TEXT_SIZE - 1 bytes) when it names one; an anonymous report
- *   (hashed, unverified, or neither ID nor callsign) only on a call that names no source (spec 2.14);
- * - when the row already holds a sender scope (an earlier position), the report's sender scope and identity
- *   discriminator are the same;
+ *   (dsd_call_snapshot::ota_source_id) when the report names one (a call with source 0 takes no named report); the
+ *   same callsign (dsd_call_snapshot::source_text, both compared as the call layer keeps identity text, whitespace
+ *   runs one space; a callsign using all DSD_POSITION_SOURCE_TEXT_SIZE - 1 bytes, its last not a space, matches by
+ *   prefix) when it names one; an anonymous report (hashed, unverified, or neither ID nor callsign) only on a call that
+ *   names no source (spec 2.14);
+ * - the report was heard where the call was. Same reception: the received identity epoch the report came from (the
+ *   low 32 bits of dsd_position_fix::origin_gen) is the one the call began on (dsd_call_snapshot::rx_id_epoch); the
+ *   scopes are then not compared, since the record may have learned more between the two reads. Another reception
+ *   (the record was reset since): the report's reception scope (dsd_position_fix::reception_scope, with its P25 NAC
+ *   discriminator) equals the row's known one (Event_History::rx_scope); an unknown row scope matches nothing. The
+ *   report's sender scope is never compared (it is only the track key): a TETRA radio of a foreign network heard here
+ *   enriches its own call;
  * - the report is newer (greater rev) than the position the row holds, if any.
  *
  * @p fix must be the record dsd_position_admit() returned for an admitted report (rev set). The CRC provenance of the
- * slot (dsd_state::event_crc_invalid) marks the call and the row as every enrichment does. Callers must not hold the
+ * slot (dsd_state::event_crc_invalid) marks the call and the epoch's row as every enrichment does, whether or not the
+ * row takes the position. Callers must not hold the
  * call-state lock or a history transaction. Decoder thread.
  *
  * @return 1 when written, 0 when declined, -1 for invalid arguments (NULLs, no history, slot >= 2, epoch 0, or a report
@@ -367,7 +379,7 @@ int dsd_event_enrich_position_closing(dsd_state* state, const dsd_event_closing_
 /**
  * @brief dsd_event_set_open_call_detail(DSD_EVENT_DETAIL_GPS) with an admitted position report: written into the
  * slot's open call's row (ACTIVE, epoch opened, not held or rejected by the receive policy) with its text, under the
- * typed-source, sender-scope and newest-rev rules of dsd_event_enrich_position(). For detail that does not name its
+ * typed-source, same-reception and newest-rev rules of dsd_event_enrich_position(). For detail that does not name its
  * call (D-STAR slow-data DPRS). dsd_event_set_open_call_detail(DSD_EVENT_DETAIL_GPS) writes text without a position
  * and drops the row's position.
  *
