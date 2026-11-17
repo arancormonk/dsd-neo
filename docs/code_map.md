@@ -10788,7 +10788,9 @@ Notes:
   did. PortAudio and AAudio read only the snapshot they counted, with no wait, so audio captured while they read is
   left in the stream. PortAudio
   (Windows) reads one snapshot of what `Pa_GetStreamReadAvailable()` reports (at most its input buffer, with no cap of
-  its own; an error count is an error), less the frames kept. AAudio (Android) reads with no wait what the device wrote
+  its own; an error count is an error), less the frames kept, each read asking for no more than the stream reports
+  available just before it (a blocking `Pa_ReadStream()` of frames no longer held would wait for new capture, without
+  end on a source that stopped), and ends when it holds none. AAudio (Android) reads with no wait what the device wrote
   and no read took (`AAudioStream_getFramesWritten()` less `AAudioStream_getFramesRead()`), less the frames kept, at
   most 96000 frames and no read begun after 250 ms. The null backend holds nothing. A drop may lose only audio held
   before the mark: once it cannot tell old audio from new it stops and keeps what it holds. PortAudio and AAudio count

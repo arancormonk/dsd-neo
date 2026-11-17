@@ -130,9 +130,11 @@ int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
  *   counted by time, not from a count taken first, so a server overrun (which throws the oldest audio away before it
  *   is read) loses no audio captured after the mark.
  * - PortAudio (Windows): one snapshot of the frames the stream reports available at the call
- *   (Pa_GetStreamReadAvailable(), at most its input buffer), less those kept, read without a wait; no frame or time
- *   cap of its own. A read that reports an overrun (paInputOverflowed) ends it: its frames are kept, returned first by
- *   dsd_audio_read(), and the rest stays in the device.
+ *   (Pa_GetStreamReadAvailable(), at most its input buffer), less those kept, read without a wait: each read asks for
+ *   no more than the stream reports available just before it (a blocking read of frames no longer held would wait for
+ *   new capture), and the drop ends when it holds none; no frame or time cap of its own. A read that reports an
+ *   overrun (paInputOverflowed) ends it: its frames are kept, returned first by dsd_audio_read(), and the rest stays in
+ *   the device.
  * - AAudio (Android): the frames the device wrote and no read took (AAudioStream_getFramesWritten() less
  *   AAudioStream_getFramesRead()), less those kept, read with no wait: at most 96000 frames (2 s at 48 kHz), no read
  *   begun after 250 ms. A read after which the device's overrun count (AAudioStream_getXRunCount()) moved ends it, as

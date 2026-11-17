@@ -1014,7 +1014,9 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 #define PORTAUDIO_DISCARD_CHUNK_FRAMES 256
 #define PORTAUDIO_DISCARD_MAX_CHANNELS 8
 
-/* Read and drop @p owed frames from the device, with no wait (they were available). A read that reports an overrun
+/* Read and drop @p owed frames from the device, never waiting: each read asks for no more than the stream reports
+   available just before it (a blocking read of frames the device no longer holds would wait for new capture, for as
+   long as the source delivers nothing), and the drop ends when the stream holds none. A read that reports an overrun
    (paInputOverflowed: PortAudio threw input away since the last read) ends it: the oldest audio is gone, and what that
    read returned may have been captured after the mark, so nothing tells old from new any more. That chunk goes to the
    carry, which the next dsd_audio_read() returns first, and the rest stays in the device. The frames dropped, or -1 on
@@ -1024,8 +1026,19 @@ portaudio_discard_owed(const dsd_audio_stream* stream, signed long owed) {
     int16_t chunk[PORTAUDIO_DISCARD_CHUNK_FRAMES * PORTAUDIO_DISCARD_MAX_CHANNELS];
     int dropped = 0;
     while (owed > 0) {
-        const unsigned long frames =
-            owed < PORTAUDIO_DISCARD_CHUNK_FRAMES ? (unsigned long)owed : PORTAUDIO_DISCARD_CHUNK_FRAMES;
+        const signed long available = Pa_GetStreamReadAvailable(stream->handle);
+        if (available < 0) {
+            set_error_pa((PaError)available);
+            return -1;
+        }
+        signed long want = owed < available ? owed : available;
+        if (want > PORTAUDIO_DISCARD_CHUNK_FRAMES) {
+            want = PORTAUDIO_DISCARD_CHUNK_FRAMES;
+        }
+        if (want <= 0) {
+            break; /* the stream holds no more */
+        }
+        const unsigned long frames = (unsigned long)want;
         const PaError err = Pa_ReadStream(stream->handle, chunk, frames);
         if (err == paInputOverflowed) {
             if (audio_input_carry_keep(stream->input_carry, chunk, frames, stream->channels) != 0) {
