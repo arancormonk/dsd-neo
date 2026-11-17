@@ -7308,8 +7308,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   carries the latest mark (`ENGINE_RIGCTL_RETUNE`, `test_newest_cutoff_wins()`). Off the decoder thread (the P25
   watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` (`unflushed_retune.c`) before its tune
   notice: the mark it took before its request, held in the backlog (`dsd_input_backlog_post()`; of two posts the later
-  mark is held, in whatever order they come), and an atomic count, the decoder's cue. The decoder's next read takes it (`frame_sync_take_unflushed_retunes()`, inline in
-  `frame_sync_unflushed.h`, with the take itself in `frame_sync_unflushed.c`: one relaxed load per symbol read and per
+  mark is held, in whatever order they come), and an atomic count, the decoder's cue. The decoder's next read takes it
+  (`frame_sync_take_unflushed_retunes()`, inline in `frame_sync_unflushed.h`, with the take itself in
+  `frame_sync_unflushed.c`: one relaxed load per symbol read and per
   EDACS triplet, with no measurable cost on a 120 s DMR decode), moving the epoch and asking for the drop with the
   post's mark, so the watchdog's tunes drop at the next read after the post; the notice's reconcile
   (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet. Every mark is measured when it is taken:
@@ -10775,8 +10776,8 @@ Notes:
   captured while the decoder waited between the mark and the count is kept: PulseAudio, PortAudio and AAudio keep by
   the same rule. No drop waits for audio: a source that stops delivering (suspended during the retune) ends it at
   once, and every read in it takes only what is already held. PulseAudio (Linux, macOS) records input through its own
-  record stream on the threaded-mainloop API (`src/platform/audio_pulse_record.c`: `pa_simple`'s context, stream
-  flags, blocking read, liveness check and hole skip, with the stream in reach; output stays on `pa_simple`), because
+  record stream on the threaded-mainloop API (`src/platform/audio_pulse_record.c`: `pa_simple`'s context, latency
+  flag, blocking read, liveness check and hole skip, with the stream in reach; output stays on `pa_simple`), because
   `pa_simple` hides what its client holds and its read waits for the source with no bound. The drop reads what the
   client holds now (`pulse_record_read_held()`: `pa_stream_peek()` until it hands over nothing, never a wait), at most
   2 s of frames at the stream's rate (exact to one read: the cap is checked before each 32-frame read, so up to 31

@@ -466,8 +466,8 @@ test_discard_through(void) {
         DSD_FPRINTF(stderr, "failed to send the samples before the discard\n");
         rc = 1;
     } else {
-        /* The datagram may still be on its way to the ring: marks until the ring has it. Here and below the bounds (10 s)
-           only turn a lost datagram into a failure, never a slow receive thread. */
+        /* The datagram may still be on its way to the ring: marks until the ring has it. Here and below the bounds
+           (10 s) only turn a lost datagram into a failure, never a slow receive thread. */
         for (int tries = 0; tries < 1000; tries++) {
             dsd_input_backlog_mark(&cut);
             if (cut.arrived >= 3U) {

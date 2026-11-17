@@ -280,8 +280,8 @@ void dsd_frame_sync_note_off_thread_tune(const dsd_p25p1_decision* read);
 void dsd_frame_sync_note_off_thread_unflushed_retune(const dsd_input_cut* cut);
 
 /**
- * @brief Ask for an input drop (issue #834): a rigctl peer confirmed a retune asked for at @p cut, while the audio input
- * still held the frequency left's samples. Decoder thread; carried out at its next input read
+ * @brief Ask for an input drop (issue #834): a rigctl peer confirmed a retune asked for at @p cut, while the audio
+ * input still held the frequency left's samples. Decoder thread; carried out at its next input read
  * (dsd_symbol_apply_input_drop()), of what the input held at @p cut only.
  *
  * For one input (dsd_opts::pcm_input_generation) the cutoff is the newest mark (dsd_input_cut::order), whichever path

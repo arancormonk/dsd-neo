@@ -557,8 +557,8 @@ udp_send(dsd_socket_t tx, int port, const int16_t* samples, size_t count) {
                                                                                                                    : -1;
 }
 
-/* The next UDP sample, waiting for it (-32768 for none). Every caller sent it already: the bound (10 s) only turns a lost
-   datagram into a failure, never a slow receive thread. */
+/* The next UDP sample, waiting for it (-32768 for none). Every caller sent it already: the bound (10 s) only turns a
+   lost datagram into a failure, never a slow receive thread. */
 static int16_t
 udp_next(dsd_opts* opts) {
     int16_t s = 0;
@@ -1024,8 +1024,8 @@ static struct {
     dsd_input_cut mark;  /* a retune's mark, taken before it is confirmed (RECONNECT_MARK_*) */
 } g_reconnect;
 
-/* Send @p count samples of @p value to the new connection and wait until @p client holds @p held bytes ready (the bound,
-   10 s, only turns a lost send into a failure). */
+/* Send @p count samples of @p value to the new connection and wait until @p client holds @p held bytes ready (the
+   bound, 10 s, only turns a lost send into a failure). */
 static int
 reconnect_send(dsd_socket_t client, int16_t value, int count, long held) {
     uint8_t bytes[2U * RECONNECT_OLD_SAMPLES];

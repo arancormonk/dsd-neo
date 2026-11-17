@@ -7,10 +7,10 @@
  * @file
  * @brief The unflushed-retune count (issue #834): what a tune off the decoder thread posts for a rigctl peer's
  * confirmed retune that no stream flush follows (dsd_frame_sync_note_off_thread_unflushed_retune()): the input's mark,
- * taken before the tune was asked for, held for the decoder (dsd_input_backlog_post()) and a count, the decoder thread's cue to take it, and the
- * input-replacement side that retires a post the new input does not hold (dsd_frame_sync_forget_unflushed_retunes()).
- * The decoder thread's take, which moves the epoch and asks for the input drop, is in frame_sync_unflushed.c. Nothing
- * here reads the options or the decoder state.
+ * taken before the tune was asked for, held for the decoder (dsd_input_backlog_post()) and a count, the decoder
+ * thread's cue to take it, and the input-replacement side that retires a post the new input does not hold
+ * (dsd_frame_sync_forget_unflushed_retunes()). The decoder thread's take, which moves the epoch and asks for the input
+ * drop, is in frame_sync_unflushed.c. Nothing here reads the options or the decoder state.
  */
 
 #include <dsd-neo/dsp/unflushed_retune.h>
