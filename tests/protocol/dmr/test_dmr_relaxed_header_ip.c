@@ -317,9 +317,11 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
     (void)opts;
-    (void)state;
     (void)len;
     (void)DMR_PDU;
+    // As the real decoder leaves the slot text after a report it did not admit (issue #800).
+    DSD_SNPRINTF(state->dmr_lrrp_gps[state->currentslot & 1], sizeof state->dmr_lrrp_gps[0], "%s",
+                 "NMEA / LOCN; Source: 1 Position suppressed (CRC ERR);");
 }
 
 static void
@@ -1172,6 +1174,11 @@ test_type1_mnis_locn_length_is_not_offset_adjusted(void) {
     }
     if (g_utf8_first_byte != 0x41U) {
         DSD_FPRINTF(stderr, "mnis-locn-len: text started at %02X, not at the +7 payload offset\n", g_utf8_first_byte);
+        rc = 1;
+    }
+    // dmr_locn() stages an admitted position itself; the slot text is never staged as the notice's GPS (issue #800).
+    if (dsd_event_staged_gps(&state, 0)[0] != '\0') {
+        DSD_FPRINTF(stderr, "mnis-locn-len: LOCN text staged as GPS: %s\n", dsd_event_staged_gps(&state, 0));
         rc = 1;
     }
     return rc;

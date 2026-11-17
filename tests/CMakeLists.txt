@@ -15791,18 +15791,28 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_dmr_udp_comp_header PRIVATE dsd-neo_platform)
 add_test(NAME DMR_UDP_COMP_HEADER COMMAND dsd-neo_test_dmr_udp_comp_header)
 
-# DMR LRRP: coordinate formula comparison (RadioReference vs ok-dmrlib vs dsd-neo)
+# DMR LRRP: fixed latitude/longitude reference vectors through the real decoder (AABF-D-1 7.3.37-38, issue #800)
 add_executable(
     dsd-neo_test_dmr_lrrp_coordinate_formulas
     protocol/dmr/test_dmr_lrrp_coordinate_formulas.c
+    test_support/data_event_gps_shim.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_coordinate_formulas
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_coordinate_formulas
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
 )
 target_link_libraries(
     dsd-neo_test_dmr_lrrp_coordinate_formulas
-    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE dsd-neo_test_receive_support dsd-neo_platform dsd-neo_test_support
 )
 add_test(
     NAME DMR_LRRP_COORDINATE_FORMULAS
@@ -20288,6 +20298,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_grant_policy
     dsd-neo_test_dmr_preempt
     dsd-neo_test_dmr_locn_time_fallback
+    dsd-neo_test_dmr_lrrp_coordinate_formulas
     dsd-neo_test_dmr_lrrp_crc_gating
     dsd-neo_test_dmr_lrrp_empty_payload_type
     dsd-neo_test_dmr_lrrp_event_crc_gating
@@ -27346,10 +27357,57 @@ set(_dsd_dmr_decoder_stub_targets
     dsd-neo_test_dmr_lrrp_event_crc_gating
     dsd-neo_test_dmr_udp_comp_header
     dsd-neo_test_dmr_locn_time_fallback
+    dsd-neo_test_dmr_lrrp_coordinate_formulas
 )
 foreach(_dsd_dmr_stub_target IN LISTS _dsd_dmr_decoder_stub_targets)
     target_link_libraries(
         "${_dsd_dmr_stub_target}"
         PRIVATE dsd-neo_test_dmr_decoder_stubs
+    )
+endforeach()
+
+# The real position admission (issue #800) without the core library, for tests that compile protocol decoders
+# directly: no reception has an alias scope and no source has a label (tests/test_support/position_feed_label_stubs.c).
+add_library(
+    dsd-neo_test_position_support
+    STATIC
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/position_feed_label_stubs.c
+)
+target_include_directories(
+    dsd-neo_test_position_support
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_position_support
+    PUBLIC
+        dsd-neo_test_receive_support
+        $<LINK_ONLY:dsd-neo_runtime>
+        $<LINK_ONLY:dsd-neo_platform>
+)
+
+# Tests that compile the DMR PDU decoders (dmr_pdu.c) directly: LRRP and LOCN admit their positions.
+set(_dsd_dmr_pdu_position_targets
+    dsd-neo_test_dmr_lrrp_time_fallback
+    dsd-neo_test_dmr_lrrp_time_valid
+    dsd-neo_test_dmr_lrrp_token_alignment
+    dsd-neo_test_dmr_lrrp_response_token_lengths
+    dsd-neo_test_dmr_lrrp_resync_prefix
+    dsd-neo_test_dmr_lrrp_position_token_precedence
+    dsd-neo_test_dmr_lrrp_crc_gating
+    dsd-neo_test_dmr_lrrp_empty_payload_type
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    dsd-neo_test_dmr_pdu_utf16_text
+    dsd-neo_test_dmr_tms_utf16le
+    dsd-neo_test_dmr_lrrp_ip_udp_lengths
+    dsd-neo_test_dmr_lrrp_event_crc_gating
+    dsd-neo_test_dmr_udp_comp_header
+    dsd-neo_test_dmr_locn_time_fallback
+    dsd-neo_test_dmr_lrrp_coordinate_formulas
+)
+foreach(_dsd_dmr_pdu_target IN LISTS _dsd_dmr_pdu_position_targets)
+    target_link_libraries(
+        "${_dsd_dmr_pdu_target}"
+        PRIVATE dsd-neo_test_position_support
     )
 endforeach()
