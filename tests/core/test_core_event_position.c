@@ -139,7 +139,8 @@ test_active_call_push_and_snapshot(void) {
     assert(dsd_event_history_copy_snapshot(&g_state, snap) == 1);
     expect_row_fix(&snap[0].Event_History_Items[1], &f, "GPS 22.5 45.0");
 
-    /* An ended call takes no position from the active-call writer; a report that admission never stamped is no input. */
+    /* An ended call takes no position from the active-call writer; a report that admission never stamped is no
+       input. */
     assert(dsd_event_enrich_position(&g_state, 0U, epoch, &f, "late") == 0);
     dsd_position_fix raw = f;
     raw.rev = 0U;

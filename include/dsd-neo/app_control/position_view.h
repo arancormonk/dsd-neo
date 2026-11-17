@@ -9,8 +9,8 @@
  * decoder last published, read through a cursor, from any thread.
  *
  * Every snapshot publish copies the decoder's new feed records, those above the last one it published, into one
- * published ring (DSD_POSITION_FEED_CAPACITY records, fixed storage) under the snapshot lock. A frontend reads that ring
- * with dsd_app_position_copy_since(): no allocation, no I/O, one copy under the same lock, and none of the
+ * published ring (DSD_POSITION_FEED_CAPACITY records, fixed storage) under the snapshot lock. A frontend reads that
+ * ring with dsd_app_position_copy_since(): no allocation, no I/O, one copy under the same lock, and none of the
  * single-consumer snapshot accessors' state touched, so the Qt model, a background tap and any other reader can each
  * follow it with a cursor of their own.
  *
@@ -48,7 +48,8 @@ extern "C" {
 typedef struct {
     /** The decoder's live stream at that publish; 0 when the decoder had none (no run, or its feed failed to start). */
     uint64_t stream_id;
-    /** dsd_decode_time() at that publish: whole seconds on the decode clock, the unit of dsd_position_fix::rx_time_s. */
+    /** dsd_decode_time() at that publish: whole seconds on the decode clock, the unit of
+     * dsd_position_fix::rx_time_s. */
     int64_t decode_now_s;
     /** dsd_decode_clock_source() at that publish (a dsd_decode_clock_source_t value). */
     uint8_t clock_source;
@@ -81,10 +82,10 @@ typedef struct {
 /**
  * @brief Copy up to @p cap published records with seq above @p after_seq, oldest first, into @p out.
  *
- * A reader starts with stream_id 0 and after_seq 0 and then passes the cursor's stream_id and last_seq. A stream_id that
- * is neither 0 nor the published stream is a reset: the call reads the published stream from its start. A reader whose
- * after_seq is older than oldest_seq - 1 gets the oldest records held and lost set. Any thread, any number of readers,
- * each with its own @p out and @p next; one copy under the snapshot lock, no allocation.
+ * A reader starts with stream_id 0 and after_seq 0 and then passes the cursor's stream_id and last_seq. A stream_id
+ * that is neither 0 nor the published stream is a reset: the call reads the published stream from its start. A reader
+ * whose after_seq is older than oldest_seq - 1 gets the oldest records held and lost set. Any thread, any number of
+ * readers, each with its own @p out and @p next; one copy under the snapshot lock, no allocation.
  *
  * @param stream_id The stream the reader follows (the last cursor's stream_id), or 0 for none yet.
  * @param after_seq The last seq the reader has (the last cursor's last_seq), or 0.

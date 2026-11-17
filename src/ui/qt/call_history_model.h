@@ -621,8 +621,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         qint64 limit = std::numeric_limits<qint64>::max();
     };
 
-    /** @brief The ordinal of ring @p ring in @p ordinals, given now when it has none; 0 for ring 0 (no identity), or when
-     * the holder's block is used up. */
+    /** @brief The ordinal of ring @p ring in @p ordinals, given now when it has none; 0 for ring 0 (no identity), or
+     * when the holder's block is used up. */
     static qint64 sessionOrdinalFor(SessionOrdinals& ordinals, quint64 ring);
 
   private:
@@ -1009,7 +1009,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     qint64 m_spillFoldedBytes = -1;
     quint64 m_spillFoldGeneration = 0;
     bool m_handoffOwed = false;
-    /* Issue #800, 2.7: the session ordinal of every ring read (SessionOrdinals). Persisted (callHistory/sessionOrd/next, /rings). */
+    /* Issue #800, 2.7: the session ordinal of every ring read (SessionOrdinals). Persisted
+       (callHistory/sessionOrd/next, /rings). */
     SessionOrdinals m_sessionOrdinals;
     /* Bumped by every clearAll(): a tap started before a clear settled no mark the model may adopt. */
     quint64 m_clearRev = 0;

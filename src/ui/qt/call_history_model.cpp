@@ -81,8 +81,8 @@ constexpr const char kClearPendingKey[] = "callHistory/clear/pending";
 constexpr const char kClearPushSeqKey[2][32] = {"callHistory/clear/pushSeq0", "callHistory/clear/pushSeq1"};
 /* Absent in a mark written before marks named their ring, which then reads 0. */
 constexpr const char kClearRingKey[] = "callHistory/clear/ring";
-/* Issue #800: the session ordinals given to rings (SessionOrdinals): the next to give, and "ring:ordinal" pairs, the ring
-   in hex (a nonce can use all 64 bits). */
+/* Issue #800: the session ordinals given to rings (SessionOrdinals): the next to give, and "ring:ordinal" pairs, the
+   ring in hex (a nonce can use all 64 bits). */
 constexpr const char kSessionOrdNextKey[] = "callHistory/sessionOrd/next";
 constexpr const char kSessionOrdRingsKey[] = "callHistory/sessionOrd/rings";
 /* The ordinals set aside for each start of the background tap: it gives one to each new ring it meets while the app is

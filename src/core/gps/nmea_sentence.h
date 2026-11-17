@@ -9,8 +9,8 @@
  *
  * Sources: gpsd "NMEA Revealed" and the u-blox 8 / M8 receiver description (UBX-13003221, section 31): the checksum is
  * the XOR of the characters between the '$' or '!' and the '*', sent as two hex digits; any two-letter talker
- * (GP, GL, GA, GB, BD, GN, ...) sends RMC and GGA, while '$P' starts a proprietary sentence; latitude is ddmm.m..., longitude dddmm.m...; RMC speed is in knots;
- * GGA has no date; HDOP is a ratio, not metres (never read).
+ * (GP, GL, GA, GB, BD, GN, ...) sends RMC and GGA, while '$P' starts a proprietary sentence; latitude is ddmm.m...,
+ * longitude dddmm.m...; RMC speed is in knots; GGA has no date; HDOP is a ratio, not metres (never read).
  */
 
 #ifndef DSD_NEO_SRC_CORE_GPS_NMEA_SENTENCE_H_
@@ -61,7 +61,8 @@ typedef enum {
     NMEA_TYPE_GGA = 2,
 } nmea_sentence_type;
 
-/** What an RMC or GGA sentence says about the position. Unknown values carry the <dsd-neo/core/position.h> sentinels. */
+/** What an RMC or GGA sentence says about the position. Unknown values carry the <dsd-neo/core/position.h>
+ * sentinels. */
 typedef struct {
     uint8_t type; /**< nmea_sentence_type */
     /** 1 when the sentence's own status says it is a measured fix: GGA quality 1-5; RMC status A and, when the

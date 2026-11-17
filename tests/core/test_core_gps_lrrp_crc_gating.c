@@ -188,7 +188,8 @@ test_usbd_lip(const dsd_opts* opts, dsd_state* state, const char* path) {
             }
             DSD_MEMCPY(clean_lip, gps, sizeof clean_lip);
         } else if (i == 1 ? gps[0] != '\0' : memcmp(clean_lip, gps, sizeof clean_lip) != 0) {
-            // A CRC-failed reply leaves no position text (spec 2.11); the other slot's scope and the CRC bit do not count.
+            // A CRC-failed reply leaves no position text (spec 2.11); the other slot's scope and the CRC bit
+            // do not count.
             DSD_FPRINTF(stderr, "\n%s: unexpected decoded state: %s\n", lip_tags[i], gps);
             rc = 1;
         }

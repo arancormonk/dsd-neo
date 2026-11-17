@@ -43,7 +43,8 @@
  * Issue #800: a voice row keeps its GPS text and message (B2), a late enrichment re-reads it, and both survive a save,
  * a reload and the spill with the structured position; a fragment's fix joins only its own radio's row; a merged row
  * shows the fix of its newest fragment by run and rev (2.7); two callsign callers (B3), two textual destinations under
- * one service (B4) and two conventional systems (B5) stay apart; a notice decoded again collapses only on the same fix. */
+ * one service (B4) and two conventional systems (B5) stay apart; a notice decoded again collapses only on the same
+ * fix. */
 
 #include <QByteArray>
 #include <QChar>
@@ -5279,8 +5280,8 @@ test_voice_row_keeps_gps_and_message(void) {
                && detail_of(model, row_with_tg(model, 80002U)) == u8("On my way \xC2\xB7 GPS: Protected"));
 }
 
-/* B2: the texts and the structured position survive a save, a reload and the spill, and a reloaded or spilled seen entry
- * knows them, so the ring row reads as no update. A stored position no report could hold loads as none. */
+/* B2: the texts and the structured position survive a save, a reload and the spill, and a reloaded or spilled seen
+ * entry knows them, so the ring row reads as no update. A stored position no report could hold loads as none. */
 void
 test_texts_and_position_survive_save_reload_and_spill(void) {
     resetStorage();
@@ -5441,8 +5442,8 @@ test_position_order_follows_runs_and_revs(void) {
     }
 }
 
-/* B3: two callsign callers (D-STAR) to one destination on one frequency, seconds apart, are two calls, each with its own
- * fix, also when their display names are the same. */
+/* B3: two callsign callers (D-STAR) to one destination on one frequency, seconds apart, are two calls, each with its
+ * own fix, also when their display names are the same. */
 void
 test_callsign_callers_stay_apart(void) {
     const time_t when = 1754704000;
@@ -5519,9 +5520,9 @@ test_textual_destinations_under_one_service_stay_apart(void) {
 }
 
 /* B5: rows whose known systems differ are two calls: two conventional DMR systems on two frequencies, and two
- * conventional P25 channels of one NAC; live, after a reload and through the spill. A trunked call on two voice channels
- * of one system, and a Capacity Plus radio before and after a rest channel move, stay one call; so does a row an older
- * build stored, which knows no system. */
+ * conventional P25 channels of one NAC; live, after a reload and through the spill. A trunked call on two voice
+ * channels of one system, and a Capacity Plus radio before and after a rest channel move, stay one call; so does a row
+ * an older build stored, which knows no system. */
 void
 test_system_identity_splits_conventional_systems(void) {
     const time_t when = 1754706000;
@@ -5623,8 +5624,8 @@ test_system_identity_splits_conventional_systems(void) {
 }
 
 /* B5 ruling: a weaker identity joins a stronger one of the same family. A trunked P25 call whose first fragment knew
- * only the NAC (each voice channel its own discriminator) joins the fragments that learned the WACN and SYSID, in either
- * order, and the row keeps the full scope; two full scopes that differ stay two calls. */
+ * only the NAC (each voice channel its own discriminator) joins the fragments that learned the WACN and SYSID, in
+ * either order, and the row keeps the full scope; two full scopes that differ stay two calls. */
 void
 test_weaker_identity_joins_stronger(void) {
     const time_t when = 1754706500;

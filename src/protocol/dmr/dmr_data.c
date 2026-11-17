@@ -62,7 +62,8 @@ typedef struct dmr_data_sync_ctx_s {
     /* The slot (DSD_DMR_MONO_RX_TS1/TS2) a checked TACT names for a standalone burst the single-slot output folds onto
        lane 0; DSD_DMR_MONO_RX_NONE otherwise (issue #637). */
     uint8_t folded_slot;
-    /* Who sent the burst, by its own sync word (dmr_data_collect_sync()), for a service with a direction (spec 2.13). */
+    /* Who sent the burst, by its own sync word (dmr_data_collect_sync()), for a service with a direction
+       (spec 2.13). */
     dmr_burst_origin origin;
 } dmr_data_sync_ctx;
 

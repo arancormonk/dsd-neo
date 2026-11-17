@@ -4,11 +4,11 @@
  */
 
 /*
- * Issue #800 2.2, N1, D13: an M17 position comes only from the GNSS META field of a link setup whose CRC passed -- an RF
- * LSF, a stream's LSD assembled from its LICH, an IP stream frame or an MPKT frame, each with its own CRC -- and never
- * from what this station transmits, from an LSF -F decoded despite a failed CRC, or from a packet: M17 defines no GNSS
- * packet protocol, so a 0x91 packet is an unknown protocol. Driven through the real decoder entry points, with the real
- * call state, history rows and position feed. Coordinates are synthetic.
+ * Issue #800 2.2, N1, D13: an M17 position comes only from the GNSS META field of a link setup whose CRC passed -- an
+ * RF LSF, a stream's LSD assembled from its LICH, an IP stream frame or an MPKT frame, each with its own CRC -- and
+ * never from what this station transmits, from an LSF -F decoded despite a failed CRC, or from a packet: M17 defines no
+ * GNSS packet protocol, so a 0x91 packet is an unknown protocol. Driven through the real decoder entry points, with the
+ * real call state, history rows and position feed. Coordinates are synthetic.
  */
 
 #include <dsd-neo/core/call_state.h>

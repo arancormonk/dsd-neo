@@ -1482,11 +1482,11 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
 /* ---- NXDN GPS ---- */
 
 /* The NXDN GPS report has no official source: its layout is SDRTrunk's (nxdn/layer3/data/GPS.java), whose offsets count
- * from the 0xFFFC marker, so they are 16 more than these: elevation 56 (16 bits, unit unknown), speed 74 (14, 0.1 km/h),
- * heading 92 (12, 0.1 degree; 0xFFF none), date 136 (7, year - 2000) / 143 (4, month) / 147 (5, day - 1), longitude
- * 152 (16, DDDMM) / 183 (hemisphere), latitude 184 (16, DDMM) / 200 (15, 1/10000 minute) / 215 (hemisphere), time 247
- * (5, hour) / 252 (6, minute) / 258 (6, second). The longitude's fraction is not read: its offset rests on that one
- * source (a decided limit), so the longitude keeps whole minutes. */
+ * from the 0xFFFC marker, so they are 16 more than these: elevation 56 (16 bits, unit unknown), speed 74 (14, 0.1
+ * km/h), heading 92 (12, 0.1 degree; 0xFFF none), date 136 (7, year - 2000) / 143 (4, month) / 147 (5, day - 1),
+ * longitude 152 (16, DDDMM) / 183 (hemisphere), latitude 184 (16, DDMM) / 200 (15, 1/10000 minute) / 215 (hemisphere),
+ * time 247 (5, hour) / 252 (6, minute) / 258 (6, second). The longitude's fraction is not read: its offset rests on
+ * that one source (a decided limit), so the longitude keeps whole minutes. */
 typedef struct {
     int32_t lat_e7;
     int32_t lon_e7;

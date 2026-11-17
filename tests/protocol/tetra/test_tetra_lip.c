@@ -152,8 +152,8 @@ sds_lip(uint32_t type, uint32_t ssi, uint32_t mcc, uint32_t mnc, const ttb_block
 }
 
 /* Part @p sequence of 2 of concatenated message @p reference (tables 29.60, 29.62) under PID 12, or with
- * @p transport under PID 140 after an SDS-TRANSFER header (table 29.11), holding @p n bits of @p payload from SSI @p ssi;
- * part 1 names payload PID 10. */
+ * @p transport under PID 140 after an SDS-TRANSFER header (table 29.11), holding @p n bits of @p payload from SSI
+ * @p ssi; part 1 names payload PID 10. */
 static ttb_block
 sds_concat_part(uint32_t ssi, int transport, uint32_t reference, uint32_t sequence, const uint8_t* payload, int n) {
     ttb_block c = {0};

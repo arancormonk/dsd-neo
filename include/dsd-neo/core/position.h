@@ -23,9 +23,10 @@
  * 4. Values: |lat| <= 90, |lon| <= 180, exactly (0,0) refused; an out-of-range heading becomes unknown.
  * 5. Freeze: the reception scope, the sender scope, the identity discriminator and the label at acceptance. A local
  *    sender (sender scope equal to the reception scope, of any kind, none included) is labelled as call rows are: the
- *    scoped lookup in the reception's alias scope, the radio list first. A foreign sender (an explicit sender scope that
- *    differs from the reception's, e.g. a TETRA calling party's own network) takes only a label learned in exactly its
- *    own scope (dsd_tg_policy_lookup_learned_label()), never the radio list. Hashed and unverified sources get none.
+ *    scoped lookup in the reception's alias scope, the radio list first. A foreign sender (an explicit sender scope
+ *    that differs from the reception's, e.g. a TETRA calling party's own network) takes only a label learned in
+ *    exactly its own scope (dsd_tg_policy_lookup_learned_label()), never the radio list. Hashed and unverified sources
+ *    get none.
  * 6. Stamp: the process-wide revision (rev), proc_instance, rx_time_s and rx_clock.
  * 8. Feed: a repeat of the same track's last kept report (every observable field equal, kept less than
  *    DSD_POSITION_REPEAT_MS ago on the decode clock) is not kept; anything else is appended to the ring with the next
@@ -275,10 +276,10 @@ int dsd_position_same_track(const dsd_position_fix* a, const dsd_position_fix* b
 
 struct dsd_received_identity;
 
-/** The scope (D7) of a reception whose received identity record is @p rx: its alias scope; else, for EDACS, its site and
- * system; else the control channel frequency the record holds; else @p tuned_hz as a tuned-frequency scope; else none.
- * Writes @p out (NONE when none) and returns 1 when a scope was found, 0 otherwise (or for NULL @p rx). NULL @p out does
- * nothing. */
+/** The scope (D7) of a reception whose received identity record is @p rx: its alias scope; else, for EDACS, its site
+ * and system; else the control channel frequency the record holds; else @p tuned_hz as a tuned-frequency scope; else
+ * none. Writes @p out (NONE when none) and returns 1 when a scope was found, 0 otherwise (or for NULL @p rx). NULL
+ * @p out does nothing. */
 int dsd_position_scope_from_rxid(const struct dsd_received_identity* rx, uint32_t tuned_hz, dsd_position_scope* out);
 
 /** The protocol family a track belongs to (dsd_position_same_track()): one value per system type, so P25 Phase 1 and
@@ -289,8 +290,8 @@ int dsd_position_protocol_family(int protocol);
 /**
  * @brief Start the run's feed: a new stream (a new stream_id, seq restarting at 1, no remembered tracks) in @p state's
  * extension slot, allocated when the slot has none, and draw the process instance if no call drew it yet. The engine
- * calls it at the start of every run, never on the decode path. Returns 0, or -1 for NULL @p state or a failed allocation (the feed then stays off for the run and
- * admission still works).
+ * calls it at the start of every run, never on the decode path. Returns 0, or -1 for NULL @p state or a failed
+ * allocation (the feed then stays off for the run and admission still works).
  */
 int dsd_position_feed_start(dsd_state* state);
 

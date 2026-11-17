@@ -74,7 +74,8 @@
 
 static void decodeM17PKT(const dsd_opts* opts, dsd_state* state, const uint8_t* input, int len);
 
-/* The transmission an LSF belongs to, for the GNSS META repeat rule: RF (the call it publishes), or a network stream. */
+/* The transmission an LSF belongs to, for the GNSS META repeat rule: RF (the call it publishes), or a network
+   stream. */
 typedef struct {
     uint8_t network; /* 1 for an IP stream or MPKT frame */
     uint16_t stream_id;

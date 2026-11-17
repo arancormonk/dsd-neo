@@ -35,7 +35,8 @@ item_text(const char* text, size_t capacity) {
     return QString::fromUtf8(text, static_cast<qsizetype>(qstrnlen(text, capacity)));
 }
 
-/** @brief A ring item's sender identity (issue #800): pos.scope with its discriminator, set with or without a position. */
+/** @brief A ring item's sender identity (issue #800): pos.scope with its discriminator, set with or without a
+ * position. */
 CallHistoryScope
 item_sender_scope(const Event_History* item) {
     CallHistoryScope scope;
@@ -282,8 +283,8 @@ row_take_payload(CallHistoryModel::Row& row, const Event_History* item) {
     row.gpsSlot = row.slot;
 }
 
-/** @brief Whether two raw texts (callsigns, dial strings) are known and differ, compared as the call layer does: runs of
- * spaces as one, trimmed. */
+/** @brief Whether two raw texts (callsigns, dial strings) are known and differ, compared as the call layer does: runs
+ * of spaces as one, trimmed. */
 bool
 raw_texts_differ(const QString& a, const QString& b) {
     const QString x = a.simplified();

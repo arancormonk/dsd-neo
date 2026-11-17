@@ -144,8 +144,8 @@ void dsd_event_stage_clear(dsd_state* state, uint8_t slot);
  * Stage an admitted position report and its text for the slot's next data notice (dsd_event_emit_data_notice() or
  * dsd_event_emit_data_notice_classified()), replacing any staged GPS text and position: the two are staged together.
  * dsd_event_stage_gps() stages text without a position and clears a staged one. @p fix must be the record
- * dsd_position_admit() returned for an admitted report (its rev is set); @p gps_text is the text shown as the row's GPS.
- * The notice checks the report's typed source against its own observation when it emits (see
+ * dsd_position_admit() returned for an admitted report (its rev is set); @p gps_text is the text shown as the row's
+ * GPS. The notice checks the report's typed source against its own observation when it emits (see
  * dsd_event_emit_data_notice_with_position()). Takes the history transaction internally.
  *
  * @return 1 when staged, -1 for invalid arguments (NULL, no history, a slot outside DSD_CALL_STATE_SLOT_COUNT, or a
