@@ -252,6 +252,14 @@ item_position_valid(const Event_History* item) {
            && call_history_position_values_valid(item->pos.lat_e7, item->pos.lon_e7, item->pos.kind, item->pos.flags);
 }
 
+/** @brief @p text as a raw source or target identity of a @p protocol call, or empty for a display placeholder
+ * (call_history_identity_text_is_raw()). */
+static QString
+raw_identity_text(int protocol, bool source, const QString& text) {
+    return call_history_identity_text_is_raw(protocol, source, text.simplified().toUtf8().constData()) ? text
+                                                                                                       : QString();
+}
+
 /**
  * @brief Give @p row its item's raw identity, text message, GPS text and position (issue #800), each from the row's
  * own fragment. Pure, as everything the background tap's walk calls must be.
@@ -259,8 +267,8 @@ item_position_valid(const Event_History* item) {
 void
 row_take_payload(CallHistoryModel::Row& row, const Event_History* item) {
     row.protocol = item->systype;
-    row.sourceText = item_text(item->src_str, sizeof(item->src_str));
-    row.targetText = item_text(item->tgt_str, sizeof(item->tgt_str));
+    row.sourceText = raw_identity_text(row.protocol, true, item_text(item->src_str, sizeof(item->src_str)));
+    row.targetText = raw_identity_text(row.protocol, false, item_text(item->tgt_str, sizeof(item->tgt_str)));
     row.sourceScope = item_sender_scope(item);
     row.rxScope = item_rx_scope(item);
     row.messageText = item_text(item->text_message, sizeof(item->text_message));
@@ -428,8 +436,8 @@ row_payload_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     const qint64 stored = json_i64_or(obj, "proto", -1);
     const int protocol = stored >= 0 && stored <= INT8_MAX ? static_cast<int>(stored) : -1;
     row.protocol = call_history_protocol_family(protocol) >= 0 ? protocol : -1;
-    row.sourceText = obj.value(QLatin1String("srcText")).toString();
-    row.targetText = obj.value(QLatin1String("tgtText")).toString();
+    row.sourceText = raw_identity_text(row.protocol, true, obj.value(QLatin1String("srcText")).toString());
+    row.targetText = raw_identity_text(row.protocol, false, obj.value(QLatin1String("tgtText")).toString());
     row.sourceScope = scope_from_json(obj, "sscope");
     row.rxScope = scope_from_json(obj, "rx");
     row.messageText = obj.value(QLatin1String("msg")).toString();

@@ -19,13 +19,13 @@
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MERGE_H_
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_MERGE_H_
 
+#include <cstring>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <stddef.h>
 #include <stdint.h>
 
 namespace dsd_qt {
@@ -401,6 +401,35 @@ call_history_protocol_family(int protocol) {
         return 0x200 + DSD_SYNC_X2TDMA_DATA_POS;
     }
     return dsd_sync_protocol_family(protocol);
+}
+
+/**
+ * @brief Whether a protocol's calls are named by text (issue #800): M17, D-STAR and YSF callsigns and dPMR dial
+ * strings. Every other protocol names its calls by number, and the text the core writes beside the number
+ * (Event_History::src_str/tgt_str, e.g. EDACS `LID_<id>`, `LID_UNK` and `<afs>_AFS_..`) is a display rendering of
+ * that number or of its absence: no raw identity of its own. An unknown protocol (a row an older build stored) keeps
+ * whatever text it has.
+ */
+inline bool
+call_history_protocol_names_by_text(int protocol) {
+    if (protocol < 0 || protocol >= static_cast<int>(DSD_POSITION_PROTOCOL_NONE)) {
+        return protocol < 0;
+    }
+    return DSD_SYNC_IS_M17(protocol) || DSD_SYNC_IS_DSTAR(protocol) || DSD_SYNC_IS_YSF(protocol)
+           || DSD_SYNC_IS_DPMR(protocol);
+}
+
+/**
+ * @brief Whether @p text (simplified) is a raw source or target identity of a @p protocol call, rather than a display
+ * placeholder: only a protocol that names calls by text has one (call_history_protocol_names_by_text()), and M17's
+ * `UNKNOWN` source (the broadcast address where a callsign belongs) names nobody.
+ */
+inline bool
+call_history_identity_text_is_raw(int protocol, bool source, const char* text) {
+    if (!call_history_protocol_names_by_text(protocol) || text == nullptr || text[0] == '\0') {
+        return false;
+    }
+    return !(source && protocol >= 0 && DSD_SYNC_IS_M17(protocol) && std::strcmp(text, "UNKNOWN") == 0);
 }
 
 /** @brief Whether two sync types may be one call: the same family, or either not known. */

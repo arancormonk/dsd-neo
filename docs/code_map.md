@@ -15490,8 +15490,10 @@ Qt Quick frontend (`src/ui/qt`):
       only while `pos.valid` and its values pass `call_history_position_values_valid()`. `DetailRole` joins the two
       texts with ` · `; a row an older build stored keeps its one text as `legacyDetail`.
     - Identity: `Row` keeps the raw identity apart from display names: `protocol` (the sync type), `sourceText` and
-      `targetText` (raw `src_str`/`tgt_str`), `sourceScope` (`pos.scope` and its discriminator, set with or without a
-      position) and `rxScope` (`rx_scope`). Merging (`rows_mergeable()`) treats two different known raw source texts as
+      `targetText` (raw `src_str`/`tgt_str`, kept only for protocols that name calls by text -- M17, D-STAR, YSF,
+      dPMR -- by `call_history_identity_text_is_raw()`: the EDACS `LID_<id>`, `LID_UNK` and AFS labels render a number
+      or its absence, and M17's `UNKNOWN` source names nobody), `sourceScope` (`pos.scope` and its discriminator, set
+      with or without a position) and `rxScope` (`rx_scope`). Merging (`rows_mergeable()`) treats two different known raw source texts as
       two calls whatever their aliases (B3), compares the raw target text before a name (`row_destination()`, B4), and
       requires compatible protocol families (`call_history_protocol_family()`, the core's `dsd_sync_protocol_family()`
       plus YSF, dPMR and X2-TDMA polarities) and scopes (`call_history_scopes_compatible()`, B5): an unknown scope

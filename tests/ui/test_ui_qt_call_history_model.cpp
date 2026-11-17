@@ -101,6 +101,7 @@
 #include "json_store.h"
 
 #include "call_history_filter.h"
+#include "call_history_merge.h"
 #include "call_history_model.h"
 #include "call_recording_provider.h"
 #include "dsd-neo/core/safe_api.h"
@@ -5594,6 +5595,42 @@ test_callsign_callers_stay_apart(void) {
     expect("B3: one caller's fragments (padding aside) are one call", model.count() == 1);
 }
 
+/* The text the core writes beside a numeric identity is no raw identity: an EDACS late-entry fragment with an unknown
+ * source (`LID_UNK`) and its identified continuation a second later (`LID_<id>`) are one call, as their numbers say,
+ * also through a reload. An M17 `UNKNOWN` source (the broadcast address) names nobody either. */
+void
+test_identity_placeholders_are_no_raw_identity(void) {
+    const time_t when = 1754705000;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* first = ring.commit(0, 100U, 0U, when, when + 3, "100_AFS_06_041");
+        first->systype = DSD_SYNC_EDACS_POS;
+        DSD_SNPRINTF(first->src_str, sizeof(first->src_str), "%s", "LID_UNK");
+        Event_History* second = ring.commit(0, 100U, 5001U, when + 4, when + 9, "100_AFS_06_041");
+        second->systype = DSD_SYNC_EDACS_POS;
+        DSD_SNPRINTF(second->src_str, sizeof(second->src_str), "%s", "LID_5001");
+        model.refresh(ring.state);
+        expect("EDACS placeholders: the unknown-source fragment joins its continuation", model.count() == 1);
+    }
+    const QJsonObject stored = stored_row_with(100U, 5001U);
+    expect("EDACS placeholders: no raw text is stored", !stored.isEmpty() && !stored.contains(QLatin1String("srcText"))
+                                                            && !stored.contains(QLatin1String("tgtText")));
+    {
+        CallHistoryModel reloaded;
+        expect("EDACS placeholders: one call after a reload", reloaded.count() == 1);
+    }
+    expect("M17 UNKNOWN source is no identity",
+           !dsd_qt::call_history_identity_text_is_raw(DSD_SYNC_M17_LSF_POS, true, "UNKNOWN"));
+    expect("M17 BROADCAST destination is one",
+           dsd_qt::call_history_identity_text_is_raw(DSD_SYNC_M17_LSF_POS, false, "BROADCAST"));
+    expect("an EDACS LID is no identity",
+           !dsd_qt::call_history_identity_text_is_raw(DSD_SYNC_EDACS_POS, true, "LID_5001"));
+    expect("a D-STAR callsign is one",
+           dsd_qt::call_history_identity_text_is_raw(DSD_SYNC_DSTAR_HD_POS, true, "N0CALL"));
+}
+
 /* B4: one M17 caller's calls to two destinations under one named CAN are two calls, though the service name names
  * both rows; and they stay two through a reload. */
 void
@@ -5935,6 +5972,7 @@ main(int argc, char** argv) {
     test_fragment_texts_follow_the_rows_radio();
     test_position_order_follows_runs_and_revs();
     test_callsign_callers_stay_apart();
+    test_identity_placeholders_are_no_raw_identity();
     test_textual_destinations_under_one_service_stay_apart();
     test_system_identity_splits_conventional_systems();
     test_weaker_identity_joins_stronger();
