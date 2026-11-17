@@ -15,10 +15,10 @@
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/frame_sync.h>
-#include <dsd-neo/dsp/unflushed_retune.h>
-#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/platform/input_backlog.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include "dsd-neo/core/state_fwd.h"
 
 #if defined(near) || defined(far) || defined(_WINDOWS_) || defined(_WINSOCK2API_) || defined(_WINSOCKAPI_)
 #error "a header on the <dsd-neo/core/state.h> path brought in <windows.h> or a Winsock header"
@@ -35,7 +35,17 @@ near(int a, int b) {
 
 int
 main(void) {
-    if (!near(1, 2)) {
+    /* Something of each header, used as the decoder uses it: a fresh state, its hunt's first profile, a mark, and the
+       forced-key check. */
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (state == NULL) {
+        return 1;
+    }
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    const dsd_input_cut cut = {0};
+    const int ok = near(1, 2) && cut.measured == 0U && !dsd_key_dmr_forced_clear(state);
+    free(state);
+    if (!ok) {
         return 1;
     }
     printf("PLATFORM_HEADERS_NO_SYSTEM_SOCKETS: OK\n");
