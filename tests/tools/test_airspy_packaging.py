@@ -225,13 +225,14 @@ class AirspyPackaging(unittest.TestCase):
         self.assertIn(f'cp -f android/third_party/librtlsdr/COPYING "$DOCDIR/{gpl}"', macos)
         self.assertIn(f'cp -f packaging/librtlsdr-PATCHES.txt "$DOCDIR/{patches}"', macos)
         self.assertIn(f" {gpl} {patches} ", macos)
-        windows = (ROOT / ".github/workflows/windows-ci.yaml").read_text()
+        windows = (ROOT / "tools/windows/stage_release_tree.ps1").read_text()
         self.assertIn("Copy-Item -Force 'android/third_party/librtlsdr/COPYING' "
                       "(Join-Path $licenseDir 'librtlsdr-GPL-2.0-or-later.txt') -ErrorAction Stop", windows)
         self.assertIn("Copy-Item -Force 'packaging/librtlsdr-PATCHES.txt' "
                       "(Join-Path $licenseDir 'librtlsdr-PATCHES.txt') -ErrorAction Stop", windows)
         self.assertIn(f"'{gpl}','{patches}'", windows)
-        self.assertIn("no transfer left, canceling", windows)
+        self.assertIn("no transfer left, canceling", (ROOT / "tools/windows/verify_release_tree.ps1").read_text())
+        self.assert_windows_release_scripts()
 
         component = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
                          if c["id"] == "desktop-rtl")
@@ -291,10 +292,19 @@ class AirspyPackaging(unittest.TestCase):
         self.assertIn("-DCMAKE_POLICY_VERSION_MINIMUM=3.5", build_dep)
         macos = (ROOT / ".github/workflows/macos-ci.yaml").read_text()
         self.assertIn(" licenses/" + NOTICE + " ", macos)
-        windows = (ROOT / ".github/workflows/windows-ci.yaml").read_text()
+        windows = (ROOT / "tools/windows/stage_release_tree.ps1").read_text()
         self.assertIn("'licenses/" + NOTICE + "'", windows)
         self.assertIn("Copy-Item -Force 'android/third_party/libairspy/LICENSE' "
                       "(Join-Path $licenseDir '" + NOTICE + "') -ErrorAction Stop", windows)
+        self.assert_windows_release_scripts()
+
+    def assert_windows_release_scripts(self):
+        """The Windows release job and the pull-request Release build stage and check the tree with the scripts."""
+        for workflow in ("windows-ci.yaml", "windows-pr.yaml"):
+            text = (ROOT / ".github/workflows" / workflow).read_text()
+            for script in ("./tools/windows/stage_release_tree.ps1", "./tools/windows/verify_release_tree.ps1"):
+                with self.subTest(workflow=workflow, script=script):
+                    self.assertIn(script, text)
 
     @unittest.skipUnless(shutil.which("clang-format"), "clang-format is required")
     def test_b2_upstream_format_is_ignored(self):

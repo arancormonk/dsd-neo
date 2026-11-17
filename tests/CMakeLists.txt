@@ -25795,6 +25795,15 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_legal_inventory.py
     )
+    # The Windows ZIP's SoapySDR modules: overlays, pins, notices, legal records and
+    # the release jobs' calls (the pwsh half registers as TOOLS_SOAPY_RELEASE_SCRIPTS).
+    add_test(
+        NAME TOOLS_SOAPY_MODULE_PACKAGING
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_soapy_module_packaging.py
+            SoapyModulePackaging
+    )
     add_test(
         NAME TOOLS_CI_SCHEDULING
         COMMAND
@@ -26115,6 +26124,22 @@ if(Python3_Interpreter_FOUND)
             TOOLS_STAGE_RUNTIME_DLLS
             PROPERTIES
                 TIMEOUT 120
+                ENVIRONMENT "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS}"
+        )
+        # tools/windows/stage_release_tree.ps1 over a fake vcpkg tree, and the readers
+        # verify_release_tree.ps1 uses, fed output that Windows builds of SoapySDRUtil
+        # and dsd-neo printed under Wine. The fakes are POSIX scripts here too.
+        add_test(
+            NAME TOOLS_SOAPY_RELEASE_SCRIPTS
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_soapy_module_packaging.py
+                SoapyReleaseScripts
+        )
+        set_tests_properties(
+            TOOLS_SOAPY_RELEASE_SCRIPTS
+            PROPERTIES
+                TIMEOUT 180
                 ENVIRONMENT "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS}"
         )
     endif()
