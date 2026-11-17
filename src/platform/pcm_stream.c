@@ -23,7 +23,7 @@
 enum { PCM_STREAM_OPEN = 0, PCM_STREAM_EOF = 1, PCM_STREAM_FAILED = 2 };
 
 /* The most one discard (dsd_pcm_stream_discard_through()) takes: the buffer and 20 refills of it, about 4 s of 48 kHz
-   mono (2 s of stereo), and no refill after 250 ms on the monotonic clock. */
+   mono (2 s of stereo), and no refill but the first after 250 ms on the monotonic clock. */
 #define DSD_PCM_STREAM_DISCARD_MAX_FILLS 20U
 #define DSD_PCM_STREAM_DISCARD_MAX_MS    250U
 
@@ -254,10 +254,11 @@ dsd_pcm_stream_discard_through(dsd_pcm_stream* stream, const dsd_input_cut* cut)
         stream->pos += whole;
         owed -= (uint64_t)whole;
         dropped += (long)(whole / 2U);
-        /* The rest was ready at the mark, so a refill does not wait for it. */
+        /* The rest was ready at the mark, so a refill does not wait for it. The time cap never skips the first refill:
+           a pause of the decoder inside the drop does not decide what it takes. */
         if (owed == 0U || fills == DSD_PCM_STREAM_DISCARD_MAX_FILLS
-            || dsd_time_monotonic_ms() - start_ms >= DSD_PCM_STREAM_DISCARD_MAX_MS || pcm_stream_wait(stream, 0U) <= 0
-            || pcm_stream_fill(stream) <= 0) {
+            || (fills > 0U && dsd_time_monotonic_ms() - start_ms >= DSD_PCM_STREAM_DISCARD_MAX_MS)
+            || pcm_stream_wait(stream, 0U) <= 0 || pcm_stream_fill(stream) <= 0) {
             break;
         }
     }

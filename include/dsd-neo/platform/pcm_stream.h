@@ -54,11 +54,11 @@ int dsd_pcm_stream_read_wait(dsd_pcm_stream* stream, int16_t* out, unsigned int 
 /**
  * Drop the whole samples the stream held when @p cut was marked (dsd_input_backlog_mark()) and the decoder has not
  * read: from the reader's buffer, then from the descriptor or socket, read without waiting: at most 21 buffers of
- * 19200 bytes (about 4 s of 48 kHz mono), and no refill after 250 ms on the monotonic clock. A part of a sample is
- * kept, so the samples after it stay whole, and every byte that arrived after the mark is kept. A cut measured on
- * another input or attachment (dsd_input_backlog_cut_applies()) and a descriptor that is not a pipe, FIFO or socket
- * (dsd_fd_is_stream(): a regular file, a console) drop nothing. Returns the samples dropped (0 for NULL or an ended
- * stream).
+ * 19200 bytes (about 4 s of 48 kHz mono), and no refill but the first after 250 ms on the monotonic clock (a pause
+ * of the decoder inside the drop never skips its first refill). A part of a sample is kept, so the samples after it
+ * stay whole, and every byte that arrived after the mark is kept. A cut measured on another input or attachment
+ * (dsd_input_backlog_cut_applies()) and a descriptor that is not a pipe, FIFO or socket (dsd_fd_is_stream(): a regular
+ * file, a console) drop nothing. Returns the samples dropped (0 for NULL or an ended stream).
  */
 long dsd_pcm_stream_discard_through(dsd_pcm_stream* stream, const dsd_input_cut* cut);
 

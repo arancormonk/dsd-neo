@@ -18216,7 +18216,7 @@ target_link_libraries(
 add_test(NAME PLATFORM_PCM_STREAM COMMAND dsd-neo_test_platform_pcm_stream)
 
 # A backlog mark taken while the decoder refills the reader (issue #834), its readiness query wrapped through a GNU ld
-# --wrap seam so the refill runs inside it.
+# --wrap seam so the refill runs inside it, and the monotonic clock wrapped so a drop can pause past its time cap.
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_platform_pcm_stream_mark
@@ -18235,6 +18235,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         PRIVATE
             -Wl,--wrap=dsd_fd_readable_bytes
             -Wl,--wrap=dsd_socket_readable_bytes
+            -Wl,--wrap=dsd_time_monotonic_ms
     )
     add_test(
         NAME PLATFORM_PCM_STREAM_MARK

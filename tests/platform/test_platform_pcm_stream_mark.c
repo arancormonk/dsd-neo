@@ -6,7 +6,7 @@
  * the reader read in and those the pipe or socket holds ready; a refill moves bytes from the one to the other. The
  * readiness query is wrapped (GNU ld --wrap) so that the decoder thread tries its refill between the query and the
  * count: the mark must still count each byte once, and the drop that follows must keep every sample that came after
- * the mark.
+ * the mark. The monotonic clock is wrapped too, so a drop can be paused past its time cap before its first refill.
  */
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -27,6 +27,8 @@ long __real_dsd_fd_readable_bytes(int fd);
 long __wrap_dsd_fd_readable_bytes(int fd);
 long __real_dsd_socket_readable_bytes(dsd_socket_t sock);
 long __wrap_dsd_socket_readable_bytes(dsd_socket_t sock);
+uint64_t __real_dsd_time_monotonic_ms(void);
+uint64_t __wrap_dsd_time_monotonic_ms(void);
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 static int g_failures = 0;
@@ -37,6 +39,18 @@ check(int condition, const char* what) {
         DSD_FPRINTF(stderr, "FAIL: %s\n", what);
         g_failures++;
     }
+}
+
+/* While set, every clock read is 300 ms after the one before: the decoder paused past a drop's 250 ms cap. */
+static atomic_int g_clock_jumps;
+static uint64_t g_clock_offset_ms;
+
+uint64_t
+__wrap_dsd_time_monotonic_ms(void) {
+    if (atomic_load(&g_clock_jumps)) {
+        g_clock_offset_ms += 300U;
+    }
+    return __real_dsd_time_monotonic_ms() + g_clock_offset_ms;
 }
 
 /* The decoder thread's refill, started from inside the mark's readiness query. */
@@ -164,9 +178,43 @@ test_socket_mark_during_refill(void) {
     (void)close(fds[1]);
 }
 
+/* The decoder pauses past the drop's 250 ms cap between its start and its first refill: three old samples were ready
+   on the pipe at the mark, none read in yet, and all three still go, since the cap never skips the first refill. The
+   new sample after them is read. */
+static void
+test_pause_before_the_first_refill(void) {
+    int fds[2] = {-1, -1};
+    if (pipe(fds) != 0) {
+        check(0, "pipe for the paused drop");
+        return;
+    }
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_fd(fds[0]);
+    check(stream != NULL, "open on the pipe for the paused drop");
+    const int16_t old_samples[3] = {20, 21, 22};
+    const int16_t new_sample = 200;
+    check(dsd_write(fds[1], old_samples, sizeof old_samples) == (ssize_t)sizeof old_samples, "the old samples");
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    check(cut.measured == 1U && cut.arrived == sizeof old_samples, "the mark counts them");
+    atomic_store(&g_clock_jumps, 1);
+    const long dropped = dsd_pcm_stream_discard_through(stream, &cut);
+    atomic_store(&g_clock_jumps, 0);
+    check(dsd_write(fds[1], &new_sample, sizeof new_sample) == (ssize_t)sizeof new_sample, "the new sample");
+    int16_t s = 0;
+    const int got = dsd_pcm_stream_read_wait(stream, &s, 1000U);
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "a drop paused past its cap still takes its first refill (dropped %ld, next %d)",
+                 dropped, got == DSD_PCM_STREAM_SAMPLE ? s : -1);
+    check(dropped == 3 && got == DSD_PCM_STREAM_SAMPLE && s == new_sample, what);
+    dsd_pcm_stream_close(stream);
+    (void)close(fds[0]);
+    (void)close(fds[1]);
+}
+
 int
 main(void) {
     test_pipe_mark_during_refill();
     test_socket_mark_during_refill();
+    test_pause_before_the_first_refill();
     return g_failures == 0 ? 0 : 1;
 }

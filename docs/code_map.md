@@ -7334,7 +7334,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   32-frame read (up to 31 frames past it), no read begun after 250 ms; PortAudio on Windows, one snapshot of what is
   available; AAudio on Android, at most 96000 frames and no read begun after 250 ms; see the platform audio entry), the
   UDP ring (what it holds: at least 1 s at 48 kHz) and the TCP reader and socket, and stdin when it is a pipe or socket
-  (21 buffers of 19200 bytes, about 4 s of 48 kHz mono, and no refill after 250 ms).
+  (21 buffers of 19200 bytes, about 4 s of 48 kHz mono, and no refill but the first after 250 ms).
   Files, stdin from a file and RTL-family streams are left alone, and `pcm_input_generation` and the analog and
   scan-quiet keys do not move: the input is the same stream. The RTL flush also restarts the symbol path's span
   (`symbol_rtl_span_restart()`: jitter, matched-filter seam, timing trace, sync anchor); a rigctl retune does not
