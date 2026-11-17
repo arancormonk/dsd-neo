@@ -295,6 +295,7 @@ not the history from before.
 | `src_str`, `tgt_str` | Text identities (M17, YSF, D-STAR, dPMR callsigns). |
 | `t_name`, `s_name`, `t_mode`, `s_mode` | Group/source names and modes from the imported CSVs. |
 | `alias`, `gps`, `text` | Talker alias, GPS report and text message. |
+| `pos` | Present only while the row carries a checked position report (the one its `gps` text shows): `lat` and `lon` (degrees, seven decimals), `err_m` (metres, `0` when unknown), `flags` and `rev`, as in the [`positions`](#positions-verified-position-reports) topic. A data report (LRRP, LOCN, LIP, NMEA, NXDN GPS, TETRA LIP) is on its own data row; a position sent during a call (embedded GPS, L3Harris, Motorola, M17, D-STAR) is on that call's row. A row whose position changes in place is sent again with `"update":true`. |
 | `event`, `internal` | The event text, and DSD-neo's own notices. |
 | `enc`, `enc_alg`, `enc_key`, `mi` | Encryption indicators: the algorithm, the key **id** and the over-the-air MI, never key material. |
 | `channel`, `channel_label` | Trunk channel number and named scan channel. |
@@ -462,10 +463,11 @@ closes the connections.
  "identity_freq_hz":0,"freq_hz":0,"rx_time":1700000003,"rx_clock":0}
 ```
 
-One line per position report the decoder kept in its position feed: the same
-reports `-L` and the History screens use, so only reports whose own check (CRC,
-FEC or checksum) passed. A report that repeats its radio's last kept one
-unchanged within 30 s is not kept again.
+One line per position report the decoder kept in its position feed. These are
+the checked reports that History and `-L` take (only reports whose own check,
+a CRC, FEC or checksum, passed), D-STAR and M17 included, which `-L` leaves out.
+A report that repeats its radio's last kept one unchanged within 30 s is not
+kept again.
 
 * `pos_stream` names the decoder run (a decimal string, like every 64-bit
   identifier) and `pos_seq` numbers the run's kept reports from `1`. A new run is

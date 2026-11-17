@@ -431,11 +431,16 @@ Windows console runs:
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
   filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded
   text message, `Talker Alias:`, `GPS:`, `DSD-neo:` for a decoder notice) follow its line and repeat that
-  event's own stamp rather than reading the clock again; a voice transmission reacquired after a sync loss
-  appends a `Reacquired:` continuation carrying the stamp of the row it extends. While scanning a `-Y` list
-  or rotating `--trunk-scan` targets, each line names the channel it was heard on in brackets between the
-  timestamp and the protocol token. A [service name](#receive-filters-and-service-names) that labels the traffic
-  takes that place, scanning or not; other lines from a receiver that is not scanning a named channel are unchanged.
+  event's own stamp rather than reading the clock again. A `GPS:` line follows a call only for a position sent during
+  that call (DMR embedded GPS, P25 L3Harris or Motorola link control, M17, D-STAR); a separate data report (LRRP, LOCN,
+  LIP, UDT NMEA, ASCII NMEA, NXDN GPS, TETRA LIP) gets its own data line with its `GPS:` line, never the call of the
+  radio talking at the time, and a DMR USBD LIP reply is an anonymous `USBD LIP Poll Response; SRC(Hash): NNN;` line
+  (the hash is not a radio ID). A report with LIP position error 7 reads `fix may be old or invalid`. A voice
+  transmission reacquired after a sync loss appends a `Reacquired:` continuation carrying the stamp of the row it
+  extends. While scanning a `-Y` list or rotating `--trunk-scan` targets, each line names the channel it was heard on in
+  brackets between the timestamp and the protocol token. A [service name](#receive-filters-and-service-names) that
+  labels the traffic takes that place, scanning or not; other lines from a receiver that is not scanning a named channel
+  are unchanged.
   A DMR, P25 Phase 2 or X2-TDMA line ends with the over-the-air slot, `Slot 1;` or `Slot 2;`. The single-slot DMR
   decoder (`-fr`, `-nm`) carries both slots on one lane and logs the slot its bursts' CACH proved (`Slot 1;` while
   none is proven). In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
@@ -540,15 +545,53 @@ closing the window with background listening off, and "Dismiss failure and choos
 abandoned and the uploads still queued are not sent, one log line gives the count, and their WAV and JSON files stay on
 disk. A session that ends on its own there (end of a replay, input closed, receiver unplugged) still waits as the CLI
 does.
-- `-L <file>` Append LRRP (location) data. Rows are gated by the dispatch CRC verdict for DMR data
-  PDUs (LRRP, LOCN, LIP, UDT NMEA), DMR voice-LC embedded GPS, and P25 Phase 1 data PDUs reaching
-  the IP/UDP LRRP ports; P25 Harris/APX voice-LC GPS and NXDN are unchanged. Under `-F`, CRC-failed
-  data still decodes on screen and reaches history / the `-J` log marked `[CRC ERR]`, with LRRP
-  position tokens shown as suppressed (`CRC ERR`) and no location row appended. Bursts accepted as
-  RAS under `-F` are also excluded because their CRC could not be verified; the burst line
-  shows `-RAS`, history marks them `[RAS]`, and a withheld LRRP position reads `suppressed (RAS)`. An
-  embedded GPS row names the source of the call it rode on, so under `-F` a checked position can carry
-  the source ID of a RAS-accepted voice header.
+- `-L <file>` Append position reports, one tab-separated row each: date, time, source ID, latitude, longitude, speed
+  in km/h and heading in degrees (`0` stands for an unknown speed or heading). A row is written only for a report
+  whose own check passed (a CRC, an RS decode or a checksum), from the same checked record the History screens and the
+  control API's `positions` topic show. Rows come from:
+  - DMR LRRP and LOCN, LIP over UDT or UDP, binary UDT NMEA and the embedded GPS LC, and LRRP that P25 Phase 1 data
+    carries to an LRRP port.
+  - P25 L3Harris GPS updates (Phase 1 and Phase 2) and the Motorola embedded GPS link control (LCO $06).
+  - ASCII NMEA RMC and GGA sentences (P25 data SAP 48, NXDN data) and NXDN GPS reports. These need the source of the
+    packet's checked header: a report without one gets no row.
+  - TETRA LIP short location reports sent as SDS (PID 10); the source is the calling party's SSI.
+
+  Never written:
+  - D-STAR and M17 positions: their source is a callsign and the column is a number. They still reach History and
+    the API.
+  - DMR USBD LIP poll responses (the source is an 8-bit hash, not a radio ID), USBD poll requests (no position) and
+    USBD bursts without a repeater-mode sync (not decoded as a position).
+  - A report whose check failed, or that `-F` accepted as RAS. It still prints, with `Position: (suppressed; CRC ERR)`
+    or `(suppressed; RAS)` in place of the coordinates (see `-F`).
+  - A report with no fix or an impossible position: a latitude past 90 or a longitude past 180 degrees, minutes of 60
+    or more, exactly 0, 0, UDT NMEA with Q=0, an L3Harris update marked no fix or GPS not enabled, an NMEA GGA whose
+    quality is not 1-5, an RMC not marked valid (status `V`, or mode `N`, `E`, `M` or `S`). A bad time, speed or
+    heading field does not stop the row: that field becomes unknown.
+  - A report the [receive filters](#receive-filters-and-service-names) reject; a report in several parts (DMR and P25
+    data packets, an NXDN data call, an L3Harris Part A and B, a TETRA concatenated SDS) whose parts were heard across
+    a retune or a trunk scan switch; an NXDN GPS report not bound to the checked data header that opened it; an
+    L3Harris Part A and B that do not pair (another call, source or update, or more than 2 s apart).
+  - An LRRP position after a token whose layout is not confirmed (0x50, 0x52, 0x54, 0x68, 0x6A or an unknown
+    token): the report prints `Position: (suppressed; layout not confirmed)`.
+
+  A position on the equator or the prime meridian is written; earlier versions dropped it.
+
+  The source column is the radio ID only when it came from checked content, else `00000000`. DMR embedded GPS takes
+  the call's source only when a checked voice header or full LC of the same transmission (not a RAS one) named it.
+  P25 Phase 1 L3Harris and Motorola GPS take it only from a hard-decoded voice link control of the same active call,
+  never from an ended one. P25 Phase 2 L3Harris takes it only when the call's source, talkgroup and kind all came from
+  messages whose CRC passed: a call followed from a grant that failed its CRC under `-F` gets none until a checked
+  MAC_PTT or MAC_ACTIVE names all three again.
+
+  Speed and heading: LRRP speed is km/h with three decimals (earlier versions wrote 0.01 mph); a LIP speed above 1043
+  km/h is written as 1043 and an ambiguous LIP direction as 0; UDT NMEA above 126 knots is written as 233; L3Harris rows
+  carry the report's speed (earlier versions wrote 0) and its heading. Earlier versions also wrote southern LRRP
+  latitudes and NXDN longitudes wrong.
+
+  A LIP or embedded GPS report with position error 7 ("not known") is still written: the radio may have had no fix,
+  so the position may be old, and the file has no column to say so. History shows such a report with "fix may be old
+  or invalid", and the API sets its flag `128`. The Motorola LCO $06, NXDN GPS and DMR LOCN formats rest on fewer than
+  two published sources; they are decoded and written as before, and the API marks them with flag `256`.
 - `--lrrp-extra-port <n>` Also decode UDP port `<n>` as LRRP. Repeatable, at most 8 ports.
   The registered location port 4001 is always decoded; this adds ports a system uses
   instead of it, which would otherwise be reported as `Unknown UDP Port`. Ports the decoder
@@ -2285,6 +2328,14 @@ setting, shown apart from what is received, and it is off by default: then the o
   still acts on its grants, payload and voice, but no system broadcast in it is applied: no WACN/SYSID/NAC, control
   channel, site or LRA, channel identifier (IDEN) table or trust, secondary control channel, neighbour, system services,
   system time or protection parameters come from it. P25 Phase 1 TSBK and trunking MBT always need their CRCs.
+  Positions never come from content `-F` let through. A DMR or P25 data report (LRRP, LOCN, LIP, UDT NMEA, ASCII
+  NMEA) or a DMR embedded GPS LC whose check failed, or that was accepted as RAS, still prints, and its data notice is
+  kept marked `[CRC ERR]` or `[RAS]`, but without coordinates (`Position: (suppressed; CRC ERR)`): nothing reaches
+  History's position, `-L` or the API, and a failed P25 packet keeps none of its NMEA sentences. A DMR USBD LIP
+  reply whose CRC failed leaves no notice at all. A position heard during a P25 Phase 2 call that was followed from a
+  grant whose CRC failed names no radio (`SRC: unverified;`, `00000000` in `-L`) until a checked MAC_PTT or
+  MAC_ACTIVE names the source, talkgroup and kind again. An M17 LSF that failed its CRC still sets up the stream, but
+  its META (text, GNSS position, extended callsign) is not read.
   Relaxed CRC is one setting: `-F`, `--strict-crc`, the terminal's "Relaxed CRC checks" toggle (`F`), the Qt/Android
   Settings → Decoding → **Relaxed CRC** switch (which adds `-F` to every session the app starts) and a scan row's
   own `-F` or `--strict-crc` all turn every one of these gates on or off together, DMR's relaxed control-channel

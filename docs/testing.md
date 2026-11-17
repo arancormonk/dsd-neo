@@ -84,8 +84,8 @@ control channel without `-F` and requires the notice and no accepted content; `D
 `DECODE_IQ_DMR_POLARITY_AUTO` are its controls and must never print it.
 
 `CORE_EVENTS_STAGED_PAYLOAD` checks that data-notice staging is independent of active-call enrichment.
-`CORE_GPS_LRRP_CRC_GATING` checks that the real GPS decoders retain their state strings while suppressing
-CRC-failed location rows, with slot isolation and both file date formats; the LIP vectors follow
+`CORE_GPS_LRRP_CRC_GATING` checks that the real GPS decoders keep a CRC-failed fix out of both their position
+text and the location file (issue #800), with slot isolation and both file date formats; the LIP vectors follow
 TS 102 361-4 Table 6.79 and TS 100 392-18-1 Table 6.1. `DMR_USBD_LIP_LRRP_CRC` runs
 BPTC-encoded USBD LIP bursts through the real burst handler in strict and relaxed/RAS modes, checking
 decoded coordinates, file rows, CRC-flag restoration, and that strict mode decodes no CRC-failed USBD and

@@ -2519,6 +2519,63 @@ suite runs under this compiler.
   no position) and its site (`site_id`, by the call rows' rule). The API row gains `"pos"` (lat/lon from the fixed point, `err_m`,
   `flags`, `rev`) and the event fingerprint hashes it, both only while `pos.valid`. Tests: `CORE_EVENT_POSITION`,
   `API_FEED`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
+- API note: position producers (issue #800). Each decoder that reads a position fills one `dsd_position_fix` (its
+  `dsd_position_kind`) and admits it with verdicts from checks it ran itself: a zero `event_crc_invalid` proves
+  nothing where no CRC scope exists (P25 link control and MAC, NXDN, M17, D-STAR, TETRA). Only an admitted record
+  gets its GPS text, history position, `-L` row and feed record; a refused or unchecked report prints its fields
+  without coordinates (`Position: (suppressed; CRC ERR)`, `(suppressed; RAS)`, `(refused)`). Raw fields are checked
+  before they are converted (degrees, minutes 0-59, fractions, a boundary degree only with zero minutes, dates per
+  month, times of day): a bad coordinate refuses the report, any other bad field becomes unknown and is never folded
+  (a heading outside 0-3599 tenths of a degree, a time past 23:59:59). Per kind, position check / source check:
+  - DMR LRRP and LOCN (`dmr_pdu.c`), LIP over UDT or UDP and binary UDT NMEA (`dsd_gps.c`): the data packet's header,
+    CRC32 and block CRCs, or the UDT's CRCs, and not RAS / the same packet. LRRP reads its numeric fields as
+    variable-length (uintvar, ufloatvar, sfloatvar) and decodes tokens 0x51, 0x53, 0x55, 0x67, 0x69, 0x6B, 0x6C and
+    document type 0x13; a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
+    parse, and a resync-guessed position is never published. UDT NMEA needs Q=1. These go to their own data notice
+    (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no
+    specification).
+  - DMR USBD LIP (`dmr_dburst.c`): the burst CRC and an MS-sourced repeater-mode data sync (`dmr_burst_origin`,
+    `dmr_data_burst_handler_origin()`): a BS-sourced burst is a Poll Request (no position), a direct-mode or unknown
+    one is not decoded. The source is an 8-bit hash (`SOURCE_HASHED`): its own anonymous notice
+    `USBD LIP Poll Response; SRC(Hash): NNN;`, never `-L`. `lip_parse_short_report()` and its text and `-L` helpers are
+    shared with TETRA.
+  - DMR embedded GPS (`dmr_embedded_gps()`): the embedded LC checksum (`WEAK_CHECK`) / a checked, non-RAS full LC of
+    the same transmission named the call's source (`dmr_lc_checked_transmission`, `dmr_lc_checked_source`, cleared
+    with the reception), else unverified.
+  - P25 Phase 1 L3Harris and Motorola APX (MFID $90 LCO $06, `FORMAT_PROVISIONAL`) link control (`p25_lcw.c`,
+    `nmea_harris()`, `apx_embedded_gps()` with a `dsd_gps_report_ctx`): a hard RS decode of the LDU1 or TDULC LC (a
+    soft-erasure retry is unchecked); L3Harris pairs Part A (LCO 42 or 44) only with the Part B of its parity (43 or
+    45) on the same call epoch and source within 2 s on the decode clock, in storage of its own
+    (`p25_p1_harris_gps_part_a`), and needs quality %01 or %10 / a hard-decoded voice-user LC of the same ACTIVE call.
+    A terminator's GPS LC belongs to the call that terminator ended (`dsd_event_capture_closing_call()` before
+    `p25_sm_emit_tdu()`). Phase 2 L3Harris (`p25p2_vpdu.c`): MAC CRC and the whole segment (17 octets; the shifted
+    `80 AA A4 11` form 18, and never from a FACCH) / `p25_sm_checked_call_identity()` (P25 SM below).
+  - ASCII NMEA (`nmea_sentence_checker()`, the RMC/GGA parser in the core-private `src/core/gps/nmea_sentence.{h,c}`;
+    P25 SAP 48, NXDN data format 0x06): the packet check plus each sentence's own checksum; the first RMC with status
+    A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, is the report / the same packet. A
+    CRC-failed packet keeps no sentence text.
+  - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data
+    call header bound to the same assembly (`nxdn_data_call.c`: `nxdn_data_origin`, `nxdn_data_header_ms`,
+    `nxdn_data_carrier_seq`; a failed FACCH2/UDCH or FACCH3/UDCH2 CRC, a rejected header, another reception or
+    carrier, or 2 s on the decode clock drop it). A payload with no bound header gives no position. Its own notice.
+  - M17 GNSS META (`m17.c`; `m17_parse_gnss_meta()` and `m17_parse_extended_callsign_meta()` take the 14 META bytes, no
+    packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
+    monitor; one report per transmission and META content. A packet never carries a position (0x91 is shown as an
+    unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
+    `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches; its source is the header callsign
+    only when the record arrived within that call. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
+    concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
+    sender's own MCC/MNC as the sender scope when sent.
+  - Origin and `-L`. Multi-fragment producers capture the origin with the first fragment (`dmr_data_origin[slot]` at the
+    DMR data header, `p25_mdpu_origin` at a P25 Phase 1 MDPU header block in `p25_mpdu_collect_blocks()`,
+    `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA concatenation) and pass it to admission (LRRP
+    and LOCN through `dmr_pdu_position_origin()`, which picks the DMR or the P25 one), which refuses the report when a
+    retune, target switch or reception change came in between. `-L` rows: LRRP and LOCN through
+    `dmr_pdu_write_location_row()`, LIP through `lip_write_location_row()`, the rest through `dsd_gps.c`'s writers,
+    always from the admitted record (its source, 0 when admission cleared it); NMEA and NXDN rows need a source.
+    Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. Tests: `CORE_POSITION_FEED`,
+    `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`, `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`,
+    `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `NXDN_GPS_DISPATCH`, `M17_GNSS_POSITION`, `DSTAR_DPRS`, `TETRA_LIP`.
 - API note: the unit activity ring (`<dsd-neo/core/unit_activity.h>`, `src/core/util/unit_activity.c`, state
   extension 14) is the session's log of trunking unit events: registrations, deregistrations, talkgroup joins, denies,
   queued and waiting responses, radio commands, status and message reports. Protocol producers push one plain record
@@ -6465,6 +6522,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   prints apart (`Seed: BEE00.348.293 (set)`). Tests: `APP_CONTROL_SITE_IDENTITY_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
   `UI_NCURSES_VISUALIZERS_HELPERS`, `UI_NCURSES_P25_DISPLAY_HELPERS`, `UI_QT_METRICS_MODEL`,
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the record rides the snapshot).
+- Positions (issue #800): `include/dsd-neo/app_control/position_view.h`, `src/app_control/position_view.c` and the
+  private `position_ring.h`. One static published ring of 1,024 records in `ui_snapshot.c`, beside `g_pub_eh`: the
+  publish hop copies the feed records above the last one it published under `g_mu`, the consumer hop copies none, and
+  nothing allocates. A run's first publish replaces the previous run's records, and a publish with no live feed keeps
+  the last run's, so its final publish (Engine above) stays readable after the stop. `dsd_app_position_copy_since()`
+  reads it from any thread with a cursor of the reader's own (`stream_id`, `last_seq`, `oldest_seq`/`newest_seq`,
+  `more`, `lost`, `reset`) and the clock sample stored with the ring (`stream_id`, `decode_now_s`, `clock_source`,
+  `running`, which the exit flag clears at the final publish), so a frontend ages a replay's fix on the replay clock
+  only while that run is going. Test: `APP_CONTROL_POSITION_VIEW`.
 - Unit activity: `include/dsd-neo/app_control/unit_activity_view.h` and `src/app_control/unit_activity_view.c` read
   a snapshot's unit activity ring (Core) for every frontend (the Qt Activity screen, the terminal panel), so both say
   the same thing.
@@ -6602,7 +6668,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     restart drops above. A collection reports the entries it found as its total. `status.scan_avoids` is the held
     summary; `get {"what":"scan_avoids","offset","limit"}` (`dsd_api_feed_scan_avoids_page()`, limit 1..64) takes a
     reference under the lock and formats its page (the view's labels, each entry's `scan_avoid_remove` identity) on
-    the session thread outside every lock, so the replaced block is freed by its last reader
+    the session thread outside every lock, so the replaced block is freed by its last reader. Positions (issue #800):
+    `track_positions()` follows the decoder's live feed (`dsd_position_feed_copy_since()`) at every publish, as
+    `track_events()` follows the rings, and builds and broadcasts `position` lines (topic `positions`, `pos_stream` as
+    a decimal string, `pos_seq`) only while a client subscribes; with none it moves its cursor to the newest seq. A
+    new stream is followed from its first record. `dsd_api_feed_start()` takes the baseline from the published ring
+    (`dsd_app_position_copy_since()`), so a server started during a run sends none of the run's earlier records.
+    There is no backlog and no `get`; a gap in `pos_seq` is a report kept while unsubscribed or overwritten in the
+    1,024-record ring between two publishes
   - `api_commands.c`: one table entry per `DSD_APP_CMD_*` (`API_COMMANDS` reads `commands.h` at run time and fails on a
     command without one), mapping `params` onto the exact payload through the same app-control submit functions the
     frontends use; each entry names its submit function and, for a string command, the longest value its handler
@@ -12191,6 +12264,18 @@ Private per-protocol modules worth knowing about:
   that release is never received, so that call keeps whatever name its row had. The fast release is kept (maintainer
   decision): it returns the tuner to the control channel early, and an alias sent before the second END, or on a
   channel the fast release does not close, still names the call (see the Motorola alias invariant under Core).
+- P25 identity provenance (`p25_trunk_sm.c`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`, issue #800). Each slot's
+  assignment and each `p25_sm_event_t` carry `identity_checked`: `P25_SM_IDENTITY_CHECKED_SOURCE`, `_TARGET` and
+  `_KIND` (group or private), each set only from the check the producer ran on the message that set that field (a
+  grant's or MAC message's own CRC). A field inherited from an earlier assignment keeps that assignment's bit, a
+  source-less update never sets the source bit, and a new call epoch, a release or a reset clears all three. Decoders
+  publish through `p25_sm_emit_voice_start()` with the bits they set; the older convenience emitters publish unchecked,
+  and the event builders default to unchecked. The slot keeps the identity it last published for its canonical call
+  (`p25_sm_published_identity`); `p25_sm_checked_call_identity()` returns it only while that call is ACTIVE on that
+  epoch with that source, target and kind, all three checked and a source named. Position producers attribute a
+  report only through it (Core, position producers), so a call followed from a CRC-failed Phase 2 grant under `-F`
+  names no radio on its positions until a checked MAC_PTT or MAC_ACTIVE names all three again; a private call's
+  destination comes only from its grant. Tests: `P25_P2_HARRIS_GPS`, `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
@@ -12301,7 +12386,8 @@ Private per-protocol modules worth knowing about:
   protocol has a per-frame check: a D-STAR
   superframe costs 1992 symbols and a ProVoice frame 736, and the AMBE/IMBE error counts they leave in
   `dsd_state::errs`/`errs2` are soft corrections, not verdicts. D-STAR confirms on a CRC-16/X.25 — the RF header via
-  `processDSTAR_HD()`, or the header rebroadcast in `dstar_slow_data.c` — and both confirm on a second frame arriving
+  `processDSTAR_HD()`, the header rebroadcast in `dstar_slow_data.c`, or a whole D-PRS (GPS-A) record whose `$$CRCxxxx`
+  matches its text (issue #800; the `$$CRC` literal alone proves nothing) — and both confirm on a second frame arriving
   behind its own exact sync word before the carrier drops. `processDSTAR()` and `processProVoice()` return the answer,
   the dispatch handlers map it to `dsd_frame_verdict`, and the engine clears it with the carrier through the exported
   `dstar_confirm_reset()`/`provoice_confirm_reset()`.
@@ -13309,7 +13395,14 @@ single "current call".
   clauses 6.3.4 and 9.7.10, annex B: the CRC of `tetra_llc_fcs32()` over the DM-SDU elements before it; the parser
   records the verdict, `tetra_dmo_sync_h_t::fcs_state`): short data whose FCS fails, or whose DM-SDU the block ends in
   before its FCS, is discarded (clause 6.3.2), neither noted nor kept as the last one noted, since the channel CRC does
-  not stand in for it. Cell reselection is not noted: it concerns one MS at a time.
+  not stand in for it. Cell reselection is not noted: it concerns one MS at a time. An SDS under PID 10 holds a LIP
+  PDU (issue #800, `sds_lip_*` in `tetra_mle.c`): whole, or a complete concatenated message that completed on the
+  reception its first part arrived on. Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
+  position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
+  one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling
+  party's own network (MCC/MNC) when it is sent, else the decoded one; a foreign sender is named only by a label
+  learned for its network. The destination's group or individual kind is not known, so the record never sets
+  `TARGET_GROUP`. Test: `TETRA_LIP`.
 
 Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, the followed call's in the
 first block on its carrier included, identifier reuse, another calling party or its network included, a released,
@@ -15379,6 +15472,41 @@ Qt Quick frontend (`src/ui/qt`):
     mode (`Analog NFM`, `Analog AM`, `Analog`) on the Encrypted/Unencrypted line (index 11); every line keeps its place,
     so `siteLineIndex` stays 9. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`,
     `tst_monitor_recent_calls.qml`, `tst_monitor_call_identity.qml`), `UI_QT_QML_BACK_MODALS`.
+  - Call history texts, position and identity (issue #800; `call_history_model.{h,cpp}`, `call_history_merge.h`,
+    `call_history_payload.{h,cpp}`).
+    - Payload: every row, voice and notice alike, keeps its message text (`messageText`, with its provenance) and its
+      GPS text with the structured position (`gpsText`, `Row::Position`: lat/lon x 1e7, error, flags, kind, rev,
+      process instance, receive time), read from `Event_History::text_message`, `gps_s` and `pos`; the ring's position
+      only while `pos.valid` and its values pass `call_history_position_values_valid()`. `DetailRole` joins the two
+      texts with ` · `; a row an older build stored keeps its one text as `legacyDetail`.
+    - Identity: `Row` keeps the raw identity apart from display names: `protocol` (the sync type), `sourceText` and
+      `targetText` (raw `src_str`/`tgt_str`), `sourceScope` (`pos.scope` and its discriminator, set with or without a
+      position) and `rxScope` (`rx_scope`). Merging (`rows_mergeable()`) treats two different known raw source texts as
+      two calls whatever their aliases (B3), compares the raw target text before a name (`row_destination()`, B4), and
+      requires compatible protocol families (`call_history_protocol_family()`, the core's `dsd_sync_protocol_family()`
+      plus YSF, dPMR and X2-TDMA polarities) and scopes (`call_history_scopes_compatible()`, B5): an unknown scope
+      matches any; two scopes of the same strength (`call_history_scope_strength()`: feed-only frequency, then NAC /
+      Capacity Plus / EDACS, then a full system) must be equal; a weaker one joins a stronger one of its family, and the
+      row keeps the stronger. So two conventional systems on two frequencies, or two P25 channels sharing a NAC, are two
+      rows, while a trunked call over several voice channels stays one. Rows saved without identity merge as before.
+    - Fold (`fold_payload()`, `fill_identity()`): a fragment gives the row its texts, position, sender scope, protocol
+      and target and source texts only when it names the same radio (`fragment_identity_compatible()`): an anonymous
+      fragment never enriches a named row, one naming another radio keeps its texts to itself, and the texts anonymous
+      fragments gave are dropped when the row learns its radio. The reception scope folds by strength from any
+      fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
+      greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
+      unkeyed ones follow provenance. The session ordinal is persisted per ring (`callHistory/sessionOrd/next` and
+      `/rings`, the newest 64), given the first time a ring is read; the background tap takes a reserved block of
+      1,024 (`kTapOrdinalBlock`, saved before it starts) and hands its ring map back at every stop, so a later run's
+      fix wins whatever order the fragments are read in.
+    - Re-ingest and notices: `SeenState` keeps digests of the GPS text, message and position (`gpx`, `msx`, `psx`),
+      so a late fix or message on a committed row is read again; an entry from an older build reads 0, so such a row
+      is read once more. A repeated notice (`notices_same_delivery()`) must match the texts, the fix (coordinates,
+      error, flags, kind), the raw target and identity. Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
+      `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd` and
+      `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, each only when known (`detail` only for a legacy text); spill lines
+      add `ord`. An impossible stored position loads as none, its text kept. Tests: `UI_QT_CALL_HISTORY_MODEL`,
+      `UI_QT_CALL_HISTORY_MERGE`, `UI_QT_CALL_HISTORY_TAP`.
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
@@ -16845,7 +16973,16 @@ Qt Quick frontend (`src/ui/qt`):
   exemption kind with each echo marker and key form. A producer line whose code is a key option with a value of at most two digits would
   still be kept. Keep `kProducerLines` and `kMeasurementTemplates` in step with those producers' format strings, give
   a new producer of a signed number a line in the corpus, and keep the key-option pattern in step with
-  `src/runtime/cli/args.c`. The persistent
+  `src/runtime/cli/args.c`. Received positions (issue #800, D10): after the key rule, `redact()` replaces a whole
+  record that shows a position received over the air with `[redacted position]` (`holdsReceivedPosition()`): a line
+  matching `kPositionMarkers` (one entry per producer's position or position-message print: `Lat:`/`Lon:`, `GPS`,
+  `GNSS`, `LRRP`, `LOCN`, `NMEA` and raw RMC/GGA/GLL/GNS/VTG sentences, LIP, `Location Service`, `Position`, APRS,
+  D-PRS and `$$CRC`, Cellocator, the LOCN hemisphere form and D-STAR GPS `DATA:` blocks), a pair of decimal degrees
+  with at least four places (not followed by a unit), or a degrees-and-minutes pair. Payload bytes printed on such a
+  line go with it. A stored tail is redacted again when it is loaded (`seedRing()`), so an older build's log never
+  reaches Copy or Share with one. Raw dumps under generic prefixes (`-Z`: DMR PDU, P25 MBT, M17 LSF and packet bytes)
+  are kept and can hold an encoded position. Keep `kPositionMarkers` in step with the producers' print text, and give
+  a new position print a line in `UI_QT_DIAGNOSTICS_LOG` (`receivedPositionsAreRemoved()`). The persistent
   tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
   `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every
   250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything before
