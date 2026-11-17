@@ -24,6 +24,9 @@ static atomic_int s_mu_state;
 static const void* s_queue;
 static dsd_input_arrived_fn s_arrived;
 static uint64_t s_seq; /* moves at every attach and every detach of the attached queue */
+/* Every attachment number given out so far (backlog_new_attachment_locked()): s_seq never takes one of them again, so a
+   cut measured on an attachment that ended never applies to a later one, at the same address or not. */
+static uint64_t s_seq_issued;
 /* The marks taken so far: the order of the last one (dsd_input_cut::order). */
 static uint64_t s_marks;
 static dsd_input_cut s_post;
@@ -40,6 +43,15 @@ static dsd_input_socket_arrived_fn s_opening_arrived;
    attached, since the queue's count goes on from the connection's. */
 static uint64_t s_continued_from;
 static uint64_t s_continued_to;
+/* What the last attach replaced, kept while its queue is the one attached on that attachment (s_seq == s_undo_seq): an
+   input whose start fails after its queue attached (dsd_input_backlog_attach_failed()) puts it back. */
+static int s_undo_held;
+static uint64_t s_undo_seq;
+static const void* s_undo_queue;
+static dsd_input_arrived_fn s_undo_arrived;
+static uint64_t s_undo_prior_seq;
+static uint64_t s_undo_continued_from;
+static uint64_t s_undo_continued_to;
 
 static void
 backlog_lock(void) {
@@ -60,6 +72,12 @@ backlog_lock(void) {
 static void
 backlog_unlock(void) {
     dsd_mutex_unlock(&s_mu);
+}
+
+/* A new attachment: a number no attachment had before. */
+static void
+backlog_new_attachment_locked(void) {
+    s_seq = ++s_seq_issued;
 }
 
 /* No input is opening any more: the backlog's copy of its connection is cleared. */
@@ -92,7 +110,16 @@ dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived) {
     backlog_lock();
     const uint64_t opened = s_seq;
     const int continues = s_opening;
-    s_seq++;
+    /* The registration this attach replaces, for an input that fails to start after it (not one that was opening, whose
+       connection this queue goes on from). */
+    s_undo_held = !continues;
+    s_undo_queue = s_queue;
+    s_undo_arrived = s_arrived;
+    s_undo_prior_seq = s_seq;
+    s_undo_continued_from = s_continued_from;
+    s_undo_continued_to = s_continued_to;
+    backlog_new_attachment_locked();
+    s_undo_seq = s_seq;
     s_queue = queue;
     s_arrived = arrived;
     if (s_post_held) {
@@ -121,7 +148,36 @@ dsd_input_backlog_detach(const void* queue) {
     if (s_queue == queue) {
         s_queue = NULL;
         s_arrived = NULL;
-        s_seq++;
+        backlog_new_attachment_locked();
+    }
+    backlog_unlock();
+}
+
+void
+dsd_input_backlog_attach_failed(const void* queue) {
+    if (queue == NULL) {
+        return;
+    }
+    backlog_lock();
+    if (s_queue == queue) {
+        if (s_undo_held && s_seq == s_undo_seq) {
+            /* Nothing attached, detached or opened since this queue attached, and nothing read the queue it replaced
+               meanwhile: that queue is the input again, on its own attachment, so a mark measured on it before still
+               counts it. A post measured on the queue that failed is no input's drop. */
+            if (s_post_held && s_post.measured && s_post.seq == s_undo_seq) {
+                s_post_held = 0;
+            }
+            s_queue = s_undo_queue;
+            s_arrived = s_undo_arrived;
+            s_seq = s_undo_prior_seq;
+            s_continued_from = s_undo_continued_from;
+            s_continued_to = s_undo_continued_to;
+        } else {
+            s_queue = NULL;
+            s_arrived = NULL;
+            backlog_new_attachment_locked();
+        }
+        s_undo_held = 0;
     }
     backlog_unlock();
 }
@@ -151,7 +207,7 @@ dsd_input_backlog_cut_applies(const dsd_input_cut* cut, const void* queue) {
 static void
 backlog_end_opening_locked(void) {
     if (s_opening) {
-        s_seq++;
+        backlog_new_attachment_locked();
         backlog_clear_opening_locked();
     }
 }
@@ -166,7 +222,7 @@ dsd_input_backlog_opening(dsd_socket_t sock, dsd_input_socket_arrived_fn arrived
     }
     if (sock != DSD_INVALID_SOCKET && arrived != NULL) {
         /* The queue attached before, if any, is no longer the input: the connection is, until its queue attaches. */
-        s_seq++;
+        backlog_new_attachment_locked();
         s_queue = NULL;
         s_arrived = NULL;
         s_opening = 1;

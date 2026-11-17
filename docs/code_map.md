@@ -7343,7 +7343,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the attach retires it, and the new input's audio is kept. A failed open ends the opening, with
   the connection detached and a post measured on it retired (`dsd_frame_sync_forget_unflushed_retunes()`). The UDP
   ring attaches before its receive thread starts (nothing counted yet) and stdin's reader when it opens, so neither
-  has a moment in which a post waits for its input to be measured.
+  has a moment in which a post waits for its input to be measured. A UDP input whose receive thread then fails to start undoes its attach
+  (`dsd_input_backlog_attach_failed()`): the reader an input switch keeps running is the measured input again, on the
+  attachment it had, so a mark taken on it before the switch still applies. Attachment numbers are never reused, so a
+  cut measured on the failed queue never applies to a later one.
   Replacing the input (`dsd_opts_reset_pcm_input_state()`, the Pulse open, the TCP reconnect) retires a held post that
   was not measured on the queue attached then (`dsd_frame_sync_forget_unflushed_retunes()`, declared in
   `include/dsd-neo/dsp/unflushed_retune.h`, which `<dsd-neo/core/opts.h>` includes for

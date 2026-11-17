@@ -8117,6 +8117,35 @@ add_test(
     COMMAND dsd-neo_test_core_audio_input_switch
 )
 
+# A switch to UDP whose receive thread does not start keeps the running TCP or stdin reader as the input a rigctl
+# retune's drop is measured on (issue #834), with the real backends. udp_input.c is built in with its thread-start
+# seam (DSD_NEO_TEST_HOOKS), and the readers run on POSIX pipes and loopback sockets.
+if(NOT APPLE AND NOT WIN32)
+    add_executable(
+        dsd-neo_test_core_audio_input_switch_backlog
+        core/test_core_audio_input_switch_backlog.c
+        ${PROJECT_SOURCE_DIR}/src/io/audio_backends/udp_input.c
+    )
+    target_include_directories(
+        dsd-neo_test_core_audio_input_switch_backlog
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/audio_backends
+    )
+    target_compile_definitions(
+        dsd-neo_test_core_audio_input_switch_backlog
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_core_audio_input_switch_backlog
+        PRIVATE dsd-neo_core dsd-neo_io_audio
+    )
+    add_test(
+        NAME CORE_AUDIO_INPUT_SWITCH_BACKLOG
+        COMMAND dsd-neo_test_core_audio_input_switch_backlog
+    )
+endif()
+
 # The one-channel mix of two slots (issue #518): fresh talkers summed through the mixer's limiter, and the DMR
 # superframe mix's sources.
 add_executable(dsd-neo_test_core_mono_mix core/test_core_mono_mix.c)

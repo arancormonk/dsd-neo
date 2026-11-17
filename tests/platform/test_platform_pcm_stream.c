@@ -496,6 +496,61 @@ test_opening_keeps_its_own_connection(void) {
     socket_pair_close(&pair);
 }
 
+/* A queue whose count is the uint64_t it points to. */
+static uint64_t
+fake_queue_arrived(const void* queue) {
+    return *(const uint64_t*)queue;
+}
+
+/* Issue #834: an input whose start fails after its queue attached (a UDP receive thread that did not start) undoes the
+   attach. The queue it replaced, which a switch keeps running, is the input again on its own attachment: a mark taken
+   on it before still applies, and one taken now is measured on it. A cut or post measured on the failed queue applies
+   to nothing, not even a later queue at the same address. An attach that went on from an opening has no queue to put
+   back, so its failure only detaches. */
+static void
+test_failed_start_puts_back_the_replaced_queue(void) {
+    static uint64_t kept = 10U;
+    static uint64_t failed = 20U;
+    dsd_input_backlog_retire();
+    dsd_input_backlog_attach(&kept, fake_queue_arrived);
+    dsd_input_cut before;
+    dsd_input_backlog_mark(&before);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_cut on_failed;
+    dsd_input_backlog_mark(&on_failed);
+    post_now();
+    dsd_input_backlog_attach_failed(&failed);
+    check(dsd_input_backlog_take(NULL) == 0, "a post measured on the queue that failed is retired");
+    check(dsd_input_backlog_cut_applies(&before, &kept), "a mark taken on the kept queue before still applies");
+    dsd_input_cut after;
+    dsd_input_backlog_mark(&after);
+    check(after.measured == 1U && after.arrived == kept && dsd_input_backlog_cut_applies(&after, &kept),
+          "a mark taken now is measured on the kept queue");
+    check(!dsd_input_backlog_cut_applies(&on_failed, &failed), "a mark on the failed queue applies to nothing");
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    check(!dsd_input_backlog_cut_applies(&on_failed, &failed),
+          "nor to a later queue at the same address on a new attachment");
+    dsd_input_backlog_mark(&after);
+    dsd_input_backlog_attach_failed(&kept);
+    dsd_input_cut still;
+    dsd_input_backlog_mark(&still);
+    check(still.measured == 1U && still.arrived == failed && dsd_input_backlog_cut_applies(&after, &failed),
+          "a failed start of a queue that is not attached changes nothing");
+    dsd_input_backlog_detach(&failed);
+
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the opening's attach");
+    dsd_input_backlog_attach(&kept, fake_queue_arrived);
+    dsd_input_backlog_opening(pair.client, dsd_pcm_stream_socket_arrived);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_backlog_attach_failed(&failed);
+    dsd_input_cut none;
+    dsd_input_backlog_mark(&none);
+    check(none.measured == 0U, "an attach that went on from an opening only detaches when its start fails");
+    socket_pair_close(&pair);
+    dsd_input_backlog_retire();
+}
+
 static void
 test_no_stream(void) {
     int16_t s = 7;
@@ -543,6 +598,7 @@ main(void) {
     test_post_while_the_input_opens();
     test_post_while_the_input_opens_is_measured_when_posted();
     test_opening_keeps_its_own_connection();
+    test_failed_start_puts_back_the_replaced_queue();
     test_later_mark_is_held();
     dsd_socket_cleanup();
     if (g_failures != 0) {

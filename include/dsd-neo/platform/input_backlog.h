@@ -71,6 +71,12 @@ void dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived);
  * the connection detached and a post measured on it retired. */
 void dsd_input_backlog_opening(dsd_socket_t sock, dsd_input_socket_arrived_fn arrived);
 
+/** @p queue attached (dsd_input_backlog_attach()), and then its input failed to start (a UDP input whose receive
+ * thread did not start): detached, and while nothing attached, detached or opened since it attached, the queue its attach
+ * replaced is the input again on the attachment it had, so an input switch that keeps the running input keeps its
+ * registration too, and a mark measured on that queue before still counts it. Call it before @p queue is freed. */
+void dsd_input_backlog_attach_failed(const void* queue);
+
 /** @p queue goes away: detached before it is freed, if it is the one attached. */
 void dsd_input_backlog_detach(const void* queue);
 

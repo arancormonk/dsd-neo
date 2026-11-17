@@ -28,6 +28,9 @@
 #endif
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#ifdef DSD_NEO_TEST_HOOKS
+#include "udp_input_test_support.h"
+#endif
 
 /** @brief Simple single-producer/single-consumer ring for PCM16 samples. */
 typedef struct udp_input_ring {
@@ -256,6 +259,27 @@ udp_input_arrived(const void* queue) {
     return dsd_atomic_u64_load_relaxed(&ctx->ring.written);
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+static int s_udp_test_thread_starts_to_fail;
+
+void
+udp_input_test_fail_thread_starts(int count) {
+    s_udp_test_thread_starts_to_fail = count;
+}
+#endif
+
+/* Start the receive thread: 0, or the error that kept it from starting. */
+static int
+udp_input_start_thread(udp_input_ctx* ctx) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (s_udp_test_thread_starts_to_fail > 0) {
+        s_udp_test_thread_starts_to_fail--;
+        return EAGAIN;
+    }
+#endif
+    return dsd_thread_create(&ctx->th, udp_rx_thread, ctx);
+}
+
 /**
  * @brief Start UDP input thread and ring.
  *
@@ -329,9 +353,10 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
     opts->udp_in_sockfd = sockfd;
     /* The input the decoder reads from now on: a rigctl retune's drop is measured on its ring. */
     dsd_input_backlog_attach(ctx, udp_input_arrived);
-    int rc = dsd_thread_create(&ctx->th, udp_rx_thread, ctx);
+    int rc = udp_input_start_thread(ctx);
     if (rc != 0) {
-        dsd_input_backlog_detach(ctx);
+        /* The input did not start: the input it was to replace (a switch keeps it running) is measured again. */
+        dsd_input_backlog_attach_failed(ctx);
         ring_destroy(&ctx->ring);
         dsd_socket_close(sockfd);
         free(ctx);
