@@ -12537,12 +12537,60 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
 
     double
     getSampleRate(const int, const size_t) const override {
-        return fake_->rate_hz;
+        return fake_->readback_rate_hz > 0.0 ? fake_->readback_rate_hz : fake_->rate_hz;
+    }
+
+    std::vector<double>
+    listSampleRates(const int, const size_t) const override {
+        return points(fake_->listed_rates, fake_->listed_rate_count);
+    }
+
+    SoapySDR::RangeList
+    getSampleRateRange(const int, const size_t) const override {
+        return ranges(fake_->rate_ranges, fake_->rate_range_count);
     }
 
     void
-    setBandwidth(const int, const size_t, const double) override {
+    setBandwidth(const int, const size_t, const double bw) override {
         fake_->bandwidth_writes++;
+        fake_->last_bandwidth_hz = bw;
+    }
+
+    std::vector<double>
+    listBandwidths(const int, const size_t) const override {
+        return points(fake_->bandwidths, fake_->bandwidth_count);
+    }
+
+    SoapySDR::RangeList
+    getBandwidthRange(const int, const size_t) const override {
+        if (fake_->bandwidth_range_count > 0U) {
+            return ranges(fake_->bandwidth_ranges, fake_->bandwidth_range_count);
+        }
+        SoapySDR::RangeList out;
+        for (double bw : points(fake_->bandwidths, fake_->bandwidth_count)) {
+            out.emplace_back(bw, bw);
+        }
+        return out;
+    }
+
+    std::string
+    getHardwareKey(void) const override {
+        return fake_->hardware_key ? fake_->hardware_key : "";
+    }
+
+  private:
+    static std::vector<double>
+    points(const double* values, size_t count) {
+        return values ? std::vector<double>(values, values + count) : std::vector<double>();
+    }
+
+    static SoapySDR::RangeList
+    ranges(const rtl_device_test_soapy_range* values, size_t count) {
+        SoapySDR::RangeList out;
+        for (size_t i = 0; values && i < count; i++) {
+            out.emplace_back(values[i].minimum, values[i].maximum, values[i].step);
+        }
+        return out;
     }
 };
 } // namespace
@@ -12569,8 +12617,12 @@ rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int nam
     if (fake->cf32_stream) {
         dev->soapy_format = SOAPY_FMT_CF32;
     }
-    if (fake->driver_key) {
+    dev->soapy_requested_bandwidth_hz = fake->bandwidth_request_hz;
+    if (fake->driver_key || fake->hardware_key || fake->requested_profile) {
         rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), fake->driver_key);
+        rtl_device_copy_cstr(dev->soapy_hardware_key, sizeof(dev->soapy_hardware_key), fake->hardware_key);
+        rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile),
+                             fake->requested_profile);
         soapy_select_profile_locked(dev);
     }
     return dev;

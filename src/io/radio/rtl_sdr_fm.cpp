@@ -13295,6 +13295,8 @@ test_capture_program_result(int rc, rtl_stream_test_capture_result* out) {
     out->refused_forced = g_rate_plan_refused.device_forced;
     out->published_rate_out_hz = g_pub_rate_out.load(std::memory_order_relaxed);
     out->published_forced = g_pub_capture_rate_forced.load(std::memory_order_relaxed);
+    out->input_ring_capacity_floats = input_ring.capacity;
+    out->centered_iq = dongle.centered_iq;
 }
 
 static void
@@ -13349,6 +13351,39 @@ rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* o
     }
     dsd_live_iq_step_finish(&demod.live_iq_step);
     test_capture_program_result(rc, out);
+    test_capture_program_leave(&saved);
+    return 0;
+}
+
+static_assert((int)RTL_STREAM_TEST_SOURCE_SOAPY == (int)RADIO_SOURCE_SOAPY,
+              "the test seam's SoapySDR source is the stream's");
+static_assert((int)RTL_STREAM_TEST_SOURCE_AIRSPY == (int)RADIO_SOURCE_AIRSPY,
+              "the test seam's Airspy source is the stream's");
+
+extern "C" int
+rtl_stream_test_open_radio_capture(int source_kind, struct rtl_device* dev, dsd_opts* opts, uint32_t center_hz,
+                                   rtl_stream_test_capture_result* out) {
+    if (!dev || !opts || center_hz == 0U || !out || g_stream || input_ring.capacity != 0U
+        || (source_kind != RADIO_SOURCE_SOAPY && source_kind != RADIO_SOURCE_AIRSPY)) {
+        return -1;
+    }
+    const RadioSourceKind kind = (RadioSourceKind)source_kind;
+    const TestCaptureProgramState saved = test_capture_program_enter(dev, center_hz, 0);
+    /* As stream_open_init_pipeline() and stream_open_configure_pipeline_state() run them, the demod chain's finalize
+       (which neither sizes nor programs anything) left out. */
+    int rc = input_ring_init(&input_ring, (size_t)(MAXIMUM_BUF_LENGTH * 8));
+    if (rc == 0 && kind == RADIO_SOURCE_AIRSPY) {
+        rc = stream_open_size_airspy_input(opts);
+    }
+    if (rc == 0) {
+        rc = stream_open_validate_device_capture_rate(kind);
+    }
+    if (rc == 0) {
+        rc = controller_program_initial_device(&controller, opts);
+    }
+    dsd_live_iq_step_finish(&demod.live_iq_step);
+    test_capture_program_result(rc, out);
+    input_ring_destroy(&input_ring);
     test_capture_program_leave(&saved);
     return 0;
 }

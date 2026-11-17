@@ -593,6 +593,10 @@ typedef struct {
     int refused_forced;           /* and its forced flag */
     int published_rate_out_hz;    /* the demod rate the stream publishes for the other threads */
     int published_forced;         /* and the forced flag */
+    /* The stream's input ring in floats (0: none allocated), and whether the driver delivers centred I/Q (a native
+       Airspy), so no Fs/4 shift runs. */
+    size_t input_ring_capacity_floats;
+    int centered_iq;
 } rtl_stream_test_capture_result;
 
 /* Plan every later programming for @p backend (a dsd_rate_plan_backend) in place of the open device's, -1 for the
@@ -612,6 +616,21 @@ int rtl_stream_test_program_initial_capture(struct rtl_device* dev, const dsd_op
 int rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
                                            uint32_t retune_center_hz, int retune_rate_in_hz,
                                            rtl_stream_test_capture_result* out);
+
+/* The stream's radio sources, as rtl_sdr_fm.cpp numbers them (rtl_stream_test_open_radio_capture()). */
+enum {
+    RTL_STREAM_TEST_SOURCE_SOAPY = 2,
+    RTL_STREAM_TEST_SOURCE_AIRSPY = 4,
+};
+
+/* The radio part of a stream open for @p source_kind with @p dev as the open device, with no thread started: the
+ * stream's default input ring, the input sizing for the source (an Airspy's native rate), the capture-rate check on
+ * the rate the device advertises, the start's device programming for @p center_hz (read-back included), then what the
+ * open sizes after it. @p out holds the capture and the input ring the open left; the ring is freed and the stream's
+ * own state comes back afterwards. Returns -1 with a stream open or a ring allocated, else 0 (the open's result in
+ * out->rc). */
+int rtl_stream_test_open_radio_capture(int source_kind, struct rtl_device* dev, dsd_opts* opts, uint32_t center_hz,
+                                       rtl_stream_test_capture_result* out);
 
 /* A capture-programming session on @p dev as the open device (issue #782 D3): the stream start's programming for
  * @p center_hz, with a 48 kHz demod input, into @p out; then steps, until rtl_stream_test_capture_session_end() puts
@@ -657,19 +676,47 @@ enum {
  * state. Returns the supervisor's manual target after it. */
 int rtl_stream_test_autogain_target(struct rtl_device* dev, int stage, int initial, int seed);
 
+/* A range a SoapySDR driver reports (SoapySDR::Range): a step of 0 takes any value in it. */
+typedef struct {
+    double minimum;
+    double maximum;
+    double step;
+} rtl_device_test_soapy_range;
+
 typedef struct {
     double gain_db;
     double selected_db;
     int writes;
     int refuse;
     const char* driver_key; /* the driver's key, its profile picked from it as at configure (NULL: none) */
-    double rate_hz;         /* the sample rate last set, read back as is */
+    double rate_hz;         /* the sample rate last set, read back as is unless readback_rate_hz is set */
     int frequency_writes;
     int rate_writes;
     int bandwidth_writes;
     int no_gain_mode;  /* the driver has no automatic gain mode (hasGainMode() false) */
     int no_gain_range; /* the driver lists no gain stages and a 0..0 dB range: it reports no gain */
     int cf32_stream;   /* the device streams cf32, so an I/Q capture can open on it */
+    /* The hardware's key, matched for the profile after the driver's (NULL: none), and soapy_profile as configured
+       (NULL: auto). */
+    const char* hardware_key;
+    const char* requested_profile;
+    /* soapy_bandwidth_hz as configured: 0 driver automatic, -1 none (the profile's default applies), above 0 that
+       bandwidth. */
+    int bandwidth_request_hz;
+    /* listSampleRates() and getSampleRateRange(). */
+    const double* listed_rates;
+    size_t listed_rate_count;
+    const rtl_device_test_soapy_range* rate_ranges;
+    size_t rate_range_count;
+    /* listBandwidths(); getBandwidthRange() reports each as a point, as SoapySDR's default does, unless
+       bandwidth_ranges are set. */
+    const double* bandwidths;
+    size_t bandwidth_count;
+    const rtl_device_test_soapy_range* bandwidth_ranges;
+    size_t bandwidth_range_count;
+    /* The bandwidth last set (0: none), and the rate getSampleRate() reports (0: the rate last set). */
+    double last_bandwidth_hz;
+    double readback_rate_hz;
 } rtl_device_test_soapy_gain_fake;
 /* A control-only Soapy driver with quantized gain readback, counting its tuning writes. NULL without SoapySDR. */
 struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);
