@@ -17744,7 +17744,13 @@ main(void) {
 
     // The unload writes the working key the talkgroup key autoload loaded: the autoload owns it no more and its key
     // copies are wiped, so a call on a talkgroup with no key leaves the unloaded key alone.
-    seed_dmr_basic_privacy_call(state, 70ULL);
+    state->keyloader = 1;
+    state->rkey_array[123] = 0x33ULL;
+    state->rkey_array_loaded[123] = 1U;
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+    uint32_t seeded_from = 0U;
+    (void)keyring_dmr_tg_autoload_apply(state, 0U, 123U, &seeded_from);
     rc |=
         expect_true("keyloader-carrier-reset-autoload-seeded", dsd_dmr_tg_autoload_holds(state) && state->K == 0x33ULL);
     noCarrier(opts, state);
