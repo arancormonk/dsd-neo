@@ -139,6 +139,9 @@ bootOf(const QByteArray& record) {
 }
 
 const char kDroppedRecord[] = "[redacted sensitive diagnostic]";
+// Issue #800, D10: what a record holding a received position becomes. Not kDroppedRecord: a position names no key, so
+// the lines after it are not read as the rest of a key's value (StreamCapture::continuesValue()).
+const char kPositionRecord[] = "[redacted position]";
 
 /**
  * @brief What marks a record as key-bearing: a key word, or a key-taking CLI option.
@@ -418,7 +421,9 @@ const MeasurementTemplate kMeasurementTemplates[] = {
     {nullptr, "[SYNC] range:[%.1f,%.1f] dc:", nullptr},
     {nullptr, "(%.2f,%.2f|%.0f\xC2\xB0,%.2f)", nullptr},
     // Positions: LIP and Harris/NMEA reports (dsd_gps.c), DMR LRRP and NMEA LOCN (dmr_pdu.c), M17 GNSS (m17.c). A %s is
-    // the degree glyph (dsd_degrees_glyph(): the sign or " deg") and the hemisphere letter, or the optional time.
+    // the degree glyph (dsd_degrees_glyph(): the sign or " deg") and the hemisphere letter, or the optional time. Their
+    // numbers leave the key scan as every template's do, so a key beside them still drops the record; the record then
+    // reaches no log as it is: holdsReceivedPosition() removes it whole (issue #800, D10).
     {nullptr, "Lat: %.5lf%s%s Lon: %.5lf%s%s (%.5lf, %.5lf)", nullptr},
     {nullptr, "GPS: %f%s, %f%s;", nullptr},
     {nullptr, "Harris GPS: %.6lf%s, %.6lf%s;", nullptr},
@@ -629,6 +634,49 @@ holdsKeyLabel(const QString& text) {
         return false;
     }
     return withoutMeasurementFields(withoutSyncLabels(text)).contains(keyLabel());
+}
+
+/**
+ * @brief Whether @p text holds a position received over the air (issue #800, D10), which no log or export keeps.
+ *
+ * Judged by what every producer prints with one, not by each template, so a decoder line that changes or a new one
+ * (a new report format) is still covered: a position label ("Lat:", "GPS", "LRRP", "LIP", "NMEA", "APRS", ...), a raw
+ * NMEA sentence or APRS/DPRS text, a pair of decimal degrees with at least four places (the producers print five or
+ * six; a frequency or a measurement with its unit is no coordinate), or a degrees-and-minutes pair (NMEA, APRS). A
+ * label can stand on a record with no coordinates ("LIP: truncated;"); the record goes too, which costs a line of
+ * diagnostics and keeps the rule simple. The device's own location is never logged.
+ */
+bool
+holdsReceivedPosition(const QString& text) {
+    static const QRegularExpression labels(
+        QStringLiteral("\\b(?:Lat|Lon|Latitude|Longitude|Altitude)\\s*:"
+                       "|\\b(?:GPS|GNSS|LRRP|LOCN|NMEA|LIP|APRS|DPRS|USBD|Cellocator)\\b"
+                       "|Location Information Protocol|Location Report|Location Service|\\bPosition\\b"
+                       "|\\$\\$CRC|\\$[A-Z]{2}(?:RMC|GGA|GLL|GNS|VTG),"));
+    static const QRegularExpression degrees(
+        QStringLiteral("(?<![0-9.])[-+]?[0-9]{1,3}\\.[0-9]{4,}(?![0-9])\\s*(?:\\x{00B0}|deg)?\\s*[NSns]?\\s*[,/;]?\\s*"
+                       "[-+]?[0-9]{1,3}\\.[0-9]{4,}(?![0-9.])(?!\\s*(?:[kMG]?Hz|dB|ppm|ms\\b|s\\b|%))"));
+    static const QRegularExpression minutes(QStringLiteral(
+        "(?<![0-9])[0-9]{4}\\.[0-9]+\\s*,?\\s*[NS]\\b.{0,3}?(?<![0-9])[0-9]{5}\\.[0-9]+\\s*,?\\s*[EW]\\b"));
+    return text.contains(labels) || text.contains(degrees) || text.contains(minutes);
+}
+
+/**
+ * @brief @p text with its raw byte dumps replaced (issue #800, D10): runs of four or more bracketed bytes ("[0D][1A]")
+ * or of space-separated byte pairs ("0D 1A 2B 3C").
+ *
+ * A dump does not say what it carries, and the PDUs that carry positions (USBD, LRRP, LOCN, UDT, MDPU, NXDN, M17,
+ * D-STAR, TETRA) dump through the same printers as every other, so every dump goes, as a run of ten or more hex digits
+ * always has (redact()).
+ */
+QString
+withoutByteDumps(QString text) {
+    static const QRegularExpression bracketed(QStringLiteral("(?:\\[[0-9A-Fa-f]{1,2}\\] ?){3,}\\[[0-9A-Fa-f]{1,2}\\]"));
+    static const QRegularExpression spaced(
+        QStringLiteral("(?<![0-9A-Za-z])(?:[0-9A-Fa-f]{2} ){3,}[0-9A-Fa-f]{2}(?![0-9A-Za-z])"));
+    text.replace(bracketed, QStringLiteral("[redacted]"));
+    text.replace(spaced, QStringLiteral("[redacted]"));
+    return text;
 }
 
 QString
@@ -1026,6 +1074,12 @@ DiagnosticsLog::redact(QString text) {
     if (holdsKeyLabel(text)) {
         return QLatin1String(kDroppedRecord);
     }
+    // Issue #800, D10: after the key rule, which it leaves as it was. A stored record an older build kept is redacted
+    // again when it is loaded (seedRing()), so no copy or share of the log holds one either.
+    if (holdsReceivedPosition(text)) {
+        return QLatin1String(kPositionRecord);
+    }
+    text = withoutByteDumps(std::move(text));
     static const QRegularExpression hex(QStringLiteral("(?i)[0-9a-f]{10,}"));
     text.replace(hex, QStringLiteral("[redacted]"));
     text.replace(QChar('\r'), QChar(' '));

@@ -1668,7 +1668,8 @@ negativeMeasurementsDoNotCarryKeys() {
  * negative values and every precision that producer prints. The producers were found by a format-string sweep of src/
  * and the Android native code (the gate r3 fix report lists them); each line here is rendered from the producer's own
  * format (file and function named beside it), stderr ones through the stream capture and runtime-log ones through the
- * log tap, and each must reach the log unchanged, live and from a saved record. */
+ * log tap, and each must reach the log unchanged, live and from a saved record. The position templates' lines are not
+ * kept since issue #800 (D10): receivedPositionsAreRemoved() holds them. */
 static void
 measurementCorpusSurvives() {
     const QString deg = QString::fromUtf8("\xC2\xB0");
@@ -1692,27 +1693,9 @@ measurementCorpusSurvives() {
         // demod_pipeline.cpp: the CQPSK I/Q debug dump.
         QStringLiteral("[IQ] (0.52,-0.25|-25") + deg + QStringLiteral(",0.58) (-0.31,-1.92|-99") + deg
             + QStringLiteral(",1.94) "),
-        // dsd_gps.c: LIP, the three Lat/Lon reports, NMEA, Harris and NXDN, with either degree glyph.
-        QStringLiteral("Src: 1234; Lat: 32.12345") + deg + QStringLiteral("S Lon: 115.12345") + deg
-            + QStringLiteral("W (-32.12345, -115.12345); Spd: 0 km/h; Dir: 0") + deg,
-        QStringLiteral(" Lat: 32.12345 degS Lon: 115.12345 degW (-32.12345, -115.12345)"),
-        QStringLiteral(" Lat: -32.12345") + deg + QStringLiteral("S Lon: -115.12345") + deg
-            + QStringLiteral("W (-32.12345, -115.12345) "),
-        QStringLiteral(" GPS: -32.123450") + deg + QStringLiteral(", -115.123450") + deg
-            + QStringLiteral("; SPD: 0 knots; 0.000000 kph;"),
-        QStringLiteral(" Harris GPS: -32.123456 deg, -115.123456 deg; HEADING: 090 deg; TIME: 12:00:00 UTC;"),
-        QStringLiteral(" GPS: (-32.123456") + deg + QStringLiteral(", -115.123456") + deg
-            + QStringLiteral(") Speed: 0.0 k/h; COG: 0.0; Elevation: -25; Date: 2026/10/28; Time: 12:00;"),
-        // dmr_pdu.c dmr_lrrp_print_details() (J3) and the NMEA LOCN report.
-        QStringLiteral(" Lat: -32.12345 Lon: -115.12345 (-32.12345, -115.12345)"),
-        QStringLiteral(" Altitude: -25.50m"),
-        QStringLiteral(" NMEA / LOCN; Source: 1234; 2026/10/28 12:00:00 (-32.12345") + deg
-            + QStringLiteral(", -115.12345") + deg + QStringLiteral(");"),
-        QStringLiteral(" NMEA / LOCN; Source: 1234; (-32.12345 deg, -115.12345 deg);"),
         // m17.c: power, the UDP result, GNSS.
         QStringLiteral(" PWR: -51.2 dB SQL HIT: 0;"),
         QStringLiteral(" UDP IP Frame CRC: BEEF; UDP RETURN: -1: LEN: 25; SENT: 61;"),
-        QStringLiteral(" GPS: (-32.123450, -115.123450); Altitude: -25.5 m; Speed: 0.0 km/h; Bearing: 0 Degrees;"),
         // dmr_csbk.c: the broadcast local time and offset.
         QStringLiteral(" Date: 10.28; UTC Time: 02:15:00; Local: -3:15:00; Offset: -5;"),
         QStringLiteral(" UTC Time: 02:15:00; Local: -10:15:00; Offset: -12;"),
@@ -1807,6 +1790,110 @@ measurementCorpusSurvives() {
     const auto counts = DiagnosticsLog::measurementTemplateCountsForTest();
     check(counts.first == 44 && counts.second == counts.first,
           "a measurement template was refused or the list changed");
+}
+
+/* Issue #800, D10: no record that holds a position received over the air reaches the log, a copy or a share of it, live
+ * through the stream capture or stored, and a tail an older build stored with positions in it is redacted as it is
+ * loaded. Every producer's position line (the measurement templates', which still leave the key scan, so a key beside
+ * one still drops the record as a key), a label line with no coordinates, raw NMEA and APRS text, and a bare pair of
+ * decimal degrees or of degrees and minutes. Raw byte dumps, bracketed or spaced, are replaced whatever they carry.
+ * Lines that hold no position (a frequency, a site's location ID, slicer statistics) are kept as they were. */
+static void
+receivedPositionsAreRemoved() {
+    static const char kPosition[] = "[redacted position]";
+    const QString deg = QString::fromUtf8("\xC2\xB0");
+    const QStringList positionLines = {
+        // dsd_gps.c: LIP, the three Lat/Lon reports, NMEA, Harris and NXDN, with either degree glyph.
+        QStringLiteral("Src: 1234; Lat: 32.12345") + deg + QStringLiteral("S Lon: 115.12345") + deg
+            + QStringLiteral("W (-32.12345, -115.12345); Spd: 0 km/h; Dir: 0") + deg,
+        QStringLiteral(" Lat: 32.12345 degS Lon: 115.12345 degW (-32.12345, -115.12345)"),
+        QStringLiteral(" Lat: -32.12345") + deg + QStringLiteral("S Lon: -115.12345") + deg
+            + QStringLiteral("W (-32.12345, -115.12345) "),
+        QStringLiteral(" GPS: -32.123450") + deg + QStringLiteral(", -115.123450") + deg
+            + QStringLiteral("; SPD: 0 knots; 0.000000 kph;"),
+        QStringLiteral(" Harris GPS: -32.123456 deg, -115.123456 deg; HEADING: 090 deg; TIME: 12:00:00 UTC;"),
+        QStringLiteral(" GPS: (-32.123456") + deg + QStringLiteral(", -115.123456") + deg
+            + QStringLiteral(") Speed: 0.0 k/h; COG: 0.0; Elevation: -25; Date: 2026/10/28; Time: 12:00;"),
+        // dmr_pdu.c dmr_lrrp_print_details() (J3) and the NMEA LOCN report.
+        QStringLiteral(" Lat: -32.12345 Lon: -115.12345 (-32.12345, -115.12345)"),
+        QStringLiteral(" Altitude: -25.50m"),
+        QStringLiteral(" NMEA / LOCN; Source: 1234; 2026/10/28 12:00:00 (-32.12345") + deg
+            + QStringLiteral(", -115.12345") + deg + QStringLiteral(");"),
+        QStringLiteral(" NMEA / LOCN; Source: 1234; (-32.12345 deg, -115.12345 deg);"),
+        // m17.c GNSS, and the D-STAR, LIP, USBD, L3Harris, NMEA and APRS lines.
+        QStringLiteral(" GPS: (-32.123450, -115.123450); Altitude: -25.5 m; Speed: 0.0 km/h; Bearing: 0 Degrees;"),
+        QStringLiteral("Lat: 22.30.00N Lon: 45.00.00E"),
+        QStringLiteral("Location Information Protocol; Short Location Report; Src: 1234; Lat: 22.50000") + deg
+            + QStringLiteral(" N Lon: 45.00000") + deg + QStringLiteral(" E (22.50000, 45.00000); Spd: 0 km/h;"),
+        QStringLiteral("  Position Error: Less than 20m"),
+        QStringLiteral("LIP: truncated;"),
+        QStringLiteral(" USBD - Service: LIP (0) - Payload: [0D][00][1A][2B][3C][4D][5E][6F][70][81][92][A]"),
+        QStringLiteral(" L3Harris GPS Location"),
+        QStringLiteral("$GPRMC,120000,A,2230.000,N,04500.000,E,0.0,0.0,171126,,,A*6C"),
+        QStringLiteral(" APRS - N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test"),
+        QStringLiteral(" TIME: 12:00:00 UTC; (22.500000, 45.000000)"),
+        QStringLiteral(" Report 7: !2230.00N/04500.00E>"),
+    };
+    QTemporaryDir dir;
+    {
+        QByteArray bytes;
+        for (const auto& line : positionLines) {
+            bytes += line.toUtf8() + '\n';
+        }
+        const auto records = streamRecords(bytes, dir.path());
+        check(records.size() == positionLines.size(), "a position line was lost or split by the stream capture");
+        for (qsizetype i = 0; i < std::min(records.size(), positionLines.size()); ++i) {
+            checkLabelled(records.at(i) == QLatin1String(kPosition), "position kept: " + positionLines.at(i).toUtf8());
+            checkLabelled(DiagnosticsLog::redact(QStringLiteral("[stderr] [info] ") + positionLines.at(i)) == kPosition,
+                          "stored position kept: " + positionLines.at(i).toUtf8());
+        }
+    }
+    // The key rule is as it was: a key beside a position drops the record as a key.
+    check(DiagnosticsLog::redact(QStringLiteral("[stderr] [info]  Lat: -32.12345 Lon: -115.12345 (-32.12345, "
+                                                "-115.12345) -1 9"))
+              == kDropped,
+          "a key beside a position is not dropped as a key");
+    // A tail an older build stored, positions in it: the reloaded log, and so its copy and share, hold none.
+    {
+        QTemporaryDir old;
+        const QString kept = QStringLiteral("[stderr] [info] Sync: +DMR  slot1 [VOICE] ");
+        QByteArray stored;
+        for (const auto& line : positionLines) {
+            stored += QStringLiteral("[stderr] [info] ").toUtf8() + line.toUtf8() + '\n';
+        }
+        stored += kept.toUtf8() + '\n';
+        QFile tail(old.filePath("tail.log"));
+        check(tail.open(QIODevice::WriteOnly) && tail.write(stored) == stored.size(), "older tail written");
+        tail.close();
+        DiagnosticsLog reloaded(old.path());
+        DiagnosticsLogModel model(&reloaded);
+        const QString text = model.allText();
+        check(text.count(QLatin1String(kPosition)) == positionLines.size(), "a stored position survived the reload");
+        for (const auto& line : positionLines) {
+            checkLabelled(!text.contains(line), "reloaded position kept: " + line.toUtf8());
+        }
+        check(text.contains(kept), "the reload dropped a line with no position");
+    }
+    // Raw byte dumps go whatever they carry; a short run of bracketed fields stays.
+    check(DiagnosticsLog::redact(QStringLiteral("[stderr] [info]  Short Data Raw: [0D][00][1A][2B][3C]"))
+              == QStringLiteral("[stderr] [info]  Short Data Raw: [redacted]"),
+          "a bracketed dump was kept");
+    check(DiagnosticsLog::redact(QStringLiteral("[stderr] [info]  pkt:  0D 00 1A 2B 3C 4D"))
+              == QStringLiteral("[stderr] [info]  pkt:  [redacted]"),
+          "a spaced dump was kept");
+    const QStringList keptLines = {
+        QStringLiteral("WARNING: Scan channel 3 (851.012500 MHz): --squelch-db"),
+        QStringLiteral("Retune 146.520000 MHz to 146.540000 MHz."),
+        QStringLiteral("Location ID [000123] SVC [0001] RST [000000] "),
+        QStringLiteral(" Location Registration;"),
+        QStringLiteral("[SYNC] range:[-2.9,2.9] dc:-0.05 ratio(1:3)=2400:2400"),
+        QStringLiteral("  IDEN [1] Type [1] Base Freq [34040000] (170200000 Hz) TX Offset [-25] Spacing [100]"),
+        QStringLiteral("  Location ID [012345] CC1 [001][0001] CC2 [002][0002] Status: "),
+    };
+    for (const auto& line : keptLines) {
+        const QString record = QStringLiteral("[stderr] [info] ") + line;
+        checkLabelled(DiagnosticsLog::redact(record) == record, "a line with no position changed: " + line.toUtf8());
+    }
 }
 
 /* J2: a number leaves the key scan only as a labelled producer field, so the forms a command line takes still drop:
@@ -2738,6 +2825,7 @@ main(int argc, char** argv) {
     negativeMeasurementsSurvive();
     negativeMeasurementsDoNotCarryKeys();
     measurementCorpusSurvives();
+    receivedPositionsAreRemoved();
     measurementExemptionsKeepKeyForms();
     syncLabelsSurvive();
     everyExemptionYieldsToArgumentEcho();

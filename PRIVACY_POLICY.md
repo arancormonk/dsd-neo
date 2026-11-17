@@ -139,9 +139,10 @@ Google Drive, that service stores the file under its own terms. The developer ne
 it.
 
 Settings → Diagnostics keeps a short log on your device to help track down problems. Lines
-that could hold a key are removed from it. It can contain your device's maker and model, its
-Android version, and what the app decoded, such as talkgroups, radio IDs and positions sent
-over the air. It leaves your device only if you copy or share it yourself.
+that could hold a key are removed from it, and so are positions sent over the air and the raw
+data bytes the app received. It can contain your device's maker and model, its Android
+version, and what the app decoded, such as talkgroups and radio IDs. It leaves your device
+only if you copy or share it yourself.
 
 ## Permissions
 
