@@ -94,6 +94,7 @@ gps_key(const CallHistoryModel::Row& row) {
     key.keyed = row.pos.valid && row.gpsOrd > 0 && row.pos.rev > 0U;
     key.ord = row.gpsOrd;
     key.rev = row.pos.rev;
+    key.version = row.gpsVer;
     return key;
 }
 
@@ -322,6 +323,7 @@ take_gps(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
     to.gpsSeq = from.gpsSeq;
     to.gpsSlot = from.gpsSlot;
     to.gpsOrd = from.gpsOrd;
+    to.gpsVer = from.gpsVer;
 }
 
 void
@@ -440,6 +442,7 @@ row_payload_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     row.gpsSeq = static_cast<qulonglong>(json_i64_or(obj, "gpsSeq", static_cast<qint64>(row.seq)));
     row.gpsSlot = static_cast<int>(json_i64_or(obj, "gpsSlot", row.slot));
     row.gpsOrd = qMax<qint64>(json_i64_or(obj, "gpsOrd", 0), 0);
+    row.gpsVer = static_cast<quint64>(qMax<qint64>(json_i64_or(obj, "gpsVer", 0), 0));
     if (row.messageText.isEmpty() && row.gpsText.isEmpty()) {
         row.legacyDetail = obj.value(QLatin1String("detail")).toString();
     }
@@ -474,6 +477,9 @@ row_payload_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
         obj.insert(QLatin1String("gpsSeq"), static_cast<qint64>(row.gpsSeq));
         obj.insert(QLatin1String("gpsSlot"), row.gpsSlot);
         obj.insert(QLatin1String("gpsOrd"), row.gpsOrd);
+        if (row.gpsVer != 0U) {
+            obj.insert(QLatin1String("gpsVer"), static_cast<qint64>(row.gpsVer));
+        }
     }
     if (row.messageText.isEmpty() && row.gpsText.isEmpty() && !row.legacyDetail.isEmpty()) {
         obj.insert(QLatin1String("detail"), row.legacyDetail);

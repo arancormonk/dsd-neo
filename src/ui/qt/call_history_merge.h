@@ -417,11 +417,16 @@ call_history_protocols_compatible(int x, int y) {
  * A total order across decoder runs: the run's session ordinal (a persisted, strictly increasing number the model
  * gives each ring the first time it reads it; 0 when not known), then the position's rev within that run. Keyed only
  * while the fragment carries an admitted position and both are known.
+ *
+ * Apart from the key, @c version orders two readings of one fragment, with or without a position: the ring's
+ * Event_History_I::commit_rev when the fragment was read. Every change of a committed row moves it and nothing resets
+ * it, so of two readings of a fragment from one ring the greater version is the later content.
  */
 struct CallHistoryPositionKey {
-    bool keyed;   /**< an admitted position with its session ordinal and rev */
-    int64_t ord;  /**< the session ordinal of the fragment's run */
-    uint64_t rev; /**< the position's rev in that run */
+    bool keyed;       /**< an admitted position with its session ordinal and rev */
+    int64_t ord;      /**< the session ordinal of the fragment's run */
+    uint64_t rev;     /**< the position's rev in that run */
+    uint64_t version; /**< the ring's commit_rev when the fragment was read; 0 when not known (older stores) */
 };
 
 /** @brief Order two keyed positions: -1 when @p a is older than @p b, 1 when newer, 0 for the same. */
@@ -440,12 +445,13 @@ call_history_position_key_compare(const CallHistoryPositionKey& a, const CallHis
  * @brief Whether a fragment's GPS text and position replace the merged row's (issue #800, 2.7). They move together: the
  * text and the coordinates always come from one fragment.
  *
- * The fragment with the greatest key wins, whatever order the fragments arrive in, also when it is the same fragment
- * read twice (a spill line replayed over the newer revision a save already holds). A keyed fragment beats one with no
- * key (a row an older build stored, a text-only GPS line, a ring of unknown run); between two with none, the newer
- * fragment wins (call_history_fold_adopts()), the rule every other field follows. Nothing never erases something. The
- * one exception to the keys: the same fragment read again (the same provenance and ordinal) with no key takes what it
- * says now, since the core's text-only GPS write drops the position it had and leaves nothing to order by.
+ * Two readings of the same fragment (the same provenance and ordinal) are ordered by their versions when both are
+ * known: the later reading wins, with or without a position, so the core's text-only GPS write (which drops the
+ * position) still applies while an older spill line replayed over a newer save never does. Otherwise the fragment with
+ * the greatest key wins, whatever order the fragments arrive in. A keyed fragment beats one with no key (a row an older
+ * build stored, a text-only GPS line, a ring of unknown run); between two with none, the newer fragment wins
+ * (call_history_fold_adopts()), the rule every other field follows. Nothing never erases something. A reading an older
+ * store kept without a version: the same fragment read again with no key takes what it says now.
  *
  * @param stored_known   The row holds GPS text or a position.
  * @param stored_key     Its key.
@@ -465,11 +471,15 @@ call_history_gps_adopts(bool stored_known, const CallHistoryPositionKey& stored_
         return true;
     }
     const int order = call_history_provenance_compare(incoming, stored);
+    const bool same_fragment = order == 0 && incoming_key.ord == stored_key.ord;
+    if (same_fragment && incoming_key.version != 0U && stored_key.version != 0U) {
+        return incoming_key.version >= stored_key.version;
+    }
     if (stored_key.keyed && incoming_key.keyed) {
         const int keys = call_history_position_key_compare(incoming_key, stored_key);
         return keys > 0 || (keys == 0 && order >= 0);
     }
-    if (order == 0 && incoming_key.ord == stored_key.ord && !incoming_key.keyed) {
+    if (same_fragment && !incoming_key.keyed) {
         return true;
     }
     if (stored_key.keyed != incoming_key.keyed) {

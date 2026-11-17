@@ -593,13 +593,15 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         /* Issue #800, 2.7 and B2. The row's GPS text (Event_History::gps_s) and the admitted position it describes, as
          * one unit from one fragment: the one with the greatest (gpsOrd, pos.rev) (call_history_gps_adopts()). gpsOrd
          * is the session ordinal of that fragment's run (sessionOrdinalFor()); a fresh fragment carries its own.
-         * Persisted (`gps`, `gps*`, `pos`) while known. */
+         * gpsVer is the ring's commit_rev when that fragment was read (0: not known), which orders two readings of the
+         * same fragment. Persisted (`gps`, `gps*`, `pos`) while known. */
         QString gpsText;
         Position pos;
         qint64 gpsWhen = 0;
         qulonglong gpsSeq = 0;
         int gpsSlot = 0;
         qint64 gpsOrd = 0;
+        quint64 gpsVer = 0;
         /* Detail text a store an older build wrote held (the notice's message or GPS string), shown while the row
          * has neither of the two above. */
         QString legacyDetail;

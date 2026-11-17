@@ -15502,18 +15502,20 @@ Qt Quick frontend (`src/ui/qt`):
       fragment never enriches a named row, one naming another radio keeps its texts to itself, and the texts anonymous
       fragments gave are dropped when the row learns its radio. The reception scope folds by strength from any
       fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
-      greatest `(session ordinal, rev)` wins, also for one fragment read twice (an older spill line replayed over a
-      saved newer revision keeps the newer), a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
-      unkeyed ones follow provenance; only the same fragment read again with no key (the core's text-only GPS write,
-      which drops the position) takes what it says now. The session ordinal is persisted per ring (`callHistory/sessionOrd/next` and
-      `/rings`, the newest 64), given the first time a ring is read; the background tap takes a reserved block of
-      1,024 (`kTapOrdinalBlock`, saved before it starts) and hands its ring map back at every stop, so a later run's
-      fix wins whatever order the fragments are read in.
+      greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
+      unkeyed ones follow provenance. Two readings of one fragment are ordered first by `gpsVer` (the ring's
+      `commit_rev` when it was read, which every committed-row change moves and nothing resets): the later reading
+      wins with or without a position, so the core's text-only GPS write applies while an older spill line (keyed or
+      text-only) replayed over a newer save never does. A store without `gpsVer` falls back to the keys, and the same
+      fragment read again with no key takes what it says. The session ordinal is persisted per ring
+      (`callHistory/sessionOrd/next` and `/rings`, the newest 64), given the first time a ring is read; the background
+      tap takes a reserved block of 1,024 (`kTapOrdinalBlock`, saved before it starts) and hands its ring map back at
+      every stop, so a later run's fix wins whatever order the fragments are read in.
     - Re-ingest and notices: `SeenState` keeps digests of the GPS text, message and position (`gpx`, `msx`, `psx`),
       so a late fix or message on a committed row is read again; an entry from an older build reads 0, so such a row
       is read once more. A repeated notice (`notices_same_delivery()`) must match the texts, the fix (coordinates,
       error, flags, kind), the raw target and identity. Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
-      `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd` and
+      `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, each only when known (`detail` only for a legacy text); spill lines
       add `ord`. An impossible stored position loads as none, its text kept. Tests: `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_MERGE`, `UI_QT_CALL_HISTORY_TAP`.

@@ -5391,6 +5391,57 @@ test_spill_replay_keeps_newer_revision(void) {
                                                       && pos.value(QLatin1String("lat")).toInt() == 226000000);
 }
 
+/* 2.7: a spill line from before a fragment had a position (text-only GPS) never replaces the saved position the
+ * fragment gained since, but a later text-only update of the same fragment (the core's text-only write) still applies:
+ * readings of one fragment are ordered by the ring's commit_rev, with or without a position. */
+void
+test_spill_text_only_replay_keeps_saved_position(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754703000;
+    QByteArray older;
+    Event_History* call = nullptr;
+    {
+        CallHistoryModel model;
+        call = ring.commit(0, 80301U, 8301U, when, when + 4);
+        DSD_SNPRINTF(call->gps_s, sizeof(call->gps_s), "%s", "GPS: Protected");
+        model.refresh(ring.state);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        older = stores_as_spill_lines();
+        with_gps(call, "GPS: 22.70000 45.20000", 227000000, 452000000, 9U);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("2.7 text replay: the fix reads in place",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: 22.70000 45.20000"));
+    } // destructor flushes the stores
+    expect("2.7 text replay: the spill line is text-only", !older.contains("\"pos\"") && older.contains("Protected"));
+    write_spill_beside_stores(older);
+    {
+        CallHistoryModel reloaded;
+        expect("2.7 text replay: the older text-only line does not replace the saved fix",
+               reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: 22.70000 45.20000"));
+        reloaded.startSaveForTest();
+        reloaded.waitForSaveForTest();
+        const QJsonObject pos = stored_row_with(80301U, 8301U).value(QLatin1String("pos")).toObject();
+        expect("2.7 text replay: revision 9 stays stored",
+               pos.value(QLatin1String("rev")).toString() == QStringLiteral("9"));
+        // The core's later text-only write: the same fragment's newer reading applies.
+        DSD_SNPRINTF(call->gps_s, sizeof(call->gps_s), "%s", "GPS: Hidden");
+        call->pos.valid = 0U;
+        ring.touchCommitted(0);
+        reloaded.refresh(ring.state);
+        expect("2.7 text replay: a later text-only update applies",
+               reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: Hidden"));
+        reloaded.startSaveForTest();
+        reloaded.waitForSaveForTest();
+    }
+    expect("2.7 text replay: the later text-only update is stored without the fix",
+           !stored_row_with(80301U, 8301U).contains(QLatin1String("pos"))
+               && stored_row_with(80301U, 8301U).value(QLatin1String("gps")).toString()
+                      == QStringLiteral("GPS: Hidden"));
+}
+
 /* B2: a fragment gives the row its text and position only when it is the row's radio. An anonymous fragment's fix never
  * enriches a named call, in either order, and an update of an absorbed fragment that later names another radio keeps
  * the row's radio and its fix. */
@@ -5880,6 +5931,7 @@ main(int argc, char** argv) {
     test_voice_row_keeps_gps_and_message();
     test_texts_and_position_survive_save_reload_and_spill();
     test_spill_replay_keeps_newer_revision();
+    test_spill_text_only_replay_keeps_saved_position();
     test_fragment_texts_follow_the_rows_radio();
     test_position_order_follows_runs_and_revs();
     test_callsign_callers_stay_apart();

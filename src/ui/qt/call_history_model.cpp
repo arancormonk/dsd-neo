@@ -1356,6 +1356,7 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         row.row = row_from_item(item, walk.sessionLabel, walk.systemUid, slot, seq);
         row.row.session = walk.session;
         row.row.gpsOrd = walk.sessionOrd;
+        row.row.gpsVer = static_cast<quint64>(ring.commit_rev);
         row.row.fragments.append(call_history_fragment_key(instance, slot, seq));
         row.isUpdate = verdict == SeenAdvanced;
         row.again = verdict == SeenAgain;

@@ -570,7 +570,7 @@ fold_gps(const GpsFragment* const* order, int count) {
     for (int i = 0; i < count; i++) {
         const GpsFragment* f = order[i];
         const bool keptKnown = kept != nullptr && kept->known;
-        const CallHistoryPositionKey none = {false, 0, 0U};
+        const CallHistoryPositionKey none = {false, 0, 0U, 0U};
         const CallHistoryProvenance nowhere = {0, 0U, 0};
         if (call_history_gps_adopts(keptKnown, kept != nullptr ? kept->key : none,
                                     kept != nullptr ? kept->from : nowhere, f->known, f->key, f->from)) {
@@ -585,9 +585,9 @@ fold_gps(const GpsFragment* const* order, int count) {
  * fragments with none the newest wins, as before. */
 void
 test_gps_fold_total_order(void) {
-    const GpsFragment a = {"A", true, {true, 1, 5U}, {200, 1U, 0}};
-    const GpsFragment b = {"B", true, {true, 1, 9U}, {300, 2U, 0}};
-    const GpsFragment c = {"C", true, {true, 2, 2U}, {100, 1U, 0}};
+    const GpsFragment a = {"A", true, {true, 1, 5U, 0U}, {200, 1U, 0}};
+    const GpsFragment b = {"B", true, {true, 1, 9U, 0U}, {300, 2U, 0}};
+    const GpsFragment c = {"C", true, {true, 2, 2U, 0U}, {100, 1U, 0}};
     const GpsFragment* const perms[6][3] = {{&a, &b, &c}, {&a, &c, &b}, {&b, &a, &c},
                                             {&b, &c, &a}, {&c, &a, &b}, {&c, &b, &a}};
     for (const auto& perm : perms) {
@@ -597,31 +597,50 @@ test_gps_fold_total_order(void) {
     for (const auto& perm : sameRun) {
         expect("within a run the higher rev wins", fold_gps(perm, 2)[0] == 'B', true);
     }
-    const GpsFragment text = {"T", true, {false, 2, 0U}, {900, 9U, 1}};
+    const GpsFragment text = {"T", true, {false, 2, 0U, 0U}, {900, 9U, 1}};
     const GpsFragment* const keyedFirst[2][2] = {{&a, &text}, {&text, &a}};
     for (const auto& perm : keyedFirst) {
         expect("a keyed fix beats a newer text-only line", fold_gps(perm, 2)[0] == 'A', true);
     }
-    const GpsFragment old1 = {"O", true, {false, 0, 0U}, {100, 1U, 0}};
-    const GpsFragment old2 = {"P", true, {false, 0, 0U}, {200, 2U, 0}};
+    const GpsFragment old1 = {"O", true, {false, 0, 0U, 0U}, {100, 1U, 0}};
+    const GpsFragment old2 = {"P", true, {false, 0, 0U, 0U}, {200, 2U, 0}};
     const GpsFragment* const unkeyed[2][2] = {{&old1, &old2}, {&old2, &old1}};
     for (const auto& perm : unkeyed) {
         expect("among unkeyed fragments the newest wins", fold_gps(perm, 2)[0] == 'P', true);
     }
-    const GpsFragment nothing = {"N", false, {false, 0, 0U}, {999, 9U, 1}};
+    const GpsFragment nothing = {"N", false, {false, 0, 0U, 0U}, {999, 9U, 1}};
     const GpsFragment* const empty[1][2] = {{&a, &nothing}};
     expect("nothing never erases a fix", fold_gps(empty[0], 2)[0] == 'A', true);
     // The same fragment read again (a text-only write drops its position) takes what it says now.
-    const GpsFragment again = {"S", true, {false, 1, 0U}, {200, 1U, 0}};
+    const GpsFragment again = {"S", true, {false, 1, 0U, 0U}, {200, 1U, 0}};
     const GpsFragment* const sameFragment[1][2] = {{&a, &again}};
     expect("the same fragment read again takes its new text", fold_gps(sameFragment[0], 2)[0] == 'S', true);
     // The same fragment's older revision read again (a spill line replayed over a newer save) keeps the newer one, in
     // either order; its newer revision read again replaces the older.
-    const GpsFragment rev9 = {"9", true, {true, 1, 9U}, {200, 1U, 0}};
-    const GpsFragment rev5 = {"5", true, {true, 1, 5U}, {200, 1U, 0}};
+    const GpsFragment rev9 = {"9", true, {true, 1, 9U, 0U}, {200, 1U, 0}};
+    const GpsFragment rev5 = {"5", true, {true, 1, 5U, 0U}, {200, 1U, 0}};
     const GpsFragment* const revisions[2][2] = {{&rev9, &rev5}, {&rev5, &rev9}};
     for (const auto& perm : revisions) {
         expect("the same fragment keeps its newest revision", fold_gps(perm, 2)[0] == '9', true);
+    }
+    // Readings of one fragment that carry the ring's commit_rev are ordered by it, with or without a position: an
+    // older text-only reading (a spill line from before the fix) never replaces the saved rev 9, in either order,
+    // while a later text-only reading (the core's text-only write) does.
+    const GpsFragment saved9 = {"9", true, {true, 1, 9U, 20U}, {200, 1U, 0}};
+    const GpsFragment olderText = {"o", true, {false, 1, 0U, 12U}, {200, 1U, 0}};
+    const GpsFragment laterText = {"l", true, {false, 1, 0U, 25U}, {200, 1U, 0}};
+    const GpsFragment* const olderFirst[2][2] = {{&saved9, &olderText}, {&olderText, &saved9}};
+    for (const auto& perm : olderFirst) {
+        expect("an older text-only reading never replaces a newer fix", fold_gps(perm, 2)[0] == '9', true);
+    }
+    const GpsFragment* const laterOrders[2][2] = {{&saved9, &laterText}, {&laterText, &saved9}};
+    for (const auto& perm : laterOrders) {
+        expect("a later text-only reading replaces the fix", fold_gps(perm, 2)[0] == 'l', true);
+    }
+    const GpsFragment rev5Older = {"5", true, {true, 1, 5U, 10U}, {200, 1U, 0}};
+    const GpsFragment* const keyedOrders[2][2] = {{&saved9, &rev5Older}, {&rev5Older, &saved9}};
+    for (const auto& perm : keyedOrders) {
+        expect("an older keyed reading never replaces a newer one", fold_gps(perm, 2)[0] == '9', true);
     }
 }
 
