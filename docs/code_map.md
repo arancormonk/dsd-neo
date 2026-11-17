@@ -12280,16 +12280,29 @@ Private per-protocol modules worth knowing about:
   channel the fast release does not close, still names the call (see the Motorola alias invariant under Core).
 - P25 identity provenance (`p25_trunk_sm.c`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`, issue #800). Each slot's
   assignment and each `p25_sm_event_t` carry `identity_checked`: `P25_SM_IDENTITY_CHECKED_SOURCE`, `_TARGET` and
-  `_KIND` (group or private), each set only from the check the producer ran on the message that set that field (a
-  grant's or MAC message's own CRC). A field inherited from an earlier assignment keeps that assignment's bit, a
-  source-less update never sets the source bit, and a new call epoch, a release or a reset clears all three. Decoders
-  publish through `p25_sm_emit_voice_start()` with the bits they set; the older convenience emitters publish unchecked,
-  and the event builders default to unchecked. The slot keeps the identity it last published for its canonical call
-  (`p25_sm_published_identity`); `p25_sm_checked_call_identity()` returns it only while that call is ACTIVE on that
-  epoch with that source, target and kind, all three checked and a source named. Position producers attribute a
-  report only through it (Core, position producers), so a call followed from a CRC-failed Phase 2 grant under `-F`
-  names no radio on its positions until a checked MAC_PTT or MAC_ACTIVE names all three again; a private call's
-  destination comes only from its grant. Tests: `P25_P2_HARRIS_GPS`, `P25_P2_XCCH_HELPERS`.
+  `_KIND` (group or private), set only from the check the producer ran on the message (a grant's or MAC message's own
+  CRC, a link control's hard RS decode). One rule holds for every field, in the slot's assignment and in the record of
+  its canonical call (`p25_sm_published_identity`): the message that names a value sets that field's flag from its
+  own check; a later message naming the same value sets the flag when its check passed and never clears it, without
+  a new epoch or a new crypto classification; a message that omits the field (0 or absent) leaves the field and its
+  flag as they are; a message naming a different value replaces the field and its flag takes that message's verdict;
+  a new call epoch, a release or a reset clears all three. A failed check never sets a flag, and a field inherited
+  from an earlier assignment keeps that assignment's flag. Every site that sets or confirms identity applies it
+  through `p25_sm_identity_claim` (only the fields the message itself named): new grants (`p25_grant_store_slot_context`,
+  a new assignment), duplicate grants (`p25_grant_duplicate_promote_identity`), voice starts that change the call
+  (`p25_voice_start_commit_identity`) and ones that change nothing (`p25_voice_start_promote_identity`), the
+  trunk-off publication (`p25_sm_conventional_note_identity`), and Phase 2 MAC_SIGNAL voice users that observe the
+  canonical call themselves (`p25p2_vpdu_observe_voice()` → `p25_sm_note_call_identity()`, with the MAC CRC verdict).
+  The record holds the call's current source, target and kind; `p25_sm_merge_published_identity()` keeps a flag only
+  within the same epoch and value. Decoders publish through `p25_sm_emit_voice_start()` with the bits they set; the
+  older convenience emitters publish unchecked, and the event builders default to unchecked.
+  `p25_sm_checked_call_identity()` returns the record only while the call is ACTIVE on that epoch with that source,
+  target and kind, all three checked and a source named. Position producers attribute a Phase 2 report only through
+  it (Core, position producers), so a call followed from a CRC-failed grant under `-F` names no radio on its
+  positions until a checked message names the unchecked fields (a MAC_PTT, MAC_ACTIVE or voice user, or a checked
+  repeat of the grant); a private call's destination comes only from its grant. Phase 1 positions use the
+  hard-decoded voice-user LC record (`p25_p1_lc_checked_id`, `p25_lcw.c`), which follows the same rule. Tests:
+  `P25_P2_HARRIS_GPS`, `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as

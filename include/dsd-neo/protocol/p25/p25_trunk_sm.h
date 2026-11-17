@@ -89,8 +89,10 @@ typedef enum {
  * ============================================================================ */
 
 /* Which identity fields came from content whose own check passed: the source, the target (talkgroup or destination)
- * and the kind (group or private). A field keeps the bit of the message that set it, also when a later message
- * inherits it; anything never set, released or reset is unchecked (0). */
+ * and the kind (group or private). The message that names a value sets that field's bit from its own check, and a
+ * message that inherits the field keeps that bit. A later message naming the same value sets the bit when its check
+ * passed and never clears it; one that omits the field (0 or absent) leaves it; one naming another value replaces the
+ * field and its bit. A new call epoch, a release or a reset clears all three; a failed check never sets one. */
 enum {
     P25_SM_IDENTITY_CHECKED_SOURCE = 0x01,
     P25_SM_IDENTITY_CHECKED_TARGET = 0x02,
@@ -98,7 +100,8 @@ enum {
     P25_SM_IDENTITY_CHECKED_ALL = 0x07,
 };
 
-/* The identity the state machine last published for a slot's canonical call, and which of its fields are checked. */
+/* The identity of a slot's canonical call as the state machine and the Phase 2 voice users last named it, and which of
+ * its fields are checked. */
 typedef struct {
     uint64_t epoch;   // Canonical call epoch the identity was published under; 0 = none
     uint32_t source;  // Source RID, 0 = none
@@ -704,6 +707,23 @@ uint32_t p25_sm_slot_grant_seq(int slot);
  * @return 1 when the call's source, target and kind are checked provenance, 0 otherwise.
  */
 int p25_sm_checked_call_identity(const dsd_state* state, int slot, p25_sm_published_identity* out);
+
+/**
+ * @brief Record an identity a decoded message named for a slot's canonical call (issue #800, spec 2.19).
+ *
+ * For a message that observes the canonical call itself (a Phase 2 MAC_SIGNAL voice user), after that observation.
+ * Each field it names with the value the ACTIVE call now holds takes @p checked when the call is a new epoch or the
+ * value changed, and gains it otherwise; a field it leaves 0 keeps what it had.
+ *
+ * @param state Decoder state (canonical call state).
+ * @param slot Slot index (0 or 1).
+ * @param source Source RID the message named; 0 when none.
+ * @param target Talkgroup (group) or destination RID (private) the message named; 0 when none.
+ * @param is_group 1 for a group call, 0 for a private call.
+ * @param checked P25_SM_IDENTITY_CHECKED_* bits: the message's own check (0 when it failed).
+ */
+void p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uint32_t target, int is_group,
+                               uint8_t checked);
 
 /**
  * @brief Check whether a voice-user observation re-describes a call that just ended.

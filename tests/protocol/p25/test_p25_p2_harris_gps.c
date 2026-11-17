@@ -236,6 +236,54 @@ mac_active(fixture* f, uint32_t tg, uint32_t src) {
     send_facch(f, mac);
 }
 
+/* A SACCH MAC_SIGNAL (opcode 0) for voice slot 0 carrying the MAC message @p octets (MAC octets 1..), with a valid
+ * CRC-12, through the real XCCH decoder. */
+static void
+send_sacch_signal(fixture* f, const uint8_t* octets, size_t count) {
+    uint8_t mac[21] = {0};
+    for (size_t i = 0; i < count && i + 1U < sizeof mac; i++) {
+        mac[i + 1U] = octets[i];
+    }
+    int payload[180] = {0};
+    for (int i = 0; i < 168; i++) {
+        payload[i] = (mac[i / 8] >> (7 - (i % 8))) & 1;
+    }
+    for (int crc = 0; crc < 4096; crc++) {
+        for (int i = 0; i < 12; i++) {
+            payload[168 + i] = (crc >> (11 - i)) & 1;
+        }
+        if (crc12_xb_bridge(payload, 168) == 0) {
+            break;
+        }
+    }
+    // A SACCH carries the other slot's signalling: currentslot 1 speaks for voice slot 0.
+    f->st->currentslot = 1;
+    process_SACCH_MAC_PDU(f->opts, f->st, payload);
+    f->st->currentslot = 0;
+}
+
+/* Group Voice Channel User (abbreviated, clear) of @p tg by @p src. */
+static void
+sacch_group_voice_user(fixture* f, uint32_t tg, uint32_t src) {
+    const uint8_t msg[] = {
+        0x01, 0x00, (uint8_t)(tg >> 8), (uint8_t)tg, (uint8_t)(src >> 16), (uint8_t)(src >> 8), (uint8_t)src};
+    send_sacch_signal(f, msg, sizeof msg);
+}
+
+/* Unit to Unit Voice Channel User (abbreviated, clear) from @p src to @p target. */
+static void
+sacch_private_voice_user(fixture* f, uint32_t target, uint32_t src) {
+    const uint8_t msg[] = {0x02,
+                           0x00,
+                           (uint8_t)(target >> 16),
+                           (uint8_t)(target >> 8),
+                           (uint8_t)target,
+                           (uint8_t)(src >> 16),
+                           (uint8_t)(src >> 8),
+                           (uint8_t)src};
+    send_sacch_signal(f, msg, sizeof msg);
+}
+
 /* 22°30' N, 45° E at 02:00:00, heading 90.0, quality %01, @p sats satellites. */
 static void
 make_body(uint8_t body[BODY_OCTETS], uint8_t sats) {
@@ -510,6 +558,139 @@ test_conventional(void) {
     fixture_close(&f);
 }
 
+static uint64_t
+slot0_epoch(const dsd_state* st) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(st, 0U, &call) > 0 ? call.epoch : 0U;
+}
+
+/* A checked continuation that names the talkgroup but no source (MAC_ACTIVE with source 0) keeps the checked source
+ * the call already has: a field a message omits is never cleared or downgraded within the epoch. */
+static void
+test_sourceless_continuation_keeps_source(void) {
+    // Trunking off: the conventional publication.
+    fixture f;
+    fixture_open(&f);
+    f.opts->trunk_enable = 0;
+    mac_ptt(&f, TG_A, SRC_A);
+    send_gps(&f, 0);
+    expect_report(&f, "conventional ptt", SRC_A, TG_A, 1);
+    const uint64_t epoch = slot0_epoch(f.st);
+    mac_active(&f, TG_A, 0U);
+    expect_true("conventional source-less active: same call",
+                slot0_call_names(TG_A, SRC_A, f.st) && slot0_epoch(f.st) == epoch);
+    send_gps(&f, 0);
+    expect_report(&f, "conventional source-less active", SRC_A, TG_A, 1);
+    fixture_close(&f);
+
+    // Trunking on, a -F grant: the checked PTT named all three; the source-less MAC_ACTIVE keeps them.
+    fixture_open(&f);
+    group_grant(&f, SRC_A, 0);
+    mac_ptt(&f, TG_A, SRC_A);
+    mac_active(&f, TG_A, 0U);
+    send_gps(&f, 0);
+    expect_report(&f, "trunked source-less active after a checked ptt", SRC_A, TG_A, 1);
+    fixture_close(&f);
+}
+
+/* A checked message naming the identity the call already has promotes its unchecked fields, without a new epoch. */
+static void
+test_checked_repeat_promotes(void) {
+    // Voice start whose identity is unchanged (MAC_ACTIVE naming the inherited source).
+    fixture f;
+    fixture_open(&f);
+    group_grant(&f, SRC_A, 0);
+    mac_active(&f, TG_A, 0U);
+    send_gps(&f, 0);
+    expect_report(&f, "-F grant, source-less active", 0U, 0U, 0);
+    uint64_t epoch = slot0_epoch(f.st);
+    mac_active(&f, TG_A, SRC_A);
+    expect_true("checked active naming the same source: same epoch", slot0_epoch(f.st) == epoch);
+    expect_true("checked active naming the same source: slot verdict",
+                p25_sm_get_ctx()->slots[0].identity_checked == P25_SM_IDENTITY_CHECKED_ALL);
+    send_gps(&f, 0);
+    expect_report(&f, "checked active naming the same source", SRC_A, TG_A, 1);
+    fixture_close(&f);
+
+    // A checked repeat of the group grant (the duplicate-grant path).
+    fixture_open(&f);
+    group_grant(&f, SRC_A, 0);
+    mac_active(&f, TG_A, 0U);
+    send_gps(&f, 0);
+    expect_report(&f, "-F grant before the checked repeat", 0U, 0U, 0);
+    epoch = slot0_epoch(f.st);
+    group_grant(&f, SRC_A, 1);
+    expect_true("checked group grant repeat: same epoch", slot0_epoch(f.st) == epoch);
+    expect_true("checked group grant repeat: slot verdict",
+                p25_sm_get_ctx()->slots[0].identity_checked == P25_SM_IDENTITY_CHECKED_ALL);
+    send_gps(&f, 0);
+    expect_report(&f, "checked group grant repeat", SRC_A, TG_A, 1);
+    // A failed repeat naming the same identity downgrades nothing.
+    group_grant(&f, SRC_A, 0);
+    expect_true("-F group grant repeat: slot verdict kept",
+                p25_sm_get_ctx()->slots[0].identity_checked == P25_SM_IDENTITY_CHECKED_ALL);
+    send_gps(&f, 0);
+    expect_report(&f, "-F group grant repeat", SRC_A, TG_A, 1);
+    fixture_close(&f);
+
+    // A checked repeat of the private grant verifies the destination the PTT cannot name.
+    fixture_open(&f);
+    private_grant(&f, SRC_A, 0);
+    mac_ptt(&f, 0U, SRC_A);
+    send_gps(&f, 0);
+    expect_report(&f, "-F private grant", 0U, 0U, 0);
+    epoch = slot0_epoch(f.st);
+    private_grant(&f, SRC_A, 1);
+    expect_true("checked private grant repeat: same epoch", slot0_epoch(f.st) == epoch);
+    send_gps(&f, 0);
+    expect_report(&f, "checked private grant repeat", SRC_A, UNIT_B, 0);
+    fixture_close(&f);
+
+    // A voice start without a passed check naming the same identity (a service change, so it is committed) keeps the
+    // verdicts the checked PTT gave.
+    fixture_open(&f);
+    group_grant(&f, SRC_A, 1);
+    mac_ptt(&f, TG_A, SRC_A);
+    epoch = slot0_epoch(f.st);
+    (void)p25_sm_emit_active_call(f.opts, f.st, 0, (int)TG_A, 0, (int)SRC_A, 1, 0x01);
+    expect_true("unchecked active, same identity: same epoch", slot0_epoch(f.st) == epoch);
+    expect_true("unchecked active, same identity: slot verdict kept",
+                p25_sm_get_ctx()->slots[0].identity_checked == P25_SM_IDENTITY_CHECKED_ALL);
+    send_gps(&f, 0);
+    expect_report(&f, "unchecked active, same identity", SRC_A, TG_A, 1);
+    fixture_close(&f);
+}
+
+/* A checked SACCH MAC_SIGNAL voice user that establishes the call on late entry (no MAC_PTT/MAC_ACTIVE) names it. */
+static void
+test_sacch_voice_user(void) {
+    fixture f;
+    fixture_open(&f);
+    f.opts->trunk_enable = 0;
+    sacch_group_voice_user(&f, TG_A, SRC_A);
+    expect_true("conventional sacch group voice user open", slot0_call_names(TG_A, SRC_A, f.st));
+    send_gps(&f, 0);
+    expect_report(&f, "conventional sacch group voice user", SRC_A, TG_A, 1);
+    fixture_close(&f);
+
+    fixture_open(&f);
+    f.opts->trunk_enable = 0;
+    sacch_private_voice_user(&f, UNIT_B, SRC_A);
+    expect_true("conventional sacch private voice user open", slot0_call_names(UNIT_B, SRC_A, f.st));
+    send_gps(&f, 0);
+    expect_report(&f, "conventional sacch private voice user", SRC_A, UNIT_B, 0);
+    fixture_close(&f);
+
+    // Trunking on after a -F grant: the checked voice user names all three fields itself.
+    fixture_open(&f);
+    group_grant(&f, SRC_A, 0);
+    sacch_group_voice_user(&f, TG_A, SRC_A);
+    expect_true("trunked sacch group voice user open", slot0_call_names(TG_A, SRC_A, f.st));
+    send_gps(&f, 0);
+    expect_report(&f, "trunked sacch group voice user after a -F grant", SRC_A, TG_A, 1);
+    fixture_close(&f);
+}
+
 /* Every grant routing in the MAC dispatch stamps the grant's CRC verdict on the slot's identity. */
 static void
 test_every_grant_kind(void) {
@@ -596,6 +777,9 @@ main(void) {
     test_checked_group_ptt_after_unchecked_grant();
     test_private_destination_inherited();
     test_sourceless_update();
+    test_sourceless_continuation_keeps_source();
+    test_checked_repeat_promotes();
+    test_sacch_voice_user();
     test_epoch_change();
     test_conventional();
     test_unstamped_voice_start();
