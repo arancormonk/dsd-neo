@@ -295,8 +295,8 @@ static void
 dstar_aprs_timestamp(const uint8_t* text, dstar_aprs_position* pos) {
     unsigned f[3];
     pos->time_kind = 0;
-    for (int i = 0; i < 3; i++) {
-        if (!dstar_aprs_digits(text + (2 * i), 2, &f[i])) {
+    for (size_t i = 0; i < 3U; i++) {
+        if (!dstar_aprs_digits(text + (2U * i), 2, &f[i])) {
             return;
         }
     }
@@ -501,7 +501,7 @@ dstar_sd_collect_gps(const dsd_opts* opts, dsd_state* state, const uint8_t* raw)
         dstar_dprs_reset(a);
     }
     for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
-        const uint8_t* block = raw + (b * DSTAR_SD_BLOCK_BYTES);
+        const uint8_t* block = raw + ((size_t)b * (size_t)DSTAR_SD_BLOCK_BYTES);
         if ((block[0] & DSTAR_SD_TYPE_MASK) != DSTAR_SD_TYPE_GPS) {
             continue;
         }

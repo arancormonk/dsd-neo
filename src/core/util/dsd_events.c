@@ -4282,7 +4282,7 @@ dsd_event_data_notice_args_valid(const dsd_opts* opts, const dsd_state* state, u
 static void
 watchdog_event_notice_set_gps(Event_History* item, const dsd_call_observation* observation, const char* gps,
                               const dsd_position_fix* fix) {
-    if (!dsd_event_pos_fix_admitted(fix)) {
+    if (fix == NULL || !dsd_event_pos_fix_admitted(fix)) { /* No report, or one admission never saw: text only. */
         DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps);
         return;
     }
