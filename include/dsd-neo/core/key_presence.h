@@ -81,12 +81,25 @@ dsd_dmr_tg_autoload_holds(const dsd_state* state) {
            && state->H == in[5] && state->basic_key_present == flags[0] && state->hytera_key_segments == flags[1];
 }
 
+// No Basic Privacy or Hytera key, into a key copy's @p words (K, K1..K4, H) and @p flags (basic_key_present,
+// hytera_key_segments): the readers below fill it so on a path with no key, never leaving it unwritten.
+static inline void
+dsd_dmr_key_copy_none(unsigned long long int words[6], uint8_t flags[2]) {
+    for (int i = 0; i < 6; i++) {
+        words[i] = 0ULL;
+    }
+    flags[0] = 0U;
+    flags[1] = 0U;
+}
+
 // The operator's own Basic Privacy and Hytera key while the autoload's key is the working key: the key state the
 // autoload replaced (a key set directly, or none), into @p words (K, K1..K4, H) and @p flags (basic_key_present,
-// hytera_key_segments); returns 0 and fills nothing when the working key is not the autoload's.
+// hytera_key_segments); returns 0 and fills them with no key (zeros) when the working key is not the autoload's.
+// Every word and flag is written on every path.
 static inline int
 dsd_dmr_tg_autoload_baseline(const dsd_state* state, unsigned long long int words[6], uint8_t flags[2]) {
     if (!dsd_dmr_tg_autoload_holds(state)) {
+        dsd_dmr_key_copy_none(words, flags);
         return 0;
     }
     for (int i = 0; i < 6; i++) {
@@ -133,11 +146,13 @@ dsd_dmr_tg_autoload_hand_back(dsd_state* state) {
 // the slot, the working key; else the key the slot's own call last keyed from (dsd_state::dmr_tg_autoload slot_key)
 // while @p tg is that call's talkgroup or not known yet; else the key the autoload replaced while its key is the
 // working key, else the working key. Never another slot's talkgroup key. Into @p words and @p flags as
-// dsd_dmr_tg_autoload_baseline() fills them.
+// dsd_dmr_tg_autoload_baseline() fills them; with no @p state, no key (zeros). Every word and flag is written on every
+// path.
 static inline void
 dsd_dmr_slot_call_key(const dsd_state* state, uint8_t slot, uint32_t tg, unsigned long long int words[6],
                       uint8_t flags[2]) {
     if (!state) {
+        dsd_dmr_key_copy_none(words, flags);
         return;
     }
     const uint8_t idx = slot & 1U;

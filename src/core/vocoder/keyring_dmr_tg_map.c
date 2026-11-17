@@ -337,6 +337,7 @@ void
 keyring_dmr_tg_autoload_preview(const dsd_state* state, uint8_t slot, uint32_t tg, unsigned long long int words[6],
                                 uint8_t flags[2]) {
     if (state == NULL) {
+        dsd_dmr_key_copy_none(words, flags);
         return;
     }
     uint32_t source = 0U;

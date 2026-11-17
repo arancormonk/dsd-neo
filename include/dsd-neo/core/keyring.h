@@ -188,7 +188,7 @@ int keyring_dmr_tg_autoload_apply(dsd_state* state, uint8_t slot, uint32_t tg, u
  * The Basic Privacy and Hytera working key (K, K1, K2, K3, K4, H, then basic_key_present and hytera_key_segments) a
  * frame of slot @p slot's call on talkgroup @p tg is keyed with once the autoload has run for it
  * (keyring_dmr_tg_autoload_apply()), without running it: for judging and showing a call from its LC before its voice
- * keys it.
+ * keys it. With no @p state, no key (zeros): every word and flag is written on every path.
  */
 void keyring_dmr_tg_autoload_preview(const dsd_state* state, uint8_t slot, uint32_t tg, unsigned long long int words[6],
                                      uint8_t flags[2]);

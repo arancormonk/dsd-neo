@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -625,8 +626,67 @@ test_direct_entry_keeps_no_autoloaded_key(void) {
     return failed;
 }
 
+/* Whether the key copy holds zeros only. */
+static int
+key_copy_is_zero(const unsigned long long int words[6], const uint8_t flags[2]) {
+    for (int i = 0; i < 6; i++) {
+        if (words[i] != 0ULL) {
+            return 0;
+        }
+    }
+    return flags[0] == 0U && flags[1] == 0U;
+}
+
+/* The key readers fill every word and flag they are given on every path: with no state, the slot's call key and the
+   autoload's preview are no key, and while the autoload does not hold, its baseline is no key (and it says so). A caller's uninitialized copy is
+   never read back, and a copy that held an earlier key never keeps it. */
+static int
+test_key_readers_fill_their_outputs(void) {
+    int failed = 0;
+    unsigned long long int words[6];
+    uint8_t flags[2];
+    DSD_MEMSET(words, 0xA5, sizeof words);
+    DSD_MEMSET(flags, 0xA5, sizeof flags);
+    dsd_dmr_slot_call_key(NULL, 0U, 123U, words, flags);
+    if (!key_copy_is_zero(words, flags)) {
+        DSD_FPRINTF(stderr, "the slot call key with no state left its outputs unwritten\n");
+        failed = 1;
+    }
+    DSD_MEMSET(words, 0xA5, sizeof words);
+    DSD_MEMSET(flags, 0xA5, sizeof flags);
+    keyring_dmr_tg_autoload_preview(NULL, 0U, 123U, words, flags);
+    if (!key_copy_is_zero(words, flags)) {
+        DSD_FPRINTF(stderr, "the autoload preview with no state left its outputs unwritten\n");
+        failed = 1;
+    }
+
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+    DSD_MEMSET(words, 0xA5, sizeof words);
+    DSD_MEMSET(flags, 0xA5, sizeof flags);
+    if (dsd_dmr_tg_autoload_baseline(state, words, flags) != 0 || !key_copy_is_zero(words, flags)) {
+        DSD_FPRINTF(stderr, "the autoload baseline while it does not hold is not an empty key\n");
+        failed = 1;
+    }
+    DSD_MEMSET(words, 0xA5, sizeof words);
+    DSD_MEMSET(flags, 0xA5, sizeof flags);
+    if (dsd_dmr_tg_autoload_baseline(NULL, words, flags) != 0 || !key_copy_is_zero(words, flags)) {
+        DSD_FPRINTF(stderr, "the autoload baseline with no state is not an empty key\n");
+        failed = 1;
+    }
+    free_test_state(state);
+    return failed;
+}
+
 int
 main(void) {
+    if (test_key_readers_fill_their_outputs() != 0) {
+        return 1;
+    }
     if (test_scan_keys_and_wipe_leave_no_autoloaded_key() != 0) {
         return 1;
     }

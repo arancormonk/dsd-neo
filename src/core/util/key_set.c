@@ -101,8 +101,9 @@ key_scalars_capture(dsd_key_scalars* out, const dsd_state* state) {
         out->H = words[5];
         out->basic_key_present = flags[0];
         out->hytera_key_segments = flags[1];
-        DSD_SECURE_ZERO(words, sizeof(words));
     }
+    DSD_SECURE_ZERO(words, sizeof(words));
+    DSD_SECURE_ZERO(flags, sizeof(flags));
     out->R = state->R;
     out->RR = state->RR;
     DSD_MEMCPY(out->scalar_key_present, state->scalar_key_present, sizeof out->scalar_key_present);
