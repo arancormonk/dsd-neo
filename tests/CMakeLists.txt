@@ -12484,6 +12484,38 @@ target_link_libraries(
 )
 add_test(NAME P25_P1_TDULC COMMAND dsd-neo_test_p25_p1_tdulc)
 
+# P25 P1 L3Harris GPS updates through the real link control dispatch, decoder, admission, history and -L (issue #800)
+add_executable(
+    dsd-neo_test_p25_p1_harris_gps
+    protocol/p25/test_p25_p1_harris_gps.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_harris_gps
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p1_harris_gps
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p1_harris_gps
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME P25_P1_HARRIS_GPS COMMAND dsd-neo_test_p25_p1_harris_gps)
+
 # P25 P1 TDULC should not force immediate CC return
 add_executable(
     dsd-neo_test_p25_p1_tdulc_no_cc_bounce
@@ -15841,6 +15873,9 @@ add_executable(
     dsd-neo_test_dmr_embedded_gps_position_error
     protocol/dmr/test_dmr_embedded_gps_position_error.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    # Producers admit their reports to the position feed (issue #800).
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    test_support/position_label_stubs.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15871,6 +15906,9 @@ add_executable(
     dsd-neo_test_core_gps_lrrp_crc_gating
     core/test_core_gps_lrrp_crc_gating.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    # Producers admit their reports to the position feed (issue #800).
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    test_support/position_label_stubs.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )

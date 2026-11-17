@@ -6,6 +6,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
@@ -314,28 +315,32 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         }
     }
 
-    uint8_t harris[192] = {0};
-    // P25 phase 2 MAC shape: GPS starts at bit 40; explicit slot 2 clamps to index 1.
-    set_bits_msb(harris, 0, 16, 0x80AA);
-    set_bits_msb(harris, 40 + 16, 1, 1);
-    set_bits_msb(harris, 40 + 17, 7, 30);
-    set_bits_msb(harris, 40 + 24, 8, 22);
-    set_bits_msb(harris, 40 + 48, 1, 1);
-    set_bits_msb(harris, 40 + 56, 8, 45);
+    // L3Harris GPS update body (TIA-102.AABF-D-1 §7.3.35-36): 22 degrees 30 minutes S, 45 degrees W, quality %01 (fix).
+    // Phase 2 MAC on slot 1; only a message whose own check passed (pos_verified) reaches the location file.
+    const uint8_t harris[DSD_HARRIS_GPS_BODY_OCTETS] = {0x00, 0x00, 0x9E, 22,   0x00, 0x00, 0x80,
+                                                        45,   0x00, 0x00, 0x00, 0x00, 0x00, 0x10};
     state->event_crc_invalid[0] = 0;
-    for (int invalid = 1; invalid >= 0; --invalid) {
+    state->event_crc_invalid[1] = 0;
+    for (int verified = 0; verified <= 1; ++verified) {
         if (!truncate_output(path)) {
             return 100;
         }
-        state->event_crc_invalid[1] = invalid;
         state->dmr_embedded_gps[1][0] = '\0';
-        nmea_harris(opts, state, harris, 234567, 2);
-        if (!expect_rows(path, !invalid, "00234567", "-22.500000", "-45.000000", 0, 0, NULL, "Harris MAC slot")) {
-            return 11 + (1 - invalid) * 2;
+        const dsd_gps_report_ctx ctx = {
+            .protocol = DSD_SYNC_P25P2_POS,
+            .slot = 1U,
+            .source_id = 234567U,
+            .source_verified = 1U,
+            .pos_verified = (uint8_t)verified,
+        };
+        const int admitted = nmea_harris(opts, state, harris, &ctx);
+        if ((admitted != 0) != verified
+            || !expect_rows(path, verified, "00234567", "-22.500000", "-45.000000", 0, 0, NULL, "Harris MAC slot")) {
+            return 11 + verified * 2;
         }
-        if (!strstr(state->dmr_embedded_gps[1], "(-22.500000, -45.000000)")) {
-            DSD_FPRINTF(stderr, "\nHarris: missing decoded GPS state\n");
-            return 12 + (1 - invalid) * 2;
+        if ((strstr(state->dmr_embedded_gps[1], "(-22.500000, -45.000000)") != NULL) != verified) {
+            DSD_FPRINTF(stderr, "\nHarris: unexpected decoded GPS state: %s\n", state->dmr_embedded_gps[1]);
+            return 12 + verified * 2;
         }
     }
 
@@ -394,20 +399,24 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
     set_bits_msb(apx_lc, 25, 23, 0x200000);
     set_bits_msb(apx_lc, 48, 1, 1);
     set_bits_msb(apx_lc, 49, 23, 0x300000);
-    // APX voice LC has no production CRC scope: exercise the writer's gate directly.
-    for (int invalid = 1; invalid >= 0; --invalid) {
+    // APX voice LC: the location file takes it only after a hard RS decode (pos_verified). Bit 23 has no documented
+    // meaning and is not read as "last fix".
+    state->event_crc_invalid[1] = 0;
+    state->currentslot = 1;
+    for (int verified = 0; verified <= 1; ++verified) {
         if (!truncate_output(path)) {
             return 100;
         }
-        state->event_crc_invalid[1] = invalid;
         state->dmr_embedded_gps[1][0] = '\0';
-        apx_embedded_gps(opts, state, apx_lc);
-        if (!expect_rows(path, !invalid, "00000000", "-22.500003", "-112.499992", 0, 0, "19990102", "APX voice LC")) {
-            return 22 + (1 - invalid) * 2;
+        const dsd_gps_report_ctx ctx = {.protocol = DSD_SYNC_P25P1_POS, .slot = 1U, .pos_verified = (uint8_t)verified};
+        (void)apx_embedded_gps(opts, state, apx_lc, &ctx);
+        if (!expect_rows(path, verified, "00000000", "-22.500003", "-112.499992", 0, 0, "19990102", "APX voice LC")) {
+            return 22 + verified * 2;
         }
-        if (strstr(state->dmr_embedded_gps[1], "(-22.500003, -112.499992) Last Fix") == NULL) {
-            DSD_FPRINTF(stderr, "\nAPX voice LC: unexpected decoded GPS state: %s\n", state->dmr_embedded_gps[1]);
-            return 23 + (1 - invalid) * 2;
+        const char* apx_state = state->dmr_embedded_gps[1];
+        if ((strstr(apx_state, "(-22.500003, -112.499992)") != NULL) != verified || strstr(apx_state, "Last Fix")) {
+            DSD_FPRINTF(stderr, "\nAPX voice LC: unexpected decoded GPS state: %s\n", apx_state);
+            return 23 + verified * 2;
         }
     }
 

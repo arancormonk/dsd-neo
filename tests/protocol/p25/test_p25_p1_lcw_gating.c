@@ -10,9 +10,11 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -103,22 +105,24 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     (void)input;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
+apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[], const dsd_gps_report_ctx* ctx) {
     (void)opts;
     (void)state;
     (void)lc_bits;
+    (void)ctx;
+    return 0;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const dsd_gps_report_ctx* ctx) {
     (void)opts;
     (void)state;
-    (void)input;
-    (void)src;
-    (void)slot;
+    (void)body;
+    (void)ctx;
+    return 0;
 }
 
 static void
@@ -137,9 +141,6 @@ expect_eq_int(const char* tag, int got, int want) {
     }
     return 0;
 }
-
-void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors);
-void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
 
 static int
 init_retained_p1_call(dsd_opts* opts, dsd_state* state, int tg, int src) {
@@ -499,7 +500,7 @@ test_lcgrgr_from_tdulc_records_without_voice_start(void) {
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     DSD_SNPRINTF(state.generic_talker_alias[0], sizeof state.generic_talker_alias[0], "%s", "OLD ALIAS");
     build_group_voice_user_lcw(lcw, 0x90, 0x40, LCGRGR_SG, LCGRGR_SRC);
-    p25_lcw_from_tdulc(&opts, &state, lcw, 0);
+    p25_lcw_from_tdulc(&opts, &state, lcw, 0, NULL);
 
     p25_sm_ctx_t* sm = p25_sm_get_ctx();
     rc |= expect_eq_int("LCGRGR TDULC no voice start", sm->slots[0].voice_active, 0);

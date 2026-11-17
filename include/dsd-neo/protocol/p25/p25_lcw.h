@@ -14,6 +14,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_LCW_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_LCW_H_
 
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -30,9 +31,13 @@ void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrec
  * Decode an LCW carried by a TDULC terminator.
  *
  * Voice-user metadata is retained, but cannot emit a new voice-start event
- * after the terminator has ended the current transmission.
+ * after the terminator has ended the current transmission. @p closing is the
+ * call the terminator ended, captured (dsd_event_capture_closing_call()) just
+ * before it did: a GPS link control in the terminator belongs to that call
+ * (issue #800, spec N2). NULL when none was captured.
  */
-void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
+void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
+                        const dsd_event_closing_call* closing);
 
 #ifdef __cplusplus
 }

@@ -17,6 +17,7 @@
  */
 
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
@@ -288,6 +289,10 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     p25_status_accum_ensure_started(state);
 
     state->currentslot = 0;
+    /* The terminator ends the call before its own link control is dispatched (a grant in it must survive). A GPS link
+       control it carries belongs to the call it ended: capture that call first (issue #800, spec N2). */
+    dsd_event_closing_call closing;
+    (void)dsd_event_capture_closing_call(state, 0U, &closing);
     p25_sm_emit_tdu(opts, state);
 
     state->dmr_so = 0;
@@ -303,6 +308,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     tdulc_read_data_and_parity_words(opts, state, dodeca_data, dodeca_parity, &status_count, soft_dibits,
                                      &soft_dibit_index);
 
+    const unsigned int soft_rs_before = state->p25_p1_soft_rs_ok;
     int irrecoverable_errors = tdulc_recover_reedsolomon(state, dodeca_data, dodeca_parity, soft_dibits);
     tdulc_apply_recovery_result(state, irrecoverable_errors);
     tdulc_finalize_tail_symbols(opts, state, &status_count);
@@ -319,7 +325,11 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "\n");
     } else if (irrecoverable_errors == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        p25_lcw_from_tdulc(opts, state, LCW_bits, 0);
+        // As on LDU1: only the hard decode checks the link control; tdulc_recover_reedsolomon() counts each soft-erasure
+        // recovery (spec 2.20).
+        state->p25_p1_lcw_soft = (uint8_t)(state->p25_p1_soft_rs_ok != soft_rs_before);
+        p25_lcw_from_tdulc(opts, state, LCW_bits, 0, &closing);
+        state->p25_p1_lcw_soft = 0U;
         DSD_FPRINTF(stderr, "%s", KNRM);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);

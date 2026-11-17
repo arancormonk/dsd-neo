@@ -9,6 +9,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -82,15 +83,16 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     (void)input;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const dsd_gps_report_ctx* ctx) {
     (void)opts;
     (void)state;
-    (void)input;
+    (void)body;
     g_nmea_harris_calls++;
-    g_nmea_harris_src = src;
-    g_nmea_harris_slot = slot;
+    g_nmea_harris_src = ctx ? ctx->source_id : 0U;
+    g_nmea_harris_slot = ctx ? ctx->slot : -1;
+    return 0;
 }
 
 static int

@@ -798,6 +798,17 @@ p25p2_vpdu_active_source(const dsd_state* state, uint8_t slot) {
     return (uint32_t)call.ota_source_id;
 }
 
+/* The provenance of an L3Harris GPS MAC: the MAC CRC verdict and the slot's ACTIVE call's source. The source is not
+ * yet checked provenance (spec 2.19), so admission leaves it out. */
+static void
+p25p2_vpdu_harris_report_ctx(const p25p2_vpdu_ctx* ctx, dsd_gps_report_ctx* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->protocol = DSD_SYNC_IS_P25P2(ctx->state->lastsynctype) ? ctx->state->lastsynctype : DSD_SYNC_P25P2_POS;
+    out->slot = (uint8_t)(ctx->slot & 1);
+    out->source_id = p25p2_vpdu_active_source(ctx->state, (uint8_t)ctx->slot);
+    out->pos_verified = (uint8_t)(ctx->crc_ok != 0);
+}
+
 static void
 p25p2_vpdu_update_playback_if_match(const dsd_opts* opts, dsd_state* state, int group, long int freq) {
     if (!opts || opts->trunk_enable != 0) {
@@ -2558,19 +2569,14 @@ p25p2_vpdu_iter_block_25(p25p2_vpdu_ctx* ctx) {
         ; //0x11 or 17 dec sounds reasonable, but cannot verify
         DSD_FPRINTF(stderr, "\n MFID %02X (Harris); Len: %d; Opcode: %02X/%02X;", mfid, len, unk1, unk2);
 
-        //convert bytes to bits, may move this up top
-        uint8_t mac_bits[24 * 8];
-        DSD_MEMSET(mac_bits, 0, sizeof(mac_bits));
-        int l, x, z = 0;
-        for (l = 0; l < 24; l++) {
-            for (x = 0; x < 8; x++) {
-                mac_bits[z++] = (((uint8_t)MAC[l] << x) & 0x80) >> 7;
-            }
+        // The L3Harris GPS update body (Part A + Part B octets, TIA-102.AABF-D-1 §7.3.35-36) after `80 AA A4 11`.
+        uint8_t body[DSD_HARRIS_GPS_BODY_OCTETS];
+        for (int l = 0; l < DSD_HARRIS_GPS_BODY_OCTETS; l++) {
+            body[l] = (uint8_t)(MAC[5 + l] & 0xFFU);
         }
-
-        int tsrc = (int)p25p2_vpdu_active_source(state, (uint8_t)slot);
-
-        nmea_harris(opts, state, mac_bits + 0, tsrc, slot); //new
+        dsd_gps_report_ctx report;
+        p25p2_vpdu_harris_report_ctx(ctx, &report);
+        (void)nmea_harris(opts, state, body, &report);
 
         len_b = 17;
     }
@@ -5375,18 +5381,9 @@ p25p2_vpdu_handle_motorola_active_group_marker(p25p2_vpdu_ctx* ctx) {
 }
 
 static void
-p25p2_vpdu_set_bit_octet(uint8_t* bits, int octet, uint8_t value) {
-    for (int bit = 0; bit < 8; bit++) {
-        bits[(octet * 8) + bit] = (uint8_t)((value >> (7 - bit)) & 0x01U);
-    }
-}
-
-static void
 p25p2_vpdu_handle_harris_gps_location(p25p2_vpdu_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    uint8_t bits[24 * 8];
-    int src = (int)p25p2_vpdu_active_source(state, (uint8_t)ctx->slot);
     int payload_octets = ctx->len_b - 3;
 
     // A position from a MAC that failed its CRC (-F) would reach the event row and the location files.
@@ -5400,13 +5397,16 @@ p25p2_vpdu_handle_harris_gps_location(p25p2_vpdu_ctx* ctx) {
         return;
     }
 
-    DSD_MEMSET(bits, 0, sizeof bits);
-    for (int i = 0; i < payload_octets && (4 + ctx->len_a + i) < 24 && (5 + i) < 24; i++) {
-        p25p2_vpdu_set_bit_octet(bits, 5 + i, (uint8_t)(ctx->mac[4 + ctx->len_a + i] & 0xFFU));
+    uint8_t body[DSD_HARRIS_GPS_BODY_OCTETS];
+    DSD_MEMSET(body, 0, sizeof body);
+    for (int i = 0; i < payload_octets && i < DSD_HARRIS_GPS_BODY_OCTETS && (4 + ctx->len_a + i) < 24; i++) {
+        body[i] = (uint8_t)(ctx->mac[4 + ctx->len_a + i] & 0xFFU);
     }
 
     DSD_FPRINTF(stderr, "\n L3Harris GPS Location");
-    nmea_harris(opts, state, bits, (uint32_t)src, ctx->slot);
+    dsd_gps_report_ctx report;
+    p25p2_vpdu_harris_report_ctx(ctx, &report);
+    (void)nmea_harris(opts, state, body, &report);
 }
 
 static void

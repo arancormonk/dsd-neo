@@ -556,6 +556,36 @@ typedef struct {
     uint8_t bits[P25_APX_ALIAS_STORE_BITS];
 } p25_apx_alias_rx_state_t;
 
+/**
+ * The P25 Phase 1 L3Harris GPS update Part A (MFID $A4 LCO 42 or 44, TIA-102.AABF-D-1 §7.3.35) waiting for its Part B
+ * (issue #800). It owns its storage, so a talker alias between the two halves cannot wipe it (spec N3). It pairs only
+ * with the Part B of its own parity (42 with 43, 44 with 45; D14) heard on the same call epoch and source within the
+ * pairing window on the decode clock, and the report keeps the reception it began on (@c origin). Any newer Part A
+ * replaces it; a Part B of the other parity, its use, another call epoch or source, and expiry clear it.
+ */
+typedef struct {
+    uint8_t valid;
+    uint8_t even;            /* 1 for LCO 44 (even-numbered update), 0 for LCO 42 */
+    uint8_t hard;            /* its link control passed a hard RS decode (not a soft-erasure retry) */
+    uint8_t octets[7];       /* Part A octets 2-8 */
+    uint32_t source;         /* the bound call's source; 0 when none */
+    uint64_t epoch;          /* the bound call's epoch; 0 when no call was open */
+    uint64_t stored_mono_ms; /* dsd_decode_now_mono_ms() when stored */
+    dsd_position_origin origin;
+} p25_p1_harris_gps_part_a;
+
+/**
+ * The identity a P25 Phase 1 voice-user link control (LCO 0x00, 0x03, Motorola LCGRGR) that passed a hard RS decode
+ * named for the call of @c epoch, while that call was ACTIVE with this source (issue #800, spec 2.2): the checked
+ * provenance a GPS link control of the same transmission takes its source, target and group flag from.
+ */
+typedef struct {
+    uint64_t epoch; /* 0: none */
+    uint32_t source;
+    uint32_t target;
+    uint8_t group;
+} p25_p1_lc_checked_identity;
+
 /** Fragments in one Kenwood NXDN talker alias, and the text octets they carry (the last two octets of fragment 4 are
  * not text). */
 #define NXDN_ALIAS_FRAGMENTS  4
@@ -2282,10 +2312,13 @@ struct dsd_state {
     unsigned int p25_p1_soft_hamming_ok; // soft Hamming corrections
     unsigned int p25_p1_soft_golay_ok;   // soft Golay corrections (hard would have failed)
     unsigned int p25_p1_soft_rs_ok;      // soft RS erasure corrections (hard would have failed)
-    /* 1 while the LDU1 link control being handled passed only a soft-erasure RS retry: its service options are not
-       checked evidence that the call is encrypted (dsd_call_crypto_update::enc_observed). */
+    /* 1 while the LDU1 or TDULC link control being handled passed only a soft-erasure RS retry: its service options
+       are not checked evidence that the call is encrypted (dsd_call_crypto_update::enc_observed), and its GPS and
+       voice-user identity are not checked provenance (issue #800, spec 2.20). */
     uint8_t p25_p1_lcw_soft;
-    unsigned int p25_p2_soft_ess_ok; // soft ESS corrections
+    p25_p1_harris_gps_part_a p25_p1_harris_part_a;   /* L3Harris GPS Part A waiting for its Part B */
+    p25_p1_lc_checked_identity p25_p1_lc_checked_id; /* the hard-decoded voice-user identity of the call */
+    unsigned int p25_p2_soft_ess_ok;                 // soft ESS corrections
     unsigned int p25_p2_soft_ess_max_depth;
     unsigned int p25_p1_soft_combined_ok;
     //iden freq storage for frequency calculations
