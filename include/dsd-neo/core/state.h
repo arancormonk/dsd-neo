@@ -1625,7 +1625,8 @@ struct dsd_state {
        switch, a reopened stream) is cleared unrun. */
     uint32_t input_drop_generation;
     /* Where the input stood when the retune was confirmed (dsd_input_backlog_mark()): the drop takes only what was
-       queued by then, never what arrived after it. */
+       queued by then, never what arrived after it. The newest mark asked for on the input, kept once carried out: an
+       older one asked for later never replaces it (dsd_frame_sync_request_input_drop()). */
     dsd_input_cut input_drop_cut;
     /* Set while the DSP sync anchor (state-ext slot 12, src/dsp/symbol_anchor.c) records or holds a move for the grid;
        the grid looks the anchor up only then. */

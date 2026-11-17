@@ -39,16 +39,25 @@ frame_sync_take_unflushed_retunes_now(const dsd_opts* opts, dsd_state* state, ui
     if (!dsd_input_backlog_take(&cut)) {
         return;
     }
-    state->symbol_clock_epoch++;
-    /* And what the input held at the post goes before the next read (dsd_symbol_apply_input_drop()). */
-    dsd_frame_sync_request_input_drop(opts, state, &cut);
+    /* What the input held at the post goes before the next read (dsd_symbol_apply_input_drop()), and the epoch moves.
+       A post the decoder thread's own retune marked after moves neither: that retune moved the epoch, no symbol was
+       read between them (this take runs at every read), and its cutoff is the newer. */
+    if (dsd_frame_sync_request_input_drop(opts, state, &cut)) {
+        state->symbol_clock_epoch++;
+    }
 }
 
-void
+int
 dsd_frame_sync_request_input_drop(const dsd_opts* opts, dsd_state* state, const dsd_input_cut* cut) {
+    const uint32_t generation = opts ? opts->pcm_input_generation : 0U;
+    /* The newest mark of the input stands, pending or carried out: an older one never moves it back. */
+    if (state->input_drop_generation == generation && cut->order <= state->input_drop_cut.order) {
+        return 0;
+    }
     state->input_drop_pending = 1U;
-    state->input_drop_generation = opts ? opts->pcm_input_generation : 0U;
+    state->input_drop_generation = generation;
     state->input_drop_cut = *cut;
+    return 1;
 }
 
 void

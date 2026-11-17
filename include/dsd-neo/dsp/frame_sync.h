@@ -283,15 +283,22 @@ void dsd_frame_sync_note_off_thread_unflushed_retune(void);
  * held the frequency left's samples. Decoder thread; carried out at its next input read (dsd_symbol_apply_input_drop()),
  * of what the input held at @p cut only.
  *
+ * For one input (dsd_opts::pcm_input_generation) the cutoff is the newest mark (dsd_input_cut::order), whichever path
+ * asks and in whatever order: a mark older than the one last asked for on the input, pending or carried out, asks for
+ * nothing (a watchdog post the decoder thread takes after its own later retune marked the input). A request on a newer
+ * input replaces whatever an older input's was.
+ *
  * @param opts Decoder options (the input).
  * @param state Decoder state taking the request.
  * @param cut Where the input stood at the confirmation (dsd_input_backlog_mark()).
+ * @return 1 when @p cut is now the input's cutoff, 0 when a newer one stands.
  */
-void dsd_frame_sync_request_input_drop(const dsd_opts* opts, dsd_state* state, const dsd_input_cut* cut);
+int dsd_frame_sync_request_input_drop(const dsd_opts* opts, dsd_state* state, const dsd_input_cut* cut);
 
 /**
  * @brief On the decoder thread, take an unflushed retune posted off it
- * (dsd_frame_sync_note_off_thread_unflushed_retune()) at once: the epoch moves and the input drop is asked for. Every
+ * (dsd_frame_sync_note_off_thread_unflushed_retune()) at once: the epoch moves and the input drop is asked for, unless
+ * a newer cutoff stands (the decoder thread's own retune since the post, which moved the epoch). Every
  * input reader runs it before it reads (the symbol reader inline, EDACS analog voice through this), so a watchdog
  * tune's drop comes at the next read after its post. One relaxed load when nothing is posted.
  */

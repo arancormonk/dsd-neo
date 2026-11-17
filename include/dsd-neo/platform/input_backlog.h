@@ -43,7 +43,11 @@ typedef struct dsd_input_cut {
     uint64_t seq;       /**< the attachment the count was read on (dsd_input_backlog_cut_applies()) */
     uint64_t arrived;   /**< the queue's count at the mark, when measured */
     uint64_t marked_ns; /**< monotonic time of the mark */
-    uint8_t measured;   /**< whether a queue was attached to count */
+    /** Where the mark stands among every mark taken, whichever thread took it: a later mark has a greater one (never 0).
+     * Of two marks of one input the later discards at least as much (a count and a time never go back), so a drop
+     * keeps the later one (dsd_frame_sync_request_input_drop()). */
+    uint64_t order;
+    uint8_t measured; /**< whether a queue was attached to count */
 } dsd_input_cut;
 
 /** @p queue is the input the decoder reads from now on, its count read by @p arrived. While an input is opening

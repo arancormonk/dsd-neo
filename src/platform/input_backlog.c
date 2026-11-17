@@ -23,6 +23,8 @@ static atomic_int s_mu_state;
 static const void* s_queue;
 static dsd_input_arrived_fn s_arrived;
 static uint64_t s_seq; /* moves at every attach and every detach of the attached queue */
+/* The marks taken so far: the order of the last one (dsd_input_cut::order). */
+static uint64_t s_marks;
 static dsd_input_cut s_post;
 static int s_post_held;
 /* An input is being opened (dsd_input_backlog_opening()): its connection is the attached input, counted until its
@@ -56,6 +58,7 @@ backlog_mark_locked(dsd_input_cut* out) {
     out->measured = (uint8_t)(s_queue != NULL && s_arrived != NULL);
     out->arrived = out->measured ? s_arrived(s_queue) : 0U;
     out->marked_ns = dsd_time_monotonic_ns();
+    out->order = ++s_marks;
 }
 
 void

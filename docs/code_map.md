@@ -7294,7 +7294,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   thread can count what it holds (`pa_simple` hides it): its drop keeps the newest audio, as much as the time since the
   mark (`dsd_input_cut::marked_ns`, `dsd_audio_discard_input()`, below). The request is also tagged with
   `dsd_opts::pcm_input_generation` (`input_drop_generation`): one asked for on an input since replaced is cleared unrun,
-  and a run boundary (`dsd_frame_sync_off_thread_tunes_reset()`) clears it too. Off the decoder thread (the P25
+  and a run boundary (`dsd_frame_sync_off_thread_tunes_reset()`) clears it too. Every mark carries its place among all
+  marks (`dsd_input_cut::order`, taken under the backlog's lock), and for one input the cutoff is the newest mark,
+  whichever path asks and in whatever order (`dsd_frame_sync_request_input_drop()`): a mark older than the one last
+  asked for on the input, pending or carried out, asks for nothing, so a watchdog post the decoder thread takes after
+  its own later retune (an io_control tune, the frequency entry) never brings back what that retune dropped, and moves
+  no epoch (that retune moved it, and no symbol came between them); a request on a newer input replaces an older
+  input's. Two posts before one take leave the later (the backlog holds the latest post), and a take racing a post
+  carries the latest mark (`ENGINE_RIGCTL_RETUNE`, `test_newest_cutoff_wins()`). Off the decoder thread (the P25
   watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` (`unflushed_retune.c`) before its tune
   notice: the mark, held in the backlog (`dsd_input_backlog_post()`; the latest post wins), and an atomic count, the
   decoder's cue. The decoder's next read takes it (`frame_sync_take_unflushed_retunes()`, inline in

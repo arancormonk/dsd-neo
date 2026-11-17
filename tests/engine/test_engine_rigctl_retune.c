@@ -53,6 +53,7 @@
 #include "edacs_internal.h"
 #include "engine_hooks_install.h"
 #include "p25p1_terminator_end.h"
+#include "services.h"
 #include "test_support.h"
 
 #include <dsd-neo/platform/file_compat.h>
@@ -1112,6 +1113,13 @@ watchdog_post_while_tcp_reconnects(int when) {
     opts->tcp_sockfd = DSD_INVALID_SOCKET;
     dsd_frame_sync_off_thread_tunes_reset(state);
     state->symbol_clock_input = opts->pcm_input_generation;
+    /* The old connection's last cutoff, carried out, given an order past any mark: the newest of that input. The new
+       connection is another input, so its post is its cutoff all the same. */
+    dsd_input_cut old_cut;
+    dsd_input_backlog_mark(&old_cut);
+    old_cut.order = UINT64_MAX;
+    (void)dsd_frame_sync_request_input_drop(opts, state, &old_cut);
+    state->input_drop_pending = 0U;
     (void)getSymbol(opts, state, 0); /* the connection ends, the reconnect opens the new one */
     (void)getSymbol(opts, state, 0);
     char label[256];
@@ -1339,6 +1347,160 @@ test_stdin_backlog(void) {
     return rc;
 }
 
+/* ---- The newest cutoff wins (issue #834) ---- */
+
+/* One sample of @p value into the pipe the stdin reader reads. */
+static int
+pipe_put(int fd, int16_t value) {
+    const uint8_t b[2] = {(uint8_t)((uint16_t)value & 0xFFU), (uint8_t)((uint16_t)value >> 8)};
+    return dsd_write(fd, b, sizeof b) == (ssize_t)sizeof b;
+}
+
+/* A tune the peer confirms: on the decoder thread, the io_control tune a command makes (the frequency entry, a manual
+   tune), which reconciles no tune made off the thread first; off it, the P25 watchdog's trunk tune, which posts its
+   mark for the decoder thread. */
+static int
+tune_on(dsd_opts* opts, dsd_state* state, long hz, int decoder_thread) {
+    if (decoder_thread) {
+        uint64_t pending_id = 0U;
+        return svc_io_control_tune(opts, state, (uint32_t)hz, &pending_id) == 0;
+    }
+    dsd_engine_set_decoder_thread(0);
+    const int ok = dsd_engine_trunk_tune_to_freq_request(opts, state, hz, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_engine_set_decoder_thread(1);
+    return ok;
+}
+
+/* The next sample the stdin reader reads, or INT16_MIN for none within a second. */
+static int16_t
+pipe_next(dsd_opts* opts) {
+    int16_t s = 0;
+    return dsd_pcm_stream_read_wait(opts->audio_in_stdin, &s, 1000U) == DSD_PCM_STREAM_SAMPLE ? s : INT16_MIN;
+}
+
+/* Whether two marks are the same mark. */
+static int
+same_cut(const dsd_input_cut* a, const dsd_input_cut* b) {
+    return a->seq == b->seq && a->arrived == b->arrived && a->marked_ns == b->marked_ns && a->measured == b->measured;
+}
+
+/* What the first read after the case's tunes returns, and the epoch moves it made, against what the case expects. */
+static int
+expect_newest(const char* what, dsd_opts* opts, const dsd_state* state, int16_t want, uint32_t e, uint32_t moves) {
+    char label[200];
+    const int16_t got = pipe_next(opts);
+    DSD_SNPRINTF(label, sizeof label, "%s: the first sample read is %d (read %d), the epoch moved %u (moved %u)", what,
+                 (int)want, (int)got, moves, state->symbol_clock_epoch - e);
+    return expect_true(label, got == want && state->symbol_clock_epoch - e == moves && state->input_drop_pending == 0U);
+}
+
+/* For one input the pending cutoff is the newest mark, whichever path installs it and in whatever order they are
+   taken: a watchdog post taken after the decoder thread's own later retune never brings back the audio that retune
+   dropped, and moves no epoch (that retune moved it, and no symbol came between them). */
+static int
+test_newest_cutoff_wins(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_STDIN) != 0) {
+        return expect_true("newest cutoff: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    int fds[2] = {-1, -1};
+    int rc = expect_true("pipe", make_pipe(fds) == 0);
+    opts->audio_in_stdin = rc == 0 ? dsd_pcm_stream_open_fd(fds[0]) : NULL;
+    if (opts->audio_in_stdin == NULL) {
+        rig_case_close(&c);
+        return expect_true("stdin reader", 0);
+    }
+    rc |= expect_true("on a voice channel", tune_on(opts, state, VC1_HZ, 1));
+    dsd_symbol_apply_input_drop(opts, state);
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    state->symbol_clock_input = opts->pcm_input_generation;
+
+    /* The watchdog's A->B post, then a decoder-thread B->C retune before the next read: the post is older. */
+    uint32_t e = state->symbol_clock_epoch;
+    rc |= expect_true("A's audio", pipe_put(fds[1], 10));
+    rc |= expect_true("watchdog A->B", tune_on(opts, state, VC2_HZ, 0));
+    rc |= expect_true("B's audio", pipe_put(fds[1], 20));
+    rc |= expect_true("io_control B->C", tune_on(opts, state, VC3_HZ, 1));
+    take_at_the_next_read(opts, state);
+    rc |= expect_true("C's audio", pipe_put(fds[1], 30));
+    rc |= expect_newest("an older watchdog post taken after a newer direct retune", opts, state, 30, e, 1U);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+
+    /* The decoder thread's retune, then a watchdog post before the next read: the post is newer, and is taken. */
+    e = state->symbol_clock_epoch;
+    rc |= expect_true("C's audio again", pipe_put(fds[1], 40));
+    rc |= expect_true("io_control C->A", tune_on(opts, state, VC1_HZ, 1));
+    rc |= expect_true("A's audio again", pipe_put(fds[1], 50));
+    rc |= expect_true("watchdog A->B again", tune_on(opts, state, VC2_HZ, 0));
+    take_at_the_next_read(opts, state);
+    rc |= expect_true("B's audio again", pipe_put(fds[1], 60));
+    rc |= expect_newest("a newer watchdog post taken after an older direct retune", opts, state, 60, e, 2U);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+
+    /* Two posts before one take: the later one is the cutoff. */
+    e = state->symbol_clock_epoch;
+    rc |= expect_true("B's audio, third", pipe_put(fds[1], 70));
+    rc |= expect_true("watchdog B->C", tune_on(opts, state, VC3_HZ, 0));
+    rc |= expect_true("C's audio, third", pipe_put(fds[1], 80));
+    rc |= expect_true("watchdog C->A", tune_on(opts, state, VC1_HZ, 0));
+    take_at_the_next_read(opts, state);
+    rc |= expect_true("A's audio, third", pipe_put(fds[1], 90));
+    rc |= expect_newest("two posts before one take", opts, state, 90, e, 1U);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+
+    /* The newer direct retune's drop already carried out when the older post is taken: the post asks for nothing. */
+    e = state->symbol_clock_epoch;
+    rc |= expect_true("A's audio, fourth", pipe_put(fds[1], 100));
+    rc |= expect_true("watchdog A->B, fourth", tune_on(opts, state, VC2_HZ, 0));
+    rc |= expect_true("B's audio, fourth", pipe_put(fds[1], 110));
+    /* The decoder thread's retune runs between the watchdog's post and its count (frame_sync_take_unflushed_retunes()
+       has not seen the post yet): its drop is carried out first. */
+    rc |= expect_true("io_control B->C, fourth", tune_on(opts, state, VC3_HZ, 1));
+    dsd_symbol_apply_input_drop(opts, state);
+    const dsd_input_cut held = state->input_drop_cut;
+    rc |= expect_true("C's audio, fourth", pipe_put(fds[1], 120));
+    take_at_the_next_read(opts, state);
+    rc |= expect_true("the older post leaves the newer cutoff in place", same_cut(&held, &state->input_drop_cut));
+    rc |= expect_newest("an older post taken after the newer drop was carried out", opts, state, 120, e, 1U);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+
+    /* A take racing a post: the watchdog's second post has marked the input, its count not yet raised, when the decoder
+       takes the first one's count. The take carries the latest mark (the later post's), and the second count, when it
+       comes, finds nothing left to take. */
+    e = state->symbol_clock_epoch;
+    rc |= expect_true("C's audio, fifth", pipe_put(fds[1], 150));
+    rc |= expect_true("watchdog C->A, fifth", tune_on(opts, state, VC1_HZ, 0));
+    rc |= expect_true("A's audio, fifth", pipe_put(fds[1], 160));
+    dsd_input_backlog_post(); /* the second post's mark; its count comes after the take */
+    take_at_the_next_read(opts, state);
+    rc |= expect_true("audio after the second post", pipe_put(fds[1], 170));
+    rc |= expect_newest("a take racing a post", opts, state, 170, e, 1U);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+
+    /* The request itself, whatever asks: of two marks of the input, the later one stands in either order. */
+    dsd_input_cut early;
+    dsd_input_cut late;
+    dsd_input_backlog_mark(&early);
+    rc |= expect_true("audio between the marks", pipe_put(fds[1], 130));
+    dsd_input_backlog_mark(&late);
+    dsd_frame_sync_request_input_drop(opts, state, &late);
+    dsd_frame_sync_request_input_drop(opts, state, &early);
+    rc |= expect_true("an earlier mark asked for after a later one leaves the later one",
+                      state->input_drop_pending == 1U && same_cut(&late, &state->input_drop_cut));
+    dsd_symbol_apply_input_drop(opts, state);
+    rc |= expect_true("audio after both marks", pipe_put(fds[1], 140));
+    rc |= expect_true("the later mark's drop takes what came between them", pipe_next(opts) == 140);
+
+    dsd_pcm_stream_close(opts->audio_in_stdin);
+    opts->audio_in_stdin = NULL;
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+    rig_case_close(&c);
+    return rc;
+}
+
 /* Every input reader carries out a pending drop before it reads: the symbol reader and EDACS analog voice. */
 static int
 test_readers_carry_out_the_drop(void) {
@@ -1435,6 +1597,7 @@ main(void) {
     rc |= test_drop_belongs_to_its_input();
     rc |= test_tcp_backlog();
     rc |= test_stdin_backlog();
+    rc |= test_newest_cutoff_wins();
     rc |= test_readers_carry_out_the_drop();
     rc |= test_wav_input_unchanged();
     dsd_socket_cleanup();
