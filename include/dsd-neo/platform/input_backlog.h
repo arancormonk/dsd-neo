@@ -5,8 +5,8 @@
 
 /**
  * @file
- * @brief Where the audio input stood when a rigctl retune was confirmed (issue #834), so its drop takes only the input
- * queued before the retune, never what arrived after it.
+ * @brief Where the audio input stood before a rigctl retune was asked for (issue #834), so its drop takes only the
+ * input queued before the retune, never what arrived after it.
  *
  * The queue the decoder reads attaches itself while it exists (dsd_input_backlog_attach()): a function that returns
  * how much input the queue has taken in so far, in its own unit, and is safe to call from any thread while attached.
@@ -16,12 +16,14 @@
  * device input (PulseAudio, PortAudio, AAudio) attaches nothing: its drop keeps the audio captured since the mark's
  * time (dsd_input_cut::marked_ns, dsd_audio_discard_input()).
  *
- * The retune the P25 watchdog confirms off the decoder thread is held here until the decoder takes it
- * (dsd_input_backlog_post(), dsd_input_backlog_take()), measured when it is posted: the cutoff is what had arrived on
- * the input then, nothing later. A connection being opened (dsd_input_backlog_opening(): a TCP reconnect's, once it is
- * made) is the measured input until its queue attaches, which goes on from its count, so a post made in between is
- * measured on it at the post. One posted while no input is attached (the reconnect's backoff) moved the peer before the
- * next input existed, so nothing is queued before it there: it is retired. An input replacement
+ * Every mark is taken before the retune is asked for (before the rigctl leg sends anything), and used only once the
+ * peer confirmed it: a peer may move and send the new channel's audio before its reply, and that audio must not count
+ * as queued before the retune. The retune the P25 watchdog confirms off the decoder thread is held here, with the mark
+ * it took, until the decoder takes it (dsd_input_backlog_post(), dsd_input_backlog_take()). A connection being opened
+ * (dsd_input_backlog_opening(): a TCP reconnect's, once it is made) is the measured input until its queue attaches,
+ * which goes on from its count, so a mark taken in between is measured on it, and stands on the queue after the
+ * attach. One taken while no input is attached (the reconnect's backoff) measured nothing: posted before the next
+ * input attaches, it is retired, and that input's audio is kept. An input replacement
  * (dsd_input_backlog_forget()) retires a post that was not measured on the queue attached then, and a run boundary
  * (dsd_input_backlog_retire()) any post.
  */
@@ -38,7 +40,7 @@ extern "C" {
 /** How much input @p queue has taken in so far, in the queue's unit. Called with the backlog's lock held. */
 typedef uint64_t (*dsd_input_arrived_fn)(const void* queue);
 
-/** A mark: the attached queue's count and the time, when a retune was confirmed. */
+/** A mark: the attached queue's count and the time, before a retune was asked for. */
 typedef struct dsd_input_cut {
     uint64_t seq;       /**< the attachment the count was read on (dsd_input_backlog_cut_applies()) */
     uint64_t arrived;   /**< the queue's count at the mark, when measured */
@@ -57,7 +59,7 @@ void dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived);
 
 /** A replacement input begins: its connection @p conn exists, and is the measured input until its queue attaches next,
  * counted by @p arrived in the queue's unit as the queue will count it (nothing reads the connection before then), so a
- * post made meanwhile is measured when it is made. A post made before now while no input was attached is retired.
+ * mark taken meanwhile is measured on it. A post held now that measured no input is retired.
  * Decoder thread. The next attach ends the opening; dsd_input_backlog_forget() or dsd_input_backlog_retire() end it with
  * the connection detached and a post measured on it retired. */
 void dsd_input_backlog_opening(const void* conn, dsd_input_arrived_fn arrived);
@@ -71,8 +73,11 @@ void dsd_input_backlog_mark(dsd_input_cut* out);
 /** Whether @p cut counted @p queue, attached since without a break. */
 int dsd_input_backlog_cut_applies(const dsd_input_cut* cut, const void* queue);
 
-/** A retune confirmed off the decoder thread: marked and held for the decoder (the latest post wins). */
-void dsd_input_backlog_post(void);
+/** A retune confirmed off the decoder thread, held for the decoder: @p cut is its mark, taken before the tune was asked
+ * for (dsd_input_backlog_mark()), so audio that came after the request, even before its confirmation, is not in it. Of
+ * two posts the later mark is held (dsd_input_cut::order). A mark measured on a connection that was opening stands on
+ * the queue that attached to it since (dsd_input_backlog_attach()). */
+void dsd_input_backlog_post(const dsd_input_cut* cut);
 
 /** The decoder takes the held post into @p out: 1 when one was held and not retired, else 0. */
 int dsd_input_backlog_take(dsd_input_cut* out);

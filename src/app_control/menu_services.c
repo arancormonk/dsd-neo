@@ -41,6 +41,7 @@
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -2808,10 +2809,13 @@ svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out
         return -1;
     }
     const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
+    /* Before the leg sends anything: the peer may move and send new audio before it answers. */
+    dsd_input_cut mark;
+    dsd_input_backlog_mark(&mark);
     const int rc = io_control_set_freq_tagged(opts, state, hz, out_pending_id);
     /* With rigctl in use io_control tunes the peer alone (no RTL leg), and 0 is its RPRT 0. */
     if (rc == 0 && opts->use_rigctl == 1) {
-        dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, (long int)hz);
+        dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, (long int)hz, &mark);
     }
     return rc;
 }

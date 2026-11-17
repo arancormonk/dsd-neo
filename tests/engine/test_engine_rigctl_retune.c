@@ -99,7 +99,25 @@ typedef struct {
     int started;
     atomic_int f_mode;
     atomic_int f_taken; /* F requests answered RPRT 0 */
+    /* The audio input's write end (-1: none). A peer that applies a frequency before it answers sends the new channel's
+       audio there first: two samples from f_audio_value, which then moves on by two. */
+    atomic_int audio_fd;
+    atomic_int f_audio_value;
 } fake_rig;
+
+/* The peer has moved to the frequency it was asked for: the new channel's first two samples reach the audio input
+   before the reply does. */
+static void
+fake_rig_send_new_audio(fake_rig* rig) {
+    const int fd = atomic_load(&rig->audio_fd);
+    if (fd < 0) {
+        return;
+    }
+    const int value = atomic_fetch_add(&rig->f_audio_value, 2);
+    const uint8_t b[4] = {(uint8_t)((unsigned)value & 0xFFU), (uint8_t)(((unsigned)value >> 8) & 0xFFU),
+                          (uint8_t)((unsigned)(value + 1) & 0xFFU), (uint8_t)(((unsigned)(value + 1) >> 8) & 0xFFU)};
+    (void)dsd_write(fd, b, sizeof b);
+}
 
 /* One line of the peer's protocol: the reply to @p line, or NULL to drop the connection. */
 static const char*
@@ -119,6 +137,7 @@ fake_rig_reply(fake_rig* rig, const char* line, long* freq, char* buf, size_t ca
             *freq = hz;
         }
         (void)atomic_fetch_add(&rig->f_taken, 1);
+        fake_rig_send_new_audio(rig);
         return "RPRT 0\n";
     }
     if (line[0] == 'f') {
@@ -174,6 +193,8 @@ fake_rig_open(fake_rig* rig, dsd_opts* opts) {
     rig->conn = DSD_INVALID_SOCKET;
     atomic_store(&rig->f_mode, RIG_TAKES);
     atomic_store(&rig->f_taken, 0);
+    atomic_store(&rig->audio_fd, -1);
+    atomic_store(&rig->f_audio_value, 0);
     rig->listener = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
     if (rig->listener == DSD_INVALID_SOCKET) {
         return -1;
@@ -222,6 +243,14 @@ fake_rig_close(fake_rig* rig, dsd_opts* opts) {
     }
     (void)dsd_socket_close(rig->listener);
     opts->use_rigctl = 0;
+}
+
+/* The P25 watchdog's retune, confirmed the moment it was asked for: its mark, posted at once. */
+static void
+watchdog_retune_now(void) {
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    dsd_frame_sync_note_off_thread_unflushed_retune(&cut);
 }
 
 /* ---- Fixture ---- */
@@ -810,7 +839,7 @@ static DSD_THREAD_RETURN_TYPE
     wait_poster_main(void* arg) {
     wait_poster* wp = (wait_poster*)arg;
     dsd_sleep_ms(150U);
-    dsd_frame_sync_note_off_thread_unflushed_retune();
+    watchdog_retune_now();
     wp->sent = wait_src_send(wp->src, 1000, 300U) == 0;
     DSD_THREAD_RETURN;
 }
@@ -833,7 +862,7 @@ watchdog_queue_case(dsd_opts* opts, dsd_state* state, const wait_src* src, const
     DSD_SNPRINTF(label, sizeof label, "%s: the old channel's audio, its first sample read", what);
     int rc = expect_true(label, wait_src_send(src, 30, 300U) == 0 && wait_input_next(opts) == 30);
     dsd_sleep_ms(50U); /* all of it queued */
-    dsd_frame_sync_note_off_thread_unflushed_retune();
+    watchdog_retune_now();
     take_at_the_next_read(opts, state);
     rc |= expect_true("send after the drop", wait_src_send(src, 500, 2U) == 0);
     DSD_SNPRINTF(label, sizeof label, "%s: what was queued at the post goes at the next read", what);
@@ -943,9 +972,13 @@ test_watchdog_post_drops_only_what_was_queued(void) {
 
 /* When the watchdog posts its retune against the reconnect. */
 enum {
-    RECONNECT_POST_IN_BACKOFF = 0,  /* before the connection is made */
-    RECONNECT_POST_IN_OPEN = 1,     /* once it is made, before its reader attaches */
-    RECONNECT_POST_IN_OPEN_LATE = 2 /* the same, and new audio reaches the connection before its reader attaches */
+    RECONNECT_POST_IN_BACKOFF = 0,   /* before the connection is made */
+    RECONNECT_POST_IN_OPEN = 1,      /* once it is made, before its reader attaches */
+    RECONNECT_POST_IN_OPEN_LATE = 2, /* the same, and new audio reaches the connection before its reader attaches */
+    /* Marked once the connection is made, before its reader attaches, and confirmed (posted) after it attached. */
+    RECONNECT_MARK_IN_OPEN_POST_ATTACHED = 3,
+    /* Marked during the backoff, before the connection is made, and confirmed while it opens. */
+    RECONNECT_MARK_IN_BACKOFF_POST_IN_OPEN = 4
 };
 
 #define RECONNECT_OLD_SAMPLES   300
@@ -969,6 +1002,7 @@ static struct {
     int old_read;        /* samples read that the connection held when it was made */
     int new_read;        /* samples read that were sent after the post */
     long dropped;        /* samples a drop took */
+    dsd_input_cut mark;  /* a retune's mark, taken before it is confirmed (RECONNECT_MARK_*) */
 } g_reconnect;
 
 /* Send @p count samples of @p value to the new connection and wait up to a second until @p client holds @p held bytes
@@ -1003,7 +1037,9 @@ reconnect_connect(const char* host, int port, int resolve, dsd_socket_cancel_fn 
     (void)cancelled;
     (void)context;
     if (g_reconnect.when == RECONNECT_POST_IN_BACKOFF) {
-        dsd_frame_sync_note_off_thread_unflushed_retune();
+        watchdog_retune_now();
+    } else if (g_reconnect.when == RECONNECT_MARK_IN_BACKOFF_POST_IN_OPEN) {
+        dsd_input_backlog_mark(&g_reconnect.mark);
     }
     g_reconnect.listener = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
     dsd_socket_t client = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
@@ -1036,8 +1072,12 @@ reconnect_connect(const char* host, int port, int resolve, dsd_socket_cancel_fn 
 static tcp_input_ctx*
 reconnect_open(dsd_socket_t sockfd, int samplerate) {
     long held = 2L * RECONNECT_OLD_SAMPLES;
-    if (g_reconnect.when != RECONNECT_POST_IN_BACKOFF) {
-        dsd_frame_sync_note_off_thread_unflushed_retune();
+    if (g_reconnect.when == RECONNECT_POST_IN_OPEN || g_reconnect.when == RECONNECT_POST_IN_OPEN_LATE) {
+        watchdog_retune_now();
+    } else if (g_reconnect.when == RECONNECT_MARK_IN_OPEN_POST_ATTACHED) {
+        dsd_input_backlog_mark(&g_reconnect.mark);
+    } else if (g_reconnect.when == RECONNECT_MARK_IN_BACKOFF_POST_IN_OPEN) {
+        dsd_frame_sync_note_off_thread_unflushed_retune(&g_reconnect.mark);
     }
     if (g_reconnect.when == RECONNECT_POST_IN_OPEN_LATE) {
         held += 2L * RECONNECT_LATE_SAMPLES;
@@ -1046,6 +1086,9 @@ reconnect_open(dsd_socket_t sockfd, int samplerate) {
         }
     }
     tcp_input_ctx* reader = tcp_input_open(sockfd, samplerate);
+    if (reader != NULL && g_reconnect.when == RECONNECT_MARK_IN_OPEN_POST_ATTACHED) {
+        dsd_frame_sync_note_off_thread_unflushed_retune(&g_reconnect.mark);
+    }
     if (reader != NULL
         && reconnect_send(sockfd, RECONNECT_NEW_VALUE, RECONNECT_AFTER_SAMPLES, held + 2L * RECONNECT_AFTER_SAMPLES)
                != 0) {
@@ -1125,19 +1168,22 @@ watchdog_post_while_tcp_reconnects(int when) {
     char label[256];
     int rc = expect_true("reconnect: the old connection ended and the new one was read",
                          g_reconnect.ended && g_reconnect.first_value >= 0);
-    if (when == RECONNECT_POST_IN_BACKOFF) {
+    if (when == RECONNECT_POST_IN_BACKOFF || when == RECONNECT_MARK_IN_BACKOFF_POST_IN_OPEN) {
         DSD_SNPRINTF(label, sizeof label,
-                     "a retune posted during the backoff drops nothing of the new connection: it is read from its "
-                     "first sample (first %d, dropped %ld)",
+                     "a retune %s drops nothing of the new connection: it is read from its first sample (first %d, "
+                     "dropped %ld)",
+                     when == RECONNECT_POST_IN_BACKOFF ? "posted during the backoff"
+                                                       : "asked for during the backoff and confirmed while it opens",
                      g_reconnect.first_value, g_reconnect.dropped);
         rc |= expect_true(label, g_reconnect.dropped == 0 && g_reconnect.first_value == RECONNECT_OLD_VALUE);
         rc |= expect_true("and the post is not taken later", dsd_input_backlog_take(NULL) == 0);
     } else {
         DSD_SNPRINTF(label, sizeof label,
-                     "a retune posted while the new connection opens drops what it held when posted, and nothing "
+                     "a retune marked while the new connection opens drops what it held at the mark, and nothing "
                      "that came after (%s; read %d old, %d new, first %d, dropped %ld of %d)",
-                     when == RECONNECT_POST_IN_OPEN_LATE ? "new audio before its reader attached"
-                                                         : "no new audio before",
+                     when == RECONNECT_POST_IN_OPEN_LATE            ? "new audio before its reader attached"
+                     : when == RECONNECT_MARK_IN_OPEN_POST_ATTACHED ? "confirmed after its reader attached"
+                                                                    : "no new audio before",
                      g_reconnect.old_read, g_reconnect.new_read, g_reconnect.first_value, g_reconnect.dropped,
                      RECONNECT_OLD_SAMPLES);
         rc |= expect_true(label, g_reconnect.old_read == 0 && g_reconnect.dropped == RECONNECT_OLD_SAMPLES
@@ -1164,7 +1210,9 @@ static int
 test_watchdog_post_while_tcp_reconnects(void) {
     return watchdog_post_while_tcp_reconnects(RECONNECT_POST_IN_OPEN)
            | watchdog_post_while_tcp_reconnects(RECONNECT_POST_IN_OPEN_LATE)
-           | watchdog_post_while_tcp_reconnects(RECONNECT_POST_IN_BACKOFF);
+           | watchdog_post_while_tcp_reconnects(RECONNECT_POST_IN_BACKOFF)
+           | watchdog_post_while_tcp_reconnects(RECONNECT_MARK_IN_OPEN_POST_ATTACHED)
+           | watchdog_post_while_tcp_reconnects(RECONNECT_MARK_IN_BACKOFF_POST_IN_OPEN);
 }
 
 /* A watchdog retune posted before the input is replaced moved the peer before the new stream began: the new stream
@@ -1473,7 +1521,9 @@ test_newest_cutoff_wins(void) {
     rc |= expect_true("C's audio, fifth", pipe_put(fds[1], 150));
     rc |= expect_true("watchdog C->A, fifth", tune_on(opts, state, VC1_HZ, 0));
     rc |= expect_true("A's audio, fifth", pipe_put(fds[1], 160));
-    dsd_input_backlog_post(); /* the second post's mark; its count comes after the take */
+    dsd_input_cut second;
+    dsd_input_backlog_mark(&second);
+    dsd_input_backlog_post(&second); /* the second post's mark; its count comes after the take */
     take_at_the_next_read(opts, state);
     rc |= expect_true("audio after the second post", pipe_put(fds[1], 170));
     rc |= expect_newest("a take racing a post", opts, state, 170, e, 1U);
@@ -1492,6 +1542,127 @@ test_newest_cutoff_wins(void) {
     dsd_symbol_apply_input_drop(opts, state);
     rc |= expect_true("audio after both marks", pipe_put(fds[1], 140));
     rc |= expect_true("the later mark's drop takes what came between them", pipe_next(opts) == 140);
+
+    dsd_pcm_stream_close(opts->audio_in_stdin);
+    opts->audio_in_stdin = NULL;
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+    rig_case_close(&c);
+    return rc;
+}
+
+/* ---- The cutoff is marked before the peer is asked to move (issue #834) ---- */
+
+/* A rigctl leg that asks the peer for @p hz: 1 when the peer took it. */
+typedef int (*rig_leg_fn)(dsd_opts* opts, dsd_state* state, long hz);
+
+static int
+leg_trunk(dsd_opts* opts, dsd_state* state, long hz) {
+    return dsd_engine_trunk_tune_to_freq_request(opts, state, hz, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static int
+leg_watchdog(dsd_opts* opts, dsd_state* state, long hz) {
+    return tune_on(opts, state, hz, 0);
+}
+
+static int
+leg_io_control(dsd_opts* opts, dsd_state* state, long hz) {
+    return tune_on(opts, state, hz, 1);
+}
+
+static int
+leg_scan(dsd_opts* opts, dsd_state* state, long hz) {
+    uint64_t request_id = 0U;
+    return dsd_engine_scan_tune_to_freq(opts, state, hz, 0, &request_id) == DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static int
+leg_cc_return(dsd_opts* opts, dsd_state* state, long hz) {
+    state->trunk_cc_freq = hz;
+    return dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+/* The no-carrier pass's own control-channel return: the legacy leg. */
+static int
+leg_no_carrier_return(dsd_opts* opts, dsd_state* state, long hz) {
+    state->trunk_cc_freq = hz;
+    opts->trunk_is_tuned = 1;
+    state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->last_vc_sync_time = 0;
+    noCarrier(opts, state);
+    return opts->rigctl_sent_freq_hz == (uint32_t)hz;
+}
+
+/* A peer that applies the frequency and sends the new channel's audio before its reply: the audio queued before the
+   request goes at the next read, and the new channel's, which reached the input before the reply, is read. */
+static int
+new_audio_case(dsd_opts* opts, dsd_state* state, fake_rig* rig, int fd, rig_leg_fn leg, long hz, const char* what) {
+    char label[200];
+    const int new_value = atomic_load(&rig->f_audio_value);
+    int rc = expect_true("the old channel's audio", pipe_put(fd, 7) && pipe_put(fd, 8));
+    DSD_SNPRINTF(label, sizeof label, "%s: the peer took the frequency", what);
+    rc |= expect_true(label, leg(opts, state, hz));
+    take_at_the_next_read(opts, state);
+    const int16_t first = pipe_next(opts);
+    const int16_t second = first == INT16_MIN ? INT16_MIN : pipe_next(opts);
+    DSD_SNPRINTF(label, sizeof label,
+                 "%s: the new channel's audio sent before the reply is read (read %d, %d; expected %d, %d)", what,
+                 (int)first, (int)second, new_value, new_value + 1);
+    rc |= expect_true(label, first == (int16_t)new_value && second == (int16_t)(new_value + 1));
+    return rc;
+}
+
+/* Every rigctl leg marks the input before it sends the frequency, and installs that mark only once the peer took it:
+   a peer that moves and sends new audio before it answers loses none of it. A refused or lost request installs
+   nothing. */
+static int
+test_new_audio_before_the_reply(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_STDIN) != 0) {
+        return expect_true("before the reply: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    int fds[2] = {-1, -1};
+    int rc = expect_true("pipe", make_pipe(fds) == 0);
+    opts->audio_in_stdin = rc == 0 ? dsd_pcm_stream_open_fd(fds[0]) : NULL;
+    if (opts->audio_in_stdin == NULL) {
+        rig_case_close(&c);
+        return expect_true("stdin reader", 0);
+    }
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    state->symbol_clock_input = opts->pcm_input_generation;
+    atomic_store(&c.rig.f_audio_value, 1000);
+    atomic_store(&c.rig.audio_fd, fds[1]);
+    rc |= new_audio_case(opts, state, &c.rig, fds[1], leg_trunk, VC1_HZ, "a trunk tune");
+    rc |= new_audio_case(opts, state, &c.rig, fds[1], leg_watchdog, VC2_HZ, "the watchdog's tune");
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    rc |= new_audio_case(opts, state, &c.rig, fds[1], leg_io_control, VC3_HZ, "an io_control tune");
+    rc |= new_audio_case(opts, state, &c.rig, fds[1], leg_scan, VC1_HZ, "a scan tune");
+    rc |= new_audio_case(opts, state, &c.rig, fds[1], leg_cc_return, CC_HZ, "a return");
+    rc |= new_audio_case(opts, state, &c.rig, fds[1], leg_trunk, VC2_HZ, "a grant after it");
+    rc |= new_audio_case(opts, state, &c.rig, fds[1], leg_no_carrier_return, CC_HZ, "the no-carrier return");
+
+    /* A refused request and a lost reply install nothing: what was queued is read on. */
+    atomic_store(&c.rig.f_mode, RIG_REFUSES);
+    rc |= expect_true("audio before a refusal", pipe_put(fds[1], 21));
+    rc |= expect_true("refused", !leg_trunk(opts, state, VC3_HZ));
+    take_at_the_next_read(opts, state);
+    rc |= expect_true("a refused request drops nothing", pipe_next(opts) == 21);
+    const uint32_t e = state->symbol_clock_epoch;
+    rc |= expect_true("audio before a refused watchdog tune", pipe_put(fds[1], 22));
+    rc |= expect_true("refused off the thread", !leg_watchdog(opts, state, VC3_HZ));
+    take_at_the_next_read(opts, state);
+    rc |= expect_true("a refused watchdog tune posts nothing",
+                      pipe_next(opts) == 22 && state->symbol_clock_epoch == e && dsd_input_backlog_take(NULL) == 0);
+    atomic_store(&c.rig.f_mode, RIG_DROPS);
+    rc |= expect_true("audio before a lost reply", pipe_put(fds[1], 23));
+    rc |= expect_true("lost", !leg_io_control(opts, state, VC3_HZ));
+    take_at_the_next_read(opts, state);
+    rc |= expect_true("a lost reply drops nothing", pipe_next(opts) == 23 && state->symbol_clock_epoch == e);
+    atomic_store(&c.rig.f_mode, RIG_TAKES);
+    atomic_store(&c.rig.audio_fd, -1);
 
     dsd_pcm_stream_close(opts->audio_in_stdin);
     opts->audio_in_stdin = NULL;
@@ -1598,6 +1769,7 @@ main(void) {
     rc |= test_tcp_backlog();
     rc |= test_stdin_backlog();
     rc |= test_newest_cutoff_wins();
+    rc |= test_new_audio_before_the_reply();
     rc |= test_readers_carry_out_the_drop();
     rc |= test_wav_input_unchanged();
     dsd_socket_cleanup();

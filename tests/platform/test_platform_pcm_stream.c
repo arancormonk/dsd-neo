@@ -341,13 +341,21 @@ test_fd_discard_through(void) {
     (void)remove(path);
 }
 
+/* A retune confirmed off the decoder thread the moment it was asked for: its mark, posted at once. */
+static void
+post_now(void) {
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    dsd_input_backlog_post(&cut);
+}
+
 /* Issue #834: a retune posted while no input is open, and none is being opened (the backoff before a TCP reconnect),
    moved the peer before the next input began: that input's first samples arrived after it, so it is not measured on
    that input and its drop never runs. */
 static void
 test_post_before_the_input_opens(void) {
     dsd_input_backlog_retire();
-    dsd_input_backlog_post();
+    post_now();
     socket_pair pair;
     check(socket_pair_open(&pair) == 0, "loopback connection for the early post");
     const uint8_t fresh[] = {0x65U, 0x00U, 0x66U, 0x00U};
@@ -382,10 +390,10 @@ test_post_while_the_input_opens(void) {
     check(socket_holds(pair.client, (long)sizeof old_audio), "it arrived");
 
     dsd_input_backlog_retire();
-    dsd_input_backlog_post();
+    post_now();
     dsd_input_backlog_opening(&pair.client, dsd_pcm_stream_socket_arrived);
     check(dsd_input_backlog_take(NULL) == 0, "a post made before the opening began is retired by it");
-    dsd_input_backlog_post();
+    post_now();
     dsd_input_backlog_forget();
     check(dsd_input_backlog_take(NULL) == 0, "an opening that ended unopened leaves no post");
     dsd_input_cut cut;
@@ -393,7 +401,7 @@ test_post_while_the_input_opens(void) {
     check(cut.measured == 0U, "and its connection is no input any more");
 
     dsd_input_backlog_opening(&pair.client, dsd_pcm_stream_socket_arrived);
-    dsd_input_backlog_post();
+    post_now();
     dsd_pcm_stream* stream = dsd_pcm_stream_open_socket(pair.client);
     check(stream != NULL, "open on the socket being opened");
     dsd_input_backlog_forget();
@@ -424,7 +432,7 @@ test_post_while_the_input_opens_is_measured_when_posted(void) {
     check(dsd_socket_send(pair.server, old_audio, sizeof old_audio, 0) == (int)sizeof old_audio, "send old audio");
     check(socket_holds(pair.client, (long)sizeof old_audio), "it arrived");
     dsd_input_backlog_opening(&pair.client, dsd_pcm_stream_socket_arrived);
-    dsd_input_backlog_post();
+    post_now();
     const uint8_t fresh[] = {0x03U, 0x00U};
     check(dsd_socket_send(pair.server, fresh, sizeof fresh, 0) == (int)sizeof fresh, "send new audio");
     check(socket_holds(pair.client, (long)(sizeof old_audio + sizeof fresh)), "it arrived before the reader");
@@ -458,6 +466,26 @@ test_no_stream(void) {
     dsd_pcm_stream_close(NULL);
 }
 
+/* Issue #834: each post carries the mark its retune took before it was asked for, so two watchdog retunes may post in
+   either order: the later mark is held, as its drop takes at least as much. */
+static void
+test_later_mark_is_held(void) {
+    dsd_input_backlog_retire();
+    dsd_input_cut early;
+    dsd_input_cut late;
+    dsd_input_backlog_mark(&early);
+    dsd_input_backlog_mark(&late);
+    dsd_input_backlog_post(&late);
+    dsd_input_backlog_post(&early);
+    dsd_input_cut held;
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == late.order, "the later mark is held, posted first");
+    dsd_input_backlog_post(&early);
+    dsd_input_backlog_post(&late);
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == late.order, "and posted last");
+}
+
 int
 main(void) {
     if (dsd_socket_init() != 0) {
@@ -474,6 +502,7 @@ main(void) {
     test_post_before_the_input_opens();
     test_post_while_the_input_opens();
     test_post_while_the_input_opens_is_measured_when_posted();
+    test_later_mark_is_held();
     dsd_socket_cleanup();
     if (g_failures != 0) {
         return 1;

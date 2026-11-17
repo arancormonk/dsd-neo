@@ -16,6 +16,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 
@@ -52,15 +53,18 @@ void dsd_engine_set_decoder_thread(int is_decoder);
  * (issue #834): unless the peer was on @p freq_hz already (@p sent_before_hz, dsd_opts::rigctl_sent_freq_hz before the
  * tune; 0 when none was sent), the epoch moves, so no span the decoders measure on the symbol clock (a DMR slot's MI
  * chain, a P25 Phase 1 terminator's place, the DMR polarity run) reaches across the tune, and the samples the input
- * held at the confirmation (dsd_input_backlog_mark()) are dropped at the decoder thread's next input read
- * (dsd_state::input_drop_pending, dsd_symbol_apply_input_drop()); what arrives after it is kept. Off the decoder
- * thread (the P25 watchdog) the tune posts the mark and a count, and both happen at the decoder thread's next input
- * read (frame_sync_take_unflushed_retunes()), or at the tune notice's reconcile if no read came first
- * (dsd_frame_sync_apply_off_thread_tunes()).
- * Called by each rigctl leg, once its frequency request was answered RPRT 0: the backend tune
- * (dsd_engine_tune_with_backend()), the legacy -Y step and control-channel return, and app-control's io_control leg.
+ * held at @p mark are dropped at the decoder thread's next input read (dsd_state::input_drop_pending,
+ * dsd_symbol_apply_input_drop()); what arrived after it is kept. @p mark is the input's mark the leg took before it
+ * sent the peer anything (dsd_input_backlog_mark()): a peer may move and send the new channel's audio before it
+ * answers, and that audio came after the mark. Off the decoder thread (the P25 watchdog) the tune posts the mark and
+ * a count, and both happen at the decoder thread's next input read (frame_sync_take_unflushed_retunes()), or at the
+ * tune notice's reconcile if no read came first (dsd_frame_sync_apply_off_thread_tunes()).
+ * Called by each rigctl leg, once its frequency request was answered RPRT 0, never for a request refused or whose reply
+ * was lost: the backend tune (dsd_engine_tune_with_backend()), the legacy -Y step and control-channel return, and
+ * app-control's io_control leg.
  */
-void dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz);
+void dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz,
+                                   const dsd_input_cut* mark);
 /**
  * @brief Tune a scanner row or target (the -Y channel scan, --trunk-scan).
  *

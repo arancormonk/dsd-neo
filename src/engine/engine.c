@@ -68,6 +68,7 @@
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
@@ -1429,6 +1430,9 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq
     if (!legacy_rigctl_leg_present(opts)) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    /* Before the leg sends anything: the peer may move and send new audio before it answers. */
+    dsd_input_cut mark;
+    dsd_input_backlog_mark(&mark);
     const dsd_rigctl_passband passband = dsd_rigctl_passband_of(opts, NULL);
     if (dsd_rigctl_passband_captures(opts, &passband)) {
         const bool ok = SetScanRowModulation(opts->rigctl_sockfd, passband.kind, passband.bandwidth_hz);
@@ -1460,7 +1464,7 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq
         if (!rtl_leg_follows) {
             /* Nothing flushes the stream after this leg (issue #834): the untyped step's RTL leg, where one follows,
                retunes the stream, which flushes it; the direct control-channel return has none. */
-            dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, freq);
+            dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, freq, &mark);
         }
     }
     opts->rigctl_sent_freq_hz = (uint32_t)freq;

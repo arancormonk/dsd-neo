@@ -2941,9 +2941,9 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
         opts->tcp_sockfd =
             dsd_net_audio_input_hook_tcp_connect(opts->tcp_hostname, opts->tcp_portno, 0, cancelled, NULL);
         if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
-            /* The new connection exists: a watchdog retune posted from now on may find the old channel's audio on it,
-               and is measured on it when posted, its reader going on from that count; one posted during the backoff
-               moved the peer before it began (issue #834). */
+            /* The new connection exists: a watchdog retune marked from now on may find the old channel's audio on it,
+               and is measured on it, its reader going on from that count; one marked during the backoff measured no
+               input and is not this one's drop (issue #834). */
             dsd_input_backlog_opening(&opts->tcp_sockfd, dsd_pcm_stream_socket_arrived);
             opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
             if (opts->tcp_in_ctx == NULL) {

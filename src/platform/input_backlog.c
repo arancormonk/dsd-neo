@@ -30,6 +30,11 @@ static int s_post_held;
 /* An input is being opened (dsd_input_backlog_opening()): its connection is the attached input, counted until its
    queue attaches. */
 static int s_opening;
+/* The last attach went on from an opening's connection (s_continued_to != 0): a mark measured on that connection
+   (attachment s_continued_from) stands on the queue attached then (attachment s_continued_to) while it stays
+   attached, since the queue's count goes on from the connection's. */
+static uint64_t s_continued_from;
+static uint64_t s_continued_to;
 
 static void
 backlog_lock(void) {
@@ -83,6 +88,8 @@ dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived) {
             s_post_held = 0;
         }
     }
+    s_continued_from = opened;
+    s_continued_to = continues ? s_seq : 0U;
     s_opening = 0;
     backlog_unlock();
 }
@@ -151,10 +158,21 @@ dsd_input_backlog_opening(const void* conn, dsd_input_arrived_fn arrived) {
 }
 
 void
-dsd_input_backlog_post(void) {
+dsd_input_backlog_post(const dsd_input_cut* cut) {
+    if (cut == NULL) {
+        return;
+    }
     backlog_lock();
-    backlog_mark_locked(&s_post);
-    s_post_held = 1;
+    dsd_input_cut held = *cut;
+    /* Marked on a connection that was opening, whose queue has attached since and goes on from its count. */
+    if (held.measured && s_continued_to != 0U && held.seq == s_continued_from && s_seq == s_continued_to) {
+        held.seq = s_seq;
+    }
+    /* Of two posts the later mark is held, whatever order they come in. */
+    if (!s_post_held || held.order > s_post.order) {
+        s_post = held;
+        s_post_held = 1;
+    }
     backlog_unlock();
 }
 

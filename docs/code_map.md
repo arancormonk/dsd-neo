@@ -7281,10 +7281,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the frequency the peer is on, a refused request and a lost reply move nothing. The epoch moves at once, and the
   input's queued samples are asked to go: `dsd_state::input_drop_pending`, which the decoder thread carries out at its
   next input read (`dsd_symbol_apply_input_drop()` in `dsd_symbol.c`, called before the symbol reader reads and before
-  EDACS analog voice reads a triplet), never inside the tune or a tick. The drop takes only what the input held at the
-  confirmation, never what arrived after it, also when the new channel's audio is what ended a read that was waiting
-  then: the request carries a mark of the input (`dsd_state::input_drop_cut`, `dsd_input_backlog_mark()` in
-  `<dsd-neo/platform/input_backlog.h>`). The queue the decoder reads attaches itself while it exists
+  EDACS analog voice reads a triplet), never inside the tune or a tick. The drop takes only what the input held before
+  the leg asked the peer to move, never what arrived after it, also when the new channel's audio is what ended a read
+  that was waiting then: the request carries a mark of the input (`dsd_state::input_drop_cut`,
+  `dsd_input_backlog_mark()` in `<dsd-neo/platform/input_backlog.h>`). Every leg takes that mark before it sends the
+  peer anything and installs it only once the peer answered `RPRT 0`: a peer may move and send the new channel's audio
+  before its reply, and that audio is kept (`ENGINE_RIGCTL_RETUNE`, `test_new_audio_before_the_reply()`, every leg). A
+  refused request or a lost reply installs nothing. The queue the decoder reads attaches itself while it exists
   (`dsd_input_backlog_attach()`): the PCM stream reader of stdin and TCP counts the bytes it read in plus those its
   descriptor or socket holds ready (`FIONREAD`, `dsd_fd_readable_bytes()`, `dsd_socket_readable_bytes()`), and the UDP
   ring the samples written into it; each count is safe to read from any thread, and each queue detaches before it is
@@ -7303,20 +7306,21 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   input's. Two posts before one take leave the later (the backlog holds the latest post), and a take racing a post
   carries the latest mark (`ENGINE_RIGCTL_RETUNE`, `test_newest_cutoff_wins()`). Off the decoder thread (the P25
   watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` (`unflushed_retune.c`) before its tune
-  notice: the mark, held in the backlog (`dsd_input_backlog_post()`; the latest post wins), and an atomic count, the
-  decoder's cue. The decoder's next read takes it (`frame_sync_take_unflushed_retunes()`, inline in
+  notice: the mark it took before its request, held in the backlog (`dsd_input_backlog_post()`; of two posts the later
+  mark is held, in whatever order they come), and an atomic count, the decoder's cue. The decoder's next read takes it (`frame_sync_take_unflushed_retunes()`, inline in
   `frame_sync_unflushed.h`, with the take itself in `frame_sync_unflushed.c`: one relaxed load per symbol read and per
   EDACS triplet, with no measurable cost on a 120 s DMR decode), moving the epoch and asking for the drop with the
   post's mark, so the watchdog's tunes drop at the next read after the post; the notice's reconcile
-  (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet. Every post is measured when it is made: the
-  cutoff is what had arrived on the input then, nothing later. The TCP reconnect makes its new connection the measured
-  input as soon as `tcp_connect` returns it (`dsd_input_backlog_opening()`, counted by
+  (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet. Every mark is measured when it is taken:
+  the cutoff is what had arrived on the input then, nothing later. The TCP reconnect makes its new connection the
+  measured input as soon as `tcp_connect` returns it (`dsd_input_backlog_opening()`, counted by
   `dsd_pcm_stream_socket_arrived()`: the bytes the socket holds ready, since nothing has read it yet), before its reader
-  exists; the reader that attaches next goes on from that count (`dsd_input_backlog_attach()`), so a retune confirmed
-  while the connection opens drops what it held at the post, and audio that reached it after the post, before the
-  reader attached or after, is kept. The TCP reconnect takes such a post before the connection's first read. A post
-  made while no input is attached (during the reconnect's backoff) moved the peer before the next input existed, so
-  nothing on it was queued before the post: the opening or the attach retires it. A failed open ends the opening, with
+  exists; the reader that attaches next goes on from that count (`dsd_input_backlog_attach()`), so a retune marked
+  while the connection opens drops what it held at the mark, also when it is confirmed after the reader attached (the
+  post moves the mark onto that reader), and audio that reached it after the mark, before the reader attached or
+  after, is kept. The TCP reconnect takes such a post before the connection's first read. A mark taken while no input
+  is attached (during the reconnect's backoff) measured nothing: posted before the next input attaches, the opening or
+  the attach retires it, and the new input's audio is kept. A failed open ends the opening, with
   the connection detached and a post measured on it retired (`dsd_frame_sync_forget_unflushed_retunes()`). The UDP
   ring attaches before its receive thread starts (nothing counted yet) and stdin's reader when it opens, so neither
   has a moment in which a post waits for its input to be measured.

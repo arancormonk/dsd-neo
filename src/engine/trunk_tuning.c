@@ -186,23 +186,24 @@ dsd_engine_set_decoder_thread(int is_decoder) {
 }
 
 void
-dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz) {
-    if (!opts || !state || opts->use_rigctl != 1 || (sent_before_hz != 0U && (long int)sent_before_hz == freq_hz)) {
+dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz,
+                              const dsd_input_cut* mark) {
+    if (!opts || !state || !mark || opts->use_rigctl != 1
+        || (sent_before_hz != 0U && (long int)sent_before_hz == freq_hz)) {
         return;
     }
     if (!s_decoder_thread) {
         /* The decoder thread moves the epoch and asks for the drop at its next input read, or at this tune's notice
            if no read comes first. */
-        dsd_frame_sync_note_off_thread_unflushed_retune();
+        dsd_frame_sync_note_off_thread_unflushed_retune(mark);
         return;
     }
     state->symbol_clock_epoch++;
     /* The input still holds the frequency left's samples: the decoder thread drops them at its next input read
-       (dsd_symbol_apply_input_drop()), outside this tune, up to where the input stands now. */
-    dsd_input_cut cut;
-    dsd_input_backlog_mark(&cut);
-    /* Marked now: newer than any mark asked for before, so it is the cutoff (a post marked after it replaces it). */
-    (void)dsd_frame_sync_request_input_drop(opts, state, &cut);
+       (dsd_symbol_apply_input_drop()), outside this tune, up to where the input stood before the leg asked the peer
+       to move. This thread took no other mark since (a take of a watchdog post runs before a leg, never inside one),
+       so it is the newest the thread asks for; a post marked after it replaces it. */
+    (void)dsd_frame_sync_request_input_drop(opts, state, mark);
 }
 
 /* Off the decoder thread, a tune request's one read of the P25p1 decision the decoder publishes
@@ -960,6 +961,9 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
         const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
+        /* Before the leg sends anything: the peer may move and send new audio before it answers. */
+        dsd_input_cut mark;
+        dsd_input_backlog_mark(&mark);
         if (!dsd_engine_tune_rigctl(opts, state, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
@@ -973,7 +977,7 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
 #endif
         if (!conventional_scan || opts->audio_in_type != AUDIO_IN_RTL) {
             /* No RTL leg follows, so no stream flush says the radio moved. */
-            dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, freq);
+            dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, freq, &mark);
             return DSD_TRUNK_TUNE_RESULT_OK;
         }
     }

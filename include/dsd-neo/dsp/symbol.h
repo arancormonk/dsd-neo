@@ -24,8 +24,8 @@ float getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
 
 /**
  * @brief Carry out a pending input drop (dsd_state::input_drop_pending, issue #834): a rigctl peer confirmed a retune
- * while the audio input still held the frequency left's samples. Drops what the input held at the confirmation
- * (dsd_state::input_drop_cut), as an RTL retune's flush does, and keeps what arrived after it: the UDP ring and the TCP
+ * while the audio input still held the frequency left's samples. Drops what the input held before the retune was
+ * asked for (dsd_state::input_drop_cut), as an RTL retune's flush does, and keeps what arrived after it: the UDP ring and the TCP
  * connection up to the count marked on them (the network-audio hooks), stdin up to its count when it is a pipe or
  * socket (dsd_pcm_stream_discard_through()), and PulseAudio, PortAudio or AAudio input but for the audio captured since
  * the mark (dsd_audio_discard_input()). Files and RTL streams hold nothing to drop. Every input reader runs it before

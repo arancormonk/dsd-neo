@@ -1624,7 +1624,7 @@ struct dsd_state {
     /* dsd_opts::pcm_input_generation when the drop was asked for: a drop meant for an input since replaced (an input
        switch, a reopened stream) is cleared unrun. */
     uint32_t input_drop_generation;
-    /* Where the input stood when the retune was confirmed (dsd_input_backlog_mark()): the drop takes only what was
+    /* Where the input stood before the retune was asked for (dsd_input_backlog_mark()): the drop takes only what was
        queued by then, never what arrived after it. The newest mark asked for on the input, kept once carried out: an
        older one asked for later never replaces it (dsd_frame_sync_request_input_drop()). */
     dsd_input_cut input_drop_cut;
