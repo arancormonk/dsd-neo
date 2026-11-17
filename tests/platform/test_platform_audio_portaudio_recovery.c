@@ -162,6 +162,14 @@ static unsigned long g_frames_read;
    g_available_late_frames more, once. */
 static int g_available_late_ms;
 static signed long g_available_late_frames;
+/* Input frames numbered from g_read_next (mono), when g_read_numbered. At the g_overrun_at_read-th read from then on
+   (0: never) the input buffer has overrun first (issue #834): PortAudio threw its oldest frames away, what it holds is
+   g_overrun_available frames numbered from g_overrun_next, and the read reports paInputOverflowed. */
+static int g_read_numbered;
+static int16_t g_read_next;
+static int g_overrun_at_read;
+static int16_t g_overrun_next;
+static signed long g_overrun_available;
 
 PaDeviceIndex
 Pa_GetDefaultInputDevice(void) {
@@ -257,12 +265,23 @@ Pa_WriteStream(PaStream* stream, const void* buffer, unsigned long frames) {
 PaError
 Pa_ReadStream(PaStream* stream, void* buffer, unsigned long frames) {
     (void)stream;
-    (void)buffer;
+    PaError result = paNoError;
+    if (g_overrun_at_read > 0 && --g_overrun_at_read == 0) {
+        g_read_available = g_overrun_available;
+        g_read_next = g_overrun_next;
+        result = paInputOverflowed;
+    }
+    if (g_read_numbered && buffer != NULL) {
+        int16_t* out = (int16_t*)buffer;
+        for (unsigned long i = 0; i < frames; i++) {
+            out[i] = g_read_next++;
+        }
+    }
     g_frames_read += frames;
     if (g_read_available > 0) {
         g_read_available -= (signed long)frames < g_read_available ? (signed long)frames : g_read_available;
     }
-    return paNoError;
+    return result;
 }
 
 signed long
@@ -506,6 +525,61 @@ test_input_discard_keeps_what_was_captured_before_its_snapshot(void) {
     g_default_input = paNoDevice;
 }
 
+/* Issue #834: the input buffer overruns during the discard (a 100 ms buffer turning over while the decoder was
+   descheduled): 48000 frames were available at the count, and at the discard's second read PortAudio has thrown its
+   oldest frames away, so what it holds from there on (4800 frames, numbered from 20000) was captured after the mark.
+   The discard drops the first read's 256 frames only (unless the host stalls the call for most of a second), keeps the
+   second read's chunk for the next read, and leaves the rest in the device. */
+static void
+test_input_discard_stops_at_an_overrun(void) {
+    g_default_input = 0;
+    const dsd_audio_params params = {48000, 1, 16, NULL, "test", 0};
+    dsd_audio_stream* in = dsd_audio_open_input(&params);
+    assert(in != NULL);
+    g_read_available = 48000;
+    g_read_numbered = 1;
+    g_read_next = 0;
+    g_overrun_at_read = 2;
+    g_overrun_next = 20000;
+    g_overrun_available = 4800;
+    const int dropped = dsd_audio_discard_input(in, dsd_time_monotonic_ns());
+    int16_t next[4] = {0};
+    const int got = dsd_audio_read(in, next, 4);
+    if (dropped != 256 || got != 4 || next[0] != 20000) {
+        DSD_FPRINTF(stderr, "an overrun's discard dropped %d frames, next %d (expected 256, then 20000)\n", dropped,
+                    (int)next[0]);
+    }
+    assert(dropped == 256 && got == 4);
+    for (int i = 0; i < 4; i++) {
+        assert(next[i] == (int16_t)(20000 + i));
+    }
+    /* The kept chunk goes first, then the device: one read across both. */
+    int16_t across[300] = {0};
+    assert(dsd_audio_read(in, across, 300) == 300);
+    for (int i = 0; i < 300; i++) {
+        assert(across[i] == (int16_t)(20004 + i));
+    }
+    /* An overrun at the first read drops nothing and keeps that chunk (frames numbered from 1000 on); a later discard
+       of a mark long ago keeps it all, and one of a mark now drops the kept chunk no read took, as the oldest the stream
+       holds, then what the device holds (24000 frames), but for the frames captured during the call on the real
+       clock. */
+    g_read_available = 1000;
+    g_overrun_at_read = 1;
+    g_overrun_next = 1000;
+    g_overrun_available = 1000;
+    assert(dsd_audio_discard_input(in, dsd_time_monotonic_ns()) == 0);
+    g_read_available = 24000;
+    assert(dsd_audio_discard_input(in, dsd_time_monotonic_ns() - 1000000000U) == 0);
+    int16_t one = 0;
+    const int later = dsd_audio_discard_input(in, dsd_time_monotonic_ns());
+    assert(dsd_audio_read(in, &one, 1) == 1);
+    assert(later > 256 && later <= 256 + 24000 && one == (int16_t)(1000 + later));
+    g_read_numbered = 0;
+    g_read_available = 0;
+    dsd_audio_close(in);
+    g_default_input = paNoDevice;
+}
+
 int
 main(void) {
     assert(dsd_audio_init() == 0);
@@ -513,6 +587,7 @@ main(void) {
     test_streams_on_two_threads_never_overlap_in_portaudio();
     test_input_discard_reads_what_is_available();
     test_input_discard_keeps_what_was_captured_before_its_snapshot();
+    test_input_discard_stops_at_an_overrun();
     dsd_audio_cleanup();
     printf("PLATFORM_AUDIO_PORTAUDIO_RECOVERY: OK\n");
     return 0;

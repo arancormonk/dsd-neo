@@ -1407,8 +1407,12 @@ dsd_audio_open_input(const dsd_audio_params* params) {
     }
 
     dsd_audio_stream* stream = calloc(1, sizeof(dsd_audio_stream));
-    if (!stream) {
+    if (stream) {
+        stream->input_carry = (struct audio_input_carry*)calloc(1, sizeof(*stream->input_carry));
+    }
+    if (!stream || !stream->input_carry) {
         set_error("Out of memory");
+        free(stream);
         return NULL;
     }
 
@@ -1417,6 +1421,7 @@ dsd_audio_open_input(const dsd_audio_params* params) {
     stream->sample_rate = params->sample_rate;
 
     if (aaudio_stream_open_logged(stream) != 0) {
+        audio_input_carry_free(stream->input_carry);
         free(stream);
         return NULL;
     }
@@ -1479,8 +1484,10 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     }
 
     const size_t stride = (size_t)stream->channels;
-    int16_t* cursor = buffer;
-    size_t remaining = frames;
+    /* What a discard kept goes first: it is older than anything the device holds. */
+    const size_t carried = audio_input_carry_take(stream->input_carry, stream->channels, buffer, frames);
+    int16_t* cursor = buffer + carried * stride;
+    size_t remaining = frames - carried;
     int reopened = 0;
 
     while (remaining > 0) {
@@ -1522,9 +1529,9 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 #define DSD_AAUDIO_DISCARD_MAX_NS       250000000ULL
 
 /* The frames an input discard drops into @p owed: what the stream holds now (the frames the device wrote that no read
-   took) less what was captured since @p marked_ns, at most DSD_AAUDIO_DISCARD_MAX_FRAMES. The time since the mark is
-   read after the counts, so frames written before them, while the decoder waited, are kept too. 0, or -1 when a count
-   failed. */
+   took, and what an earlier discard kept and no read took, the oldest of it) less what was captured since @p marked_ns,
+   at most DSD_AAUDIO_DISCARD_MAX_FRAMES. The time since the mark is read after the counts, so frames written before
+   them, while the decoder waited, are kept too. 0, or -1 when a count failed. */
 static int
 aaudio_input_discard_owed(const dsd_audio_stream* stream, uint64_t marked_ns, uint64_t* owed) {
     const int64_t written = AAudioStream_getFramesWritten(stream->handle);
@@ -1533,26 +1540,19 @@ aaudio_input_discard_owed(const dsd_audio_stream* stream, uint64_t marked_ns, ui
         set_error_aaudio((aaudio_result_t)(written < 0 ? written : read));
         return -1;
     }
-    const uint64_t held = written > read ? (uint64_t)(written - read) : 0U;
+    const uint64_t held =
+        (written > read ? (uint64_t)(written - read) : 0U) + (uint64_t)audio_input_carry_left(stream->input_carry);
     const uint64_t drop = held - audio_input_keep_since(marked_ns, dsd_time_monotonic_ns(), stream->sample_rate, held);
     *owed = drop < (uint64_t)DSD_AAUDIO_DISCARD_MAX_FRAMES ? drop : (uint64_t)DSD_AAUDIO_DISCARD_MAX_FRAMES;
     return 0;
 }
 
-/* The frames dropped are not counted in device_frames: the decoder never had them. */
-int
-dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
-    if (!stream || !stream->is_input || stream->channels <= 0 || stream->channels > DSD_AAUDIO_DISCARD_MAX_CHANNELS) {
-        set_error("Invalid arguments");
-        return -1;
-    }
-    if (!stream->handle) {
-        return 0; /* between a disconnect and a reopen nothing is held */
-    }
-    uint64_t owed = 0U;
-    if (aaudio_input_discard_owed(stream, marked_ns, &owed) != 0) {
-        return -1;
-    }
+/* Read and drop @p owed frames from the device, with no wait. A read after which the device's overrun count moved from
+   @p xruns ends it: the device threw away audio it held, and what that read returned may have been captured after the
+   mark, so nothing tells old from new any more. That chunk goes to the carry, which the next dsd_audio_read() returns
+   first, and the rest stays in the device. The frames dropped, or -1 on a read error. */
+static int
+aaudio_discard_reads(const dsd_audio_stream* stream, uint64_t owed, int32_t xruns) {
     int16_t chunk[DSD_AAUDIO_DISCARD_CHUNK_FRAMES * DSD_AAUDIO_DISCARD_MAX_CHANNELS];
     const uint64_t start_ns = dsd_time_monotonic_ns();
     int dropped = 0;
@@ -1568,9 +1568,37 @@ dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
             }
             break;
         }
+        if (AAudioStream_getXRunCount(stream->handle) != xruns) {
+            if (audio_input_carry_keep(stream->input_carry, chunk, (size_t)res, stream->channels) != 0) {
+                set_error("Out of memory");
+            }
+            break;
+        }
         dropped += (int)res;
     }
     return dropped;
+}
+
+/* The frames dropped are not counted in device_frames: the decoder never had them. */
+int
+dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
+    if (!stream || !stream->is_input || !stream->input_carry || stream->channels <= 0
+        || stream->channels > DSD_AAUDIO_DISCARD_MAX_CHANNELS) {
+        set_error("Invalid arguments");
+        return -1;
+    }
+    if (!stream->handle) {
+        return 0; /* between a disconnect and a reopen nothing is held */
+    }
+    /* Taken before the counts: an overrun from here on stops the reads. */
+    const int32_t xruns = AAudioStream_getXRunCount(stream->handle);
+    uint64_t owed = 0U;
+    if (aaudio_input_discard_owed(stream, marked_ns, &owed) != 0) {
+        return -1;
+    }
+    const size_t from_carry = audio_input_carry_drop(stream->input_carry, (size_t)owed);
+    const int dropped = aaudio_discard_reads(stream, owed - (uint64_t)from_carry, xruns);
+    return dropped < 0 ? -1 : dropped + (int)from_carry;
 }
 
 int
@@ -1706,6 +1734,7 @@ dsd_audio_close(dsd_audio_stream* stream) {
         stream->convert_buf = NULL;
     }
 
+    audio_input_carry_free(stream->input_carry);
     free(stream);
 }
 

@@ -107,6 +107,14 @@ static struct {
        device writes written_late_frames more, once. */
     uint64_t written_late_ns;
     int64_t written_late_frames;
+    /* Input frames numbered from input_next (mono), when input_numbered; at the overrun_at_read-th read from then on
+       (0: never) the device overruns first: its overrun count moves, and what it holds from there on is numbered from
+       overrun_next (issue #834). */
+    int input_numbered;
+    int16_t input_next;
+    int overrun_at_read;
+    int16_t overrun_next;
+    int32_t xruns;
     int16_t captured[FAKE_CAPTURE_SAMPLES];
     size_t captured_samples;
 } g;
@@ -416,6 +424,16 @@ AAudioStream_read(AAudioStream* stream, void* buffer, int32_t frames, int64_t ti
     if (buffer != NULL) {
         DSD_MEMSET(buffer, 0, (size_t)frames * (size_t)g.device_channels * sizeof(int16_t));
     }
+    if (g.overrun_at_read > 0 && --g.overrun_at_read == 0) {
+        g.xruns++;
+        g.input_next = g.overrun_next;
+    }
+    if (g.input_numbered && buffer != NULL) {
+        int16_t* out = (int16_t*)buffer;
+        for (int32_t i = 0; i < frames; i++) {
+            out[i] = g.input_next++;
+        }
+    }
     g.input_frames_taken += frames;
     return frames;
 }
@@ -472,7 +490,7 @@ AAudioStreamBuilder_setBufferCapacityInFrames(AAudioStreamBuilder* builder, int3
 int32_t
 AAudioStream_getXRunCount(AAudioStream* stream) {
     (void)stream;
-    return 0;
+    return g.xruns;
 }
 
 int64_t
@@ -1046,6 +1064,56 @@ test_input_stream(void) {
             DSD_FPRINTF(stderr, "a late count's discard dropped %d frames (expected 240)\n", dropped);
         }
         assert(dropped == 240 && g.input_frames_taken == 240);
+    }
+    dsd_audio_close(stream);
+
+    /* Issue #834: the device overruns during the discard (the decoder was descheduled and its buffer turned over): 4800
+       frames were held at the mark, and at the discard's second read the device has thrown its oldest away, so what it
+       holds from there on (numbered from 20000) was captured after the mark. The discard drops the first read's 256
+       frames only, keeps the second read's chunk for the next read, and leaves the rest in the device. */
+    reset_fakes();
+    g.device_rate = 48000;
+    g.device_channels = 1;
+    stream = dsd_audio_open_input(&params);
+    assert(stream != NULL);
+    g.frames_read_step = 0;
+    g.frames_written = 4800;
+    g.frames_read = 0;
+    g.input_numbered = 1;
+    g.input_next = 0;
+    g.overrun_at_read = 2;
+    g.overrun_next = 20000;
+    {
+        const int dropped = dsd_audio_discard_input(stream, g.now_ns);
+        int16_t next[4] = {0};
+        const int got = dsd_audio_read(stream, next, 4);
+        if (dropped != 256 || got != 4 || next[0] != 20000) {
+            DSD_FPRINTF(stderr, "an overrun's discard dropped %d frames, next %d (expected 256, then 20000)\n", dropped,
+                        (int)next[0]);
+        }
+        assert(dropped == 256 && got == 4);
+        for (int i = 0; i < 4; i++) {
+            assert(next[i] == (int16_t)(20000 + i));
+        }
+        /* The kept chunk goes first, then the device: one read across both. */
+        int16_t across[300] = {0};
+        assert(dsd_audio_read(stream, across, 300) == 300);
+        for (int i = 0; i < 300; i++) {
+            assert(across[i] == (int16_t)(20004 + i));
+        }
+    }
+    /* An overrun at the first read drops nothing and keeps that chunk (numbered from 30000); a later discard drops a
+       kept chunk no read took as the oldest the stream holds, then the device's 100 frames. */
+    g.frames_written = g.frames_read + 1000;
+    g.overrun_at_read = 1;
+    g.overrun_next = 30000;
+    assert(dsd_audio_discard_input(stream, g.now_ns) == 0);
+    g.frames_written = g.frames_read + 100;
+    {
+        int16_t one = 0;
+        assert(dsd_audio_discard_input(stream, g.now_ns) == 256 + 100);
+        assert(dsd_audio_read(stream, &one, 1) == 1);
+        assert(one == (int16_t)(30256 + 100));
     }
     dsd_audio_close(stream);
 

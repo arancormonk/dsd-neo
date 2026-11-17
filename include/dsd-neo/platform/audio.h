@@ -118,19 +118,25 @@ int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
  * A device captures in real time, so the newest frames it holds, as many as the time since the mark lasts, are the
  * audio captured since then. That time is read after the backend counts what it holds (or, on PulseAudio, after its
  * last read), so audio captured while the caller waited before the count is kept, and the frame count rounds up: a
- * drop keeps more rather than less. Per backend:
+ * drop keeps more rather than less. Frames an earlier drop kept and no read took are the oldest the stream holds. A
+ * drop may lose only audio held before the mark: once it cannot tell old audio from new (the device overran and threw
+ * audio away), it stops, and keeps what it holds. Per backend:
  * - PulseAudio (Linux, macOS), a best effort: what the client holds from the server (the rest of the record fragment
  *   being read, the queue behind it) is read until a read waits for audio; that read's frames count as held too. At
  *   most 2 s of frames at the stream's rate, exact to one 32-frame read (the cap is checked before each read, so up to
  *   31 frames past it), no read begun after 250 ms on the monotonic clock, and the last read waits up to one record
  *   block (about 100 ms) on top of that. pa_simple says nothing of what it holds before it is read, so the newest
- *   frames read are kept in the stream and returned first by dsd_audio_read().
+ *   frames read are kept in the stream and returned first by dsd_audio_read(). The keep is counted by time, not from a
+ *   count taken first, so a server overrun (which throws the oldest audio away before it is read) loses no audio
+ *   captured after the mark.
  * - PortAudio (Windows): one snapshot of the frames the stream reports available at the call
  *   (Pa_GetStreamReadAvailable(), at most its input buffer), less those kept, read without a wait; no frame or time
- *   cap of its own.
+ *   cap of its own. A read that reports an overrun (paInputOverflowed) ends it: its frames are kept, returned first by
+ *   dsd_audio_read(), and the rest stays in the device.
  * - AAudio (Android): the frames the device wrote and no read took (AAudioStream_getFramesWritten() less
  *   AAudioStream_getFramesRead()), less those kept, read with no wait: at most 96000 frames (2 s at 48 kHz), no read
- *   begun after 250 ms.
+ *   begun after 250 ms. A read after which the device's overrun count (AAudioStream_getXRunCount()) moved ends it, as
+ *   on PortAudio.
  * Audio still on its way to DSD-neo (in the producer, or in the sound server) arrives after the call and is kept.
  *
  * @param stream     Input stream handle.

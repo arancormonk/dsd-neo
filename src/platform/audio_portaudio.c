@@ -691,8 +691,12 @@ dsd_audio_open_input(const dsd_audio_params* params) {
     }
 
     dsd_audio_stream* stream = calloc(1, sizeof(dsd_audio_stream));
-    if (!stream) {
+    if (stream) {
+        stream->input_carry = (struct audio_input_carry*)calloc(1, sizeof(*stream->input_carry));
+    }
+    if (!stream || !stream->input_carry) {
         set_error("Out of memory");
+        free(stream);
         return NULL;
     }
 
@@ -718,6 +722,7 @@ dsd_audio_open_input(const dsd_audio_params* params) {
 
     if (err != paNoError || start_err != paNoError) {
         set_error_pa(err != paNoError ? err : start_err);
+        audio_input_carry_free(stream->input_carry);
         free(stream);
         return NULL;
     }
@@ -990,7 +995,13 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
         return -1;
     }
 
-    PaError err = Pa_ReadStream(stream->handle, buffer, (unsigned long)frames);
+    /* What a discard kept goes first: it is older than anything the device holds. */
+    const size_t carried = audio_input_carry_take(stream->input_carry, stream->channels, buffer, frames);
+    if (carried == frames) {
+        return (int)frames;
+    }
+    PaError err =
+        Pa_ReadStream(stream->handle, buffer + carried * (size_t)stream->channels, (unsigned long)(frames - carried));
     if (err != paNoError && err != paInputOverflowed) {
         set_error_pa(err);
         return -1;
@@ -1003,38 +1014,56 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 #define PORTAUDIO_DISCARD_CHUNK_FRAMES 256
 #define PORTAUDIO_DISCARD_MAX_CHANNELS 8
 
-int
-dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
-    if (!stream || !stream->handle || !stream->is_input || stream->channels <= 0
-        || stream->channels > PORTAUDIO_DISCARD_MAX_CHANNELS) {
-        set_error("Invalid arguments");
-        return -1;
-    }
+/* Read and drop @p owed frames from the device, with no wait (they were available). A read that reports an overrun
+   (paInputOverflowed: PortAudio threw input away since the last read) ends it: the oldest audio is gone, and what that
+   read returned may have been captured after the mark, so nothing tells old from new any more. That chunk goes to the
+   carry, which the next dsd_audio_read() returns first, and the rest stays in the device. The frames dropped, or -1 on
+   a read error. */
+static int
+portaudio_discard_owed(const dsd_audio_stream* stream, signed long owed) {
     int16_t chunk[PORTAUDIO_DISCARD_CHUNK_FRAMES * PORTAUDIO_DISCARD_MAX_CHANNELS];
-    /* What the stream has available now, less what was captured since the mark, read without a wait; later frames are
-       kept. The time since the mark is read after the count, so frames captured before it, while the decoder waited,
-       are kept too. A negative count is an error. */
-    signed long available = Pa_GetStreamReadAvailable(stream->handle);
-    if (available < 0) {
-        set_error_pa((PaError)available);
-        return -1;
-    }
-    const uint64_t keep =
-        audio_input_keep_since(marked_ns, dsd_time_monotonic_ns(), stream->sample_rate, (uint64_t)available);
-    available -= (signed long)keep;
     int dropped = 0;
-    while (available > 0) {
+    while (owed > 0) {
         const unsigned long frames =
-            available < PORTAUDIO_DISCARD_CHUNK_FRAMES ? (unsigned long)available : PORTAUDIO_DISCARD_CHUNK_FRAMES;
+            owed < PORTAUDIO_DISCARD_CHUNK_FRAMES ? (unsigned long)owed : PORTAUDIO_DISCARD_CHUNK_FRAMES;
         const PaError err = Pa_ReadStream(stream->handle, chunk, frames);
-        if (err != paNoError && err != paInputOverflowed) {
+        if (err == paInputOverflowed) {
+            if (audio_input_carry_keep(stream->input_carry, chunk, frames, stream->channels) != 0) {
+                set_error("Out of memory");
+            }
+            break;
+        }
+        if (err != paNoError) {
             set_error_pa(err);
             return -1;
         }
         dropped += (int)frames;
-        available -= (signed long)frames;
+        owed -= (signed long)frames;
     }
     return dropped;
+}
+
+int
+dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
+    if (!stream || !stream->handle || !stream->is_input || !stream->input_carry || stream->channels <= 0
+        || stream->channels > PORTAUDIO_DISCARD_MAX_CHANNELS) {
+        set_error("Invalid arguments");
+        return -1;
+    }
+    /* What the stream has available now, and what an earlier discard kept and no read took (the oldest of it), less
+       what was captured since the mark, read without a wait; later frames are kept. The time since the mark is read
+       after the count, so frames captured before it, while the decoder waited, are kept too. A negative count is an
+       error. */
+    const signed long available = Pa_GetStreamReadAvailable(stream->handle);
+    if (available < 0) {
+        set_error_pa((PaError)available);
+        return -1;
+    }
+    const uint64_t held = (uint64_t)available + audio_input_carry_left(stream->input_carry);
+    const uint64_t keep = audio_input_keep_since(marked_ns, dsd_time_monotonic_ns(), stream->sample_rate, held);
+    const size_t from_carry = audio_input_carry_drop(stream->input_carry, (size_t)(held - keep));
+    const int dropped = portaudio_discard_owed(stream, (signed long)(held - keep - from_carry));
+    return dropped < 0 ? -1 : dropped + (int)from_carry;
 }
 
 /* An async stream's device is down: once a reopen is due, close the failed device and open it again, on the writer's
@@ -1210,6 +1239,7 @@ dsd_audio_close(dsd_audio_stream* stream) {
         portaudio_lifecycle_unlock();
     }
 
+    audio_input_carry_free(stream->input_carry);
     free(stream);
 }
 

@@ -51,6 +51,13 @@ static int g_pa_simple_read_calls;
 static int g_pa_capture_on;
 static int16_t g_pa_capture_next;
 static size_t g_pa_capture_held;
+/* At the g_pa_overrun_at_read-th read from then on (0: never), the decoder is preempted inside it for
+   g_pa_overrun_ns on the fake clock, and the server's record queue overruns meanwhile (issue #834): it throws its
+   oldest frames away, so what it holds is g_pa_overrun_held frames numbered from g_pa_overrun_next. */
+static int g_pa_overrun_at_read;
+static uint64_t g_pa_overrun_ns;
+static int16_t g_pa_overrun_next;
+static size_t g_pa_overrun_held;
 static int g_pa_simple_write_fail;
 static int g_pa_simple_write_calls;
 static int g_pa_simple_drain_fail;
@@ -69,6 +76,10 @@ reset_pa_simple_fakes(void) {
     g_pa_capture_on = 0;
     g_pa_capture_next = 0;
     g_pa_capture_held = 0U;
+    g_pa_overrun_at_read = 0;
+    g_pa_overrun_ns = 0U;
+    g_pa_overrun_next = 0;
+    g_pa_overrun_held = 0U;
     g_pa_simple_write_fail = 0;
     g_pa_simple_write_calls = 0;
     g_pa_simple_drain_fail = 0;
@@ -242,6 +253,11 @@ pa_simple_read(pa_simple* s, void* data, size_t bytes, int* error) {
     }
     if (data != NULL) {
         DSD_MEMSET(data, 0, bytes);
+    }
+    if (g_pa_capture_on && g_pa_overrun_at_read > 0 && --g_pa_overrun_at_read == 0) {
+        g_now_ns += g_pa_overrun_ns;
+        g_pa_capture_next = g_pa_overrun_next;
+        g_pa_capture_held = g_pa_overrun_held;
     }
     if (g_pa_capture_on && data != NULL) {
         const size_t frames = bytes / sizeof(int16_t);
@@ -984,6 +1000,44 @@ test_pulse_input_discard_keeps_what_came_before_it_began(void) {
     reset_pa_simple_fakes();
 }
 
+/* Issue #834: the server's record queue overruns during the discard. The decoder was preempted for 100 ms inside the
+   discard's third read, and the server threw its oldest frames away meanwhile: frames 0..299 were held at the mark,
+   the first two reads took 0..63, and what the server holds from there on is 4800 frames numbered from 20000. The read
+   that was preempted ends the discard (it took over 1 ms), and the discard keeps the frames captured since the mark,
+   counted by time: 100 ms, more than it read, so nothing goes, and every frame the overrun left is read, in order. */
+static void
+test_pulse_input_discard_keeps_what_an_overrun_left(void) {
+    reset_pa_simple_fakes();
+    dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
+    params.sample_rate = 48000;
+    params.channels = 1;
+    params.bits_per_sample = 16;
+    params.app_name = "dsd-neo-test";
+    dsd_audio_stream* in = dsd_audio_open_input(&params);
+    assert(in != NULL);
+    g_pa_capture_on = 1;
+    g_pa_capture_held = 300U;
+    g_pa_capture_next = 0;
+    g_pa_overrun_at_read = 3;
+    g_pa_overrun_ns = 100000000ULL;
+    g_pa_overrun_next = 20000;
+    g_pa_overrun_held = 4800U;
+    const int dropped = dsd_audio_discard_input(in, g_now_ns);
+    int16_t frames[100];
+    assert(dsd_audio_read(in, frames, 100) == 100);
+    if (dropped != 0 || frames[0] != 0 || frames[64] != 20000) {
+        DSD_FPRINTF(stderr, "an overrun's discard dropped %d, read %d then %d (expected 0, 0 and 20000)\n", dropped,
+                    frames[0], frames[64]);
+    }
+    assert(dropped == 0);
+    for (int i = 0; i < 100; i++) {
+        assert(frames[i] == (int16_t)(i < 64 ? i : 20000 + (i - 64)));
+    }
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+}
+
 int
 main(void) {
     test_pulse_size_helpers();
@@ -999,6 +1053,7 @@ main(void) {
     test_pulse_input_discard_keeps_what_its_wait_brought();
     test_pulse_input_discard_keeps_the_newest();
     test_pulse_input_discard_keeps_what_came_before_it_began();
+    test_pulse_input_discard_keeps_what_an_overrun_left();
     return 0;
 }
 

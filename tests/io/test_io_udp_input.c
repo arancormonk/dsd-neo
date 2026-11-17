@@ -510,6 +510,76 @@ test_discard_through(void) {
     return rc;
 }
 
+/* The ring's count of samples written, once it reaches @p want (waiting up to 2 s for the receive thread). */
+static uint64_t
+ring_written_reaches(uint64_t want) {
+    dsd_input_cut cut;
+    DSD_MEMSET(&cut, 0, sizeof cut);
+    for (int tries = 0; tries < 200; tries++) {
+        dsd_input_backlog_mark(&cut);
+        if (cut.arrived >= want) {
+            break;
+        }
+        dsd_sleep_ms(10U);
+    }
+    return cut.arrived;
+}
+
+/* Issue #834: the ring fills between the mark and the discard. It never overwrites what it holds: samples that do not
+   fit are dropped as they arrive (counted in the drops, never written), so the discard takes the samples written by the
+   mark and none of those that entered the ring after it, which are read. A 48 kHz ring holds 47999 samples. */
+static int
+test_discard_through_a_full_ring(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.wav_sample_rate = 48000;
+    if (udp_input_start(&opts, "127.0.0.1", 0, 48000) != 0) {
+        DSD_FPRINTF(stderr, "udp_input_start failed for the full ring\n");
+        return 1;
+    }
+    const int port = get_bound_port(opts.udp_in_sockfd);
+    dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    int rc = expect_int("full ring: a sender", tx != DSD_INVALID_SOCKET && port > 0, 1);
+    static int16_t old_block[1000];
+    for (size_t i = 0; i < 1000U; i++) {
+        old_block[i] = 1;
+    }
+    /* 47990 old samples, each datagram counted before the next is sent. */
+    for (uint64_t sent = 0U; rc == 0 && sent < 47990U;) {
+        const size_t n = 47990U - sent < 1000U ? (size_t)(47990U - sent) : 1000U;
+        rc |= expect_int("full ring: old samples sent", send_pcm16le(tx, "127.0.0.1", port, old_block, n), 0);
+        sent += n;
+        rc |= expect_int("full ring: old samples written", ring_written_reaches(sent) == sent, 1);
+    }
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    rc |= expect_int("full ring: the mark counts the old samples", (int)cut.arrived, 47990);
+    /* After the mark, 20 new samples: 9 fit, 11 are dropped as they arrive. */
+    int16_t fresh[20];
+    for (int i = 0; i < 20; i++) {
+        fresh[i] = (int16_t)(1000 + i);
+    }
+    if (rc == 0) {
+        rc |= expect_int("full ring: new samples sent", send_pcm16le(tx, "127.0.0.1", port, fresh, 20U), 0);
+        rc |= expect_int("full ring: the ring is full", (int)ring_written_reaches(47999U), 47999);
+        rc |= expect_int("full ring: the discard takes the old samples only",
+                         (int)udp_input_discard_through(&opts, &cut), 47990);
+        for (int i = 0; i < 9 && rc == 0; i++) {
+            int16_t sample = 0;
+            rc |= expect_int("full ring: a new sample that fit", udp_input_read_sample_wait(&opts, &sample, 1000U), 1);
+            rc |= expect_int("full ring: is read in order", sample, 1000 + i);
+        }
+        int16_t none = 0;
+        rc |= expect_int("full ring: nothing more (a wait that times out)",
+                         udp_input_read_sample_wait(&opts, &none, 50U), -1);
+    }
+    if (tx != DSD_INVALID_SOCKET) {
+        dsd_socket_close(tx);
+    }
+    udp_input_stop(&opts);
+    return rc;
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -535,6 +605,9 @@ main(void) {
         goto cleanup;
     }
     if (test_discard_through() != 0) {
+        goto cleanup;
+    }
+    if (test_discard_through_a_full_ring() != 0) {
         goto cleanup;
     }
 
