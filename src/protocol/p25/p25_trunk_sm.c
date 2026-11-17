@@ -3532,7 +3532,7 @@ p25_voice_close_slot_media(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, 
     ctx->slots[slot].algid = 0;
     ctx->slots[slot].keyid = 0;
     ctx->slots[slot].src = 0;
-    ctx->slots[slot].identity_checked &= (uint8_t)~P25_SM_IDENTITY_CHECKED_SOURCE;
+    ctx->slots[slot].identity_checked &= 0xFEU /* ~P25_SM_IDENTITY_CHECKED_SOURCE */;
     ctx->slots[slot].crypto_attempt_m = 0.0;
 }
 
@@ -3563,7 +3563,7 @@ p25_voice_close_slot_media_preserve_crypto(p25_sm_ctx_t* ctx, dsd_opts* opts, ds
     ctx->slots[slot].voice_active = 0;
     ctx->slots[slot].last_active_m = 0.0;
     ctx->slots[slot].src = 0;
-    ctx->slots[slot].identity_checked &= (uint8_t)~P25_SM_IDENTITY_CHECKED_SOURCE;
+    ctx->slots[slot].identity_checked &= 0xFEU /* ~P25_SM_IDENTITY_CHECKED_SOURCE */;
 }
 
 static void
@@ -3843,7 +3843,7 @@ p25_voice_start_preserve_assignment_source(const p25_sm_slot_ctx_t* slot_ctx, p2
         // A source-less message names no talker: the inherited one keeps the assignment's verdict, never this
         // message's.
         out->src = slot_ctx->src;
-        out->identity_checked = (uint8_t)((out->identity_checked & (uint8_t)~P25_SM_IDENTITY_CHECKED_SOURCE)
+        out->identity_checked = (uint8_t)((out->identity_checked & 0xFEU /* ~P25_SM_IDENTITY_CHECKED_SOURCE */)
                                           | (slot_ctx->identity_checked & P25_SM_IDENTITY_CHECKED_SOURCE));
     }
 }

@@ -165,8 +165,8 @@ run_locn_case(dsd_opts* opts, dsd_state* st, const locn_case* c) {
     if (c->published) {
         const uint16_t want_flags = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
         if (fix->rev == 0U || fix->kind != DSD_POS_DMR_LOCN || fix->lat_e7 != c->lat_e7 || fix->lon_e7 != c->lon_e7
-            || (fix->flags & (uint16_t)~(uint16_t)DSD_POS_FLAG_TARGET_GROUP) != want_flags
-            || fix->source_id != 0x123456U || file[0] == '\0') {
+            || (fix->flags & 0xFFFBU /* ~DSD_POS_FLAG_TARGET_GROUP */) != want_flags || fix->source_id != 0x123456U
+            || file[0] == '\0') {
             DSD_FPRINTF(stderr, "%s: rev %llu kind %u (%d, %d) flags %04X, row '%s'\n", c->tag,
                         (unsigned long long)fix->rev, (unsigned)fix->kind, (int)fix->lat_e7, (int)fix->lon_e7,
                         (unsigned)fix->flags, file);
