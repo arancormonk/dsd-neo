@@ -26042,6 +26042,8 @@ if(Python3_Interpreter_FOUND)
     # Production Android Kotlin on the JVM, one CTest per suite of run_jvm_tests.py. Each compiles Kotlin, which is
     # memory-hungry, so they never run at once. The time is CPU spent in cold compiler JVMs, a few seconds a compile on
     # an idle host but over 40 s beside a full parallel build, so the timeout leaves room for two compiles at that pace.
+    # It also covers the two longest suites: beside parallel QML suites engine_stop ran past 90 s (47 s alone) and
+    # location took 61 s.
     add_test(
         NAME ANDROID_LOCATION_JVM
         COMMAND
@@ -26197,12 +26199,6 @@ if(Python3_Interpreter_FOUND)
             SKIP_RETURN_CODE 77
             TIMEOUT 300
             RESOURCE_LOCK android_kotlin_jvm
-    )
-    # The two longest suites: beside parallel QML suites engine_stop ran past 90 s (47 s alone) and location took 61 s.
-    set_tests_properties(
-        ANDROID_ENGINE_STOP_JVM
-        ANDROID_LOCATION_JVM
-        PROPERTIES TIMEOUT 180
     )
     add_test(
         NAME ANDROID_DIAGNOSTICS_SHARE_PATHS
