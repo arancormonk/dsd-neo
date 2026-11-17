@@ -22,7 +22,6 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h> // IWYU pragma: keep - private-source tests need the enrichment declaration
 #include <dsd-neo/core/opts.h>
@@ -50,8 +49,11 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef SOFTID
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include "p25p1_current_call.h"
+#else
+#include <dsd-neo/core/constants.h>
 #endif
 
 static void
