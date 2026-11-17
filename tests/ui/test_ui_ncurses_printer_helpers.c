@@ -4805,7 +4805,7 @@ test_scan_timing_row_truncates_to_panel_width(void) {
     g_unicode_stub = 1;
 }
 
-/* The silent-channel skip's status is the phrase itself (issue #834 A7): no trailing field, and every variant fits the
+/* The silent-channel skip's status is the phrase itself (issue #834 R7): no trailing field, and every variant fits the
    phrase column, so the countdown and the budgets keep their columns, for both owners and both stays it is shown on. */
 static void
 test_scan_timing_row_quiet_variants(void) {

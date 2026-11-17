@@ -39,7 +39,7 @@ typedef struct {
     /** The owner's tune sequence of that tune (dsd_engine_scan_owner::tune_seq): a visit tuned before skip-silent was
         turned on is never checked. */
     uint64_t tune_seq;
-    /** dsd_state::scan_y_content_seq and scan_y_unchecked_seq when a -Y landing was noted (issue #834 B1, A4): the row
+    /** dsd_state::scan_y_content_seq and scan_y_unchecked_seq when a -Y landing was noted (issue #834 R6, R8): the row
         carried a call on this visit once either has moved past it, content a protocol's CRC/FEC gate passed or a frame
         of a protocol with no such gate (X2-TDMA, ProVoice, TETRA). A raw sync moves neither. */
     uint32_t y_content_seq;
@@ -104,7 +104,7 @@ typedef struct {
        did not step after all gets no second yield for the same pair, so a held row is never reset at every frame. */
     uint64_t y_frame_yield_epoch;
     int64_t y_frame_yield_mark_ms;
-    /* A sync awaiting its frame's verdict (issue #834 D8; scan_quiet.c), moved only while skip-silent is on.
+    /* A sync awaiting its frame's verdict (issue #834 R1; scan_quiet.c), moved only while skip-silent is on.
        frame_pending: the frame sync returned a sync whose frame has not ended yet. frame_evidence, frame_hold_ms: the
        strongest content note that frame made so far (DSD_CONTENT_EVIDENCE_*, 0 for none) and its longest PARTIAL hold.
        pending_until_m: the decode-mono time a PARTIAL frame's verdict is waited for until (0 for none). A quiet result
@@ -114,7 +114,7 @@ typedef struct {
     uint8_t frame_evidence;
     uint32_t frame_hold_ms;
     double pending_until_m;
-    /* The receiver's last no-check WARN line (issue #834 B1; scan_quiet.c, radio-off builds too): its reason
+    /* The receiver's last no-check WARN line (issue #834 R6; scan_quiet.c, radio-off builds too): its reason
        (dsd_scan_quiet_reason, NONE before any), detail, input kind, device spec hash and capture rate. A line is logged
        only when the key differs; turning skip-silent on or off forgets it, so off -> on logs again. */
     uint8_t quiet_warned_reason;

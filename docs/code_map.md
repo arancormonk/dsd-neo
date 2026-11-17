@@ -543,7 +543,7 @@ Generated (do not edit/commit):
       over USB; the shift off), a rate (RATE) or analog width (WIDTH) the calibration did not validate
       (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_analog_supported()` with the analog kind). The visit is
       SUSPENDED with that reason (`quiet_refuse()`), so an edit restarts it on the same visit, and the refusal is cached
-      (issue #834 A5, `scan_quiet_check::refused`): a publication of the same visit with the same facts and revisions
+      (issue #834 R10, `scan_quiet_check::refused`): a publication of the same visit with the same facts and revisions
       while the stream keeps the output generation it refused (any change of rate, shift or receive profile moves it)
       starts nothing and reads no capture (`quiet_refusal_holds()`, one compare); the hunt and frame services answer
       NONE for it at once. A width refusal needs no capture of its own: a start whose analog width the calibration does
@@ -556,7 +556,7 @@ Generated (do not edit/commit):
       `scan_quiet_check::republish_seen`, which a publication, and a return to the revisions published, set back), so
       it starts again on the same visit under syncs that keep the frame loop running. A request the tap refuses (a
       Signal search holds it) is DONE.
-    - Frame-boundary service (issue #834 D8, `dsd_engine_scan_quiet_frame_service()`): a sync its protocol's gate
+    - Frame-boundary service (issue #834 R1, `dsd_engine_scan_quiet_frame_service()`): a sync its protocol's gate
       rejects no longer ends the check, so a channel whose noise keeps passing a sync word (NXDN48, dPMR) restarts
       short hunts that rarely reach the hunt's 300-symbol service, and the trunk scan's per-frame ticks publish only
       when an outer pass is owed. The synced-frames loop therefore runs the check's service at every frame boundary,
@@ -573,7 +573,7 @@ Generated (do not edit/commit):
       stays: the 300-symbol hook, the 50 ms recheck, one phase step per call, the 400 ms request deadline and READY's
       250 ms age. A check suspended while its visit's landing is still in force (a revision moved, as the hunt's own
       symbol-profile requests did before they stopped moving the change number when they repeat the profile the
-      stream runs, or a note of change; defect B8) owes one republication (`scan_quiet_check::republish_owed`, set by
+      stream runs, or a note of change; #834 R5) owes one republication (`scan_quiet_check::republish_owed`, set by
       the reconcile or `dsd_engine_scan_quiet_invalidate()`, cleared by any publication or start): the next frame
       boundary takes it once (`dsd_engine_scan_quiet_take_republish()`), since under syncs that keep the loop running no
       outer pass or `noCarrier()` comes to publish it. The trunk scan's then owes the per-frame tick a pass
@@ -620,7 +620,7 @@ Generated (do not edit/commit):
       (`trunk_scan_quiet_tick_end()`, which tests the setting first; a per-frame tick of a carrier publishes only when
       it tuned another target, `trunk_scan_quiet_tune_mark()`, the owner's `tune_seq` read at the tick's start: under
       syncs that keep the synced-frames loop running no outer pass would publish the target that tick advanced to,
-      defect B7, the trunk twin of -Y's B6; a visit with no sync has no per-frame ticks, so its publications are the
+      #834 R4, the trunk twin of -Y's R3; a visit with no sync has no per-frame ticks, so its publications are the
       outer passes' as before):
       its landing in this session, or its park still in flight (epoch 0, its request), with `trunk_scan_quiet_facts()`
       (the target type's mode classes, an analog target's kind and width through `scan_quiet_analog_facts()`, the DSP
@@ -639,7 +639,7 @@ Generated (do not edit/commit):
       decline the result before the idle decision could apply it.
     - -Y skip (`engine.c`, `no_carrier_scanner_step_decided()` around `no_carrier_scanner_step_is_due()`, one load with
       the setting off): every committed landing publishes its row at once (`dsd_engine_scan_quiet_publish_row()`, as
-      the trunk scan publishes at its tick's tail after an advance; defect B6, which left a row unmeasured until the
+      the trunk scan publishes at its tick's tail after an advance; #834 R3, which left a row unmeasured until the
       next `noCarrier()`): a typed row's commit (`channel_scan_commit()`: the timed step, a tune completed late in
       `dsd_engine_channel_scan_pending()`, a manual step, a go-to, a resume), an untyped row's install
       (`untyped_install_row()`: the timed step, a tune landed late in `dsd_engine_scan_untyped_poll()`, a walk the scan
@@ -717,15 +717,15 @@ Generated (do not edit/commit):
       (`tests/y_call_hold_check.py` over the `dsd-neo_test_y_call_hold_replay` host: every real call fixture kept while
       its frames come and left once it ends, typed and as an untyped `-fa` row, at -t 1 and typed at -t 2), and
       `ENGINE_PROTOCOL_DISPATCH` (the unchecked-frame note for X2-TDMA, ProVoice and TETRA only).
-    - Reason model and publication (issue #834 B1, `scan_quiet_timing_fill()`): both timing writers
+    - Reason model and publication (issue #834 R6, `scan_quiet_timing_fill()`): both timing writers
       (`trunk_scan_publish_timing()` through `trunk_scan_timing_fill_quiet()`, the -Y `dsd_engine_scan_y_timing_tick()`
       through `scan_y_timing_fill_quiet()`) fill `dsd_scan_timing_publication::quiet_status` (NONE, CHECKING, NO_CHECK)
       and `quiet_reason` (`dsd_scan_quiet_reason`) for the visit on air, named by a `scan_quiet_visit_ref` (owner,
       index, session, list identity, label). Shown only on the stays a skip ends early
       (`scan_quiet_stay_shows_status()`: IDLE_DWELL, which -Y's voice gate also publishes while a row qualifies, and
-      -Y's HANGTIME; a raw sync no longer ends the check (D8), so a -Y row's hangtime or qualify window shows CHECKING
+      -Y's HANGTIME; a raw sync no longer ends the check (R1), so a -Y row's hangtime or qualify window shows CHECKING
       whether or not it has synced, and a check ended by checked content or a carrier is DONE, so NONE). NO_CHECK on -Y
-      only while the row has carried no call this visit (A4's unsynced hangtime: `dsd_state::scan_y_content_seq`,
+      only while the row has carried no call this visit (R8's unsynced hangtime: `dsd_state::scan_y_content_seq`,
       checked content, and `scan_y_unchecked_seq`, an X2-TDMA, ProVoice or TETRA frame dispatched, against the values
       the landing recorded, `dsd_engine_scan_landing::y_content_seq`, `y_unchecked_seq`), since under the legacy rule
       HANGTIME is the stay a call publishes from start to end; with no row landing in force (the start frequency
@@ -771,7 +771,7 @@ Generated (do not edit/commit):
       then NONE once the row synced, `test_y_quiet_refused_row_restarts_after_an_edit`,
       `test_y_quiet_warn_widths_are_the_admitted_ones`), `ENGINE_TRUNK_SCAN`
       `test_scan_quiet_width_ahead_keeps_rate_precedence` (two lists at different DSP rates).
-    - Checked content (issue #834 D8): `activity_seq` moves, only while skip-silent is on, when a frame's content
+    - Checked content (issue #834 R1): `activity_seq` moves, only while skip-silent is on, when a frame's content
       passes its protocol's CRC/FEC gate (a PROVEN content note, `dsd_frame_sync_hook_content_evidence()`, the engine's
       `dsd_engine_scan_quiet_note_evidence()`: once a frame however many of its checks pass, once a note outside a
       frame) and whenever a monitor block found the carrier itself, whatever its tone verdict
@@ -833,7 +833,7 @@ Generated (do not edit/commit):
       history, event or location output, and reports nothing to the trunk scan. Radio-off builds compile it as a no-op
       service. Tests: `ENGINE_TRUNK_SCAN` (`test_scan_quiet_*`: a fake tap, link fakes of `rtl_signal_quiet_*`,
       `rtl_signal_capture_get()` and `rtl_stream_receive_change_seq()`, on a fake realtime clock, a link wrap of
-      `dsd_realtime_mono_ms()`, separate from the TEST decode clock; the D8 regressions run on the real realtime clock
+      `dsd_realtime_mono_ms()`, separate from the TEST decode clock; the R1 regressions run on the real realtime clock
       with no link wrap, so they build everywhere: `test_scan_quiet_rejected_sync_keeps_the_check`,
       `test_scan_quiet_y_noise_frames_still_step`, `test_scan_quiet_pending_verdict_holds_every_skip_point`,
       `test_scan_quiet_evidence_*`, and the frame-boundary service on the check's clock seam:
@@ -4948,7 +4948,7 @@ scan-owner extension lookup and a phase load. A check under way
 receive-request atomic), then one realtime read, then the phase's own step (WAIT_CAPTURE: a tap capture read at most
 every 50 ms; REQUESTED: the status word's atomic load; READY: a capture read and the ledger's frame gate). It is paid
 only with the setting on, once per 300 symbols. NONE with nothing installed.
-`content_evidence` (`dsd_frame_sync_hook_content_evidence()`, #834 D8) is how protocol code tells the scan quiet check
+`content_evidence` (`dsd_frame_sync_hook_content_evidence()`, #834 R1) is how protocol code tells the scan quiet check
 what its CRC/FEC gate made of the frame being decoded (`DSD_CONTENT_EVIDENCE_PROVEN`, or `DSD_CONTENT_EVIDENCE_PARTIAL`
 with the protocol's hold for the frame that completes it; the sites are in the Engine section's scan quiet check). The
 wrapper first stores the note for the -Y frame-boundary step whatever the setting (up to three plain stores per frame,
@@ -6495,7 +6495,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold
   `dsd_state::scan_timing` into the Scan Timing row — the stay phrase, the remaining/total of the window that is
   running, and which of dwell/hold/hang is worth printing (issue #508), including `Carrier` for an analog row's carrier
-  hold (issue #526). The silent-channel skip's status (issue #834 A7, `scan_timing_fill_quiet()`) is the phrase itself
+  hold (issue #526). The silent-channel skip's status (issue #834 R7, `scan_timing_fill_quiet()`) is the phrase itself
   on the two stays the decoder publishes it on, an idle dwell (the trunk scan's, or -Y's qualify window, where it
   outranks `Qualify`) and -Y's hangtime: `Quiet check` for CHECKING, `No check: input`, `tuner`, `rate`, `modes` or
   `width` (WIDTH and NO_WIDTH) for NO_CHECK, with `quiet_status`, `quiet_reason` and `quiet_text`, a full sentence for
@@ -7352,7 +7352,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   Files, stdin from a file and RTL-family streams are left alone, and `pcm_input_generation` and the analog and
   scan-quiet keys do not move: the input is the same stream. The RTL flush also restarts the symbol path's span
   (`symbol_rtl_span_restart()`: jitter, matched-filter seam, timing trace, sync anchor); a rigctl retune does not
-  (measured, task A3d fix round 1: no gain on synthetic DMR hops). Audio the peer itself still holds (its demodulator
+  (measured: no gain on synthetic DMR hops). Audio the peer itself still holds (its demodulator
   and audio path, the sound server) arrives after the drop and is read as the new carrier's: a documented limit
   (`docs/cli.md`, `-U`). It changes no
   carrier count, privacy or crypto field, so the carrier boundary's order and the DMR forget's (the FID kept until the
@@ -9050,7 +9050,7 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `dsd_signal_quiet_rate_supported(rate)` (every class) and `dsd_signal_quiet_analog_supported(kind, width, rate)`
   (`kind` a `dsd_analog_demod`) match the calibrated capture rates and widths of that kind exactly
   (`kQuietNfmWidthsHz`: the Radio sheet's NFM steps plus 10, 12 and 15 kHz; `kQuietAmWidthsHz`: its AM steps plus
-  8333 Hz; issue #834 A11, each NFM width validated with both transmitters); elsewhere the engine makes no check.
+  8333 Hz; issue #834 R11, each NFM width validated with both transmitters); elsewhere the engine makes no check.
   Changing the measurement, the sub-windows, either list or a constant means re-running that calibration. It judges
   `DSD_SIGNAL_QUIET_WINDOWS` (9) back-to-back sub-windows, each the smallest whole number of transforms of at least
   10 ms, in every requested width class (`DSD_SIGNAL_QUIET_CLASS_12K5`, `_6K25`, `_ANALOG` with the request's analog
@@ -10317,7 +10317,7 @@ Notes:
     as a refusal where it lands is (issue #578). Each numbered request also notes
     the CQPSK state it leaves the stream on (an analog family request turns it off, a demod profile sets or leaves it),
     which `rtl_stream_requested_cqpsk()` answers with while any request is unsettled. A second counter,
-    `rtl_stream_receive_change_seq()` (issue #834 B8), moves with each numbered request except a symbol profile that
+    `rtl_stream_receive_change_seq()` (issue #834 R5), moves with each numbered request except a symbol profile that
     repeats what the stream will run once its queue drains (`rtl_stream_demod_request_repeats_locked()`: the same values
     as the demod-only request still queued, else, with nothing queued or unsettled, the published FSK profile, judged
     conservatively): the frame-sync hunt re-asks for the profile it runs about once a visit, and the scan quiet check,

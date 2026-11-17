@@ -1663,7 +1663,7 @@ no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int r
         dsd_scan_option_values scratch;
         scan_quiet_analog_facts(opts, state, kind, dsd_engine_channel_scan_row_values(state, row, &scratch), e);
     }
-    /* Why these facts give the row no check, if they give none (issue #834 B1). */
+    /* Why these facts give the row no check, if they give none (issue #834 R6). */
     e->reason = scan_quiet_facts_reason(opts, e, mode == DSD_SCAN_MODE_INHERIT);
 }
 
@@ -4370,7 +4370,7 @@ live_scanner_receive_should_yield(const dsd_opts* opts, dsd_state* state) {
            && dsd_engine_channel_scan_has_other_row(opts, state);
 }
 
-/* The frame sync's answer. A sync it returns is no activity to a scan quiet check (issue #834 D8): its frame's verdict
+/* The frame sync's answer. A sync it returns is no activity to a scan quiet check (issue #834 R1): its frame's verdict
    is pending until the frame ends, and only content its protocol's gate passes counts. One load while skip-silent is
    off. */
 static int
@@ -4391,8 +4391,8 @@ live_scanner_quiet_pending_reset(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
-/* The trunk scan's quiet check at a frame boundary (issue #834 D8): its service, and once per suspension a
-   republication its landing still in force is owed (B8): the per-frame tick after this one publishes the target on air
+/* The trunk scan's quiet check at a frame boundary (issue #834 R1): its service, and once per suspension a
+   republication its landing still in force is owed (R5): the per-frame tick after this one publishes the target on air
    as the outer pass's would. */
 static void
 live_scanner_trunk_quiet_frame_service(const dsd_opts* opts, dsd_state* state) {
@@ -4403,7 +4403,7 @@ live_scanner_trunk_quiet_frame_service(const dsd_opts* opts, dsd_state* state) {
 }
 
 /* The -Y frame-boundary yield (issue #834): the row steps on its quiet result; else a check suspended while its row's
-   landing is still in force is published again, once per suspension (B8), since no noCarrier() comes to do it while
+   landing is still in force is published again, once per suspension (R5), since no noCarrier() comes to do it while
    the syncs keep coming. */
 static int
 live_scanner_y_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
@@ -4601,7 +4601,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
             state->synctype = DSD_SYNC_NONE;
             break;
         }
-        /* A trunk-scan target's quiet check is serviced at every frame boundary too (issue #834 D8): under syncs its
+        /* A trunk-scan target's quiet check is serviced at every frame boundary too (issue #834 R1): under syncs its
            protocol's gate rejects the hunts stay too short to reach their 300-symbol service. The per-frame tick then
            decides as at any tick. One load with skip-silent off. */
         if (opts->scan_skip_silent) {

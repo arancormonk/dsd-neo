@@ -23196,7 +23196,7 @@ qt_pass(dsd_opts* opts, dsd_state* state) {
 
 static int g_qt_notices = 0;
 static char g_qt_notice[192];
-/* The silent-channel skip's WARN lines (issue #834 B1), counted by the same tap: a process installs one tap only. */
+/* The silent-channel skip's WARN lines (issue #834 R6), counted by the same tap: a process installs one tap only. */
 static int g_qt_warns = 0;
 static char g_qt_warn[512];
 
@@ -23236,7 +23236,7 @@ qt_pass_to_ready(dsd_opts* opts, dsd_state* state) {
                          && scan_quiet_phase_get(state) == SCAN_QUIET_READY);
 }
 
-/* --- Issue #834 D8: only content its protocol's CRC/FEC gate passed is activity to the check; a sync the frame sync
+/* --- Issue #834 R1: only content its protocol's CRC/FEC gate passed is activity to the check; a sync the frame sync
  * returns waits for its frame's verdict. These cases need no link wrap, so they build and run everywhere: the check
  * reads the rig's frozen clock through scan_quiet_test_realtime_ms (g_quiet_rt_ms, started at the real time after the
  * rig's landing), so no READY result ages out on a slow host. --- */
@@ -23279,9 +23279,9 @@ qt_portable_start(dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, ch
     return rc;
 }
 
-/* B5: a sync whose frame checked nothing (NXDN48 or dPMR noise passing a sync word) no longer ends the check. A READY
-   result still hands the hunt back after it, and the trunk scan's per-frame tick after that frame skips the target,
-   with its NOTICE. */
+/* Issue #834 R2: a sync whose frame checked nothing (NXDN48 or dPMR noise passing a sync word) no longer ends the
+   check. A READY result still hands the hunt back after it, and the trunk scan's per-frame tick after that frame skips
+   the target, with its NOTICE. */
 static int
 test_scan_quiet_rejected_sync_keeps_the_check(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -23324,9 +23324,9 @@ qt_y_ready(dsd_opts* opts, dsd_state* state, scan_quiet_eligibility* e) {
     return qt_expect("a -Y check is measuring", scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED);
 }
 
-/* B5 under -Y: syncs that keep coming and check nothing (a row of NXDN48 noise) never reach noCarrier() through a
-   no-sync hunt. The synced-frames loop's frame-boundary yield collects the quiet result after a rejected frame and
-   yields, and the -Y step's apply then consumes it: the row steps. */
+/* Issue #834 R2 under -Y: syncs that keep coming and check nothing (a row of NXDN48 noise) never reach noCarrier()
+   through a no-sync hunt. The synced-frames loop's frame-boundary yield collects the quiet result after a rejected
+   frame and yields, and the -Y step's apply then consumes it: the row steps. */
 static int
 test_scan_quiet_y_noise_frames_still_step(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -23572,7 +23572,7 @@ test_scan_quiet_evidence_moves_no_trunk_activity(void) {
     return rc;
 }
 
-/* --- Issue #834 D8: the frame-boundary service. A rejected sync no longer ends the check, so a channel whose noise keeps
+/* --- Issue #834 R1: the frame-boundary service. A rejected sync no longer ends the check, so a channel whose noise keeps
  * passing a sync word (NXDN48, dPMR) restarts short hunts that rarely reach the hunt's 300-symbol point; the synced-frames
  * loop runs the check's service at every frame boundary instead (dsd_engine_scan_quiet_frame_service()). A request a
  * frame boundary starts waits SCAN_QUIET_FRAME_SETTLE_MS from the first qualifying capture the service saw, or from the
@@ -23894,10 +23894,10 @@ test_scan_quiet_sync_free_visit_timing(void) {
     return rc;
 }
 
-/* issue #834 B7: only a tick that tuned another target, or the outer pass, publishes. On a visit with no sync there are no
+/* issue #834 R4: only a tick that tuned another target, or the outer pass, publishes. On a visit with no sync there are no
    per-frame ticks, so its publications are the outer passes' as before: a tick with no pass owed that tunes nothing
    publishes nothing; the pass publishes the landed target and the tap is asked; the pass whose idle decision skips it
-   publishes the target it tuned, in the same tick. The same expectations hold on the code before B7. */
+   publishes the target it tuned, in the same tick. The same expectations hold on the code before R4. */
 static int
 test_scan_quiet_trunk_sync_free_publication(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -23935,7 +23935,7 @@ test_scan_quiet_trunk_sync_free_publication(void) {
     return rc;
 }
 
-/* issue #834 B8: a check suspended while its landing is still in force (a revision moved: a numbered receive request,
+/* issue #834 R5: a check suspended while its landing is still in force (a revision moved: a numbered receive request,
    a note of change) owes the next frame boundary one republication: taken once, never again for the same suspension,
    and owed again after a new one. A suspension because the visit itself changed owes nothing, a publication clears
    what is owed, and with the setting off nothing is owed. */
@@ -23987,7 +23987,7 @@ test_scan_quiet_suspension_owes_one_republication(void) {
     return rc;
 }
 
-/* issue #834 B8: a symbol profile request that repeats what the stream runs (the hunt re-asking for its own profile) is
+/* issue #834 R5: a symbol profile request that repeats what the stream runs (the hunt re-asking for its own profile) is
    numbered as every request but leaves the change number alone, so the landed check measuring the channel is not
    suspended by it and goes on to its result; one that may change the receive chain moves the change number and still
    suspends it. */
@@ -24193,7 +24193,7 @@ test_scan_quiet_waits_for_the_landed_capture(void) {
     return rc;
 }
 
-/* A capture the calibration refuses (issue #834 A5, B1): centred I/Q (no Fs/4 rotation: Airspy, offset tuning, the
+/* A capture the calibration refuses (issue #834 R6, R10): centred I/Q (no Fs/4 rotation: Airspy, offset tuning, the
    shift off), a rate it did not validate, an analog width or kind it did not. Nothing is requested and the visit is
    SUSPENDED with its reason, not DONE, so it stays restartable; while the facts, revisions and stream generation stay
    the ones refused a publication starts nothing and reads no capture (one compare), and the hunt hands nothing back. A
@@ -24875,7 +24875,7 @@ test_scan_quiet_adopts_a_park_measured_in_flight(void) {
             /* The tick notes the park's landing first, which adopts the result, then its idle decision applies it
                (an unadopted, epoch-0 result is never applied): the target skips with its NOTICE, and the visit's
                check is consumed. The tick tuned the next target, so it publishes that visit at its tail (issue #834
-               B7): a park still in flight, waiting, with nothing asked of the tap yet. */
+               R4): a park still in flight, waiting, with nothing asked of the tap yet. */
             qt_notices_watch(1);
             dsd_engine_trunk_scan_tick(&opts, &state);
             const scan_quiet_visit_key next = scan_quiet_key_get(&state);
@@ -24924,9 +24924,9 @@ test_scan_quiet_adopts_a_park_measured_in_flight(void) {
     return rc;
 }
 
-/* Issue #834 D8: a PARTIAL frame on a park still in flight keeps its hold when the coordinator records that park's
+/* Issue #834 R1: a PARTIAL frame on a park still in flight keeps its hold when the coordinator records that park's
    landing (the same tune, the epoch step the check adopts as the same visit), whether the landing is recorded while
-   the check is still REQUESTED (A10's order: REQUESTED, PARTIAL frame, adoption, READY) or once it is READY. With the
+   the check is still REQUESTED (in the order REQUESTED, PARTIAL frame, adoption, READY) or once it is READY. With the
    result READY, neither the hunt nor the tick skips before the verdict: the frame after completes it (PROVEN, the
    target stays), or, when the hold outlives the result's 250 ms age, the result ages out DONE and the dwell decides. */
 static int
@@ -25479,7 +25479,7 @@ test_scan_quiet_mixed_set_judges_the_analog_class(void) {
                                        == (DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_ANALOG)
                                 && g_tap.last_request.analog_width_hz == 10000U);
         } else {
-            /* Refused by the capture (SUSPENDED with its reason, issue #834 A5), nothing requested. */
+            /* Refused by the capture (SUSPENDED with its reason, issue #834 R10), nothing requested. */
             rc |= qt_expect("a mixed set outside the analog domain: no check",
                             scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED && g_tap.requests == requests);
         }
@@ -26308,7 +26308,7 @@ test_scan_quiet_y_ready_declines_at_its_own_sites(void) {
 
 /* The NOTICE line and the width classes. */
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
-/* --- Issue #834 B1: the check says when and why it cannot check a visit, through the trunk scan's timing publication
+/* --- Issue #834 R6: the check says when and why it cannot check a visit, through the trunk scan's timing publication
  * (quiet_status and quiet_reason, shown on the idle dwell) and with a WARN line once per key. --- */
 /* Count the WARN lines from here (qt_count_notice(), the process's one tap). */
 static void
@@ -26551,7 +26551,7 @@ test_scan_quiet_trunk_publishes_each_cause(void) {
     return rc;
 }
 
-/* The channel lines are remembered per target (issue #834 B1, A6): two targets with no width visited in turn log one
+/* The channel lines are remembered per target (issue #834 R6, R9): two targets with no width visited in turn log one
    line each however often the rotation comes back. A new key logs again: the -8 monitor's width changed (another
    effective width), a target edited in place (the lists' revision), the list loaded again (another coordinator). A
    width-refused target is refused at once on its next visit, with no Quiet check before its capture comes. */
@@ -26650,9 +26650,10 @@ test_scan_quiet_trunk_channel_lines_once_per_key(void) {
     return rc;
 }
 
-/* Two lists at different DSP rates (issue #834 A5 precedence): list 1's target reads a validated capture; list 2's runs
-   another DSP rate, whose capture rate the calibration did not validate. Its NFM target at a width it does not cover is
-   not refused for its width ahead of its own capture: the capture's rate outranks the width, so it reads rate. */
+/* Two lists at different DSP rates (issue #834 R10 precedence): list 1's target reads a validated capture; list 2's
+   runs another DSP rate, whose capture rate the calibration did not validate. Its NFM target at a width it does not
+   cover is not refused for its width ahead of its own capture: the capture's rate outranks the width, so it reads
+   rate. */
 static int
 test_scan_quiet_width_ahead_keeps_rate_precedence(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -26816,7 +26817,7 @@ test_scan_quiet_notice_and_classes(void) {
     return rc;
 }
 
-/* Issue #834 B1: an input with no check (in a radio-off build, every input) says so on the conventional target on air:
+/* Issue #834 R6: an input with no check (in a radio-off build, every input) says so on the conventional target on air:
    No check: input through the trunk scan's timing publication, one WARN line however many ticks follow, logged again
    once the setting is turned off and on. */
 static int

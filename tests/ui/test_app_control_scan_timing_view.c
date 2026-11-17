@@ -546,7 +546,7 @@ assert_quiet(const dsd_app_scan_timing* view, const char* phrase, uint8_t status
     }
 }
 
-/* Each published status is the phrase itself on the idle dwell and the -Y hangtime (issue #834 A7), for both owners:
+/* Each published status is the phrase itself on the idle dwell and the -Y hangtime (issue #834 R7), for both owners:
    the compact reason in at most 17 characters, the full sentence beside it for a screen reader. WIDTH and NO_WIDTH
    share the phrase, not the sentence. */
 static void
@@ -658,7 +658,7 @@ test_quiet_status_only_where_published(void) {
 }
 
 /* The phrase column keeps room for the widest phrase, the quiet variants included: none is wider than the widest
-   plain phrase, so the column, and the terminal goldens, keep their width (issue #834 A7). */
+   plain phrase, so the column, and the terminal goldens, keep their width (issue #834 R7). */
 static void
 test_phrase_width_holds(void) {
     assert(dsd_app_scan_timing_phrase_width() == strlen("Acquiring control"));

@@ -956,7 +956,7 @@ test_budget_exit_runs_the_no_sync_hooks(void) {
 
 /* Issue #834: a scan quiet check's in-hunt service, faked as the engine's. It answers HAND_BACK from the first
    300-symbol point at or after g_quiet_ready_at symbols, LIVE before it, but only while the scan-owner activity
-   sequence (g_quiet_sync_seq), which moves only for a frame its protocol's gate passed (D8), has not moved since its
+   sequence (g_quiet_sync_seq), which moves only for a frame its protocol's gate passed (R1), has not moved since its
    request (g_quiet_sync_at_request); NONE (the check DONE) once it has: the engine's rule (scan_quiet.c,
    ENGINE_TRUNK_SCAN). A rejected sync moves nothing. With g_quiet_always_live it answers LIVE throughout. */
 static long g_quiet_ready_at = 0;
@@ -1061,7 +1061,7 @@ test_the_hunt_returns_its_syncs_once_the_quiet_service_answers_no(void) {
     assert(g_quiet_asks > g_quiet_handbacks);
 }
 
-/* Issue #834 D8: syncs whose frames their protocol's gate rejects (noise passing a sync word) move nothing, so the hunt
+/* Issue #834 R1: syncs whose frames their protocol's gate rejects (noise passing a sync word) move nothing, so the hunt
    keeps handing back at the 300-symbol points it reaches between them, and returns its syncs in between. A check that
    is only LIVE (measuring, or a result held while a verdict is pending) never hands back: the hunt runs its pass to its
    end. */

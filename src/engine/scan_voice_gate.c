@@ -601,7 +601,7 @@ scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, double
     out->span_ms = scan_y_timing_span_ms(span_s);
 }
 
-/* The silent-channel skip's status on the -Y row on air (issue #834 B1): shown on its idle dwell (the voice gate's
+/* The silent-channel skip's status on the -Y row on air (issue #834 R6): shown on its idle dwell (the voice gate's
    qualify window) and its hangtime, the windows a skip ends early. */
 static void
 scan_y_timing_fill_quiet(const dsd_opts* opts, dsd_state* state, dsd_scan_timing_publication* report) {

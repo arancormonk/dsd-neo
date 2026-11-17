@@ -4757,7 +4757,7 @@ trunk_scan_timing_fill_visit(const dsd_opts* opts, const dsd_state* state, const
     }
 }
 
-/* The silent-channel skip's status on the target on air (issue #834 B1): shown on its idle dwell, said of a
+/* The silent-channel skip's status on the target on air (issue #834 R6): shown on its idle dwell, said of a
    conventional target only. One load with the setting off. */
 static void
 trunk_scan_timing_fill_quiet(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_coord* coord,
@@ -5195,7 +5195,7 @@ trunk_scan_quiet_classes(const dsd_opts* opts, const dsd_state* state, const dsd
         dsd_scan_option_values scratch;
         scan_quiet_analog_facts(opts, state, kind, trunk_scan_target_values(rt, &scratch), e);
     }
-    /* Why these facts give the target no check, if they give none (issue #834 B1). */
+    /* Why these facts give the target no check, if they give none (issue #834 R6). */
     e->reason = scan_quiet_facts_reason(opts, e, 0);
 }
 
@@ -5289,7 +5289,7 @@ trunk_scan_quiet_tune_mark(const dsd_state* state) {
    and did not apply is declined (a stay, a hold, a release or any other step that spent the tick came first), then the
    visit on air is published, after any landing or advance this tick made: on the outer loop's pass, and on a per-frame
    tick that tuned another target (@p tunes_before, trunk_scan_quiet_tune_mark() at the tick's start), whose new visit
-   no outer pass may publish while the frames keep coming (issue #834 B7, the trunk scan's twin of the -Y landing
+   no outer pass may publish while the frames keep coming (issue #834 R4, the trunk scan's twin of the -Y landing
    publication). */
 static void
 trunk_scan_quiet_tick_end(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m,

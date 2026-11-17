@@ -13,7 +13,7 @@
  *
  * - SUSPENDED: the visit is not eligible, or what it was published with changed; nothing runs until engine service
  *   publishes it again (scan_quiet_publish_eligibility()). A visit that cannot be checked is SUSPENDED too, with its
- *   reason (dsd_scan_quiet_reason, issue #834 B1): its session's (an input with no check), its facts' (decoders with no
+ *   reason (dsd_scan_quiet_reason, issue #834 R6): its session's (an input with no check), its facts' (decoders with no
  *   known width, no NFM width), or its capture's (a centred capture, an uncalibrated rate or analog width). A capture's
  *   refusal is cached: published again with the same facts and revisions while the stream keeps the output generation
  *   it refused, the visit starts nothing and reads no capture; an edit, a rate or receive change starts it again.
@@ -35,7 +35,7 @@
  * A visit is (owner, landing epoch, tune request). Activity anywhere in the visit ends its check, suspended or not, so
  * no check is made for it again: content that passed its protocol's CRC/FEC gate (a PROVEN content note,
  * dsd_engine_scan_quiet_note_evidence()) or the analog carrier (dsd_engine_scan_quiet_note_activity()). A raw sync is
- * no activity (issue #834 D8): a sync the frame sync returns waits for its frame's verdict
+ * no activity (issue #834 R1): a sync the frame sync returns waits for its frame's verdict
  * (dsd_engine_scan_quiet_note_frame_sync(), dsd_engine_scan_quiet_frame_end()), and a frame that left a PARTIAL note
  * waits up to its protocol's hold for the frame that completes it; while either is pending a READY result is neither
  * handed back, applied nor declined, and still ages out. A visit counts from its tune's issue
@@ -65,7 +65,7 @@ enum {
     SCAN_QUIET_REQUEST_DEADLINE_MS = 400,
     SCAN_QUIET_READY_MAX_AGE_MS = 250,
     SCAN_QUIET_MAX_RETRIES = 3,
-    /** A request a frame-boundary service starts waits this long (issue #834 D8): from the first qualifying capture the
+    /** A request a frame-boundary service starts waits this long (issue #834 R1): from the first qualifying capture the
         service saw, or from the retryable failure it collected. */
     SCAN_QUIET_FRAME_SETTLE_MS = 125,
 };
@@ -176,7 +176,7 @@ uint8_t scan_quiet_facts_reason(const dsd_opts* opts, const scan_quiet_eligibili
  * replay (neither the stream nor the decode clock). */
 int scan_quiet_session_supported(const dsd_opts* opts);
 
-/** The scan visit on air, as a timing writer names it (issue #834 B1). */
+/** The scan visit on air, as a timing writer names it (issue #834 R6). */
 typedef struct {
     int owner;         /**< SCAN_QUIET_OWNER_TRUNK or SCAN_QUIET_OWNER_Y */
     int index;         /**< the target or row on air; -1 with none */
@@ -193,7 +193,7 @@ typedef struct {
  * skip ends early. Every other stay explains the visit by itself. */
 int scan_quiet_stay_shows_status(uint8_t stay_reason);
 
-/** Fill @p report's quiet_status and quiet_reason for the visit on air @p ref (issue #834 B1), on the decoder thread,
+/** Fill @p report's quiet_status and quiet_reason for the visit on air @p ref (issue #834 R6), on the decoder thread,
  * from what the check knows of it: NONE with the setting off, for a trunked target, for a stay not shown, and for a
  * check of another visit or one that ended; NO_CHECK with its reason, the receiver's first (an input with no check,
  * in a radio-off build too; the visit's own capture centred or at an uncalibrated rate, or a centred capture the
@@ -298,7 +298,7 @@ scan_quiet_visit_key scan_quiet_key_get(const dsd_state* state);
  * check, or none, and for one the step ended. Decoder thread. */
 int dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state);
 
-/* Content evidence (issue #834 D8; the content_evidence hook of dsd_frame_sync_hooks). Only while skip-silent is on
+/* Content evidence (issue #834 R1; the content_evidence hook of dsd_frame_sync_hooks). Only while skip-silent is on
    (the runtime wrapper and the frame loop's guards), on the decoder thread; a state with no scan owner has no check and
    gets no owner made for it. */
 /** A protocol's gate verdict on the frame being decoded (dsd_frame_sync_hook_content_evidence()): PROVEN moves the
@@ -315,7 +315,7 @@ void dsd_engine_scan_quiet_note_frame_sync(dsd_state* state);
 void dsd_engine_scan_quiet_frame_end(dsd_state* state);
 /** Nothing is waited for any more: the frame loop left before a frame's end, or a boundary ended what it waited on. */
 void dsd_engine_scan_quiet_pending_reset(dsd_state* state);
-/** The service at a frame boundary of the synced-frames loop (issue #834 D8), for @p owner_kind's check: as the hunt's
+/** The service at a frame boundary of the synced-frames loop (issue #834 R1), for @p owner_kind's check: as the hunt's
  * (reconcile, then start, collect or expire), except that a request it starts waits SCAN_QUIET_FRAME_SETTLE_MS from
  * the first qualifying capture the service saw, or from the retryable failure, and that it never moves the hunt's
  * capture schedule. Syncs the protocol's gate rejects keep the hunts short, so they rarely reach the hunt's
@@ -326,10 +326,10 @@ int dsd_engine_scan_quiet_frame_service(const dsd_opts* opts, dsd_state* state, 
  * frame-boundary service answers DSD_SCAN_QUIET_HAND_BACK, so the loop ends and noCarrier() decides as after the hunt's
  * hand-back. */
 int dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state);
-/** Whether @p owner_kind's check owes a frame boundary its republication (issue #834 B8): it was suspended (a revision
+/** Whether @p owner_kind's check owes a frame boundary its republication (issue #834 R5): it was suspended (a revision
  * changed, such as a receive request the stream numbered, or a note of change) while its visit's landing was still in
  * force, or it is SUSPENDED with a reason it cannot be checked and a revision it was published with has moved since
- * (a width or row edit; once per change, B1), so it starts again on the same visit. Under syncs that keep the
+ * (a width or row edit; once per change, R6), so it starts again on the same visit. Under syncs that keep the
  * synced-frames loop running no outer pass or noCarrier() comes to publish it again, so the frame boundary does, once:
  * 1 at most once per suspension or change, which this clears; a publication or a new start clears it too. 0 with the
  * setting off (one load), for another owner, or for a check not suspended. */

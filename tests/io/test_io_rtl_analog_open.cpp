@@ -462,7 +462,7 @@ nxdn48_profile_settled(void) {
     return receive_requests_settled() && rate == 2400 && levels == 4 && profile == RTL_STREAM_CHANNEL_PROFILE_6K25;
 }
 
-/* Issue #834 B8: every queued receive request is numbered, but only one that may change the receive chain moves the
+/* Issue #834 R5: every queued receive request is numbered, but only one that may change the receive chain moves the
  * change number (rtl_stream_receive_change_seq()), which the scan quiet check snapshots. The frame-sync hunt re-asks for
  * the symbol profile the stream runs about once a visit: that repeat, of the published profile or of the one still
  * queued, is numbered, queued and applied as before and leaves the change number alone. A new profile, a TED override

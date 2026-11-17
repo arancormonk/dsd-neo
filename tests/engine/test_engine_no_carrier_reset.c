@@ -4742,7 +4742,7 @@ frame_was(const char* tag, int frame, const char* label, unsigned long long rkey
     return 0;
 }
 
-/* Issue #834 D8: a sync the live loop's hunt returns is no activity to a scan quiet check: frames whose protocol's gate
+/* Issue #834 R1: a sync the live loop's hunt returns is no activity to a scan quiet check: frames whose protocol's gate
    checked nothing (YSF, D-STAR and DMR syncs alike) move no activity sequence and leave nothing pending once each ends.
    A frame its gate passed (PROVEN) moves it once a frame, and one that left a PARTIAL verdict holds the check back for
    its hold. With the setting off nothing moves (one load). */
@@ -4793,7 +4793,7 @@ test_live_loop_counts_only_checked_frames(void) {
 }
 
 /* Issue #834: a provisional P25 sync (a tolerant word, held until its NID or window verdict) is activity to a scan quiet
-   check only once that verdict passed, as any sync is (D8): its frame's PROVEN note comes from behind the verdict. A
+   check only once that verdict passed, as any sync is (R1): its frame's PROVEN note comes from behind the verdict. A
    noise near-miss whose verdict fails is put back everywhere else, and must not end a silent channel's quiet check:
    frames 1 and 3 fail, frame 2 passes, so the sequence moves once with skip-silent on, for every kind of candidate, and
    no frame is left pending. With the setting off it stays. */
@@ -14713,7 +14713,7 @@ test_live_scan_over_silent_inputs(void) {
 static struct {
     int active;
     int real_widths;   /* judge the analog width with the shipped admission table rather than accept every width */
-    int centred;       /* the capture has no Fs/4 rotation (a native Airspy, issue #834 B1) */
+    int centred;       /* the capture has no Fs/4 rotation (a native Airspy, issue #834 R6) */
     int rate_refused;  /* the capture's rate is one the calibration did not validate */
     int quiet;         /* the answer: quiet (1) or busy (0) */
     uint32_t gen_base; /* the stream generation is gen_base + the tunes made */
@@ -14723,7 +14723,7 @@ static struct {
     dsd_signal_quiet_request last;
     int notices;
     char notice[192];
-    int warns; /* the silent-channel skip's WARN lines (issue #834 B1) */
+    int warns; /* the silent-channel skip's WARN lines (issue #834 R6) */
     char warn[512];
 } g_yq;
 
@@ -14938,7 +14938,7 @@ yq_finish(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_tuning_requests_reset();
 }
 
-/* -Y: a landed row is measured as it lands (issue #834 B6): the noCarrier() whose step landed it leaves its check
+/* -Y: a landed row is measured as it lands (issue #834 R3): the noCarrier() whose step landed it leaves its check
    REQUESTED, with no further noCarrier(), and the next pass steps off it for its quiet result, long before its 10 s
    hangtime, with one NOTICE line naming the row; typed and untyped. Collecting the result writes no hangtime anchor.
    With the setting off nothing is asked and nothing steps. */
@@ -14983,7 +14983,7 @@ test_y_quiet_skips_a_landed_row(int typed, int on) {
     return rc;
 }
 
-/* issue #834 B6: every committed -Y landing publishes its row at once, so its check is REQUESTED with one request and
+/* issue #834 R3: every committed -Y landing publishes its row at once, so its check is REQUESTED with one request and
    no further noCarrier(); a landing that failed or was superseded arms nothing. Each case lands row 0 first (the
    timed step, measured as it lands), then takes row 1 another way. */
 enum {
@@ -15076,7 +15076,7 @@ yq_landing_case(int which) {
     return rc;
 }
 
-/* issue #834 B1: the -Y timing publication says what the check does on the row on air. A typed row measured as it
+/* issue #834 R6: the -Y timing publication says what the check does on the row on air. A typed row measured as it
    lands, its hangtime running: Quiet check. An untyped row under a decoder set holding ProVoice: No check: modes, with
    one WARN line naming the row however many ticks follow. */
 static int
@@ -15152,7 +15152,7 @@ test_y_quiet_timing_says_why(void) {
     return rc;
 }
 
-/* issue #834 B1: each no-check cause through the real -Y timing writer, on an unsynced row in its hangtime, then the
+/* issue #834 R6: each no-check cause through the real -Y timing writer, on an unsynced row in its hangtime, then the
    same row once it synced (a call on it) reads nothing of the check. */
 enum { YQ_CAUSE_INPUT = 0, YQ_CAUSE_TUNER, YQ_CAUSE_RATE, YQ_CAUSE_WIDTH, YQ_CAUSE_NO_WIDTH, YQ_CAUSE_COUNT };
 
@@ -15274,7 +15274,7 @@ test_y_quiet_input_shows_until_a_call(void) {
     return rc;
 }
 
-/* issue #834 A5: a -Y row refused for its width starts again on the same visit once the width is edited, through the
+/* issue #834 R10: a -Y row refused for its width starts again on the same visit once the width is edited, through the
    frame boundary's owed republication (syncs that keep the frame loop running let no noCarrier() publish it), owed
    once per change. */
 static int
@@ -15312,7 +15312,7 @@ test_y_quiet_refused_row_restarts_after_an_edit(void) {
     return rc;
 }
 
-/* issue #834 B1: the widths the WARN line names as checked are exactly the admitted ones, NFM and AM. */
+/* issue #834 R6: the widths the WARN line names as checked are exactly the admitted ones, NFM and AM. */
 static int
 test_y_quiet_warn_widths_are_the_admitted_ones(void) {
     int rc = 0;
@@ -15403,7 +15403,7 @@ test_y_quiet_typed_row_judges_the_monitor(int nfm_hz) {
 }
 
 /* -Y: a row landed mid-transmission counts its checked content from its tune's issue. The row is measured as it
-   lands (issue #834 B6); checked frames after the landing end its check: the row keeps its hangtime. With no frames
+   lands (issue #834 R3); checked frames after the landing end its check: the row keeps its hangtime. With no frames
    the next pass steps on its quiet result, and the row it lands on is measured as it lands. */
 static int
 test_y_quiet_counts_from_the_landing(int heard) {
@@ -15438,7 +15438,7 @@ test_y_quiet_counts_from_the_landing(int heard) {
     return rc;
 }
 
-/* -Y, issue #834 D8: syncs that keep coming and that their protocol's gate rejects (NXDN48 or dPMR noise) keep the
+/* -Y, issue #834 R1: syncs that keep coming and that their protocol's gate rejects (NXDN48 or dPMR noise) keep the
    synced-frames loop running, so the row never reaches noCarrier() through a no-sync hunt. The loop's frame-boundary
    yield collects the quiet result after the first rejected frame and leaves, and the next noCarrier() steps the row
    with its NOTICE, long before the hangtime; typed and untyped. A frame that left a PARTIAL verdict holds the yield
@@ -15488,7 +15488,7 @@ test_y_quiet_noise_syncs_still_step(int typed) {
 /* -Y: a row counts its checked content from its tune's issue. A Next whose RTL tune timed out lands while a frame
    decodes, and the checked frame the new channel carries comes before the outer pass notes the landing: it ends the
    row's check at its landing's publication, so the tap is never asked for the row and it keeps its hangtime. With
-   nothing heard the row is measured as its landing is noted (issue #834 B6) and the next pass steps. */
+   nothing heard the row is measured as its landing is noted (issue #834 R3) and the next pass steps. */
 static int
 test_y_quiet_counts_from_the_walk_tune(int heard) {
     dsd_opts* opts = NULL;
@@ -15704,7 +15704,7 @@ enum {
     YQ_STEP_IN_FLIGHT,
 };
 
-/* The keep cases a step would stay for: set up after the landing, which measured the row as it landed (issue #834 B6),
+/* The keep cases a step would stay for: set up after the landing, which measured the row as it landed (issue #834 R3),
    so only the requests made once they are in force count. */
 static void
 yq_keep_stay(dsd_opts* opts, dsd_state* state, int which, long int base_hz, double now_m) {
@@ -15762,7 +15762,7 @@ yq_keep_case(int which) {
             state->scan_voice_gate_voice_m = now_m;
         }
     }
-    /* Up to the first step: the row a step lands on is measured as it lands (issue #834 B6), and would skip too. */
+    /* Up to the first step: the row a step lands on is measured as it lands (issue #834 R3), and would skip too. */
     for (int pass = 0; pass < 3 && g_rtl_tune_calls == 0; pass++) {
         noCarrier(opts, state);
     }
@@ -15966,11 +15966,11 @@ test_live_trunk_scan_skips_a_quiet_target(int on) {
     return rc;
 }
 
-/* Issue #834 D8, trunk scan: a target whose noise keeps passing a sync word its protocol's gate rejects (NXDN48 or dPMR
+/* Issue #834 R1, trunk scan: a target whose noise keeps passing a sync word its protocol's gate rejects (NXDN48 or dPMR
    noise) keeps the synced-frames loop running, so the hunt's 300-symbol service never comes and the outer pass that
    publishes the target never runs. The loop's frame-boundary service collects the quiet result after the first
    rejected frame, and the per-frame tick skips the target with its NOTICE, long before its 3 s dwell. That tick tuned
-   the next target, so it publishes it too (issue #834 B7): the next target is measured at once, and the frame
+   the next target, so it publishes it too (issue #834 R4): the next target is measured at once, and the frame
    boundary after it skips it in turn, still with no outer pass. With the setting off nothing is asked and the target
    stays. */
 /* A trunk scan of two DMR conventional targets on RTL input over the fake tap, skip-silent @p on, whose one outer pass
@@ -16037,7 +16037,7 @@ test_trunk_quiet_noise_syncs_still_skip(int on) {
     return rc;
 }
 
-/* Issue #834 B8: a check suspended while its landing is still in force (here a note of change; on air, a receive request
+/* Issue #834 R5: a check suspended while its landing is still in force (here a note of change; on air, a receive request
    the stream numbered) is published again at the next frame boundary, once, though the syncs keep coming and no outer
    pass or noCarrier() runs: measured again, then skipped at the boundary after, for the trunk scan and for -Y. */
 static int

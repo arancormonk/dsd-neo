@@ -69,7 +69,7 @@ scan_quiet_revisions_read(const dsd_opts* opts, const dsd_state* state, scan_qui
 #ifdef USE_RADIO
     /* A receive-profile or width request still in flight changes what the channel is received as; one that repeats the
        profile the stream runs (the hunt re-asking for its own) changes nothing and moves no change number (issue #834
-       B8). */
+       R5). */
     out->receive_change_seq = rtl_stream_receive_change_seq();
 #endif
     out->nfm_width_hz = opts->analog_nfm_bandwidth_hz;
@@ -223,7 +223,7 @@ scan_quiet_stay_shows_status(uint8_t stay_reason) {
     return stay_reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL || stay_reason == (uint8_t)DSD_SCAN_STAY_HANGTIME;
 }
 
-/* The analog widths the WARN line names as checked (issue #834 B1): the calibration's admitted widths
+/* The analog widths the WARN line names as checked (issue #834 R6): the calibration's admitted widths
    (signal_measure.cpp kQuietNfmWidthsHz, kQuietAmWidthsHz), which ENGINE_NO_CARRIER_RESET holds them to. */
 static const uint32_t k_quiet_warn_nfm_hz[] = {8000U, 10000U, 11250U, 12000U, 12500U, 15000U, 16000U, 20000U, 25000U};
 static const uint32_t k_quiet_warn_am_hz[] = {5000U, 6000U, 8000U, 8333U, 10000U, 15000U, 20000U};
@@ -434,7 +434,7 @@ scan_quiet_format_warn(char* out, size_t out_size, uint8_t reason, int detail, u
     return quiet_format_channel_warn(out, out_size, reason, (uint8_t)detail, name, mhz, kind, width_hz);
 }
 
-/* The receiver's WARN key (issue #834 B1): the reason, its detail, the input kind, the device spec and the capture
+/* The receiver's WARN key (issue #834 R6): the reason, its detail, the input kind, the device spec and the capture
    rate. */
 typedef struct {
     uint8_t reason;
@@ -500,12 +500,12 @@ quiet_input_detail(const dsd_opts* opts) {
 #endif
 }
 
-/* Whether the -Y stay on air has carried no call (issue #834 A4, "unsynced HANGTIME"), so its no-check status is shown:
+/* Whether the -Y stay on air has carried no call (issue #834 R8, "unsynced HANGTIME"), so its no-check status is shown:
    no content a protocol's CRC/FEC gate passed and no frame of a protocol with no such gate (X2-TDMA, ProVoice, TETRA)
    since its baseline. On a landed row that is the landing (dsd_engine_scan_landing::y_content_seq, y_unchecked_seq);
    with no row landing in force (the start frequency before the first step, a step that forgot the landing and then
    failed, an input switch) the stay's own start (dsd_state::scan_y_stay_content_seq, scan_y_stay_unchecked_seq). A
-   call explains the stay, so no no-check status is shown on it; a check under way still is (D8). A raw sync, which
+   call explains the stay, so no no-check status is shown on it; a check under way still is (R1). A raw sync, which
    NXDN48 and dPMR pass on noise several times a second, is no call, and neither is the scan's own re-arm of the
    hangtime anchor (a landing, a hold released). */
 static int
@@ -573,7 +573,7 @@ typedef struct {
     int origin_set;
     uint64_t origin_ms;
     uint64_t next_capture_check_ms;
-    /* The frame-boundary settle wait (issue #834 D8): a request a frame-boundary service starts waits
+    /* The frame-boundary settle wait (issue #834 R1): a request a frame-boundary service starts waits
        SCAN_QUIET_FRAME_SETTLE_MS (realtime) from settle_from_ms, the first qualifying capture the service saw (the first
        request) or the retryable failure it collected (a retry); settle_set 0 while there is neither. capture_seen: a
        qualifying capture was seen in this wait before its deadline, so the wait is no longer for a capture and its
@@ -581,7 +581,7 @@ typedef struct {
     int settle_set;
     int capture_seen;
     uint64_t settle_from_ms;
-    /* Suspended while the visit's landing was still in force (issue #834 B8): the next frame boundary publishes it
+    /* Suspended while the visit's landing was still in force (issue #834 R5): the next frame boundary publishes it
        again, once (dsd_engine_scan_quiet_take_republish()); a publication or a new start clears it. */
     int republish_owed;
     int retries;
@@ -599,13 +599,13 @@ typedef struct {
     double visit_decode_m;
     uint64_t ready_ms;
     dsd_signal_quiet_result result;
-    /* A refusal of the visit's capture (a centred capture, an uncalibrated rate or analog width; A5): the check stays
+    /* A refusal of the visit's capture (a centred capture, an uncalibrated rate or analog width; R10): the check stays
        SUSPENDED, so an edit restarts it on the same visit, but a publication of the same facts and revisions while the
        stream keeps the generation it refused (refused_generation, which any change of rate, shift or receive profile
        moves) starts nothing: one compare, no capture read. */
     int refused;
     uint32_t refused_generation;
-    /* Why the visit gets no check (dsd_scan_quiet_reason), with the check SUSPENDED (issue #834 B1): its session's or
+    /* Why the visit gets no check (dsd_scan_quiet_reason), with the check SUSPENDED (issue #834 R6): its session's or
        its facts' reason at its publication, or its capture's (a refusal). NONE for any other phase or suspension. */
     uint8_t reason;
     /* What the last capture read showed of the receiver (TUNER, RATE, or NONE for one it checks), on the input it was
@@ -623,7 +623,7 @@ typedef struct {
     /* The revisions a no-check suspension was last found moved at (dsd_engine_scan_quiet_take_republish()), so a frame
        boundary owes one republication per change. */
     scan_quiet_revisions republish_seen;
-    /* The channel WARN keys logged, per row or target (issue #834 B1): [0] the trunk scan's, [1] -Y's. */
+    /* The channel WARN keys logged, per row or target (issue #834 R6): [0] the trunk scan's, [1] -Y's. */
     struct quiet_channel_key* warned[2];
     size_t warned_cap[2];
 } scan_quiet_check;
@@ -748,7 +748,7 @@ quiet_age_ms(uint64_t now_ms, uint64_t since_ms) {
     return now_ms >= since_ms ? now_ms - since_ms : 0U;
 }
 
-/* Whether a frame's verdict is still awaited (issue #834 D8): a sync whose frame has not ended, or a PARTIAL frame's
+/* Whether a frame's verdict is still awaited (issue #834 R1): a sync whose frame has not ended, or a PARTIAL frame's
    hold not over yet (both sides on the decode clock). A quiet result is neither handed back, applied nor declined while
    one is; the check's reconcile, collection and deadlines go on. */
 static int
@@ -831,7 +831,7 @@ quiet_capture_refusal(const dsd_opts* opts, scan_quiet_check* c, const dsd_signa
 }
 
 /* The capture refused the visit for @p reason: SUSPENDED, not DONE, so an edit that changes what it refused starts it
-   again on the same visit (issue #834 A5); until then the refusal is cached (scan_quiet_check::refused). */
+   again on the same visit (issue #834 R10); until then the refusal is cached (scan_quiet_check::refused). */
 static void
 quiet_refuse(scan_quiet_check* c, uint8_t reason) {
     quiet_end(c, SCAN_QUIET_SUSPENDED);
@@ -1166,7 +1166,7 @@ quiet_publication_ends_visit(const dsd_opts* opts, const dsd_state* state, const
 }
 
 /* An ineligible publication: SUSPENDED, with the reason the visit gets no check in the precedence of the reason
-   model (issue #834 B1): the session's, then the facts' (decoders, width); a visit's own conditions (a hold, a stay, no
+   model (issue #834 R6): the session's, then the facts' (decoders, width); a visit's own conditions (a hold, a stay, no
    alternate, a tune pending) give none. */
 static void
 quiet_suspend_ineligible(const dsd_opts* opts, const dsd_engine_scan_owner* owner, int owner_kind, scan_quiet_check* c,
@@ -1191,7 +1191,7 @@ quiet_suspend_ineligible(const dsd_opts* opts, const dsd_engine_scan_owner* owne
     }
 }
 
-/* Whether the started check @p c is refused for its analog width without a capture read (issue #834 A5): the last
+/* Whether the started check @p c is refused for its analog width without a capture read (issue #834 R10): the last
    capture read, on the input in force, in this stream session (a reopen may turn the rotation off) and at the DSP rate
    this visit runs (so at this visit's capture rate), was rotated and at a validated rate, and the calibration covers
    no such width of this kind there. At another DSP rate the visit reads its own capture, whose rate outranks its
@@ -1208,7 +1208,7 @@ quiet_width_refused_ahead(const dsd_opts* opts, const scan_quiet_check* c) {
     return !dsd_signal_quiet_analog_supported(c->analog_kind, c->analog_width_hz, c->receiver_rate_hz);
 }
 
-/* Whether a refusal of the visit's capture still stands for @p e (issue #834 A5): the same visit published with the
+/* Whether a refusal of the visit's capture still stands for @p e (issue #834 R10): the same visit published with the
    same facts and revisions, the stream still on the generation refused. A permanent refusal costs this compare per
    publication: no start, no capture read. */
 static int
@@ -1300,7 +1300,7 @@ dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
 
 /* A visit SUSPENDED with a reason it cannot be checked (a refusal, or facts with no check) whose revisions moved since
    it was published, such as a width or row edit: once per change, so it is republished and starts again on the same
-   visit under syncs that keep the frame loop running (as a suspension of a check under way owes one, B8). */
+   visit under syncs that keep the frame loop running (as a suspension of a check under way owes one, R5). */
 static int
 quiet_no_check_facts_moved(const dsd_opts* opts, const dsd_state* state, scan_quiet_check* c) {
     if (c->reason == (uint8_t)DSD_SCAN_QUIET_REASON_NONE) {
