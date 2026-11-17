@@ -152,9 +152,9 @@ typedef struct {
     uint32_t grant_seq;                                // IDLE: the slot's grant_seq when the IDLE was observed
     int grant_seq_valid;                               // 1 when grant_seq is set
     int preempt_only; // GRANT announced on a voice channel for another carrier: considered only as a preemption
-    // P25_SM_IDENTITY_CHECKED_* bits for src, tg/dst and is_group. The identity builders below set all three: every
-    // producer dispatches only messages that passed their own check, except a Phase 2 MAC_SIGNAL whose CRC failed
-    // (-F), whose grants clear them (it still drives the follow, as documented for -F).
+    // P25_SM_IDENTITY_CHECKED_* bits for src, tg/dst and is_group: which of them came from a message whose own check
+    // the producer ran and saw pass. Unchecked (0) unless the producer sets it; the builders below never do. A Phase 2
+    // MAC_SIGNAL whose CRC failed (-F) leaves it 0 and is still followed, as documented for -F.
     uint8_t identity_checked;
 } p25_sm_event_t;
 
@@ -774,7 +774,8 @@ int p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot);
  * The state machine reopens the call epoch from the retained carrier
  * assignment, re-evaluates policy/crypto, and never invokes the tuner for an
  * accepted identity on the current carrier. Trunk-follow mode rejects the
- * event when no traffic-channel assignment is active.
+ * event when no traffic-channel assignment is active. The identity is
+ * unchecked provenance; see p25_sm_emit_voice_start().
  * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
  */
 int p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
@@ -790,9 +791,19 @@ int p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int
 int p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
+ * @brief Emit a voice start the caller built: a P25_SM_EV_PTT or P25_SM_EV_ACTIVE event, with or without an in-band
+ *        identity, whose p25_sm_event_t.identity_checked the caller set from the check it ran on the message.
+ *
+ * Decoders use this form. The convenience emitters below publish their identity as unchecked (spec 2.19).
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
+ */
+int p25_sm_emit_voice_start(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
+
+/**
  * @brief Emit an ACTIVE event carrying an authoritative in-band call identity.
  *
- * Trunk-follow mode rejects the event when no traffic-channel assignment is active.
+ * Trunk-follow mode rejects the event when no traffic-channel assignment is active. The identity is unchecked
+ * provenance; see p25_sm_emit_voice_start().
  * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
  */
 int p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
@@ -817,7 +828,8 @@ int64_t p25_conventional_grant_frequency(const dsd_state* state, int slot, uint3
  * @brief Emit an ACTIVE call whose message type carries no source field.
  *
  * See p25_sm_ev_active_call_source_absent(): the voice start must not inherit
- * the preceding assignment's talker for these calls.
+ * the preceding assignment's talker for these calls. The identity is
+ * unchecked provenance; see p25_sm_emit_voice_start().
  */
 int p25_sm_emit_active_call_source_absent(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int is_group,
                                           int svc_bits);
@@ -1006,7 +1018,6 @@ p25_sm_ev_group_grant(int channel, long freq_hz, int tg, int src, int svc_bits) 
     ev.svc_bits = svc_bits;
     ev.is_group = 1;
     ev.grant_provenance = P25_SM_GRANT_PROVENANCE_ASSIGNMENT;
-    ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
     return ev;
 }
 
@@ -1029,7 +1040,6 @@ p25_sm_ev_indiv_grant(int channel, long freq_hz, int dst, int src, int svc_bits)
     ev.svc_bits = svc_bits;
     ev.is_group = 0;
     ev.grant_provenance = P25_SM_GRANT_PROVENANCE_ASSIGNMENT;
-    ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
     return ev;
 }
 
@@ -1072,7 +1082,6 @@ p25_sm_ev_ptt_call(int slot, int tg, int dst, int src, int is_group, int svc_bit
     ev.is_group = is_group ? 1 : 0;
     ev.svc_bits = svc_bits;
     ev.identity_valid = 1;
-    ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
     return ev;
 }
 
@@ -1094,7 +1103,6 @@ p25_sm_ev_active_call(int slot, int tg, int dst, int src, int is_group, int svc_
     ev.is_group = is_group ? 1 : 0;
     ev.svc_bits = svc_bits;
     ev.identity_valid = 1;
-    ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
     return ev;
 }
 

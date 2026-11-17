@@ -524,14 +524,12 @@ enum {
     P25P2_DISPATCH_PREEMPT_ONLY = 2,
 };
 
-/* A grant from a MAC whose CRC failed (-F) still drives the follow, as -F documents, but none of its identity is
- * checked provenance (spec 2.19): @p crc_ok 0 clears the event's verdicts. */
+/* Every grant the MAC dispatch makes carries the MAC's CRC verdict on its identity (spec 2.19). A grant from a MAC
+ * whose CRC failed (-F) still drives the follow, as -F documents, with its identity unchecked. */
 static void
 p25p2_vpdu_dispatch_grant_event(dsd_opts* opts, dsd_state* state, p25_sm_event_t* ev, int dispatch, int crc_ok) {
     ev->preempt_only = dispatch == P25P2_DISPATCH_PREEMPT_ONLY;
-    if (!crc_ok) {
-        ev->identity_checked = 0U;
-    }
+    ev->identity_checked = crc_ok ? (uint8_t)P25_SM_IDENTITY_CHECKED_ALL : 0U;
     p25_sm_event(p25_sm_get_ctx(), opts, state, ev);
 }
 

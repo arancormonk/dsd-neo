@@ -23,8 +23,10 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/protocol/p25/p25_xcch.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -194,10 +196,44 @@ private_grant(fixture* f, uint32_t src, int crc_ok) {
     send_mac(f, 0, grant, sizeof grant, crc_ok);
 }
 
-/* MAC_PTT as the XCCH decoder emits it (CRC-checked): the group address field and the source; always "group". */
+/* A FACCH MAC PDU of slot 0 (MAC octets 0-17) with a valid CRC-12, through the real XCCH decoder. */
+static void
+send_facch(fixture* f, const uint8_t mac[18]) {
+    int payload[156] = {0};
+    for (int i = 0; i < 144; i++) {
+        payload[i] = (mac[i / 8] >> (7 - (i % 8))) & 1;
+    }
+    for (int crc = 0; crc < 4096; crc++) {
+        for (int i = 0; i < 12; i++) {
+            payload[144 + i] = (crc >> (11 - i)) & 1;
+        }
+        if (crc12_xb_bridge(payload, 144) == 0) {
+            break;
+        }
+    }
+    f->st->currentslot = 0;
+    process_FACCH_MAC_PDU(f->opts, f->st, payload);
+}
+
+/* MAC_PTT (opcode 1): the source in octets 13-15 and the group address field in 16-17. */
 static void
 mac_ptt(fixture* f, uint32_t tg, uint32_t src) {
-    (void)p25_sm_emit_ptt_call(f->opts, f->st, 0, (int)tg, 0, (int)src, 1, 0x00);
+    uint8_t mac[18] = {0};
+    mac[0] = 0x20;
+    mac[13] = (uint8_t)(src >> 16);
+    mac[14] = (uint8_t)(src >> 8);
+    mac[15] = (uint8_t)src;
+    mac[16] = (uint8_t)(tg >> 8);
+    mac[17] = (uint8_t)tg;
+    send_facch(f, mac);
+}
+
+/* MAC_ACTIVE (opcode 4) carrying a Group Voice Channel User (clear) of @p tg by @p src (0 = none named). */
+static void
+mac_active(fixture* f, uint32_t tg, uint32_t src) {
+    const uint8_t mac[18] = {
+        0x80, 0x01, 0x00, (uint8_t)(tg >> 8), (uint8_t)tg, (uint8_t)(src >> 16), (uint8_t)(src >> 8), (uint8_t)src};
+    send_facch(f, mac);
 }
 
 /* 22°30' N, 45° E at 02:00:00, heading 90.0, quality %01, @p sats satellites. */
@@ -359,7 +395,7 @@ test_sourceless_update(void) {
         fixture f;
         fixture_open(&f);
         group_grant(&f, SRC_A, crc_ok);
-        (void)p25_sm_emit_active_call(f.opts, f.st, 0, (int)TG_A, 0, 0, 1, 0x00);
+        mac_active(&f, TG_A, 0U);
         expect_true("source-less call open", slot0_call_names(TG_A, SRC_A, f.st));
         send_gps(&f, 0);
         if (crc_ok) {
@@ -416,6 +452,44 @@ test_epoch_change(void) {
     fixture_close(&f);
 }
 
+/* A voice start emitted without a verdict (the convenience emitters) is unchecked, whatever the grant was. */
+static void
+test_unstamped_voice_start(void) {
+    fixture f;
+    fixture_open(&f);
+    group_grant(&f, SRC_A, 1);
+    (void)p25_sm_emit_ptt_call(f.opts, f.st, 0, (int)TG_A, 0, (int)SRC_A, 1, 0x00);
+    expect_true("unstamped call open", slot0_call_names(TG_A, SRC_A, f.st));
+    send_gps(&f, 0);
+    expect_report(&f, "unstamped ptt", 0U, 0U, 0);
+    fixture_close(&f);
+}
+
+/* After the call ended (MAC_END_PTT, hangtime) a position names no one: the call is no longer ACTIVE. */
+static void
+test_hangtime(void) {
+    fixture f;
+    fixture_open(&f);
+    group_grant(&f, SRC_A, 1);
+    mac_ptt(&f, TG_A, SRC_A);
+    send_gps(&f, 0);
+    expect_report(&f, "before the end", SRC_A, TG_A, 1);
+    uint8_t end[18] = {0};
+    end[0] = 0x40; // MAC_END_PTT (opcode 2)
+    end[13] = (uint8_t)(SRC_A >> 16);
+    end[14] = (uint8_t)(SRC_A >> 8);
+    end[15] = (uint8_t)SRC_A;
+    end[16] = (uint8_t)(TG_A >> 8);
+    end[17] = (uint8_t)TG_A;
+    send_facch(&f, end);
+    dsd_call_snapshot call;
+    expect_true("call ended", dsd_call_state_get(f.st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    expect_true("still on the voice channel", p25_sm_get_ctx()->state == P25_SM_TUNED);
+    send_gps(&f, 0);
+    expect_report(&f, "hangtime", 0U, 0U, 0);
+    fixture_close(&f);
+}
+
 /* With trunking off a checked MAC_PTT names the call by itself; a -F voice user naming another talker does not. */
 static void
 test_conventional(void) {
@@ -464,6 +538,26 @@ test_every_grant_kind(void) {
          16},
         // SNDCP Data Channel Grant - Explicit (DSO, CHAN-T, CHAN-R, target)
         {"data grant 0x54", {0x54, 0x00, 0x10, 0x0A, 0x10, 0x0A, 0x00, 0x0F, 0xA2}, 9},
+        // Group Voice Channel Grant Update - Explicit (SVC, reserved, CHAN-T, CHAN-R, group)
+        {"group update explicit 0x43", {0x43, 0x00, 0x00, 0x10, 0x0A, 0x10, 0x0A, 0x00, 0x64}, 9},
+        // Group Voice Channel Grant Update - Explicit (SVC, CHAN-T, CHAN-R, group)
+        {"group update explicit 0xC3", {0xC3, 0x00, 0x10, 0x0A, 0x10, 0x0A, 0x00, 0x64}, 8},
+        // Unit to Unit Voice Channel Grant Update (abbreviated)
+        {"unit to unit update 0x46", {0x46, 0x10, 0x0A, 0x00, 0x0F, 0xA2, 0x00, 0x0B, 0xB9}, 9},
+        // Unit to Unit Voice Service Channel Grant - Extended (CHAN-T, CHAN-R, source WACN/SYS, source, target)
+        {"unit to unit grant extended 0xC4",
+         {0xC4, 0x10, 0x0A, 0x10, 0x0A, 0xBE, 0xE0, 0x01, 0xA2, 0x00, 0x0B, 0xB9, 0x00, 0x0F, 0xA2},
+         15},
+        // MFID90 Group Regroup Channel Grant - Explicit (SVC, CHAN-T, CHAN-R, supergroup, source)
+        {"regroup grant explicit A4/90",
+         {0xA4, 0x90, 0x0D, 0x00, 0x10, 0x0A, 0x10, 0x0A, 0x00, 0x64, 0x00, 0x0B, 0xB9},
+         13},
+        // MFID90 Group Regroup Channel Grant Update (channel, supergroup; same channel twice)
+        {"regroup update A5/90", {0xA5, 0x90, 0x0B, 0x10, 0x0A, 0x00, 0x64, 0x10, 0x0A, 0x00, 0x64}, 11},
+        // MFID90 Group Regroup Voice Channel Update (SVC, supergroup, channel)
+        {"regroup voice channel update 83/90", {0x83, 0x90, 0x00, 0x00, 0x64, 0x10, 0x0A}, 7},
+        // L3Harris Unit-to-Unit Data Channel Grant (channel, target, source)
+        {"harris data grant AC/A4", {0xAC, 0xA4, 0x0C, 0x00, 0x10, 0x0A, 0x00, 0x0F, 0xA2, 0x00, 0x0B, 0xB9}, 12},
     };
 
     for (size_t g = 0; g < sizeof grants / sizeof grants[0]; g++) {
@@ -480,6 +574,20 @@ test_every_grant_kind(void) {
             fixture_close(&f);
         }
     }
+
+    // A Phase 1 TSBK bridged into the MAC dispatch passed its own CRC-16 before it got there: checked.
+    fixture f;
+    fixture_open(&f);
+    unsigned long long int tsbk[24] = {0};
+    const uint8_t grant[] = {0x40, 0x00, 0x10, 0x0A, 0x00, 0x64, 0x00, 0x0B, 0xB9};
+    for (size_t i = 0; i < sizeof grant; i++) {
+        tsbk[i + 1U] = grant[i];
+    }
+    process_MAC_VPDU_bridged_p1(f.opts, f.st, tsbk);
+    expect_true("bridged tsbk grant: followed", p25_sm_get_ctx()->state == P25_SM_TUNED);
+    expect_true("bridged tsbk grant: verdict",
+                p25_sm_get_ctx()->slots[0].identity_checked == P25_SM_IDENTITY_CHECKED_ALL);
+    fixture_close(&f);
 }
 
 int
@@ -490,6 +598,8 @@ main(void) {
     test_sourceless_update();
     test_epoch_change();
     test_conventional();
+    test_unstamped_voice_start();
+    test_hangtime();
     test_every_grant_kind();
     dsd_decode_clock_use_system();
     if (g_fail) {

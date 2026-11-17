@@ -169,19 +169,39 @@ p25p2_xcch_get_slot_src(const dsd_state* state, int slot) {
     return (int)call.ota_source_id;
 }
 
+/* MAC_PTT and MAC_ACTIVE reach their handlers only after the PDU's CRC passed (process_SACCH_MAC_PDU(),
+ * process_FACCH_MAC_PDU()), so the identity they decode from the MAC itself is checked provenance (spec 2.19). */
+static int
+p25p2_xcch_emit_checked_voice_start(dsd_opts* opts, dsd_state* state, p25_sm_event_t* ev) {
+    ev->identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
+    return p25_sm_emit_voice_start(opts, state, ev);
+}
+
 static int
 p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, const unsigned long long int mac[24]) {
     struct p25p2_mac_voice_identity identity;
     if (p25p2_mac_decode_voice_identity(type, mac, &identity) == 1) {
-        if (identity.source_optional) {
-            return p25_sm_emit_active_call_source_absent(opts, state, slot, identity.tg, identity.dst,
-                                                         identity.is_group, identity.svc_bits);
-        }
-        const int accepted = p25_sm_emit_active_call(opts, state, slot, identity.tg, identity.dst, identity.src,
-                                                     identity.is_group, identity.svc_bits);
-        return accepted;
+        p25_sm_event_t ev = identity.source_optional
+                                ? p25_sm_ev_active_call_source_absent(slot, identity.tg, identity.dst,
+                                                                      identity.is_group, identity.svc_bits)
+                                : p25_sm_ev_active_call(slot, identity.tg, identity.dst, identity.src,
+                                                        identity.is_group, identity.svc_bits);
+        return p25p2_xcch_emit_checked_voice_start(opts, state, &ev);
     }
     return p25_sm_emit_active(opts, state, slot);
+}
+
+/* MAC_PTT: the group address field and the source, with the raw octets that coalesce SACCH/FACCH retransmissions. */
+static int
+p25p2_xcch_emit_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, const unsigned long long int mac[24],
+                    double observed_m, int facch) {
+    p25_sm_event_t ev = p25_sm_ev_ptt_call(slot, p25p2_xcch_tg_from_mac(mac), 0, (int)p25p2_xcch_src_from_mac(mac), 1,
+                                           P25_SM_SVC_UNKNOWN);
+    p25p2_xcch_ptt_signature(mac, ev.ptt_signature);
+    ev.ptt_signature_valid = observed_m > 0.0 ? 1 : 0;
+    ev.observed_m = observed_m;
+    ev.facch = facch ? 1 : 0;
+    return p25p2_xcch_emit_checked_voice_start(opts, state, &ev);
 }
 
 static void
@@ -476,8 +496,6 @@ static void
 p25p2_xcch_handle_sacch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, int mac_offset, int res,
                                 const unsigned long long int smac[24]) {
     const double ptt_observed_m = dsd_decode_now_mono_s();
-    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
-    p25p2_xcch_ptt_signature(smac, signature);
 
     DSD_FPRINTF(stderr, " MAC_PTT ");
     DSD_FPRINTF(stderr, "%s", KGRN);
@@ -485,9 +503,7 @@ p25p2_xcch_handle_sacch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     state->p25_p2_last_mac_active[slot] = dsd_decode_time();
     state->p25_p2_last_mac_active_m[slot] = ptt_observed_m;
 
-    if (!p25_sm_emit_ptt_call_metadata(opts, state, slot, p25p2_xcch_tg_from_mac(smac), 0,
-                                       (int)p25p2_xcch_src_from_mac(smac), 1, P25_SM_SVC_UNKNOWN, signature,
-                                       ptt_observed_m, 0)) {
+    if (!p25p2_xcch_emit_ptt(opts, state, slot, smac, ptt_observed_m, 0)) {
         // A companion slot can keep the traffic carrier tuned after this slot
         // is rejected. Preserve the denied identity so a later ESS decision
         // cannot evaluate the preceding allowed call and reopen audio.
@@ -606,8 +622,6 @@ static void
 p25p2_xcch_handle_facch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, int mac_offset, int res,
                                 const unsigned long long int fmac[24]) {
     const double ptt_observed_m = dsd_decode_now_mono_s();
-    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
-    p25p2_xcch_ptt_signature(fmac, signature);
 
     DSD_FPRINTF(stderr, " MAC_PTT  ");
     DSD_FPRINTF(stderr, "%s", KGRN);
@@ -615,9 +629,7 @@ p25p2_xcch_handle_facch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     state->p25_p2_last_mac_active[slot] = dsd_decode_time();
     state->p25_p2_last_mac_active_m[slot] = ptt_observed_m;
 
-    if (!p25_sm_emit_ptt_call_metadata(opts, state, slot, p25p2_xcch_tg_from_mac(fmac), 0,
-                                       (int)p25p2_xcch_src_from_mac(fmac), 1, P25_SM_SVC_UNKNOWN, signature,
-                                       ptt_observed_m, 1)) {
+    if (!p25p2_xcch_emit_ptt(opts, state, slot, fmac, ptt_observed_m, 1)) {
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }

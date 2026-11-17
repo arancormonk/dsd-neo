@@ -7731,6 +7731,14 @@ p25_sm_emit_ptt_call_metadata(dsd_opts* opts, dsd_state* state, int slot, int tg
 }
 
 int
+p25_sm_emit_voice_start(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    if (!ev || (ev->type != P25_SM_EV_PTT && ev->type != P25_SM_EV_ACTIVE)) {
+        return 0;
+    }
+    return p25_sm_emit_voice_start_event(opts, state, ev, ev->type == P25_SM_EV_PTT ? "ptt" : "active");
+}
+
+int
 p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
     p25_sm_event_t ev = p25_sm_ev_active(slot);
     return p25_sm_emit_voice_start_event(opts, state, &ev, "active");

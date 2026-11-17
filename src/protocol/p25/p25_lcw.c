@@ -199,6 +199,15 @@ p25_lcw_note_checked_identity(p25_lcw_ctx* ctx, uint32_t target, uint32_t source
     id->group = group;
 }
 
+/* A link control is dispatched only after its RS decode succeeded (LDU1, TDULC): the identity it names reaches the trunk
+ * state machine as checked (spec 2.19). */
+static int
+p25_lcw_emit_voice_user(p25_lcw_ctx* ctx, int tg, int dst, uint32_t source, int is_group) {
+    p25_sm_event_t ev = p25_sm_ev_active_call(0, tg, dst, (int)source, is_group, ctx->lc_svcopt);
+    ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
+    return p25_sm_emit_voice_start(ctx->opts, ctx->state, &ev);
+}
+
 static int
 p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source) {
     ctx->state->generic_talker_alias[0][0] = '\0';
@@ -207,7 +216,7 @@ p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t so
     if (!ctx->allow_voice_start) {
         return 0;
     }
-    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, 0, (int)target, (int)source, 0, ctx->lc_svcopt)) {
+    if (!p25_lcw_emit_voice_user(ctx, 0, (int)target, source, 0)) {
         return 0;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
@@ -229,7 +238,7 @@ p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t sourc
     if (!ctx->allow_voice_start) {
         return 0;
     }
-    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, group, 0, (int)source, 1, ctx->lc_svcopt)) {
+    if (!p25_lcw_emit_voice_user(ctx, group, 0, source, 1)) {
         return 0;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
@@ -347,6 +356,7 @@ p25_lcw_offer_preemption(p25_lcw_ctx* ctx, const uint16_t* channels, const uint1
         }
         events[n] = p25_sm_ev_group_grant_update(channels[i], 0, groups[i], 0, svcs[i]);
         events[n].preempt_only = 1;
+        events[n].identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the RS-decoded link control's own fields
         if (!p25_sm_grant_candidate_rank(ctx->opts, ctx->state, &events[n], &ranks[n])) {
             DSD_MEMSET(&ranks[n], 0, sizeof(ranks[n]));
         }
@@ -451,6 +461,7 @@ p25_lcw_handle_format_44_trunking(p25_lcw_ctx* ctx, uint16_t channel, uint16_t g
     if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->trunk_tune_group_calls == 1
         && !p25_lcw_format_44_hold_blocks_grant(ctx, group)) {
         p25_sm_event_t ev = p25_sm_ev_group_grant_update(channel, 0, group, 0, ctx->lc_svcopt);
+        ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the RS-decoded link control's own fields
         p25_sm_event(p25_sm_get_ctx(), ctx->opts, ctx->state, &ev);
     }
 }
