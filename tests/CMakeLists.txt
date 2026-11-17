@@ -16721,6 +16721,7 @@ set(_dsd_tetra_test_sources
     tetra_publication
     tetra_voice_gate
     tetra_calls
+    tetra_lip
     viterbi
 )
 

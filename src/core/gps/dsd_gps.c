@@ -474,22 +474,35 @@ lip_print_report(const lip_short_report* r, const lip_source* who, const char* p
     lip_print_time_elapsed(r->time_elapsed);
 }
 
+void
+lip_short_report_text(const lip_short_report* report, char* out, size_t cap) {
+    if (out == NULL || cap == 0U) {
+        return;
+    }
+    out[0] = '\0';
+    if (report == NULL) {
+        return;
+    }
+    const char* deg_glyph = dsd_degrees_glyph();
+    const gps_hemisphere_pair p = gps_hemisphere_pair_from_e7(report->lat_e7, report->lon_e7);
+    char err[64];
+    char motion[80];
+    gps_error_text(report->position_error, report->err_m, err, sizeof err);
+    lip_motion_text(report, deg_glyph, motion, sizeof motion);
+    DSD_SNPRINTF(out, cap, "LIP: %.5lf%s%s %.5lf%s%s; %s; %s", p.lat, deg_glyph, p.latstr, p.lon, deg_glyph, p.lonstr,
+                 err, motion);
+}
+
 /* The row's and the display's text of an admitted LIP report, into dsd_state::dmr_embedded_gps[slot]. */
 static void
 lip_store_text(dsd_state* state, int slot, const lip_short_report* r, int hash) {
-    const char* deg_glyph = dsd_degrees_glyph();
-    const gps_hemisphere_pair p = gps_hemisphere_pair_from_e7(r->lat_e7, r->lon_e7);
-    char prefix[16] = "";
+    char text[192]; /* the longest text is about 120 bytes */
+    lip_short_report_text(r, text, sizeof text);
     if (hash >= 0) {
-        DSD_SNPRINTF(prefix, sizeof prefix, "%03d; ", hash);
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "%03d; %s", hash, text);
+    } else {
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "%s", text);
     }
-    char err[64];
-    char motion[80];
-    gps_error_text(r->position_error, r->err_m, err, sizeof err);
-    lip_motion_text(r, deg_glyph, motion, sizeof motion);
-    DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
-                 "%sLIP: %.5lf%s%s %.5lf%s%s; %s; %s", prefix, p.lat, deg_glyph, p.latstr, p.lon, deg_glyph, p.lonstr,
-                 err, motion);
 }
 
 /* Why a report of the slot's scope is unchecked, for the console: a failed check, or a RAS acceptance. */
@@ -546,10 +559,18 @@ lip_report(const dsd_opts* opts, dsd_state* state, const lip_short_report* r, co
     lip_store_text(state, slot, r, who->hash);
     (void)dsd_event_stage_position(state, (uint8_t)slot, &fix, state->dmr_embedded_gps[slot]);
     if (who->hash < 0) {
-        const int speed = fix.speed_dkmh == DSD_POSITION_SPEED_UNKNOWN ? 0 : gps_speed_kmh(fix.speed_dkmh);
-        const int azimuth = (fix.flags & DSD_POS_FLAG_HEADING_AMBIGUOUS) != 0U ? 0 : (int)(fix.heading_ddeg / 10U);
-        gps_write_lrrp_admitted(opts, &fix, speed, azimuth);
+        lip_write_location_row(opts, &fix);
     }
+}
+
+void
+lip_write_location_row(const dsd_opts* opts, const dsd_position_fix* fix) {
+    if (fix == NULL) {
+        return;
+    }
+    const int speed = fix->speed_dkmh == DSD_POSITION_SPEED_UNKNOWN ? 0 : gps_speed_kmh(fix->speed_dkmh);
+    const int azimuth = (fix->flags & DSD_POS_FLAG_HEADING_AMBIGUOUS) != 0U ? 0 : (int)(fix->heading_ddeg / 10U);
+    gps_write_lrrp_admitted(opts, fix, speed, azimuth);
 }
 
 static uint8_t

@@ -28,9 +28,12 @@ target_include_directories(
     PRIVATE ${_PUBLIC_INCLUDES}
 )
 
+# The LIP short report parser and its location-file row live in the core GPS module (dsd_gps.c), which uses the DMR
+# text decoder: link it as D-STAR does.
 target_link_libraries(
     dsd-neo_proto_tetra
     PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_crypto dsd-neo_core
+    PRIVATE dsd-neo_proto_dmr
 )
 
 target_link_libraries(dsd-neo_proto_tetra PRIVATE dsd-neo_warnings)

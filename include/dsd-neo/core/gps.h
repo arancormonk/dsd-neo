@@ -63,6 +63,22 @@ int lip_parse_short_report(const uint8_t* bits, size_t bit_count, lip_short_repo
 void lip_short_report_to_fix(const lip_short_report* report, struct dsd_position_fix* fix);
 
 /**
+ * @brief The text of a decoded short report, as history rows and the console show it:
+ * "LIP: <lat> <lon>; <position error>; Spd: <speed>; Dir: <direction>", with unknown and bounded codes said as such
+ * (position error 7 reads "fix may be old or invalid"). Print it only for a report dsd_position_admit() admitted.
+ * @p out is always terminated when @p cap > 0; a NULL @p report leaves it empty.
+ */
+void lip_short_report_text(const lip_short_report* report, char* out, size_t cap);
+
+/**
+ * @brief Write the location file (-L) row of an admitted LIP short report from its admitted record @p fix: its source
+ * (0 when admission cleared it), coordinates, speed in whole km/h (0 when unknown, 1043 for the lower bound) and
+ * direction in whole degrees (0 when ambiguous). Only when -L is on. Never call it for a refused report or a hashed
+ * source (decision D8).
+ */
+void lip_write_location_row(const dsd_opts* opts, const struct dsd_position_fix* fix);
+
+/**
  * @brief The DMR embedded GPS LC (TS 102 361-2 Table 7.3). The caller (dmr_flco) runs it only for an unprotected LC whose
  * embedded checksum passed. Its source is the slot's ACTIVE call's when a checked full LC of that call named it
  * (dsd_state::dmr_lc_checked_transmission / dmr_lc_checked_source); otherwise the report is unattributed.

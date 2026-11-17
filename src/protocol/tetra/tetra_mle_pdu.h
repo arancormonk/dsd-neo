@@ -269,6 +269,9 @@ typedef struct {
     tetra_sds_concat_part concat; /**< when concat_present */
     tetra_cmce_party calling;
     int data_bits;       /**< user data length */
+    int payload_pos;     /**< user defined data-4: bit of the TM-SDU where the SDU after the protocol identifier (and
+                              its SDS-TL header, for the PIDs that use one) starts, when pid_present */
+    int payload_bits;    /**< ...and its length */
     uint16_t short_data; /**< user defined data-1, short data type identifier 0 */
     uint8_t sdti;        /**< short data type identifier (table 14.13) */
     uint8_t pid;         /**< protocol identifier (table 29.21) of user defined data-4, when pid_present */

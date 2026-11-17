@@ -2605,6 +2605,11 @@ tetra_calls_unfollowed(dsd_opts* opts, dsd_state* state) {
     (void)dsd_tg_policy_clear_active_call(state, -1);
 }
 
+int
+tetra_calls_protocol(const dsd_state* state) {
+    return calls_protocol(state);
+}
+
 uint32_t
 tetra_calls_addressed_ssi(const tetra_mac_sdu* sdu) {
     uint32_t ssi = 0;

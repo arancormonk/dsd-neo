@@ -273,6 +273,10 @@ void tetra_calls_unfollowed(dsd_opts* opts, dsd_state* state);
 /** @brief The SSI the MAC PDU of @p sdu names in the clear (tetra_mac_address), 0 for none or a NULL @p sdu. */
 uint32_t tetra_calls_addressed_ssi(const tetra_mac_sdu* sdu);
 
+/** @brief The TETRA sync type the decoder is on, as the canonical calls and the notices carry it (the current burst's,
+ * else the last one's, else DSD_SYNC_TETRA_NDB_POS). */
+int tetra_calls_protocol(const dsd_state* state);
+
 /**
  * @brief Commit a notice of TETRA traffic to the event history: a data notice (SDS) or, with @p control, a control
  * notice (status, MM), from @p src to @p dst, with @p text (may be NULL) as its message. Only once a CRC-passed block
