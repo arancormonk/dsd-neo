@@ -1017,7 +1017,9 @@ The check runs only where the calibration rendered and validated it, matched exa
   `rtl_downsample_passes_for_rate_in()` in `src/io/radio/rtl_sdr_fm.cpp`; the selectable DSP bandwidths 4 to 72 kHz
   give only these three, and an RTL-SDR or rtl_tcp stream runs the request as asked), an Airspy's 2.5, 3, 6 and
   10 MS/s, and the common RTL-SDR rates a SoapySDR device may be given, which picks its own nearest rate: 0.96, 1.2,
-  1.28, 1.44, 1.6, 1.8, 1.92, 2.048 and 2.4 Msps. A SoapySDR device that runs any other rate gets no check. The
+  1.28, 1.44, 1.6, 1.8, 1.92, 2.048 and 2.4 Msps. A SoapySDR device that runs any other rate gets no check. A HackRF
+  through SoapySDR runs 10 MS/s and is checked there, on the 10 MS/s calibration, which used a flat noise floor; an
+  Airspy HF+ runs its own rates below 1 MS/s and gets no check. The
   Airspy rates apply to an Airspy through SoapySDR: a native Airspy input delivers centred I/Q with no quarter-rate
   shift, which the measurement's geometry needs, so it gets no check at any rate; neither does an RTL-SDR with offset
   tuning on, or any capture with the shift turned off.

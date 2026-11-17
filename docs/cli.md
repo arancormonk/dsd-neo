@@ -15,7 +15,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`, `--scan-skip-silent`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]` (`gain` `0` = automatic, `1`–`49` = manual dB)
-- Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
+- Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`; the Windows ZIP ships it and the Airspy, HackRF and Airspy HF+ modules)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
   `--rtl-udp-control-bind <ipv4>` for explicit remote exposure (see `docs/udp-control.md`). It stays off under
   `--trunk-scan`, which owns the tuner.
@@ -2864,7 +2864,8 @@ Advanced (env)
 
 - Use this path for non-RTL radios exposed through Soapy modules. The backend requires SoapySDR 0.8.1 or newer.
 - Typical workflow:
-  1. Install SoapySDR 0.8.1 or newer and the module for your radio.
+  1. Install SoapySDR 0.8.1 or newer and the module for your radio. The Windows ZIP already has SoapySDR 0.8.1,
+     `bin\SoapySDRUtil.exe` and the Airspy, HackRF and Airspy HF+ modules (`docs/soapysdr.md` section 0a).
   2. Verify Soapy is installed and check plugin search paths: `SoapySDRUtil --info`
   3. Enumerate radios: `SoapySDRUtil --find`
   4. Probe one candidate and capture its args: `SoapySDRUtil --probe="driver=sdrplay"`
@@ -2896,6 +2897,10 @@ Advanced (env)
   again.
 - RX-888 family radios use the SDDC Soapy module and the `sddc` profile; see `docs/soapysdr.md` for the antenna,
   ADC clock, and throughput requirements.
+- A HackRF runs at 10 MS/s (the `hackrf` profile's rate) with its filter opened to 5.5 MHz; `soapy_profile = "generic"`
+  keeps the rate nearest the request. Every profile's default filter opens to keep the channel a quarter of the sample
+  rate off centre, and an explicit narrower `soapy_bandwidth_hz` is applied with a warning (`docs/soapysdr.md`,
+  Tuner filter).
 - `--print-config` reflects shorthand as normalized config fields (`soapy_args` + `rtl_*`) rather than the raw input
   string.
 - If your Soapy args string itself contains `:`, prefer config keys (`soapy_args` + `rtl_*`) to avoid ambiguity.

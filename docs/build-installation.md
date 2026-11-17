@@ -38,7 +38,14 @@ Package hints:
 - macOS (Homebrew): `brew install cmake ninja openssl libsndfile ncurses pulseaudio rtl-sdr airspy soapysdr codec2`.
 - Windows: source builds use the `win-msvc-*` presets in `CMakePresets.json` with vcpkg; set `VCPKG_ROOT` first.
   The presets build with Ninja and the compiler of the Visual Studio you use: open the folder in Visual Studio, or run
-  `cmake` from a Developer PowerShell or x64 Native Tools prompt.
+  `cmake` from a Developer PowerShell or x64 Native Tools prompt. vcpkg also builds the SoapySDR Airspy, HackRF and
+  Airspy HF+ modules. `SoapySDR.dll` looks for modules relative to its own folder, so a `dsd-neo.exe` run from the
+  build tree finds them only through `SOAPY_SDR_PLUGIN_PATH`: set it to
+  `vcpkg_installed\x64-windows-dynamic-release\lib\SoapySDR\modules0.8` for `win-msvc-release`, or
+  `vcpkg_installed\x64-windows-dynamic\debug\lib\SoapySDR\modules0.8` for `win-msvc-debug`. Never mix the two: a
+  Release module does not load into a Debug `SoapySDR.dll`, nor the reverse. `SoapySDRUtil.exe` is built for Release
+  only (`vcpkg_installed\x64-windows-dynamic-release\tools\soapysdr\`). The release zip lays all of this out by
+  itself ([soapysdr.md](soapysdr.md) section 0a).
 - Android: see [Android Cross Builds](#android-cross-builds).
 
 ## Build mbelib-neo

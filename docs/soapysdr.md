@@ -23,8 +23,8 @@ You need three pieces:
 - `SoapySDRUtil` (device discovery/probe tool)
 - A SoapySDR module/plugin for your radio (Airspy/SDRplay/HackRF/LimeSDR/etc.)
 
-Using the prebuilt Windows release zip? The runtime library is already bundled — skip to section 0a for how to add
-driver modules.
+Using the prebuilt Windows release zip? It already has all three for Airspy, HackRF and Airspy HF+ radios; see
+section 0a.
 
 Sanity-check that the tool is installed and Soapy can see your plugins/devices:
 
@@ -36,34 +36,75 @@ SoapySDRUtil --find
 If `--find` shows no devices, you likely do not have the right module installed, or Soapy cannot find it.
 If you installed modules into a non-standard location, set `SOAPY_SDR_PLUGIN_PATH` and re-run `SoapySDRUtil --info`.
 
-## 0a) Windows release zip: installing driver modules
+## 0a) Windows release zip: bundled modules, and adding others
 
-The Windows release zip ships `SoapySDR.dll` (version 0.8.1, the core library only) in `bin\`. It does **not**
-include any radio driver modules or the `SoapySDRUtil.exe` tool, so out of the box `-i soapy` always reports
-`SoapySDR: enumerate found no devices`. To use a Soapy radio you must install a module for it yourself.
+The Windows release zip ships SoapySDR 0.8.1 with three radio modules and the `SoapySDRUtil.exe` tool:
 
-**Where modules are loaded from.** `SoapySDR.dll` resolves its install root from its own location (one level above
-`bin\`), so with the zip extracted to `C:\dsd-neo` it searches:
+| Radio | Module (in `lib\SoapySDR\modules0.8\`) | Its library (in `bin\`) | Args |
+| --- | --- | --- | --- |
+| Airspy R2, Airspy Mini | `airspySupport.dll` (SoapyAirspy 0.2.1) | `airspy.dll`, the one the native Airspy input uses | `driver=airspy` |
+| HackRF One | `HackRFSupport.dll` (SoapyHackRF 0.3.6) | `hackrf.dll` | `driver=hackrf` |
+| Airspy HF+, HF+ Discovery | `airspyhfSupport.dll` (SoapyAirspyHF 0.2.1) | `airspyhf.dll` | `driver=airspyhf` |
 
-- `C:\dsd-neo\lib\SoapySDR\modules0.8\` — create this folder and drop module DLLs into it, or
+`bin\SoapySDR.dll`, `bin\libusb-1.0.dll` and `bin\pthreadVC3.dll` serve all three. From the unzipped folder,
+`bin\SoapySDRUtil.exe --info` lists the modules it found and `bin\SoapySDRUtil.exe --find` lists the radios
+plugged in. Windows reaches each radio through the WinUSB driver. An Airspy normally sets it up by itself
+([airspy.md](airspy.md)); a radio that `--find` does not list may need WinUSB installed once with
+[Zadig](https://zadig.akeo.ie/), as an RTL-SDR does.
+
+What dsd-neo does with each (none of this is tested on real hardware yet):
+
+- **Airspy R2 and Mini** get the Airspy profile and the device's own rate nearest what dsd-neo asks for (2.5 MS/s on
+  an R2, 3 MS/s on a Mini). Gains: `LNA`, `MIX`, `VGA`. They also have a native input, `-i airspy`
+  ([airspy.md](airspy.md)); through SoapySDR, Skip silent channels can check them (see [trunk-scan.md](trunk-scan.md)).
+- **HackRF One** gets the HackRF profile and runs at 10 MS/s, whatever DSP bandwidth you pick: its makers list 2 MS/s
+  as its lowest rate and recommend 8 MS/s or more. dsd-neo halves 10 MS/s down to the DSP bandwidth, as it does for an
+  Airspy. Its filter opens to 5.5 MHz (see Tuner filter below). That is 20 MB/s over USB, 80 MB/s for a cf32
+  `--iq-capture`, and a 32 MiB input buffer (about 419 ms at 10 MS/s). `soapy_profile = "generic"` keeps the old
+  behaviour, the rate nearest the request (2 MS/s, or 1 MS/s at the 72 kHz DSP bandwidth). Gains: `LNA`, `VGA` and the
+  14 dB `AMP`; set them with `soapy_gains` (for example `soapy_gains = "LNA:24,VGA:20,AMP:0"`), and keep `AMP` off
+  near strong transmitters. Skip silent channels checks it at 10 MS/s.
+- **Airspy HF+ and HF+ Discovery** get the generic profile (they used to be taken for an Airspy) and the device's
+  rate nearest the request, its highest (768 kS/s on a Discovery). They have no filter control. Gains: the LNA
+  on or off, the attenuator (0 to 48 dB in 6 dB steps) and the AGC. The
+  hardware covers 0.5 kHz to 31 MHz and 64 to 260 MHz; the `-i soapy:...:freq` shorthand starts at 1 MHz, so tune
+  lower through `[input] rtl_freq` (untested). Skip silent channels cannot check them at these rates.
+
+**Picking a radio.** A bare `-i soapy` opens the first radio found, in driver order: Airspy, then Airspy HF+, then
+HackRF. With more than one radio plugged in, name it: `-i soapy:driver=hackrf` or
+`-i soapy:driver=airspy,serial=...`. To find a radio, a module opens each free radio of its kind for a moment: the
+HackRF module opens every free HackRF, reads its serial and turns its transceiver off, even when it then picks another
+radio. A radio another program is using is skipped; whether a HackRF streaming in another program is left alone is
+untested.
+
+**What the errors mean.**
+
+- `SoapySDR::Device::make() no match`: no loaded module handles that driver (a typo in `driver=`, or a module that did
+  not load; run `bin\SoapySDRUtil.exe --info`).
+- `Unable to open AirSpy device`, `Unable to open AirspyHF device`, `no hackrf device matches`: the module loaded but
+  found no free radio of that kind (unplugged, in use by another program, or without the WinUSB driver).
+- `no driver specified and no enumeration results`: a bare `-i soapy` found no radio at all.
+
+**Adding another module.** `SoapySDR.dll` finds its install root from its own location (one level above `bin\`), so
+with the zip extracted to `C:\dsd-neo` it loads modules from:
+
+- `C:\dsd-neo\lib\SoapySDR\modules0.8\`, or
 - every directory listed in the `SOAPY_SDR_PLUGIN_PATH` environment variable (semicolon-separated), or
 - `%SOAPY_SDR_ROOT%\lib\SoapySDR\modules0.8\` if you set `SOAPY_SDR_ROOT` (it overrides the DLL-relative root).
 
-**The `modules0.8` name is the module ABI version, and it must match.** DSD-neo bundles the SoapySDR 0.8.1
-*release*, whose ABI string is plain `0.8`. Module DLLs built against a different ABI are skipped at startup with
-an ABI-mismatch warning. In particular, bundles built from SoapySDR git master (for example PothosSDR installers)
-use suffixed ABIs such as `0.8-3` — modules taken from those bundles will not load against the shipped
-`SoapySDR.dll`. Use modules built against a SoapySDR 0.8.x release, or build the module yourself against the
-0.8.1 headers/library from the zip's ecosystem.
+A module you add must be:
 
-**Module dependencies still apply.** A module DLL loads its own backend libraries, which must be findable next to
-the module or on `PATH` — for example SDRplay's `sdrplay_api.dll` (install the official SDRplay API/service first)
-or `airspy.dll` for Airspy.
+- 64-bit, built with the Microsoft compiler (the bundled `MSVCP140.dll` and `VCRUNTIME140.dll` runtime).
+- Built for module ABI `0.8` exactly, that is against a SoapySDR 0.8.x release. Modules from SoapySDR development
+  builds report ABIs such as `0.8-3` (PothosSDR installers ship these), and SoapySDR 0.9 modules report `0.9`; both
+  are skipped with `failed ABI check`. A second module for a driver that is already loaded is skipped with
+  `duplicate entry`, and the bundled one stays in use.
+- Able to find its own DLLs: Windows looks for them next to `dsd-neo.exe` (in `bin\`) and on `PATH`, not next to the
+  module. SDRplay's module, for example, needs `sdrplay_api.dll` from the official SDRplay API installer on `PATH`.
+  Do not put any DLL other than a module in the module folder: SoapySDR loads every DLL there as a module.
 
-**Verifying without `SoapySDRUtil.exe`.** Watch dsd-neo's startup log: a wrong or missing module shows
-`SoapySDR: enumerate found no devices`, and ABI mismatches are logged when modules are scanned. If you want the
-full `--find`/`--probe` workflow from section 2, install a matching-ABI SoapySDR build separately and point its
-`SOAPY_SDR_PLUGIN_PATH` at the same module directory.
+Long folder names (around 260 characters) or folder names with characters outside your Windows language's code page
+can stop SoapySDR from finding its modules; extract the zip to a short path such as `C:\dsd-neo`.
 
 ## 1) Build with Soapy enabled
 
@@ -113,7 +154,37 @@ changes it plans again. A device slower than the DSP bandwidth does not start (`
 than the 72000 Hz DSP bandwidth; choose a smaller DSP bandwidth`), nor does
 one whose rate cannot be resampled to the bandwidth within 5 ppm (`dsd-neo cannot convert the device's ... Hz to the
 48000 Hz DSP bandwidth closely enough ...; choose another DSP bandwidth`); every rate grid listed here converts
-exactly.
+exactly. A profile can prefer a rate of its own: the HackRF profile runs 10 MS/s whenever the radio offers exactly that
+rate, and dsd-neo halves it down the same way. Up to 10 MS/s is accepted, checked on the rate the radio reports back;
+a radio that reports more does not start (`the device runs ... Hz, above the 10000000 Hz capture ceiling`), and dsd-neo
+sizes its input buffer for the rate the radio delivers. A retune whose reported rate moves above what that buffer holds
+is refused and the radio stays where it was; restart the stream to use the new rate.
+
+**Tuner filter.** A SoapySDR capture is tuned a quarter of the sample rate above the channel (dsd-neo moves it back in
+software, which keeps the channel away from the radio's centre spike), so the radio's filter has to keep a channel
+that far off its centre: at least half the sample rate plus 72 kHz, the widest DSP bandwidth. With `soapy_bandwidth_hz`
+at its default (`-1`), a profile's filter narrower than that opens to the narrowest filter the radio offers at or
+above it, and the start says so once:
+
+- HackRF at 10 MS/s: 5.5 MHz (was 1.75 MHz).
+- SDRplay at 2 MS/s: 1.536 MHz; at 1 MS/s: 600 kHz (was 200 kHz).
+- ADALM-Pluto at 2 MS/s: 2 MHz; at 1 MS/s: 1 MHz (was 200 kHz).
+- LimeSDR: unchanged; its narrowest filter, 1.4 MHz, is already wide enough at the rates dsd-neo runs it.
+
+```text
+SoapySDR: opened the profile's 1750000 Hz bandwidth to 5500000 Hz for the channel 2500000 Hz off centre.
+```
+
+The SDRplay and ADALM-Pluto figures come from their drivers' filter lists; they are not tested on those radios. An
+explicit `soapy_bandwidth_hz` (or `DSD_NEO_TUNER_BW_HZ`) is applied as the radio takes it. If that is narrower, dsd-neo
+warns once for that filter and rate:
+
+```text
+SoapySDR: bandwidth 5000000 Hz is narrower than 5072000 Hz, which keeps the channel (2500000 Hz off centre, a quarter of the 10000000 Hz sample rate) at every DSP bandwidth.
+```
+
+A filter a little narrower than that figure can still keep a narrower DSP bandwidth's channel whole; the figure is for
+the widest. `soapy_bandwidth_hz = 0` leaves the filter to the driver.
 
 Minimal config (recommended):
 
@@ -137,7 +208,8 @@ Optional tuning keys (also shared with RTL/RTL-TCP):
 Optional Soapy-specific keys:
 
 - `soapy_profile = "auto|generic|airspy|sdrplay|hackrf|lime|pluto|rtlsdr|uhd|sddc"` selects a capability profile.
-  `auto` detects from the Soapy driver/hardware strings.
+  `auto` detects from the Soapy driver/hardware strings; an Airspy HF+ gets `generic`. `hackrf` runs a HackRF at
+  10 MS/s; `generic` on a HackRF keeps the rate nearest the request.
 - `soapy_stream_format = "auto|cf32|cs16"` controls RX stream format selection. `auto` prefers the device native
   format when it is `CF32` or `CS16`, then falls back to supported formats. See [Signal levels on a CS16
   stream](#signal-levels-on-a-cs16-stream) for how `CS16` samples are scaled.
@@ -148,8 +220,9 @@ Optional Soapy-specific keys:
   `rx:key=value` or `rx0:key=value` for RX channel 0 settings.
 - `soapy_gains = "NAME:dB[,NAME:dB...]"` applies named Soapy gain stages and suppresses aggregate gain changes. Items
   may be separated with commas, semicolons, or spaces.
-- `soapy_bandwidth_hz = -1|0|<Hz>` uses profile/default behavior for `-1`, driver automatic/no explicit request for
-  `0`, or validates and applies an explicit hardware bandwidth in Hz.
+- `soapy_bandwidth_hz = -1|0|<Hz>` uses the profile's filter for `-1` (opened for the quarter-rate offset, see Tuner
+  filter above), driver automatic/no explicit request for `0`, or validates and applies an explicit hardware bandwidth
+  in Hz (with a warning when it is narrower than the offset channel needs).
 - `digital_resample = "auto|on|off"` controls whether the digital FSK stream is resampled to the resampler target
   (48000 Hz by default). The stream runs at the DSP bandwidth (see Device rates above), so `auto` engages only when
   the device picked its own rate and the DSP bandwidth yields a non-integer samples-per-symbol (12 kHz for
@@ -183,7 +256,6 @@ soapy_profile = "sdrplay"
 soapy_stream_format = "auto"
 soapy_settings = "rfnotch_ctrl=true,dabnotch_ctrl=true,biasT_ctrl=false,agc_setpoint=-30,rfgain_sel=4"
 soapy_gains = "IFGR:35"
-soapy_bandwidth_hz = 200000
 rtl_freq = "851.375M"
 rtl_gain = 22
 rtl_ppm = -2
@@ -327,8 +399,9 @@ dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan
   Host or USB bus is falling behind. Try reducing throughput by lowering `rtl_bw_khz` (config key; for example 48 -> 16)
   and/or overriding tuner bandwidth (env `DSD_NEO_TUNER_BW_HZ=<Hz|auto>`), then reduce system load or adjust driver settings.
 - Discovery/plugin issues:
-  Confirm `SOAPY_SDR_PLUGIN_PATH` includes the module directory for your Soapy drivers. On Windows release-zip
-  installs no modules ship at all — see section 0a for where to put them and the ABI-match requirement.
+  Confirm `SOAPY_SDR_PLUGIN_PATH` includes the module directory for your Soapy drivers. The Windows release zip ships
+  the Airspy, HackRF and Airspy HF+ modules and `bin\SoapySDRUtil.exe`; see section 0a for adding others and the
+  ABI-match requirement.
 
 Manual driver-setting check:
 

@@ -83,7 +83,17 @@ requirement through `find_package(OpenSSL 3.0 REQUIRED)`.
 ## Packaging Dependencies
 
 Windows builds use vcpkg overlays under `vcpkg-ports/` and triplets under
-`vcpkg-triplets/`. AppImage builds use pinned CI source checkouts for compiled
+`vcpkg-triplets/`. The Windows zip's SoapySDR pieces come from overlays too:
+`soapysdr` (the registry port's SoapySDR 0.8.1 with a `tools` feature that
+builds `SoapySDRUtil.exe`, which the registry port leaves out), the device
+libraries `hackrf` (libhackrf, release 2026.01.3) and `airspyhf` (libairspyhf),
+and the modules `soapy-airspy`, `soapy-hackrf` and `soapy-airspyhf`, which
+build against the overlays' libraries (`soapy-airspy` against the held
+`airspy` overlay below). libairspyhf is pinned to an untagged commit on
+purpose: its only release tag, 1.6.8, dates from 2020, and the fixes since
+(a hang when a device is unplugged, a use-after-free) are on master; the library
+sources have not changed since the 1.8.1 version bump. The macOS DMG bundles
+Homebrew's SoapySDR and no modules. AppImage builds use pinned CI source checkouts for compiled
 dependencies that are not suitable from the Ubuntu 20.04 base image, including
 SoapySDR 0.8.1 or newer. Linux source-install validation uses pinned Docker
 images from `tools/ci-dependency-pins.env` to exercise apt, dnf, zypper, apk,
@@ -105,7 +115,9 @@ Two packaging pins are held below upstream on purpose:
 - SoapySDR stays on 0.8.1. SoapySDR 0.9.0 moves the module ABI to `0.9`, and
   the AppImage loads the SoapySDR device modules installed on the host, which
   every distribution still builds for `0.8`. Move it once distributions ship
-  0.9 modules.
+  0.9 modules. The Windows zip's bundled modules are built against the same
+  0.8.1 and would move with it, but modules Windows users add from elsewhere
+  would then need the `0.9` ABI too.
 - libairspy stays on `bd15be38e91ebaa3e0bebb1e320255bde4ccf059`. Upstream's
   June 2025 "Copyright Update" commits put `iqconverter_float.*` and
   `iqconverter_int16.*` under a license that allows distribution only within
