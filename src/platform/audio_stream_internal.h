@@ -6,7 +6,7 @@
 #ifndef DSD_NEO_SRC_PLATFORM_AUDIO_STREAM_INTERNAL_H
 #define DSD_NEO_SRC_PLATFORM_AUDIO_STREAM_INTERNAL_H
 
-#include <dsd-neo/core/safe_api.h> // IWYU pragma: keep (DSD_MEMCPY in the input carry's inline helpers)
+#include <dsd-neo/core/safe_api.h> // IWYU pragma: keep -- the input carry's inline helpers copy with DSD_MEMCPY.
 #include <dsd-neo/platform/audio_concealment.h>
 #include <dsd-neo/platform/threading.h>
 

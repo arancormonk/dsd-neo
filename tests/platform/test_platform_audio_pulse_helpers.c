@@ -254,10 +254,13 @@ pa_simple_read(pa_simple* s, void* data, size_t bytes, int* error) {
     if (data != NULL) {
         DSD_MEMSET(data, 0, bytes);
     }
-    if (g_pa_capture_on && g_pa_overrun_at_read > 0 && --g_pa_overrun_at_read == 0) {
-        g_now_ns += g_pa_overrun_ns;
-        g_pa_capture_next = g_pa_overrun_next;
-        g_pa_capture_held = g_pa_overrun_held;
+    if (g_pa_capture_on && g_pa_overrun_at_read > 0) {
+        g_pa_overrun_at_read--;
+        if (g_pa_overrun_at_read == 0) {
+            g_now_ns += g_pa_overrun_ns;
+            g_pa_capture_next = g_pa_overrun_next;
+            g_pa_capture_held = g_pa_overrun_held;
+        }
     }
     if (g_pa_capture_on && data != NULL) {
         const size_t frames = bytes / sizeof(int16_t);
@@ -915,7 +918,7 @@ test_pulse_input_discard_keeps_the_newest(void) {
     /* Held: frames 0..299. The discard reads 32 at a time; its tenth read waits and brings frames 288..319. */
     g_pa_capture_held = 300U;
     assert(dsd_audio_discard_input(in, g_now_ns - 1000000U) == 176);
-    int16_t frames[50];
+    int16_t frames[50] = {0};
     assert(dsd_audio_read(in, frames, 1) == 1 && frames[0] == 176);
     assert(dsd_audio_read(in, frames, 50) == 50);
     for (int i = 0; i < 50; i++) {
@@ -1024,7 +1027,7 @@ test_pulse_input_discard_keeps_what_an_overrun_left(void) {
     g_pa_overrun_next = 20000;
     g_pa_overrun_held = 4800U;
     const int dropped = dsd_audio_discard_input(in, g_now_ns);
-    int16_t frames[100];
+    int16_t frames[100] = {0};
     assert(dsd_audio_read(in, frames, 100) == 100);
     if (dropped != 0 || frames[0] != 0 || frames[64] != 20000) {
         DSD_FPRINTF(stderr, "an overrun's discard dropped %d, read %d then %d (expected 0, 0 and 20000)\n", dropped,

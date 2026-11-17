@@ -424,9 +424,12 @@ AAudioStream_read(AAudioStream* stream, void* buffer, int32_t frames, int64_t ti
     if (buffer != NULL) {
         DSD_MEMSET(buffer, 0, (size_t)frames * (size_t)g.device_channels * sizeof(int16_t));
     }
-    if (g.overrun_at_read > 0 && --g.overrun_at_read == 0) {
-        g.xruns++;
-        g.input_next = g.overrun_next;
+    if (g.overrun_at_read > 0) {
+        g.overrun_at_read--;
+        if (g.overrun_at_read == 0) {
+            g.xruns++;
+            g.input_next = g.overrun_next;
+        }
     }
     if (g.input_numbered && buffer != NULL) {
         int16_t* out = (int16_t*)buffer;

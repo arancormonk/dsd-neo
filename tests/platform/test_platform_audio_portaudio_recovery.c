@@ -266,10 +266,13 @@ PaError
 Pa_ReadStream(PaStream* stream, void* buffer, unsigned long frames) {
     (void)stream;
     PaError result = paNoError;
-    if (g_overrun_at_read > 0 && --g_overrun_at_read == 0) {
-        g_read_available = g_overrun_available;
-        g_read_next = g_overrun_next;
-        result = paInputOverflowed;
+    if (g_overrun_at_read > 0) {
+        g_overrun_at_read--;
+        if (g_overrun_at_read == 0) {
+            g_read_available = g_overrun_available;
+            g_read_next = g_overrun_next;
+            result = paInputOverflowed;
+        }
     }
     if (g_read_numbered && buffer != NULL) {
         int16_t* out = (int16_t*)buffer;
