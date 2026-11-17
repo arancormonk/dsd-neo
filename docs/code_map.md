@@ -42,12 +42,14 @@ Generated (do not edit/commit):
 - Path: `src/engine` (including `src/engine/dispatch`), `include/dsd-neo/engine`
 - Targets: `dsd-neo_engine`, `dsd-neo_dispatch`
 - Responsibilities:
-  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines). At the end of a run
-    `dsd_engine_run_with_lifecycle()` commits the session's last calls (`dsd_engine_finalize_calls()`: end the slots
-    as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry before it calls the
-    frontends' stop hooks, so a frontend that records calls gets the final transmission; `dsd_engine_cleanup()`
-    repeats the step, which then finds nothing left to do. At the start of every run the engine also starts the run's
-    position feed (`dsd_position_feed_start()`, below), beside the debug start time
+  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines). At the end of a run whose
+    lifecycle started (its start hook ran and succeeded) `dsd_engine_run_with_lifecycle()` commits the session's last
+    calls (`dsd_engine_finalize_calls()`: end the slots as sync loss, commit their rows, retire the held VOICE_END
+    alerts) and publishes telemetry, then calls the frontends' stop hook when there is one, so a frontend that records
+    calls gets the final transmission; a frontend with only a start hook (Android) gets the final publish too, which
+    its history tap reads after the stop (bug B1, issue #800). A start hook that fails adds no publish and no stop
+    call. `dsd_engine_cleanup()` repeats the step, which then finds nothing left to do. At the start of every run the
+    engine also starts the run's position feed (`dsd_position_feed_start()`, below), beside the debug start time
   - Output files of a session that never runs (#782): the bootstrap opens the `-c` symbol capture, `-w` static WAV
     and `-6` raw WAV while it parses, and only `dsd_engine_cleanup()` closed them. `-P` opens its per-call WAVs only
     at the run's start (issue #708), so a configure leaves none. `dsd_engine_release_outputs()` closes them (and any

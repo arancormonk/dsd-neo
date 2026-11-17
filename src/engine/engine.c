@@ -5201,13 +5201,17 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
 ENGINE_OUT:
     /* The run leaves its carrier: nothing it decoded says the receiver is on a two-slot carrier any more. */
     state->tdma_carrier = 0U;
-    if (lifecycle_started && hooks && hooks->stop) {
+    if (lifecycle_started) {
         /* The session's last calls are committed and published while the frontends are still attached, so a
-           frontend that records them (the control API's event subscribers) gets the final transmission too. */
+           frontend that records them (the control API's event subscribers) gets the final transmission too. A
+           frontend with no stop hook (Android passes only start) still gets the final publish: its history tap reads
+           the last published rings after the stop. */
         dsd_exitflag_store(1);
         dsd_engine_finalize_calls(opts, state);
         dsd_telemetry_publish_both_and_redraw(opts, state);
-        hooks->stop(opts, state, hooks->context);
+        if (hooks && hooks->stop) {
+            hooks->stop(opts, state, hooks->context);
+        }
     }
     dsd_engine_cleanup(opts, state);
     /* The watchdog has stopped: what this session published and noted goes with it. */
