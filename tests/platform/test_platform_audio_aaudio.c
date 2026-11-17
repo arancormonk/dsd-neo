@@ -421,9 +421,6 @@ AAudioStream_read(AAudioStream* stream, void* buffer, int32_t frames, int64_t ti
         g.read_result_pending = 0;
         return g.read_result;
     }
-    if (buffer != NULL) {
-        DSD_MEMSET(buffer, 0, (size_t)frames * (size_t)g.device_channels * sizeof(int16_t));
-    }
     if (g.overrun_at_read > 0) {
         g.overrun_at_read--;
         if (g.overrun_at_read == 0) {
@@ -431,10 +428,16 @@ AAudioStream_read(AAudioStream* stream, void* buffer, int32_t frames, int64_t ti
             g.input_next = g.overrun_next;
         }
     }
-    if (g.input_numbered && buffer != NULL) {
+    if (buffer != NULL) {
+        /* Silence, or with input_numbered each frame's samples numbered by frame. */
+        const size_t ch = (size_t)g.device_channels;
+        const size_t samples = (size_t)frames * ch;
         int16_t* out = (int16_t*)buffer;
-        for (int32_t i = 0; i < frames; i++) {
-            out[i] = g.input_next++;
+        for (size_t i = 0; i < samples; i++) {
+            out[i] = g.input_numbered ? (int16_t)(g.input_next + (int16_t)(i / ch)) : 0;
+        }
+        if (g.input_numbered) {
+            g.input_next = (int16_t)(g.input_next + frames);
         }
     }
     g.input_frames_taken += frames;
