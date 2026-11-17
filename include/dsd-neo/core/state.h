@@ -1322,7 +1322,8 @@ struct dsd_state {
 
     /* The DMR talkgroup key autoload's working key (keyring_dmr_tg_autoload_apply()): the K, K1..K4, H,
        basic_key_present and hytera_key_segments it replaced (a key set directly, or none), restored for a call whose
-       talkgroup has no key, and the ones it installed, so a key changed since by anything else is left alone. Both
+       talkgroup has no key, and the ones it installed; it owns the working key (active) until anything else writes
+       it, which hands it back first (dsd_dmr_tg_autoload_hand_back()), so a key written since is left alone. Both
        slots share the one working key, so each slot keeps the talkgroup whose key its own call last keyed from
        (slot_tg, 0: none), which a frame of a call no LC has named yet keys from again, and that key (slot_key and
        slot_key_flags, laid out as baseline; flags all 0: the slot's call keyed from no talkgroup), which a frontend

@@ -118,6 +118,9 @@ key_scalars_capture(dsd_key_scalars* out, const dsd_state* state) {
 
 static void
 key_scalars_install(dsd_state* state, const dsd_key_scalars* in) {
+    // A key set, profile, scan row or direct key installed is the operator's, whatever its value: the talkgroup key
+    // autoload owns the working key no more.
+    dsd_dmr_tg_autoload_hand_back(state);
     state->K = in->K;
     state->K1 = in->K1;
     state->K2 = in->K2;

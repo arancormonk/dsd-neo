@@ -1926,15 +1926,21 @@ suite runs under this compiler.
   `dmr_flco_missing_alg_key_can_decrypt()`). The terminal UI's slot row shows the key its own call keyed from
   (`slot_key`, `dsd_dmr_slot_call_key()`, since the UI snapshot holds no keyring), or none, and the Loaded lines and the
   Hytera menu label show the key the user loaded (the key the autoload replaced while its key is the working key), never
-  a talkgroup's, revealed only by `--show-keys` through the redaction helpers. A key changed by anything else since is
-  left alone, a scan's saved keys and a key typed in overlay mode (`dsd_key_apply_direct()`) take the key the autoload
+  a talkgroup's, revealed only by `--show-keys` through the redaction helpers. The autoload owns the working key from
+  the moment it installs it (`dmr_tg_autoload.active`) until anything else writes it: every other writer (the key
+  commands, a key set, profile or scan row installed, `key_scalars_install()`, a direct key, the CLI's `-2`, the
+  no-carrier unload) first hands it back (`dsd_dmr_tg_autoload_hand_back()` in `key_presence.h`), which puts back the
+  key the autoload replaced, so the write builds on the operator's own key, and ends the ownership whatever value is
+  written, one equal to the autoload's included, wiping its key copies; the autoload owns it again only when it next
+  keys a call. A scan's saved keys and a key typed in overlay mode (`dsd_key_apply_direct()`) take the key the autoload
   replaced (`key_scalars_capture()`), so a typed Basic Privacy key keeps no talkgroup's Hytera key, the secure wipe
   clears the autoload's copies, and the no-carrier unload of a keyring's working keys is unchanged
   (`no_carrier_unload_keys_if_needed()`). Tests: `P25_CRYPTO_STATE`, `NXDN_ELEMENT_BOUNDS` (imported zero keys, the
   narrow AES fallback, VCALL_IV keeping the VCALL's key), `CORE_MBE_TRANSFORM_CONTEXT`, `DMR_BLOCK_CRYPTO`,
   `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO` (incomplete AES keys refused on the data and replay paths),
-  `CORE_DMR_VOICE_ALG_GATE` (DMR voice width), `CORE_DMR_TG_KEY_MAP`, `CORE_KEY_SET`, `DMR_SYNTH_BP_KEY`,
-  `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `UI_NCURSES_PRINTER_HELPERS`, `UI_MENU_LABELS`.
+  `CORE_DMR_VOICE_ALG_GATE` (DMR voice width), `CORE_DMR_TG_KEY_MAP`, `CORE_KEY_SET`, `CORE_KEY_DIRECT` (each writer
+  of the working key, the autoload's own value written), `DMR_SYNTH_BP_KEY`, `ENGINE_NO_CARRIER_RESET`,
+  `ENGINE_TRUNK_SCAN`, `UI_NCURSES_PRINTER_HELPERS`, `UI_MENU_LABELS`.
 
 - Invariant (audio sinks, `<dsd-neo/core/audio_sink.h>`, `src/core/audio/audio_sink.c`, issue #659): every writer of
   decoded or analog audio applies its own gates and picks the output type, then writes the local device streams only

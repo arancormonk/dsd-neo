@@ -13,6 +13,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
@@ -17740,6 +17741,25 @@ main(void) {
     rc |= expect_true("keyloader-carrier-reset-clears-aes-bytes", aes_cleared && state->K == 0ULL && state->K1 == 0ULL
                                                                       && state->H == 0ULL
                                                                       && state->aes_key_loaded[0] == 0);
+
+    // The unload writes the working key the talkgroup key autoload loaded: the autoload owns it no more and its key
+    // copies are wiped, so a call on a talkgroup with no key leaves the unloaded key alone.
+    seed_dmr_basic_privacy_call(state, 70ULL);
+    rc |=
+        expect_true("keyloader-carrier-reset-autoload-seeded", dsd_dmr_tg_autoload_holds(state) && state->K == 0x33ULL);
+    noCarrier(opts, state);
+    int autoload_wiped = state->dmr_tg_autoload.active == 0U;
+    for (size_t i = 0U; i < 6U; i++) {
+        autoload_wiped &= state->dmr_tg_autoload.baseline[i] == 0ULL && state->dmr_tg_autoload.installed[i] == 0ULL;
+    }
+    autoload_wiped &= state->dmr_tg_autoload.baseline_flags[0] == 0U && state->dmr_tg_autoload.installed_flags[0] == 0U;
+    rc |= expect_true("keyloader-carrier-reset-ends-the-autoload-hold",
+                      !dsd_dmr_tg_autoload_holds(state) && autoload_wiped && state->K == 0ULL && state->H == 0ULL);
+    uint32_t unload_keyed_from = 0U;
+    rc |= expect_true("keyloader-carrier-reset-autoload-restores-nothing",
+                      !keyring_dmr_tg_autoload_apply(state, 0U, 456U, &unload_keyed_from) && state->K == 0ULL
+                          && state->basic_key_present == 0U);
+    state->keyloader = 0;
 
     // Embedded direct keys deliberately use keyloader=0, matching -b/-H:
     // noCarrier preserves them and must not alter the operator's mute policy.

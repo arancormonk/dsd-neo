@@ -16,6 +16,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
@@ -3214,6 +3215,7 @@ no_carrier_unload_keys_if_needed(dsd_state* state) {
     if (state->keyloader != 1) {
         return;
     }
+    dsd_dmr_tg_autoload_hand_back(state);
     state->R = 0;
     state->RR = 0;
     state->K = 0;

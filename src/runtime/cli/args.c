@@ -10,6 +10,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/gain_setting.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/lrrp_ports.h>
@@ -3289,6 +3290,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
         }                                                                                                              \
         case '2':                                                                                                      \
             state->tyt_bp = 1;                                                                                         \
+            dsd_dmr_tg_autoload_hand_back(state);                                                                      \
             DSD_CLI_PARSE_U64_OR_RETURN("-2", optarg, 16, state->H);                                                   \
             state->H = state->H & 0xFFFF;                                                                              \
             char key_text[16];                                                                                         \

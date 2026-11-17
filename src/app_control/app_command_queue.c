@@ -32,6 +32,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frontend_types.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
@@ -772,6 +773,8 @@ apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct ds
             if (c->n >= (int)sizeof(uint32_t)) {
                 uint32_t v = 0;
                 DSD_MEMCPY(&v, c->data, sizeof v);
+                /* The key typed goes over the operator's own, never over a talkgroup's the autoload loaded. */
+                dsd_dmr_tg_autoload_hand_back(state);
                 state->K = v;
                 state->basic_key_present = 1;
                 DSD_SECURE_ZERO(&v, sizeof v);
@@ -817,6 +820,7 @@ apply_cmd_key_hytera_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     } p;
 
     DSD_MEMCPY(&p, c->data, sizeof p);
+    dsd_dmr_tg_autoload_hand_back(state);
     state->H = p.H;
     state->K1 = p.K1;
     state->K2 = p.K2;
@@ -860,6 +864,7 @@ apply_cmd_key_aes_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
         state->aes_key[i + 16] = (uint8_t)((p.K3 >> (56 - (i * 8))) & 0xFFU);
         state->aes_key[i + 24] = (uint8_t)((p.K4 >> (56 - (i * 8))) & 0xFFU);
     }
+    dsd_dmr_tg_autoload_hand_back(state);
     state->H = 0ULL;
     state->K1 = 0ULL;
     state->K2 = 0ULL;

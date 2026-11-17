@@ -178,8 +178,9 @@ uint32_t keyring_dmr_tg_key_cell(uint32_t tg);
  * the carrier and a trunk-scan visit forget it (keyring_dmr_tg_autoload_forget_slot(), dmr_forget_call_privacy()), so
  * a new call keys from no earlier call's talkgroup; one whose terminator was missed on the same carrier is still the
  * slot's call and keys from its talkgroup until the new call's LC names its own (the code cannot tell them apart
- * before that). A key changed since by anything else (a key command, the no-carrier unload) is
- * left alone. Returns 1 when a talkgroup's key was loaded, that talkgroup into @p keyed_from, 0 otherwise.
+ * before that). A key written since by anything else (a key command, a key set, a direct key, the no-carrier unload:
+ * dsd_dmr_tg_autoload_hand_back()), whatever its value, is left alone. Returns 1 when a talkgroup's key was loaded,
+ * that talkgroup into @p keyed_from, 0 otherwise.
  */
 int keyring_dmr_tg_autoload_apply(dsd_state* state, uint8_t slot, uint32_t tg, uint32_t* keyed_from);
 

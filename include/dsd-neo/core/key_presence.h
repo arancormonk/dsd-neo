@@ -2,6 +2,7 @@
 #ifndef DSD_NEO_CORE_KEY_PRESENCE_H
 #define DSD_NEO_CORE_KEY_PRESENCE_H
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
@@ -64,9 +65,11 @@ dsd_key_dmr_forced_clear(const dsd_state* state) {
     return state && (state->baofeng_ap == 1 || state->csi_ee == 1 || state->ken_sc == 1);
 }
 
-// Whether the DMR talkgroup key autoload's key is still the working key: the Basic Privacy and Hytera key (K, K1..K4,
-// H, basic_key_present, hytera_key_segments) is the one it installed (dsd_state::dmr_tg_autoload), changed by nothing
-// else since (a key command, the no-carrier unload).
+// Whether the DMR talkgroup key autoload's key is still the working key: the autoload owns the Basic Privacy and
+// Hytera key (K, K1..K4, H, basic_key_present, hytera_key_segments) since it installed it (dsd_state::dmr_tg_autoload
+// active), which every other writer ends whatever it writes (dsd_dmr_tg_autoload_hand_back(): a key command, a key
+// set, profile or scan row, a direct key, the CLI, the no-carrier unload), and the working key is still the one it
+// installed.
 static inline int
 dsd_dmr_tg_autoload_holds(const dsd_state* state) {
     if (!state || !state->dmr_tg_autoload.active) {
@@ -92,6 +95,37 @@ dsd_dmr_tg_autoload_baseline(const dsd_state* state, unsigned long long int word
     flags[0] = state->dmr_tg_autoload.baseline_flags[0];
     flags[1] = state->dmr_tg_autoload.baseline_flags[1];
     return 1;
+}
+
+// Something other than the autoload is about to write the Basic Privacy and Hytera working key (K, K1..K4, H,
+// basic_key_present, hytera_key_segments): a key command, a key set, profile or scan row installed, a direct key, the
+// CLI, the no-carrier unload. Every such writer calls this first. While the autoload's key is the working key, the key
+// it replaced comes back, so a write of some of those fields builds on the operator's own key and never keeps a
+// talkgroup's. The autoload then owns the working key no more, whatever value is written (one equal to its own
+// included), and its copies of the keys are wiped; it owns it again only when it next keys a call
+// (keyring_dmr_tg_autoload_apply()), which takes the key written as the one it replaces. Each slot's record of the
+// talkgroup its call keyed from stays.
+static inline void
+dsd_dmr_tg_autoload_hand_back(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    if (dsd_dmr_tg_autoload_holds(state)) {
+        const unsigned long long int* words = state->dmr_tg_autoload.baseline;
+        state->K = words[0];
+        state->K1 = words[1];
+        state->K2 = words[2];
+        state->K3 = words[3];
+        state->K4 = words[4];
+        state->H = words[5];
+        state->basic_key_present = state->dmr_tg_autoload.baseline_flags[0];
+        state->hytera_key_segments = state->dmr_tg_autoload.baseline_flags[1];
+    }
+    state->dmr_tg_autoload.active = 0U;
+    DSD_SECURE_ZERO(state->dmr_tg_autoload.baseline, sizeof(state->dmr_tg_autoload.baseline));
+    DSD_SECURE_ZERO(state->dmr_tg_autoload.installed, sizeof(state->dmr_tg_autoload.installed));
+    DSD_SECURE_ZERO(state->dmr_tg_autoload.baseline_flags, sizeof(state->dmr_tg_autoload.baseline_flags));
+    DSD_SECURE_ZERO(state->dmr_tg_autoload.installed_flags, sizeof(state->dmr_tg_autoload.installed_flags));
 }
 
 // The DMR Basic Privacy and Hytera key slot @p slot's call on talkgroup @p tg (0 for a call no LC has named yet) is
