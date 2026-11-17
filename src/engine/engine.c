@@ -5205,7 +5205,9 @@ ENGINE_OUT:
         /* The session's last calls are committed and published while the frontends are still attached, so a
            frontend that records them (the control API's event subscribers) gets the final transmission too. A
            frontend with no stop hook (Android passes only start) still gets the final publish: its history tap reads
-           the last published rings after the stop. */
+           the last published rings after the stop. The exit flag is set before that publish: the published position
+           feed's clock sample (app-control's position view, issue #800) takes it as the run's end, so publishing first
+           would leave a stopped run reading as running (ENGINE_LIFECYCLE_FINALIZE pins the order). */
         dsd_exitflag_store(1);
         dsd_engine_finalize_calls(opts, state);
         dsd_telemetry_publish_both_and_redraw(opts, state);

@@ -14,13 +14,19 @@
  * A frontend with a start hook and no stop hook (Android) still gets the final commit published before the cleanup
  * (bug B1, issue #800); a session whose start hook fails gets no lifecycle publish and no stop callback, and the
  * cleanup still commits its last call. No session commits its last call twice.
+ *
+ * The final publish happens with the exit flag already set: the published position feed's clock sample reads the run
+ * as stopped from that publish on (issue #800), even for a run that ended on its own with the flag clear.
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/position_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
@@ -171,12 +177,47 @@ test_start_failure(void) {
     session_close(&s);
 }
 
+/* A frontend attaching as the CLI and Android do: the app-control runtime's first publish starts the run's sample. */
+static int
+start_app_control(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)context;
+    g_started = 1;
+    dsd_app_frontend_runtime_start(opts, state);
+    dsd_app_position_cursor cursor;
+    assert(dsd_app_position_copy_since(0U, 0U, NULL, 0U, &cursor) == 0);
+    assert(cursor.stream_id != 0U && cursor.stream_id == dsd_position_feed_stream_id(state));
+    assert(cursor.sample.stream_id == cursor.stream_id && cursor.sample.running == 1U);
+    return 0;
+}
+
+/* A run that ends on its own (--playfiles with nothing to play), with the exit flag never set before the engine's own
+   end: the final publish still reads the run as stopped, because the engine sets the flag before it publishes. */
+static void
+test_final_publish_stops_position_sample(void) {
+    session s = session_open();
+    s.opts->playfiles = 1;
+    s.state->cli_argc_effective = 0;
+    s.state->cli_argv = NULL;
+    const dsd_engine_lifecycle_hooks hooks = {.start = start_app_control};
+    (void)dsd_engine_run_with_lifecycle(s.opts, s.state, &hooks);
+    assert(g_started == 1);
+    dsd_app_position_cursor cursor;
+    assert(dsd_app_position_copy_since(0U, 0U, NULL, 0U, &cursor) == 0);
+    assert(cursor.stream_id != 0U && cursor.sample.stream_id == cursor.stream_id);
+    assert(cursor.sample.running == 0U);
+    dsd_app_frontend_runtime_stop();
+    dsd_exitflag_store(0);
+    session_close(&s);
+}
+
 int
 main(void) {
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){.publish_snapshot = count_publish});
     test_start_and_stop_hooks();
     test_start_hook_only();
     test_start_failure();
+    dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
+    test_final_publish_stops_position_sample();
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
     printf("engine lifecycle finalize test passed\n");
     return 0;

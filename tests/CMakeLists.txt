@@ -6631,6 +6631,7 @@ target_include_directories(
     dsd-neo_test_app_control_position_view
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
         ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 target_compile_definitions(
@@ -9731,7 +9732,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
 endif()
 
-# The engine commits and publishes the last call before the frontends' stop hooks.
+# The engine commits and publishes the last call before the frontends' stop hooks, with the exit flag set first, so
+# the published position sample (app-control, issue #800) reads the run as stopped.
 add_executable(
     dsd-neo_test_engine_lifecycle_finalize
     engine/test_engine_lifecycle_finalize.c
@@ -9742,7 +9744,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_engine_lifecycle_finalize
-    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+    PRIVATE dsd-neo_engine dsd-neo_app_control ${LIBS} dsd-neo_test_support
 )
 add_test(
     NAME ENGINE_LIFECYCLE_FINALIZE

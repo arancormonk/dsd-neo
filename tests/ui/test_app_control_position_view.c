@@ -28,9 +28,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "../../src/app_control/position_ring.h"
-#include "../../src/app_control/snapshot_internal.h"
 #include "dsd-neo/core/call_state.h"
+#include "position_ring.h"
+#include "snapshot_internal.h"
 
 /* The event history copy lives in dsd_events.c, which this test does not link; no state here has a history. */
 int
@@ -425,7 +425,7 @@ reader_main(void* arg) {
 }
 
 /* Readers on their own threads while the decoder thread admits and publishes: each reads every record in order (or a
-   gap the cursor names) without disturbing the others. The publish hop's cost is measured with and without them. */
+   gap the cursor names) without disturbing the others. */
 static void
 test_concurrent_readers(void) {
     dsd_state* st = new_state();
@@ -443,33 +443,92 @@ test_concurrent_readers(void) {
         ctx[r].stop = &stop;
         assert(dsd_thread_create(&threads[r], reader_main, &ctx[r]) == 0);
     }
-    uint64_t contended_ns = 0U;
     for (uint32_t round = 0; round < ROUNDS; round++) {
         admit(st, 5000U + round * PER_ROUND, PER_ROUND);
-        const uint64_t t0 = dsd_realtime_mono_ns();
         publish(st);
-        contended_ns += dsd_realtime_mono_ns() - t0;
     }
     atomic_store(&stop, 1);
     for (int r = 0; r < READERS; r++) {
         assert(dsd_thread_join(threads[r]) == 0);
         assert(ctx[r].failures == 0 && ctx[r].read > 0U);
     }
+    free_state(st);
+}
 
-    /* The same publishes with no reader. */
-    dsd_state* quiet = new_state();
-    assert(dsd_position_feed_start(quiet) == 0);
-    publish(quiet);
-    uint64_t quiet_ns = 0U;
-    for (uint32_t round = 0; round < ROUNDS; round++) {
-        admit(quiet, 5000U + round * PER_ROUND, PER_ROUND);
-        const uint64_t t0 = dsd_realtime_mono_ns();
-        publish(quiet);
-        quiet_ns += dsd_realtime_mono_ns() - t0;
+/*============================================================================
+ * The publish hop's cost, alone and under contending readers
+ *============================================================================*/
+
+enum { TIMING_BLOCKS = 4, TIMING_ROUNDS = 100 };
+
+/* A reader that only contends for the snapshot lock: reads everything new in small pages until stopped. */
+static DSD_THREAD_RETURN_TYPE
+contender_main(void* arg) {
+    reader_ctx* ctx = (reader_ctx*)arg;
+    uint64_t stream = 0U;
+    uint64_t after = 0U;
+    while (!atomic_load(ctx->stop)) {
+        dsd_app_position_cursor c;
+        const int n = dsd_app_position_copy_since(stream, after, ctx->page, 5U, &c);
+        if (n < 0) {
+            ctx->failures++;
+            break;
+        }
+        stream = c.stream_id;
+        after = c.last_seq;
+        if (n == 0) {
+            dsd_thread_yield();
+        }
     }
+    DSD_THREAD_RETURN;
+}
+
+/* One block of publishes of PER_ROUND new records each; the summed publish time in ns. */
+static uint64_t
+timed_block(dsd_state* st, uint32_t* next_report) {
+    uint64_t ns = 0U;
+    for (int round = 0; round < TIMING_ROUNDS; round++) {
+        admit(st, *next_report, PER_ROUND);
+        *next_report += PER_ROUND;
+        const uint64_t t0 = dsd_realtime_mono_ns();
+        publish(st);
+        ns += dsd_realtime_mono_ns() - t0;
+    }
+    return ns;
+}
+
+/* Informational: after a warm-up block, quiet and contended blocks alternate on one stream, so neither side carries a
+   cold-cache or ordering bias. The whole publish path (history + API + positions) is measured by the PR's performance
+   run (spec 4.9). */
+static void
+measure_publish_hop(void) {
+    dsd_state* st = new_state();
+    assert(dsd_position_feed_start(st) == 0);
+    publish(st);
+    uint32_t next_report = 20000U;
+    (void)timed_block(st, &next_report); /* warm-up */
+    uint64_t quiet_ns = 0U;
+    uint64_t contended_ns = 0U;
+    for (int block = 0; block < TIMING_BLOCKS; block++) {
+        quiet_ns += timed_block(st, &next_report);
+        atomic_int stop = 0;
+        reader_ctx ctx[READERS];
+        dsd_thread_t threads[READERS];
+        for (int r = 0; r < READERS; r++) {
+            DSD_MEMSET(&ctx[r], 0, sizeof ctx[r]);
+            ctx[r].stop = &stop;
+            assert(dsd_thread_create(&threads[r], contender_main, &ctx[r]) == 0);
+        }
+        contended_ns += timed_block(st, &next_report);
+        atomic_store(&stop, 1);
+        for (int r = 0; r < READERS; r++) {
+            assert(dsd_thread_join(threads[r]) == 0);
+            assert(ctx[r].failures == 0);
+        }
+    }
+    const double publishes = (double)TIMING_BLOCKS * TIMING_ROUNDS;
     printf("position publish hop, %d records per publish: %.1f us alone, %.1f us under %d readers\n", PER_ROUND,
-           (double)quiet_ns / ROUNDS / 1000.0, (double)contended_ns / ROUNDS / 1000.0, READERS);
-    free_state(quiet);
+           (double)quiet_ns / publishes / 1000.0, (double)contended_ns / publishes / 1000.0, READERS);
     free_state(st);
 }
 
@@ -487,6 +546,7 @@ main(void) {
     test_no_allocation(st);
     free_state(st);
     test_concurrent_readers();
+    measure_publish_hop();
     dsd_decode_clock_use_system();
     printf("APP_CONTROL_POSITION_VIEW: OK\n");
     return 0;
