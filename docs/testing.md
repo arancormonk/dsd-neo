@@ -3617,6 +3617,14 @@ repeats. A burst's start is where its carrier comes on. The scenes:
 | `udp-tap-pause` | The `onsets` kind's discriminator tap at 48 kHz sent live the same way: noise, a 1 s burst that runs to the sender's 1 s stop, then noise alone. |
 | `udp-pause` | Sent live to `-i udp` at 8192 Hz in 20 ms datagrams, paced in real time: nine 960-sample blocks of the floor, 200 samples of an old source's burst (part of the tenth block), then the sender stops for a second and a new source's 1 s burst follows. The old burst is no burst of its own to the checker: a recording that holds it starts before the new one. |
 
+The two udp scenes run the analog tap's clock, on which it tells a paused input and sets the stale deadline that
+`dsd_engine_analog_call_due()` and the scanners read, on the scene's own time (`dsd_analog_rx_test_set_clock()`; the
+host builds `analog_rx.c` in with `DSD_NEO_TEST_HOOKS`): the samples the decoder has read, and in a silence the sender
+makes (its stop, the end) the real time since the decoder found the input empty there, up to the silence's length. A
+decoder held up mid-burst (a loaded host, a sanitizer build) therefore never reads as a stream pause, while the
+sender's 1 s stop still does. Before that, a stall of 0.7 s in the burst left `DECODE_UDP_ANALOG_RECORD_NOISE_PAUSE`
+with no recording.
+
 After the run the host reads the journal and finds each published recording in the scene: 50 ms pieces of it (its
 loudest, then from its middle outwards) are compared with the scene's voice around every burst, by normalised
 correlation on every sixth sample and then sample by sample around the best, until one matches with a score of 0.7.

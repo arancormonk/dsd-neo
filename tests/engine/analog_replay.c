@@ -149,6 +149,7 @@
 #endif
 
 #include "../test_support/test_support.h"
+#include "analog_rx_internal.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "p56.h"
 
@@ -1572,6 +1573,7 @@ analog_replay_gap(char** args, int count) {
  *  - udp: the pcm kind sent live to `-i udp` at --analog-pcm-tap's rate in 20 ms datagrams, paced in real time, with
  *    the sender stopping for a second before the sample pause_s names: a stream pause part-way through a monitor block.
  *  - udp-tap: the iq kind's discriminator tap sent the same way, for the noise squelch on a live input.
+ *    Both udp kinds run the analog tap's clock on the scene's own time (analog_scene_clock_ms()).
  * Every burst is keyed with 2 ms raised-cosine ramps. */
 #define ANALOG_SCENE_MAX_BURSTS   8
 #define ANALOG_SCENE_SEED         668U
@@ -1949,6 +1951,60 @@ analog_scene_read_tap(void) {
    the scene, the burst included. */
 static dsd_atomic_u64 g_scene_read;
 
+/* The silences the udp scene's sender makes: its stop before the sample at pause_s, and the end after the last sample.
+   Each starts once the decoder has read every sample before it and found the input empty. */
+enum { ANALOG_SCENE_STOP = 0, ANALOG_SCENE_END, ANALOG_SCENE_SILENCES };
+
+static struct {
+    uint64_t at;             /* the samples read before it; 0 for none */
+    uint64_t len_ms;         /* how long the sender keeps it */
+    dsd_atomic_u64 found_ms; /* real ms when the decoder first found the input empty there; 0 before */
+} g_scene_silence[ANALOG_SCENE_SILENCES];
+
+/* The scene clock starts here, so it never reads 0, which the tap's deadline takes for none. */
+#define ANALOG_SCENE_CLOCK_ORIGIN_MS 1000U
+
+/*
+ * The clock the analog tap tells a paused input by (dsd_analog_rx_test_set_clock()), and with it every reader of its
+ * stale deadline, in the udp scenes: the scene's own time at the samples the decoder has read, and in a silence the
+ * sender makes, the real time since the decoder found the input empty there, up to the silence's length. A decoder
+ * that is not scheduled for a while in the middle of a burst (a loaded host, a sanitizer build) then still reads the
+ * burst as one reception, as it would on the real clock only if it were never held up, and the sender's stop is still
+ * the pause it is on the air.
+ */
+static uint64_t
+analog_scene_clock_ms(void) {
+    const uint64_t read = dsd_atomic_u64_load_acquire(&g_scene_read);
+    uint64_t ms = ANALOG_SCENE_CLOCK_ORIGIN_MS + read * 1000U / (uint64_t)g_scene.pcm_rate;
+    for (int i = 0; i < ANALOG_SCENE_SILENCES; i++) {
+        const uint64_t at = g_scene_silence[i].at;
+        if (at == 0U || read < at) {
+            continue;
+        }
+        if (read > at) {
+            ms += g_scene_silence[i].len_ms;
+            continue;
+        }
+        const uint64_t found = dsd_atomic_u64_load_acquire(&g_scene_silence[i].found_ms);
+        if (found != 0U) {
+            const uint64_t since = dsd_realtime_mono_ms() - found;
+            ms += since < g_scene_silence[i].len_ms ? since : g_scene_silence[i].len_ms;
+        }
+    }
+    return ms;
+}
+
+/* The decoder found the input empty after @p read samples: a silence of the sender's there starts now. */
+static void
+analog_scene_note_empty(uint64_t read) {
+    for (int i = 0; i < ANALOG_SCENE_SILENCES; i++) {
+        if (g_scene_silence[i].at != 0U && g_scene_silence[i].at == read
+            && dsd_atomic_u64_load_acquire(&g_scene_silence[i].found_ms) == 0U) {
+            dsd_atomic_u64_store_release(&g_scene_silence[i].found_ms, dsd_realtime_mono_ms());
+        }
+    }
+}
+
 static int
 analog_scene_udp_read(dsd_opts* opts, int16_t* out) {
     const int got = udp_input_read_sample(opts, out);
@@ -1963,15 +2019,25 @@ analog_scene_udp_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms
     const int got = udp_input_read_sample_wait(opts, out, timeout_ms);
     if (got == 1) {
         (void)dsd_atomic_u64_fetch_add_release(&g_scene_read, 1U);
+    } else if (got < 0) {
+        analog_scene_note_empty(dsd_atomic_u64_load_acquire(&g_scene_read));
     }
     return got;
 }
 
 /* The network input hooks the engine installs (dsd_engine_net_audio_input_hooks_install()), with the udp reads
-   counted for the sender. */
+   counted for the sender, and the tap's clock on the scene's time. */
 static void
 analog_scene_count_udp_reads(void) {
     dsd_atomic_u64_init(&g_scene_read, 0U);
+    g_scene_silence[ANALOG_SCENE_STOP].at = (uint64_t)lround(g_scene.scene->pause_s * (double)g_scene.pcm_rate);
+    g_scene_silence[ANALOG_SCENE_STOP].len_ms = ANALOG_SCENE_UDP_STOP_MS;
+    g_scene_silence[ANALOG_SCENE_END].at = (uint64_t)g_scene.pcm_n;
+    g_scene_silence[ANALOG_SCENE_END].len_ms = ANALOG_SCENE_UDP_END_MS;
+    for (int i = 0; i < ANALOG_SCENE_SILENCES; i++) {
+        dsd_atomic_u64_init(&g_scene_silence[i].found_ms, 0U);
+    }
+    dsd_analog_rx_test_set_clock(analog_scene_clock_ms);
     dsd_net_audio_input_hooks hooks = {0};
     hooks.tcp_open = tcp_input_open;
     hooks.tcp_close = tcp_input_close;

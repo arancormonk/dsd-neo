@@ -23811,15 +23811,25 @@ endif()
 # line; the negative controls at the end of this block show that a missed bound fails.
 # Thresholds sit well clear of the values measured when each case was added;
 # docs/testing.md records those values and what each case pins.
-add_executable(dsd-neo_test_analog_replay engine/analog_replay.c)
+# analog_rx.c is built in with DSD_NEO_TEST_HOOKS, ahead of dsd-neo_dsp's copy, so a udp scene runs the analog tap's
+# clock, and every reader of its stale deadline, on the scene's own time (a decoder held up mid-burst is no pause).
+add_executable(
+    dsd-neo_test_analog_replay
+    engine/analog_replay.c
+    ../src/dsp/analog_rx.c
+)
 target_include_directories(
     dsd-neo_test_analog_replay
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${LIBSNDFILE_INCLUDE_DIR}
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${LIBSNDFILE_INCLUDE_DIR}
 )
 # --analog-iq-gain-db reads the committed fixtures only, from this directory.
 target_compile_definitions(
     dsd-neo_test_analog_replay
     PRIVATE
+        DSD_NEO_TEST_HOOKS
         "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
 )
 target_link_libraries(
