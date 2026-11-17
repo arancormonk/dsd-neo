@@ -14888,6 +14888,35 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
 )
 add_test(NAME DMR_USBD_LIP_LRRP_CRC COMMAND dsd-neo_test_dmr_usbd_lip_lrrp_crc)
+
+# DMR USBD LIP (#800 spec 2.13): a Poll Response only from an inbound (MS-sourced) sync, at either polarity, through the
+# real single-slot data path; the symbol reader is replaced by linker wraps.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        protocol/dmr/test_dmr_usbd_inbound_sync.c
+        test_support/dmr_bptc_test_encoder.c
+    )
+    target_include_directories(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        # The voice path the single-slot reader links reaches the NXDN scrambler (LFSRN) through core's vocoder.
+        PRIVATE dsd-neo_proto_dmr dsd-neo_proto_nxdn dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        PRIVATE
+            "LINKER:--wrap=getDibitSoft"
+            "LINKER:--wrap=get_dibit_and_analog_signal"
+    )
+    add_test(
+        NAME DMR_USBD_INBOUND_SYNC
+        COMMAND dsd-neo_test_dmr_usbd_inbound_sync
+    )
+endif()
 add_executable(
     dsd-neo_test_dmr_flco_mono_crc_scope
     protocol/dmr/test_dmr_flco_mono_crc_scope.c

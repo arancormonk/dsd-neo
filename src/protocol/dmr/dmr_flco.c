@@ -912,7 +912,7 @@ dmr_flco_forget_replaced_crypto_continuity(dsd_state* state, uint8_t slot) {
 
 /* A full LC whose own check passed (not a RAS acceptance) named the slot's ACTIVE call's source: the embedded GPS LC
    that follows in this transmission is that radio's (spec 2.2). Any other LC leaves the record alone, so it names a
-   source only while the call stays the epoch and source it recorded. */
+   source only while the call stays the transmission and source it recorded (a fade the call layer heals keeps it). */
 static void
 dmr_flco_note_checked_source(const dmr_flco_ctx* ctx, uint8_t slot) {
     dsd_call_snapshot call;
@@ -920,7 +920,7 @@ dmr_flco_note_checked_source(const dmr_flco_ctx* ctx, uint8_t slot) {
         || call.phase != DSD_CALL_PHASE_ACTIVE || call.ota_source_id != ctx->source) {
         return;
     }
-    ctx->state->dmr_lc_checked_epoch[slot] = call.epoch;
+    ctx->state->dmr_lc_checked_transmission[slot] = dsd_call_snapshot_transmission(&call);
     ctx->state->dmr_lc_checked_source[slot] = ctx->source;
 }
 

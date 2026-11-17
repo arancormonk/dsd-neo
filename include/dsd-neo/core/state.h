@@ -2115,10 +2115,11 @@ struct dsd_state {
        on, captured with that first fragment (dsd_position_origin_capture()). A position report the assembly carries
        (LIP, binary UDT NMEA) is admitted against it, so a retune or target switch before the last block refuses it. */
     dsd_position_origin dmr_data_origin[2];
-    /* Per slot: the call epoch whose source a checked full LC named (a voice LC header or a late-entry embedded LC whose
-       own check passed, not a RAS acceptance; dmr_flco), and that source. The embedded GPS LC is attributed to the
-       slot's ACTIVE call only while it is still this epoch and source. */
-    uint64_t dmr_lc_checked_epoch[2];
+    /* Per slot: the call transmission (dsd_call_snapshot_transmission()) whose source a checked full LC named (a voice
+       LC header or a late-entry embedded LC whose own check passed, not a RAS acceptance; dmr_flco), and that source.
+       The embedded GPS LC is attributed to the slot's ACTIVE call only while it is still this transmission and source.
+       Cleared when the call state starts over (a new call-state extension restarts its epochs). */
+    uint64_t dmr_lc_checked_transmission[2];
     uint32_t dmr_lc_checked_source[2];
 
     //Generic Talker Alias String

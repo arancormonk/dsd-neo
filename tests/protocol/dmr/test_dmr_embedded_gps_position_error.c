@@ -543,7 +543,7 @@ main(void) {
         if (dsd_call_state_get(&st, 0U, &call) <= 0) {
             return 100;
         }
-        st.dmr_lc_checked_epoch[0] = call.epoch;
+        st.dmr_lc_checked_transmission[0] = dsd_call_snapshot_transmission(&call);
         st.dmr_lc_checked_source[0] = 900001U;
     }
 

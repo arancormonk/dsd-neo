@@ -384,24 +384,32 @@ lip_print_reason(const lip_short_report* r, int hash_prefix) {
     }
 }
 
-/* "Spd: ..." and "Dir: ..." of a LIP report, the unknown and bounded codes said as such (Tables 6.51, 6.45). */
+/* A known speed in 0.1 km/h as whole km/h, rounded (Table 6.51 gives code 125 as 1 043 km/h). */
+static int
+gps_speed_kmh(uint16_t speed_dkmh) {
+    return (int)((speed_dkmh + 5U) / 10U);
+}
+
+/* "Spd: ..." and "Dir: ..." of a LIP report, the unknown and bounded codes said as such (Tables 6.51, 6.45); a
+ * half-degree heading keeps its decimal. */
 static void
 lip_motion_text(const lip_short_report* r, const char* deg_glyph, char* out, size_t cap) {
     char speed[24];
-    char direction[40];
+    char heading[16];
     if (r->speed_dkmh == DSD_POSITION_SPEED_UNKNOWN) {
         DSD_SNPRINTF(speed, sizeof speed, "%s", "unknown");
     } else {
-        DSD_SNPRINTF(speed, sizeof speed, "%s%u km/h", (r->flags & DSD_POS_FLAG_SPEED_LOWER_BOUND) != 0U ? ">" : "",
-                     (unsigned)(r->speed_dkmh / 10U));
+        DSD_SNPRINTF(speed, sizeof speed, "%s%d km/h", (r->flags & DSD_POS_FLAG_SPEED_LOWER_BOUND) != 0U ? ">" : "",
+                     gps_speed_kmh(r->speed_dkmh));
     }
-    if ((r->flags & DSD_POS_FLAG_HEADING_AMBIGUOUS) != 0U) {
-        DSD_SNPRINTF(direction, sizeof direction, "%u.%u%s or unknown", (unsigned)(r->heading_ddeg / 10U),
-                     (unsigned)(r->heading_ddeg % 10U), deg_glyph);
+    if (r->heading_ddeg % 10U != 0U) {
+        DSD_SNPRINTF(heading, sizeof heading, "%u.%u", (unsigned)(r->heading_ddeg / 10U),
+                     (unsigned)(r->heading_ddeg % 10U));
     } else {
-        DSD_SNPRINTF(direction, sizeof direction, "%u%s", (unsigned)(r->heading_ddeg / 10U), deg_glyph);
+        DSD_SNPRINTF(heading, sizeof heading, "%u", (unsigned)(r->heading_ddeg / 10U));
     }
-    DSD_SNPRINTF(out, cap, "Spd: %s; Dir: %s", speed, direction);
+    DSD_SNPRINTF(out, cap, "Spd: %s; Dir: %s%s%s", speed, heading, deg_glyph,
+                 (r->flags & DSD_POS_FLAG_HEADING_AMBIGUOUS) != 0U ? " or unknown" : "");
 }
 
 /* "Err: ..." of a position error code (Tables 6.93 / 7.24); code 7 says the fix may be old or invalid (D11). */
@@ -440,20 +448,22 @@ typedef struct {
     uint32_t src;
 } lip_source;
 
+/* Print a LIP report. @p position_note NULL prints its coordinates (an admitted report); otherwise the coordinates are
+ * left out and the note says why ("suppressed; CRC ERR", "refused"). */
 static void
-lip_print_report(const lip_short_report* r, const lip_source* who, int checked, const char* suppressed) {
+lip_print_report(const lip_short_report* r, const lip_source* who, const char* position_note) {
     const char* deg_glyph = dsd_degrees_glyph();
     if (who->hash >= 0) {
         DSD_FPRINTF(stderr, "Src(Hash); %03d;  ", who->hash);
     } else {
         DSD_FPRINTF(stderr, "Src: %u; ", who->src);
     }
-    if (checked) {
+    if (position_note == NULL) {
         const gps_hemisphere_pair p = gps_hemisphere_pair_from_e7(r->lat_e7, r->lon_e7);
         DSD_FPRINTF(stderr, "Lat: %.5lf%s%s Lon: %.5lf%s%s (%.5lf, %.5lf); ", p.lat, deg_glyph, p.latstr, p.lon,
                     deg_glyph, p.lonstr, (double)r->lat_e7 / 1e7, (double)r->lon_e7 / 1e7);
     } else {
-        DSD_FPRINTF(stderr, "Position: (suppressed; %s); ", suppressed);
+        DSD_FPRINTF(stderr, "Position: (%s); ", position_note);
     }
     char motion[80];
     lip_motion_text(r, deg_glyph, motion, sizeof motion);
@@ -485,53 +495,58 @@ lip_store_text(dsd_state* state, int slot, const lip_short_report* r, int hash) 
 /* Why a report of the slot's scope is unchecked, for the console: a failed check, or a RAS acceptance. */
 static const char*
 gps_suppressed_label(uint8_t crc_flags) {
-    return dsd_crc_is_failed(crc_flags) ? "CRC ERR" : "RAS";
+    return dsd_crc_is_failed(crc_flags) ? "suppressed; CRC ERR" : "suppressed; RAS";
 }
 
-/* Print a LIP report and publish it when its carrier's checks passed (the slot's event_crc_invalid scope, set by the
- * caller): admit it, stage it with its text for the slot's next data notice (the carrier's own: a UDT, a UDP datagram
- * or a USBD reply), and write the location file unless the source is a hash (decision D8). A report that is unchecked
- * or refused leaves no text and stages nothing (spec 2.11). */
-static void
-lip_report(const dsd_opts* opts, dsd_state* state, const lip_short_report* r, const lip_source* who) {
+/* Admit a checked LIP report: the record, its kind and source (a USBD reply's hash is never an identity), and the
+ * reception it came from (a DMR data assembly's origin, captured with its header). */
+static int
+lip_admit(const dsd_opts* opts, dsd_state* state, const lip_short_report* r, const lip_source* who,
+          dsd_position_fix* fix) {
     const int slot = state->currentslot & 1;
-    const uint8_t crc_flags = state->event_crc_invalid[slot];
-    const int checked = crc_flags == 0U;
-    DSD_FPRINTF(stderr, "Location Information Protocol; ");
-    if (who->hash < 0) {
-        DSD_FPRINTF(stderr, "Short Location Report; ");
-    }
-    lip_print_report(r, who, checked, gps_suppressed_label(crc_flags));
-    if (!checked) {
-        return;
-    }
-
-    dsd_position_fix fix;
-    dsd_position_fix_init(&fix);
-    lip_short_report_to_fix(r, &fix);
-    fix.slot = (uint8_t)slot;
+    dsd_position_fix_init(fix);
+    lip_short_report_to_fix(r, fix);
+    fix->slot = (uint8_t)slot;
     const dsd_position_origin* origin = NULL;
     int source_verified = 0;
     if (who->hash >= 0) {
-        fix.kind = DSD_POS_LIP_USBD;
-        fix.protocol = (uint8_t)DSD_SYNC_DMR_MS_DATA; // only an inbound (MS-sourced) burst is a Poll Response
-        fix.flags = (uint16_t)(fix.flags | DSD_POS_FLAG_SOURCE_HASHED);
+        fix->kind = DSD_POS_LIP_USBD;
+        fix->protocol = (uint8_t)DSD_SYNC_DMR_MS_DATA; // only an inbound (MS-sourced) burst is a Poll Response
+        fix->flags = (uint16_t)(fix->flags | DSD_POS_FLAG_SOURCE_HASHED);
     } else {
-        fix.kind = DSD_POS_LIP;
-        fix.protocol = (uint8_t)state->lastsynctype;
-        fix.source_id = who->src;
+        fix->kind = DSD_POS_LIP;
+        fix->protocol = (uint8_t)state->lastsynctype;
+        fix->source_id = who->src;
         source_verified = 1; // the same checked packet named it
         if (DSD_SYNC_IS_DMR(state->lastsynctype) && state->dmr_data_origin[slot].valid) {
             origin = &state->dmr_data_origin[slot];
         }
     }
-    if (dsd_position_admit(opts, state, &fix, 1, source_verified, origin) == DSD_POSITION_REFUSED) {
+    return dsd_position_admit(opts, state, fix, 1, source_verified, origin) != DSD_POSITION_REFUSED;
+}
+
+/* Print a LIP report and publish it when its carrier's checks passed (the slot's event_crc_invalid scope, set by the
+ * caller) and admission admitted it: stage it with its text for the slot's next data notice (the carrier's own: a UDT,
+ * a UDP datagram or a USBD reply), and write the location file unless the source is a hash (decision D8). A report
+ * that is unchecked or refused prints no coordinates, leaves no text and stages nothing (spec 2.11). */
+static void
+lip_report(const dsd_opts* opts, dsd_state* state, const lip_short_report* r, const lip_source* who) {
+    const int slot = state->currentslot & 1;
+    const uint8_t crc_flags = state->event_crc_invalid[slot];
+    DSD_FPRINTF(stderr, "Location Information Protocol; ");
+    if (who->hash < 0) {
+        DSD_FPRINTF(stderr, "Short Location Report; ");
+    }
+    dsd_position_fix fix;
+    const int admitted = crc_flags == 0U && lip_admit(opts, state, r, who, &fix);
+    lip_print_report(r, who, crc_flags != 0U ? gps_suppressed_label(crc_flags) : (admitted ? NULL : "refused"));
+    if (!admitted) {
         return;
     }
     lip_store_text(state, slot, r, who->hash);
     (void)dsd_event_stage_position(state, (uint8_t)slot, &fix, state->dmr_embedded_gps[slot]);
     if (who->hash < 0) {
-        const int speed = fix.speed_dkmh == DSD_POSITION_SPEED_UNKNOWN ? 0 : (int)(fix.speed_dkmh / 10U);
+        const int speed = fix.speed_dkmh == DSD_POSITION_SPEED_UNKNOWN ? 0 : gps_speed_kmh(fix.speed_dkmh);
         const int azimuth = (fix.flags & DSD_POS_FLAG_HEADING_AMBIGUOUS) != 0U ? 0 : (int)(fix.heading_ddeg / 10U);
         gps_write_lrrp_admitted(opts, &fix, speed, azimuth);
     }
@@ -781,6 +796,34 @@ udt_nmea_fill_fix(const dsd_state* state, const udt_nmea_fields* f, int type, ui
     }
 }
 
+/* Admit a checked, in-range UDT NMEA report (the UDT's source, from the same checked header) against the reception
+ * its UDT began on. */
+static int
+udt_nmea_admit(const dsd_opts* opts, dsd_state* state, int slot, dsd_position_fix* fix) {
+    const dsd_position_origin* origin = (DSD_SYNC_IS_DMR(state->lastsynctype) && state->dmr_data_origin[slot].valid)
+                                            ? &state->dmr_data_origin[slot]
+                                            : NULL;
+    return dsd_position_admit(opts, state, fix, 1, 1, origin) != DSD_POSITION_REFUSED;
+}
+
+/* The console's position of a UDT NMEA report: coordinates only for an admitted one. */
+static void
+udt_nmea_print_position(uint8_t crc_flags, const udt_nmea_fields* f, int in_range, int admitted,
+                        const dsd_position_fix* fix, const char* deg_glyph) {
+    if (crc_flags != 0U) {
+        DSD_FPRINTF(stderr, " Position: (%s);", gps_suppressed_label(crc_flags));
+    } else if (!f->q) {
+        DSD_FPRINTF(stderr, " GPS: no fix;");
+    } else if (!in_range) {
+        DSD_FPRINTF(stderr, " GPS: invalid position;");
+    } else if (!admitted) {
+        DSD_FPRINTF(stderr, " GPS: (refused);");
+    } else {
+        DSD_FPRINTF(stderr, " GPS: %f%s, %f%s;", (double)fix->lat_e7 / 1e7, deg_glyph, (double)fix->lon_e7 / 1e7,
+                    deg_glyph);
+    }
+}
+
 void
 nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32_t src, int type) {
     const int slot = state->currentslot & 1;
@@ -796,22 +839,13 @@ nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, u
     udt_nmea_read(input, &f);
     const char* deg_glyph = dsd_degrees_glyph();
     const uint8_t crc_flags = state->event_crc_invalid[slot];
-    const int checked = crc_flags == 0U;
     const int in_range = udt_nmea_position_in_range(&f);
 
+    // Q = 0 is "No fix" and the Table B.7 ranges bound every field: neither is a position (spec 2.5).
     dsd_position_fix fix;
     udt_nmea_fill_fix(state, &f, type, src, slot, &fix);
-    const double latitude = (double)fix.lat_e7 / 1e7;
-    const double longitude = (double)fix.lon_e7 / 1e7;
-    if (!checked) {
-        DSD_FPRINTF(stderr, " Position: (suppressed; %s);", gps_suppressed_label(crc_flags));
-    } else if (!f.q) {
-        DSD_FPRINTF(stderr, " GPS: no fix;");
-    } else if (!in_range) {
-        DSD_FPRINTF(stderr, " GPS: invalid position;");
-    } else {
-        DSD_FPRINTF(stderr, " GPS: %f%s, %f%s;", latitude, deg_glyph, longitude, deg_glyph);
-    }
+    const int admitted = crc_flags == 0U && f.q && in_range && udt_nmea_admit(opts, state, slot, &fix);
+    udt_nmea_print_position(crc_flags, &f, in_range, admitted, &fix, deg_glyph);
 
     //Speed in Knots
     if (f.speed > 126) {
@@ -820,22 +854,14 @@ nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, u
         DSD_FPRINTF(stderr, " SPD: %d knots; %f kph;", f.speed, (double)f.speed * 1.852);
     }
     udt_nmea_print_time(&f, type, deg_glyph);
-
-    // Q = 0 is "No fix" and the Table B.7 ranges bound every field: neither is a position (spec 2.5).
-    if (!checked || !f.q || !in_range) {
-        return;
-    }
-    const dsd_position_origin* origin = (DSD_SYNC_IS_DMR(state->lastsynctype) && state->dmr_data_origin[slot].valid)
-                                            ? &state->dmr_data_origin[slot]
-                                            : NULL;
-    if (dsd_position_admit(opts, state, &fix, 1, 1, origin) == DSD_POSITION_REFUSED) {
+    if (!admitted) {
         return;
     }
     DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "GPS: (%f%s, %f%s)",
                  (double)fix.lat_e7 / 1e7, deg_glyph, (double)fix.lon_e7 / 1e7, deg_glyph);
     (void)dsd_event_stage_position(state, (uint8_t)slot, &fix, state->dmr_embedded_gps[slot]);
     const int azimuth = fix.heading_ddeg == DSD_POSITION_HEADING_UNKNOWN ? 0 : (int)(fix.heading_ddeg / 10U);
-    gps_write_lrrp_admitted(opts, &fix, (int)(fix.speed_dkmh / 10U), azimuth);
+    gps_write_lrrp_admitted(opts, &fix, gps_speed_kmh(fix.speed_dkmh), azimuth);
 }
 
 //restructured the Harris GPS to flow more like the DMR UDT NMEA Format when possible
@@ -926,8 +952,8 @@ nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32
 }
 
 //externalize embedded GPS - Confirmed working now on NE, NW, SE, and SW coordinates
-/* The embedded GPS LC's attribution (spec 2.2): the slot's ACTIVE call, and whether a checked full LC of that call
- * (a voice LC header or a late-entry LC, not a RAS acceptance) named its source in this transmission. */
+/* The embedded GPS LC's attribution (spec 2.2): the slot's ACTIVE call, and whether a checked full LC of that call's
+ * transmission (a voice LC header or a late-entry LC, not a RAS acceptance) named its source. */
 static int
 dmr_embedded_gps_call(const dsd_state* state, uint8_t slot, dsd_call_snapshot* call, int* source_verified) {
     *source_verified = 0;
@@ -935,35 +961,42 @@ dmr_embedded_gps_call(const dsd_state* state, uint8_t slot, dsd_call_snapshot* c
         return 0;
     }
     *source_verified = call->ota_source_id != 0U && call->ota_source_id <= UINT32_MAX
-                       && state->dmr_lc_checked_epoch[slot] == call->epoch
+                       && state->dmr_lc_checked_transmission[slot] == dsd_call_snapshot_transmission(call)
                        && state->dmr_lc_checked_source[slot] == (uint32_t)call->ota_source_id;
     return 1;
 }
 
-/* Admit an embedded GPS fix (5-bit checksum: WEAK_CHECK) and publish it: the slot's active call's row (under the
- * writer's typed-source rule), the display text and the location file. */
-static void
-dmr_embedded_gps_publish(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_position_fix* report,
-                         uint8_t pos_err) {
+/* An embedded GPS fix (5-bit checksum: WEAK_CHECK), admitted with the attribution of the slot's active call. */
+typedef struct {
+    dsd_position_fix fix;
     dsd_call_snapshot call;
+    int has_call;
+} dmr_embedded_gps_admission;
+
+static int
+dmr_embedded_gps_admit(const dsd_opts* opts, dsd_state* state, uint8_t slot, dmr_embedded_gps_admission* a) {
     int source_verified = 0;
-    const int has_call = dmr_embedded_gps_call(state, slot, &call, &source_verified);
-    dsd_position_fix fix = *report;
-    fix.protocol = (uint8_t)(has_call ? call.protocol : state->lastsynctype);
-    fix.source_id = source_verified ? (uint32_t)call.ota_source_id : 0U;
-    if (dsd_position_admit(opts, state, &fix, 1, source_verified, NULL) == DSD_POSITION_REFUSED) {
-        return;
-    }
+    a->has_call = dmr_embedded_gps_call(state, slot, &a->call, &source_verified);
+    a->fix.protocol = (uint8_t)(a->has_call ? a->call.protocol : state->lastsynctype);
+    a->fix.source_id = source_verified ? (uint32_t)a->call.ota_source_id : 0U;
+    return dsd_position_admit(opts, state, &a->fix, 1, source_verified, NULL) != DSD_POSITION_REFUSED;
+}
+
+/* Publish an admitted embedded GPS fix: the display text, the slot's active call's row (under the writer's
+ * typed-source rule) and the location file. */
+static void
+dmr_embedded_gps_publish(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dmr_embedded_gps_admission* a,
+                         uint8_t pos_err) {
     const char* deg_glyph = dsd_degrees_glyph();
-    const gps_hemisphere_pair p = gps_hemisphere_pair_from_e7(fix.lat_e7, fix.lon_e7);
+    const gps_hemisphere_pair p = gps_hemisphere_pair_from_e7(a->fix.lat_e7, a->fix.lon_e7);
     char err[64];
-    gps_error_text(pos_err, fix.err_m, err, sizeof err);
+    gps_error_text(pos_err, a->fix.err_m, err, sizeof err);
     DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "GPS: %.5lf%s%s %.5lf%s%s %s",
                  p.lat, deg_glyph, p.latstr, p.lon, deg_glyph, p.lonstr, err);
-    if (has_call) {
-        (void)dsd_event_enrich_position(state, slot, call.epoch, &fix, state->dmr_embedded_gps[slot]);
+    if (a->has_call) {
+        (void)dsd_event_enrich_position(state, slot, a->call.epoch, &a->fix, state->dmr_embedded_gps[slot]);
     }
-    gps_write_lrrp_admitted(opts, &fix, 0, 0);
+    gps_write_lrrp_admitted(opts, &a->fix, 0, 0);
 }
 
 void
@@ -985,25 +1018,27 @@ dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]
     const uint8_t slot = (uint8_t)(state->currentslot & 1);
     // The caller ran the embedded LC checksum; a burst scope that failed (a mono-collapsed slot's) still withholds it.
     const uint8_t crc_flags = state->event_crc_invalid[slot];
-    dsd_position_fix fix;
-    dsd_position_fix_init(&fix);
-    fix.kind = DSD_POS_DMR_EMBEDDED;
-    fix.slot = slot;
-    fix.flags = (uint16_t)DSD_POS_FLAG_WEAK_CHECK;
-    fix.lat_e7 = gps_twos_complement_e7(lat, 24U, GPS_LAT_SPAN_E7);
-    fix.lon_e7 = gps_twos_complement_e7(lon, 25U, GPS_LON_SPAN_E7);
-    fix.err_m = gps_position_error_m(pos_err, &fix.flags);
-    if (crc_flags != 0U) {
-        DSD_FPRINTF(stderr, " Position: (suppressed; %s)", gps_suppressed_label(crc_flags));
+    dmr_embedded_gps_admission a;
+    DSD_MEMSET(&a, 0, sizeof a);
+    dsd_position_fix_init(&a.fix);
+    a.fix.kind = DSD_POS_DMR_EMBEDDED;
+    a.fix.slot = slot;
+    a.fix.flags = (uint16_t)DSD_POS_FLAG_WEAK_CHECK;
+    a.fix.lat_e7 = gps_twos_complement_e7(lat, 24U, GPS_LAT_SPAN_E7);
+    a.fix.lon_e7 = gps_twos_complement_e7(lon, 25U, GPS_LON_SPAN_E7);
+    a.fix.err_m = gps_position_error_m(pos_err, &a.fix.flags);
+    const int admitted = crc_flags == 0U && dmr_embedded_gps_admit(opts, state, slot, &a);
+    if (crc_flags != 0U || !admitted) {
+        DSD_FPRINTF(stderr, " Position: (%s)", crc_flags != 0U ? gps_suppressed_label(crc_flags) : "refused");
     } else {
         const char* deg_glyph = dsd_degrees_glyph();
-        const gps_hemisphere_pair p = gps_hemisphere_pair_from_e7(fix.lat_e7, fix.lon_e7);
+        const gps_hemisphere_pair p = gps_hemisphere_pair_from_e7(a.fix.lat_e7, a.fix.lon_e7);
         DSD_FPRINTF(stderr, " Lat: %.5lf%s%s Lon: %.5lf%s%s (%.5lf, %.5lf)", p.lat, deg_glyph, p.latstr, p.lon,
-                    deg_glyph, p.lonstr, (double)fix.lat_e7 / 1e7, (double)fix.lon_e7 / 1e7);
+                    deg_glyph, p.lonstr, (double)a.fix.lat_e7 / 1e7, (double)a.fix.lon_e7 / 1e7);
     }
-    gps_print_position_error(pos_err, (unsigned int)fix.err_m);
-    if (crc_flags == 0U) {
-        dmr_embedded_gps_publish(opts, state, slot, &fix, pos_err);
+    gps_print_position_error(pos_err, (unsigned int)a.fix.err_m);
+    if (admitted) {
+        dmr_embedded_gps_publish(opts, state, slot, &a, pos_err);
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 }

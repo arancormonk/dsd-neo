@@ -115,6 +115,10 @@ dsd_call_state_ext_get(dsd_state* state, int create) {
             call_state_ext_cleanup(ext);
             ext = NULL;
         }
+        // The new extension restarts the epoch sequence: a record keyed to the old one's transmissions (the DMR
+        // checked-LC source for embedded GPS) must not match a call of the new one.
+        DSD_MEMSET(state->dmr_lc_checked_transmission, 0, sizeof(state->dmr_lc_checked_transmission));
+        DSD_MEMSET(state->dmr_lc_checked_source, 0, sizeof(state->dmr_lc_checked_source));
     }
     (void)dsd_mutex_unlock(&g_call_state_alloc_mutex);
     return ext;

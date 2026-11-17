@@ -262,8 +262,10 @@ test_short_lip_codes(dsd_opts* opts, dsd_state* state, const char* path) {
         const char* text;    // the row's and the display's text
         const char* console; // printed
     } cases[] = {
-        {125, 14, 1, 1042, 315, "Spd: 1042 km/h; Dir: 315", "Spd: 1042 km/h; Dir: 315"},
-        {126, 1, 1, 1043, 22, "Spd: >1043 km/h; Dir: 22", "Spd: >1043 km/h; Dir: 22"},
+        // Table 6.51 gives 125 as 1 043 km/h: rounded, not truncated. A half-degree heading keeps its decimal.
+        {125, 14, 1, 1043, 315, "Spd: 1043 km/h; Dir: 315", "Spd: 1043 km/h; Dir: 315"},
+        {126, 1, 1, 1043, 22, "Spd: >1043 km/h; Dir: 22.5", "Spd: >1043 km/h; Dir: 22.5"},
+        {30, 3, 1, 30, 67, "Spd: 30 km/h; Dir: 67.5", "Spd: 30 km/h; Dir: 67.5"},
         {127, 0, 1, 0, 0, "Spd: unknown; Dir: 0", "Spd: unknown; Dir: 0"},
         {28, 15, 1, 28, 0, "Spd: 28 km/h; Dir: 337.5 or unknown", "Spd: 28 km/h; Dir: 337.5 or unknown"},
         {29, 2, 7, 29, 45, "Unknown Pos Err (fix may be old or invalid); Spd: 29 km/h; Dir: 45",
@@ -294,6 +296,19 @@ test_short_lip_codes(dsd_opts* opts, dsd_state* state, const char* path) {
                          cases[i].azimuth_column, NULL, "2.3 LIP codes")
             || !strstr(state->dmr_embedded_gps[1], cases[i].text) || !strstr(output, cases[i].console)) {
             DSD_FPRINTF(stderr, "2.3 LIP code case %zu: state=%s; console=%s\n", i, state->dmr_embedded_gps[1], output);
+            rc = 1;
+        }
+    }
+    // A report admission refuses ((0, 0) here) prints no coordinates.
+    {
+        uint8_t zero[76] = {0};
+        char output[2048];
+        if (!truncate_output(path) || capture_lip_pdu(opts, state, zero, sizeof zero, output)) {
+            return 100;
+        }
+        if (!strstr(output, "Position: (refused)") || strstr(output, "Lat:") != NULL
+            || !expect_rows(path, 0, NULL, NULL, NULL, 0, 0, NULL, "refused LIP")) {
+            DSD_FPRINTF(stderr, "refused LIP console: %s\n", output);
             rc = 1;
         }
     }
@@ -417,6 +432,7 @@ test_udt_nmea_bounds(const dsd_opts* opts, dsd_state* state, const char* path) {
     static const udt_nmea_case cases[] = {
         {2, 1, 20, 22, 30, 0, 45, 0, 0, 11, 22, 33, 90, 1, 37, 90, "22.500000", "-45.000000", "11:22:33 UTC", "valid"},
         {2, 0, 20, 22, 30, 0, 45, 0, 0, 11, 22, 33, 90, 0, 0, 0, NULL, NULL, "no fix", "Q=0 no fix"},
+        {2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, "GPS: (refused);", "refused (0, 0)"},
         {2, 1, 0, 89, 59, 9999, 179, 59, 9999, 0, 0, 0, 0, 1, 0, 0, "89.999998", "-179.999998", "COG: 0", "max"},
         {2, 1, 0, 90, 0, 0, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, "invalid position", "NDEG 90"},
         {2, 1, 0, 22, 60, 0, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, "invalid position", "NMIN 60"},
@@ -495,7 +511,8 @@ test_embedded_attribution(const dsd_opts* opts, dsd_state* state, const char* pa
     state->currentslot = 1;
     state->event_crc_invalid[1] = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
-        state->dmr_lc_checked_epoch[1] = cases[i].epoch_matches ? call.epoch : call.epoch + 1U;
+        state->dmr_lc_checked_transmission[1] =
+            cases[i].epoch_matches ? dsd_call_snapshot_transmission(&call) : dsd_call_snapshot_transmission(&call) + 1U;
         state->dmr_lc_checked_source[1] = cases[i].checked_source;
         if (!truncate_output(path)) {
             return 100;
@@ -506,7 +523,7 @@ test_embedded_attribution(const dsd_opts* opts, dsd_state* state, const char* pa
         }
     }
     (void)dsd_call_state_end(state, 1U, 0.0);
-    state->dmr_lc_checked_epoch[1] = 0U;
+    state->dmr_lc_checked_transmission[1] = 0U;
     state->dmr_lc_checked_source[1] = 0U;
     return 0;
 }
