@@ -11335,25 +11335,39 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
-# Frame acquisition's sync type and control-channel stamp, written by the hunt outside the P25 SM tick guard, and the
-# no-carrier pass's resets, beside the real P25 watchdog thread's control-channel tick (run it under tsan-debug too).
-add_executable(
-    dsd-neo_test_engine_p25_watchdog_acquisition_race
-    engine/test_engine_p25_watchdog_acquisition_race.c
-)
-target_include_directories(
-    dsd-neo_test_engine_p25_watchdog_acquisition_race
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
-)
-target_link_libraries(
-    dsd-neo_test_engine_p25_watchdog_acquisition_race
-    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
-)
-add_test(
-    NAME ENGINE_P25_WATCHDOG_ACQUISITION_RACE
-    COMMAND dsd-neo_test_engine_p25_watchdog_acquisition_race
-)
-set_tests_properties(ENGINE_P25_WATCHDOG_ACQUISITION_RACE PROPERTIES TIMEOUT 60)
+# The P25 watchdog thread is a beat and the decoder thread runs its ticks: a release the beat paces tunes from the decoder
+# thread, beside the hunt's writes and reads (run it under tsan-debug too). The rigctl peer is replaced through the
+# linker, so GNU ld and lld only.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_engine_p25_watchdog_decoder_tick
+        engine/test_engine_p25_watchdog_decoder_tick.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_p25_watchdog_decoder_tick
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_p25_watchdog_decoder_tick
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=SetModulationKind"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
+            ${LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_P25_WATCHDOG_DECODER_TICK
+        COMMAND dsd-neo_test_engine_p25_watchdog_decoder_tick
+    )
+    set_tests_properties(ENGINE_P25_WATCHDOG_DECODER_TICK PROPERTIES TIMEOUT 60)
+endif()
 
 # Compile the queue here to enable private storage-erasure probes without adding
 # diagnostic accessors to the production library or public frontend API.

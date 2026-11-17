@@ -877,24 +877,31 @@ watchdog_ownership_thread(void) {
     p25->t_hunt_try_m = old_try;
     dsd_trunk_recovery_note_protocol(&g_state, DSD_TRUNK_RECOVERY_DMR);
     p25_sm_watchdog_start(&g_opts, &g_state);
-    /* Acquisition owns these volatile fields outside the SM guard. TSan must
-     * see no watchdog read of them while a DMR owner excludes P25 recovery. */
+    /* Acquisition changes these hints between the beats; the tick each beat asks for runs here, on the decoder thread,
+     * and a DMR owner excludes P25 recovery whatever they say. */
+    int ticks = 0;
     for (int i = 0; i < 450; ++i) {
         g_state.synctype = (i & 1) ? DSD_SYNC_P25P1_POS : DSD_SYNC_DMR_BS_DATA_POS;
         g_state.lastsynctype = g_state.synctype;
         g_state.p25_cc_is_tdma = i & 1;
+        ticks += p25_sm_watchdog_service(&g_opts, &g_state);
         dsd_sleep_ms(1U);
     }
     p25_sm_watchdog_stop();
-    int rc =
-        expect(fabs(p25->t_hunt_try_m - old_try) < 1e-9, "background watchdog excludes DMR despite changing raw hints");
+    int rc = expect(ticks > 0, "the watchdog's beats ask the decoder thread for ticks");
+    rc |=
+        expect(fabs(p25->t_hunt_try_m - old_try) < 1e-9, "watchdog-paced ticks exclude DMR despite changing raw hints");
     g_state.synctype = g_state.lastsynctype = DSD_SYNC_NONE;
     g_state.p25_cc_is_tdma = 0;
     dsd_trunk_recovery_note_protocol(&g_state, DSD_TRUNK_RECOVERY_P25);
     p25_sm_watchdog_start(&g_opts, &g_state);
-    dsd_sleep_ms(50U);
+    ticks = 0;
+    for (int i = 0; i < 500 && ticks == 0; ++i) {
+        ticks += p25_sm_watchdog_service(&g_opts, &g_state);
+        dsd_sleep_ms(1U);
+    }
     p25_sm_watchdog_stop();
-    rc |= expect(p25->t_hunt_try_m > old_try, "background watchdog positive control drives P25 recovery");
+    rc |= expect(p25->t_hunt_try_m > old_try, "watchdog-paced tick positive control drives P25 recovery");
     cleanup();
     return rc;
 }
@@ -1027,6 +1034,15 @@ seed_skip_watchdog_call(void) {
     return rc;
 }
 
+/* The tick a watchdog beat asks for, in flight on a thread of its own: in production the decoder thread runs it
+   (p25_sm_watchdog_service()), and commands drained beside one still meet the guard it holds. */
+static DSD_THREAD_RETURN_TYPE
+watchdog_tick_in_flight(void* opaque) {
+    (void)opaque;
+    p25_sm_try_tick(&g_opts, &g_state);
+    DSD_THREAD_RETURN;
+}
+
 static int
 watchdog_call_skip_phases(void) {
     if (setup(0.0f)) {
@@ -1060,7 +1076,9 @@ watchdog_call_skip_phases(void) {
         /* The frontends' view before the tick: trunking on. */
         dsd_app_telemetry_publish_opts_snapshot(&g_opts);
         dsd_app_telemetry_publish_snapshot(&g_state);
-        p25_sm_watchdog_start(&g_opts, &g_state);
+        dsd_thread_t tick;
+        const int tick_started = dsd_thread_create(&tick, watchdog_tick_in_flight, NULL) == 0;
+        rc |= expect(tick_started, "tick thread started");
         dsd_mutex_lock(&g_skip_flush.mutex);
         while (!g_skip_flush.entered) {
             if (dsd_cond_timedwait(&g_skip_flush.condition, &g_skip_flush.mutex, 2000) != 0) {
@@ -1069,7 +1087,7 @@ watchdog_call_skip_phases(void) {
         }
         const int entered = g_skip_flush.entered;
         dsd_mutex_unlock(&g_skip_flush.mutex);
-        rc |= expect(entered, "real watchdog reached partial-audio flush");
+        rc |= expect(entered, "the tick reached partial-audio flush");
         if (phase != 0 && entered) {
             rc |= expect(dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 0) > 0, "in-flight trunk off queued");
             rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 1 && !g_opts.trunk_enable,
@@ -1103,7 +1121,9 @@ watchdog_call_skip_phases(void) {
             }
         }
         release_barrier();
-        p25_sm_watchdog_stop();
+        if (tick_started) {
+            dsd_thread_join(tick);
+        }
         if (phase != 0 && entered) {
             /* The next drain, with nothing queued, is the put-off publication's next opportunity. */
             rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 0, "empty drain after the tick");

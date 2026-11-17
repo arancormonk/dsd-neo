@@ -849,8 +849,9 @@ frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* lab
 #endif
     frame_sync_set_basic_lock(ctx);
     frame_sync_p25p1_mark_frame_span(state);
-    /* The frame's single-slot setup (the second slot's burst and algorithm) is its dispatch's, under the P25 SM tick
-       guard: a watchdog release clears the same fields (dsd_dispatch_handle_p25p1()). */
+    state->dmrburstR = 17;
+    state->payload_algidR = 0;
+    state->dmr_stereo = 1;
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "P25 Phase 1");
     if (opts->errorbars == 1) {
         printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
@@ -5939,6 +5940,29 @@ frame_sync_pass_end_step(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ct
     return budget_step != 0;
 }
 
+/* The tick a P25 watchdog beat asked for, run at the hunt's checkpoint on the decoder thread
+   (dsd_frame_sync_hook_p25_sm_watchdog_service()). A tick that moved the chain under the hunt (a release to the control
+   channel, a hunt step, a CQPSK retry: the modulation, the symbol profile or a tune) leaves nothing of the window
+   worth matching: the hunt drops its history and starts its context over in place, as a CQPSK trial's handback does,
+   with no no-sync return, which would run a no-carrier pass. Returns 1 when it did. */
+static int
+frame_sync_service_p25_watchdog(frame_sync_runtime_ctx* rt, dsd_opts* opts, dsd_state* state) {
+    const int rf_mod = state->rf_mod;
+    const int sps_idx = state->sps_hunt_idx;
+    const int sps = state->samplesPerSymbol;
+    const uint64_t last_request = dsd_trunk_tuning_last_request();
+    if (!dsd_frame_sync_hook_p25_sm_watchdog_service(opts, state)) {
+        return 0;
+    }
+    if (state->rf_mod == rf_mod && state->sps_hunt_idx == sps_idx && state->samplesPerSymbol == sps
+        && dsd_trunk_tuning_last_request() == last_request) {
+        return 0;
+    }
+    frame_sync_history_drop(state);
+    frame_sync_runtime_init(rt, opts, state);
+    return 1;
+}
+
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -5967,6 +5991,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         rt.t++;
         if ((rt.t % 300) == 0) {
             frame_sync_publish_ui_throttled(opts, state);
+            if (frame_sync_service_p25_watchdog(&rt, opts, state)) {
+                continue;
+            }
             if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
                 dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
                 frame_sync_history_drop(state);

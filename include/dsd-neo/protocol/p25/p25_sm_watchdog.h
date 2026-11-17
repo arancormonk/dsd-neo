@@ -12,42 +12,21 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <time.h>
 #ifdef DSD_NEO_TEST_HOOKS
 #include <dsd-neo/platform/threading.h>
 #endif
 
 /*
- * Background watchdog for the P25 trunking state machine tick.
- * Ensures hangtime/CC-return logic continues even if the main
- * DSP loop is temporarily stalled by upstream I/O.
+ * Background watchdog for the P25 trunking state machine tick. Its thread is a beat: every 200-400 ms it asks the
+ * decoder thread for a tick (p25_sm_watchdog_request_tick()), and the decoder runs it at its next service point
+ * (p25_sm_watchdog_service()): the frame-sync hunt's checkpoint, between synced frames, the engine loop, and a hunt
+ * read waiting on a quiet input. So the hangtime, grant and control-channel recovery timers keep running between the
+ * decoder's own ticks, while every tune and every write of dsd_state and dsd_opts stays on the decoder thread.
  */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/**
- * @brief What frame acquisition found, as the watchdog's tick reads it.
- *
- * The frame-sync hunt writes these dsd_state fields at every accepted sync, outside the P25 SM tick guard. The decoder
- * thread (the one that started the watchdog) copies them here each time it leaves the guard, after the dispatch that
- * follows every accept, so the watchdog's tick reads this copy and never the fields. A stamp the tick writes is merged
- * back into dsd_state, newest wins, the next time the decoder takes the guard. Read and written under the guard only.
- */
-typedef struct {
-    int lastsynctype;            /**< dsd_state::lastsynctype */
-    time_t last_cc_sync_time;    /**< dsd_state::last_cc_sync_time */
-    double last_cc_sync_time_m;  /**< dsd_state::last_cc_sync_time_m */
-    int cc_sync_written_by_tick; /**< the tick wrote the stamp: the decoder merges it at its next guard entry */
-} p25_sm_acquisition;
-
-/**
- * @brief The acquisition copy on the watchdog's thread; NULL on every other thread, which reads dsd_state itself.
- *
- * Only meaningful under the tick guard.
- */
-p25_sm_acquisition* p25_sm_watchdog_acquisition(void);
 
 /**
  * @brief Attempt to run one P25 state-machine tick when idle.
@@ -58,6 +37,24 @@ p25_sm_acquisition* p25_sm_watchdog_acquisition(void);
  * @param state Decoder state.
  */
 void p25_sm_try_tick(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief The watchdog's beat: ask the decoder thread for a P25 tick. Touches no decoder state; any thread.
+ */
+void p25_sm_watchdog_request_tick(void);
+
+/** @brief Whether a beat is waiting for the decoder thread: one atomic load. */
+int p25_sm_watchdog_tick_wanted(void);
+
+/**
+ * @brief Decoder thread: run the tick a watchdog beat asked for (p25_sm_try_tick()), if one did.
+ *
+ * Takes the tick guard with a try: a hold already taken, by the caller or anyone, leaves the beat standing for the next
+ * service point. One atomic load when no beat waits.
+ *
+ * @return 1 when a tick ran, else 0.
+ */
+int p25_sm_watchdog_service(dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Try to enter the critical section shared with P25 SM ticks.
@@ -87,7 +84,7 @@ int p25_sm_tick_guard_held_by_caller(void);
 int p25_sm_tick_guard_busy(void);
 
 /**
- * @brief Start the background 1 Hz watchdog thread.
+ * @brief Start the background watchdog thread (the beat that asks the decoder thread for ticks).
  *
  * No-op if already started. A thread that cannot start leaves the watchdog off (logged); a later start tries again.
  *

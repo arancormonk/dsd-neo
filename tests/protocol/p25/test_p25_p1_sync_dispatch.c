@@ -430,20 +430,12 @@ test_simple_tdu_dispatch_defaults(void) {
     reset_stub_state();
 
     state.synctype = DSD_SYNC_P25P1_POS;
-    /* A DMR slot 2 burst with an ALG ID before it (a DMR carrier under -fa). */
-    state.dmrburstR = 9;
-    state.payload_algidR = 0x84;
-    state.dmr_stereo = 0;
     g_test_duid = 0x3U;
     dsd_dispatch_handle_p25p1(&opts, &state);
 
     assert(state.nac == 0x293);
     assert(state.lastp25type == 0);
     assert(strcmp(state.fsubtype, " TDU          ") == 0);
-    /* A Phase 1 frame carries one slot: its dispatch, under the P25 SM tick guard, clears the second. */
-    assert(state.dmrburstR == 17);
-    assert(state.payload_algidR == 0);
-    assert(state.dmr_stereo == 1);
 }
 
 static const char k_valid_embedded_gps[] = "GPS: 41.12345N 087.12345W (41.12345, -87.12345) Current Fix";

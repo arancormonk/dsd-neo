@@ -26,7 +26,6 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
-#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -364,36 +363,6 @@ p25_sm_note_validated_cc(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
-/* Frame acquisition's facts, the last sync type and the control channel's sync stamp, are the decoder thread's: the
-   frame-sync hunt writes them at every accepted sync, outside the P25 SM tick guard. On the watchdog's thread the machine
-   reads and writes the copy the decoder hands over at each guard release instead (p25_sm_watchdog_acquisition()); on
-   every other thread it uses dsd_state's. */
-static int
-p25_sm_seen_synctype(const dsd_state* state) {
-    const p25_sm_acquisition* seen = p25_sm_watchdog_acquisition();
-    return seen ? seen->lastsynctype : state->lastsynctype;
-}
-
-static double
-p25_sm_seen_cc_sync_m(const dsd_state* state) {
-    const p25_sm_acquisition* seen = p25_sm_watchdog_acquisition();
-    return seen ? seen->last_cc_sync_time_m : state->last_cc_sync_time_m;
-}
-
-/* A stamp written on the watchdog's thread reaches dsd_state when the decoder next takes the guard, newest wins. */
-static void
-p25_sm_set_cc_sync(dsd_state* state, time_t at, double at_m) {
-    p25_sm_acquisition* seen = p25_sm_watchdog_acquisition();
-    if (seen) {
-        seen->last_cc_sync_time = at;
-        seen->last_cc_sync_time_m = at_m;
-        seen->cc_sync_written_by_tick = 1;
-        return;
-    }
-    state->last_cc_sync_time = at;
-    state->last_cc_sync_time_m = at_m;
-}
-
 static int
 p25_sm_current_cc_nac(const dsd_state* state) {
     if (!state) {
@@ -402,7 +371,7 @@ p25_sm_current_cc_nac(const dsd_state* state) {
     if (state->p2_hardset && p25_sm_valid_nac_ull(state->p2_cc)) {
         return (int)state->p2_cc;
     }
-    if (DSD_SYNC_IS_P25P2(p25_sm_seen_synctype(state)) && p25_sm_valid_nac_ull(state->p2_cc)) {
+    if (DSD_SYNC_IS_P25P2(state->lastsynctype) && p25_sm_valid_nac_ull(state->p2_cc)) {
         return (int)state->p2_cc;
     }
     if (p25_sm_valid_nac_int(state->nac)) {
@@ -524,17 +493,16 @@ p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
     ctx->t_cc_sync_m = tune_start_m;
     if (state) {
         const double decoded_cc_m = state->p25_last_cc_msg_time_m;
-        double cc_sync_m = p25_sm_seen_cc_sync_m(state);
-        if (cc_sync_m <= 0.0 || cc_sync_m < tune_start_m) {
-            p25_sm_set_cc_sync(state, dsd_decode_time(), tune_start_m);
-            cc_sync_m = tune_start_m;
+        if (state->last_cc_sync_time_m <= 0.0 || state->last_cc_sync_time_m < tune_start_m) {
+            state->last_cc_sync_time = dsd_decode_time();
+            state->last_cc_sync_time_m = tune_start_m;
         }
-        if (cc_sync_m > ctx->t_cc_sync_m && decoded_cc_m <= tune_start_m) {
+        if (state->last_cc_sync_time_m > ctx->t_cc_sync_m && decoded_cc_m <= tune_start_m) {
             // Absorb a newer raw-sync timestamp only when no decoded CC block
             // already proves activity after the tune boundary. A block decoded
             // before asynchronous completion is resolved must remain eligible
             // to satisfy the strict decoded-after-tune check below.
-            ctx->t_cc_sync_m = cc_sync_m;
+            ctx->t_cc_sync_m = state->last_cc_sync_time_m;
         }
     }
     ctx->t_cc_tune_m = ctx->t_cc_sync_m;
@@ -544,7 +512,7 @@ p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
                  "decoded_cc_m=%.3f",
                  source ? source : "unknown", p25_sm_cc_acquisition_origin_name(origin),
                  p25_sm_cc_acquire_grace_s(ctx, ctx->config.cc_grace_s), tune_start_m, ctx->t_cc_tune_m,
-                 state ? p25_sm_seen_cc_sync_m(state) : 0.0, state ? state->p25_last_cc_msg_time_m : 0.0);
+                 state ? state->last_cc_sync_time_m : 0.0, state ? state->p25_last_cc_msg_time_m : 0.0);
 }
 
 static void
@@ -612,7 +580,7 @@ p25_sm_refresh_cc_sync_from_state(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_s
                          "source=%s origin=%s decoded_cc_m=%.3f tune_m=%.3f last_cc_m=%.3f expected_nac=0x%03X "
                          "reacquire_attempted=%d soft_reacquire=%d reacquire_latency=%.3f cold_start=%d",
                          trigger ? trigger : "state", p25_sm_cc_acquisition_origin_name(origin), decoded_cc_m, tune_m,
-                         state ? p25_sm_seen_cc_sync_m(state) : 0.0, ctx->expected_cc_nac, reacquire_attempted,
+                         state ? state->last_cc_sync_time_m : 0.0, ctx->expected_cc_nac, reacquire_attempted,
                          reacquire_m > 0.0 ? 1 : 0,
                          reacquire_m > 0.0 && decoded_cc_m > reacquire_m ? decoded_cc_m - reacquire_m : 0.0,
                          cold_start);
@@ -624,9 +592,8 @@ p25_sm_refresh_cc_sync_from_state(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_s
         p25_sm_set_expected_cc_nac(ctx, state, 0);
         return 0;
     }
-    const double cc_sync_m = state ? p25_sm_seen_cc_sync_m(state) : 0.0;
-    if (state && cc_sync_m > ctx->t_cc_sync_m) {
-        ctx->t_cc_sync_m = cc_sync_m;
+    if (state && state->last_cc_sync_time_m > ctx->t_cc_sync_m) {
+        ctx->t_cc_sync_m = state->last_cc_sync_time_m;
         p25_sm_set_expected_cc_nac(ctx, state, 1);
         return 1;
     }
@@ -3038,12 +3005,12 @@ p25_grant_seed_cc_before_vc_tune(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_st
         return;
     }
 
-    double cc_sync_m = p25_sm_seen_cc_sync_m(state);
-    if (cc_sync_m <= 0.0 || cc_sync_m < now_m) {
-        p25_sm_set_cc_sync(state, dsd_decode_time(), now_m);
-        cc_sync_m = now_m;
+    if (state->last_cc_sync_time_m <= 0.0 || state->last_cc_sync_time_m < now_m) {
+        state->last_cc_sync_time = dsd_decode_time();
+        state->last_cc_sync_time_m = now_m;
     }
-    ctx->t_cc_sync_m = (state->p25_last_cc_msg_time_m > 0.0) ? state->p25_last_cc_msg_time_m : cc_sync_m;
+    ctx->t_cc_sync_m =
+        (state->p25_last_cc_msg_time_m > 0.0) ? state->p25_last_cc_msg_time_m : state->last_cc_sync_time_m;
     ctx->t_cc_tune_m = 0.0;
     ctx->cc_sync_pending = 0;
     ctx->cc_acquisition_origin = P25_SM_CC_ACQUISITION_NONE;
@@ -3230,7 +3197,7 @@ p25_grant_blocked_by_pending_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     p25_sm_diagf(opts, state, ctx, "grant_cc_pending",
                  "ch=0x%04X freq=%ld slot=%d tg=%d src=%d tune_m=%.3f last_cc_m=%.3f decoded_cc_m=%.3f",
                  ev->channel & 0xFFFF, grant->freq, grant->slot, ev->tg, ev->src, ctx->t_cc_tune_m,
-                 state ? p25_sm_seen_cc_sync_m(state) : 0.0, state ? state->p25_last_cc_msg_time_m : 0.0);
+                 state ? state->last_cc_sync_time_m : 0.0, state ? state->p25_last_cc_msg_time_m : 0.0);
     return 1;
 }
 
@@ -3548,9 +3515,8 @@ p25_voice_set_state_identity(dsd_state* state, int slot, const p25_sm_event_t* e
 
 static int
 p25_call_protocol(const p25_sm_ctx_t* ctx, const dsd_state* state) {
-    const int synctype = state ? p25_sm_seen_synctype(state) : DSD_SYNC_NONE;
-    if (DSD_SYNC_IS_P25(synctype)) {
-        return synctype;
+    if (state && DSD_SYNC_IS_P25(state->lastsynctype)) {
+        return state->lastsynctype;
     }
     return ctx && ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
 }
@@ -5528,17 +5494,18 @@ handle_cc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     }
     const double now_m = dsd_decode_now_mono_s();
     if (state) {
-        p25_sm_set_cc_sync(state, dsd_decode_time(), now_m);
+        state->last_cc_sync_time = dsd_decode_time();
+        state->last_cc_sync_time_m = now_m;
     }
     if (ctx->cc_sync_pending) {
         (void)p25_sm_refresh_cc_sync_from_state(ctx, (dsd_opts*)opts, state, "sm-event");
     } else {
-        ctx->t_cc_sync_m = state ? p25_sm_seen_cc_sync_m(state) : now_m;
+        ctx->t_cc_sync_m = state ? state->last_cc_sync_time_m : now_m;
         p25_sm_set_expected_cc_nac(ctx, state, 1);
     }
     p25_sm_diagf((dsd_opts*)opts, state, ctx, "cc_sync",
                  "pending=%d expected_nac=0x%03X nac=0x%03X last_cc_m=%.3f decoded_cc_m=%.3f", ctx->cc_sync_pending,
-                 ctx->expected_cc_nac, state ? state->nac : 0, state ? p25_sm_seen_cc_sync_m(state) : 0.0,
+                 ctx->expected_cc_nac, state ? state->nac : 0, state ? state->last_cc_sync_time_m : 0.0,
                  state ? state->p25_last_cc_msg_time_m : 0.0);
 
     if (!ctx->cc_sync_pending && (ctx->state == P25_SM_IDLE || ctx->state == P25_SM_HUNTING)) {
@@ -6516,9 +6483,8 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (state && state->p25_cc_freq != 0) {
         ctx->state = P25_SM_ON_CC;
         // Sync CC timestamp from state
-        const double cc_sync_m = p25_sm_seen_cc_sync_m(state);
-        if (cc_sync_m > 0.0) {
-            ctx->t_cc_sync_m = cc_sync_m;
+        if (state->last_cc_sync_time_m > 0.0) {
+            ctx->t_cc_sync_m = state->last_cc_sync_time_m;
         } else {
             ctx->t_cc_sync_m = dsd_decode_now_mono_s();
         }
@@ -6824,9 +6790,8 @@ p25_sm_tick_on_cc_eval_cooldown(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_sta
     }
 
     cc_ts = ctx->t_cc_sync_m;
-    const double cc_sync_m = p25_sm_seen_cc_sync_m(state);
-    if (cc_sync_m > 0.0 && cc_sync_m < cc_ts) {
-        cc_ts = cc_sync_m;
+    if (state->last_cc_sync_time_m > 0.0 && state->last_cc_sync_time_m < cc_ts) {
+        cc_ts = state->last_cc_sync_time_m;
     }
     if (cc_ts <= 0.0 || (now_m - cc_ts) >= eval_window_s) {
         dsd_trunk_cc_candidates_set_cooldown(state, state->p25_cc_eval_freq, now_m + 10.0);
@@ -6861,11 +6826,10 @@ p25_sm_tick_on_cc_is_lost(const p25_sm_ctx_t* ctx, const dsd_state* state, doubl
     }
     cc_ts = ctx->t_cc_sync_m;
     if (state) {
-        const double cc_sync_m = p25_sm_seen_cc_sync_m(state);
-        if (cc_sync_m <= 0.0) {
+        if (state->last_cc_sync_time_m <= 0.0) {
             cc_ts = 0.0;
-        } else if (cc_sync_m < cc_ts) {
-            cc_ts = cc_sync_m;
+        } else if (state->last_cc_sync_time_m < cc_ts) {
+            cc_ts = state->last_cc_sync_time_m;
         }
     }
     if (cc_ts <= 0.0 && ctx->t_cc_sync_m > 0.0) {
@@ -6909,7 +6873,7 @@ p25_sm_tick_on_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
                      "reason=acquire-timeout origin=%s effective_grace=%.3f cc_grace=%.3f tune_m=%.3f "
                      "last_cc_m=%.3f decoded_cc_m=%.3f now_m=%.3f",
                      p25_sm_cc_acquisition_origin_name(origin), p25_sm_cc_acquire_grace_s(ctx, cc_grace), cc_grace,
-                     ctx->t_cc_tune_m, state ? p25_sm_seen_cc_sync_m(state) : 0.0,
+                     ctx->t_cc_tune_m, state ? state->last_cc_sync_time_m : 0.0,
                      state ? state->p25_last_cc_msg_time_m : 0.0, now_m);
         if (state && state->p25_cc_eval_freq != 0) {
             dsd_trunk_cc_candidates_set_cooldown(state, state->p25_cc_eval_freq, now_m + 10.0);
@@ -6921,7 +6885,7 @@ p25_sm_tick_on_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
     } else {
         p25_sm_diagf(opts, state, ctx, "cc_lost",
                      "reason=timeout cc_grace=%.3f last_cc_m=%.3f decoded_cc_m=%.3f now_m=%.3f", cc_grace,
-                     state ? p25_sm_seen_cc_sync_m(state) : 0.0, state ? state->p25_last_cc_msg_time_m : 0.0, now_m);
+                     state ? state->last_cc_sync_time_m : 0.0, state ? state->p25_last_cc_msg_time_m : 0.0, now_m);
     }
     p25_sm_reset_cc_reacquire_tracking(ctx);
     set_state(ctx, opts, state, P25_SM_HUNTING, "cc-lost");
@@ -7870,9 +7834,8 @@ p25_sm_conventional_source(const dsd_state* state, const p25_sm_event_t* ev, int
 
 static int
 p25_sm_conventional_protocol(const dsd_state* state) {
-    const int synctype = p25_sm_seen_synctype(state);
-    if (DSD_SYNC_IS_P25(synctype)) {
-        return synctype;
+    if (DSD_SYNC_IS_P25(state->lastsynctype)) {
+        return state->lastsynctype;
     }
     return DSD_SYNC_IS_P25P2(state->synctype) ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
 }
@@ -8508,8 +8471,8 @@ p25_lockout_snapshot_from_observation(const p25_sm_ctx_t* ctx, const dsd_state* 
     DSD_MEMSET(call, 0, sizeof(*call));
     call->epoch = epoch;
     call->phase = DSD_CALL_PHASE_ACTIVE;
-    const int synctype = p25_sm_seen_synctype(state);
-    call->protocol = DSD_SYNC_IS_P25(synctype) ? synctype : (slot == 0U ? DSD_SYNC_P25P1_POS : DSD_SYNC_P25P2_POS);
+    call->protocol = DSD_SYNC_IS_P25(state->lastsynctype) ? state->lastsynctype
+                                                          : (slot == 0U ? DSD_SYNC_P25P1_POS : DSD_SYNC_P25P2_POS);
     call->slot = slot;
     call->kind = is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
     call->ota_target_id = (uint32_t)target;

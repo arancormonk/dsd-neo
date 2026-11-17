@@ -617,12 +617,6 @@ dsd_frame_verdict
 dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     /* The tune the frame was synced on: its handler may tune away (a grant) before the frame is reported. */
     const uint64_t tune_generation = dsd_trunk_tuning_generation();
-    /* A Phase 1 frame carries one slot. Set here, under the P25 SM tick guard, not at the sync accept in the hunt: the
-       P25 watchdog's release writes the second slot's fields too. A tolerant sync whose NID fails puts them back with
-       the rest of what was held (dsd_frame_sync_p25p1_candidate_rejected()). */
-    state->dmrburstR = 17;
-    state->payload_algidR = 0;
-    state->dmr_stereo = 1;
     p25p1_sync_acceptance sync;
     sync.kind = dsd_frame_sync_p25p1_sync_kind(state, &sync.anchor_nac, &sync.errors);
     p25_status_accum_snapshot status_before;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
-/* Real P25 watchdog, policy stores, command drain and partial-audio playback.
+/* A real P25 SM tick in flight on another thread, policy stores, command drain and partial-audio playback.
  * Only tuning and the audio output boundary are replaced. */
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
@@ -328,10 +328,22 @@ submit_phase(void) {
     }
 }
 
+/* The tick a watchdog beat asks for, in flight on a thread of its own: the decoder thread runs it in production
+   (p25_sm_watchdog_service()), and a command drained beside one still waits for the guard it holds. */
+static DSD_THREAD_RETURN_TYPE
+tick_in_flight(void* opaque) {
+    (void)opaque;
+    p25_sm_try_tick(&g_opts, &g_state);
+    DSD_THREAD_RETURN;
+}
+
 static int
 drain_during_flush(void) {
     g_state.p25_sm_force_release = 1;
-    p25_sm_watchdog_start(&g_opts, &g_state);
+    dsd_thread_t tick;
+    if (dsd_thread_create(&tick, tick_in_flight, NULL) != 0) {
+        return expect(0, "tick thread started");
+    }
     dsd_mutex_lock(&g_flush.mutex);
     while (!g_flush.entered) {
         if (dsd_cond_timedwait(&g_flush.condition, &g_flush.mutex, 5000) != 0) {
@@ -340,10 +352,10 @@ drain_during_flush(void) {
     }
     const int entered = g_flush.entered;
     dsd_mutex_unlock(&g_flush.mutex);
-    int rc = expect(entered, "real watchdog reached flush");
+    int rc = expect(entered, "the tick reached flush");
     if (!entered) {
         release_barrier();
-        p25_sm_watchdog_stop();
+        dsd_thread_join(tick);
         return rc;
     }
     g_flush.baseline = dsd_app_command_test_policy_guard_waits();
@@ -360,7 +372,7 @@ drain_during_flush(void) {
     if (started) {
         dsd_thread_join(releaser);
     }
-    p25_sm_watchdog_stop();
+    dsd_thread_join(tick);
     rc |= expect(!g_flush.stalled, "releaser did not reach fixture stall bound");
     rc |= expect(dsd_app_command_test_policy_guard_waits() == g_flush.baseline + 1, "probe == baseline + 1");
     return rc;

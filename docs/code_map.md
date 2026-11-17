@@ -1278,20 +1278,25 @@ untyped FDMA entry with a typed peer entry at trust 1 (`trunk_scan_share_peer_id
 Recovery ownership is checked at the P25 watchdog, DMR tick and engine frame-sync callback boundaries. Runtime trunk-scan
 hooks identify the parked protocol. Outside trunk scan, validated control/grant evidence retains a protocol owner
 across sync loss; unrelated protocol decodes and raw sync cannot evict it. Ownership writes and watchdog reads share the decoder/SM guard, so the
-watchdog predicate does not read the sync or CC-format hints modified by frame acquisition. Nor does the tick: the
-frame-sync hunt writes `lastsynctype` and the control channel's sync stamp (`last_cc_sync_time`, `_m`) at every accepted
-sync, outside the guard, so on the watchdog's thread the P25 machine reads them from the copy the decoder thread hands
-over each time it leaves the guard (`p25_sm_acquisition`, `p25_sm_watchdog_acquisition()`; the dispatch after every
-accept is such a hold), and a stamp the tick writes (the grace after a control-channel tune) goes into that copy, which
-the decoder merges into `dsd_state`, newest wins, when it next takes the guard (`p25_sm_seen_synctype()`,
-`p25_sm_seen_cc_sync_m()`, `p25_sm_set_cc_sync()` in `p25_trunk_sm.c`; every other thread reads the fields). The
-decoder thread is the one that started the watchdog. The no-carrier pass's reset (`dsd_engine_reset_no_carrier_state()`:
-the NAC and the carrier's other codes, the sync type, crypto and call state) and its identity step run under one hold of
-the guard, and the frame sync's notes to the machine (a voice channel's sync, a pass without one) wait for the guard.
-A Phase 1 frame's single-slot setup (`dmrburstR`, `payload_algidR`, `dmr_stereo`), which a watchdog release also writes,
-is set in its dispatch (`dsd_dispatch_handle_p25p1()`), not at the hunt's accept.
-`ENGINE_P25_WATCHDOG_ACQUISITION_RACE` runs the real watchdog thread beside those writes (tsan-debug). A retune the
-watchdog makes still writes the chain and the stamps from its own thread (`trunk_tuning.c`), as an off-thread tune.
+watchdog predicate does not read the sync or CC-format hints modified by frame acquisition.
+
+**P25 watchdog threading:** the P25 watchdog thread is a beat (`p25_sm_watchdog_request_tick()`, every 200 ms with a
+frontend, 400 ms headless, `DSD_NEO_P25_WD_MS`): it reads and writes no `dsd_state` or `dsd_opts`, and makes no tune.
+The tick it asks for runs on the decoder thread (`p25_sm_watchdog_service()`: the same `p25_sm_try_tick()`, under the
+tick guard), which owns every field the hunt reads and makes every tune: at the frame-sync hunt's 300-symbol checkpoint
+(`frame_sync_service_p25_watchdog()`, which drops the history and starts the hunt's context over in place when the tick
+moved the chain: the modulation, the symbol profile or a tune), between synced frames
+(`live_scanner_process_synced_frames()`), in the main pass's own tick, and in place inside a hunt read waiting on a
+quiet input (each slice of the silent PCM wait, the RTL idle-bounded read). A beat that finds the guard held stays
+asked for. So a release, a control-channel hunt step and a CQPSK retry write the decoder's profile (`rf_mod`,
+`samplesPerSymbol`, `symbolCenter`, `sps_hunt_*`), `trunk_is_tuned`, `p25_p2_active_slot`, the audio gates and the sync
+stamps in the same decoder-thread call that retunes, before another sample is read; the beat-to-tick delay is at most
+one checkpoint (62.5 ms at 4800 sym/s), one frame, or one quiet-read slice. A frame read waits for its samples inside a
+dispatch that holds the guard, as before. The off-thread tune machinery (`dsd_frame_sync_note_off_thread_tune()`, the
+published P25p1 decision, `dsd_rxid_request_trunk_tune()`) has no production caller off the decoder thread any more.
+`ENGINE_P25_WATCHDOG_DECODER_TICK` runs the real watchdog thread beside the hunt's writes and reads and checks that a
+watchdog-paced release tunes from the decoder thread (tsan-debug).
+
 DMR owns its decoded
 CC heartbeat, six-second loss grace, two-second probe window and five-second backend deadline inside each
 target's `dmr_sm_ctx_t`. In single-system sessions the engine ticks admitted DMR recovery between synced frames,
@@ -2532,8 +2537,8 @@ suite runs under this compiler.
     `close_and_publish_call_wav()` follows), so the commit links it and a drop unlinks it; with no such epoch, as no
     row's (nothing names it, as on the drop path). An empty file, `-P` off, a static WAV and an active call's file (its
     commit closes it) are left alone. The check that no call owns the file and its close run as one step under the
-    call-state lock, the lock every commit holds while it rotates a slot: a flush on the P25 watchdog's thread (a trunk
-    control-channel return or tune, under the tick guard) can meet the decoder thread committing the slot's ended call
+    call-state lock, the lock every commit holds while it rotates a slot: a flush in a P25 tick (a trunk
+    control-channel return or tune, under the tick guard; the decoder thread runs the watchdog's ticks) can meet the decoder thread committing the slot's ended call
     (`dsd_event_sync_slot()` from `noCarrier()` or `getFrameSync()`, which holds the call-state lock and not the tick
     guard), and the two must never close the same file. The slot writers never meet a flush: they run on the decoder
     thread under the tick guard (a frame dispatch), and the watchdog flushes only inside its tick. Lock order: tick
@@ -3705,7 +3710,7 @@ suite runs under this compiler.
   re-resolves for admission: the winner becomes the slot's and the snapshot's policy target in place
   (`dsd_call_state_update_policy_target()`, no boundary; the received service options and priority stay as received)
   and the ledger takes its priority; when nothing in the patch may be followed the held call is described with no
-  priority protection (-1). The watchdog's TUNED tick runs that re-resolution on its own thread, so every command that
+  priority protection (-1). The watchdog-paced TUNED tick runs that re-resolution under the tick guard, so every command that
   writes a talkgroup policy input applies under the P25 SM tick guard: the policy store, Hold, allow list and record
   switch (`command_changes_call_verdict()`), and the tune switches, the encryption lockout ledger, every key edit (they
   bump its key epoch) and the Phase 2 parameters (`command_writes_tick_inputs()`). Admission also judges the row-edit
@@ -4556,8 +4561,8 @@ suite runs under this compiler.
   (`ui_user_move_forgets_identity()`); and the guarded no-carrier step (`dsd_engine_no_carrier_identity_stale()`), so
   the next transmission proves RAS again. A frame
   of another family drops the part with the record and keeps the evidence (the same carrier): the next signature notes
-  it again. `dsd_engine_forget_carrier_codes()` does not reset it: the voice-channel tune that calls it can run on the
-  watchdog's thread, and the trunk tune's apply covers that tune. A tune the user asked for while trunking, which keeps
+  it again. `dsd_engine_forget_carrier_codes()` does not reset it: the trunk tune's apply covers the voice-channel tune that calls
+  it. A tune the user asked for while trunking, which keeps
   the decoder's trunking state and so is no carrier boundary, forgets the record too (D4: any user move), after the
   calls it ended took theirs: a frequency entry that selects a P25 control channel (`ui_cmd_handle_p25_cc_selection()`,
   accepted only), a Return to CC, and a channel or candidate cycle (`ui_user_move_forgets_identity()`, which also marks
@@ -4859,7 +4864,7 @@ suite runs under this compiler.
     readings feed the P25 patch table's listening clock) is decode time: protocol windows (the DMR header repeat, SLCO
     print throttle and RC repeat dedup, the P25 PTT retransmission and FACCH double-END windows, NXDN recent context),
     trunk SM stamps and ticks, sync stamps, and decoded-output timestamps and file names. The P25 SM watchdog thread
-    sleeps in real time, but the ticks it drives compare decode time, so where a tick falls among a replay's samples
+    sleeps in real time, but the ticks it asks the decoder thread for compare decode time, so where a tick falls among a replay's samples
     follows the wall clock, one reason a trunked (`-T`) replay is outside the replay determinism guarantee
     (`docs/iq-capture-replay.md`). In
     `src/core`, `src/app_control` and `src/ui` decode time drives the call store's fallback stamps
@@ -5488,7 +5493,7 @@ stays. Tests: `CORE_KEY_DIRECT`, `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`, `UI_ASYN
 
 **Publishing under the tick guard:** the P25 watchdog's tick writes decoder state and options (calls, tuned and
 control-channel frequencies, site tables, CC candidates, `trunk_is_tuned`, the tuner's centre frequency) under the P25
-SM tick guard on its own thread. `dsd_app_telemetry_publish_snapshot()` and `dsd_app_telemetry_publish_opts_snapshot()`
+SM tick guard (on the decoder thread, which runs the watchdog's ticks). `dsd_app_telemetry_publish_snapshot()` and `dsd_app_telemetry_publish_opts_snapshot()`
 therefore read the live state only under that guard: the copy, the notification record and the observers. Publishers run
 on the decoder thread only, and a publication never waits for a tick (a tick can last an RTL tune, up to 500 ms, or
 rigctl round trips): a publisher already under the guard (a frame dispatch) uses that hold, since the guard is not
@@ -5775,8 +5780,7 @@ reports every outcome: its late failure posts the text the import composed (the 
 import applied); its landing (the import's toast with the tune landed) and its drop (superseded, or the stream stopped)
 replace the import's own toast only while it is up, never a newer message or a cleared line. An owner's own tune
 (`dsd_engine_tune_rtl()`, `no_carrier_tune_rtl_if_needed()`: a trunk hunt, a grant, a scan step, after an import that
-turned it on) marks itself first (`dsd_engine_manual_tune_owner_takes_over()`, atomic, since the P25 watchdog's thread
-tunes too), and its drop says nothing, unless the import's tune had already landed. The operator's P25 Return-to-CC,
+turned it on) marks itself first (`dsd_engine_manual_tune_owner_takes_over()`, atomic), and its drop says nothing, unless the import's tune had already landed. The operator's P25 Return-to-CC,
 Candidate cycle and a block's return to the control channel (`request_manual_tune()` with a P25 symbol rate) tune
 through the same hook, so they count as owner tunes as well: an import's tune they drop is not announced (accepted
 limit; their own toasts say where the receiver went). The cached centre follows a tune that fails inside its wait the
@@ -9294,7 +9298,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     modulation goes back. A tune that fails or is deferred puts the comparison back as it was, with the front end's
     profile captured before the comparison ended, so the decoder and the front end stay on the same chain.
   - The comparison is the decoder thread's: it runs in the hunt, outside the P25 SM tick guard, and a tune the P25
-    watchdog's tick makes on its own thread never touches it. The invariant: an off-thread tune makes one coherent read
+    watchdog's tick made on its own thread never touches it (the decoder thread now runs those ticks, see "P25 watchdog
+    threading"; the rule stays for any tune made off it). The invariant: an off-thread tune makes one coherent read
     of the decision the decoder publishes (`dsd_frame_sync_p25p1_read_decision()`: one atomic value, whether a
     comparison runs and the learned modulation, the leading chain while one runs, published at every comparison step and
     every write of the learned modulation by `dsd_frame_sync_p25p1_mod_compare_publish()`), taken when its outermost
@@ -13200,8 +13205,8 @@ Key public headers (selection):
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
   a stop joins only a thread that started; `p25_sm_watchdog_set_thread_create_for_test()`, compiled only with
-  `DSD_NEO_TEST_HOOKS`, injects the failure, `P25_SM_WATCHDOG_START`; `p25_sm_acquisition`, the frame-acquisition
-  facts the decoder thread hands the watchdog's tick at each guard release, see Single-Tuner Trunk Scan)
+  `DSD_NEO_TEST_HOOKS`, injects the failure, `P25_SM_WATCHDOG_START`; the thread only asks for ticks, which the decoder
+  thread runs, `p25_sm_watchdog_service()`, see "P25 watchdog threading")
 - NXDN: `<dsd-neo/protocol/nxdn/nxdn_const.h>`, `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>`
   (the movable missing-channel ledger and its exit summary, so trunk scan can park one per target)
 - D‑STAR: `<dsd-neo/protocol/dstar/dstar_const.h>`, `<dsd-neo/protocol/dstar/dstar_header.h>`

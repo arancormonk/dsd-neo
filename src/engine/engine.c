@@ -4155,18 +4155,8 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
         untyped_install_row(opts, state, scanner_row, now, 0U);
     }
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
-    /* The reset writes what the P25 watchdog's tick reads (the NAC and the carrier's other codes, the sync type, the
-       crypto and call state): under the tick guard, with the identity step, which waits for a tick rather than give
-       way to it here. */
-    const int take_guard = !guard_held && !p25_sm_tick_guard_held_by_caller();
-    if (take_guard) {
-        p25_sm_tick_guard_enter();
-    }
     dsd_engine_reset_no_carrier_state(opts, state);
-    dsd_engine_no_carrier_identity_stale(state, 1);
-    if (take_guard) {
-        p25_sm_tick_guard_leave();
-    }
+    dsd_engine_no_carrier_identity_stale(state, guard_held);
 }
 
 void
@@ -4671,6 +4661,9 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         if (opts->scan_skip_silent) {
             live_scanner_trunk_quiet_frame_service(opts, state);
         }
+        /* A P25 watchdog beat's tick, between frames, on this thread (p25_sm_watchdog_service()): a carrier that keeps
+           sync never reaches the main pass's tick or the hunt's checkpoint for long. */
+        (void)p25_sm_watchdog_service(opts, state);
         dsd_trunk_scan_hook_tick(opts, state);
         if (live_scanner_frame_boundary_yields(opts, state, frame_dispatchable)) {
             state->synctype = DSD_SYNC_NONE;

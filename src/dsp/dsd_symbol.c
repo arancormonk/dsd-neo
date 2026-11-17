@@ -2641,7 +2641,9 @@ symbol_rtl_read_yielded(dsd_state* state) {
    Under a scan the pass ends (symbol_hunt_idle_ends_pass()). Else nothing waits on the decoder, and the read reads
    again. Returns 1 when the read leaves. Nothing of the stream is lost either way: the read found no samples. */
 static int
-symbol_rtl_read_idle_leaves(const dsd_opts* opts, dsd_state* state) {
+symbol_rtl_read_idle_leaves(dsd_opts* opts, dsd_state* state) {
+    /* A P25 watchdog beat's tick runs here, in place, as in a quiet PCM wait. */
+    (void)dsd_frame_sync_hook_p25_sm_watchdog_service(opts, state);
     if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()) {
         state->input_interrupted = 1;
         return 1;
@@ -2670,7 +2672,7 @@ symbol_rtl_read_wants(const symbol_work_ctx* work) {
    A hunt read that the stream bounded reads again unless it leaves (symbol_rtl_read_idle_leaves()). Returns the read's
    result: DSD_RTL_READ_IDLE only when the read left. */
 static int
-symbol_rtl_read_sample(const dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work,
+symbol_rtl_read_sample(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work,
                        uint32_t* read_generation, int* got) {
     for (;;) {
         *read_generation = dsd_rtl_stream_metrics_hook_stream_generation();
@@ -3067,6 +3069,9 @@ symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* 
         if (!work->hunting) {
             continue;
         }
+        /* A P25 watchdog beat's tick runs here, in place: no sample is in flight (the hunt's next checkpoint starts its
+           context over if the tick moved the chain). */
+        (void)dsd_frame_sync_hook_p25_sm_watchdog_service(opts, state);
         const uint64_t now_ms = dsd_realtime_mono_ms();
         if (!silent) {
             silent = 1;
