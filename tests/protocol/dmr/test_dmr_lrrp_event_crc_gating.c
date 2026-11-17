@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
-/* Issue #550: LOCN and IP/UDP LRRP location rows honor the dispatch CRC verdict. */
+/* Issue #550: LOCN and IP/UDP LRRP location rows honor the dispatch CRC verdict. Issue #800: only a report whose
+ * checks passed is staged as the notice's position, and a failed LOCN keeps its coordinates out of the text. */
 
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -156,6 +159,30 @@ expect_rows(const char* path, int expected, const char* src, const char* lat, co
     return 1;
 }
 
+// Whether the slot holds a staged, admitted position of `kind` at (lat_e7, lon_e7) when `want` is set, none otherwise.
+static int
+expect_staged(const dsd_state* state, int want, uint8_t kind, int32_t lat_e7, int32_t lon_e7, const char* tag) {
+    const dsd_position_fix* fix = dsd_event_staged_position(state, 0);
+    if (!want) {
+        if (fix->rev != 0U) {
+            DSD_FPRINTF(stderr, "\n%s: a position was staged\n", tag);
+            return 0;
+        }
+        return 1;
+    }
+    if (fix->rev == 0U || fix->kind != kind || fix->lat_e7 != lat_e7 || fix->lon_e7 != lon_e7) {
+        DSD_FPRINTF(stderr, "\n%s: staged rev %llu kind %u at (%d, %d)\n", tag, (unsigned long long)fix->rev,
+                    (unsigned)fix->kind, (int)fix->lat_e7, (int)fix->lon_e7);
+        return 0;
+    }
+    const uint16_t provisional = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
+    if (((fix->flags & provisional) != 0U) != (kind == DSD_POS_DMR_LOCN)) {
+        DSD_FPRINTF(stderr, "\n%s: flags %04X\n", tag, (unsigned)fix->flags);
+        return 0;
+    }
+    return 1;
+}
+
 static uint16_t
 build_ipv4_udp_lrrp(uint8_t packet[64], uint16_t port) {
     // POINT_2D response from DMR_LRRP_CRC_GATING: lat 11.25, lon 45.
@@ -193,13 +220,20 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         state->event_crc_invalid[0] = invalid;
         state->dmr_lrrp_source[0] = 123456;
         state->dmr_lrrp_gps[0][0] = '\0';
+        dsd_event_stage_clear(state, 0);
         dmr_locn(opts, state, (uint16_t)(sizeof locn - 1), locn);
         if (!expect_rows(path, !invalid, "00123456", "22.50000", "45.00000", "LOCN")) {
             return 1 + (1 - invalid) * 2;
         }
-        if (!strstr(state->dmr_lrrp_gps[0], "NMEA / LOCN") || !strstr(state->dmr_lrrp_gps[0], "(22.50000, 45.00000)")) {
-            DSD_FPRINTF(stderr, "\nLOCN: missing decoded state: %s\n", state->dmr_lrrp_gps[0]);
+        // A failed check keeps the coordinates out of the notice text and stages no position (issue #800).
+        const char* want = invalid ? "NMEA / LOCN; Source: 123456 Position suppressed (CRC ERR);"
+                                   : "NMEA / LOCN; Source: 123456 (22.50000, 45.00000)";
+        if (strcmp(state->dmr_lrrp_gps[0], want) != 0) {
+            DSD_FPRINTF(stderr, "\nLOCN: got '%s', want '%s'\n", state->dmr_lrrp_gps[0], want);
             return 2 + (1 - invalid) * 2;
+        }
+        if (!expect_staged(state, !invalid, DSD_POS_DMR_LOCN, 225000000, 450000000, "LOCN")) {
+            return 7 + (1 - invalid);
         }
     }
     state->currentslot = 0;
@@ -210,12 +244,18 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
             return 100;
         }
         state->event_crc_invalid[0] = (uint8_t)invalid;
+        dsd_event_stage_clear(state, 0);
         dmr_sd_pdu_process(opts, state, (uint16_t)(sizeof locn - 1), locn, 1U);
         if (!expect_rows(path, !invalid, "00123456", "22.50000", "45.00000", "T4 short-data LOCN")) {
             return 20;
         }
         if (!strstr(state->dmr_lrrp_gps[0], "NMEA / LOCN")) {
             return 21;
+        }
+        // The short-data path stages only an admitted position, never the LOCN text alone.
+        if (!expect_staged(state, !invalid, DSD_POS_DMR_LOCN, 225000000, 450000000, "T4 short-data LOCN")
+            || (invalid && dsd_event_staged_gps(state, 0)[0] != '\0')) {
+            return 22;
         }
     }
     static const uint16_t ports[] = {4001, 49198};
@@ -243,6 +283,7 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
             DSD_SNPRINTF(tag, sizeof tag, "UDP/%u %s", (unsigned)ports[i], scopes[c].tag);
             state->event_crc_invalid[0] = scopes[c].scope;
             state->dmr_lrrp_gps[0][0] = '\0';
+            dsd_event_stage_clear(state, 0);
             decode_ip_pdu(opts, state, len, packet);
             if (!expect_rows(path, scopes[c].scope == 0U, "00000111", "11.25000", "45.00000", tag)) {
                 return 30 + (int)(i * 8U + c * 2U);
@@ -251,6 +292,9 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
                 DSD_FPRINTF(stderr, "\n%s: missing '%s' in state: %s\n", tag, scopes[c].expected,
                             state->dmr_lrrp_gps[0]);
                 return 31 + (int)(i * 8U + c * 2U);
+            }
+            if (!expect_staged(state, scopes[c].scope == 0U, DSD_POS_DMR_LRRP, 112500000, 450000000, tag)) {
+                return 60 + (int)(i * 8U + c);
             }
         }
     }
@@ -281,6 +325,7 @@ main(void) {
     opts.aggressive_framesync = 0;
     opts.dmr_crc_relaxed_default = 1;
     state.currentslot = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     int rc = run_cases(&opts, &state, path);
     remove(path);
     free(state.event_history_s);

@@ -6,12 +6,18 @@
 /*
  * Validate LOCN (NMEA-like) date handling: out-of-range decoded dates should
  * be ignored and system time used instead in the LRRP output file.
+ *
+ * Issue #800 bug 2.5: every LOCN field is checked before it is used (digits only, a sign per field, minutes below 60,
+ * degrees within 90/180 with the boundary only at zero minutes, a date that exists), and an admitted report is staged
+ * as a provisional-format position (decision D12). The coordinates are synthetic.
  */
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
@@ -109,6 +115,148 @@ expect_has_substr(const char* buf, const char* needle, const char* tag) {
         return 1;
     }
     return 0;
+}
+
+typedef struct {
+    const char* tag;
+    const char* text;
+    int published; // admitted, staged and written to -L
+    int32_t lat_e7;
+    int32_t lon_e7;
+    const char* summary; // the slot text, or NULL to skip the check
+} locn_case;
+
+static const locn_case k_locn_cases[] = {
+    {"plain", "N2230.0000E04500.0000", 1, 225000000, 450000000, "NMEA / LOCN; Source: 1193046 (22.50000, 45.00000)"},
+    {"south west", "S2230.5000W04500.0000", 1, -225083333, -450000000, NULL},
+    // A later N field is north even after an S field.
+    {"sign per field", "S2230.0000N1130.0000E04500.0000", 1, 115000000, 450000000, NULL},
+    {"boundary", "N9000.0000E18000.0000", 1, 900000000, 1800000000, NULL},
+    {"minute 60", "N4560.0000E04500.0000", 0, 0, 0, "NMEA / LOCN; Source: 1193046 Position suppressed (invalid);"},
+    {"latitude 99", "N9930.0000E04500.0000", 0, 0, 0, NULL},
+    {"past the pole", "N9000.0001E04500.0000", 0, 0, 0, NULL},
+    {"past the date line", "W18000.0001N1000.0000", 0, 0, 0, NULL},
+    // A non-digit is no field at all (it used to shift by a negative amount).
+    {"non-digit", "N/430.0000E04500.0000", 0, 0, 0, ""},
+};
+
+static int
+run_locn_case(dsd_opts* opts, dsd_state* st, const locn_case* c) {
+    FILE* trunc = dsd_fopen_private(opts->lrrp_out_file, "w");
+    if (trunc == NULL || fclose(trunc) != 0) {
+        return 1;
+    }
+    dsd_event_stage_clear(st, 0);
+    st->dmr_lrrp_gps[0][0] = '\0';
+    uint8_t pdu[64];
+    const size_t len = strlen(c->text);
+    DSD_MEMCPY(pdu, c->text, len);
+    dmr_locn(opts, st, (uint16_t)len, pdu);
+
+    int rc = 0;
+    const dsd_position_fix* fix = dsd_event_staged_position(st, 0);
+    char file[256] = "";
+    FILE* f = fopen(opts->lrrp_out_file, "rb");
+    if (f != NULL) {
+        const size_t n = fread(file, 1, sizeof file - 1U, f);
+        file[n] = '\0';
+        fclose(f);
+    }
+    if (c->published) {
+        const uint16_t want_flags = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
+        if (fix->rev == 0U || fix->kind != DSD_POS_DMR_LOCN || fix->lat_e7 != c->lat_e7 || fix->lon_e7 != c->lon_e7
+            || (fix->flags & (uint16_t)~(uint16_t)DSD_POS_FLAG_TARGET_GROUP) != want_flags
+            || fix->source_id != 0x123456U || file[0] == '\0') {
+            DSD_FPRINTF(stderr, "%s: rev %llu kind %u (%d, %d) flags %04X, row '%s'\n", c->tag,
+                        (unsigned long long)fix->rev, (unsigned)fix->kind, (int)fix->lat_e7, (int)fix->lon_e7,
+                        (unsigned)fix->flags, file);
+            rc = 1;
+        }
+    } else if (fix->rev != 0U || file[0] != '\0') {
+        DSD_FPRINTF(stderr, "%s: published (rev %llu, row '%s')\n", c->tag, (unsigned long long)fix->rev, file);
+        rc = 1;
+    }
+    if (c->summary != NULL && strcmp(st->dmr_lrrp_gps[0], c->summary) != 0) {
+        DSD_FPRINTF(stderr, "%s: text '%s', want '%s'\n", c->tag, st->dmr_lrrp_gps[0], c->summary);
+        rc = 1;
+    }
+    return rc;
+}
+
+// The date prints only when it exists: 31 February 2024 does not, 29 February 2024 does.
+static int
+run_locn_date_cases(dsd_opts* opts, dsd_state* st) {
+    static const struct {
+        const char* text;
+        const char* needle;
+        int present;
+    } dates[] = {
+        {"A120000310224N2230.0000E04500.0000", "2024/02/31", 0},
+        {"A120000290224N2230.0000E04500.0000", "2024/02/29", 1},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof dates / sizeof dates[0]; i++) {
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "dmr_locn_date") != 0) {
+            return 1;
+        }
+        uint8_t pdu[64];
+        const size_t len = strlen(dates[i].text);
+        DSD_MEMCPY(pdu, dates[i].text, len);
+        dmr_locn(opts, st, (uint16_t)len, pdu);
+        dsd_test_capture_stderr_end(&cap);
+        char err[1024];
+        if (dsd_test_capture_stderr_read(&cap, err, sizeof err) != 0) {
+            return 1;
+        }
+        if ((strstr(err, dates[i].needle) != NULL) != dates[i].present) {
+            DSD_FPRINTF(stderr, "date %s: stderr '%s'\n", dates[i].needle, err);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+static int
+run_locn_cases(dsd_opts* opts) {
+    static dsd_state st;
+    st.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    st.dmr_lrrp_source[0] = 0x123456;
+    st.event_history_s = calloc(2, sizeof *st.event_history_s);
+    if (st.event_history_s == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_locn_cases / sizeof k_locn_cases[0]; i++) {
+        rc |= run_locn_case(opts, &st, &k_locn_cases[i]);
+    }
+    rc |= run_locn_date_cases(opts, &st);
+
+    // A failed check is the reason a damaged report is withheld, even when a field is also out of range.
+    st.event_crc_invalid[0] = 1;
+    static const locn_case damaged = {"damaged and out of range",
+                                      "N4560.0000E04500.0000",
+                                      0,
+                                      0,
+                                      0,
+                                      "NMEA / LOCN; Source: 1193046 Position suppressed (CRC ERR);"};
+    rc |= run_locn_case(opts, &st, &damaged);
+    st.event_crc_invalid[0] = 0;
+
+    // A DMR data packet addressed to its header's group target is a group report.
+    st.dmr_lrrp_target[0] = 777;
+    st.dmr_data_target_is_group[0] = 1;
+    static const locn_case group = {"group target", "N2230.0000E04500.0000", 1, 225000000, 450000000, NULL};
+    rc |= run_locn_case(opts, &st, &group);
+    const dsd_position_fix* fix = dsd_event_staged_position(&st, 0);
+    if ((fix->flags & (uint16_t)DSD_POS_FLAG_TARGET_GROUP) == 0U || fix->target_id != 777U) {
+        DSD_FPRINTF(stderr, "group target: flags %04X target %u\n", (unsigned)fix->flags, (unsigned)fix->target_id);
+        rc = 1;
+    }
+    free(st.event_history_s);
+    st.event_history_s = NULL;
+    return rc;
 }
 
 int
@@ -214,6 +362,7 @@ main(void) {
     rc |= expect_no_substr(buf, "2038/", "LOCN excludes bogus decoded year");
     free(buf);
 
+    rc |= run_locn_cases(&opts);
     remove(outtmpl);
     return rc;
 }

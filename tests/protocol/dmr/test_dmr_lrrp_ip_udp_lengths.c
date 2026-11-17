@@ -237,10 +237,10 @@ build_ipv4_udp_lrrp(uint8_t* out, size_t cap, uint8_t ihl_words) {
     out[p++] = 0x00;
     out[p++] = 0x00; // lon = 0x20000000
 
-    // 0x6C SPEED: raw units 1/100 mph -> 10.00 mph (0x03E8)
+    // 0x6C SPEED: ufloatvar m/s -> 10 m/s (integer 0x0A, fraction 0x00)
     out[p++] = 0x6C;
-    out[p++] = 0x03;
-    out[p++] = 0xE8;
+    out[p++] = 0x0A;
+    out[p++] = 0x00;
 
     // 0x56 HEADING: 2-degree increments -> 90 degrees (45)
     out[p++] = 0x56;

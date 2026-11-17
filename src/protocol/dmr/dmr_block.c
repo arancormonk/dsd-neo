@@ -1358,8 +1358,8 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         // for locating confirmed-data DBSN octets and has no bearing on a text length; the
         // dmr_locn() call on the next line passes the same pointer with the unadjusted length.
         utf8_to_text(ctx->state, 0, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
+        // An admitted position is staged for this notice by dmr_locn() itself, never the text alone.
         dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
-        dsd_event_stage_gps(ctx->state, ctx->slot, ctx->state->dmr_lrrp_gps[ctx->slot]);
     }
 
     // LRRP/LOCN rewrite dmr_lrrp_gps with the decoded position and ARS appends its summary to it,

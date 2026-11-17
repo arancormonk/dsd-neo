@@ -821,9 +821,10 @@ main(void) {
         }
     }
     fclose(log);
-    // The RAS-accepted header's event is [RAS] in -J, not [CRC ERR].
+    // The RAS-accepted header's event is [RAS] in -J, not [CRC ERR]. The clean captured LRRP report's notice carries
+    // its admitted position, so it adds its GPS line (issue #800).
     assert(marked + ras + clean > 0U);
-    assert(marked == 11 && ras == 1 && clean == 9 && marked_text == 3);
+    assert(marked == 11 && ras == 1 && clean == 10 && marked_text == 3);
     assert(remove(path) == 0);
     opts->event_out_file[0] = '\0';
     test_ras_data_provenance(opts, state);
