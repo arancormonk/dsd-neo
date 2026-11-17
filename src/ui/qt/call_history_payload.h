@@ -68,6 +68,10 @@ bool item_position_valid(const Event_History* item);
 /** @brief Give @p row its item's raw identity, text message, GPS text and position, from the row's own fragment. */
 void row_take_payload(CallHistoryModel::Row& row, const Event_History* item);
 
+/** @brief A row that names its source keeps no anonymous position (issue #800, spec 2.14): an anonymous report and its
+ * GPS text go once the row names a source, as the core drops them (dsd_event_pos_requalify_row()). */
+void drop_anonymous_gps_of_named(CallHistoryModel::Row& row);
+
 /** @brief Whether two raw texts (callsigns, dial strings) are known and differ, runs of spaces as one, trimmed. */
 bool raw_texts_differ(const QString& a, const QString& b);
 

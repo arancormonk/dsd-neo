@@ -470,6 +470,96 @@ test_merge_keeps_text_and_position_together(void) {
     merge_case(1, 1);
 }
 
+/* The active call's source fills in (no new epoch), and its row is rendered again. */
+static void
+fill_source(int protocol, uint64_t source_id, const char* source_text) {
+    dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1201U,
+        .policy_target_id = 1201U,
+        .ota_source_id = source_id,
+        .observed_m = g_observed_m,
+    };
+    if (source_text != NULL) {
+        DSD_SNPRINTF(observation.source_text, sizeof observation.source_text, "%s", source_text);
+    }
+    g_observed_m += 0.1;
+    assert(dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    dsd_event_sync_slot(&g_opts, &g_state, 0U);
+}
+
+/* An anonymous report admitted while the call named no source. */
+static dsd_position_fix
+anonymous_on_nameless(int protocol, uint64_t epoch, const char* text) {
+    dsd_position_fix anon;
+    dsd_position_fix_init(&anon);
+    anon.kind = DSD_POS_P25_HARRIS;
+    anon.protocol = (uint8_t)protocol;
+    anon.source_id = 3001U;
+    anon.lat_e7 = 100000000;
+    anon.lon_e7 = 200000000;
+    assert(dsd_position_admit(&g_opts, &g_state, &anon, 1, 0, NULL) != DSD_POSITION_REFUSED);
+    assert((anon.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) != 0U);
+    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &anon, text) == 1);
+    assert(row(0)->pos.valid == 1U && row(0)->pos.anonymous == 1U);
+    return anon;
+}
+
+/* An anonymous report stays on a row only while the row names no source (spec 2.14): once the call's source fills in
+ * within the same epoch (a voice-user LC after the report), or a reacquired segment gives the row its source, the
+ * report and its GPS text go, so no named caller is shown with a report that never named it. A report that named the
+ * source stays when the row learns its name. */
+static void
+test_anonymous_position_leaves_a_named_row(void) {
+    reset_fixture();
+    const uint64_t epoch = observe(DSD_SYNC_P25P1_POS, 0U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    (void)anonymous_on_nameless(DSD_SYNC_P25P1_POS, epoch, "anonymous fix");
+    fill_source(DSD_SYNC_P25P1_POS, 3001U, NULL);
+    assert(row(0)->source_id == 3001U);
+    assert(row(0)->pos.valid == 0U && row(0)->gps_s[0] == '\0');
+    end_call(DSD_CALL_END_TERMINATOR);
+    assert(row(1)->source_id == 3001U && row(1)->pos.valid == 0U && row(1)->gps_s[0] == '\0');
+
+    /* A reacquired segment fills the committed row's source. */
+    reset_fixture();
+    const uint64_t first = observe(DSD_SYNC_P25P1_POS, 0U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    (void)anonymous_on_nameless(DSD_SYNC_P25P1_POS, first, "anonymous fix");
+    end_call(DSD_CALL_END_SYNC_LOSS);
+    assert(row(1)->pos.valid == 1U);
+    assert(observe(DSD_SYNC_P25P1_POS, 3001U, NULL, DSD_CALL_BOUNDARY_BEGIN) != first);
+    end_call(DSD_CALL_END_SYNC_LOSS);
+    assert(row(1)->source_id == 3001U && row(2)->source_id == 0U && row(2)->pos.valid == 0U); /* one row */
+    assert(row(1)->pos.valid == 0U && row(1)->gps_s[0] == '\0');
+
+    /* A callsign call: the D-STAR row that later shows the header's callsign drops the anonymous record too. */
+    reset_fixture();
+    const uint64_t dstar = observe(DSD_SYNC_DSTAR_HD_POS, 0U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_position_fix dprs;
+    dsd_position_fix_init(&dprs);
+    dprs.kind = DSD_POS_DSTAR_DPRS;
+    dprs.protocol = DSD_SYNC_DSTAR_HD_POS;
+    dprs.lat_e7 = 100000000;
+    dprs.lon_e7 = 200000000;
+    assert(dsd_position_admit(&g_opts, &g_state, &dprs, 1, 0, NULL) != DSD_POSITION_REFUSED);
+    assert(dsd_event_enrich_position(&g_state, 0U, dstar, &dprs, "DPRS anonymous") == 1);
+    fill_source(DSD_SYNC_DSTAR_HD_POS, 0U, "N0CALL");
+    assert(row(0)->pos.valid == 0U && row(0)->gps_s[0] == '\0');
+
+    /* A report that named the call's radio is not anonymous: it stays whatever the row learns. */
+    reset_fixture();
+    const uint64_t named = observe(DSD_SYNC_P25P1_POS, 3001U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    assert(named != 0U);
+    const dsd_position_fix own = admitted(DSD_SYNC_P25P1_POS, 3001U, 225000000, 450000000);
+    assert(dsd_event_enrich_position(&g_state, 0U, named, &own, "own fix") == 1);
+    assert(row(0)->pos.anonymous == 0U);
+    dsd_event_sync_slot(&g_opts, &g_state, 0U);
+    expect_row_fix(row(0), &own, "own fix");
+    end_call(DSD_CALL_END_TERMINATOR);
+    expect_row_fix(row(1), &own, "own fix");
+}
+
 /* The P25 terminator: the call it ends is captured first, and that capture alone may enrich the ended call. */
 static void
 test_closing_call(void) {
@@ -585,6 +675,7 @@ main(void) {
     test_callsign_sources();
     test_text_only_after_gps();
     test_merge_keeps_text_and_position_together();
+    test_anonymous_position_leaves_a_named_row();
     test_closing_call();
     test_data_notices();
     dsd_state_ext_free_all(&g_state);

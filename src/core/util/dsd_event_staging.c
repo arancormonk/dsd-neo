@@ -94,6 +94,9 @@ dsd_event_pos_set_from_fix(dsd_event_pos* pos, const dsd_position_fix* fix) {
     pos->valid = 1U;
     pos->rx_clock = fix->rx_clock;
     pos->kind = fix->kind;
+    pos->anonymous =
+        (uint8_t)((fix->flags & (uint16_t)(DSD_POS_FLAG_SOURCE_HASHED | DSD_POS_FLAG_SOURCE_UNVERIFIED)) != 0U
+                  || (fix->source_id == 0U && fix->source_text[0] == '\0'));
     pos->scope.kind = fix->sender_scope.kind;
     pos->scope.a = fix->sender_scope.a;
     pos->scope.b = fix->sender_scope.b;

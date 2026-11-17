@@ -699,7 +699,9 @@ typedef struct {
     uint8_t valid;            /**< 1 while the row carries an admitted position */
     uint8_t rx_clock;         /**< dsd_position_fix::rx_clock */
     uint8_t kind;             /**< dsd_position_kind */
-    uint8_t pad[3];           /**< always 0 */
+    uint8_t anonymous;        /**< 1 when the report names no source a row could check (hashed, unverified, or no ID
+                                   and no callsign): it stays only while the row names no source either */
+    uint8_t pad[2];           /**< always 0 */
     dsd_position_scope scope; /**< the sender scope (see above); DSD_POS_SCOPE_NONE when none was stamped */
 } dsd_event_pos;
 

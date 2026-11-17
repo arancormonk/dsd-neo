@@ -1771,6 +1771,7 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     if (existing.src == 0) {
         existing.src = row.src;
     }
+    drop_anonymous_gps_of_named(existing);
     // A call heard again in a later session is part of that session too: its views show
     // the merged row, and a full log keeps it as that session's.
     existing.session = qMax(existing.session, row.session);
@@ -1830,6 +1831,7 @@ CallHistoryModel::absorbRepeatedNotice(const Row& row) {
         take_gps(logged, row);
     }
     fill_identity(logged, row);
+    drop_anonymous_gps_of_named(logged);
     // Its fragment is the logged notice's now, so a spill folded twice finds it there (foldSpill()).
     unionFragments(logged, row.fragments);
     (void)receive_adopt_identity(logged, row);
@@ -2519,6 +2521,7 @@ row_from_json(const QJsonObject& obj) {
         row_site_from_json(row, obj);
     }
     row_payload_from_json(row, obj);
+    drop_anonymous_gps_of_named(row);
     // Issue #708; absent in stores older builds wrote (a uid is then assigned at load).
     row.uid = qMax<qint64>(json_i64_or(obj, "uid", 0), 0);
     for (const auto& fragment : obj.value(QLatin1String("fr")).toArray()) {

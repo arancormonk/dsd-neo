@@ -2506,9 +2506,12 @@ suite runs under this compiler.
   `dsd_event_stage_position()` (the next data notice; `Event_History_Staged::pos_fix` keeps the whole record) and
   `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol family; the
   report's source ID and callsign, compared as call identity text, equal to the call's or the notice's; an anonymous
-  report only where no source is named; a notice given a report whose identity admission cleared drops its own source
-  and target), requires the report to have been heard where the row was (on the received-identity epoch the call began
-  on, else with a reception scope equal to the row's known `Event_History::rx_scope`; an unknown one matches nothing
+  report only where no source is named, and only while none is: `pos.anonymous` marks it, and a row that names its
+  source later -- a fill in the same epoch or a reacquired segment's -- drops it with its GPS text,
+  `dsd_event_pos_requalify_row()`, as History's fold does, `drop_anonymous_gps_of_named()`; a notice given a report
+  whose identity admission cleared drops its own source and target), requires the report to have been heard where
+  the row was (on the received-identity epoch the call began on, else with a reception scope equal to the row's
+  known `Event_History::rx_scope`; an unknown one matches nothing
   across receptions; the sender scope in `pos.scope` is only the track key), and lets only a newer `rev` replace a position. A call row takes
   its reception identity by the `site_id` rule (re-read from the live record on every render while active on the carrier it
   began on, so a scope learned mid-call replaces a weaker one; else kept, or the record as the call ended with the

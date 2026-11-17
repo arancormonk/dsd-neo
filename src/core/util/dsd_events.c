@@ -1097,6 +1097,38 @@ watchdog_event_merge_stamps(Event_History* retained, const Event_History* staged
     }
 }
 
+/* Whether a row names its source (issue #800): a source ID, or a source text that is identity. EDACS writes its numeric
+ * source, or its absence, as a LID_ label: a rendering, not a name. */
+static int
+dsd_event_row_names_source(const Event_History* item) {
+    if (item->source_id != 0U) {
+        return 1;
+    }
+    if (DSD_SYNC_IS_EDACS(item->systype)) {
+        return 0;
+    }
+    for (size_t i = 0U; i < sizeof(item->src_str) && item->src_str[i] != '\0'; i++) {
+        if (!isspace((unsigned char)item->src_str[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A row's position was admitted against the source the row named then (dsd_event_pos_source_compatible()), and a known
+ * source never changes within a call (another source opens another epoch): only a fill can follow. An anonymous report
+ * qualifies only while the row names no source, so once the row names one (a voice-user LC after the report, a
+ * reacquired segment's source) the report and its GPS text go. Returns 1 when dropped. */
+static int
+dsd_event_pos_requalify_row(Event_History* item) {
+    if (item->pos.valid == 0U || item->pos.anonymous == 0U || !dsd_event_row_names_source(item)) {
+        return 0;
+    }
+    item->gps_s[0] = '\0';
+    dsd_event_pos_drop_position(&item->pos);
+    return 1;
+}
+
 // Scalar identity a later segment may only fill in, never overwrite: the first segment that
 // decoded a value is as authoritative as any later one.
 static void
@@ -1129,6 +1161,7 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
     watchdog_event_merge_text(retained->t_mode, staged->t_mode, sizeof(retained->t_mode));
     watchdog_event_merge_text(retained->s_mode, staged->s_mode, sizeof(retained->s_mode));
     watchdog_event_merge_channel_label(retained, staged);
+    (void)dsd_event_pos_requalify_row(retained);
 }
 
 // The channel kind a row's site check reads: a row's kind means something only beside its channel.
@@ -2320,6 +2353,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->channel_label_resolved = ctx->channel_label_resolved;
     item->operator_tuned = ctx->operator_tuned;
     item->scan_member = ctx->scan_member;
+    (void)dsd_event_pos_requalify_row(item);
     (void)state;
     (void)slot;
 }

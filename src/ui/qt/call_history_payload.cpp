@@ -161,6 +161,9 @@ position_from_json(const QJsonObject& obj) {
     pos.rev = json_hex_u64(stored, "rev");
     pos.procInstance = json_hex_u64(stored, "inst");
     pos.rxTimeS = json_i64_or(stored, "rxt", 0);
+    /* A store without the mark: a hashed or unverified source is anonymous for sure. */
+    pos.anonymous = stored.value(QLatin1String("anon")).toBool()
+                    || (pos.flags & (DSD_POS_FLAG_SOURCE_HASHED | DSD_POS_FLAG_SOURCE_UNVERIFIED)) != 0U;
     return pos;
 }
 
@@ -178,6 +181,9 @@ position_to_json(const CallHistoryModel::Position& pos, QJsonObject& obj) {
     stored.insert(QLatin1String("rev"), QString::number(pos.rev, 16));
     stored.insert(QLatin1String("inst"), QString::number(pos.procInstance, 16));
     stored.insert(QLatin1String("rxt"), pos.rxTimeS);
+    if (pos.anonymous) {
+        stored.insert(QLatin1String("anon"), true);
+    }
     obj.insert(QLatin1String("pos"), stored);
 }
 
@@ -286,10 +292,20 @@ row_take_payload(CallHistoryModel::Row& row, const Event_History* item) {
         row.pos.rev = item->pos.rev;
         row.pos.procInstance = item->pos.proc_instance;
         row.pos.rxTimeS = item->pos.rx_time_s;
+        row.pos.anonymous = item->pos.anonymous != 0U;
     }
     row.gpsWhen = row.when;
     row.gpsSeq = row.seq;
     row.gpsSlot = row.slot;
+    drop_anonymous_gps_of_named(row);
+}
+
+void
+drop_anonymous_gps_of_named(CallHistoryModel::Row& row) {
+    if (row.pos.valid && row.pos.anonymous && row_names_source(row)) {
+        row.gpsText.clear();
+        row.pos = CallHistoryModel::Position();
+    }
 }
 
 /** @brief Whether two raw texts (callsigns, dial strings) are known and differ, compared as the call layer does: runs

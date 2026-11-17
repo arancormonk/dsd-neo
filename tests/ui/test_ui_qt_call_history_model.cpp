@@ -5443,6 +5443,54 @@ test_spill_text_only_replay_keeps_saved_position(void) {
                       == QStringLiteral("GPS: Hidden"));
 }
 
+/* Spec 2.14: a row that names its source never shows an anonymous report. A ring row read while its call named no
+ * source keeps its anonymous fix; once the same row names a radio with the fix still on it (as an older core left it),
+ * the fix and its text go, also from a store that kept them. */
+void
+test_named_row_drops_anonymous_position(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754706000;
+    {
+        CallHistoryModel model;
+        Event_History* call = ring.commit(0, 80401U, 0U, when, when + 4);
+        call->systype = DSD_SYNC_P25P1_POS;
+        with_gps(call, "GPS: 22.80000 45.30000", 228000000, 453000000, 7U);
+        call->pos.flags = DSD_POS_FLAG_SOURCE_UNVERIFIED;
+        call->pos.anonymous = 1U;
+        model.refresh(ring.state);
+        expect("2.14: a nameless call shows its anonymous fix",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: 22.80000 45.30000"));
+        call->source_id = 3001U;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("2.14: once the call names its radio, the anonymous fix goes",
+               model.count() == 1 && detail_of(model, 0).isEmpty());
+    } // destructor flushes the stores
+    const QJsonObject stored = stored_row_with(80401U, 3001U);
+    expect("2.14: the named row stores no anonymous fix",
+           !stored.isEmpty() && !stored.contains(QLatin1String("pos")) && !stored.contains(QLatin1String("gps")));
+    // A store that kept one (written before this rule) loads without it.
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    QJsonObject row = rows.at(0).toObject();
+    QJsonObject pos;
+    pos.insert(QLatin1String("lat"), 228000000);
+    pos.insert(QLatin1String("lon"), 453000000);
+    pos.insert(QLatin1String("err"), 10);
+    pos.insert(QLatin1String("flags"), static_cast<int>(DSD_POS_FLAG_SOURCE_UNVERIFIED));
+    pos.insert(QLatin1String("kind"), static_cast<int>(DSD_POS_P25_HARRIS));
+    pos.insert(QLatin1String("rev"), QStringLiteral("7"));
+    row.insert(QLatin1String("pos"), pos);
+    row.insert(QLatin1String("gps"), QStringLiteral("GPS: 22.80000 45.30000"));
+    rows.replace(0, row);
+    expect("2.14: the edited store is written", dsd_qt::json_store_save_array("call_history.json", rows));
+    {
+        CallHistoryModel reloaded;
+        expect("2.14: a stored anonymous fix on a named row loads as none",
+               reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+    }
+}
+
 /* B2: a fragment gives the row its text and position only when it is the row's radio. An anonymous fragment's fix never
  * enriches a named call, in either order, and an update of an absorbed fragment that later names another radio keeps
  * the row's radio and its fix. */
@@ -5973,6 +6021,7 @@ main(int argc, char** argv) {
     test_position_order_follows_runs_and_revs();
     test_callsign_callers_stay_apart();
     test_identity_placeholders_are_no_raw_identity();
+    test_named_row_drops_anonymous_position();
     test_textual_destinations_under_one_service_stay_apart();
     test_system_identity_splits_conventional_systems();
     test_weaker_identity_joins_stronger();

@@ -479,7 +479,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         quint8 kind = 0;   // dsd_position_kind
         quint64 rev = 0;   // orders positions within one run
         quint64 procInstance = 0;
-        qint64 rxTimeS = 0; // when it was received; display only, never orders
+        qint64 rxTimeS = 0;     // when it was received; display only, never orders
+        bool anonymous = false; // names no source a row could check (Event_History::pos.anonymous)
     };
 
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
