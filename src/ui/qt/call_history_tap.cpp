@@ -204,6 +204,7 @@ CallHistoryTap::stop() {
     m_thread.join();
     m_running = false;
     m_rings.reset();
+    m_result.ordinals = m_context.ordinals.rings;
     m_context = Context();
     // The final append failed too (the spill is still unwritable): the rows go to the model with the rest of the
     // result, since the next start clears what the tap holds.
@@ -311,6 +312,7 @@ CallHistoryTap::poll() {
         const quint64 instance = static_cast<quint64>(ring->instance);
         settleClear(slot, pushSeq, instance);
         CallHistoryModel::RingWalk walk = slotWalk(slot, meta);
+        walk.sessionOrd = CallHistoryModel::sessionOrdinalFor(m_context.ordinals, instance);
         QList<QString> settled;
         walk.settledKeys = &settled;
         QList<CallHistoryModel::FreshRow> fresh;

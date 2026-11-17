@@ -23,7 +23,9 @@
  * starts it again: the old session's calls keep its attribution, the new session's take theirs. A spilled row keeps
  * its site and call channel (issue #799), within the spill's size per row. A site text digest an older build's seen
  * entry takes from the tap's read reaches the seen store through the spill, so a text that changes alone after it is
- * read again at the next launch (issue #40). The deliberate failures' warnings are
+ * read again at the next launch (issue #40). Issue #800, 2.7: a run the tap read first keeps a session ordinal no later
+ * run's comes before, even when the process dies before its spill folds and the fold fails once after a newer run: the
+ * merged call shows the newer run's fix, though the older run's revs are higher. The deliberate failures' warnings are
  * counted, not printed. */
 
 #include <QByteArray>
@@ -45,8 +47,10 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
 #include <atomic>
@@ -56,6 +60,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -206,6 +211,18 @@ struct Decoder {
         item->site_id = site;
         item->call_channel_kind = kind;
         item->channel = channel;
+    }
+
+    /** Give the newest committed row GPS text and the admitted position it describes (issue #800). */
+    void
+    gpsNewest(int slot, const char* text, int32_t lat_e7, uint64_t rev) {
+        Event_History* item = &state->event_history_s[slot].Event_History_Items[1];
+        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", text);
+        item->pos.valid = 1U;
+        item->pos.lat_e7 = lat_e7;
+        item->pos.lon_e7 = 450000000;
+        item->pos.kind = DSD_POS_DMR_EMBEDDED;
+        item->pos.rev = rev;
     }
 
     /** Commit a data notice the way dsd_event_emit_data_notice() does. */
@@ -1014,6 +1031,83 @@ test_failed_spill_read_keeps_the_spill(void) {
     expect("read error: reported only for the failed read", g_spillReadWarnings == 1);
 }
 
+/* Issue #800, 2.7. The tap reads a run's two fragments of one call in the background (fixes with revs 5 and 9) and the
+ * process dies: its settings keep only what was saved when the tap started. The relaunch's fold of the spill fails, a
+ * newer run's fragment of the same call (rev 2) is ingested live, and the next fold adds the older run's two. The
+ * merged call shows the newer run's fix: the tap's ring took an ordinal from the block set aside before it ran. */
+void
+test_failed_spill_read_after_a_newer_run(void) {
+    resetStorage();
+    const time_t when = 1755000000;
+    const uint32_t tg = 80701U;
+    const uint32_t src = 8701U;
+    const QStringList ordinalKeys = {QStringLiteral("callHistory/sessionOrd/next"),
+                                     QStringLiteral("callHistory/sessionOrd/rings")};
+    QVariantMap atTapStart;
+    {
+        Decoder first;
+        CallHistoryModel model;
+        start_tap(model);
+        set_app_state(Qt::ApplicationSuspended);
+        {
+            QSettings settings;
+            for (const QString& key : ordinalKeys) {
+                atTapStart.insert(key, settings.value(key));
+            }
+        }
+        first.commit(0, tg, src, when);
+        first.gpsNewest(0, "GPS: A", 225000000, 5U);
+        first.commit(0, tg, src, when + 6);
+        first.gpsNewest(0, "GPS: B", 226000000, 9U);
+        first.publish();
+        for (int poll = 0; poll < 6; poll++) {
+            model.waitForBackgroundPollForTest();
+        }
+        expect("2.7: the older run's fragments are spilled", spill_lines() == 2);
+    }
+    // What a process killed in the background leaves: the settings as they were when the tap started.
+    {
+        QSettings settings;
+        for (const QString& key : ordinalKeys) {
+            if (atTapStart.value(key).isValid()) {
+                settings.setValue(key, atTapStart.value(key));
+            } else {
+                settings.remove(key);
+            }
+        }
+    }
+    set_app_state(Qt::ApplicationActive);
+    g_spillReadWarnings = 0;
+    CallHistoryModel::failNextSpillReadAfterLinesForTest(0);
+    {
+        Decoder second;
+        CallHistoryModel model;
+        expect("2.7: the failed fold adds nothing", model.count() == 0 && g_spillReadWarnings == 1);
+        second.commit(0, tg, src, when + 12);
+        second.gpsNewest(0, "GPS: C", 227000000, 2U);
+        second.publish();
+        gui_ingest(model);
+        expect("2.7: the newer run's fragment is logged",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::DetailRole).toString() == QStringLiteral("GPS: C"));
+    }
+    expect("2.7: the spill waits for a whole read", spill_lines() == 2);
+    {
+        CallHistoryModel retried;
+        expect("2.7: the retried fold joins the older run's fragments to the call", retried.count() == 1);
+        expect("2.7: the newer run's fix wins over the older run's higher revs",
+               retried.count() == 1
+                   && retried.data(retried.index(0), CallHistoryModel::DetailRole).toString()
+                          == QStringLiteral("GPS: C"));
+        retried.saveNow();
+        settle_save(retried);
+    }
+    CallHistoryModel last;
+    expect("2.7: a reload keeps the newer run's fix",
+           last.count() == 1
+               && last.data(last.index(0), CallHistoryModel::DetailRole).toString() == QStringLiteral("GPS: C"));
+}
+
 /* The row with talkgroup @p tg, or -1. */
 int
 row_of_tg(const CallHistoryModel& model, qulonglong tg) {
@@ -1237,6 +1331,7 @@ main(int argc, char** argv) {
     test_session_fields_change_together_while_hidden();
     test_tap_attributes_by_row_stamp();
     test_tap_saves_a_settled_site_text_digest();
+    test_failed_spill_read_after_a_newer_run();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

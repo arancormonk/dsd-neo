@@ -21,8 +21,10 @@
 
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_channel.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -299,6 +301,223 @@ call_history_seen_absorb_site_text(uint32_t* stored_digest, bool* stored_known, 
     *stored_digest = digest;
     *stored_known = true;
     return advanced;
+}
+
+/**
+ * @brief A system identity as a history row keeps it (issue #800, D7): a dsd_position_scope and its identity
+ *        discriminator (the tuned frequency of a P25 NAC scope, else 0). Kind DSD_POS_SCOPE_NONE is no identity.
+ *
+ * A row keeps two: where it was heard (Event_History::rx_scope) and its sender's (Event_History::pos.scope).
+ */
+struct CallHistoryScope {
+    uint8_t kind = DSD_POS_SCOPE_NONE; /**< dsd_position_scope_kind */
+    uint32_t a = 0U;
+    uint32_t b = 0U;
+    int64_t freqHz = 0; /**< the identity discriminator */
+};
+
+/** @brief Whether a row knows the identity: any kind but DSD_POS_SCOPE_NONE. */
+inline bool
+call_history_scope_known(const CallHistoryScope& scope) {
+    return scope.kind != static_cast<uint8_t>(DSD_POS_SCOPE_NONE);
+}
+
+/**
+ * @brief Whether two identities may be one system: equal, or either not known.
+ *
+ * A row with no recorded identity (one an older build stored, a protocol that has none, a reception read before any
+ * was known) is compatible with any, which keeps the merge it always had (issue #800, B5).
+ */
+inline bool
+call_history_scopes_compatible(const CallHistoryScope& x, const CallHistoryScope& y) {
+    return !call_history_scope_known(x) || !call_history_scope_known(y)
+           || (x.kind == y.kind && x.a == y.a && x.b == y.b && x.freqHz == y.freqHz);
+}
+
+/**
+ * @brief The protocol family of a row's sync type (Event_History::systype), or -1 when it is not known.
+ *
+ * One value per system type, both polarities and both bursts of it included, as the position feed groups tracks
+ * (dsd_position_protocol_family()); YSF, dPMR, X2-TDMA and analog are grouped here as well, since a history row only
+ * asks whether two fragments can be one call. Any other sync type is its own family. Rows older builds stored keep no
+ * sync type (-1).
+ */
+inline int
+call_history_protocol_family(int protocol) {
+    if (protocol < 0 || protocol >= static_cast<int>(DSD_POSITION_PROTOCOL_NONE)) {
+        return -1;
+    }
+    if (DSD_SYNC_IS_P25(protocol)) {
+        return 1;
+    }
+    if (DSD_SYNC_IS_DMR(protocol)) {
+        return 2;
+    }
+    if (DSD_SYNC_IS_NXDN(protocol)) {
+        return 3;
+    }
+    if (DSD_SYNC_IS_TETRA(protocol)) {
+        return 4;
+    }
+    if (DSD_SYNC_IS_DSTAR(protocol)) {
+        return 5;
+    }
+    if (DSD_SYNC_IS_M17(protocol)) {
+        return 6;
+    }
+    if (DSD_SYNC_IS_EDACS(protocol)) {
+        return 7;
+    }
+    if (DSD_SYNC_IS_YSF(protocol)) {
+        return 8;
+    }
+    if (DSD_SYNC_IS_DPMR(protocol)) {
+        return 9;
+    }
+    if (DSD_SYNC_IS_X2TDMA(protocol)) {
+        return 10;
+    }
+    return 0x100 + protocol;
+}
+
+/** @brief Whether two sync types may be one call: the same family, or either not known. */
+inline bool
+call_history_protocols_compatible(int x, int y) {
+    const int fx = call_history_protocol_family(x);
+    const int fy = call_history_protocol_family(y);
+    return fx < 0 || fy < 0 || fx == fy;
+}
+
+/**
+ * @brief Where a fragment's GPS text and position stand in the order that picks a merged row's one (issue #800, 2.7).
+ *
+ * A total order across decoder runs: the run's session ordinal (a persisted, strictly increasing number the model
+ * gives each ring the first time it reads it; 0 when not known), then the position's rev within that run. Keyed only
+ * while the fragment carries an admitted position and both are known.
+ */
+struct CallHistoryPositionKey {
+    bool keyed;   /**< an admitted position with its session ordinal and rev */
+    int64_t ord;  /**< the session ordinal of the fragment's run */
+    uint64_t rev; /**< the position's rev in that run */
+};
+
+/** @brief Order two keyed positions: -1 when @p a is older than @p b, 1 when newer, 0 for the same. */
+inline int
+call_history_position_key_compare(const CallHistoryPositionKey& a, const CallHistoryPositionKey& b) {
+    if (a.ord != b.ord) {
+        return a.ord < b.ord ? -1 : 1;
+    }
+    if (a.rev != b.rev) {
+        return a.rev < b.rev ? -1 : 1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Whether a fragment's GPS text and position replace the merged row's (issue #800, 2.7). They move together: the
+ * text and the coordinates always come from one fragment.
+ *
+ * The fragment with the greatest key wins, whatever order the fragments arrive in. A keyed fragment beats one with no
+ * key (a row an older build stored, a text-only GPS line, a ring of unknown run); between two with none, the newer
+ * fragment wins (call_history_fold_adopts()), the rule every other field follows. Nothing never erases something, and
+ * the same fragment read again (the same provenance and ordinal) takes what it says now: the core's text-only GPS write
+ * drops the position it had.
+ *
+ * @param stored_known   The row holds GPS text or a position.
+ * @param stored_key     Its key.
+ * @param stored         The fragment it came from.
+ * @param incoming_known The fragment carries GPS text or a position.
+ * @param incoming_key   Its key.
+ * @param incoming       The fragment.
+ */
+inline bool
+call_history_gps_adopts(bool stored_known, const CallHistoryPositionKey& stored_key,
+                        const CallHistoryProvenance& stored, bool incoming_known,
+                        const CallHistoryPositionKey& incoming_key, const CallHistoryProvenance& incoming) {
+    if (!incoming_known) {
+        return false;
+    }
+    if (!stored_known) {
+        return true;
+    }
+    const int order = call_history_provenance_compare(incoming, stored);
+    if (order == 0 && incoming_key.ord == stored_key.ord) {
+        return true;
+    }
+    if (stored_key.keyed && incoming_key.keyed) {
+        const int keys = call_history_position_key_compare(incoming_key, stored_key);
+        return keys > 0 || (keys == 0 && order >= 0);
+    }
+    if (stored_key.keyed != incoming_key.keyed) {
+        return incoming_key.keyed;
+    }
+    return order >= 0;
+}
+
+/** @brief FNV-1a (32 bits) of @p len bytes, folded into @p hash. */
+inline uint32_t
+call_history_fnv1a(uint32_t hash, const void* data, size_t len) {
+    const unsigned char* bytes = static_cast<const unsigned char*>(data);
+    for (size_t i = 0U; i < len; i++) {
+        hash ^= bytes[i];
+        hash *= 16777619U;
+    }
+    return hash;
+}
+
+/**
+ * @brief A digest of a ring row's text (its GPS text or text message): FNV-1a over its bytes up to the NUL, bounded by
+ *        @p capacity; 0 for no text, and never 0 for some.
+ *
+ * The seen store keeps it rather than the text: the core writes both into a committed voice row in place (a late
+ * enrichment), and only the change matters (issue #800, B2).
+ */
+inline uint32_t
+call_history_text_digest(const char* text, size_t capacity) {
+    size_t len = 0U;
+    while (len < capacity && text[len] != '\0') {
+        len++;
+    }
+    if (len == 0U) {
+        return 0U;
+    }
+    const uint32_t hash = call_history_fnv1a(2166136261U, text, len);
+    return hash != 0U ? hash : 1U;
+}
+
+/**
+ * @brief A digest of an admitted position (Event_History::pos): its coordinates, error, flags, kind, rev and process
+ *        instance; 0 when the row carries none, and never 0 for one.
+ */
+inline uint32_t
+call_history_position_digest(bool valid, int32_t lat_e7, int32_t lon_e7, uint32_t err_m, uint16_t flags, uint8_t kind,
+                             uint64_t rev, uint64_t proc_instance) {
+    if (!valid) {
+        return 0U;
+    }
+    uint32_t hash = 2166136261U;
+    hash = call_history_fnv1a(hash, &lat_e7, sizeof lat_e7);
+    hash = call_history_fnv1a(hash, &lon_e7, sizeof lon_e7);
+    hash = call_history_fnv1a(hash, &err_m, sizeof err_m);
+    hash = call_history_fnv1a(hash, &flags, sizeof flags);
+    hash = call_history_fnv1a(hash, &kind, sizeof kind);
+    hash = call_history_fnv1a(hash, &rev, sizeof rev);
+    hash = call_history_fnv1a(hash, &proc_instance, sizeof proc_instance);
+    return hash != 0U ? hash : 1U;
+}
+
+/**
+ * @brief Whether an admitted position's values are ones a report could hold: latitude within +/-90 and longitude within
+ *        +/-180 degrees (x 1e7), not exactly (0, 0), a known kind and only defined flags (position.h).
+ *
+ * A stored row's position is read through it, so a corrupt or hand-edited store loads as no position rather than one
+ * nobody received.
+ */
+inline bool
+call_history_position_values_valid(int64_t lat_e7, int64_t lon_e7, int64_t kind, int64_t flags) {
+    return lat_e7 >= -900000000LL && lat_e7 <= 900000000LL && lon_e7 >= -1800000000LL && lon_e7 <= 1800000000LL
+           && !(lat_e7 == 0 && lon_e7 == 0) && kind >= 1 && kind <= static_cast<int64_t>(DSD_POS_KIND_LAST)
+           && flags >= 0 && (flags & ~static_cast<int64_t>(DSD_POS_FLAG_ALL)) == 0;
 }
 
 /* Sanity bound on a row's start/end stamps: a span longer than this is a corrupt
