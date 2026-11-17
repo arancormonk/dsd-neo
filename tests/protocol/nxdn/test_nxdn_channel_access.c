@@ -21,6 +21,7 @@
 #include <string.h>
 #include "../../test_support/test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 

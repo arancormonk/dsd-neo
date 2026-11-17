@@ -17,7 +17,6 @@
 #include <dsd-neo/fec/rs_12_9.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
-#include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

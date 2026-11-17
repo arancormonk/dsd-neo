@@ -15,7 +15,6 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
-#include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -25,6 +24,7 @@
 #include <string.h>
 #include "dmr_bptc_test_encoder.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"

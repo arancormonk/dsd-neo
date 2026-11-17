@@ -29,6 +29,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/receive_types.h"
+#include "dsd-neo/core/state_fwd.h"
 
 _Static_assert(DSD_STATE_EXT_CORE_POSITION_FEED == 17, "the position feed owns state_ext slot 17");
 _Static_assert(DSD_POSITION_FEED_CAPACITY == 1024, "the ring holds 1,024 records");

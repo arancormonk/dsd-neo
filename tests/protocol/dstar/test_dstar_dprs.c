@@ -25,6 +25,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 /* The published vector: CRC-16/X.25 of the text after the comma, CR included, is 9E3E. */
 static const char k_vector[] = "$$CRC9E3E,N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test\r";

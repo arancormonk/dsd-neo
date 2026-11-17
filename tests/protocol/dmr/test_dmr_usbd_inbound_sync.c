@@ -11,12 +11,10 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/fec/block_codes.h>
-#include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
@@ -27,7 +25,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "test_support.h"
+#include "dsd-neo/core/synctype_ids.h"
 
 // NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 int __wrap_getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft);

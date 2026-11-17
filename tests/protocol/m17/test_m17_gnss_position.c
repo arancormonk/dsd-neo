@@ -24,6 +24,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/file_compat.h"
 #include "m17_algorithms.h"
 #include "m17_internal.h"
 #include "test_support.h"
@@ -31,6 +34,8 @@
 #ifdef USE_CODEC2
 #include <codec2/codec2.h>
 #endif
+
+struct CODEC2;
 
 enum { LSF_BITS = M17_LSF_BYTES * 8 };
 

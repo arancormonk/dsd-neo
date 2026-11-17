@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
 #include "test_env.h"
 #include "test_support.h"

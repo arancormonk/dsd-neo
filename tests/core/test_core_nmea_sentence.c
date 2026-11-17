@@ -24,7 +24,6 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"

@@ -26,6 +26,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #include "../../test_support/radio_policy_test.h"
+#include "dsd-neo/core/position.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push

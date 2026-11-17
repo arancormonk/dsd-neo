@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include "dsd-neo/core/position.h"
 
 static const dsd_state* g_stub_state;
 
