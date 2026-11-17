@@ -440,10 +440,10 @@ test_lost_cr_costs_only_its_record(void) {
     rig_open(&r);
     open_call(&r, "N0CALL");
     char text[160];
-    const size_t without_cr = strlen(k_vector) - 1U;
+    const size_t without_cr = sizeof(k_vector) - 2U;
     DSD_MEMCPY(text, k_vector, without_cr);
     DSD_MEMCPY(text + without_cr, k_vector, sizeof(k_vector));
-    send_gps(&r, text, strlen(text), 0);
+    send_gps(&r, text, without_cr + sizeof(k_vector) - 1U, 0);
     dsd_position_fix f[2];
     expect_int("record after a lost CR decodes", feed_records(&r, f, 2U), 1);
     expect_int("record after a lost CR is the transmission's", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED, 0);
