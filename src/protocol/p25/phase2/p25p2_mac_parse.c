@@ -132,7 +132,8 @@ p25p2_mac_payload_len_override(const unsigned long long mac[24], int opcode_pos)
 
     /* The legacy L3Harris GPS form `80 AA A4 <len>`: a manufacturer message (TIA-102.BBAD-A §3.36: MCO octet, MFID
        octet, length octet) behind an unexplained 0x80 octet. Its length counts from the MCO octet `AA`, so the segment
-       is the 0x80 octet plus that length: 18 for the observed `80 AA A4 11`, whose last octet carries the GPS quality. */
+       is the 0x80 octet plus that length: 18 for the observed `80 AA A4 11`, whose last octet carries the GPS
+       quality. */
     if (opcode == 0x80u && mfid == 0xAAu && len_octet == 0xA4u && opcode_pos + 4 < 24) {
         uint8_t shifted_len = (uint8_t)p25p2_mac_octet(mac, opcode_pos + 3);
         if ((shifted_len & 0x3Fu) > 0u) {

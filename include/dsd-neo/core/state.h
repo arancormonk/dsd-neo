@@ -560,8 +560,9 @@ typedef struct {
  * The P25 Phase 1 L3Harris GPS update Part A (MFID $A4 LCO 42 or 44, TIA-102.AABF-D-1 §7.3.35) waiting for its Part B
  * (issue #800). It owns its storage, so a talker alias between the two halves cannot wipe it (spec N3). It pairs only
  * with the Part B of its own parity (42 with 43, 44 with 45; D14) heard on the same call epoch (never outside a call)
- * and source within the pairing window on the decode clock, and the report keeps the reception it began on (@c origin). Any newer Part A
- * replaces it; a Part B of the other parity, its use, another call epoch or source, and expiry clear it.
+ * and source within the pairing window on the decode clock, and the report keeps the reception it began on
+ * (@c origin). Any newer Part A replaces it; a Part B of the other parity, its use, another call epoch or source, and
+ * expiry clear it.
  */
 typedef struct {
     uint8_t valid;

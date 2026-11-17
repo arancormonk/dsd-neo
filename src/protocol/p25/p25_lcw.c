@@ -199,8 +199,8 @@ p25_lcw_note_checked_identity(p25_lcw_ctx* ctx, uint32_t target, uint32_t source
     id->group = group;
 }
 
-/* A link control is dispatched only after its RS decode succeeded (LDU1, TDULC): the identity it names reaches the trunk
- * state machine as checked (spec 2.19). */
+/* A link control is dispatched only after its RS decode succeeded (LDU1, TDULC): the identity it names reaches the
+ * trunk state machine as checked (spec 2.19). */
 static int
 p25_lcw_emit_voice_user(p25_lcw_ctx* ctx, int tg, int dst, uint32_t source, int is_group) {
     p25_sm_event_t ev = p25_sm_ev_active_call(0, tg, dst, (int)source, is_group, ctx->lc_svcopt);

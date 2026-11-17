@@ -39,8 +39,8 @@ typedef struct dsd_gps_report_ctx {
     /** The reception captured with the report's first fragment (L3Harris Part A); NULL for a single message, which
      * takes the current reception. */
     const struct dsd_position_origin* origin;
-    /** The call the message carrying the report has just ended, captured before it did (dsd_event_capture_closing_call();
-     * a P25 Phase 1 TDULC, spec N2): when valid, the history row is written through
+    /** The call the message carrying the report has just ended, captured before it did
+     * (dsd_event_capture_closing_call(); a P25 Phase 1 TDULC, spec N2): when valid, the history row is written through
      * dsd_event_enrich_position_closing(). NULL otherwise (Phase 2). */
     const struct dsd_event_closing_call* closing;
     /** The call the report belongs to: its epoch (dsd_call_snapshot::epoch); 0 enriches the slot's ACTIVE call, if
@@ -109,8 +109,8 @@ void lip_short_report_text(const lip_short_report* report, char* out, size_t cap
 void lip_write_location_row(const dsd_opts* opts, const struct dsd_position_fix* fix);
 
 /**
- * @brief The DMR embedded GPS LC (TS 102 361-2 Table 7.3). The caller (dmr_flco) runs it only for an unprotected LC whose
- * embedded checksum passed. Its source is the slot's ACTIVE call's when a checked full LC of that call named it
+ * @brief The DMR embedded GPS LC (TS 102 361-2 Table 7.3). The caller (dmr_flco) runs it only for an unprotected LC
+ * whose embedded checksum passed. Its source is the slot's ACTIVE call's when a checked full LC of that call named it
  * (dsd_state::dmr_lc_checked_transmission / dmr_lc_checked_source); otherwise the report is unattributed.
  */
 void dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]);

@@ -325,8 +325,8 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "\n");
     } else if (irrecoverable_errors == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        // As on LDU1: only the hard decode checks the link control; tdulc_recover_reedsolomon() counts each soft-erasure
-        // recovery (spec 2.20).
+        // As on LDU1: only the hard decode checks the link control; tdulc_recover_reedsolomon() counts each
+        // soft-erasure recovery (spec 2.20).
         state->p25_p1_lcw_soft = (uint8_t)(state->p25_p1_soft_rs_ok != soft_rs_before);
         p25_lcw_from_tdulc(opts, state, LCW_bits, 0, &closing);
         state->p25_p1_lcw_soft = 0U;

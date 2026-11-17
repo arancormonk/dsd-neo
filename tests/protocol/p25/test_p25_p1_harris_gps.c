@@ -11,8 +11,9 @@
  * fraction and minutes; Part B (LCO 43, or 45) the longitude degrees, a 17-bit time of day (the T bit is Part B octet 8
  * bit 7), a 12-bit heading in tenths of a degree, a 12-bit velocity in tenths of a knot, the emergency bit, a 2-bit
  * quality and the satellites in view. A report is checked only when both halves passed a hard RS decode, pair by parity
- * on one call epoch (never outside a call) and source within the pairing window, and carry quality %01 or %10; its source only when a
- * hard-decoded voice-user link control of the same ACTIVE call named it. All coordinates and IDs are made up.
+ * on one call epoch (never outside a call) and source within the pairing window, and carry quality %01 or %10; its
+ * source only when a hard-decoded voice-user link control of the same ACTIVE call named it. All coordinates and IDs are
+ * made up.
  */
 
 #include <dsd-neo/core/call_state.h>
