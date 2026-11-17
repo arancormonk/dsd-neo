@@ -1609,6 +1609,20 @@ dmr_pdu_position_protocol(const dsd_state* state) {
                : (uint8_t)DSD_POSITION_PROTOCOL_NONE;
 }
 
+// The reception the packet carrying a position report began on (spec 2.3 step 3): the DMR data header's for a DMR
+// packet (dmr_dheader()), the MDPU header's for a P25 Phase 1 one (processMPDU()). NULL when none was captured, which
+// takes the current reception.
+static const dsd_position_origin*
+dmr_pdu_position_origin(const dsd_state* state, uint8_t slot) {
+    const dsd_position_origin* origin = NULL;
+    if (DSD_SYNC_IS_DMR(state->lastsynctype)) {
+        origin = &state->dmr_data_origin[slot & 1U];
+    } else if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
+        origin = &state->p25_mdpu_origin;
+    }
+    return (origin != NULL && origin->valid != 0U) ? origin : NULL;
+}
+
 // The decoded document as a position report.
 static void
 dmr_lrrp_fill_fix(const dsd_state* state, const dmr_lrrp_parse_result* best, const dmr_lrrp_emit_context* ctx,
@@ -1727,7 +1741,7 @@ dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, const dmr_lrrp_par
     if (best->have_pos && ctx->pos_verified) {
         dmr_lrrp_fill_fix(state, best, ctx, &fix);
         // The same checked packet names the source and the target.
-        admitted = dsd_position_admit(opts, state, &fix, 1, 1, NULL);
+        admitted = dsd_position_admit(opts, state, &fix, 1, 1, dmr_pdu_position_origin(state, slot));
         if (admitted == DSD_POSITION_REFUSED) {
             ctx->suppressed_label = "not usable";
         }
@@ -1995,7 +2009,7 @@ dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DM
             fix.flags |= (uint16_t)DSD_POS_FLAG_TARGET_GROUP;
         }
         // The packet's checks passed; its data header names the source and the target.
-        if (dsd_position_admit(opts, state, &fix, 1, 1, NULL) == DSD_POSITION_REFUSED) {
+        if (dsd_position_admit(opts, state, &fix, 1, 1, dmr_pdu_position_origin(state, slot)) == DSD_POSITION_REFUSED) {
             withheld = "not usable";
         }
     }

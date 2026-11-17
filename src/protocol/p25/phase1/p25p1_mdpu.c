@@ -15,6 +15,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -309,6 +310,8 @@ p25_mpdu_collect_blocks(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
         p25_mpdu_store_r12_block(ctx, block_idx);
         if (block_idx == 0) {
             p25_mpdu_update_header_from_first_block(ctx, opts);
+            // The packet's first fragment: where a position report it carries was heard (spec 2.3 step 3).
+            dsd_position_origin_capture(opts, state, &state->p25_mdpu_origin);
         }
     }
 }

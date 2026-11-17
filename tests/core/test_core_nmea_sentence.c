@@ -21,6 +21,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_pdu.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -451,6 +452,62 @@ test_p25_sap48(void) {
     CHECK(strstr(dsd_event_staged_gps(&g_state, 0), "GPRMC") == NULL);
 }
 
+/* ---- P25: a report is admitted against the reception its MDPU's header was heard on (issue #800 2.3 step 3) ---- */
+
+/* An LRRP POINT_2D response (lat 11.25, lon 45) in IPv4/UDP to port 4001, as a SAP 0 packet from LLID 1234. */
+static void
+p25_ip_lrrp(void) {
+    static const uint8_t doc[] = {0x07, 12, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    uint8_t pdu[128];
+    DSD_MEMSET(pdu, 0, sizeof pdu);
+    pdu[0] = 0x10; /* fmt 16, io 0: the LLID is the source */
+    pdu[1] = 0;    /* SAP 0: IP packet data */
+    pdu[4] = 0x04;
+    pdu[5] = 0xD2; /* LLID 1234 */
+    pdu[6] = 0x05;
+    uint8_t* ip = pdu + 12;
+    const uint16_t udp_len = (uint16_t)(8U + sizeof doc);
+    const uint16_t ip_len = (uint16_t)(20U + udp_len);
+    ip[0] = 0x45;
+    ip[3] = (uint8_t)ip_len;
+    ip[8] = 64;
+    ip[9] = 17;
+    ip[12] = 10;
+    ip[15] = 111;
+    ip[16] = 10;
+    ip[19] = 222;
+    ip[20] = ip[22] = 0x0F;
+    ip[21] = ip[23] = 0xA1; /* UDP 4001 */
+    ip[25] = (uint8_t)udp_len;
+    DSD_MEMCPY(ip + 28, doc, sizeof doc);
+    p25_decode_pdu_data(&g_opts, &g_state, pdu, (int)(12U + ip_len + 4U));
+}
+
+static void
+test_p25_origin(void) {
+    char s[128];
+    sentence(s, sizeof s, "GPRMC,120000,A,2230.0000,N,04500.0000,E,010.0,090.0,150626,,,A", "\r\n");
+    dsd_position_fix recs[4];
+    for (int lrrp = 0; lrrp <= 1; lrrp++) {
+        for (int retune = 0; retune <= 1; retune++) {
+            reset_fixture();
+            dsd_position_origin_capture(&g_opts, &g_state, &g_state.p25_mdpu_origin);
+            if (retune) {
+                dsd_trunk_tuning_generation_advance();
+            }
+            if (lrrp) {
+                p25_ip_lrrp();
+            } else {
+                p25_sap48(s, 0);
+            }
+            const int kept = feed_records(recs, 4);
+            CHECK(kept == (retune ? 0 : 1));
+            CHECK(kept != 1 || recs[0].kind == (lrrp ? DSD_POS_DMR_LRRP : DSD_POS_NMEA));
+            CHECK(kept != 1 || recs[0].protocol == DSD_SYNC_P25P1_POS);
+        }
+    }
+}
+
 int
 main(void) {
     int fd = dsd_test_mkstemp(g_lpath, sizeof g_lpath, "core_nmea_sentence");
@@ -468,6 +525,7 @@ main(void) {
     test_producer_per_sentence();
     test_producer_sentence_choice();
     test_p25_sap48();
+    test_p25_origin();
 
     dsd_state_ext_free_all(&g_state);
     (void)remove(g_lpath);

@@ -2171,6 +2171,10 @@ struct dsd_state {
        on, captured with that first fragment (dsd_position_origin_capture()). A position report the assembly carries
        (LIP, binary UDT NMEA) is admitted against it, so a retune or target switch before the last block refuses it. */
     dsd_position_origin dmr_data_origin[2];
+    /* The reception the current P25 Phase 1 multi-block packet (processMPDU()) began on, captured when its header
+       block was read. A position report the packet carries (LRRP, SAP 48 NMEA) is admitted against it, so a retune or
+       received-identity change before the last block refuses it. */
+    dsd_position_origin p25_mdpu_origin;
     /* Per slot: the call transmission (dsd_call_snapshot_transmission()) whose source a checked full LC named (a voice
        LC header or a late-entry embedded LC whose own check passed, not a RAS acceptance; dmr_flco), and that source.
        The embedded GPS LC is attributed to the slot's ACTIVE call only while it is still this transmission and source.

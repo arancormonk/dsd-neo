@@ -655,6 +655,101 @@ test_sap3_lrrp_location_rows(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+// Issue #800 spec 2.3 step 3: a position report is admitted against the reception its packet's data header was heard
+// on. A retune completed between the header and the last block refuses it (no -L row); the same packet without one
+// is admitted. `retune` advances the tuning generation before the last block.
+static void
+send_lrrp_packet(dsd_opts* opts, dsd_state* state, int retune) {
+    // Compressed UDP/IPv4 on the LRRP port with a POINT_2D response (lat 11.25, lon 45), in three blocks.
+    static const uint8_t lrrp_doc[] = {0x07, 12, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    uint8_t pdu[36] = {0x00, 0x20, 0x00, 0x3F, 0x00, 0x0F, 0xA1};
+    DSD_MEMCPY(pdu + 7, lrrp_doc, sizeof lrrp_doc);
+    const uint8_t poc = (uint8_t)(sizeof pdu - 4U - 7U - sizeof lrrp_doc);
+    uint8_t hdr[12] = {(uint8_t)(0x02U | ((poc & 0x10U) ? 0x10U : 0U)),
+                       (uint8_t)(0x30U | (poc & 0x0FU)),
+                       0,
+                       0,
+                       42,
+                       0,
+                       0,
+                       24,
+                       0x83,
+                       0,
+                       0,
+                       0};
+    crc32(pdu, sizeof pdu);
+    header(opts, state, hdr, 1);
+    for (size_t b = 0; b < 3U; ++b) {
+        if (retune && b == 2U) {
+            dsd_trunk_tuning_generation_advance();
+        }
+        dmr_block_assembler(opts, state, pdu + b * 12U, 12, 0x07, 1);
+    }
+}
+
+// The same for an MNIS LOCN report: a standard header, the DPF 15 MNIS extension, then three data blocks.
+static void
+send_locn_packet(dsd_opts* opts, dsd_state* state, int retune) {
+    static const uint8_t locn[] = "A123456070826N2230.0000E04500.0000";
+    uint8_t pdu[46] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x00, 0x01};
+    DSD_MEMCPY(pdu + 7, locn, sizeof locn - 1U);
+    // 46 octets less the 7-octet MNIS header, the report and the CRC32: one pad octet.
+    uint8_t hdr[12] = {0x02, 0x91, 0, 0, 42, 0, 0, 24, 0x84, 0, 0, 0};
+    uint8_t ext[12] = {0};
+    // The MNIS CRC32 leaves out the first three octets and the one before the CRC (dmr_block_type1_update_crc()).
+    uint8_t span[42] = {0};
+    DSD_MEMCPY(span, pdu + 3, 38);
+    crc32(span, sizeof span);
+    DSD_MEMCPY(pdu + 42, span + 38, 4);
+    DSD_MEMCPY(ext, pdu, 10);
+    header(opts, state, hdr, 1);
+    header(opts, state, ext, 1);
+    for (size_t b = 0; b < 3U; ++b) {
+        if (retune && b == 2U) {
+            dsd_trunk_tuning_generation_advance();
+        }
+        dmr_block_assembler(opts, state, pdu + 10U + b * 12U, 12, 0x07, 1);
+    }
+}
+
+static int
+test_position_origin_across_retune(dsd_opts* opts, dsd_state* state) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dmr-position-origin");
+    if (fd < 0 || dsd_close(fd) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", path);
+    opts->lrrp_file_output = 1;
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    state->currentslot = 0;
+    int rc = 0;
+    for (int kind = 0; kind < 2 && rc == 0; ++kind) {
+        for (int retune = 0; retune <= 1; ++retune) {
+            int before = count_location_rows(path);
+            if (kind == 0) {
+                send_lrrp_packet(opts, state, retune);
+            } else {
+                send_locn_packet(opts, state, retune);
+            }
+            int after = count_location_rows(path);
+            int expected = retune ? 0 : 1;
+            if (before < 0 || after < 0 || after != before + expected) {
+                DSD_FPRINTF(stderr, "\n%s %s -L rows: expected %d new, before=%d after=%d\n", kind ? "LOCN" : "LRRP",
+                            retune ? "after a retune" : "clean", expected, before, after);
+                rc = 1;
+                break;
+            }
+        }
+    }
+    opts->lrrp_file_output = 0;
+    if (remove(path) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
+
 // A confirmed packet may announce 127 blocks (Blocks to Follow is 7 bits). Every block's CRC9 verdict counts,
 // the 127th included; it used to be written past its row and left out of the packet's verdict.
 static int
@@ -832,6 +927,7 @@ main(void) {
     int rc = test_mnis_location_file(opts, state);
     rc |= test_sap3_ars_real_path(opts, state);
     rc |= test_sap3_lrrp_location_rows(opts, state);
+    rc |= test_position_origin_across_retune(opts, state);
     rc |= test_confirmed_127_blocks(opts, state);
     rc |= test_t3_mbc_grant_channel_provenance(opts, state);
     dsd_state_ext_free_all(state);
