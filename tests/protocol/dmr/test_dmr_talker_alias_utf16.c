@@ -6,7 +6,7 @@
 /*
  * DMR talker alias, UTF-16 format: the alias text must be transcoded by dsd-neo rather than
  * handed unit-by-unit to fprintf("%lc") (the crash path of issue #358). A surrogate pair is
- * one character, an unpaired half is U+FFFD, and the stored alias counts them that way.
+ * one character, an unpaired half is U+FFFD, and the stored alias keeps those characters as UTF-8.
  */
 
 #include <assert.h>
@@ -129,10 +129,12 @@ main(void) {
         assert(0 && "UTF-16 alias was not transcoded as expected");
     }
 
-    /* Three non-ASCII characters (not four units) plus 'A', then the "; " the decoder appends. */
-    if (strcmp(st->generic_talker_alias[0], "***A; ") != 0) {
+    /* The stored alias keeps the same characters as UTF-8 (a surrogate pair is one character, the orphan U+FFFD), then
+       the "; " the decoder appends. */
+    if (strncmp(st->generic_talker_alias[0], kExpected, sizeof kExpected - 1U) != 0
+        || strcmp(st->generic_talker_alias[0] + (sizeof kExpected - 1U), "; ") != 0) {
         DSD_FPRINTF(stderr, "stored alias: '%s'\n", st->generic_talker_alias[0]);
-        assert(0 && "stored alias must count a surrogate pair as one character");
+        assert(0 && "stored alias must keep the non-Latin characters");
     }
 
     /* Observing a call lazily allocates the call-state extension. */

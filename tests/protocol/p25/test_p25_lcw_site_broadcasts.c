@@ -4,7 +4,8 @@
  */
 
 /*
- * P25 Phase 1 LCW site/control-channel broadcast tests.
+ * P25 Phase 1 LCW site/control-channel broadcast tests, and the unit messages whose labels and fields follow
+ * TIA-102.AABF-D §7.3 (Group Affiliation Query, Message Update and its Source ID Extension form, reserved LCO 43).
  *
  * Field layouts are aligned with sdrtrunk's LCSystemServiceBroadcast,
  * LCSecondaryControlChannelBroadcast, LCAdjacentSiteStatusBroadcast,
@@ -16,11 +17,14 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -392,10 +396,117 @@ test_lcw_protection_parameter_still_updates_call_protection(void) {
     return rc;
 }
 
+static char g_lcw_out[4096];
+
+/* Decode one LCW, keeping what it prints in g_lcw_out. */
+static int
+lcw_capturing(dsd_opts* opts, dsd_state* state, uint8_t* bits) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_lcw_unit_messages") != 0) {
+        DSD_FPRINTF(stderr, "capture failed: %s\n", strerror(errno));
+        return -1;
+    }
+    p25_lcw(opts, state, bits, 0);
+    dsd_test_capture_stderr_end(&cap);
+    return dsd_test_capture_stderr_read(&cap, g_lcw_out, sizeof g_lcw_out);
+}
+
+static int
+expect_out(const char* tag, const char* needle, int present) {
+    if ((strstr(g_lcw_out, needle) != NULL) != (present != 0)) {
+        DSD_FPRINTF(stderr, "FAIL %s: '%s' %s in '%s'\n", tag, needle, present ? "missing" : "unexpected", g_lcw_out);
+        return 1;
+    }
+    return 0;
+}
+
+/* LC 0x50 Group Affiliation Query (TIA-102.AABF-D §7.3.9): octets 1-2 reserved, Target Address 3-5, Source Address
+   6-8. It asks a radio for its affiliation and carries no group, so it adds no affiliation. */
+static int
+test_lcw_0x50_query_no_ga_row(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[96];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+
+    build_lcw(bits, 0x50);
+    put_bits(bits, 24, 24, 0x123456);
+    put_bits(bits, 48, 24, 0xFFFFFD);
+    rc |= expect_eq_int("0x50 decoded", lcw_capturing(&opts, &state, bits), 0);
+    rc |= expect_out("0x50 fields", "Group Affiliation Query - TGT 1193046 SRC 16777213", 1);
+    rc |= expect_out("0x50 no group", "TG ", 0);
+    rc |= expect_eq_int("0x50 adds no affiliation", state.p25_ga_count, 0);
+    return rc;
+}
+
+/* LC 0x55 is Message Update (TIA-102.AABF-D §7.3.19: Message octets 1-2, Target 3-5, Source 6-8). */
+static int
+test_lcw_0x55_message_update(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[96];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+
+    build_lcw(bits, 0x55);
+    put_bits(bits, 8, 16, 0xBEEF);
+    put_bits(bits, 24, 24, 100);
+    put_bits(bits, 48, 24, 200);
+    rc |= expect_eq_int("0x55 decoded", lcw_capturing(&opts, &state, bits), 0);
+    rc |= expect_out("0x55 label and fields", "Message Update - MSG BEEF TGT 100 SRC 200", 1);
+    rc |= expect_out("0x55 not a status update", "Status Update", 0);
+    return rc;
+}
+
+/* LC 0x5B is Message Update - Source ID Extension Required (TIA-102.AABF-D §7.3.31, LCO 27), same fields. */
+static int
+test_lcw_0x5b_message_update_ext(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[96];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+
+    build_lcw(bits, 0x5B);
+    put_bits(bits, 8, 16, 0x0102);
+    put_bits(bits, 24, 24, 300);
+    put_bits(bits, 48, 24, 400);
+    rc |= expect_eq_int("0x5B decoded", lcw_capturing(&opts, &state, bits), 0);
+    rc |= expect_out("0x5B label", "Source ID Extension Required", 1);
+    rc |= expect_out("0x5B fields", "MSG 0102 TGT 300 SRC 400", 1);
+    rc |= expect_out("0x5B handled", "Unknown Format", 0);
+    return rc;
+}
+
+/* LC 0x6B (LCO 43) is reserved (TIA-102.AABF-D Table 2: LCO 43-63 reserved): no message name. */
+static int
+test_lcw_0x6b_reserved(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[96];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+
+    build_lcw(bits, 0x6B);
+    rc |= expect_eq_int("0x6B decoded", lcw_capturing(&opts, &state, bits), 0);
+    rc |= expect_out("0x6B not message update", "Message Update", 0);
+    rc |= expect_out("0x6B unknown", "Unknown Format 6B", 1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
 
+    rc |= test_lcw_0x50_query_no_ga_row();
+    rc |= test_lcw_0x55_message_update();
+    rc |= test_lcw_0x5b_message_update_ext();
+    rc |= test_lcw_0x6b_reserved();
     rc |= test_lcw_system_service_broadcast();
     rc |= test_lcw_secondary_cc_implicit_resolves_and_filters();
     rc |= test_lcw_secondary_cc_explicit_resolves();

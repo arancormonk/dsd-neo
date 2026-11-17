@@ -51,7 +51,7 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES = 1,
     /*
      * Core facilities use dedicated slots rather than expanding `dsd_state`.
-     * Engine owns 0, 1, 3 and 7; core owns 2, 4, 5 and 8, and 13 (taken from the io range); runtime owns 6; DSP
+     * Engine owns 0, 1, 3 and 7; core owns 2, 4, 5 and 8, and 13 and 14 (taken from the io range); runtime owns 6; DSP
      * owns 9, 10 and 11 (taken from the core range, as runtime took 6 from the engine range) and 12 (taken from the io
      * range); app-control owns 16, from the ui range.
      */
@@ -77,6 +77,10 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
      * (src/core/audio/voice_level.c, issue #518). Decoder-thread private: frontends read the applied gain from
      * dsd_state::aout_gain/aout_gainR. */
     DSD_STATE_EXT_CORE_VOICE_LEVEL = 13,
+    /* The session's unit activity ring: registrations, joins, denies and radio commands heard
+     * (src/core/util/unit_activity.c, <dsd-neo/core/unit_activity.h>). Written on the decoder thread; frontends read
+     * the snapshot copies dsd_unit_activity_copy_snapshot() makes into the snapshots' own slot. */
+    DSD_STATE_EXT_CORE_UNIT_ACTIVITY = 14,
     /* App-control's frequency entry that sent a scan to one of its rows and still waits on its tune (issue #644,
      * src/app_control/scan_entry_toast.c): what its landing's toast names. Decoder-thread private. */
     DSD_STATE_EXT_APP_SCAN_ENTRY = 16,

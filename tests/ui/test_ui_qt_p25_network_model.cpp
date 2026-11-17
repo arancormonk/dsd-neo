@@ -5,7 +5,10 @@
 #include <QString>
 #include <cstdio>
 #include <cstdlib>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_network_model.h"
 
@@ -76,5 +79,20 @@ main(int argc, char** argv) {
     model.refresh(&s);
     model.refresh(nullptr);
     check(model.radios().isEmpty());
+    /* Affiliation and radio rows carry their names (the facade's lookup); a name learned later renames the row. */
+    model.refresh(&s);
+    check(model.radios()[0].toMap()["rid"].toUInt() == 999 && model.radios()[0].toMap()["name"].toString().isEmpty());
+    const int before = changes;
+    dsd_source_alias_store* names = dsd_source_alias_store_create();
+    dsd_source_alias_entry alice = {};
+    alice.id_start = alice.id_end = 999; // the newest radio row (rid 256's slot was reused above)
+    DSD_SNPRINTF(alice.name, sizeof alice.name, "%s", "Alice");
+    check(names != nullptr && dsd_source_alias_store_append(names, &alice) == 0);
+    dsd_source_alias_install(&s, names);
+    model.refresh(&s);
+    check(changes == before + 1 && model.radios()[0].toMap()["name"].toString() == QStringLiteral("Alice"));
+    const QVariantMap affiliation = model.affiliations()[0].toMap();
+    check(affiliation.contains("name") && affiliation.contains("tgName"));
+    dsd_state_ext_free_all(&s);
     return 0;
 }

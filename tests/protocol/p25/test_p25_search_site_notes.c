@@ -261,7 +261,7 @@ test_vpdu_rfss(void) {
     // A TSBK RFSS status (CRC-16 passed before processTSBK() hands it to the vPDU bridge).
     reset();
     rfss_mac(mac, 0x07, 0x7A, 0x1A3, 1, 2);
-    process_MAC_VPDU(&g_opts, &g_state, 0, P25_MAC_PDU_SIGNAL, mac);
+    process_MAC_VPDU_bridged_p1(&g_opts, &g_state, mac);
     rc |= expect_int("tsbk rfss notes once", g_notes, 1);
     rc |= expect_int("tsbk rfss kind", g_note.kind, DSD_SEARCH_SITE_NOTE_P25_SITE);
     rc |= expect_site("tsbk rfss site", "SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2");
@@ -293,7 +293,7 @@ test_vpdu_rfss(void) {
     // SYSID 0 names no system.
     reset();
     rfss_mac(mac, 0x07, 0x7A, 0x000, 1, 2);
-    process_MAC_VPDU(&g_opts, &g_state, 0, P25_MAC_PDU_SIGNAL, mac);
+    process_MAC_VPDU_bridged_p1(&g_opts, &g_state, mac);
     rc |= expect_int("sysid 0 rfss is decoded", (long)g_state.p2_siteid, 2);
     rc |= expect_int("sysid 0 rfss notes nothing", g_notes, 0);
 
@@ -461,7 +461,7 @@ test_received_identity(void) {
     // A TSBK RFSS status through the vPDU bridge: the site and LRA, under the SYSID it advertises.
     reset();
     rfss_mac(mac, 0x07, 0x7A, 0x1A3, 1, 2);
-    process_MAC_VPDU(&g_opts, &g_state, 0, P25_MAC_PDU_SIGNAL, mac);
+    process_MAC_VPDU_bridged_p1(&g_opts, &g_state, mac);
     rc |=
         expect_int("rx-id tsbk rfss parts", (long)id->valid, DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE | DSD_RXID_P25_LRA);
     rc |= expect_int("rx-id tsbk rfss sysid", id->p25_sysid, 0x1A3);

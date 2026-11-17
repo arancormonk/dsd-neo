@@ -11,6 +11,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
@@ -22,6 +23,7 @@
 #include "tetra_log.h"
 #include "tetra_mm_pdu.h"
 #include "tetra_state.h"
+#include "tetra_unit_activity.h"
 
 /* EN 300 392-2 clause 21.4.4.1: downlink main carrier frequency = base frequency + main carrier x 25 kHz + offset.
  * ETSI TS 100 392-15 table 1 gives frequency band values 1 to 9 the base frequency value x 100 MHz. Value 0 means the
@@ -43,7 +45,38 @@ typedef struct {
     int cc;
     int nbits;          /* bits in the PDU, for the truncation notes */
     uint8_t print_only; /* the PDU came with another cell's channel allocation: printed, this cell's state untouched */
+    tetra_mm_addr addr; /* the MAC address the PDU came with; not valid when none came */
 } mm_ctx;
+
+int
+tetra_mm_addr_radio_ssi(const tetra_mm_addr* addr, uint32_t* ssi) {
+    if (!addr || !addr->valid || addr->encrypted
+        || (addr->type != TETRA_MM_ADDR_SSI && addr->type != TETRA_MM_ADDR_USSI)) {
+        return 0;
+    }
+    if (ssi) {
+        *ssi = addr->ssi;
+    }
+    return 1;
+}
+
+/* The MAC address for a summary line: the radio's SSI or USSI, or what else it was -- an SMI is a management identity
+ * and an encrypted short identity names nobody, so neither reads as a radio. */
+static void
+mm_addr_text(const tetra_mm_addr* a, char* out, size_t cap) {
+    uint32_t ssi = 0;
+    if (tetra_mm_addr_radio_ssi(a, &ssi)) {
+        DSD_SNPRINTF(out, cap, "ms=%s(%u)", a->type == TETRA_MM_ADDR_USSI ? "USSI" : "SSI", (unsigned)ssi);
+    } else if (a->valid && a->encrypted) {
+        DSD_SNPRINTF(out, cap, "addr=ESI (encrypted identity)");
+    } else if (a->valid && a->type == TETRA_MM_ADDR_SMI) {
+        DSD_SNPRINTF(out, cap, "addr=SMI(%u) (management identity)", (unsigned)a->ssi);
+    } else if (a->valid && a->type == TETRA_MM_ADDR_EVENT_LABEL) {
+        DSD_SNPRINTF(out, cap, "addr=event label");
+    } else {
+        DSD_SNPRINTF(out, cap, "addr=none");
+    }
+}
 
 static uint8_t
 mm_u8(tetra_bit_reader* r, int width) {
@@ -758,10 +791,16 @@ static void
 mm_report_enable_disable(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
     const tetra_mm_enable_disable_t* const e = &pdu->enable_disable;
     const char* const name = e->is_enable ? "D-ENABLE" : "D-DISABLE";
-    DSD_FPRINTF(stderr, "[TETRA MM %s] CC=%d intent=%u equipment=%u subscription=%u%s\n", name, ctx->cc,
-                (unsigned)e->intent, (unsigned)e->equipment, (unsigned)e->subscription,
+    /* The Intent/confirm element (EN 300 392-7 table A.68): 0 the first intent, 1 the confirmation after authentication;
+     * the PDU commands either way, and says nothing of whether the MS obeyed. */
+    DSD_FPRINTF(stderr, "[TETRA MM %s] CC=%d stage=%s equipment=%u subscription=%u%s\n", name, ctx->cc,
+                e->intent ? "confirm" : "intent", (unsigned)e->equipment, (unsigned)e->subscription,
                 e->permanent ? " permanent" : "");
     mm_notice_enable_disable(ctx, e, name);
+    /* Another cell's PDU (print-only) is printed, never logged under this cell's reception scope. */
+    if (!ctx->print_only) {
+        tetra_ua_enable_disable(ctx->opts, ctx->state, e);
+    }
 }
 
 /* EN 300 392-2 clause 16.9.2: location update and group identity PDUs. */
@@ -792,9 +831,30 @@ mm_decode_lu_accept(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
     return 1;
 }
 
+/* Table 16.68: the location update accept type, in the core's words the unit activity log shows too. */
+static const char*
+mm_lu_accept_type_name(uint8_t type) {
+    const char* const name = dsd_ua_tetra_accept_type_text(type);
+    return name ? name : "reserved accept type";
+}
+
+/* The PDU has no ISSI of its own (clause 16.4.1 note 5): the MS is the one the MAC addressed. Its SSI element is the
+ * ASSI or (V)ASSI given to that MS (table 16.11). */
 static void
 mm_report_lu_accept(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
-    DSD_FPRINTF(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d type=%u\n", ctx->cc, (unsigned)pdu->lu_accept.type);
+    const tetra_mm_lu_accept_t* const a = &pdu->lu_accept;
+    char addr[64];
+    char assigned[32] = "";
+    mm_addr_text(&ctx->addr, addr, sizeof addr);
+    if (a->ssi_valid) {
+        DSD_SNPRINTF(assigned, sizeof assigned, " assigned=SSI(%u)", (unsigned)a->ssi);
+    }
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d type=%u (%s) %s%s\n", ctx->cc, (unsigned)a->type,
+                mm_lu_accept_type_name(a->type), addr, assigned);
+    /* Another cell's PDU (print-only) is printed, never logged under this cell's reception scope. */
+    if (!ctx->print_only) {
+        tetra_ua_lu_accept(ctx->opts, ctx->state, &ctx->addr, a);
+    }
 }
 
 /* Cipher control and the ciphering parameters it announces (EN 300 392-2 tables 16.12 and 16.13). */
@@ -865,14 +925,45 @@ mm_decode_lu_reject(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
     return mm_read_address_tail(r, &rej->address);
 }
 
+/* Table 16.67: the location update type a D-LOCATION UPDATE REJECT answers. */
+static const char*
+mm_lu_type_name(uint8_t type) {
+    static const char* const names[8] = {
+        "roaming",
+        "migrating",
+        "periodic",
+        "ITSI attach",
+        "service restoration roaming",
+        "service restoration migrating",
+        "demand",
+        "disabled MS updating",
+    };
+    return names[type & 7u];
+}
+
+/* Table 16.81: the reject cause, in the core's words the unit activity log shows too; 0, 17 and 22 to 31 are
+ * reserved. */
+static const char*
+mm_lu_reject_cause_name(uint8_t cause) {
+    const char* const name = dsd_ua_reason_text(DSD_UA_REASON_TETRA_LU_REJECT, cause);
+    return name ? name : "reserved cause";
+}
+
 static void
 mm_report_lu_reject(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
     const tetra_mm_lu_reject_t* const rej = &pdu->lu_reject;
     char cipher[40];
+    char addr[64];
     tetra_mm_cipher_detail(rej->cipher_control, rej->cipher_params, cipher, sizeof cipher);
-    DSD_FPRINTF(stderr, "[TETRA MM D-LU-REJECT] CC=%d type=%u cause=%u cipher=%u%s\n", ctx->cc, (unsigned)rej->type,
-                (unsigned)rej->cause, (unsigned)rej->cipher_control, cipher);
+    mm_addr_text(&ctx->addr, addr, sizeof addr);
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-REJECT] CC=%d type=%u cause=%u cipher=%u%s (%s rejected: %s) %s\n", ctx->cc,
+                (unsigned)rej->type, (unsigned)rej->cause, (unsigned)rej->cipher_control, cipher,
+                mm_lu_type_name(rej->type), mm_lu_reject_cause_name(rej->cause), addr);
     mm_cipher_remember_ksg(ctx, rej->cipher_control, rej->cipher_params);
+    /* Another cell's PDU (print-only) is printed, never logged under this cell's reception scope. */
+    if (!ctx->print_only) {
+        tetra_ua_lu_reject(ctx->opts, ctx->state, &ctx->addr, rej);
+    }
 }
 
 /* Table 16.14 D-LOCATION UPDATE PROCEEDING: the (V)ASSI and the MNI are both type 1 elements. */
@@ -1082,11 +1173,12 @@ tetra_mm_decode(const uint8_t* bits, int nbits, tetra_mm_pdu* out) {
 
 void
 tetra_mm_dispatch(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
-    tetra_mm_dispatch_as(bits, nbits, cc, 0, opts, state);
+    tetra_mm_dispatch_as(bits, nbits, cc, 0, NULL, opts, state);
 }
 
 void
-tetra_mm_dispatch_as(const uint8_t* bits, int nbits, int cc, int print_only, dsd_opts* opts, dsd_state* state) {
+tetra_mm_dispatch_as(const uint8_t* bits, int nbits, int cc, int print_only, const tetra_mm_addr* addr, dsd_opts* opts,
+                     dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts || !bits || nbits < 4) {
         return;
@@ -1094,7 +1186,10 @@ tetra_mm_dispatch_as(const uint8_t* bits, int nbits, int cc, int print_only, dsd
     tetra_mm_pdu pdu;
     const int complete = tetra_mm_decode(bits, nbits, &pdu);
     const mm_kind* const kind = &k_mm_kinds[pdu.type & 15u];
-    const mm_ctx ctx = {opts, state, ts, cc, nbits, (uint8_t)(print_only != 0)};
+    mm_ctx ctx = {opts, state, ts, cc, nbits, (uint8_t)(print_only != 0), {0}};
+    if (addr) {
+        ctx.addr = *addr;
+    }
     if (!kind->decode) {
         TETRA_LOG_PAYLOAD(ts, "[TETRA MM] CC=%d reserved PDU type %u (%d bits)\n", cc, (unsigned)pdu.type, nbits);
     } else if (complete) {

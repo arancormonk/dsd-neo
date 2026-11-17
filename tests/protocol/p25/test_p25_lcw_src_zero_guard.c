@@ -504,7 +504,8 @@ main(void) {
                           active_call_is(&st, DSD_CALL_KIND_PRIVATE_VOICE, 0x101112, 0x202122));
     }
 
-    /* Format 0x50 updates affiliation only; it is not a voice identity. */
+    /* Format 0x50 (Group Affiliation Query, TIA-102.AABF-D §7.3.9: Target Address bits 24-47, Source Address bits
+       48-71) asks a radio for its affiliation: it is no voice identity, and it names no group, so no affiliation. */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
@@ -538,8 +539,7 @@ main(void) {
         rc |= expect_true("Fmt0x50_preserves_canonical_call", same_call_identity(&before, &after));
         rc |= expect_true("Fmt0x50_preserves_decoder_crypto", st.payload_algid == 0x84 && st.payload_keyid == 0x1234
                                                                   && st.payload_miP == UINT64_C(0x1122334455667788));
-        rc |= expect_true("Fmt0x50_updates_affiliation",
-                          st.p25_ga_count == 1 && st.p25_ga_rid[0] == 0x654321 && st.p25_ga_tg[0] == 0x3456);
+        rc |= expect_true("Fmt0x50_adds_no_affiliation", st.p25_ga_count == 0 && st.p25_ga_rid[0] == 0);
     }
 
     /*

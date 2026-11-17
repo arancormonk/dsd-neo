@@ -165,7 +165,7 @@ main(void) {
     // Not testing ENC gating here; allow encrypted to ensure unknown-SVC paths do not block
     opts.trunk_tune_enc_calls = 1;
     unsigned int before = st.p25_sm_tune_count;
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH path*/, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &st, MAC);
     rc |= expect_true("group gating honored", st.p25_sm_tune_count == before);
 
     // Case B: group calls on -> tune occurs

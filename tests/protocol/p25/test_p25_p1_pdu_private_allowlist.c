@@ -280,6 +280,28 @@ p25_aff_register(dsd_state* state, uint32_t rid) {
 }
 
 void
+p25_aff_register_assigned(dsd_state* state, uint32_t assigned, const p25_home_id* home, uint32_t serving_wacn,
+                          uint16_t serving_sys) {
+    (void)state;
+    (void)assigned;
+    (void)home;
+    (void)serving_wacn;
+    (void)serving_sys;
+}
+
+/* p25_unit_activity.c looks up the address a home SUID holds on the serving system; this harness keeps no table. */
+int
+p25_aff_assigned_for_home(const dsd_state* state, const p25_home_id* home, uint32_t serving_wacn, uint16_t serving_sys,
+                          uint32_t* assigned) {
+    (void)state;
+    (void)home;
+    (void)serving_wacn;
+    (void)serving_sys;
+    (void)assigned;
+    return 0;
+}
+
+void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_ga_add(dsd_state* state, uint32_t rid, uint16_t tg) {
     (void)state;

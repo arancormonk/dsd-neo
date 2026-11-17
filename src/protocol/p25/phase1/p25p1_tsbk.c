@@ -17,6 +17,7 @@
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
@@ -32,8 +33,8 @@
 #include <stdio.h>
 #include "../p25_cc_update.h"
 #include "../p25_mfid90_utils.h"
-#include "../p25_response_reason.h"
 #include "../p25_search_site.h"
+#include "../p25_unit_activity.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -217,9 +218,12 @@ tsbk_update_fec_counters(const dsd_opts* opts, dsd_state* state, int err) {
     }
 }
 
+/* The TSBK in the MAC form process_MAC_VPDU_bridged_p1() decodes as one message: its opcode as the abbreviated Phase 2
+   opcode at PDU[1] and TSBK octet n at PDU[n] for n = 2..9 (the MFID and the CRC are not carried). PDU[0] (0x07, the
+   TSBK DUID) only labels the payload print; nothing reads it as a transport marker, and nothing past PDU[9] is read. */
 static void
 tsbk_build_mac_like_pdu(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], unsigned long long int PDU[24]) {
-    PDU[0] = 0x07; // P25p1 TSBK DUID
+    PDU[0] = 0x07;
     PDU[1] = tsbk_byte[0] & 0x3F;
     PDU[2] = tsbk_byte[2];
     PDU[3] = tsbk_byte[3];
@@ -229,9 +233,9 @@ tsbk_build_mac_like_pdu(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], unsigned 
     PDU[7] = tsbk_byte[7];
     PDU[8] = tsbk_byte[8];
     PDU[9] = tsbk_byte[9];
-    PDU[10] = 0; // strip CRC for vPDU search
+    PDU[10] = 0; // the CRC is not part of the message
     PDU[11] = 0;
-    PDU[1] ^= 0x40; // flip to match MAC_PDU flavor (3D -> 7D)
+    PDU[1] ^= 0x40; // abbreviated Phase 2 opcode: B1B2 = 01 (3D -> 7D)
 }
 
 static void
@@ -490,7 +494,7 @@ tsbk_handle_mfid90_traffic_channel_id(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLO
 }
 
 static void
-tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+tsbk_handle_mfid90_queued_deny(const dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
                                int is_deny) {
     int has_additional = ((tsbk_byte[2] & 0x80) != 0);
     int svc_type = tsbk_byte[2] & 0x3F;
@@ -498,7 +502,7 @@ tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t t
     int addl_info = tsbk_u24(tsbk_byte, 4);
     int target_addr = tsbk_u24(tsbk_byte, 7);
     const char* reason_str =
-        is_deny ? p25_deny_response_reason((uint8_t)reason_code) : p25_queued_response_reason((uint8_t)reason_code);
+        dsd_ua_reason_text(is_deny ? DSD_UA_REASON_P25_DENY : DSD_UA_REASON_P25_QUEUED, (uint16_t)reason_code);
 
     DSD_FPRINTF(stderr, "\n MFID90 (Moto) %s Response\n", is_deny ? "Deny" : "Queued");
     DSD_FPRINTF(stderr, "  SVC [%02X] Reason [%s]", svc_type, reason_str);
@@ -516,15 +520,21 @@ tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t t
     }
     DSD_FPRINTF(stderr, " Target [%d]\n", target_addr);
 
+    /* Counted and shown only: the response answers some unit's request and names no assignment, so the carrier being
+       followed stays (the acquisition watchdog ends one that never carries voice), as on the standard Deny/Queued
+       path (p25p2_vpdu.c). */
     if (opts) {
         if (is_deny) {
             state->p25_sm_deny_count++;
-            p25_sm_release(p25_sm_get_ctx(), opts, state, "deny-rsp");
         } else {
             state->p25_sm_queued_count++;
-            p25_sm_release(p25_sm_get_ctx(), opts, state, "queued-rsp");
         }
     }
+    /* The TSBK passed its CRC: tsbk_dispatch_message() dispatches no other. */
+    const p25_ua_origin origin = {opts, state, 0U, 0U, 1U};
+    const p25_ua_response response = {(uint8_t)is_deny,        (uint8_t)svc_type,   (uint8_t)reason_code,
+                                      (uint8_t)has_additional, (uint32_t)addl_info, (uint32_t)target_addr};
+    p25_ua_deny_queued(&origin, &response);
 }
 
 static void
@@ -678,7 +688,7 @@ tsbk_handle_mfid90_regroup_grants(dsd_opts* opts, dsd_state* state, const uint8_
 }
 
 static int
-tsbk_handle_mfid90_responses(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+tsbk_handle_mfid90_responses(const dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
                              int opcode) {
     switch (opcode) {
         case 0x06: tsbk_handle_mfid90_queued_deny(opts, state, tsbk_byte, /*is_deny*/ 0); break;
@@ -793,7 +803,8 @@ tsbk_isp_print_status(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_
     DSD_FPRINTF(stderr, "\n %s (ISP protected/inbound)", label);
     DSD_FPRINTF(stderr, " FM [%d] TO [%d]", source, target);
     if (has_status) {
-        DSD_FPRINTF(stderr, " UNIT STATUS [%02X] USER STATUS [%02X]", tsbk_byte[2], tsbk_byte[3]);
+        /* The Status field's first octet is the User Status, the second the Unit Status (TIA-102.AABC-D §2.3.29). */
+        DSD_FPRINTF(stderr, " USER STATUS [%02X] UNIT STATUS [%02X]", tsbk_byte[2], tsbk_byte[3]);
     }
 }
 
@@ -1083,7 +1094,7 @@ tsbk_dispatch_message(dsd_opts* opts, dsd_state* state, const tsbk_decode_ctx_t*
             return;
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
-        process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_SIGNAL, PDU);
+        process_MAC_VPDU_bridged_p1(opts, state, PDU);
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }

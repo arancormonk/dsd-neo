@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-const char* p25_extended_function_class0_operand_label(uint8_t operand);
-int p25_extended_function_operand_is_ack(uint8_t operand);
+/** Class $00 operand label, an acknowledgement labelled as one ("Radio Inhibit Ack"); "Reserved" for the rest. */
+const char* p25_extended_function_class0_label(uint8_t operand);
 
 #endif // DSD_NEO_PROTOCOL_P25_EXTENDED_FUNCTION_H

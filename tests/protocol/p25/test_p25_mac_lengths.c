@@ -22,12 +22,14 @@ int
 main(void) {
     int rc = 0;
 
-    // Core standard opcodes. Values are whole MAC structure octets, including opcode.
+    // Core standard opcodes. Values are whole MAC structure octets, including opcode. 0x45 / 0xC5 / 0x4A follow
+    // TIA-102.BBAD-A's message length table (Unit to Unit Answer Request 8 / 12, Telephone Interconnect Answer
+    // Request 9).
     rc |= expect_eq("OP 0x03 (TELE_USER)", p25p2_mac_len_for(0x01, 0x03), 7);
     rc |= expect_eq("OP 0x40 (GRP_V_CH_GRANT)", p25p2_mac_len_for(0x01, 0x40), 9);
     rc |= expect_eq("OP 0x41 (GRP_V_SVC_REQ)", p25p2_mac_len_for(0x01, 0x41), 7);
-    rc |= expect_eq("OP 0x45 (UU_ANS_REQ_ABBR)", p25p2_mac_len_for(0x01, 0x45), 10);
-    rc |= expect_eq("OP 0x4A (TELE_ANS_RSP)", p25p2_mac_len_for(0x01, 0x4A), 7);
+    rc |= expect_eq("OP 0x45 (UU_ANS_REQ_ABBR)", p25p2_mac_len_for(0x01, 0x45), 8);
+    rc |= expect_eq("OP 0x4A (TELE_INT_ANS_REQ)", p25p2_mac_len_for(0x01, 0x4A), 9);
     rc |= expect_eq("OP 0x4C (RUM_ABBR)", p25p2_mac_len_for(0x01, 0x4C), 10);
     rc |= expect_eq("OP 0x52 (SNDCP_REQ)", p25p2_mac_len_for(0x01, 0x52), 8);
     rc |= expect_eq("OP 0x53 (SNDCP_PAGE_RSP)", p25p2_mac_len_for(0x01, 0x53), 9);
@@ -41,7 +43,7 @@ main(void) {
     rc |= expect_eq("OP 0xC0 (GRP_V_CH_GRANT_EXP)", p25p2_mac_len_for(0x01, 0xC0), 11);
     rc |= expect_eq("OP 0xC3 (GRP_V_CH_GRANT_UP_EXP)", p25p2_mac_len_for(0x01, 0xC3), 8);
     rc |= expect_eq("OP 0xC4 (UU_V_SVC_GRANT_EXT_VCH)", p25p2_mac_len_for(0x01, 0xC4), 15);
-    rc |= expect_eq("OP 0xC5 (UU_ANS_REQ_EXT)", p25p2_mac_len_for(0x01, 0xC5), 14);
+    rc |= expect_eq("OP 0xC5 (UU_ANS_REQ_EXT)", p25p2_mac_len_for(0x01, 0xC5), 12);
     rc |= expect_eq("OP 0xC6 (UU_V_GRANT_UP_EXT_VCH)", p25p2_mac_len_for(0x01, 0xC6), 15);
     rc |= expect_eq("OP 0xC7 (UU_GRANT_UP_EXT_LCCH base fragment)", p25p2_mac_len_for(0x01, 0xC7), 18);
     rc |= expect_eq("OP 0xCB (CALL_ALERT_EXT_LCCH base fragment)", p25p2_mac_len_for(0x01, 0xCB), 18);

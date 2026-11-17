@@ -180,6 +180,37 @@ test_utf8_validation(void) {
     assert(!dsd_utf8_is_valid("\xE2\x82\x41")); /* a non-continuation byte inside */
 }
 
+/* One sequence's length, and the one rule for cutting text to a field: whole, well-formed characters only, ending
+   before a byte that starts none. */
+static void
+test_utf8_sequence_and_whole_prefix(void) {
+    assert(dsd_utf8_sequence_len("A", 1) == 1U);
+    assert(dsd_utf8_sequence_len("\xC3\xA9", 2) == 2U);
+    assert(dsd_utf8_sequence_len("\xC3\xA9", 1) == 0U); /* cut short */
+    assert(dsd_utf8_sequence_len("\xC3"
+                                 "A",
+                                 2)
+           == 0U);                                          /* no continuation byte */
+    assert(dsd_utf8_sequence_len("\xE0\x9F\xBF", 3) == 0U); /* overlong */
+    assert(dsd_utf8_sequence_len("\xF0\x9F\x9A\x92", 4) == 4U);
+    assert(dsd_utf8_sequence_len("A", 0) == 0U);
+    const char* text = "ab\xC3\xA9"
+                       "cd";
+    assert(dsd_utf8_whole_prefix_len(text, 6, 6) == 6U);
+    assert(dsd_utf8_whole_prefix_len(text, 6, 3) == 2U); /* the cut would split the e-acute: it goes */
+    assert(dsd_utf8_whole_prefix_len(text, 6, 4) == 4U);
+    assert(dsd_utf8_whole_prefix_len(text, 3, 6) == 2U); /* the text itself ends inside it */
+    assert(dsd_utf8_whole_prefix_len("AB\xC3"
+                                     "AC",
+                                     5, 5)
+           == 2U);
+    assert(dsd_utf8_whole_prefix_len("\x80"
+                                     "A",
+                                     2, 2)
+           == 0U);
+    assert(dsd_utf8_whole_prefix_len("", 0, 0) == 0U);
+}
+
 /* The Windows user-file opener (path_policy.c) opens a path through the wide calls when it is well-formed UTF-8, as the
    app writes a list's file named in any script, and through the ANSI calls otherwise, as a command line in the ANSI
    code page gives it. */
@@ -257,6 +288,7 @@ main(void) {
     test_invalid_scalars_encode_as_replacement();
     test_utf8_encoding_needs_room_for_terminator();
     test_utf8_validation();
+    test_utf8_sequence_and_whole_prefix();
     test_utf8_validation_of_paths();
     test_utf16_to_utf8_encodes_standard_utf8();
     DSD_FPRINTF(stderr, "CORE_UTF16: PASS\n");

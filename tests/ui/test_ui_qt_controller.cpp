@@ -55,6 +55,7 @@ extern "C" {
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
@@ -89,6 +90,7 @@ extern "C" {
 #include "session_args.h"
 #include "talkgroup_list_model.h"
 #include "ui_controller.h"
+#include "unit_activity_model.h"
 
 namespace {
 
@@ -1891,6 +1893,59 @@ test_session_end_saves_after_final_ingest() {
     }
     freeState(&state);
 }
+
+/* The Activity screen's log: read from each redraw's snapshot while the session runs, kept across a scan hop (one log
+ * spans the session), dropped when the session stops and read from the start at the next. */
+static void
+test_unit_activity_follows_the_session() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    Host host;
+    dsd_qt::UiController controller(&host, nullptr, nullptr, nullptr);
+    dsd_qt::UnitActivityModel activity;
+    controller.setUnitActivity(&activity);
+    controller.setPollIntervalMs(50);
+    const auto tick = [&]() {
+        dsd_app_telemetry_publish_opts_snapshot(&opts);
+        dsd_app_telemetry_publish_snapshot(&state);
+        dsd_app_request_redraw();
+        QEventLoop loop;
+        QTimer::singleShot(65, &loop, &QEventLoop::quit);
+        controller.start();
+        loop.exec();
+        controller.stop();
+    };
+    const auto push = [&](uint32_t rid) {
+        dsd_unit_activity row;
+        DSD_MEMSET(&row, 0, sizeof(row));
+        row.protocol = DSD_UA_PROTO_P25P1;
+        row.kind = DSD_UA_REGISTRATION;
+        row.role = DSD_UA_ROLE_RESPONSE;
+        row.result = DSD_UA_RESULT_ACCEPTED;
+        row.subject.id = rid;
+        row.subject.subtype = DSD_UA_ID_RADIO;
+        row.subject.valid = 1U;
+        check(dsd_unit_activity_push(&state, &row) == 1);
+    };
+    push(1234567U);
+    push(1234568U);
+    tick();
+    check(activity.count() == 2);
+    state.trunk_scan_active_ordinal = 7; // a hop keeps the log
+    push(1234569U);
+    tick();
+    check(activity.count() == 3);
+    host.setPhase(Host::Idle);
+    check(activity.count() == 0);
+    tick(); // the stopped session's last snapshot is not read
+    check(activity.count() == 0);
+    host.setPhase(Host::Running);
+    tick();
+    check(activity.count() == 3);
+    freeState(&state);
+}
 } // namespace
 
 int
@@ -1903,6 +1958,7 @@ main(int argc, char** argv) {
     test_history_receives_effective_scan_options();
     test_history_handoff_after_resume_without_redraw();
     test_session_end_saves_after_final_ingest();
+    test_unit_activity_follows_the_session();
     test_startup_options_wait_for_redraw();
     test_metrics_age_without_decoder_redraw();
     test_target_change_publishes_once();

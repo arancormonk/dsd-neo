@@ -757,7 +757,8 @@ main(void) {
             return 111;
         }
         rc |= expect_contains_text("mbt 0x18 label", out, "Status Update MBT - Extended");
-        rc |= expect_contains_text("mbt 0x18 statuses", out, "UNIT STATUS [21] USER STATUS [43]");
+        /* User Status first, then Unit Status (TIA-102.AABC-D §2.3.29). */
+        rc |= expect_contains_text("mbt 0x18 statuses", out, "USER STATUS [21] UNIT STATUS [43]");
         rc |= expect_contains_text("mbt 0x18 source", out, "FM [74565] FULL [12345.678.234567]");
         rc |= expect_contains_text("mbt 0x18 target", out, "TO [703710] FULL [ABCDE.234.456789]");
 
@@ -1057,6 +1058,12 @@ main(void) {
         rc |= expect_contains_text("mbt 0x2C SRC_ID", out, "SRC_ID [56789A]");
         rc |= expect_contains_text("mbt 0x2C SRC", out, "SRC [74565]");
         rc |= expect_contains_text("mbt 0x2C response", out, "REG_ACCEPT");
+        /* The header address was assigned to the SUID in the data block, on the serving system. */
+        const p25_home_id home = {0xABCDE, 0x123, 0x56789A, 1U};
+        uint32_t assigned = 0;
+        rc |= expect_eq_int("mbt 0x2C owner kept", p25_aff_assigned_for_home(&state, &home, 0x11111, 0x222, &assigned),
+                            1);
+        rc |= expect_eq_long("mbt 0x2C owner's address", (long)assigned, 0x012345);
     }
 
     // AMBTC Unit Registration Response (0x2C): rejected response does not track affiliation.

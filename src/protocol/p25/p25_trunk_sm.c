@@ -8009,7 +8009,7 @@ p25_aff_find_idx(const dsd_state* state, uint32_t rid) {
     if (!state || rid == 0) {
         return -1;
     }
-    for (int i = 0; i < 256; i++) {
+    for (int i = 0; i < P25_AFF_MAX; i++) {
         if (state->p25_aff_rid[i] == rid) {
             return i;
         }
@@ -8022,7 +8022,7 @@ p25_aff_find_free(const dsd_state* state) {
     if (!state) {
         return -1;
     }
-    for (int i = 0; i < 256; i++) {
+    for (int i = 0; i < P25_AFF_MAX; i++) {
         if (state->p25_aff_rid[i] == 0) {
             return i;
         }
@@ -8030,18 +8030,26 @@ p25_aff_find_free(const dsd_state* state) {
     return -1;
 }
 
-void
-p25_aff_register(dsd_state* state, uint32_t rid) {
-    if (!state || rid == 0) {
-        return;
+static void
+p25_aff_clear_entry(dsd_state* state, int idx) {
+    state->p25_aff_rid[idx] = 0;
+    state->p25_aff_last_seen[idx] = 0;
+    DSD_MEMSET(&state->p25_aff_assoc[idx], 0, sizeof(state->p25_aff_assoc[idx]));
+    if (state->p25_aff_count > 0) {
+        state->p25_aff_count--;
     }
+}
+
+/* The entry holding @p rid, refreshed; a new one (the oldest evicted when full) has no owner. */
+static int
+p25_aff_touch(dsd_state* state, uint32_t rid) {
     int idx = p25_aff_find_idx(state, rid);
     if (idx < 0) {
         idx = p25_aff_find_free(state);
         if (idx < 0) {
             time_t oldest = state->p25_aff_last_seen[0];
             int old_idx = 0;
-            for (int i = 1; i < 256; i++) {
+            for (int i = 1; i < P25_AFF_MAX; i++) {
                 if (state->p25_aff_last_seen[i] < oldest) {
                     oldest = state->p25_aff_last_seen[i];
                     old_idx = i;
@@ -8052,8 +8060,18 @@ p25_aff_register(dsd_state* state, uint32_t rid) {
             state->p25_aff_count++;
         }
         state->p25_aff_rid[idx] = rid;
+        DSD_MEMSET(&state->p25_aff_assoc[idx], 0, sizeof(state->p25_aff_assoc[idx]));
     }
     state->p25_aff_last_seen[idx] = dsd_decode_time();
+    return idx;
+}
+
+void
+p25_aff_register(dsd_state* state, uint32_t rid) {
+    if (!state || rid == 0) {
+        return;
+    }
+    (void)p25_aff_touch(state, rid);
 }
 
 void
@@ -8063,10 +8081,109 @@ p25_aff_deregister(dsd_state* state, uint32_t rid) {
     }
     int idx = p25_aff_find_idx(state, rid);
     if (idx >= 0) {
-        state->p25_aff_rid[idx] = 0;
-        state->p25_aff_last_seen[idx] = 0;
-        if (state->p25_aff_count > 0) {
-            state->p25_aff_count--;
+        p25_aff_clear_entry(state, idx);
+    }
+}
+
+static int
+p25_aff_serving_known(uint32_t serving_wacn, uint16_t serving_sys) {
+    return serving_wacn != 0U || serving_sys != 0U;
+}
+
+static int
+p25_aff_home_usable(const p25_home_id* home) {
+    return home != NULL && home->valid != 0U && home->id != 0U;
+}
+
+/* Whether entry @p idx is owned by @p home, learned on the serving system @p serving_wacn / @p serving_sys. */
+static int
+p25_aff_owned_by(const dsd_state* state, int idx, const p25_home_id* home, uint32_t serving_wacn,
+                 uint16_t serving_sys) {
+    const p25_aff_assoc_t* assoc = &state->p25_aff_assoc[idx];
+    return state->p25_aff_rid[idx] != 0U && assoc->home_id != 0U && assoc->home_id == home->id
+           && assoc->home_wacn == home->wacn && assoc->home_sys == home->sys && assoc->serving_wacn == serving_wacn
+           && assoc->serving_sys == serving_sys;
+}
+
+void
+p25_aff_register_assigned(dsd_state* state, uint32_t assigned, const p25_home_id* home, uint32_t serving_wacn,
+                          uint16_t serving_sys) {
+    if (!state || assigned == 0U) {
+        return;
+    }
+    const int owned = p25_aff_home_usable(home) && p25_aff_serving_known(serving_wacn, serving_sys);
+    if (owned) {
+        /* A unit holds one registration on a system: the address it held before is no longer its own. Freed before
+           the new address takes a slot, so a full table reuses that slot rather than evicting another unit. */
+        for (int i = 0; i < P25_AFF_MAX; i++) {
+            if (state->p25_aff_rid[i] != assigned && p25_aff_owned_by(state, i, home, serving_wacn, serving_sys)) {
+                p25_aff_clear_entry(state, i);
+            }
+        }
+    }
+    const int idx = p25_aff_touch(state, assigned);
+    p25_aff_assoc_t* assoc = &state->p25_aff_assoc[idx];
+    if (!owned) {
+        /* Nothing says who holds the address now: no owner, never the previous one. */
+        DSD_MEMSET(assoc, 0, sizeof(*assoc));
+        return;
+    }
+    assoc->home_wacn = home->wacn;
+    assoc->home_sys = home->sys;
+    assoc->home_id = home->id;
+    assoc->serving_wacn = serving_wacn;
+    assoc->serving_sys = serving_sys;
+}
+
+int
+p25_aff_deregister_home(dsd_state* state, const p25_home_id* home, uint32_t serving_wacn, uint16_t serving_sys) {
+    if (!state || !p25_aff_home_usable(home)) {
+        return 0;
+    }
+    /* An address equal to the unit ID is the unit's own at home. With no serving system known no owner was kept, so
+       that address is all the table has to go on. */
+    const int at_home =
+        !p25_aff_serving_known(serving_wacn, serving_sys) || (home->wacn == serving_wacn && home->sys == serving_sys);
+    int removed = 0;
+    for (int i = 0; i < P25_AFF_MAX; i++) {
+        const int unowned_home_address =
+            at_home && state->p25_aff_rid[i] == home->id && state->p25_aff_assoc[i].home_id == 0U;
+        if (unowned_home_address || p25_aff_owned_by(state, i, home, serving_wacn, serving_sys)) {
+            p25_aff_clear_entry(state, i);
+            removed++;
+        }
+    }
+    return removed;
+}
+
+int
+p25_aff_assigned_for_home(const dsd_state* state, const p25_home_id* home, uint32_t serving_wacn, uint16_t serving_sys,
+                          uint32_t* assigned) {
+    if (!state || !p25_aff_home_usable(home)) {
+        return 0;
+    }
+    for (int i = 0; i < P25_AFF_MAX; i++) {
+        if (p25_aff_owned_by(state, i, home, serving_wacn, serving_sys)) {
+            if (assigned) {
+                *assigned = state->p25_aff_rid[i];
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void
+p25_aff_drop_foreign_owners(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    const uint32_t wacn = (uint32_t)state->p2_wacn;
+    const uint16_t sys = (uint16_t)state->p2_sysid;
+    for (int i = 0; i < P25_AFF_MAX; i++) {
+        p25_aff_assoc_t* assoc = &state->p25_aff_assoc[i];
+        if (assoc->home_id != 0U && (assoc->serving_wacn != wacn || assoc->serving_sys != sys)) {
+            DSD_MEMSET(assoc, 0, sizeof(*assoc));
         }
     }
 }
@@ -8077,15 +8194,11 @@ p25_aff_tick(dsd_state* state) {
         return;
     }
     time_t now = dsd_decode_time();
-    for (int i = 0; i < 256; i++) {
+    for (int i = 0; i < P25_AFF_MAX; i++) {
         if (state->p25_aff_rid[i] != 0) {
             time_t last = state->p25_aff_last_seen[i];
             if (last != 0 && (now - last) > P25_AFF_TTL_SEC) {
-                state->p25_aff_rid[i] = 0;
-                state->p25_aff_last_seen[i] = 0;
-                if (state->p25_aff_count > 0) {
-                    state->p25_aff_count--;
-                }
+                p25_aff_clear_entry(state, i);
             }
         }
     }

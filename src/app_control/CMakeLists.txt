@@ -51,6 +51,7 @@ target_sources(
         symbol_profile.c
         tcp_audio_connect.c
         tetra_view.c
+        unit_activity_view.c
         telemetry_hooks_install.c
         telemetry_observers.c
         history_tap.c

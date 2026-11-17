@@ -2,10 +2,14 @@
 #include <dsd-neo/app_control/p25_network.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/utf16.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <string.h>
 
 /* Stable insertion into a small index list keeps equal timestamps deterministic. */
 static void
@@ -128,6 +132,26 @@ dsd_app_p25_patches(const dsd_state* state, dsd_app_p25_patch* out, int capacity
     return n;
 }
 
+/* Keep the whole, well-formed characters of @p s (dsd_utf8_whole_prefix_len()): a list's name can be cut
+ * mid-character (49 bytes), and a byte that starts no character ends it. */
+static void
+keep_whole_characters(char* s) {
+    const size_t n = strlen(s);
+    s[dsd_utf8_whole_prefix_len(s, n, n)] = '\0';
+}
+
+/* A row's names from the held snapshot's lists: the radio's in the current reception's scope, the talkgroup's label. */
+static void
+name_row(const dsd_state* state, dsd_app_p25_affiliation* row) {
+    if (dsd_source_label_lookup(state, row->rid, NULL, 0U, row->name, sizeof row->name) == 1) {
+        keep_whole_characters(row->name);
+    }
+    if (row->tg != 0U
+        && dsd_tg_policy_lookup_group_label(state, row->tg, NULL, 0U, row->tg_name, sizeof row->tg_name)) {
+        keep_whole_characters(row->tg_name);
+    }
+}
+
 static int
 affiliations(const dsd_state* state, dsd_app_p25_affiliation* out, int capacity, int groups) {
     if (!state || !out || capacity <= 0) {
@@ -152,6 +176,7 @@ affiliations(const dsd_state* state, dsd_app_p25_affiliation* out, int capacity,
         out[i].rid = rids[k];
         out[i].tg = groups ? state->p25_ga_tg[k] : 0;
         out[i].last_seen = seen[k];
+        name_row(state, &out[i]);
     }
     return n;
 }

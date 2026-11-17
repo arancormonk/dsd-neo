@@ -1428,7 +1428,8 @@ Window {
             if (mainRoot.sessionDestination.length > 0) {
                 if (mainRoot.failureText.length > 0 && mainRoot.failureText !== mainRoot.dismissedFailure)
                     mainRoot.revealFailure();
-                else
+                // Activity is the session's own: it has no tab to stay on.
+                else if (mainRoot.sessionDestination !== "activity")
                     mainRoot.currentTab = mainRoot.sessionDestination === "history" ? 1 : 2;
                 sessionToolsLayer.leave();
             }
@@ -2558,7 +2559,7 @@ Window {
                 anchors.leftMargin: 14
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: mainRoot.sessionDestination === "history" ? qsTr("History") : qsTr("Settings")
+                text: mainRoot.sessionDestination === "history" ? qsTr("History") : mainRoot.sessionDestination === "activity" ? qsTr("Activity") : qsTr("Settings")
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(22)
                 font.weight: Font.Bold
@@ -2575,6 +2576,16 @@ Window {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             visible: mainRoot.sessionDestination === "history"
+        }
+        // The session's unit activity log; it has no screen outside a session.
+        ActivityScreen {
+            objectName: "sessionActivityScreen"
+            showTitle: false
+            anchors.top: sessionToolsHeader.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            visible: mainRoot.sessionDestination === "activity"
         }
         SettingsScreen {
             objectName: "sessionSettingsScreen"
@@ -2614,6 +2625,7 @@ Window {
             if (mainRoot.sessionScanList && metrics.scanListCount > 1)
                 items.push({text: qsTr("Scan lists"), key: "scanLists", objectName: "sessionMenuScanLists"});
             items.push({text: qsTr("Talkgroups"), key: "talkgroups", objectName: "sessionMenuTalkgroups"});
+            items.push({text: qsTr("Activity"), key: "activity", objectName: "sessionMenuActivity"});
             items.push({text: qsTr("History"), key: "history", objectName: "sessionMenuHistory"});
             items.push({text: qsTr("Settings"), key: "settings", objectName: "sessionMenuSettings"});
             items.push({text: qsTr("Diagnostics"), key: "diagnostics", objectName: "sessionMenuDiagnostics"});
@@ -2634,7 +2646,7 @@ Window {
                 sessionScanLists.open();
             else if (key === "talkgroups")
                 mainRoot.talkgroupsOpen = true;
-            else if (key === "history" || key === "settings")
+            else if (key === "history" || key === "settings" || key === "activity")
                 mainRoot.sessionDestination = key;
             else if (key === "diagnostics")
                 mainRoot.diagnosticsOpen = true;

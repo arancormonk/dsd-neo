@@ -4,11 +4,13 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/managed_file.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/source_alias.h>
@@ -22,6 +24,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -111,6 +114,9 @@ typedef struct {
     double start_mono_s;
     double last_seen_mono_s;
     double last_preempt_mono_s;
+    /* The reception the call was evaluated in (dsd_alias_scope_current() when it was noted): a private call's
+       endpoints are read in it again when the table changes, as evaluation read them. */
+    dsd_alias_scope scope;
 } dsd_tg_policy_active_call;
 
 typedef struct {
@@ -358,6 +364,14 @@ tg_policy_copy_entry_normalized(dsd_tg_policy_entry* dst, const dsd_tg_policy_en
     if (src->kind == DSD_TG_POLICY_ROW_PATTERN) {
         DSD_SNPRINTF(dst->pattern, sizeof(dst->pattern), "%.*s", (int)(sizeof(src->pattern) - 1U), src->pattern);
     }
+    // Only a learned alias row has a scope, and an invalid scope is all zero, so scopes compare by their fields.
+    if (src->kind == DSD_TG_POLICY_ROW_EXACT && src->source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS && src->scope.valid
+        && src->scope.kind > DSD_ALIAS_SCOPE_NONE && src->scope.kind <= DSD_ALIAS_SCOPE_LAST) {
+        dst->scope.kind = src->scope.kind;
+        dst->scope.a = src->scope.a;
+        dst->scope.b = src->scope.b;
+        dst->scope.valid = 1U;
+    }
     tg_policy_normalize_entry(dst);
 }
 
@@ -590,6 +604,57 @@ tg_policy_find_bounds_idx_kind(const dsd_tg_policy_context* ctx, uint32_t id_sta
     return -1;
 }
 
+/* The exact rows for one ID a lookup or a learn weighs: the first talkgroup/user row, the first imported alias row (a
+ * mode-D row typed or loaded without a scope: it names the radio everywhere), the first learned alias row of @p scope
+ * (NULL: of any scope), and the first learned row heard with no scope (which, as every learned row did before scopes,
+ * names the radio everywhere, behind the scope's own row). -1 for none; the scan stops at the user row, which decides
+ * alone. */
+typedef struct {
+    int user;
+    int imported_alias;
+    int learned_alias;
+    int unscoped_alias;
+} tg_policy_exact_rows;
+
+static tg_policy_exact_rows
+tg_policy_find_exact_rows(const dsd_tg_policy_context* ctx, uint32_t id, const dsd_alias_scope* scope) {
+    tg_policy_exact_rows rows = {-1, -1, -1, -1};
+    if (!ctx) {
+        return rows;
+    }
+    for (size_t i = 0; i < ctx->table.count; i++) {
+        const tg_policy_row_key* k = &ctx->table.keys[i];
+        if (k->kind != DSD_TG_POLICY_ROW_EXACT || k->id_start != id || k->id_end != id) {
+            continue;
+        }
+        if (!k->alias) {
+            rows.user = (int)i;
+            break;
+        }
+        const dsd_tg_policy_entry* e = &ctx->table.entries[i];
+        if (e->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS) {
+            if (rows.imported_alias < 0) {
+                rows.imported_alias = (int)i;
+            }
+        } else if (rows.learned_alias < 0 && (!scope || dsd_alias_scope_equal(&e->scope, scope))) {
+            rows.learned_alias = (int)i;
+        } else if (rows.unscoped_alias < 0 && !e->scope.valid) {
+            rows.unscoped_alias = (int)i;
+        }
+    }
+    return rows;
+}
+
+/* The alias row that names the radio: an imported one, else the scope's learned one, else one learned with no scope.
+ * -1 for none. */
+static int
+tg_policy_exact_rows_alias(const tg_policy_exact_rows* rows) {
+    if (rows->imported_alias >= 0) {
+        return rows->imported_alias;
+    }
+    return rows->learned_alias >= 0 ? rows->learned_alias : rows->unscoped_alias;
+}
+
 /* The row an edit by bounds addresses: the first non-alias row, else (@p take_alias) an exact alias row to take over. */
 static int
 tg_policy_find_edit_idx(const dsd_tg_policy_context* ctx, uint32_t id_start, uint32_t id_end, int take_alias) {
@@ -600,17 +665,20 @@ tg_policy_find_edit_idx(const dsd_tg_policy_context* ctx, uint32_t id_start, uin
     return tg_policy_find_bounds_idx_kind(ctx, id_start, id_end, 1);
 }
 
-static int tg_policy_lookup_exact_in_ctx(const dsd_tg_policy_context* ctx, uint32_t id, dsd_tg_policy_lookup* out);
+static int tg_policy_lookup_exact_in_ctx(const dsd_tg_policy_context* ctx, uint32_t id, const dsd_alias_scope* scope,
+                                         dsd_tg_policy_lookup* out);
 
 static int DSD_ATTR_USED
 tg_policy_lookup_exact_only(const dsd_state* state, uint32_t id, dsd_tg_policy_entry* out) {
     dsd_tg_policy_lookup lookup;
+    dsd_alias_scope scope;
     if (!out) {
         return 0;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
     DSD_MEMSET(&lookup, 0, sizeof(lookup));
-    if (!tg_policy_lookup_exact_in_ctx(tg_policy_ctx_get_const(state), id, &lookup)) {
+    (void)dsd_alias_scope_current(state, &scope);
+    if (!tg_policy_lookup_exact_in_ctx(tg_policy_ctx_get_const(state), id, &scope, &lookup)) {
         return 0;
     }
     *out = lookup.entry;
@@ -918,7 +986,7 @@ tg_policy_hash_bytes(uint64_t hash, const void* data, size_t len) {
     const unsigned char* p = (const unsigned char*)data;
     for (size_t i = 0; i < len; i++) {
         hash ^= p[i];
-        hash *= 0x100000001b3ULL;
+        hash *= DSD_FNV1A64_PRIME;
     }
     return hash;
 }
@@ -951,7 +1019,15 @@ dsd_tg_policy_rows_hash_fold(uint64_t* hash, const dsd_tg_policy_entry* entry) {
     h = tg_policy_hash_text(h, row.mode, sizeof row.mode);
     h = tg_policy_hash_text(h, row.name, sizeof row.name);
     h = tg_policy_hash_text(h, row.tags, sizeof row.tags);
-    *hash = tg_policy_hash_bytes(h, flags, sizeof flags);
+    h = tg_policy_hash_bytes(h, flags, sizeof flags);
+    if (row.scope.valid) {
+        // A learned row's scope is read from its file line, so a changed scope cell is a changed row.
+        const unsigned char scope_kind[2] = {0x5CU, row.scope.kind};
+        h = tg_policy_hash_bytes(h, scope_kind, sizeof scope_kind);
+        h = tg_policy_hash_u32(h, row.scope.a);
+        h = tg_policy_hash_u32(h, row.scope.b);
+    }
+    *hash = h;
     return 0;
 }
 
@@ -1045,25 +1121,27 @@ dsd_tg_policy_learn_exact(dsd_state* state, const dsd_tg_policy_entry* entry) {
         return DSD_TG_POLICY_LEARN_FAILED;
     }
     tg_policy_copy_entry_normalized(&normalized, entry);
+    if (!normalized.scope.valid) {
+        // The scope a learn comes from is the reception's (<dsd-neo/core/alias_learn.h>).
+        (void)dsd_alias_scope_current(state, &normalized.scope);
+    }
     // A learned alias only ever appends or replaces an alias row: it moves the generation for snapshots but leaves
     // every row a frontend edits where it was, so edits captured before it stay valid.
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
     if (!ctx) {
         return DSD_TG_POLICY_LEARN_FAILED;
     }
-    if (tg_policy_find_bounds_idx_kind(ctx, normalized.id_start, normalized.id_start, 0) >= 0) {
+    // Another scope's learned row is another radio's: only this scope's row is compared and replaced.
+    const tg_policy_exact_rows rows = tg_policy_find_exact_rows(ctx, normalized.id_start, &normalized.scope);
+    if (rows.user >= 0 || rows.imported_alias >= 0) {
+        // A talkgroup/user row, or an alias the user typed or an older file holds without a scope, wins.
         return DSD_TG_POLICY_LEARN_KEPT;
     }
-    const int alias_idx = tg_policy_find_bounds_idx_kind(ctx, normalized.id_start, normalized.id_start, 1);
-    if (alias_idx < 0) {
+    if (rows.learned_alias < 0) {
         return tg_policy_store_append_kind(ctx, &normalized, 0) == 0 ? DSD_TG_POLICY_LEARN_ADDED
                                                                      : DSD_TG_POLICY_LEARN_FAILED;
     }
-    dsd_tg_policy_entry* stored = &ctx->table.entries[alias_idx];
-    if (stored->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS) {
-        // A persisted alias from the group file: the file's first row wins, as on a reload.
-        return DSD_TG_POLICY_LEARN_KEPT;
-    }
+    dsd_tg_policy_entry* stored = &ctx->table.entries[rows.learned_alias];
     if (tg_policy_learned_fields_equal(stored, &normalized)) {
         return DSD_TG_POLICY_LEARN_UNCHANGED;
     }
@@ -1534,39 +1612,28 @@ dsd_tg_policy_remove_key(dsd_state* state, uint64_t context, unsigned int genera
     return 0;
 }
 
-/* The first exact row for @p id, preferring a talkgroup/user row over a learned alias (@p allow_alias 0 skips aliases). */
+/* The first exact row for @p id, preferring a talkgroup/user row over an alias row (@p allow_alias 0 skips aliases),
+ * and an imported alias row over a learned one of @p scope (NULL: of any scope). */
 static int
 tg_policy_lookup_exact_in_ctx_kind(const dsd_tg_policy_context* ctx, uint32_t id, int allow_alias,
-                                   dsd_tg_policy_lookup* out) {
-    int alias_idx = -1;
+                                   const dsd_alias_scope* scope, dsd_tg_policy_lookup* out) {
     if (!ctx || !out) {
         return 0;
     }
-    for (size_t i = 0; i < ctx->table.count; i++) {
-        const tg_policy_row_key* k = &ctx->table.keys[i];
-        if (k->kind != DSD_TG_POLICY_ROW_EXACT || k->id_start != id || k->id_end != id) {
-            continue;
-        }
-        if (!k->alias) {
-            out->match = DSD_TG_POLICY_MATCH_EXACT;
-            out->entry = ctx->table.entries[i];
-            return 1;
-        }
-        if (alias_idx < 0) {
-            alias_idx = (int)i;
-        }
+    const tg_policy_exact_rows rows = tg_policy_find_exact_rows(ctx, id, scope);
+    const int idx = rows.user >= 0 ? rows.user : (allow_alias ? tg_policy_exact_rows_alias(&rows) : -1);
+    if (idx < 0) {
+        return 0;
     }
-    if (allow_alias && alias_idx >= 0) {
-        out->match = DSD_TG_POLICY_MATCH_EXACT;
-        out->entry = ctx->table.entries[alias_idx];
-        return 1;
-    }
-    return 0;
+    out->match = DSD_TG_POLICY_MATCH_EXACT;
+    out->entry = ctx->table.entries[idx];
+    return 1;
 }
 
 static int
-tg_policy_lookup_exact_in_ctx(const dsd_tg_policy_context* ctx, uint32_t id, dsd_tg_policy_lookup* out) {
-    return tg_policy_lookup_exact_in_ctx_kind(ctx, id, 1, out);
+tg_policy_lookup_exact_in_ctx(const dsd_tg_policy_context* ctx, uint32_t id, const dsd_alias_scope* scope,
+                              dsd_tg_policy_lookup* out) {
+    return tg_policy_lookup_exact_in_ctx_kind(ctx, id, 1, scope, out);
 }
 
 static int
@@ -1653,7 +1720,7 @@ tg_policy_lookup_group_in_ctx(const dsd_tg_policy_context* ctx, uint32_t tg, dsd
     if (!ctx || !ctx->table.entries || ctx->table.count == 0) {
         return 0;
     }
-    if (tg_policy_lookup_exact_in_ctx_kind(ctx, tg, 0, out)) {
+    if (tg_policy_lookup_exact_in_ctx_kind(ctx, tg, 0, NULL, out)) {
         return 1;
     }
     return tg_policy_lookup_span_in_ctx(ctx, tg, out);
@@ -1669,9 +1736,11 @@ tg_policy_refresh_active_priorities(dsd_tg_policy_context* ctx) {
         dsd_tg_policy_lookup lookup = {0};
         int matched = 0;
         if (call->private_call) {
-            // As private evaluation: the target's row, else the source's; an endpoint of 0 is unknown.
-            matched = (call->tg != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->tg, &lookup))
-                      || (call->src != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->src, &lookup));
+            // As private evaluation (tg_policy_lookup_private_endpoint(), tg_policy_choose_private_entry()): the
+            // target's row, else the source's, each read in the reception the call was evaluated in, so a learned
+            // alias of another system never decides; an endpoint of 0 is unknown.
+            matched = (call->tg != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->tg, &call->scope, &lookup))
+                      || (call->src != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->src, &call->scope, &lookup));
         } else {
             matched = tg_policy_lookup_group_in_ctx(ctx, call->tg, &lookup);
         }
@@ -1699,7 +1768,9 @@ dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_looku
         return 0;
     }
 
-    if (tg_policy_lookup_exact_in_ctx(ctx, id, out)) {
+    dsd_alias_scope scope;
+    (void)dsd_alias_scope_current(state, &scope);
+    if (tg_policy_lookup_exact_in_ctx(ctx, id, &scope, out)) {
         return 0;
     }
     (void)tg_policy_lookup_span_in_ctx(ctx, id, out);
@@ -1739,15 +1810,26 @@ dsd_tg_policy_has_entries(const dsd_state* state) {
 int
 dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
                            size_t name_sz) {
+    return dsd_tg_policy_lookup_label_scoped(state, NULL, id, mode, mode_sz, name, name_sz);
+}
+
+int
+dsd_tg_policy_lookup_label_scoped(const dsd_state* state, const dsd_alias_scope* scope, uint32_t id, char* mode,
+                                  size_t mode_sz, char* name, size_t name_sz) {
     dsd_tg_policy_lookup lookup;
+    dsd_alias_scope current;
     if (mode && mode_sz > 0) {
         mode[0] = '\0';
     }
     if (name && name_sz > 0) {
         name[0] = '\0';
     }
+    if (!scope) {
+        (void)dsd_alias_scope_current(state, &current);
+        scope = &current;
+    }
     DSD_MEMSET(&lookup, 0, sizeof(lookup));
-    if (!tg_policy_lookup_exact_in_ctx(tg_policy_ctx_get_const(state), id, &lookup)) {
+    if (!tg_policy_lookup_exact_in_ctx(tg_policy_ctx_get_const(state), id, scope, &lookup)) {
         return 0;
     }
     tg_policy_safe_copy(mode, mode_sz, lookup.entry.mode);
@@ -2566,14 +2648,101 @@ tg_policy_probe_group_file(const char* path, tg_policy_group_file_probe* out) {
     return failed ? -1 : 0;
 }
 
+static const char* const tg_policy_scope_kind_names[] = {"", "p25", "dmr", "nxdn", "tetra", "p25nac"};
+
+int
+dsd_tg_policy_scope_format(const dsd_alias_scope* scope, char* out, size_t out_sz) {
+    if (!out || out_sz == 0U) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (!scope || !scope->valid || scope->kind == DSD_ALIAS_SCOPE_NONE || scope->kind > DSD_ALIAS_SCOPE_LAST) {
+        return 0;
+    }
+    const int n = DSD_SNPRINTF(out, out_sz, "%s%s:%" PRIX32 ":%" PRIX32, DSD_TG_POLICY_SCOPE_PREFIX,
+                               tg_policy_scope_kind_names[scope->kind], scope->a, scope->b);
+    if (n < 0 || (size_t)n >= out_sz) {
+        out[0] = '\0';
+        return 0;
+    }
+    return 1;
+}
+
+/* One hexadecimal field of a scope cell: 1 to 8 hex digits, nothing else. */
 static int
-tg_policy_write_group_file_header(FILE* wf, tg_policy_group_file_probe* probe, const char* clean_meta) {
+tg_policy_scope_parse_hex(const char* text, uint32_t* out) {
+    const size_t len = strlen(text);
+    if (len == 0U || len > 8U) {
+        return 0;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (!isxdigit((unsigned char)text[i])) {
+            return 0;
+        }
+    }
+    return dsd_parse_uint32_strict(text, 16, UINT32_MAX, out) == 0;
+}
+
+int
+dsd_tg_policy_scope_parse(const char* cell, dsd_alias_scope* out) {
+    const size_t prefix_len = sizeof(DSD_TG_POLICY_SCOPE_PREFIX) - 1U;
+    char buf[48];
+    if (!cell || !out || strncmp(cell, DSD_TG_POLICY_SCOPE_PREFIX, prefix_len) != 0) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    const char* body = cell + prefix_len;
+    if (strlen(body) >= sizeof buf) {
+        return -1;
+    }
+    DSD_SNPRINTF(buf, sizeof buf, "%s", body);
+    char* first = strchr(buf, ':');
+    char* second = first ? strchr(first + 1, ':') : NULL;
+    if (!second) {
+        return -1;
+    }
+    *first = '\0';
+    *second = '\0';
+    uint8_t kind = DSD_ALIAS_SCOPE_NONE;
+    for (int k = DSD_ALIAS_SCOPE_P25; k <= DSD_ALIAS_SCOPE_LAST; k++) {
+        if (tg_policy_ascii_casecmp(buf, tg_policy_scope_kind_names[k]) == 0) {
+            kind = (uint8_t)k;
+        }
+    }
+    uint32_t a = 0U;
+    uint32_t b = 0U;
+    if (kind == DSD_ALIAS_SCOPE_NONE || !tg_policy_scope_parse_hex(first + 1, &a)
+        || !tg_policy_scope_parse_hex(second + 1, &b)) {
+        return -1;
+    }
+    out->kind = kind;
+    out->a = a;
+    out->b = b;
+    out->valid = 1U;
+    return 1;
+}
+
+/* Whether a rewrite or an append writes @p entry's scope: a learned exact mode-D row with a valid scope, the only form
+ * the importer reads a scope cell on (a learned DE row, which only older versions wrote, is written plain). */
+static int
+tg_policy_entry_scoped(const dsd_tg_policy_entry* entry) {
+    return entry->kind == DSD_TG_POLICY_ROW_EXACT && entry->source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS
+           && entry->scope.valid && strcmp(entry->mode, "D") == 0;
+}
+
+static int
+tg_policy_write_group_file_header(FILE* wf, tg_policy_group_file_probe* probe, const char* clean_meta, int scoped) {
     if (!wf || !probe) {
         return -1;
     }
     if (probe->missing_or_empty) {
-        DSD_SNPRINTF(probe->header_line, sizeof probe->header_line, "%s",
-                     (clean_meta && clean_meta[0] != '\0') ? "id,mode,name,metadata\n" : "id,mode,name\n");
+        const char* header = "id,mode,name\n";
+        if (scoped) {
+            header = "id,mode,name,metadata,scope\n";
+        } else if (clean_meta && clean_meta[0] != '\0') {
+            header = "id,mode,name,metadata\n";
+        }
+        DSD_SNPRINTF(probe->header_line, sizeof probe->header_line, "%s", header);
         if (fputs(probe->header_line, wf) < 0) {
             return -1;
         }
@@ -2650,24 +2819,41 @@ tg_policy_write_group_file_entry(tg_policy_row_sink* sink, const dsd_tg_policy_e
         return -1;
     }
     char id_text[24];
-    char extra[258];
+    char extra[320];
+    char scope[DSD_TG_POLICY_SCOPE_TEXT_MAX];
     DSD_SNPRINTF(id_text, sizeof(id_text), "%u", entry->id_start);
+    const int scoped = tg_policy_entry_scoped(entry) && dsd_tg_policy_scope_format(&entry->scope, scope, sizeof scope);
     // Alias metadata is not a category: under a header that models a tags column it goes one column further, past an
-    // empty tags field, where the importer does not read it.
-    DSD_SNPRINTF(extra, sizeof(extra), "%s%s", (probe->header.tags_modelled && clean_meta[0] != '\0') ? "," : "",
-                 clean_meta);
+    // empty tags field, where the importer does not read it. A scope cell follows the metadata cell (empty or not),
+    // past every column the header models; the importer finds it by its prefix.
+    DSD_SNPRINTF(extra, sizeof(extra), "%s%s%s%s",
+                 (probe->header.tags_modelled && (clean_meta[0] != '\0' || scoped)) ? "," : "", clean_meta,
+                 scoped ? "," : "", scoped ? scope : "");
     return tg_policy_write_group_row(sink, entry, id_text, probe->has_header && probe->header.policy, extra[0] != '\0',
                                      clean_mode, clean_name, extra);
 }
 
+/* The cells after a rewritten row's modelled columns: its tags under a header with a tags column, then a scoped
+ * learned row's scope cell. */
+static void
+tg_policy_table_row_extra(const dsd_tg_policy_entry* entry, int tags_column, char* out, size_t out_sz) {
+    char clean_tags[sizeof(entry->tags)];
+    char scope[DSD_TG_POLICY_SCOPE_TEXT_MAX];
+    tg_policy_csv_sanitize_copy(clean_tags, sizeof(clean_tags), entry->tags);
+    const int scoped = tg_policy_entry_scoped(entry) && dsd_tg_policy_scope_format(&entry->scope, scope, sizeof scope);
+    DSD_SNPRINTF(out, out_sz, "%s%s%s", tags_column ? clean_tags : "", (tags_column && scoped) ? "," : "",
+                 scoped ? scope : "");
+}
+
 static int
 tg_policy_write_group_table(tg_policy_row_sink* sink, const dsd_tg_policy_entry* entries, size_t count, int use_policy,
-                            int any_tags) {
-    const char* header = "id,mode,name\n";
+                            int any_tags, int any_scoped) {
+    const char* header = any_scoped ? "id,mode,name,scope\n" : "id,mode,name\n";
     if (use_policy) {
-        header = "id,mode,name,priority,preempt,audio,record,stream,tags\n";
+        header = any_scoped ? "id,mode,name,priority,preempt,audio,record,stream,tags,scope\n"
+                            : "id,mode,name,priority,preempt,audio,record,stream,tags\n";
     } else if (any_tags) {
-        header = "id,mode,name,tags\n";
+        header = any_scoped ? "id,mode,name,tags,scope\n" : "id,mode,name,tags\n";
     }
     dsd_tg_policy_group_header_parse(header, &sink->header);
     int failed = fputs(header, sink->wf) < 0;
@@ -2676,7 +2862,7 @@ tg_policy_write_group_table(tg_policy_row_sink* sink, const dsd_tg_policy_entry*
         char id_text[24];
         char clean_mode[sizeof(entry->mode)];
         char clean_name[sizeof(entry->name)];
-        char clean_tags[sizeof(entry->tags)];
+        char extra[sizeof(entry->tags) + DSD_TG_POLICY_SCOPE_TEXT_MAX + 1U];
         if (entry->kind == DSD_TG_POLICY_ROW_PATTERN) {
             DSD_SNPRINTF(id_text, sizeof(id_text), "%s", entry->pattern);
         } else if (entry->kind == DSD_TG_POLICY_ROW_RANGE) {
@@ -2686,10 +2872,10 @@ tg_policy_write_group_table(tg_policy_row_sink* sink, const dsd_tg_policy_entry*
         }
         tg_policy_csv_sanitize_copy(clean_mode, sizeof(clean_mode), entry->mode);
         tg_policy_csv_sanitize_copy(clean_name, sizeof(clean_name), entry->name);
-        tg_policy_csv_sanitize_copy(clean_tags, sizeof(clean_tags), entry->tags);
-        failed =
-            tg_policy_write_group_row(sink, entry, id_text, use_policy, any_tags, clean_mode, clean_name, clean_tags)
-            != 0;
+        tg_policy_table_row_extra(entry, use_policy || any_tags, extra, sizeof extra);
+        failed = tg_policy_write_group_row(sink, entry, id_text, use_policy, any_tags || extra[0] != '\0', clean_mode,
+                                           clean_name, extra)
+                 != 0;
     }
     return failed ? -1 : 0;
 }
@@ -2759,6 +2945,7 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, dsd_state* state) {
     }
     int use_policy = probe.has_header && probe.header.policy;
     int any_tags = 0;
+    int any_scoped = 0;
     size_t count = ctx->table.count;
     for (size_t i = 0; i < count; i++) {
         const dsd_tg_policy_entry* entry = &ctx->table.entries[i];
@@ -2768,6 +2955,7 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, dsd_state* state) {
         if (ctx->table.entries[i].tags[0] != '\0') {
             any_tags = 1;
         }
+        any_scoped |= tg_policy_entry_scoped(entry);
     }
     // Staged before the managed-file lock, which then covers only the check and the replace.
     char tmp[sizeof(opts->group_in_file) + 32];
@@ -2779,7 +2967,7 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, dsd_state* state) {
     if (!sink.wf) {
         return -1;
     }
-    int failed = tg_policy_write_group_table(&sink, ctx->table.entries, count, use_policy, any_tags) != 0;
+    int failed = tg_policy_write_group_table(&sink, ctx->table.entries, count, use_policy, any_tags, any_scoped) != 0;
     if (fclose(sink.wf) != 0) {
         failed = 1;
     }
@@ -2847,17 +3035,25 @@ tg_policy_append_lists_incomplete(const tg_policy_append_lists* lists) {
     return 0;
 }
 
-/* A list held aside that stands for the file takes the appended row too, as its next load of the file would (the file's
- * first row for an ID wins, so a list with a row for the ID keeps it). Otherwise its next rewrite of the file would drop
- * the row just appended. Its baseline already counts the row, so a list that cannot store it (out of memory) no longer
- * holds every row of its file: it is marked incomplete, and refuses to be written back until it is reloaded. */
+/* A list held aside that stands for the file takes the appended row too, as its next load of the file would read it (the
+ * file's first row for an ID wins, so a list with a row for the ID keeps it). Otherwise its next rewrite of the file
+ * would drop the row just appended. A scoped row is read back as a learned row of its scope; a row without a scope is
+ * written as a plain row, which a load reads as an imported row, so it is mirrored as one and ranks as the reload would
+ * rank it. Its baseline already counts the row, so a list that cannot store it (out of memory) no longer holds every
+ * row of its file: it is marked incomplete, and refuses to be written back until it is reloaded. */
 static void
 tg_policy_store_mirror_learned(dsd_tg_policy_context* ctx, const dsd_tg_policy_entry* entry) {
-    if (tg_policy_find_bounds_idx_kind(ctx, entry->id_start, entry->id_start, 0) >= 0
-        || tg_policy_find_bounds_idx_kind(ctx, entry->id_start, entry->id_start, 1) >= 0) {
+    dsd_tg_policy_entry row = *entry;
+    if (!tg_policy_entry_scoped(entry)) {
+        row.source = DSD_TG_POLICY_SOURCE_IMPORTED;
+        DSD_MEMSET(&row.scope, 0, sizeof(row.scope));
+    }
+    const tg_policy_exact_rows rows = tg_policy_find_exact_rows(ctx, row.id_start, &row.scope);
+    if (rows.user >= 0 || rows.imported_alias >= 0
+        || (row.source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS && rows.learned_alias >= 0)) {
         return;
     }
-    if (tg_policy_store_append_kind(ctx, entry, 0) != 0) {
+    if (tg_policy_store_append_kind(ctx, &row, 0) != 0) {
         ctx->incomplete = 1;
     }
 }
@@ -2871,7 +3067,7 @@ tg_policy_append_row(FILE* wf, const tg_policy_append_lists* lists, const char* 
     char clean_name[128];
     tg_policy_csv_sanitize_copy(clean_mode, sizeof(clean_mode), entry->mode);
     tg_policy_csv_sanitize_copy(clean_name, sizeof(clean_name), entry->name);
-    if (tg_policy_write_group_file_header(wf, probe, clean_meta) != 0) {
+    if (tg_policy_write_group_file_header(wf, probe, clean_meta, tg_policy_entry_scoped(entry)) != 0) {
         return -1;
     }
     tg_policy_row_sink sink;
@@ -3167,6 +3363,18 @@ tg_policy_note_active_slot(dsd_tg_policy_context* ctx, int slot, const dsd_tg_po
     tg_policy_active_call_assign_from_route(c, route, decision, now_mono_s);
 }
 
+/* Stamp the slot(s) @p slot (-1: both) with the reception @p state decodes now, the scope the call was evaluated in. */
+static void
+tg_policy_stamp_active_scope(const dsd_state* state, dsd_tg_policy_context* ctx, int slot) {
+    dsd_alias_scope scope;
+    (void)dsd_alias_scope_current(state, &scope);
+    for (int i = 0; i < 2; i++) {
+        if (slot == -1 || slot == i) {
+            ctx->active.calls[i].scope = scope;
+        }
+    }
+}
+
 int
 dsd_tg_policy_note_active_call(dsd_state* state, const dsd_tg_policy_call_route* route,
                                const dsd_tg_policy_decision* decision, double now_mono_s) {
@@ -3183,6 +3391,7 @@ dsd_tg_policy_note_active_call(dsd_state* state, const dsd_tg_policy_call_route*
     } else {
         tg_policy_note_active_slot(ctx, route->slot, route, decision, now_mono_s);
     }
+    tg_policy_stamp_active_scope(state, ctx, route->slot);
     return 0;
 }
 
@@ -3220,6 +3429,7 @@ dsd_tg_policy_describe_followed_call(dsd_state* state, const dsd_tg_policy_call_
     } else {
         tg_policy_describe_slot(ctx, route->slot, route, decision, start_mono_s, now_mono_s);
     }
+    tg_policy_stamp_active_scope(state, ctx, route->slot);
     return 0;
 }
 

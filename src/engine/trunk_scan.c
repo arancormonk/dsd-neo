@@ -133,7 +133,7 @@ typedef struct {
     dsd_trunk_cc_candidates cc_candidates;
     p25_nb_entry_t p25_nb_entries[P25_NB_MAX];
     dsd_enc_lockout_entry enc_lockout_entries[DSD_ENC_LOCKOUT_MAX];
-    time_t p25_aff_last_seen[256];
+    time_t p25_aff_last_seen[P25_AFF_MAX];
     time_t p25_ga_last_seen[512];
     int trunk_recovery_protocol;
     unsigned int dmr_color_code;
@@ -170,7 +170,9 @@ typedef struct {
     char dmr_site_parms[200];
     char dmr_branding[20];
     char dmr_branding_sub[80];
-    uint32_t p25_aff_rid[256];
+    uint32_t p25_aff_rid[P25_AFF_MAX];
+    /* Who each registered address was assigned to, and on which serving system: the target's own. */
+    p25_aff_assoc_t p25_aff_assoc[P25_AFF_MAX];
     uint32_t p25_ga_rid[512];
     uint16_t p25_prot_kid;
     int16_t p25_sys_time_offset;
@@ -2215,6 +2217,7 @@ trunk_scan_save_p25_catalog_snapshot(const dsd_state* state, dsd_trunk_scan_snap
     snapshot->p25_aff_count = state->p25_aff_count;
     DSD_MEMCPY(snapshot->p25_aff_rid, state->p25_aff_rid, sizeof(snapshot->p25_aff_rid));
     DSD_MEMCPY(snapshot->p25_aff_last_seen, state->p25_aff_last_seen, sizeof(snapshot->p25_aff_last_seen));
+    DSD_MEMCPY(snapshot->p25_aff_assoc, state->p25_aff_assoc, sizeof(snapshot->p25_aff_assoc));
     snapshot->p25_ga_count = state->p25_ga_count;
     DSD_MEMCPY(snapshot->p25_ga_rid, state->p25_ga_rid, sizeof(snapshot->p25_ga_rid));
     DSD_MEMCPY(snapshot->p25_ga_tg, state->p25_ga_tg, sizeof(snapshot->p25_ga_tg));
@@ -2229,6 +2232,7 @@ trunk_scan_restore_p25_catalog_snapshot(dsd_state* state, const dsd_trunk_scan_s
     state->p25_aff_count = snapshot->p25_aff_count;
     DSD_MEMCPY(state->p25_aff_rid, snapshot->p25_aff_rid, sizeof(state->p25_aff_rid));
     DSD_MEMCPY(state->p25_aff_last_seen, snapshot->p25_aff_last_seen, sizeof(state->p25_aff_last_seen));
+    DSD_MEMCPY(state->p25_aff_assoc, snapshot->p25_aff_assoc, sizeof(state->p25_aff_assoc));
     state->p25_ga_count = snapshot->p25_ga_count;
     DSD_MEMCPY(state->p25_ga_rid, snapshot->p25_ga_rid, sizeof(state->p25_ga_rid));
     DSD_MEMCPY(state->p25_ga_tg, snapshot->p25_ga_tg, sizeof(state->p25_ga_tg));

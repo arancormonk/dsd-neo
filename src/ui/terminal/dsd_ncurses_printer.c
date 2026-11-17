@@ -36,6 +36,7 @@
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/app_control/tetra_view.h>
+#include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/edacs_session.h>
@@ -85,6 +86,8 @@
 #include "ui_key_status.h"
 #include "ui_row.h"
 #include "ui_snr_readout.h"
+#include "ui_text.h"
+#include "unit_activity_panel.h"
 
 #include <dsd-neo/ui/keymap.h>
 #ifdef USE_RADIO
@@ -2080,6 +2083,67 @@ ui_render_p25_optional_sections(const dsd_opts* opts, dsd_state* state) {
     ui_render_p25_metric_toggles(opts, state);
     ui_render_p25_affiliations_panel(opts, state);
     ui_render_p25_group_affiliations_panel(opts, state);
+}
+
+/* The Unit Activity section's panel (read position, name key, rows held), updated on the UI thread from each frame's
+   snapshot (unit_activity_panel.h). */
+static ui_unit_activity_panel ui_unit_activity_state;
+
+/* One line of the section: the border and @p lead, then @p text cut with the marker to end before the last column, as
+   every cut row does (ui_row.h). */
+static void
+ui_unit_activity_print_line(const char* lead, const char* text, int cols, int unicode) {
+    char shown[UI_UNIT_ACTIVITY_LINE_SIZE];
+    const size_t len = ui_text_sanitize(unicode, text, strlen(text), shown, sizeof shown);
+    const char* marker = NULL;
+    const int budget = cols - 1 - (1 + (int)strlen(lead));
+    const size_t cut = ui_text_fit(unicode, shown, len, budget > 0 ? budget : 0, &marker);
+    ui_print_lborder_green();
+    printw("%s%.*s%s\n", lead, (int)cut, shown, marker ? marker : "");
+}
+
+static void
+ui_unit_activity_print_row(const dsd_app_unit_activity_row* row, const dsd_app_unit_activity_row* newer, int cols,
+                           int unicode) {
+    char line[UI_UNIT_ACTIVITY_LINE_SIZE];
+    ui_unit_activity_summary(row, line, sizeof line);
+    attr_t saved_attrs = 0;
+    short saved_pair = 0;
+    if (row->tone == DSD_UA_TONE_WARNING) {
+        /* A kill or inhibit command, in the red the dashboard already uses. */
+        attr_get(&saved_attrs, &saved_pair, NULL);
+        attron(COLOR_PAIR(2));
+    }
+    ui_unit_activity_print_line(" ", line, cols, unicode);
+    if (row->tone == DSD_UA_TONE_WARNING) {
+        attr_set(saved_attrs, saved_pair, NULL);
+    }
+    ui_unit_activity_detail(row, ui_unit_activity_system_changes(row, newer), line, sizeof line);
+    if (line[0] != '\0') {
+        ui_unit_activity_print_line("  \\-- ", line, cols, unicode);
+    }
+}
+
+/* Unit activity heard on any trunking control channel this session (Display -> Sections -> Unit activity): the newest
+   rows first, as the Qt Activity screen lists them, with the same labels, names and reasons. */
+static void
+ui_render_unit_activity_section(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->frontend_display.show_unit_activity != 1) {
+        return;
+    }
+    ui_unit_activity_panel_update(&ui_unit_activity_state, state);
+    ui_print_header("Unit Activity");
+    const int cols = ui_get_panel_cols();
+    const int unicode = ui_text_unicode_output();
+    for (int i = 0; i < ui_unit_activity_state.count; i++) {
+        ui_unit_activity_print_row(&ui_unit_activity_state.rows[i], i > 0 ? &ui_unit_activity_state.rows[i - 1] : NULL,
+                                   cols, unicode);
+    }
+    if (ui_unit_activity_state.count == 0) {
+        ui_print_lborder_green();
+        printw(" (none)\n");
+    }
+    ui_print_hr();
 }
 
 typedef struct {
@@ -4371,6 +4435,7 @@ dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
     } else {
         ui_render_audio_decode_section(opts, state, level);
         ui_render_p25_optional_sections(opts, state);
+        ui_render_unit_activity_section(opts, state);
     }
 
     ui_render_call_info_and_history(opts, state);

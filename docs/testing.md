@@ -3747,8 +3747,11 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   still flood the session menu and the radio and squelch sheets, so case B cannot pass because the hops stopped reaching
   them. `tst_a11y_closed_sheets.qml` covers the closed KeySheet and SiteSheet; `tst_a11y_talkgroups.qml` the hidden
   Talkgroups screen across two targets' tables, reopening at the reader's place, an edit keeping the version it opened
-  with, and a card's listening switch saying each of the card's lines once. A part known to churn whose fix has not
-  landed goes in the scan churn file's `pendingFix` list (sheet, part, how to find it, the fix): it is held as an
+  with, and a card's listening switch saying each of the card's lines once. `tst_a11y_activity.qml` covers the Activity
+  screen: hidden under a busy log (new rows, merges, a loss and a name learned) it builds no row and raises no show or
+  hide; open, a merge and a late name rename their row in place; each filter pill says whether it is checked. A part
+  known to churn whose fix has not landed goes in the scan churn file's `pendingFix` list (sheet, part, how to find it,
+  the fix): it is held as an
   expected failure, and the fix turns that into an unexpected pass, which fails until the entry is removed. Its cases F
   to H run the event loop between hops and ticks, so the pacer's renames 1 ms after a step and once a period are
   counted. F opens the Monitor's details with the step floor off: each hop renames a changed reading group once (the

@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include "../p25_cc_update.h"
 #include "../p25_search_site.h"
+#include "../p25_unit_activity.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -599,8 +600,33 @@ p25_handle_mbt_unit_to_unit_answer_request(const dsd_opts* opts, dsd_state* stat
     DSD_FPRINTF(stderr, "\n  SVC [%02X] TO [%u] FULL SRC [%05X.%03X.%06X]", svc, target, src_wacn, src_sys, src_id);
 }
 
+/* An outbound MBT reaches the handlers only after its header CRC-16 and its CRC-32 passed (p25p1_mdpu.c): Phase 1, no
+   slot. */
+static p25_ua_origin
+p25_mbt_ua_origin(const dsd_opts* opts, dsd_state* state) {
+    const p25_ua_origin o = {opts, state, 0U, 0U, 1U};
+    return o;
+}
+
+/* The unit activity row of an extended Status Update, Status Query, Message Update or Call Alert (TIA-102.AABC-D
+   Figs 6.2.18-2, 6.2.17-2, 6.2.10-2, 6.2.4-2: Target Address in the header, Source SUID in block 0 with the Status or
+   Message at its octets 5-6, Source Address across blocks 0-1, Target SUID in block 1). */
+static void
+p25_mbt_ua_command_metadata(const dsd_opts* opts, dsd_state* state, uint8_t opcode, const p25_ua_unit* source,
+                            const p25_ua_unit* target, uint16_t value) {
+    const p25_ua_origin origin = p25_mbt_ua_origin(opts, state);
+    switch (opcode) {
+        case 0x18: p25_ua_status_update(&origin, value, target, source); break;
+        case 0x1A: p25_ua_status_query(&origin, target, source); break;
+        case 0x1C: p25_ua_message_update(&origin, value, target, source); break;
+        case 0x1F: p25_ua_call_alert(&origin, target, source); break;
+        default: break;
+    }
+}
+
 static void DSD_ATTR_USED
-p25_handle_mbt_extended_command_metadata(const uint8_t* mpdu_byte, uint8_t opcode) {
+p25_handle_mbt_extended_command_metadata(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
+                                         uint8_t opcode) {
     const char* label = "Command";
     uint32_t src_local = 0;
     uint32_t src_wacn = 0;
@@ -629,10 +655,14 @@ p25_handle_mbt_extended_command_metadata(const uint8_t* mpdu_byte, uint8_t opcod
     p25_mbt_print_fq_radio("FM", src_local, src_wacn, src_sys, src_id);
     p25_mbt_print_fq_radio("TO", tgt_local, tgt_wacn, tgt_sys, tgt_id);
     if (opcode == 0x18) {
-        DSD_FPRINTF(stderr, " UNIT STATUS [%02X] USER STATUS [%02X]", mpdu_byte[17], mpdu_byte[18]);
+        /* User Status first, then Unit Status (TIA-102.AABC-D §2.3.29). */
+        DSD_FPRINTF(stderr, " USER STATUS [%02X] UNIT STATUS [%02X]", mpdu_byte[17], mpdu_byte[18]);
     } else if (opcode == 0x1C) {
         DSD_FPRINTF(stderr, " SHORT DATA [%04X]", p25_mbt_u16(mpdu_byte, 17U));
     }
+    const p25_ua_unit source = {src_id, {src_wacn, src_sys, src_id, 1U}, src_local, 0U};
+    const p25_ua_unit target = {tgt_id, {tgt_wacn, tgt_sys, tgt_id, 1U}, tgt_local, 0U};
+    p25_mbt_ua_command_metadata(opts, state, opcode, &source, &target, (uint16_t)p25_mbt_u16(mpdu_byte, 17U));
 }
 
 static void DSD_ATTR_USED
@@ -856,7 +886,7 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_group_affiliation_response(dsd_state* state, const uint8_t* mpdu_byte) {
+p25_handle_mbt_group_affiliation_response(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     uint32_t ta = ((uint32_t)mpdu_byte[3] << 16) | ((uint32_t)mpdu_byte[4] << 8) | (uint32_t)mpdu_byte[5];
     int mfid = mpdu_byte[2];
     int wacn = (mpdu_byte[8] << 12) | (mpdu_byte[9] << 4) | ((mpdu_byte[12] & 0xF0) >> 4);
@@ -876,10 +906,12 @@ p25_handle_mbt_group_affiliation_response(dsd_state* state, const uint8_t* mpdu_
         p25_aff_register(state, ta);
         p25_ga_add(state, ta, (uint16_t)ga);
     }
+    const p25_ua_origin origin = p25_mbt_ua_origin(opts, state);
+    p25_ua_group_affiliation_response(&origin, gav, ta, (uint16_t)ga);
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_unit_registration_response(dsd_state* state, const uint8_t* mpdu_byte) {
+p25_handle_mbt_unit_registration_response(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     uint32_t src = ((uint32_t)mpdu_byte[3] << 16) | ((uint32_t)mpdu_byte[4] << 8) | (uint32_t)mpdu_byte[5];
     int mfid = mpdu_byte[2];
     int wacn = (mpdu_byte[8] << 12) | (mpdu_byte[9] << 4) | ((mpdu_byte[12] & 0xF0) >> 4);
@@ -894,9 +926,11 @@ p25_handle_mbt_unit_registration_response(dsd_state* state, const uint8_t* mpdu_
     if (res != 0) {
         DSD_FPRINTF(stderr, " RES [%02X]", res);
     }
+    /* The header's address is the one assigned to the SUID in the data block (TIA-102.AABC-D §6.2.21.2). */
+    const p25_home_id home = {(uint32_t)wacn, (uint16_t)sysid, sid, 1U};
     if (rv == 0) {
         DSD_FPRINTF(stderr, " REG_ACCEPT");
-        p25_aff_register(state, src);
+        p25_aff_register_assigned(state, src, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid);
     } else if (rv == 1) {
         DSD_FPRINTF(stderr, " REG_FAIL");
     } else if (rv == 2) {
@@ -904,6 +938,8 @@ p25_handle_mbt_unit_registration_response(dsd_state* state, const uint8_t* mpdu_
     } else {
         DSD_FPRINTF(stderr, " REG_REFUSED");
     }
+    const p25_ua_origin origin = p25_mbt_ua_origin(opts, state);
+    p25_ua_registration_response(&origin, rv, &home, src);
 }
 
 static void DSD_ATTR_USED
@@ -1190,7 +1226,8 @@ p25_handle_mbt_data_service_opcode(dsd_opts* opts, dsd_state* state, const uint8
 }
 
 static int
-p25_handle_mbt_command_metadata_opcode(const uint8_t* mpdu_byte, size_t mpdu_len, const p25p1_mbt_fields* fields) {
+p25_handle_mbt_command_metadata_opcode(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
+                                       size_t mpdu_len, const p25p1_mbt_fields* fields) {
     switch (fields->opcode) {
         case 0x18:
         case 0x1A:
@@ -1199,22 +1236,22 @@ p25_handle_mbt_command_metadata_opcode(const uint8_t* mpdu_byte, size_t mpdu_len
             if (!p25_mbt_require_len(fields, mpdu_len, 32U, "AMBTC command/status metadata")) {
                 return 1;
             }
-            p25_handle_mbt_extended_command_metadata(mpdu_byte, fields->opcode);
+            p25_handle_mbt_extended_command_metadata(opts, state, mpdu_byte, fields->opcode);
             return 1;
         default: return 0;
     }
 }
 
 static int
-p25_handle_mbt_affiliation_roaming_opcode(dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
-                                          const p25p1_mbt_fields* fields) {
+p25_handle_mbt_affiliation_roaming_opcode(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
+                                          size_t mpdu_len, const p25p1_mbt_fields* fields) {
     switch (fields->opcode) {
         case 0x28:
             if (fields->fmt == 0x17) {
                 if (!p25_mbt_require_len(fields, mpdu_len, 21U, "Group Affiliation Response")) {
                     return 1;
                 }
-                p25_handle_mbt_group_affiliation_response(state, mpdu_byte);
+                p25_handle_mbt_group_affiliation_response(opts, state, mpdu_byte);
             } else {
                 DSD_FPRINTF(stderr, " - group affiliation response format %02X not handled", fields->fmt);
             }
@@ -1230,7 +1267,7 @@ p25_handle_mbt_affiliation_roaming_opcode(dsd_state* state, const uint8_t* mpdu_
                 if (!p25_mbt_require_len(fields, mpdu_len, 18U, "Unit Registration Response")) {
                     return 1;
                 }
-                p25_handle_mbt_unit_registration_response(state, mpdu_byte);
+                p25_handle_mbt_unit_registration_response(opts, state, mpdu_byte);
             } else {
                 DSD_FPRINTF(stderr, " - unit registration response format %02X not handled", fields->fmt);
             }
@@ -1262,10 +1299,10 @@ p25_handle_mbt_standard_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* 
     if (p25_handle_mbt_data_service_opcode(opts, state, mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
-    if (p25_handle_mbt_command_metadata_opcode(mpdu_byte, mpdu_len, fields)) {
+    if (p25_handle_mbt_command_metadata_opcode(opts, state, mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
-    return p25_handle_mbt_affiliation_roaming_opcode(state, mpdu_byte, mpdu_len, fields);
+    return p25_handle_mbt_affiliation_roaming_opcode(opts, state, mpdu_byte, mpdu_len, fields);
 }
 
 int

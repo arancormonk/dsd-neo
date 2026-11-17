@@ -2365,6 +2365,33 @@ suite runs under this compiler.
   `dsd_utf16_to_utf8()`, never JNI's modified UTF-8, which writes a supplementary character as two 3-byte surrogates
   and so no longer matches a UTF-8 file's text (issue #644, a `--trunk-scan-hold` id); an unpaired half becomes U+FFFD,
   and an embedded U+0000 refuses the conversion rather than cutting the text short. Tests: `CORE_UTF16`.
+- DMR standard talker alias (`dmr_talker_alias_lc_header()` / `_blocks()` / `_decode()` in `src/core/util/dsd_alias.c`):
+  Data Format 0 is ISO 7-bit, 1 ISO 8-bit (Latin-1), 2 UTF-8 and 3 UTF-16BE (TS 102 361-2 Table 7.25). The header's Data
+  Length counts code units of that format (7-bit characters, octets, UTF-16 units; Table 7.26), never characters, and
+  does not cut the text, since radios send lengths that disagree with it. Malformed UTF-8 (one U+FFFD per maximal
+  ill-formed subpart) and unpaired surrogates become U+FFFD; a character cut where the received blocks stop, while the
+  length says more units follow, is left out until the block that completes it. Every non-control character is stored
+  as UTF-8, whole sequences only (`generic_talker_alias`, the event row). Learning
+  (`dsd_alias_learn_radio()`, metadata `DMR TA`): `dsd_state::dmr_alias_assembly[slot]` (`dmr_talker_alias_assembly`)
+  records which of the header and blocks 1-3 arrived, each with a checked embedded LC checksum, while the slot's call
+  was the ACTIVE one with that epoch and source on that tuning generation. A header of another format, length, text or
+  binding restarts it; a block under another binding, or one that differs from the block held, ends it until the next
+  header; a failed checksum (`dmr_talker_alias_lc_invalidate()`) clears it. The pieces live in `dmr_pdu_sf`, which
+  other decoders clear or reuse (`dmr_reset_blocks()` after a data error on either slot, the data assembler, NXDN and
+  P25 on slot 0), so the assembly keeps each piece's bits as stored and a learn whose pieces no longer hold them ends
+  it. A block is shown and written into the history row (`generic_talker_alias`, the event row's alias) only when
+  the header and every block up to it arrived in this assembly and still hold what arrived; otherwise the decode
+  line says `(incomplete)`, nothing new is shown and the last whole alias stays (tests `DMR_ALIAS_LEARN`
+  `test_buffer_reset_between_pieces` / `test_display_after_buffer_reset`). The alias is learned once per assembly, as
+  the call source's alias of the reception's scope, only when the header and every block up to the one decoded
+  arrived and the text visibly ended inside them: a padding unit (all zeros or all ones, never a space) follows its
+  last character, all three blocks are there, or the text exactly fills what arrived and the header's Data Length is
+  exactly that many units (a six-character callsign sent in the header alone). The Data Length alone does not say
+  where the text ends (radios understate it, and a name learned short would be kept by the group file). So an alias
+  padded with spaces to the edge of what arrived, or one that fills it while its Data Length says otherwise (an
+  understated length, the KE8NAX sample's 2 for six characters), is shown but never learned (a decided limit). A block
+  that completes the set out of order waits for the next cycle's decode; an empty alias and one with a U+FFFD are never
+  learned. Tests: `DMR_TALKER_ALIAS_UTF8`, `DMR_TALKER_ALIAS_UTF16`, `DMR_TALKER_ALIAS_HEADER_LEN`, `DMR_ALIAS_LEARN`.
 - Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the
   MFID 0x90 alias (Phase 1 LCW 0x15/0x17, Phase 2 MAC 0x91/0x95) assembles in `dsd_state::p25_apx_alias_rx[slot]`
   (`p25_apx_alias_rx_state_t`), which owns its header copy, block bitmap and record store; it never touches the
@@ -2401,6 +2428,21 @@ suite runs under this compiler.
   `P25_MOTOROLA_ALIAS` (`test_ended_hold_names_the_group`, `test_held_call_keeps_its_names`).
   Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
   `DMR_TALKER_ALIAS_HEADER_LEN` (store bounds and isolation).
+- Invariant (Kenwood NXDN talker alias, `src/protocol/nxdn/nxdn_alias_decode.c`,
+  `<dsd-neo/protocol/nxdn/nxdn_alias_decode.h>`): PROP_FORM 0x3F with MFID 0x68 and 0x8204 carries fragment n of a
+  count in octet 4 and four octets of text. Only a count of four is assembled (SDRTrunk and DSD-FME agree on four
+  fragments and on 14 text octets: the last two of fragment 4 are not text); another count is printed raw and ends the
+  assembly in progress. The assembly (`dsd_state::nxdn_alias_prop`, `nxdn_alias_assembly`) stores fragments by number
+  and is bound to the slot, the call epoch (canonical slot 0's current or retained ended call), that call's source and
+  the tuning generation of its first stored fragment; a fragment under another binding, or one that differs from the
+  fragment already held under its number, restarts it, and a repeat keeps it. The alias is published (display and the
+  open call's history row) only by the fragment that completes the assembly (`nxdn_alias_complete()`), so a partial,
+  spliced or conflicting assembly never shows, and the last complete alias stays shown until another completes. The
+  octets are shown as today (printable ASCII, others as spaces; the character set beyond ASCII is not confirmed by a
+  second source). The completed alias is learned (`dsd_alias_learn_radio()`, metadata `Kenwood`, the reception's scope)
+  as the bound call's source's only while that call is still the ACTIVE one with the same epoch, source and tuning
+  generation, so an alias completed in another call's hangtime (bound to the ended call) names nobody. ARIB and DCR
+  aliases are unchanged (shown, not learned). Tests: `NXDN_ALIAS_DECODE` (`test_prop_dispatch`), `NXDN_ALIAS_LEARN`.
 - API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan
   target's `p25_bandplan_csv`, the terminal/Qt imports) lives in `dsd_state` as `p25_bandplan_rows[]` beside the
   IDEN tables it seeds. `src/core/file/p25_bandplan_csv.c` parses and writes the CSV
@@ -2411,14 +2453,133 @@ suite runs under this compiler.
   direction the export uses. Every core CSV importer shares its token helpers through the module-private
   `src/core/file/csv_parse_internal.h`; the channel map's key column accepts decimal, `0x` hex and `<iden>-<chan>`
   spellings there.
-- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 (taken
-  from the io range): `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and the reception
-  it runs for, the talkers both slots remember, and the DMR superframe mixer's one-channel limiter (issue #518);
+- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 and 14
+  (taken from the io range): 13 is `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and
+  the reception it runs for, the talkers both slots remember, and the DMR superframe mixer's one-channel limiter (issue
+  #518), and 14 `DSD_STATE_EXT_CORE_UNIT_ACTIVITY`, the session's unit activity ring (below);
   runtime 6; DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is
   `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
   its tune (issue #644). `CORE_STATE_EXT` pins these five.
+- API note: the unit activity ring (`<dsd-neo/core/unit_activity.h>`, `src/core/util/unit_activity.c`, state
+  extension 14) is the session's log of trunking unit events: registrations, deregistrations, talkgroup joins, denies,
+  queued and waiting responses, radio commands, status and message reports. Protocol producers push one plain record
+  (`dsd_unit_activity`, at most 192 B, static-asserted) per decoded message that passed its CRC/FEC gate (never content
+  `-F` let through); the ring stores numbers only, and the app-control view resolves labels, reason text, scope text and
+  names.
+  - Push (decoder thread; the first push creates the ring and draws its instance): normalises the record (an invalid
+    identity, home, scope or value is zeroed; a valid identity, home or scope needs an in-enum subtype or kind, as
+    protocol, kind, role and result do, or the push is refused), takes the reception scope from `rx_id` when the
+    producer gave none (`dsd_ua_scope`: the learned-alias scope's kind, a and b from the one mapping both share,
+    `dsd_alias_scope_from_rxid()`, plus the site in `c` with `DSD_UA_SCOPE_SITE_KNOWN` and the NXDN category), and
+    stamps `seq`, `rev`, `first_ms`/`last_ms` (decode mono ms) and `wall_s` (the floored decode wall reading, the
+    history rows' convention). `name_frozen` is the latest pushed name:
+    the producer resolves it, a merge that pushes a non-empty one replaces it, and nothing else rewrites it.
+  - Dedup: a push merges into one of the 16 most recently revised rows when every field but the stamps, `repeat`,
+    `slot` and the name is equal (protocol, kind, role, result, stage, reason, the four identities with their homes,
+    group, value, value2, scope, `freq_hz`), the decode clock has not gone back past the row's
+    `last_ms`, and less than 2 s passed since its `first_ms` (an anchored window). A merge bumps `repeat` (saturating),
+    `last_ms` and `rev`, and keeps every key field the row holds. One exception to the key: a DEREGISTRATION push with
+    no assigned identity matches whatever assigned identity the held row has, because that identity is not in the
+    message (the P25 producer reads it from the registration the first acknowledgement removes, so a repeat finds
+    none) and the repeat merges into the row that keeps it.
+  - Delivery: every insert or merge stamps the next ring revision; `dsd_unit_activity_read()` returns rows after a
+    cursor in revision order (never seq order), so a capped read never skips a merged row. A full ring evicts its least
+    recently revised row, so every row held is newer than every row evicted: a reader whose cursor is below the highest
+    evicted revision gets `lost` once, and another instance gets `reset`.
+  - Snapshots: `ui_snapshot_copy_render_state()` copies the ring at both hops (published, consumer) with
+    `dsd_unit_activity_copy_snapshot()` into each snapshot's own ring, allocated at its first copy and reused: an
+    unchanged revision returns at once, the same instance copies only the rows revised since (plus 4 KiB of links), an
+    instance change copies every row. A failed allocation keeps what the copy held and marks it not whole, so a
+    reader's cursor stays and the hop retries (the consumer's at its next read).
+  - Budget: 1024 rows of 192 B plus 4 KiB of links, about 196 KiB per ring; three rings (live, published, consumer),
+    about 588 KiB. The ring is not part of a trunk-scan target's saved state: one log spans the session, so it adds
+    nothing per target. Tests: `CORE_UNIT_ACTIVITY`, `APP_CONTROL_SNAPSHOT_UNIT_ACTIVITY`, `ENGINE_TRUNK_SCAN`
+    (`test_unit_activity_ring_spans_trunk_scan_switch`: a real A -> B -> A switch keeps the instance, every row, its
+    system and its name).
+  - Coverage and limits: P25 Phase 1 and 2, DMR Tier III (standard FID 0x00 CSBKs) with Motorola ARS on DMR data,
+    NXDN Type C and TETRA. EDACS adds no row (no public spec; its unit-event opcodes come from one code lineage), nor
+    do NXDN Type D and P25 multi-fragment messages (TDMA control channel support, issue #874). The log holds what a
+    downlink listener hears: a radio's requests are uplink and never heard, so only the system's answers and commands
+    make rows; while the one tuner follows a voice channel the control channel is not heard, and only what the voice
+    channel itself carries arrives; a DMR logout is not told apart from a login (C_ACKD 0x62 answers both) and a
+    TETRA detach (U-ITSI DETACH) is uplink; and no row says a radio acted on a command (a P25 acknowledgement is only
+    an acknowledgement, NXDN REM_CON_RESP comes before execution, DMR and TETRA send no outcome), which the view's
+    labels keep to (below, under App control).
+  - Scope limits (decided, not bugs): a P25 row heard before the carrier's network status (the first second of a
+    session, or right after a trunk-scan hop, whose `trunk_scan_leave_carrier()` resets `rx_id`) takes the NAC scope,
+    as a learned alias heard then does. It is not named from the WACN/SYS lists afterwards, shows "NAC n" as its
+    system, and the same message heard after the network status starts a second row (scope is keyed), with a system
+    change line between them in the terminal. On Capacity Plus a trunk tune drops the colour code
+    (`dsd_rxid_trunk_tune()`) until the next burst gives it back, and the Capacity Plus scope needs it: the name key
+    changes twice per rest-channel move or call follow, so each frontend reads its rows again (up to 1024, on the UI
+    thread), and a row pushed in between (an ARS report) has no scope and shows only its frozen name. The colour code
+    of the channel reached is not known until it is heard, so it is not carried over.
+  - Stages and reasons: `stage` is a `dsd_ua_stage` (a TETRA D-DISABLE / D-ENABLE intent or its authenticated confirm:
+    both are commands). `reason_set` names one of the reason tables in `<dsd-neo/core/unit_activity_reason.h>`
+    (`src/core/util/unit_activity_reason.c`, data only): P25 deny and queued (the words the P25 Deny / Queued prints
+    always used; `p25p2_vpdu.c` and `p25p1_tsbk.c` print through it, and their own table is gone), DMR Tier III C_ACKD
+    (TS 102 361-4 Tables 7.42-7.45) and Tier II NACK_Rsp (TS 102 361-2 Table 7.13, kept apart: 0x21 differs), NXDN Cause
+    (MM) and Cause (SS) (TS 1-A Tables 6.5-27 / 6.5-29) and the TETRA location update reject cause (EN 300 392-2 Table
+    16.81). `dsd_ua_reason_text()` returns NULL for a value its table does not define (P25 reads its ranges, "Reserved"
+    / "User/System Defined", as its prints did), so a print shows the raw value then. One table serves the log and the
+    prints. The same header names the TETRA location update accept types (`dsd_ua_tetra_accept_type_text()`, Table
+    16.68; NULL above 7), the value of a TETRA location registration row. Test: `CORE_UNIT_ACTIVITY_REASON` (every 8-bit
+    P25 code against the prints' former table, kept in the test).
+  - Protocol producers (`src/protocol/<name>/<name>_unit_activity.c`): one row per checked message, `freq_hz` the
+    tuned frequency. Every producer names the row through the one core rule, `dsd_unit_activity_freeze_name()`: the
+    assigned identity when it is a RADIO, else the subject RADIO only while `dsd_unit_activity_identity_at_home()` (no
+    home, or the home is the current reception's scope; the scope kinds are static-asserted equal to the alias
+    scope's) and not `subject_nonlocal`, looked up in the current scope, else a GROUP subject's talkgroup label;
+    infrastructure, TEI pieces and UNKNOWN identities are never named. Test: `CORE_UNIT_ACTIVITY`
+    (`test_freeze_name_nonlocal_and_group`), `DMR_UNIT_ACTIVITY` (`test_naming`), `NXDN_UNIT_ACTIVITY`
+    (`test_naming`), `TETRA_UNIT_ACTIVITY` (`test_naming`, `test_ussi_never_named_locally`).
+  - Nonlocal subjects: `subject_nonlocal` marks a subject number that is known not to be a local radio's although no
+    home system says whose it is: a TETRA USSI (a migrating MS's home-network SSI), a P25 LC 0x5B Message Update
+    source (its Source ID waits for the Source ID Extension that qualifies it; the row shows the ID only and is not
+    corrected when the extension arrives), and a P25 abbreviated registration response's unit of another System ID
+    heard before the site's WACN, and an NXDN inter-system remote control subject its Location ID does not qualify.
+    Neither the push nor the view names it from the local lists, a radio's name or a group's label alike (an NXDN
+    inter-system group command is never qualified by a Location ID); its assigned identity still names it. It is keyed
+    with the subject, and push clears it on a row with no valid subject.
+    - DMR (`dmr_unit_activity.c`; standard FID 0x00 CSBKs that passed their own CRC, never one `-F` accepted as RAS):
+      C_ACKD 0x62 from REGI is REGISTRATION / ACK / ACKNOWLEDGED with no reason (a deregistration is answered alike, TS
+      102 361-4 clause 6.4.6), 0x2A / 0x2B from REGI REGISTRATION refused / denied, 0x65 from REGI GROUP_AFFILIATION
+      with the Response_Info acceptance mask as the value (accepted when non-zero, refused when zero; no talkgroup
+      invented), any other NACK DENY, QACK QUEUED, WACK WAITING, each with its Tier III reason; the other
+      acknowledgements add no row. G/I (Response_Info bit 16, Table 7.41) makes the target a talkgroup; the additional
+      information is the actor when it is a Table A.8 gateway, else the recipient (the request's destination, of
+      unknown kind). C_AHOY: stun / revive / kill / radio check / subscription list request (REGISTRATION COMMAND) with
+      the gateway as the INFRASTRUCTURE actor, authentication with no actor (the challenge is no identity and not
+      keyed). Motorola ARS (an exact ARS message on a checked DMR data PDU, `dmr_ars_note_activity()`): device / user
+      registration and deregistration as REPORT rows of the sending radio. Test: `DMR_UNIT_ACTIVITY`.
+    - NXDN (`nxdn_unit_activity.c`, `nxdn_ua_dispatch()`; Type-C only: a CAC, or a composite control channel once
+      Type-C decoded, never Type-D or a traffic channel; a message shorter than its mandatory part adds no row):
+      REG_RESP 0x20, REG_C_RESP 0x22 ("Logout response"; no second source confirms which cause a successful clear
+      carries, so a success is result UNKNOWN, the cause kept as the reason) and GRP_REG_RESP
+      0x24 with Cause (MM) as the reason (location accepted with the group failed or refused is a registration
+      accepted, a group join failed / refused); the home Location ID without site code is the subject's home, the
+      visitor unit (H/V set and present) `assigned` and the visitor group `value2`; a visitor's GroupID is its home
+      system's group (TS 1-C §15.2), so it is `group_nonlocal` and the view never labels it from this system's list. REM_CON_REQ 0x34: stun / revival /
+      kill / remote monitor (unit only) COMMAND rows, G/U picking unit or group, the source the actor, the Control
+      Parameter in `value2`. REM_CON_RESP 0x35: RESPONSE rows with the source (the controlled unit, TS 1-C Fig
+      15.21-1) as the subject, the destination (the requester) as the recipient and Cause (SS) as the reason (the
+      controller's send success, the target's receive success and the no-response timeout differ only there); no row
+      for a remote monitor answer. Between systems (CC Option I/I, Table 6.5-7) both read the Location ID Option and
+      Location ID after the mandatory part (TS 1-A §6.4.1.17 / §6.4.1.18): the unit it relates to (source or
+      destination, Table 6.5-12) gets it as its home, so another system's unit is neither named locally nor merged
+      with a unit of the same number elsewhere; an inter-system message whose unit cannot be qualified (no Location
+      ID, a reserved option, a group) marks the subject `subject_nonlocal`. Unit IDs FFF0-FFFF are infrastructure.
+      Test: `NXDN_UNIT_ACTIVITY` (`test_rem_con_inter_system`).
+    - TETRA (`tetra_unit_activity.c`; clear or decrypted MM only): LU ACCEPT / REJECT for the MAC-addressed MS (an SMI
+      is UNKNOWN; an event label, no address or an encrypted short identity adds no row, since rows of different MSs
+      would merge; a USSI, a migrating MS's home-network SSI, is a `subject_nonlocal` subject; the address's
+      MCC/MNC is the cell's, never a home), the accept type as the value and the SSI element as `assigned`, the reject
+      cause as the reason and the update type in `value2`; D-DISABLE temporary / permanent and D-ENABLE as STUN / KILL /
+      REVIVE commands at the INTENT or AUTHENTICATED stage, the subscription SSI with its ITSI network as the home, an
+      equipment-only command a TEI_PARTIAL subject (the TEI's low 32 bits, the rest in `value2`). Test:
+      `TETRA_UNIT_ACTIVITY`.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
@@ -2522,15 +2683,46 @@ suite runs under this compiler.
   capture or a row at that index whose kind or key changed, so a duplicate, a zero-start range or a pattern row is
   the one edited; a token with index -1 keeps the old bounds-only meaning (first talkgroup row with those bounds).
   Tests: `CORE_TALKGROUP_POLICY`, `CORE_TG_POLICY_ALLOC_FAIL`, `APP_COMMAND_QUEUE`, `UI_QT_TALKGROUP_LIST_MODEL`.
-- Invariant (learned alias rows, `<dsd-neo/core/talkgroup_policy.h>`): every over-the-air alias publisher (Motorola,
-  Harris and Tait in `dsd_alias.c`, the P25 Phase 1 LSD soft ID in `p25p1_ldu1.c`/`p25p1_ldu2.c`) learns its row
-  through `dsd_tg_policy_learn_exact()`, always in mode `D` (an encrypted radio is locked out by the encryption ledger,
-  never by its alias row): a talkgroup/user row for the ID wins, a learned row is replaced only when its normalised
-  name changed, and a repeat changes nothing, so the policy generation (and every frontend's snapshot copy keyed on it)
-  stays put while a radio keeps sending the same alias. `DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY` follows the same
-  compare. Only a first-learned row is appended to the group file, which is append-only and whose first row for an ID
-  is the one a reload keeps: a renamed radio's new alias holds for the session, and after a restart the file's earlier
-  name loads as an imported row and wins (documented limit). Tests: `CORE_TALKGROUP_POLICY`, `P25_MOTOROLA_ALIAS`.
+- Invariant (learned alias rows, `<dsd-neo/core/talkgroup_policy.h>`, `<dsd-neo/core/alias_learn.h>`): every
+  over-the-air alias publisher learns its row in mode `D` (an encrypted radio is locked out by the encryption ledger,
+  never by its alias row): Motorola, Harris, Tait and the DMR standard talker alias in `dsd_alias.c` and the NXDN
+  Kenwood alias in `nxdn_alias_decode.c` through `dsd_alias_learn_radio()`, the P25
+  Phase 1 LSD soft ID in `p25p1_ldu1.c`/`p25p1_ldu2.c` through `dsd_tg_policy_learn_exact()`. A talkgroup/user row
+  for the ID wins, a learned row is replaced only when its normalised name changed, and a repeat changes nothing, so
+  the policy generation (and every frontend's snapshot copy keyed on it) stays put while a radio keeps sending the same
+  alias. `DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY` follows the same compare. Only a first-learned row is appended to
+  the group file, which is append-only and whose first row for an ID and scope is the one a reload keeps: a renamed
+  radio's new alias holds for the session. Tests: `CORE_TALKGROUP_POLICY`, `P25_MOTOROLA_ALIAS`, `CORE_SCOPED_ALIAS`.
+- Invariant (scoped learned aliases, issue B28, `<dsd-neo/core/alias_learn.h>`): a learned row
+  (`DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS`) carries `dsd_tg_policy_entry::scope`, the system of the reception it was heard
+  on: `dsd_alias_scope_current()` reads `dsd_state::rx_id`, never the alias message's own metadata, and
+  `dsd_tg_policy_learn_exact()` takes it for an entry without one. Scope kinds and their a/b: `P25` WACN/SYSID;
+  `P25_NAC` the NAC/0 (P25 without a network status); `DMR` `(trunk << 8) | Tier III model` with the raw network number
+  (Tier III, Connect Plus), or `(trunk << 8) | colour code` with the site number (Capacity Plus); `NXDN` `0x100 |
+  category` with the Type-C system code, or `0x200` with the Type-D system ID; `TETRA` MCC/MNC. Exact lookups by state
+  (`dsd_tg_policy_lookup_id()`, `_lookup_label()`, private-call endpoints, `dsd_source_label_lookup()`) take the current
+  scope; `dsd_tg_policy_lookup_label_scoped()` and `dsd_source_label_lookup_scoped()` take one. Precedence for one ID
+  (`tg_policy_find_exact_rows()`, shared by lookup, learn and the held-list mirror): a talkgroup/user row, then an
+  imported alias row (mode `D` without a scope: typed, or appended by an older version), then the learned row of the
+  lookup's scope, then a row learned with no scope (it names the radio everywhere, as every learned row did before
+  scopes). The trunk-scan targets without their own `-G` list share the baseline list (`dsd_scan_groups_enter()`
+  installs it), so scoping happens in the rows, not by list. Persistence: the append writes a valid scope as a
+  `scope=<kind>:<a hex>:<b hex>` cell after the metadata cell (`dsd_tg_policy_scope_format()`,
+  `talkgroup_policy_internal.h`); the importer (`group_apply_scope_field()`, `dsd_import.c`) scans the cells past the
+  modelled columns, and a parsed cell on an exact mode `D` row makes it a scoped learned row again (on any other mode,
+  `DE` included, the cell is reported and ignored, so a hand-typed cell never turns a talkgroup row or lockout into an
+  alias); the rows hash folds the scope, and the rewrite keeps the cell (header `...,scope`). A row learned with no
+  scope (no system and no access code known) keeps the pre-scope behaviour: appended as a plain row, which reloads as an
+  imported row, and the held-list mirror stores it as an imported row so the held list ranks it as its reload would.
+  Limits: two conventional P25 channels on one NAC (0x293, the default, is common) share their aliases, and so do two
+  Capacity Plus systems with the same site number and colour code (dsd-neo's own received site identity stands in for a
+  system number Capacity Plus does not send; not a protocol rule). The active-call priority refresh reads a private
+  call's endpoints in the reception the call was evaluated in (stored on the held call when it is noted or described),
+  with evaluation's precedence (the target's row, else the source's), so a learned alias of another system never
+  replaces the row evaluation chose (test `CORE_TALKGROUP_POLICY` `test_private_refresh_keeps_reception_scope`).
+  `dsd_alias_name_key()` hashes the group list's
+  context identity and generation, the radio list's identity and generation and the current scope: a frontend
+  re-resolves retained names when it changes. Tests: `CORE_SCOPED_ALIAS`.
 - Invariant (the group file stands for the list, discussion #748, `<dsd-neo/core/talkgroup_policy.h>`): dsd-neo writes
   its group file back (a rewrite on every saved edit, an export, an appended alias row), so a list that is not what
   the file holds must never be written over it.
@@ -6070,6 +6262,64 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   prints apart (`Seed: BEE00.348.293 (set)`). Tests: `APP_CONTROL_SITE_IDENTITY_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
   `UI_NCURSES_VISUALIZERS_HELPERS`, `UI_NCURSES_P25_DISPLAY_HELPERS`, `UI_QT_METRICS_MODEL`,
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the record rides the snapshot).
+- Unit activity: `include/dsd-neo/app_control/unit_activity_view.h` and `src/app_control/unit_activity_view.c` read
+  a snapshot's unit activity ring (Core) for every frontend (the Qt Activity screen, the terminal panel), so both say
+  the same thing.
+  - Reading: `dsd_app_unit_activity_rows()` reads after a cursor `{instance, rev}` in revision order (call again while
+    `meta.more`; `meta.reset` when the cursor belonged to another ring; `meta.lost` until a read returns a row past the
+    rows evicted unread). Each record becomes a `dsd_app_unit_activity_row`: `seq` (update a merged row in place),
+    `rev`, `wall_s`, `repeat`, `filters`, `tone` and the texts.
+  - Filters: `DSD_UA_FILTER_LOGINS` / `TALKGROUPS` / `REFUSED` / `COMMANDS` / `OTHER` by kind; a refused, denied or
+    failed result adds `REFUSED`, so a denied registration is in Logins and Refused; waiting rows count as refused and
+    queued. `tone` is a warning for inhibit and kill (TETRA permanent disable included).
+  - Labels: `kind_label` comes from one first-match rule table by kind, role, result, protocol and stage. Labels say
+    what was heard, never an outcome: "Inhibit sent" / "Inhibit acknowledged", "Kill sent", TETRA "Disable command" /
+    "Authenticated disable command" / "Permanent disable command" / "Enable command", "Remote-control response" (any
+    response to a stun, revive or kill: NXDN REM_CON_RESP comes before execution), "Registration acknowledged" (DMR
+    0x62: login or logout), "Logout response" (NXDN REG_C_RESP, whose success value is unconfirmed), "Talkgroup
+    subscription response" (DMR 0x65, its acceptance mask in the target text, "all rejected" when zero), "Waiting for
+    further signalling". `reason_text` is "<table text> (0xNN)", or "Reason 0xNN" when the table names none.
+    `dsd_app_unit_activity_headline()` is the one line every frontend shows: the label, plus ": <reason>" on a deny
+    or queued row ("Denied: Target Unit Not Valid (0x20)").
+  - Texts: `subject_text` is the subject's ID ("1234567", "TG 100", "System 0x...", "Equipment 0x...", "Address n");
+    a status or message report's subject is its reporting unit. `target_text` (128 bytes) joins the group with its
+    label, the value (status, message, service type, DMR mask, TETRA accept type; a P25 status as "status A1/0B", User
+    then Unit Status in hex, and a P25 message as "message 1234", the 16-bit value in hex, as the P25 prints show
+    them), the keyed second value where it means something, so rows that differ only there read apart (a DMR ARS
+    report's "device" / "user", a P25 deny or queued response's Additional Information "for n", an NXDN "visitor TG
+    n" or remote control "parameter 0xNNNN", a TETRA rejected location update's "update type n"; a TETRA TEI's high
+    bits complete the subject text, "Equipment 0x" and the whole TEI in hex), the assigned identity ("as n"), the
+    recipient ("to n") and the requester or gateway ("from System 0xFFFECF": a gateway is never the subject). Each part
+    is whole: a long group label is shortened first (ending "…"), then a part that still does not fit is left out with
+    those after it and the text ends ", …", so an ID is never cut. `scope_text` names the row's system ("WACN BEE00
+    SYS 123 RFSS 1 SITE 2", "NAC 293", "Net 17 Site 5", Capacity Plus "Site 4 CC 3", "SYS 77 SITE 6", "MCC 901 MNC
+    9999 LA 12"). Every text is well-formed UTF-8 cut at a character boundary, C0 and C1 controls as spaces.
+  - Names: only RADIO and GROUP subjects are named. While the row's scope is the snapshot's current one, both known
+    (`dsd_alias_scope_equal()` on two valid learned-alias scopes; an unknown scope on either side, as before a
+    target's network identity, keeps the frozen name and shows no live talkgroup label: test
+    `test_unknown_scope_keeps_frozen_name`), the name comes from the snapshot's lists in that scope
+    (`dsd_source_label_lookup_scoped()`: the assigned ID first, then the subject unless its home is another system or
+    it is `subject_nonlocal`; a group's label); a row of another system shows `name_frozen` (a radio's name or a
+    group's label as its producer stored it), because the current lists (a trunk-scan target's own) say nothing about
+    another system's radio. So a later alias renames only rows of its own system, and A -> B -> A shows each system's
+    names; the scope alone tells the systems apart. `dsd_app_unit_activity_name_key()` (`dsd_alias_name_key()`)
+    changes whenever a name could change; a frontend then reads again from `{instance, 0}` and updates its rows by
+    seq.
+  - Frontends: the Qt Activity screen (`UnitActivityModel`, under UI, Qt).
+  - Test: `APP_CONTROL_UNIT_ACTIVITY`.
+  - Terminal: the Unit Activity section (`frontend_display.show_unit_activity`, Display -> Sections -> Unit activity,
+    `DSD_APP_CMD_UI_SHOW_UNIT_ACTIVITY_TOGGLE`) draws from each frame's snapshot.
+    `src/ui/terminal/unit_activity_panel.{h,c}` (no curses) holds the 8 rows with the highest seq, newest first,
+    updated in place by seq, dropped on `meta.reset`, and read again from `{instance, 0}` when the name key changes; it
+    builds each row's lines: time, headline, subject with its name in brackets, target, `(xN)`, then a `\--` line
+    with the reason a headline does not carry and the protocol and system when they differ from the row above. No gap
+    row: a row dropped unread was revised before the 1024 the ring keeps (least recently revised is evicted), and seq
+    departs from revision order only through merges, which reach just the 16 most recently revised rows
+    (`DSD_UNIT_ACTIVITY_DEDUP_LOOKBACK`); so about 1000 kept rows outrank any dropped row by seq and the loss lies
+    below the 8 shown. A larger lookback or another eviction order breaks this (`test_wrap_keeps_highest_seq`).
+    `dsd_ncurses_printer.c` cuts each line to the panel (`ui_text_fit()`) and draws a warning row (`tone`) in colour
+    pair 2. Tests: `UI_UNIT_ACTIVITY_PANEL` (real ring and view), `UI_NCURSES_PRINTER_HELPERS` (the drawn lines,
+    stubbed view).
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -10020,6 +10270,19 @@ control within the CC grace walks its channel map with the ordinary hunts.
 - Tests: `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`, `P25_SM_COLD_START`, `P25_MBT_DECODE`,
   `ENGINE_DMR_CC_RECOVERY`, `ENGINE_COLD_START_HUNT`, `APP_COMMAND_QUEUE`, `DMR_CONFIDENCE_GATE`,
   `ENGINE_TRUNK_RETUNE_REGRESSION`, `RUNTIME_FRAME_SYNC_HOOKS`, `FRAME_SYNC_POLICY`, `FRAME_SYNC_INTERNAL_HELPERS`.
+- EDACS status LCNs (`src/protocol/edacs/edacs-fme.c`): an assignment's LCN field names a channel only below 26;
+  26-31 are status values (reserved, convert to callee, call queued, system busy, call denied:
+  `edacs_lcn_status_string()`). Such an assignment is printed with its status and gets no recent-activity row, voice or
+  data (`edacs_lcn_names_channel()`); main published LCNs 26-30 as grants on a 0 Hz channel. This rests on the
+  decoder's own reserved-LCN handling; EDACS gets no unit-event semantics (no public spec). Tests:
+  `EDACS_GRANT_TUNE_MATRIX` (`edacs_run_status_lcn_cases`).
+- YSF call mode 1 ("radio ID", `src/protocol/ysf/ysf.c`): the CSD1 destination field is printed as a 5-character
+  destination radio ID and a 5-character source radio ID, but the call's target text keeps all 10 characters. The
+  split is not changed: the two independent decoders checked disagree (DSDcc `processCSD1()` reads destination and
+  source radio IDs from octets 0-4 and 5-9 in that mode and no source callsign; MMDVMHost `CYSFPayload` reads the
+  10-octet destination and the source callsign at octets 10-19 whatever the call mode and treats mode 1 as a group
+  call to "ALL"), dsd-neo's reading descends from DSDcc, and no primary YSF text is on hand. Unresolved until a
+  primary source or a capture settles it.
 - NXDN (`src/protocol/nxdn/nxdn_cc_hunt.c`, `<dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>`, context in state-ext slot 28
   `DSD_STATE_EXT_PROTO_NXDN_CC_HUNT`): NXDN has no trunk state machine and no other control-channel hunt, so this one
   runs at session start and after a control channel is lost. Eligibility is
@@ -10089,6 +10352,21 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   FACCH and SACCH bursts are not dispatched, since a CRC proves a MAC payload, not which slot it belongs to. LCCH
   (DUID 13/4) still is, but both slots' pending MAC assemblies are discarded and the VPDU drops the window's fragment
   segments (`p25p2_window_slot_unproven()`).
+- Multi-fragment MAC messages (TIA-102.BBAD-A §3, §4.7; `p25p2_vpdu.c`, `P25_P2_MULTIFRAG_CRC`). They are only
+  available on the LCCH, so a base (0x71/0xF1, 0xC7, 0xCB, 0xCD, 0xCE, 0xCF, 0xD9, 0xDB, 0xDE, 0xE0) or continuation
+  (0x10) fragment on a FACCH or SACCH is dropped. The assembly is kept per logical channel (`p25_mac_frag[currentslot]`,
+  not the voice slot a SACCH's MAC names), since a single LCCH sends the fragments in consecutive bursts of its channel.
+  Every fragment must come from a MAC PDU whose CRC-16 passed: an LCCH PDU that failed (`-F` lets it through) ends
+  the assembly, whatever it holds. The frame decoder ends a channel's assembly when one of its bursts is not an LCCH
+  whose CRC-16 passed (lost, retired by a missed sync, failed RS or CRC, voice, FACCH, SACCH, data), when a window is
+  unproven or breaks continuity, and when the carrier changes (`p25p2_frame_forget_carrier()`). A complete message
+  decodes only when its Multi-Fragment CRC-16 (its last two data octets, the LCCH CRC-16 polynomial over every data
+  octet before them) checks: otherwise only a raw "CRC-16 failed; not decoded" note prints, and nothing is published,
+  granted or written to a table. Handlers never read the CRC octets as fields (`p25p2_vpdu_frag_has()` counts the
+  octets before them). A dual LCCH, whose fragments alternate between the channels, is not assembled (the per-channel
+  assembly drops it, and the assembled CRC rejects a mix), and multi-fragment messages stay out of the unit activity
+  log: following the LCCH stream needs the I-ISCH LCH-type and OS bits the ISCH decoder does not read, which is TDMA
+  control channel support ([issue #874](https://github.com/arancormonk/dsd-neo/issues/874)).
 - Retune token (`p25p2_retune.c`): `dsd_trunk_tuning_generation()`, `dsd_trunk_tuning_pending_request()` and the
   frame-reset generation `p25_p2_frame_reset()` bumps. `p25p2_process_duid()` snapshots it per window and stops as
   soon as a dispatch, a post-timeslot (whose rekey commit can lock out and return to the CC) or a retirement changes
@@ -10127,6 +10405,87 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   Group Regroup Add/Delete (0x81/0x89) count their length octet as the whole message: SG at octets 4-5, then
   `(len - 5) / 2` work groups; a length under 5 or past the span changes nothing, and an Add with no member creates no
   patch.
+- Bridged Phase 1 TSBK (`process_MAC_VPDU_bridged_p1()` in `<dsd-neo/protocol/p25/p25_vpdu.h>`). `p25p1_tsbk.c` hands
+  each CRC-valid standard TSBK to the MAC handlers in MAC form: opcode `0x40 | op` at `MAC[1]`, TSBK octet n at
+  `MAC[n]` for n = 2..9. That entry point sets `p25p2_vpdu_ctx::bridged_p1`, and `p25p2_vpdu_is_bridged_p1(ctx)` is
+  the only transport test a handler makes: never `MAC[0]`, `MAC[len_a]` or the sync type, which a native header or a
+  previous message's last octet can match. A bridged TSBK is one 9-octet message: it is not segmented with the Phase 2
+  length table (which split a short opcode's trailing octets off as a second message: a Call Alert's source made an RFSS
+  status that zeroed the site), it never starts, continues, ends or clears a multi-fragment assembly, and nothing past
+  `MAC[9]` is copied in. Handlers whose Phase 2 layout differs read the Phase 1 one (TIA-102.AABC-D): 0x05 Unit-to-Unit
+  Answer Request, 0x15 SNDCP Data Page Request, 0x2D Unit Registration Command, 0x36 Roaming Address Command, and the
+  length-octet responses. Opcodes with no single-block Phase 1 layout (0x01 and 0x0C reserved, 0x12 / 0x13 obsolete,
+  0x1E Radio Unit Monitor Enhanced Command and 0x31 Authentication Demand, both multi-block, 0x37 Roaming Address
+  Update) print octets 2-9 raw: no Phase 2 handler runs, so none writes a network table.
+  Native lengths follow TIA-102.BBAD-A where sdrtrunk differs: 0x45 / 0xC5 are 8 / 12, 0x4A is 9 (`p25p2_mac_tables.c`).
+  TSBK 0x1D Radio Unit Monitor Command reads its Phase 1 layout (TX Time, SM, TX Multiplier, Source, Target; its Phase 2
+  opcode 0x5D is the obsolete form and prints as such), and TSBK 0x2E Authentication Command (obsolete in AABC-D, no
+  Phase 2 message on 0x6E) prints its target SUID.
+  Tests: `P25_TSBK_BRIDGE_BOUNDARY`, `P25_MAC_LENGTHS`, `P25_MAC_SEGMENT`.
+- Unit registrations (`p25_aff_*` in `<dsd-neo/protocol/p25/p25_trunk_sm.h>`, `dsd_state::p25_aff_rid` /
+  `p25_aff_assoc`). An accepted Unit Registration Response names the unit's home SUID (WACN, System ID, Source ID) and
+  the local address the system assigned it (Source Address, the WUID: TIA-102.AABC-D §2.3.27, §6.2.21); the table is
+  keyed by that address, and `p25_aff_register_assigned()` keeps, per entry, the home SUID and the serving system
+  (`p2_wacn`/`p2_sysid`) it was heard on. The abbreviated form (0x6C / TSBK 0x2C) is sent to a unit whose home WACN is
+  the site's, so its SUID is the serving WACN, the message's System ID and Source ID; the extended form (Phase 2 0xEC,
+  TIA-102.BBAD-A §3.47 Fig 110: RV in octet 3, SUID octets 4-10, Source Address 11-13; the MBT 0x2C with the address in
+  its header) carries the full SUID. A Unit Deregistration Acknowledge names only the SUID (§6.2.22; BBAD-A Fig 111):
+  `p25_aff_deregister_home()` removes the entries still owned by that SUID on this serving system, plus an unowned
+  entry whose address is the unit ID when the unit is at home (or no serving system is known). A new owner of an
+  address replaces the old one, a unit registering again under a new address gives up the old one (freed first, so a
+  full table reuses its slot rather than evicting another unit), and a new system identity
+  (`p25_update_system_identity()` → `p25_aff_drop_foreign_owners()`) drops owners another system named; every owner
+  rule lives in `p25_trunk_sm.c`. Eviction, the 15-minute aging and trunk-scan save/restore move the owner with its
+  entry. Registrations are written only from content that passed its
+  CRC (`p25p2_vpdu_network_table_writable()`). Tests: `P25_AFF_ASSIGNMENT`, `ENGINE_TRUNK_SCAN`, `P25_MBT_DECODE`.
+- Deny and Queued Responses (standard 0x67 / 0x61 and their TSBKs, Motorola MAC 0xA7 / 0xA6 and MFID90 TSBKs 0x07 /
+  0x06) answer a unit's request: their Target Address is the unit that asked (TIA-102.AABC-D §6.2.5, §6.2.14) and no
+  field ties one to the assignment being followed, so a response is printed, published to Recent Activity and counted
+  (`p25_sm_deny_count` / `p25_sm_queued_count`, not for a MAC whose CRC failed under `-F`), never acted on: no path
+  calls `p25_sm_release()` over one, busy carrier or idle, and the acquisition watchdog ends an assignment that never
+  carries voice. Tests: `P25_DENY_NO_RELEASE`, `P25_QUEUED_DENY_RESPONSE`, `P25_P1_TSBK_HANDLERS`.
+- Unit message fields. A Status field's first octet is the User Status and its second the Unit Status
+  (TIA-102.AABC-D §2.3.29) on every form: 0x58 / TSBK 0x18, 0xD8, the 0xD9 multi-fragment, the MBT and the inbound
+  TSBKs. Extended Function class $00 labels name the acknowledgement operands ($80 / $FD-$FF, §2.3.15 Table 2.3.15-1)
+  on 0x64, 0xE4, 0xE5 and Motorola 0x84 alike (`p25_extended_function_class0_label()`). Link control (TIA-102.AABF-D
+  §7.3): 0x50 Group Affiliation Query prints its target and source and adds no affiliation (it carries no group), 0x55
+  is Message Update and 0x5B its Source ID Extension form (Message, Target, Source), and 0x6B (LCO 43) is reserved.
+- Unit activity rows (`src/protocol/p25/p25_unit_activity.{c,h}`, one emit helper per message family, into
+  `<dsd-neo/core/unit_activity.h>`). The handlers decode; a helper builds and pushes the row: Unit Registration
+  Response 0x6C / 0xEC / MBT (subject the home SUID, `assigned` the Source Address on an accept when it is not the
+  home ID on the serving system; the abbreviated form's home WACN is the site's, so it has a home only once that is
+  known), Location Registration Response 0x6B (group), Unit Deregistration Acknowledge 0x6F / 0xEF (the home SUID, with
+  the address `p25_aff_assigned_for_home()` held before the entry goes), Unit Registration Command 0x6D / TSBK 0x2D,
+  Group Affiliation Response 0x68 / 0xE8 / MBT (RV and GAV: accept, fail, deny, refused), Deny / Queued Response
+  (standard and Motorola, P25 and MFID90 TSBK: service type as value, the reason in the P25 table, the additional
+  information as value2 when AIV), Extended Function class $00 on 0x64 / 0xE4 / 0xE5 / Motorola 0x84 (check, detach,
+  uninhibit, inhibit; a command's argument is the requester, an ACK's argument is the radio that acknowledged and its
+  target the party told: Table 2.3.15-1; other classes and reserved operands add none), Radio Unit Monitor (TSBK 0x1D,
+  0x4C, 0xCC, the 0x5E talkgroup mode with the group and no actor), Status Update 0x58 / 0xD8 / MBT and Message Update
+  0x5C / 0xDC / MBT / LC 0x55 / 0x5B (reports: subject the reporting source, the target as recipient, value the 16-bit
+  status, User Status high octet, or message), Status Query 0x5A / 0xDA / MBT (command to the target), Call Alert 0x5F /
+  0xDF / MBT, Unit-to-Unit 0x45 / 0xC5 and telephone 0x4A Answer Requests, and the TSBK 0x2E Authentication Command
+  (target SUID). An extended form's source SUID gives its identity a home (0xE4 on a command operand when the Source
+  ID is the argument's; 0xE5 carries no Source ID, so its argument gets none), and an extended MBT (AABC-D Figs
+  6.2.4-2, 6.2.10-2, 6.2.17-2, 6.2.18-2) names each unit by its SUID with its WUID on the sending system as the
+  subject's `assigned` identity. A report, query, alert, answer request or authentication subject that names only its
+  home SUID (0xD8 / 0xDC and the other native extended forms) takes as `assigned` the address that SUID holds on the
+  serving system (`p25_aff_assigned_for_home()` with `p2_wacn` / `p2_sysid`, plan G5), so a visitor is named by its
+  local ID. The LC 0x5B source and an abbreviated registration response's unit of another System ID before the site's
+  WACN are `subject_nonlocal` (never named from the local lists). Addresses
+  $FFFFFC-$FFFFFF are infrastructure, never radios (§2.3.30), and 0 names nobody. A repeated deregistration
+  acknowledgement, which finds the registration gone, merges into the first one's row (the core's DEREGISTRATION key
+  rule). Provenance: a row needs `p25p2_vpdu_ctx::crc_ok` (a MAC PDU `-F` let through makes none); TSBKs, MBTs and link
+  control words reach the handlers only after their CRC / FEC. Multi-fragment messages, the Group Affiliation Query,
+  the ACK Response, the MBT Unit-to-Unit Answer Request and the multi-block Authentication Demand make no row.
+  `name_frozen` comes from `dsd_unit_activity_freeze_name()`, the rule every producer shares. Tests:
+  `P25_UNIT_ACTIVITY`, `P25_P1_TSBK_HANDLERS` (MFID90 rows), `P25_P2_MULTIFRAG_CRC` (no row).
+- Phase 2 Network Status Broadcast and the control channel's access method. An accepted broadcast notes a TDMA system
+  (`p25_sys_is_tdma`) wherever it is heard, but marks the control channel TDMA (`p25_cc_is_tdma`) only when heard on
+  an LCCH (`p2_is_lcch`): on a voice channel's SACCH or FACCH it names the control channel, which may be FDMA (a site
+  with an FDMA control channel may carry TDMA traffic channels, TIA-102.BBAC-A §2), as
+  `p25_sm_seed_cc_modulation_from_current_sync()` already rules. Test:
+  `P25_P2_VPDU_GRANTS` (`test_nsb_on_voice_channel_keeps_fdma_cc`).
 - Scrambling code recovery (`p25p2_seed_recover.c`, issue #804). On a carrier whose code is not proven
   (`p2_cc_verified == 0`), not hand-set (`p2_hardset == 0`) and not trunked (`trunk_enable == 0`), `processP2()` hands
   each window to `p25p2_seed_recover_window()` after `p25p2_window_position()` and before the descrambler, with
@@ -11242,6 +11601,23 @@ Private per-protocol modules worth knowing about:
   `dmr_cspdu_cap_plus_slot_lsn()`), not the record's, so a slot whose identity expired with its call while the
   companion kept the carrier busy (no record left) takes the group a status names for its next call. Tests:
   `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`.
+- DMR reasons and C_AHOY meaning (`src/protocol/dmr/dmr_reason.{c,h}`). The Tier II NACK_Rsp Reason Code (TS 102 361-2
+  Table 7.13) and the Tier III C_ACKD / C_ACKU / P_ACKD / P_ACKU Reason (TS 102 361-4 Tables 7.42-7.45, plus
+  MS_Duplex_Not_Supported 0x16 from the clause 7.2.8.2 text) are separate tables, as they give 0x21 different meanings;
+  the CSBK prints read them from the core's one table set (`dsd_ua_reason_text()` with `DSD_UA_REASON_DMR_TIER2_NACK` /
+  `DSD_UA_REASON_DMR_TIER3`, NULL for an undefined value: print it raw), which the unit activity log shares, and
+  `dmr_tier3_reason_class_of()` gives the class (NACK / ACK / QACK / WACK). `dmr_ahoy_classify()` reads a Service_Kind
+  13 / 14 C_AHOY by its whole field combination (Tables 6.11, 6.17, 6.19, 6.23, 6.27): STUNI with flag 0 / 1 is stun /
+  revive and KILLI with flag 0 kill, each to one radio; TSI with flag 0 a radio check (radio or talkgroup); flag 0 with
+  a 000000-FFFCDF value in the source field an authentication challenge to one radio, the value never an identity;
+  TATTSI with flag 1 the talkgroup subscription list request; any other combination UNRECOGNISED. Each names the command
+  or poll the TSCC sent, never its outcome (the radio's answer is inbound). NACK_Rsp carries its source before its
+  target (Table 7.6). Standard-only CSBK opcodes (UU_V_Req, UU_Ans_Rsp, CT_CSBK, C_AHOY, C_ACKVIT, C_RAND, C_ACKD,
+  C_ACKU, P_ACKD, P_ACKU, NACK_Rsp, P_MAINT, and BS_Dwn_Act on MS data) decode only under FID 0x00
+  (`dmr_cspdu_pf0_handle_standard_only()`); under another FID they print as `Manufacturer CSBK`. No vendor dispatcher
+  decodes these opcodes today; one added later must take its opcode out of `dmr_cspdu_pf0_is_standard_only()`, or both
+  lines print. Grants, moves, C_ALOHA (Capacity Max recognition included), P_CLEAR, P_PROTECT, C_BCAST and preambles
+  still run for any FID. Tests: `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through `dmr_flco()`).
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
   stays at the CSBK/status layer, which alone knows each grant's classification (Tier III data grants rewritten to
   group, Connect Plus private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,
@@ -11756,7 +12132,18 @@ EN 300 392-7 annex A; `tetra_mm_pdu.h`). The dispatchers (`tetra_mac_parse_schd(
 `tetra_mm_dispatch()`) decode through the same readers and act only on a complete PDU: the summary line, the call event,
 the notice, the SDS reassembly, the KSG an SCK Provide of a trunked mode SCK (SCK use 0, EN 300 392-7 table A.101;
 SCKs for direct mode alone name no trunked algorithm) or a GCK Provide names, and the KSG the ciphering parameters of a
-D-LOCATION UPDATE COMMAND or REJECT name for the serving network (not the MS's network of its address extension). Of
+D-LOCATION UPDATE COMMAND or REJECT name for the serving network (not the MS's network of its address extension).
+D-LOCATION UPDATE ACCEPT and REJECT carry no ISSI (EN 300 392-2 clause 16.4.1 note 5), so `tetra_mm_dispatch_as()`
+takes the MAC address the TM-SDU came with (`tetra_mm_addr`: SSI, USSI, SMI or event label, the encrypted flag, the
+cell's MCC/MNC; `mle_mm_addr()` in `tetra_mle.c`, for a PDU behind its own discriminator and for the MM SDU of a
+D-NEW-CELL or D-PREPARE-FAIL) and the summary line names the MS by it: only a clear SSI or USSI is a radio
+(`tetra_mm_addr_radio_ssi()`); an SMI is shown as a management identity and an encrypted short identity names nobody.
+The ACCEPT's SSI element is the ASSI or (V)ASSI given to that MS (`assigned=`), and the accept type (table 16.68),
+location update type (table 16.67) and reject cause (table 16.81) are named; the accept type and the reject cause in
+the core's words (`dsd_ua_tetra_accept_type_text()`, `dsd_ua_reason_text()`), which the unit activity log shares
+(`tetra_unit_activity.c`, rows for LU ACCEPT / REJECT and D-DISABLE / D-ENABLE; Test: `TETRA_UNIT_ACTIVITY`).
+D-DISABLE / D-ENABLE print the Intent/confirm element as `stage=intent` or `stage=confirm` (EN 300 392-7 table
+A.68): a command either way, never an outcome. Tests: `TETRA_MM_ADDRESS`. Of
 signalling, `tetra_state_t` keeps only what the decoder reads back: the cell's main carrier, band, offset and location
 area with its broadcast security (the extended services broadcast's security information, EN 300 392-7 table A.104, and
 the BS service details' air interface encryption bit, each kept until the next SYSINFO that carries it), the KSG
@@ -12039,7 +12426,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   address, takes a call PDU of it (`tetra_calls_on_event()` acts on nothing and, at `opts->verbose > 1`, the default,
   logs so), attaches its allocation, event label or usage marker (`tetra_calls_on_allocation()` is not called), proves
   or maintains a call, or reaches the state machine. Its MM PDUs are printed without writing the D-MM STATUS shown or
-  the KSG a network uses (`tetra_mm_dispatch_as()`, from `tetra_mle_dispatch_sdu()`). An allocation left unread
+  the KSG a network uses, or a unit activity row (LU accept / reject, D-DISABLE / D-ENABLE; `tetra_mm_dispatch_as()`,
+  from `tetra_mle_dispatch_sdu()`; test `TETRA_UNIT_ACTIVITY` `test_other_cell_makes_no_row`). An allocation left unread
   (encrypted with no key: EN 300 392-7 clause 6.7.1.2 encrypts everything after the allocation-present flag) has no
   flag the decoder knows, and its PDU is handled as any other.
 - Known limits of a guarded follow, decided rather than worked around:
@@ -14929,7 +15317,8 @@ Qt Quick frontend (`src/ui/qt`):
   with `Qt.callLater`). Tests: `tst_site_chooser_sheet.qml`, `tst_monitor_roaming.qml`, `tst_settings_roaming.qml`
   (`UI_QT_QML_CALL_LISTS`).
 - Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's
-  recent calls (`homeRecentList`) and the Talkgroups grid (`talkgroupGrid`) get their models from a `KeepPlace` only
+  recent calls (`homeRecentList`), the Talkgroups grid (`talkgroupGrid`) and the Activity list (`activityList`, keyed by
+  seq through `UnitActivityFilterModel::rowForSeq()`) get their models from a `KeepPlace` only
   while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with
   them under it, and each row built there was announced to accessibility clients. Setting a view's model puts it at its
   start, so `KeepPlace` notes the top row's identity (`rowUid`; a card's `idStart` and `idEnd`, since an exact row and a
@@ -15938,12 +16327,45 @@ Qt Quick frontend (`src/ui/qt`):
   unexpired skips across scan visits; **Clear temporary avoids and call skips — current list** clears them with
   session avoids. Runtime's `dsd_rr_talkgroups_apply_categories()` supplies category names to both RadioReference
   frontends before CSV generation.
+- `unit_activity_model.{h,cpp}`: `UnitActivityModel` holds the session's unit activity log for `qml/ActivityScreen.qml`
+  (the monitor session menu's **Activity** entry, `sessionMenuActivity`, a `sessionDestination` of the session tools
+  shell like History and Settings, with no screen outside a session). `UiController::refreshModels()` feeds it each
+  redraw while the session is live, with the same held snapshot as the other models, through
+  `<dsd-neo/app_control/unit_activity_view.h>` (cursor kept by the model, pages of 64); `clearLiveModels()` drops it at
+  Starting, Idle and Failed. A scan hop keeps it: one log spans the session. Rows are held newest first by seq and a row
+  read again (a merge, a rename) is updated in place with `dataChanged` for the roles that changed, never moved, so a
+  screen reader's order holds; at most `DSD_UNIT_ACTIVITY_CAPACITY` rows, the oldest leaving the bottom. A `lost` read
+  places the one gap row ("Earlier activity was not kept") below the rows read after it; a later loss moves it and drops
+  the rows still below it (rows were lost there too), so the list never holds two. A row read again is compared field by
+  field, so a hop's re-read formats no text for unchanged rows. `capacity` (CONSTANT) gives QML the ring's size. When
+  `dsd_app_unit_activity_name_key()` changes, the model first reads what is new, then reads every row again from
+  `{instance, 0}` only to rename held rows in place, ignoring that read's `lost` (it reports any eviction, not a new
+  loss) and the rows it no longer holds. A new ring instance (`reset`) replaces every row. `UnitActivityFilterModel` is
+  the screen's filter (`activityView`): one `DSD_UA_FILTER_*` bit or every row, the gap row under every filter. The
+  screen reuses History's shell, `FilterPill` (one of six, so `Accessible.RadioButton`, checkable, `Accessible.checked`
+  on the chosen one and no separate `selected`, as Listen's tabs) in a wrapping `Flow` (every pill reachable by a swipe;
+  a horizontal strip builds no off-screen chip) and History's row grammar: who (the name, then its ID in a text of its
+  own that keeps its whole width, wrapping only if alone it is wider than the line; only the name is cut, at its end,
+  in what is left, and it goes when not a character fits; the row's accessible name still reads both whole) and the
+  time with a repeat count, what (the view's headline with the target, two lines), where
+  (a reason the headline does not carry, the protocol, the scope, two lines); where an eight-digit ID and the widest
+  time do not fit on one line, every row puts its time under the name (one rule per list). Only an inhibit or kill row
+  (`DSD_UA_TONE_WARNING`) takes `Theme.alert`. The empty state lives in its own `PlexFlickable` over the list's area:
+  centred while it fits, scrolling from the top when a large text size makes it taller, never over the pills; it counts
+  data rows only, so under a filter that leaves just the gap row it shows the filtered message below that row. Each row
+  is one StaticText node whose name and description carry its lines. Tests: `UI_QT_UNIT_ACTIVITY_MODEL`
+  (`test_model_gap_row_once`), `UI_QT_CONTROLLER` (`test_unit_activity_follows_the_session`), `tst_activity_screen.qml`,
+  `tst_a11y_activity.qml`.
 - `p25_network_model.{h,cpp}` copies four bounded lists through the frontend-neutral
   `app_control/p25_network.h` facade using `UiController::tick`'s held snapshot.
   `qml/NetworkSheet.qml` activates refresh only while visible; session edges and
   scan-target changes clear it through `clearLiveModels()`. The C facade sorts
   recent-first, resolves candidate flags from the snapshot's deep-copied extension,
   formats CFVA through P25, and filters expired patches without mutating the snapshot.
+  Affiliation and radio rows carry names: the radio's from `dsd_source_label_lookup()` (the current reception's
+  scope, as the Activity screen names the current system's radios) and the talkgroup's label, cut to whole UTF-8
+  characters; the sheet shows them after the ID (`RID:1234567 (Alice) · TG:77 (Fire Dispatch)`). Test:
+  `APP_CONTROL_P25_NETWORK` (`test_rows_carry_names`).
 - `diagnostics_log.{h,cpp}` owns the process ring, the sole redaction/capture stage,
   and the asynchronous bounded tail writer. `DiagnosticsLogModel` refreshes before
   the redraw consume in `UiController::tick`; it persists across decoder session
@@ -18497,8 +18919,8 @@ item view refills its delegates even while invisible, so:
 
 - A hidden sheet or screen does not keep a live list model bound. It hands the view its model only while visible:
   `model: sheet.visible ? (metrics.decryptionSlots || []) : []` (KeySheet's slots), `FieldGrid`'s `live: sheet.visible`
-  (SiteSheet), `screen.live` (the Talkgroups chips), or `qml/KeepPlace.qml` for a scrolled list that must reopen at
-  the reader's place (History, Home's recent calls, the Talkgroups grid; see "Hidden lists" under UI, Qt), or a
+  (SiteSheet), `screen.live` (the Talkgroups chips), or `qml/KeepPlace.qml` for a scrolled list that must reopen at the
+  reader's place (History, Home's recent calls, the Talkgroups grid, Activity; see "Hidden lists" under UI, Qt), or a
   `Binding` that keeps the last model while hidden for Repeaters in a scrolled `Column` (the Signal search screen's
   detections and avoids, same section). Opening fills it from the readings as they are then. A sheet whose content
   follows the snapshot can instead refresh only while visible (`NetworkSheet`).
@@ -18721,8 +19143,10 @@ Pause holds it: each refresh rebuilds the rows.
 (`tst_a11y_harness.qml`), then a scan's steady ticks, hops, target names, two-slot hops, calls, hops with the Monitor's
 details open and readings that move every tick against `Main.qml` (`tst_a11y_scan_churn.qml`), closed KeySheet and
 SiteSheet and the open Network sheet across refreshes, reorders, capped arrivals, a shrink, a clear and refill, and hops
-between P25 targets (100 radios and 1 among them) and to targets with no P25 network (`tst_a11y_closed_sheets.qml`), and a hidden Talkgroups screen across two
-targets' tables (`tst_a11y_talkgroups.qml`). `tst_a11y_text_reach.qml` walks every screen and sheet for visible text no
+between P25 targets (100 radios and 1 among them) and to targets with no P25 network (`tst_a11y_closed_sheets.qml`), the
+Activity screen hidden under a busy log and its rows renamed in place while open (`tst_a11y_activity.qml`), and a
+hidden Talkgroups screen across two targets' tables (`tst_a11y_talkgroups.qml`).
+`tst_a11y_text_reach.qml` walks every screen and sheet for visible text no
 node reads, against one allowlist with a reason per entry, and `tst_a11y_paced_names.qml` holds moving readings to their
 pace. How the harness works and how to add a case: `docs/testing.md` "Accessibility event counts".
 

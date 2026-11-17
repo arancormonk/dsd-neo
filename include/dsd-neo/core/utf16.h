@@ -253,6 +253,50 @@ dsd_utf8_lead(unsigned char c, unsigned char* lo, unsigned char* hi) {
 }
 
 /**
+ * @brief The length of the complete, well-formed UTF-8 sequence that starts @p s, within its @p avail bytes (RFC 3629,
+ * as dsd_utf8_lead() bounds it), or 0 when @p avail is 0 or @p s starts none.
+ */
+static inline size_t
+dsd_utf8_sequence_len(const char* s, size_t avail) {
+    if (avail == 0U) {
+        return 0;
+    }
+    unsigned char lo;
+    unsigned char hi;
+    const size_t len = dsd_utf8_lead((unsigned char)s[0], &lo, &hi);
+    if (len == 0U || len > avail) {
+        return 0;
+    }
+    for (size_t i = 1; i < len; i++) {
+        const unsigned char c = (unsigned char)s[i];
+        const unsigned char min = i == 1U ? lo : 0x80U;
+        const unsigned char max = i == 1U ? hi : 0xBFU;
+        if (c < min || c > max) {
+            return 0;
+        }
+    }
+    return len;
+}
+
+/**
+ * @brief The length of the longest prefix of the @p len bytes at @p s that takes at most @p max bytes and holds only
+ * whole, well-formed UTF-8 characters (dsd_utf8_sequence_len()): a cut never keeps part of a character, and the
+ * prefix ends before the first byte that starts no well-formed character. The one rule for cutting text to a field.
+ */
+static inline size_t
+dsd_utf8_whole_prefix_len(const char* s, size_t len, size_t max) {
+    size_t at = 0;
+    while (at < len) {
+        const size_t n = dsd_utf8_sequence_len(s + at, len - at);
+        if (n == 0U || at + n > max) {
+            break;
+        }
+        at += n;
+    }
+    return at;
+}
+
+/**
  * @brief Return 1 when the NUL-terminated @p s is well-formed UTF-8, else 0 (NULL is not).
  *
  * Well-formed as RFC 3629 defines it: shortest form only, no surrogate code points, nothing above

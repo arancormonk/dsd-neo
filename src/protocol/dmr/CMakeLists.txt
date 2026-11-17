@@ -14,7 +14,9 @@ target_sources(
         dmr_csbk.c
         dmr_confidence.c
         dmr_ras.c
+        dmr_reason.c
         dmr_trunk_sm.c
+        dmr_unit_activity.c
         dmr_data.c
         dmr_dburst.c
         dmr_enc_class.c

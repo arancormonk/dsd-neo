@@ -25,9 +25,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -44,9 +46,9 @@
 #include <time.h>
 #include "../p25_cc_update.h"
 #include "../p25_extended_function.h"
-#include "../p25_response_reason.h"
 #include "../p25_search_site.h"
 #include "../p25_trunk_sm_internal.h"
+#include "../p25_unit_activity.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -600,6 +602,8 @@ typedef struct {
     int end_pdu;
     int iter_idx;
     int crc_ok; /* 0: a MAC_SIGNAL -F let through with a failed CRC (process_MAC_VPDU_crc()) */
+    /* 1: one Phase 1 TSBK in MAC form; process_MAC_VPDU_bridged_p1() alone sets it. */
+    int bridged_p1;
 } p25p2_vpdu_ctx;
 
 static void p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx);
@@ -796,7 +800,7 @@ p25p2_vpdu_active_source(const dsd_state* state, uint8_t slot) {
 
 static void
 p25p2_vpdu_update_playback_if_match(const dsd_opts* opts, dsd_state* state, int group, long int freq) {
-    if (opts->trunk_enable != 0) {
+    if (!opts || opts->trunk_enable != 0) {
         return;
     }
     if (p25p2_vpdu_active_target_matches(state, (uint64_t)(uint32_t)group)) {
@@ -874,9 +878,40 @@ p25p2_vpdu_u24(const unsigned long long int* mac, int idx) {
     return (int)((mac[idx] << 16) | (mac[idx + 1] << 8) | mac[idx + 2]);
 }
 
+/* The message is a Phase 1 TSBK the TSBK decoder handed over (process_MAC_VPDU_bridged_p1()), not a Phase 2 MAC
+   message: TSBK octet n sits at MAC[n], and a handler reads the Phase 1 layout. The transport says so, never the
+   octets: a native MAC header or a previous message's last octet can be 0x07 as well. */
 static int
 p25p2_vpdu_is_bridged_p1(const p25p2_vpdu_ctx* ctx) {
-    return (ctx != NULL && ctx->len_a == 0 && ctx->mac[0] == 0x07);
+    return ctx != NULL && ctx->bridged_p1 != 0;
+}
+
+/* Where a message of this PDU was heard, for its unit activity row: a bridged TSBK is Phase 1 on no slot. A row comes
+   only from a message whose CRC passed (p25_ua_origin::crc_ok). */
+static p25_ua_origin
+p25p2_vpdu_ua_origin(const p25p2_vpdu_ctx* ctx) {
+    const int bridged = p25p2_vpdu_is_bridged_p1(ctx);
+    const p25_ua_origin o = {
+        .opts = ctx->opts,
+        .state = ctx->state,
+        .phase2 = (uint8_t)!bridged,
+        .slot = (uint8_t)(bridged ? 0 : (ctx->slot & 1)),
+        .crc_ok = (uint8_t)(ctx->crc_ok != 0),
+    };
+    return o;
+}
+
+/* A source unit with the home system of its SUID (WACN and System ID the message carries). */
+static p25_ua_unit
+p25p2_vpdu_ua_fq_unit(uint32_t id, int wacn, int sys) {
+    const p25_ua_unit u = {id, {(uint32_t)wacn, (uint16_t)sys, id, 1U}, 0U, 0U};
+    return u;
+}
+
+static p25_ua_unit
+p25p2_vpdu_ua_unit(uint32_t id) {
+    const p25_ua_unit u = {id, {0U, 0U, 0U, 0U}, 0U, 0U};
+    return u;
 }
 
 static int
@@ -1092,21 +1127,21 @@ p25p2_vpdu_other_slot_audio_with_history(const dsd_state* state, int slot, doubl
     return state->p25_p2_audio_allowed[other_slot] || recent_mac || recent_voice;
 }
 
-// Whether either logical slot still looks occupied: gated audio,
-// MAC activity inside the hold window, or recent voice on the carrier. A
-// Deny/Queued response heard in a voice channel's signaling answers some
-// unit's request; releasing the carrier over one while a call -- or the
-// hangtime gap the SM promises to bridge -- still occupies a slot tears down
-// audible traffic, so the voice hold is stretched to the trunking hangtime.
-static int
-p25p2_vpdu_carrier_occupied_for_response(const dsd_opts* opts, const dsd_state* state) {
-    double mac_hold = p25p2_vpdu_cfg_mac_hold_s(0.75);
-    double voice_hold = p25p2_vpdu_cfg_voice_hold_s(0.75);
-    if (opts != NULL && (double)opts->trunk_hangtime > voice_hold) {
-        voice_hold = (double)opts->trunk_hangtime;
+/* A Deny or Queued Response answers some unit's request (TIA-102.AABC-D §6.2.5 / §6.2.14: its Target Address is the
+   unit that asked, never the talkgroup a grant names), and no field ties it to the assignment being followed. It is
+   counted and shown, never acted on: the carrier stays, and the acquisition watchdog ends an assignment that never
+   carries voice. A response whose MAC CRC failed (kept under -F) is not counted. */
+static void
+p25p2_vpdu_count_response(const p25p2_vpdu_ctx* ctx, int is_deny) {
+    dsd_state* state = ctx->state;
+    if (!ctx->opts || !ctx->crc_ok) {
+        return;
     }
-    return p25p2_vpdu_other_slot_audio_with_history(state, 0, mac_hold, voice_hold)
-           || p25p2_vpdu_other_slot_audio_with_history(state, 1, mac_hold, voice_hold);
+    if (is_deny) {
+        state->p25_sm_deny_count++;
+    } else {
+        state->p25_sm_queued_count++;
+    }
 }
 
 static int
@@ -1464,7 +1499,7 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x48 || MAC[1 + len_a] == 0x49 || MAC[1 + len_a] == 0xC8 || MAC[1 + len_a] == 0xC9) {
-        int k = (MAC[len_a] == 0x07) ? 0 : 1;
+        int k = p25p2_vpdu_is_bridged_p1(ctx) ? 0 : 1;
         int svc = MAC[2 + len_a + k];
         int channel = (MAC[3 + len_a + k] << 8) | MAC[4 + len_a + k];
         int timer = (MAC[5 + len_a + k] << 8) | MAC[6 + len_a + k];
@@ -1970,7 +2005,6 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_12(p25p2_vpdu_ctx* ctx) {
-    const dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
     struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
@@ -2007,8 +2041,8 @@ p25p2_vpdu_iter_block_12(p25p2_vpdu_ctx* ctx) {
         int dso = MAC[2 + len_a];
         int dac = (MAC[3 + len_a] << 8) | MAC[4 + len_a];
         int target = (MAC[5 + len_a] << 16) | (MAC[6 + len_a] << 8) | MAC[7 + len_a];
-        //P25p1 TSBK is shifted slightly on these two values
-        if (DSD_SYNC_IS_P25P1(state->synctype)) {
+        // Phase 1 TSBK 0x15 has two reserved octets before these two (TIA-102.AABC-D §5.2.6)
+        if (p25p2_vpdu_is_bridged_p1(ctx)) {
             dac = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
             target = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
         }
@@ -3068,7 +3102,7 @@ p25p2_vpdu_iter_block_34(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x79) {
-        int bridged_p1 = (MAC[len_a] == 0x07);
+        int bridged_p1 = p25p2_vpdu_is_bridged_p1(ctx);
         int rfssid = MAC[2 + len_a];
         int siteid = MAC[3 + len_a];
         int channel1 = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
@@ -3350,6 +3384,17 @@ BLOCK_END:
     ctx->iter_idx = i;
 }
 
+/* The Registration Value of a Unit Registration Response (TIA-102.AABC-D §6.2.21.1). */
+static void
+p25p2_vpdu_print_registration_value(int rv) {
+    switch (rv) {
+        case 0: DSD_FPRINTF(stderr, " REG_ACCEPT;"); break;
+        case 1: DSD_FPRINTF(stderr, " REG_FAIL;"); break;     // the RFSS was unable to verify the registration
+        case 2: DSD_FPRINTF(stderr, " REG_DENY;"); break;     // not allowed at this location
+        default: DSD_FPRINTF(stderr, " REG_REFUSED;"); break; // WUID invalid; may re-register after a user stimulus
+    }
+}
+
 static void
 p25p2_vpdu_iter_block_38(p25p2_vpdu_ctx* ctx) {
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
@@ -3363,33 +3408,29 @@ p25p2_vpdu_iter_block_38(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1 + len_a] == 0xEC && MAC[0] != 0x07) {
+    if (MAC[1 + len_a] == 0xEC && !p25p2_vpdu_is_bridged_p1(ctx)) {
+        /* Unit Registration Response - Extended (TIA-102.BBAD-A §3.47 Fig 110, length 13): octet 2 the length, octet 3
+           reserved bits 7-2 and RV bits 1-0, Source SUID octets 4-10 (WACN, System ID, Source ID), Source Address (the
+           assigned address) octets 11-13. */
         int res = (MAC[3 + len_a] >> 2) & 0x3F;
-        int RV = (MAC[2 + len_a] >> 0) & 0x3;
-        int src = (MAC[8 + len_a] << 16) | (MAC[9 + len_a] << 8) | MAC[10 + len_a];
+        int RV = (MAC[3 + len_a] >> 0) & 0x3;
         int uwacn = (MAC[4 + len_a] << 12) | (MAC[5 + len_a] << 4) | ((MAC[6 + len_a] & 0xF0) >> 4);
         int usys = ((MAC[6 + len_a] & 0xF) << 8) | MAC[7 + len_a];
-        DSD_FPRINTF(stderr, "\n Unit Registration Response - WACN: %05X; SYS: %03X; SRC: %d", uwacn, usys, src);
+        int sid = p25p2_vpdu_u24(MAC, 8 + len_a);
+        int src = p25p2_vpdu_u24(MAC, 11 + len_a);
+        DSD_FPRINTF(stderr, "\n Unit Registration Response - WACN: %05X; SYS: %03X; SRC_ID: %d SRC: %d", uwacn, usys,
+                    sid, src);
         if (res) {
             DSD_FPRINTF(stderr, " RES: %d;", res);
         }
-        if (RV == 0) {
-            DSD_FPRINTF(stderr, " REG_ACCEPT;");
-            // Track affiliated RID
-            if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
-                p25_aff_register(state, (uint32_t)src);
-            }
-        }
-        if (RV == 1) {
-            DSD_FPRINTF(stderr, " REG_FAIL;"); //RFSS was unable to verify
-        }
-        if (RV == 2) {
-            DSD_FPRINTF(stderr, " REG_DENY;"); //Not allowed at this location
-        }
-        if (RV == 3) {
-            DSD_FPRINTF(stderr, " REG_REFUSED;"); //WUID invalid but re-register after a user stimulus
+        p25p2_vpdu_print_registration_value(RV);
+        const p25_home_id home = {(uint32_t)uwacn, (uint16_t)usys, (uint32_t)sid, 1U};
+        if (RV == 0 && p25p2_vpdu_network_table_writable(ctx, "registration")) {
+            p25_aff_register_assigned(state, (uint32_t)src, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid);
         }
         DSD_FPRINTF(stderr, " - Extended;");
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_registration_response(&origin, RV, &home, (uint32_t)src);
     }
 
     if (len_b < 0) {
@@ -3408,7 +3449,7 @@ p25p2_vpdu_handle_location_registration_response(const p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
     const int len_a = ctx->len_a;
     int k = 1; // vPDU offset
-    if (MAC[len_a] == 0x07) {
+    if (p25p2_vpdu_is_bridged_p1(ctx)) {
         k = 0; // TSBK offset
     }
 
@@ -3438,6 +3479,8 @@ p25p2_vpdu_handle_location_registration_response(const p25p2_vpdu_ctx* ctx) {
         case 3: DSD_FPRINTF(stderr, " REG_REFUSED;"); break;
         default: break;
     }
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_location_registration_response(&origin, rv, (uint32_t)target, (uint16_t)group);
 }
 
 static void
@@ -3464,35 +3507,31 @@ p25p2_vpdu_iter_block_39(p25p2_vpdu_ctx* ctx) {
     				[07][6C][01][EC][72][70][EC][72][70][EC][00][00]
     				[00][00][00][00][00][00][00][00][00][00][00][00]
     			*/
+        /* RV octet bits 5-4, then the 12-bit System ID, Source ID and Source Address (TIA-102.AABC-D §6.2.21.1;
+           TIA-102.BBAD-A §3.47 Fig 109 one octet later, after the length octet). The abbreviated form is used when
+           the unit's home WACN is this site's, so its SUID is this WACN, that System ID and the Source ID. */
         int k = 1; //vPDU is one octet higher than TSBK
-        if (MAC[len_a] == 0x07) {
+        if (p25p2_vpdu_is_bridged_p1(ctx)) {
             k = 0;
         }
         int res = (MAC[2 + len_a + k] >> 6) & 0x3;
         int RV = (MAC[2 + len_a + k] >> 4) & 0x3;
-        int usite = ((MAC[2 + len_a + k] & 0xF) << 8) | MAC[3 + len_a + k];
+        int usys = ((MAC[2 + len_a + k] & 0xF) << 8) | MAC[3 + len_a + k];
         int sid = (MAC[4 + len_a + k] << 16) | (MAC[5 + len_a + k] << 8) | MAC[6 + len_a + k];
         int src = (MAC[7 + len_a + k] << 16) | (MAC[8 + len_a + k] << 8) | MAC[9 + len_a + k];
-        DSD_FPRINTF(stderr, "\n Unit Registration Response - SITE: %03X SRC_ID: %d SRC: %d", usite, sid, src);
+        DSD_FPRINTF(stderr, "\n Unit Registration Response - SYS: %03X SRC_ID: %d SRC: %d", usys, sid, src);
         if (res) {
             DSD_FPRINTF(stderr, " RES: %d;", res);
         }
-        if (RV == 0) {
-            DSD_FPRINTF(stderr, " REG_ACCEPT;");
-            // Track affiliated RID
-            if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
-                p25_aff_register(state, (uint32_t)src);
-            }
+        p25p2_vpdu_print_registration_value(RV);
+        const p25_home_id home = {(uint32_t)state->p2_wacn, (uint16_t)usys, (uint32_t)sid, 1U};
+        if (RV == 0 && p25p2_vpdu_network_table_writable(ctx, "registration")) {
+            p25_aff_register_assigned(state, (uint32_t)src, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid);
         }
-        if (RV == 1) {
-            DSD_FPRINTF(stderr, " REG_FAIL;"); //RFSS was unable to verify
-        }
-        if (RV == 2) {
-            DSD_FPRINTF(stderr, " REG_DENY;"); //Not allowed at this location
-        }
-        if (RV == 3) {
-            DSD_FPRINTF(stderr, " REG_REFUSED;"); //WUID invalid but re-register after a user stimulus
-        }
+        /* The abbreviated form's home WACN is the site's: a home system only once the site's WACN is known. */
+        const p25_home_id row_home = {home.wacn, home.sys, home.id, (uint8_t)(state->p2_wacn != 0ULL)};
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_registration_response(&origin, RV, &row_home, (uint32_t)src);
     }
 
     if (len_b < 0) {
@@ -3517,14 +3556,16 @@ p25p2_vpdu_iter_block_40(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1 + len_a] == 0x6D && MAC[0 + len_a] != 0x07) {
-        int k = 2; //vPDU is two octets higher than TSBK
-        if (MAC[len_a] == 0x07) {
-            k = 0;
-        }
-        int src = (MAC[2 + len_a + k] << 16) | (MAC[3 + len_a + k] << 8) | MAC[4 + len_a + k];
-        int tgt = (MAC[5 + len_a + k] << 16) | (MAC[6 + len_a + k] << 8) | MAC[7 + len_a + k];
-        DSD_FPRINTF(stderr, "\n Unit Registration - SRC: %d; TGT: %d;", src, tgt);
+    if (MAC[1 + len_a] == 0x6D) {
+        /* Unit Registration Command. Phase 2 (TIA-102.BBAD-A §3.32 Fig 81, length 7): Target ID octets 2-4,
+           Source Address octets 5-7. Phase 1 TSBK 0x2D (TIA-102.AABC-D §6.2.20): octets 2-3 reserved, Target ID 4-6,
+           Source Address 7-9. */
+        const int k = p25p2_vpdu_is_bridged_p1(ctx) ? 2 : 0;
+        int tgt = p25p2_vpdu_u24(MAC, 2 + len_a + k);
+        int src = p25p2_vpdu_u24(MAC, 5 + len_a + k);
+        DSD_FPRINTF(stderr, "\n Unit Registration Command - TGT: %d; SRC: %d;", tgt, src);
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_registration_command(&origin, (uint32_t)tgt);
     }
 
     if (len_b < 0) {
@@ -3551,6 +3592,8 @@ p25p2_vpdu_iter_block_41(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x6F || MAC[1 + len_a] == 0xEF) {
+        /* The SUID the deregistration was for (TIA-102.BBAD-A §3.48 Fig 111; TIA-102.AABC-D §6.2.22), never the local
+           address its registration assigned: the entry that address keys goes only while it is still this SUID's. */
         int src = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
         int uwacn = (MAC[3 + len_a] << 12) | (MAC[4 + len_a] << 4) | ((MAC[5 + len_a] & 0xF0) >> 4);
         int usys = ((MAC[5 + len_a] & 0xF) << 8) | MAC[6 + len_a];
@@ -3558,10 +3601,15 @@ p25p2_vpdu_iter_block_41(p25p2_vpdu_ctx* ctx) {
         if (MAC[1 + len_a] == 0xEF) {
             DSD_FPRINTF(stderr, " - Extended;");
         }
-        // Remove RID from affiliation table
+        const p25_home_id home = {(uint32_t)uwacn, (uint16_t)usys, (uint32_t)src, 1U};
+        /* The address the registration held, read before its entry goes. */
+        uint32_t assigned = 0U;
+        (void)p25_aff_assigned_for_home(state, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, &assigned);
         if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
-            p25_aff_deregister(state, (uint32_t)src);
+            (void)p25_aff_deregister_home(state, &home, (uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid);
         }
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_deregistration_ack(&origin, &home, assigned);
     }
 
     if (len_b < 0) {
@@ -3813,7 +3861,12 @@ p25p2_vpdu_accept_nsb_cc(const dsd_opts* opts, dsd_state* state, int lwacn, int 
     const long neigh[1] = {state->p25_cc_freq};
     p25_cc_record_neighbor_frequencies(opts, state, neigh, 1);
     p25p2_vpdu_note_nsb_system_tdma(state);
-    state->p25_cc_is_tdma = 1; // TDMA control channel (QPSK, 6000 sym/s)
+    /* The broadcast names the control channel, not its access method: one heard on a TDMA voice channel's SACCH or
+       FACCH may name an FDMA control channel (a site with an FDMA control channel may carry TDMA traffic channels,
+       TIA-102.BBAC-A §2). Only an LCCH, a TDMA control channel itself, proves it (as p25_trunk_sm.c's CC seed). */
+    if (state->p2_is_lcch == 1) {
+        state->p25_cc_is_tdma = 1; // TDMA control channel (QPSK, 6000 sym/s)
+    }
 
     // Only update system identity and potentially reset IDEN tables when values
     // are sane (non-zero) and we have a valid frequency mapping.
@@ -3977,7 +4030,7 @@ p25p2_vpdu_iter_block_49(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1 + len_a] == 0x7C || (MAC[1 + len_a] == 0x7E && MAC[len_a] == 0x07)) {
+    if (MAC[1 + len_a] == 0x7C || (MAC[1 + len_a] == 0x7E && p25p2_vpdu_is_bridged_p1(ctx))) {
         /*
          * Preserve the current conflict split: bridged P1 TSBK 0x3E (MAC
          * 0x7E) is adjacency/uncoordinated band plan, while bridged 0x3F
@@ -3986,7 +4039,7 @@ p25p2_vpdu_iter_block_49(p25p2_vpdu_ctx* ctx) {
          * AABC-E text or captures. Bridged P1 0x3C/0x3E adjacency carries
          * CFVA/reserved here, not SYSID.
          */
-        int bridged_p1_adj = (MAC[len_a] == 0x07 && (MAC[1 + len_a] == 0x7C || MAC[1 + len_a] == 0x7E));
+        int bridged_p1_adj = p25p2_vpdu_is_bridged_p1(ctx);
         int uncoordinated = (MAC[1 + len_a] == 0x7E);
         int lra = MAC[2 + len_a];
         int cfva = MAC[3 + len_a] >> 4;
@@ -4191,7 +4244,7 @@ p25p2_vpdu_iter_block_52(p25p2_vpdu_ctx* ctx) {
 
     if (MAC[1 + len_a] == 0x68) {
         int k = 1; // vPDU offset
-        if (MAC[len_a] == 0x07) {
+        if (p25p2_vpdu_is_bridged_p1(ctx)) {
             k = 0; // TSBK offset
         }
         int lg = (MAC[2 + len_a + k] >> 7) & 0x1;
@@ -4207,6 +4260,8 @@ p25p2_vpdu_iter_block_52(p25p2_vpdu_ctx* ctx) {
             // Also track group affiliation (RID -> TG mapping)
             p25_ga_add(state, (uint32_t)ta, (uint32_t)ga);
         }
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_group_affiliation_response(&origin, gav, (uint32_t)ta, (uint16_t)ga);
     }
 
     if (len_b < 0) {
@@ -4243,14 +4298,14 @@ p25p2_vpdu_iter_block_53(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n  Class: %02X Operand: %02X Arg/Src: %06X Target: %u", class_id, operand, argument,
                     target);
         if (class_id == 0) {
-            DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label(operand));
-            if (p25_extended_function_operand_is_ack(operand)) {
-                DSD_FPRINTF(stderr, " Ack");
-            }
+            DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_label(operand));
         } else {
             DSD_FPRINTF(stderr, " Other Command");
         }
         DSD_FPRINTF(stderr, ";");
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        const p25_ua_ext_function function = {class_id, operand, argument, target, NULL};
+        p25_ua_extended_function(&origin, &function);
     }
 
     if (MAC[1 + len_a] == 0x69) {
@@ -4328,7 +4383,7 @@ p25p2_vpdu_iter_block_55(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1 + len_a] == 0x7F && MAC[len_a] == 0x07) {
+    if (MAC[1 + len_a] == 0x7F && p25p2_vpdu_is_bridged_p1(ctx)) {
         int algid = (int)MAC[4 + len_a];
         int kid = (int)((MAC[5 + len_a] << 8) | MAC[6 + len_a]);
         int target = (int)((MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a]);
@@ -4380,9 +4435,8 @@ typedef struct {
 } p25p2_vpdu_time_fields;
 
 static void
-p25p2_vpdu_parse_time(const unsigned long long int* MAC, int len_a, p25p2_vpdu_time_fields* f) {
+p25p2_vpdu_parse_time(const unsigned long long int* MAC, int len_a, int bridged_p1, p25p2_vpdu_time_fields* f) {
     DSD_MEMSET(f, 0, sizeof(*f));
-    const int bridged_p1 = (MAC[len_a] == 0x07);
     f->vd = (int)p25_mac_get_bits(MAC, len_a, 8, 1);
     f->vt = (int)p25_mac_get_bits(MAC, len_a, 9, 1);
     f->vl = (int)p25_mac_get_bits(MAC, len_a, 10, 1);
@@ -4443,7 +4497,7 @@ p25p2_vpdu_iter_block_56(p25p2_vpdu_ctx* ctx) {
 
     if (MAC[1 + len_a] == 0x75) {
         p25p2_vpdu_time_fields f;
-        p25p2_vpdu_parse_time(MAC, len_a, &f);
+        p25p2_vpdu_parse_time(MAC, len_a, p25p2_vpdu_is_bridged_p1(ctx), &f);
         p25p2_vpdu_print_time(&f);
 
         const int offset_minutes = p25p2_vpdu_lto_offset_minutes(f.vl, f.lto_sign, f.lto_mag);
@@ -4477,7 +4531,6 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_57(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -4498,7 +4551,7 @@ p25p2_vpdu_iter_block_57(p25p2_vpdu_ctx* ctx) {
         int target_addr = (int)((MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a]);
 
         const char* reason_str =
-            is_deny ? p25_deny_response_reason((uint8_t)reason_code) : p25_queued_response_reason((uint8_t)reason_code);
+            dsd_ua_reason_text(is_deny ? DSD_UA_REASON_P25_DENY : DSD_UA_REASON_P25_QUEUED, (uint16_t)reason_code);
 
         DSD_FPRINTF(stderr, "\n %s Response", is_deny ? "Deny" : "Queued");
         DSD_FPRINTF(stderr, "\n  SVC [%02X] Reason [%s]", svc_type, reason_str);
@@ -4517,19 +4570,11 @@ p25p2_vpdu_iter_block_57(p25p2_vpdu_ctx* ctx) {
                                          target_addr, reason_str);
         }
 
-        // Notify the trunking state machine. An occupied carrier keeps its
-        // calls; the acquisition watchdog owns cleaning up a granted-then-
-        // denied assignment that never produces voice.
-        if (opts) {
-            if (is_deny) {
-                state->p25_sm_deny_count++;
-            } else {
-                state->p25_sm_queued_count++;
-            }
-            if (!p25p2_vpdu_carrier_occupied_for_response(opts, state)) {
-                p25_sm_release(p25_sm_get_ctx(), opts, state, is_deny ? "deny-rsp" : "queued-rsp");
-            }
-        }
+        p25p2_vpdu_count_response(ctx, is_deny);
+        const p25_ua_response response = {(uint8_t)is_deny,       (uint8_t)svc_type,   (uint8_t)reason_code,
+                                          (uint8_t)has_addl_info, (uint32_t)addl_info, (uint32_t)target_addr};
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        p25_ua_deny_queued(&origin, &response);
     }
 
     if (len_b < 0) {
@@ -4567,18 +4612,31 @@ p25p2_vpdu_handle_unit_to_unit_answer_request(const p25p2_vpdu_ctx* ctx, int opc
     int target = p25p2_vpdu_u24(MAC, 3 + len_a);
 
     DSD_FPRINTF(stderr, "\n Unit-to-Unit Answer Request");
-    if (opcode == 0xC5) {
+    p25_ua_unit caller;
+    if (p25p2_vpdu_is_bridged_p1(ctx)) {
+        /* Phase 1 TSBK 0x05 (TIA-102.AABC-D §4.2.4.1 Fig 4.2.4-1): Service Options octet 2, octet 3 reserved, Target
+           Address octets 4-6, Source ID octets 7-9. Phase 2 0x45 has no reserved octet (TIA-102.BBAD-A §3.10 Fig 36). */
+        int source = p25p2_vpdu_u24(MAC, 7 + len_a);
+        target = p25p2_vpdu_u24(MAC, 4 + len_a);
+        caller = p25p2_vpdu_ua_unit((uint32_t)source);
+        DSD_FPRINTF(stderr, " - Abbreviated");
+        DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Source [%d]", svc, target, source);
+    } else if (opcode == 0xC5) {
         int src_wacn = p25p2_vpdu_fqid_wacn(MAC, 6 + len_a);
         int src_sys = p25p2_vpdu_fqid_sysid(MAC, 6 + len_a);
         int source = p25p2_vpdu_u24(MAC, 10 + len_a);
+        caller = p25p2_vpdu_ua_fq_unit((uint32_t)source, src_wacn, src_sys);
         DSD_FPRINTF(stderr, " - Extended");
         DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Source [%05X:%03X.%d]", svc, target, src_wacn, src_sys, source);
     } else {
         int source = p25p2_vpdu_u24(MAC, 6 + len_a);
+        caller = p25p2_vpdu_ua_unit((uint32_t)source);
         DSD_FPRINTF(stderr, " - Abbreviated");
         DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Source [%d]", svc, target, source);
     }
     p25p2_vpdu_print_svc_no_state(ctx->opts, svc);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_answer_request(&origin, (uint32_t)target, &caller, 1, (uint8_t)svc);
 }
 
 static void
@@ -4595,9 +4653,13 @@ p25p2_vpdu_handle_telephone_interconnect_answer_request(const p25p2_vpdu_ctx* ct
     }
     digits[d] = '\0';
 
-    int target = (int)((MAC[7 + len_a] >> 4) & 0x0F);
+    /* Ten BCD digits in octets 2-6 and a 24-bit Target Address in octets 7-9, on Phase 2 0x4A (TIA-102.BBAD-A
+       §3.12 Fig 42, length 9) and Phase 1 TSBK 0x0A (TIA-102.AABC-D §4.2.7 Fig 4.2.7-1) alike. */
+    int target = p25p2_vpdu_u24(MAC, 7 + len_a);
     DSD_FPRINTF(stderr, "\n Telephone Interconnect Answer Request");
     DSD_FPRINTF(stderr, "\n  Target [%d] Digits [%s]", target, digits);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_answer_request(&origin, (uint32_t)target, NULL, 0, 0U);
 }
 
 static void
@@ -4606,17 +4668,22 @@ p25p2_vpdu_handle_status_update_abbreviated(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
     const int len_a = ctx->len_a;
     const int bridged_p1 = p25p2_vpdu_is_bridged_p1(ctx);
-    int unit_status = (int)MAC[(bridged_p1 ? 2 : 3) + len_a];
-    int user_status = (int)MAC[(bridged_p1 ? 3 : 4) + len_a];
+    /* The 16-bit Status field: User Status in its first octet, Unit Status in its second (TIA-102.AABC-D §2.3.29). */
+    int user_status = (int)MAC[(bridged_p1 ? 2 : 3) + len_a];
+    int unit_status = (int)MAC[(bridged_p1 ? 3 : 4) + len_a];
     int target = p25p2_vpdu_u24(MAC, (bridged_p1 ? 4 : 5) + len_a);
     int source = p25p2_vpdu_u24(MAC, (bridged_p1 ? 7 : 8) + len_a);
 
     DSD_FPRINTF(stderr, "\n Status Update - Abbreviated");
-    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Unit [%02X] User [%02X]", target, source, unit_status,
-                user_status);
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] User [%02X] Unit [%02X]", target, source, user_status,
+                unit_status);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
-                                 "STATUS Target: %d Source: %d Unit: %02X User: %02X; ", target, source, unit_status,
-                                 user_status);
+                                 "STATUS Target: %d Source: %d User: %02X Unit: %02X; ", target, source, user_status,
+                                 unit_status);
+    const p25_ua_unit reporter = p25p2_vpdu_ua_unit((uint32_t)source);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    const p25_ua_unit recipient = p25p2_vpdu_ua_unit((uint32_t)target);
+    p25_ua_status_update(&origin, (uint16_t)((user_status << 8) | unit_status), &recipient, &reporter);
 }
 
 static const char*
@@ -4629,6 +4696,18 @@ p25p2_vpdu_query_alert_label(int opcode) {
         case 0x6A:
         case 0xEA: return "Group Affiliation Query";
         default: return "Query";
+    }
+}
+
+/* A Status Query or Call Alert row (a Group Affiliation Query adds none: the plan's table has no row for it). */
+static void
+p25p2_vpdu_ua_query_or_alert(const p25p2_vpdu_ctx* ctx, int opcode, uint32_t target, p25_ua_unit source) {
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    const p25_ua_unit paged = p25p2_vpdu_ua_unit(target);
+    if (opcode == 0x5A || opcode == 0xDA) {
+        p25_ua_status_query(&origin, &paged, &source);
+    } else if (opcode == 0x5F || opcode == 0xDF) {
+        p25_ua_call_alert(&origin, &paged, &source);
     }
 }
 
@@ -4651,6 +4730,7 @@ p25p2_vpdu_handle_query_alert_affiliation_abbreviated(p25p2_vpdu_ctx* ctx, int o
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d]", target, source);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "%s Target: %d Source: %d; ", label, target, source);
+    p25p2_vpdu_ua_query_or_alert(ctx, opcode, (uint32_t)target, p25p2_vpdu_ua_unit((uint32_t)source));
 }
 
 static void
@@ -4667,6 +4747,10 @@ p25p2_vpdu_handle_message_update_abbreviated(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Message [%04X]", target, source, message);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "MSG Target: %d Source: %d Message: %04X; ", target, source, message);
+    const p25_ua_unit reporter = p25p2_vpdu_ua_unit((uint32_t)source);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    const p25_ua_unit recipient = p25p2_vpdu_ua_unit((uint32_t)target);
+    p25_ua_message_update(&origin, (uint16_t)message, &recipient, &reporter);
 }
 
 static void
@@ -4696,11 +4780,15 @@ p25p2_vpdu_handle_ack_response_fne_abbreviated(p25p2_vpdu_ctx* ctx) {
 static void
 p25p2_vpdu_handle_roaming_address_command(const p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
+    /* Phase 2 0x76 carries a length octet at octet 2 and its fields one octet later (TIA-102.BBAD-A §3.50 Fig 113)
+       than Phase 1 TSBK 0x36 (TIA-102.AABC-D §6.2.25: Stack Operation octet 2, WACN and System ID octets 3-6, Target
+       ID octets 7-9). */
     const int len_a = ctx->len_a;
-    int stack_op = (int)MAC[3 + len_a];
-    int target_wacn = p25p2_vpdu_fqid_wacn(MAC, 4 + len_a);
-    int target_sys = p25p2_vpdu_fqid_sysid(MAC, 4 + len_a);
-    int target = p25p2_vpdu_u24(MAC, 8 + len_a);
+    const int k = p25p2_vpdu_is_bridged_p1(ctx) ? 0 : 1;
+    int stack_op = (int)MAC[2 + len_a + k];
+    int target_wacn = p25p2_vpdu_fqid_wacn(MAC, 3 + len_a + k);
+    int target_sys = p25p2_vpdu_fqid_sysid(MAC, 3 + len_a + k);
+    int target = p25p2_vpdu_u24(MAC, 7 + len_a + k);
 
     DSD_FPRINTF(stderr, "\n Roaming Address Command");
     DSD_FPRINTF(stderr, "\n  StackOp [%02X] Target [%05X:%03X.%d]", stack_op, target_wacn, target_sys, target);
@@ -4743,23 +4831,78 @@ p25p2_vpdu_handle_telephone_interconnect_voice_user(p25p2_vpdu_ctx* ctx) {
                                  "TELE Target: %d Timer: %.1fs; ", target, (double)timer / 10.0);
 }
 
+/* A Radio Unit Monitor Command - Abbreviated, from either layout: Target is the unit monitored, Source the unit that
+   monitors (TIA-102.AABC-D §6.2.24.1). */
 static void
-p25p2_vpdu_handle_radio_unit_monitor_abbreviated(p25p2_vpdu_ctx* ctx) {
-    const unsigned long long int* MAC = ctx->mac;
+p25p2_vpdu_report_radio_unit_monitor(const p25p2_vpdu_ctx* ctx, int target, int source, int transmit_time,
+                                     int multiplier, int silent) {
     dsd_state* state = ctx->state;
-    const int len_a = ctx->len_a;
-    int transmit_time = (int)MAC[3 + len_a];
-    int silent = ((MAC[4 + len_a] & 0x80U) != 0U);
-    int multiplier = (int)(MAC[4 + len_a] & 0x03U);
-    int target = p25p2_vpdu_u24(MAC, 5 + len_a);
-    int source = p25p2_vpdu_u24(MAC, 8 + len_a);
-
     DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Abbreviated");
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Time [%d] Mult [%d]%s", target, source, transmit_time, multiplier,
                 silent ? " Silent" : "");
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "RUM Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time,
                                  multiplier, silent ? " Silent" : "");
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    const p25_ua_unit monitor = p25p2_vpdu_ua_unit((uint32_t)source);
+    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, &monitor, 0, 0U);
+}
+
+static void
+p25p2_vpdu_handle_radio_unit_monitor_abbreviated(const p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    const int len_a = ctx->len_a;
+    int transmit_time = (int)MAC[3 + len_a];
+    int silent = ((MAC[4 + len_a] & 0x80U) != 0U);
+    int multiplier = (int)(MAC[4 + len_a] & 0x03U);
+    int target = p25p2_vpdu_u24(MAC, 5 + len_a);
+    int source = p25p2_vpdu_u24(MAC, 8 + len_a);
+    p25p2_vpdu_report_radio_unit_monitor(ctx, target, source, transmit_time, multiplier, silent);
+}
+
+/* Phase 1 TSBK 0x1D Radio Unit Monitor Command (TIA-102.AABC-D §6.2.24.1 Fig 6.2.24-1): TX Time octet 2, SM bit 7 and
+   TX Multiplier bits 1-0 of octet 3, Source Address octets 4-6 (the unit that monitors), Target Address octets 7-9
+   (the unit monitored). Its Phase 2 opcode 0x5D is the obsolete form (TIA-102.BBAD-A Fig 82). */
+static void
+p25p2_vpdu_handle_radio_unit_monitor_p1(const p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    const int len_a = ctx->len_a;
+    int transmit_time = (int)MAC[2 + len_a];
+    int silent = ((MAC[3 + len_a] & 0x80U) != 0U);
+    int multiplier = (int)(MAC[3 + len_a] & 0x03U);
+    int source = p25p2_vpdu_u24(MAC, 4 + len_a);
+    int target = p25p2_vpdu_u24(MAC, 7 + len_a);
+    p25p2_vpdu_report_radio_unit_monitor(ctx, target, source, transmit_time, multiplier, silent);
+}
+
+static void
+p25p2_vpdu_handle_radio_unit_monitor_obsolete(const p25p2_vpdu_ctx* ctx) {
+    if (p25p2_vpdu_is_bridged_p1(ctx)) {
+        p25p2_vpdu_handle_radio_unit_monitor_p1(ctx);
+        return;
+    }
+    DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Obsolete");
+}
+
+/* Phase 1 TSBK 0x2E Authentication Command (TIA-102.AABC-D §6.2.3 Fig 6.2.3-1, obsolete there): octet 2 reserved, the
+   target's SUID in octets 3-9 (WACN, System ID, Target ID). It asks the target to start authenticating; Phase 2 has no
+   message on its MAC opcode 0x6E. */
+static void
+p25p2_vpdu_handle_authentication_command_p1(const p25p2_vpdu_ctx* ctx) {
+    if (!p25p2_vpdu_is_bridged_p1(ctx)) {
+        return;
+    }
+    const unsigned long long int* MAC = ctx->mac;
+    const int len_a = ctx->len_a;
+    int target_wacn = p25p2_vpdu_fqid_wacn(MAC, 3 + len_a);
+    int target_sys = p25p2_vpdu_fqid_sysid(MAC, 3 + len_a);
+    int target = p25p2_vpdu_u24(MAC, 7 + len_a);
+
+    DSD_FPRINTF(stderr, "\n Authentication Command (obsolete)");
+    DSD_FPRINTF(stderr, "\n  Target [%05X:%03X.%d]", target_wacn, target_sys, target);
+    const p25_ua_unit unit = p25p2_vpdu_ua_fq_unit((uint32_t)target, target_wacn, target_sys);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_authentication_command(&origin, &unit);
 }
 
 static void
@@ -4784,6 +4927,9 @@ p25p2_vpdu_handle_radio_unit_monitor_enhanced_abbreviated(p25p2_vpdu_ctx* ctx) {
         state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, talkgroup_mode ? 0U : (uint64_t)source, 0U, 0, 0U,
         "RUM-E Target: %d %s: %d Time: %d ALG: %02X KID: %04X%s; ", target, talkgroup_mode ? "TG" : "RID", monitor,
         transmit_time, algid, key_id, silent ? " Silent" : "");
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    const p25_ua_unit monitoring = p25p2_vpdu_ua_unit((uint32_t)source);
+    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, &monitoring, talkgroup_mode, (uint16_t)group);
 }
 
 static void
@@ -4805,6 +4951,9 @@ p25p2_vpdu_handle_radio_unit_monitor_extended_vch(p25p2_vpdu_ctx* ctx) {
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "RUM-X Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time,
                                  multiplier, silent ? " Silent" : "");
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    const p25_ua_unit monitor = p25p2_vpdu_ua_fq_unit((uint32_t)source, source_wacn, source_sys);
+    p25_ua_radio_unit_monitor(&origin, (uint32_t)target, &monitor, 0, 0U);
 }
 
 static void
@@ -4812,19 +4961,24 @@ p25p2_vpdu_handle_status_update_extended_vch(p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
     dsd_state* state = ctx->state;
     const int len_a = ctx->len_a;
-    int unit_status = (int)MAC[3 + len_a];
-    int user_status = (int)MAC[4 + len_a];
+    /* User Status, then Unit Status (TIA-102.AABC-D §2.3.29; TIA-102.BBAD-A §3.41 Fig 92). */
+    int user_status = (int)MAC[3 + len_a];
+    int unit_status = (int)MAC[4 + len_a];
     int target = p25p2_vpdu_u24(MAC, 5 + len_a);
     int source_wacn = p25p2_vpdu_fqid_wacn(MAC, 8 + len_a);
     int source_sys = p25p2_vpdu_fqid_sysid(MAC, 8 + len_a);
     int source = p25p2_vpdu_u24(MAC, 12 + len_a);
 
     DSD_FPRINTF(stderr, "\n Status Update - Extended VCH");
-    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Unit [%02X] User [%02X]", target, source_wacn,
-                source_sys, source, unit_status, user_status);
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] User [%02X] Unit [%02X]", target, source_wacn,
+                source_sys, source, user_status, unit_status);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
-                                 "STATUS-X Target: %d Source: %d Unit: %02X User: %02X; ", target, source, unit_status,
-                                 user_status);
+                                 "STATUS-X Target: %d Source: %d User: %02X Unit: %02X; ", target, source, user_status,
+                                 unit_status);
+    const p25_ua_unit reporter = p25p2_vpdu_ua_fq_unit((uint32_t)source, source_wacn, source_sys);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    const p25_ua_unit recipient = p25p2_vpdu_ua_unit((uint32_t)target);
+    p25_ua_status_update(&origin, (uint16_t)((user_status << 8) | unit_status), &recipient, &reporter);
 }
 
 static void
@@ -4842,6 +4996,8 @@ p25p2_vpdu_handle_status_query_alert_affiliation_extended_vch(p25p2_vpdu_ctx* ct
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d]", target, source_wacn, source_sys, source);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "%s-X Target: %d Source: %d; ", label, target, source);
+    p25p2_vpdu_ua_query_or_alert(ctx, opcode, (uint32_t)target,
+                                 p25p2_vpdu_ua_fq_unit((uint32_t)source, source_wacn, source_sys));
 }
 
 static void
@@ -4860,6 +5016,10 @@ p25p2_vpdu_handle_message_update_extended_vch(p25p2_vpdu_ctx* ctx) {
                 message);
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "MSG-X Target: %d Source: %d Message: %04X; ", target, source, message);
+    const p25_ua_unit reporter = p25p2_vpdu_ua_fq_unit((uint32_t)source, source_wacn, source_sys);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    const p25_ua_unit recipient = p25p2_vpdu_ua_unit((uint32_t)target);
+    p25_ua_message_update(&origin, (uint16_t)message, &recipient, &reporter);
 }
 
 static void
@@ -4880,11 +5040,20 @@ p25p2_vpdu_handle_extended_function_extended_vch(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  Class [%02X] Operand [%02X] Arg [%06X] Target [%d] Source [%05X:%03X.%d]", class_id,
                 operand, argument, target, source_wacn, source_sys, source);
     if (class_id == 0) {
-        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label((uint8_t)operand));
+        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_label((uint8_t)operand));
     }
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, 0U,
                                  "EXTFUNC-X Target: %d Source: %d Function: %04X Arg: %06X; ", target, source, function,
                                  argument);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    /* A command's argument is the Source Address / ID (TIA-102.AABC-D Table 2.3.15-1): the Source SUID names that unit
+       when its ID is the argument's. An acknowledgement's argument is the radio acknowledging, which no text ties to
+       the Source SUID. */
+    const p25_home_id source_home = {(uint32_t)source_wacn, (uint16_t)source_sys, (uint32_t)source, 1U};
+    const int command = (operand & 0x80) == 0;
+    const p25_ua_ext_function f = {(uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target,
+                                   command && source == argument ? &source_home : NULL};
+    p25_ua_extended_function(&origin, &f);
 }
 
 static void
@@ -4904,11 +5073,16 @@ p25p2_vpdu_handle_extended_function_extended_lcch(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  Class [%02X] Operand [%02X] Arg [%06X] Target [%d] Source [%05X:%03X]", class_id, operand,
                 argument, target, source_wacn, source_sys);
     if (class_id == 0) {
-        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label((uint8_t)operand));
+        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_label((uint8_t)operand));
     }
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_DATA, (uint64_t)target, 0U, 0U, 0, 0U,
                                  "EXTFUNC-L Target: %d Source: %05X:%03X Function: %04X Arg: %06X; ", target,
                                  source_wacn, source_sys, function, argument);
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    /* The LCCH form carries a Source WACN and System ID but no Source ID, and no text ties them to the argument's unit:
+       the argument gets no home (the print shows them). */
+    const p25_ua_ext_function f = {(uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target, NULL};
+    p25_ua_extended_function(&origin, &f);
 }
 
 static void
@@ -4936,6 +5110,8 @@ p25p2_vpdu_handle_group_affiliation_response_extended(p25p2_vpdu_ctx* ctx) {
         p25_aff_register(state, (uint32_t)target);
         p25_ga_add(state, (uint32_t)target, (uint16_t)group);
     }
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_group_affiliation_response(&origin, response, (uint32_t)target, (uint16_t)group);
 }
 
 static int
@@ -4947,7 +5123,7 @@ p25p2_vpdu_dispatch_block_58_primary(p25p2_vpdu_ctx* ctx, int opcode) {
         case 0x4A: p25p2_vpdu_handle_telephone_interconnect_answer_request(ctx); break;
         case 0x4C: p25p2_vpdu_handle_radio_unit_monitor_abbreviated(ctx); break;
         case 0x58: p25p2_vpdu_handle_status_update_abbreviated(ctx); break;
-        case 0x5D: DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Obsolete"); break;
+        case 0x5D: p25p2_vpdu_handle_radio_unit_monitor_obsolete(ctx); break;
         case 0x5E: p25p2_vpdu_handle_radio_unit_monitor_enhanced_abbreviated(ctx); break;
         default: return 0;
     }
@@ -4962,6 +5138,7 @@ p25p2_vpdu_dispatch_block_58_secondary(p25p2_vpdu_ctx* ctx, int opcode) {
         case 0x6A: p25p2_vpdu_handle_query_alert_affiliation_abbreviated(ctx, opcode); break;
         case 0x5C: p25p2_vpdu_handle_message_update_abbreviated(ctx); break;
         case 0x60: p25p2_vpdu_handle_ack_response_fne_abbreviated(ctx); break;
+        case 0x6E: p25p2_vpdu_handle_authentication_command_p1(ctx); break;
         case 0x76: p25p2_vpdu_handle_roaming_address_command(ctx); break;
         case 0x77: p25p2_vpdu_handle_roaming_address_update(ctx); break;
         default: return 0;
@@ -4998,7 +5175,6 @@ p25p2_vpdu_iter_block_58(p25p2_vpdu_ctx* ctx) {
 
 static void
 p25p2_vpdu_handle_motorola_queued_deny(p25p2_vpdu_ctx* ctx, int is_deny) {
-    dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
     const unsigned long long int* MAC = ctx->mac;
     const int len_a = ctx->len_a;
@@ -5008,7 +5184,7 @@ p25p2_vpdu_handle_motorola_queued_deny(p25p2_vpdu_ctx* ctx, int is_deny) {
     int addl_info = p25p2_vpdu_u24(MAC, 6 + len_a);
     int target_addr = p25p2_vpdu_u24(MAC, 9 + len_a);
     const char* reason_str =
-        is_deny ? p25_deny_response_reason((uint8_t)reason_code) : p25_queued_response_reason((uint8_t)reason_code);
+        dsd_ua_reason_text(is_deny ? DSD_UA_REASON_P25_DENY : DSD_UA_REASON_P25_QUEUED, (uint16_t)reason_code);
 
     DSD_FPRINTF(stderr, "\n Motorola %s Response", is_deny ? "Deny" : "Queued");
     DSD_FPRINTF(stderr, "\n  SVC [%02X] Reason [%s]", svc_type, reason_str);
@@ -5024,17 +5200,11 @@ p25p2_vpdu_handle_motorola_queued_deny(p25p2_vpdu_ctx* ctx, int is_deny) {
     }
     DSD_FPRINTF(stderr, " Target [%d]", target_addr);
 
-    // Same occupancy rule as the standard Deny/Queued handler above.
-    if (opts) {
-        if (is_deny) {
-            state->p25_sm_deny_count++;
-        } else {
-            state->p25_sm_queued_count++;
-        }
-        if (!p25p2_vpdu_carrier_occupied_for_response(opts, state)) {
-            p25_sm_release(p25_sm_get_ctx(), opts, state, is_deny ? "deny-rsp" : "queued-rsp");
-        }
-    }
+    p25p2_vpdu_count_response(ctx, is_deny);
+    const p25_ua_response response = {(uint8_t)is_deny,       (uint8_t)svc_type,   (uint8_t)reason_code,
+                                      (uint8_t)has_addl_info, (uint32_t)addl_info, (uint32_t)target_addr};
+    const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+    p25_ua_deny_queued(&origin, &response);
 }
 
 static void
@@ -5066,7 +5236,10 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) 
     DSD_FPRINTF(stderr, "\n Motorola Group Regroup Extended Function Command");
     DSD_FPRINTF(stderr, "\n  Class [%02X] Operand [%02X] Arg [%06X] Target [%d]", class_id, operand, argument, target);
     if (class_id == 0) {
-        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label((uint8_t)operand));
+        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_label((uint8_t)operand));
+        const p25_ua_origin origin = p25p2_vpdu_ua_origin(ctx);
+        const p25_ua_ext_function f = {(uint8_t)class_id, (uint8_t)operand, (uint32_t)argument, (uint32_t)target, NULL};
+        p25_ua_extended_function(&origin, &f);
     } else if (class_id == 0x02 && operand == 0x00) {
         int sg = argument & 0xFFFF;
         DSD_FPRINTF(stderr, " Create Supergroup");
@@ -5420,12 +5593,22 @@ p25p2_vpdu_is_null_avoid_zero_bias(int opcode) {
     return opcode == 0x08;
 }
 
+enum {
+    /* The Multi-Fragment CRC-16 closes a multi-fragment message: its last two data octets (TIA-102.BBAD-A §4.7). */
+    P25P2_MULTIFRAG_CRC_OCTETS = 2,
+};
+
+/* The assembly of the LCCH on the current burst's logical channel. Its fragments come in consecutive bursts of that
+   channel (TIA-102.BBAD-A §3), so it is kept per logical channel, not per the voice slot a SACCH's MAC names; the frame
+   decoder ends it when a burst of that channel is lost, fails or is no LCCH (p25p2_frame.c). A dual LCCH, whose
+   fragments alternate between the channels, is not followed: it needs the LCCH stream position the I-ISCH's LCH type
+   bits give, which the ISCH decoder does not read (issue #874). */
 static p25_mac_fragment_state_t*
 p25p2_vpdu_frag_for_ctx(const p25p2_vpdu_ctx* ctx) {
     if (!ctx || !ctx->state) {
         return NULL;
     }
-    return &ctx->state->p25_mac_frag[ctx->slot & 1];
+    return &ctx->state->p25_mac_frag[ctx->state->currentslot & 1];
 }
 
 static void
@@ -5436,10 +5619,17 @@ p25p2_vpdu_frag_clear(p25_mac_fragment_state_t* frag) {
     DSD_MEMSET(frag, 0, sizeof(*frag));
 }
 
+/* The message's octets, from Data Length (index 0) up to its Multi-Fragment CRC-16, which no handler reads as a
+   field. */
+static int
+p25p2_vpdu_frag_payload_octets(const p25_mac_fragment_state_t* frag) {
+    return frag ? (int)frag->collected - P25P2_MULTIFRAG_CRC_OCTETS : 0;
+}
+
 static int
 p25p2_vpdu_frag_u8(const p25p2_vpdu_ctx* ctx, int idx) {
     const p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
-    if (!frag || idx < 0 || idx >= (int)frag->collected) {
+    if (!frag || idx < 0 || idx >= p25p2_vpdu_frag_payload_octets(frag)) {
         return 0;
     }
     return (int)frag->data[idx];
@@ -5477,7 +5667,7 @@ p25p2_vpdu_frag_explicit_channel(const p25p2_vpdu_ctx* ctx, int idx) {
 static int
 p25p2_vpdu_frag_has(const p25p2_vpdu_ctx* ctx, int count) {
     const p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
-    return frag && count >= 0 && (int)frag->collected >= count;
+    return frag && count >= 0 && p25p2_vpdu_frag_payload_octets(frag) >= count;
 }
 
 static void p25p2_vpdu_multifrag_set_active(dsd_state* state, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 2, 3);
@@ -5636,17 +5826,18 @@ p25p2_vpdu_handle_multifrag_status_update(p25p2_vpdu_ctx* ctx) {
         return;
     }
 
-    int unit_status = p25p2_vpdu_frag_u8(ctx, 1);
-    int user_status = p25p2_vpdu_frag_u8(ctx, 2);
+    /* User Status, then Unit Status (TIA-102.AABC-D §2.3.29). */
+    int user_status = p25p2_vpdu_frag_u8(ctx, 1);
+    int unit_status = p25p2_vpdu_frag_u8(ctx, 2);
     int target = p25p2_vpdu_frag_u24(ctx, 3);
     int source_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 6);
     int source_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 6);
     int source = p25p2_vpdu_frag_u24(ctx, 13);
     DSD_FPRINTF(stderr, "\n Status Update - Extended LCCH Complete");
-    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Unit [%02X] User [%02X]", target, source_wacn,
-                source_sys, source, unit_status, user_status);
-    p25p2_vpdu_multifrag_set_active(state, "STATUS-L Target: %d Source: %d Unit: %02X User: %02X; ", target, source,
-                                    unit_status, user_status);
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] User [%02X] Unit [%02X]", target, source_wacn,
+                source_sys, source, user_status, unit_status);
+    p25p2_vpdu_multifrag_set_active(state, "STATUS-L Target: %d Source: %d User: %02X Unit: %02X; ", target, source,
+                                    user_status, unit_status);
 }
 
 static void
@@ -5741,6 +5932,39 @@ p25p2_vpdu_handle_completed_multifragment(p25p2_vpdu_ctx* ctx) {
     }
 }
 
+/* Whether the complete message's Multi-Fragment CRC-16 checks (TIA-102.BBAD-A §4.7): G(x) = x^16 + x^12 + x^5 + 1,
+   inverted, the LCCH MAC PDU's CRC-16 (ComputeCrcCCITT16b()), over every data octet before it. Those are each
+   fragment's PDU Contents less its B1/B2/MCO and Length octets, exactly what the assembly keeps. */
+static int
+p25p2_vpdu_frag_crc_ok(const p25_mac_fragment_state_t* frag) {
+    uint8_t bits[(DSD_P25_MAC_FRAGMENT_MAX_OCTETS - P25P2_MULTIFRAG_CRC_OCTETS) * 8];
+    const int covered = p25p2_vpdu_frag_payload_octets(frag);
+    if (!frag || covered < 1 || (int)frag->collected != (int)frag->data_len) {
+        return 0;
+    }
+    for (int i = 0; i < covered; i++) {
+        for (int b = 0; b < 8; b++) {
+            bits[(i * 8) + b] = (uint8_t)((frag->data[i] >> (7 - b)) & 1U);
+        }
+    }
+    const uint16_t sent = (uint16_t)((frag->data[covered] << 8) | frag->data[covered + 1]);
+    return ComputeCrcCCITT16b(bits, (unsigned int)(covered * 8)) == sent;
+}
+
+/* A message whose last fragment arrived decodes only when its Multi-Fragment CRC-16 checks: otherwise nothing past
+   this note prints, publishes or changes state. The assembly ends either way. */
+static void
+p25p2_vpdu_finish_multifragment(p25p2_vpdu_ctx* ctx, p25_mac_fragment_state_t* frag) {
+    if (p25p2_vpdu_frag_crc_ok(frag)) {
+        p25p2_vpdu_handle_completed_multifragment(ctx);
+    } else {
+        DSD_FPRINTF(stderr,
+                    "\n MAC Multi-Fragment Opcode [%02X] DataLen [%d]: Multi-Fragment CRC-16 failed; not decoded",
+                    (unsigned)frag->opcode, (int)frag->data_len);
+    }
+    p25p2_vpdu_frag_clear(frag);
+}
+
 static int
 p25p2_vpdu_frag_append(p25_mac_fragment_state_t* frag, const unsigned long long int* mac, int start, int len) {
     int count = len - 2;
@@ -5791,8 +6015,7 @@ p25p2_vpdu_consume_multifragment_base(p25p2_vpdu_ctx* ctx, int opcode) {
     DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Base Opcode [%02X] DataLen [%d] Collected [%d]", opcode,
                 (int)frag->data_len, (int)frag->collected);
     if ((int)frag->collected >= (int)frag->data_len) {
-        p25p2_vpdu_handle_completed_multifragment(ctx);
-        p25p2_vpdu_frag_clear(frag);
+        p25p2_vpdu_finish_multifragment(ctx, frag);
     }
     return 1;
 }
@@ -5817,25 +6040,55 @@ p25p2_vpdu_consume_multifragment_continuation(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Continuation Opcode [%02X] DataLen [%d] Collected [%d]",
                 (int)frag->opcode, (int)frag->data_len, (int)frag->collected);
     if ((int)frag->collected >= (int)frag->data_len) {
-        p25p2_vpdu_handle_completed_multifragment(ctx);
-        p25p2_vpdu_frag_clear(frag);
+        p25p2_vpdu_finish_multifragment(ctx, frag);
     }
     return 1;
+}
+
+/* Whether a base or continuation fragment may join an assembly. Multi-fragment messages are only available on the
+   LCCH (TIA-102.BBAD-A §3): a fragment heard on a FACCH or SACCH is dropped. So is one whose MAC PDU failed its CRC-16
+   (-F lets the PDU through; p25p2_vpdu_note_lcch_pdu() has ended the assembly), and one of a superframe whose slot
+   parity is unknown, which could join the other logical channel's assembly. */
+static int
+p25p2_vpdu_fragment_admitted(const p25p2_vpdu_ctx* ctx, int opcode) {
+    const char* why = NULL;
+    if (ctx->state->p2_is_lcch != 1) {
+        why = "not on an LCCH";
+    } else if (!ctx->crc_ok) {
+        why = "CRC failed";
+    } else if (p25p2_window_slot_unproven()) {
+        why = "unaligned superframe";
+    }
+    if (why != NULL) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment [%02X] dropped: %s", opcode, why);
+        return 0;
+    }
+    return 1;
+}
+
+/* An LCCH MAC PDU whose CRC-16 failed (-F lets it through) is a burst of the LCCH's stream that cannot be trusted:
+   whatever it holds, the assembly it would continue ends. */
+static void
+p25p2_vpdu_note_lcch_pdu(const p25p2_vpdu_ctx* ctx) {
+    if (ctx->state->p2_is_lcch != 1 || ctx->crc_ok) {
+        return;
+    }
+    p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
+    if (frag && frag->active) {
+        DSD_FPRINTF(stderr, "\n MAC Multi-Fragment assembly cleared: LCCH CRC failed");
+        p25p2_vpdu_frag_clear(frag);
+    }
 }
 
 static int
 p25p2_vpdu_consume_fragment_segment(p25p2_vpdu_ctx* ctx) {
     int opcode = (int)ctx->mac[1 + ctx->len_a];
-    // A superframe whose slot parity is unknown: an assembly is per slot, so a fragment could join the wrong one.
-    if (p25p2_window_slot_unproven() && (p25p2_vpdu_is_standard_multifragment_base(opcode) || opcode == 0x10)) {
-        DSD_FPRINTF(stderr, "\n MAC multi-fragment [%02X] dropped: unaligned superframe", opcode);
-        return 1;
-    }
-    if (p25p2_vpdu_is_standard_multifragment_base(opcode)) {
-        return p25p2_vpdu_consume_multifragment_base(ctx, opcode);
-    }
-    if (opcode == 0x10) {
-        return p25p2_vpdu_consume_multifragment_continuation(ctx);
+    if (p25p2_vpdu_is_standard_multifragment_base(opcode) || opcode == 0x10) {
+        if (!p25p2_vpdu_fragment_admitted(ctx, opcode)) {
+            return 1;
+        }
+        return opcode == 0x10 ? p25p2_vpdu_consume_multifragment_continuation(ctx)
+                              : p25p2_vpdu_consume_multifragment_base(ctx, opcode);
     }
     if (p25p2_vpdu_is_null_avoid_zero_bias(opcode)) {
         return 1;
@@ -5843,8 +6096,10 @@ p25p2_vpdu_consume_fragment_segment(p25p2_vpdu_ctx* ctx) {
     if (opcode == 0x00 && ctx->iter_idx > 0) {
         return 1;
     }
+    /* Another message in the LCCH's burst: the multi-fragment message is not continued there. A FACCH or SACCH is no
+       burst of the LCCH's stream and leaves its assembly alone. */
     p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
-    if (frag && frag->active) {
+    if (ctx->state->p2_is_lcch == 1 && frag && frag->active) {
         DSD_FPRINTF(stderr, "\n MAC Multi-Fragment assembly cleared by non-fragment opcode [%02X]", opcode);
         p25p2_vpdu_frag_clear(frag);
     }
@@ -5881,7 +6136,13 @@ p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx) {
 
 static int
 p25p2_vpdu_select_segment(p25p2_vpdu_ctx* ctx, int index) {
-    if (!ctx || !ctx->mac_res || index < 0 || index >= ctx->mac_res->segment_count) {
+    if (!ctx || !ctx->mac_res) {
+        return 0;
+    }
+    // The segments the result holds: never more than its array, whatever the count says.
+    const int count =
+        ctx->mac_res->segment_count < P25P2_MAC_MAX_SEGMENTS ? ctx->mac_res->segment_count : P25P2_MAC_MAX_SEGMENTS;
+    if (index < 0 || index >= count) {
         return 0;
     }
     // A segment offset must address a real octet; handlers add fixed field offsets to it.
@@ -5890,7 +6151,7 @@ p25p2_vpdu_select_segment(p25p2_vpdu_ctx* ctx, int index) {
     }
     ctx->len_a = ctx->mac_res->segments[index].offset;
     ctx->len_b = ctx->mac_res->segments[index].length;
-    ctx->len_c = (index + 1 < ctx->mac_res->segment_count) ? ctx->mac_res->segments[index + 1].length : 0;
+    ctx->len_c = (index + 1 < count) ? ctx->mac_res->segments[index + 1].length : 0;
     return ctx->len_b > 0;
 }
 
@@ -5909,6 +6170,88 @@ p25p2_vpdu_print_payload(const dsd_opts* opts, const unsigned long long int mac[
         }
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+enum {
+    /* A Phase 1 TSBK in MAC form is one message of 9 octets, MAC[1..9]: the opcode and TSBK octets 2-9. */
+    P25P2_VPDU_BRIDGED_P1_LEN = 9,
+};
+
+/* A Phase 1 TSBK opcode with no single-block layout, while its Phase 2 opcode has a handler: that handler would read a
+   Phase 2 layout (and octets past the TSBK) the TSBK does not carry, and could write its fields to the network tables,
+   so its octets print raw instead. TIA-102.AABC-D's OSP list has 0x01 and 0x0C reserved and 0x12 / 0x13 obsolete, and
+   defines 0x1E (§6.2.34), 0x31 (§6.2.30) and 0x37 (§6.2.26) as multi-block messages only. NULL for every other
+   opcode. */
+static const char*
+p25p2_vpdu_bridged_p1_raw_name(int opcode) {
+    switch (opcode) {
+        case 0x41:
+        case 0x4C: return "Reserved opcode";
+        case 0x52: return "Group Data Channel Announcement (obsolete)";
+        case 0x53: return "Group Data Channel Announcement - Explicit (obsolete)";
+        case 0x5E: return "Radio Unit Monitor Enhanced Command";
+        case 0x71: return "Authentication Demand";
+        case 0x77: return "Roaming Address Update";
+        default: return NULL;
+    }
+}
+
+static int
+p25p2_vpdu_print_bridged_p1_raw(const p25p2_vpdu_ctx* ctx) {
+    const int opcode = (int)ctx->mac[1];
+    const char* name = p25p2_vpdu_bridged_p1_raw_name(opcode);
+    if (name == NULL) {
+        return 0;
+    }
+    DSD_FPRINTF(stderr, "\n Phase 1 TSBK %02X %s - not decoded\n  Octets 2-9 [", opcode & 0x3F, name);
+    for (int bi = 2; bi <= P25P2_VPDU_BRIDGED_P1_LEN; bi++) {
+        DSD_FPRINTF(stderr, "%s%02llX", bi > 2 ? " " : "", ctx->mac[bi]);
+    }
+    DSD_FPRINTF(stderr, "]");
+    return 1;
+}
+
+static void
+p25p2_vpdu_dispatch_segment(p25p2_vpdu_ctx* ctx) {
+    if (p25p2_vpdu_is_bridged_p1(ctx)) {
+        /* One TSBK is never a piece of a Phase 2 multi-fragment message: it neither starts, continues, ends nor
+           clears an assembly. */
+        if (!p25p2_vpdu_print_bridged_p1_raw(ctx)) {
+            p25p2_vpdu_dispatch_blocks(ctx);
+        }
+        return;
+    }
+    if (!p25p2_vpdu_consume_fragment_segment(ctx)) {
+        p25p2_vpdu_dispatch_blocks(ctx);
+    }
+}
+
+static void
+p25p2_vpdu_run(p25p2_vpdu_ctx* ctx) {
+    p25p2_vpdu_emit_json(ctx);
+    p25p2_vpdu_lcch_signal_update(ctx);
+    p25p2_vpdu_note_lcch_pdu(ctx);
+    if (!p25p2_vpdu_validate_len_and_warn(ctx)) {
+        ctx->end_pdu = 1;
+    }
+
+    const p25p2_retune_token token = p25p2_retune_token_now();
+    for (int segment_idx = 0; !ctx->end_pdu && segment_idx < ctx->mac_res->segment_count; segment_idx++) {
+        ctx->skip_rest = 0;
+        ctx->iter_idx = segment_idx;
+        if (!p25p2_vpdu_select_segment(ctx, segment_idx)) {
+            break;
+        }
+        p25p2_vpdu_dispatch_segment(ctx);
+        // A segment that retuned (a grant, a return to the control channel) left this channel: the PDU's later
+        // segments describe the one left, so none of them may act on the new assignment (issue #651).
+        if (p25p2_retune_token_changed(&token)) {
+            break;
+        }
+    }
+
+    ctx->state->p2_is_lcch = 0;
+    p25p2_vpdu_print_payload(ctx->opts, ctx->mac);
 }
 
 void
@@ -5955,33 +6298,48 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
         .end_pdu = 0,
         .iter_idx = 0,
         .crc_ok = crc_ok != 0,
+        .bridged_p1 = 0,
     };
+    p25p2_vpdu_run(&ctx);
+}
 
-    p25p2_vpdu_emit_json(&ctx);
-    p25p2_vpdu_lcch_signal_update(&ctx);
-    if (!p25p2_vpdu_validate_len_and_warn(&ctx)) {
-        ctx.end_pdu = 1;
+void
+process_MAC_VPDU_bridged_p1(dsd_opts* opts, dsd_state* state, unsigned long long int mac[24]) {
+    /* The TSBK's octets and nothing else: a handler reading past them finds zeros, never stale or foreign octets. */
+    unsigned long long int mac_octets[P25P2_MAC_STAGING_OCTETS] = {0};
+    for (int bi = 0; bi <= P25P2_VPDU_BRIDGED_P1_LEN; bi++) {
+        mac_octets[bi] = mac[bi] & 0xFFu;
     }
 
-    const p25p2_retune_token token = p25p2_retune_token_now();
-    for (int segment_idx = 0; !ctx.end_pdu && segment_idx < mac_res.segment_count; segment_idx++) {
-        ctx.skip_rest = 0;
-        ctx.iter_idx = segment_idx;
-        if (!p25p2_vpdu_select_segment(&ctx, segment_idx)) {
-            break;
-        }
-        if (!p25p2_vpdu_consume_fragment_segment(&ctx)) {
-            p25p2_vpdu_dispatch_blocks(&ctx);
-        }
-        // A segment that retuned (a grant, a return to the control channel) left this channel: the PDU's later
-        // segments describe the one left, so none of them may act on the new assignment (issue #651).
-        if (p25p2_retune_token_changed(&token)) {
-            break;
-        }
-    }
+    /* One message, MAC[1..9]: a TSBK is a single bounded structure (TIA-102.AABC-D), so the Phase 2 length table,
+       which would split a short opcode's trailing octets off as a second message, does not apply. */
+    struct p25p2_mac_result mac_res;
+    DSD_MEMSET(&mac_res, 0, sizeof(mac_res));
+    mac_res.type = 0;
+    mac_res.span = P25P2_VPDU_BRIDGED_P1_LEN;
+    mac_res.opcode = (uint8_t)mac_octets[1];
+    mac_res.segment_count = 1;
+    mac_res.segments[0].offset = 0;
+    mac_res.segments[0].length = P25P2_VPDU_BRIDGED_P1_LEN;
 
-    state->p2_is_lcch = 0;
-    p25p2_vpdu_print_payload(opts, MAC);
+    p25p2_vpdu_ctx ctx = {
+        .opts = opts,
+        .state = state,
+        .type = 0,
+        .pdu_type = P25_MAC_PDU_SIGNAL,
+        .mac = mac_octets,
+        .mac_res = &mac_res,
+        .len_a = 0,
+        .len_b = P25P2_VPDU_BRIDGED_P1_LEN,
+        .len_c = 0,
+        .slot = state->currentslot,
+        .skip_rest = 0,
+        .end_pdu = 0,
+        .iter_idx = 0,
+        .crc_ok = 1, /* the TSBK decoder dispatches only blocks that passed their CRC (p25p1_tsbk.c) */
+        .bridged_p1 = 1,
+    };
+    p25p2_vpdu_run(&ctx);
 }
 
 // Local bounded append helper (reused pattern across modules)

@@ -18,6 +18,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/unit_activity.h>
+#include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_activity.h>
@@ -37,6 +39,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_mfid90_utils.h"
 #include "test_support.h"
+#include "unit_activity_capture.h"
 
 static int g_add_wgid_count;
 static int g_add_wuid_count;
@@ -49,6 +52,7 @@ static int g_grant_count;
 static int g_group_data_grant_count;
 static int g_indiv_data_grant_count;
 static int g_mac_count;
+static unsigned long long g_mac_form[24];
 static int g_last_sg;
 static int g_last_wgid;
 static uint32_t g_last_wuid;
@@ -82,6 +86,7 @@ static int g_soft_llr_list_count;
 static int g_crc_call_count;
 static int g_crc_accept_call;
 static int g_candidate_count;
+static int g_release_count;
 
 enum { TEST_TSBK_BYTES_PER_BLOCK = 12 };
 
@@ -251,6 +256,7 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
     (void)opts;
     (void)state;
     (void)reason;
+    g_release_count++;
 }
 
 int
@@ -318,13 +324,12 @@ p25_store_site_lra(dsd_state* state, uint8_t lra) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
-                 unsigned long long int mac[24]) {
+process_MAC_VPDU_bridged_p1(dsd_opts* opts, dsd_state* state, unsigned long long int mac[24]) {
     (void)opts;
     (void)state;
-    (void)type;
-    (void)pdu_type;
-    (void)mac;
+    for (int i = 0; i < 24; i++) {
+        g_mac_form[i] = mac[i];
+    }
     g_mac_count++;
 }
 
@@ -812,13 +817,15 @@ test_standard_isp_metadata_logging_and_no_retune(void) {
         return 1;
     }
     rc |= expect_contains("isp status update label", out, "Status Update Request");
-    rc |= expect_contains("isp status update fields", out, "UNIT STATUS [21] USER STATUS [43]");
+    /* User Status first, then Unit Status (TIA-102.AABC-D §2.3.29). */
+    rc |= expect_contains("isp status update fields", out, "USER STATUS [21] UNIT STATUS [43]");
 
     build_isp_two_party(tsbk, 0x19, 0x21, 0x43);
     if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
         return 1;
     }
     rc |= expect_contains("isp status response label", out, "Status Query Response");
+    rc |= expect_contains("isp status response fields", out, "USER STATUS [21] UNIT STATUS [43]");
 
     build_isp_two_party(tsbk, 0x1A, 0x00, 0x00);
     if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
@@ -1548,6 +1555,59 @@ test_mfid90_grant_update_trunk_dispatch(void) {
     return rc;
 }
 
+/* A Motorola Deny / Queued TSBK (MFID 0x90 opcode 0x07 / 0x06) that passed its CRC is one unit activity row, in the
+   P25 reason table as its print reads it; a block that failed its CRC reaches no handler and makes none. */
+static int
+test_mfid90_deny_queued_activity_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    tsbk_decode_ctx_t ctx;
+    unsigned long long pdu[24] = {0};
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    ctx.tsbk_byte[0] = 0x07;
+    ctx.tsbk_byte[1] = 0x90;
+    ctx.tsbk_byte[2] = 0x80 | 0x02;
+    ctx.tsbk_byte[3] = 0x60;
+    ctx.tsbk_byte[4] = 0x00;
+    ctx.tsbk_byte[5] = 0x01;
+    ctx.tsbk_byte[6] = 0x01;
+    ctx.tsbk_byte[7] = 0x00;
+    ctx.tsbk_byte[8] = 0x01;
+    ctx.tsbk_byte[9] = 0x23;
+
+    int rc = 0;
+    reset_calls();
+    dsd_test_ua_capture_reset();
+    tsbk_dispatch_message(&opts, &state, &ctx, 1, 0x90, 0, pdu);
+    rc |= expect_int("failed-CRC MFID90 deny no row", dsd_test_ua_capture_count(), 0);
+
+    tsbk_dispatch_message(&opts, &state, &ctx, 0, 0x90, 0, pdu);
+    const dsd_unit_activity* r = dsd_test_ua_capture_last();
+    rc |= expect_int("MFID90 deny one row", dsd_test_ua_capture_count(), 1);
+    rc |= expect_int("MFID90 deny protocol", r->protocol, DSD_UA_PROTO_P25P1);
+    rc |= expect_int("MFID90 deny kind", r->kind, DSD_UA_DENY);
+    rc |= expect_int("MFID90 deny result", r->result, DSD_UA_RESULT_DENIED);
+    rc |= expect_int("MFID90 deny subject", (int)r->subject.id, 0x000123);
+    rc |= expect_int("MFID90 deny subject radio", r->subject.subtype, DSD_UA_ID_RADIO);
+    rc |= expect_int("MFID90 deny service", (int)r->value, 0x02);
+    rc |= expect_int("MFID90 deny reason set", r->reason_set, DSD_UA_REASON_P25_DENY);
+    rc |= expect_int("MFID90 deny reason", r->reason_code, 0x60);
+    rc |= expect_int("MFID90 deny info", r->value2_valid && r->value2 == 0x000101U, 1);
+
+    ctx.tsbk_byte[0] = 0x06;
+    ctx.tsbk_byte[2] = 0x02;
+    ctx.tsbk_byte[3] = 0x40;
+    tsbk_dispatch_message(&opts, &state, &ctx, 0, 0x90, 0, pdu);
+    r = dsd_test_ua_capture_last();
+    rc |= expect_int("MFID90 queued row", dsd_test_ua_capture_count(), 2);
+    rc |= expect_int("MFID90 queued kind", r->kind, DSD_UA_QUEUED);
+    rc |= expect_int("MFID90 queued reason set", r->reason_set, DSD_UA_REASON_P25_QUEUED);
+    rc |= expect_int("MFID90 queued no info", r->value2_valid, 0);
+    return rc;
+}
+
 static int
 test_mfid90_queued_and_deny_callbacks(void) {
     static dsd_opts opts;
@@ -1616,6 +1676,47 @@ test_mfid90_queued_and_deny_callbacks(void) {
     rc |= expect_int("deny aii callback count", (int)state.p25_sm_deny_count, 1);
     rc |= expect_int("deny aii activity set", recent_activity(&state, &activity), 1);
     rc |= expect_int("deny aii info label", strstr(activity.notice, "Info: 123456") != NULL, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* A Motorola Deny / Queued Response TSBK (MFID 0x90) heard on the followed voice channel, through the TSBK dispatcher:
+   it answers some unit's request and names no assignment, so nothing is released, whether the carrier is busy or idle
+   and whatever unit it names. */
+static int
+test_deny_never_releases_mfid90_p1(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    tsbk_decode_ctx_t ctx;
+    unsigned long long pdu[24];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+
+    int rc = 0;
+    static const uint8_t opcodes[] = {0x06 /* queued */, 0x07 /* deny */};
+    static const uint32_t targets[] = {100U, 4321U, 0x123456U};
+    for (int o = 0; o < 2; o++) {
+        for (int t = 0; t < 3; t++) {
+            DSD_MEMSET(&ctx, 0, sizeof(ctx));
+            ctx.tsbk_byte[0] = opcodes[o];
+            ctx.tsbk_byte[1] = 0x90;
+            ctx.tsbk_byte[2] = 0x80;
+            ctx.tsbk_byte[3] = 0x30;
+            ctx.tsbk_byte[6] = 0x64;
+            ctx.tsbk_byte[7] = (uint8_t)(targets[t] >> 16);
+            ctx.tsbk_byte[8] = (uint8_t)(targets[t] >> 8);
+            ctx.tsbk_byte[9] = (uint8_t)targets[t];
+            reset_calls();
+            g_release_count = 0;
+            tsbk_dispatch_message(&opts, &state, &ctx, 0, 0x90, 0, pdu);
+            rc |= expect_int("mfid90 response releases nothing", g_release_count, 0);
+        }
+    }
+    rc |= expect_int("mfid90 denies counted", (int)state.p25_sm_deny_count, 3);
+    rc |= expect_int("mfid90 queued counted", (int)state.p25_sm_queued_count, 3);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -1831,6 +1932,51 @@ test_dispatch_gates_mac_and_vendor_handlers(void) {
     return rc;
 }
 
+/* What a standard TSBK hands to the MAC handlers, built and dispatched as processTSBK() does: the abbreviated Phase 2
+   opcode at MAC[1], TSBK octet n at MAC[n] for n = 2..9, and nothing after it (test_p25_tsbk_bridge_boundary.c feeds
+   this form to process_MAC_VPDU_bridged_p1()). */
+static int
+test_dispatch_hands_mac_form_to_bridged_entry(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    tsbk_decode_ctx_t ctx;
+    unsigned long long pdu[24];
+    static const uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0x1F, 0x00, 0x11, 0x22, 0x33, 0x44,
+                                                       0x55, 0x66, 0x77, 0x88, 0xAB, 0xCD};
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    DSD_MEMSET(g_mac_form, 0xFF, sizeof(g_mac_form));
+    DSD_MEMCPY(ctx.tsbk_byte, tsbk, sizeof(tsbk));
+
+    int rc = 0;
+    reset_calls();
+    tsbk_build_mac_like_pdu(ctx.tsbk_byte, pdu);
+    tsbk_dispatch_message(&opts, &state, &ctx, 0, ctx.tsbk_byte[1], 0, pdu);
+    rc |= expect_int("mac form handed once", g_mac_count, 1);
+    rc |= expect_int("mac form opcode", (int)g_mac_form[1], 0x40 | 0x1F);
+    for (int n = 2; n <= 9; n++) {
+        rc |= expect_int("mac form tsbk octet", (int)g_mac_form[n], tsbk[n]);
+    }
+    for (int n = 10; n < 24; n++) {
+        rc |= expect_int("mac form nothing past octet 9", (int)g_mac_form[n], 0);
+    }
+    return rc;
+}
+
+/* p25_unit_activity.c looks up the address a home SUID holds on the serving system; this harness keeps no table. */
+int
+p25_aff_assigned_for_home(const dsd_state* state, const p25_home_id* home, uint32_t serving_wacn, uint16_t serving_sys,
+                          uint32_t* assigned) {
+    (void)state;
+    (void)home;
+    (void)serving_wacn;
+    (void)serving_sys;
+    (void)assigned;
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1847,10 +1993,13 @@ main(void) {
     rc |= test_mfid90_grant_seeds_trunk_state();
     rc |= test_mfid90_grant_update_trunk_dispatch();
     rc |= test_mfid90_queued_and_deny_callbacks();
+    rc |= test_mfid90_deny_queued_activity_rows();
+    rc |= test_deny_never_releases_mfid90_p1();
     rc |= test_mfid90_ack_display_only();
     rc |= test_mfid90_tdma_data_channel_display_only();
     rc |= test_network_status_state_policy();
     rc |= test_dispatch_gates_mac_and_vendor_handlers();
+    rc |= test_dispatch_hands_mac_form_to_bridged_entry();
     dsd_decode_clock_use_system();
     return rc;
 }

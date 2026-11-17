@@ -15,6 +15,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -54,9 +55,11 @@ typedef struct {
 
 /* One per snapshot. The LCN tail, names and avoid flags are copied at every hop and share one validity; the sparse
  * channel map and the trunk-scan avoid list are copied only when their (instance, revision) moved or the copy held is
- * not whole. */
+ * not whole. unit_activity_valid: the unit activity ring the snapshot holds is its source's as of the last copy (the
+ * ring keeps its own instance and revision, so its copy needs no mark beside it). */
 typedef struct {
     uint8_t lcn_valid;
+    uint8_t unit_activity_valid;
     ui_snapshot_store_mark chan_map;
     ui_snapshot_store_mark trunk_scan_avoids;
     ui_snapshot_store_mark trunk_scan_entry_reasons;
@@ -67,6 +70,7 @@ static ui_snapshot_marks g_consume_marks;
 /* The live decoder state holds the originals, whole by definition. */
 static const ui_snapshot_marks k_live_marks = {
     .lcn_valid = 1U,
+    .unit_activity_valid = 1U,
     .chan_map = {.valid = 1U},
     .trunk_scan_avoids = {.valid = 1U},
     .trunk_scan_entry_reasons = {.valid = 1U},
@@ -432,9 +436,23 @@ ui_snapshot_copy_scan_lists(dsd_state* dst, ui_snapshot_marks* marks, const dsd_
                                                     src_marks->trunk_scan_entry_reasons.valid);
 }
 
+/* The unit activity ring (<dsd-neo/core/unit_activity.h>), copied incrementally into the snapshot's own ring. A source
+ * whose own copy failed is not copied on: the destination keeps the rows it holds, so a reader's cursor neither skips
+ * nor goes back, and both copies are retried (the published one at the next publication, the consumer's at its next
+ * read). */
+static void
+ui_snapshot_copy_unit_activity(dsd_state* dst, ui_snapshot_marks* marks, const dsd_state* src,
+                               const ui_snapshot_marks* src_marks) {
+    if (!src_marks->unit_activity_valid) {
+        marks->unit_activity_valid = 0U;
+        return;
+    }
+    marks->unit_activity_valid = dsd_unit_activity_copy_snapshot(dst, src) == 0 ? 1U : 0U;
+}
+
 static int
 ui_snapshot_marks_whole(const ui_snapshot_marks* marks) {
-    return marks->lcn_valid && marks->chan_map.valid && marks->trunk_scan_avoids.valid
+    return marks->lcn_valid && marks->unit_activity_valid && marks->chan_map.valid && marks->trunk_scan_avoids.valid
            && marks->trunk_scan_entry_reasons.valid;
 }
 
@@ -449,6 +467,7 @@ ui_snapshot_copy_render_state(dsd_state* dst, ui_snapshot_marks* marks, const ds
     dst->key_profile_ref[sizeof(dst->key_profile_ref) - 1U] = '\0';
     (void)dsd_tg_policy_copy_snapshot(dst, src);
     (void)dsd_source_alias_copy_snapshot(dst, src);
+    ui_snapshot_copy_unit_activity(dst, marks, src, src_marks);
 
     UI_SNAPSHOT_COPY_RANGE(dst, src, audio_out_idx, lastsample);
     UI_SNAPSHOT_COPY_RANGE(dst, src, err_str, optind);
@@ -504,6 +523,15 @@ dsd_app_snapshot_test_get_event_history_copy_counts(dsd_app_snapshot_event_histo
     dsd_mutex_lock(&g_mu);
     *counts = g_eh_copy_counts;
     dsd_mutex_unlock(&g_mu);
+}
+
+int
+dsd_app_snapshot_test_consumer_needs_retry(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    const int retry = g_consume_needs_retry;
+    dsd_mutex_unlock(&g_mu);
+    return retry;
 }
 #endif
 

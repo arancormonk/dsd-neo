@@ -14,6 +14,7 @@ target_sources(
         ncurses_visualizers.c
         ncurses_p25_display.c
         ncurses_trunk_display.c
+        unit_activity_panel.c
         ui_prims.c
         ui_row.c
         ui_text.c

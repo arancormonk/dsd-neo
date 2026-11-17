@@ -512,6 +512,23 @@ typedef struct {
     uint8_t data[DSD_P25_MAC_FRAGMENT_MAX_OCTETS];
 } p25_mac_fragment_state_t;
 
+/** Capacity of the P25 affiliation (registered unit) table, dsd_state::p25_aff_rid. */
+#define P25_AFF_MAX 256
+
+/**
+ * Who an affiliation-table entry's local address was assigned to: the home identity (WACN, System ID, unit ID: the
+ * SUID) a Unit Registration Response named, and the serving system it was heard on. A registration away from a unit's
+ * home system gives it a local address unlike its unit ID (TIA-102.AABC-D §2.3.27); the deregistration names the
+ * SUID, never that address. home_id 0 means the entry has no association (no unit has ID 0).
+ */
+typedef struct {
+    uint32_t home_wacn;
+    uint32_t home_id;
+    uint32_t serving_wacn;
+    uint16_t home_sys;
+    uint16_t serving_sys;
+} p25_aff_assoc_t;
+
 /** Capacity of one Motorola alias assembly, in bit entries: the stored header layout, then the blocks by number. */
 #define P25_APX_ALIAS_STORE_BITS  (24 * 128)
 /** Longest received header kept for the benign-repeat compare (the Phase 2 MAC header; Phase 1 uses 72). */
@@ -537,6 +554,48 @@ typedef struct {
     uint8_t header[P25_APX_ALIAS_HEADER_BITS];
     uint8_t bits[P25_APX_ALIAS_STORE_BITS];
 } p25_apx_alias_rx_state_t;
+
+/** Fragments in one Kenwood NXDN talker alias, and the text octets they carry (the last two octets of fragment 4 are
+ * not text). */
+#define NXDN_ALIAS_FRAGMENTS  4
+#define NXDN_ALIAS_TEXT_BYTES 14
+
+/**
+ * The Kenwood NXDN talker alias (PROP_FORM, MFID 0x68, 0x8204) being assembled: four fragments of four octets, stored
+ * by number. It is bound to the slot, call epoch, call source and tuning generation its first stored fragment arrived
+ * in; a fragment under any other binding, a fragment count other than four, or a fragment that differs from the one
+ * already stored under its number restarts it. Only a complete assembly is ever published (nxdn_alias_complete()).
+ */
+typedef struct nxdn_alias_assembly {
+    uint8_t seen_mask; /* bit n - 1 set when fragment n is stored; 0: no assembly */
+    uint8_t slot;
+    uint32_t source; /* ota_source_id of the bound call; 0 when no call was open */
+    uint64_t epoch;  /* call epoch the assembly is bound to; 0 when no call was open */
+    uint64_t tune_generation;
+    uint8_t fragment[NXDN_ALIAS_FRAGMENTS][4];
+} nxdn_alias_assembly;
+
+/**
+ * What of one slot's DMR talker alias (TS 102 361-2 clause 7.2.18) has arrived, and the call it belongs to: the
+ * header and blocks 1 to 3, each with a checked embedded LC checksum, while the slot's call was the ACTIVE one with
+ * this epoch and source on this tuning generation. A header of another format, length, text or binding restarts it; a
+ * block under another binding, or one that differs from the block already held, ends it until the next header. The
+ * alias is learned (dsd_alias_learn_radio()) once, when the header and every block up to the one decoded arrived and
+ * the text visibly ended inside them: padding follows it, all three blocks are there, or it exactly fills them and
+ * the Data Length agrees (dmr_talker_alias_lc_decode(); the Data Length alone is not trusted for where the text ends).
+ * The pieces live in dmr_pdu_sf, which other decoders clear and reuse (dmr_reset_blocks(), the data assembler, NXDN
+ * and P25 on slot 0), so each piece's bits are kept here as they were stored: a learn whose pieces no longer hold them
+ * ends the assembly instead, and a block is shown and written into the history row only while the header and every
+ * block up to it arrived here and still hold what arrived (else the last whole alias stays).
+ */
+typedef struct dmr_talker_alias_assembly {
+    uint8_t mask;    /* bit 0 the header, bit n block n; 0: no assembly */
+    uint8_t learned; /* the complete alias of this assembly was learned */
+    uint32_t source; /* ota_source_id of the ACTIVE call the header arrived in; 0 when none was */
+    uint64_t epoch;
+    uint64_t tune_generation;
+    uint8_t piece[4][7]; /* each piece's bits as stored (header 48 or 49, a block 56), packed MSB first */
+} dmr_talker_alias_assembly;
 
 typedef struct {
     uint8_t mask;
@@ -1992,9 +2051,10 @@ struct dsd_state {
     int dmr_cach_counter;          //counter for dmr_cach_fragments 0-3; not sure if needed yet.
 
     //dmr talker alias new/fixed stuff
-    uint8_t dmr_alias_format[2];    //per slot
-    uint8_t dmr_alias_block_len[2]; //per slot
-    uint8_t dmr_alias_char_size[2]; //per slot
+    uint8_t dmr_alias_format[2];                     //per slot
+    uint8_t dmr_alias_block_len[2];                  //per slot
+    uint8_t dmr_alias_char_size[2];                  //per slot
+    dmr_talker_alias_assembly dmr_alias_assembly[2]; /* per slot: what of the alias arrived, for learning */
     char dmr_alias_block_segment[2][4][7]
                                 [16]; //2 slots, by 4 blocks, by up to 7 alias bytes that are up to 16-bit chars
     char dmr_embedded_gps[2][600];    //2 slots by 99 char string for string embedded gps
@@ -2472,9 +2532,11 @@ struct dsd_state {
     // Tracks up to 256 recent unit registrations (RIDs) with last-seen time for aging.
     // Entries are added on Unit Registration Accept and removed on Deregistration Ack
     // or when the last-seen exceeds an aging threshold.
-    int p25_aff_count;             // number of active entries
-    uint32_t p25_aff_rid[256];     // RID values
-    time_t p25_aff_last_seen[256]; // last seen timestamp per RID
+    int p25_aff_count;                     // number of active entries
+    uint32_t p25_aff_rid[P25_AFF_MAX];     // RID values (the local address a registration assigned)
+    time_t p25_aff_last_seen[P25_AFF_MAX]; // last seen timestamp per RID
+    // Per entry: the home SUID the address was assigned to and the serving system (p25_aff_register_assigned()).
+    p25_aff_assoc_t p25_aff_assoc[P25_AFF_MAX];
 
     // P25 Group Affiliation tracking: RID↔TG observations with aging
     int p25_ga_count;
@@ -2687,8 +2749,7 @@ struct dsd_state {
     uint8_t nxdn_frame_foreign;
     uint8_t nxdn_sacch_frame_segment[4][18]; //part of frame by 18 bits
     uint8_t nxdn_sacch_frame_segcrc[4];
-    uint8_t nxdn_alias_block_number;
-    char nxdn_alias_block_segment[4][4][8];
+    nxdn_alias_assembly nxdn_alias_prop; /* the Kenwood alias being assembled (nxdn_alias_decode_prop()) */
     uint8_t nxdn_alias_arib_total_segments;
     uint8_t nxdn_alias_arib_seen_mask;
     uint8_t nxdn_alias_arib_segments[4][6];

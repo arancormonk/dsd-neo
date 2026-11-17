@@ -299,6 +299,7 @@ Main Menu
 │   ├── Sections
 │   │   ├── Channels [On]
 │   │   ├── DSP panel [Off]                          (radio input only)
+│   │   ├── Unit activity [Off]
 │   │   ├── ─────
 │   │   ├── P25 metrics [Off]
 │   │   ├── P25 affiliations [Off]
@@ -1307,10 +1308,34 @@ layout. While active, the header shows a `Compact (c)` indicator and the frame r
 
 Suppressed while compact: the Input Output section, visual aids (including any enabled visualizers — their
 toggles are remembered and restored when leaving compact; switching one on while compact shows a brief
-"hidden in compact view" toast), the detailed Audio Decode section, the optional P25 sections, and the
-Channels list. The condensed Status block also omits the Voice Error counters and the `Relaxed CRC` decoder
-indicator from the full Audio Decode section — leave compact view to inspect those. The setting is
+"hidden in compact view" toast), the detailed Audio Decode section, the optional P25 sections, the Unit
+Activity section, and the Channels list. The condensed Status block also omits the Voice Error counters and the
+`Relaxed CRC` decoder indicator from the full Audio Decode section — leave compact view to inspect those. The setting is
 session-only and is not persisted to the config file.
+
+## Unit Activity
+
+Menu -> Display -> Sections -> **Unit activity** (off by default) adds a `Unit Activity` section under the
+optional P25 sections. It lists what radios did on the trunking control channels heard this session, on P25, DMR
+Tier III, NXDN Type C and TETRA: registrations and logouts, talkgroup joins, denies and queued requests, radio
+commands (inhibit, kill, radio check, ...) and status messages. The newest eight rows show, newest first, with the
+same words as the Activity screen in the Android and desktop apps:
+
+```text
+| 12:34:56 Denied: Target Unit Not Valid (0x20); 1234567; service 0x04, for 7654321 (x3)
+|  \-- P25 Phase 1, WACN BEE00 SYS 123
+| 12:34:51 Joined talkgroup; 1234567 [Engine 5]; TG 100
+```
+
+Each row gives the time it was first heard, what was heard, the radio (with its name in brackets when the radio list
+or an over-the-air alias names it on that system), the talkgroup or other details, and `(x3)` when the same message
+was heard again within two seconds of the first. A second line gives any other reason, and the protocol and system
+whenever they change from the row above. An inhibit, kill or permanent disable command, or its acknowledgement, is
+drawn in red. A command row says the command was sent, never that the radio acted on it: a listener cannot see that.
+Other things never reach a listener either: the requests radios send, the control channel while the receiver follows
+a voice channel, and DMR and TETRA logouts.
+Lines longer than the terminal end in `…`. The section is hidden in compact view; `(none)` means nothing has been
+heard yet.
 
 ## Event History Rows
 

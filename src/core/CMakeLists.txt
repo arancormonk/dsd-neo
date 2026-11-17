@@ -57,6 +57,8 @@ target_sources(
         util/dsd_alias.c
         util/talkgroup_policy.c
         util/source_alias.c
+        util/unit_activity.c
+        util/unit_activity_reason.c
         util/synctype.c
         file/dsd_file.c
         file/managed_file.c

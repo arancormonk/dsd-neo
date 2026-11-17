@@ -32,6 +32,7 @@
 #include "p25_network_model.h" // WP-F2
 #include "recording_status.h"
 #include "talkgroup_list_model.h"
+#include "unit_activity_model.h"
 
 namespace dsd_qt {
 
@@ -151,6 +152,10 @@ UiController::clearLiveModels() {
     }
     if (m_talkgroups != nullptr) {
         m_talkgroups->clear();
+    }
+    // One log spans a session, scan hops included; a new session starts its own.
+    if (m_unitActivity != nullptr) {
+        m_unitActivity->clear();
     }
     // Later live models join this list. History is durable across sessions and
     // targets; clearing it here would discard calls the operator asked to keep.
@@ -286,9 +291,14 @@ UiController::refreshModels() {
             m_metrics->clear();
         }
     }
-    if (!redraw) {
-        return;
+    if (redraw) {
+        refreshRedrawModels(opts_snapshot, snapshot, live, new_target);
     }
+}
+
+void
+UiController::refreshRedrawModels(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool live,
+                                  bool new_target) {
     if (live && m_network != nullptr && !new_target) { // A hop has published this snapshot's network already.
         m_network->refresh(snapshot);
     }
@@ -299,6 +309,9 @@ UiController::refreshModels() {
     }
     if (live && m_talkgroups != nullptr) {
         m_talkgroups->refresh(opts_snapshot, snapshot);
+    }
+    if (live && m_unitActivity != nullptr) {
+        m_unitActivity->refresh(snapshot);
     }
 }
 

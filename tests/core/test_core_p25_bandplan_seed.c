@@ -14,12 +14,19 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+/* p25_update_system_identity() hands a system change to the registration table (p25_trunk_sm.c, not built here). */
+void
+p25_aff_drop_foreign_owners(dsd_state* state) {
+    (void)state;
+}
 
 static void
 add_row(dsd_state* state, int iden, int is_tdma, long base_5hz, int spac, int type, unsigned long long wacn,

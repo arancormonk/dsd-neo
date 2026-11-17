@@ -1194,6 +1194,7 @@ static const api_command_desc k_commands[] = {
     API_ACTION("ui_show_p25_ccc_toggle", DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE),
     API_ACTION("ui_show_channels_toggle", DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE),
     API_ACTION("ui_show_p25_callsign_toggle", DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE),
+    API_ACTION("ui_show_unit_activity_toggle", DSD_APP_CMD_UI_SHOW_UNIT_ACTIVITY_TOGGLE),
 
     API_U32("key_basic_set", DSD_APP_CMD_KEY_BASIC_SET, "{value:uint32}"),
     API_U32("key_scrambler_set", DSD_APP_CMD_KEY_SCRAMBLER_SET, "{value:uint32}"),
