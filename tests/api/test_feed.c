@@ -7,7 +7,8 @@
  * The API feed's scan avoid copy (issue #672) through its test hooks, against stand-ins for the server: a page reader
  * held between pinning the list and reading it while the decode thread swaps in a new list, and a failed collection of
  * a -Y list followed by a retry at the same key, and the cached records and copy dropped when no client is connected
- * and replaced at a decoder restart; and the status record's tunable for each kind of input (issue #743).
+ * and replaced at a decoder restart; the status record's tunable for each kind of input (issue #743); event rows'
+ * positions and the positions topic (issue #800).
  */
 
 #include <assert.h>
@@ -18,6 +19,7 @@
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -34,10 +36,13 @@
 
 /*============================================================================
  * Stand-ins for the server: g_clients clients connected (one unless a test
- * says otherwise), nobody subscribed
+ * says otherwise), subscribed to the topics in g_interest (none unless a test
+ * says otherwise); the lines broadcast on the positions topic are kept
  *============================================================================*/
 
 static int g_clients = 1;
+static uint32_t g_interest = 0U;
+static dsd_json_buf g_position_lines;
 
 int
 dsd_api_client_count(void) {
@@ -46,15 +51,14 @@ dsd_api_client_count(void) {
 
 int
 dsd_api_topic_interest(uint32_t topic) {
-    (void)topic;
-    return 0;
+    return (topic & g_interest) != 0U;
 }
 
 void
 dsd_api_broadcast(const char* line, size_t len, uint32_t topic) {
-    (void)line;
-    (void)len;
-    (void)topic;
+    if (topic == DSD_API_TOPIC_POSITIONS) {
+        assert(dsd_json_buf_append(&g_position_lines, line, len) == 0);
+    }
 }
 
 /*============================================================================
@@ -430,6 +434,123 @@ test_event_row_position(void) {
     expect_row_json(&e, "\"lat\":90.0000000,\"lon\":180.0000000,", 1);
 }
 
+/*============================================================================
+ * The positions topic (issue #800)
+ *============================================================================*/
+
+/* Admit @p count verified reports from made-up radio 1234 to talkgroup 99, report k at 22.5 N + k * 1e-7, 45.0 E. */
+static void
+admit_reports(uint32_t first, uint32_t count) {
+    for (uint32_t k = first; k < first + count; k++) {
+        dsd_position_fix f;
+        dsd_position_fix_init(&f);
+        f.kind = DSD_POS_DMR_LRRP;
+        f.protocol = DSD_SYNC_DMR_BS_DATA_POS;
+        f.lat_e7 = 225000000 + (int32_t)k;
+        f.lon_e7 = 450000000;
+        f.err_m = 10U;
+        f.heading_ddeg = 900U;
+        f.source_id = 1234U;
+        f.target_id = 99U;
+        f.flags = DSD_POS_FLAG_TARGET_GROUP;
+        assert(dsd_position_admit(NULL, g_state, &f, 1, 1, NULL) == DSD_POSITION_ADMITTED_KEPT);
+    }
+}
+
+/* Publish once and return the position lines it broadcast, parsed and checked: each a whole "position" object with the
+   stream as a decimal string, in pos_seq order from @p first_seq, of report pos_seq + @p report_offset. */
+static size_t
+publish_positions(uint64_t stream, uint64_t first_seq, uint32_t report_offset) {
+    dsd_json_buf_reset(&g_position_lines);
+    dsd_telemetry_publish_both_and_redraw(g_opts, g_state);
+    size_t lines = 0U;
+    char want_stream[32];
+    DSD_SNPRINTF(want_stream, sizeof want_stream, "%llu", (unsigned long long)stream);
+    const char* at = g_position_lines.data;
+    const char* end = at != NULL ? at + g_position_lines.len : NULL;
+    while (at != NULL && at < end) {
+        const char* nl = memchr(at, '\n', (size_t)(end - at));
+        assert(nl != NULL);
+        char line[2048];
+        assert((size_t)(nl - at) < sizeof line);
+        DSD_MEMCPY(line, at, (size_t)(nl - at));
+        line[nl - at] = '\0';
+        dsd_json_node* root = NULL;
+        char err[96];
+        assert(dsd_json_parse(line, &root, err, sizeof err) == 0);
+        const char* type = dsd_json_as_str(dsd_json_obj_get(root, "type"));
+        assert(type != NULL && strcmp(type, "position") == 0);
+        const dsd_json_node* pos_stream = dsd_json_obj_get(root, "pos_stream");
+        assert(pos_stream != NULL && pos_stream->type == DSD_JSON_STRING);
+        assert(strcmp(dsd_json_as_str(pos_stream), want_stream) == 0);
+        const dsd_json_node* pos_seq = dsd_json_obj_get(root, "pos_seq");
+        assert(pos_seq != NULL && pos_seq->type == DSD_JSON_NUMBER);
+        uint64_t seq = 0U;
+        assert(dsd_json_as_u64(pos_seq, &seq) == 0 && seq == first_seq + lines);
+        uint64_t global_seq = 0U;
+        assert(dsd_json_as_u64(dsd_json_obj_get(root, "seq"), &global_seq) == 0 && global_seq > 0U);
+        char want[160];
+        const uint64_t report = seq + report_offset;
+        DSD_SNPRINTF(want, sizeof want, "\"lat\":22.50%05llu,\"lon\":45.0000000,\"alt_dm\":null,\"err_m\":10,",
+                     (unsigned long long)report);
+        if (strstr(line, want) == NULL) {
+            DSD_FPRINTF(stderr, "position line lacks %s: %s\n", want, line);
+            assert(0);
+        }
+        dsd_json_free(root);
+        lines++;
+        at = nl + 1;
+    }
+    return lines;
+}
+
+/* The topic follows the live feed at every publish: no backlog at a subscription, but a report kept between the
+   subscription and the next publish is sent; a burst larger than one page arrives whole and in order; a new run is a
+   new stream from its first record; an overrun between two publishes is a gap in pos_seq. */
+static void
+test_positions_topic(void) {
+    dsd_json_buf_init(&g_position_lines);
+    assert(dsd_position_feed_start(g_state) == 0);
+    const uint64_t s1 = dsd_position_feed_stream_id(g_state);
+    admit_reports(1U, 2U); /* nobody subscribed */
+    assert(publish_positions(s1, 0U, 0U) == 0U);
+
+    g_interest = DSD_API_TOPIC_POSITIONS; /* subscribed */
+    admit_reports(3U, 1U);                /* kept before the next publish */
+    assert(publish_positions(s1, 3U, 0U) == 1U);
+    char line[2048];
+    DSD_SNPRINTF(line, sizeof line, "%.*s", (int)g_position_lines.len, g_position_lines.data);
+    assert(strstr(line, "\"heading_ddeg\":900,\"age_class\":null,\"sats\":null,\"fix_time\":null,\"source_id\":1234,"
+                        "\"target_id\":99,\"source_text\":\"\",")
+           != NULL);
+    assert(strstr(line, "\"kind\":1,") != NULL && strstr(line, "\"flags\":4,") != NULL);
+    assert(publish_positions(s1, 0U, 0U) == 0U); /* nothing new */
+
+    admit_reports(4U, 40U); /* more than one page */
+    assert(publish_positions(s1, 4U, 0U) == 40U);
+
+    /* A new run: its stream, from seq 1. */
+    assert(dsd_position_feed_start(g_state) == 0);
+    const uint64_t s2 = dsd_position_feed_stream_id(g_state);
+    assert(s2 != s1);
+    admit_reports(101U, 2U);
+    assert(publish_positions(s2, 1U, 100U) == 2U);
+
+    /* Unsubscribed: nothing, and the report kept meanwhile is not sent after a new subscription. */
+    g_interest = 0U;
+    admit_reports(103U, 1U);
+    assert(publish_positions(s2, 0U, 0U) == 0U);
+    g_interest = DSD_API_TOPIC_POSITIONS;
+    assert(publish_positions(s2, 0U, 0U) == 0U);
+
+    /* The ring overran between two publishes: seqs 4..1033 kept, 10..1033 still held, a gap before 10. */
+    admit_reports(104U, 1030U);
+    assert(publish_positions(s2, 10U, 100U) == (size_t)DSD_POSITION_FEED_CAPACITY);
+
+    g_interest = 0U;
+    dsd_json_buf_free(&g_position_lines);
+}
+
 int
 main(void) {
     g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
@@ -445,6 +566,7 @@ main(void) {
     test_cache_never_stale();
     test_status_tunable();
     test_event_row_position();
+    test_positions_topic();
 
     dsd_api_feed_stop();
     dsd_app_frontend_runtime_stop();

@@ -32,9 +32,10 @@ enum {
     DSD_API_TOPIC_QUALITY = 1u << 4,
     DSD_API_TOPIC_STATUS = 1u << 5,
     DSD_API_TOPIC_RESULT = 1u << 6,
+    DSD_API_TOPIC_POSITIONS = 1u << 7, /**< the verified position feed (issue #800) */
 };
 
-enum { DSD_API_TOPIC_COUNT = 7 };
+enum { DSD_API_TOPIC_COUNT = 8 };
 
 /**
  * Decryption requests the API submits carry this bit in their request id, so
