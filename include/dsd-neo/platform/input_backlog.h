@@ -31,6 +31,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_INPUT_BACKLOG_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_INPUT_BACKLOG_H_
 
+#include <dsd-neo/platform/sockets.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -39,6 +40,10 @@ extern "C" {
 
 /** How much input @p queue has taken in so far, in the queue's unit. Called with the backlog's lock held. */
 typedef uint64_t (*dsd_input_arrived_fn)(const void* queue);
+
+/** How much input the connected socket @p sock has taken in so far, in the unit the queue that will read it counts.
+ * Called with the backlog's lock held. */
+typedef uint64_t (*dsd_input_socket_arrived_fn)(dsd_socket_t sock);
 
 /** A mark: the attached queue's count and the time, before a retune was asked for. */
 typedef struct dsd_input_cut {
@@ -57,12 +62,14 @@ typedef struct dsd_input_cut {
  * on the connection stands on it. A post made while no input was attached is retired. */
 void dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived);
 
-/** A replacement input begins: its connection @p conn exists, and is the measured input until its queue attaches next,
- * counted by @p arrived in the queue's unit as the queue will count it (nothing reads the connection before then), so a
- * mark taken meanwhile is measured on it. A post held now that measured no input is retired.
+/** A replacement input begins: its connected socket @p sock exists, and is the measured input until its queue attaches
+ * next, counted by @p arrived in the queue's unit as the queue will count it (nothing reads the connection before then),
+ * so a mark taken meanwhile is measured on it. The backlog keeps @p sock itself, never an address of the caller's: the
+ * caller's copy may change or go away while the opening lasts. An invalid @p sock or a NULL @p arrived opens nothing.
+ * A post held now that measured no input is retired.
  * Decoder thread. The next attach ends the opening; dsd_input_backlog_forget() or dsd_input_backlog_retire() end it with
  * the connection detached and a post measured on it retired. */
-void dsd_input_backlog_opening(const void* conn, dsd_input_arrived_fn arrived);
+void dsd_input_backlog_opening(dsd_socket_t sock, dsd_input_socket_arrived_fn arrived);
 
 /** @p queue goes away: detached before it is freed, if it is the one attached. */
 void dsd_input_backlog_detach(const void* queue);

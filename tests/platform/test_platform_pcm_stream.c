@@ -390,7 +390,7 @@ test_post_while_the_input_opens(void) {
 
     dsd_input_backlog_retire();
     post_now();
-    dsd_input_backlog_opening(&pair.client, dsd_pcm_stream_socket_arrived);
+    dsd_input_backlog_opening(pair.client, dsd_pcm_stream_socket_arrived);
     check(dsd_input_backlog_take(NULL) == 0, "a post made before the opening began is retired by it");
     post_now();
     dsd_input_backlog_forget();
@@ -399,7 +399,7 @@ test_post_while_the_input_opens(void) {
     dsd_input_backlog_mark(&cut);
     check(cut.measured == 0U, "and its connection is no input any more");
 
-    dsd_input_backlog_opening(&pair.client, dsd_pcm_stream_socket_arrived);
+    dsd_input_backlog_opening(pair.client, dsd_pcm_stream_socket_arrived);
     post_now();
     dsd_pcm_stream* stream = dsd_pcm_stream_open_socket(pair.client);
     check(stream != NULL, "open on the socket being opened");
@@ -430,7 +430,7 @@ test_post_while_the_input_opens_is_measured_when_posted(void) {
     const uint8_t old_audio[] = {0x01U, 0x00U};
     check(dsd_socket_send(pair.server, old_audio, sizeof old_audio, 0) == (int)sizeof old_audio, "send old audio");
     check(socket_holds(pair.client, (long)sizeof old_audio), "it arrived");
-    dsd_input_backlog_opening(&pair.client, dsd_pcm_stream_socket_arrived);
+    dsd_input_backlog_opening(pair.client, dsd_pcm_stream_socket_arrived);
     post_now();
     const uint8_t fresh[] = {0x03U, 0x00U};
     check(dsd_socket_send(pair.server, fresh, sizeof fresh, 0) == (int)sizeof fresh, "send new audio");
@@ -452,6 +452,47 @@ test_post_while_the_input_opens_is_measured_when_posted(void) {
     check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 3,
           "and the new sample that came before the reader is read");
     dsd_pcm_stream_close(stream);
+    socket_pair_close(&pair);
+}
+
+/* Issue #834: the backlog keeps the opening's connection itself, never the caller's address of it. The variable the
+   caller passed it from may change or go away while the opening lasts (the options a reconnect wrote it into can be
+   replaced or freed): the opening still counts its own connection. A run boundary (dsd_input_backlog_retire(), at a
+   run's start and end) and an input replacement (dsd_input_backlog_forget()) end the opening, after which a mark
+   measures nothing. */
+static void
+test_opening_keeps_its_own_connection(void) {
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the kept opening");
+    const uint8_t old_audio[] = {0x01U, 0x00U, 0x02U, 0x00U};
+    check(dsd_socket_send(pair.server, old_audio, sizeof old_audio, 0) == (int)sizeof old_audio, "send old audio");
+    check(socket_holds(pair.client, (long)sizeof old_audio), "it arrived");
+
+    const int ends_by_retire[] = {1, 0};
+    for (size_t i = 0; i < sizeof ends_by_retire / sizeof ends_by_retire[0]; i++) {
+        dsd_input_backlog_retire();
+        dsd_socket_t callers_copy = pair.client;
+        dsd_input_backlog_opening(callers_copy, dsd_pcm_stream_socket_arrived);
+        callers_copy = DSD_INVALID_SOCKET;
+        dsd_input_cut cut;
+        DSD_MEMSET(&cut, 0, sizeof cut);
+        dsd_input_backlog_mark(&cut);
+        char what[192];
+        DSD_SNPRINTF(what, sizeof what,
+                     "the opening counts its own connection after the caller's copy changed (measured %u, %llu bytes, "
+                     "expected 4)",
+                     (unsigned)cut.measured, (unsigned long long)cut.arrived);
+        check(cut.measured == 1U && cut.arrived == sizeof old_audio, what);
+        if (ends_by_retire[i]) {
+            dsd_input_backlog_retire();
+        } else {
+            dsd_input_backlog_forget();
+        }
+        dsd_input_backlog_mark(&cut);
+        check(cut.measured == 0U,
+              ends_by_retire[i] ? "a run boundary ends the opening" : "an input replacement ends the opening");
+        check(callers_copy == DSD_INVALID_SOCKET, "the caller's copy stays its own");
+    }
     socket_pair_close(&pair);
 }
 
@@ -501,6 +542,7 @@ main(void) {
     test_post_before_the_input_opens();
     test_post_while_the_input_opens();
     test_post_while_the_input_opens_is_measured_when_posted();
+    test_opening_keeps_its_own_connection();
     test_later_mark_is_held();
     dsd_socket_cleanup();
     if (g_failures != 0) {

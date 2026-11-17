@@ -7333,8 +7333,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the cutoff is what had arrived on the input then, nothing later. The TCP reconnect makes its new connection the
   measured input as soon as `tcp_connect` returns it (`dsd_input_backlog_opening()`, counted by
   `dsd_pcm_stream_socket_arrived()`: the bytes the socket holds ready, since nothing has read it yet), before its reader
-  exists; the reader that attaches next goes on from that count (`dsd_input_backlog_attach()`), so a retune marked
-  while the connection opens drops what it held at the mark, also when it is confirmed after the reader attached (the
+  exists. The backlog keeps the socket itself, by value, never the address of the options field it came from, so a
+  replaced or freed `dsd_opts` leaves it nothing to read; the attach, the forget and the run boundary clear it. The
+  reader that attaches next goes on from that count (`dsd_input_backlog_attach()`), so a retune marked while the
+  connection opens drops what it held at the mark, also when it is confirmed after the reader attached (the
   post moves the mark onto that reader), and audio that reached it after the mark, before the reader attached or
   after, is kept. The TCP reconnect takes such a post before the connection's first read. A mark taken while no input
   is attached (during the reconnect's backoff) measured nothing: posted before the next input attaches, the opening or

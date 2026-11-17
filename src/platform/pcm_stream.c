@@ -58,11 +58,11 @@ pcm_stream_arrived(const void* queue) {
 }
 
 uint64_t
-dsd_pcm_stream_socket_arrived(const void* sock) {
-    if (sock == NULL) {
+dsd_pcm_stream_socket_arrived(dsd_socket_t sock) {
+    if (sock == DSD_INVALID_SOCKET) {
         return 0U;
     }
-    const long ready = dsd_socket_readable_bytes(*(const dsd_socket_t*)sock);
+    const long ready = dsd_socket_readable_bytes(sock);
     return ready > 0 ? (uint64_t)ready : 0U;
 }
 

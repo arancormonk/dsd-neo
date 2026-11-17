@@ -10,6 +10,7 @@
 
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <stddef.h>
@@ -27,9 +28,13 @@ static uint64_t s_seq; /* moves at every attach and every detach of the attached
 static uint64_t s_marks;
 static dsd_input_cut s_post;
 static int s_post_held;
-/* An input is being opened (dsd_input_backlog_opening()): its connection is the attached input, counted until its
-   queue attaches. */
+/* An input is being opened (dsd_input_backlog_opening()): its connection is the measured input, counted by
+   s_opening_arrived until its queue attaches. The backlog keeps the connection itself (s_opening_sock), never the
+   address the caller holds it at, so it counts the same connection whatever becomes of the caller's copy; no queue is
+   attached meanwhile (s_queue NULL). */
 static int s_opening;
+static dsd_socket_t s_opening_sock = DSD_INVALID_SOCKET;
+static dsd_input_socket_arrived_fn s_opening_arrived;
 /* The last attach went on from an opening's connection (s_continued_to != 0): a mark measured on that connection
    (attachment s_continued_from) stands on the queue attached then (attachment s_continued_to) while it stays
    attached, since the queue's count goes on from the connection's. */
@@ -57,11 +62,24 @@ backlog_unlock(void) {
     dsd_mutex_unlock(&s_mu);
 }
 
+/* No input is opening any more: the backlog's copy of its connection is cleared. */
+static void
+backlog_clear_opening_locked(void) {
+    s_opening = 0;
+    s_opening_sock = DSD_INVALID_SOCKET;
+    s_opening_arrived = NULL;
+}
+
 static void
 backlog_mark_locked(dsd_input_cut* out) {
     out->seq = s_seq;
-    out->measured = (uint8_t)(s_queue != NULL && s_arrived != NULL);
-    out->arrived = out->measured ? s_arrived(s_queue) : 0U;
+    if (s_opening) {
+        out->measured = 1U;
+        out->arrived = s_opening_arrived(s_opening_sock);
+    } else {
+        out->measured = (uint8_t)(s_queue != NULL && s_arrived != NULL);
+        out->arrived = out->measured ? s_arrived(s_queue) : 0U;
+    }
     out->marked_ns = dsd_time_monotonic_ns();
     out->order = ++s_marks;
 }
@@ -90,7 +108,7 @@ dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived) {
     }
     s_continued_from = opened;
     s_continued_to = continues ? s_seq : 0U;
-    s_opening = 0;
+    backlog_clear_opening_locked();
     backlog_unlock();
 }
 
@@ -129,30 +147,31 @@ dsd_input_backlog_cut_applies(const dsd_input_cut* cut, const void* queue) {
     return applies;
 }
 
-/* The connection an opening attached is no input any more (its open failed, or the run ended): detached. */
+/* The connection an opening measured is no input any more (its open failed, or the run ended): detached. */
 static void
 backlog_end_opening_locked(void) {
     if (s_opening) {
-        s_queue = NULL;
-        s_arrived = NULL;
         s_seq++;
-        s_opening = 0;
+        backlog_clear_opening_locked();
     }
 }
 
 void
-dsd_input_backlog_opening(const void* conn, dsd_input_arrived_fn arrived) {
+dsd_input_backlog_opening(dsd_socket_t sock, dsd_input_socket_arrived_fn arrived) {
     backlog_lock();
     /* Posted while no input was attached, before this connection existed: nothing it holds was queued before the post,
        as at an attach. */
     if (s_post_held && !s_post.measured) {
         s_post_held = 0;
     }
-    if (conn != NULL && arrived != NULL) {
+    if (sock != DSD_INVALID_SOCKET && arrived != NULL) {
+        /* The queue attached before, if any, is no longer the input: the connection is, until its queue attaches. */
         s_seq++;
-        s_queue = conn;
-        s_arrived = arrived;
+        s_queue = NULL;
+        s_arrived = NULL;
         s_opening = 1;
+        s_opening_sock = sock;
+        s_opening_arrived = arrived;
     }
     backlog_unlock();
 }
