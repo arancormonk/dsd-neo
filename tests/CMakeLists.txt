@@ -19444,6 +19444,30 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(IO_SOAPY_STREAM_LOSS PROPERTIES TIMEOUT 120)
 
+    # The rate and tuner filter a SoapySDR device runs (a HackRF's preferred rate, profile filters opened for the
+    # Fs/4 offset, the explicit-bandwidth warning) and what a stream open on one sizes, through the device's own
+    # calls on a stand-in driver. Skips in a build without SoapySDR.
+    add_executable(
+        dsd-neo_test_io_rtl_device_soapy_rate
+        io/test_io_rtl_device_soapy_rate.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_device_soapy_rate
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_device_soapy_rate
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_test_support
+            ${LIBS}
+    )
+    add_test(
+        NAME IO_RTL_DEVICE_SOAPY_RATE
+        COMMAND dsd-neo_test_io_rtl_device_soapy_rate
+    )
+
     # The SoapySDR reader's CS16 conversion, grouped fs/4 rotation included, bit for
     # bit against the per-sample rotation. Skips in a build without SoapySDR.
     add_executable(
@@ -21364,7 +21388,10 @@ if(DSD_HAS_RADIO)
     # first 2 s 16 voice bursts (one superframe of allowance), tetra_call_real_air_72k's first 2 s 70 identities and 25
     # TCH/FS bursts whose CRC passed. Before issue #806 the replay ran these chains unstepped at 78,125 or 93,750 Hz: the
     # two P25 Phase 1 control channels decoded no network status and no grant, P25 Phase 2 one SACCH, and TETRA ran only
-    # through a resampled replay (288 kHz), not the recorded chain.
+    # through a resampled replay (288 kHz), not the recorded chain. TETRA_CALL_SOAPY_156K is the same TETRA excerpt as a
+    # HackRF at 10 MS/s through SoapySDR leaves it after six half-band passes (156,250 Hz): one more pass to 78,125 Hz
+    # and the 576/625 step, a ratio no other case runs. It covers that part of the chain only, not the live 10 MS/s
+    # ingest or the Fs/4 tuning.
     foreach(
         _forced_case
         IN
@@ -21374,6 +21401,7 @@ if(DSD_HAS_RADIO)
             "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161.[0-9: ]+P25p2 SACCH  MAC_IDLE@@1@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
             "DMR_VOICE_AIRSPY_312K@@dmr_voice_airspy_312k@@-fs@@Color Code=02 \\| VC@@10@@Color Code=02 \\| VLC@@1@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
             "TETRA_CALL_AIRSPY_375K@@tetra_call_airspy_375k@@-fT -Z@@\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=375000 Hz, base_decim=4, I/Q step L/M=96/125"
+            "TETRA_CALL_SOAPY_156K@@tetra_call_soapy_156k@@-fT -Z@@\\[TETRA BSCH\\] MCC=[0-9]+ MNC=[0-9]+ CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=156250 Hz, base_decim=2, I/Q step L/M=576/625"
     )
         string(REPLACE "@@" ";" _forced_fields "${_forced_case}")
         list(GET _forced_fields 0 _forced_name)

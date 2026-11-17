@@ -7,6 +7,7 @@
 
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/runtime/analog_channel.h>
 
 #include <algorithm>
 #include <cctype>
@@ -160,22 +161,41 @@ parse_finite_double(const std::string& value, double* out) {
 }
 
 const SoapyProfile k_profiles[] = {
-    {SoapyProfileId::Auto, "auto", "auto", 0.0, nullptr},
-    {SoapyProfileId::Generic, "generic", "Generic SoapySDR", 0.0, nullptr},
-    {SoapyProfileId::Airspy, "airspy", "Airspy", 250000.0, nullptr},
-    {SoapyProfileId::Sdrplay, "sdrplay", "SDRplay", 200000.0, nullptr},
-    {SoapyProfileId::Hackrf, "hackrf", "HackRF", 1750000.0, nullptr},
-    {SoapyProfileId::Lime, "lime", "LimeSDR", 300000.0, nullptr},
-    {SoapyProfileId::Pluto, "pluto", "ADALM-Pluto", 300000.0, nullptr},
-    {SoapyProfileId::Rtlsdr, "rtlsdr", "RTL-SDR", 0.0, nullptr},
-    {SoapyProfileId::Uhd, "uhd", "UHD/USRP", 0.0, nullptr},
+    {SoapyProfileId::Auto, "auto", "auto", 0.0, nullptr, 0.0},
+    {SoapyProfileId::Generic, "generic", "Generic SoapySDR", 0.0, nullptr, 0.0},
+    {SoapyProfileId::Airspy, "airspy", "Airspy", 250000.0, nullptr, 0.0},
+    {SoapyProfileId::Sdrplay, "sdrplay", "SDRplay", 200000.0, nullptr, 0.0},
+    /* HackRF: its makers list 2 MS/s as the lowest rate and recommend 8 MS/s or more (the MAX2837's narrowest filter
+       barely attenuates at the edges of a 2 MS/s capture), so it runs 10 MS/s, a rate the half-band cascade and the
+       rate step already serve for a native Airspy. */
+    {SoapyProfileId::Hackrf, "hackrf", "HackRF", 1750000.0, nullptr, 10000000.0},
+    {SoapyProfileId::Lime, "lime", "LimeSDR", 300000.0, nullptr, 0.0},
+    {SoapyProfileId::Pluto, "pluto", "ADALM-Pluto", 300000.0, nullptr, 0.0},
+    {SoapyProfileId::Rtlsdr, "rtlsdr", "RTL-SDR", 0.0, nullptr, 0.0},
+    {SoapyProfileId::Uhd, "uhd", "UHD/USRP", 0.0, nullptr, 0.0},
     /* SDDC (RX-888 family): no hardware bandwidth control, and the tuner path used by every
        digital voice band is reached through the "VHF" antenna rather than the HF default. */
-    {SoapyProfileId::Sddc, "sddc", "SDDC/RX-888", 0.0, "VHF"},
+    {SoapyProfileId::Sddc, "sddc", "SDDC/RX-888", 0.0, "VHF", 0.0},
 };
 
-SoapyProfileId
-detect_profile_from_text(const std::string& text) {
+/* A profile and the keywords that name it in a driver key, hardware key or device argument. */
+struct keyword_profile {
+    const char* const* keywords;
+    size_t count;
+    SoapyProfileId id;
+};
+
+template <size_t N>
+keyword_profile
+keywords_for(const char* const (&keywords)[N], SoapyProfileId id) {
+    return {keywords, N, id};
+}
+
+/* The profile @p text names in @p out_id, or false when it names none. An Airspy HF+ (SoapyAirspyHF's "AirspyHF") is
+ * named and runs the generic profile: its key holds "airspy", but it is not an Airspy. */
+bool
+detect_profile_from_text(const std::string& text, SoapyProfileId* out_id) {
+    static const char* const k_airspyhf_keywords[] = {"airspyhf", "airspy hf"};
     static const char* const k_airspy_keywords[] = {"airspy"};
     static const char* const k_sdrplay_keywords[] = {"sdrplay", "rsp1", "rsp2", "rspduo", "rspdx"};
     static const char* const k_hackrf_keywords[] = {"hackrf"};
@@ -186,32 +206,28 @@ detect_profile_from_text(const std::string& text) {
     static const char* const k_sddc_keywords[] = {"sddc",   "rx888", "rx-888", "rx999",
                                                   "rx-999", "rx666", "rx-666", "bbrf103"};
 
+    static const keyword_profile k_order[] = {
+        keywords_for(k_airspyhf_keywords, SoapyProfileId::Generic),
+        keywords_for(k_airspy_keywords, SoapyProfileId::Airspy),
+        keywords_for(k_sdrplay_keywords, SoapyProfileId::Sdrplay),
+        keywords_for(k_hackrf_keywords, SoapyProfileId::Hackrf),
+        keywords_for(k_lime_keywords, SoapyProfileId::Lime),
+        keywords_for(k_pluto_keywords, SoapyProfileId::Pluto),
+        keywords_for(k_rtlsdr_keywords, SoapyProfileId::Rtlsdr),
+        keywords_for(k_uhd_keywords, SoapyProfileId::Uhd),
+        keywords_for(k_sddc_keywords, SoapyProfileId::Sddc),
+    };
+
     const std::string lower_text = lower_copy(text);
-    if (contains_any_lower(lower_text, k_airspy_keywords, sizeof k_airspy_keywords / sizeof k_airspy_keywords[0])) {
-        return SoapyProfileId::Airspy;
+    const keyword_profile* named =
+        std::find_if(std::begin(k_order), std::end(k_order), [&lower_text](const keyword_profile& entry) {
+            return contains_any_lower(lower_text, entry.keywords, entry.count);
+        });
+    if (named == std::end(k_order)) {
+        return false;
     }
-    if (contains_any_lower(lower_text, k_sdrplay_keywords, sizeof k_sdrplay_keywords / sizeof k_sdrplay_keywords[0])) {
-        return SoapyProfileId::Sdrplay;
-    }
-    if (contains_any_lower(lower_text, k_hackrf_keywords, sizeof k_hackrf_keywords / sizeof k_hackrf_keywords[0])) {
-        return SoapyProfileId::Hackrf;
-    }
-    if (contains_any_lower(lower_text, k_lime_keywords, sizeof k_lime_keywords / sizeof k_lime_keywords[0])) {
-        return SoapyProfileId::Lime;
-    }
-    if (contains_any_lower(lower_text, k_pluto_keywords, sizeof k_pluto_keywords / sizeof k_pluto_keywords[0])) {
-        return SoapyProfileId::Pluto;
-    }
-    if (contains_any_lower(lower_text, k_rtlsdr_keywords, sizeof k_rtlsdr_keywords / sizeof k_rtlsdr_keywords[0])) {
-        return SoapyProfileId::Rtlsdr;
-    }
-    if (contains_any_lower(lower_text, k_uhd_keywords, sizeof k_uhd_keywords / sizeof k_uhd_keywords[0])) {
-        return SoapyProfileId::Uhd;
-    }
-    if (contains_any_lower(lower_text, k_sddc_keywords, sizeof k_sddc_keywords / sizeof k_sddc_keywords[0])) {
-        return SoapyProfileId::Sddc;
-    }
-    return SoapyProfileId::Generic;
+    *out_id = named->id;
+    return true;
 }
 
 double
@@ -280,16 +296,9 @@ soapy_select_profile_id(const SoapyProfileSelection& selection) {
         return requested;
     }
 
-    SoapyProfileId id = detect_profile_from_text(selection.driver_key);
-    if (id != SoapyProfileId::Generic) {
-        return id;
-    }
-    id = detect_profile_from_text(selection.hardware_key);
-    if (id != SoapyProfileId::Generic) {
-        return id;
-    }
-    id = detect_profile_from_text(selection.args);
-    if (id != SoapyProfileId::Generic) {
+    SoapyProfileId id = SoapyProfileId::Generic;
+    if (detect_profile_from_text(selection.driver_key, &id) || detect_profile_from_text(selection.hardware_key, &id)
+        || detect_profile_from_text(selection.args, &id)) {
         return id;
     }
     return SoapyProfileId::Generic;
@@ -473,6 +482,107 @@ soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_ra
         *out_adjusted = true;
     }
     return supported ? nearest : requested;
+}
+
+namespace {
+
+/* Rates and bandwidths within this of each other are the same: drivers report them as doubles from integer tables. */
+constexpr double kSoapyExactHz = 1.0;
+
+bool
+range_holds_point(double value, const SoapyRange& range) {
+    if (!std::isfinite(value) || range.maximum < range.minimum || value < range.minimum - kSoapyExactHz
+        || value > range.maximum + kSoapyExactHz) {
+        return false;
+    }
+    if (!(range.step > 0.0)) {
+        return true;
+    }
+    const double steps = std::round((value - range.minimum) / range.step);
+    return std::fabs(range.minimum + steps * range.step - value) <= kSoapyExactHz;
+}
+
+/* The narrowest point of @p range at or above @p floor_hz (its step rounded up), or false when it has none. */
+bool
+range_point_at_or_above(double floor_hz, const SoapyRange& range, double* out_hz) {
+    if (range.maximum < range.minimum || range.maximum < floor_hz - kSoapyExactHz) {
+        return false;
+    }
+    double point = std::max(range.minimum, floor_hz);
+    if (range.step > 0.0) {
+        /* A floor within kSoapyExactHz of a step is that step. */
+        const double steps = std::ceil((point - range.minimum - kSoapyExactHz) / range.step);
+        point = range.minimum + std::max(0.0, steps) * range.step;
+        if (point > range.maximum + kSoapyExactHz) {
+            return false;
+        }
+    }
+    *out_hz = point;
+    return true;
+}
+
+} // namespace
+
+bool
+soapy_rate_supported_exactly(double rate_hz, const std::vector<double>& listed_rates,
+                             const std::vector<SoapyRange>& ranges) {
+    if (!(rate_hz > 0.0)) {
+        return false;
+    }
+    const bool listed = std::any_of(listed_rates.begin(), listed_rates.end(),
+                                    [rate_hz](double rate) { return std::fabs(rate - rate_hz) <= kSoapyExactHz; });
+    return listed || std::any_of(ranges.begin(), ranges.end(), [rate_hz](const SoapyRange& range) {
+               return range_holds_point(rate_hz, range);
+           });
+}
+
+double
+soapy_profile_sample_rate(const SoapyProfile& profile, double requested, const std::vector<double>& listed_rates,
+                          const std::vector<SoapyRange>& ranges, bool* out_adjusted) {
+    const double preferred = profile.preferred_sample_rate_hz;
+    if (requested > 0.0 && preferred > 0.0 && soapy_rate_supported_exactly(preferred, listed_rates, ranges)) {
+        if (out_adjusted) {
+            *out_adjusted = std::fabs(preferred - requested) > 0.5;
+        }
+        return preferred;
+    }
+    return soapy_nearest_sample_rate(requested, listed_rates, ranges, out_adjusted);
+}
+
+double
+soapy_fs4_channel_floor_hz(double capture_rate_hz) {
+    return capture_rate_hz / 2.0 + (double)DSD_ANALOG_RTL_DSP_BW_MAX_KHZ * 1000.0;
+}
+
+double
+soapy_floor_bandwidth(double floor_hz, const std::vector<SoapyRange>& ranges) {
+    double best = 0.0;
+    double widest = 0.0;
+    bool have_best = false;
+    bool have_widest = false;
+    for (const SoapyRange& range : ranges) {
+        if (range.maximum < range.minimum) {
+            continue;
+        }
+        double point = 0.0;
+        if (range_point_at_or_above(floor_hz, range, &point) && (!have_best || point < best)) {
+            best = point;
+            have_best = true;
+        }
+        if (!have_widest || range.maximum > widest) {
+            widest = range.maximum;
+            have_widest = true;
+        }
+    }
+    if (have_best) {
+        return best;
+    }
+    return have_widest ? widest : floor_hz;
+}
+
+bool
+soapy_bandwidth_cuts_offset(double applied_hz, double capture_rate_hz) {
+    return capture_rate_hz > 0.0 && applied_hz < soapy_fs4_channel_floor_hz(capture_rate_hz) - 0.5;
 }
 
 std::string

@@ -938,6 +938,54 @@ static char g_rate_chain_refusal[256];
 /* The plan the planner last refused, with the fields it worked out (a refused read-back keeps it and the forced flag). */
 static dsd_rate_plan g_rate_plan_refused;
 
+/* Capture-rate window the ingest ring and watermark defaults are sized for. */
+static const long long kMinCaptureRateHz = 225000LL;
+static const long long kMaxCaptureRateHz = 3200000LL;
+/* A raw I/Q stream's RATE is held to the same ceiling (issue #743): its ring and chain are sized as a device's. */
+static_assert(kMaxCaptureRateHz == (long long)DSD_IQ_NET_MAX_RATE_HZ, "the stream rate ceiling is the capture ceiling");
+/* The ceiling for a device that picks its own rate, a SoapySDR device or a native Airspy: the stream runs up to it with
+ * an input ring scaled to the rate (stream_open_size_input_for_rate()). An RTL-SDR and rtl_tcp run the rates the
+ * stream asks for, which stay within kMaxCaptureRateHz. */
+static const uint32_t kMaxDeviceCaptureRateHz = 10000000U;
+static_assert(kMaxDeviceCaptureRateHz == (uint32_t)DSD_AIRSPY_MAX_RATE, "the device ceiling is a native Airspy's");
+/* The default input ring, in floats: what kMaxCaptureRateHz is sized against. */
+static const size_t kInputRingDefaultFloats = (size_t)MAXIMUM_BUF_LENGTH * 8U;
+/* The highest capture rate the stream's input ring holds the default ring's time at (input_ring_rate_for_capacity()).
+   Set by the open before any thread runs, then read by the controller: the ring is never resized under the stream's
+   threads, so a later rate above it is refused. */
+static uint32_t g_input_ring_rate_hz = (uint32_t)kMaxCaptureRateHz;
+
+/* An input ring with the default ring's time capacity at @p rate_hz: the default ring, doubled until it holds it. */
+static size_t
+input_ring_capacity_for_rate(uint32_t rate_hz) {
+    size_t capacity = kInputRingDefaultFloats;
+    const uint64_t needed =
+        ((uint64_t)capacity * rate_hz + (uint64_t)kMaxCaptureRateHz - 1U) / (uint64_t)kMaxCaptureRateHz;
+    while ((uint64_t)capacity < needed) {
+        capacity *= 2U;
+    }
+    return capacity;
+}
+
+/* The highest capture rate a ring of @p capacity floats holds the default ring's time at. */
+static uint32_t
+input_ring_rate_for_capacity(size_t capacity) {
+    const uint64_t rate_hz = (uint64_t)capacity * (uint64_t)kMaxCaptureRateHz / (uint64_t)kInputRingDefaultFloats;
+    return rate_hz > (uint64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)rate_hz;
+}
+
+/* The highest capture rate a device on @p backend may run; a replay's chain is planned from its file and has none. */
+static uint32_t
+capture_rate_ceiling_hz(dsd_rate_plan_backend backend) {
+    switch (backend) {
+        case DSD_RATE_PLAN_BACKEND_SOAPY:
+        case DSD_RATE_PLAN_BACKEND_AIRSPY: return kMaxDeviceCaptureRateHz;
+        case DSD_RATE_PLAN_BACKEND_RTL_USB:
+        case DSD_RATE_PLAN_BACKEND_RTL_TCP: return (uint32_t)kMaxCaptureRateHz;
+        default: return UINT32_MAX;
+    }
+}
+
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 /* The backend the plan is made for in place of the device's (-1: the device's). */
 static int g_test_rate_plan_backend = -1;
@@ -977,6 +1025,26 @@ rate_chain_backend(void) {
     }
 #endif
     return rtl_device_rate_plan_backend(rtl_device_handle);
+}
+
+/* Whether the capture can run at @p rate_hz, the rate the device delivers: within the ceiling for its backend and, once
+ * the stream's input ring was sized (@p ring_sized: a retune, a correction or a rollback), within the rate that ring
+ * holds. A refusal says why in g_rate_chain_refusal. */
+static int
+capture_rate_within_limits(uint32_t rate_hz, int ring_sized) {
+    const uint32_t ceiling_hz = capture_rate_ceiling_hz(rate_chain_backend());
+    if (rate_hz > ceiling_hz) {
+        DSD_SNPRINTF(g_rate_chain_refusal, sizeof g_rate_chain_refusal,
+                     "the device runs %u Hz, above the %u Hz capture ceiling", rate_hz, ceiling_hz);
+        return 0;
+    }
+    if (ring_sized && rate_hz > g_input_ring_rate_hz) {
+        DSD_SNPRINTF(g_rate_chain_refusal, sizeof g_rate_chain_refusal,
+                     "the device moved to %u Hz, above the %u Hz the input ring was sized for when the stream started",
+                     rate_hz, g_input_ring_rate_hz);
+        return 0;
+    }
+    return 1;
 }
 
 /* Plan the chain for @p request_hz, programmed as @p programmed_hz and read back as @p readback_hz (0: not yet) at the
@@ -1187,15 +1255,16 @@ struct CaptureReadback {
 };
 } // namespace
 
-/* The rate chain on what the device reports (@p rb): the final plan, the I/Q rate step for it, then the capture moved
- * for the rate the device delivers. Returns 0, with @p out_rate_hz (optional) the rate the chain runs at; otherwise the
+/* The rate chain on what the device reports (@p rb): the rate it delivers held to the capture limits
+ * (capture_rate_within_limits()), the final plan, the I/Q rate step for it, then the capture moved for that rate. Returns 0, with @p out_rate_hz (optional) the rate the chain runs at; otherwise the
  * refusal in @p out_refusal and its code. A refused plan leaves the chain as it was; a failed step design leaves the
  * step on its running design and the chain on the read-back, which the caller puts back; a failed correction
  * (retune_capture_frequency_for_actual_rate()) leaves both on the read-back. */
 static int
 apply_actual_capture_rate(const CaptureReadback* rb, uint32_t* out_rate_hz, int* out_refusal) {
     *out_refusal = kCaptureRefusalNone;
-    if (rate_chain_replan(rb->programmed_hz, rb->readback_hz) != 0) {
+    const uint32_t delivered_hz = rb->readback_hz != 0U ? rb->readback_hz : rb->programmed_hz;
+    if (!capture_rate_within_limits(delivered_hz, 1) || rate_chain_replan(rb->programmed_hz, rb->readback_hz) != 0) {
         *out_refusal = kCaptureRefusalRatePlan;
         return kCaptureRateChainRefused;
     }
@@ -5763,12 +5832,6 @@ rtl_floor_log2_nonzero(int value) {
 #endif
 }
 
-/* Capture-rate window the ingest ring and watermark defaults are sized for. */
-static const long long kMinCaptureRateHz = 225000LL;
-static const long long kMaxCaptureRateHz = 3200000LL;
-/* A raw I/Q stream's RATE is held to the same ceiling (issue #743): its ring and chain are sized as a device's. */
-static_assert(kMaxCaptureRateHz == (long long)DSD_IQ_NET_MAX_RATE_HZ, "the stream rate ceiling is the capture ceiling");
-
 static int
 rtl_choose_passes_near_good_rate(int rate_in_hz, int suggested_passes) {
     static const int good_rates[] = {960000, 1024000, 1200000, 1536000, 1920000, 2048000, 2400000};
@@ -7323,10 +7386,15 @@ controller_apply_initial_offset_tuning(const dsd_opts* opts) {
     }
 }
 
-/* The start's read-back @p actual_hz (0: none) of @p io_capture_rate_hz: the final plan and its I/Q rate step. */
+/* The start's read-back @p actual_hz (0: none) of @p io_capture_rate_hz: the rate the device delivers held to the
+ * capture ceiling, the final plan and its I/Q rate step. */
 static int
 controller_take_initial_readback(uint32_t* io_capture_rate_hz, uint32_t actual_hz) {
-    if (rate_chain_replan(*io_capture_rate_hz, actual_hz) != 0 || rate_chain_sync_step() != 0) {
+    /* The ceiling holds on the rate the device delivers, which can differ from the one it advertised before the open
+       (stream_open_validate_device_capture_rate()); the input ring is sized for it once the start is programmed. */
+    const uint32_t delivered_hz = actual_hz != 0U ? actual_hz : *io_capture_rate_hz;
+    if (!capture_rate_within_limits(delivered_hz, 0) || rate_chain_replan(*io_capture_rate_hz, actual_hz) != 0
+        || rate_chain_sync_step() != 0) {
         LOG_ERROR("The stream cannot start: %s.\n", g_rate_chain_refusal);
         return kCaptureRateChainRefused;
     }
@@ -9267,10 +9335,11 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
         LOG_ERROR("Output ring buffer allocation failed.\n");
         return -1;
     }
-    if (input_ring_init(&input_ring, (size_t)(MAXIMUM_BUF_LENGTH * 8)) != 0) {
+    if (input_ring_init(&input_ring, kInputRingDefaultFloats) != 0) {
         LOG_ERROR("Failed to initialize input ring buffer.\n");
         return -1;
     }
+    g_input_ring_rate_hz = input_ring_rate_for_capacity(input_ring.capacity);
     g_demod_input_reserve_floats.store((size_t)MAXIMUM_BUF_LENGTH, std::memory_order_relaxed);
     /* A purge requested and never taken belongs to the stream that requested it: a stop can land between a RESET's or
        a live retune's request and the demod's or the replay reader's take. Left set, it would discard this stream's
@@ -9727,11 +9796,12 @@ stream_open_finalize_analog_channel(const dsd_opts* opts) {
 }
 
 /**
- * @brief Reject devices whose slowest usable rate exceeds what the ingest path carries.
+ * @brief Reject devices whose advertised rate exceeds the capture ceiling, before anything is programmed.
  *
- * The input ring and the millisecond-based watermarks are sized for capture rates in the
- * `kMinCaptureRateHz`..`kMaxCaptureRateHz` window. A device that can only stream faster
- * would silently overrun, so fail the open with the numbers the user needs instead.
+ * The ceiling is the device's backend's (capture_rate_ceiling_hz()): an RTL-SDR's request window, or 10 MS/s for a
+ * device that picks its own rate, whose input ring is scaled to it. This early check uses the rate the device says it
+ * will deliver; the start's programming holds the rate it reads back to the same ceiling
+ * (controller_take_initial_readback()), which also covers a device whose rate discovery failed here.
  */
 static int
 stream_open_validate_device_capture_rate(RadioSourceKind source_kind) {
@@ -9748,7 +9818,7 @@ stream_open_validate_device_capture_rate(RadioSourceKind source_kind) {
         || deliverable_hz == 0U) {
         return 0;
     }
-    long long ceiling = source_kind == RADIO_SOURCE_AIRSPY ? (long long)DSD_AIRSPY_MAX_RATE : kMaxCaptureRateHz;
+    const long long ceiling = (long long)capture_rate_ceiling_hz(rate_chain_backend());
     if ((long long)deliverable_hz <= ceiling) {
         return 0;
     }
@@ -10217,26 +10287,41 @@ stream_open_finalize_rate_chain(RadioSourceKind source_kind, const dsd_opts* opt
     return 0;
 }
 
-/* An Airspy's native rate, read once its device is open, and an input ring with the default ring's time capacity at
- * that rate. */
+/* An input ring with the default ring's time capacity at @p rate_hz (input_ring_capacity_for_rate()), allocated only
+ * when the stream's ring is smaller; the open runs it before any thread starts. */
 static int
-stream_open_size_airspy_input(dsd_opts* opts) {
+stream_open_size_input_for_rate(uint32_t rate_hz) {
+    const size_t capacity = input_ring_capacity_for_rate(rate_hz);
+    if (capacity > input_ring.capacity) {
+        input_ring_destroy(&input_ring);
+        if (input_ring_init(&input_ring, capacity) != 0) {
+            LOG_ERROR("Failed to size the input ring for %u Hz.\n", rate_hz);
+            return -1;
+        }
+        input_ring_enable_space_notify(&input_ring, 0);
+    }
+    g_input_ring_rate_hz = input_ring_rate_for_capacity(input_ring.capacity);
+    return 0;
+}
+
+/* An Airspy's native rate, read once its device is open, an input ring sized for it, and centred I/Q (no Fs/4 shift). */
+static int
+stream_open_init_airspy_input(dsd_opts* opts) {
     if (rtl_device_airspy_info(rtl_device_handle, &opts->airspy_info) != 0) {
         return -1;
     }
-    /* Preserve the default ring's time capacity at higher native rates. */
-    size_t capacity = (size_t)MAXIMUM_BUF_LENGTH * 8U;
-    uint64_t needed = ((uint64_t)capacity * opts->airspy_info.sample_rate + 3199999U) / 3200000U;
-    while (capacity < needed) {
-        capacity *= 2;
-    }
-    input_ring_destroy(&input_ring);
-    if (input_ring_init(&input_ring, capacity) != 0) {
+    if (stream_open_size_input_for_rate(opts->airspy_info.sample_rate) != 0) {
         return -1;
     }
-    input_ring_enable_space_notify(&input_ring, 0);
     dongle.centered_iq = 1;
     return 0;
+}
+
+/* Once the start is programmed, an input ring sized for the rate the device delivers (a SoapySDR device may read back
+ * another rate than it advertised); a fixed source's ring is its own. */
+static int
+stream_open_size_input_for_capture(RadioSourceKind source_kind) {
+    return radio_source_has_fixed_tuning(source_kind) ? 0 : stream_open_size_input_for_rate(load_dongle_rate());
 }
 
 /* Seconds of samples at the DSP input rate a raw I/Q stream's input ring holds (issue #743 D6). */
@@ -10313,7 +10398,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (stream_open_open_device(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
         return -1;
     }
-    if (source_kind == RADIO_SOURCE_AIRSPY && stream_open_size_airspy_input(opts) != 0) {
+    if (source_kind == RADIO_SOURCE_AIRSPY && stream_open_init_airspy_input(opts) != 0) {
         return -1;
     }
     if (source_kind == RADIO_SOURCE_NET_IQ
@@ -10330,6 +10415,9 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     stream_open_apply_requested_ppm(opts, source_kind);
 
     if (stream_open_finalize_rate_chain(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
+        return -1;
+    }
+    if (stream_open_size_input_for_capture(source_kind) != 0) {
         return -1;
     }
     (void)stream_open_warn_low_dsp_bw(opts, demod.complex_rate, demod.cqpsk_enable);
@@ -13238,6 +13326,7 @@ struct TestCaptureProgramState {
     int centered_iq;
     int direct_sampling;
     int disable_fs4_shift;
+    uint32_t input_ring_rate_hz;
 };
 
 /* Make @p dev the open device of a stream about to start on @p center_hz with a 48 kHz demod input. */
@@ -13256,8 +13345,11 @@ test_capture_program_enter(struct rtl_device* dev, uint32_t center_hz, int direc
     saved.centered_iq = dongle.centered_iq;
     saved.direct_sampling = dongle.direct_sampling;
     saved.disable_fs4_shift = disable_fs4_shift;
+    saved.input_ring_rate_hz = g_input_ring_rate_hz;
 
     rtl_device_handle = dev;
+    /* The default ring's, as stream_open_init_pipeline() leaves it. */
+    g_input_ring_rate_hz = input_ring_rate_for_capacity(kInputRingDefaultFloats);
     /* A fake device may sit where an earlier one was. */
     capture_writes_forget();
     g_rate_plan_refused = dsd_rate_plan{};
@@ -13316,6 +13408,17 @@ test_capture_program_leave(const TestCaptureProgramState* saved) {
     dongle.centered_iq = saved->centered_iq;
     dongle.direct_sampling = saved->direct_sampling;
     disable_fs4_shift = saved->disable_fs4_shift;
+    g_input_ring_rate_hz = saved->input_ring_rate_hz;
+}
+
+/* After a start that programmed with @p rc, the rate an open's input ring would then hold
+ * (stream_open_size_input_for_capture()), with no ring allocated: a session's retunes are held to it. */
+static void
+test_capture_note_ring_rate(int rc) {
+    if (rc == 0) {
+        g_input_ring_rate_hz = std::max(g_input_ring_rate_hz,
+                                        input_ring_rate_for_capacity(input_ring_capacity_for_rate(load_dongle_rate())));
+    }
 }
 
 } // namespace
@@ -13343,6 +13446,7 @@ rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* o
     }
     const TestCaptureProgramState saved = test_capture_program_enter(dev, center_hz, 0);
     int rc = controller_program_initial_device(&controller, opts);
+    test_capture_note_ring_rate(rc);
     if (rc == 0) {
         dsd_live_iq_step_finish(&demod.live_iq_step);
         int hardware_changed = 0;
@@ -13370,16 +13474,20 @@ rtl_stream_test_open_radio_capture(int source_kind, struct rtl_device* dev, dsd_
     const RadioSourceKind kind = (RadioSourceKind)source_kind;
     const TestCaptureProgramState saved = test_capture_program_enter(dev, center_hz, 0);
     /* As stream_open_init_pipeline() and stream_open_configure_pipeline_state() run them, the demod chain's finalize
-       (which neither sizes nor programs anything) left out. */
-    int rc = input_ring_init(&input_ring, (size_t)(MAXIMUM_BUF_LENGTH * 8));
+       (which neither sizes nor programs anything) left out: the ring for the delivered rate follows the programming,
+       as it follows stream_open_finalize_rate_chain() there. */
+    int rc = input_ring_init(&input_ring, kInputRingDefaultFloats);
     if (rc == 0 && kind == RADIO_SOURCE_AIRSPY) {
-        rc = stream_open_size_airspy_input(opts);
+        rc = stream_open_init_airspy_input(opts);
     }
     if (rc == 0) {
         rc = stream_open_validate_device_capture_rate(kind);
     }
     if (rc == 0) {
         rc = controller_program_initial_device(&controller, opts);
+    }
+    if (rc == 0) {
+        rc = stream_open_size_input_for_capture(kind);
     }
     dsd_live_iq_step_finish(&demod.live_iq_step);
     test_capture_program_result(rc, out);
@@ -13422,6 +13530,7 @@ rtl_stream_test_capture_session_begin(struct rtl_device* dev, const dsd_opts* op
     g_test_capture_session.saved = test_capture_program_enter(dev, center_hz, 0);
     store_dongle_ppm_error(0);
     const int rc = controller_program_initial_device(&controller, opts);
+    test_capture_note_ring_rate(rc);
     /* The start's finalize ends its transaction and publishes the chain (controller_finalize_dsp_chain()). */
     dsd_live_iq_step_finish(&demod.live_iq_step);
     rtl_stream_publish_demod_profile_snapshot();

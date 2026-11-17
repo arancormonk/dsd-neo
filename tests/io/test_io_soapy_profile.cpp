@@ -107,6 +107,15 @@ test_profile_selection(void) {
     rc |= expect_profile("bbrf103 hardware", {"", "", "BBRF103", ""}, SoapyProfileId::Sddc);
     rc |= expect_profile("sddc args", {"", "", "", "driver=SDDC"}, SoapyProfileId::Sddc);
     rc |= expect_profile("sddc requested by name", {"sddc", "", "", ""}, SoapyProfileId::Sddc);
+    /* An Airspy HF+ is not an Airspy: SoapyAirspyHF's driver and hardware key is "AirspyHF", which holds "airspy". */
+    rc |= expect_profile("airspyhf driver", {"", "AirspyHF", "", ""}, SoapyProfileId::Generic);
+    rc |= expect_profile("airspyhf hardware", {"", "", "AirspyHF", ""}, SoapyProfileId::Generic);
+    rc |= expect_profile("airspyhf args", {"", "", "", "driver=airspyhf"}, SoapyProfileId::Generic);
+    rc |= expect_profile("airspyhf keys", {"", "AirspyHF", "AirspyHF", "driver=airspyhf,serial=1"},
+                         SoapyProfileId::Generic);
+    rc |= expect_profile("airspy hf hardware", {"", "", "Airspy HF+ Discovery", ""}, SoapyProfileId::Generic);
+    rc |= expect_profile("airspy keys", {"", "Airspy", "AirSpy One", "driver=airspy"}, SoapyProfileId::Airspy);
+    rc |= expect_profile("airspy args", {"", "", "", "driver=airspy"}, SoapyProfileId::Airspy);
 
     SoapyProfileId parsed = SoapyProfileId::Generic;
     rc |= expect_true("empty profile parses auto", dsdneo::soapy_profile_parse_name("", &parsed));
@@ -402,6 +411,73 @@ test_setting_value_validation(void) {
     return rc;
 }
 
+/* A profile's preferred rate runs only where the device supports it exactly; else the nearest rate, as before. */
+static int
+test_profile_sample_rate(void) {
+    int rc = 0;
+    const dsdneo::SoapyProfile& hackrf = dsdneo::soapy_profile_by_id(SoapyProfileId::Hackrf);
+    const dsdneo::SoapyProfile& generic = dsdneo::soapy_profile_by_id(SoapyProfileId::Generic);
+    const std::vector<double> whole_mhz = {1e6, 2e6, 3e6, 8e6, 10e6, 20e6};
+    rc |= expect_true("listed rate supported", dsdneo::soapy_rate_supported_exactly(10e6, whole_mhz, {}));
+    rc |= expect_true("listed rate within 1 Hz", dsdneo::soapy_rate_supported_exactly(10e6 + 0.9, whole_mhz, {}));
+    rc |= expect_true("unlisted rate unsupported", !dsdneo::soapy_rate_supported_exactly(9e6, whole_mhz, {}));
+    rc |= expect_true("continuous range point", dsdneo::soapy_rate_supported_exactly(10e6, {}, {{2e6, 20e6, 0.0}}));
+    rc |= expect_true("outside range", !dsdneo::soapy_rate_supported_exactly(10e6, {}, {{2e6, 8e6, 0.0}}));
+    rc |= expect_true("stepped range point", dsdneo::soapy_rate_supported_exactly(11e6, {}, {{2e6, 20e6, 3e6}}));
+    /* 10 MHz lies inside [2, 20] MHz but between its 3 MHz steps (8, 11). */
+    rc |= expect_true("stepped range gap", !dsdneo::soapy_rate_supported_exactly(10e6, {}, {{2e6, 20e6, 3e6}}));
+    rc |= expect_true("no rate is unsupported", !dsdneo::soapy_rate_supported_exactly(0.0, whole_mhz, {}));
+
+    bool adjusted = false;
+    rc |= expect_double("HackRF preferred rate listed",
+                        dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, whole_mhz, {}, &adjusted), 10e6);
+    rc |= expect_true("HackRF preferred rate adjusts the request", adjusted);
+    rc |= expect_double("HackRF preferred rate in a range",
+                        dsdneo::soapy_profile_sample_rate(hackrf, 1152000.0, {}, {{2e6, 20e6, 0.0}}, &adjusted), 10e6);
+    rc |= expect_double("HackRF falls back off a stepped range",
+                        dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {}, {{2e6, 20e6, 3e6}}, &adjusted), 2e6);
+    rc |= expect_double("HackRF falls back when unlisted",
+                        dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {1e6, 2e6, 8e6}, {}, &adjusted), 2e6);
+    rc |= expect_double("generic keeps the nearest rate",
+                        dsdneo::soapy_profile_sample_rate(generic, 1536000.0, whole_mhz, {}, &adjusted), 2e6);
+    rc |= expect_double("HackRF preferred rate needs a request",
+                        dsdneo::soapy_profile_sample_rate(hackrf, 0.0, whole_mhz, {}, &adjusted), 0.0);
+    rc |= expect_true("no request is not adjusted", !adjusted);
+    return rc;
+}
+
+/* The Fs/4 offset channel's floor, and the narrowest bandwidth a device admits at or above it. */
+static int
+test_offset_channel_floor(void) {
+    int rc = 0;
+    rc |= expect_double("floor at 10 MS/s", dsdneo::soapy_fs4_channel_floor_hz(10e6), 5072000.0);
+    rc |= expect_double("floor at 2 MS/s", dsdneo::soapy_fs4_channel_floor_hz(2e6), 1072000.0);
+    const std::vector<SoapyRange> points = {{1.75e6, 1.75e6, 0.0}, {5e6, 5e6, 0.0}, {5.5e6, 5.5e6, 0.0}};
+    rc |= expect_double("smallest point at or above", dsdneo::soapy_floor_bandwidth(5072000.0, points), 5.5e6);
+    rc |= expect_double("point at the floor", dsdneo::soapy_floor_bandwidth(5e6, points), 5e6);
+    rc |= expect_double("point within 1 Hz of the floor", dsdneo::soapy_floor_bandwidth(5e6 + 0.5, points), 5e6);
+    rc |= expect_double("widest when none reaches", dsdneo::soapy_floor_bandwidth(8e6, points), 5.5e6);
+    rc |= expect_double("continuous range takes the floor",
+                        dsdneo::soapy_floor_bandwidth(1072000.0, {{200000.0, 56e6, 0.0}}), 1072000.0);
+    rc |= expect_double("range minimum above the floor",
+                        dsdneo::soapy_floor_bandwidth(822000.0, {{1400100.0, 130e6, 0.0}}), 1400100.0);
+    rc |= expect_double("stepped range rounds up",
+                        dsdneo::soapy_floor_bandwidth(1072000.0, {{200000.0, 8e6, 250000.0}}), 1200000.0);
+    rc |= expect_double("stepped range on a step",
+                        dsdneo::soapy_floor_bandwidth(1200000.0, {{200000.0, 8e6, 250000.0}}), 1200000.0);
+    rc |= expect_double("stepped range past its last step",
+                        dsdneo::soapy_floor_bandwidth(7.96e6, {{200000.0, 8e6, 250000.0}}), 8e6);
+    rc |= expect_double("narrowest of several ranges",
+                        dsdneo::soapy_floor_bandwidth(1072000.0, {{2e6, 4e6, 0.0}, {1.5e6, 1.5e6, 0.0}}), 1.5e6);
+    rc |= expect_double("no ranges keep the floor", dsdneo::soapy_floor_bandwidth(1072000.0, {}), 1072000.0);
+
+    rc |= expect_true("below the floor cuts", dsdneo::soapy_bandwidth_cuts_offset(5071999.0, 10e6));
+    rc |= expect_true("at the floor keeps", !dsdneo::soapy_bandwidth_cuts_offset(5072000.0, 10e6));
+    rc |= expect_true("above the floor keeps", !dsdneo::soapy_bandwidth_cuts_offset(5.5e6, 10e6));
+    rc |= expect_true("no rate never cuts", !dsdneo::soapy_bandwidth_cuts_offset(1.0, 0.0));
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -412,6 +488,8 @@ main(void) {
     rc |= test_stream_format_selection();
     rc |= test_cs16_full_scale();
     rc |= test_range_selection();
+    rc |= test_profile_sample_rate();
+    rc |= test_offset_channel_floor();
     rc |= test_join_and_scope_names();
     rc |= test_settings_parser_accepts_device_and_rx_scopes();
     rc |= test_settings_parser_rejects_invalid_items();

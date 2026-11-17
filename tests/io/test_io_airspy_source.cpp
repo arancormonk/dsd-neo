@@ -546,6 +546,20 @@ main() {
     // #782 gate r2 H2: nor does the run record (collect_run_result()) read the failed open's error once one succeeds.
     CHECK(rtl_device_airspy_last_open_error() == 0);
     rtl_device_destroy(opened);
+
+    // The radio part of a stream open on a native Airspy at its 10 MS/s: the driver delivers centred I/Q, so no Fs/4
+    // shift runs and the capture is the centre itself, and the input ring holds the default ring's time at 10 MS/s.
+    struct rtl_device* airspy = rtl_device_create_airspy(&opts->airspy, ring.get());
+    CHECK(airspy != nullptr);
+    rtl_stream_test_capture_result open{};
+    CHECK(rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_AIRSPY, airspy, opts.get(), 851375000U, &open)
+          == 0);
+    CHECK(open.rc == 0);
+    CHECK(open.capture_rate_hz == 10000000U);
+    CHECK(open.centered_iq == 1 && open.fs4_rotation == 0);
+    CHECK(open.capture_freq_hz == 851375000U);
+    CHECK(open.input_ring_capacity_floats == 8388608U);
+    rtl_device_destroy(airspy);
     return 0;
 }
 #endif

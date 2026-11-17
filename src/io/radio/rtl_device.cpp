@@ -482,6 +482,9 @@ struct rtl_device {
     uint64_t soapy_last_overflow_log_ns = 0U;
     int soapy_profile_id = 0;
     int soapy_requested_bandwidth_hz = 0;
+    /* The filter and rate the last bandwidth notice was logged for, so a retune that applies them again stays quiet. */
+    double soapy_bandwidth_noted_hz = 0.0;
+    uint32_t soapy_bandwidth_noted_rate_hz = 0U;
     uint32_t soapy_startup_center_freq_hz = 0U;
     /* Memoized rtl_device_nearest_supported_rate answer; valid while the device configuration
        (and therefore its rate grid) is unchanged. actual == 0 means empty. */
@@ -4603,6 +4606,12 @@ soapy_set_cached_format(struct rtl_device* dev, const std::string& format) {
         dev->soapy_format = SOAPY_FMT_NONE;
     }
     soapy_set_cs16_full_scale(dev, format);
+}
+
+/* The profile the device runs (soapy_select_profile_locked()). */
+static const dsdneo::SoapyProfile&
+rtl_device_soapy_profile(const struct rtl_device* dev) {
+    return dsdneo::soapy_profile_by_id((dsdneo::SoapyProfileId)dev->soapy_profile_id);
 }
 
 static void
@@ -10537,7 +10546,8 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
                     soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
                 std::vector<dsdneo::SoapyRange> ranges =
                     soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
-                applied = dsdneo::soapy_nearest_sample_rate(requested, listed, ranges, &adjusted);
+                applied = dsdneo::soapy_profile_sample_rate(rtl_device_soapy_profile(dev), requested, listed, ranges,
+                                                            &adjusted);
             } catch (const std::exception&) {
                 applied = requested;
             }
@@ -10594,7 +10604,8 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
         std::vector<double> listed = soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
         std::vector<dsdneo::SoapyRange> ranges =
             soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
-        double applied = dsdneo::soapy_nearest_sample_rate((double)requested, listed, ranges, &adjusted);
+        double applied = dsdneo::soapy_profile_sample_rate(rtl_device_soapy_profile(dev), (double)requested, listed,
+                                                           ranges, &adjusted);
         if (!(applied > 0.0) || applied > (double)UINT32_MAX) {
             return -1;
         }
@@ -11241,6 +11252,50 @@ rtl_device_choose_soapy_bandwidth(const struct rtl_device* dev, uint32_t bw_hz) 
                                              profile.default_bandwidth_hz);
 }
 
+/* Whether a bandwidth notice for @p applied_hz at the device's rate is new since the last one logged. */
+static bool
+soapy_bandwidth_notice_is_new(struct rtl_device* dev, double applied_hz) {
+    if (std::fabs(dev->soapy_bandwidth_noted_hz - applied_hz) <= 0.5
+        && dev->soapy_bandwidth_noted_rate_hz == dev->rate) {
+        return false;
+    }
+    dev->soapy_bandwidth_noted_hz = applied_hz;
+    dev->soapy_bandwidth_noted_rate_hz = dev->rate;
+    return true;
+}
+
+/* The capture runs the Fs/4 shift, so the channel sits a quarter of the rate off centre: a profile's default filter
+ * that would cut it (@p applied_hz, as the device's ranges snap it) opens to the narrowest supported one that keeps it
+ * (soapy_floor_bandwidth()). Returns the bandwidth to write; @p out_opened says whether it was opened. */
+static double
+soapy_open_default_bandwidth(const struct rtl_device* dev, const dsdneo::SoapyBandwidthChoice& choice,
+                             const std::vector<dsdneo::SoapyRange>& ranges, double applied_hz, bool* out_opened) {
+    *out_opened = false;
+    if (choice.explicit_request || !fs4_shift_capture_active(dev) || dev->rate == 0U
+        || !dsdneo::soapy_bandwidth_cuts_offset(applied_hz, (double)dev->rate)) {
+        return applied_hz;
+    }
+    const double opened_hz =
+        dsdneo::soapy_floor_bandwidth(dsdneo::soapy_fs4_channel_floor_hz((double)dev->rate), ranges);
+    *out_opened = opened_hz > applied_hz + 0.5;
+    return *out_opened ? opened_hz : applied_hz;
+}
+
+/* An explicit bandwidth, as the device took it (@p applied_hz), narrower than the Fs/4 offset channel needs: applied
+ * as asked, and said once for that filter and rate. */
+static void
+soapy_warn_narrow_explicit_bandwidth(struct rtl_device* dev, const dsdneo::SoapyBandwidthChoice& choice,
+                                     double applied_hz) {
+    if (!choice.explicit_request || !fs4_shift_capture_active(dev) || dev->rate == 0U
+        || !dsdneo::soapy_bandwidth_cuts_offset(applied_hz, (double)dev->rate)
+        || !soapy_bandwidth_notice_is_new(dev, applied_hz)) {
+        return;
+    }
+    LOG_WARN("SoapySDR: bandwidth %.0f Hz is narrower than %.0f Hz, which keeps the channel (%u Hz off centre, a "
+             "quarter of the %u Hz sample rate) at every DSP bandwidth.\n",
+             applied_hz, dsdneo::soapy_fs4_channel_floor_hz((double)dev->rate), dev->rate / 4U, dev->rate);
+}
+
 static int
 rtl_device_apply_soapy_bandwidth_locked(struct rtl_device* dev, const dsdneo::SoapyBandwidthChoice& choice) {
     if (!choice.should_apply) {
@@ -11266,10 +11321,19 @@ rtl_device_apply_soapy_bandwidth_locked(struct rtl_device* dev, const dsdneo::So
         }
         return choice.explicit_request ? DSD_ERR_NOT_SUPPORTED : 0;
     }
-    if (std::fabs(applied_hz - (double)choice.bandwidth_hz) > 0.5) {
+    bool opened = false;
+    applied_hz = soapy_open_default_bandwidth(dev, choice, ranges, applied_hz, &opened);
+    if (opened) {
+        if (soapy_bandwidth_notice_is_new(dev, applied_hz)) {
+            DSD_FPRINTF(stderr,
+                        "SoapySDR: opened the profile's %d Hz bandwidth to %.0f Hz for the channel %u Hz off centre.\n",
+                        choice.bandwidth_hz, applied_hz, dev->rate / 4U);
+        }
+    } else if (std::fabs(applied_hz - (double)choice.bandwidth_hz) > 0.5) {
         DSD_FPRINTF(stderr, "SoapySDR: adjusted bandwidth from %d Hz to %.0f Hz.\n", choice.bandwidth_hz, applied_hz);
     }
     dev->soapy_dev->setBandwidth(SOAPY_SDR_RX, 0, applied_hz);
+    soapy_warn_narrow_explicit_bandwidth(dev, choice, applied_hz);
     return 0;
 }
 #endif

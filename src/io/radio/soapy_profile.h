@@ -59,6 +59,9 @@ struct SoapyProfile {
     /* RX antenna to select when the user configured none and the tuned frequency is above the
        HF/VHF split. NULL leaves the driver default in place. */
     const char* default_antenna;
+    /* Sample rate to run when the device supports it exactly (soapy_profile_sample_rate()), whatever rate the stream
+       asks for; 0 takes the device rate nearest the request. */
+    double preferred_sample_rate_hz;
 };
 
 struct SoapyProfileSelection {
@@ -116,6 +119,24 @@ SoapyBandwidthChoice soapy_choose_bandwidth_hz(int tuner_bw_hz, bool tuner_bw_hz
 double soapy_nearest_in_ranges(double requested, const std::vector<SoapyRange>& ranges, bool* out_supported);
 double soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_rates,
                                  const std::vector<SoapyRange>& ranges, bool* out_adjusted);
+/* Whether the device runs @p rate_hz itself: a listed rate within 1 Hz of it, or a range point (minimum + k * step,
+ * any point of a range with no step) within 1 Hz. */
+bool soapy_rate_supported_exactly(double rate_hz, const std::vector<double>& listed_rates,
+                                  const std::vector<SoapyRange>& ranges);
+/* The rate a device with @p profile runs for @p requested: the profile's preferred rate when the device supports it
+ * exactly, else soapy_nearest_sample_rate(). @p out_adjusted as there. */
+double soapy_profile_sample_rate(const SoapyProfile& profile, double requested, const std::vector<double>& listed_rates,
+                                 const std::vector<SoapyRange>& ranges, bool* out_adjusted);
+
+/* The narrowest tuner filter that keeps the channel whole at every DSP bandwidth while the capture runs the Fs/4
+ * shift at @p capture_rate_hz: the channel sits a quarter of the rate off centre, so the filter's full width must
+ * reach half the rate plus the widest DSP bandwidth (72 kHz). */
+double soapy_fs4_channel_floor_hz(double capture_rate_hz);
+/* The narrowest bandwidth @p ranges admit at or above @p floor_hz (a range's steps rounded up), or the widest they
+ * admit when none reaches it; @p floor_hz when @p ranges admit none. */
+double soapy_floor_bandwidth(double floor_hz, const std::vector<SoapyRange>& ranges);
+/* Whether a filter of @p applied_hz is narrower than soapy_fs4_channel_floor_hz() at @p capture_rate_hz. */
+bool soapy_bandwidth_cuts_offset(double applied_hz, double capture_rate_hz);
 std::string soapy_join_names(const std::vector<std::string>& names, size_t max_chars);
 const char* soapy_setting_scope_name(SoapySettingScope scope);
 bool soapy_parse_settings(const std::string& spec, std::vector<SoapySettingRequest>* out_requests,
