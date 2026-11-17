@@ -747,6 +747,13 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     // before they can flip an established classification.
     ctx->lc_so = ctx->so;
     if (ctx->voice_slot_known) {
+        // A checked LC on a held slot ends the hold (dmr_flco_release_voice_hold()) on its own word: what the slot
+        // classified while held is forgotten first, since every checked LC or PI header naming a cipher ends a hold as
+        // it is decoded, so it came from data no check of the call's passed (an embedded LC whose checksum failed, a
+        // heal restoring what one wrote) or from a PI header naming no cipher.
+        if (ctx->CRCCorrect == 1U && ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U) {
+            dmr_enc_class_reset(ctx->state, ctx->voice_slot);
+        }
         const int strong = ctx->type == 1U && ctx->CRCCorrect == 1U;
         ctx->so = (uint8_t)dmr_enc_class_observe(ctx->state, ctx->voice_slot, ctx->so, strong);
         dmr_flco_release_voice_hold(ctx);

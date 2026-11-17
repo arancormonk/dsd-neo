@@ -3363,6 +3363,11 @@ suite runs under this compiler.
   the slot's live crypto and classification and leaves a hold standing: an embedded LC whose checksum failed writes
   the same live FID and service options the stash copies, so what it restores is no check of the call's. A checked LC
   or PI header ends the hold as it is decoded, so a slot one of them released is not held when the heal comes.
+  A checked LC that ends a hold does so on its own word (`dmr_flco_sync_active_call_state()`): what the slot
+  classified while held, all of it from data no check of the call's passed or from a PI header naming no cipher, is
+  forgotten first, so embedded LCs whose checksum failed (or a heal restoring what they wrote) cannot have the
+  classification hysteresis quarantine its privacy bit as a lone contradiction. From then on the hysteresis runs as
+  before.
 
   A DMR frame on a held slot is unknown there (`mbe_dmr_slot_judge()`, `dsd_state::dmr_enc_class_held`), with X2-TDMA's
   rule below, whatever class its privacy bit or ALG ID reads: an embedded LC whose checksum failed still sets the live
@@ -3403,7 +3408,8 @@ suite runs under this compiler.
   `test_rigctl_reconnect_hook_tunes_leave()`, `park_judge_advance_falls_back()`, `park_judge_pending_first_park()`,
   `park_judge_rotation_rolls_back()`, `park_judge_resume_fails_everywhere()`),
   `ENGINE_TRUNK_SCAN`, `ENGINE_RUN_SETUP`, `ENGINE_REPLAY_DECODE_CLOCK`, `DMR_FLCO_PRIVACY_MODES`
-  (`test_heal_keeps_a_voice_hold()`), `DMR_ENC_CLASS`.
+  (`test_heal_keeps_a_voice_hold()`), `DMR_ENC_CLASS`; `test_dmr_hold_edges()` covers the heal
+  (`test_dmr_hold_heal_keeps_hold()`) and the checked word (`test_dmr_hold_ends_on_the_checked_word()`).
   P25 Phase 1 and Phase 2 use `p25_crypto_audio_output_permitted()`; Phase 2 also needs its decode gate. NXDN and
   dPMR use `nxdn_cipher_type` and the key the vocoder applies
   (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). X2-TDMA is judged per timeslot and

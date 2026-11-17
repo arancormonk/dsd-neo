@@ -4447,6 +4447,62 @@ test_dmr_hold_heal_keeps_hold(char frame[4][24]) {
     return dmr_hold_heal_case(frame, 0x00U) | dmr_hold_heal_case(frame, 0x40U);
 }
 
+/* While a slot is held, two embedded LCs whose checksum failed say clear (FID 0x10, no privacy bit), which would
+   establish the slot's classification as clear. The checked LC that ends the hold asks for Basic Privacy: its own
+   word decides, so the frame plays keyed with the -b key, as on a fresh decoder that heard that LC, never as it came.
+   The same holds after a heal restored what such LCs wrote. */
+static int
+test_dmr_hold_ends_on_the_checked_word(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    char reference[49] = {0};
+    int rc = expect_true("the checked word: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_basic_key(opts, state);
+    dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x10U, 0x40U, 303U);
+    rc |= expect_true("the checked word: a fresh decoder keys the frame after a checked Basic Privacy LC",
+                      dmr_hop_record_frame(opts, state, frame, reference)
+                          && memcmp(reference, as_it_came, sizeof reference) != 0);
+    free_test_runtime(opts, state);
+    for (int healed = 0; healed <= 1; healed++) {
+        const char* how = healed ? "after a heal" : "after two failed embedded LCs";
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        dmr_hold_basic_key(opts, state);
+        dmr_hop_clock_at(2.0);
+        state->dmr_confidence_voice_open[0] = 1;
+        state->dmr_confidence_voice_m[0] = dsd_decode_now_mono_s();
+        dmr_sm_emit_voice_sync(opts, state, 0);
+        dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, 0x00U, 303U);
+        char recorded[49] = {0};
+        if (healed) {
+            dmr_hop_lc_on(opts, state, 0, 2U, 0U, 0x10U, 0x00U, 303U);
+            rc |= expect_true("the checked word: the frame that heals the call stays held",
+                              !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        } else {
+            dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, 0x00U, 303U);
+        }
+        char what[192];
+        DSD_SNPRINTF(what, sizeof what, "the checked word %s: the slot reads clear, held", how);
+        rc |= expect_true(what, dmr_enc_class_established_clear(state, 0U) && state->dmr_enc_class_held[0] == 1U);
+        dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x10U, 0x40U, 303U);
+        DSD_SNPRINTF(what, sizeof what,
+                     "the checked word %s: a checked Basic Privacy LC ends the hold, the frame keyed", how);
+        rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                                    && state->dmr_enc_class_held[0] == 0U
+                                    && memcmp(recorded, reference, sizeof recorded) == 0);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* The -1 RC4 key the PI header's key ID 5 names. */
 static void
 dmr_fold_rc4_key(dsd_opts* opts, dsd_state* state) {
@@ -4515,6 +4571,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_hold_kirisun_pi_naming_no_cipher(frame);
     rc |= test_dmr_hold_hytera_pi_and_lc(frame);
     rc |= test_dmr_hold_heal_keeps_hold(frame);
+    rc |= test_dmr_hold_ends_on_the_checked_word(frame);
     rc |= test_dmr_mono_folds_slot2_pi_onto_lane0(frame);
     return rc;
 }
