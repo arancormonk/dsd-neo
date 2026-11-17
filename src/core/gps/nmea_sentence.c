@@ -41,6 +41,17 @@ nmea_hex_value(uint8_t c) {
     return -1;
 }
 
+/* After a sentence whose framing failed: the next line end, sentence start or NUL from @p i, so that the sentences
+ * after it are still read. */
+static size_t
+nmea_resync(const uint8_t* bytes, size_t len, size_t i) {
+    while (i < len && !nmea_is_line_end(bytes[i]) && bytes[i] != (uint8_t)'$' && bytes[i] != (uint8_t)'!'
+           && bytes[i] != 0U) {
+        i++;
+    }
+    return i;
+}
+
 /* The sentence's end from @p star (where its body stopped): the '*', the two checksum digits and the verdict. Returns
  * where the next search starts. */
 static size_t
@@ -48,14 +59,14 @@ nmea_close_sentence(const uint8_t* bytes, size_t len, size_t star, nmea_sentence
     if (star >= len || bytes[star] != (uint8_t)'*') {
         out->status = NMEA_SENTENCE_NO_STAR;
         out->len = star - out->start;
-        return star;
+        return nmea_resync(bytes, len, star);
     }
     const int hi = (star + 1U < len) ? nmea_hex_value(bytes[star + 1U]) : -1;
     const int lo = (star + 2U < len) ? nmea_hex_value(bytes[star + 2U]) : -1;
     if (hi < 0 || lo < 0) {
         out->status = NMEA_SENTENCE_BAD_HEX;
         out->len = star + 1U - out->start;
-        return star + 1U;
+        return nmea_resync(bytes, len, star + 1U);
     }
     out->received = (uint8_t)((hi << 4) | lo);
     out->status = (out->received == out->calc) ? NMEA_SENTENCE_OK : NMEA_SENTENCE_CHECKSUM;
@@ -315,8 +326,10 @@ nmea_parse_date(const nmea_field* f) {
 
 static int
 nmea_rmc_mode_measured(const nmea_field* mode) {
+    /* Before NMEA 2.3 there is no mode field: status A alone counts (a decided limit). A field that is present but
+       empty says no more than an absent one, so it is read the same way (controller ruling). */
     if (mode->n == 0U) {
-        return 1; /* before NMEA 2.3 no mode field: status A alone (a decided limit) */
+        return 1;
     }
     return nmea_field_is(mode, 'A') || nmea_field_is(mode, 'D') || nmea_field_is(mode, 'F') || nmea_field_is(mode, 'R')
            || nmea_field_is(mode, 'P');
@@ -406,10 +419,12 @@ nmea_read_gga(const nmea_fields* fields, nmea_fix* out) {
     nmea_read_gga_extras(fields, out);
 }
 
-/* The address: a two-letter talker (upper case) and the formatter. */
+/* The address: a two-letter talker (upper case) and the formatter. A 'P' first is a proprietary sentence ($P + a
+ * manufacturer code, NMEA 0183), never an RMC or GGA whatever letters follow. */
 static nmea_sentence_type
 nmea_formatter(const nmea_field* address) {
-    if (address->n != 5U || address->p[0] < 'A' || address->p[0] > 'Z' || address->p[1] < 'A' || address->p[1] > 'Z') {
+    if (address->n != 5U || address->p[0] < 'A' || address->p[0] > 'Z' || address->p[0] == 'P' || address->p[1] < 'A'
+        || address->p[1] > 'Z') {
         return NMEA_TYPE_OTHER;
     }
     const char* f = address->p + 2;

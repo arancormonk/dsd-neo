@@ -97,7 +97,21 @@ test_framing(void) {
     static const uint8_t bad_hex[] = "$GPTXT*G0";
     pos = 0U;
     CHECK(nmea_next_sentence(bad_hex, sizeof bad_hex - 1U, &pos, &s) == 1 && s.status == NMEA_SENTENCE_BAD_HEX);
-    CHECK(nmea_next_sentence(bad_hex, sizeof bad_hex - 1U, &pos, &s) == -1);
+    CHECK(nmea_next_sentence(bad_hex, sizeof bad_hex - 1U, &pos, &s) == 0);
+
+    /* A sentence whose framing fails does not end the scan: the search resumes at the next line end or start. */
+    char resync[256];
+    DSD_SNPRINTF(resync, sizeof resync, "$GPGGA,120000*4\r\n%s$GPTXT,1\x01junk%s", a, c);
+    pos = 0U;
+    CHECK(nmea_next_sentence((const uint8_t*)resync, strlen(resync), &pos, &s) == 1
+          && s.status == NMEA_SENTENCE_BAD_HEX);
+    CHECK(nmea_next_sentence((const uint8_t*)resync, strlen(resync), &pos, &s) == 1 && s.status == NMEA_SENTENCE_OK);
+    CHECK(s.len == strlen(a) - 2U);
+    CHECK(nmea_next_sentence((const uint8_t*)resync, strlen(resync), &pos, &s) == 1
+          && s.status == NMEA_SENTENCE_NO_STAR);
+    CHECK(nmea_next_sentence((const uint8_t*)resync, strlen(resync), &pos, &s) == 1 && s.status == NMEA_SENTENCE_OK);
+    CHECK(s.len == strlen(c) - 2U);
+    CHECK(nmea_next_sentence((const uint8_t*)resync, strlen(resync), &pos, &s) == 0);
     uint8_t padded[96];
     assert(strlen(lit) <= sizeof padded);
     DSD_MEMSET(padded, 0, sizeof padded);
@@ -141,6 +155,13 @@ test_rmc_fields(void) {
     CHECK(parse_body("GBRMC,120000,A,2230.0,N,04500.0,E,,,150626,,,P").has_position);
     CHECK(parse_body("gpRMC,120000,A,2230.0,N,04500.0,E,,,150626,,,A").type == NMEA_TYPE_OTHER);
     CHECK(parse_body("GPRMB,A,0.66,L,003,004").type == NMEA_TYPE_OTHER);
+    /* '$P' starts a proprietary sentence, never an RMC or GGA. */
+    CHECK(parse_body("PGRMC,A,2230.0,N,04500.0,E,,,150626,,,A").type == NMEA_TYPE_OTHER);
+    CHECK(parse_body("PQGGA,120000,2230.0,N,04500.0,E,1,05,1.0,10.0,M,,M,,").type == NMEA_TYPE_OTHER);
+
+    /* A mode field that is sent but empty reads as no mode field (pre-NMEA 2.3): status A alone. */
+    CHECK(parse_body("GPRMC,120000,A,2230.0,N,04500.0,E,,,150626,,,").measured_fix);
+    CHECK(parse_body("GPRMC,120000,A,2230.0,N,04500.0,E,,,150626,,,,V").measured_fix);
 
     /* Measured-fix rule: status V, and modes N, E, M, S are no fix. */
     CHECK(!parse_body("GPRMC,120000,V,2230.0,N,04500.0,E,,,150626,,,A").measured_fix);
@@ -328,6 +349,16 @@ test_producer_per_sentence(void) {
     dsd_position_fix recs[4];
     CHECK(feed_records(recs, 4) == 1);
     CHECK(recs[0].lat_e7 == 225000000 && recs[0].lon_e7 == 450000000 && recs[0].alt_dm == 100);
+
+    /* A sentence with broken checksum digits does not hide the measured fix that follows it. */
+    reset_fixture();
+    char r[128];
+    sentence(r, sizeof r, "GPRMC,120000,A,1000.0000,N,02000.0000,E,,,150626,,,A", "\r\n");
+    DSD_SNPRINTF(buf, sizeof buf, "$GPGGA,120000,2230.0000,N,04500.0000,E,1,05,1.0,10.0,M,,M,,*4\r\n%s", r);
+    CHECK(check_payload(buf, 4321U, 1) == 1U);
+    CHECK(feed_records(recs, 4) == 1);
+    CHECK(recs[0].lat_e7 == 100000000 && recs[0].lon_e7 == 200000000);
+    CHECK(strstr(notice_row()->text_message, "$GPGGA") == NULL);
 
     /* Every sentence failing: nothing is checked, no notice, and nothing is kept as text. */
     reset_fixture();

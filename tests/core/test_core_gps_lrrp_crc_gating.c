@@ -62,17 +62,6 @@ dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t sl
     return dsd_event_emit_data_notice(opts, state, slot, observation, notice);
 }
 
-int
-dsd_event_emit_data_notice_with_position(dsd_opts* opts, dsd_state* state, uint8_t slot,
-                                         const dsd_call_observation* observation, dsd_event_category category,
-                                         const char* notice, const dsd_position_fix* fix, const char* gps_text) {
-    (void)category;
-    if (fix == NULL || fix->rev == 0U || gps_text == NULL) {
-        return -1;
-    }
-    return dsd_event_emit_data_notice_with_gps(opts, state, slot, observation, notice, gps_text);
-}
-
 void
 utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     (void)state;

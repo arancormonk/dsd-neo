@@ -9,7 +9,7 @@
  *
  * Sources: gpsd "NMEA Revealed" and the u-blox 8 / M8 receiver description (UBX-13003221, section 31): the checksum is
  * the XOR of the characters between the '$' or '!' and the '*', sent as two hex digits; any two-letter talker
- * (GP, GL, GA, GB, BD, GN, ...) sends RMC and GGA; latitude is ddmm.m..., longitude dddmm.m...; RMC speed is in knots;
+ * (GP, GL, GA, GB, BD, GN, ...) sends RMC and GGA, while '$P' starts a proprietary sentence; latitude is ddmm.m..., longitude dddmm.m...; RMC speed is in knots;
  * GGA has no date; HDOP is a ratio, not metres (never read).
  */
 
@@ -45,7 +45,9 @@ typedef struct {
  * @brief Find the next sentence of @p bytes at or after @p *pos.
  *
  * CR and LF between sentences are skipped. The payload ends at its last byte or at a NUL (padding). A sentence starts
- * with '$' or '!' and runs over printable characters to its '*' and two hex digits.
+ * with '$' or '!' and runs over printable characters to its '*' and two hex digits. After a sentence whose framing
+ * failed (no '*', or no two hex digits after it) the search goes on at the next CR, LF, '$', '!' or NUL, so the
+ * sentences after it are still read.
  *
  * @return 1 with @p out filled and @p *pos moved past the sentence (whatever its status); 0 at the end of the payload;
  *         -1 when the byte at @p *pos can start no sentence (@p *pos is left on it).

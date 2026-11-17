@@ -1211,12 +1211,13 @@ nxdn_gps_print(const nxdn_gps_fields* g, const dsd_position_fix* fix) {
     }
 }
 
+/* The report is a data transmission of its own: it goes to its own data notice row only, never onto a voice call's
+ * row (controller ruling, as for DMR LIP), with its -L row. */
 static void
 nxdn_gps_publish(const dsd_opts* opts, dsd_state* state, const dsd_position_fix* fix) {
     if (state->event_history_s != NULL) {
         char gps_string[96];
         gps_format_position_text(fix, gps_string, sizeof(gps_string));
-        (void)gps_enrich_active_call(state, 0U, fix->source_id, gps_string, fix, NULL);
 
         /* The notice names the checked header bound to this assembly: its source is the record's. */
         const uint32_t source = fix->source_id;

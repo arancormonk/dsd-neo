@@ -95,18 +95,6 @@ dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t sl
     return 0;
 }
 
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_event_emit_data_notice_with_position(dsd_opts* opts, dsd_state* state, uint8_t slot,
-                                         const dsd_call_observation* observation, dsd_event_category category,
-                                         const char* notice, const dsd_position_fix* fix, const char* gps_text) {
-    (void)category;
-    if (fix == NULL || fix->rev == 0U || gps_text == NULL) {
-        return -1;
-    }
-    return dsd_event_emit_data_notice_with_gps(opts, state, slot, observation, notice, gps_text);
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
@@ -450,8 +438,10 @@ test_nxdn_gps_report_paths(const dsd_opts* opts, dsd_state* st) {
 
     nxdn_gps_report(opts, st, bits, sizeof bits, 900003U, NULL);
 
-    rc |= expect_has_substr(st->event_history_s[0].Event_History_Items[0].gps_s, "41.", "nxdn-gps-lat");
-    rc |= expect_has_substr(st->event_history_s[0].Event_History_Items[0].gps_s, "87.", "nxdn-gps-lon");
+    /* A data report goes to its own notice row only: the same radio's active call row is left alone. */
+    rc |= expect_i("nxdn-gps-not-on-call-row", st->event_history_s[0].Event_History_Items[0].gps_s[0], '\0');
+    rc |= expect_has_substr(g_watchdog_gps, "41.", "nxdn-gps-lat");
+    rc |= expect_has_substr(g_watchdog_gps, "87.", "nxdn-gps-lon");
     rc |= expect_i("nxdn-watchdog-calls", g_watchdog_calls, 1);
     /* The notice names the source of the header bound to the report (the caller's), as the record does. */
     rc |= expect_u32("nxdn-watchdog-src", g_watchdog_src, 900003U);

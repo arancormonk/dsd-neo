@@ -15904,6 +15904,7 @@ add_executable(
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
+    test_support/data_event_position_stub.c
 )
 target_include_directories(
     dsd-neo_test_dmr_embedded_gps_position_error
@@ -15943,6 +15944,7 @@ add_executable(
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
+    test_support/data_event_position_stub.c
 )
 target_include_directories(
     dsd-neo_test_core_gps_lrrp_crc_gating

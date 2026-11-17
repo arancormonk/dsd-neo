@@ -453,6 +453,17 @@ test_binding_rejected_header_and_udch2(void) {
     send_blocks(payload, total);
     expect_nothing(100U);
 
+    /* A rejected SD call header (0x38 shorter than 79 bits) replaces the bound one too. */
+    reset_fixture();
+    send_header(100U, total, 1);
+    uint8_t short_sd_header[64];
+    DSD_MEMSET(short_sd_header, 0, sizeof short_sd_header);
+    put_bits(short_sd_header, 2, 0x38U, 6);
+    NXDN_Elements_Content_decode(&g_opts, &g_state, short_sd_header, sizeof short_sd_header);
+    CHECK(!nxdn_data_call_header_bound(&g_state));
+    send_blocks(payload, total);
+    expect_nothing(100U);
+
     reset_fixture();
     send_header(100U, total, 1);
     struct nxdn_facch3_udch2_message failed;
@@ -495,6 +506,47 @@ test_binding_reception_and_expiry(void) {
     send_blocks(payload, total);
     dsd_position_fix r;
     expect_one(100U, 100000000, 225000000, &r);
+}
+
+/* Every channel that carries a RAN notes it in the received identity, whose epoch a different RAN moves: a SACCH
+ * (non-superframe and superframe), a CAC and a FACCH2/UDCH (above) all end the binding with another RAN, and keep it
+ * with the same one. */
+static void
+deliver_ran(int path, uint8_t ran) {
+    uint8_t trellis[208];
+    uint8_t m_data[32];
+    DSD_MEMSET(trellis, 0, sizeof trellis);
+    DSD_MEMSET(m_data, 0, sizeof m_data);
+    put_bits(trellis, 2, ran, 6);
+    if (path == 0) {
+        g_state.nxdn_sacch_non_superframe = 1;
+        nxdn_handle_sacch(&g_opts, &g_state, trellis, m_data, 0U, 0U);
+    } else if (path == 1) {
+        g_state.nxdn_sacch_non_superframe = 0;
+        put_bits(trellis, 0, 3U, 2); /* the first of four segments */
+        nxdn_handle_sacch(&g_opts, &g_state, trellis, m_data, 0U, 0U);
+    } else {
+        nxdn_handle_cac(&g_opts, &g_state, trellis, m_data, 0U);
+    }
+}
+
+static void
+test_binding_ran_from_every_channel(void) {
+    static const char* names[] = {"SACCH non-superframe", "SACCH superframe", "CAC"};
+    for (int path = 0; path < 3; path++) {
+        for (int other = 0; other <= 1; other++) {
+            reset_fixture();
+            g_state.nxdn_confirmed = 1U; /* a SACCH's RAN counts once the transmission is confirmed */
+            send_header(100U, 60U, 1);
+            CHECK(nxdn_data_call_header_bound(&g_state));
+            deliver_ran(path, other ? 6U : g_ran);
+            if (nxdn_data_call_header_bound(&g_state) != !other) {
+                DSD_FPRINTF(stderr, "FAIL: %s RAN %s: binding %s\n", names[path], other ? "change" : "repeat",
+                            other ? "kept" : "lost");
+                g_failures++;
+            }
+        }
+    }
 }
 
 /* NMEA in a data call (format 0x06): the sentences end where the CRC32 begins; the bound header names the source. */
@@ -544,6 +596,7 @@ main(void) {
     test_binding_failed_replacement_header();
     test_binding_rejected_header_and_udch2();
     test_binding_reception_and_expiry();
+    test_binding_ran_from_every_channel();
     test_nmea_data_call();
 
     dsd_state_ext_free_all(&g_state);
