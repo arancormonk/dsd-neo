@@ -14,6 +14,8 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/threading.h>
@@ -355,6 +357,79 @@ test_status_tunable(void) {
     DSD_SNPRINTF(g_opts->audio_in_dev, sizeof g_opts->audio_in_dev, "%s", dev);
 }
 
+/*============================================================================
+ * Event rows carry the admitted position (issue #800)
+ *============================================================================*/
+
+/* A row as init_event_history() leaves it (the fields it sets apart from zero). */
+static void
+blank_row(Event_History* e) {
+    DSD_MEMSET(e, 0, sizeof(*e));
+    e->systype = -1;
+    e->subtype = -1;
+    e->severity = DSD_EVENT_SEVERITY_UNKNOWN;
+    e->category = DSD_EVENT_CATEGORY_UNKNOWN;
+    e->receive_identity.kind = (uint8_t)DSD_RECEIVE_NONE;
+}
+
+static void
+expect_row_json(const Event_History* e, const char* want, int present) {
+    static char json[65536];
+    assert(dsd_api_feed_test_encode_event_row(e, json, sizeof json) == 0);
+    dsd_json_node* root = NULL;
+    char err[96];
+    assert(dsd_json_parse(json, &root, err, sizeof err) == 0);
+    dsd_json_free(root);
+    if (present ? strstr(json, want) == NULL : strstr(json, want) != NULL) {
+        DSD_FPRINTF(stderr, "row JSON %s '%s': %s\n", present ? "lacks" : "has", want, json);
+        assert(0);
+    }
+}
+
+/* The row's "pos" object joins the row JSON (lat/lon from the fixed point, seven decimals) and its fingerprint only
+   while the row carries a position; a blank row's fingerprint is the one it always had. */
+static void
+test_event_row_position(void) {
+    static Event_History e;
+    blank_row(&e);
+    /* Pinned: the blank row's fingerprint before rows carried positions. */
+    assert(dsd_api_feed_test_row_fingerprint(&e) == UINT64_C(0xb5a24928254104bb));
+    DSD_SNPRINTF(e.gps_s, sizeof e.gps_s, "%s", "GPS A");
+    e.pos.scope.kind = (uint8_t)DSD_POS_SCOPE_P25; /* a stamped sender identity is not a position */
+    e.pos.scope.a = 0xA1234U;
+    expect_row_json(&e, "\"pos\"", 0);
+    const uint64_t text_only = dsd_api_feed_test_row_fingerprint(&e);
+
+    e.pos.valid = 1U;
+    e.pos.lat_e7 = -225000000;
+    e.pos.lon_e7 = 450000000;
+    e.pos.err_m = 10U;
+    e.pos.flags = (uint16_t)DSD_POS_FLAG_TARGET_GROUP;
+    e.pos.rev = 7U;
+    expect_row_json(&e,
+                    "\"gps\":\"GPS A\",\"pos\":{\"lat\":-22.5000000,\"lon\":45.0000000,\"err_m\":10,\"flags\":4,"
+                    "\"rev\":7},\"text\":",
+                    1);
+    const uint64_t first = dsd_api_feed_test_row_fingerprint(&e);
+    assert(first != text_only);
+
+    /* A position-only update (a newer report, same text and coordinates) is a change a client must see. */
+    e.pos.rev = 8U;
+    assert(dsd_api_feed_test_row_fingerprint(&e) != first);
+    e.pos.rev = 7U;
+    assert(dsd_api_feed_test_row_fingerprint(&e) == first);
+    e.pos.lat_e7 = -225000001;
+    assert(dsd_api_feed_test_row_fingerprint(&e) != first);
+
+    /* The extremes and the smallest step keep every digit. */
+    e.pos.lat_e7 = -5;
+    e.pos.lon_e7 = -1800000000;
+    expect_row_json(&e, "\"lat\":-0.0000005,\"lon\":-180.0000000,", 1);
+    e.pos.lat_e7 = 900000000;
+    e.pos.lon_e7 = 1800000000;
+    expect_row_json(&e, "\"lat\":90.0000000,\"lon\":180.0000000,", 1);
+}
+
 int
 main(void) {
     g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
@@ -369,6 +444,7 @@ main(void) {
     test_lcn_failed_collection();
     test_cache_never_stale();
     test_status_tunable();
+    test_event_row_position();
 
     dsd_api_feed_stop();
     dsd_app_frontend_runtime_stop();

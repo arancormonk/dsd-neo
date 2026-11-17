@@ -236,6 +236,11 @@ call_state_normalize_text(char dst[DSD_CALL_IDENTITY_TEXT_SIZE], const char* src
     dst[out] = '\0';
 }
 
+void
+dsd_call_state_normalize_identity_text(char* dst, const char* src) {
+    call_state_normalize_text(dst, src);
+}
+
 static int
 call_state_known_text_changed(const char* current, const char* incoming) {
     char normalized[DSD_CALL_IDENTITY_TEXT_SIZE];

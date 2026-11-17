@@ -524,6 +524,37 @@ api_analog_mode(int protocol, uint8_t mode) {
     }
 }
 
+/* Degrees x 1e7 as a JSON number with seven decimals, from the integer: no floating point on the way. */
+static void
+api_e7_text(int32_t v, char* out, size_t cap) {
+    const int64_t wide = v;
+    const uint64_t mag = (uint64_t)(wide < 0 ? -wide : wide);
+    DSD_SNPRINTF(out, cap, "%s%llu.%07llu", wide < 0 ? "-" : "", (unsigned long long)(mag / 10000000U),
+                 (unsigned long long)(mag % 10000000U));
+}
+
+/* The admitted position the row's GPS text describes (issue #800), only when the row carries one. */
+static void
+encode_event_pos(dsd_json_writer* w, const dsd_event_pos* pos) {
+    if (!pos->valid) {
+        return;
+    }
+    char lat[24];
+    char lon[24];
+    api_e7_text(pos->lat_e7, lat, sizeof lat);
+    api_e7_text(pos->lon_e7, lon, sizeof lon);
+    (void)dsd_json_key(w, "pos");
+    (void)dsd_json_obj_begin(w);
+    (void)dsd_json_key(w, "lat");
+    (void)dsd_json_value_raw(w, lat);
+    (void)dsd_json_key(w, "lon");
+    (void)dsd_json_value_raw(w, lon);
+    (void)dsd_json_kv_u64(w, "err_m", pos->err_m);
+    (void)dsd_json_kv_u64(w, "flags", pos->flags);
+    (void)dsd_json_kv_u64(w, "rev", pos->rev);
+    (void)dsd_json_obj_end(w);
+}
+
 static void
 encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t push, uint64_t instance) {
     (void)dsd_json_key(w, "row");
@@ -575,6 +606,7 @@ encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t 
     (void)dsd_json_kv_i64(w, "event_start_time", (int64_t)e->event_start_time);
     (void)dsd_json_kv_strn(w, "alias", e->alias, sizeof e->alias);
     (void)dsd_json_kv_strn(w, "gps", e->gps_s, sizeof e->gps_s);
+    encode_event_pos(w, &e->pos);
     (void)dsd_json_kv_strn(w, "text", e->text_message, sizeof e->text_message);
     (void)dsd_json_kv_strn(w, "event", e->event_string, sizeof e->event_string);
     (void)dsd_json_kv_strn(w, "internal", e->internal_str, sizeof e->internal_str);
@@ -648,6 +680,19 @@ fnv1a_site(uint64_t h, const dsd_received_identity* id) {
     return fnv1a_str(h, id->dmr_brand, sizeof id->dmr_brand);
 }
 
+/* The position a row reports (encode_event_pos()); nothing for a row without one, so a blank row hashes as before. */
+static uint64_t
+fnv1a_pos(uint64_t h, const dsd_event_pos* pos) {
+    if (!pos->valid) {
+        return h;
+    }
+    h = fnv1a_u64(h, pos->rev);
+    h = fnv1a_u64(h, (uint64_t)(int64_t)pos->lat_e7);
+    h = fnv1a_u64(h, (uint64_t)(int64_t)pos->lon_e7);
+    h = fnv1a_u64(h, pos->err_m);
+    return fnv1a_u64(h, pos->flags);
+}
+
 /* Everything a client sees of a committed row. */
 static uint64_t
 row_fingerprint(const Event_History* e) {
@@ -704,6 +749,7 @@ row_fingerprint(const Event_History* e) {
     h = fnv1a_str(h, e->event_string, sizeof e->event_string);
     h = fnv1a_str(h, e->internal_str, sizeof e->internal_str);
     h = fnv1a_byte(h, e->call_channel_kind);
+    h = fnv1a_pos(h, &e->pos);
     return fnv1a_site(h, &e->site_id);
 }
 
@@ -720,6 +766,33 @@ eh_init_empty_fingerprint(void) {
     blank.receive_identity.kind = (uint8_t)DSD_RECEIVE_NONE; /* Kind "none", never kind 0 (slot) (issue #637). */
     g_eh_empty_fp = row_fingerprint(&blank);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_api_feed_test_encode_event_row(const Event_History* e, char* out, size_t cap) {
+    if (e == NULL || out == NULL || cap == 0U) {
+        return -1;
+    }
+    dsd_json_buf b;
+    dsd_json_buf_init(&b);
+    dsd_json_writer w;
+    dsd_json_writer_init(&w, &b);
+    (void)dsd_json_obj_begin(&w);
+    encode_event_row(&w, e, 0, 1U, 1U);
+    (void)dsd_json_obj_end(&w);
+    const int ok = !dsd_json_writer_failed(&w) && b.data != NULL && b.len < cap;
+    if (ok) {
+        DSD_MEMCPY(out, b.data, b.len + 1U);
+    }
+    dsd_json_buf_free(&b);
+    return ok ? 0 : -1;
+}
+
+uint64_t
+dsd_api_feed_test_row_fingerprint(const Event_History* e) {
+    return row_fingerprint(e);
+}
+#endif
 
 /* Append the line for committed row @p idx of @p ring to g_events. */
 static void

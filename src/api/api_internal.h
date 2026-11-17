@@ -15,6 +15,9 @@
 #include <stdint.h>
 
 #include "json.h"
+#ifdef DSD_NEO_TEST_HOOKS
+#include <dsd-neo/core/state.h> /* Event_History for the row encoder hooks */
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -110,6 +113,11 @@ void dsd_api_feed_scan_avoids_page(dsd_json_writer* w, uint64_t offset, size_t l
 void dsd_api_feed_test_on_page_pinned(void (*hook)(void));
 /** Fail the feed's next @p count scan avoid block allocations (decode thread). */
 void dsd_api_feed_test_fail_block_allocs(int count);
+/** The JSON object {"row":{...}} the event topic writes for @p e (slot 0, push 1, ring 1) into @p out. 0, or -1 when it
+    does not fit or fails. */
+int dsd_api_feed_test_encode_event_row(const Event_History* e, char* out, size_t cap);
+/** The fingerprint the event topic compares to tell an update of a committed row. */
+uint64_t dsd_api_feed_test_row_fingerprint(const Event_History* e);
 #endif
 
 /* ---- commands ---- */

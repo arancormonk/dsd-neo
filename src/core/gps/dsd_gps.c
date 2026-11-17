@@ -18,6 +18,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
@@ -35,9 +36,13 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/* Enrich the slot's ACTIVE call's row with GPS text: with an admitted position report (@p fix, from
+ * dsd_position_admit()) the text and the position go in together under the writer's typed-source rule
+ * (dsd_event_enrich_position()); with @p fix NULL the text alone (dsd_event_enrich_gps()). A nonzero
+ * @p expected_source must be the call's source. */
 static int
 gps_enrich_active_call(dsd_state* state, uint8_t slot, uint32_t expected_source, const char* text,
-                       dsd_call_snapshot* call_out) {
+                       const dsd_position_fix* fix, dsd_call_snapshot* call_out) {
     dsd_call_snapshot call;
     const int has_active_call = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
     if (has_active_call && expected_source != 0U && call.ota_source_id != expected_source) {
@@ -48,6 +53,9 @@ gps_enrich_active_call(dsd_state* state, uint8_t slot, uint32_t expected_source,
     }
     if (call_out) {
         *call_out = call;
+    }
+    if (fix != NULL) {
+        return dsd_event_enrich_position(state, slot, call.epoch, fix, text);
     }
     return dsd_event_enrich_gps(state, slot, call.epoch, text);
 }
@@ -368,7 +376,8 @@ lip_report(const dsd_opts* opts, dsd_state* state, const lip_fields* f, uint32_t
         // Carrier reports need a known source before enriching an active call.
         // USBD hashes retain the existing wildcard-source behavior.
         if (hash_prefix >= 0 || expected_source != 0U) {
-            (void)gps_enrich_active_call(state, (uint8_t)slot, expected_source, state->dmr_embedded_gps[slot], NULL);
+            (void)gps_enrich_active_call(state, (uint8_t)slot, expected_source, state->dmr_embedded_gps[slot], NULL,
+                                         NULL);
         }
         gps_write_lrrp_compact(opts, state, slot, src, lat_sf * latitude, lon_sf * longitude, vt, dt);
     } else {
@@ -520,7 +529,7 @@ nmea_store_and_report(const dsd_opts* opts, dsd_state* state, int slot, uint32_t
                       float speed_kph, uint16_t cog, int type, const char* deg_glyph) {
     DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "GPS: (%f%s, %f%s)", latitude,
                  deg_glyph, longitude, deg_glyph);
-    (void)gps_enrich_active_call(state, (uint8_t)slot, src, state->dmr_embedded_gps[slot], NULL);
+    (void)gps_enrich_active_call(state, (uint8_t)slot, src, state->dmr_embedded_gps[slot], NULL, NULL);
 
     int speed_int = (int)speed_kph;
     int azimuth = (type == 2) ? (int)cog : 0;
@@ -701,7 +710,7 @@ nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32
                  deg_glyph);
 
     // save to event history string
-    (void)gps_enrich_active_call(state, slot_idx, src, state->dmr_embedded_gps[slot_idx], NULL);
+    (void)gps_enrich_active_call(state, slot_idx, src, state->dmr_embedded_gps[slot_idx], NULL, NULL);
 
     // save to LRRP report for mapping/logging
     gps_write_lrrp_compact(opts, state, slot_idx, src, latitude, longitude, 0, (int)heading);
@@ -739,7 +748,7 @@ dmr_embedded_gps_store_clear_fix(const dsd_opts* opts, dsd_state* state, uint8_t
 
     dsd_call_snapshot call;
     uint32_t src = 0U;
-    if (gps_enrich_active_call(state, slot, 0U, state->dmr_embedded_gps[slot], &call) > 0
+    if (gps_enrich_active_call(state, slot, 0U, state->dmr_embedded_gps[slot], NULL, &call) > 0
         && call.ota_source_id <= UINT32_MAX) {
         src = (uint32_t)call.ota_source_id;
     }
@@ -896,7 +905,7 @@ apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]
 
             dsd_call_snapshot call;
             uint32_t src = 0U;
-            if (gps_enrich_active_call(state, slot_idx, 0U, state->dmr_embedded_gps[slot_idx], &call) > 0
+            if (gps_enrich_active_call(state, slot_idx, 0U, state->dmr_embedded_gps[slot_idx], NULL, &call) > 0
                 && call.ota_source_id <= UINT32_MAX) {
                 src = (uint32_t)call.ota_source_id;
             }
@@ -1055,7 +1064,7 @@ nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, ui
     if (have_events) {
         char gps_string[256];
         DSD_SNPRINTF(gps_string, sizeof(gps_string), "(%.6f%s, %.6f%s)", latitude, deg_glyph, longitude, deg_glyph);
-        (void)gps_enrich_active_call(state, 0U, src, gps_string, NULL);
+        (void)gps_enrich_active_call(state, 0U, src, gps_string, NULL, NULL);
 
         uint32_t source = (uint32_t)state->dmr_lrrp_source[0];
         uint32_t target = (uint32_t)state->dmr_lrrp_target[0];

@@ -20,6 +20,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -624,6 +625,31 @@ typedef enum DSD_ATTR_PACKED {
     DSD_EVENT_CATEGORY_SYSTEM = 5
 } dsd_event_category;
 
+/**
+ * The admitted position report a history row carries (issue #800), set together with the row's gps_s text by the
+ * position writers in <dsd-neo/core/events.h> and only from a report dsd_position_admit() admitted. Laid out without
+ * padding, so a row stays comparable byte for byte.
+ *
+ * scope and identity_freq_hz are the row's sender identity (D7): the admitted report's sender scope and identity
+ * discriminator, or, on a data notice without a position, the scope of the reception the notice was heard on, stamped
+ * at emit. They may be set while valid is 0. Everything else is meaningful only while valid is 1.
+ */
+typedef struct {
+    uint64_t proc_instance;   /**< dsd_position_fix::proc_instance of the report */
+    uint64_t rev;             /**< dsd_position_fix::rev; the newest rev wins wherever two positions meet */
+    int64_t rx_time_s;        /**< dsd_position_fix::rx_time_s (display only; never orders) */
+    int64_t identity_freq_hz; /**< dsd_position_fix::identity_freq_hz: the discriminator of a P25 NAC scope, else 0 */
+    int32_t lat_e7;           /**< degrees x 1e7, north positive */
+    int32_t lon_e7;           /**< degrees x 1e7, east positive */
+    uint32_t err_m;           /**< metres; DSD_POSITION_ERR_UNKNOWN (0) */
+    uint16_t flags;           /**< dsd_position_flag */
+    uint8_t valid;            /**< 1 while the row carries an admitted position */
+    uint8_t rx_clock;         /**< dsd_position_fix::rx_clock */
+    uint8_t kind;             /**< dsd_position_kind */
+    uint8_t pad[3];           /**< always 0 */
+    dsd_position_scope scope; /**< the sender scope (see above); DSD_POS_SCOPE_NONE when none was stamped */
+} dsd_event_pos;
+
 //event history (each item)
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 // The dsd_state structure is intentionally organized by functional groups for clarity
@@ -725,6 +751,10 @@ typedef struct {
     char text_message[2000]; // If this event is a decoded text message, then it goes here
     char event_string[2000]; //user legible and printable string for the event that happened
     char internal_str[2000]; //string that relates to a DSD-neo generated event (ENC LO, error notices, etc)
+    // The admitted position gps_s describes, and the row's sender identity (issue #800). gps_s and pos are written
+    // in one step by the position writers (<dsd-neo/core/events.h>); a text-only GPS write leaves pos without a
+    // position (valid 0), so the two never disagree.
+    dsd_event_pos pos;
 } Event_History;
 
 //event history for number of each items above
@@ -736,6 +766,9 @@ typedef struct {
 typedef struct {
     char gps_s[2000];
     char text_message[2000];
+    // The admitted report gps_s describes (dsd_event_stage_position()), whole: the next data notice checks its typed
+    // source against the notice's own before the row takes it. rev 0 = none; a text-only stage clears it.
+    dsd_position_fix pos_fix;
 } Event_History_Staged;
 
 /* The one comparison of the two P25p1 demodulator chains an acquisition gets (frame sync's

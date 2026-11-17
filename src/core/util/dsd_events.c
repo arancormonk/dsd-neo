@@ -21,6 +21,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
@@ -52,6 +53,9 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "dsd_event_staging.h"
+
+/* A row stays comparable byte for byte (watchdog_event_commit_candidate()): its position has no padding. */
+_Static_assert(sizeof(dsd_event_pos) == 64U, "dsd_event_pos must stay free of padding");
 
 enum {
     DSD_EVENT_SUBTYPE_DMR_DATA_BURST = 6,
@@ -136,6 +140,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].text_message[0] = '\0';
         event_struct->Event_History_Items[i].event_string[0] = '\0';
         event_struct->Event_History_Items[i].internal_str[0] = '\0';
+        DSD_MEMSET(&event_struct->Event_History_Items[i].pos, 0, sizeof(event_struct->Event_History_Items[i].pos));
     }
     if (stop > 1U) {
         // The reset reached committed rows, not just the staged one.
@@ -233,6 +238,7 @@ push_event_history(Event_History_I* event_struct) {
         copy_str_field(event_struct->Event_History_Items[i].internal_str,
                        event_struct->Event_History_Items[i - 1].internal_str,
                        sizeof event_struct->Event_History_Items[i].internal_str);
+        event_struct->Event_History_Items[i].pos = event_struct->Event_History_Items[i - 1].pos;
     }
     event_struct->push_seq++;
     event_struct->commit_rev++;
@@ -1146,6 +1152,31 @@ watchdog_event_merge_site(Event_History* retained, const Event_History* staged) 
     dsd_rxid_site_union(&retained->site_id, &staged->site_id, &retained->site_id);
 }
 
+// GPS text and position come from one side, so they never disagree (issue #800). With a position on either side the
+// newer report (greater rev: process-wide and monotonic, so a wall clock step cannot keep an older fix) supplies both;
+// a side without one never displaces a position. With none on either side the text merges as other progressive
+// detail, and a sender identity the row lacks is filled in. Returns 1 when the row's GPS text changed.
+static uint8_t
+watchdog_event_merge_gps(Event_History* retained, const Event_History* staged) {
+    const uint64_t retained_rev = retained->pos.valid ? retained->pos.rev : 0U;
+    const uint64_t staged_rev = staged->pos.valid ? staged->pos.rev : 0U;
+    if (retained_rev == 0U && staged_rev == 0U) {
+        if (retained->pos.scope.kind == (uint8_t)DSD_POS_SCOPE_NONE) {
+            retained->pos.scope = staged->pos.scope;
+            retained->pos.identity_freq_hz = staged->pos.identity_freq_hz;
+        }
+        return (uint8_t)watchdog_event_merge_text_progressive(retained->gps_s, staged->gps_s, sizeof(retained->gps_s),
+                                                              0);
+    }
+    if (staged_rev <= retained_rev) {
+        return 0U;
+    }
+    const int changed = strncmp(retained->gps_s, staged->gps_s, sizeof(retained->gps_s)) != 0;
+    copy_str_field(retained->gps_s, staged->gps_s, sizeof(retained->gps_s));
+    retained->pos = staged->pos;
+    return changed ? 1U : 0U;
+}
+
 // Fold the staged row into the row already in history: this is the same transmission, and
 // everything the reacquired segment learned -- a late-decoded SRC, the system identifiers, an
 // alias, GPS, a text message, the crypto header that finally arrived -- has to survive.
@@ -1179,8 +1210,7 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
 
     added->alias =
         (uint8_t)watchdog_event_merge_text_progressive(retained->alias, staged->alias, sizeof(retained->alias), 1);
-    added->gps =
-        (uint8_t)watchdog_event_merge_text_progressive(retained->gps_s, staged->gps_s, sizeof(retained->gps_s), 0);
+    added->gps = watchdog_event_merge_gps(retained, staged);
     added->text_message = (uint8_t)watchdog_event_merge_text_progressive(retained->text_message, staged->text_message,
                                                                          sizeof(retained->text_message), 0);
     added->internal = (uint8_t)watchdog_event_merge_text_progressive(retained->internal_str, staged->internal_str,
@@ -3343,6 +3373,7 @@ dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_
         DSD_SNPRINTF(item->alias, sizeof(item->alias), "%s", value);
     } else if (field == DSD_EVENT_DETAIL_GPS) {
         DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", value);
+        dsd_event_pos_drop_position(&item->pos); /* text without a position */
     } else {
         DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", value);
     }
@@ -3601,6 +3632,7 @@ dsd_event_enrich_apply(dsd_state* state, uint8_t slot, Event_History* item, cons
         DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
     } else if (kind == DSD_EVENT_ENRICH_GPS) {
         DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", value);
+        dsd_event_pos_drop_position(&item->pos); /* text without a position */
     } else {
         DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", value);
     }
@@ -3785,6 +3817,197 @@ dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char
     return dsd_event_enrich_epoch(NULL, state, slot, epoch, text, DSD_EVENT_ENRICH_TEXT);
 }
 
+/* ---- Position writers (issue #800) ---- */
+
+/* An admitted report that names no source a row could check: hashed, unverified, or neither ID nor callsign. */
+static int
+dsd_event_pos_fix_anonymous(const dsd_position_fix* fix) {
+    if ((fix->flags & (uint16_t)(DSD_POS_FLAG_SOURCE_HASHED | DSD_POS_FLAG_SOURCE_UNVERIFIED)) != 0U) {
+        return 1;
+    }
+    return fix->source_id == 0U && fix->source_text[0] == '\0';
+}
+
+/* The report's callsign against the subject's (a call's or a notice's), both compared as a call keeps identity text
+ * (whitespace runs one space). The report keeps DSD_POSITION_SOURCE_TEXT_SIZE - 1 bytes: a report cut there matches
+ * the subject's longer callsign by its prefix. */
+static int
+dsd_event_pos_callsign_matches(const char* text, const char* callsign) {
+    char subject[DSD_CALL_IDENTITY_TEXT_SIZE];
+    char mine[DSD_CALL_IDENTITY_TEXT_SIZE];
+    dsd_call_state_normalize_identity_text(subject, text);
+    dsd_call_state_normalize_identity_text(mine, callsign);
+    const size_t n = strnlen(mine, sizeof mine);
+    if (n == 0U || strncmp(subject, mine, n) != 0) {
+        return 0;
+    }
+    return subject[n] == '\0' || strnlen(callsign, DSD_POSITION_SOURCE_TEXT_SIZE) == DSD_POSITION_SOURCE_TEXT_SIZE - 1U;
+}
+
+/* The typed-source rule (spec 2.7): the report may describe the subject (a call or a notice) of @p protocol, numeric
+ * @p source_id and callsign @p text: the same protocol family, the same source ID and callsign where the report names
+ * them, and an anonymous report only for a subject that names no source (spec 2.14). */
+static int
+dsd_event_pos_source_compatible(int protocol, uint64_t source_id, const char* text, const dsd_position_fix* fix) {
+    const int family = dsd_position_protocol_family(protocol);
+    if (family < 0 || family != dsd_position_protocol_family(fix->protocol)) {
+        return 0;
+    }
+    if (dsd_event_pos_fix_anonymous(fix)) {
+        return source_id == 0U && text[0] == '\0';
+    }
+    if (fix->source_id != 0U && source_id != (uint64_t)fix->source_id) {
+        return 0;
+    }
+    return fix->source_text[0] == '\0' || dsd_event_pos_callsign_matches(text, fix->source_text);
+}
+
+/* The row's sender identity, once it has one, is the report's; and the report is newer than the row's position. */
+static int
+dsd_event_pos_row_takes(const Event_History* item, const dsd_position_fix* fix) {
+    const dsd_event_pos* pos = &item->pos;
+    if (pos->scope.kind != (uint8_t)DSD_POS_SCOPE_NONE
+        && (pos->scope.kind != fix->sender_scope.kind || pos->scope.a != fix->sender_scope.a
+            || pos->scope.b != fix->sender_scope.b || pos->identity_freq_hz != fix->identity_freq_hz)) {
+        return 0;
+    }
+    return !pos->valid || fix->rev > pos->rev;
+}
+
+/* Text and position in one step. */
+static void
+dsd_event_pos_write(Event_History* item, const dsd_position_fix* fix, const char* gps_text) {
+    DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps_text);
+    dsd_event_pos_set_from_fix(&item->pos, fix);
+}
+
+static int
+dsd_event_pos_call_compatible(const dsd_call_snapshot* call, const dsd_position_fix* fix) {
+    return dsd_event_pos_source_compatible(call->protocol, call->ota_source_id, call->source_text, fix);
+}
+
+/* Caller holds the call-state lock: the epoch's call (ACTIVE, or ENDED when @p allow_ended) is the slot's canonical
+ * call and the receive policy publishes it. */
+static int
+dsd_event_pos_call_open_for(const dsd_call_snapshot* call, uint64_t epoch, int allow_ended) {
+    if (call->epoch != epoch || call->receive_verdict == DSD_RECEIVE_CHECKING
+        || call->receive_verdict == DSD_RECEIVE_REJECTED) {
+        return 0;
+    }
+    return call->phase == DSD_CALL_PHASE_ACTIVE || (allow_ended && call->phase == DSD_CALL_PHASE_ENDED);
+}
+
+/* Caller holds the call-state lock. Write the report into the epoch's row, or decline. */
+static int
+dsd_event_enrich_position_locked(dsd_state* state, uint8_t slot, dsd_call_state_ext* ext, uint64_t epoch,
+                                 const dsd_position_fix* fix, const char* gps_text) {
+    dsd_call_snapshot* call = &ext->calls.slots[slot];
+    uint8_t history_index = 0U;
+    const dsd_event_enrich_target target =
+        dsd_event_enrich_find_row(state, slot, epoch, &ext->events[slot], &history_index);
+    if (target == DSD_EVENT_ENRICH_TARGET_UNOPENED) {
+        dsd_event_enrich_unopened(state, slot, ext, call, gps_text, DSD_EVENT_ENRICH_GPS);
+    }
+    if (target != DSD_EVENT_ENRICH_TARGET_ROW) {
+        return 0;
+    }
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    Event_History* item = &event_struct->Event_History_Items[history_index];
+    if (!dsd_event_pos_row_takes(item, fix)) {
+        return 0;
+    }
+    dsd_event_pos_write(item, fix, gps_text);
+    if (state->event_crc_invalid[slot]) {
+        dsd_event_enrich_mark_crc(ext, call, item, state->event_crc_invalid[slot]);
+    }
+    if (history_index != 0U) {
+        event_struct->commit_rev++; /* late enrichment of a committed row */
+    }
+    dsd_event_history_mark_dirty(event_struct);
+    return 1;
+}
+
+static int
+dsd_event_enrich_position_impl(dsd_state* state, uint8_t slot, uint64_t epoch, int allow_ended,
+                               const dsd_position_fix* fix, const char* gps_text) {
+    if (!state || !state->event_history_s || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U
+        || !dsd_event_pos_fix_admitted(fix) || !gps_text) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    int written = 0;
+    if (dsd_event_pos_call_open_for(call, epoch, allow_ended) && dsd_event_pos_call_compatible(call, fix)) {
+        written = dsd_event_enrich_position_locked(state, slot, ext, epoch, fix, gps_text);
+    }
+    dsd_call_state_ext_unlock(ext);
+    return written;
+}
+
+int
+dsd_event_enrich_position(dsd_state* state, uint8_t slot, uint64_t epoch, const dsd_position_fix* fix,
+                          const char* gps_text) {
+    return dsd_event_enrich_position_impl(state, slot, epoch, 0, fix, gps_text);
+}
+
+int
+dsd_event_capture_closing_call(const dsd_state* state, uint8_t slot, dsd_event_closing_call* out) {
+    if (!state || !out || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.epoch == 0U || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    out->epoch = call.epoch;
+    out->source_id = call.ota_source_id;
+    out->protocol = call.protocol;
+    out->slot = slot;
+    out->valid = 1U;
+    return 1;
+}
+
+int
+dsd_event_enrich_position_closing(dsd_state* state, const dsd_event_closing_call* closing, const dsd_position_fix* fix,
+                                  const char* gps_text) {
+    if (!closing) {
+        return -1;
+    }
+    if (!closing->valid) {
+        return (!state || !dsd_event_pos_fix_admitted(fix) || !gps_text) ? -1 : 0;
+    }
+    return dsd_event_enrich_position_impl(state, closing->slot, closing->epoch, 1, fix, gps_text);
+}
+
+int
+dsd_event_set_open_call_position(dsd_state* state, uint8_t slot, const dsd_position_fix* fix, const char* gps_text) {
+    if (!state || !state->event_history_s || slot > 1U || !dsd_event_pos_fix_admitted(fix) || !gps_text) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    Event_History* item = &event_struct->Event_History_Items[0];
+    int written = 0;
+    if (watchdog_event_slot_call_is_open(call, &ext->events[slot]) && dsd_event_pos_call_compatible(call, fix)
+        && dsd_event_pos_row_takes(item, fix)) {
+        dsd_event_pos_write(item, fix, gps_text);
+        dsd_event_history_mark_dirty(event_struct);
+        written = 1;
+    }
+    dsd_call_state_ext_unlock(ext);
+    return written;
+}
+
 void
 dsd_event_history_reset(dsd_state* state) {
     if (state == NULL || state->event_history_s == NULL) {
@@ -3965,10 +4188,81 @@ dsd_event_data_notice_args_valid(const dsd_opts* opts, const dsd_state* state, u
     return category == DSD_EVENT_CATEGORY_DATA || category == DSD_EVENT_CATEGORY_CONTROL;
 }
 
+/* A notice's GPS: the text, with the admitted report it describes when there is one (@p fix, rev set). The report goes
+ * in only when its typed source is the notice's own; otherwise neither the text nor the position does, so the two never
+ * disagree. */
+static void
+watchdog_event_notice_set_gps(Event_History* item, const dsd_call_observation* observation, const char* gps,
+                              const dsd_position_fix* fix) {
+    if (!dsd_event_pos_fix_admitted(fix)) {
+        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps);
+        return;
+    }
+    if (dsd_event_pos_source_compatible(observation->protocol, observation->ota_source_id, observation->source_text,
+                                        fix)) {
+        dsd_event_pos_write(item, fix, gps);
+    }
+}
+
+/* The site a notice was heard on, by the call rows' rule (watchdog_event_current_load_system()): the site parts of the
+ * received identity when it is a record of the notice's family; none playing back files, for M17, dPMR, a protocol of
+ * no family and a TETRA direct mode carrier. Zero when none. */
+static void
+watchdog_event_notice_site(const dsd_opts* opts, const dsd_state* state, int protocol, dsd_received_identity* site) {
+    const dsd_rxid_family family = dsd_rxid_family_for_sync(protocol);
+    if (opts->playfiles != 0 || family == DSD_RXID_FAMILY_NONE || family == DSD_RXID_FAMILY_OTHER
+        || DSD_SYNC_IS_M17(protocol) || DSD_SYNC_IS_DPMR(protocol)) {
+        return;
+    }
+    if (DSD_SYNC_IS_TETRA(protocol) && state->tetra_pub.mode >= DSD_TETRA_MODE_DMO_DIRECT
+        && state->tetra_pub.mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY) {
+        return;
+    }
+    watchdog_event_site_take(&state->rx_id, family, site);
+}
+
+/* A notice's identity, stamped at emit so a saved notice row can rebuild its track (spec 2.7): the sender scope its
+ * position carries, else the scope of the reception it was heard on (none for the callsign protocols), and its site. */
+static void
+watchdog_event_notice_stamp_identity(const dsd_opts* opts, const dsd_state* state, Event_History* item,
+                                     const dsd_call_observation* observation) {
+    if (!item->pos.valid) {
+        dsd_position_origin here;
+        dsd_position_origin_capture(opts, state, &here);
+        const int family = dsd_position_protocol_family(observation->protocol);
+        if (family >= 0 && !DSD_SYNC_IS_M17(observation->protocol) && !DSD_SYNC_IS_DSTAR(observation->protocol)) {
+            item->pos.scope.kind = here.scope.kind;
+            item->pos.scope.a = here.scope.a;
+            item->pos.scope.b = here.scope.b;
+            item->pos.identity_freq_hz = here.scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? here.freq_hz : 0;
+        }
+    }
+    watchdog_event_notice_site(opts, state, observation->protocol, &item->site_id);
+}
+
+/* The notice's payload: the staged one (consumed) or the caller's own GPS, then its identity. */
+static void
+watchdog_event_notice_payload(const dsd_opts* opts, const dsd_state* state, Event_History_I* event_struct,
+                              Event_History* item, const dsd_call_observation* observation, const char* gps,
+                              const dsd_position_fix* fix) {
+    if (gps == NULL) {
+        const Event_History_Staged* staged = &event_struct->staged;
+        watchdog_event_notice_set_gps(item, observation, staged->gps_s, &staged->pos_fix);
+        DSD_SNPRINTF(item->text_message, sizeof item->text_message, "%s", staged->text_message);
+        dsd_event_staging_clear_locked(event_struct);
+    } else {
+        watchdog_event_notice_set_gps(item, observation, gps, fix);
+    }
+    watchdog_event_notice_stamp_identity(opts, state, item, observation);
+}
+
+/* gps NULL consumes the slot's staged payload; otherwise the notice carries @p gps (with the admitted @p fix it
+ * describes, or NULL) and the staging is left alone. */
 static int
 dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
                                 dsd_event_category category, const char* notice, const char* gps,
-                                int consume_staged_payload) {
+                                const dsd_position_fix* fix) {
+    const int consume_staged_payload = gps == NULL;
     if (!dsd_event_data_notice_args_valid(opts, state, slot, observation, category, notice)) {
         return -1;
     }
@@ -4023,13 +4317,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     item->event_time = watchdog_event_decode_second();
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
-    if (consume_staged_payload) {
-        DSD_SNPRINTF(item->gps_s, sizeof item->gps_s, "%s", event_struct->staged.gps_s);
-        DSD_SNPRINTF(item->text_message, sizeof item->text_message, "%s", event_struct->staged.text_message);
-        dsd_event_staging_clear_locked(event_struct);
-    } else {
-        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps);
-    }
+    watchdog_event_notice_payload(opts, state, event_struct, item, observation, gps, fix);
 
     char timestr[9];
     char datestr[11];
@@ -4060,7 +4348,7 @@ int
 dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t slot,
                                       const dsd_call_observation* observation, dsd_event_category category,
                                       const char* notice) {
-    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, NULL, 1);
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, NULL, NULL);
 }
 
 int
@@ -4076,7 +4364,17 @@ dsd_event_emit_data_notice_classified_with_gps(dsd_opts* opts, dsd_state* state,
     if (gps == NULL) {
         return -1;
     }
-    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, gps, 0);
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, gps, NULL);
+}
+
+int
+dsd_event_emit_data_notice_with_position(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                         const dsd_call_observation* observation, dsd_event_category category,
+                                         const char* notice, const dsd_position_fix* fix, const char* gps_text) {
+    if (!dsd_event_pos_fix_admitted(fix) || gps_text == NULL) {
+        return -1;
+    }
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, gps_text, fix);
 }
 
 int

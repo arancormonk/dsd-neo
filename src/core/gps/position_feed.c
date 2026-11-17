@@ -217,6 +217,14 @@ pos_protocol_family(uint8_t protocol) {
     return 0x100 + s;
 }
 
+int
+dsd_position_protocol_family(int protocol) {
+    if (protocol < 0 || protocol >= (int)DSD_POSITION_PROTOCOL_NONE) {
+        return -1;
+    }
+    return pos_protocol_family((uint8_t)protocol);
+}
+
 /* M17 and D-STAR name their sources by callsign and carry no system identity. */
 static int
 pos_protocol_is_callsign(uint8_t protocol) {

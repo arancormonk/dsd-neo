@@ -7414,6 +7414,25 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         COMMAND dsd-neo_test_core_events_staged_payload
     )
 
+    # History rows carry the admitted position (issue #800): the position writers, push, staging, merge, snapshot.
+    add_executable(
+        dsd-neo_test_core_event_position
+        core/test_core_event_position.c
+    )
+    target_include_directories(
+        dsd-neo_test_core_event_position
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_core_event_position
+        PRIVATE dsd-neo_core dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_core_event_position
+        PRIVATE "LINKER:--wrap=beeper"
+    )
+    add_test(NAME CORE_EVENT_POSITION COMMAND dsd-neo_test_core_event_position)
+
     add_executable(
         dsd-neo_test_core_call_alert_history
         core/test_core_call_alert_history.c

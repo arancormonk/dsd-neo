@@ -2498,6 +2498,22 @@ suite runs under this compiler.
   (never on the decode path; a new `stream_id`, seq from 1) and freed with the extensions; without one admission
   still works and nothing is kept. `dsd_position_feed_copy_since()` is the allocation-free read by seq (stream, held
   seqs, `more`, `lost`). Test: `CORE_POSITION_FEED`.
+- API note: history rows carry the admitted fix (`Event_History::pos`, a padding-free `dsd_event_pos`, issue #800).
+  Only the position writers in `<dsd-neo/core/events.h>` set it, always together with `gps_s` and only from an
+  admitted record: `dsd_event_enrich_position()` (the slot's ACTIVE call of an epoch),
+  `dsd_event_enrich_position_closing()` with `dsd_event_capture_closing_call()` (the call a P25 Phase 1 terminator
+  ends before it dispatches its own link control), `dsd_event_set_open_call_position()` (D-STAR slow data),
+  `dsd_event_stage_position()` (the next data notice; `Event_History_Staged::pos_fix` keeps the whole record) and
+  `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol family; the
+  report's source ID and callsign, compared as call identity text, equal to the call's or the notice's; an anonymous
+  report only where no source is named), keeps the row's sender scope once it has one, and lets only a newer `rev`
+  replace a position. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
+  `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
+  move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`.
+  Every data notice stamps its sender identity (`pos.scope`, the reception's scope when it has no position) and its
+  site (`site_id`, by the call rows' rule). The API row gains `"pos"` (lat/lon from the fixed point, `err_m`,
+  `flags`, `rev`) and the event fingerprint hashes it, both only while `pos.valid`. Tests: `CORE_EVENT_POSITION`,
+  `API_FEED`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
 - API note: the unit activity ring (`<dsd-neo/core/unit_activity.h>`, `src/core/util/unit_activity.c`, state
   extension 14) is the session's log of trunking unit events: registrations, deregistrations, talkgroup joins, denies,
   queued and waiting responses, radio commands, status and message reports. Protocol producers push one plain record
