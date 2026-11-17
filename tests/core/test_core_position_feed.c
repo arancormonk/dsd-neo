@@ -364,13 +364,30 @@ test_labels_local_and_foreign(void) {
     assert(dsd_position_admit(NULL, st, &unverified, 1, 0, NULL) == DSD_POSITION_ADMITTED_NOT_KEPT);
     assert(unverified.label[0] == '\0' && unverified.sender_scope.a == 100U);
 
-    /* A reception that names no system (feed-only scope): no label, the radio list included. */
+    /* A reception that names no system (a conventional channel, a replay): its own senders are local and named as
+     * call rows name them, the radio list included, whether the scope is feed-only or none. */
     DSD_MEMSET(&st->rx_id, 0, sizeof(st->rx_id));
     dsd_opts* opts = new_opts();
     tune_rtl(opts, 450000000U);
     dsd_position_fix feed_only = f;
     assert(dsd_position_admit(opts, st, &feed_only, 1, 1, NULL) == DSD_POSITION_ADMITTED_NOT_KEPT);
-    assert(feed_only.reception_scope.kind == DSD_POS_SCOPE_FEED_TUNED_FREQ && feed_only.label[0] == '\0');
+    assert(feed_only.reception_scope.kind == DSD_POS_SCOPE_FEED_TUNED_FREQ);
+    assert(strcmp(feed_only.label, "Local Radio") == 0);
+    dsd_position_fix no_scope = f;
+    assert(dsd_position_admit(NULL, st, &no_scope, 1, 1, NULL) == DSD_POSITION_ADMITTED_NOT_KEPT);
+    assert(no_scope.reception_scope.kind == DSD_POS_SCOPE_NONE && strcmp(no_scope.label, "Local Radio") == 0);
+
+    /* The same number sent from an explicit foreign network over that reception: never the local radio list. */
+    dsd_position_fix foreign_unlearned = f;
+    foreign_unlearned.sender_scope.kind = DSD_POS_SCOPE_TETRA;
+    foreign_unlearned.sender_scope.a = 300U;
+    foreign_unlearned.sender_scope.b = 40U;
+    assert(dsd_position_admit(opts, st, &foreign_unlearned, 1, 1, NULL) == DSD_POSITION_ADMITTED_NOT_KEPT);
+    assert(foreign_unlearned.label[0] == '\0');
+    dsd_position_fix foreign_learned = away;
+    foreign_learned.label[0] = '\0';
+    assert(dsd_position_admit(opts, st, &foreign_learned, 1, 1, NULL) == DSD_POSITION_ADMITTED_NOT_KEPT);
+    assert(strcmp(foreign_learned.label, "Foreign Radio") == 0);
     free(opts);
     free_state(st);
 }

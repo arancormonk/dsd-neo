@@ -2487,8 +2487,10 @@ suite runs under this compiler.
   for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays),
   freezes the reception scope (the alias scope, else a feed-only EDACS, control-channel or tuned-frequency scope;
   none for M17/D-STAR), the sender scope (TETRA's calling party network when sent), the identity discriminator (the
-  tuned frequency for a P25 NAC scope) and the label (a local sender through the scoped lookup; a foreign sender only
-  through a label learned in its own scope, `dsd_tg_policy_lookup_learned_label()`; none for a feed-only scope), and
+  tuned frequency for a P25 NAC scope) and the label (a local sender, whose sender scope equals the reception scope of
+  any kind, feed-only and none included, through the scoped lookup call rows use, the radio list first; a foreign
+  sender, with its own different scope, only through a label learned in that scope,
+  `dsd_tg_policy_lookup_learned_label()`), and
   stamps the process-wide `rev`, `proc_instance`, `rx_time_s` and `rx_clock`. Only an admitted report may reach `-L`
   or history. The feed keeps an admitted report unless it repeats its track's last kept one (every observable field
   equal, kept less than 30 s ago on the decode clock; anonymous sources never fold; 256 tracks, the least recently

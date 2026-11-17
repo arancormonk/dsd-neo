@@ -21,7 +21,11 @@
  * 3. Origin: a multi-fragment report is refused when its first fragment was heard under another reception generation
  *    (dsd_position_origin_capture() / dsd_position_origin_matches()).
  * 4. Values: |lat| <= 90, |lon| <= 180, exactly (0,0) refused; an out-of-range heading becomes unknown.
- * 5. Freeze: the reception scope, the sender scope, the identity discriminator and the label at acceptance.
+ * 5. Freeze: the reception scope, the sender scope, the identity discriminator and the label at acceptance. A local
+ *    sender (sender scope equal to the reception scope, of any kind, none included) is labelled as call rows are: the
+ *    scoped lookup in the reception's alias scope, the radio list first. A foreign sender (an explicit sender scope that
+ *    differs from the reception's, e.g. a TETRA calling party's own network) takes only a label learned in exactly its
+ *    own scope (dsd_tg_policy_lookup_learned_label()), never the radio list. Hashed and unverified sources get none.
  * 6. Stamp: the process-wide revision (rev), proc_instance, rx_time_s and rx_clock.
  * 8. Feed: a repeat of the same track's last kept report (every observable field equal, kept less than
  *    DSD_POSITION_REPEAT_MS ago on the decode clock) is not kept; anything else is appended to the ring with the next

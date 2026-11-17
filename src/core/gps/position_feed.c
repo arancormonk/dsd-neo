@@ -300,23 +300,27 @@ pos_values_ok(dsd_position_fix* r) {
     return 1;
 }
 
-/* Step 5, the label: never for an anonymous source; for a local sender (sender scope = reception scope, an alias
- * scope) the scoped lookup as the unit activity freeze does; for a foreign sender only a label learned in the sender's
- * own scope (the radio list and unscoped rows name local radios). A feed-only or no scope names no system: no label. */
+/* Step 5, the label: never for an anonymous source. A local sender (its sender scope equals the reception scope, of
+ * whatever kind: an alias scope, a feed-only scope or none) is named as call rows name it, by the scoped lookup in the
+ * reception's alias scope (the radio list first, then the group list; an invalid scope reads the rows that name a
+ * radio everywhere). A foreign sender (its own network differs from the reception's) skips the radio list and the
+ * unscoped rows, which name local radios: only a label learned in its own scope names it, and none when that scope is
+ * no alias scope. */
 static void
 pos_freeze_label(const dsd_state* state, dsd_position_fix* r) {
     DSD_MEMSET(r->label, 0, sizeof(r->label));
-    dsd_alias_scope sender;
-    if (pos_anonymous(r) || r->source_id == 0U || !pos_scope_to_alias(&r->sender_scope, &sender)) {
+    if (pos_anonymous(r) || r->source_id == 0U) {
         return;
     }
     char name[DSD_SOURCE_ALIAS_NAME_MAX];
     char mode[8];
-    int found;
+    int found = 0;
+    dsd_alias_scope scope;
     if (pos_scope_equal(&r->sender_scope, &r->reception_scope)) {
-        found = dsd_source_label_lookup_scoped(state, &sender, r->source_id, mode, sizeof mode, name, sizeof name);
-    } else {
-        found = dsd_tg_policy_lookup_learned_label(state, &sender, r->source_id, name, sizeof name);
+        (void)pos_scope_to_alias(&r->reception_scope, &scope);
+        found = dsd_source_label_lookup_scoped(state, &scope, r->source_id, mode, sizeof mode, name, sizeof name);
+    } else if (pos_scope_to_alias(&r->sender_scope, &scope)) {
+        found = dsd_tg_policy_lookup_learned_label(state, &scope, r->source_id, name, sizeof name);
     }
     if (!found) {
         return;
