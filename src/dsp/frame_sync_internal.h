@@ -123,6 +123,12 @@ typedef struct {
 const frame_sync_sps_profile* frame_sync_sps_profile_for_index(int index);
 
 void frame_sync_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now);
+/** A P25 watchdog beat's tick, run in place inside a hunt read waiting on a quiet input (frame_sync_watchdog_tick.c).
+ * Decoder thread. */
+void frame_sync_service_p25_watchdog_in_read(dsd_opts* opts, dsd_state* state);
+/** Whether a tick a hunt read ran in place moved the chain since the last call: the hunt's next checkpoint then starts
+ * its context over. Clears it. Decoder thread. */
+int frame_sync_take_p25_watchdog_moved_chain(void);
 void frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt);
 int frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* state);
 int frame_sync_should_skip_snr_or_power_gate(const dsd_opts* opts, const dsd_state* state);

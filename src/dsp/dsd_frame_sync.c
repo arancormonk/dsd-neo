@@ -5940,13 +5940,11 @@ frame_sync_pass_end_step(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ct
     return budget_step != 0;
 }
 
-/* The tick a P25 watchdog beat asked for, run at the hunt's checkpoint on the decoder thread
-   (dsd_frame_sync_hook_p25_sm_watchdog_service()). A tick that moved the chain under the hunt (a release to the control
-   channel, a hunt step, a CQPSK retry: the modulation, the symbol profile or a tune) leaves nothing of the window
-   worth matching: the hunt drops its history and starts its context over in place, as a CQPSK trial's handback does,
-   with no no-sync return, which would run a no-carrier pass. Returns 1 when it did. */
+/* The tick a P25 watchdog beat asked for, run here on the decoder thread
+   (dsd_frame_sync_hook_p25_sm_watchdog_service()). 1 when one ran and moved the chain under the hunt: a release to the
+   control channel, a hunt step or a CQPSK retry (the modulation, the symbol profile or a tune). */
 static int
-frame_sync_service_p25_watchdog(frame_sync_runtime_ctx* rt, dsd_opts* opts, dsd_state* state) {
+frame_sync_p25_watchdog_tick_moved_chain(dsd_opts* opts, dsd_state* state) {
     const int rf_mod = state->rf_mod;
     const int sps_idx = state->sps_hunt_idx;
     const int sps = state->samplesPerSymbol;
@@ -5954,8 +5952,17 @@ frame_sync_service_p25_watchdog(frame_sync_runtime_ctx* rt, dsd_opts* opts, dsd_
     if (!dsd_frame_sync_hook_p25_sm_watchdog_service(opts, state)) {
         return 0;
     }
-    if (state->rf_mod == rf_mod && state->sps_hunt_idx == sps_idx && state->samplesPerSymbol == sps
-        && dsd_trunk_tuning_last_request() == last_request) {
+    return state->rf_mod != rf_mod || state->sps_hunt_idx != sps_idx || state->samplesPerSymbol != sps
+           || dsd_trunk_tuning_last_request() != last_request;
+}
+
+/* The hunt's checkpoint: the beat's tick runs here, and when it, or one a hunt read ran since, moved the chain, nothing of
+   the window is worth matching: the hunt drops its history and starts its context over in place, as a CQPSK trial's
+   handback does, with no no-sync return, which would run a no-carrier pass. Returns 1 when it did. */
+static int
+frame_sync_service_p25_watchdog(frame_sync_runtime_ctx* rt, dsd_opts* opts, dsd_state* state) {
+    const int in_read = frame_sync_take_p25_watchdog_moved_chain();
+    if (!frame_sync_p25_watchdog_tick_moved_chain(opts, state) && !in_read) {
         return 0;
     }
     frame_sync_history_drop(state);
@@ -5980,6 +5987,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
     frame_sync_runtime_ctx rt;
     frame_sync_runtime_init(&rt, opts, state);
+    /* A tick a read ran before this call is behind the context just built. */
+    (void)frame_sync_take_p25_watchdog_moved_chain();
     /* The last call's history, when it ended on a no-sync exit and the stream went on unbroken from there. */
     frame_sync_history_resume(&rt, state);
 

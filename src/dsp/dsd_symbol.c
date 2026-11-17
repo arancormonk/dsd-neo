@@ -68,6 +68,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/unflushed_retune.h"
 #include "dsd-neo/platform/sockets.h"
+#include "frame_sync_internal.h"
 #include "frame_sync_unflushed.h"
 #include "pcm_input_staging.h"
 #include "symbol_anchor_internal.h"
@@ -2643,7 +2644,7 @@ symbol_rtl_read_yielded(dsd_state* state) {
 static int
 symbol_rtl_read_idle_leaves(dsd_opts* opts, dsd_state* state) {
     /* A P25 watchdog beat's tick runs here, in place, as in a quiet PCM wait. */
-    (void)dsd_frame_sync_hook_p25_sm_watchdog_service(opts, state);
+    frame_sync_service_p25_watchdog_in_read(opts, state);
     if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()) {
         state->input_interrupted = 1;
         return 1;
@@ -3071,7 +3072,7 @@ symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* 
         }
         /* A P25 watchdog beat's tick runs here, in place: no sample is in flight (the hunt's next checkpoint starts its
            context over if the tick moved the chain). */
-        (void)dsd_frame_sync_hook_p25_sm_watchdog_service(opts, state);
+        frame_sync_service_p25_watchdog_in_read(opts, state);
         const uint64_t now_ms = dsd_realtime_mono_ms();
         if (!silent) {
             silent = 1;
