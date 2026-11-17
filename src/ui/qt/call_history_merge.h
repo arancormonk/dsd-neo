@@ -440,11 +440,12 @@ call_history_position_key_compare(const CallHistoryPositionKey& a, const CallHis
  * @brief Whether a fragment's GPS text and position replace the merged row's (issue #800, 2.7). They move together: the
  * text and the coordinates always come from one fragment.
  *
- * The fragment with the greatest key wins, whatever order the fragments arrive in. A keyed fragment beats one with no
+ * The fragment with the greatest key wins, whatever order the fragments arrive in, also when it is the same fragment
+ * read twice (a spill line replayed over the newer revision a save already holds). A keyed fragment beats one with no
  * key (a row an older build stored, a text-only GPS line, a ring of unknown run); between two with none, the newer
- * fragment wins (call_history_fold_adopts()), the rule every other field follows. Nothing never erases something, and
- * the same fragment read again (the same provenance and ordinal) takes what it says now: the core's text-only GPS write
- * drops the position it had.
+ * fragment wins (call_history_fold_adopts()), the rule every other field follows. Nothing never erases something. The
+ * one exception to the keys: the same fragment read again (the same provenance and ordinal) with no key takes what it
+ * says now, since the core's text-only GPS write drops the position it had and leaves nothing to order by.
  *
  * @param stored_known   The row holds GPS text or a position.
  * @param stored_key     Its key.
@@ -464,12 +465,12 @@ call_history_gps_adopts(bool stored_known, const CallHistoryPositionKey& stored_
         return true;
     }
     const int order = call_history_provenance_compare(incoming, stored);
-    if (order == 0 && incoming_key.ord == stored_key.ord) {
-        return true;
-    }
     if (stored_key.keyed && incoming_key.keyed) {
         const int keys = call_history_position_key_compare(incoming_key, stored_key);
         return keys > 0 || (keys == 0 && order >= 0);
+    }
+    if (order == 0 && incoming_key.ord == stored_key.ord && !incoming_key.keyed) {
+        return true;
     }
     if (stored_key.keyed != incoming_key.keyed) {
         return incoming_key.keyed;

@@ -15502,8 +15502,10 @@ Qt Quick frontend (`src/ui/qt`):
       fragment never enriches a named row, one naming another radio keeps its texts to itself, and the texts anonymous
       fragments gave are dropped when the row learns its radio. The reception scope folds by strength from any
       fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
-      greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
-      unkeyed ones follow provenance. The session ordinal is persisted per ring (`callHistory/sessionOrd/next` and
+      greatest `(session ordinal, rev)` wins, also for one fragment read twice (an older spill line replayed over a
+      saved newer revision keeps the newer), a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
+      unkeyed ones follow provenance; only the same fragment read again with no key (the core's text-only GPS write,
+      which drops the position) takes what it says now. The session ordinal is persisted per ring (`callHistory/sessionOrd/next` and
       `/rings`, the newest 64), given the first time a ring is read; the background tap takes a reserved block of
       1,024 (`kTapOrdinalBlock`, saved before it starts) and hands its ring map back at every stop, so a later run's
       fix wins whatever order the fragments are read in.

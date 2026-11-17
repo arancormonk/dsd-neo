@@ -5195,9 +5195,9 @@ stored_row_with(qulonglong tg, qulonglong src) {
     return QJsonObject();
 }
 
-/** Rewrite the stored rows and seen entries as the background tap's spill lines, and remove both stores. */
-void
-stores_to_spill(void) {
+/** The stored rows and seen entries as the background tap's spill lines. */
+QByteArray
+stores_as_spill_lines(void) {
     const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
     const QJsonArray seen = dsd_qt::json_store_load_array("call_history_seen.json");
     QByteArray bytes;
@@ -5222,10 +5222,23 @@ stores_to_spill(void) {
         line.insert(QLatin1String("row"), row);
         bytes += QJsonDocument(line).toJson(QJsonDocument::Compact) + '\n';
     }
-    QFile::remove(dsd_qt::json_store_path(QStringLiteral("call_history.json")));
-    QFile::remove(dsd_qt::json_store_path(QStringLiteral("call_history_seen.json")));
+    return bytes;
+}
+
+/** Write @p bytes as the spill the next model folds, beside whatever the stores hold. */
+void
+write_spill_beside_stores(const QByteArray& bytes) {
     QFile spill(dsd_qt::json_store_path(QStringLiteral("call_history_spill.jsonl")));
     expect("the spill is written", spill.open(QIODevice::WriteOnly) && spill.write(bytes) == bytes.size());
+}
+
+/** Rewrite the stored rows and seen entries as the background tap's spill lines, and remove both stores. */
+void
+stores_to_spill(void) {
+    const QByteArray bytes = stores_as_spill_lines();
+    QFile::remove(dsd_qt::json_store_path(QStringLiteral("call_history.json")));
+    QFile::remove(dsd_qt::json_store_path(QStringLiteral("call_history_seen.json")));
+    write_spill_beside_stores(bytes);
 }
 
 /* B2: a voice row keeps its GPS text and text message (the terminal and the API show them), a notice with both keeps
@@ -5338,6 +5351,44 @@ test_texts_and_position_survive_save_reload_and_spill(void) {
     const QJsonObject resaved = stored_row_with(80101U, 8101U);
     expect("B2 store: an impossible stored position loads as none",
            !resaved.contains(QLatin1String("pos")) && resaved.value(QLatin1String("gps")).toString().size() > 0);
+}
+
+/* 2.7: a spill line kept after a failed read replays an older revision of a fragment whose newer revision the save
+ * already holds (the same provenance and run): the newer revision stays, its text and its position together. */
+void
+test_spill_replay_keeps_newer_revision(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754702000;
+    QByteArray older;
+    {
+        CallHistoryModel model;
+        Event_History* call = ring.commit(0, 80201U, 8201U, when, when + 4);
+        with_gps(call, "GPS: 22.50000 45.00000", 225000000, 450000000, 5U);
+        model.refresh(ring.state);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        older = stores_as_spill_lines();
+        with_gps(call, "GPS: 22.60000 45.10000", 226000000, 451000000, 9U);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("2.7 replay: the newer revision reads in place",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: 22.60000 45.10000"));
+    } // destructor flushes the stores
+    expect("2.7 replay: the save holds revision 9",
+           stored_row_with(80201U, 8201U).value(QLatin1String("pos")).toObject().value(QLatin1String("rev")).toString()
+               == QStringLiteral("9"));
+    write_spill_beside_stores(older);
+    {
+        CallHistoryModel reloaded;
+        expect("2.7 replay: the older spill line does not replace the newer revision",
+               reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: 22.60000 45.10000"));
+        reloaded.startSaveForTest();
+        reloaded.waitForSaveForTest();
+    }
+    const QJsonObject pos = stored_row_with(80201U, 8201U).value(QLatin1String("pos")).toObject();
+    expect("2.7 replay: revision 9 stays stored", pos.value(QLatin1String("rev")).toString() == QStringLiteral("9")
+                                                      && pos.value(QLatin1String("lat")).toInt() == 226000000);
 }
 
 /* B2: a fragment gives the row its text and position only when it is the row's radio. An anonymous fragment's fix never
@@ -5828,6 +5879,7 @@ main(int argc, char** argv) {
     test_row_without_start_time_reads_unknown();
     test_voice_row_keeps_gps_and_message();
     test_texts_and_position_survive_save_reload_and_spill();
+    test_spill_replay_keeps_newer_revision();
     test_fragment_texts_follow_the_rows_radio();
     test_position_order_follows_runs_and_revs();
     test_callsign_callers_stay_apart();

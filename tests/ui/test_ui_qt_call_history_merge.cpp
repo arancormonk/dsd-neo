@@ -615,6 +615,14 @@ test_gps_fold_total_order(void) {
     const GpsFragment again = {"S", true, {false, 1, 0U}, {200, 1U, 0}};
     const GpsFragment* const sameFragment[1][2] = {{&a, &again}};
     expect("the same fragment read again takes its new text", fold_gps(sameFragment[0], 2)[0] == 'S', true);
+    // The same fragment's older revision read again (a spill line replayed over a newer save) keeps the newer one, in
+    // either order; its newer revision read again replaces the older.
+    const GpsFragment rev9 = {"9", true, {true, 1, 9U}, {200, 1U, 0}};
+    const GpsFragment rev5 = {"5", true, {true, 1, 5U}, {200, 1U, 0}};
+    const GpsFragment* const revisions[2][2] = {{&rev9, &rev5}, {&rev5, &rev9}};
+    for (const auto& perm : revisions) {
+        expect("the same fragment keeps its newest revision", fold_gps(perm, 2)[0] == '9', true);
+    }
 }
 
 void
