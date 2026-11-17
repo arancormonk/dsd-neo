@@ -772,8 +772,8 @@ CallHistoryModel::advanceSession() {
     m_session++;
     m_settings.setValue(QLatin1String(kSessionKey), m_session);
     /* A start usually brings a fresh ring, but not always: an embedding host can run again on the
-     * state its last run used (the Android service reuses it when a start races the previous run's
-     * stopSelfLatest()), and that ring keeps its identity, its rows and its push count. So a clear
+     * state its last run used (the Android service no longer does: it resets its objects for every
+     * configure, android/session_objects.h), and that ring keeps its identity, its rows and its push count. So a clear
      * that names its ring is kept. It goes on covering that ring's cleared rows if the state was
      * reused, and the first read of any other ring drops it (settleClear()). A pending clear, or one
      * that names no ring, would bind to whatever ring comes next and could hide a fresh ring's first
