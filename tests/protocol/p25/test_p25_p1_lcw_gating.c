@@ -467,6 +467,28 @@ test_group_voice_user_parity(int mfid) {
     return rc;
 }
 
+/* The identity a voice-user link control names reaches the trunk state machine as checked only when the link control was
+   hard-decoded (spec 2.20); one a soft-erasure RS retry recovered leaves it unchecked. */
+static int
+test_voice_user_identity_checked_follows_hard_decode(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    int rc = 0;
+
+    for (int soft = 0; soft < 2; soft++) {
+        rc |= expect_eq_int("identity fixture", init_retained_p1_call(&opts, &state, LCGRGR_SG, LCGRGR_SRC), 1);
+        build_group_voice_user_lcw(lcw, 0x00, 0x00, LCGRGR_SG, LCGRGR_SRC + 1);
+        state.p25_p1_lcw_soft = (uint8_t)soft;
+        p25_lcw(&opts, &state, lcw, 0);
+        state.p25_p1_lcw_soft = 0U;
+        rc |= expect_eq_int(soft ? "soft LC leaves the identity unchecked" : "hard LC checks the identity",
+                            p25_sm_get_ctx()->slots[0].published.checked, soft ? 0 : P25_SM_IDENTITY_CHECKED_ALL);
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
 /* Preservation: KEY=0 on the active patch is a clear classification, so an encrypted LCGRGR keeps the gate open. */
 static int
 test_lcgrgr_key0_keeps_clear_gate(void) {
@@ -695,6 +717,7 @@ main(void) {
     rc |= test_rejected_lcw_stops_post_processing(0x00, 0x90);
     rc |= test_group_voice_user_parity(0x00);
     rc |= test_group_voice_user_parity(0x90);
+    rc |= test_voice_user_identity_checked_follows_hard_decode();
     rc |= test_lcgrgr_key0_keeps_clear_gate();
     rc |= test_lcgrgr_from_tdulc_records_without_voice_start();
 

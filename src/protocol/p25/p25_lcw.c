@@ -199,12 +199,13 @@ p25_lcw_note_checked_identity(p25_lcw_ctx* ctx, uint32_t target, uint32_t source
     id->group = group;
 }
 
-/* A link control is dispatched only after its RS decode succeeded (LDU1, TDULC): the identity it names reaches the
- * trunk state machine as checked (spec 2.19). */
+/* A link control reaches the trunk state machine with its identity checked only when it was hard-decoded (spec 2.20); a
+ * soft-erasure retry also succeeds, but its identity stays unchecked. The identity it names reaches the
+ * trunk state machine with the verdict of that decode (spec 2.19). */
 static int
 p25_lcw_emit_voice_user(p25_lcw_ctx* ctx, int tg, int dst, uint32_t source, int is_group) {
     p25_sm_event_t ev = p25_sm_ev_active_call(0, tg, dst, (int)source, is_group, ctx->lc_svcopt);
-    ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
+    ev.identity_checked = ctx->lc_hard ? P25_SM_IDENTITY_CHECKED_ALL : 0U;
     return p25_sm_emit_voice_start(ctx->opts, ctx->state, &ev);
 }
 
@@ -461,7 +462,8 @@ p25_lcw_handle_format_44_trunking(p25_lcw_ctx* ctx, uint16_t channel, uint16_t g
     if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->trunk_tune_group_calls == 1
         && !p25_lcw_format_44_hold_blocks_grant(ctx, group)) {
         p25_sm_event_t ev = p25_sm_ev_group_grant_update(channel, 0, group, 0, ctx->lc_svcopt);
-        ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the RS-decoded link control's own fields
+        ev.identity_checked =
+            ctx->lc_hard ? P25_SM_IDENTITY_CHECKED_ALL : 0U; // the RS-decoded link control's own fields
         p25_sm_event(p25_sm_get_ctx(), ctx->opts, ctx->state, &ev);
     }
 }
