@@ -1939,19 +1939,21 @@ fold_payload(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
 }
 
 /**
- * @brief Fill what @p existing does not know of its raw identity from @p row (issue #800): the sync type, the sender and
- * reception systems, the target text, and the source text when the source ID agrees (a row keeps its radio). Known
- * values stay: a merge joins only rows whose known ones agree (rows_identity_compatible()).
+ * @brief Fill what @p existing does not know of its raw identity from @p row (issue #800): the sync type, the target
+ * text, the source text when the source ID agrees (a row keeps its radio), and the sender and reception systems when
+ * @p row names them more strongly (call_history_scope_strength()). Other known values stay: a merge joins only rows
+ * whose known ones agree (rows_identity_compatible()).
  */
 void
 fill_identity(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
     if (call_history_protocol_family(existing.protocol) < 0) {
         existing.protocol = row.protocol;
     }
-    if (!call_history_scope_known(existing.sourceScope)) {
+    // The stronger identity of the two the merge found compatible: a trunked call's NAC gives way to its system.
+    if (call_history_scope_strength(row.sourceScope) > call_history_scope_strength(existing.sourceScope)) {
         existing.sourceScope = row.sourceScope;
     }
-    if (!call_history_scope_known(existing.rxScope)) {
+    if (call_history_scope_strength(row.rxScope) > call_history_scope_strength(existing.rxScope)) {
         existing.rxScope = row.rxScope;
     }
     if (existing.targetText.simplified().isEmpty()) {

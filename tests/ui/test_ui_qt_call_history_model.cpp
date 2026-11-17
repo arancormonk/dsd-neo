@@ -5599,6 +5599,49 @@ test_system_identity_splits_conventional_systems(void) {
     expect("B5: a row with no recorded system merges as before", upgraded.count() == 1);
 }
 
+/* B5 ruling: a weaker identity joins a stronger one of the same family. A trunked P25 call whose first fragment knew
+ * only the NAC (each voice channel its own discriminator) joins the fragments that learned the WACN and SYSID, in either
+ * order, and the row keeps the full scope; two full scopes that differ stay two calls. */
+void
+test_weaker_identity_joins_stronger(void) {
+    const time_t when = 1754706500;
+    for (int fullFirst = 0; fullFirst < 2; fullFirst++) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            const uint8_t kinds[3] = {
+                fullFirst != 0 ? static_cast<uint8_t>(DSD_POS_SCOPE_P25) : static_cast<uint8_t>(DSD_POS_SCOPE_P25_NAC),
+                fullFirst != 0 ? static_cast<uint8_t>(DSD_POS_SCOPE_P25_NAC) : static_cast<uint8_t>(DSD_POS_SCOPE_P25),
+                DSD_POS_SCOPE_P25_NAC};
+            for (int i = 0; i < 3; i++) {
+                Event_History* item = ring.commit(0, 80611U, 8611U, when + 5 * i, when + 5 * i + 3);
+                const bool full = kinds[i] == DSD_POS_SCOPE_P25;
+                with_rx(item, kinds[i], full ? 0xBEE00U : 0x293U, full ? 0x1A3U : 0U, full ? 0 : 851000000 + 12500 * i);
+                item->freq_hz = 851000000 + 12500 * i;
+                model.refresh(ring.state);
+            }
+            expect(fullFirst != 0 ? "B5: a full scope then NAC fragments are one call"
+                                  : "B5: NAC fragments and the full scope are one call",
+                   model.count() == 1);
+        } // destructor flushes the stores
+        const QJsonObject rx = stored_row_with(80611U, 8611U).value(QLatin1String("rx")).toObject();
+        expect("B5: the merged row keeps the full scope", rx.value(QLatin1String("k")).toInt() == DSD_POS_SCOPE_P25
+                                                              && rx.value(QLatin1String("b")).toInt() == 0x1A3);
+        CallHistoryModel reloaded;
+        expect("B5: the merged call stays one after a reload", reloaded.count() == 1);
+    }
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    for (int i = 0; i < 2; i++) {
+        with_rx(ring.commit(0, 80612U, 8612U, when + 5 * i, when + 5 * i + 3), DSD_POS_SCOPE_P25, 0xBEE00U,
+                i == 0 ? 0x1A3U : 0x1A4U, 0);
+    }
+    model.refresh(ring.state);
+    expect("B5: two full P25 scopes that differ are two calls", model.count() == 2);
+}
+
 /* A notice decoded again is the logged one only when it is the same fix: the same text with another position is another
  * delivery. The rev and the process of a decode in a fresh ring differ and do not count. */
 void
@@ -5766,6 +5809,7 @@ main(int argc, char** argv) {
     test_callsign_callers_stay_apart();
     test_textual_destinations_under_one_service_stay_apart();
     test_system_identity_splits_conventional_systems();
+    test_weaker_identity_joins_stronger();
     test_repeated_notice_compares_the_fix();
 
     QDir(dataDir).removeRecursively();

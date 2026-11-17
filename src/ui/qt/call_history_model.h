@@ -575,7 +575,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         /* Issue #800. The row's raw identity, beside the display labels above: the sync type it was decoded from
          * (Event_History::systype; -1 when not known), the source and target text as received (src_str, tgt_str:
          * callsigns, dial strings), the sender's system (pos.scope with its discriminator) and where it was heard
-         * (rx_scope, once resolved). A merge never joins two known values that differ (rows_mergeable()), and a
+         * (rx_scope, once resolved). A merge never joins two that differ (rows_mergeable(); systems only when known at
+         * one strength, call_history_scopes_compatible(), and the row keeps the stronger), and a
          * fragment gives the row its text and position only when its identity agrees (fragment_identity_compatible()).
          * Persisted (`proto`, `srcText`, `tgtText`, `sscope`, `rx`) when known; rows older builds stored know none. */
         int protocol = -1;

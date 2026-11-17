@@ -647,6 +647,28 @@ test_identity_compatibility(void) {
     expect("one system is compatible with itself", call_history_scopes_compatible(tuned1, tuned1), true);
     expect("two tuned frequencies are two systems", call_history_scopes_compatible(tuned1, tuned2), false);
     expect("one NAC on two frequencies is two systems", call_history_scopes_compatible(nac1, nac2), false);
+    CallHistoryScope p25;
+    p25.kind = DSD_POS_SCOPE_P25;
+    p25.a = 0xBEE00U;
+    p25.b = 0x1A3U;
+    CallHistoryScope otherP25 = p25;
+    otherP25.b = 0x1A4U;
+    CallHistoryScope capPlus;
+    capPlus.kind = DSD_POS_SCOPE_DMR;
+    capPlus.a = (static_cast<uint32_t>(DSD_RXID_DMR_TRUNK_CAPACITY_PLUS) << 8);
+    capPlus.b = 0x105U;
+    CallHistoryScope tier3;
+    tier3.kind = DSD_POS_SCOPE_DMR;
+    tier3.a = (static_cast<uint32_t>(DSD_RXID_DMR_TRUNK_TIER3) << 8) | 1U;
+    tier3.b = 0x22U;
+    expect("a NAC joins its system's full scope", call_history_scopes_compatible(nac1, p25), true);
+    expect("a full scope joins a NAC", call_history_scopes_compatible(p25, nac2), true);
+    expect("a tuned frequency joins a full scope", call_history_scopes_compatible(tuned1, p25), true);
+    expect("two full P25 scopes that differ are two systems", call_history_scopes_compatible(p25, otherP25), false);
+    expect("a NAC is no DMR system", call_history_scopes_compatible(nac1, tier3), false);
+    expect("Capacity Plus is a weak DMR scope", dsd_qt::call_history_scope_strength(capPlus) == 2, true);
+    expect("a Tier III network is a full DMR scope", dsd_qt::call_history_scope_strength(tier3) == 3, true);
+    expect("a weak DMR scope joins a full one", call_history_scopes_compatible(capPlus, tier3), true);
 }
 
 void

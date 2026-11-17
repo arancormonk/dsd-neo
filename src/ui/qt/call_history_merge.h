@@ -323,15 +323,59 @@ call_history_scope_known(const CallHistoryScope& scope) {
 }
 
 /**
- * @brief Whether two identities may be one system: equal, or either not known.
+ * @brief How strongly an identity names a system (issue #800, B5): 0 none; 1 a feed-only fallback (the control
+ *        channel's or the tuned frequency); 2 a weak scope that is not unique (a conventional P25 NAC with its tuned
+ *        frequency, a Capacity Plus site and colour code, an EDACS site or system); 3 a full system scope (P25 WACN and
+ *        SYSID, a Tier III or Connect Plus network, NXDN, TETRA).
+ */
+inline int
+call_history_scope_strength(const CallHistoryScope& scope) {
+    switch (scope.kind) {
+        case DSD_POS_SCOPE_NONE: return 0;
+        case DSD_POS_SCOPE_FEED_CC_FREQ:
+        case DSD_POS_SCOPE_FEED_TUNED_FREQ: return 1;
+        case DSD_POS_SCOPE_P25_NAC:
+        case DSD_POS_SCOPE_FEED_EDACS: return 2;
+        case DSD_POS_SCOPE_DMR:
+            // a = (dsd_rxid_dmr_trunk << 8) | Tier III model (<dsd-neo/core/alias_learn.h>).
+            return (scope.a >> 8) == static_cast<uint32_t>(DSD_RXID_DMR_TRUNK_CAPACITY_PLUS) ? 2 : 3;
+        default: return 3;
+    }
+}
+
+/** @brief The system family an identity belongs to: P25 for both P25 kinds; 0 for a feed-only fallback, which any
+ *         family can have. */
+inline int
+call_history_scope_family(const CallHistoryScope& scope) {
+    if (call_history_scope_strength(scope) <= 1) {
+        return 0;
+    }
+    return scope.kind == static_cast<uint8_t>(DSD_POS_SCOPE_P25_NAC) ? static_cast<int>(DSD_POS_SCOPE_P25)
+                                                                     : static_cast<int>(scope.kind);
+}
+
+/**
+ * @brief Whether two identities may be one system (issue #800, B5).
  *
- * A row with no recorded identity (one an older build stored, a protocol that has none, a reception read before any
- * was known) is compatible with any, which keeps the merge it always had (issue #800, B5).
+ * Only two identities known at the same strength (call_history_scope_strength()) that differ are two systems: two
+ * conventional DMR systems on two frequencies, two conventional P25 channels of one NAC. A weaker identity is
+ * compatible with a stronger one of the same family, so a trunked call whose first fragment knew only the NAC still
+ * joins the fragment that learned the WACN and SYSID. A row with no recorded identity (one an older build stored, a
+ * protocol that has none) is compatible with any, which keeps the merge it always had.
  */
 inline bool
 call_history_scopes_compatible(const CallHistoryScope& x, const CallHistoryScope& y) {
-    return !call_history_scope_known(x) || !call_history_scope_known(y)
-           || (x.kind == y.kind && x.a == y.a && x.b == y.b && x.freqHz == y.freqHz);
+    const int sx = call_history_scope_strength(x);
+    const int sy = call_history_scope_strength(y);
+    if (sx == 0 || sy == 0) {
+        return true;
+    }
+    if (sx == sy) {
+        return x.kind == y.kind && x.a == y.a && x.b == y.b && x.freqHz == y.freqHz;
+    }
+    const int fx = call_history_scope_family(x);
+    const int fy = call_history_scope_family(y);
+    return fx == 0 || fy == 0 || fx == fy;
 }
 
 /**
