@@ -23,6 +23,8 @@
 extern "C" {
 #endif
 
+struct dsd_event_closing_call;
+
 /** Decode an LCW carried by an active-call data unit such as LDU1. */
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
 
@@ -30,9 +32,13 @@ void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrec
  * Decode an LCW carried by a TDULC terminator.
  *
  * Voice-user metadata is retained, but cannot emit a new voice-start event
- * after the terminator has ended the current transmission.
+ * after the terminator has ended the current transmission. @p closing is the
+ * call the terminator ended, captured (dsd_event_capture_closing_call()) just
+ * before it did: a GPS link control in the terminator belongs to that call
+ * (issue #800, spec N2). NULL when none was captured.
  */
-void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
+void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
+                        const struct dsd_event_closing_call* closing);
 
 #ifdef __cplusplus
 }

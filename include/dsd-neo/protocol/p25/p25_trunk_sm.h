@@ -85,6 +85,31 @@ typedef enum {
 } p25_sm_grant_provenance_e;
 
 /* ============================================================================
+ * Identity provenance (issue #800, spec 2.19)
+ * ============================================================================ */
+
+/* Which identity fields came from content whose own check passed: the source, the target (talkgroup or destination)
+ * and the kind (group or private). A field keeps the bit of the message that set it, also when a later message
+ * inherits it; anything never set, released or reset is unchecked (0). */
+enum {
+    P25_SM_IDENTITY_CHECKED_SOURCE = 0x01,
+    P25_SM_IDENTITY_CHECKED_TARGET = 0x02,
+    P25_SM_IDENTITY_CHECKED_KIND = 0x04,
+    P25_SM_IDENTITY_CHECKED_ALL = 0x07,
+};
+
+/* The identity the state machine last published for a slot's canonical call, and which of its fields are checked. */
+typedef struct {
+    uint64_t epoch;   // Canonical call epoch the identity was published under; 0 = none
+    uint32_t source;  // Source RID, 0 = none
+    uint32_t target;  // Talkgroup (group) or destination RID (private)
+    uint8_t kind;     // dsd_call_kind of the published call
+    uint8_t is_group; // 1 when target is a talkgroup
+    uint8_t checked;  // P25_SM_IDENTITY_CHECKED_* bits
+    uint8_t reserved;
+} p25_sm_published_identity;
+
+/* ============================================================================
  * Events
  * ============================================================================ */
 
@@ -127,6 +152,10 @@ typedef struct {
     uint32_t grant_seq;                                // IDLE: the slot's grant_seq when the IDLE was observed
     int grant_seq_valid;                               // 1 when grant_seq is set
     int preempt_only; // GRANT announced on a voice channel for another carrier: considered only as a preemption
+    // P25_SM_IDENTITY_CHECKED_* bits for src, tg/dst and is_group: which of them came from a message whose own check
+    // the producer ran and saw pass. Unchecked (0) unless the producer sets it; the builders below never do. A Phase 2
+    // MAC_SIGNAL whose CRC failed (-F) leaves it 0 and is still followed, as documented for -F.
+    uint8_t identity_checked;
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -206,6 +235,8 @@ typedef struct {
     double last_enc_suppress_m; // Monotonic timestamp of the last enc-lockout suppression action on this slot.
                                 // The suppressed transmission occupies the carrier with no assignment, epoch,
                                 // or audio trace, so this is the only evidence of it that survives the teardown.
+    uint8_t identity_checked;   // P25_SM_IDENTITY_CHECKED_* bits for src, ota_tg/dst and is_group (assignment)
+    p25_sm_published_identity published; // Identity last published for this slot's canonical call
 } p25_sm_slot_ctx_t;
 
 typedef struct {
@@ -661,6 +692,20 @@ int p25_sm_slot_grant_since(int slot, uint32_t grant_seq);
 uint32_t p25_sm_slot_grant_seq(int slot);
 
 /**
+ * @brief The checked identity of a slot's ACTIVE canonical call (issue #800, spec 2.19).
+ *
+ * The identity counts only while the slot's canonical call is ACTIVE, is the epoch the state machine last published
+ * an identity for, still has that identity's source, target and kind, all three came from checked content (a field
+ * inherited from an earlier assignment keeps that assignment's verdict), and it names a source.
+ *
+ * @param state Decoder state (canonical call state).
+ * @param slot Slot index (0 or 1).
+ * @param[out] out The published identity; zeroed when none counts.
+ * @return 1 when the call's source, target and kind are checked provenance, 0 otherwise.
+ */
+int p25_sm_checked_call_identity(const dsd_state* state, int slot, p25_sm_published_identity* out);
+
+/**
  * @brief Check whether a voice-user observation re-describes a call that just ended.
  *
  * After an accepted MAC_END_PTT the FNE keeps describing the completed call
@@ -729,7 +774,8 @@ int p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot);
  * The state machine reopens the call epoch from the retained carrier
  * assignment, re-evaluates policy/crypto, and never invokes the tuner for an
  * accepted identity on the current carrier. Trunk-follow mode rejects the
- * event when no traffic-channel assignment is active.
+ * event when no traffic-channel assignment is active. The identity is
+ * unchecked provenance; see p25_sm_emit_voice_start().
  * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
  */
 int p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
@@ -745,9 +791,19 @@ int p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int
 int p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
+ * @brief Emit a voice start the caller built: a P25_SM_EV_PTT or P25_SM_EV_ACTIVE event, with or without an in-band
+ *        identity, whose p25_sm_event_t.identity_checked the caller set from the check it ran on the message.
+ *
+ * Decoders use this form. The convenience emitters below publish their identity as unchecked (spec 2.19).
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
+ */
+int p25_sm_emit_voice_start(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
+
+/**
  * @brief Emit an ACTIVE event carrying an authoritative in-band call identity.
  *
- * Trunk-follow mode rejects the event when no traffic-channel assignment is active.
+ * Trunk-follow mode rejects the event when no traffic-channel assignment is active. The identity is unchecked
+ * provenance; see p25_sm_emit_voice_start().
  * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
  */
 int p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
@@ -772,7 +828,8 @@ int64_t p25_conventional_grant_frequency(const dsd_state* state, int slot, uint3
  * @brief Emit an ACTIVE call whose message type carries no source field.
  *
  * See p25_sm_ev_active_call_source_absent(): the voice start must not inherit
- * the preceding assignment's talker for these calls.
+ * the preceding assignment's talker for these calls. The identity is
+ * unchecked provenance; see p25_sm_emit_voice_start().
  */
 int p25_sm_emit_active_call_source_absent(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int is_group,
                                           int svc_bits);

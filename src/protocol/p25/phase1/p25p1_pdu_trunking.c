@@ -244,6 +244,7 @@ p25p1_pdu_dispatch_group_grant(dsd_opts* opts, dsd_state* state, int channel, in
         p25_sm_event_t ev = provenance == P25_SM_GRANT_PROVENANCE_UPDATE
                                 ? p25_sm_ev_group_grant_update(channel, 0, group, src, svc_bits)
                                 : p25_sm_ev_group_grant(channel, 0, group, src, svc_bits);
+        ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the MBT passed its CRCs (p25p1_mdpu.c)
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     } else {
         p25_sm_apply_group_grant_policy(opts, state, channel, svc_bits, group, src);
@@ -581,6 +582,7 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
     if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
         p25_sm_event_t ev = opcode == 0x06 ? p25_sm_ev_indiv_grant_update(channelt, 0, (int)target, (int)source, svc)
                                            : p25_sm_ev_indiv_grant(channelt, 0, (int)target, (int)source, svc);
+        ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the MBT passed its CRCs (p25p1_mdpu.c)
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
@@ -731,6 +733,7 @@ p25_handle_mbt_individual_data_channel_grant(dsd_opts* opts, dsd_state* state, c
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
         p25_sm_event_t ev = p25_sm_ev_indiv_data_grant(channelt, 0, (int)target, (int)source, svc);
+        ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the MBT passed its CRCs (p25p1_mdpu.c)
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
@@ -754,6 +757,7 @@ p25_handle_mbt_group_data_channel_grant(dsd_opts* opts, dsd_state* state, const 
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
         p25_sm_event_t ev = p25_sm_ev_group_data_grant(channelt, 0, (int)group, (int)source, svc);
+        ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the MBT passed its CRCs (p25p1_mdpu.c)
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
@@ -832,6 +836,7 @@ p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, co
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
         p25_sm_event_t ev = (opcode & 1) ? p25_sm_ev_indiv_grant_update(channel, 0, (int)target, 0, svc)
                                          : p25_sm_ev_indiv_grant(channel, 0, (int)target, 0, svc);
+        ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the MBT passed its CRCs (p25p1_mdpu.c)
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 

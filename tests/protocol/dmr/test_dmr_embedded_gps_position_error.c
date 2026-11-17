@@ -252,25 +252,23 @@ test_packed_nmea_formats(const dsd_opts* opts, dsd_state* st) {
     }
 
     {
-        uint8_t bits[160];
-        DSD_MEMSET(bits, 0, sizeof bits);
-        set_bits_msb(bits, (int)sizeof bits, 0, 0x2AA4U, 16);
-        set_bits_msb(bits, (int)sizeof bits, 40, 5000U, 16);
-        bits[56] = 1U; // negative latitude
-        set_bits_msb(bits, (int)sizeof bits, 57, 30U, 7);
-        set_bits_msb(bits, (int)sizeof bits, 64, 41U, 8);
-        set_bits_msb(bits, (int)sizeof bits, 72, 2500U, 16);
-        bits[88] = 1U; // negative longitude
-        set_bits_msb(bits, (int)sizeof bits, 89, 15U, 7);
-        set_bits_msb(bits, (int)sizeof bits, 96, 87U, 8);
-        set_bits_msb(bits, (int)sizeof bits, 104, 3661U, 16);
-        set_bits_msb(bits, (int)sizeof bits, 135, 270U, 9);
+        // L3Harris GPS update body (TIA-102.AABF-D-1 §7.3.35-36): 41°30.5000' S (0x9E = south, 30 minutes),
+        // 87°15.2500' W (0x8F = west, 15 minutes), 01:01:01 UTC, heading 270.0 degrees (0x0A8C tenths), quality %01.
+        const uint8_t bits[DSD_HARRIS_GPS_BODY_OCTETS] = {0x13, 0x88, 0x9E, 41U,  0x09, 0xC4, 0x8F,
+                                                          87U,  0x0E, 0x4D, 0x8C, 0x00, 0x0A, 0x10};
+        dsd_gps_report_ctx ctx = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = 1U,
+            .source_id = 900002U,
+            .source_verified = 1U,
+            .pos_verified = 1U,
+        };
 
         DSD_MEMSET(st->dmr_embedded_gps[1], 0, sizeof st->dmr_embedded_gps[1]);
         DSD_MEMSET(st->event_history_s[1].Event_History_Items[0].gps_s, 0,
                    sizeof st->event_history_s[1].Event_History_Items[0].gps_s);
         st->event_history_s[1].Event_History_Items[0].source_id = 900002U;
-        nmea_harris(opts, st, bits, 900002U, 2);
+        (void)nmea_harris(opts, st, bits, &ctx);
 
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "-41.508333", "harris-nmea-lat");
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "-87.254167", "harris-nmea-lon");
@@ -281,7 +279,8 @@ test_packed_nmea_formats(const dsd_opts* opts, dsd_state* st) {
         DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
                      sizeof st->event_history_s[1].Event_History_Items[0].gps_s, "%s", "existing call GPS");
         const uint64_t revision = st->event_history_s[1].revision;
-        nmea_harris(opts, st, bits, 900003U, 2);
+        ctx.source_id = 900003U;
+        (void)nmea_harris(opts, st, bits, &ctx);
         rc |= expect_i("harris-mismatched-source-preserves-gps",
                        strcmp(st->event_history_s[1].Event_History_Items[0].gps_s, "existing call GPS"), 0);
         rc |= expect_i("harris-mismatched-source-preserves-revision", st->event_history_s[1].revision == revision, 1);
@@ -289,7 +288,7 @@ test_packed_nmea_formats(const dsd_opts* opts, dsd_state* st) {
         (void)dsd_call_state_end(st, 1U, 0.0);
         st->event_history_s[1].Event_History_Items[0].gps_s[0] = '\0';
         const uint64_t ownerless_revision = st->event_history_s[1].revision;
-        nmea_harris(opts, st, bits, 900003U, 2);
+        (void)nmea_harris(opts, st, bits, &ctx);
         rc |= expect_i("ownerless-harris-does-not-stage-gps", st->event_history_s[1].Event_History_Items[0].gps_s[0],
                        '\0');
         rc |= expect_i("ownerless-harris-preserves-revision", st->event_history_s[1].revision == ownerless_revision, 1);
@@ -350,17 +349,25 @@ test_lip_and_vendor_gps(const dsd_opts* opts, dsd_state* st) {
         DSD_MEMSET(st->event_history_s[1].Event_History_Items[0].gps_s, 0,
                    sizeof st->event_history_s[1].Event_History_Items[0].gps_s);
         bits[1] = 1U;  // res_a
-        bits[23] = 1U; // expired/last fix
+        bits[23] = 1U; // no documented meaning: not read as "last fix"
         bits[24] = 1U; // negative latitude
         set_bits_msb(bits, (int)sizeof bits, 25, 0x200000U, 23);
         bits[48] = 1U; // west longitude encoding
         set_bits_msb(bits, (int)sizeof bits, 49, 0x300000U, 23);
 
-        apx_embedded_gps(opts, st, bits);
+        const dsd_gps_report_ctx ctx = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = 1U,
+            .source_id = 0x102030U,
+            .source_verified = 1U,
+            .pos_verified = 1U,
+        };
+        (void)apx_embedded_gps(opts, st, bits, &ctx);
 
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "GPS:", "apx-gps-string");
-        rc |= expect_has_substr(st->dmr_embedded_gps[1], "Last Fix", "apx-expired");
-        rc |= expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "Last Fix", "apx-event");
+        rc |= expect_i("apx-no-last-fix-reading", strstr(st->dmr_embedded_gps[1], "Last Fix") == NULL, 1);
+        rc |= expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "(-22.500003, -112.499992)",
+                                "apx-event");
     }
 
     return rc;

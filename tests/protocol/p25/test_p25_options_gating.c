@@ -8,6 +8,7 @@
  * Ensures trunk_tune_group_calls / trunk_tune_private_calls disable tuning.
  */
 
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -82,14 +83,14 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     (void)input;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const dsd_gps_report_ctx* ctx) {
     (void)opts;
     (void)state;
-    (void)input;
-    (void)src;
-    (void)slot;
+    (void)body;
+    (void)ctx;
+    return 0;
 }
 
 static int

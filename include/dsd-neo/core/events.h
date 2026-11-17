@@ -351,7 +351,7 @@ int dsd_event_enrich_position(dsd_state* state, uint8_t slot, uint64_t epoch, co
 
 /** A call captured just before it ends, for detail decoded after the end in the same message (spec N2: a P25 Phase 1
  * TDULC ends the call before it dispatches its own link control). */
-typedef struct {
+typedef struct dsd_event_closing_call {
     uint64_t epoch;     /**< the call's epoch; 0 when nothing was captured */
     uint64_t source_id; /**< the call's dsd_call_snapshot::ota_source_id when captured; 0 = none */
     int protocol;       /**< the call's DSD_SYNC_* value */

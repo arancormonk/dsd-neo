@@ -9,6 +9,7 @@
  * when provenance (WACN/SYSID and, if present, RFSS/SITE) matches current site.
  */
 
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <stdint.h>
@@ -60,14 +61,14 @@ l3h_embedded_alias_decode(dsd_opts* o, dsd_state* s, uint8_t slot, int16_t len, 
     (void)in;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_harris(dsd_opts* o, dsd_state* s, uint8_t* in, uint32_t src, int slot) {
-    (void)o;
-    (void)s;
-    (void)in;
-    (void)src;
-    (void)slot;
+nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const dsd_gps_report_ctx* ctx) {
+    (void)opts;
+    (void)state;
+    (void)body;
+    (void)ctx;
+    return 0;
 }
 
 int

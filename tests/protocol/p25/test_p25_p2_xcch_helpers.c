@@ -60,6 +60,7 @@ static int g_active_src[2];
 static int g_active_is_group[2];
 static int g_active_svc[2];
 static int g_active_source_absent[2];
+static int g_voice_start_unchecked; /* voice starts the decoder emitted without all three identity verdicts */
 static int g_voice_identity_result;
 static struct p25p2_mac_voice_identity g_voice_identity;
 static int g_end_count[2];
@@ -273,6 +274,27 @@ p25_sm_emit_ptt_call_metadata(dsd_opts* opts, dsd_state* state, int slot, int tg
     }
     g_ptt_metadata_count++;
     return p25_sm_emit_ptt_call(opts, state, slot, tg, dst, src, is_group, svc_bits);
+}
+
+/* The decoder's voice-start entry: routed to the stubs above by event type, recording the identity verdicts. */
+int
+p25_sm_emit_voice_start(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    if (ev->identity_valid && ev->identity_checked != P25_SM_IDENTITY_CHECKED_ALL) {
+        g_voice_start_unchecked++;
+    }
+    if (ev->type == P25_SM_EV_PTT) {
+        return p25_sm_emit_ptt_call_metadata(opts, state, ev->slot, ev->tg, ev->dst, ev->src, ev->is_group,
+                                             ev->svc_bits, ev->ptt_signature_valid ? ev->ptt_signature : NULL,
+                                             ev->observed_m, ev->facch);
+    }
+    if (!ev->identity_valid) {
+        return p25_sm_emit_active(opts, state, ev->slot);
+    }
+    if (ev->source_absent) {
+        return p25_sm_emit_active_call_source_absent(opts, state, ev->slot, ev->tg, ev->dst, ev->is_group,
+                                                     ev->svc_bits);
+    }
+    return p25_sm_emit_active_call(opts, state, ev->slot, ev->tg, ev->dst, ev->src, ev->is_group, ev->svc_bits);
 }
 
 void
@@ -1011,6 +1033,7 @@ test_ptt_signature_transport_equivalence_and_repeat_processing(void) {
     process_FACCH_MAC_PDU(&opts, &state, facch_payload);
 
     rc |= expect_int("all PTT copies emitted", g_ptt_metadata_count, 4);
+    rc |= expect_int("PTT copies emitted as checked identities", g_voice_start_unchecked, 0);
     for (int i = 0; i < 4; i++) {
         char label[64];
         DSD_SNPRINTF(label, sizeof(label), "PTT signature copy %d", i);

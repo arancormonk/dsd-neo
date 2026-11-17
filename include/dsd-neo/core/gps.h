@@ -25,6 +25,35 @@ extern "C" {
 
 struct dsd_position_fix;
 struct dsd_position_origin;
+struct dsd_event_closing_call;
+
+/** Octets in an L3Harris GPS update body: Part A octets 2-8, then Part B octets 2-8 (TIA-102.AABF-D-1 §7.3.35-36). */
+#define DSD_HARRIS_GPS_BODY_OCTETS 14
+
+/**
+ * Where a P25 link-control or MAC GPS report came from and which checks it passed (issue #800). The decoder admits
+ * the report with these verdicts (dsd_position_admit()); nothing reaches `-L`, history or the feed without
+ * @c pos_verified, and the source, target and group flag only with @c source_verified.
+ */
+typedef struct dsd_gps_report_ctx {
+    /** The reception captured with the report's first fragment (L3Harris Part A); NULL for a single message, which
+     * takes the current reception. */
+    const struct dsd_position_origin* origin;
+    /** The call the message carrying the report has just ended, captured before it did (dsd_event_capture_closing_call();
+     * a P25 Phase 1 TDULC, spec N2): when valid, the history row is written through
+     * dsd_event_enrich_position_closing(). NULL otherwise (Phase 2). */
+    const struct dsd_event_closing_call* closing;
+    /** The call the report belongs to: its epoch (dsd_call_snapshot::epoch); 0 enriches the slot's ACTIVE call, if
+     * any. Ignored when @c closing is valid. */
+    uint64_t call_epoch;
+    uint32_t source_id;      /**< the call's source; 0 = none */
+    uint32_t target_id;      /**< the call's target; 0 = none */
+    int protocol;            /**< DSD_SYNC_* of the carrier */
+    uint8_t slot;            /**< lane: 0 or 1 */
+    uint8_t pos_verified;    /**< 1 when the message's own check passed (hard RS decode, MAC CRC, whole segment) */
+    uint8_t source_verified; /**< 1 when source, target and group flag came from checked provenance */
+    uint8_t target_group;    /**< 1 when @c target_id is a talkgroup */
+} dsd_gps_report_ctx;
 
 /**
  * @brief A LIP short location report (ETSI TS 100 392-18-1 V1.7.2 Table 6.1), decoded and range-checked into the
@@ -85,7 +114,11 @@ void lip_write_location_row(const dsd_opts* opts, const struct dsd_position_fix*
  * (dsd_state::dmr_lc_checked_transmission / dmr_lc_checked_source); otherwise the report is unattributed.
  */
 void dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]);
-void apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]);
+/**
+ * Motorola MFID $90 LCO $06 embedded GPS (layout from one non-official source: FORMAT_PROVISIONAL, D12).
+ * @return the dsd_position_admit() result (0 when nothing was admitted).
+ */
+int apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[], const dsd_gps_report_ctx* ctx);
 /**
  * @brief A DMR USBD LIP Poll Response (TS 102 361-4 Table 6.79): the caller runs it only for an inbound burst (the
  * MS-sourced data sync) and inside the burst's event_crc_invalid scope, whose verdict decides whether the position was
@@ -134,7 +167,15 @@ uint8_t nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint
  */
 void nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t input_bits, uint32_t src,
                      const struct dsd_position_origin* origin);
-void nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32_t src, int slot);
+/**
+ * L3Harris GPS update (TIA-102.AABF-D-1 §7.3.35-36), Phase 1 link control or Phase 2 MAC.
+ *
+ * @param body DSD_HARRIS_GPS_BODY_OCTETS octets: Part A octets 2-8 then Part B octets 2-8 (on Phase 2, the 14 octets
+ *        after the `AA A4 11` header).
+ * @param ctx Provenance and verdicts; NULL decodes and prints only.
+ * @return the dsd_position_admit() result: 0 when nothing was admitted (no fix, invalid fields, unchecked message).
+ */
+int nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const dsd_gps_report_ctx* ctx);
 
 #ifdef __cplusplus
 }

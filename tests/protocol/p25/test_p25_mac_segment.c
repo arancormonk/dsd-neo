@@ -7,6 +7,7 @@
  * Verify MAC VPDU length inference from MCO for unknown opcode and capacity capping.
  */
 
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <errno.h>
 #include <limits.h>
@@ -38,6 +39,7 @@ typedef struct dsd_state dsd_state;
 static int g_apx_alias_header_calls;
 static int g_l3h_alias_calls;
 static int g_nmea_harris_calls;
+static uint8_t g_nmea_harris_body[DSD_HARRIS_GPS_BODY_OCTETS];
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -69,15 +71,17 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     g_l3h_alias_calls++;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const dsd_gps_report_ctx* ctx) {
     (void)opts;
     (void)state;
-    (void)input;
-    (void)src;
-    (void)slot;
+    (void)ctx;
     g_nmea_harris_calls++;
+    if (body) {
+        DSD_MEMCPY(g_nmea_harris_body, body, sizeof g_nmea_harris_body);
+    }
+    return 0;
 }
 
 static int
@@ -338,6 +342,43 @@ run_answer_request_length_cases(void) {
     return rc;
 }
 
+/* Issue #800 (R3-2): the legacy shifted L3Harris GPS message `80 AA A4 11` is 18 octets, the 0x80 octet plus the 17
+   its length octet counts from the MCO octet `AA`; its last octet (GPS quality) is no next segment's opcode. */
+static int
+run_shifted_harris_length_cases(void) {
+    unsigned long long mac[24];
+    struct p25p2_mac_result res;
+    int rc = 0;
+
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x80;
+    mac[2] = 0xAA;
+    mac[3] = 0xA4;
+    mac[4] = 0x11;
+    mac[18] = 0x1C;
+    if (p25p2_mac_parse(1, mac, &res) != 0) {
+        return 413;
+    }
+    rc |= expect_int("shifted harris len", res.segments[0].length, 18);
+    rc |= expect_int("shifted harris next offset", res.segments[1].offset, 18);
+    rc |= expect_int("shifted harris next len", res.segments[1].length, 2);
+
+    // After a 3-octet segment, 18 octets end at MAC[21]: past the SACCH span, so the segment is not taken.
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x08;
+    mac[2] = 0x03;
+    mac[4] = 0x80;
+    mac[5] = 0xAA;
+    mac[6] = 0xA4;
+    mac[7] = 0x11;
+    if (p25p2_mac_parse(1, mac, &res) != 0) {
+        return 414;
+    }
+    rc |= expect_int("shifted harris past span count", res.segment_count, 1);
+
+    return rc;
+}
+
 static int
 run_direct_segment_parse_cases(void) {
     unsigned long long mac[24] = {0};
@@ -471,7 +512,7 @@ run_direct_segment_parse_cases(void) {
     }
     rc |= expect_int("truncated third segment count", res.segment_count, 2);
 
-    return rc | run_transport_span_cases() | run_answer_request_length_cases();
+    return rc | run_transport_span_cases() | run_answer_request_length_cases() | run_shifted_harris_length_cases();
 }
 
 static int
@@ -632,6 +673,33 @@ run_offset_relative_vpdu_cases(void) {
     mac[9] = 0x11;
     p25_test_process_mac_vpdu_ex(1, mac, 24, 0, 0);
     rc |= expect_int("truncated shifted harris gps", g_nmea_harris_calls, 0);
+
+    // The whole shifted message on a SACCH: the body is MAC[5..18], ending with Part B octet 8.
+    g_nmea_harris_calls = 0;
+    DSD_MEMSET(g_nmea_harris_body, 0, sizeof g_nmea_harris_body);
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x80;
+    mac[2] = 0xAA;
+    mac[3] = 0xA4;
+    mac[4] = 0x11;
+    for (int i = 0; i < DSD_HARRIS_GPS_BODY_OCTETS; i++) {
+        mac[5 + i] = (unsigned char)(0x21 + i);
+    }
+    p25_test_process_mac_vpdu_ex(1, mac, 24, 0, 0);
+    rc |= expect_int("shifted harris gps", g_nmea_harris_calls, 1);
+    rc |= expect_int("shifted harris gps first body octet", g_nmea_harris_body[0], 0x21);
+    rc |= expect_int("shifted harris gps last body octet", g_nmea_harris_body[DSD_HARRIS_GPS_BODY_OCTETS - 1], 0x2E);
+
+    // A FACCH carries 17 MAC octets: the 18-octet message never fits.
+    g_nmea_harris_calls = 0;
+    p25_test_process_mac_vpdu_ex(0, mac, 24, 0, 0);
+    rc |= expect_int("shifted harris gps on facch", g_nmea_harris_calls, 0);
+
+    // A length octet other than 17 is not the GPS message.
+    g_nmea_harris_calls = 0;
+    mac[4] = 0x05;
+    p25_test_process_mac_vpdu_ex(1, mac, 24, 0, 0);
+    rc |= expect_int("shifted harris gps short length", g_nmea_harris_calls, 0);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x30;
