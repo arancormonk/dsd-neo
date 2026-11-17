@@ -1067,6 +1067,10 @@ static const NcMenuItem DISPLAY_SECTION_ITEMS[] = {
      .is_enabled = io_rtl_active,
      .on_select = act_toggle_dsp_panel},
 #endif
+    {.id = "sec.unitact",
+     .label_fn = lbl_ui_unit_activity,
+     .help = "Show the unit activity section (registrations, talkgroup joins, denies, radio commands).",
+     .on_select = act_toggle_ui_unit_activity},
     {.id = "sec.sep", .kind = NC_ITEM_SEPARATOR},
     {.id = "sec.p25m",
      .label_fn = lbl_ui_p25_metrics,

@@ -559,16 +559,16 @@ test_carrier_evidence_reset(void) {
     g_state->nxdn_confirmed = 1;
     g_state->nxdn_confirm_weak_streak = 1;
     g_state->nxdn_sacch_frame_segcrc[0] = 0;
-    g_state->nxdn_alias_block_number = 1U;
+    g_state->nxdn_alias_prop.seen_mask = 1U;
     g_state->data_header_valid[0] = 1; // a DCALL header from the carrier left
-    g_state->nxdn_alias_block_segment[0][0][0] = 'O';
+    g_state->nxdn_alias_prop.fragment[0][0] = 'O';
     run_until(5.9, 6.5);
     expect("evidence: probe", g_tune_count, 1);
     expect("evidence: confirmation reset", g_state->nxdn_confirmed, 0);
     expect("evidence: weak streak reset", g_state->nxdn_confirm_weak_streak, 0);
     expect("evidence: SACCH assembly reset", g_state->nxdn_sacch_frame_segcrc[0], 1);
     expect("evidence: alias assembly reset",
-           g_state->nxdn_alias_block_number == 0U && g_state->nxdn_alias_block_segment[0][0][0] == 0, 1);
+           g_state->nxdn_alias_prop.seen_mask == 0U && g_state->nxdn_alias_prop.fragment[0][0] == 0, 1);
     expect("evidence: data call header forgotten", g_state->data_header_valid[0], 0);
 }
 

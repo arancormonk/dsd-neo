@@ -1472,6 +1472,58 @@ edacs_run_radio_policy_cases(void) {
     return rc;
 }
 
+/* No recent-activity row on any channel, and no tune: what an assignment carrying a status LCN must leave. */
+static int
+edacs_expect_no_recent(const char* test_case) {
+    dsd_recent_activity_snapshot recent = {0};
+    const int have = dsd_recent_activity_copy_snapshot(&g_state, &recent) > 0;
+    int rc = 0;
+    for (int i = 0; i < DSD_RECENT_ACTIVITY_COUNT; i++) {
+        if (have && recent.entries[i].notice[0] != '\0') {
+            DSD_FPRINTF(stderr, "FAIL case=%s row=%d notice=\"%s\"\n", test_case, i, recent.entries[i].notice);
+            rc = 1;
+        }
+    }
+    rc |= edacs_expect(g_vc_tune_count == 0, test_case, "state", "status LCN tuned nothing");
+    return rc;
+}
+
+/* An assignment whose LCN field holds a status (26-31: reserved, convert to callee, queued, system busy, denied; the
+ * decoder's own reserved-LCN table, edacs_lcn_status_string()) names no channel: nothing was granted, so no
+ * recent-activity row stands for it, voice or data, standard or extended addressing (regression: main published LCNs
+ * 26-30 as grants on a 0 Hz channel). */
+static int
+edacs_run_status_lcn_cases(void) {
+    int rc = 0;
+    char name[64];
+    for (int lcn = 26; lcn <= 31; lcn++) {
+        edacs_setup_state_fixture(0);
+        edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_group_msg1(2, lcn, 321, 1234),
+                                  edacs_standard_group_msg2(1234));
+        DSD_SNPRINTF(name, sizeof(name), "standard-group-status-lcn-%d", lcn);
+        rc |= edacs_expect_no_recent(name);
+
+        edacs_setup_state_fixture(0);
+        edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_data_msg1(0, lcn, 777, 0),
+                                  edacs_standard_data_msg2(5));
+        DSD_SNPRINTF(name, sizeof(name), "standard-data-status-lcn-%d", lcn);
+        rc |= edacs_expect_no_recent(name);
+
+        edacs_setup_state_fixture(1);
+        edacs_process_valid_frame(&g_opts, &g_state, edacs_extended_group_msg1(0x3, lcn, 0x2222),
+                                  edacs_extended_group_msg2(0x45678, 0, 1));
+        DSD_SNPRINTF(name, sizeof(name), "extended-group-status-lcn-%d", lcn);
+        rc |= edacs_expect_no_recent(name);
+
+        edacs_setup_state_fixture(1);
+        edacs_process_valid_frame(&g_opts, &g_state, edacs_extended_icall_msg1(654321),
+                                  edacs_extended_icall_msg2(lcn, 45678));
+        DSD_SNPRINTF(name, sizeof(name), "extended-icall-status-lcn-%d", lcn);
+        rc |= edacs_expect_no_recent(name);
+    }
+    return rc;
+}
+
 static int
 edacs_run_extended_state_cases(void) {
     int rc = 0;
@@ -4179,6 +4231,7 @@ main(void) {
     rc |= edacs_run_standard_state_cases();
     rc |= edacs_run_lcn_capture_stamp_cases();
     rc |= edacs_run_extended_state_cases();
+    rc |= edacs_run_status_lcn_cases();
     rc |= edacs_run_radio_policy_cases();
     rc |= edacs_run_helper_contract_cases();
     rc |= edacs_run_analog_loop_helper_cases();

@@ -205,7 +205,7 @@ test_tsbk_0x3e_not_protection(void) {
     MAC[6] = 0xCD;
     MAC[7] = 0xEF;
 
-    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &st, MAC);
 
     if (st.p25_prot_algid != 0 || st.p25_prot_kid != 0) {
         DSD_FPRINTF(stderr, "FAIL: test_tsbk_0x3e_not_protection: protection state changed ALGID=0x%02X KID=0x%04X\n",
@@ -305,7 +305,7 @@ test_time_date_bridged_p1_survey_offset_layout(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&st, 0, sizeof(st));
     build_p1_bridged_time_date_offset_mac(MAC, 330, 1);
-    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &st, MAC);
 
     if (st.p25_sys_time_offset != 330 || st.p25_sys_time_offset_valid != 1) {
         DSD_FPRINTF(stderr, "FAIL: bridged P1 positive UTC offset expected +330, got %d valid %u\n",
@@ -316,7 +316,7 @@ test_time_date_bridged_p1_survey_offset_layout(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&st, 0, sizeof(st));
     build_p1_bridged_time_date_offset_mac(MAC, 0x800 | 330, 0);
-    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &st, MAC);
 
     if (st.p25_sys_time_offset != -330 || st.p25_sys_time_offset_valid != 1) {
         DSD_FPRINTF(stderr, "FAIL: bridged P1 negative UTC offset expected -330, got %d valid %u\n",
@@ -533,7 +533,7 @@ test_vpdu_dispatch_0x7e(void) {
     MAC[8] = 0x01;
     MAC[9] = 0x02;
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &st, MAC);
 
     if (st.p25_prot_algid != 0 || st.p25_prot_kid != 0) {
         DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x7e: protection state changed ALGID=0x%02X KID=0x%04X\n",
@@ -576,7 +576,7 @@ test_vpdu_dispatch_0x7f(void) {
     MAC[8] = 0x34;
     MAC[9] = 0x56;
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &st, MAC);
 
     if (st.p25_prot_valid != 1) {
         DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x7f: p25_prot_valid expected 1, got %u\n", st.p25_prot_valid);

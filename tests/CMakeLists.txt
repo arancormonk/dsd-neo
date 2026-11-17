@@ -338,6 +338,21 @@ target_link_libraries(
     PUBLIC $<LINK_ONLY:dsd-neo_runtime>
 )
 
+# No-op DMR unit activity producers and the core reason tables, for tests that compile the DMR CSBK or data decoders
+# (dmr_csbk.c, dmr_ars.c) without the core ring; DMR_UNIT_ACTIVITY links the real producers. The targets that need it
+# are listed once, after they are defined (_dsd_dmr_decoder_stub_targets).
+add_library(
+    dsd-neo_test_dmr_decoder_stubs
+    STATIC
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_unit_activity_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_decoder_stubs
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(dsd-neo_test_dmr_decoder_stubs PRIVATE dsd-neo_warnings)
+
 # Links dsd-neo_runtime without its usage requirements, so a test can compile
 # decoder sources with its own feature macros: a SoapySDR-only or Airspy-only
 # build's USE_RADIO without USE_RTLSDR, whatever backends this configure found.
@@ -1118,6 +1133,18 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/call_view.h
   CXX
 )
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_unit_activity_view
+  HEADERS_PUBLIC_APP_CONTROL_UNIT_ACTIVITY_VIEW
+  dsd-neo/app_control/unit_activity_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_unit_activity_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_UNIT_ACTIVITY_VIEW_CXX
+  dsd-neo/app_control/unit_activity_view.h
+  CXX
+)
 # Issue #575: the call history's access-code text, read by the Qt call history.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_site_identity_view
@@ -1565,6 +1592,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_alias_learn
+  HEADERS_PUBLIC_CORE_ALIAS_LEARN
+  dsd-neo/core/alias_learn.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_alias_learn_cxx
+  HEADERS_PUBLIC_CORE_ALIAS_LEARN_CXX
+  dsd-neo/core/alias_learn.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_received_identity
   HEADERS_PUBLIC_CORE_RECEIVED_IDENTITY
   dsd-neo/core/received_identity.h
@@ -1647,6 +1686,30 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_CORE_SOURCE_ALIAS
   dsd-neo/core/source_alias.h
   C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_unit_activity
+  HEADERS_PUBLIC_CORE_UNIT_ACTIVITY
+  dsd-neo/core/unit_activity.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_unit_activity_cxx
+  HEADERS_PUBLIC_CORE_UNIT_ACTIVITY_CXX
+  dsd-neo/core/unit_activity.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_unit_activity_reason
+  HEADERS_PUBLIC_CORE_UNIT_ACTIVITY_REASON
+  dsd-neo/core/unit_activity_reason.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_unit_activity_reason_cxx
+  HEADERS_PUBLIC_CORE_UNIT_ACTIVITY_REASON_CXX
+  dsd-neo/core/unit_activity_reason.h
+  CXX
 )
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_wideband_spectrum
@@ -2372,8 +2435,71 @@ target_include_directories(
     dsd-neo_test_nxdn_alias_decode
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_nxdn_alias_decode PRIVATE dsd-neo_proto_nxdn)
 add_test(NAME NXDN_ALIAS_DECODE COMMAND dsd-neo_test_nxdn_alias_decode)
+
+# NXDN Type-C unit activity rows (REG_RESP, REG_C_RESP, GRP_REG_RESP, REM_CON_REQ / RESP) through a CAC and the
+# element dispatch: lengths, visitor fields, G/U flag, roles, Type-C path only, CRC-checked CACs only
+add_executable(
+    dsd-neo_test_nxdn_unit_activity
+    protocol/nxdn/test_nxdn_unit_activity.c
+    # Talkgroup labels are also read back through the app-control view every frontend shows.
+    ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_unit_activity
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
+)
+add_test(NAME NXDN_UNIT_ACTIVITY COMMAND dsd-neo_test_nxdn_unit_activity)
+
+# NXDN Kenwood alias learning through the element dispatch: only a complete alias bound to the active call is learned,
+# in the reception's scope
+add_executable(
+    dsd-neo_test_nxdn_alias_learn
+    protocol/nxdn/test_nxdn_alias_learn.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_alias_learn
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME NXDN_ALIAS_LEARN COMMAND dsd-neo_test_nxdn_alias_learn)
+
+# These tests go through the NXDN element dispatch, whose channel and text helpers live in the P25 and DMR libraries,
+# and which reaches core GPS decoding, which resolves utf8_to_text back in proto_dmr: the archives depend on each other
+# and need a link group, as P25_P2_VPDU_BOUNDS does.
+foreach(
+    _dsd_nxdn_dmr_target
+    IN
+    ITEMS
+        dsd-neo_test_nxdn_alias_decode
+        dsd-neo_test_nxdn_unit_activity
+        dsd-neo_test_nxdn_alias_learn
+)
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            ${_dsd_nxdn_dmr_target}
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_proto_nxdn
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                "-Wl,--end-group"
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            ${_dsd_nxdn_dmr_target}
+            PRIVATE
+                dsd-neo_proto_nxdn
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                dsd-neo_test_support
+        )
+    endif()
+endforeach()
 
 add_executable(
     dsd-neo_test_nxdn_alias_fallback
@@ -3253,6 +3379,29 @@ if(DSD_ENABLE_TERMINAL_UI)
     target_link_libraries(dsd-neo_test_ui_rr_panel PRIVATE dsd-neo_runtime)
     add_test(NAME UI_RR_PANEL COMMAND dsd-neo_test_ui_rr_panel)
 
+    # The terminal's Unit Activity rows over a real ring and the real view: the newest rows by seq, merges in place, a new
+    # log, names after a rename, and each row's line text.
+    add_executable(
+        dsd-neo_test_ui_unit_activity_panel
+        ui/test_ui_unit_activity_panel.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/unit_activity_panel.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_unit_activity_panel
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_unit_activity_panel
+        PRIVATE dsd-neo_core dsd-neo_runtime dsd-neo_platform
+    )
+    add_test(
+        NAME UI_UNIT_ACTIVITY_PANEL
+        COMMAND dsd-neo_test_ui_unit_activity_panel
+    )
+
     # The real panel, library, chooser/prompt widgets and menu core (its UI-exit shutdown); the wizard core, the menu's
     # rows and app-control commands are stubbed in the test.
     add_executable(
@@ -3494,6 +3643,26 @@ target_include_directories(
 add_test(
     NAME APP_CONTROL_ACCESS_CODE_VIEW
     COMMAND dsd-neo_test_app_control_access_code_view
+)
+
+# The unit activity log as every frontend shows it: labels, filters, reason, scope and names that follow each row's
+# own system.
+add_executable(
+    dsd-neo_test_app_control_unit_activity
+    ui/test_app_control_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_unit_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_app_control_unit_activity
+    PRIVATE dsd-neo_core dsd-neo_runtime dsd-neo_platform
+)
+add_test(
+    NAME APP_CONTROL_UNIT_ACTIVITY
+    COMMAND dsd-neo_test_app_control_unit_activity
 )
 
 # The system identity received on the carrier being decoded, as every frontend shows it.
@@ -3867,6 +4036,8 @@ if(DSD_ENABLE_TERMINAL_UI)
             ui/test_ui_ncurses_printer_helpers.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/unit_activity_panel.c
+            ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time.c
             ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
@@ -5937,6 +6108,9 @@ if(DSD_ENABLE_QT_UI)
             # WP-F2: real network fixture, using only the snapshot-copy facade.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/p25_network.c
+            # The Activity screen's production model over the real view.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
             ui/qml_spectrum_stub.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
@@ -6223,6 +6397,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
@@ -6258,6 +6433,51 @@ add_test(
     COMMAND dsd-neo_test_app_control_snapshot_event_history
 )
 
+# The unit activity ring's two snapshot hops (decoder -> published -> consumer): incremental, retried on failure.
+add_executable(
+    dsd-neo_test_app_control_snapshot_unit_activity
+    ui/test_ui_snapshot_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_snapshot_unit_activity
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_snapshot_unit_activity
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_snapshot_unit_activity
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_audio_activity
+        dsd-neo_platform
+        dsd-neo_runtime
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME APP_CONTROL_SNAPSHOT_UNIT_ACTIVITY
+    COMMAND dsd-neo_test_app_control_snapshot_unit_activity
+)
+
 # Issue #708: the History tap, the second reader of the published history, against a racing publisher and the single
 # consumer (run it under the tsan preset too).
 add_executable(
@@ -6270,6 +6490,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_recording.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
@@ -7627,6 +7848,46 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_talkgroup_policy PRIVATE dsd-neo_core)
 add_test(NAME CORE_TALKGROUP_POLICY COMMAND dsd-neo_test_core_talkgroup_policy)
+
+# The unit activity ring (src/core/util/unit_activity.c), built with its allocation and copy-count seams; the rest of
+# core (the learned-alias scope mapping the ring shares) comes from dsd-neo_core.
+add_executable(
+    dsd-neo_test_core_unit_activity
+    core/test_core_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
+)
+target_include_directories(
+    dsd-neo_test_core_unit_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_core_unit_activity
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_core_unit_activity
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_runtime
+        dsd-neo_platform
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME CORE_UNIT_ACTIVITY COMMAND dsd-neo_test_core_unit_activity)
+
+# The unit activity reason tables; the P25 ones against the P25 prints' former table.
+add_executable(
+    dsd-neo_test_core_unit_activity_reason
+    core/test_core_unit_activity_reason.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
+)
+target_include_directories(
+    dsd-neo_test_core_unit_activity_reason
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME CORE_UNIT_ACTIVITY_REASON
+    COMMAND dsd-neo_test_core_unit_activity_reason
+)
 
 add_executable(dsd-neo_test_core_source_alias core/test_core_source_alias.c)
 target_link_libraries(dsd-neo_test_core_source_alias PRIVATE dsd-neo_core)
@@ -9420,6 +9681,12 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
     # The scan quiet check (issue #834), over a fake signal tap.
     ${PROJECT_SOURCE_DIR}/src/engine/scan_quiet.c
+    # The session's unit activity log across a target switch, read through the view every frontend shows.
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan
@@ -9427,6 +9694,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/engine
         ${PROJECT_SOURCE_DIR}/src/dsp
+        ${PROJECT_SOURCE_DIR}/src/core/util
 )
 target_compile_definitions(
     dsd-neo_test_engine_trunk_scan
@@ -10932,6 +11200,89 @@ target_link_libraries(
 )
 add_test(NAME P25_MAC_SEGMENT COMMAND dsd-neo_test_p25_mac_segment)
 
+# P25 Phase 1 TSBK decoded through the MAC handlers: one message, Phase 1 layouts; native PDUs keep segmenting
+add_executable(
+    dsd-neo_test_p25_tsbk_bridge_boundary
+    protocol/p25/test_p25_tsbk_bridge_boundary.c
+)
+target_include_directories(
+    dsd-neo_test_p25_tsbk_bridge_boundary
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME P25_TSBK_BRIDGE_BOUNDARY
+    COMMAND dsd-neo_test_p25_tsbk_bridge_boundary
+)
+
+# P25 unit registration: the assigned address, the home SUID it belongs to, and deregistration by that SUID
+add_executable(
+    dsd-neo_test_p25_aff_assignment
+    protocol/p25/test_p25_aff_assignment.c
+)
+target_include_directories(
+    dsd-neo_test_p25_aff_assignment
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME P25_AFF_ASSIGNMENT COMMAND dsd-neo_test_p25_aff_assignment)
+
+# P25 unit activity rows: every message family through the TSBK, MAC, MBT and link control dispatch
+add_executable(
+    dsd-neo_test_p25_unit_activity
+    protocol/p25/test_p25_unit_activity.c
+    # Names are also read back through the app-control view every frontend shows.
+    ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
+)
+target_include_directories(
+    dsd-neo_test_p25_unit_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME P25_UNIT_ACTIVITY COMMAND dsd-neo_test_p25_unit_activity)
+
+# P25 Deny / Queued responses are shown, never acted on: no carrier is released over one
+add_executable(
+    dsd-neo_test_p25_deny_no_release
+    protocol/p25/test_p25_deny_no_release.c
+)
+target_include_directories(
+    dsd-neo_test_p25_deny_no_release
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME P25_DENY_NO_RELEASE COMMAND dsd-neo_test_p25_deny_no_release)
+
+# These tests drive the real TSBK and MAC handlers, which reach core GPS decoding, and that resolves utf8_to_text back
+# in proto_dmr: the archives depend on each other and need a link group, as P25_P2_VPDU_BOUNDS does.
+foreach(
+    _dsd_p25_dmr_target
+    IN
+    ITEMS
+        dsd-neo_test_p25_tsbk_bridge_boundary
+        dsd-neo_test_p25_aff_assignment
+        dsd-neo_test_p25_unit_activity
+        dsd-neo_test_p25_deny_no_release
+)
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            ${_dsd_p25_dmr_target}
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                "-Wl,--end-group"
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            ${_dsd_p25_dmr_target}
+            PRIVATE
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                dsd-neo_test_support
+        )
+    endif()
+endforeach()
+
 # P25 IDEN variants (TDMA denom + map override)
 add_executable(
     dsd-neo_test_p25_iden_variants
@@ -10989,7 +11340,10 @@ add_executable(
     # The network status names the patch table's owner; a validated control block advances its listening clock.
     ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
-    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
+    # The Deny / Queued prints' reason table and the unit activity rows, into a recording ring.
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/unit_activity_capture.c
 )
 target_include_directories(
     dsd-neo_test_p25_p1_tsbk_handlers
@@ -11514,6 +11868,48 @@ else()
 endif()
 add_test(NAME P25_P2_SEED_RECOVER COMMAND dsd-neo_test_p25_p2_seed_recover)
 
+# P25 P2 multi-fragment messages: LCCH only, every fragment's CRC-16 and the assembled Multi-Fragment CRC-16, reset on
+# a break in the LCCH's bursts, through the real VPDU and frame decoders
+add_executable(
+    dsd-neo_test_p25_p2_multifrag_crc
+    protocol/p25/test_p25_p2_multifrag_crc.c
+    protocol/p25/p25p2_burst_builder.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_multifrag_crc
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
+)
+# Real XCCH and frame processing reach the core vocoder, which reaches the DMR and NXDN ciphers.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p2_multifrag_crc
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            "-Wl,--end-group"
+            ${DSD_NEO_TEST_MATH_LIB}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_multifrag_crc
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            ${DSD_NEO_TEST_MATH_LIB}
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME P25_P2_MULTIFRAG_CRC COMMAND dsd-neo_test_p25_p2_multifrag_crc)
+
 # P25 P1 trunk SM core
 add_executable(dsd-neo_test_p25_p1_trunk_sm protocol/p25/test_p25_p1_trunk_sm.c)
 target_include_directories(
@@ -11731,7 +12127,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_patch.c
     ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/fec/trellis34.c
-    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
+    # The Deny / Queued prints' reason table and the unit activity rows, into a recording ring.
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/unit_activity_capture.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_tsbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_12.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_crc.c
@@ -12862,6 +13261,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
@@ -12911,6 +13311,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
@@ -12955,6 +13356,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
@@ -13003,6 +13405,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
@@ -14508,6 +14911,48 @@ target_link_libraries(
 )
 add_test(NAME DMR_MASS_REGISTRATION COMMAND dsd-neo_test_dmr_mass_registration)
 
+# DMR CSBK / data header decode fixes through dmr_cspdu() and dmr_dheader(): NACK_Rsp order and reasons, FID-gated
+# standard opcodes, C_AHOY classification, Gen_Site_Params, UDT header flags, SP_HEAD status width
+add_executable(dsd-neo_test_dmr_csbk_fixes protocol/dmr/test_dmr_csbk_fixes.c)
+target_include_directories(
+    dsd-neo_test_dmr_csbk_fixes
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_csbk_fixes
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_CSBK_FIXES COMMAND dsd-neo_test_dmr_csbk_fixes)
+
+# DMR unit activity rows through dmr_cspdu() and dmr_udp_comp_pdu(): C_ACKD answers, C_AHOY commands, ARS reports;
+# FID 0x00 and CRC-checked content only, gateways as the actor
+add_executable(
+    dsd-neo_test_dmr_unit_activity
+    protocol/dmr/test_dmr_unit_activity.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_unit_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_unit_activity
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_UNIT_ACTIVITY COMMAND dsd-neo_test_dmr_unit_activity)
+
+# DMR talker alias learning through the alias header / block entry points: only a complete, coherent alias bound to
+# the call is learned, in the reception's scope
+add_executable(dsd-neo_test_dmr_alias_learn protocol/dmr/test_dmr_alias_learn.c)
+target_include_directories(
+    dsd-neo_test_dmr_alias_learn
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_alias_learn
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_ALIAS_LEARN COMMAND dsd-neo_test_dmr_alias_learn)
+
 add_executable(dsd-neo_test_dmr_r34_noise protocol/dmr/test_dmr_r34_noise.c)
 target_include_directories(
     dsd-neo_test_dmr_r34_noise
@@ -15190,6 +15635,29 @@ add_test(
     COMMAND dsd-neo_test_dmr_talker_alias_utf16
 )
 
+# DMR talker alias, UTF-8 format: decoded as UTF-8 across the LC PDUs, length in code units, malformed -> U+FFFD
+add_executable(
+    dsd-neo_test_dmr_talker_alias_utf8
+    protocol/dmr/test_dmr_talker_alias_utf8.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_talker_alias_utf8
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_talker_alias_utf8
+    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
+)
+add_test(NAME DMR_TALKER_ALIAS_UTF8 COMMAND dsd-neo_test_dmr_talker_alias_utf8)
+
 # Motorola APX embedded alias, UTF-16 text: same transcoding path as the DMR alias
 add_executable(
     dsd-neo_test_core_apx_embedded_alias_utf16
@@ -15321,6 +15789,37 @@ else()
     )
 endif()
 add_test(NAME P25_MOTOROLA_ALIAS COMMAND dsd-neo_test_p25_motorola_alias)
+
+# Learned aliases kept with the system they were heard on (B28), through the real P25 link control and MAC decoders
+add_executable(dsd-neo_test_core_scoped_alias core/test_core_scoped_alias.c)
+target_include_directories(
+    dsd-neo_test_core_scoped_alias
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_core_scoped_alias
+        PRIVATE
+            dsd-neo_app_control
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_core_scoped_alias
+        PRIVATE
+            dsd-neo_app_control
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME CORE_SCOPED_ALIAS COMMAND dsd-neo_test_core_scoped_alias)
 
 # P25 SM core behaviors (monotonic/backoff/cc-hunt)
 add_executable(dsd-neo_test_p25_sm_core protocol/p25/test_p25_sm_core.c)
@@ -15548,6 +16047,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_patch.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_pdu_trunking.c
+    # The MBT registration and affiliation rows, into the real ring.
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
@@ -15746,6 +16248,8 @@ set(_dsd_tetra_test_sources
     cmce_pdus
     sds_pdus
     mm_dispatch
+    tetra_mm_address
+    tetra_unit_activity
     rcpc_map
     real_air_bit_trace
     sds_reference_mac
@@ -15791,6 +16295,11 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
         PROPERTIES LABELS "protocol;tetra"
     )
 endforeach()
+# The unit activity rows are also read back through the app-control view every frontend shows, as names reach users.
+target_sources(
+    dsd-neo_test_tetra_tetra_unit_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
+)
 
 # A followed call returns to the control channel it left when another cell is decoded on its traffic carrier
 # (discussion #748), and nothing of that cell is taken on meanwhile: the real BSCH parser, MAC, call records and
@@ -19305,7 +19814,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_p25_lcw_site_broadcasts
-    PRIVATE dsd-neo_proto_p25
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
 )
 add_test(
     NAME P25_LCW_SITE_BROADCASTS
@@ -19408,6 +19917,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_talker_alias_header_len
     dsd-neo_test_dmr_udp_comp_header
     dsd-neo_test_dmr_talker_alias_utf16
+    dsd-neo_test_dmr_talker_alias_utf8
     dsd-neo_test_dpmr_reference_vectors
     dsd-neo_test_dpmr_voice_bridge
     dsd-neo_test_m17_lsf_parse
@@ -24560,6 +25070,7 @@ if(DSD_ENABLE_QT_UI)
         # Issue #697: several lists started as one session, through the real starter.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -25343,6 +25854,27 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_P25_NETWORK_MODEL
         COMMAND dsd-neo_test_ui_qt_p25_network_model
+    )
+    # The Activity screen's model over the unit activity ring and view.
+    add_executable(
+        dsd-neo_test_ui_qt_unit_activity_model
+        ui/test_ui_qt_unit_activity_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_unit_activity_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_unit_activity_model
+        PRIVATE
+            dsd-neo_ui_qt
+            Qt6::Test
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+    )
+    add_test(
+        NAME UI_QT_UNIT_ACTIVITY_MODEL
+        COMMAND dsd-neo_test_ui_qt_unit_activity_model
     )
 endif()
 
@@ -26322,3 +26854,33 @@ add_test(
     NAME RUNTIME_RECEIVE_POLICY
     COMMAND dsd-neo_test_runtime_receive_policy
 )
+
+# Tests that compile the DMR CSBK or data decoders directly link the no-op unit activity producers.
+set(_dsd_dmr_decoder_stub_targets
+    dsd-neo_test_dmr_t3_cmove
+    dsd-neo_test_dmr_t3_force_release
+    dsd-neo_test_dmr_t3_move_release
+    dsd-neo_test_dmr_t3_ann_wd_tscc
+    dsd-neo_test_dmr_relaxed_header_ip
+    dsd-neo_test_dmr_lrrp_time_fallback
+    dsd-neo_test_dmr_lrrp_time_valid
+    dsd-neo_test_dmr_lrrp_token_alignment
+    dsd-neo_test_dmr_lrrp_response_token_lengths
+    dsd-neo_test_dmr_lrrp_resync_prefix
+    dsd-neo_test_dmr_lrrp_position_token_precedence
+    dsd-neo_test_dmr_lrrp_crc_gating
+    dsd-neo_test_dmr_lrrp_empty_payload_type
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    dsd-neo_test_dmr_pdu_utf16_text
+    dsd-neo_test_dmr_tms_utf16le
+    dsd-neo_test_dmr_lrrp_ip_udp_lengths
+    dsd-neo_test_dmr_lrrp_event_crc_gating
+    dsd-neo_test_dmr_udp_comp_header
+    dsd-neo_test_dmr_locn_time_fallback
+)
+foreach(_dsd_dmr_stub_target IN LISTS _dsd_dmr_decoder_stub_targets)
+    target_link_libraries(
+        "${_dsd_dmr_stub_target}"
+        PRIVATE dsd-neo_test_dmr_decoder_stubs
+    )
+endforeach()

@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_TALKGROUP_POLICY_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_TALKGROUP_POLICY_H_H
 
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -93,6 +94,10 @@ typedef struct {
     uint8_t source;
     unsigned int row;
     char pattern[DSD_ID_PATTERN_TEXT_MAX]; /* Canonical pattern text on a pattern row; empty otherwise. */
+    /* The system a learned alias row (exact, source RUNTIME_ALIAS) was heard on (<dsd-neo/core/alias_learn.h>): it
+     * names its radio only in that scope. Zero (invalid) on every other row, and on a learned row heard with no
+     * scope; stores zero it there. */
+    dsd_alias_scope scope;
 } dsd_tg_policy_entry;
 
 typedef struct {
@@ -185,7 +190,9 @@ int dsd_tg_policy_add_range_entry(dsd_state* state, const dsd_tg_policy_entry* e
 int dsd_tg_policy_add_pattern_entry(dsd_state* state, const dsd_tg_policy_entry* entry);
 /** Row lookup for any ID: the first exact row (a talkgroup row before a learned alias), else the narrowest range (last
  * row wins ties), else the most specific pattern (dsd_id_pattern_more_specific(), last row wins ties). Learned alias
- * rows take part only as exact rows. Returns -1 for NULL @p out, 0 otherwise (match NONE when nothing matched). */
+ * rows take part only as exact rows: an imported alias row (mode D without a scope), else the learned row of the
+ * current reception's scope (dsd_alias_scope_current()), else one learned with no scope. Returns -1 for NULL @p out,
+ * 0 otherwise (match NONE when nothing matched). */
 int dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_lookup* out);
 /** Talkgroup lookup: the row that decides talkgroup @p tg in group evaluation. As dsd_tg_policy_lookup_id(), but a
  * learned alias row (a radio) never matches. Returns -1 for NULL @p out, 0 otherwise. */
@@ -195,9 +202,13 @@ size_t dsd_tg_policy_pattern_count(const dsd_state* state);
 int dsd_tg_policy_has_entries(const dsd_state* state);
 /** Exact-row label for any ID: the first exact row (a talkgroup row before a learned alias) with its mode and name.
  * The radio-side fallback of dsd_source_label_lookup(); a talkgroup is labelled by
- * dsd_tg_policy_lookup_group_label(). Returns 1 when an exact row matched (its name may be empty). */
+ * dsd_tg_policy_lookup_group_label(). Alias rows in the order dsd_tg_policy_lookup_id() reads them. Returns 1 when an
+ * exact row matched (its name may be empty). */
 int dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
                                size_t name_sz);
+/** dsd_tg_policy_lookup_label() for a reception of @p scope (NULL: the current one) instead of the current one. */
+int dsd_tg_policy_lookup_label_scoped(const dsd_state* state, const dsd_alias_scope* scope, uint32_t id, char* mode,
+                                      size_t mode_sz, char* name, size_t name_sz);
 /**
  * @brief Talkgroup label: the mode and name of the row that decides talkgroup @p tg (dsd_tg_policy_lookup_group():
  * a talkgroup exact row, else the narrowest range, else the most specific pattern).
@@ -290,18 +301,26 @@ typedef enum {
 } dsd_tg_policy_learn_result;
 
 /**
- * @brief Learn an over-the-air alias (a DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS exact row) for an ID.
+ * @brief Learn an over-the-air alias (a DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS exact row) for an ID, in the entry's scope.
  *
- * Compares before it writes: the first exact row for the ID is kept when it was imported or entered by the user, and
- * a learned one is replaced only when its normalised name or mode (D vs DE) changed, so a repeated alias leaves the
- * table and its generation alone while a renamed radio's new alias replaces the old one.
+ * The scope is `entry->scope`, or, when that is not valid, the current reception's (dsd_alias_scope_current()), so a
+ * decoder that builds its entry with dsd_tg_policy_make_exact_entry() (the P25 Phase 1 LSD soft ID) learns in the
+ * reception's scope; with no reception scope either the row is learned without one, as before scopes.
+ * Compares before it writes: a talkgroup or user row for the ID, or an imported alias row (mode D without a scope),
+ * is kept; the learned row of that scope is
+ * replaced only when its normalised name or mode (D vs DE) changed, so a repeated alias leaves the table and its
+ * generation alone while a renamed radio's new alias replaces the old one; another scope's learned row is never
+ * touched, and a scope without one gets its own row (ADDED). Decoders learn through dsd_alias_learn_radio().
  */
 dsd_tg_policy_learn_result dsd_tg_policy_learn_exact(dsd_state* state, const dsd_tg_policy_entry* entry);
 /**
  * @brief Append one exact row to opts->group_in_file in the file's own schema, creating the file when missing.
  *
  * A last line without a newline is ended first. @p metadata (free text, may be NULL) never lands in a column the
- * header models as tags: it goes one column further, past an empty tags field.
+ * header models as tags: it goes one column further, past an empty tags field. A learned row with a valid scope gets
+ * one more cell after the metadata, its `scope=` token (an empty metadata cell before it when @p metadata is empty),
+ * which the importer reads back into the row's scope; a file the append creates names it in the header
+ * (`id,mode,name,metadata,scope`).
  *
  * The append runs under the managed-file lock (<dsd-neo/core/managed_file.h>) and does not check the file: it destroys
  * nothing. When @p state's list has a baseline for the file (dsd_tg_policy_write_group_file()), the row is folded into
@@ -508,7 +527,8 @@ int dsd_tg_policy_remove_key(dsd_state* state, uint64_t context, unsigned int ge
  * Keeps an extended policy header, or promotes for priority, preempt or media overrides. Otherwise uses
  * id,mode,name,tags when any row has tags, or id,mode,name. Ranges are written as start-end, patterns as their
  * canonical text. Unmodelled free-text columns (e.g. alias metadata)
- * are not preserved.
+ * are not preserved. A scoped learned alias row keeps its scope as a `scope=` cell after the modelled columns (the
+ * header then ends in `scope`); a learned row without a scope is written as a plain row, as before.
  *
  * External-edit guard: the list keeps a baseline, the rows hash of the file it was last read from or written to (every
  * load of the file, this write, an export, and each appended alias row keep it current). Before replacing a file the

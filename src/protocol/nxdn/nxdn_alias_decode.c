@@ -5,10 +5,13 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/alias_learn.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #if !defined(DSD_HAVE_ICONV)
 #define DSD_HAVE_ICONV 0
@@ -186,32 +189,54 @@ nxdn_alias_log_prop_segment(const dsd_opts* opts, uint8_t block_number, uint8_t 
     DSD_FPRINTF(stderr, " Alias segment %u/%u", (unsigned)block_number, (unsigned)total_blocks);
 }
 
+/* A fragment that is not one of a four-fragment alias: its octets are shown raw and nothing assembles them. */
 static void
-nxdn_alias_store_prop_segment(dsd_state* state, const uint8_t* message_bits, uint8_t block_number) {
-    for (size_t i = 0U; i < 4U; i++) {
-        uint8_t b = (uint8_t)convert_bits_into_output(&message_bits[40U + (i * 8U)], 8U);
-        char c = (b >= 0x20U && b <= 0x7EU) ? (char)b : ' ';
-        state->nxdn_alias_block_segment[block_number - 1U][i][0] = c;
-        state->nxdn_alias_block_segment[block_number - 1U][i][1] = '\0';
-    }
-}
-
-static void
-nxdn_alias_collect_prop_alias(const dsd_state* state, uint8_t total_blocks, char* alias, size_t alias_sz) {
-    if (state == NULL || alias == NULL || alias_sz == 0U) {
+nxdn_alias_log_prop_unassembled(const dsd_opts* opts, const uint8_t fragment[4]) {
+    if (opts == NULL || opts->payload != 1) {
         return;
     }
-    size_t pos = 0U;
-    size_t limit = alias_sz - 1U;
-    for (size_t b = 0U; b < total_blocks && pos < limit; b++) {
-        for (size_t i = 0U; i < 4U && pos < limit; i++) {
-            char c = state->nxdn_alias_block_segment[b][i][0];
-            if (c != '\0') {
-                alias[pos++] = c;
-            }
-        }
+    DSD_FPRINTF(stderr, " %02X%02X%02X%02X (not assembled)", (unsigned)fragment[0], (unsigned)fragment[1],
+                (unsigned)fragment[2], (unsigned)fragment[3]);
+}
+
+/* The binding a fragment arriving now belongs to: canonical slot 0's call, its current one or the ended one it
+ * retains, and the tuning generation. */
+static void
+nxdn_alias_binding_now(const dsd_state* state, nxdn_alias_assembly* binding) {
+    DSD_MEMSET(binding, 0, sizeof(*binding));
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0
+        && (call.phase == DSD_CALL_PHASE_ACTIVE || call.phase == DSD_CALL_PHASE_ENDED)) {
+        binding->epoch = call.epoch;
+        binding->source = (uint32_t)call.ota_source_id;
     }
-    alias[pos] = '\0';
+    binding->tune_generation = dsd_trunk_tuning_generation();
+}
+
+static int
+nxdn_alias_same_binding(const nxdn_alias_assembly* a, const nxdn_alias_assembly* b) {
+    return a->slot == b->slot && a->source == b->source && a->epoch == b->epoch
+           && a->tune_generation == b->tune_generation;
+}
+
+int
+nxdn_alias_complete(const nxdn_alias_assembly* assembly, char* alias, size_t alias_sz) {
+    const uint8_t full_mask = (uint8_t)((1U << NXDN_ALIAS_FRAGMENTS) - 1U);
+    if (alias == NULL || alias_sz == 0U) {
+        return 0;
+    }
+    alias[0] = '\0';
+    if (assembly == NULL || assembly->seen_mask != full_mask || alias_sz <= NXDN_ALIAS_TEXT_BYTES) {
+        return 0;
+    }
+    /* The text is the first 14 octets; the last two of fragment 4 are not text. */
+    for (size_t i = 0U; i < NXDN_ALIAS_TEXT_BYTES; i++) {
+        const uint8_t b = assembly->fragment[i / 4U][i % 4U];
+        alias[i] = (b >= 0x20U && b <= 0x7EU) ? (char)b : ' ';
+    }
+    alias[NXDN_ALIAS_TEXT_BYTES] = '\0';
+    nxdn_alias_trim_trailing_spaces(alias);
+    return alias[0] != '\0' ? 1 : 0;
 }
 
 static void
@@ -332,13 +357,27 @@ nxdn_alias_decode_shift_jis_like(const uint8_t* in, size_t in_len, char* out, si
     return strlen(out);
 }
 
+/* Learn a completed Kenwood alias as its talker's (dsd_alias_learn_radio(), the reception's scope): only when the whole
+ * assembly was bound to a call with a source and that call is still the ACTIVE one, so an alias heard in another
+ * call's hangtime (bound to the ended call) never names the ended call's talker. It runs once per completed assembly:
+ * a repeated fragment changes nothing. */
+static void
+nxdn_alias_learn(const dsd_opts* opts, dsd_state* state, const nxdn_alias_assembly* a, const char* alias) {
+    dsd_call_snapshot call;
+    if (a->source == 0U || alias[0] == '\0' || dsd_call_state_get(state, a->slot, &call) <= 0
+        || call.phase != DSD_CALL_PHASE_ACTIVE || call.epoch != a->epoch || call.ota_source_id != a->source
+        || dsd_trunk_tuning_generation() != a->tune_generation) {
+        return;
+    }
+    (void)dsd_alias_learn_radio(opts, state, NULL, a->source, alias, "Kenwood");
+}
+
 void
 nxdn_alias_reset(dsd_state* state) {
     if (state == NULL) {
         return;
     }
-    state->nxdn_alias_block_number = 0U;
-    DSD_MEMSET(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+    DSD_MEMSET(&state->nxdn_alias_prop, 0, sizeof(state->nxdn_alias_prop));
     nxdn_alias_reset_arib(state);
 }
 
@@ -348,26 +387,46 @@ nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_t* me
         return;
     }
 
-    uint8_t block_number = (uint8_t)convert_bits_into_output(&message_bits[32U], 4U);
-    uint8_t total_blocks = (uint8_t)convert_bits_into_output(&message_bits[36U], 4U);
+    const uint8_t block_number = (uint8_t)convert_bits_into_output(&message_bits[32U], 4U);
+    const uint8_t total_blocks = (uint8_t)convert_bits_into_output(&message_bits[36U], 4U);
+    uint8_t fragment[4];
+    for (size_t i = 0U; i < 4U; i++) {
+        fragment[i] = (uint8_t)convert_bits_into_output(&message_bits[40U + (i * 8U)], 8U);
+    }
     nxdn_alias_log_prop_segment(opts, block_number, total_blocks);
 
-    if (block_number < 1U || block_number > 4U) {
+    nxdn_alias_assembly* const a = &state->nxdn_alias_prop;
+    if (total_blocks != NXDN_ALIAS_FRAGMENTS || block_number < 1U || block_number > NXDN_ALIAS_FRAGMENTS) {
+        // Only the four-fragment layout is known; another count ends the assembly in progress too.
+        nxdn_alias_log_prop_unassembled(opts, fragment);
+        DSD_MEMSET(a, 0, sizeof(*a));
         return;
     }
-    if (total_blocks == 0U || total_blocks > 4U) {
-        total_blocks = 4U;
+
+    nxdn_alias_assembly now;
+    nxdn_alias_binding_now(state, &now);
+    const size_t index = (size_t)block_number - 1U;
+    const uint8_t bit = (uint8_t)(1U << index);
+    if (a->seen_mask != 0U
+        && (!nxdn_alias_same_binding(a, &now)
+            || ((a->seen_mask & bit) != 0U && memcmp(a->fragment[index], fragment, sizeof(fragment)) != 0))) {
+        // Another call, carrier or alias: its fragments must not complete this one.
+        DSD_MEMSET(a, 0, sizeof(*a));
+    }
+    if (a->seen_mask == 0U) {
+        *a = now;
+    }
+    const uint8_t was_mask = a->seen_mask;
+    DSD_MEMCPY(a->fragment[index], fragment, sizeof(fragment));
+    a->seen_mask = (uint8_t)(a->seen_mask | bit);
+    if (a->seen_mask == was_mask) {
+        return; // a repeat of a fragment already held
     }
 
-    state->nxdn_alias_block_number = block_number;
-    nxdn_alias_store_prop_segment(state, message_bits, block_number);
-
-    char alias[17];
-    DSD_MEMSET(alias, 0, sizeof(alias));
-    nxdn_alias_collect_prop_alias(state, total_blocks, alias, sizeof(alias));
-    nxdn_alias_trim_trailing_spaces(alias);
-    if (alias[0] != '\0') {
+    char alias[NXDN_ALIAS_TEXT_BYTES + 1U];
+    if (nxdn_alias_complete(a, alias, sizeof(alias))) {
         nxdn_alias_publish(state, alias);
+        nxdn_alias_learn(opts, state, a, alias);
     }
 }
 

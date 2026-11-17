@@ -269,12 +269,41 @@ int tetra_mm_decode(const uint8_t* bits, int nbits, tetra_mm_pdu* out);
  * control @p control announces; "" with cipher control off. Uplink and downlink PDUs carry the same element. */
 void tetra_mm_cipher_detail(uint8_t control, uint16_t params, char* out, size_t cap);
 
+/** What the MAC address of the PDU that carried an MM PDU names (EN 300 392-2 table 21.55 address types). */
+enum {
+    TETRA_MM_ADDR_UNKNOWN = 0,     /**< no MAC address came with it, or a Null PDU or reserved address type */
+    TETRA_MM_ADDR_SSI = 1,         /**< types 001, 101, 110: an SSI (the ISSI of the MS, or an ASSI / (V)ASSI) */
+    TETRA_MM_ADDR_USSI = 2,        /**< type 011: the un-exchanged SSI of a migrating MS */
+    TETRA_MM_ADDR_SMI = 3,         /**< types 100, 111: a management identity, never a radio (EN 300 392-1 7.3.3) */
+    TETRA_MM_ADDR_EVENT_LABEL = 4, /**< type 010: an event label, which names no identity of its own */
+};
+
+/**
+ * The address an MM PDU was sent to: the D-LOCATION UPDATE ACCEPT and REJECT PDUs carry no ISSI of their own
+ * (EN 300 392-2 clause 16.4.1 note 5), so the MS they concern is the one the MAC addressed. Only a clear SSI or USSI
+ * names a radio (tetra_mm_addr_radio_ssi()).
+ */
+typedef struct {
+    uint32_t ssi;      /**< the SSI, USSI or SMI; 0 for an event label, an unknown address and while @c encrypted */
+    uint8_t type;      /**< TETRA_MM_ADDR_* */
+    uint8_t encrypted; /**< the SSI part is an encrypted short identity no key decrypted (EN 300 392-7 4.2.6) */
+    uint16_t mcc, mnc; /**< the network of the cell the PDU was decoded on; 0 when that is not known (also DMO) */
+    uint8_t valid;     /**< the PDU came with its MAC address: the fields above are that address */
+} tetra_mm_addr;
+
+/** 1 with the SSI in @p ssi when @p addr names a radio: a clear SSI or USSI. An SMI, an event label, an encrypted
+ * identity or a missing address never does, even when its number equals a radio's. */
+int tetra_mm_addr_radio_ssi(const tetra_mm_addr* addr, uint32_t* ssi);
+
 /**
  * @brief tetra_mm_dispatch() for an MM PDU in a TM-SDU that came with another cell's channel allocation
  * (tetra_mac_sdu_other_cell()) when @p print_only: it is decoded and printed as ever, and writes none of this cell's
- * state (the D-MM STATUS shown, the TEA a network uses). tetra_mm_dispatch() is this with 0.
+ * state (the D-MM STATUS shown, the TEA a network uses). @p addr is the MAC address the TM-SDU came with (NULL: none,
+ * a TM-SDU decoded without its MAC PDU); the location update PDUs name the MS by it. tetra_mm_dispatch() is this with
+ * 0 and NULL.
  */
-void tetra_mm_dispatch_as(const uint8_t* bits, int nbits, int cc, int print_only, dsd_opts* opts, dsd_state* state);
+void tetra_mm_dispatch_as(const uint8_t* bits, int nbits, int cc, int print_only, const tetra_mm_addr* addr,
+                          dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

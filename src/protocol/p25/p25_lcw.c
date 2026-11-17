@@ -37,6 +37,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_cc_update.h"
+#include "p25_unit_activity.h"
 
 static void
 p25_lcw_publish_activity(dsd_state* state, uint8_t index, dsd_call_kind kind, uint64_t target, uint64_t source,
@@ -517,20 +518,14 @@ p25_lcw_handle_format_4a(p25_lcw_ctx* ctx) {
     (void)p25_lcw_accept_private_voice_user(ctx, target, src);
 }
 
+/* Group Affiliation Query (TIA-102.AABF-D §7.3.9): octets 1-2 reserved, Target Address octets 3-5, Source Address
+   octets 6-8. It asks the target to report its affiliation and names no group, so no affiliation is learned from it. */
 static void
 p25_lcw_handle_format_50(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Affiliation Query");
-    uint16_t group = (uint16_t)convert_bits_into_output(&ctx->bits[32], 16);
+    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
     uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
-    if (group) {
-        DSD_FPRINTF(stderr, " - TG %u", group);
-    }
-    if (source) {
-        DSD_FPRINTF(stderr, " SRC %u", source);
-    }
-    if (group && source) {
-        p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
-    }
+    DSD_FPRINTF(stderr, " - TGT %u SRC %u", target, source);
 }
 
 static void
@@ -557,10 +552,33 @@ p25_lcw_handle_format_54(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Status Update");
 }
 
+/* Message Update (TIA-102.AABF-D §7.3.19) and Message Update - Source ID Extension Required (§7.3.31, LCO 27): the
+   16-bit Message octets 1-2, Target Address octets 3-5, Source Address (Source ID) octets 6-8. The link control word
+   reached here only after its FEC corrected it (p25p1_ldu1.c, p25p1_tdulc.c), so its message is a unit activity row.
+   The extension form's Source ID is qualified by the Source ID Extension (LCO 9) that follows it: it is no local
+   address, and with no home system yet the row keeps it nonlocal (never named from the local lists). */
+static void
+p25_lcw_print_message_update(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, uint8_t source_nonlocal) {
+    uint16_t message = (uint16_t)convert_bits_into_output(&bits[8], 16);
+    uint32_t target = (uint32_t)convert_bits_into_output(&bits[24], 24);
+    uint32_t source = (uint32_t)convert_bits_into_output(&bits[48], 24);
+    DSD_FPRINTF(stderr, " - MSG %04X TGT %u SRC %u", message, target, source);
+    const p25_ua_origin origin = {opts, state, 0U, 0U, 1U};
+    const p25_ua_unit reporter = {source, {0U, 0U, 0U, 0U}, 0U, source_nonlocal};
+    const p25_ua_unit recipient = {target, {0U, 0U, 0U, 0U}, 0U, 0U};
+    p25_ua_message_update(&origin, message, &recipient, &reporter);
+}
+
 static void
 p25_lcw_handle_format_55(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
-    DSD_FPRINTF(stderr, " Status Update");
+    DSD_FPRINTF(stderr, " Message Update");
+    p25_lcw_print_message_update(ctx->opts, ctx->state, &ctx->bits[0], 0U);
+}
+
+static void
+p25_lcw_handle_format_5b(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " Message Update %s Source ID Extension Required", dsd_unicode_or_ascii("–", "-"));
+    p25_lcw_print_message_update(ctx->opts, ctx->state, &ctx->bits[0], 1U);
 }
 
 static void
@@ -787,12 +805,6 @@ p25_lcw_handle_format_6a(p25_lcw_ctx* ctx) {
 }
 
 static void
-p25_lcw_handle_format_6b(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
-    DSD_FPRINTF(stderr, " Message Update %s Source ID Extension Required", dsd_unicode_or_ascii("–", "-"));
-}
-
-static void
 p25_lcw_handle_call_termination(p25_lcw_ctx* ctx) {
     uint32_t tgt = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " Call Termination; TGT: %d;", tgt);
@@ -813,11 +825,11 @@ p25_lcw_dispatch_standard_format(p25_lcw_ctx* ctx) {
         {0x50, p25_lcw_handle_format_50}, {0x51, p25_lcw_handle_format_51}, {0x52, p25_lcw_handle_format_52},
         {0x53, p25_lcw_handle_format_53}, {0x54, p25_lcw_handle_format_54}, {0x55, p25_lcw_handle_format_55},
         {0x56, p25_lcw_handle_format_56}, {0x57, p25_lcw_handle_format_57}, {0x58, p25_lcw_handle_format_58},
-        {0x59, p25_lcw_handle_format_59}, {0x5A, p25_lcw_handle_format_5a}, {0x5C, p25_lcw_handle_format_5c},
-        {0x60, p25_lcw_handle_format_60}, {0x61, p25_lcw_handle_format_61}, {0x62, p25_lcw_handle_format_62},
-        {0x63, p25_lcw_handle_format_63}, {0x64, p25_lcw_handle_format_64}, {0x65, p25_lcw_handle_format_65},
-        {0x66, p25_lcw_handle_format_66}, {0x67, p25_lcw_handle_format_67}, {0x68, p25_lcw_handle_format_68},
-        {0x69, p25_lcw_handle_format_69}, {0x6A, p25_lcw_handle_format_6a}, {0x6B, p25_lcw_handle_format_6b},
+        {0x59, p25_lcw_handle_format_59}, {0x5A, p25_lcw_handle_format_5a}, {0x5B, p25_lcw_handle_format_5b},
+        {0x5C, p25_lcw_handle_format_5c}, {0x60, p25_lcw_handle_format_60}, {0x61, p25_lcw_handle_format_61},
+        {0x62, p25_lcw_handle_format_62}, {0x63, p25_lcw_handle_format_63}, {0x64, p25_lcw_handle_format_64},
+        {0x65, p25_lcw_handle_format_65}, {0x66, p25_lcw_handle_format_66}, {0x67, p25_lcw_handle_format_67},
+        {0x68, p25_lcw_handle_format_68}, {0x69, p25_lcw_handle_format_69}, {0x6A, p25_lcw_handle_format_6a},
     };
 
     for (size_t i = 0; i < (sizeof(handlers) / sizeof(handlers[0])); i++) {

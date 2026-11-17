@@ -1317,6 +1317,59 @@ void p25_aff_deregister(dsd_state* state, uint32_t rid);
  */
 void p25_aff_tick(dsd_state* state);
 
+/** A unit's home identity (SUID): WACN, System ID and unit ID. valid 0 means unknown. */
+typedef struct {
+    uint32_t wacn;
+    uint16_t sys;
+    uint32_t id;
+    uint8_t valid;
+} p25_home_id;
+
+/**
+ * @brief Record an accepted Unit Registration: local address @p assigned, given to @p home on the serving system.
+ *
+ * The entry for @p assigned is added or refreshed as p25_aff_register() does. When @p home is valid (non-zero ID) and
+ * the serving system is known (WACN or System ID non-zero), the entry also keeps who it was assigned to: a new owner
+ * replaces the previous one (an address is reassigned), and another entry this home held on the same serving system
+ * goes (a unit holds one registration per system). Otherwise the entry keeps no owner.
+ *
+ * @param state Decoder state holding the affiliation table.
+ * @param assigned Local address (WUID) the registration assigned.
+ * @param home Home identity the response named; NULL or invalid keeps no owner.
+ * @param serving_wacn WACN of the system the response was heard on.
+ * @param serving_sys System ID of the system the response was heard on.
+ */
+void p25_aff_register_assigned(dsd_state* state, uint32_t assigned, const p25_home_id* home, uint32_t serving_wacn,
+                               uint16_t serving_sys);
+
+/**
+ * @brief Remove the registration a Unit Deregistration Acknowledge names by its home identity.
+ *
+ * Removes every entry still owned by @p home on this serving system. An entry with no owner goes only when its
+ * address is the home unit ID and the home system is the serving system (a unit at home is addressed by its own ID)
+ * or no serving system is known; an address now owned by another home stays.
+ *
+ * @return Number of entries removed.
+ */
+int p25_aff_deregister_home(dsd_state* state, const p25_home_id* home, uint32_t serving_wacn, uint16_t serving_sys);
+
+/**
+ * @brief The local address @p home holds on the serving system.
+ *
+ * @param assigned Receives the address when found (may be NULL).
+ * @return 1 when an entry owned by @p home on this serving system exists, else 0.
+ */
+int p25_aff_assigned_for_home(const dsd_state* state, const p25_home_id* home, uint32_t serving_wacn,
+                              uint16_t serving_sys, uint32_t* assigned);
+
+/**
+ * @brief Drop the owners another serving system named (the system identity, p2_wacn / p2_sysid, just changed).
+ *
+ * A local address (WUID) is assigned at registration and unique only within its system (TIA-102.AABC-D §2.3.27), so
+ * an owner learned on another system no longer holds it here. The registered addresses stay.
+ */
+void p25_aff_drop_foreign_owners(dsd_state* state);
+
 /* ============================================================================
  * Group Affiliation (RID ↔ TG) helpers
  * ============================================================================ */

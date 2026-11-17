@@ -26,9 +26,12 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <stdio.h>
 #include "dmr_ars.h"
+#include "dmr_unit_activity.h"
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -383,4 +386,15 @@ dmr_ars_print_message(dsd_state* state, const uint8_t* msg, uint16_t len) {
         rec_len = DMR_ARS_MAX_DUMP;
     }
     utf8_to_text(state, 0, rec_len, rec);
+}
+
+void
+dmr_ars_note_activity(const dsd_opts* opts, dsd_state* state, uint8_t slot, const uint8_t* msg, uint16_t len,
+                      uint32_t source) {
+    // The IP data path also carries P25 data; its ARS is not a DMR row.
+    if (state == NULL || msg == NULL || !DSD_SYNC_IS_DMR(state->lastsynctype)
+        || state->event_crc_invalid[slot & 1U] != 0U || !dmr_ars_record_is_exact(msg, len)) {
+        return;
+    }
+    dmr_ua_ars(opts, state, (uint8_t)(slot & 1U), (uint8_t)(msg[2] & 0x0FU), source);
 }

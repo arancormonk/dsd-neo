@@ -2514,7 +2514,12 @@ channel is delayed.
   within the same system scope. Export warns when the 64-row limit omits entries. See `docs/csv-formats.md` for
   the offset encoding and channel-map invalidation rules.
 - Group list CSV (allow/block + labels, optional `priority/preempt/audio/record/stream` policy columns; exact IDs,
-  ranges and digit patterns such as `12xx` or `*`): `-G <file>`; pattern starter in `examples/group_patterns.csv`
+  ranges and digit patterns such as `12xx` or `*`): `-G <file>`; pattern starter in `examples/group_patterns.csv`.
+  Radio aliases heard over the air (P25, the DMR talker alias, the NXDN Kenwood alias) are learned into this list as
+  mode `D` rows and appended to the file, with a `scope=` cell naming the system they were heard on once that system is
+  known; such a row names its radio only on that system, also after a restart. A mode `D` row you type (no `scope=`
+  cell) names the radio on every system. See the learned alias notes under
+  [Priority and preemption](csv-formats.md#priority-and-preemption).
 - Source ID list CSV (radio ID names; with a `mode` header column also block, mute, recording and export rules by
   radio): `--src-csv <file>` (also `--src-csv=<file>`); format in `docs/csv-formats.md`, starters in
   `examples/src.csv` and `examples/src_policy.csv`. Source names prefer this list, then the group list's exact row;

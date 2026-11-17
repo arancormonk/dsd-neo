@@ -180,7 +180,7 @@ expect_identity_calls(const char* tag, const dsd_state* state) {
 
 static int
 expect_file_contains(const char* tag, const char* path, const char* needle) {
-    FILE* f = fopen(path, "rb");
+    FILE* f = path ? fopen(path, "rb") : NULL;
     if (!f) {
         DSD_FPRINTF(stderr, "%s: failed to open capture %s\n", tag, path ? path : "(null)");
         return 1;
@@ -510,6 +510,10 @@ expect_metadata_only_state(const char* tag, const dsd_opts* opts, const dsd_stat
     return rc;
 }
 
+/* 1 while run_sccb_tsbk_candidate_case() runs: the case's octets are a Phase 1 TSBK in MAC form, decoded as the TSBK
+   decoder hands it over (process_MAC_VPDU_bridged_p1()), not a FACCH MAC PDU. */
+static int g_sccb_case_is_tsbk;
+
 static int
 run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int current_site, long* out_freqs,
                         int out_cap, int* out_rfss, int* out_site, int* out_lcn_count, long* out_lcn_freqs,
@@ -536,7 +540,11 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
         MAC[i] = mac_bytes[i];
     }
 
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    if (g_sccb_case_is_tsbk) {
+        process_MAC_VPDU_bridged_p1(&opts, state, MAC);
+    } else {
+        process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    }
 
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
     int count = (cc != NULL) ? cc->count : 0;
@@ -559,6 +567,17 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
     }
     dsd_state_ext_free_all(state);
     free(state);
+    return count;
+}
+
+static int
+run_sccb_tsbk_candidate_case(const unsigned char* mac_bytes, int current_rfss, int current_site, long* out_freqs,
+                             int out_cap, int* out_rfss, int* out_site, int* out_lcn_count, long* out_lcn_freqs,
+                             int out_lcn_cap) {
+    g_sccb_case_is_tsbk = 1;
+    int count = run_sccb_candidate_case(mac_bytes, current_rfss, current_site, out_freqs, out_cap, out_rfss, out_site,
+                                        out_lcn_count, out_lcn_freqs, out_lcn_cap);
+    g_sccb_case_is_tsbk = 0;
     return count;
 }
 
@@ -622,7 +641,7 @@ run_bridged_sccb_zero_channel_b_case(void) {
     MAC[8] = 0x00;
     MAC[9] = 0x00;
 
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, state, MAC);
 
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
     const int count = (cc != NULL) ? cc->count : 0;
@@ -733,7 +752,7 @@ run_sccb_explicit_scan_list_case(int imported, int seeded_count, const char* tag
     MAC[7] = 0x05;
     MAC[8] = 0x01; /* service class */
 
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, state, MAC);
 
     DSD_SNPRINTF(label, sizeof label, "%s_count_not_lowered", tag);
     rc |= expect_true(label, state->lcn_freq_count >= seeded_count);
@@ -908,7 +927,7 @@ run_p1_bridged_adjacent_unknown_sysid_case(void) {
     MAC[7] = 0x10;
     MAC[8] = 0x0A; /* CHAN-T 0x100A */
     MAC[9] = 0x01;
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, state, MAC);
 
     const long want = 851000000L + 10L * 100L * 125L;
     rc |= expect_eq_long("p1_bridge_adjacent_neighbor_count", state->p25_nb_count, 1);
@@ -1089,6 +1108,23 @@ failed_crc_process(dsd_opts* opts, dsd_state* state, const unsigned char* mac_by
         MAC[i] = mac_bytes[i];
     }
     process_MAC_VPDU_crc(opts, state, 1 /* SACCH */, P25_MAC_PDU_SIGNAL, MAC, crc_ok);
+}
+
+/* Protection Parameter Update is a Phase 1 TSBK (0x3F): it reaches the handlers only from the TSBK decoder, whose blocks
+   passed their CRC, so no failed-CRC form of it exists. The crc_ok = 0 case feeds the same octets as a failed-CRC
+   SACCH instead, which shows that a Phase 2 MAC opcode 0x7F is no protection update at all: no handler runs, and the
+   case asserts only that nothing is applied. */
+static void
+protection_update_process(dsd_opts* opts, dsd_state* state, const unsigned char* mac_bytes, int crc_ok) {
+    if (!crc_ok) {
+        failed_crc_process(opts, state, mac_bytes, crc_ok);
+        return;
+    }
+    unsigned long long int tsbk[24] = {0};
+    for (int i = 0; i < 24; i++) {
+        tsbk[i] = mac_bytes[i];
+    }
+    process_MAC_VPDU_bridged_p1(opts, state, tsbk);
 }
 
 /* System A as failed_crc_seed_state() built it, untouched. */
@@ -1453,7 +1489,7 @@ run_failed_crc_status_broadcast_cases(void) {
         }
         failed_crc_process(&opts, state, services, crc_ok);
         failed_crc_process(&opts, state, time_date, crc_ok);
-        failed_crc_process(&opts, state, protection, crc_ok);
+        protection_update_process(&opts, state, protection, crc_ok);
         if (crc_ok) {
             rc |= expect_true("checked service broadcast applies",
                               state->p25_sys_services_valid == 1 && state->p25_sys_services_available == 0x123456U);
@@ -1470,7 +1506,7 @@ run_failed_crc_status_broadcast_cases(void) {
                               state->p25_sys_time_valid == 0 && state->p25_sys_time == 0);
             rc |= expect_true("failed-crc time broadcast sets no offset",
                               state->p25_sys_time_offset_valid == 0 && state->p25_sys_time_offset == 0);
-            rc |= expect_true("failed-crc protection broadcast sets no parameters",
+            rc |= expect_true("failed-crc SACCH 0x7F (no Phase 2 protection update) sets no parameters",
                               state->p25_prot_valid == 0 && state->p25_prot_algid == 0 && state->p25_prot_kid == 0);
             rc |= expect_failed_crc_tables_unchanged("failed-crc status broadcasts", state);
         }
@@ -1611,10 +1647,10 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[3] = 0x43;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
     rc |= expect_contains("p1 bridged 0x18 status target", recent_notice(&state, 0U), "STATUS Target: 703710");
     rc |= expect_contains("p1 bridged 0x18 status source", recent_notice(&state, 0U), "Source: 74565");
-    rc |= expect_contains("p1 bridged 0x18 status codes", recent_notice(&state, 0U), "Unit: 21 User: 43");
+    rc |= expect_contains("p1 bridged 0x18 status codes", recent_notice(&state, 0U), "User: 21 Unit: 43");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -1623,7 +1659,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0x5A;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
     rc |= expect_contains("p1 bridged 0x1A query target", recent_notice(&state, 0U), "Status Query Target: 703710");
     rc |= expect_contains("p1 bridged 0x1A query source", recent_notice(&state, 0U), "Source: 74565");
     dsd_state_ext_free_all(&state);
@@ -1636,7 +1672,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[3] = 0xEF;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
     rc |= expect_contains("p1 bridged 0x1C message target", recent_notice(&state, 0U), "MSG Target: 703710");
     rc |= expect_contains("p1 bridged 0x1C message source", recent_notice(&state, 0U), "Source: 74565");
     rc |= expect_contains("p1 bridged 0x1C message body", recent_notice(&state, 0U), "Message: BEEF");
@@ -1648,7 +1684,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0x5F;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
     rc |= expect_contains("p1 bridged 0x1F alert target", recent_notice(&state, 0U), "Call Alert Target: 703710");
     rc |= expect_contains("p1 bridged 0x1F alert source", recent_notice(&state, 0U), "Source: 74565");
     dsd_state_ext_free_all(&state);
@@ -1659,7 +1695,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0x6A;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &state, MAC);
     rc |= expect_contains("p1 bridged 0x2A affiliation target", recent_notice(&state, 0U),
                           "Group Affiliation Query Target: 703710");
     rc |= expect_contains("p1 bridged 0x2A affiliation source", recent_notice(&state, 0U), "Source: 74565");
@@ -2000,6 +2036,67 @@ init_multifragment_continuation(unsigned long long int* mac, unsigned len) {
     init_length_coded_tdma_segment(mac, 0x10U, len);
 }
 
+/* Writes the Multi-Fragment CRC-16 (TIA-102.BBAD-A §4.7: x^16 + x^12 + x^5 + 1, inverted, MSB first) into the last two
+   data octets of the message @p frags[0..count-1] carry, over every data octet before them. Each fragment's data
+   octets follow its B1/B2/MCO and Length octets, Data Length (the base's third octet) of them in all. */
+static void
+seal_multifragment(unsigned long long int* const* frags, int count) {
+    unsigned long long int* octet[256];
+    const int data_len = (int)(frags[0][3] & 0xFFU);
+    int n = 0;
+    for (int f = 0; f < count; f++) {
+        const int len = (int)(frags[f][2] & 0x3FU);
+        for (int i = 0; i + 2 < len && n < data_len && 3 + i < 24; i++) {
+            octet[n++] = &frags[f][3 + i];
+        }
+    }
+    if (n != data_len || n < 3) {
+        return;
+    }
+    uint16_t crc = 0U;
+    for (int i = 0; i < n - 2; i++) {
+        for (int b = 7; b >= 0; b--) {
+            const unsigned feedback = ((crc >> 15U) & 1U) ^ (unsigned)((*octet[i] >> b) & 1U);
+            crc = (uint16_t)(crc << 1U);
+            if (feedback) {
+                crc ^= 0x1021U;
+            }
+        }
+    }
+    crc ^= 0xFFFFU;
+    *octet[n - 2] = (crc >> 8) & 0xFFU;
+    *octet[n - 1] = crc & 0xFFU;
+}
+
+static void
+seal_two_fragments(unsigned long long int* base, unsigned long long int* cont) {
+    unsigned long long int* frags[2] = {base, cont};
+    seal_multifragment(frags, 2);
+}
+
+/* An LCCH MAC_SIGNAL on logical channel @p lch whose CRC-16 passed: multi-fragment messages are only available on the
+   LCCH (TIA-102.BBAD-A §3), and the assembly is that channel's. */
+static void
+lcch_vpdu(dsd_opts* opts, dsd_state* state, int lch, unsigned long long int* mac) {
+    state->p2_is_lcch = 1;
+    state->currentslot = lch;
+    process_MAC_VPDU(opts, state, 1 /* SACCH layout */, P25_MAC_PDU_SIGNAL, mac);
+}
+
+/* Status Update - Extended LCCH (TIA-102.BBAD-A §3.41, Figures 93-94): Data Length 25, the continuation Length 11. */
+static void
+init_status_update_fragments(unsigned long long int* base, unsigned long long int* cont) {
+    init_multifragment_base(base, 0xD9, 25);
+    base[4] = 0x12;
+    base[5] = 0x34;
+    put_u24_ull(base, 6, 0x010203);
+    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
+    put_u24_ull(base, 16, 0x445566);
+    init_multifragment_continuation(cont, 11);
+    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
+    seal_two_fragments(base, cont);
+}
+
 static int
 run_standard_mac_multifragment_cases(void) {
     static const struct {
@@ -2015,6 +2112,7 @@ run_standard_mac_multifragment_cases(void) {
     static dsd_state state;
     unsigned long long int base[24] = {0};
     unsigned long long int cont[24] = {0};
+    unsigned long long int pad[24] = {0};
     int rc = 0;
 
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -2022,94 +2120,59 @@ run_standard_mac_multifragment_cases(void) {
     DSD_MEMSET(&state, 0, sizeof state);
     init_multifragment_continuation(cont, 10);
     put_u24_ull(cont, 3, 0x010203);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    lcch_vpdu(&opts, &state, 0, cont);
     rc |= expect_true("orphan continuation does not mutate active state", recent_notice(&state, 0U)[0] == '\0');
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0xD9, 24);
-    base[4] = 0x12;
-    base[5] = 0x34;
-    put_u24_ull(base, 6, 0x010203);
-    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
-    put_u24_ull(base, 16, 0x445566);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
+    init_status_update_fragments(base, cont);
+    lcch_vpdu(&opts, &state, 0, base);
     rc |= expect_true("base fragment does not mutate active state", recent_notice(&state, 0U)[0] == '\0');
-
-    init_multifragment_continuation(cont, 10);
-    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    lcch_vpdu(&opts, &state, 0, cont);
     rc |= expect_contains("completed 0xD9 status label", recent_notice(&state, 0U), "STATUS-L");
     rc |= expect_contains("completed 0xD9 target", recent_notice(&state, 0U), "Target: 66051");
     rc |= expect_contains("completed 0xD9 source", recent_notice(&state, 0U), "Source: 4478310");
-    rc |= expect_contains("completed 0xD9 unit", recent_notice(&state, 0U), "Unit: 12");
-    rc |= expect_contains("completed 0xD9 user", recent_notice(&state, 0U), "User: 34");
+    rc |= expect_contains("completed 0xD9 user", recent_notice(&state, 0U), "User: 12");
+    rc |= expect_contains("completed 0xD9 unit", recent_notice(&state, 0U), "Unit: 34");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0xD9, 24);
-    base[4] = 0x12;
-    base[5] = 0x34;
-    put_u24_ull(base, 6, 0x010203);
-    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
-    put_u24_ull(base, 16, 0x445566);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
-
-    init_length_coded_tdma_segment(cont, 0x08U, 6);
-    cont[3] = 0x88;
-    cont[4] = 0x88;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    init_status_update_fragments(base, cont);
+    lcch_vpdu(&opts, &state, 0, base);
+    init_length_coded_tdma_segment(pad, 0x08U, 6);
+    pad[3] = 0x88;
+    pad[4] = 0x88;
+    lcch_vpdu(&opts, &state, 0, pad);
     rc |= expect_eq_long("null avoid zero bias keeps fragment active", state.p25_mac_frag[0].active, 1);
     rc |= expect_eq_long("null avoid zero bias does not append", state.p25_mac_frag[0].collected, 16);
-
-    init_multifragment_continuation(cont, 10);
-    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    lcch_vpdu(&opts, &state, 0, cont);
     rc |= expect_contains("null avoid zero bias allows completion", recent_notice(&state, 0U), "STATUS-L");
     dsd_state_ext_free_all(&state);
 
+    /* The base's PDU ends in null padding after the message; the assembly is logical channel 1's. */
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0xD9, 24);
-    base[4] = 0x12;
-    base[5] = 0x34;
-    put_u24_ull(base, 6, 0x010203);
-    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
-    put_u24_ull(base, 16, 0x445566);
-    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, P25_MAC_PDU_ACTIVE, base);
-    rc |= expect_eq_long("SACCH base ignores null padding active", state.p25_mac_frag[1].active, 1);
-    rc |= expect_eq_long("SACCH base ignores null padding collected", state.p25_mac_frag[1].collected, 16);
-
-    init_multifragment_continuation(cont, 10);
-    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
-    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, P25_MAC_PDU_ACTIVE, cont);
-    rc |= expect_contains("SACCH completed 0xD9 status label", recent_notice(&state, 0U), "STATUS-L");
-    rc |= expect_eq_long("SACCH completed 0xD9 clears active", state.p25_mac_frag[1].active, 0);
+    init_status_update_fragments(base, cont);
+    lcch_vpdu(&opts, &state, 1, base);
+    rc |= expect_eq_long("LCCH base ignores null padding active", state.p25_mac_frag[1].active, 1);
+    rc |= expect_eq_long("LCCH base ignores null padding collected", state.p25_mac_frag[1].collected, 16);
+    rc |= expect_eq_long("LCCH base keeps no other channel's", state.p25_mac_frag[0].active, 0);
+    lcch_vpdu(&opts, &state, 1, cont);
+    rc |= expect_contains("LCCH completed 0xD9 status label", recent_notice(&state, 0U), "STATUS-L");
+    rc |= expect_eq_long("LCCH completed 0xD9 clears active", state.p25_mac_frag[1].active, 0);
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0xD9, 24);
-    base[4] = 0x12;
-    base[5] = 0x34;
-    put_u24_ull(base, 6, 0x010203);
-    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
-    put_u24_ull(base, 16, 0x445566);
-    state.currentslot = 0;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
-    rc |= expect_eq_long("slot0 base active before slot1 continuation", state.p25_mac_frag[0].active, 1);
-    rc |= expect_eq_long("slot0 base collected before slot1 continuation", state.p25_mac_frag[0].collected, 16);
-
-    init_multifragment_continuation(cont, 10);
-    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
-    state.currentslot = 1;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
-    rc |= expect_eq_long("slot1 continuation does not append slot0", state.p25_mac_frag[0].collected, 16);
-    rc |= expect_eq_long("slot1 continuation leaves slot0 active", state.p25_mac_frag[0].active, 1);
-    rc |= expect_eq_long("slot1 continuation has no slot1 active", state.p25_mac_frag[1].active, 0);
-    rc |= expect_true("slot1 continuation does not complete slot0", recent_notice(&state, 0U)[0] == '\0');
-
-    state.currentslot = 0;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
-    rc |= expect_contains("slot0 continuation completes slot0", recent_notice(&state, 0U), "STATUS-L");
+    init_status_update_fragments(base, cont);
+    lcch_vpdu(&opts, &state, 0, base);
+    rc |= expect_eq_long("lch0 base active before lch1 continuation", state.p25_mac_frag[0].active, 1);
+    rc |= expect_eq_long("lch0 base collected before lch1 continuation", state.p25_mac_frag[0].collected, 16);
+    lcch_vpdu(&opts, &state, 1, cont);
+    rc |= expect_eq_long("lch1 continuation does not append lch0", state.p25_mac_frag[0].collected, 16);
+    rc |= expect_eq_long("lch1 continuation leaves lch0 active", state.p25_mac_frag[0].active, 1);
+    rc |= expect_eq_long("lch1 continuation has no lch1 active", state.p25_mac_frag[1].active, 0);
+    rc |= expect_true("lch1 continuation does not complete lch0", recent_notice(&state, 0U)[0] == '\0');
+    lcch_vpdu(&opts, &state, 0, cont);
+    rc |= expect_contains("lch0 continuation completes lch0", recent_notice(&state, 0U), "STATUS-L");
     dsd_state_ext_free_all(&state);
 
     for (size_t i = 0; i < sizeof(complete_cases) / sizeof(complete_cases[0]); i++) {
@@ -2125,34 +2188,45 @@ run_standard_mac_multifragment_cases(void) {
         base[17] = 0x10;
         base[18] = 0x05;
 
+        /* Data Length 24: the continuation's 8 data octets are 16-23, cont[3..10], and the last two (cont[9..10])
+           are the Multi-Fragment CRC-16, so the fields fill cont[3..8] only. */
         init_multifragment_continuation(cont, 10);
         put_u24_ull(cont, 3, 0x445566);
-        put_fqid_tail_ull(cont, 6, 0x0BCDE, 0x234, 0x778899);
+        put_u24_ull(cont, 6, 0x778899);
+        seal_two_fragments(base, cont);
 
-        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
-        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+        lcch_vpdu(&opts, &state, 0, base);
+        lcch_vpdu(&opts, &state, 0, cont);
         rc |= expect_contains("completed multi-fragment opcode label", recent_notice(&state, 0U),
                               complete_cases[i].label);
         dsd_state_ext_free_all(&state);
     }
 
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0xD9, 24);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
+    init_multifragment_base(base, 0xD9, 25);
+    lcch_vpdu(&opts, &state, 0, base);
     init_multifragment_continuation(cont, 2); // invalid: no continuation payload after opcode/length bytes
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    lcch_vpdu(&opts, &state, 0, cont);
     rc |= expect_true("invalid continuation clears without active state", recent_notice(&state, 0U)[0] == '\0');
     dsd_state_ext_free_all(&state);
 
+    /* The longest message, Data Length 255: the base's 16 octets, 14 continuations of 16 (Length 18, the LCCH's whole
+       message span) and one of 15 (Length 17). */
+    enum { MAX_FRAGMENTS = 16 };
+
+    static unsigned long long int frag_macs[MAX_FRAGMENTS][24];
+    unsigned long long int* frags[MAX_FRAGMENTS];
     DSD_MEMSET(&state, 0, sizeof state);
-    init_multifragment_base(base, 0x71, 255);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
-    for (int i = 0; i < 11; i++) {
-        init_multifragment_continuation(cont, 23);
-        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    init_multifragment_base(frag_macs[0], 0x71, 255);
+    frags[0] = frag_macs[0];
+    for (int f = 1; f < MAX_FRAGMENTS; f++) {
+        init_multifragment_continuation(frag_macs[f], f < MAX_FRAGMENTS - 1 ? 18U : 17U);
+        frags[f] = frag_macs[f];
     }
-    init_multifragment_continuation(cont, 11);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
+    seal_multifragment(frags, MAX_FRAGMENTS);
+    for (int f = 0; f < MAX_FRAGMENTS; f++) {
+        lcch_vpdu(&opts, &state, 0, frags[f]);
+    }
     rc |= expect_eq_long("max-length multi-fragment clears active", state.p25_mac_frag[0].active, 0);
     rc |= expect_eq_long("max-length multi-fragment clears collected", state.p25_mac_frag[0].collected, 0);
     rc |= expect_contains("max-length multi-fragment completes", recent_notice(&state, 0U), "AUTH-L");
@@ -2161,9 +2235,219 @@ run_standard_mac_multifragment_cases(void) {
     return rc;
 }
 
+enum { VPDU_CORE_CAPTURE_BYTES = 8192 };
+
+static char g_vpdu_out[VPDU_CORE_CAPTURE_BYTES];
+
+/* Decode @p mac as a Phase 1 TSBK in MAC form (@p bridged, the TSBK decoder's call) or a native FACCH PDU, keeping
+   what the handlers print in g_vpdu_out. */
+static int
+decode_capturing(dsd_opts* opts, dsd_state* state, unsigned long long int* mac, int bridged) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_p2_vpdu_core_case") != 0) {
+        return -1;
+    }
+    if (bridged) {
+        process_MAC_VPDU_bridged_p1(opts, state, mac);
+    } else {
+        process_MAC_VPDU(opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, mac);
+    }
+    dsd_test_capture_stderr_end(&cap);
+    return dsd_test_capture_stderr_read(&cap, g_vpdu_out, sizeof g_vpdu_out);
+}
+
+static int
+expect_lacks(const char* tag, const char* haystack, const char* needle) {
+    if (haystack && needle && strstr(haystack, needle) != NULL) {
+        DSD_FPRINTF(stderr, "%s: unexpected '%s' in '%s'\n", tag, needle, haystack);
+        return 1;
+    }
+    return 0;
+}
+
+/* The 16-bit Status field is User Status in its first octet, Unit Status in its second (TIA-102.AABC-D §2.3.29), on
+   every Status Update form. The extended LCCH (0xD9) form is pinned in run_standard_mac_multifragment_cases(), the
+   MBT in P25_MBT_DECODE, the inbound TSBK in P25_P1_TSBK_HANDLERS. */
+static int
+test_status_user_then_unit(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+
+    /* TSBK 0x18: Status octets 2-3, Target 4-6, Source 7-9. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[0] = 0x07;
+    MAC[1] = 0x58;
+    MAC[2] = 0xA1;
+    MAC[3] = 0x0B;
+    put_u24_ull(MAC, 4, 0x000064);
+    put_u24_ull(MAC, 7, 0x0000C8);
+    rc |= expect_true("p1 status decoded", decode_capturing(&opts, &state, MAC, 1) == 0);
+    rc |= expect_contains("p1 status text", g_vpdu_out, "Target [100] Source [200] User [A1] Unit [0B]");
+    rc |= expect_contains("p1 status notice", recent_notice(&state, 0U), "User: A1 Unit: 0B");
+    dsd_state_ext_free_all(&state);
+
+    /* Phase 2 0x58 (TIA-102.BBAD-A §3.41 Fig 91): length octet 2, Status 3-4, Target 5-7, Source 8-10. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x58;
+    MAC[2] = 0x0A;
+    MAC[3] = 0xA2;
+    MAC[4] = 0x0C;
+    put_u24_ull(MAC, 5, 0x000064);
+    put_u24_ull(MAC, 8, 0x0000C8);
+    rc |= expect_true("p2 status decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("p2 status text", g_vpdu_out, "Target [100] Source [200] User [A2] Unit [0C]");
+    rc |= expect_contains("p2 status notice", recent_notice(&state, 0U), "User: A2 Unit: 0C");
+    dsd_state_ext_free_all(&state);
+
+    /* Phase 2 0xD8 (Fig 92): Status 3-4, Target 5-7, Source SUID 8-14. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xD8;
+    MAC[2] = 0x0E;
+    MAC[3] = 0xA3;
+    MAC[4] = 0x0D;
+    put_u24_ull(MAC, 5, 0x000064);
+    put_fqid_tail_ull(MAC, 8, 0xBEE00, 0x123, 0x0000C8);
+    rc |= expect_true("p2 extended status decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("p2 extended status text", g_vpdu_out, "User [A3] Unit [0D]");
+    rc |= expect_contains("p2 extended status notice", recent_notice(&state, 0U), "User: A3 Unit: 0D");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* An Extended Function operand with bit 7 set is the acknowledgement of the command in its low bits
+   (TIA-102.AABC-D §2.3.15 Table 2.3.15-1): every form that names a class $00 command names its ACK too. */
+static int
+test_ext_forms_ack_label(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+
+    /* TSBK 0x24 Extended Function Command: Class 2, Operand 3, Argument 4-6, Target 7-9. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[0] = 0x07;
+    MAC[1] = 0x64;
+    MAC[2] = 0x00;
+    MAC[3] = 0xFF;
+    put_u24_ull(MAC, 7, 0x000064);
+    rc |= expect_true("0x64 decoded", decode_capturing(&opts, &state, MAC, 1) == 0);
+    rc |= expect_contains("0x64 ack", g_vpdu_out, "Radio Inhibit Ack;");
+    dsd_state_ext_free_all(&state);
+
+    /* Phase 2 0xE4 Extended VCH and 0xE5 Extended LCCH: length 2, Function (class, operand) 3-4, Argument 5-7,
+       Target 8-10, source SUID after it. */
+    static const int forms[] = {0xE4, 0xE5};
+    for (int i = 0; i < 2; i++) {
+        DSD_MEMSET(&state, 0, sizeof state);
+        DSD_MEMSET(MAC, 0, sizeof MAC);
+        MAC[1] = (unsigned long long int)forms[i];
+        MAC[2] = 0x0E;
+        MAC[3] = 0x00;
+        MAC[4] = 0xFD;
+        put_u24_ull(MAC, 8, 0x000064);
+        rc |= expect_true("extended form decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+        rc |= expect_contains("extended form ack", g_vpdu_out, "Radio Detach Ack");
+        dsd_state_ext_free_all(&state);
+    }
+
+    /* The command itself keeps its plain label, and a reserved operand never reads as an ACK. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xE4;
+    MAC[2] = 0x0E;
+    MAC[4] = 0x7E;
+    rc |= expect_true("extended command decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("extended command label", g_vpdu_out, "Radio Uninhibit");
+    rc |= expect_lacks("extended command not ack", g_vpdu_out, "Uninhibit Ack");
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[4] = 0x81;
+    rc |= expect_true("reserved operand decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("reserved operand label", g_vpdu_out, "Reserved");
+    rc |= expect_lacks("reserved operand not ack", g_vpdu_out, "Ack");
+    dsd_state_ext_free_all(&state);
+
+    /* Motorola 0x84 (MFID 0x90, length octet 3): the standard fields one octet later. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x84;
+    MAC[2] = 0x90;
+    MAC[3] = 0x0B;
+    MAC[4] = 0x00;
+    MAC[5] = 0x80;
+    put_u24_ull(MAC, 9, 0x000064);
+    rc |= expect_true("motorola form decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("motorola form ack", g_vpdu_out, "Radio Check Ack");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* TSBK 0x1D Radio Unit Monitor Command (TIA-102.AABC-D §6.2.24.1): TX Time octet 2, SM bit 7 and TX Multiplier bits
+   1-0 of octet 3, Source Address 4-6, Target Address 7-9. It is current in Phase 1; only its Phase 2 opcode 0x5D is
+   obsolete. */
+static int
+test_tsbk_0x1d_rum_fields(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[0] = 0x07;
+    MAC[1] = 0x5D;
+    MAC[2] = 0x05;
+    MAC[3] = 0x82;
+    put_u24_ull(MAC, 4, 0x000064);
+    put_u24_ull(MAC, 7, 0x0000C8);
+    rc |= expect_true("0x1D decoded", decode_capturing(&opts, &state, MAC, 1) == 0);
+    rc |= expect_contains("0x1D fields", g_vpdu_out, "Target [200] Source [100] Time [5] Mult [2] Silent");
+    rc |= expect_lacks("0x1D not obsolete", g_vpdu_out, "Obsolete");
+    rc |= expect_contains("0x1D notice", recent_notice(&state, 0U), "RUM Target: 200 Source: 100 Time: 5 Mult: 2");
+    dsd_state_ext_free_all(&state);
+
+    /* The Phase 2 0x5D stays the obsolete form. */
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x5D;
+    rc |= expect_true("0x5D decoded", decode_capturing(&opts, &state, MAC, 0) == 0);
+    rc |= expect_contains("0x5D obsolete", g_vpdu_out, "Radio Unit Monitor Command - Obsolete");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* TSBK 0x2E Authentication Command (TIA-102.AABC-D §6.2.3): octet 2 reserved, target SUID octets 3-9. */
+static int
+test_tsbk_0x2e_auth_cmd(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[0] = 0x07;
+    MAC[1] = 0x6E;
+    put_fqid_tail_ull(MAC, 3, 0xBEE00, 0x123, 0x00ABCD);
+    rc |= expect_true("0x2E decoded", decode_capturing(&opts, &state, MAC, 1) == 0);
+    rc |= expect_contains("0x2E label", g_vpdu_out, "Authentication Command (obsolete)");
+    rc |= expect_contains("0x2E target", g_vpdu_out, "Target [BEE00:123.43981]");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 run_cases(void) {
     int rc = 0;
+
+    rc |= test_status_user_then_unit();
+    rc |= test_ext_forms_ack_label();
+    rc |= test_tsbk_0x1d_rum_fields();
+    rc |= test_tsbk_0x2e_auth_cmd();
 
     // Case 1: SACCH, PTT opcode (0x01) with basic header → JSON emits summary "PTT"
     {
@@ -2258,7 +2542,7 @@ run_cases(void) {
         mac[7] = 0x05;
         mac[8] = 0x01; // service class
 
-        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
+        int count = run_sccb_tsbk_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
         rc |= expect_eq_long("p1_bridge_sccb_explicit_count", count, 1);
         rc |= expect_eq_long("p1_bridge_sccb_explicit_downlink", freqs[0], 851000000 + 10 * 100 * 125);
     }
@@ -2279,7 +2563,7 @@ run_cases(void) {
         mac[8] = 0x05;
         mac[9] = 0x00; // SSC B zero is still a valid bridged P1 channel B
 
-        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
+        int count = run_sccb_tsbk_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
         rc |= expect_eq_long("p1_bridge_sccb_implicit_zero_ssc_count", count, 2);
         rc |= expect_eq_long("p1_bridge_sccb_implicit_zero_ssc_ch1", freqs[0], 851000000 + 10 * 100 * 125);
         rc |= expect_eq_long("p1_bridge_sccb_implicit_zero_ssc_ch2", freqs[1], 851000000 + 5 * 100 * 125);
@@ -2330,7 +2614,7 @@ run_cases(void) {
         mac[7] = 0x05;
         mac[8] = 0x01;
 
-        int count = run_sccb_candidate_case(mac, 0x63, 0x63, freqs, 4, NULL, NULL, &lcn_count, NULL, 0);
+        int count = run_sccb_tsbk_candidate_case(mac, 0x63, 0x63, freqs, 4, NULL, NULL, &lcn_count, NULL, 0);
         rc |= expect_eq_long("p1_bridge_sccb_foreign_site_count", count, 0);
         rc |= expect_eq_long("p1_bridge_sccb_foreign_lcn_count", lcn_count, 0);
     }

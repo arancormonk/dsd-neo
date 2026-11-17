@@ -157,7 +157,7 @@ test_que_rsp_field_extraction_known_payload(void) {
     // SVC=0x15, Reason=0x20, Addl=0x123456, Target=0xABCDEF (11259375)
     build_que_deny_mac(MAC, 0, 0x15, 0x20, 0x123456, 0xABCDEF);
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU_bridged_p1(&opts, &st, MAC);
 
     int rc = 0;
     if (st.p25_sm_queued_count != 1 || st.p25_sm_deny_count != 0) {
@@ -586,7 +586,7 @@ test_sm_deny_counter_increments(void) {
 }
 
 /* ============================================================================
- * Test: Deny/Queued heard on an occupied carrier must not release it
+ * Test: Deny/Queued never release the carrier, occupied or idle
  * ============================================================================ */
 
 static int
@@ -620,7 +620,8 @@ test_deny_holds_occupied_carrier(void) {
         rc = 1;
     }
 
-    /* Once nothing occupies either slot, the same deny releases as before. */
+    /* Nor does an idle one: the deny answers some unit's request, and the acquisition watchdog, not the response,
+       ends an assignment that never carries voice (P25_DENY_NO_RELEASE covers every form). */
     st.p25_p2_audio_allowed[1] = 0;
     process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
     if (st.p25_sm_deny_count != 2) {
@@ -628,8 +629,8 @@ test_deny_holds_occupied_carrier(void) {
                     st.p25_sm_deny_count);
         rc = 1;
     }
-    if (ctx->state == P25_SM_TUNED) {
-        DSD_FPRINTF(stderr, "FAIL: test_deny_holds_occupied_carrier: idle carrier did not release\n");
+    if (ctx->state != P25_SM_TUNED) {
+        DSD_FPRINTF(stderr, "FAIL: test_deny_holds_occupied_carrier: released an idle carrier\n");
         rc = 1;
     }
 

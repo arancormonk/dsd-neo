@@ -128,6 +128,8 @@ Item {
         // Every screen and sheet this harness can build on its own, with how it opens. The pieces they are built from
         // (buttons, tags, rows) are checked inside them, where the node that reads them is.
         readonly property var components: [
+            // The session's unit activity: empty, so the empty state's lines are walked.
+            {file: "ActivityScreen"},
             {file: "ActionMenu", open: function (menu) {
                 menu.title = "Talkgroup 100";
                 menu.actions = [{text: "Hold", description: "Only this talkgroup is heard"}, {text: "Avoid"}];
@@ -836,6 +838,11 @@ Item {
                 DiagnosticsScreen: function (screen) {
                     return diagnosticsLog.paused && diagnosticsLog.rowCount() > 0;
                 },
+                // A named row, a deny, a kill command heard twice and the gap row.
+                ActivityScreen: function (screen) {
+                    var view = findChild(screen, "activityList");
+                    return view.count === unitActivity.count + 1 && view.itemAtIndex(0) !== null;
+                },
                 HistoryScreen: function (screen) {
                     var shown = false;
                     (function look(item) {
@@ -848,8 +855,16 @@ Item {
                     return shown;
                 }
             };
+            testContext.clearUnitActivity();
+            verify(testContext.pushUnitActivity({kind: "registration", subject: 10}));
+            for (var k = 0; k < 1029; ++k)
+                verify(testContext.pushUnitActivity({kind: "registration", subject: 100000 + k}, false));
+            verify(testContext.pushUnitActivity({kind: "affiliation", subject: 1234567, group: 100, name: "Engine 7"}, false));
+            verify(testContext.pushUnitActivity({kind: "deny", subject: 1234568, reason: 0x20}, false));
+            verify(testContext.pushUnitActivity({kind: "kill", subject: 1234569}, false));
+            verify(testContext.pushUnitActivity({kind: "kill", subject: 1234569}));
             for (var file of ["HomeScreen", "ImportsScreen", "RadioReferenceScreen", "KeySheet", "DiagnosticsScreen",
-                    "HistoryScreen"]) {
+                    "HistoryScreen", "ActivityScreen"]) {
                 var item = build({file: file});
                 open(item, {});
                 if (file === "DiagnosticsScreen")
@@ -863,6 +878,17 @@ Item {
                 dispose(item);
             }
             diagnosticsLog.paused = false;
+            // The Activity screen's gap row, at the bottom of its list.
+            var activity = build({file: "ActivityScreen"});
+            open(activity, {});
+            var activityRows = findChild(activity, "activityList");
+            activityRows.positionViewAtEnd();
+            waitForRendering(host);
+            wait(20);
+            verify(activityRows.itemAtIndex(activityView.rowForSeq(0)) !== null, "the gap row is on screen");
+            problems = problems.concat(unexplained(activity, [], "ActivityScreen gap row"));
+            dispose(activity);
+            testContext.clearUnitActivity();
             // The wizard's CSV choices, its picker open on talkgroup lists.
             var wizard = build({file: "WizardScreen"});
             open(wizard, {});

@@ -1604,6 +1604,7 @@ test_ui_visibility_toggles_preserve_show_keys(void) {
         {DSD_APP_CMD_UI_SHOW_P25_IDEN_TOGGLE, "P25 IDEN visibility toggle preserves show_keys"},
         {DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE, "P25 CC candidates visibility toggle preserves show_keys"},
         {DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE, "channels visibility toggle preserves show_keys"},
+        {DSD_APP_CMD_UI_SHOW_UNIT_ACTIVITY_TOGGLE, "unit activity visibility toggle preserves show_keys"},
     };
 
     int rc = 0;

@@ -95,6 +95,36 @@ Item {
             compare(populated.active, false);
             sheet.item.network = p25Network;
         }
+        function textItem(item, text) {
+            if (item.text === text)
+                return item;
+            for (var i = 0; i < item.children.length; ++i) {
+                var found = textItem(item.children[i], text);
+                if (found)
+                    return found;
+            }
+            return null;
+        }
+        // Affiliation and radio rows name their radio and talkgroup after the
+        // ID, as the lists name them for this system; a name learned later
+        // renames the row it is on, and a name is drawn as written.
+        function test_rows_show_names() {
+            retained.affiliations = [{rid: 1234567, tg: 77, name: "Alice", tgName: "Fire Dispatch"}];
+            retained.radios = [{rid: 1234567, name: "Alice"}, {rid: 7654321, name: ""}];
+            sheet.item.network = retained;
+            sheet.item.open();
+            wait(20);
+            compare(textCount(sheet.item, "RID:1234567 (Alice) · TG:77 (Fire Dispatch)"), 1);
+            compare(textCount(sheet.item, "RID:1234567 (Alice)"), 1);
+            var unnamed = textItem(sheet.item, "RID:7654321");
+            verify(unnamed !== null);
+            retained.radios = [{rid: 1234567, name: "Alice"}, {rid: 7654321, name: "<b>Bob</b>\nCar 2"}];
+            wait(20);
+            compare(textItem(sheet.item, "RID:7654321 (<b>Bob</b> Car 2)"), unnamed, "the row is renamed in place");
+            compare(unnamed.textFormat, Text.PlainText);
+            sheet.item.visible = false;
+            sheet.item.network = p25Network;
+        }
         // Issue #782: without a screen reader the sections stay most recent first, as the model lists them: a
         // neighbour heard again moves to the top, and its row moves with it.
         function test_recent_first_without_a_screen_reader() {

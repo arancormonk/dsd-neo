@@ -15,22 +15,24 @@
  * Length semantics: whole MAC structure octets, including the opcode byte.
  *
  * The standard table follows sdrtrunk's MacOpcode lengths for fixed-length
- * structures. Vendor partition opcodes are intentionally handled in
- * vendor_len_for() so Motorola/Harris/Tait opcodes do not collide with
- * standard-vendor entries by opcode number alone.
+ * structures, except where TIA-102.BBAC Table 8-2 says otherwise: Unit to Unit
+ * Answer Request 0x45 / 0xC5 is 8 / 12 octets (sdrtrunk 10 / 14) and Telephone
+ * Interconnect Answer Request 0x4A is 9 (sdrtrunk 7). Vendor partition opcodes
+ * are intentionally handled in vendor_len_for() so Motorola/Harris/Tait opcodes
+ * do not collide with standard-vendor entries by opcode number alone.
  */
 static const uint8_t standard_mac_msg_len[256] = {
     [0x01] = 7,  [0x02] = 8,  [0x03] = 7,  [0x05] = 16, [0x21] = 14, [0x22] = 15, [0x25] = 15, [0x30] = 5,  [0x31] = 7,
 
-    [0x40] = 9,  [0x41] = 7,  [0x42] = 9,  [0x43] = 9,  [0x44] = 9,  [0x45] = 10, [0x46] = 9,  [0x48] = 10, [0x49] = 10,
-    [0x4A] = 7,  [0x4C] = 10, [0x52] = 8,  [0x53] = 9,  [0x54] = 9,  [0x55] = 7,  [0x58] = 10, [0x5A] = 7,  [0x5C] = 10,
+    [0x40] = 9,  [0x41] = 7,  [0x42] = 9,  [0x43] = 9,  [0x44] = 9,  [0x45] = 8,  [0x46] = 9,  [0x48] = 10, [0x49] = 10,
+    [0x4A] = 9,  [0x4C] = 10, [0x52] = 8,  [0x53] = 9,  [0x54] = 9,  [0x55] = 7,  [0x58] = 10, [0x5A] = 7,  [0x5C] = 10,
     [0x5D] = 8,  [0x5E] = 14, [0x5F] = 7,  [0x60] = 9,  [0x61] = 9,  [0x64] = 9,  [0x67] = 9,  [0x68] = 10, [0x6A] = 7,
     [0x6B] = 10, [0x6C] = 10, [0x6D] = 7,  [0x6F] = 9,  [0x70] = 9,  [0x71] = 18, [0x72] = 9,  [0x73] = 9,  [0x74] = 9,
     [0x75] = 9,  [0x76] = 10, [0x77] = 13, [0x78] = 9,  [0x79] = 9,  [0x7A] = 9,  [0x7B] = 11, [0x7C] = 9,  [0x7D] = 9,
 
     [0x88] = 5,  [0x90] = 7,
 
-    [0xC0] = 11, [0xC3] = 8,  [0xC4] = 15, [0xC5] = 14, [0xC6] = 15, [0xC7] = 18, [0xC8] = 12, [0xC9] = 12, [0xCB] = 18,
+    [0xC0] = 11, [0xC3] = 8,  [0xC4] = 15, [0xC5] = 12, [0xC6] = 15, [0xC7] = 18, [0xC8] = 12, [0xC9] = 12, [0xCB] = 18,
     [0xCC] = 14, [0xCD] = 18, [0xCE] = 18, [0xCF] = 18, [0xD6] = 9,  [0xD8] = 14, [0xD9] = 18, [0xDA] = 11, [0xDB] = 18,
     [0xDC] = 14, [0xDE] = 18, [0xDF] = 11, [0xE0] = 18, [0xE4] = 17, [0xE5] = 14, [0xE8] = 16, [0xE9] = 8,  [0xEA] = 11,
     [0xEC] = 13, [0xF1] = 18, [0xF2] = 16, [0xF3] = 14, [0xFA] = 11, [0xFB] = 13, [0xFC] = 11, [0xFE] = 15,

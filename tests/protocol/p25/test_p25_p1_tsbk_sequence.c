@@ -256,12 +256,9 @@ p25_status_accum_classify(dsd_state* state) {
 }
 
 void
-process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
-                 unsigned long long int mac[24]) {
+process_MAC_VPDU_bridged_p1(dsd_opts* opts, dsd_state* state, unsigned long long int mac[24]) {
     (void)opts;
     (void)state;
-    (void)type;
-    (void)pdu_type;
     if (g_mac_count < 3) {
         g_mac_group[g_mac_count] = (int)((mac[5] << 8) | mac[6]);
         g_mac_source[g_mac_count] = (int)((mac[7] << 16) | (mac[8] << 8) | mac[9]);
@@ -998,6 +995,18 @@ test_network_status_owns_patches(int hardset) {
         DSD_FPRINTF(stderr, "  (%s)\n", tag);
     }
     return rc;
+}
+
+/* p25_unit_activity.c looks up the address a home SUID holds on the serving system; this harness keeps no table. */
+int
+p25_aff_assigned_for_home(const dsd_state* state, const p25_home_id* home, uint32_t serving_wacn, uint16_t serving_sys,
+                          uint32_t* assigned) {
+    (void)state;
+    (void)home;
+    (void)serving_wacn;
+    (void)serving_sys;
+    (void)assigned;
+    return 0;
 }
 
 int

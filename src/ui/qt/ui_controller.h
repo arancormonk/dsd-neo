@@ -27,6 +27,7 @@
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <type_traits> // IWYU pragma: keep
 
@@ -41,6 +42,7 @@ class DiagnosticsLogModel;
 class TalkgroupListModel;
 class CommandBridge;
 class RecordingStatus;
+class UnitActivityModel;
 
 class UiController : public QObject {
     Q_OBJECT
@@ -82,6 +84,12 @@ class UiController : public QObject {
         m_network = model;
     }
 
+    // The Activity screen's log: read from each redraw's held snapshot while a session runs, dropped at its edges.
+    void
+    setUnitActivity(UnitActivityModel* model) {
+        m_unitActivity = model;
+    }
+
     // Issue #708: what call recording is doing, read every tick (the view stays readable when no redraw comes).
     void
     setRecordingStatus(RecordingStatus* status) {
@@ -121,6 +129,8 @@ class UiController : public QObject {
     void tick();
     /** @brief The redraw-driven part of tick(): metrics, network, history and talkgroups. */
     void refreshModels();
+    /** @brief The models a redraw feeds from the held snapshot: network, history, talkgroups and unit activity. */
+    void refreshRedrawModels(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool live, bool new_target);
     void pollTalkgroupExport();
     void pollDecryptionResult();
     /** @brief Reset the target-scoped models when the scan target changed; true when it did. */
@@ -135,6 +145,7 @@ class UiController : public QObject {
     TalkgroupListModel* m_talkgroups = nullptr;
     DiagnosticsLogModel* m_diagnostics = nullptr;
     P25NetworkModel* m_network = nullptr; // WP-F2
+    UnitActivityModel* m_unitActivity = nullptr;
     RecordingStatus* m_recordingStatus = nullptr;
     QTimer m_timer;
     QVariantMap m_talkgroupExportResult;

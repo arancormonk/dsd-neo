@@ -1242,7 +1242,8 @@ test_visibility_and_queue_overflow(void) {
     post_empty(DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE);
     post_empty(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE);
     post_empty(DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE);
-    rc |= expect_int("visibility commands applied", dsd_app_drain_cmds(&opts, &state), 8);
+    post_empty(DSD_APP_CMD_UI_SHOW_UNIT_ACTIVITY_TOGGLE);
+    rc |= expect_int("visibility commands applied", dsd_app_drain_cmds(&opts, &state), 9);
     rc |= expect_int("dsp panel visible", opts.frontend_display.show_dsp_panel, 1);
     rc |= expect_int("p25 metrics visible", opts.frontend_display.show_p25_metrics, 1);
     rc |= expect_int("p25 affiliations visible", opts.frontend_display.show_p25_affiliations, 1);
@@ -1251,6 +1252,7 @@ test_visibility_and_queue_overflow(void) {
     rc |= expect_int("p25 candidates visible", opts.frontend_display.show_p25_cc_candidates, 1);
     rc |= expect_int("channels visible", opts.frontend_display.show_channels, 1);
     rc |= expect_int("callsign visible", opts.frontend_display.show_p25_callsign_decode, 1);
+    rc |= expect_int("unit activity visible", opts.frontend_display.show_unit_activity, 1);
 
     opts.frontend_display.show_channels = 0;
     for (int i = 0; i < 140; i++) {

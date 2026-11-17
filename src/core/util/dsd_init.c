@@ -1382,8 +1382,7 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc)); //init on 1, bad CRC all
     state->nxdn_sacch_non_superframe = 1;
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-    state->nxdn_alias_block_number = 0;
-    DSD_MEMSET(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+    DSD_MEMSET(&state->nxdn_alias_prop, 0, sizeof(state->nxdn_alias_prop));
     state->nxdn_alias_arib_total_segments = 0;
     state->nxdn_alias_arib_seen_mask = 0;
     DSD_MEMSET(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));

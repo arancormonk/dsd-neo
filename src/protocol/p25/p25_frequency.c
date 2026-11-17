@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -495,6 +496,8 @@ p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned l
     }
     state->p2_wacn = wacn;
     state->p2_sysid = sysid;
+    /* Registration owners are per system: the old system's go, its registered addresses stay. */
+    p25_aff_drop_foreign_owners(state);
     /* WACN and SYSID are two thirds of the Phase 2 seed, so a proof of the seed they replace does not carry over
        (issue #804): a burst or a checked network status proves the new one, and the NAC it names (issue #802). */
     dsd_state_forget_p2_proof(state);

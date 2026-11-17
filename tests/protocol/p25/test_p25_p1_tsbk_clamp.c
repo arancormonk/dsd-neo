@@ -95,7 +95,7 @@ main(void) {
         .base = 851000000 / 5,
         .spac = 100,
     };
-    p25_test_invoke_mac_vpdu_capture(mac, 10, /*trunk*/ 1, /*cc*/ 851000000, &cfg, &vc0, &tuned);
+    p25_test_invoke_p1_tsbk_capture(mac, 10, /*trunk*/ 1, /*cc*/ 851000000, &cfg, &vc0, &tuned);
     rc |= expect_true("not tuned", tuned == 0);
     rc |= expect_true("vc0 not set", vc0 == 0);
     return rc;

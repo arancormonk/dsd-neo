@@ -214,7 +214,7 @@ run_tdma_paging_len_case(const char* tag, uint8_t opcode, uint8_t count_bits, in
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = opcode;
     mac[2] = count_bits;
-    if ((1 + expectB) < (int)sizeof(mac)) {
+    if ((2 + expectB) < (int)sizeof(mac)) {
         mac[1 + expectB] = 0x30; // following fixed-length MAC structure proves alignment
         mac[2 + expectB] = 0x00;
     }
@@ -301,6 +301,40 @@ run_transport_span_cases(void) {
 
     rc |= expect_int("span zero rejected", p25p2_mac_parse_span(1, 0, mac, &res), -1);
     rc |= expect_int("span past buffer rejected", p25p2_mac_parse_span(1, 24, mac, &res), -1);
+    return rc;
+}
+
+/* A native message's next one starts where its TIA-102.BBAD-A length ends: Unit to Unit Answer Request 0x45 / 0xC5
+   is 8 / 12 octets and Telephone Interconnect Answer Request 0x4A is 9, each here followed by a 7-octet Call Alert. */
+static int
+run_answer_request_length_cases(void) {
+    static const struct {
+        const char* tag;
+        uint8_t opcode;
+        int len;
+    } cases[] = {
+        {"uu answer abbreviated", 0x45, 8},
+        {"uu answer extended", 0xC5, 12},
+        {"telephone answer", 0x4A, 9},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        unsigned long long mac[24] = {0};
+        struct p25p2_mac_result res;
+        char tag[96];
+        mac[1] = cases[i].opcode;
+        mac[1 + cases[i].len] = 0x5F;
+        if (p25p2_mac_parse(1, mac, &res) != 0) {
+            return 410;
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "%s first len", cases[i].tag);
+        rc |= expect_int(tag, res.segments[0].length, cases[i].len);
+        DSD_SNPRINTF(tag, sizeof tag, "%s next offset", cases[i].tag);
+        rc |= expect_int(tag, res.segment_count >= 2 ? res.segments[1].offset : -1, cases[i].len);
+        DSD_SNPRINTF(tag, sizeof tag, "%s next len", cases[i].tag);
+        rc |= expect_int(tag, res.segment_count >= 2 ? res.segments[1].length : -1, 7);
+    }
     return rc;
 }
 
@@ -437,7 +471,7 @@ run_direct_segment_parse_cases(void) {
     }
     rc |= expect_int("truncated third segment count", res.segment_count, 2);
 
-    return rc | run_transport_span_cases();
+    return rc | run_transport_span_cases() | run_answer_request_length_cases();
 }
 
 static int

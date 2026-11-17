@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
+import "Util.js" as Util
 
 ModalSheet {
     id: sheet
@@ -21,7 +22,12 @@ ModalSheet {
         }
         if (section === 1)
             return "SG:" + row.sgid + (row.isPatch ? " · Patch" : " · Simulselect") + (row.groups.length ? " · TG:" + row.groups.join(", ") : "") + (row.radios.length ? " · RID:" + row.radios.join(", ") : "");
-        return "RID:" + row.rid + (section === 2 ? " · TG:" + row.tg : "");
+        return "RID:" + row.rid + named(row.name) + (section === 2 ? " · TG:" + row.tg + named(row.tgName) : "");
+    }
+    // A radio's or talkgroup's name after its ID, as the lists name it for
+    // this system (the Activity screen's names): "RID:1234567 (Alice)".
+    function named(name) {
+        return name ? " (" + Util.oneLine(name) + ")" : "";
     }
     // Issue #782: with a screen reader on, each section in a fixed order of
     // its entries: neighbours by frequency and site identity, patches by

@@ -7126,8 +7126,8 @@ test_carrier_boundary_discards_partial_assemblies(void) {
         state->nxdn_sacch_frame_segcrc[part] = 0;
     }
     state->nxdn_part_of_frame = 2;
-    state->nxdn_alias_block_number = 2;
-    state->nxdn_alias_block_segment[0][0][0] = 'A';
+    state->nxdn_alias_prop.seen_mask = 3;
+    state->nxdn_alias_prop.fragment[0][0] = 'A';
     state->nxdn_alias_arib_total_segments = 3;
     state->nxdn_alias_arib_seen_mask = 1;
     state->nxdn_alias_arib_segments[0][0] = 7;
@@ -7179,7 +7179,7 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     }
     rc |= expect_true("assemblies: the boundary drops the NXDN SACCH superframe", nxdn_cleared);
     rc |= expect_true("assemblies: the boundary drops the NXDN alias blocks",
-                      state->nxdn_alias_block_number == 0 && state->nxdn_alias_block_segment[0][0][0] == 0
+                      state->nxdn_alias_prop.seen_mask == 0 && state->nxdn_alias_prop.fragment[0][0] == 0
                           && state->nxdn_alias_arib_total_segments == 0 && state->nxdn_alias_arib_seen_mask == 0
                           && state->nxdn_alias_arib_segments[0][0] == 0);
     rc |= expect_true("assemblies: the boundary drops the DMR short LC fragments and data blocks",

@@ -7,9 +7,14 @@
  * Focused checks for NXDN alias helper decode paths.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
+#include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -93,6 +98,167 @@ expect_size(const char* tag, size_t got, size_t want) {
     return 0;
 }
 
+/* A Kenwood alias fragment as the element decoder receives it: message type 0x3F (PROP_FORM), MFID 0x68, 0x8204,
+ * fragment number and count, four octets. */
+static void
+build_prop_elements(uint8_t* bits, uint8_t block_number, uint8_t total_blocks, const uint8_t octets4[4]) {
+    DSD_MEMSET(bits, 0, 96);
+    write_bits_u8(bits, 0U, 0x3FU, 8U);
+    write_bits_u8(bits, 8U, 0x68U, 8U);
+    write_bits_u8(bits, 16U, 0x82U, 8U);
+    write_bits_u8(bits, 24U, 0x04U, 8U);
+    write_bits_u8(bits, 32U, block_number, 4U);
+    write_bits_u8(bits, 36U, total_blocks, 4U);
+    for (size_t i = 0U; i < 4U; i++) {
+        write_bits_u8(bits, 40U + (i * 8U), octets4[i], 8U);
+    }
+}
+
+/* Fragment @p block_number of @p total_blocks carrying the four characters @p text, through the element dispatch. */
+static void
+send_fragment(dsd_opts* opts, dsd_state* state, uint8_t block_number, uint8_t total_blocks, const char* text) {
+    uint8_t octets[4];
+    uint8_t bits[96];
+    for (size_t i = 0U; i < 4U; i++) {
+        octets[i] = (uint8_t)text[i];
+    }
+    build_prop_elements(bits, block_number, total_blocks, octets);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+}
+
+/* A voice call from @p source on canonical slot 0: a new call epoch. */
+static void
+open_call(dsd_state* state, uint64_t source) {
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = DSD_SYNC_NXDN_POS;
+    obs.slot = 0U;
+    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+    obs.ota_target_id = 100U;
+    obs.policy_target_id = 100U;
+    obs.ota_source_id = source;
+    (void)dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+static void
+set_alias(dsd_state* state, const char* alias) {
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", alias);
+}
+
+/*
+ * Kenwood alias assembly through the element dispatch (B24). Two other decoders agree on four fragments and 14 text
+ * octets (SDRTrunk TalkerAliasAssembler, DSD-FME NXDN_decode_Alias). Main published after every fragment, joined the
+ * fragments it had (a missing one spliced the rest together), forced any other count to four and kept the two
+ * non-text octets of fragment 4.
+ */
+static int
+test_prop_dispatch(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    nxdn_alias_reset(state);
+    set_alias(state, "");
+    open_call(state, 1001U);
+
+    // Fragments 1 and 3 of 4 publish nothing: no "DISPCH01" from a missing fragment 2.
+    send_fragment(opts, state, 1U, 4U, "DISP");
+    rc |= expect_str("prop-fragment1-not-published", state->generic_talker_alias[0], "");
+    send_fragment(opts, state, 3U, 4U, "CH01");
+    rc |= expect_str("prop-spliced-not-published", state->generic_talker_alias[0], "");
+    send_fragment(opts, state, 2U, 4U, "ATCH");
+    rc |= expect_str("prop-three-of-four-not-published", state->generic_talker_alias[0], "");
+    // Fragment 4 completes it; its last two octets are not text.
+    send_fragment(opts, state, 4U, 4U, " 7AZ");
+    rc |= expect_str("prop-complete-14-octets", state->generic_talker_alias[0], "DISPATCHCH01 7");
+
+    // A different fragment 1 starts another alias; the last complete one stays until that completes.
+    send_fragment(opts, state, 1U, 4U, "XXXX");
+    rc |= expect_str("prop-last-complete-kept", state->generic_talker_alias[0], "DISPATCHCH01 7");
+    send_fragment(opts, state, 2U, 4U, "YYYY");
+    send_fragment(opts, state, 3U, 4U, "ZZZZ");
+    rc |= expect_str("prop-last-complete-kept-3", state->generic_talker_alias[0], "DISPATCHCH01 7");
+
+    // Fragments from another call never complete this one.
+    set_alias(state, "KEEP");
+    nxdn_alias_reset(state);
+    open_call(state, 1001U);
+    send_fragment(opts, state, 1U, 4U, "AAAA");
+    send_fragment(opts, state, 2U, 4U, "BBBB");
+    open_call(state, 2002U);
+    send_fragment(opts, state, 3U, 4U, "CCCC");
+    send_fragment(opts, state, 4U, 4U, "DD  ");
+    rc |= expect_str("prop-other-call-not-spliced", state->generic_talker_alias[0], "KEEP");
+    send_fragment(opts, state, 1U, 4U, "EEEE");
+    send_fragment(opts, state, 2U, 4U, "FFFF");
+    rc |= expect_str("prop-same-call-complete", state->generic_talker_alias[0], "EEEEFFFFCCCCDD");
+
+    // Nor do fragments heard on another carrier.
+    set_alias(state, "KEEP");
+    nxdn_alias_reset(state);
+    open_call(state, 3003U);
+    send_fragment(opts, state, 1U, 4U, "AAAA");
+    send_fragment(opts, state, 2U, 4U, "BBBB");
+    dsd_trunk_tuning_generation_advance();
+    send_fragment(opts, state, 3U, 4U, "CCCC");
+    send_fragment(opts, state, 4U, 4U, "DD  ");
+    rc |= expect_str("prop-other-carrier-not-spliced", state->generic_talker_alias[0], "KEEP");
+
+    // A conflicting fragment count abandons the assembly; another count is never published.
+    set_alias(state, "KEEP");
+    nxdn_alias_reset(state);
+    open_call(state, 4004U);
+    send_fragment(opts, state, 1U, 4U, "AAAA");
+    send_fragment(opts, state, 2U, 4U, "BBBB");
+    send_fragment(opts, state, 3U, 3U, "CCCC");
+    rc |= expect_str("prop-total-3-not-published", state->generic_talker_alias[0], "KEEP");
+    send_fragment(opts, state, 3U, 4U, "CCCC");
+    send_fragment(opts, state, 4U, 4U, "DD  ");
+    rc |= expect_str("prop-conflicting-total-not-spliced", state->generic_talker_alias[0], "KEEP");
+    nxdn_alias_reset(state);
+    send_fragment(opts, state, 1U, 2U, "TEST");
+    send_fragment(opts, state, 2U, 2U, "NAME");
+    rc |= expect_str("prop-total-2-not-published", state->generic_talker_alias[0], "KEEP");
+    send_fragment(opts, state, 1U, 0U, "TEST");
+    rc |= expect_str("prop-total-0-not-published", state->generic_talker_alias[0], "KEEP");
+
+    // A second, different fragment under a number already held restarts the assembly.
+    nxdn_alias_reset(state);
+    send_fragment(opts, state, 1U, 4U, "AAAA");
+    send_fragment(opts, state, 2U, 4U, "BBBB");
+    send_fragment(opts, state, 2U, 4U, "QQQQ");
+    send_fragment(opts, state, 3U, 4U, "CCCC");
+    send_fragment(opts, state, 4U, 4U, "DD  ");
+    rc |= expect_str("prop-conflicting-fragment-not-spliced", state->generic_talker_alias[0], "KEEP");
+    // ...while a repeat of the one held keeps it.
+    nxdn_alias_reset(state);
+    send_fragment(opts, state, 1U, 4U, "AAAA");
+    send_fragment(opts, state, 2U, 4U, "BBBB");
+    send_fragment(opts, state, 2U, 4U, "BBBB");
+    send_fragment(opts, state, 3U, 4U, "CCCC");
+    send_fragment(opts, state, 4U, 4U, "DD  ");
+    rc |= expect_str("prop-repeat-kept", state->generic_talker_alias[0], "AAAABBBBCCCCDD");
+    return rc;
+}
+
+/* nxdn_alias_complete() answers only for all four fragments. */
+static int
+test_prop_complete_api(void) {
+    int rc = 0;
+    nxdn_alias_assembly a;
+    char out[NXDN_ALIAS_TEXT_BYTES + 1U];
+    DSD_MEMSET(&a, 0, sizeof(a));
+    DSD_MEMCPY(a.fragment[0], "NAME", 4U);
+    DSD_MEMCPY(a.fragment[1], "ONE ", 4U);
+    DSD_MEMCPY(a.fragment[2], "    ", 4U);
+    DSD_MEMCPY(a.fragment[3], "  \x41\x5A", 4U);
+    a.seen_mask = 0x7U;
+    rc |= expect_size("complete-three-of-four", (size_t)nxdn_alias_complete(&a, out, sizeof(out)), 0U);
+    rc |= expect_str("complete-three-of-four-empty", out, "");
+    a.seen_mask = 0xFU;
+    rc |= expect_size("complete-four", (size_t)nxdn_alias_complete(&a, out, sizeof(out)), 1U);
+    rc |= expect_str("complete-four-text", out, "NAMEONE");
+    rc |= expect_size("complete-short-buffer", (size_t)nxdn_alias_complete(&a, out, NXDN_ALIAS_TEXT_BYTES), 0U);
+    return rc;
+}
+
 int
 main(void) {
     static dsd_state state;
@@ -109,13 +275,12 @@ main(void) {
      * fragments here. The expected alias stays stable until a complete coherent
      * sequence arrives, which catches stale-fragment mixing regressions.
      */
-    build_prop_msg(bits, 2U, 2U, "NAME");
+    build_prop_msg(bits, 2U, 4U, "NAME");
     nxdn_alias_decode_prop(&opts, &state, bits);
-    rc |= expect_str("prop-partial", state.generic_talker_alias[0], "NAME");
+    rc |= expect_str("prop-partial", state.generic_talker_alias[0], "");
 
-    build_prop_msg(bits, 1U, 2U, "TEST");
-    nxdn_alias_decode_prop(&opts, &state, bits);
-    rc |= expect_str("prop-assembled", state.generic_talker_alias[0], "TESTNAME");
+    rc |= test_prop_dispatch(&opts, &state);
+    rc |= test_prop_complete_api();
 
     DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "KEEP");
 
@@ -221,6 +386,7 @@ main(void) {
         rc |= expect_size("sjis-multibyte-len", out_len, strlen(out));
     }
 
+    dsd_state_ext_free_all(&state);
     if (rc == 0) {
         printf("NXDN_ALIAS_DECODE: OK\n");
     }

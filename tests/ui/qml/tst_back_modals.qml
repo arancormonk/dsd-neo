@@ -695,7 +695,7 @@ Item {
         function test_session_menu_routes_data() {
             var rows = [];
             for (var height of [900, 440]) {
-                for (var text of ["Sites", "Radio", "Spectrum", "Talkgroups", "History", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
+                for (var text of ["Sites", "Radio", "Spectrum", "Talkgroups", "Activity", "History", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
                     rows.push({tag: text + "-" + height, text: text, height: height});
             }
             return rows;
@@ -717,7 +717,7 @@ Item {
             var menu = item("sessionMenu");
             monitor.openSessionMenu();
             tryCompare(menu, "visible", true);
-            compare(menu.actions.length, 8);
+            compare(menu.actions.length, 9);
             var button = visualChild(menu, function (entry) {
                 return entry.text === data.text && typeof entry.clicked === "function";
             });
@@ -746,6 +746,8 @@ Item {
                 verify(app.spectrumOpen);
             if (data.text === "Talkgroups")
                 verify(app.talkgroupsOpen);
+            if (data.text === "Activity")
+                compare(app.sessionDestination, "activity");
             if (data.text === "History")
                 compare(app.sessionDestination, "history");
             if (data.text === "Settings")
@@ -760,7 +762,7 @@ Item {
             app.sessionRow = -1;
             testContext.setMetric("radioInput", false);
             menu.open();
-            compare(menu.actions.length, 4);
+            compare(menu.actions.length, 5);
             verify(Ui.Navigation.back(app));
             verify(!menu.visible);
         }

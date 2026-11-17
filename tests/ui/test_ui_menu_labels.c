@@ -1099,6 +1099,9 @@ test_display_and_advanced_labels(void) {
     rc |= expect_str("p25 cc candidates off", lbl_ui_p25_ccc(&ctx, b, sizeof(b)), "P25 CC candidates [Off]");
     rc |= expect_str("p25 callsign off", lbl_ui_p25_callsign(&ctx, b, sizeof(b)), "P25 callsign decode [Off]");
     rc |= expect_str("channels on", lbl_ui_channels(&ctx, b, sizeof(b)), "Channels [On]");
+    rc |= expect_str("unit activity off", lbl_ui_unit_activity(&ctx, b, sizeof(b)), "Unit activity [Off]");
+    opts.frontend_display.show_unit_activity = 1;
+    rc |= expect_str("unit activity on", lbl_ui_unit_activity(&ctx, b, sizeof(b)), "Unit activity [On]");
     rc |= expect_str("compact view off", lbl_ui_compact(&ctx, b, sizeof(b)), "Compact view [Off]");
     opts.frontend_terminal_display.terminal_compact = 1;
     rc |= expect_str("compact view on", lbl_ui_compact(&ctx, b, sizeof(b)), "Compact view [On]");

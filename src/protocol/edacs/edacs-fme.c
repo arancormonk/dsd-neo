@@ -1084,6 +1084,15 @@ edacs_update_lcn_count(dsd_state* state, int lcn) {
     }
 }
 
+_Static_assert(DSD_RECENT_ACTIVITY_COUNT >= 26, "every EDACS channel LCN has a recent-activity row");
+
+/* An assignment's LCN field names a channel only below 26: 26-31 are status values (reserved, convert to callee,
+   queued, system busy, denied; edacs_lcn_status_string()). A status is no grant, so it gets no recent-activity row. */
+static int
+edacs_lcn_names_channel(int lcn) {
+    return lcn >= 0 && lcn < 26;
+}
+
 static int
 edacs_lcn_is_tunable(const dsd_state* state, int lcn) {
     return lcn > 0 && lcn < 26 && state->edacs_cc_lcn != 0 && state->trunk_lcn_freq[lcn - 1] != 0;
@@ -1333,7 +1342,7 @@ edacs_publish_voice_grant(dsd_state* state, int lcn, int is_digital, uint64_t ta
     DSD_SNPRINTF(notice, sizeof notice, "%s %s grant TGT %llu SRC %llu", is_digital ? "Digital" : "Analog",
                  kind == DSD_CALL_KIND_PRIVATE_VOICE ? "private" : "group", (unsigned long long)target,
                  (unsigned long long)source);
-    if (lcn >= 0 && lcn < DSD_RECENT_ACTIVITY_COUNT) {
+    if (edacs_lcn_names_channel(lcn)) {
         (void)dsd_recent_activity_publish(state, (uint8_t)lcn, observation, notice, 0U);
     }
 }
@@ -1392,7 +1401,7 @@ edacs_publish_data_activity(dsd_state* state, int lcn, uint64_t target, uint64_t
         dsd_call_observation_data(edacs_observation_protocol(state, 0), 0U, source, target);
     observation.channel = lcn > 0 ? (uint32_t)lcn : 0U;
     observation.frequency_hz = lcn > 0 && lcn < 26 ? state->trunk_lcn_freq[lcn - 1] : 0;
-    if (lcn >= 0 && lcn < DSD_RECENT_ACTIVITY_COUNT) {
+    if (edacs_lcn_names_channel(lcn)) {
         (void)dsd_recent_activity_publish(state, (uint8_t)lcn, &observation, notice, 0U);
     }
 }

@@ -4,7 +4,9 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_channel.h>
@@ -32,6 +34,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
+#include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -90,6 +93,7 @@
 #include "scan_owner.h"
 #include "scan_quiet.h"
 #include "scan_step_untyped.h"
+#include "talkgroup_policy_internal.h"
 #include "test_env.h"
 #include "test_support.h"
 #include "trunk_scan_internal.h"
@@ -1644,6 +1648,12 @@ seed_target0_p25_state(dsd_state* state) {
     state->p25_aff_count = 1;
     state->p25_aff_rid[0] = 400;
     state->p25_aff_last_seen[0] = 222;
+    /* Address 400 was assigned to home 0xBEE01:3A5.43981 while target 0's system served it. */
+    state->p25_aff_assoc[0].home_wacn = 0xBEE01;
+    state->p25_aff_assoc[0].home_sys = 0x3A5;
+    state->p25_aff_assoc[0].home_id = 43981;
+    state->p25_aff_assoc[0].serving_wacn = 0xABCDE;
+    state->p25_aff_assoc[0].serving_sys = 0x123;
     state->p25_ga_count = 1;
     state->p25_ga_rid[0] = 500;
     state->p25_ga_tg[0] = 600;
@@ -1720,6 +1730,11 @@ seed_target1_p25_state(dsd_state* state) {
     state->p25_aff_count = 1;
     state->p25_aff_rid[0] = 903;
     state->p25_aff_last_seen[0] = 904;
+    state->p25_aff_assoc[0].home_wacn = 0xBEE02;
+    state->p25_aff_assoc[0].home_sys = 0x456;
+    state->p25_aff_assoc[0].home_id = 903;
+    state->p25_aff_assoc[0].serving_wacn = 0x77777;
+    state->p25_aff_assoc[0].serving_sys = 0x777;
     state->p25_ga_count = 1;
     state->p25_ga_rid[0] = 905;
     state->p25_ga_tg[0] = 906;
@@ -1758,6 +1773,7 @@ expect_empty_target_p25_state(const dsd_state* state) {
     if (state->p25_prot_valid != 0 || state->p25_cc_prot_valid != 0 || state->p25_sys_time_valid != 0
         || state->p25_sys_services_valid != 0 || state->p25_site_lra_valid != 0
         || state->p25_site_network_active_valid != 0 || state->p25_patch_count != 0 || state->p25_aff_count != 0
+        || state->p25_aff_assoc[0].home_id != 0U || state->p25_aff_assoc[0].serving_wacn != 0U
         || state->p25_ga_count != 0 || state->p25_nb_count != 0 || state->p25_secondary_cc_count != 0
         || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0 || state->p25_patch_owner_known != 0
         || state->p25_patch_seq_counter != 0U || fabs(state->p25_patch_listen_s) > 1e-9) {
@@ -1797,6 +1813,14 @@ expect_target0_p25_state(const dsd_state* state) {
         test_rc = 1;
     }
     test_rc |= expect_p25_patch_freshness(state, 100.0, 10U);
+    /* Who an address was assigned to, and on which serving system, is the target's own and comes back with it
+       (test_assoc_trunk_scan_restore() checks the whole table). */
+    if (state->p25_aff_assoc[0].home_wacn != 0xBEE01U || state->p25_aff_assoc[0].home_sys != 0x3A5U
+        || state->p25_aff_assoc[0].home_id != 43981U || state->p25_aff_assoc[0].serving_wacn != 0xABCDEU
+        || state->p25_aff_assoc[0].serving_sys != 0x123U) {
+        DSD_FPRINTF(stderr, "P25 registration owners leaked across scan targets\n");
+        test_rc = 1;
+    }
     if (state->p25_aff_count != 1 || state->p25_aff_rid[0] != 400 || state->p25_aff_last_seen[0] != 222
         || state->p25_ga_count != 1 || state->p25_ga_rid[0] != 500 || state->p25_ga_tg[0] != 600
         || state->p25_ga_last_seen[0] != 333) {
@@ -1985,6 +2009,245 @@ test_coordinator_idle_rotation_and_state_restore(void) {
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Fill every registration owner slot with values derived from @p tag (a distinct table per target). */
+static void
+seed_aff_owners(dsd_state* state, uint32_t tag) {
+    state->p25_aff_count = P25_AFF_MAX;
+    for (int i = 0; i < P25_AFF_MAX; i++) {
+        state->p25_aff_rid[i] = tag + (uint32_t)i + 1U;
+        state->p25_aff_last_seen[i] = (time_t)tag + (time_t)i;
+        state->p25_aff_assoc[i].home_wacn = 0xBEE00U + (tag & 0xFFU);
+        state->p25_aff_assoc[i].home_sys = (uint16_t)(0x100U + (uint32_t)i);
+        state->p25_aff_assoc[i].home_id = tag + 0x10000U + (uint32_t)i;
+        state->p25_aff_assoc[i].serving_wacn = 0xABC00U + (tag & 0xFFU);
+        state->p25_aff_assoc[i].serving_sys = (uint16_t)(0x200U + (tag & 0xFFU));
+    }
+}
+
+/* B27 / H1: every registration owner (home SUID + serving system per assigned address) is the scan target's own: it
+   leaves with its target, never shows on another, and comes back whole. */
+static int
+test_assoc_trunk_scan_restore(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static p25_aff_assoc_t target0_owners[P25_AFF_MAX];
+    static p25_aff_assoc_t no_owners[P25_AFF_MAX]; /* all zero: no owner */
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "assoc restore: scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    seed_aff_owners(&state, 0x1000U);
+    DSD_MEMCPY(target0_owners, state.p25_aff_assoc, sizeof target0_owners);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1
+        || memcmp(state.p25_aff_assoc, no_owners, sizeof no_owners) != 0) {
+        DSD_FPRINTF(stderr, "assoc restore: target 0's registration owners showed on target 1\n");
+        test_rc = 1;
+    }
+    seed_aff_owners(&state, 0x2000U);
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0
+        || memcmp(state.p25_aff_assoc, target0_owners, sizeof target0_owners) != 0) {
+        DSD_FPRINTF(stderr, "assoc restore: target 0's registration owners did not come back whole\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* This host stubs the talkgroup policy (scan_group_stubs.c): the learned-alias lookups the radio names go through
+   (source_alias.c) find no row here, so each unit activity row is named by what its producer froze. */
+int
+dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
+                           size_t name_sz) {
+    (void)state;
+    (void)id;
+    (void)mode;
+    (void)mode_sz;
+    (void)name;
+    (void)name_sz;
+    return 0;
+}
+
+int
+dsd_tg_policy_lookup_label_scoped(const dsd_state* state, const dsd_alias_scope* scope, uint32_t id, char* mode,
+                                  size_t mode_sz, char* name, size_t name_sz) {
+    (void)scope;
+    return dsd_tg_policy_lookup_label(state, id, mode, mode_sz, name, name_sz);
+}
+
+int
+dsd_tg_policy_lookup_group_label(const dsd_state* state, uint32_t tg, char* mode, size_t mode_sz, char* name,
+                                 size_t name_sz) {
+    return dsd_tg_policy_lookup_label(state, tg, mode, mode_sz, name, name_sz);
+}
+
+void
+dsd_tg_policy_table_version(const dsd_state* state, uint64_t* out_context_id, unsigned int* out_generation) {
+    (void)state;
+    *out_context_id = 0U;
+    *out_generation = 0U;
+}
+
+void
+dsd_tg_policy_media_normalize(const char* mode, uint8_t* audio, uint8_t* record, uint8_t* stream) {
+    (void)mode;
+    *audio = 1U;
+    *record = 1U;
+    *stream = 1U;
+}
+
+/* A P25 registration row for RID 42 named @p name by its producer; its scope is the reception's (rx_id). */
+static int
+push_rid42_row(dsd_state* state, uint32_t group, const char* name) {
+    dsd_unit_activity row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.protocol = DSD_UA_PROTO_P25P1;
+    row.kind = DSD_UA_GROUP_AFFILIATION;
+    row.role = DSD_UA_ROLE_RESPONSE;
+    row.result = DSD_UA_RESULT_ACCEPTED;
+    row.subject.id = 42U;
+    row.subject.subtype = DSD_UA_ID_RADIO;
+    row.subject.valid = 1U;
+    row.group = group;
+    row.group_valid = 1U;
+    DSD_SNPRINTF(row.name_frozen, sizeof row.name_frozen, "%s", name);
+    return dsd_unit_activity_push(state, &row);
+}
+
+/* The rows after @p rev of the ring @p instance; meta in @p meta. */
+static int
+read_activity(const dsd_state* state, uint64_t instance, uint64_t rev, dsd_unit_activity* out, int cap,
+              dsd_unit_activity_read_meta* meta) {
+    return dsd_unit_activity_read(state, instance, rev, out, cap, meta);
+}
+
+/* The view's name for the row of @p seq ("" when none). */
+static void
+activity_name_of(const dsd_state* state, uint64_t seq, char* out, size_t cap) {
+    dsd_app_unit_activity_cursor cursor = {0, 0};
+    dsd_app_unit_activity_meta meta;
+    dsd_app_unit_activity_row rows[8];
+    const int n = dsd_app_unit_activity_rows(state, &cursor, rows, 8, &meta);
+    out[0] = '\0';
+    for (int i = 0; i < n; i++) {
+        if (rows[i].seq == seq) {
+            DSD_SNPRINTF(out, cap, "%s", rows[i].subject_name);
+        }
+    }
+}
+
+/* The unit activity log is the session's, not a target's: one ring spans a real A -> B -> A trunk-scan switch with its
+   instance kept and nothing reset or lost, each row keeps the system it was heard on and its name, and a reader's
+   cursor from before the switch reads only what came after. */
+static int
+test_unit_activity_ring_spans_trunk_scan_switch(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    int test_rc = 0;
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "activity ring: scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    dsd_unit_activity rows[8];
+    dsd_unit_activity_read_meta meta;
+
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x123U);
+    test_rc |= push_rid42_row(&state, 100U, "Alice") == 1 ? 0 : 1; /* seq 1, on A */
+    (void)read_activity(&state, 0U, 0U, rows, 8, &meta);
+    const uint64_t instance = meta.instance;
+    const uint64_t cursor = meta.last_rev;
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "activity ring: no switch to target 1\n");
+        test_rc = 1;
+    }
+    int n = read_activity(&state, instance, cursor, rows, 8, &meta);
+    if (!meta.held || meta.instance != instance || meta.reset || meta.lost || n != 0) {
+        DSD_FPRINTF(stderr, "activity ring: the switch to B dropped or reset the ring (held %u reset %u n %d)\n",
+                    (unsigned)meta.held, (unsigned)meta.reset, n);
+        test_rc = 1;
+    }
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x456U);
+    test_rc |= push_rid42_row(&state, 100U, "Bob") == 1 ? 0 : 1; /* seq 2, on B: another system's radio 42 */
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "activity ring: no switch back to target 0\n");
+        test_rc = 1;
+    }
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x123U);
+    test_rc |= push_rid42_row(&state, 101U, "Alice") == 1 ? 0 : 1; /* seq 3, on A again */
+    n = read_activity(&state, instance, cursor, rows, 8, &meta);
+    if (meta.instance != instance || meta.reset || meta.lost || n != 2 || rows[0].seq != 2U || rows[1].seq != 3U) {
+        DSD_FPRINTF(stderr, "activity ring: after A -> B -> A the cursor read %d rows (reset %u lost %u)\n", n,
+                    (unsigned)meta.reset, (unsigned)meta.lost);
+        test_rc = 1;
+    }
+    n = read_activity(&state, instance, 0U, rows, 8, &meta);
+    if (n != 3 || rows[0].scope.b != 0x123U || rows[1].scope.b != 0x456U || rows[2].scope.b != 0x123U) {
+        DSD_FPRINTF(stderr, "activity ring: rows lost their systems across the switch\n");
+        test_rc = 1;
+    }
+    const char* want[3] = {"Alice", "Bob", "Alice"};
+    for (uint64_t seq = 1U; seq <= 3U; seq++) {
+        char name[64];
+        activity_name_of(&state, seq, name, sizeof name);
+        if (strcmp(name, want[seq - 1U]) != 0) {
+            DSD_FPRINTF(stderr, "activity ring: row %u is named \"%s\", want \"%s\"\n", (unsigned)seq, name,
+                        want[seq - 1U]);
+            test_rc = 1;
+        }
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    dsd_state_ext_free_all(&state);
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -25036,6 +25299,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_assoc_trunk_scan_restore);
+    rc |= run_with_default_tune_hook(test_unit_activity_ring_spans_trunk_scan_switch);
     rc |= run_with_default_tune_hook(test_target_patch_clock_survives_other_reception);
     rc |= run_with_default_tune_hook(test_init_reads_the_list_spec);
     rc |= run_with_default_tune_hook(test_lists_load_in_order_and_rotate_over_the_lists_on);

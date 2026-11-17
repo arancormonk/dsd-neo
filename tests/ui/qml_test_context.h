@@ -79,16 +79,21 @@
 #include <ctime>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/scan_list_view.h>
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
+#include <dsd-neo/core/unit_activity.h>
+#include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <iterator>
 #include <memory>
@@ -134,6 +139,7 @@
 #include "talkgroup_filter_model.h"
 #include "talkgroup_list_model.h"
 #include "text_order.h"
+#include "unit_activity_model.h"
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
@@ -3881,6 +3887,9 @@ class Setup : public QObject {
                 dsd_state_ext_free_all(table.get());
             }
         }
+        if (m_activity_state) {
+            dsd_state_ext_free_all(m_activity_state.get());
+        }
     }
 
     Q_INVOKABLE bool
@@ -4164,6 +4173,90 @@ class Setup : public QObject {
         }
         state->p25_nb_count = count;
         m_network->replaceForTarget(state);
+    }
+
+    /**
+     * @brief Push one unit activity row onto the fixture's log and, with @p read, read it into `unitActivity` as a
+     * redraw tick does (UiController feeds the production model the same way).
+     *
+     * @p row: `kind` ("registration", "deregistration", "affiliation", "deny", "queued", "inhibit", "kill", "status";
+     * default registration), `subject` (a radio ID, or a talkgroup with `groupSubject`), `group`, `name` (the name
+     * its producer stored), `reason` (a P25 deny or queued reason code). The log is heard on a made-up P25 system
+     * (WACN 0xBEE00, SYS 0x123) at one fixed decode-clock time. Returns false when the push was refused.
+     */
+    Q_INVOKABLE bool
+    pushUnitActivity(const QVariantMap& row, bool read = true) {
+        if (m_activity == nullptr) {
+            return false;
+        }
+        dsd_state* state = activityState();
+        dsd_unit_activity r;
+        DSD_MEMSET(&r, 0, sizeof(r));
+        r.protocol = DSD_UA_PROTO_P25P1;
+        const QString kind = row.value(QStringLiteral("kind"), QStringLiteral("registration")).toString();
+        activityKind(kind, r);
+        r.subject.id = row.value(QStringLiteral("subject"), 1234567).toUInt();
+        r.subject.subtype = row.value(QStringLiteral("groupSubject")).toBool() ? DSD_UA_ID_GROUP : DSD_UA_ID_RADIO;
+        r.subject.valid = 1U;
+        if (row.contains(QStringLiteral("group"))) {
+            r.group = row.value(QStringLiteral("group")).toUInt();
+            r.group_valid = 1U;
+        }
+        if (row.contains(QStringLiteral("reason"))) {
+            r.reason_code = static_cast<uint16_t>(row.value(QStringLiteral("reason")).toUInt());
+            r.reason_set = kind == QStringLiteral("queued") ? DSD_UA_REASON_P25_QUEUED : DSD_UA_REASON_P25_DENY;
+        }
+        const QByteArray name = row.value(QStringLiteral("name")).toString().toUtf8();
+        DSD_SNPRINTF(r.name_frozen, sizeof r.name_frozen, "%s", name.constData());
+        /* Stamped at one fixed decode-clock reading, so a repeat always merges (the ring's 2 s window) however slow
+         * the run, and every row shows the same time; the clock goes back to the real one at once. */
+        const bool systemClock = dsd_decode_clock_source() == DSD_DECODE_CLOCK_SYSTEM;
+        if (systemClock) {
+            dsd_decode_clock_use_test(UINT64_C(1700000000000000000));
+        }
+        const int pushed = dsd_unit_activity_push(state, &r);
+        if (systemClock) {
+            dsd_decode_clock_use_system();
+        }
+        if (pushed < 0) {
+            return false;
+        }
+        if (read) {
+            m_activity->refresh(state);
+        }
+        return true;
+    }
+
+    /** @brief Read the fixture's log into `unitActivity`, as the next redraw tick would. */
+    Q_INVOKABLE void
+    readUnitActivity() {
+        if (m_activity != nullptr) {
+            m_activity->refresh(activityState());
+        }
+    }
+
+    /** @brief Learn @p name for radio @p rid on the fixture's system (an over-the-air alias), then read the log. */
+    Q_INVOKABLE bool
+    learnUnitActivityName(uint rid, const QString& name) {
+        const QByteArray utf8 = name.toUtf8();
+        const int learned = dsd_alias_learn_radio(nullptr, activityState(), nullptr, rid, utf8.constData(), nullptr);
+        readUnitActivity();
+        return learned != DSD_TG_POLICY_LEARN_FAILED;
+    }
+
+    /** @brief A session's end: the model drops its rows and the fixture's log starts over, under no filter. */
+    Q_INVOKABLE void
+    clearUnitActivity() {
+        if (m_activity != nullptr) {
+            m_activity->clear();
+        }
+        if (m_activity_view != nullptr) {
+            m_activity_view->setFilter(0);
+        }
+        if (m_activity_state) {
+            dsd_state_ext_free_all(m_activity_state.get());
+            m_activity_state.reset();
+        }
     }
 
     /**
@@ -6789,6 +6882,12 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("replayFiles"), m_replay_files);
         m_network = new dsd_qt::P25NetworkModel(engine);
         ctx->setContextProperty(QStringLiteral("p25Network"), m_network); // WP-F2
+        // The Activity screen's production model and filter, fed by pushUnitActivity().
+        m_activity = new dsd_qt::UnitActivityModel(engine);
+        m_activity_view = new dsd_qt::UnitActivityFilterModel(engine);
+        m_activity_view->setSourceModel(m_activity);
+        ctx->setContextProperty(QStringLiteral("unitActivity"), m_activity);
+        ctx->setContextProperty(QStringLiteral("activityView"), m_activity_view);
         // Issue #782: the production state, following QAccessible (on in the DSD_QML_TEST_ACCESSIBILITY=1 run).
         ctx->setContextProperty(QStringLiteral("screenReader"), new dsd_qt::ScreenReaderState(engine));
         ctx->setContextProperty(QStringLiteral("diagnosticsLog"), new dsd_qt::DiagnosticsLogModel(nullptr, engine));
@@ -6956,6 +7055,49 @@ class Setup : public QObject {
     dsd_qt::P25NetworkModel* m_network = nullptr;
     /* Issue #782: the snapshot hopNetwork() publishes, built on first use. */
     std::unique_ptr<dsd_state> m_network_state;
+    dsd_qt::UnitActivityModel* m_activity = nullptr;
+    dsd_qt::UnitActivityFilterModel* m_activity_view = nullptr;
+    /* The log pushUnitActivity() writes, built on first use, on a made-up P25 system. */
+    std::unique_ptr<dsd_state> m_activity_state;
+
+    dsd_state*
+    activityState() {
+        if (!m_activity_state) {
+            m_activity_state = std::make_unique<dsd_state>();
+            dsd_rxid_reset(m_activity_state.get());
+            dsd_rxid_note_p25_network(m_activity_state.get(), 0xBEE00U, 0x123U);
+        }
+        return m_activity_state.get();
+    }
+
+    static void
+    activityKind(const QString& kind, dsd_unit_activity& r) {
+        struct KindRow {
+            const char* name;
+            uint8_t kind, role, result;
+        };
+
+        static const KindRow kinds[] = {
+            {"registration", DSD_UA_REGISTRATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_ACCEPTED},
+            {"deregistration", DSD_UA_DEREGISTRATION, DSD_UA_ROLE_ACK, DSD_UA_RESULT_ACKNOWLEDGED},
+            {"affiliation", DSD_UA_GROUP_AFFILIATION, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_ACCEPTED},
+            {"deny", DSD_UA_DENY, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_DENIED},
+            {"queued", DSD_UA_QUEUED, DSD_UA_ROLE_RESPONSE, DSD_UA_RESULT_QUEUED},
+            {"inhibit", DSD_UA_INHIBIT, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA},
+            {"kill", DSD_UA_KILL, DSD_UA_ROLE_COMMAND, DSD_UA_RESULT_NA},
+            {"status", DSD_UA_STATUS, DSD_UA_ROLE_REPORT, DSD_UA_RESULT_NA},
+        };
+        r.kind = DSD_UA_REGISTRATION;
+        r.role = DSD_UA_ROLE_RESPONSE;
+        r.result = DSD_UA_RESULT_ACCEPTED;
+        for (const KindRow& row : kinds) {
+            if (kind == QLatin1String(row.name)) {
+                r.kind = row.kind;
+                r.role = row.role;
+                r.result = row.result;
+            }
+        }
+    }
 
     struct TableRow {
         uint32_t id;

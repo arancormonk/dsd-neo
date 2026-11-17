@@ -52,6 +52,8 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     const int mac_len = (size > 28U) ? (int)(data[28] % (int)(sizeof(mac_bytes) + 1U)) : (int)sizeof(mac_bytes);
 
     p25_test_process_mac_vpdu_ex(type, mac_bytes, mac_len, is_lcch, currentslot);
+    /* And as a Phase 1 TSBK in MAC form, the way the TSBK decoder hands one over. */
+    p25_test_process_p1_tsbk(mac_bytes, mac_len);
 
     return 0;
 }

@@ -654,6 +654,7 @@ static const struct UiVisibilityToggleSpec k_ui_visibility_toggle_specs[] = {
     {DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE, offsetof(dsd_opts, frontend_display.show_p25_cc_candidates)},
     {DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE, offsetof(dsd_opts, frontend_display.show_channels)},
     {DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE, offsetof(dsd_opts, frontend_display.show_p25_callsign_decode)},
+    {DSD_APP_CMD_UI_SHOW_UNIT_ACTIVITY_TOGGLE, offsetof(dsd_opts, frontend_display.show_unit_activity)},
 };
 
 static int
@@ -4950,6 +4951,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE,
     DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE,
     DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_UNIT_ACTIVITY_TOGGLE,
     DSD_APP_CMD_RUNTIME_CONFIG_APPLY,
 };
 
@@ -11130,6 +11132,7 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE,
     DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE,
     DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_UNIT_ACTIVITY_TOGGLE,
     DSD_APP_CMD_CALL_ALERT_TOGGLE,
     DSD_APP_CMD_CALL_ALERT_EVENTS_SET,
     DSD_APP_CMD_CONFIG_METADATA_SET,

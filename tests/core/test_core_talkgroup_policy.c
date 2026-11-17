@@ -3,10 +3,12 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/source_alias.h>
@@ -3510,6 +3512,60 @@ test_priority_refresh_pattern_and_unknown(void) {
     return rc;
 }
 
+/* A followed private call keeps the priority its evaluation gave it when the table changes: the refresh reads the
+ * endpoints in the call's own reception scope, as dsd_tg_policy_evaluate_private_call() does. Here the destination's
+ * only row is a learned alias of another system (priority 0), which never applies on this system, so the source's
+ * explicit row (priority 100) decides, and a priority-50 call cannot take over after an unrelated edit. */
+static int
+test_private_refresh_keeps_reception_scope(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_private_calls = 1;
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    dsd_rxid_note_p25_network(st, 0xBEE00U, 0x123U);
+    rc |= expect_true("source row", add_exact_row(st, 1001, "A", "Source") == 0);
+    dsd_tg_policy_entry values;
+    DSD_MEMSET(&values, 0, sizeof values);
+    values.priority = 100;
+    rc |= expect_true("source priority 100",
+                      dsd_tg_policy_set_fields(st, 1001, 1001, &values, DSD_TG_POLICY_FIELD_PRIORITY) == 0);
+    dsd_alias_scope other;
+    DSD_MEMSET(&other, 0, sizeof other);
+    other.kind = DSD_ALIAS_SCOPE_P25;
+    other.a = 0xBEE00U;
+    other.b = 0x456U;
+    other.valid = 1U;
+    (void)dsd_alias_learn_radio(NULL, st, &other, 2002, "Visitor", NULL);
+
+    dsd_tg_policy_decision decision, competing;
+    dsd_tg_policy_evaluate_private_call(&opts, st, 1001, 2002, 0, 0, &decision);
+    rc |= expect_true("evaluation: the source's row decides (100)", decision.priority == 100);
+    dsd_tg_policy_call_route priv, candidate;
+    init_route(&priv, 2002, 1001, 851000000L, 1, 0, 0);
+    init_route(&candidate, 200, 2, 852000000L, 2, 0, 1);
+    rc |= expect_true("followed private call",
+                      dsd_tg_policy_describe_followed_call(st, &priv, &decision, 10.0, 10.0) == 0);
+    init_decision(&competing, 200, 2, 50, 1, 1);
+    rc |= expect_true("priority 50 yields to 100",
+                      !dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 13.0));
+    rc |= expect_true("an unrelated edit", add_exact_row(st, 7777, "A", "Other") == 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 1001, 2002, 0, 0, &decision);
+    rc |= expect_true("evaluation still 100", decision.priority == 100);
+    rc |= expect_true("after the edit, priority 50 still yields to the held 100",
+                      !dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 13.0));
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    free_test_state(st);
+    return rc;
+}
+
 /* Radio policy (D5, D6, D8): a known radio's row only restricts. Group and private calls, the source known or unknown,
  * each radio row variant, a Hold on the target or none, -W on or off. */
 typedef struct {
@@ -4277,6 +4333,7 @@ main(void) {
     rc |= test_session_avoid_count_pattern();
     rc |= test_unknown_private_endpoints();
     rc |= test_priority_refresh_pattern_and_unknown();
+    rc |= test_private_refresh_keeps_reception_scope();
     rc |= test_radio_policy_matrix();
     rc |= test_no_radio_policy_no_change();
     rc |= test_row_token_refuses_stray_pattern_text();

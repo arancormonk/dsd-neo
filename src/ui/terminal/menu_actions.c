@@ -1817,6 +1817,12 @@ act_toggle_ui_channels(void* v) {
 }
 
 void
+act_toggle_ui_unit_activity(void* v) {
+    UNUSED(v);
+    (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_UNIT_ACTIVITY_TOGGLE);
+}
+
+void
 act_toggle_ui_compact(void* v) {
     UNUSED(v);
     (void)dsd_app_command_action(DSD_APP_CMD_TOGGLE_COMPACT);

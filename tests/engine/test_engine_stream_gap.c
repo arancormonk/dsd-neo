@@ -490,7 +490,7 @@ test_gap_resets_evidence_and_assemblies(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_nid_evidence = 1;
     state->tdma_carrier = 1U;
     state->nxdn_part_of_frame = 2;
-    state->nxdn_alias_block_number = 2;
+    state->nxdn_alias_prop.seen_mask = 3;
     state->dmr_cach_counter = 2;
     state->dmr_embedded_signalling[0][1][0] = 1;
     state->late_entry_mi_fragment[0][1][0] = 5U;
@@ -508,7 +508,7 @@ test_gap_resets_evidence_and_assemblies(dsd_opts* opts, dsd_state* state) {
                && state->dstar_confirmed == 0 && state->m17_confirmed == 0 && state->provoice_confirmed == 0
                && state->ysf_fich_confirmed == 0 && state->p25_p1_nid_evidence == 0 && state->tdma_carrier == 0U);
     expect("assemblies: the partial assemblies go",
-           state->nxdn_part_of_frame == 0 && state->nxdn_alias_block_number == 0 && state->dmr_cach_counter == 0
+           state->nxdn_part_of_frame == 0 && state->nxdn_alias_prop.seen_mask == 0 && state->dmr_cach_counter == 0
                && state->dmr_embedded_signalling[0][1][0] == 0 && state->late_entry_mi_fragment[0][1][0] == 0U
                && ((const unsigned char*)state->p25_mac_frag)[0] == 0 && state->m17_lsf[0] == 0
                && state->ysf_txt[0][0] == 0);

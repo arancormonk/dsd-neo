@@ -169,8 +169,8 @@ test_direct_dmr_alias_decoders(dsd_opts* opts, dsd_state* st) {
     seed_active_call(st, 1U, 700002U, 0U);
     const uint64_t slot1_revision = st->event_history_s[1].revision;
     dmr_talker_alias_lc_decode(opts, st, 1, 1, 16, 3);
-    rc |= expect_str(st->generic_talker_alias[1], "A *; ", "utf16 generic alias");
-    rc |= expect_str(st->event_history_s[1].Event_History_Items[0].alias, "A *; ", "utf16 event alias");
+    rc |= expect_str(st->generic_talker_alias[1], "A \xC4\x80; ", "utf16 generic alias");
+    rc |= expect_str(st->event_history_s[1].Event_History_Items[0].alias, "A \xC4\x80; ", "utf16 event alias");
     if (st->event_history_s[1].revision != slot1_revision + 1U) {
         DSD_FPRINTF(stderr, "utf16 event alias did not advance history revision once\n");
         rc = 1;
@@ -552,8 +552,8 @@ test_dmr_alias_header_and_block_format_variants(dsd_opts* opts, dsd_state* st) {
     dmr_talker_alias_lc_header(opts, st, 1, lc_bits);
     rc |= expect_u8(st->dmr_alias_char_size[1], 16U, "dmr alias utf16 char size");
     rc |= expect_u8(st->dmr_alias_block_len[1], 3U, "dmr alias utf16 block len");
-    rc |= expect_str(st->generic_talker_alias[1], "Q *; ", "dmr alias utf16 header text");
-    rc |= expect_str(st->event_history_s[1].Event_History_Items[0].alias, "Q *; ", "dmr alias utf16 event text");
+    rc |= expect_str(st->generic_talker_alias[1], "Q \xC4\x80; ", "dmr alias utf16 header text");
+    rc |= expect_str(st->event_history_s[1].Event_History_Items[0].alias, "Q \xC4\x80; ", "dmr alias utf16 event text");
 
     DSD_MEMSET(st->dmr_pdu_sf[1], 0, sizeof(st->dmr_pdu_sf[1]));
     value_to_bits_msb(st->dmr_pdu_sf[1], 0, sizeof(st->dmr_pdu_sf[1]), 'Z', 16);
@@ -563,8 +563,23 @@ test_dmr_alias_header_and_block_format_variants(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(lc_bits, 32, sizeof(lc_bits), '2', 16);
     value_to_bits_msb(lc_bits, 48, sizeof(lc_bits), '3', 16);
     dmr_talker_alias_lc_blocks(opts, st, 1, 0, lc_bits);
-    rc |= expect_str(st->generic_talker_alias[1], "Z  123; ", "dmr alias utf16 block text");
+    /* The header's bits were overwritten after it arrived ('Z' over 'Q'): the block is stored, but header and block no
+       longer make one alias, so nothing new is shown and the last whole alias stays. */
+    rc |= expect_str(st->generic_talker_alias[1], "Q \xC4\x80; ", "dmr alias utf16 block over a reused header");
     rc |= expect_u8(st->dmr_pdu_sf[1][48], lc_bits[16], "dmr alias utf16 block copy");
+
+    /* The same block after the whole header: shown with it. */
+    DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
+    value_to_bits_msb(lc_bits, 16, sizeof(lc_bits), 3U, 2);
+    value_to_bits_msb(lc_bits, 18, sizeof(lc_bits), 4U, 5);
+    value_to_bits_msb(lc_bits, 24, sizeof(lc_bits), 'Z', 16);
+    dmr_talker_alias_lc_header(opts, st, 1, lc_bits);
+    DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
+    value_to_bits_msb(lc_bits, 16, sizeof(lc_bits), '1', 16);
+    value_to_bits_msb(lc_bits, 32, sizeof(lc_bits), '2', 16);
+    value_to_bits_msb(lc_bits, 48, sizeof(lc_bits), '3', 16);
+    dmr_talker_alias_lc_blocks(opts, st, 1, 0, lc_bits);
+    rc |= expect_str(st->generic_talker_alias[1], "Z  123; ", "dmr alias utf16 block text");
 
     return rc;
 }
