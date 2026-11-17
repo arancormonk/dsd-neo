@@ -15,6 +15,7 @@
 #include <pulse/sample.h>
 #include <pulse/simple.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <dsd-neo/platform/env.h>

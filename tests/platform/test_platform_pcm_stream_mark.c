@@ -19,12 +19,15 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 long __real_dsd_fd_readable_bytes(int fd);
 long __wrap_dsd_fd_readable_bytes(int fd);
 long __real_dsd_socket_readable_bytes(dsd_socket_t sock);
 long __wrap_dsd_socket_readable_bytes(dsd_socket_t sock);
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 static int g_failures = 0;
 
