@@ -106,12 +106,15 @@ truncate_file(const char* path) {
 
 static size_t
 read_file(const char* path, char* buf, size_t cap) {
+    if (cap == 0U) {
+        return 0U;
+    }
+    DSD_MEMSET(buf, 0, cap); /* terminated wherever the read stops: at most cap - 1 bytes are read */
     FILE* f = fopen(path, "rb");
     if (f == NULL) {
         return 0U;
     }
     const size_t n = fread(buf, 1, cap - 1U, f);
-    buf[n] = '\0';
     fclose(f);
     return n;
 }

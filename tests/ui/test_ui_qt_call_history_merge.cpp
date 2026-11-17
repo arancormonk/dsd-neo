@@ -555,8 +555,6 @@ test_site_fold_order_limit(void) {
     expect_int("site 2 first: it holds the system-only fragment and site 2", rows[0].fragments, 0x5);
 }
 
-} // namespace
-
 /* A fragment's GPS unit as the fold sees it: its key, its provenance, and a name to tell it by. */
 struct GpsFragment {
     const char* name;
@@ -694,6 +692,8 @@ test_digests_and_stored_position(void) {
     expect("an undefined flag is no position",
            call_history_position_values_valid(1, 1, 3, static_cast<int64_t>(DSD_POS_FLAG_ALL) + 1), false);
 }
+
+} // namespace
 
 int
 main(void) {

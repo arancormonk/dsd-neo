@@ -15133,8 +15133,15 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
     target_link_libraries(
         dsd-neo_test_dmr_usbd_inbound_sync
-        # The voice path the single-slot reader links reaches the NXDN scrambler (LFSRN) through core's vocoder.
-        PRIVATE dsd-neo_proto_dmr dsd-neo_proto_nxdn dsd-neo_test_support
+        # The voice path the single-slot reader links reaches the NXDN scrambler (LFSRN) through core's vocoder, and
+        # NXDN needs core back: one group, so a linker that reads archives once in order (GNU ld) resolves both ways.
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_proto_nxdn
+            "-Wl,--end-group"
+            dsd-neo_test_support
     )
     target_link_options(
         dsd-neo_test_dmr_usbd_inbound_sync
@@ -16900,10 +16907,26 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/protocol/tetra
     )
-    target_link_libraries(
-        "${_dsd_tetra_target}"
-        PRIVATE dsd-neo_proto_tetra dsd-neo_fec dsd-neo_test_support
-    )
+    # The LIP reports reach core's GPS decoders, whose object also holds a caller of the DMR text decoder: one group,
+    # so a linker that reads archives once in order (GNU ld) finds it after core.
+    if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            "${_dsd_tetra_target}"
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_proto_tetra
+                dsd-neo_core
+                dsd-neo_proto_dmr
+                "-Wl,--end-group"
+                dsd-neo_fec
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            "${_dsd_tetra_target}"
+            PRIVATE dsd-neo_proto_tetra dsd-neo_fec dsd-neo_test_support
+        )
+    endif()
     string(REGEX REPLACE "^tetra_" "" _dsd_tetra_test_name "${_dsd_tetra_test}")
     string(TOUPPER "${_dsd_tetra_test_name}" _dsd_tetra_test_name)
     add_test(

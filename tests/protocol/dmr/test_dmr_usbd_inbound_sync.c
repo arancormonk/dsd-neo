@@ -29,7 +29,9 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
 
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 int __wrap_getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 int __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
 
 /* The burst's live half (54 dibits), then filler for the reads past it. */

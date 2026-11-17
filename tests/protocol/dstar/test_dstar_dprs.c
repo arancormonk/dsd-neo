@@ -145,7 +145,7 @@ send_gps(rig* r, const char* text, size_t len, int skip_blocks) {
     DSD_MEMSET(bytes, 0x66, sizeof(bytes));
     while (at < len) {
         const size_t n = (len - at) < 5U ? (len - at) : 5U;
-        uint8_t* b = bytes + (block * 6);
+        uint8_t* b = bytes + ((size_t)block * 6U);
         b[0] = (uint8_t)(0x30U | n);
         DSD_MEMCPY(b + 1, text + at, n);
         at += n;

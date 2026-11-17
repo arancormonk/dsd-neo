@@ -132,6 +132,18 @@ typedef struct {
     const char* tag;
 } usbd_case;
 
+/* The fields a notice writes: equal when no notice was written over the row. */
+static int
+notice_row_unchanged(const Event_History* a, const Event_History* b) {
+    return a->write == b->write && a->systype == b->systype && a->subtype == b->subtype && a->category == b->category
+           && a->source_id == b->source_id && a->target_id == b->target_id && a->event_time == b->event_time
+           && a->event_start_time == b->event_start_time && memcmp(a->gps_s, b->gps_s, sizeof a->gps_s) == 0
+           && memcmp(a->event_string, b->event_string, sizeof a->event_string) == 0
+           && memcmp(a->text_message, b->text_message, sizeof a->text_message) == 0
+           && memcmp(a->internal_str, b->internal_str, sizeof a->internal_str) == 0
+           && memcmp(&a->pos, &b->pos, sizeof a->pos) == 0;
+}
+
 static int
 check_case(const dsd_state* state, const usbd_case* c, const Event_History* notice_before) {
     const Event_History_I* history = &state->event_history_s[1];
@@ -145,7 +157,7 @@ check_case(const dsd_state* state, const usbd_case* c, const Event_History* noti
     }
     const char* gps = state->dmr_embedded_gps[1];
     if (!c->published) {
-        if (gps[0] != '\0' || memcmp(notice, notice_before, sizeof *notice) != 0) {
+        if (gps[0] != '\0' || !notice_row_unchanged(notice, notice_before)) {
             DSD_FPRINTF(stderr, "\n%s: an unpublished reply left text or a notice: %s\n", c->tag, gps);
             return 0;
         }
@@ -202,8 +214,7 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         state->data_header_format[1] = 1;
         DSD_MEMSET(state->dmr_embedded_gps[1], 0, sizeof state->dmr_embedded_gps[1]);
         open_clean_call(opts, state);
-        Event_History notice_before;
-        DSD_MEMCPY(&notice_before, &state->event_history_s[1].Event_History_Items[1], sizeof notice_before);
+        const Event_History notice_before = state->event_history_s[1].Event_History_Items[1];
         dmr_data_burst_handler_origin(opts, state, info, 0x0B, NULL, cases[i].origin);
         if (state->event_crc_invalid[1] != 0) {
             DSD_FPRINTF(stderr, "\n%s: CRC flag was not restored\n", cases[i].tag);

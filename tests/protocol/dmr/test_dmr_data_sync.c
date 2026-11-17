@@ -50,7 +50,8 @@ static uint8_t g_live_reliability[64];
 static int g_cach_calls;
 static int g_debug_format_calls;
 static uint8_t g_handler_burst;
-static dmr_burst_origin g_handler_origin;
+/* The origin the handler was given, -1 before it runs. */
+static int g_handler_origin;
 static uint8_t g_handler_info[196];
 static uint8_t g_handler_reliab[98];
 /* The received identity as a snapshot published while the burst is dispatched would carry it. */
@@ -83,7 +84,7 @@ reset_fixture(void) {
     g_cach_calls = 0;
     g_debug_format_calls = 0;
     g_handler_burst = 0;
-    g_handler_origin = (dmr_burst_origin)-1;
+    g_handler_origin = -1;
     g_confidence_result = DMR_CONFIDENCE_LOCKED;
     g_boundary_at = -1;
     for (size_t i = 0; i < 64U; i++) {
@@ -160,7 +161,7 @@ dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196
                               const uint8_t* reliab98, dmr_burst_origin origin) {
     (void)opts;
     g_handler_calls++;
-    g_handler_origin = origin;
+    g_handler_origin = (int)origin;
     g_handler_slot = state->currentslot;
     g_handler_mono_slot = state->dmr_mono_rx_slot;
     if (g_handler_moves_carrier) {
@@ -1044,7 +1045,7 @@ test_burst_origin_from_sync(void) {
             }
             dmr_data_sync(&opts, &state);
             assert(g_handler_calls == 1);
-            assert(g_handler_origin == cases[i].origin);
+            assert(g_handler_origin == (int)cases[i].origin);
         }
     }
 }

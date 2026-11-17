@@ -1929,7 +1929,7 @@ put_harris_gps(unsigned long long int* mac, int offset, int length_octet) {
     mac[2 + offset] = 0xA4;
     mac[3 + offset] = (unsigned long long int)length_octet;
     for (int i = 0; i < DSD_HARRIS_GPS_BODY_OCTETS; i++) {
-        mac[4 + offset + i] = (unsigned long long int)(0x11 + i);
+        mac[4 + offset + i] = 0x11ULL + (unsigned long long int)i;
     }
 }
 

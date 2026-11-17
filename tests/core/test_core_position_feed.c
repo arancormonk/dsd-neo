@@ -63,6 +63,26 @@ free_state(dsd_state* st) {
     free(st);
 }
 
+static int
+scope_equal(const dsd_position_scope* a, const dsd_position_scope* b) {
+    return a->kind == b->kind && memcmp(a->pad, b->pad, sizeof a->pad) == 0 && a->a == b->a && a->b == b->b;
+}
+
+/* Every field of two reports equal: a refused report must come back exactly as it went in. */
+static int
+fix_equal(const dsd_position_fix* a, const dsd_position_fix* b) {
+    return a->stream_id == b->stream_id && a->seq == b->seq && a->proc_instance == b->proc_instance && a->rev == b->rev
+           && a->origin_gen == b->origin_gen && a->rx_time_s == b->rx_time_s && a->fix_time_s == b->fix_time_s
+           && a->freq_hz == b->freq_hz && a->identity_freq_hz == b->identity_freq_hz && a->lat_e7 == b->lat_e7
+           && a->lon_e7 == b->lon_e7 && a->alt_dm == b->alt_dm && a->err_m == b->err_m && a->source_id == b->source_id
+           && a->target_id == b->target_id && a->speed_dkmh == b->speed_dkmh && a->heading_ddeg == b->heading_ddeg
+           && a->flags == b->flags && a->rx_clock == b->rx_clock && a->age_class == b->age_class && a->sats == b->sats
+           && a->protocol == b->protocol && a->kind == b->kind && a->slot == b->slot
+           && scope_equal(&a->reception_scope, &b->reception_scope) && scope_equal(&a->sender_scope, &b->sender_scope)
+           && memcmp(a->source_text, b->source_text, sizeof a->source_text) == 0
+           && memcmp(a->label, b->label, sizeof a->label) == 0;
+}
+
 /* A verified DMR LRRP report from made-up radio 1234 to talkgroup 99 at 22.5 N 45.0 E. */
 static dsd_position_fix
 base_fix(void) {
@@ -133,7 +153,7 @@ test_gates(void) {
     /* The producer's own check must have passed, exactly 1. */
     assert(dsd_position_admit(opts, st, &f, 0, 1, NULL) == DSD_POSITION_REFUSED);
     assert(dsd_position_admit(opts, st, &f, 2, 1, NULL) == DSD_POSITION_REFUSED);
-    assert(memcmp(&f, &before, sizeof f) == 0); /* a refused report is left as it was */
+    assert(fix_equal(&f, &before)); /* a refused report is left as it was */
     assert(dsd_position_admit(opts, NULL, &f, 1, 1, NULL) == DSD_POSITION_REFUSED);
     assert(dsd_position_admit(opts, st, NULL, 1, 1, NULL) == DSD_POSITION_REFUSED);
 
@@ -693,7 +713,7 @@ test_origin(void) {
     f.protocol = DSD_SYNC_P25P1_POS;
     const dsd_position_fix before = f;
     assert(dsd_position_admit(opts, st, &f, 1, 1, &origin) == DSD_POSITION_REFUSED);
-    assert(memcmp(&f, &before, sizeof f) == 0);
+    assert(fix_equal(&f, &before));
 
     /* So does a received identity epoch change (another system, a target switch). */
     dsd_position_origin_capture(opts, st, &origin);

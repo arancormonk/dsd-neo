@@ -59,11 +59,17 @@ dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_Histor
 static atomic_int g_count_allocs = 0;
 static atomic_int g_allocs = 0;
 
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 void* __real_malloc(size_t size);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 void* __real_calloc(size_t count, size_t size);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 void* __real_realloc(void* ptr, size_t size);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 void* __wrap_malloc(size_t size);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 void* __wrap_calloc(size_t count, size_t size);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 void* __wrap_realloc(void* ptr, size_t size);
 
 void*

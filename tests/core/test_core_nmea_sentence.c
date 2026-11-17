@@ -214,7 +214,7 @@ test_gga_fields(void) {
     CHECK(f.speed_dkmh == DSD_POSITION_SPEED_UNKNOWN && f.heading_ddeg == DSD_POSITION_HEADING_UNKNOWN);
     CHECK(parse_body("GPGGA,120000,2230.0,N,04500.0,E,2,05,1.0,-12.5,M,,M,,").alt_dm == -125);
     /* Quality 1-5 is a measured fix; 0 (none), 6 (dead reckoning), 7 (manual) and 8 (simulator) are not. */
-    for (char q = '0'; q <= '9'; q++) {
+    for (int q = '0'; q <= '9'; q++) {
         char body[96];
         DSD_SNPRINTF(body, sizeof body, "GPGGA,120000,2230.0,N,04500.0,E,%c,05,1.0,10.0,M,,M,,", q);
         f = parse_body(body);
