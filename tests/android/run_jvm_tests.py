@@ -20,6 +20,11 @@ APP_SOURCES = Path("android/package/src/io/github/arancormonk/dsdneo")
 # the CPU time of the default C2 and G1 threads, and CPU is what a loaded host runs out of: two cold Kotlin compiles of
 # the usb suite outlasted CTest's 90 s beside a full parallel build.
 JVM_OPTIONS = ("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC")
+# kotlinc takes its JVM's options from JAVA_OPTS, in both launchers (bin/kotlinc and bin/kotlinc.bat), and puts each
+# word on the java command line itself. Not as -J arguments: Windows runs kotlinc.bat, and cmd.exe splits a batch file's
+# arguments at "=", so -J-XX:TieredStopAtLevel=1 reached the JVM as -XX:TieredStopAtLevel and a stray 1. A set JAVA_OPTS
+# replaces the launchers' default heap options, so they go in with it (Kotlin 2.4's default).
+KOTLINC_DEFAULT_JAVA_OPTS = "-Xmx512M -Xms128M"
 
 # A double-quoted literal on one line, and the escapes the golden records use (C and Kotlin agree on these).
 STRING_LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
@@ -1765,6 +1770,28 @@ def cached_compiler():
     return jars
 
 
+def kotlinc_environment(environ):
+    """@p environ with JVM_OPTIONS in JAVA_OPTS, for the kotlinc launcher: after the options already set there, or after
+    the launchers' default when none are."""
+    given = environ.get("JAVA_OPTS", "").strip()
+    return {**environ, "JAVA_OPTS": " ".join((given or KOTLINC_DEFAULT_JAVA_OPTS, *JVM_OPTIONS))}
+
+
+def compile_command(java, kotlinc, cached, files, output, environ):
+    """The compile of @p files into the jar @p output: its argv, its environment and the classpath the tests run on. With
+    kotlinc, the JVM options go through JAVA_OPTS and no argument carries one; with the cached compiler, java takes them
+    as arguments itself."""
+    if kotlinc:
+        argv = [kotlinc, "-include-runtime", *map(str, files), "-d", str(output)]
+        return argv, kotlinc_environment(environ), str(output)
+    classpath = os.pathsep.join(map(str, cached))
+    argv = [
+        java, *JVM_OPTIONS, "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
+        "-no-stdlib", "-no-reflect", "-classpath", classpath, *map(str, files), "-d", str(output),
+    ]
+    return argv, dict(environ), os.pathsep.join((str(output), classpath))
+
+
 def run_build(name, build, java, kotlinc, cached):
     app = REPO / APP_SOURCES
     files = [
@@ -1774,17 +1801,8 @@ def run_build(name, build, java, kotlinc, cached):
     ]
     with tempfile.TemporaryDirectory(prefix=f"dsd-{name}-tests-") as directory:
         output = Path(directory) / "tests.jar"
-        if kotlinc:
-            compiler = [kotlinc, *(f"-J{option}" for option in JVM_OPTIONS), "-include-runtime"]
-            runtime = str(output)
-        else:
-            classpath = os.pathsep.join(map(str, cached))
-            compiler = [
-                java, *JVM_OPTIONS, "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
-                "-no-stdlib", "-no-reflect", "-classpath", classpath,
-            ]
-            runtime = os.pathsep.join((str(output), classpath))
-        subprocess.run([*compiler, *map(str, files), "-d", str(output)], check=True)
+        argv, env, runtime = compile_command(java, kotlinc, cached, files, output, os.environ)
+        subprocess.run(argv, env=env, check=True)
         for test in build.tests:
             # Top-level functions in Foo.kt compile into the class FooKt.
             subprocess.run([java, *JVM_OPTIONS, "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"], check=True, timeout=30)

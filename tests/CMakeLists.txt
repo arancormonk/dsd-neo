@@ -26050,6 +26050,14 @@ if(Python3_Interpreter_FOUND)
         COMMAND
             ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/android/test_r8.py
     )
+    # run_jvm_tests.py's compile command, as Windows hands it to kotlinc.bat: cmd.exe splits a batch
+    # file's arguments at "=", so the JVM options go through JAVA_OPTS. Stdlib only; starts no JVM.
+    add_test(
+        NAME ANDROID_JVM_RUNNER_COMMAND
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/test_run_jvm_tests.py
+    )
     # Production Android Kotlin on the JVM, one CTest per suite of run_jvm_tests.py. Each compiles Kotlin, which is
     # memory-hungry, so they never run at once. The time is CPU spent in cold compiler JVMs, a few seconds a compile on
     # an idle host but over 40 s beside a full parallel build, so the timeout leaves room for two compiles at that pace.
