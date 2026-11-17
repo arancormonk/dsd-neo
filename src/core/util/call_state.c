@@ -96,9 +96,29 @@ call_state_ext_allocate(void) {
     return ext;
 }
 
+/* Forget every record keyed to a call epoch or transmission of the sequence that ends (issue #800): a new call-state
+ * extension restarts the epochs at 1 (another engine run on a reused state), and a record of the old sequence would
+ * match a call of the new one. They are the DMR checked-LC source (embedded GPS), the P25 Phase 1 hard-decoded
+ * voice-user identity and L3Harris Part A, the D-STAR D-PRS record being collected in a call and the last admitted M17
+ * GNSS META. A D-PRS record begun outside any call (epoch 0) is bound by its reception only, and stays: the call whose
+ * first observation creates the extension may be the one it entered late. */
+static void
+call_state_forget_epoch_records(dsd_state* state) {
+    DSD_MEMSET(state->dmr_lc_checked_transmission, 0, sizeof(state->dmr_lc_checked_transmission));
+    DSD_MEMSET(state->dmr_lc_checked_source, 0, sizeof(state->dmr_lc_checked_source));
+    DSD_MEMSET(&state->p25_p1_lc_checked_id, 0, sizeof(state->p25_p1_lc_checked_id));
+    DSD_MEMSET(&state->p25_p1_harris_part_a, 0, sizeof(state->p25_p1_harris_part_a));
+    if (state->dstar_dprs.epoch != 0U) {
+        DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
+    }
+    DSD_MEMSET(state->m17_gnss_meta_admitted, 0, sizeof(state->m17_gnss_meta_admitted));
+    state->m17_gnss_tx_kind = 0U;
+    state->m17_gnss_tx_id = 0U;
+}
+
 /* The extension, created when @p create and missing. A created one restarts the epoch sequence unless @p restore (the
- * caller copies another state's calls and epoch sequence into it): then a record keyed to the old transmissions (the
- * DMR checked-LC source for embedded GPS) must not match a call of the new sequence, so it is cleared. */
+ * caller copies another state's calls and epoch sequence into it): then the records keyed to the old transmissions
+ * (call_state_forget_epoch_records()) must not match a call of the new sequence, so they are cleared. */
 static dsd_call_state_ext*
 call_state_ext_obtain(dsd_state* state, int create, int restore) {
     if (!state) {
@@ -119,8 +139,7 @@ call_state_ext_obtain(dsd_state* state, int create, int restore) {
             ext = NULL;
         }
         if (ext && !restore) {
-            DSD_MEMSET(state->dmr_lc_checked_transmission, 0, sizeof(state->dmr_lc_checked_transmission));
-            DSD_MEMSET(state->dmr_lc_checked_source, 0, sizeof(state->dmr_lc_checked_source));
+            call_state_forget_epoch_records(state);
         }
     }
     (void)dsd_mutex_unlock(&g_call_state_alloc_mutex);

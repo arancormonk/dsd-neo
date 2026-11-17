@@ -2573,9 +2573,14 @@ suite runs under this compiler.
     retune, target switch or reception change came in between. `-L` rows: LRRP and LOCN through
     `dmr_pdu_write_location_row()`, LIP through `lip_write_location_row()`, the rest through `dsd_gps.c`'s writers,
     always from the admitted record (its source, 0 when admission cleared it); NMEA and NXDN rows need a source.
-    Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. Tests: `CORE_POSITION_FEED`,
-    `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`, `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`,
-    `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `NXDN_GPS_DISPATCH`, `M17_GNSS_POSITION`, `DSTAR_DPRS`, `TETRA_LIP`.
+    Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. The records keyed to a call epoch or
+    transmission (the DMR checked-LC source, `p25_p1_lc_checked_id`, the L3Harris Part A, a D-PRS record begun in a
+    call, the last admitted M17 META) are cleared when the call state starts over
+    (`call_state_forget_epoch_records()`: a new call-state extension restarts the epochs at 1, as another engine run on
+    a reused state does). Tests:
+    `CORE_POSITION_FEED`, `CORE_CALL_STATE_ALLOC`, `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`,
+    `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`, `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `P25_P1_TDULC`,
+    `NXDN_GPS_DISPATCH`, `M17_GNSS_POSITION`, `DSTAR_DPRS`, `TETRA_LIP`.
 - API note: the unit activity ring (`<dsd-neo/core/unit_activity.h>`, `src/core/util/unit_activity.c`, state
   extension 14) is the session's log of trunking unit events: registrations, deregistrations, talkgroup joins, denies,
   queued and waiting responses, radio commands, status and message reports. Protocol producers push one plain record

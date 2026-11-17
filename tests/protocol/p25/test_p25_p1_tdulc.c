@@ -555,6 +555,47 @@ test_terminator_gps(void) {
     return rc;
 }
 
+/* Issue #800: the next engine run on a reused state (the engine's cleanup frees the call state, so the epochs restart
+   at 1) forgets the last run's hard-decoded voice-user identity: a GPS link control of the new run's first call,
+   opened by a soft-recovered link control of the same radio, is not attributed by it. */
+static int
+test_reused_state_forgets_checked_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint8_t apx[7] = {0x00, 0x00, 0x2A, 0xAA, 0xAA, 0x15, 0x55};
+    const uint8_t user[7] = {0x00, 0x00, 0x12, 0x34, 0x01, 0x02, 0x03};
+    uint8_t lcw[72];
+    int rc = 0;
+
+    const uint64_t first = start_checked_call(&opts, &state);
+    rc |=
+        expect_true("first run: checked identity of its call", first != 0U && state.p25_p1_lc_checked_id.epoch == first
+                                                                   && state.p25_p1_lc_checked_id.source == 0x010203U);
+
+    dsd_state_ext_free_all(&state);
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &opts, &state);
+    p25_sm_event_t grant = p25_sm_ev_group_grant(0x100A, 852125000, 0x1234, 0x010203, 0);
+    p25_sm_event(ctx, &opts, &state, &grant);
+    lcw_from_octets(lcw, 0x00, 0x00, user);
+    state.p25_p1_lcw_soft = 1U;
+    p25_lcw(&opts, &state, lcw, 0);
+    state.p25_p1_lcw_soft = 0U;
+    dsd_call_snapshot call;
+    rc |= expect_true("next run: its first call reuses the epoch and the radio",
+                      dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.epoch == first && call.ota_source_id == 0x010203U);
+
+    g_gps_calls = 0;
+    lcw_from_octets(lcw, 0x06, 0x90, apx);
+    p25_lcw(&opts, &state, lcw, 0);
+    rc |= expect_eq_int("next run: GPS dispatched", g_gps_calls, 1);
+    rc |= expect_true("next run: the call, but no checked identity",
+                      g_gps_ctx.call_epoch == first && g_gps_ctx.source_verified == 0U && g_gps_ctx.target_id == 0U);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -695,6 +736,7 @@ main(void) {
 
     // Case 8 (issue #800): GPS link controls in the terminator.
     rc |= test_terminator_gps();
+    rc |= test_reused_state_forgets_checked_identity();
 
     dsd_state_ext_free_all(&state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

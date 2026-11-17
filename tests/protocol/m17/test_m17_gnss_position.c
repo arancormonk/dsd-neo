@@ -360,6 +360,33 @@ test_ip_repeated_meta_is_one_report(void) {
     rig_close(&r);
 }
 
+/* Issue #800: the next engine run on a reused state (its cleanup frees every extension, so the call epochs restart at
+ * 1) forgets which META the last run admitted: the same META on the new run's first call is a new report. */
+static void
+test_reused_state_admits_meta_again(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    uint64_t rev = dsd_position_last_rev();
+    expect_int("first run's LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
+    expect_int("first run admits the META", (long long)(dsd_position_last_rev() - rev), 1);
+
+    dsd_state_ext_free_all(r.state);
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        init_event_history(&r.history[slot], 0, 255);
+    }
+    expect_int("next run's feed starts", dsd_position_feed_start(r.state), 0);
+    rev = dsd_position_last_rev();
+    expect_int("next run's LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
+    dsd_call_snapshot call;
+    expect_true("next run's first call is epoch 1 again",
+                dsd_call_state_get(r.state, 0U, &call) == 1 && call.epoch == 1U);
+    expect_int("next run admits the same META", (long long)(dsd_position_last_rev() - rev), 1);
+    expect_int("next run's call row takes it", row0(&r)->pos.valid, 1);
+    rig_close(&r);
+}
+
 /* Under -F an LSF whose CRC failed still sets the decoder up, but its META is no position, no text and no callsign. */
 static void
 test_relaxed_bad_lsf_gives_nothing(void) {
@@ -702,6 +729,7 @@ main(void) {
     test_rf_lsf_meta_position();
     test_rf_repeated_meta_is_one_report();
     test_ip_repeated_meta_is_one_report();
+    test_reused_state_admits_meta_again();
     test_relaxed_bad_lsf_gives_nothing();
     test_meta_field_ranges();
     test_lich_lsd_position();

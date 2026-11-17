@@ -561,8 +561,8 @@ typedef struct {
  * (issue #800). It owns its storage, so a talker alias between the two halves cannot wipe it (spec N3). It pairs only
  * with the Part B of its own parity (42 with 43, 44 with 45; D14) heard on the same call epoch (never outside a call)
  * and source within the pairing window on the decode clock, and the report keeps the reception it began on
- * (@c origin). Any newer Part A replaces it; a Part B of the other parity, its use, another call epoch or source, and
- * expiry clear it.
+ * (@c origin). Any newer Part A replaces it; a Part B of the other parity, its use, another call epoch or source,
+ * expiry and a call state that starts over (a new call-state extension restarts the epochs) clear it.
  */
 typedef struct {
     uint8_t valid;
@@ -578,7 +578,8 @@ typedef struct {
 /**
  * The identity a P25 Phase 1 voice-user link control (LCO 0x00, 0x03, Motorola LCGRGR) that passed a hard RS decode
  * named for the call of @c epoch, while that call was ACTIVE with this source (issue #800, spec 2.2): the checked
- * provenance a GPS link control of the same transmission takes its source, target and group flag from.
+ * provenance a GPS link control of the same transmission takes its source, target and group flag from. Cleared when the
+ * call state starts over (a new call-state extension restarts the epochs).
  */
 typedef struct {
     uint64_t epoch; /* 0: none */
@@ -637,8 +638,9 @@ typedef struct dmr_talker_alias_assembly {
  * (src/protocol/dstar/dstar_slow_data.c): from "$$CRC" through the CR that ends it (JARL STD 6.0 section 6.8.1). It
  * spans superframes, so it is bound to the slot 0 call it began in (epoch 0: none was active) and to the reception
  * captured with its first byte. A record that grows past DSTAR_DPRS_RECORD_MAX bytes is dropped, and one whose CR was
- * lost gives way to the next "$$CRC". Another call (for a record begun in one), a verified RF header or the carrier's
- * end (dstar_confirm_reset()) clears it.
+ * lost gives way to the next "$$CRC". Another call (for a record begun in one), a verified RF header, the carrier's
+ * end (dstar_confirm_reset()) or, for a record begun in a call, a call state that starts over (its epochs restart)
+ * clears it.
  */
 typedef struct dstar_dprs_assembly {
     uint8_t text[DSTAR_DPRS_RECORD_MAX]; /* until "$$CRC" matched: the last bytes seen, at most five */
@@ -3026,7 +3028,7 @@ struct dsd_state {
     /* The last GNSS META admitted as a position (issue #800): a transmission repeats its LSF META (RF: every LICH
      * superframe; IP: every stream frame), and the repeats are one report. Admitted again only for another
      * transmission (m17_gnss_tx_kind/m17_gnss_tx_id: 1 = RF, the slot 0 call epoch; 2 = network, the stream ID) or
-     * changed META bytes; kind 0 = none yet. */
+     * changed META bytes; kind 0 = none yet. A call state that starts over (its epochs restart) forgets it. */
     uint8_t m17_gnss_meta_admitted[14];
     uint8_t m17_gnss_tx_kind;
     uint64_t m17_gnss_tx_id;
