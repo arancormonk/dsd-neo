@@ -63,6 +63,9 @@ main(void) {
     assert(dsd_call_state_restore_snapshot(restored, &calls) >= 0);
     assert(dsd_state_ext_get(restored, DSD_STATE_EXT_CORE_CALL_STATE) != NULL);
     assert(restored->dmr_lc_checked_transmission[0] == 1U && restored->dmr_lc_checked_source[0] == 1001U);
+    // Every carrier change (a carrier boundary, a trunk-scan target switch, a scan step, a user's move) forgets it.
+    dsd_state_note_carrier_change(restored);
+    assert(restored->dmr_lc_checked_transmission[0] == 0U && restored->dmr_lc_checked_source[0] == 0U);
     dsd_state_ext_free_all(restored);
     free(restored);
 
