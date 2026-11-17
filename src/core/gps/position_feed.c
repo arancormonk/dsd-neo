@@ -152,6 +152,25 @@ pos_scope_feed_only(const dsd_received_identity* rx, uint32_t tuned_hz, dsd_posi
     return 0;
 }
 
+int
+dsd_position_scope_from_rxid(const struct dsd_received_identity* rx, uint32_t tuned_hz, dsd_position_scope* out) {
+    if (!out) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!rx) {
+        return 0;
+    }
+    dsd_alias_scope alias;
+    if (dsd_alias_scope_from_rxid(rx, &alias)) {
+        out->kind = alias.kind;
+        out->a = alias.a;
+        out->b = alias.b;
+        return 1;
+    }
+    return pos_scope_feed_only(rx, tuned_hz, out);
+}
+
 /* The reception generation: the received identity's epoch low, the trunk tuning generation high. */
 static uint64_t
 pos_generation(const dsd_state* state) {
@@ -168,14 +187,7 @@ dsd_position_origin_capture(const dsd_opts* opts, const dsd_state* state, dsd_po
         return;
     }
     const uint32_t tuned_hz = dsd_opts_tuned_freq_hz(opts);
-    dsd_alias_scope alias;
-    if (dsd_alias_scope_from_rxid(&state->rx_id, &alias)) {
-        out->scope.kind = alias.kind;
-        out->scope.a = alias.a;
-        out->scope.b = alias.b;
-    } else {
-        (void)pos_scope_feed_only(&state->rx_id, tuned_hz, &out->scope);
-    }
+    (void)dsd_position_scope_from_rxid(&state->rx_id, tuned_hz, &out->scope);
     out->freq_hz = (int64_t)tuned_hz;
     out->gen = pos_generation(state);
     out->valid = 1U;

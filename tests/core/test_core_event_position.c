@@ -205,21 +205,65 @@ test_newest_rev_wins(void) {
     expect_row_fix(row(0), &second, "second");
 }
 
-/* One radio number in two systems is two radios: a row that took one scope's report takes no other scope's. */
+/* One radio number in two systems is two radios: a row heard in one system takes no report heard in another. The row's
+ * reception identity is taken while its call is active on the carrier it began on, pinned, and committed with it. */
 static void
 test_same_number_two_scopes(void) {
     reset_fixture();
-    const uint64_t epoch = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
     dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x111U);
+    const uint64_t epoch = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    assert(row(0)->rx_scope.resolved == 1U && row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_P25);
+    assert(row(0)->rx_scope.scope.a == 0xA1234U && row(0)->rx_scope.scope.b == 0x111U);
     const dsd_position_fix here = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
-    assert(here.sender_scope.kind == DSD_POS_SCOPE_P25);
+    assert(here.reception_scope.kind == DSD_POS_SCOPE_P25);
     dsd_rxid_reset(&g_state);
     dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x222U);
     const dsd_position_fix there = admitted(DSD_SYNC_P25P1_POS, 111U, 100000000, 200000000);
-    assert(there.rev > here.rev && there.sender_scope.b != here.sender_scope.b);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &here, "here") == 1);
+    assert(there.rev > here.rev && there.reception_scope.b != here.reception_scope.b);
     assert(dsd_event_enrich_position(&g_state, 0U, epoch, &there, "there") == 0);
+    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &here, "here") == 1);
     expect_row_fix(row(0), &here, "here");
+    /* Pinned: another carrier's record does not move it, and the commit keeps it. */
+    dsd_event_sync_slot(&g_opts, &g_state, 0U);
+    assert(row(0)->rx_scope.scope.b == 0x111U);
+    end_call(DSD_CALL_END_TERMINATOR);
+    assert(row(1)->source_id == 111U && row(1)->rx_scope.resolved == 1U && row(1)->rx_scope.scope.b == 0x111U);
+
+    /* A row with no reception identity yet takes a report heard anywhere. */
+    reset_fixture();
+    const uint64_t unknown = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x222U);
+    assert(row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_NONE);
+    const dsd_position_fix later = admitted(DSD_SYNC_P25P1_POS, 111U, 100000000, 200000000);
+    assert(dsd_event_enrich_position(&g_state, 0U, unknown, &later, "later") == 1);
+}
+
+/* The sender scope is only the track key: a TETRA radio of a foreign network, heard here, enriches its own call. */
+static void
+test_foreign_sender_enriches_its_call(void) {
+    reset_fixture();
+    DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+    g_state.rx_id.family = DSD_RXID_FAMILY_TETRA;
+    g_state.rx_id.valid = DSD_RXID_TETRA_NET;
+    g_state.rx_id.tetra_mcc = 901U;
+    g_state.rx_id.tetra_mnc = 1U;
+    const uint64_t epoch = observe(DSD_SYNC_TETRA_NDB_POS, 4001U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    assert(row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_TETRA && row(0)->rx_scope.scope.a == 901U);
+    dsd_position_fix f;
+    dsd_position_fix_init(&f);
+    f.kind = DSD_POS_TETRA_LIP;
+    f.protocol = DSD_SYNC_TETRA_NDB_POS;
+    f.lat_e7 = 225000000;
+    f.lon_e7 = 450000000;
+    f.source_id = 4001U;
+    f.sender_scope.kind = (uint8_t)DSD_POS_SCOPE_TETRA;
+    f.sender_scope.a = 902U;
+    f.sender_scope.b = 7U;
+    assert(dsd_position_admit(&g_opts, &g_state, &f, 1, 1, NULL) != DSD_POSITION_REFUSED);
+    assert(f.sender_scope.a == 902U && f.reception_scope.a == 901U);
+    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &f, "LIP 22.5 45.0") == 1);
+    expect_row_fix(row(0), &f, "LIP 22.5 45.0");
+    assert(row(0)->pos.scope.a == 902U && row(0)->rx_scope.scope.a == 901U);
 }
 
 /* Callsign sources: the open-call writer (D-STAR) checks the report's callsign against the call's. */
@@ -356,6 +400,26 @@ test_data_notices(void) {
     assert(row(1)->pos.scope.kind == DSD_POS_SCOPE_P25 && row(1)->pos.scope.a == 0xA1234U
            && row(1)->pos.scope.b == 0x111U);
 
+    assert(row(1)->rx_scope.resolved == 1U && row(1)->rx_scope.scope.b == 0x111U);
+
+    /* A report whose identity admission cleared makes the notice anonymous and keeps the position. */
+    dsd_position_fix unverified;
+    dsd_position_fix_init(&unverified);
+    unverified.kind = DSD_POS_DMR_LRRP;
+    unverified.protocol = DSD_SYNC_P25P1_POS;
+    unverified.source_id = 333U;
+    unverified.target_id = 1201U;
+    unverified.lat_e7 = 100000000;
+    unverified.lon_e7 = 200000000;
+    assert(dsd_position_admit(&g_opts, &g_state, &unverified, 1, 0, NULL) != DSD_POSITION_REFUSED);
+    assert(dsd_event_stage_position(&g_state, 0U, &unverified, "LRRP unverified") == 1);
+    dsd_call_observation named = dsd_call_observation_data(DSD_SYNC_P25P1_POS, 0U, 333U, 1201U);
+    DSD_SNPRINTF(named.source_text, sizeof named.source_text, "%s", "UNIT 333");
+    assert(dsd_event_emit_data_notice(&g_opts, &g_state, 0U, &named, "PDU;") == 0);
+    expect_row_fix(row(1), &unverified, "LRRP unverified");
+    assert(row(1)->source_id == 0U && row(1)->target_id == 0U && row(1)->src_str[0] == '\0'
+           && row(1)->tgt_str[0] == '\0');
+
     /* A text-only stage clears a staged position. */
     assert(dsd_event_stage_position(&g_state, 0U, &f, "LRRP B") == 1);
     dsd_event_stage_gps(&g_state, 0U, "text only");
@@ -385,6 +449,7 @@ main(void) {
     test_typed_source_rule();
     test_newest_rev_wins();
     test_same_number_two_scopes();
+    test_foreign_sender_enriches_its_call();
     test_callsign_sources();
     test_text_only_after_gps();
     test_merge_keeps_text_and_position_together();

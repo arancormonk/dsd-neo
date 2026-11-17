@@ -836,6 +836,9 @@ main(void) {
     row_pos.scope.kind = (uint8_t)DSD_POS_SCOPE_DMR;
     row_pos.scope.a = 7U;
     history[0].Event_History_Items[1].pos = row_pos;
+    history[0].Event_History_Items[1].rx_scope.resolved = 1U;
+    history[0].Event_History_Items[1].rx_scope.scope.kind = (uint8_t)DSD_POS_SCOPE_DMR;
+    history[0].Event_History_Items[1].rx_scope.scope.a = 7U;
     DSD_SNPRINTF(history[0].Event_History_Items[1].gps_s, sizeof history[0].Event_History_Items[1].gps_s, "%s",
                  "GPS 22.5 45.0");
     /* The staged row's rdio-scanner export verdict and the talkgroup it was judged on (issue #773 D7) ride the
@@ -898,6 +901,7 @@ main(void) {
                  "MUTATED");
     history[0].Event_History_Items[1].pos.rev = 43U;
     history[0].Event_History_Items[1].pos.lat_e7 = 100000000;
+    history[0].Event_History_Items[1].rx_scope.scope.a = 8U;
     cc->count = 1;
     cc->candidates[0] = 999999999L;
     cc->added = 99U;
@@ -927,6 +931,8 @@ main(void) {
     assert(strcmp(snap->event_history_s[0].Event_History_Items[1].src_str, "RADIO-123") == 0);
     assert(memcmp(&snap->event_history_s[0].Event_History_Items[1].pos, &row_pos, sizeof row_pos) == 0);
     assert(strcmp(snap->event_history_s[0].Event_History_Items[1].gps_s, "GPS 22.5 45.0") == 0);
+    assert(snap->event_history_s[0].Event_History_Items[1].rx_scope.resolved == 1U
+           && snap->event_history_s[0].Event_History_Items[1].rx_scope.scope.a == 7U);
     assert(memcmp(&snap->event_history_s[0].Event_History_Items[1].site_id, &row_site, sizeof row_site) == 0);
     assert(snap->event_history_s[0].Event_History_Items[1].channel == 12U
            && snap->event_history_s[0].Event_History_Items[1].call_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LPCN);

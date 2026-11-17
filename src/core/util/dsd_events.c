@@ -56,6 +56,7 @@
 
 /* A row stays comparable byte for byte (watchdog_event_commit_candidate()): its position has no padding. */
 _Static_assert(sizeof(dsd_event_pos) == 64U, "dsd_event_pos must stay free of padding");
+_Static_assert(sizeof(dsd_event_rx_scope) == 24U, "dsd_event_rx_scope must stay free of padding");
 
 enum {
     DSD_EVENT_SUBTYPE_DMR_DATA_BURST = 6,
@@ -141,6 +142,8 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].event_string[0] = '\0';
         event_struct->Event_History_Items[i].internal_str[0] = '\0';
         DSD_MEMSET(&event_struct->Event_History_Items[i].pos, 0, sizeof(event_struct->Event_History_Items[i].pos));
+        DSD_MEMSET(&event_struct->Event_History_Items[i].rx_scope, 0,
+                   sizeof(event_struct->Event_History_Items[i].rx_scope));
     }
     if (stop > 1U) {
         // The reset reached committed rows, not just the staged one.
@@ -239,6 +242,7 @@ push_event_history(Event_History_I* event_struct) {
                        event_struct->Event_History_Items[i - 1].internal_str,
                        sizeof event_struct->Event_History_Items[i].internal_str);
         event_struct->Event_History_Items[i].pos = event_struct->Event_History_Items[i - 1].pos;
+        event_struct->Event_History_Items[i].rx_scope = event_struct->Event_History_Items[i - 1].rx_scope;
     }
     event_struct->push_seq++;
     event_struct->commit_rev++;
@@ -1197,6 +1201,9 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
     watchdog_event_merge_identity_fields(retained, staged);
     watchdog_event_merge_system_identity(retained, staged);
     watchdog_event_merge_site(retained, staged);
+    if (!retained->rx_scope.resolved && staged->rx_scope.resolved) {
+        retained->rx_scope = staged->rx_scope; /* where the transmission was heard, once known */
+    }
     /* A segment that confirmed the service the interrupted one never did names the row; one that confirmed nothing
        only fills a name the row lacks (issue #637). The access code and the over-the-air slot are proven apart (the
        single-slot DMR decoder can confirm the code first), so each is folded in on its own; a slot name only fills a
@@ -1889,6 +1896,42 @@ watchdog_event_current_load_system(const dsd_opts* opts, const dsd_state* state,
     ctx->sys_id3 = sys[2];
     ctx->sys_id4 = sys[3];
     ctx->sys_id5 = sys[4];
+}
+
+/* The reception identity of a row (dsd_event_rx_scope) from @p rx, with @p tuned_hz for a scope of the tuned frequency
+ * and the P25 NAC discriminator; none for the callsign protocols (M17, D-STAR), whose positions carry none either. */
+static void
+watchdog_event_rx_scope_take(dsd_event_rx_scope* out, int protocol, const dsd_received_identity* rx,
+                             uint32_t tuned_hz) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->resolved = 1U;
+    if (DSD_SYNC_IS_M17(protocol) || DSD_SYNC_IS_DSTAR(protocol)) {
+        return;
+    }
+    (void)dsd_position_scope_from_rxid(rx, tuned_hz, &out->scope);
+    out->identity_freq_hz = out->scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? (int64_t)tuned_hz : 0;
+}
+
+/* The row's reception identity, by the rule its site follows (watchdog_event_current_load_system()): the live record
+ * while the call is active on the carrier it began on (with the tuned frequency), the record as the call ended once it
+ * has (with the row's own frequency); nothing playing back files. Pinned once resolved on this epoch's own row. */
+static void
+watchdog_event_current_load_rx_scope(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                     Event_History* item, int staged_is_own) {
+    if (staged_is_own && item->rx_scope.resolved) {
+        return;
+    }
+    DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
+    if (call == NULL || call->epoch == 0U || opts->playfiles != 0) {
+        return;
+    }
+    if (call->phase == DSD_CALL_PHASE_ACTIVE && state->rx_id.epoch == call->rx_id_epoch) {
+        watchdog_event_rx_scope_take(&item->rx_scope, call->protocol, &state->rx_id, dsd_opts_tuned_freq_hz(opts));
+    } else if (call->phase == DSD_CALL_PHASE_ENDED) {
+        const uint32_t row_hz =
+            (item->freq_hz > 0 && item->freq_hz <= (int64_t)UINT32_MAX) ? (uint32_t)item->freq_hz : 0U;
+        watchdog_event_rx_scope_take(&item->rx_scope, call->protocol, &call->ended_rx_id, row_hz);
+    }
 }
 
 static void
@@ -3238,6 +3281,7 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     // otherwise it is another epoch's, and its label, frequency, code, system and start stamp are not reused.
     const int staged_is_own = lifecycle != NULL && effective_call != NULL && lifecycle->epoch == effective_call->epoch;
     watchdog_event_current_load_system(opts, state, effective_call, &candidate, staged_is_own, &ctx);
+    watchdog_event_current_load_rx_scope(opts, state, effective_call, &candidate, staged_is_own);
 
     watchdog_event_current_apply_protocol_metadata(state, &candidate, &ctx);
     watchdog_event_current_load_labels(opts, state, effective_call, &candidate, staged_is_own, &ctx);
@@ -3862,16 +3906,18 @@ dsd_event_pos_source_compatible(int protocol, uint64_t source_id, const char* te
     return fix->source_text[0] == '\0' || dsd_event_pos_callsign_matches(text, fix->source_text);
 }
 
-/* The row's sender identity, once it has one, is the report's; and the report is newer than the row's position. */
+/* The report was heard where the row was (its reception scope and discriminator equal the row's, once the row has
+ * one; the sender scope is only the track key), and it is newer than the row's position. */
 static int
 dsd_event_pos_row_takes(const Event_History* item, const dsd_position_fix* fix) {
-    const dsd_event_pos* pos = &item->pos;
-    if (pos->scope.kind != (uint8_t)DSD_POS_SCOPE_NONE
-        && (pos->scope.kind != fix->sender_scope.kind || pos->scope.a != fix->sender_scope.a
-            || pos->scope.b != fix->sender_scope.b || pos->identity_freq_hz != fix->identity_freq_hz)) {
+    const dsd_event_rx_scope* rx = &item->rx_scope;
+    const int64_t fix_rx_hz = fix->reception_scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? fix->freq_hz : 0;
+    if (rx->scope.kind != (uint8_t)DSD_POS_SCOPE_NONE
+        && (rx->scope.kind != fix->reception_scope.kind || rx->scope.a != fix->reception_scope.a
+            || rx->scope.b != fix->reception_scope.b || rx->identity_freq_hz != fix_rx_hz)) {
         return 0;
     }
-    return !pos->valid || fix->rev > pos->rev;
+    return !item->pos.valid || fix->rev > item->pos.rev;
 }
 
 /* Text and position in one step. */
@@ -3879,6 +3925,16 @@ static void
 dsd_event_pos_write(Event_History* item, const dsd_position_fix* fix, const char* gps_text) {
     DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps_text);
     dsd_event_pos_set_from_fix(&item->pos, fix);
+}
+
+/* A notice that takes a report was heard where the report was (its origin, for a multi-fragment one). */
+static void
+dsd_event_pos_write_notice(Event_History* item, const dsd_position_fix* fix, const char* gps_text) {
+    dsd_event_pos_write(item, fix, gps_text);
+    DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
+    item->rx_scope.scope = fix->reception_scope;
+    item->rx_scope.identity_freq_hz = fix->reception_scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? fix->freq_hz : 0;
+    item->rx_scope.resolved = 1U;
 }
 
 static int
@@ -4198,9 +4254,20 @@ watchdog_event_notice_set_gps(Event_History* item, const dsd_call_observation* o
         DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps);
         return;
     }
+    const int cleared = (fix->flags & (uint16_t)(DSD_POS_FLAG_SOURCE_HASHED | DSD_POS_FLAG_SOURCE_UNVERIFIED)) != 0U;
+    const int family = dsd_position_protocol_family(observation->protocol);
+    if (cleared && family >= 0 && family == dsd_position_protocol_family(fix->protocol)) {
+        /* Admission cleared the report's identity: the notice names nobody either, and keeps the position. */
+        item->source_id = 0U;
+        item->target_id = 0U;
+        item->src_str[0] = '\0';
+        item->tgt_str[0] = '\0';
+        dsd_event_pos_write_notice(item, fix, gps);
+        return;
+    }
     if (dsd_event_pos_source_compatible(observation->protocol, observation->ota_source_id, observation->source_text,
                                         fix)) {
-        dsd_event_pos_write(item, fix, gps);
+        dsd_event_pos_write_notice(item, fix, gps);
     }
 }
 
@@ -4226,16 +4293,13 @@ watchdog_event_notice_site(const dsd_opts* opts, const dsd_state* state, int pro
 static void
 watchdog_event_notice_stamp_identity(const dsd_opts* opts, const dsd_state* state, Event_History* item,
                                      const dsd_call_observation* observation) {
+    if (!item->rx_scope.resolved && dsd_position_protocol_family(observation->protocol) >= 0) {
+        watchdog_event_rx_scope_take(&item->rx_scope, observation->protocol, &state->rx_id,
+                                     dsd_opts_tuned_freq_hz(opts));
+    }
     if (!item->pos.valid) {
-        dsd_position_origin here;
-        dsd_position_origin_capture(opts, state, &here);
-        const int family = dsd_position_protocol_family(observation->protocol);
-        if (family >= 0 && !DSD_SYNC_IS_M17(observation->protocol) && !DSD_SYNC_IS_DSTAR(observation->protocol)) {
-            item->pos.scope.kind = here.scope.kind;
-            item->pos.scope.a = here.scope.a;
-            item->pos.scope.b = here.scope.b;
-            item->pos.identity_freq_hz = here.scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? here.freq_hz : 0;
-        }
+        item->pos.scope = item->rx_scope.scope;
+        item->pos.identity_freq_hz = item->rx_scope.identity_freq_hz;
     }
     watchdog_event_notice_site(opts, state, observation->protocol, &item->site_id);
 }

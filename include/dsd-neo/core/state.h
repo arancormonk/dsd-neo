@@ -630,9 +630,10 @@ typedef enum DSD_ATTR_PACKED {
  * position writers in <dsd-neo/core/events.h> and only from a report dsd_position_admit() admitted. Laid out without
  * padding, so a row stays comparable byte for byte.
  *
- * scope and identity_freq_hz are the row's sender identity (D7): the admitted report's sender scope and identity
- * discriminator, or, on a data notice without a position, the scope of the reception the notice was heard on, stamped
- * at emit. They may be set while valid is 0. Everything else is meaningful only while valid is 1.
+ * scope and identity_freq_hz are the row's sender identity (D7, the track key): the admitted report's sender scope
+ * and identity discriminator, or, on a data notice without a position, the scope of the reception the notice was heard
+ * on, stamped at emit. They may be set while valid is 0. Everything else is meaningful only while valid is 1. Where the
+ * row was heard is Event_History::rx_scope.
  */
 typedef struct {
     uint64_t proc_instance;   /**< dsd_position_fix::proc_instance of the report */
@@ -649,6 +650,21 @@ typedef struct {
     uint8_t pad[3];           /**< always 0 */
     dsd_position_scope scope; /**< the sender scope (see above); DSD_POS_SCOPE_NONE when none was stamped */
 } dsd_event_pos;
+
+/**
+ * Where a history row's call or notice was heard (issue #800, D7): the reception's scope (the alias scope, else a
+ * feed-only EDACS, control-channel or tuned-frequency scope; dsd_position_scope_from_rxid()) and its identity
+ * discriminator (the tuned frequency for a P25 NAC scope, else 0). A call row takes it by the rule its site follows
+ * (Event_History::site_id: the live record only while the call is active on the carrier it began on, the record as the
+ * call ended once it has), pinned once resolved; a data notice at emit. A position enriches a row only when its own
+ * reception scope matches (or the row has none). Laid out without padding.
+ */
+typedef struct {
+    int64_t identity_freq_hz; /**< the tuned frequency for a DSD_POS_SCOPE_P25_NAC scope, else 0 */
+    dsd_position_scope scope; /**< DSD_POS_SCOPE_NONE when none is known */
+    uint8_t resolved;         /**< 1 once the row's reception was read (a none scope included); pinned from then */
+    uint8_t pad[3];           /**< always 0 */
+} dsd_event_rx_scope;
 
 //event history (each item)
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
@@ -755,6 +771,8 @@ typedef struct {
     // in one step by the position writers (<dsd-neo/core/events.h>); a text-only GPS write leaves pos without a
     // position (valid 0), so the two never disagree.
     dsd_event_pos pos;
+    // The reception identity of the row's call or notice (issue #800), beside the sender identity in pos.scope.
+    dsd_event_rx_scope rx_scope;
 } Event_History;
 
 //event history for number of each items above

@@ -273,6 +273,14 @@ dsd_position_admit_result dsd_position_admit(const dsd_opts* opts, dsd_state* st
  * callsign. */
 int dsd_position_same_track(const dsd_position_fix* a, const dsd_position_fix* b);
 
+struct dsd_received_identity;
+
+/** The scope (D7) of a reception whose received identity record is @p rx: its alias scope; else, for EDACS, its site and
+ * system; else the control channel frequency the record holds; else @p tuned_hz as a tuned-frequency scope; else none.
+ * Writes @p out (NONE when none) and returns 1 when a scope was found, 0 otherwise (or for NULL @p rx). NULL @p out does
+ * nothing. */
+int dsd_position_scope_from_rxid(const struct dsd_received_identity* rx, uint32_t tuned_hz, dsd_position_scope* out);
+
 /** The protocol family a track belongs to (dsd_position_same_track()): one value per system type, so P25 Phase 1 and
  * 2, or DMR base and mobile bursts, give one family; a sync type of no listed family is its own. -1 for a value that is
  * no protocol (below 0, DSD_POSITION_PROTOCOL_NONE or above). */

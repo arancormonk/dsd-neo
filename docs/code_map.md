@@ -2506,12 +2506,15 @@ suite runs under this compiler.
   `dsd_event_stage_position()` (the next data notice; `Event_History_Staged::pos_fix` keeps the whole record) and
   `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol family; the
   report's source ID and callsign, compared as call identity text, equal to the call's or the notice's; an anonymous
-  report only where no source is named), keeps the row's sender scope once it has one, and lets only a newer `rev`
-  replace a position. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
+  report only where no source is named; a notice given a report whose identity admission cleared drops its own source
+  and target), requires the report's reception scope to equal the row's (`Event_History::rx_scope`, once known; the
+  sender scope in `pos.scope` is only the track key), and lets only a newer `rev` replace a position. A call row takes
+  its reception identity by the `site_id` rule (the live record while active on the carrier it began on, else the
+  record as it ended; pinned once resolved), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
   `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
   move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`.
-  Every data notice stamps its sender identity (`pos.scope`, the reception's scope when it has no position) and its
-  site (`site_id`, by the call rows' rule). The API row gains `"pos"` (lat/lon from the fixed point, `err_m`,
+  Every data notice stamps its reception identity, its sender identity (`pos.scope`, the reception's scope when it has
+  no position) and its site (`site_id`, by the call rows' rule). The API row gains `"pos"` (lat/lon from the fixed point, `err_m`,
   `flags`, `rev`) and the event fingerprint hashes it, both only while `pos.valid`. Tests: `CORE_EVENT_POSITION`,
   `API_FEED`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
 - API note: the unit activity ring (`<dsd-neo/core/unit_activity.h>`, `src/core/util/unit_activity.c`, state
