@@ -130,7 +130,9 @@ sds_head(ttb_block* c, uint32_t type, uint32_t ssi, uint32_t mcc, uint32_t mnc, 
     ttb_put(c, TETRA_MLE_PD_CMCE, 3);
     ttb_put(c, TETRA_CMCE_D_SDS_DATA, 5);
     ttb_put(c, type, 2);
-    ttb_put(c, ssi, 24);
+    if (type == 1u || type == 2u) {
+        ttb_put(c, ssi, 24); /* the reserved types 0 and 3 carry no address */
+    }
     if (type == 2u) {
         ttb_put(c, (mcc << 14) | mnc, 24); /* calling party extension (table 14.44) */
     }
@@ -149,14 +151,21 @@ sds_lip(uint32_t type, uint32_t ssi, uint32_t mcc, uint32_t mnc, const ttb_block
     return c;
 }
 
-/* Part @p sequence of 2 of concatenated message @p reference (tables 29.60, 29.62) under PID 12, holding
- * @p n bits of @p payload from SSI @p ssi; part 1 names payload PID 10. */
+/* Part @p sequence of 2 of concatenated message @p reference (tables 29.60, 29.62) under PID 12, or with
+ * @p transport under PID 140 after an SDS-TRANSFER header (table 29.11), holding @p n bits of @p payload from SSI @p ssi;
+ * part 1 names payload PID 10. */
 static ttb_block
-sds_concat_part(uint32_t ssi, uint32_t reference, uint32_t sequence, const uint8_t* payload, int n) {
+sds_concat_part(uint32_t ssi, int transport, uint32_t reference, uint32_t sequence, const uint8_t* payload, int n) {
     ttb_block c = {0};
-    const int head = 8 + 3 + 1 + 4 + 8 + 8 + (sequence == 1u ? 8 : 0);
+    const int head = 8 + (transport ? 16 : 0) + 3 + 1 + 4 + 8 + 8 + (sequence == 1u ? 8 : 0);
     sds_head(&c, 1, ssi, 0, 0, head + n);
-    ttb_put(&c, 12, 8);        /* protocol identifier: concatenated SDS message, no SDS-TL */
+    ttb_put(&c, transport ? 140u : 12u, 8); /* protocol identifier: concatenated SDS message */
+    if (transport) {
+        ttb_put(&c, 0, 4);        /* SDS-TL message type: SDS-TRANSFER */
+        ttb_put(&c, 0, 3);        /* delivery report request, service selection */
+        ttb_put(&c, 0, 1);        /* no storage/forward control */
+        ttb_put(&c, sequence, 8); /* message reference */
+    }
     ttb_put(&c, 0, 3);         /* concatenation control: transfer */
     ttb_put(&c, 0, 1);         /* no reference extension */
     ttb_put(&c, reference, 4); /* concatenated message reference */
@@ -348,21 +357,80 @@ test_not_published(void) {
     session_close(&s);
 }
 
-/* A concatenated message (PID 12) whose payload PID is 10 is a LIP PDU once complete. Its parts must come from one
- * reception: a carrier boundary between them refuses the position (the notice still goes in). */
+/* The LIP PDUs that carry no position this decoder publishes are named on the console and in the notice and give no
+ * position: a short report shorter than its 76 bits, other PDU type extensions (table 6.92), the reserved PDU types
+ * (table 6.91), a PDU too short for its type; and a short report after a reserved calling party type (table 14.43),
+ * whose address length is unknown, so nothing after it can be placed. */
+static void
+test_undecoded(void) {
+    session s = session_open();
+    const ttb_block whole = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
+    ttb_block cut = whole;
+    cut.n = 75;
+    ttb_block request = {0};
+    ttb_put(&request, 1, 2); /* PDU type extension follows */
+    ttb_put(&request, 1, 4); /* 0001: immediate location report request */
+    ttb_put(&request, 0, 8);
+    ttb_block reserved = {0};
+    ttb_put(&reserved, 2, 2); /* reserved PDU type */
+    ttb_put(&reserved, 0, 14);
+    ttb_block one_bit = {0};
+    ttb_put(&one_bit, 0, 1);
+    ttb_block ext_cut = {0};
+    ttb_put(&ext_cut, 1, 2);
+    ttb_put(&ext_cut, 0, 3); /* the 4-bit extension cut short */
+
+    const struct {
+        const ttb_block* pdu;
+        const char* what;
+    } k_cases[] = {
+        {&cut, "short location report truncated (75 bits)"},
+        {&request, "PDU type extension 1 (not decoded)"},
+        {&reserved, "reserved PDU type 2 (not decoded)"},
+        {&one_bit, "truncated (1 bits)"},
+        {&ext_cut, "truncated (5 bits)"},
+    };
+
+    char want[160];
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        const ttb_block c = sds_lip(1, SENDER_SSI, 0, 0, k_cases[i].pdu);
+        send_sds(&s, &c, 0, 0);
+        DSD_SNPRINTF(want, sizeof want, "dst_SSI=257 %s\n", k_cases[i].what);
+        assert(strstr(s.log, want) != NULL && strstr(s.log, "22.5") == NULL);
+        DSD_SNPRINTF(want, sizeof want, "SDS SRC: 4242; TGT: 257; LIP: %s;", k_cases[i].what);
+        assert(strstr(notice_row(&s)->event_string, want) != NULL && notice_row(&s)->pos.valid == 0U);
+    }
+
+    const ttb_block anon = sds_lip(0, 0, 0, 0, &whole);
+    send_sds(&s, &anon, 0, 0);
+    assert(strstr(s.log, "short location report; Position: (calling party type reserved)") != NULL
+           && strstr(s.log, "22.5") == NULL);
+    assert(notice_row(&s)->pos.valid == 0U);
+    char lfile[512];
+    read_lfile(&s, lfile, sizeof lfile);
+    assert(lfile[0] == '\0');
+    dsd_position_fix rec[2];
+    assert(feed_since(&s, 0, rec, 2) == 0);
+    session_close(&s);
+}
+
+/* A concatenated message (PID 12, or 140 with SDS-TL) whose payload PID is 10 is a LIP PDU once complete. Its parts
+ * must come from one reception: a carrier boundary between them refuses the position (the notice still goes in). */
 static void
 test_concatenated(void) {
     const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
-    for (int moved = 0; moved <= 1; moved++) {
+    for (int run = 0; run < 3; run++) {
+        const int moved = run == 1;
+        const int transport = run == 2;
         session s = session_open();
-        ttb_block c = sds_concat_part(SENDER_SSI, 5, 2, lip.bits + 40, lip.n - 40);
+        ttb_block c = sds_concat_part(SENDER_SSI, transport, 5, 2, lip.bits + 40, lip.n - 40);
         send_sds(&s, &c, 0, 0);
         assert(strstr(s.log, "TETRA SDS LIP") == NULL);
         if (moved) {
             dsd_rxid_reset(s.state); /* the engine saw a carrier boundary */
             dsd_rxid_note_tetra_cell(s.state, HOME_MCC, HOME_MNC, 25U);
         }
-        c = sds_concat_part(SENDER_SSI, 5, 1, lip.bits, 40);
+        c = sds_concat_part(SENDER_SSI, transport, 5, 1, lip.bits, 40);
         send_sds(&s, &c, 1, 0);
         const Event_History* row = notice_row(&s);
         assert(strstr(row->event_string, "SDS SRC: 4242; TGT: 257; LIP: short location report;") != NULL);
@@ -370,6 +438,9 @@ test_concatenated(void) {
         if (moved) {
             assert(strstr(s.log, "short location report; Position: (refused)") != NULL);
             assert(row->pos.valid == 0U && feed_since(&s, 0, rec, 2) == 0);
+            char lfile[512];
+            read_lfile(&s, lfile, sizeof lfile);
+            assert(lfile[0] == '\0');
         } else {
             assert(strstr(s.log, "short location report; LIP: 22.50000") != NULL);
             assert(row->pos.valid == 1U && row->pos.lat_e7 == 225000000 && row->source_id == SENDER_SSI);
@@ -436,6 +507,7 @@ main(void) {
     test_direct_with_and_without_fcs();
     test_codes();
     test_not_published();
+    test_undecoded();
     test_concatenated();
     test_sender_network_labels();
     DSD_FPRINTF(stdout, "TETRA_LIP: PASS\n");

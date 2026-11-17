@@ -1395,7 +1395,17 @@ static int
 sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const lip_short_report* r,
               const dsd_position_origin* origin, sds_lip* out) {
     dsd_position_fix* const fix = &out->fix;
-    if (!ctx->opts || !tetra_confirm_carrier_proven(ctx->state)) {
+    if (!d->calling.ssi_valid) {
+        /* A reserved calling party type (table 14.43) has no address of known length: nothing after it, the report
+         * included, can be placed. */
+        DSD_SNPRINTF(out->position, sizeof out->position, "%s", "calling party type reserved");
+        return 0;
+    }
+    if (!ctx->opts) {
+        DSD_SNPRINTF(out->position, sizeof out->position, "%s", "refused");
+        return 0;
+    }
+    if (!tetra_confirm_carrier_proven(ctx->state)) {
         DSD_SNPRINTF(out->position, sizeof out->position, "%s", "carrier not proven");
         return 0;
     }
@@ -1404,7 +1414,7 @@ sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const l
     fix->kind = DSD_POS_TETRA_LIP;
     fix->protocol = (uint8_t)tetra_calls_protocol(ctx->state);
     fix->slot = 0U;
-    fix->source_id = d->calling.ssi_valid ? d->calling.ssi : 0U;
+    fix->source_id = d->calling.ssi;
     fix->target_id = dst;
     if (d->calling.type == 2U && d->calling.extension_valid) {
         fix->sender_scope.kind = DSD_POS_SCOPE_TETRA;
@@ -1424,8 +1434,11 @@ sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const l
 static void
 sds_lip_decode(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const uint8_t* bits, int nbits,
                const dsd_position_origin* origin, sds_lip* out) {
-    const uint32_t type = nbits >= 2 ? (uint32_t)((bits[0] << 1) | bits[1]) : 4u;
-    if (type == 0u) {
+    tetra_bit_reader rd = tetra_bits_reader(bits, nbits, 0);
+    const uint32_t type = tetra_bits_read(&rd, 2); /* table 6.91 */
+    if (!tetra_bits_ok(&rd)) {
+        DSD_SNPRINTF(out->what, sizeof out->what, "truncated (%d bits)", nbits);
+    } else if (type == 0u) {
         lip_short_report r;
         if (lip_parse_short_report(bits, (size_t)nbits, &r) != 1) {
             DSD_SNPRINTF(out->what, sizeof out->what, "short location report truncated (%d bits)", nbits);
@@ -1434,17 +1447,16 @@ sds_lip_decode(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const 
         DSD_SNPRINTF(out->what, sizeof out->what, "%s", "short location report");
         out->short_report = 1;
         out->admitted = (uint8_t)sds_lip_admit(ctx, d, dst, &r, origin, out);
-    } else if (type == 1u && nbits >= 6) {
+    } else if (type == 1u) {
         /* Table 6.92: PDU type extension 0011 is the long location report (table 6.2). */
-        const uint32_t extension =
-            ((uint32_t)bits[2] << 3) | ((uint32_t)bits[3] << 2) | ((uint32_t)bits[4] << 1) | bits[5];
-        if (extension == 3u) {
+        const uint32_t extension = tetra_bits_read(&rd, 4);
+        if (!tetra_bits_ok(&rd)) {
+            DSD_SNPRINTF(out->what, sizeof out->what, "truncated (%d bits)", nbits);
+        } else if (extension == 3u) {
             DSD_SNPRINTF(out->what, sizeof out->what, "%s", "long location report (not decoded)");
         } else {
             DSD_SNPRINTF(out->what, sizeof out->what, "PDU type extension %u (not decoded)", (unsigned)extension);
         }
-    } else if (type == 1u || type > 3u) {
-        DSD_SNPRINTF(out->what, sizeof out->what, "truncated (%d bits)", nbits);
     } else {
         DSD_SNPRINTF(out->what, sizeof out->what, "reserved PDU type %u (not decoded)", (unsigned)type);
     }
