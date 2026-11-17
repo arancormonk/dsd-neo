@@ -491,7 +491,9 @@ typedef enum DSD_ATTR_PACKED {
     DSDCFG_INPUT_FILE,
     DSDCFG_INPUT_TCP,
     DSDCFG_INPUT_UDP,
-    DSDCFG_INPUT_AIRSPY
+    DSDCFG_INPUT_AIRSPY,
+    DSDCFG_INPUT_IQTCP, /* a raw I/Q stream dsd-neo connects to over TCP (issue #743) */
+    DSDCFG_INPUT_IQUDP  /* a raw I/Q stream dsd-neo receives over UDP (issue #743) */
 } dsdneoUserInputSource;
 
 typedef enum DSD_ATTR_PACKED {
@@ -538,7 +540,9 @@ typedef enum DSD_ATTR_PACKED {
 } dsdneoUserEdacsAddressing;
 
 typedef struct dsdneoUserConfig {
-    /* [input] */
+    /* [input]: has_input through input_warn_db_is_set, one block a replay session retains whole
+       (dsd_user_config_retain_input()), so every [input] field belongs inside it, and in the merge table of
+       src/runtime/config_retained_input.c. */
     int has_input;
     dsdneoUserInputSource input_source;
     char pulse_input[256];
@@ -580,6 +584,14 @@ typedef struct dsdneoUserConfig {
     int tcp_port;
     char udp_addr[64];
     int udp_port;
+    /* A raw I/Q stream (source = "iqtcp" | "iqudp", issue #743): the spec's fields, iqtcp:iq_host:iq_port:iq_rate:
+       iq_format[:iq_freq] (dsd_user_config_radio_input_spec()). iq_rate and iq_freq keep their text (Hz, or with a k or
+       M suffix; iq_freq also G), as rtl_freq does; the spec parser reads them. */
+    char iq_host[256];
+    int iq_port;
+    char iq_rate[32];
+    char iq_format[8];
+    char iq_freq[64];
     double input_warn_db;     /* low input-level advisory threshold in dBFS */
     int input_warn_db_is_set; /* distinguish explicit value from default */
 
@@ -850,7 +862,8 @@ int dsd_user_config_scanner_after(const dsdneoUserConfig* cfg, const dsd_opts* o
  *
  * What dsd_apply_user_config_to_opts() writes to opts->audio_in_dev for an `rtl` source with `rtl_freq`, an `rtltcp`
  * source with `rtltcp_host` ("rtl:dev:freq:gain:ppm:bw:sql:vol", "rtltcp:host:port[:freq:...]"), a `soapy` source
- * ("soapy" or "soapy:<soapy_args>") or an `airspy` source ("airspy"), with the values the config leaves out taken from
+ * ("soapy" or "soapy:<soapy_args>"), an `airspy` source ("airspy") or an `iqtcp` / `iqudp` source whose iq_* keys build
+ * a raw I/Q stream spec (dsd_user_config_iq_stream_input_spec()), with the values the config leaves out taken from
  * @p opts as the apply takes them. A caller compares it with the running input to know whether the apply reopens the
  * device, and which kind of device then sets the rate.
  *
@@ -858,6 +871,39 @@ int dsd_user_config_scanner_after(const dsdneoUserConfig* cfg, const dsd_opts* o
  *         sets a non-radio input (or on bad arguments).
  */
 int dsd_user_config_radio_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* out, size_t out_size);
+
+/**
+ * @brief Whether applying @p cfg's [input] sets the input device (opts->audio_in_dev): a `pulse`, `soapy` or `airspy`
+ *        source always, an `rtl` source with `rtl_freq`, an `rtltcp` one with `rtltcp_host`, a `file` one with
+ *        `file_path`, a `tcp` one with `tcp_host`, a `udp` one with `udp_addr`, and an `iqtcp` / `iqudp` one whose keys
+ *        build a spec. Otherwise the input stays as it was, and so does the [input] a save writes.
+ *
+ * @return 1 when it does, 0 otherwise (no [input], or NULL).
+ */
+int dsd_user_config_input_sets_device(const dsdneoUserConfig* cfg);
+
+/**
+ * @brief The raw I/Q stream spec an `iqtcp` or `iqudp` [input] builds (issue #743):
+ *        `iqtcp:iq_host:iq_port:iq_rate:iq_format[:iq_freq]` in its canonical form, which `-i` takes too.
+ *
+ * @param cfg      The config.
+ * @param out      Receives the spec.
+ * @param out_size Capacity of @p out.
+ * @param why      Receives the spec parser's reason, naming the field, when the keys build none (may be NULL).
+ * @param why_size Capacity of @p why.
+ * @return 0 when it builds one, -1 when the [input] is no stream source or its keys build no spec.
+ */
+int dsd_user_config_iq_stream_input_spec(const dsdneoUserConfig* cfg, char* out, size_t out_size, char* why,
+                                         size_t why_size);
+
+/**
+ * @brief The [input] key whose value the spec parser refuses in an `iqtcp` / `iqudp` [input]
+ *        (dsd_user_config_iq_stream_input_spec()), from the field the parser names (dsd_iq_net_spec_parse_field()):
+ *        `iq_host`, `iq_port`, `iq_rate`, `iq_format` or `iq_freq`, else `source`.
+ *
+ * @return The key, or NULL when the keys build a spec or the [input] is no stream source.
+ */
+const char* dsd_user_config_iq_stream_bad_key(const dsdneoUserConfig* cfg);
 
 /**
  * @brief Whether @p cfg names a tuner gain: an `rtl_gain` key that was read (0 included, which is AGC), or a nonzero
@@ -901,6 +947,102 @@ void dsd_finalize_user_config_file_input_after_cli(const dsdneoUserConfig* cfg, 
  * @param cfg [out] Destination user config snapshot.
  */
 void dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg);
+
+/**
+ * @brief The snapshot dsd_snapshot_opts_to_user_config() takes, before its last step turns off the keys an I/Q stream
+ * [input] cannot start beside (dsd_user_config_turn_off_beside_iq_stream()): trunking, the -Y scanner and a trunk
+ * scan as the session runs them (issue #743). A replay session with a retained stream [input] runs them, which every
+ * save hides; a change that replaces the replay with that input must be judged on them.
+ *
+ * @param opts Decoder options to read.
+ * @param state Decoder state to read.
+ * @param cfg [out] Destination user config snapshot.
+ */
+void dsd_snapshot_opts_to_user_config_as_run(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg);
+
+/*
+ * The [input] a session running an I/Q replay saves (issue #743). A replay (--iq-replay) has no INI form, so every save
+ * of such a session (autosave, Save, --print-config) writes the [input] of the config it loaded, unchanged, or no
+ * [input] when it loaded none. Bootstrap retains it after the load; a config file loaded during the replay whose own
+ * [input] stays applied with the replay still running replaces it, and a config patch (the control API's config_apply)
+ * merges the keys it sets into it; a radio row that returns the session to a replay retains the input it left; the
+ * session leaving the replay drops it. It lives in a state extension (DSD_STATE_EXT_RUNTIME_CONFIG_INPUT), freed with
+ * the state. Decoder thread only, except the snapshot copy below.
+ */
+
+/**
+ * @brief Retain @p cfg's [input] fields (has_input through input_warn_db_is_set) for a replay session's saves.
+ *
+ * A config without an [input] (or NULL) leaves none retained. An [input] no config can start (a file input whose
+ * file_path dsd_user_config_file_path_is_input_spec() names) is not retained: the copy held stays.
+ *
+ * @param state Decoder state that owns the copy.
+ * @param cfg Config whose [input] is retained.
+ * @return 0 on success, -1 when @p state is NULL or the copy cannot be allocated (the previous copy is kept then).
+ */
+int dsd_user_config_retain_input(dsd_state* state, const dsdneoUserConfig* cfg);
+
+/**
+ * @brief Merge the [input] keys @p patch sets into the retained [input] (retained whole when none is held).
+ *
+ * A key counts as set when its value differs from dsd_user_config_init()'s, or, for a key with an `_is_set` flag
+ * (rtl_gain, rtl_ppm, the squelch keys, soapy_bandwidth_hz, input_warn_db), when its flag is set; a key written with
+ * its default value is not told apart from an absent one. The source and the endpoint keys stay as held unless the
+ * patch names them. A merge that would leave an [input] no config can start keeps the copy held.
+ *
+ * @param state Decoder state that owns the copy.
+ * @param patch Config whose [input] keys are merged (has_input set).
+ * @return 0 on success (nothing to merge included), -1 when @p state is NULL or an allocation fails (copy unchanged).
+ */
+int dsd_user_config_merge_retained_input(dsd_state* state, const dsdneoUserConfig* patch);
+
+/**
+ * @brief The retained [input] as dsd_user_config_merge_retained_input() would leave it after @p patch, without changing
+ * the copy held: a config apply judges a patch on the [input] it leaves (issue #743), so a sourceless patch to a raw
+ * I/Q stream the session saves is refused when the stream it leaves builds no spec.
+ *
+ * @param state Decoder state that owns the copy.
+ * @param patch Config whose [input] keys would be merged (has_input set).
+ * @param out Receives a zeroed config holding the merged [input] block only.
+ * @return 1 when a copy is held and @p out holds the merge, 0 when none is held, @p patch has no [input] or an argument
+ * is NULL (@p out unchanged), -1 when an allocation fails (@p out unchanged).
+ */
+int dsd_user_config_retained_input_patched(const dsd_state* state, const dsdneoUserConfig* patch,
+                                           dsdneoUserConfig* out);
+
+/**
+ * @brief Return 1 when @p path, as a file input's file_path, names an input spec no config can start (an I/Q replay,
+ * `iqreplay:...`), 0 otherwise and for NULL. --validate-config reports such a file_path as an error.
+ *
+ * @param path A file_path value.
+ */
+int dsd_user_config_file_path_is_input_spec(const char* path);
+
+/**
+ * @brief Drop the retained [input], if any.
+ *
+ * @param state Decoder state that owns the copy (may be NULL).
+ */
+void dsd_user_config_forget_retained_input(dsd_state* state);
+
+/**
+ * @brief Copy the retained [input] fields into @p cfg.
+ *
+ * @param state Decoder state (or a snapshot of it) holding the copy.
+ * @param cfg [out] Config whose [input] fields are overwritten; left as it is when none is retained.
+ * @return 1 when an [input] was retained and copied, 0 otherwise.
+ */
+int dsd_user_config_retained_input(const dsd_state* state, dsdneoUserConfig* cfg);
+
+/**
+ * @brief Give the snapshot @p dst the retained [input] of @p src (none when @p src has none).
+ *
+ * Copies only when @p src retained another [input] since the last copy, so a snapshot publish pays a compare.
+ *
+ * @param dst Snapshot state to update.
+ * @param src Decoder state (or the snapshot it was published to).
+ */
+void dsd_user_config_copy_retained_input(dsd_state* dst, const dsd_state* src);
 
 /**
  * @brief Render a user config as INI to the given stream (stdout/stderr/file).
@@ -1026,6 +1168,30 @@ void dsd_user_config_compose_trunk_scan_lists(const dsdneoUserConfig* cfg, dsd_t
  */
 int dsd_user_config_check_trunk_scan_startable(const dsdneoUserConfig* cfg, const dsdneoUserConfig* before, char* why,
                                                size_t why_size);
+
+/**
+ * @brief The first key an I/Q stream [input] cannot start beside that @p cfg turns on (issue #743, D8).
+ *
+ * The same rules as dsd_user_config_check_trunk_scan_startable() and dsd_user_config_turn_off_beside_iq_stream():
+ * with @p cfg's [input] a raw I/Q stream (iqtcp or iqudp), `trunking.enabled`, else `trunking.scanner` (trunking off),
+ * else `trunk_scan.enabled`. Startup names it in its refusal.
+ *
+ * @param section [out] The rule's section, such as "trunking" (may be NULL).
+ * @param key [out] The rule's key, such as "enabled" (may be NULL).
+ * @return 1 when @p cfg breaks one (@p section and @p key set); 0 otherwise.
+ */
+int dsd_user_config_iq_stream_refused_key(const dsdneoUserConfig* cfg, const char** section, const char** key);
+
+/**
+ * @brief Turn off in a config each key an I/Q stream [input] cannot start beside (issue #743, D8).
+ *
+ * When @p cfg's [input] is a raw I/Q stream (iqtcp or iqudp), every key the stream's next-start rule refuses
+ * (dsd_user_config_check_trunk_scan_startable(): trunking, the -Y scanner, a trunk scan) is set to off, so the config
+ * passes that rule. Driven by the same rules. Any other [input] is left as it is. A session snapshot
+ * (dsd_snapshot_opts_to_user_config()) ends with it: a replay session that runs trunking or a scan beside the stream
+ * [input] it loaded saves that [input] with them off, a config the next start runs.
+ */
+void dsd_user_config_turn_off_beside_iq_stream(dsdneoUserConfig* cfg);
 
 #ifdef __cplusplus
 }

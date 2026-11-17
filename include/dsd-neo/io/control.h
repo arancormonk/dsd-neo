@@ -34,10 +34,11 @@ extern "C" {
  * @param out_pending_id May be NULL. Set to the request's ID when an RTL tune timed out (RTL_STREAM_TUNE_TIMEOUT), its
  *                       completion still to come; 0 otherwise.
  * @return 0 on success, 1 when an RTL request is deferred, or a negative error/timeout code (-1 refused: no backend,
- *         no context or 0 Hz). Success caches the centre the controller applied in opts->rtlsdr_center_freq. An RTL
- *         timeout leaves an accepted request active and retains its target there. An RTL failure puts the centre the
- *         controller last applied there, when it knows one: the receiver stayed on it, and a target an earlier tune's
- *         timeout cached, which this request may have coalesced over, was never reached.
+ *         no context, 0 Hz, or an input with fixed tuning, dsd_opts_input_has_fixed_tuning(), rigctl or not). Success
+ *         caches the centre the controller applied in opts->rtlsdr_center_freq. An RTL timeout leaves an accepted
+ *         request active and retains its target there. An RTL failure puts the centre the controller last applied
+ *         there, when it knows one: the receiver stayed on it, and a target an earlier tune's timeout cached, which
+ *         this request may have coalesced over, was never reached.
  */
 int io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id);
 

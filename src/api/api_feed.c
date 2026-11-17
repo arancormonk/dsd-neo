@@ -1031,6 +1031,7 @@ build_status(const dsd_state* state, dsd_json_buf* b) {
         (void)dsd_json_kv_i64(&w, "cc_freq_hz", st.cc_freq_hz);
         (void)dsd_json_kv_i64(&w, "center_freq_hz", st.center_freq_hz);
         (void)dsd_json_kv_bool(&w, "radio_input", st.radio_input);
+        (void)dsd_json_kv_bool(&w, "tunable", st.tunable);
         (void)dsd_json_kv_bool(&w, "trunking", st.trunking);
         (void)dsd_json_kv_bool(&w, "trunk_tuned", st.trunk_tuned);
         (void)dsd_json_kv_i64(&w, "lead_slot", st.lead_slot);

@@ -44,6 +44,17 @@ int app_check_next_start(const dsd_opts* opts, const dsd_state* state, app_next_
                          char* why, size_t why_size);
 
 /**
+ * @brief app_check_next_start() for a change that may replace the running input (a config apply's [input] that sets
+ *        the device, @p replaces_input set). During an I/Q replay (issue #743) a change that leaves the replay running
+ *        is judged on the save with trunking and the scanners off beside a stream [input], as every save writes them;
+ *        one that replaces the replay is judged on them as the session runs them
+ *        (dsd_snapshot_opts_to_user_config_as_run()), which the new input would run. app_check_next_start() asks it
+ *        with @p replaces_input clear.
+ */
+int app_check_next_start_input(const dsd_opts* opts, const dsd_state* state, app_next_start_change_fn change,
+                               const void* ctx, int replaces_input, char* why, size_t why_size);
+
+/**
  * @brief The change loading a channel map makes, and nothing else: @p ctx is its path (const char*). The decoder's
  *        channel-map import (svc_import_channel_map()) and a frontend's pre-check of loading files alone
  *        (dsd_app_rr_files_block_reason()) both ask it, so the two cannot drift apart.

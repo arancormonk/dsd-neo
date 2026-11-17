@@ -190,6 +190,13 @@ svc_scan_entry_continue(dsd_opts* opts, dsd_state* state) {
     return g_entry_continue;
 }
 
+/* The fixed-tuning reason (menu_services.c, not linked here; APP_COMMAND_QUEUE pins the real one's text): one for an
+   I/Q stream, the only input the trunking actions refuse (issue #743). */
+const char*
+svc_fixed_tuning_reason(const dsd_opts* opts) {
+    return dsd_opts_input_has_fixed_tuning(opts) ? "fixed tuning" : NULL;
+}
+
 /* The next-start check (menu_services.c, not linked here; APP_COMMAND_QUEUE drives the real one): passes unless
    g_next_start_why is set, and records the save the change leaves from an empty one. */
 static const char* g_next_start_why;

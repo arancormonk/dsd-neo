@@ -400,6 +400,42 @@ visit_strongest(dsd_opts* o, dsd_state* s) {
     land(o, s);
 }
 
+/* Issue #743 (B13): a replay restarted mid-run decodes on the system clock but still cannot retune, and an I/Q stream
+   never can. Both are refused at the start, before the search takes the tuner or runs a carrier boundary; the stream
+   with its own reason, which names it. */
+static void
+test_fixed_tuning_refused_before_a_boundary(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static const char k_live[] = "Signal search needs exclusive use of a live tunable SDR";
+    static const char k_stream[] = "Signal search needs a tunable SDR: an I/Q stream cannot retune";
+
+    static const struct {
+        const char* dev;
+        const char* why;
+    } fixed[] = {
+        {"iqreplay:capture.iq.json", k_live},
+        {"iqtcp:127.0.0.1:5555:240k:cs16", k_stream},
+        {"iqudp:0.0.0.0:7356:48k:cu8", k_stream},
+    };
+
+    char live_dev[sizeof o->audio_in_dev];
+    DSD_SNPRINTF(live_dev, sizeof live_dev, "%s", o->audio_in_dev);
+    dsd_decode_clock_use_system();
+    for (size_t i = 0; i < sizeof fixed / sizeof fixed[0]; i++) {
+        DSD_SNPRINTF(o->audio_in_dev, sizeof(o->audio_in_dev), "%s", fixed[i].dev);
+        const int before = boundary;
+        char error[192] = {0};
+        assert(dsd_engine_signal_search_start_refused(o, s, config, error, sizeof(error)) < 0);
+        assert(strcmp(error, fixed[i].why) == 0);
+        error[0] = '\0';
+        assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) < 0);
+        assert(strcmp(error, fixed[i].why) == 0);
+        tick(o, s);
+        assert(boundary == before && !dsd_signal_search_is_running(s) && !tuner_owner && !tune_pending);
+    }
+    DSD_SNPRINTF(o->audio_in_dev, sizeof(o->audio_in_dev), "%s", live_dev);
+    dsd_decode_clock_use_test(now_ms * 1000000);
+}
+
 static void
 test_listening_verdict_and_live_strength(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
     char error[192];
@@ -3839,6 +3875,7 @@ main(void) {
     assert(config.ranges[0].probe_ms == 3000 && config.ranges[0].digital == 1);
     config.ranges[0].start_hz = 100000000;
     config.ranges[0].end_hz = 100025000;
+    test_fixed_tuning_refused_before_a_boundary(o, s, &config);
     char error[192];
     assert(dsd_engine_signal_search_start(o, s, &config, observer, NULL, error, sizeof(error)) == 0);
     assert(bypassed && dsd_signal_search_is_running(s) && status.owned);

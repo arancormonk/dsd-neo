@@ -232,6 +232,14 @@ parse_input_source_value(const char* val, dsdneoUserInputSource* out_source) {
         *out_source = DSDCFG_INPUT_UDP;
         return 0;
     }
+    if (dsd_strcasecmp(val, "iqtcp") == 0) {
+        *out_source = DSDCFG_INPUT_IQTCP;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "iqudp") == 0) {
+        *out_source = DSDCFG_INPUT_IQUDP;
+        return 0;
+    }
     return -1;
 }
 
@@ -429,6 +437,35 @@ apply_input_file_network_keys(dsdneoUserConfig* cfg, const char* key_lc, const c
     return 1;
 }
 
+/* A text field of a raw I/Q stream's spec (issue #743): a value cut to fit would read as another value, so one too long
+   is refused and the key keeps what was there, as rtl_freq does. The spec parser judges the text itself. */
+static void
+apply_iq_stream_text(const char* key_lc, const char* val, char* out, size_t out_size) {
+    if (strlen(val) >= out_size) {
+        LOG_WARN("Config: invalid %s = '%s'; too long, keeping previous/default value\n", key_lc, val);
+        return;
+    }
+    copy_text_value(out, out_size, val);
+}
+
+static int
+apply_input_iq_stream_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val, user_cfg_parse_mode_t mode) {
+    if (strcmp(key_lc, "iq_host") == 0) {
+        apply_iq_stream_text(key_lc, val, cfg->iq_host, sizeof cfg->iq_host);
+    } else if (strcmp(key_lc, "iq_port") == 0) {
+        (void)apply_integer_setting(val, 0, mode, &cfg->iq_port);
+    } else if (strcmp(key_lc, "iq_rate") == 0) {
+        apply_iq_stream_text(key_lc, val, cfg->iq_rate, sizeof cfg->iq_rate);
+    } else if (strcmp(key_lc, "iq_format") == 0) {
+        apply_iq_stream_text(key_lc, val, cfg->iq_format, sizeof cfg->iq_format);
+    } else if (strcmp(key_lc, "iq_freq") == 0) {
+        apply_iq_stream_text(key_lc, val, cfg->iq_freq, sizeof cfg->iq_freq);
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
 static void
 apply_input_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val, user_cfg_parse_mode_t mode) {
     /* Source-independent advisory threshold; LOW advisories exist for every input family. */
@@ -460,7 +497,10 @@ apply_input_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* v
     if (apply_input_rtltcp_soapy_keys(cfg, key_lc, val, mode)) {
         return;
     }
-    (void)apply_input_file_network_keys(cfg, key_lc, val, mode);
+    if (apply_input_file_network_keys(cfg, key_lc, val, mode)) {
+        return;
+    }
+    (void)apply_input_iq_stream_keys(cfg, key_lc, val, mode);
 }
 
 static void

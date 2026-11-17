@@ -10,8 +10,6 @@
  * Pure arithmetic mirroring the DSP channel-filter design; see <dsd-neo/runtime/analog_channel.h>.
  */
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -422,33 +420,4 @@ dsd_analog_channel_lpf_off_check(int kind, int explicit_width_hz, int channel_lp
                      dsd_analog_demod_label(kind));
     }
     return -1;
-}
-
-dsd_input_dsp_rate
-dsd_input_dsp_rate_for(const char* audio_in_dev, int audio_in_type, int iq_replay_active, int rtl_bw_khz) {
-    dsd_input_dsp_rate policy = {DSD_ANALOG_RATE_RTL_BW, 0};
-    if (iq_replay_active || dsd_opts_audio_in_dev_is_iqreplay_spec(audio_in_dev)) {
-        policy.source = DSD_ANALOG_RATE_CAPTURE;
-        return policy;
-    }
-    const int device =
-        dsd_opts_audio_in_dev_is_soapy_spec(audio_in_dev) || dsd_opts_audio_in_dev_is_airspy_spec(audio_in_dev);
-    const int live_radio = device || audio_in_type == AUDIO_IN_RTL || dsd_opts_audio_in_dev_is_rtl_spec(audio_in_dev)
-                           || dsd_opts_audio_in_dev_is_rtltcp_spec(audio_in_dev);
-    if (device) {
-        policy.source = DSD_ANALOG_RATE_DEVICE;
-    }
-    if (live_radio && rtl_bw_khz > 0) {
-        policy.rate_hz = rtl_bw_khz > INT_MAX / 1000 ? INT_MAX : rtl_bw_khz * 1000;
-    }
-    return policy;
-}
-
-dsd_input_dsp_rate
-dsd_input_dsp_rate_policy(const dsd_opts* opts) {
-    if (!opts) {
-        return dsd_input_dsp_rate_for(NULL, AUDIO_IN_RTL, 0, 0);
-    }
-    return dsd_input_dsp_rate_for(opts->audio_in_dev, opts->audio_in_type, opts->iq_replay_active,
-                                  opts->rtl_dsp_bw_khz);
 }

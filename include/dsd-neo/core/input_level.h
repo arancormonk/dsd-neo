@@ -39,6 +39,8 @@ typedef enum DSD_ATTR_PACKED dsd_input_level_source {
     DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16 = 4,
     DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32 = 5,
     DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32 = 6,
+    /** Raw I/Q another program sends over the network (`iqtcp:` / `iqudp:`, issue #743): the sender's own samples. */
+    DSD_INPUT_LEVEL_SOURCE_NET_IQ = 7,
 } dsd_input_level_source;
 
 typedef struct dsd_input_level_snapshot {
@@ -127,7 +129,19 @@ int dsd_input_level_metrics_from_cs16(const int16_t* samples, size_t count, doub
                                       dsd_input_level_source source, dsd_input_level_snapshot* out);
 int dsd_input_level_metrics_from_cf32(const float* samples, size_t count, dsd_input_level_source source,
                                       dsd_input_level_snapshot* out);
+/**
+ * @brief What to do about @p snapshot's level, or NULL for a status that needs nothing (OK, unknown).
+ *
+ * The one text the warning (dsd_input_level_format_advisory_for()) and the terminal's level row both show. An I/Q
+ * replay (@p replay nonzero) says the level was fixed when the capture was recorded; a raw I/Q stream names the program
+ * that sends it; another radio names its RF gain, and an audio input its volume.
+ */
+const char* dsd_input_level_advice(const dsd_input_level_snapshot* snapshot, int replay);
+/** @brief dsd_input_level_format_advisory_for() for a live input (@p replay 0). */
 int dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, char* out, size_t out_size);
+/** @brief The warning line for @p snapshot: its label, status and reading, then dsd_input_level_advice(). */
+int dsd_input_level_format_advisory_for(const dsd_input_level_snapshot* snapshot, int replay, char* out,
+                                        size_t out_size);
 /**
  * @brief Classify @p snapshot into @p state, and print and toast an advisory when @p notify_mask allows its status.
  *
@@ -136,9 +150,9 @@ int dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, ch
  * prints it at the same capture time in every run. The toast stays up for real time (`state->ui_msg_expire`).
  *
  * A stale live RF level is replaced by a fresh producer measurement when available. Without one it is kept
- * but warns about nothing: it is the last level of a receiver that stopped. An I/Q replay (`opts->iq_replay_active`)
- * warns as its capture says whatever the real-time age, so a replay that pauses still prints the same warnings in
- * every run.
+ * but warns about nothing: it is the last level of a receiver that stopped. An I/Q replay in force
+ * (dsd_opts_input_is_iq_replay()) warns as its capture says whatever the real-time age, so a replay that pauses still
+ * prints the same warnings in every run.
  */
 void dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_snapshot* snapshot,
                              unsigned int notify_mask);

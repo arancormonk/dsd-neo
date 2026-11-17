@@ -8584,10 +8584,11 @@ test_trunk_scan_rejects_iq_replay_input(void) {
         return 1;
     }
 
+    /* The replay in force is refused with a rigctl peer configured beside it, and on its open stream. */
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    opts.iq_replay_requested = 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
     opts.use_rigctl = 1;
     DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
     opts.trunk_scan_list_count = 1;
@@ -8596,7 +8597,7 @@ test_trunk_scan_rejects_iq_replay_input(void) {
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc == 0 || strstr(err, "IQ replay") == NULL) {
-        DSD_FPRINTF(stderr, "IQ replay scan should reject requested replay rc=%d err=%s\n", rc, err);
+        DSD_FPRINTF(stderr, "IQ replay scan should reject a replay beside rigctl rc=%d err=%s\n", rc, err);
         test_rc = 1;
     }
     if (dsd_engine_trunk_scan_active_index(&state) != (size_t)-1) {
@@ -8605,19 +8606,62 @@ test_trunk_scan_rejects_iq_replay_input(void) {
     }
 
     reset_scan_opts_state(&opts, &state);
-    opts.iq_replay_active = 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
     DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
     opts.trunk_scan_list_count = 1;
     err[0] = '\0';
     rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (rc == 0 || strstr(err, "IQ replay") == NULL) {
-        DSD_FPRINTF(stderr, "IQ replay scan should reject active replay rc=%d err=%s\n", rc, err);
+        DSD_FPRINTF(stderr, "IQ replay scan should reject an open replay stream rc=%d err=%s\n", rc, err);
         test_rc = 1;
     }
     if (dsd_engine_trunk_scan_active_index(&state) != (size_t)-1) {
         DSD_FPRINTF(stderr, "active IQ replay rejection attached a coordinator\n");
         test_rc = 1;
     }
+
+    /* Issue #743: an I/Q stream is refused with its own reason, its open stream and a rigctl peer configured beside it
+       alike: the sending program picks its channel. */
+    static const char* const k_streams[] = {"iqtcp:127.0.0.1:5000:240000:cs16", "iqudp:0.0.0.0:5000:48000:cu8"};
+    for (size_t i = 0; i < sizeof k_streams / sizeof k_streams[0]; i++) {
+        for (int rigctl = 0; rigctl < 2; rigctl++) {
+            reset_scan_opts_state(&opts, &state);
+            DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", k_streams[i]);
+            opts.use_rigctl = rigctl;
+            DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+            opts.trunk_scan_list_count = 1;
+            err[0] = '\0';
+            rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+            if (rc == 0
+                || strstr(err, "--trunk-scan cannot use an I/Q stream input: it decodes only the channel the sending "
+                               "program streams")
+                       == NULL) {
+                DSD_FPRINTF(stderr, "I/Q stream scan should be refused with its reason (%s, rigctl %d) rc=%d err=%s\n",
+                            k_streams[i], rigctl, rc, err);
+                test_rc = 1;
+            }
+            if (dsd_engine_trunk_scan_active_index(&state) != (size_t)-1 || dsd_trunk_scan_hook_p25_ctx() != NULL) {
+                DSD_FPRINTF(stderr, "I/Q stream rejection attached a coordinator (%s)\n", k_streams[i]);
+                test_rc = 1;
+            }
+        }
+    }
+
+    /* Issue #743 (B14): the replay flags a session keeps after a config apply moved it onto a live rtl_tcp radio refuse
+       nothing: the radio tunes. */
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    opts.iq_replay_requested = 1;
+    opts.iq_replay_active = 1;
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    err[0] = '\0';
+    rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) == (size_t)-1) {
+        DSD_FPRINTF(stderr, "a live radio after a replay should start the scan rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
 
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -23824,8 +23868,8 @@ test_scan_quiet_adopts_a_park_measured_in_flight(void) {
 }
 
 /* SUSPENDED: an ineligible visit (the owner's conditions, no class, an analog class with no width, a session that is
-   no RTL input or is an I/Q replay by the stream or by the decode clock) requests nothing, and the hunt's service
-   returns 0 without reading the tap. The setting off: nothing published, nothing asked. */
+   no RTL input, runs an I/Q replay or I/Q stream it cannot retune, or runs on a replay's decode clock) requests nothing,
+   and the hunt's service returns 0 without reading the tap. The setting off: nothing published, nothing asked. */
 static int
 test_scan_quiet_suspended_visit_requests_nothing(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -23846,8 +23890,10 @@ test_scan_quiet_suspended_visit_requests_nothing(void) {
                 e.analog_width_hz = 0U;
                 break;
             case 3: opts.audio_in_type = AUDIO_IN_UDP; break;
-            case 4: opts.iq_replay_active = 1U; break;
-            case 5: opts.iq_replay_requested = 1U; break;
+            case 4: DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json"); break;
+            case 5:
+                DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:5555:240k:cs16");
+                break;
             case 6: dsd_decode_clock_use_replay(1700000000); break;
             default: e.key.epoch += 1U; break; /* not the visit on air */
         }
@@ -23864,8 +23910,7 @@ test_scan_quiet_suspended_visit_requests_nothing(void) {
             rc = 1;
         }
         opts.audio_in_type = AUDIO_IN_RTL;
-        opts.iq_replay_active = 0U;
-        opts.iq_replay_requested = 0U;
+        opts.audio_in_dev[0] = '\0';
         dsd_decode_clock_use_test(1000000000000ULL);
     }
     opts.scan_skip_silent = 0;
@@ -23873,6 +23918,27 @@ test_scan_quiet_suspended_visit_requests_nothing(void) {
     quiet_publish(&opts, &state);
     rc |= qt_expect("setting off: nothing published",
                     scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED && g_tap.requests == 0);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* Issue #743 (B14): a session started as an I/Q replay keeps its replay flags after a config apply moves it onto a live
+   rtl_tcp radio. The input in force decides, so the live radio's visits are measured. */
+static int
+test_scan_quiet_live_radio_after_a_replay_measures(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    opts.iq_replay_requested = 1U;
+    opts.iq_replay_active = 1U;
+    int rc = qt_expect("a live radio after a replay runs the check", scan_quiet_session_supported(&opts) == 1);
+    rc |= quiet_to_ready(&opts, &state);
+    rc |= qt_expect("one request", g_tap.requests == 1);
     quiet_rig_finish(&opts, &state, dir, path);
     return rc;
 }
@@ -25248,6 +25314,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_landing_records_the_tune);
     rc |= run_with_default_tune_hook(test_scan_quiet_adopts_a_park_measured_in_flight);
     rc |= run_with_default_tune_hook(test_scan_quiet_suspended_visit_requests_nothing);
+    rc |= run_with_default_tune_hook(test_scan_quiet_live_radio_after_a_replay_measures);
     rc |= test_scan_quiet_hook_off_is_one_load();
     rc |= run_with_default_tune_hook(test_scan_quiet_decline_ends_it_unless_the_guard_was_lost);
     rc |= run_with_default_tune_hook(test_scan_quiet_suspended_visit_keeps_its_sync_baseline);

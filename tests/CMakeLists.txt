@@ -940,6 +940,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_spec_fields
+  HEADERS_PUBLIC_RUNTIME_SPEC_FIELDS
+  dsd-neo/runtime/spec_fields.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_path_policy
   HEADERS_PUBLIC_RUNTIME_PATH_POLICY
   dsd-neo/runtime/path_policy.h
@@ -3164,6 +3170,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
     ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
     # A typed frequency's go-to names its outcome (issue #644); the engine side is stubbed.
     ${PROJECT_SOURCE_DIR}/src/app_control/scan_entry_toast.c
@@ -3188,10 +3195,10 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/ui/terminal
 )
 target_compile_definitions(dsd-neo_test_ui_menu_services PRIVATE USE_RADIO)
-# The squelch contract's dB conversion is a header inline over exp().
+# The squelch contract's dB conversion is a header inline over exp(); the radio-source view parses stream specs.
 target_link_libraries(
     dsd-neo_test_ui_menu_services
-    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE dsd-neo_io_iq ${DSD_NEO_TEST_MATH_LIB}
 )
 target_link_libraries(dsd-neo_test_ui_menu_services PRIVATE dsd-neo_runtime)
 target_sources(
@@ -3211,6 +3218,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
@@ -3219,6 +3227,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_dsp_rate.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/fp_mode.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
@@ -3237,7 +3246,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_menu_labels
-        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+        PRIVATE dsd-neo_io_iq ${DSD_NEO_TEST_MATH_LIB}
     )
     target_sources(
         dsd-neo_test_ui_menu_labels
@@ -3254,6 +3263,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
@@ -3262,6 +3272,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_dsp_rate.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/fp_mode.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
@@ -3280,7 +3291,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_menu_labels_radio
-        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+        PRIVATE dsd-neo_io_iq ${DSD_NEO_TEST_MATH_LIB}
     )
     target_compile_definitions(
         dsd-neo_test_ui_menu_labels_radio
@@ -4050,6 +4061,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
@@ -4075,6 +4087,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${_target}
             PRIVATE
                 dsd-neo_test_call_state_support
+                dsd-neo_io_iq
                 ${CURSES_LIBRARIES}
                 ${DSD_NEO_TEST_MATH_LIB}
         )
@@ -4134,6 +4147,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_dsp_rate.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
@@ -4154,7 +4168,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     target_compile_definitions(dsd-neo_test_ui_menu_actions PRIVATE USE_RADIO)
     target_link_libraries(
         dsd-neo_test_ui_menu_actions
-        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+        PRIVATE dsd-neo_io_iq ${DSD_NEO_TEST_MATH_LIB}
     )
     target_sources(
         dsd-neo_test_ui_menu_actions
@@ -7810,6 +7824,17 @@ target_include_directories(
 )
 add_test(NAME CORE_OPTS_TUNED_FREQ COMMAND dsd-neo_test_core_opts_tuned_freq)
 
+# Issue #743: the I/Q stream spec predicates and the tunability predicates (header-only)
+add_executable(
+    dsd-neo_test_core_opts_tunability
+    core/test_core_opts_tunability.c
+)
+target_include_directories(
+    dsd-neo_test_core_opts_tunability
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME CORE_OPTS_TUNABILITY COMMAND dsd-neo_test_core_opts_tunability)
+
 add_executable(dsd-neo_test_core_channel_label core/test_core_channel_label.c)
 target_include_directories(
     dsd-neo_test_core_channel_label
@@ -11011,11 +11036,13 @@ set_tests_properties(
 # Issue #518 follow-up: --print-config comes before the engine reads an RTL-SDR or
 # rtl_tcp spec, so it exported the option defaults (rtl_gain = 0, which a load now
 # applies as AGC) instead of the spec's tuning. It reads the spec first now.
+# --no-config does nothing (it says so): the run is kept from a config by leaving
+# DSD_NEO_CONFIG unset, as for every run below that passes it.
 add_test(
     NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_SPEC
     COMMAND
-        $<TARGET_FILE:dsd-neo> --no-config -i rtl:0:155.34M:30:5:24:-40:3
-        --print-config
+        ${CMAKE_COMMAND} -E env --unset=DSD_NEO_CONFIG $<TARGET_FILE:dsd-neo>
+        --no-config -i rtl:0:155.34M:30:5:24:-40:3 --print-config
 )
 set_tests_properties(
     RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_SPEC
@@ -11027,8 +11054,9 @@ set_tests_properties(
 add_test(
     NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_SPEC
     COMMAND
-        $<TARGET_FILE:dsd-neo> --no-config -i
-        rtltcp:radio.local:1235:851.0125M:12:-2:16:-50:1 --print-config
+        ${CMAKE_COMMAND} -E env --unset=DSD_NEO_CONFIG $<TARGET_FILE:dsd-neo>
+        --no-config -i rtltcp:radio.local:1235:851.0125M:12:-2:16:-50:1
+        --print-config
 )
 set_tests_properties(
     RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_SPEC
@@ -11037,6 +11065,112 @@ set_tests_properties(
         PASS_REGULAR_EXPRESSION
             [=[rtltcp_port = 1235[^[]*rtl_freq = "851012500"[^[]*rtl_gain = 12[^[]*rtl_ppm = -2[^[]*rtl_bw_khz = 16[^[]*rtl_sql = -50[^[]*rtl_volume = 1]=]
 )
+
+# Issue #743 (B1): --print-config of a session the command line turns into an I/Q replay prints the [input] of the
+# config it loaded, not the replay as a file input (source = "file", file_path = "iqreplay:...") that the next start
+# refuses; autosave and Save write the same snapshot.
+if(DSD_HAS_RADIO)
+    set(_DSD_BOOTSTRAP_REPLAY_CONFIG
+        "${_DSD_BOOTSTRAP_FIXTURE_DIR}/replay_config.ini"
+    )
+    file(
+        WRITE "${_DSD_BOOTSTRAP_REPLAY_CONFIG}"
+        "[input]\n"
+        "source = \"rtltcp\"\n"
+        "rtltcp_host = \"radio.local\"\n"
+        "rtltcp_port = 1235\n"
+        "rtl_freq = \"851.0125M\"\n"
+        "rtl_gain = 12\n"
+    )
+    add_test(
+        NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_REPLAY_KEEPS_INPUT
+        COMMAND
+            $<TARGET_FILE:dsd-neo> --config "replay_config.ini" --iq-replay
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/iq/dmr_voice.iq.json"
+            --print-config
+    )
+    set_tests_properties(
+        RUNTIME_BOOTSTRAP_PRINT_CONFIG_REPLAY_KEEPS_INPUT
+        PROPERTIES
+            ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1"
+            WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+            PASS_REGULAR_EXPRESSION
+                [=[source = "rtltcp"[^[]*rtltcp_host = "radio.local"[^[]*rtltcp_port = 1235[^[]*rtl_freq = "851.0125M"[^[]*rtl_gain = 12]=]
+            FAIL_REGULAR_EXPRESSION "iqreplay|source = \"file\""
+    )
+endif()
+# Issue #743 B7: an empty spec field keeps its place, so the export of `rtl::851.0125M:20:3`
+# carries the default device and that frequency, gain and PPM (it read 20 Hz at gain 3). B15: an rtl_tcp port
+# that is not one is refused, and so is the export.
+add_test(
+    NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_EMPTY_FIELDS
+    COMMAND
+        ${CMAKE_COMMAND} -E env --unset=DSD_NEO_CONFIG $<TARGET_FILE:dsd-neo>
+        --no-config -i rtl::851.0125M:20:3 --print-config
+)
+set_tests_properties(
+    RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_EMPTY_FIELDS
+    PROPERTIES
+        WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+        PASS_REGULAR_EXPRESSION
+            [=[rtl_device = 0[^[]*rtl_freq = "851012500"[^[]*rtl_gain = 20[^[]*rtl_ppm = 3]=]
+)
+add_test(
+    NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_BAD_PORT
+    COMMAND
+        ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+        DSD_NEO_CLI_SMOKE_MODE=print-config-rtltcp-bad-port -P
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+)
+# --no-config does nothing since config loading became opt-in; it says so.
+add_test(
+    NAME RUNTIME_CLI_NO_CONFIG_NOTICE
+    COMMAND
+        ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+        DSD_NEO_CLI_SMOKE_MODE=no-config-notice -P
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+)
+set_tests_properties(
+    RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_BAD_PORT
+    PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+)
+# Issue #743: --print-config exports an I/Q stream input as its own [input] source, in the spec's canonical text, with
+# no tuner key; a build without radio support refuses the spec on the command line instead.
+if(DSD_HAS_RADIO)
+    add_test(
+        NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_IQ_STREAM
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=print-config-iq-stream -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    set_tests_properties(
+        RUNTIME_BOOTSTRAP_PRINT_CONFIG_IQ_STREAM
+        PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+    )
+    # Issue #743 (D8 over B1): a replay with -T under a stream [input] config saves the stream with trunking off; the
+    # autosave and --print-config both pass --validate-config.
+    add_test(
+        NAME RUNTIME_BOOTSTRAP_IQ_STREAM_REPLAY_SAVE_VALIDATES
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=iq-stream-replay-save-validates -D
+            DSD_NEO_IQ_FIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/dmr_t3_cc.iq.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    set_tests_properties(
+        RUNTIME_BOOTSTRAP_IQ_STREAM_REPLAY_SAVE_VALIDATES
+        PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+    )
+else()
+    add_test(
+        NAME RUNTIME_CLI_IQ_STREAM_NEEDS_RADIO
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=iq-stream-needs-radio -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+endif()
 
 add_test(
     NAME RUNTIME_BOOTSTRAP_LIST_PROFILES
@@ -11087,6 +11221,38 @@ if(DSD_HAS_RADIO)
         COMMAND
             ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
             DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-airspy -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    # Issue #743: an I/Q stream's startup lines, a TCP stream with nothing listening exits 1 at its connect, and a RATE
+    # above the capture ceiling (from -i or a config) exits 1 before it connects.
+    foreach(
+        _iq_mode
+        IN
+        ITEMS
+            tcp-no-listener
+            min-rate-narrow
+            min-rate-wide
+            min-rate-analog
+            min-rate-met
+            rate-above-ceiling
+            config-rate-above-ceiling
+    )
+        string(TOUPPER "${_iq_mode}" _iq_name)
+        string(REPLACE "-" "_" _iq_name "${_iq_name}")
+        add_test(
+            NAME RUNTIME_CLI_IQ_STREAM_${_iq_name}
+            COMMAND
+                ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+                DSD_NEO_CLI_SMOKE_MODE=iq-stream-${_iq_mode} -P
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+        )
+    endforeach()
+    # Issue #743: an I/Q stream's planned rate holds the width before the stream connects.
+    add_test(
+        NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED_IQ_STREAM
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-iq-stream -P
             ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
     )
     add_test(
@@ -17794,8 +17960,9 @@ add_test(NAME IO_RATE_PLAN COMMAND dsd-neo_test_io_rate_plan)
 # Why a replay path cannot be opened: a symbolic link, a missing or unreadable file, a sniff read that fails (through
 # a seam built with DSD_NEO_TEST_HOOKS, on both the path's and a sidecar's data_file sniff), short input, and the
 # sidecar fallback. iq_replay.c is compiled in again with DSD_NEO_TEST_HOOKS for those seams, and dsd-neo_io_iq links
-# for the rest of the reader (iq_wav.c, iq_capture.c): the test's object already defines every replay symbol, so the
-# linker never pulls the library's own iq_replay.c object, which has no seams.
+# for the rest of the reader (iq_wav.c, iq_capture.c, and iq_rate_plan_general.c, the rate planner iq_replay.c calls):
+# the test's object already defines every replay symbol, so the linker never pulls the library's own iq_replay.c
+# object, which has no seams.
 add_executable(
     dsd-neo_test_io_iq_replay_open_errors
     io/test_io_iq_replay_open_errors.c
@@ -18161,8 +18328,18 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_platform_socket_resolve
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
+# Issue #743 B18: on POSIX the executable answers its own getaddrinfo() calls, so the
+# test sees how dsd_socket_resolve() looks a name up.
+if(NOT WIN32)
+    target_sources(
+        dsd-neo_test_platform_socket_resolve
+        PRIVATE test_support/fake_getaddrinfo.c
+    )
+endif()
 target_link_libraries(
     dsd-neo_test_platform_socket_resolve
     PRIVATE dsd-neo_platform
@@ -18311,6 +18488,50 @@ target_link_libraries(
 add_test(NAME IO_RTL_TUNER_GAINS COMMAND dsd-neo_test_io_rtl_tuner_gains)
 
 if(DSD_HAS_RADIO)
+    # Raw I/Q over the network (#743): spec, wire formats, rate telemetry and
+    # the socket reader on loopback; plain C, so it runs on every platform.
+    add_executable(dsd-neo_test_io_iq_net io/test_io_iq_net.c)
+    target_include_directories(
+        dsd-neo_test_io_iq_net
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/src/io/iq
+    )
+    target_link_libraries(
+        dsd-neo_test_io_iq_net
+        PRIVATE
+            dsd-neo_io_iq_net
+            dsd-neo_io_iq
+            dsd-neo_runtime
+            dsd-neo_dsp
+            dsd-neo_platform
+    )
+    add_test(NAME IO_IQ_NET COMMAND dsd-neo_test_io_iq_net)
+
+    # The reader's host lookup does not hold up a stop (#743): POSIX, since the
+    # executable answers its own getaddrinfo() to hold a lookup.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_io_iq_net_resolve
+            io/test_io_iq_net_resolve.c
+            test_support/fake_getaddrinfo.c
+        )
+        target_include_directories(
+            dsd-neo_test_io_iq_net_resolve
+            PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+        )
+        target_link_libraries(
+            dsd-neo_test_io_iq_net_resolve
+            PRIVATE
+                dsd-neo_io_iq_net
+                dsd-neo_io_iq
+                dsd-neo_runtime
+                dsd-neo_dsp
+                dsd-neo_platform
+        )
+        add_test(NAME IO_IQ_NET_RESOLVE COMMAND dsd-neo_test_io_iq_net_resolve)
+    endif()
+
     add_executable(dsd-neo_test_io_rtl_auto_ppm io/test_io_rtl_auto_ppm.cpp)
     target_include_directories(
         dsd-neo_test_io_rtl_auto_ppm
@@ -19449,6 +19670,7 @@ if(DSD_HAS_RADIO)
         add_executable(
             dsd-neo_test_io_rtl_tcp_reconnect
             io/test_io_rtl_tcp_reconnect.cpp
+            test_support/fake_getaddrinfo.c
         )
         target_include_directories(
             dsd-neo_test_io_rtl_tcp_reconnect
@@ -19475,6 +19697,29 @@ if(DSD_HAS_RADIO)
         )
         set_tests_properties(IO_RTL_TCP_RECONNECT PROPERTIES TIMEOUT 180)
     endif()
+
+    # The raw I/Q network input as a stream backend (issue #743): whole blocks at the demod, drop-on-full, the
+    # reconnect and resume boundaries, availability, prompt stops, the fixed-source contract, against senders on
+    # loopback, on every platform (the senders use the platform socket helpers).
+    add_executable(dsd-neo_test_io_net_iq_stream io/test_io_net_iq_stream.cpp)
+    target_include_directories(
+        dsd-neo_test_io_net_iq_stream
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_net_iq_stream
+        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_io_net_iq_stream
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            ${LIBS}
+    )
+    add_test(NAME IO_NET_IQ_STREAM COMMAND dsd-neo_test_io_net_iq_stream)
+    set_tests_properties(IO_NET_IQ_STREAM PROPERTIES TIMEOUT 180)
 
     # Paced USB ingest benchmark (not a test); run under perf stat.
     add_executable(
@@ -20191,6 +20436,31 @@ if(DSD_HAS_RADIO)
             set_tests_properties(
                 DECODE_PCM_INPUT_PATHS
                 PROPERTIES LABELS "iq-decode" TIMEOUT 180
+            )
+            # A replay with -T -U sends its rigctl peer no retune (issue #743 B12): a fake peer logs every command.
+            add_test(
+                NAME DECODE_IQ_REPLAY_RIGCTL
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/iq_replay_rigctl_check.py
+                    $<TARGET_FILE:dsd-neo> ${_DSD_NEO_IQ_FIXTURE_DIR}
+            )
+            set_tests_properties(
+                DECODE_IQ_REPLAY_RIGCTL
+                PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
+            # A raw I/Q stream on loopback (issue #743): the UDP receiving notice follows the bind, a mode switch to
+            # TETRA over the control API reconnects the TCP stream, and no rigctl peer beside it is ever connected.
+            add_test(
+                NAME RUNTIME_IQ_STREAM_LIVE
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/iq_stream_live_check.py
+                    $<TARGET_FILE:dsd-neo>
+            )
+            set_tests_properties(
+                RUNTIME_IQ_STREAM_LIVE
+                PROPERTIES LABELS "iq-stream" TIMEOUT 120
             )
         endif()
     endif()
@@ -21263,6 +21533,52 @@ if(DSD_HAS_RADIO)
                 LABELS "iq-decode"
                 TIMEOUT 120
                 FIXTURES_REQUIRED IQ_WAV_FIXTURES
+        )
+    endif()
+    # Raw I/Q over the network end to end (issue #743): committed fixtures, converted to what a sending program writes,
+    # sent at real time to -i iqtcp: / -i iqudp: (tests/iq_net_decode_check.py). TCP: the 50 kHz cs16 capture in
+    # SDR++'s 1024-byte writes, the 72 kHz call as cf32 with its FREQ (published on its carrier), the 48254 Hz WAV as
+    # cs16 and dmr_voice as cs8. UDP: dmr_voice in 1472-byte datagrams with empty ones among them, sent once the
+    # decoder says it is receiving. Analog: the NFM and AM tones as cs16, and the NFM tone at 24 kHz resampled to
+    # 48 kHz, the monitor's 48 kHz audio at the replay's level. A live stream has no end, so each run is stopped with
+    # SIGINT: POSIX only.
+    if(Python3_Interpreter_FOUND AND NOT WIN32)
+        add_test(
+            NAME DECODE_IQ_NET_TCP
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/iq_net_decode_check.py
+                --wav-fixtures ${_dsd_iq_wav_dir} tcp $<TARGET_FILE:dsd-neo>
+                ${_DSD_NEO_IQ_FIXTURE_DIR}
+        )
+        set_tests_properties(
+            DECODE_IQ_NET_TCP
+            PROPERTIES
+                LABELS "iq-decode"
+                TIMEOUT 300
+                FIXTURES_REQUIRED IQ_WAV_FIXTURES
+        )
+        add_test(
+            NAME DECODE_IQ_NET_UDP
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/iq_net_decode_check.py udp
+                $<TARGET_FILE:dsd-neo> ${_DSD_NEO_IQ_FIXTURE_DIR}
+        )
+        add_test(
+            NAME DECODE_IQ_NET_ANALOG
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/iq_net_decode_check.py analog
+                $<TARGET_FILE:dsd-neo> ${_DSD_NEO_IQ_FIXTURE_DIR}
+        )
+        set_tests_properties(
+            DECODE_IQ_NET_UDP
+            PROPERTIES LABELS "iq-decode" TIMEOUT 180
+        )
+        set_tests_properties(
+            DECODE_IQ_NET_ANALOG
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 180
         )
     endif()
 

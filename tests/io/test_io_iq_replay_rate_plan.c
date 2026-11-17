@@ -689,6 +689,220 @@ test_filter_domain(void) {
     return rc;
 }
 
+/* ---------------- The source-neutral general planner (issue #743) ---------------- */
+
+/* Rates a raw I/Q stream may run at, 8 kHz to 1.152 MS/s, with the odd ones senders pick. */
+static const uint32_t k_stream_rates[] = {8000U,   12000U,  12500U,  16000U,  20000U,   24000U,   25000U,
+                                          32000U,  36000U,  48000U,  48254U,  50000U,   62500U,   72000U,
+                                          96000U,  100000U, 144000U, 192000U, 240000U,  250000U,  288000U,
+                                          384000U, 500000U, 768000U, 960000U, 1000000U, 1024000U, 1152000U};
+
+/* The targets a stream's mode asks for: TETRA's 72 kHz (with its 18 kHz requirement), the 48 kHz default, EDACS's and
+   ProVoice's 24 kHz. */
+static const struct {
+    uint32_t target_hz;
+    uint32_t required_hz;
+} k_stream_targets[] = {{72000U, 18000U}, {48000U, 0U}, {24000U, 0U}};
+
+/* What every stream plan holds: the general rule's R = D x 2^k, the largest at or below the rate (D when slower),
+   decimated by 2^k to D with post 1; resampled exactly when R is not the rate. */
+static int
+expect_stream_plan_shape(const char* label, const dsd_iq_replay_rate_plan* plan, uint32_t rate_hz, uint32_t d) {
+    uint64_t r = d;
+    while (r * 2U <= rate_hz) {
+        r *= 2U;
+    }
+    char sub[192];
+    int rc = expect_plan_identity(label, plan);
+    DSD_SNPRINTF(sub, sizeof(sub), "%s: capture rate is the stream's", label);
+    rc |= expect_u32(sub, plan->capture_rate_hz, rate_hz);
+    DSD_SNPRINTF(sub, sizeof(sub), "%s: R = D x 2^k", label);
+    rc |= expect_u32(sub, plan->dsp_input_rate_hz, (uint32_t)r);
+    DSD_SNPRINTF(sub, sizeof(sub), "%s: decimated to D", label);
+    rc |= expect_true(sub, plan->base_decimation == (uint32_t)(r / d) && plan->post_downsample == 1U
+                               && plan->demod_rate_hz == d && plan->complex_rate_hz == d && plan->target_dsp_hz == d
+                               && !plan->kept_recorded);
+    DSD_SNPRINTF(sub, sizeof(sub), "%s: origin", label);
+    rc |= expect_true(sub, plan->resample == (r != rate_hz)
+                               && plan->origin
+                                      == (r != rate_hz ? DSD_IQ_REPLAY_ORIGIN_RESAMPLED : DSD_IQ_REPLAY_ORIGIN_EXACT));
+    return rc;
+}
+
+/* The replay's general rule is the source-neutral planner: a WAV, and a sidecar asked for a bandwidth, plan exactly
+   what dsd_iq_plan_general_rate() plans for their rate, and a stream at that rate plans the sidecar's chain. */
+static int
+test_general_planner_is_the_replays(void) {
+    int rc = 0;
+    for (size_t t = 0; t < sizeof(k_stream_targets) / sizeof(k_stream_targets[0]); t++) {
+        const uint32_t d = k_stream_targets[t].target_hz;
+        const uint32_t req = k_stream_targets[t].required_hz;
+        for (size_t i = 0; i < sizeof(k_stream_rates) / sizeof(k_stream_rates[0]); i++) {
+            const uint32_t fs = k_stream_rates[i];
+            char label[160];
+            char err[256] = {0};
+            dsd_iq_replay_rate_plan wav;
+            dsd_iq_replay_rate_plan sidecar;
+            dsd_iq_replay_rate_plan general;
+            dsd_iq_replay_rate_plan stream;
+            dsd_iq_replay_config cfg = *wav_cfg(fs);
+            DSD_SNPRINTF(label, sizeof(label), "%u Hz to %u Hz", (unsigned)fs, (unsigned)d);
+            int ok = dsd_iq_replay_plan_rate(&cfg, d, req, 0, 0U, &wav, err, sizeof(err)) == DSD_IQ_OK;
+            ok = ok && dsd_iq_plan_general_rate(DSD_IQ_PLAN_SOURCE_WAV, fs, d, &general, err, sizeof(err)) == DSD_IQ_OK;
+            rc |= expect_true(label, ok && dsd_iq_replay_rate_plan_equal(&wav, &general));
+            cfg = *sidecar_cfg(fs, 1U, 1U, 48);
+            ok = dsd_iq_replay_plan_rate(&cfg, d, req, 1, DSD_DIGITAL_CHANNEL_MAX_RATE_HZ, &sidecar, err, sizeof(err))
+                 == DSD_IQ_OK;
+            ok =
+                ok
+                && dsd_iq_plan_general_rate(DSD_IQ_PLAN_SOURCE_SIDECAR, fs, d, &general, err, sizeof(err)) == DSD_IQ_OK;
+            rc |= expect_true(label, ok && dsd_iq_replay_rate_plan_equal(&sidecar, &general));
+            ok = dsd_iq_plan_general_rate(DSD_IQ_PLAN_SOURCE_STREAM, fs, d, &stream, err, sizeof(err)) == DSD_IQ_OK;
+            rc |= expect_true(label, ok && dsd_iq_replay_rate_plan_equal(&stream, &sidecar));
+            rc |= expect_stream_plan_shape(label, &stream, fs, d);
+        }
+    }
+    return rc;
+}
+
+/* A stream plan the general rule names (issue #743): one row per kind of chain. */
+static int
+expect_stream_plan(const char* label, uint32_t rate_hz, uint32_t d, uint32_t want_dsp_in, uint32_t want_base,
+                   dsd_iq_replay_origin want_origin) {
+    dsd_iq_replay_rate_plan plan;
+    char err[256] = {0};
+    if (dsd_iq_plan_general_rate(DSD_IQ_PLAN_SOURCE_STREAM, rate_hz, d, &plan, err, sizeof(err)) != DSD_IQ_OK) {
+        DSD_FPRINTF(stderr, "FAIL: %s: refused: %s\n", label, err);
+        return 1;
+    }
+    char sub[192];
+    DSD_SNPRINTF(sub, sizeof(sub), "%s: dsp input rate", label);
+    int rc = expect_u32(sub, plan.dsp_input_rate_hz, want_dsp_in);
+    DSD_SNPRINTF(sub, sizeof(sub), "%s: base_decimation", label);
+    rc |= expect_u32(sub, plan.base_decimation, want_base);
+    DSD_SNPRINTF(sub, sizeof(sub), "%s: origin %s", label, dsd_iq_replay_origin_name(plan.origin));
+    rc |= expect_true(sub, plan.origin == want_origin);
+    return rc;
+}
+
+static int
+test_stream_plans(void) {
+    int rc = 0;
+    rc |= expect_stream_plan("8 kHz up to TETRA's 72 kHz (9x)", 8000U, 72000U, 72000U, 1U,
+                             DSD_IQ_REPLAY_ORIGIN_RESAMPLED);
+    rc |= expect_stream_plan("12.5 kHz up to 24 kHz", 12500U, 24000U, 24000U, 1U, DSD_IQ_REPLAY_ORIGIN_RESAMPLED);
+    rc |= expect_stream_plan("48 kHz at 24 kHz decimates", 48000U, 24000U, 48000U, 2U, DSD_IQ_REPLAY_ORIGIN_EXACT);
+    rc |= expect_stream_plan("48 kHz at 48 kHz as it comes", 48000U, 48000U, 48000U, 1U, DSD_IQ_REPLAY_ORIGIN_EXACT);
+    rc |= expect_stream_plan("240 kHz at 48 kHz: 192 kHz / 4", 240000U, 48000U, 192000U, 4U,
+                             DSD_IQ_REPLAY_ORIGIN_RESAMPLED);
+    rc |= expect_stream_plan("1.152 MS/s at TETRA's 72 kHz decimates by 16", 1152000U, 72000U, 1152000U, 16U,
+                             DSD_IQ_REPLAY_ORIGIN_EXACT);
+    rc |= expect_stream_plan("1.152 MS/s at 48 kHz: 768 kHz / 16", 1152000U, 48000U, 768000U, 16U,
+                             DSD_IQ_REPLAY_ORIGIN_RESAMPLED);
+    rc |= expect_stream_plan("3.2 MS/s, the ceiling, at 48 kHz: 3.072 MHz / 64", 3200000U, 48000U, 3072000U, 64U,
+                             DSD_IQ_REPLAY_ORIGIN_RESAMPLED);
+    rc |= expect_stream_plan("just under 2 x 2^10 x 1 kHz", 2047999U, 1000U, 1024000U, 1024U,
+                             DSD_IQ_REPLAY_ORIGIN_RESAMPLED);
+    return rc;
+}
+
+/* The general planner's refusals name what it plans for: a stream's own, a replay's as they always read. A refusal
+   leaves the plan as it was. */
+static int
+expect_general_refused(const char* label, dsd_iq_plan_source source, uint32_t rate_hz, uint32_t d,
+                       const char* want_reason) {
+    dsd_iq_replay_rate_plan plan;
+    dsd_iq_replay_rate_plan before;
+    DSD_MEMSET(&plan, 0x5A, sizeof(plan));
+    DSD_MEMSET(&before, 0x5A, sizeof(before));
+    char err[256] = {0};
+    const int prc = dsd_iq_plan_general_rate(source, rate_hz, d, &plan, err, sizeof(err));
+    if (prc != DSD_IQ_ERR_RATE_CHAIN || strcmp(err, want_reason) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: rc %d reason \"%s\", want \"%s\"\n", label, prc, err, want_reason);
+        return 1;
+    }
+    return expect_true(label, dsd_iq_replay_rate_plan_equal(&plan, &before));
+}
+
+static int
+test_general_planner_refusals(void) {
+    int rc = 0;
+    rc |= expect_general_refused("a stream below 8 kHz", DSD_IQ_PLAN_SOURCE_STREAM, 7999U, 48000U,
+                                 "the stream's rate (7999 Hz) is below the 8000 Hz a stream can resample");
+    rc |= expect_general_refused("a stream TETRA's 144 kHz needs an 18x upsample for", DSD_IQ_PLAN_SOURCE_STREAM, 8000U,
+                                 144000U,
+                                 "the stream's rate (8000 Hz) would need more than a 9x upsample to reach the 144000 "
+                                 "Hz DSP rate");
+    rc |= expect_general_refused("a stream at 2 x 2^10 x 1 kHz", DSD_IQ_PLAN_SOURCE_STREAM, 2048000U, 1000U,
+                                 "the stream's rate (2048000 Hz) is too fast to resample to the 1000 Hz DSP rate "
+                                 "(more than a 1024 x 2 decimation)");
+    /* Issue #743: a stream faster than the live-device capture ceiling is refused whatever the target, before a ring
+       or a chain is sized for it; a capture at that rate still plans. */
+    rc |= expect_general_refused("a stream one sample past 3.2 MS/s", DSD_IQ_PLAN_SOURCE_STREAM, 3200001U, 48000U,
+                                 "the stream's rate (3200001 Hz) is above 3200000 Hz; send one channel (the sending "
+                                 "program's VFO mode)");
+    rc |= expect_general_refused("a stream at 2 x 2^10 x 24 kHz", DSD_IQ_PLAN_SOURCE_STREAM, 49152000U, 24000U,
+                                 "the stream's rate (49152000 Hz) is above 3200000 Hz; send one channel (the sending "
+                                 "program's VFO mode)");
+    rc |= expect_general_refused("a sidecar at 2 x 2^10 x 24 kHz", DSD_IQ_PLAN_SOURCE_SIDECAR, 49152000U, 24000U,
+                                 "the capture's rate (49152000 Hz) is too fast to resample to the 24000 Hz DSP rate "
+                                 "(more than a 1024 x 2 decimation)");
+    {
+        dsd_iq_replay_rate_plan plan;
+        rc |= expect_true("a sidecar past 3.2 MS/s still plans",
+                          dsd_iq_plan_general_rate(DSD_IQ_PLAN_SOURCE_SIDECAR, 3200001U, 48000U, &plan, NULL, 0U)
+                              == DSD_IQ_OK);
+    }
+    rc |= expect_general_refused("a stream with no target", DSD_IQ_PLAN_SOURCE_STREAM, 48000U, 0U,
+                                 "no DSP target rate to plan the stream for");
+    /* A replay's words are as they were. */
+    rc |= expect_general_refused("a WAV below 8 kHz", DSD_IQ_PLAN_SOURCE_WAV, 7999U, 48000U,
+                                 "the capture's rate (7999 Hz) is below the 8000 Hz a replay can resample");
+    rc |= expect_general_refused("a sidecar past 9x", DSD_IQ_PLAN_SOURCE_SIDECAR, 8000U, 80000U,
+                                 "the capture's rate (8000 Hz) would need more than a 9x upsample to reach the 80000 "
+                                 "Hz DSP rate");
+    rc |= expect_general_refused("a WAV with no target", DSD_IQ_PLAN_SOURCE_WAV, 48000U, 0U,
+                                 "no DSP target rate to plan the replay for");
+    char err[64];
+    rc |= expect_true("NULL plan refused",
+                      dsd_iq_plan_general_rate(DSD_IQ_PLAN_SOURCE_STREAM, 48000U, 48000U, NULL, err, sizeof(err))
+                          == DSD_IQ_ERR_INVALID_ARG);
+    dsd_iq_replay_rate_plan plan;
+    rc |= expect_true("no error buffer",
+                      dsd_iq_plan_general_rate(DSD_IQ_PLAN_SOURCE_STREAM, 7999U, 48000U, &plan, NULL, 0U)
+                          == DSD_IQ_ERR_RATE_CHAIN);
+    return rc;
+}
+
+/* A live source's demod block (issue #743): the replay chunk's 16/3 ms at the DSP input rate, 1 to 8192 samples. */
+static int
+test_live_block_samples(void) {
+    static const struct {
+        uint32_t rate_hz;
+        uint32_t want;
+    } k_cases[] = {
+        {0U, 1U},          {187U, 1U},        {188U, 1U},        {8000U, 42U},        {24000U, 128U},
+        {48000U, 256U},    {48254U, 257U},    {72000U, 384U},    {144000U, 768U},     {1152000U, 6144U},
+        {1536000U, 8192U}, {1536188U, 8192U}, {2048000U, 8192U}, {UINT32_MAX, 8192U},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        char label[96];
+        DSD_SNPRINTF(label, sizeof(label), "live block at %u Hz", (unsigned)k_cases[i].rate_hz);
+        rc |= expect_u32(label, dsd_iq_live_block_samples(k_cases[i].rate_hz), k_cases[i].want);
+    }
+    /* Where it reaches, it is the replay's equal-rate chunk, counted in samples. */
+    for (size_t i = 0; i < sizeof(k_stream_rates) / sizeof(k_stream_rates[0]); i++) {
+        char label[96];
+        const uint32_t r = k_stream_rates[i];
+        DSD_SNPRINTF(label, sizeof(label), "live block at %u Hz is the replay chunk", (unsigned)r);
+        rc |= expect_u32(label, dsd_iq_live_block_samples(r),
+                         (uint32_t)(dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CF32, r) / 8U));
+    }
+    return rc;
+}
+
 /* Plan identity covers origin, step and forced flag: plans that differ only there are different chains. */
 static int
 test_plan_identity(void) {
@@ -733,6 +947,10 @@ main(void) {
     rc |= test_derived_forced();
     rc |= test_filter_domain();
     rc |= test_plan_identity();
+    rc |= test_general_planner_is_the_replays();
+    rc |= test_stream_plans();
+    rc |= test_general_planner_refusals();
+    rc |= test_live_block_samples();
     if (rc == 0) {
         printf("IO_IQ_REPLAY_RATE_PLAN: OK\n");
     }

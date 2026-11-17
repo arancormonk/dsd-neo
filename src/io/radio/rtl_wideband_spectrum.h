@@ -17,7 +17,13 @@ extern "C" {
  *
  * Called from the demod thread on every block. Returns immediately when no
  * consumer has enabled the feature, and otherwise publishes at most one frame
- * per ~66 ms (~15 FPS).
+ * per ~66 ms (~15 FPS). A frame analyses the last DSD_WIDEBAND_SPECTRUM_BINS
+ * pairs of input, which blocks shorter than that make up between them; a
+ * clear, a gap (rtl_wideband_spectrum_note_gap()) or a new rate or centre
+ * starts that history over, and nothing is published until it is full again.
+ * A block that fills the window analyses itself; after another such block it
+ * leaves the history empty rather than copy its tail, so a shorter block that
+ * follows a run of them waits for a whole window of its own.
  *
  * @param iq_interleaved  Interleaved float I/Q at capture rate.
  * @param len_interleaved Number of floats (2x the complex pair count).
@@ -34,6 +40,15 @@ void rtl_wideband_spectrum_maybe_update(const float* iq_interleaved, int len_int
  * consumer never labels post-retune bins with the previous center frequency.
  */
 void rtl_wideband_spectrum_clear(void);
+
+/**
+ * @brief Note a break in the input the tap is offered (a gap, a reset, a dropped block).
+ *
+ * The next frame waits for a full window of pairs from after the break, rather
+ * than joining pairs from either side of it. The published frame stays: a gap
+ * on the same centre does not make it wrong. Any thread.
+ */
+void rtl_wideband_spectrum_note_gap(void);
 
 #ifdef DSD_NEO_TEST_HOOKS
 /** @brief Clear the publish throttle so the next update publishes immediately. */

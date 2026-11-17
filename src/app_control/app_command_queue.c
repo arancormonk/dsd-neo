@@ -65,6 +65,7 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/env.h>
@@ -118,6 +119,7 @@
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "key_commands.h"
+#include "next_start_check.h"
 #include "recording_view_internal.h"
 #include "rr_apply_verdict.h"
 #include "scan_avoid_view_internal.h"
@@ -507,15 +509,32 @@ ui_toast_mhz(uint32_t hz, char* out, size_t out_size) {
     return out;
 }
 
-/* An I/Q replay plays the tuning its capture recorded and defers every other retune unseen (issue #575), so a tune or a
-   tuner release asked of it would be reported as done and never land. Returns 1, with the reason toasted, while the
-   input in force is a replay (dsd_opts_input_is_iq_replay()); the caller fails the command. */
+/* An input with fixed tuning (dsd_opts_input_has_fixed_tuning()) has no tuner a command can move: an I/Q replay plays
+   the tuning its capture recorded and defers every other retune unseen (issue #575), and the program sending an I/Q
+   stream picks its channel (issue #743). A tune, a tuner release or a rigctl peer asked of either would be reported as
+   done and never land. Returns 1, with the input's reason toasted, while the input in force has fixed tuning; the
+   caller fails the command. */
 static int
-ui_cmd_refuse_replay_tune(const dsd_opts* opts, dsd_state* state) {
-    if (!dsd_opts_input_is_iq_replay(opts)) {
+ui_cmd_refuse_fixed_tuning(const dsd_opts* opts, dsd_state* state) {
+    const char* why = svc_fixed_tuning_reason(opts);
+    if (!why) {
         return 0;
     }
-    ui_set_toast(state, 3, "An I/Q replay cannot retune.");
+    ui_set_toast(state, 3, "%s", why);
+    return 1;
+}
+
+/* A tuner control (gain, PPM, bias tee, device, the automatic ones) asked of an input with fixed tuning: a replay
+   plays what was recorded and a stream's sending program runs the radio, so nothing here would apply it (issue #743).
+   Returns 1, with the input's reason toasted (svc_fixed_tuner_reason()); the caller answers the command as
+   unsupported. */
+static int
+ui_cmd_refuse_fixed_tuner_control(const dsd_opts* opts, dsd_state* state) {
+    const char* why = svc_fixed_tuner_reason(opts);
+    if (!why) {
+        return 0;
+    }
+    ui_set_toast(state, 3, "%s", why);
     return 1;
 }
 
@@ -1332,6 +1351,10 @@ ui_cmd_handle_rigctl_connect_cfg(dsd_opts* opts, dsd_state* state, const struct 
     int32_t port = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_host_port_payload(c, host, sizeof host, &port)) {
+        /* A peer beside an I/Q replay or stream would take the trunking retunes the input defers (issue #743 B12). */
+        if (ui_cmd_refuse_fixed_tuning(opts, state)) {
+            return UI_CMD_APPLY_FAILED;
+        }
         int rc = svc_rigctl_connect(opts, state, host, port);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -1531,6 +1554,19 @@ ui_set_rollback_toast(dsd_state* state, const char* prefix, const char* why, int
     }
 }
 
+/* A failed command whose restart has no rollback after it (RTL_RESTART, RTL_SET_GAIN, RTL_SET_DEV): "Failed: " and
+   @p what for 4 s, as before; with the note of a capture the restart turned off before its start (issue #743 B16),
+   which is the capture the command found on (@p capture_before) and that is off now, for the 5 s a rollback's note
+   takes. */
+static void
+ui_set_failed_restart_toast(dsd_state* state, const dsd_opts* opts, int capture_before, const char* what) {
+    if (capture_before && opts && !opts->iq_capture_requested) {
+        ui_set_rollback_toast(state, "Failed: ", what, 1);
+        return;
+    }
+    ui_set_toast(state, 4, "Failed: %s", what);
+}
+
 /* The receive input a stream start reads, as a change that rewrites it finds it (issue #578): the device string and
    input type, the rtl_tcp endpoint, the RTL device index, the tuning and front-end settings a start copies, the Airspy
    and SoapySDR settings, and the digital resample policy. These are what Input > Switch source, a config's [input] and
@@ -1541,10 +1577,12 @@ ui_set_rollback_toast(dsd_state* state, const char* prefix, const char* why, int
    which a switch to PCM leaves running, recording. The start stops that stream either way, closing its I/Q capture,
    which the rollback accounts for even when it only puts PCM back. @c failure is the input failure the session had
    latched then, which the failed start can have replaced with its own and which comes back once this input runs again
-   (svc_rtl_restart_recovery_locked()). */
+   (svc_rtl_restart_recovery_locked()). @c iq_capture_requested is whether the I/Q capture was on then, for the
+   rollback to tell a stop the change made (issue #743 B16); nothing puts it back. */
 typedef struct {
     int running;
     int stream_running;
+    int iq_capture_requested;
     dsd_audio_in_type audio_in_type;
     char audio_in_dev[sizeof(((dsd_opts*)0)->audio_in_dev)];
     int rtltcp_enabled;
@@ -1585,6 +1623,7 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     }
     out->stream_running = state && state->rtl_ctx != NULL;
     out->running = opts->audio_in_type != AUDIO_IN_RTL || out->stream_running;
+    out->iq_capture_requested = opts->iq_capture_requested;
     out->audio_in_type = opts->audio_in_type;
     DSD_MEMCPY(out->audio_in_dev, opts->audio_in_dev, sizeof out->audio_in_dev);
     out->rtltcp_enabled = opts->rtltcp_enabled;
@@ -1796,13 +1835,54 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     ui_cfg_restore_mode_extras(opts, state, &before->mode);
     ui_restore_radio_input(opts, &before->input);
     int capture_stopped = 0;
-    if (svc_rtl_restart_recovery_locked(opts, state, before->input.stream_running, &before->input.failure,
-                                        &capture_stopped)
+    if (svc_rtl_restart_recovery_locked(opts, state, before->input.stream_running, before->input.iq_capture_requested,
+                                        &before->input.failure, &capture_stopped)
         != 0) {
         LOG_ERROR("Config: the input it replaced did not restart either; no radio input is running.\n");
     }
     ui_set_rollback_toast(state, "Config not applied: ", why, capture_stopped);
     return -1;
+}
+
+/* The save the RTL-SDR row leaves when it opens a remembered raw I/Q stream (svc_rtl_row_destination(), issue #743):
+   the stream as the input, the rest as it stands. @p ctx is the row's destination (const char*). */
+static void
+ui_next_start_rtl_row_input(dsdneoUserConfig* save, const void* ctx) {
+    dsd_iq_net_spec spec;
+    if (dsd_iq_net_spec_parse((const char*)ctx, &spec, NULL, 0U) != 0) {
+        return;
+    }
+    save->has_input = 1;
+    save->input_source = spec.kind == DSD_IQ_NET_KIND_UDP ? DSDCFG_INPUT_IQUDP : DSDCFG_INPUT_IQTCP;
+    DSD_SNPRINTF(save->iq_host, sizeof save->iq_host, "%s", spec.host);
+    save->iq_port = spec.port;
+    DSD_SNPRINTF(save->iq_rate, sizeof save->iq_rate, "%u", spec.rate_hz);
+    DSD_SNPRINTF(save->iq_format, sizeof save->iq_format, "%s", dsd_iq_net_format_name(spec.format));
+    save->iq_freq[0] = '\0';
+    if (spec.freq_hz != 0U) {
+        DSD_SNPRINTF(save->iq_freq, sizeof save->iq_freq, "%u", spec.freq_hz);
+    }
+}
+
+/* The RTL-SDR row reopens the radio a switch to PCM left, a raw I/Q stream included (issue #743), so a save it leaves
+   must start (issue #671, D8): a stream beside trunking, the -Y scanner or a trunk scan is refused before anything
+   changes, the rule on the status line. */
+static int
+ui_rtl_row_refused_for_next_start(const dsd_opts* opts, dsd_state* state, int cmd_id) {
+    if (cmd_id != DSD_APP_CMD_RTL_ENABLE_INPUT) {
+        return 0;
+    }
+    char destination[sizeof opts->audio_in_dev];
+    svc_rtl_row_destination(opts, destination, sizeof destination);
+    char why[256];
+    if (!dsd_opts_audio_in_dev_is_iq_stream_spec(destination)
+        || svc_check_next_start(opts, state, ui_next_start_rtl_row_input, destination, why, sizeof why) == 0) {
+        return 0;
+    }
+    LOG_WARN("Input not switched: %s.\n", why);
+    why[strcspn(why, ";")] = '\0';
+    ui_set_toast(state, 5, "Refused: %s", why);
+    return 1;
 }
 
 /* Input > Switch source > RTL-SDR or > Airspy opens a device at the DSP bandwidth (an Airspy's capture rate stepped to
@@ -1813,6 +1893,9 @@ static int
 ui_cmd_rtl_enable_input_refused(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!opts || !state) {
         return 0;
+    }
+    if (ui_rtl_row_refused_for_next_start(opts, state, c->id)) {
+        return 1;
     }
     char why[128];
     const int check = c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT
@@ -1843,7 +1926,8 @@ ui_radio_start_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_in
     const int refused = svc_describe_start_failure(opts, why, why_size);
     if (before->running) {
         ui_restore_radio_input(opts, before);
-        if (svc_rtl_restart_recovery_locked(opts, state, before->stream_running, &before->failure, out_capture_stopped)
+        if (svc_rtl_restart_recovery_locked(opts, state, before->stream_running, before->iq_capture_requested,
+                                            &before->failure, out_capture_stopped)
             != 0) {
             LOG_ERROR("The input the change replaced did not restart either; no radio input is running.\n");
         }
@@ -1888,6 +1972,42 @@ ui_radio_row_took_over(dsd_opts* opts, dsd_state* state, int pcm_timing_rate_hz)
     dsd_engine_note_input_replaced(state);
 }
 
+/*
+ * The input a radio row leaves for an I/Q replay (issue #743): the RTL-SDR row reopens the replay a switch to PCM left
+ * (svc_rtl_row_destination()), and the replay session saves the input it ran until then, the last one a save could
+ * describe, so leaving the replay and coming back never drops the [input] from the save. NULL when the row opens no
+ * replay, the session already runs one, or the copy cannot be allocated.
+ */
+static dsdneoUserConfig*
+ui_input_left_for_replay(const dsd_opts* opts, const dsd_state* state, int cmd_id) {
+    if (cmd_id != DSD_APP_CMD_RTL_ENABLE_INPUT || dsd_opts_input_is_iq_replay(opts)) {
+        return NULL;
+    }
+    char destination[sizeof opts->audio_in_dev];
+    svc_rtl_row_destination(opts, destination, sizeof destination);
+    if (!dsd_opts_audio_in_dev_is_iqreplay_spec(destination)) {
+        return NULL;
+    }
+    dsdneoUserConfig* left = (dsdneoUserConfig*)malloc(sizeof *left);
+    if (left) {
+        dsd_snapshot_opts_to_user_config(opts, state, left);
+    }
+    return left;
+}
+
+/* The replay the row opened saves @p left (ui_input_left_for_replay()); a start that failed put the input back. */
+static void
+ui_keep_input_left_for_replay(const dsd_opts* opts, dsd_state* state, dsdneoUserConfig* left) {
+    if (!left) {
+        return;
+    }
+    if (dsd_opts_input_is_iq_replay(opts) && dsd_user_config_retain_input(state, left) != 0) {
+        LOG_WARN("Input: out of memory keeping the input before the replay; a save writes no [input].\n");
+    }
+    DSD_SECURE_ZERO(left, sizeof *left);
+    free(left);
+}
+
 /* Input > Switch source > RTL-SDR or Airspy. The watchdog reads the input, and may retune it, while it holds the P25 SM
    tick guard, so the switch holds that guard from the copy of the input it would put back, through its rewrite of the
    input and its start, and, when the start fails, on through putting back the input that ran and starting it again
@@ -1912,6 +2032,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     int refused = 0;
     int capture_stopped = 0;
     int output_failed = 0;
+    dsdneoUserConfig* left_for_replay = ui_input_left_for_replay(opts, state, c->id);
     p25_sm_tick_guard_enter();
     ui_radio_input before;
     ui_capture_radio_input(opts, state, &before);
@@ -1929,6 +2050,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
         output_failed = ui_input_switched(opts, state) != 0;
     }
     p25_sm_tick_guard_leave();
+    ui_keep_input_left_for_replay(opts, state, left_for_replay);
 
     int result = ui_cmd_apply_status_from_service_rc(rc);
     if (rc == 0) {
@@ -1951,6 +2073,7 @@ ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app
     (void)c;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state) {
+        const int capture_before = opts && opts->iq_capture_requested;
         int rc = svc_rtl_restart(opts, state);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -1958,7 +2081,7 @@ ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: active radio backend cannot restart stream");
         } else {
-            ui_set_toast(state, 4, "Failed: RTL stream restart");
+            ui_set_failed_restart_toast(state, opts, capture_before, "RTL stream restart");
         }
     }
     return result;
@@ -1969,6 +2092,10 @@ ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct dsd_app
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
+        const int capture_before = opts && opts->iq_capture_requested;
         int rc = svc_rtl_set_dev_index(opts, state, v);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -1976,7 +2103,9 @@ ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct dsd_app
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: device index is not available for current radio source");
         } else {
-            ui_set_toast(state, 4, "Failed: RTL device index -> %d", (int)v);
+            char what[48];
+            DSD_SNPRINTF(what, sizeof what, "RTL device index -> %d", (int)v);
+            ui_set_failed_restart_toast(state, opts, capture_before, what);
         }
     }
     return result;
@@ -2131,7 +2260,7 @@ ui_cmd_freq_payload_refused(dsd_state* state, uint32_t v, int* status) {
    refused. */
 static int
 ui_cmd_rtl_set_freq_refused(const dsd_opts* opts, dsd_state* state, uint32_t v, int* status) {
-    if (ui_cmd_refuse_replay_tune(opts, state)) {
+    if (ui_cmd_refuse_fixed_tuning(opts, state)) {
         *status = UI_CMD_APPLY_FAILED;
         return 1;
     }
@@ -2282,7 +2411,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
     /* Every refusal below is a failed command with its reason toasted, as the frequency entry's are
      * (ui_cmd_handle_rtl_set_freq()). The replay's comes ahead of the owner gates: their toasts point at a release,
      * which a replay refuses too. */
-    if (ui_cmd_refuse_replay_tune(opts, state)) {
+    if (ui_cmd_refuse_fixed_tuning(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
     /* The trunk scan, the owner a release cannot clear (see apply_tuner_release):
@@ -2351,6 +2480,10 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
+        const int capture_before = opts && opts->iq_capture_requested;
         int rc = svc_rtl_set_gain(opts, state, v);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2362,7 +2495,9 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
         } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
-            ui_set_toast(state, 4, "Failed: RTL gain -> %d", (int)v);
+            char what[32];
+            DSD_SNPRINTF(what, sizeof what, "RTL gain -> %d", (int)v);
+            ui_set_failed_restart_toast(state, opts, capture_before, what);
         }
     }
     return result;
@@ -2374,7 +2509,10 @@ ui_cmd_handle_rtl_set_ppm(dsd_opts* opts, dsd_state* state, const struct dsd_app
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
         /* The correction applies later, on the controller; a receiver that cannot take it now refuses it here, so the
-           toast never claims a change that will not land. */
+           toast never claims a change that will not land. A fixed source (an I/Q replay) never takes one. */
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
         const char* unavailable = svc_radio_control_unavailable_text(0);
         if (unavailable) {
             ui_set_toast(state, 4, "Failed: %s", unavailable);
@@ -2505,6 +2643,9 @@ ui_cmd_handle_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, const struct ds
     int32_t on = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
         int rc = svc_rtl_set_bias_tee(opts, state, on);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2523,6 +2664,9 @@ ui_cmd_handle_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, const struct
     int32_t on = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
         int rc = svc_rtltcp_set_autotune(opts, state, on);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2541,6 +2685,9 @@ ui_cmd_handle_rtl_set_auto_ppm(dsd_opts* opts, dsd_state* state, const struct ds
     int32_t on = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
+        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
+            return UI_CMD_APPLY_UNSUPPORTED;
+        }
         int rc = svc_rtl_set_auto_ppm(opts, state, on);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2647,6 +2794,11 @@ ui_cmd_handle_rigctl_set_mod_bw(dsd_opts* opts, dsd_state* state, const struct d
     int32_t hz = 0;
     if (!state || !ui_cmd_parse_i32_payload(c, &hz)) {
         return UI_CMD_APPLY_COMPLETED;
+    }
+    /* No rigctl peer runs beside an I/Q stream (issue #743): its sending program sets the passband. A replay may run
+       beside a peer its start connected. */
+    if (dsd_opts_input_is_iq_stream(opts) && ui_cmd_refuse_fixed_tuner_control(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
     }
     char why[96];
     if (svc_apply_rigctl_setmod_bw(opts, state, (int)hz, command_writes_policy_store(c), why, sizeof why) != 0) {
@@ -3431,6 +3583,11 @@ apply_cmd_dsp(const struct dsd_app_command* c, const dsd_opts* opts, dsd_state* 
         && p.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE) {
         return UI_CMD_APPLY_UNSUPPORTED;
     }
+    /* A fixed source (an I/Q replay or stream) has no tuner gain to supervise: the toggle is refused, and never recorded
+       as the operator's setting for the radio a later open runs (rtl_stream_set_tuner_autogain()). */
+    if (p.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE && ui_cmd_refuse_fixed_tuner_control(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
     apply_dsp_op(&p, opts, state);
     return 1;
 }
@@ -3794,7 +3951,7 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     }
     /* A retune the user asked for, refused as a tap is (issue #575), ahead of the cases with nothing to return to, so a
        replay never reports it done. */
-    if (ui_cmd_refuse_replay_tune(opts, state)) {
+    if (ui_cmd_refuse_fixed_tuning(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
     if (opts->trunk_enable != 1 || current_cc_freq(state) == 0) {
@@ -4178,20 +4335,30 @@ apply_manual_channel_cycle(dsd_opts* opts, dsd_state* state, int dir) {
         opts, state, dir < 0 ? apply_manual_channel_cycle_prev_locked : apply_manual_channel_cycle_next_locked);
 }
 
+/* A raw I/Q stream source (issue #743): an RTL-family input whose rate the sender sets and DSD-neo cannot tune. */
+static int
+cfg_is_iq_stream_source(const dsdneoUserConfig* cfg) {
+    return cfg && cfg->has_input
+           && (cfg->input_source == DSDCFG_INPUT_IQTCP || cfg->input_source == DSDCFG_INPUT_IQUDP);
+}
+
 #ifdef USE_RADIO
+
 static int
 cfg_uses_rtl_runtime(const dsdneoUserConfig* cfg) {
     if (!cfg || !cfg->has_input) {
         return 0;
     }
     return cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP
-           || cfg->input_source == DSDCFG_INPUT_SOAPY || cfg->input_source == DSDCFG_INPUT_AIRSPY;
+           || cfg->input_source == DSDCFG_INPUT_SOAPY || cfg->input_source == DSDCFG_INPUT_AIRSPY
+           || cfg_is_iq_stream_source(cfg);
 }
 
 static void
 apply_cfg_live_rtl_ppm_request(dsd_opts* opts, const dsdneoUserConfig* cfg, int old_audio_in_type) {
+    /* A stream has no tuner to correct: its config's rtl_ppm is not applied (the sender tunes). */
     if (!opts || old_audio_in_type != AUDIO_IN_RTL || opts->audio_in_type != AUDIO_IN_RTL || !cfg_uses_rtl_runtime(cfg)
-        || !cfg->rtl_ppm_is_set) {
+        || !cfg->rtl_ppm_is_set || cfg_is_iq_stream_source(cfg)) {
         return;
     }
     /* Config apply must mint a fresh request generation even when the input
@@ -4202,14 +4369,9 @@ apply_cfg_live_rtl_ppm_request(dsd_opts* opts, const dsdneoUserConfig* cfg, int 
     (void)rtl_stream_request_ppm(opts, cfg->rtl_ppm);
 }
 
+/* The DSP bandwidth request, squelch and monitor volume a radio [input] applies, a raw I/Q stream's included. */
 static void
-apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
-    if (cfg->rtl_freq[0]) {
-        uint32_t hz = dsd_parse_freq_hz(cfg->rtl_freq);
-        if (hz > 0) {
-            opts->rtlsdr_center_freq = hz;
-        }
-    }
+apply_cfg_rtl_receive(dsd_opts* opts, const dsdneoUserConfig* cfg) {
     /* An unsupported rtl_bw_khz runs at the 48 kHz default, as at startup and as the config check warns: the loader
        keeps any integer, and the stream builds its rate from the stored bandwidth. */
     if (cfg->rtl_bw_khz) {
@@ -4231,11 +4393,22 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
         dsd_squelch_setting_store(opts, &dynamic);
     }
     svc_rtl_push_squelch(opts);
-    if (dsd_user_config_rtl_gain_is_set(cfg)) {
-        opts->rtl_gain_value = cfg->rtl_gain;
-    }
     if (cfg->rtl_volume) {
         opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(cfg->rtl_volume);
+    }
+}
+
+static void
+apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
+    if (cfg->rtl_freq[0]) {
+        uint32_t hz = dsd_parse_freq_hz(cfg->rtl_freq);
+        if (hz > 0) {
+            opts->rtlsdr_center_freq = hz;
+        }
+    }
+    apply_cfg_rtl_receive(opts, cfg);
+    if (dsd_user_config_rtl_gain_is_set(cfg)) {
+        opts->rtl_gain_value = cfg->rtl_gain;
     }
 }
 
@@ -4286,8 +4459,9 @@ apply_cfg_rtl_live_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
     /* An I/Q replay plays the gain its capture recorded (its open sets it), so a new gain reopens nothing: a restart
        would rewind the replay to its first sample and put decode time back on the system clock. A bandwidth request
        or a mode the replay's rate follows goes to its re-plan (apply_cfg_replay_replan()), which reopens it once,
-       where it stopped (issue #701). */
-    if (dsd_opts_input_is_iq_replay(opts)) {
+       where it stopped (issue #701). A raw I/Q stream has no gain DSD-neo sets either (issue #743): its re-plan
+       restarts it only for a new rate. */
+    if (dsd_opts_input_has_fixed_tuning(opts)) {
         opts->rtl_gain_value = before->input.rtl_gain_value;
         return 0;
     }
@@ -4313,17 +4487,31 @@ static int
 apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
                           const ui_cfg_rollback* before) {
     const char* old_audio_in_dev = before->input.audio_in_dev;
-    if (!cfg->has_input
-        || (cfg->input_source != DSDCFG_INPUT_RTL && cfg->input_source != DSDCFG_INPUT_RTLTCP
-            && cfg->input_source != DSDCFG_INPUT_SOAPY && cfg->input_source != DSDCFG_INPUT_AIRSPY)
-        || before->input.audio_in_type != AUDIO_IN_RTL || opts->audio_in_type != AUDIO_IN_RTL) {
+    if (!cfg_uses_rtl_runtime(cfg) || before->input.audio_in_type != AUDIO_IN_RTL
+        || opts->audio_in_type != AUDIO_IN_RTL) {
         return 0;
     }
     if (strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
-        return apply_cfg_rtl_live_gain(opts, state, cfg, before);
+        /* The input keeps running, so the receive settings the config staged reach it here, not through a start: the
+           squelch goes to the demodulator's own copy, as apply_cfg_rtl_receive() hands it a reopened input's. A spec
+           that carries no squelch (a raw I/Q stream's, a SoapySDR device's) builds the same spec whatever the config's
+           rtl_sql, so a new squelch alone lands here. The monitor volume is read from the options as each block
+           plays, and the DSP bandwidth request goes to the re-plan (apply_cfg_replay_replan()); a stream rate it could
+           not plan was refused before anything was staged (cfg_check_iq_stream_input()), and a restart, for a new rate
+           or a new gain, opens with them. */
+        const int rc = apply_cfg_rtl_live_gain(opts, state, cfg, before);
+        if (rc == 0) {
+            svc_rtl_push_squelch(opts);
+        }
+        return rc;
     }
 
-    if (cfg->input_source == DSDCFG_INPUT_RTL) {
+    if (cfg_is_iq_stream_source(cfg)) {
+        /* A raw I/Q stream (issue #743): no tuner keys, and the receiver is on its FREQ once it starts
+           (dsd_engine_note_stream_source()). */
+        apply_cfg_rtl_receive(opts, cfg);
+        opts->rtltcp_enabled = 0;
+    } else if (cfg->input_source == DSDCFG_INPUT_RTL) {
         if (cfg->rtl_device >= 0) {
             opts->rtl_dev_index = cfg->rtl_device;
         }
@@ -4689,17 +4877,30 @@ apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserCo
     return rc;
 }
 
-/* apply_cfg_radio_input_tuned(), then a radio input left on another frequency leaves its carrier (issue #575). A source
-   the config changed already did, where the stream started (dsd_engine_note_stream_source()), as did the live Airspy
-   retune (svc_rtl_set_freq_locked()), each moving state->carrier_seq. What is left is a reopen of the same source on
-   the config's frequency, read as every frontend reads it (dsd_opts_tuned_freq_hz()): the input stays a radio input, so
-   no input boundary or no-carrier pass ends the reception before the next carrier syncs. A start that failed put the
-   old input back, and the same source reopened for a new gain stays on its carrier. */
+/* Whether the config apply that read @p carrier_seq, @p source_key and @p starts before it ran has left the carrier
+   already: a source the config changed did, where the stream started (dsd_engine_note_stream_source()), as did the
+   live Airspy retune (svc_rtl_set_freq_locked()), with no start, each moving state->carrier_seq. A reopen of the same
+   source moves it too, with a stream gap that stays on the carrier (issue #743 B19). */
+static int
+apply_cfg_left_carrier(const dsd_state* state, uint32_t carrier_seq, uint64_t source_key, unsigned int starts) {
+    if (state->carrier_seq == carrier_seq) {
+        return 0;
+    }
+    return state->carrier_source_key != source_key || svc_rtl_start_count() == starts;
+}
+
+/* apply_cfg_radio_input_tuned(), then a radio input left on another frequency leaves its carrier (issue #575), unless
+   the apply left it already (apply_cfg_left_carrier()). What is left is a reopen of the same source on the config's
+   frequency, read as every frontend reads it (dsd_opts_tuned_freq_hz()): the input stays a radio input, so no input
+   boundary or no-carrier pass ends the reception before the next carrier syncs. A start that failed put the old input
+   back, and the same source reopened for a new gain stays on its carrier. */
 static int
 apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
     const uint32_t carrier_seq = state->carrier_seq;
+    const uint64_t source_key = state->carrier_source_key;
+    const unsigned int starts = svc_rtl_start_count();
     const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
-    if (state->carrier_seq == carrier_seq && before->input.audio_in_type == AUDIO_IN_RTL
+    if (!apply_cfg_left_carrier(state, carrier_seq, source_key, starts) && before->input.audio_in_type == AUDIO_IN_RTL
         && opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_tuned_freq_hz(opts) != before->input.tuned_freq_hz) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1); // a config apply holds the guard
     }
@@ -4720,14 +4921,15 @@ apply_cfg_replay_restore(dsd_opts* opts, dsd_state* state, const void* ctx) {
 
 /* A config applied during an I/Q replay it leaves running (issue #701): its RTL-family [input]'s rtl_bw_khz is a
    bandwidth request the replay's rate follows, and its [mode] can need another rate (TETRA's), so the replay re-plans
-   (svc_rtl_replay_replan_locked()) and reopens where it stopped. A plan no chain reaches, or a start that failed, puts
-   the receive settings, [mode] and the bandwidth back with the replay running as before, and fails the apply with the
-   reason, the rest of the config staying applied as a failed reopen leaves it; a start that left no stream at all
+   (svc_rtl_replay_replan_locked()) and reopens where it stopped. A raw I/Q stream it leaves running re-plans through a
+   restart that reconnects (svc_iq_stream_replan_locked(), issue #743). A plan no chain reaches, or a start that failed,
+   puts the receive settings, [mode] and the bandwidth back with the replay running as before, and fails the apply with
+   the reason, the rest of the config staying applied as a failed reopen leaves it; a start that left no stream at all
    takes the failed reopen's path (ui_cfg_settle_reopen()). Returns 0, or -1 when the apply fails. Caller holds the P25
    SM tick guard. */
 static int
 apply_cfg_replay_replan(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
-    if (!dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx
+    if (!dsd_opts_input_rate_is_fixed(opts) || !state->rtl_ctx
         || strncmp(before->input.audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0) {
         return 0;
     }
@@ -4735,9 +4937,13 @@ apply_cfg_replay_replan(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
         dsd_opts_set_rtl_dsp_bw(opts, dsd_analog_rtl_dsp_bw_or_default(cfg->rtl_bw_khz),
                                 DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     }
-    char why[128];
-    const int replan = svc_rtl_replay_replan_locked(opts, state, "the config", apply_cfg_replay_restore, before, NULL,
-                                                    NULL, why, sizeof why);
+    char why[192];
+    /* A raw I/Q stream the config leaves running re-plans through a restart that reconnects (issue #743). */
+    const int replan = dsd_opts_input_is_iq_stream(opts)
+                           ? svc_iq_stream_replan_locked(opts, state, "the config", apply_cfg_replay_restore, before,
+                                                         NULL, why, sizeof why)
+                           : svc_rtl_replay_replan_locked(opts, state, "the config", apply_cfg_replay_restore, before,
+                                                          NULL, NULL, why, sizeof why);
     if (replan == SVC_REPLAY_REPLAN_REFUSED) {
         ui_set_rollback_toast(state, "Config not applied: ", why, 0);
         return -1;
@@ -5710,7 +5916,7 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    if (ui_cmd_refuse_replay_tune(opts, state)) {
+    if (ui_cmd_refuse_fixed_tuning(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
     if (tuner_release_finds_pause(opts, state)) {
@@ -6426,11 +6632,12 @@ decode_mode_drop_old_analog_block(const dsd_opts* opts, dsd_state* state, int wa
 }
 
 #ifdef USE_RADIO
-/* What a mode change's replay re-plan reopened at (decode_mode_replan_replay()), for its toast. */
+/* What a mode change's replay or I/Q stream re-plan reopened at (decode_mode_replan_replay()), for its toast. */
 typedef struct {
     int reopened;
     uint32_t dsp_rate_hz;
     int resampled;
+    int stream; /* an I/Q stream (issue #743), which restarted at the rate, rather than a replay */
 } decode_mode_replan;
 
 /* What a mode change found (issue #701), for a refused re-plan to put every field the staged preset wrote back: the
@@ -6462,15 +6669,18 @@ decode_mode_restore_profile(dsd_opts* opts, dsd_state* state, const void* ctx) {
  * chain where it stopped, before the mode publishes its profile at the new rate. A plan no chain reaches, or a start
  * that failed, puts the profile from before the preset back, the replay running as before, and fails the change with
  * the reason; a start that left no stream at all goes down the start-failure path every reopen takes
- * (ui_radio_start_failed_locked()). Returns UI_CMD_APPLY_UNHANDLED for the change to go on, else its result.
+ * (ui_radio_start_failed_locked()). A raw I/Q stream re-plans the same way through a restart that reconnects (issue
+ * #743, svc_iq_stream_replan_locked()), its spec's plan asked before it stops. Returns UI_CMD_APPLY_UNHANDLED for the
+ * change to go on, else its result.
  */
 static int
 decode_mode_replan_replay(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode,
                           const decode_mode_profile_before* before, decode_mode_replan* out) {
     DSD_MEMSET(out, 0, sizeof *out);
-    if (!dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
+    if (!dsd_opts_input_rate_is_fixed(opts) || !state->rtl_ctx) {
         return UI_CMD_APPLY_UNHANDLED;
     }
+    out->stream = dsd_opts_input_is_iq_stream(opts);
     const int take_guard = !g_apply_cmd_guard_held;
     if (take_guard) {
         p25_sm_tick_guard_enter();
@@ -6480,8 +6690,12 @@ decode_mode_replan_replay(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode
     char reason[96];
     DSD_SNPRINTF(reason, sizeof reason, "the %s decoder", dsd_decode_mode_display_name(mode));
     char why[128];
-    const int replan = svc_rtl_replay_replan_locked(opts, state, reason, decode_mode_restore_profile, before,
-                                                    &out->dsp_rate_hz, &out->resampled, why, sizeof why);
+    /* An I/Q stream re-plans through a restart that reconnects (issue #743): the twin of the replay's resume. */
+    const int replan = out->stream
+                           ? svc_iq_stream_replan_locked(opts, state, reason, decode_mode_restore_profile, before,
+                                                         &out->dsp_rate_hz, why, sizeof why)
+                           : svc_rtl_replay_replan_locked(opts, state, reason, decode_mode_restore_profile, before,
+                                                          &out->dsp_rate_hz, &out->resampled, why, sizeof why);
     int capture_stopped = 0;
     int refused = 0;
     if (replan == SVC_REPLAY_REPLAN_FAILED) {
@@ -6529,7 +6743,11 @@ decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDeco
     if (replay_reopened && replay_rate_hz > 0U) {
         char rate[DSD_ANALOG_WIDTH_TEXT_MAX];
         (void)dsd_analog_width_format((int)replay_rate_hz, rate, sizeof rate);
-        DSD_SNPRINTF(text, sizeof text, "replay %s %s", replay_resampled ? "resampled to" : "runs at", rate);
+        if (dsd_opts_input_is_iq_stream(opts)) {
+            DSD_SNPRINTF(text, sizeof text, "I/Q stream reconnected at %s", rate);
+        } else {
+            DSD_SNPRINTF(text, sizeof text, "replay %s %s", replay_resampled ? "resampled to" : "runs at", rate);
+        }
         ttl_s = 5;
     } else if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, text, sizeof text) == 1) {
         char advice[DSD_TETRA_RATE_ADVICE_MAX];
@@ -6794,11 +7012,34 @@ cfg_mode_is_analog_family(const dsd_opts* opts, dsdneoUserDecodeMode mode) {
     return (mode == DSDCFG_MODE_ANALOG || mode == DSDCFG_MODE_AM) && opts->m17encoder != 1;
 }
 
+/* A raw I/Q stream, running or not, can run the mode (issue #743): the plan its start would make, from its spec. */
+static int
+rr_apply_check_iq_stream(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    char why[192];
+    if (dsd_input_dsp_stream_plan_check(opts->audio_in_dev, opts->rtl_dsp_bw_khz, mode == DSDCFG_MODE_TETRA, NULL, why,
+                                        sizeof why)
+        == 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    LOG_WARN("I/Q stream: the %s decoder needs a rate chain this stream cannot run: %s.\n",
+             dsd_decode_mode_display_name(mode), why);
+    /* TETRA's refusal names the rate the stream keeps, as the replay's does; it fits the status line. */
+    char brief[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
+    if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, brief, sizeof brief) == 1) {
+        return rr_apply_refuse(state, brief);
+    }
+    return rr_apply_refuse(state, why);
+}
+
 /* A running I/Q replay can run the mode (issue #701): the re-plan the mode change makes, asked dry, so a capture no
-   chain resamples to the mode's rate is refused before anything changes. TETRA's refusal names the rate the replay
-   keeps, as the mode change's own does (decode_mode_replan_replay()). */
+   chain resamples to the mode's rate is refused before anything changes; a raw I/Q stream asks its spec's plan. TETRA's
+   refusal names the rate the replay keeps, as the mode change's own does (decode_mode_replan_replay()). */
 static int
 rr_apply_check_replay(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    /* A stream's plan comes from its spec, so it is asked whether the stream runs or not. */
+    if (dsd_opts_input_is_iq_stream(opts)) {
+        return rr_apply_check_iq_stream(opts, state, mode);
+    }
     if (!dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
         return UI_CMD_APPLY_COMPLETED;
     }
@@ -7044,8 +7285,7 @@ rr_apply_tune_frequency_fits(const dsd_app_rr_apply_payload* p) {
    (issue #803): the capture decides the frequency, and the replay defers every live retune. */
 static int
 rr_apply_moves_the_receiver(const dsd_opts* opts, const dsd_app_rr_apply_payload* p) {
-    return rr_apply_tune_frequency_fits(p) && !dsd_opts_input_is_iq_replay(opts)
-           && (dsd_opts_input_is_radio(opts) || dsd_opts_rigctl_live(opts));
+    return rr_apply_tune_frequency_fits(p) && dsd_opts_session_can_tune(opts, dsd_opts_rigctl_live(opts));
 }
 
 /* What the import's tune did (issue #803). */
@@ -7073,7 +7313,7 @@ rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* 
     rr_apply_tune_result r = {RR_TUNE_NONE, 0U, opts->rtlsdr_center_freq};
     /* Before the RTL and rigctl alternatives io_control_set_freq_tagged() dispatches to: a replay's import would
        otherwise move a connected rigctl peer the replay does not hear (issue #803). */
-    if (dsd_opts_input_is_iq_replay(opts) || !rr_apply_tune_frequency_fits(p)) {
+    if (dsd_opts_input_has_fixed_tuning(opts) || !rr_apply_tune_frequency_fits(p)) {
         return r;
     }
     const int rc = io_control_set_freq_tagged(opts, state, p->tune_hz, &r.pending_id);
@@ -7365,7 +7605,11 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
         }
         case DSD_APP_CMD_RIGCTL_CONNECT: {
             /* The TCP input's host at the rigctl port, through the service the menu's connect takes too (issue #589).
-               The toasts name the host asked for: a failed reconnect keeps the old one in rigctlhostname. */
+               The toasts name the host asked for: a failed reconnect keeps the old one in rigctlhostname. Refused on an
+               input with fixed tuning, as the menu's connect is. */
+            if (ui_cmd_refuse_fixed_tuning(opts, state)) {
+                return UI_CMD_APPLY_FAILED;
+            }
             const int rc = svc_rigctl_connect(opts, state, opts->tcp_hostname, opts->rigctlportno);
             if (rc == 0) {
                 dmr_sm_note_receiver_unknown(dmr_sm_get_ctx()); // the new peer's radio may be tuned elsewhere
@@ -8583,6 +8827,11 @@ apply_cmd_scan_list_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     if (!scan_list_set_payload_valid(&p)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
+    /* No trunk scan runs on an I/Q stream (issue #743): the list a switch would turn on is one it cannot tune. */
+    if (dsd_opts_input_is_iq_stream(opts) && ui_cmd_refuse_fixed_tuning(opts, state)) {
+        *code_out = DSD_APP_SCAN_LIST_SET_UNAVAILABLE;
+        return UI_CMD_APPLY_FAILED;
+    }
     const int code = dsd_trunk_scan_hook_list_set(opts, state, p.session, p.list, p.enabled, p.request);
     *code_out = code;
     scan_list_set_toast(state, code, p.list, p.enabled);
@@ -8623,6 +8872,11 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         ui_set_toast(state, 3, "Not scanning: hold/avoid need -Y or --trunk-scan");
         return 1;
     }
+    /* A -Y scan never starts on an I/Q stream (issue #743); were one to run, a hold released or a row avoided would
+       step it to a row its receiver cannot reach. */
+    if (dsd_opts_input_is_iq_stream(opts) && ui_cmd_refuse_fixed_tuning(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
+    }
     if (op == DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) {
         apply_manual_scan_hold_toggle(state);
     } else {
@@ -8644,7 +8898,7 @@ apply_cmd_channel_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     const int dir = c->id == DSD_APP_CMD_CHANNEL_CYCLE_PREV ? -1 : 1;
     // Every leg below is a retune the user asked for -- the next or previous target, -Y row, P25 candidate or LCN --
     // refused during an I/Q replay as a tap is (issue #575).
-    if (ui_cmd_refuse_replay_tune(opts, state)) {
+    if (ui_cmd_refuse_fixed_tuning(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
     // Under --trunk-scan "next" and "previous" mean a target. Walking the parked target's own
@@ -9186,7 +9440,8 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
        the config re-plans its rate (apply_cfg_replay_replan()). */
     if (dsd_user_config_radio_input_spec(cfg, opts, spec, sizeof spec) != 0
         || strncmp(spec, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
-        if (dsd_opts_input_is_iq_replay(opts)) {
+        /* A raw I/Q stream re-plans the same way, through a restart (issue #743). */
+        if (dsd_opts_input_rate_is_fixed(opts)) {
             return cfg_replay_reopen(opts, state, cfg);
         }
         return cfg_gain_restarts_running_input(opts, state, cfg) ? CFG_REOPEN_AT_RUNNING_RATE : CFG_REOPEN_NONE;
@@ -9392,21 +9647,55 @@ cfg_overlay_trunk_scan_fields(dsdneoUserConfig* next, const void* ctx) {
     }
 }
 
+/* The input a save writes once the config (@p ctx) is applied (issue #743, G3): the config's own [input] source where
+   it sets the device (dsd_user_config_input_sets_device()), else the session's, which the save holds already. Only the
+   source and a raw I/Q stream's fields are read by the rules. */
+static void
+cfg_overlay_input_fields(dsdneoUserConfig* next, const dsdneoUserConfig* cfg) {
+    if (!dsd_user_config_input_sets_device(cfg)) {
+        return;
+    }
+    next->has_input = 1;
+    next->input_source = cfg->input_source;
+    DSD_MEMCPY(next->iq_host, cfg->iq_host, sizeof next->iq_host);
+    next->iq_port = cfg->iq_port;
+    DSD_MEMCPY(next->iq_rate, cfg->iq_rate, sizeof next->iq_rate);
+    DSD_MEMCPY(next->iq_format, cfg->iq_format, sizeof next->iq_format);
+    DSD_MEMCPY(next->iq_freq, cfg->iq_freq, sizeof next->iq_freq);
+}
+
+/* The save a config apply leaves: its input (cfg_overlay_input_fields()) and its trunk-scan rule fields
+   (cfg_overlay_trunk_scan_fields()) over the save as it stands. */
+static void
+cfg_overlay_next_start_fields(dsdneoUserConfig* next, const void* ctx) {
+    cfg_overlay_input_fields(next, (const dsdneoUserConfig*)ctx);
+    cfg_overlay_trunk_scan_fields(next, ctx);
+}
+
 /*
  * What a config apply leaves for the next start is saved (dsd_opts::next_start), so it must be a config the next start
  * runs (issue #671): one that would newly break a rule startup refuses a trunk scan by (a global channel map, P25 band
  * plan or -Y scanner beside it, or no target list; dsd_user_config_check_trunk_scan_startable(), the rules
  * --validate-config applies) is refused whole, before anything changes, with the rule's reason. A rule the session's
  * own save breaks already is the session's: a config that keeps it as it is, or fixes it, applies
- * (svc_check_next_start()).
+ * (svc_check_next_start()). An I/Q stream input beside trunking, the -Y scanner or a trunk scan breaks one too (issue
+ * #743, D8), so a config that names an [input] is judged as well, on the input it leaves (G3): an input-only switch to
+ * a stream under trunking already on is refused, and one that leaves the stream while it turns trunking on applies.
+ * During an I/Q replay whose saved [input] is a stream, a config that keeps the replay is judged on the save it leaves
+ * (trunking and the scanners off beside the stream, as every save writes them, so the replay runs them), and one that
+ * replaces the replay on what the session runs (app_check_next_start_input()).
  */
 static int
 cfg_check_next_start(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
-    if (!cfg->has_trunk_scan && !cfg->has_trunking) {
+    if (!cfg->has_trunk_scan && !cfg->has_trunking && !cfg->has_input) {
         return UI_CMD_APPLY_COMPLETED;
     }
     char why[256];
-    if (svc_check_next_start(opts, state, cfg_overlay_trunk_scan_fields, cfg, why, sizeof why) == 0) {
+    /* An [input] that sets the device replaces the running input, an I/Q replay included: it runs trunking and the
+       scanners as the session runs them, which a replay's save hides beside a stream [input] it loaded. */
+    if (app_check_next_start_input(opts, state, cfg_overlay_next_start_fields, cfg,
+                                   dsd_user_config_input_sets_device(cfg), why, sizeof why)
+        == 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
     LOG_WARN("Config not applied: %s.\n", why);
@@ -9416,15 +9705,86 @@ cfg_check_next_start(const dsd_opts* opts, dsd_state* state, const dsdneoUserCon
     return UI_CMD_APPLY_FAILED;
 }
 
+/* Whether the raw I/Q stream [input] @p input builds a spec, and its RATE a plan to the DSP target the config @p cfg
+   leaves (the rtl_bw_khz of @p input, else the session's; TETRA when the [mode] of @p cfg or the session runs it); the
+   parser's or planner's reason on the status line when not. */
+static int
+cfg_check_iq_stream_spec(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* input,
+                         const dsdneoUserConfig* cfg) {
+    char spec[sizeof opts->audio_in_dev];
+    char why[192];
+    const int bw_khz = input->rtl_bw_khz ? dsd_analog_rtl_dsp_bw_or_default(input->rtl_bw_khz) : opts->rtl_dsp_bw_khz;
+    const int has_mode = cfg->has_mode && cfg->decode_mode != DSDCFG_MODE_UNSET;
+    const int tetra = has_mode ? cfg->decode_mode == DSDCFG_MODE_TETRA : opts->frame_tetra == 1;
+    if (dsd_user_config_iq_stream_input_spec(input, spec, sizeof spec, why, sizeof why) == 0
+        && dsd_input_dsp_stream_plan_check(spec, bw_khz, tetra, NULL, why, sizeof why) == 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    LOG_WARN("Config not applied: %s.\n", why);
+    ui_set_toast(state, 5, "Config not applied: %s", why);
+    return UI_CMD_APPLY_FAILED;
+}
+
+/* During an I/Q replay a patch's [input] (the control API's config_apply; @p loaded_file 0) that keeps the replay
+   merges into the [input] the session saves (cfg_settle_retained_input()), so one that leaves that [input] a raw I/Q
+   stream is judged on the stream it leaves, as the next start judges it. Before, a sourceless patch with a FORMAT no
+   stream takes merged into a saved stream, and the save stopped the next start. A loaded file's [input] is a whole
+   section, judged as it is. */
+static int
+cfg_check_retained_stream_patch(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int loaded_file) {
+    if (loaded_file || !cfg->has_input || !dsd_opts_input_is_iq_replay(opts)) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    dsdneoUserConfig* merged = (dsdneoUserConfig*)malloc(sizeof *merged);
+    if (!merged) {
+        ui_set_toast(state, 5, "Config not applied: out of memory");
+        return UI_CMD_APPLY_FAILED;
+    }
+    const int held = dsd_user_config_retained_input_patched(state, cfg, merged);
+    int rc = held < 0 ? UI_CMD_APPLY_FAILED : UI_CMD_APPLY_COMPLETED;
+    if (held < 0) {
+        ui_set_toast(state, 5, "Config not applied: out of memory");
+    } else if (held == 1 && cfg_is_iq_stream_source(merged)) {
+        rc = cfg_check_iq_stream_spec(opts, state, merged, cfg);
+    }
+    DSD_SECURE_ZERO(merged, sizeof *merged);
+    free(merged);
+    return rc;
+}
+
+/* A raw I/Q stream [input] (issue #743) is refused before anything changes when its keys build no spec, or its RATE no
+   plan takes to the DSP target the config leaves (cfg_check_iq_stream_spec()), with the parser's or planner's reason,
+   as --validate-config and the next start refuse it; so is a replay patch that leaves the [input] the session saves
+   such a stream (cfg_check_retained_stream_patch()). While a -Y scan or a trunk-scan coordinator decides the front end
+   it is refused whole as the input rows refuse a switch (ui_input_switch_refused()): the stream could not carry on the
+   scan the config would leave running. */
+static int
+cfg_check_iq_stream_input(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int loaded_file) {
+    if (!cfg_is_iq_stream_source(cfg)) {
+        return cfg_check_retained_stream_patch(opts, state, cfg, loaded_file);
+    }
+    if (dsd_user_config_input_sets_device(cfg)
+        && (ui_scan_goes_on(opts, state) || (opts->trunk_scan_enabled == 1 && state->trunk_scan_target_count > 0U))) {
+        LOG_WARN("Config not applied: an I/Q stream input cannot run a scan; stop the scan first.\n");
+        ui_set_toast(state, 5, "Config not applied: stop the scan first");
+        return UI_CMD_APPLY_FAILED;
+    }
+    return cfg_check_iq_stream_spec(opts, state, cfg, cfg);
+}
+
 /* Check that the config @p cfg applies, before anything changes. A group file it names in place of the session's is
    loaded here, not installed: @p groups receives it (one reference), for cfg_begin_apply() to install once the calls of
    a scan the config stops have ended under the list they were heard with. @p groups stays NULL otherwise, and on any
-   refusal. */
+   refusal. @p loaded_file is set for a loaded file's config (a whole [input]), clear for a patch. */
 static int
-cfg_prepare_runtime_apply(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
+cfg_prepare_runtime_apply(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int loaded_file,
                           dsd_tg_policy_store** groups) {
     if (!cfg_airspy_settings_valid(cfg)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    const int stream_rc = cfg_check_iq_stream_input(opts, state, cfg, loaded_file);
+    if (stream_rc != UI_CMD_APPLY_COMPLETED) {
+        return stream_rc;
     }
     const int family_rc = cfg_check_receive_family(opts, state, cfg);
     if (family_rc != UI_CMD_APPLY_COMPLETED) {
@@ -9702,12 +10062,16 @@ cfg_store_configured_trunking(const dsd_opts* opts, dsd_state* state, const dsdn
  * stays paused, with the reason on the status line, when no row can be tuned. Another channel map changes none of
  * this: it waits for a restart (cfg_restore_lifecycle_owned()). Otherwise the config's owner is the
  * session's: a running -Y scan the config turned off leaves its scope once the command has run
- * (ui_cmd_leaves_scanner_scope()). The caller holds the P25 SM tick guard (a guarded command).
+ * (ui_cmd_leaves_scanner_scope()). A raw I/Q stream cannot retune (issue #743, D8): when the input that runs at the end
+ * is one, the owner stays as cfg_take_scan_owner() put it back. A config naming a stream beside trunking or the scanner
+ * is refused before anything changes (cfg_check_next_start()), so this holds for an apply whose new input did not
+ * start and put the stream back (@p applied 0), which would otherwise leave trunking or a -Y scan on over it. The
+ * caller holds the P25 SM tick guard (a guarded command).
  */
 static void
 cfg_settle_scan_owner(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const cfg_scan_owner* owner,
                       const cfg_lifecycle_owned* before, int applied) {
-    if (before->trunk_scan_enabled == 1) {
+    if (before->trunk_scan_enabled == 1 || dsd_opts_input_is_iq_stream(opts)) {
         return;
     }
     if (state->lcn_scan_paused) {
@@ -9981,9 +10345,9 @@ cfg_end_calls_of_the_scan_it_stops(dsd_opts* opts, dsd_state* state, const dsdne
    the calls of a -Y scan it stops under what they were heard with, then install the group list it names. Config loads
    already suspend scan-row groups, so that install replaces only the global list. */
 static int
-cfg_begin_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+cfg_begin_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int loaded_file) {
     dsd_tg_policy_store* groups = NULL;
-    const int prepare_rc = cfg_prepare_runtime_apply(opts, state, cfg, &groups);
+    const int prepare_rc = cfg_prepare_runtime_apply(opts, state, cfg, loaded_file, &groups);
     if (prepare_rc != UI_CMD_APPLY_COMPLETED) {
         return prepare_rc;
     }
@@ -10021,7 +10385,7 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     DSD_SNPRINTF(old_audio_out_dev, sizeof old_audio_out_dev, "%s", opts->audio_out_dev);
 
     DSD_MEMCPY(&cfg, c->data, sizeof cfg);
-    const int prepare_rc = cfg_begin_apply(opts, state, &cfg);
+    const int prepare_rc = cfg_begin_apply(opts, state, &cfg, c->n >= sizeof(dsd_app_config_load_payload));
     if (prepare_rc != UI_CMD_APPLY_COMPLETED) {
         return prepare_rc;
     }
@@ -10202,6 +10566,40 @@ cfg_keep_next_start_startable(dsd_opts* opts, dsd_state* state, const dsdneoUser
     }
 }
 
+/*
+ * The [input] a replay session saves (issue #743), after an apply whose own [input] stays applied while the replay
+ * keeps running: a loaded file's [input] is a whole section, which the session saves from now on; a patch (the control
+ * API's config_apply, a payload built from dsd_user_config_init() and the keys given) merges only the keys it sets,
+ * so one that names no source (an input_warn_db alone) keeps the source and endpoint the session saves. An apply
+ * without an [input] leaves the retained one alone, a refused or rolled-back one never touched it, and an [input] no
+ * config can start (a file input of an iqreplay: spec) is never retained. One that left the replay drops it with every
+ * other departure (dsd_app_drain_cmds()).
+ */
+static void
+cfg_settle_retained_input(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int kept) {
+    int has_input = 0;
+    DSD_MEMCPY(&has_input, c->data + offsetof(dsdneoUserConfig, has_input), sizeof has_input);
+    if (!kept || !has_input || !dsd_opts_input_is_iq_replay(opts)) {
+        return;
+    }
+    /* The payload bytes carry no alignment: the config is read from an aligned copy. */
+    dsdneoUserConfig* applied = (dsdneoUserConfig*)malloc(sizeof *applied);
+    if (!applied) {
+        LOG_WARN("Config: out of memory keeping the applied [input]; a save keeps the one before.\n");
+        return;
+    }
+    DSD_MEMCPY(applied, c->data, sizeof *applied);
+    /* Only a load's payload has the fields after the config (cfg_adopt_loaded_autosave()). */
+    const int loaded_file = c->n >= sizeof(dsd_app_config_load_payload);
+    const int retain_rc = loaded_file ? dsd_user_config_retain_input(state, applied)
+                                      : dsd_user_config_merge_retained_input(state, applied);
+    if (retain_rc != 0) {
+        LOG_WARN("Config: out of memory keeping the applied [input]; a save keeps the one before.\n");
+    }
+    DSD_SECURE_ZERO(applied, sizeof *applied);
+    free(applied);
+}
+
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
@@ -10216,13 +10614,16 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         return UI_CMD_APPLY_FAILED;
     }
     DSD_MEMCPY(next_before, &opts->next_start, sizeof *next_before);
-    /* Only a config naming [trunking] or [trunk_scan] moves what the trunk-scan rules read. */
+    /* Only a config naming [trunking], [trunk_scan] or [input] moves what the next-start rules read: the trunk-scan
+       rules, and an I/Q stream's beside trunking or a scan (issue #743). */
     int has_trunking = 0;
     int has_trunk_scan = 0;
+    int has_input = 0;
     DSD_MEMCPY(&has_trunking, c->data + offsetof(dsdneoUserConfig, has_trunking), sizeof has_trunking);
     DSD_MEMCPY(&has_trunk_scan, c->data + offsetof(dsdneoUserConfig, has_trunk_scan), sizeof has_trunk_scan);
+    DSD_MEMCPY(&has_input, c->data + offsetof(dsdneoUserConfig, has_input), sizeof has_input);
     dsdneoUserConfig* saves = NULL;
-    if (has_trunking || has_trunk_scan) {
+    if (has_trunking || has_trunk_scan || has_input) {
         saves = (dsdneoUserConfig*)calloc(2, sizeof *saves);
         if (!saves) {
             free(next_before);
@@ -10234,6 +10635,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int kept = 0;
     const int skip_silent_was_on = opts->scan_skip_silent != 0;
     const int rc = cfg_apply(opts, state, c, &kept);
+    cfg_settle_retained_input(opts, state, c, kept);
     /* An apply may write the skip-silent setting and whatever else a scan quiet check was measured under (#834). */
     dsd_scan_quiet_setting_changed(state, !skip_silent_was_on && opts->scan_skip_silent);
     if (!kept) {
@@ -10266,6 +10668,9 @@ apply_cmd_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
 static int
 ui_cmd_dispatch_available(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
 #ifdef USE_RADIO
+    if (c->id == DSD_APP_CMD_PPM_DELTA && ui_cmd_refuse_fixed_tuner_control(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
     if (c->id == DSD_APP_CMD_PPM_DELTA && ui_cmd_radio_unavailable_toast(state, 0)) {
         return UI_CMD_APPLY_FAILED;
     }
@@ -11414,39 +11819,86 @@ dsd_app_commands_pending(void) {
 /* The stream notice the next drain shows (dsd_app_stream_notice_post()); DSD_STREAM_NOTICE_NONE for none. One slot: a
    notice is a fact about the stream now, so a newer one replaces one not yet shown. */
 static atomic_int g_stream_notice = DSD_STREAM_NOTICE_NONE;
-/* The I/Q capture stopped recording (DSD_STREAM_NOTICE_CAPTURE_STOPPED), in a slot of its own: it changes the
-   options, so a newer notice must not replace it. */
-static atomic_int g_capture_stopped_notice = 0;
+
+/* Why the I/Q capture stopped recording, for the toast that says so: none yet, a seal at a retune's rate change
+   (DSD_STREAM_NOTICE_CAPTURE_STOPPED), or a stream restart (dsd_app_note_capture_stopped_at_restart()). */
+enum {
+    CAPTURE_STOPPED_NONE = 0,
+    CAPTURE_STOPPED_RATE_CHANGED = 1,
+    CAPTURE_STOPPED_RESTART = 2,
+};
+
+/* The I/Q capture stopped recording, in a slot of its own: it changes the options, so a newer stream notice must not
+   replace it. */
+static atomic_int g_capture_stopped_notice = CAPTURE_STOPPED_NONE;
 
 void
 dsd_app_stream_notice_post(int kind) {
     if (kind == DSD_STREAM_NOTICE_CAPTURE_STOPPED) {
-        atomic_store(&g_capture_stopped_notice, 1);
+        atomic_store(&g_capture_stopped_notice, CAPTURE_STOPPED_RATE_CHANGED);
         return;
     }
     atomic_store(&g_stream_notice, kind);
 }
 
 void
+dsd_app_note_capture_stopped_at_restart(void) {
+    atomic_store(&g_capture_stopped_notice, CAPTURE_STOPPED_RESTART);
+}
+
+void
 dsd_app_stream_notice_clear(void) {
     atomic_store(&g_stream_notice, DSD_STREAM_NOTICE_NONE);
-    atomic_store(&g_capture_stopped_notice, 0);
+    atomic_store(&g_capture_stopped_notice, CAPTURE_STOPPED_NONE);
+}
+
+/* A restart that turned the I/Q capture off (issue #743 B16) did so for the command whose toast is showing ("Applied:
+   RTL gain -> 20", a rollback's "Refused: ..."): the note goes on the end of that toast, as a rollback's does, so the
+   command's answer and the capture's both stay on screen. Returns 1 when the toast showing says it (now, or already),
+   0, changing nothing, when no toast is showing or the two do not fit: the caller shows the capture's own toast. */
+static int
+ui_toast_note_capture_stopped(dsd_state* state) {
+    static const char k_note[] = "; I/Q capture stopped";
+    const size_t len = strlen(state->ui_msg);
+    if (len == 0U || state->ui_msg_expire <= dsd_realtime_time()) {
+        return 0;
+    }
+    if (strstr(state->ui_msg, k_note) != NULL) {
+        return 1;
+    }
+    if (len + sizeof k_note > sizeof state->ui_msg) {
+        return 0;
+    }
+    char text[sizeof state->ui_msg];
+    DSD_SNPRINTF(text, sizeof text, "%s%s", state->ui_msg, k_note);
+    ui_set_toast(state, 5, "%s", text);
+    return 1;
 }
 
 /* The stream's I/Q capture stopped recording at a retune that changed the device's sample rate (issue #806 X9): the
    file keeps what it recorded until then. The capture stays off for the rest of the session, so no later start writes
    over that file, and the options and the toast say so. The drain takes it before every command and the stream start
    before it opens (svc_rtl_start_locked()), so a retune a command made that sealed the capture never lets a later
-   restart in the same drain reopen the file. */
+   restart in the same drain reopen the file. A restart that turned the capture off itself (issue #743 B16) is said
+   here too, once the command that restarted has set its own toast. */
 void
 dsd_app_take_capture_stopped(dsd_opts* opts, dsd_state* state) {
-    if (!opts || atomic_load(&g_capture_stopped_notice) == 0 || atomic_exchange(&g_capture_stopped_notice, 0) == 0) {
+    if (!opts || atomic_load(&g_capture_stopped_notice) == CAPTURE_STOPPED_NONE) {
+        return;
+    }
+    const int why = atomic_exchange(&g_capture_stopped_notice, CAPTURE_STOPPED_NONE);
+    if (why == CAPTURE_STOPPED_NONE) {
         return;
     }
     opts->iq_capture_requested = 0;
     dsd_telemetry_publish_opts_snapshot(opts);
     if (state) {
-        ui_set_toast(state, 5, "%s", "I/Q capture stopped: the device sample rate changed; what was recorded is kept");
+        if (why != CAPTURE_STOPPED_RESTART || !ui_toast_note_capture_stopped(state)) {
+            ui_set_toast(state, 5, "%s",
+                         why == CAPTURE_STOPPED_RESTART
+                             ? "I/Q capture stopped: the stream restarted; what was recorded is kept"
+                             : "I/Q capture stopped: the device sample rate changed; what was recorded is kept");
+        }
         dsd_telemetry_publish_snapshot(state);
     }
 }
@@ -11491,6 +11943,15 @@ ui_publish_deferred_snapshots(const dsd_opts* opts, const dsd_state* state) {
     }
     if (opts_pending || state_pending) {
         ui_request_redraw_if_published();
+    }
+}
+
+/* A command that took the session off its I/Q replay leaves its input saveable again: the loaded config's [input] the
+   replay saved goes (issue #743). */
+static void
+ui_forget_saved_input_off_replay(const dsd_opts* opts, dsd_state* state) {
+    if (!dsd_opts_input_is_iq_replay(opts)) {
+        dsd_user_config_forget_retained_input(state);
     }
 }
 
@@ -11541,6 +12002,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         }
         int32_t scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
         const int result = apply_cmd(opts, state, &cmd, &scan_list_code);
+        ui_forget_saved_input_off_replay(opts, state);
 #ifdef DSD_NEO_TEST_HOOKS
         g_test_last_result = result;
 #endif

@@ -418,6 +418,7 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->scan_voice_hold_ms = 2000;
     opts->scan_max_visit_ms = 0;
     opts->trunk_cli_seen = 0;
+    opts->input_cli_seen = 0;
 
     //reverse mute
     opts->reverse_mute = 0;

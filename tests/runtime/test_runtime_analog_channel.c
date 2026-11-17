@@ -17,6 +17,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -413,6 +414,23 @@ test_input_dsp_rate_policy(void) {
         {"pulse", AUDIO_IN_PULSE, 0, 48, DSD_ANALOG_RATE_RTL_BW, 0},
         {"airspy", AUDIO_IN_RTL, 0, 0, DSD_ANALOG_RATE_DEVICE, 0},
         {"airspy", AUDIO_IN_RTL, 0, INT_MAX, DSD_ANALOG_RATE_DEVICE, INT_MAX},
+        /* Issue #743: a raw I/Q stream's plan lands on its DSP target, known before it opens. */
+        {"iqtcp:127.0.0.1:1234:240k:cs16", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 48000},
+        {"iqudp:0.0.0.0:7355:48000:cf32:851M", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 24000},
+        {"iqtcp:host:1234:12.5k:cu8", AUDIO_IN_NULL, 0, 16, DSD_ANALOG_RATE_PLANNED, 16000},
+        {"iqtcp:host:1234:12.5k:cu8", AUDIO_IN_RTL, 0, 0, DSD_ANALOG_RATE_PLANNED, 48000},
+        {"iqtcp:h:1:8000:cs16", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 48000},
+        /* Its RATE decides whether a plan reaches the target: a spec that does not parse, or a rate no plan takes
+           there, has no rate, which its start refuses. */
+        {"iqudp:0.0.0.0:7355:3.2M:cu8", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 24000},
+        {"iqudp:0.0.0.0:7355:3200001:cu8", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqudp:0.0.0.0:7355:49151999:cu8", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqudp:0.0.0.0:7355:49152000:cu8", AUDIO_IN_RTL, 0, 24, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqtcp:h:1:7999:cs16", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqtcp:h:1:fast:cs16", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqudp", AUDIO_IN_RTL, 0, 48, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqtcp:127.0.0.1:1234:240k:cs16", AUDIO_IN_RTL, 0, INT_MAX, DSD_ANALOG_RATE_PLANNED, 0},
+        {"iqtcp:127.0.0.1:1234:240k:cs16", AUDIO_IN_RTL, 1, 48, DSD_ANALOG_RATE_CAPTURE, 0},
     };
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -435,13 +453,167 @@ test_input_dsp_rate_policy(void) {
     dsd_input_dsp_rate got = dsd_input_dsp_rate_policy(&opts);
     expect_int("opts: an Airspy at 72 kHz runs at 72 kHz", got.rate_hz, 72000);
     expect_int("opts: an Airspy is a device", got.source, DSD_ANALOG_RATE_DEVICE);
+    /* Issue #743 (B14): the replay flags a session keeps after a config apply moved it off a replay decide nothing. */
+    opts.iq_replay_requested = 1;
     opts.iq_replay_active = 1;
+    got = dsd_input_dsp_rate_policy(&opts);
+    expect_int("opts: an Airspy after a replay runs at 72 kHz", got.rate_hz, 72000);
+    expect_int("opts: an Airspy after a replay is a device", got.source, DSD_ANALOG_RATE_DEVICE);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
     got = dsd_input_dsp_rate_policy(&opts);
     expect_int("opts: a replay in force knows no rate up front", got.rate_hz, 0);
     expect_int("opts: a replay is its capture", got.source, DSD_ANALOG_RATE_CAPTURE);
     got = dsd_input_dsp_rate_policy(NULL);
     expect_int("NULL opts: an RTL-SDR", got.source, DSD_ANALOG_RATE_RTL_BW);
     expect_int("NULL opts: no rate", got.rate_hz, 0);
+
+    /* Issue #743: a stream in force follows the session's TETRA setting, whose target is 72 kHz. */
+    opts.iq_replay_requested = 0;
+    opts.iq_replay_active = 0;
+    opts.rtl_dsp_bw_khz = 48;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:1234:240k:cs16");
+    got = dsd_input_dsp_rate_policy(&opts);
+    expect_int("opts: a stream is planned", got.source, DSD_ANALOG_RATE_PLANNED);
+    expect_int("opts: a stream at 48 kHz runs at 48 kHz", got.rate_hz, 48000);
+    opts.frame_tetra = 1;
+    got = dsd_input_dsp_rate_policy(&opts);
+    expect_int("opts: a stream under TETRA runs at 72 kHz", got.rate_hz, 72000);
+    opts.rtl_dsp_bw_khz = 144;
+    got = dsd_input_dsp_rate_policy(&opts);
+    expect_int("opts: a stream under TETRA keeps a TETRA rate", got.rate_hz, 144000);
+    /* 8 kHz reaches TETRA's 72 kHz (9x) but not 144 kHz. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqudp:0.0.0.0:7355:8000:cs16");
+    got = dsd_input_dsp_rate_policy(&opts);
+    expect_int("opts: an 8 kHz stream cannot reach TETRA at 144 kHz", got.rate_hz, 0);
+    expect_int("opts: it is still planned", got.source, DSD_ANALOG_RATE_PLANNED);
+    opts.rtl_dsp_bw_khz = 48;
+    got = dsd_input_dsp_rate_policy(&opts);
+    expect_int("opts: an 8 kHz stream reaches TETRA at 72 kHz", got.rate_hz, 72000);
+    expect_int("the analog form plans it with TETRA off",
+               dsd_input_dsp_rate_for(opts.audio_in_dev, opts.audio_in_type, 0, opts.rtl_dsp_bw_khz).rate_hz, 48000);
+}
+
+/* The DSP target a replay or a stream is planned for: an explicit request, else the recorded bandwidth, else the
+   request in force (a mode preset or the default), the 48 kHz default for none, TETRA's 72 kHz where TETRA cannot run
+   at it. */
+static void
+test_input_dsp_target(void) {
+    static const struct {
+        const char* name;
+        int bw_khz;
+        int explicit_request;
+        int recorded_khz;
+        int tetra;
+        uint32_t want_hz;
+    } k_cases[] = {
+        {"the default", 48, 0, 0, 0, 48000U},
+        {"no bandwidth", 0, 0, 0, 0, 48000U},
+        {"a negative bandwidth", -3, 1, 0, 0, 48000U},
+        {"EDACS's preset", 24, 0, 0, 0, 24000U},
+        {"an explicit 16 kHz", 16, 1, 0, 0, 16000U},
+        {"TETRA's preset", 72, 0, 0, 1, 72000U},
+        {"TETRA at an explicit 48 kHz", 48, 1, 0, 1, 72000U},
+        {"TETRA at an explicit 36 kHz", 36, 1, 0, 1, 36000U},
+        {"TETRA at an explicit 144 kHz", 144, 1, 0, 1, 144000U},
+        {"TETRA at 162 kHz, out of its range", 162, 1, 0, 1, 72000U},
+        {"TETRA with no bandwidth", 0, 0, 0, 1, 72000U},
+        {"a recorded 24 kHz beats the request in force", 48, 0, 24, 0, 24000U},
+        {"an explicit 48 kHz beats a recorded 24 kHz", 48, 1, 24, 0, 48000U},
+        {"a recorded 24 kHz under TETRA", 72, 0, 24, 1, 72000U},
+        {"a recorded 144 kHz under TETRA", 72, 0, 144, 1, 144000U},
+    };
+
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        expect_int(k_cases[i].name,
+                   (int)dsd_input_dsp_target_hz(k_cases[i].bw_khz, k_cases[i].explicit_request, k_cases[i].recorded_khz,
+                                                k_cases[i].tetra),
+                   (int)k_cases[i].want_hz);
+    }
+}
+
+/* The PLANNED policy (issue #743): a raw I/Q stream at its spec's RATE runs at the DSP target when the general plan
+   reaches it, and at no known rate when it does not, which its start refuses. */
+static void
+test_input_dsp_rate_planned(void) {
+    static const struct {
+        unsigned rate_hz;
+        int bw_khz;
+        int tetra;
+        int want_rate_hz;
+    } cases[] = {
+        {8000U, 48, 0, 48000},    {12500U, 24, 0, 24000},   {240000U, 48, 0, 48000},  {1152000U, 24, 0, 24000},
+        {48000U, 0, 0, 48000},    {48000U, 16, 0, 16000},   {8000U, 72, 1, 72000},    {8000U, 48, 1, 72000},
+        {25000U, 24, 1, 72000},   {96000U, 36, 1, 36000},   {1152000U, 72, 1, 72000}, {7999U, 48, 0, 0},
+        {8000U, 144, 1, 0},       {16000U, 144, 1, 144000}, {49152000U, 24, 0, 0},    {49151999U, 24, 0, 0},
+        {48000U, INT_MAX, 0, 0},  {0U, 48, 0, 0},           {3200000U, 48, 0, 48000}, {3200001U, 48, 0, 0},
+        {3200000U, 72, 1, 72000}, {3200001U, 72, 1, 0},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const dsd_input_dsp_rate got = dsd_input_dsp_rate_planned(cases[i].rate_hz, cases[i].bw_khz, cases[i].tetra);
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "planned %u Hz bw %d tetra %d source", cases[i].rate_hz, cases[i].bw_khz,
+                     cases[i].tetra);
+        expect_int(label, got.source, DSD_ANALOG_RATE_PLANNED);
+        DSD_SNPRINTF(label, sizeof label, "planned %u Hz bw %d tetra %d rate", cases[i].rate_hz, cases[i].bw_khz,
+                     cases[i].tetra);
+        expect_int(label, got.rate_hz, cases[i].want_rate_hz);
+    }
+    /* Where a plan runs, the spec-free policy names the same rate. */
+    static const int bws[] = {4, 6, 8, 12, 16, 24, 48, 72};
+    for (size_t i = 0; i < sizeof bws / sizeof bws[0]; i++) {
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "planned at %d kHz is the policy's rate", bws[i]);
+        expect_int(label, dsd_input_dsp_rate_planned(240000U, bws[i], 0).rate_hz,
+                   dsd_input_dsp_rate_for("iqtcp:h:1:240k:cs16", AUDIO_IN_RTL, 0, bws[i]).rate_hz);
+    }
+
+    /* A width the planned rate cannot filter is refused with the fix a replay's names: the DSP bandwidth. */
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    expect_int("planned 25k at 24k rejected",
+               dsd_analog_width_check_at(DSD_ANALOG_DEMOD_FM, 25000, 24000, DSD_ANALOG_RATE_PLANNED, err, sizeof err),
+               -1);
+    expect_str("planned 25k at 24k text", err,
+               "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz); set the "
+               "DSP bandwidth to 48 or 72 kHz");
+    char fix[96];
+    expect_int("fix text planned", dsd_analog_width_rate_fix(25000, DSD_ANALOG_RATE_PLANNED, fix, sizeof fix), 0);
+    expect_str("fix text planned names the DSP bandwidth", fix, "set the DSP bandwidth to 48 or 72 kHz");
+}
+
+/* The stream plan check every start and re-plan asks (issue #743): a RATE above the live-device capture ceiling is
+   refused there, at any target, with the limit and the fix named; the ceiling itself runs. */
+static void
+test_input_dsp_stream_plan_check_ceiling(void) {
+    char why[192];
+    uint32_t rate_hz = 1U;
+    expect_int("3.2 MS/s runs",
+               dsd_input_dsp_stream_plan_check("iqtcp:h:1:3.2M:cs16", 48, 0, &rate_hz, why, sizeof why), 0);
+    expect_int("3.2 MS/s runs at 48 kHz", (int)rate_hz, 48000);
+
+    static const struct {
+        const char* spec;
+        int bw_khz;
+        int tetra;
+        const char* want;
+    } refused[] = {
+        {"iqtcp:h:1:3200001:cs16", 48, 0,
+         "the stream's rate (3200001 Hz) is above 3200000 Hz; send one channel (the sending program's VFO mode)"},
+        {"iqudp:0.0.0.0:7355:24M:cf32", 24, 0,
+         "the stream's rate (24000000 Hz) is above 3200000 Hz; send one channel (the sending program's VFO mode)"},
+        {"iqtcp:h:1:70M:cs16:426.7M", 72, 1,
+         "the stream's rate (70000000 Hz) is above 3200000 Hz; send one channel (the sending program's VFO mode)"},
+    };
+
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        rate_hz = 1U;
+        expect_int(refused[i].spec,
+                   dsd_input_dsp_stream_plan_check(refused[i].spec, refused[i].bw_khz, refused[i].tetra, &rate_hz, why,
+                                                   sizeof why),
+                   -1);
+        expect_int(refused[i].spec, (int)rate_hz, 0);
+        expect_str(refused[i].spec, why, refused[i].want);
+    }
 }
 
 /* DSD_NEO_CHANNEL_LPF=0 turns the channel filter off: an explicit width, or the AM default, cannot run, at any rate. */
@@ -580,6 +752,9 @@ main(void) {
     test_check_messages();
     test_check_at_rate_source_messages();
     test_input_dsp_rate_policy();
+    test_input_dsp_target();
+    test_input_dsp_rate_planned();
+    test_input_dsp_stream_plan_check_ceiling();
     test_channel_lpf_off_check();
     test_rtl_bandwidth_helpers();
     if (g_failures) {

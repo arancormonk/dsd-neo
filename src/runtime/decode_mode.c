@@ -869,7 +869,8 @@ dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts) {
     const char* dev = opts->audio_in_dev;
     return (opts->audio_in_type == AUDIO_IN_RTL || dsd_opts_audio_in_dev_is_rtl_spec(dev)
             || dsd_opts_audio_in_dev_is_rtltcp_spec(dev) || dsd_opts_audio_in_dev_is_soapy_spec(dev)
-            || dsd_opts_audio_in_dev_is_airspy_spec(dev) || dsd_opts_audio_in_dev_is_iqreplay_spec(dev))
+            || dsd_opts_audio_in_dev_is_airspy_spec(dev) || dsd_opts_audio_in_dev_is_iqreplay_spec(dev)
+            || dsd_opts_audio_in_dev_is_iq_stream_spec(dev))
                ? 1
                : 0;
 }

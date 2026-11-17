@@ -58,6 +58,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -104,6 +105,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/spec_fields.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -589,52 +591,16 @@ dsd_engine_signal_handler(int sgnl) {
     dsd_exitflag_store(1);
 }
 
-static void
-dsd_engine_setup_copy_spec(char* dst, size_t dst_size, const char* src) {
-    if (!dst || dst_size == 0 || !src) {
-        return;
-    }
-    DSD_SNPRINTF(dst, dst_size, "%s", src);
-    dst[dst_size - 1] = '\0';
-}
-
-static int
-dsd_engine_setup_parse_int_token(const char* token, int* out) {
-    int parsed = 0;
-    if (!token) {
-        return -1;
-    }
-    if (dsd_parse_int_arg(token, &parsed) != 0) {
-        return -1;
-    }
-    *out = parsed;
-    return 0;
-}
-
 static int
 dsd_engine_setup_parse_m17_udp_input(dsd_opts* opts) {
     if (!dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) {
         return 0;
     }
-    LOG_INFO("NOTICE: M17 UDP IP Frame Input: ");
-    char* saveptr = NULL;
-    char inbuf[1024];
-    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), opts->audio_in_dev);
-    if (dsd_strtok_r(inbuf, ":", &saveptr) != NULL) {
-        const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            DSD_STRNCPY(opts->m17_hostname, curr, 1023);
-        }
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            int parsed = 0;
-            if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-                opts->m17_portno = parsed;
-            }
-        }
+    if (dsd_endpoint_spec_read(opts->audio_in_dev, 1, opts->m17_hostname, sizeof opts->m17_hostname, &opts->m17_portno)
+        != 0) {
+        return -1;
     }
-    LOG_INFO("NOTICE: %s:", opts->m17_hostname);
-    LOG_INFO("NOTICE: %d \n", opts->m17_portno);
+    LOG_INFO("NOTICE: M17 UDP IP Frame Input: %s:%d\n", opts->m17_hostname, opts->m17_portno);
     return 0;
 }
 
@@ -643,23 +609,11 @@ dsd_engine_setup_parse_udp_input(dsd_opts* opts) {
     if (!dsd_opts_audio_in_dev_is_udp_spec(opts->audio_in_dev)) {
         return 0;
     }
-    LOG_INFO("NOTICE: UDP Direct Input: ");
-    char* saveptr = NULL;
-    char inbuf[1024];
-    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), opts->audio_in_dev);
-    if (dsd_strtok_r(inbuf, ":", &saveptr) != NULL) {
-        const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            DSD_STRNCPY(opts->udp_in_bindaddr, curr, 1023);
-            opts->udp_in_bindaddr[1023] = '\0';
-        }
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            int parsed = 0;
-            if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-                opts->udp_in_portno = parsed;
-            }
-        }
+    /* Port 0 is the default 7355, as it always was for a UDP input. */
+    if (dsd_endpoint_spec_read(opts->audio_in_dev, 0, opts->udp_in_bindaddr, sizeof opts->udp_in_bindaddr,
+                               &opts->udp_in_portno)
+        != 0) {
+        return -1;
     }
     if (opts->udp_in_portno == 0) {
         opts->udp_in_portno = 7355;
@@ -667,7 +621,7 @@ dsd_engine_setup_parse_udp_input(dsd_opts* opts) {
     if (opts->udp_in_bindaddr[0] == '\0') {
         DSD_SNPRINTF(opts->udp_in_bindaddr, sizeof(opts->udp_in_bindaddr), "%s", "127.0.0.1");
     }
-    LOG_INFO("NOTICE: %s:%d\n", opts->udp_in_bindaddr, opts->udp_in_portno);
+    LOG_INFO("NOTICE: UDP Direct Input: %s:%d\n", opts->udp_in_bindaddr, opts->udp_in_portno);
     return 0;
 }
 
@@ -676,25 +630,11 @@ dsd_engine_setup_parse_m17_udp_output(dsd_opts* opts) {
     if (strncmp(opts->audio_out_dev, "m17udp", 6) != 0) {
         return 0;
     }
-    LOG_INFO("NOTICE: M17 UDP IP Frame Output: ");
-    char* saveptr = NULL;
-    char outbuf[1024];
-    dsd_engine_setup_copy_spec(outbuf, sizeof(outbuf), opts->audio_out_dev);
-    if (dsd_strtok_r(outbuf, ":", &saveptr) != NULL) {
-        const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            DSD_STRNCPY(opts->m17_hostname, curr, 1023);
-        }
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            int parsed = 0;
-            if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-                opts->m17_portno = parsed;
-            }
-        }
+    if (dsd_endpoint_spec_read(opts->audio_out_dev, 1, opts->m17_hostname, sizeof opts->m17_hostname, &opts->m17_portno)
+        != 0) {
+        return -1;
     }
-    LOG_INFO("NOTICE: %s:", opts->m17_hostname);
-    LOG_INFO("NOTICE: %d \n", opts->m17_portno);
+    LOG_INFO("NOTICE: M17 UDP IP Frame Output: %s:%d\n", opts->m17_hostname, opts->m17_portno);
     opts->m17_use_ip = 1;
     opts->audio_out_type = 9;
     return 0;
@@ -705,24 +645,15 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
     if (!dsd_opts_audio_in_dev_is_tcp_spec(opts->audio_in_dev)) {
         return 0;
     }
-    LOG_INFO("NOTICE: TCP Direct Link: ");
-    char* saveptr = NULL;
-    char inbuf[1024];
-    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), opts->audio_in_dev);
-
-    if (dsd_strtok_r(inbuf, ":", &saveptr) != NULL) {
-        const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            DSD_STRNCPY(opts->tcp_hostname, curr, 1023);
-            DSD_MEMCPY(opts->rigctlhostname, opts->tcp_hostname, sizeof(opts->rigctlhostname));
-        }
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            int parsed = 0;
-            if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-                opts->tcp_portno = parsed;
-            }
-        }
+    char host[sizeof opts->tcp_hostname];
+    host[0] = '\0';
+    if (dsd_endpoint_spec_read(opts->audio_in_dev, 1, host, sizeof host, &opts->tcp_portno) != 0) {
+        return -1;
+    }
+    /* A host the spec names is rigctl's too; the default host leaves rigctl's as it is. */
+    if (host[0] != '\0') {
+        DSD_SNPRINTF(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", host);
+        DSD_MEMCPY(opts->rigctlhostname, opts->tcp_hostname, sizeof(opts->rigctlhostname));
     }
 
     while (1) {
@@ -730,8 +661,7 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
             dsd_request_shutdown(opts, state);
             return 1;
         }
-        LOG_INFO("NOTICE: %s:", opts->tcp_hostname);
-        LOG_INFO("NOTICE: %d \n", opts->tcp_portno);
+        LOG_INFO("NOTICE: TCP Direct Link: %s:%d\n", opts->tcp_hostname, opts->tcp_portno);
         opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
         if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
             /* The input's reconnect goes back to the address this connection went to (issue #634). */
@@ -787,25 +717,141 @@ dsd_engine_setup_enable_iq_replay_if_selected(dsd_opts* opts) {
     opts->iq_replay_active = 1;
 }
 
-static void
+static int
 dsd_engine_setup_parse_rtltcp_input(dsd_opts* opts) {
     if (!dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)) {
-        return;
+        return 0;
     }
-    LOG_INFO("NOTICE: RTL_TCP Input: ");
-    (void)dsd_rtl_input_spec_apply(opts);
+    if (dsd_rtl_input_spec_apply(opts) < 0) {
+        return -1;
+    }
 
     if (opts->rtltcp_portno == 0) {
         opts->rtltcp_portno = 1234;
     }
-    LOG_INFO("NOTICE: %s:%d", opts->rtltcp_hostname, opts->rtltcp_portno);
-    if (opts->rtl_bias_tee) {
-        LOG_INFO("NOTICE:  (bias=on)\n");
-    } else {
-        LOG_INFO("NOTICE: \n");
-    }
+    LOG_INFO("NOTICE: RTL_TCP Input: %s:%d%s\n", opts->rtltcp_hostname, opts->rtltcp_portno,
+             opts->rtl_bias_tee ? " (bias=on)" : "");
     opts->rtltcp_enabled = 1;
     opts->audio_in_type = AUDIO_IN_RTL;
+    return 0;
+}
+
+#ifdef USE_RADIO
+/* Whether the session decodes only the 6.25 kHz modes (NXDN48, dPMR): nothing wider, analog included. */
+static int
+iq_stream_decodes_narrow_only(const dsd_opts* opts) {
+    return (opts->frame_nxdn48 || opts->frame_dpmr) && !opts->analog_only && !opts->frame_dmr && !opts->frame_p25p1
+           && !opts->frame_p25p2 && !opts->frame_nxdn96 && !opts->frame_ysf && !opts->frame_dstar && !opts->frame_x2tdma
+           && !opts->frame_m17 && !opts->frame_provoice;
+}
+
+/* The lowest stream rate each decode family is known to decode from (issue #743): TETRA's 25 kHz channel needs 25 kHz
+   from a sending program that centres it exactly (36 kHz when its centring is approximate), a 12.5 kHz channel's modes
+   16 kHz, and the 6.25 kHz ones (NXDN48, dPMR) 12 kHz. The widest family the session decodes sets it, named as the
+   session runs it: an analog session by its FM or AM channel, which takes the 12.5 kHz rate. */
+static uint32_t
+iq_stream_min_rate_hz(const dsd_opts* opts, const char** out_family) {
+    if (opts->frame_tetra == 1) {
+        *out_family = "TETRA";
+        return 25000U;
+    }
+    if (dsd_opts_is_analog_family(opts)) {
+        *out_family = opts->analog_demod == DSD_ANALOG_DEMOD_AM ? "an analog AM channel" : "an analog FM channel";
+        return 16000U;
+    }
+    if (iq_stream_decodes_narrow_only(opts)) {
+        *out_family = "NXDN48 or dPMR";
+        return 12000U;
+    }
+    *out_family = "a 12.5 kHz digital channel";
+    return 16000U;
+}
+
+/* The rate notes a stream start says, each once per start (issue #743): whether the start in hand said them before it
+   opened (the startup's spec check, dsd_engine_setup_parse_iq_stream_input(); every later start says them once it
+   runs, note_iq_stream_started()), and whether the start in force said them under TETRA, which a switch to TETRA that
+   restarts nothing says then (dsd_engine_note_iq_stream_tetra()). Decoder thread. */
+static int s_iq_stream_notes_said_before_open = 0;
+static int s_iq_stream_tetra_notes_said = 0;
+
+/* A rate under what the mode decodes from, and under TETRA a stream without FREQ, whose trunked calls cannot be tied
+   to their allocations. */
+static void
+iq_stream_rate_notes(const dsd_opts* opts, const dsd_iq_net_spec* spec) {
+    s_iq_stream_tetra_notes_said = opts->frame_tetra == 1;
+    const char* family = "";
+    const uint32_t min_hz = iq_stream_min_rate_hz(opts, &family);
+    if (spec->rate_hz < min_hz) {
+        LOG_WARN("WARNING: I/Q stream: %u samples/s is below the %u that %s needs%s; decoding may fail. Raise the "
+                 "sample rate in the sending program.\n",
+                 spec->rate_hz, min_hz, family,
+                 opts->frame_tetra == 1 ? " (36000 when the sending program does not centre the channel exactly)" : "");
+    }
+    if (opts->frame_tetra == 1 && spec->freq_hz == 0U) {
+        LOG_INFO(
+            "NOTICE: I/Q stream: no receiver frequency (FREQ) was given, so TETRA decodes signalling and speech "
+            "but cannot tie trunked calls to the channels their allocations name. Add the sending program's centre "
+            "frequency as the spec's last field (%s:...:FORMAT:FREQ).\n",
+            spec->kind == DSD_IQ_NET_KIND_TCP ? "iqtcp" : "iqudp");
+    }
+}
+
+/* What a start on the stream @p spec says before it opens: where a TCP stream connects (a UDP one says where it
+   receives once it is bound, note_iq_stream_started()), and its rate notes. */
+static void
+iq_stream_startup_notes(const dsd_opts* opts, const dsd_iq_net_spec* spec) {
+    if (spec->kind == DSD_IQ_NET_KIND_TCP) {
+        LOG_INFO("NOTICE: I/Q stream: connecting to %s:%d (%s, %u samples/s)\n", spec->host, spec->port,
+                 dsd_iq_net_format_name(spec->format), spec->rate_hz);
+    }
+    iq_stream_rate_notes(opts, spec);
+    s_iq_stream_notes_said_before_open = 1;
+}
+#endif
+
+/* A raw I/Q stream spec (`-i iqtcp:` / `-i iqudp:` or an [input] that builds one, issue #743) read before anything
+   opens: refused with the field it names, or with no radio support in the build; otherwise written back in its
+   canonical form (the key every later comparison of the input reads), the receiver centred on FREQ (0 when not given,
+   never the 850 MHz default or a replay's centre), and a rate no plan takes to the mode's target refused with the
+   planner's reason. -1 when refused. */
+static int
+dsd_engine_setup_parse_iq_stream_input(dsd_opts* opts) {
+#ifdef USE_RADIO
+    s_iq_stream_notes_said_before_open = 0;
+#endif
+    if (!dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)) {
+        return 0;
+    }
+    char why[DSD_IQ_NET_SPEC_TEXT_MAX + 128];
+    dsd_iq_net_spec spec;
+    if (dsd_iq_net_spec_parse(opts->audio_in_dev, &spec, why, sizeof why) != 0) {
+        LOG_ERROR("Invalid I/Q stream input: %s\n", why);
+        return -1;
+    }
+    char canonical[DSD_IQ_NET_SPEC_TEXT_MAX];
+    if (dsd_iq_net_spec_format(&spec, canonical, sizeof canonical) < 0) {
+        LOG_ERROR("Invalid I/Q stream input: %s\n", opts->audio_in_dev);
+        return -1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", canonical);
+#ifndef USE_RADIO
+    LOG_ERROR("The I/Q stream input (%s:) requires a build with radio pipeline support\n",
+              spec.kind == DSD_IQ_NET_KIND_TCP ? "iqtcp" : "iqudp");
+    return -1;
+#else
+    if (dsd_input_dsp_stream_plan_check(opts->audio_in_dev, opts->rtl_dsp_bw_khz, opts->frame_tetra == 1, NULL, why,
+                                        sizeof why)
+        != 0) {
+        LOG_ERROR("I/Q stream: %s.\n", why);
+        return -1;
+    }
+    iq_stream_startup_notes(opts, &spec);
+    opts->rtltcp_enabled = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = spec.freq_hz;
+    dsd_opts_forget_iq_replay_center(opts);
+    return 0;
+#endif
 }
 
 /* The squelch for a startup notice: a level as dsd_squelch_format() writes it, or auto+NdB, noise+NdB. */
@@ -832,12 +878,7 @@ dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
     if (strncmp(opts->audio_in_dev, "soapy:", 6) == 0) {
         soapy_args = opts->audio_in_dev + 6;
     }
-    LOG_INFO("NOTICE: SoapySDR Input");
-    if (soapy_args[0] != '\0') {
-        LOG_INFO("NOTICE: : %s\n", soapy_args);
-    } else {
-        LOG_INFO("NOTICE: : default device args\n");
-    }
+    LOG_INFO("NOTICE: SoapySDR Input: %s\n", soapy_args[0] != '\0' ? soapy_args : "default device args");
     if (tuning_applied) {
         char sql[24];
         dsd_engine_squelch_notice_text(opts, sql, sizeof sql);
@@ -876,7 +917,7 @@ dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char*
         DSD_SNPRINTF(vendor, 256, "%s", "USB");
         DSD_SNPRINTF(product, 256, "%s", "RTL-SDR");
         DSD_SNPRINTF(serial, 256, "%s", "");
-        LOG_INFO("NOTICE: Using a pre-opened USB descriptor; skipping device enumeration.\n");
+        LOG_INFO("NOTICE: RTL Input: Using a pre-opened USB descriptor; skipping device enumeration.\n");
         return 1;
     }
 
@@ -898,7 +939,7 @@ dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char*
         return device_count;
     }
 
-    LOG_INFO("NOTICE: Found %d device(s):\n", device_count);
+    LOG_INFO("NOTICE: RTL Input: Found %d device(s):\n", device_count);
     for (int i = 0; i < device_count; i++) {
 #if defined(_MSC_VER) && defined(_WIN32)
         __try {
@@ -924,8 +965,9 @@ static int
 dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* vendor, char* product, char* serial) {
     UNUSED(state);
 #ifdef USE_RTLSDR
-    LOG_INFO("NOTICE: RTL Input: ");
-    (void)dsd_rtl_input_spec_apply(opts);
+    if (dsd_rtl_input_spec_apply(opts) < 0) {
+        return -1;
+    }
 
     int device_count = dsd_engine_setup_enumerate_rtl_devices(opts, vendor, product, serial);
     if (device_count <= 0) {
@@ -993,26 +1035,12 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
     if (strncmp(opts->audio_out_dev, "udp", 3) != 0) {
         return 0;
     }
-    LOG_INFO("NOTICE: UDP Blaster Output: ");
-    char* saveptr = NULL;
-    char outbuf[1024];
-    dsd_engine_setup_copy_spec(outbuf, sizeof(outbuf), opts->audio_out_dev);
-    if (dsd_strtok_r(outbuf, ":", &saveptr) != NULL) {
-        const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            DSD_STRNCPY(opts->udp_hostname, curr, 1023);
-        }
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            int parsed = 0;
-            if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-                opts->udp_portno = parsed;
-            }
-        }
+    if (dsd_endpoint_spec_read(opts->audio_out_dev, 1, opts->udp_hostname, sizeof opts->udp_hostname, &opts->udp_portno)
+        != 0) {
+        return -1;
     }
 
-    LOG_INFO("NOTICE: %s:", opts->udp_hostname);
-    LOG_INFO("NOTICE: %d \n", opts->udp_portno);
+    LOG_INFO("NOTICE: UDP Blaster Output: %s:%d\n", opts->udp_hostname, opts->udp_portno);
     int err = udp_socket_connect(opts, state);
     if (err < 0) {
         LOG_ERROR("Error Configuring UDP Socket for UDP Blaster Audio :( \n");
@@ -1032,9 +1060,7 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
         opts->udp_sockfdA = DSD_INVALID_SOCKET;
         opts->monitor_input_audio = 0;
     } else {
-        LOG_INFO("NOTICE: UDP Blaster Output (Analog): ");
-        LOG_INFO("NOTICE: %s:", opts->udp_hostname);
-        LOG_INFO("NOTICE: %d \n", opts->udp_portno + 2);
+        LOG_INFO("NOTICE: UDP Blaster Output (Analog): %s:%d\n", opts->udp_hostname, opts->udp_portno + 2);
     }
     (void)dsd_edacs_session_trunked_monitor_off(opts, state);
     return 0;
@@ -1095,19 +1121,15 @@ dsd_engine_setup_open_audio_paths(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
-/* The DSP bandwidth an RTL-SDR spec ("rtl:dev:freq:gain:ppm:bw:...") sets, read the way dsd_rtl_input_spec_apply()
- * reads its sixth field, but without looking for a device; @p fallback (the bandwidth the options already hold) when
- * the spec leaves the field out. */
+/* The DSP bandwidth the RTL-SDR spec in @p opts ("rtl:dev:freq:gain:ppm:bw:...") sets, read the way
+ * dsd_rtl_input_spec_apply() reads its sixth field, but without looking for a device; the bandwidth the options already
+ * hold when the spec leaves the field out or empty. */
 static int
-dsd_engine_setup_rtl_spec_bw_khz(const char* spec, int fallback) {
-    char inbuf[1024];
-    char* saveptr = NULL;
-    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), spec);
-    const char* curr = dsd_strtok_r(inbuf, ":", &saveptr);
-    for (int field = 1; curr && field <= 5; field++) {
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-    }
-    return curr ? dsd_rtl_spec_bw_khz_or_default(curr) : fallback;
+dsd_engine_setup_rtl_spec_bw_khz(const dsd_opts* opts) {
+    char buf[sizeof opts->audio_in_dev];
+    char* fields[6];
+    const int count = dsd_spec_split_fields(opts->audio_in_dev, buf, sizeof buf, fields, 6);
+    return (count >= 6 && fields[5][0] != '\0') ? dsd_rtl_spec_bw_khz_or_default(fields[5]) : opts->rtl_dsp_bw_khz;
 }
 
 /*
@@ -1119,9 +1141,10 @@ dsd_engine_setup_rtl_spec_bw_khz(const char* spec, int fallback) {
  * known here, so a width it cannot filter is refused before the device opens, with the validator's actionable text:
  * `-fM -i rtl:0:118.1M:22:0:16 --am-bandwidth-hz 20000` stops here. It runs before an RTL-SDR input looks for its
  * device, so the refusal does not depend on a dongle being plugged in (or on radio support in the build): the spec
- * alone decides it. An rtl_tcp, SoapySDR or Airspy spec has set rtl_dsp_bw_khz already. An I/Q replay, whose sidecar
- * sets the rate, is checked where the rate is final, at stream start (rtl_demod_finalize_analog_channel()), as is
- * whether a SoapySDR device can deliver a rate stepped to the bandwidth at all.
+ * alone decides it. An rtl_tcp, SoapySDR or Airspy spec has set rtl_dsp_bw_khz already. A raw I/Q stream runs at the
+ * target its spec's RATE is planned to (DSD_ANALOG_RATE_PLANNED, issue #743), known here too. An I/Q replay, whose
+ * sidecar sets the rate, is checked where the rate is final, at stream start (rtl_demod_finalize_analog_channel()), as
+ * is whether a SoapySDR device can deliver a rate stepped to the bandwidth at all.
  */
 static int
 dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
@@ -1133,13 +1156,13 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
         return 0;
     }
     const int rtl_spec = dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev);
-    const int bw_khz =
-        rtl_spec ? dsd_engine_setup_rtl_spec_bw_khz(opts->audio_in_dev, opts->rtl_dsp_bw_khz) : opts->rtl_dsp_bw_khz;
+    const int bw_khz = rtl_spec ? dsd_engine_setup_rtl_spec_bw_khz(opts) : opts->rtl_dsp_bw_khz;
     const int live_radio = rtl_spec || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
                            || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
-                           || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev);
+                           || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
+                           || dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev);
     const dsd_input_dsp_rate rate =
-        dsd_input_dsp_rate_for(opts->audio_in_dev, opts->audio_in_type, opts->iq_replay_active, bw_khz);
+        dsd_input_dsp_rate_for(opts->audio_in_dev, opts->audio_in_type, dsd_opts_input_is_iq_replay(opts), bw_khz);
     if (!live_radio || rate.rate_hz <= 0) {
         return 0;
     }
@@ -1194,6 +1217,26 @@ dsd_engine_setup_check_noise_squelch(const dsd_opts* opts, const dsd_state* stat
     return 0;
 }
 
+/* The UDP specs, read before anything opens: an M17 frame input, a PCM input, an M17 frame output. -1 when one is
+   refused. */
+static int
+dsd_engine_setup_parse_udp_specs(dsd_opts* opts) {
+    if (dsd_engine_setup_parse_m17_udp_input(opts) != 0 || dsd_engine_setup_parse_udp_input(opts) != 0) {
+        return -1;
+    }
+    return dsd_engine_setup_parse_m17_udp_output(opts);
+}
+
+/* An rtl_tcp, SoapySDR, I/Q stream or Airspy spec read into the options it sets. -1 when one is refused. */
+static int
+dsd_engine_setup_parse_radio_specs(dsd_opts* opts) {
+    if (dsd_engine_setup_parse_rtltcp_input(opts) != 0 || dsd_engine_setup_parse_soapy_input(opts) != 0
+        || dsd_engine_setup_parse_iq_stream_input(opts) != 0) {
+        return -1;
+    }
+    return dsd_normalize_airspy_input_spec(opts) != 0 ? -1 : 0;
+}
+
 static int
 dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -1205,9 +1248,9 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     opts->iq_replay_active = dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev) ? 1 : 0;
-    (void)dsd_engine_setup_parse_m17_udp_input(opts);
-    (void)dsd_engine_setup_parse_udp_input(opts);
-    (void)dsd_engine_setup_parse_m17_udp_output(opts);
+    if (dsd_engine_setup_parse_udp_specs(opts) != 0) {
+        return -1;
+    }
     const int tcp_setup_result = dsd_engine_setup_parse_tcp_input(opts, state);
     if (tcp_setup_result < 0) {
         return -1;
@@ -1217,11 +1260,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     }
     dsd_engine_setup_connect_rigctl_if_enabled(opts);
     dsd_engine_setup_enable_iq_replay_if_selected(opts);
-    dsd_engine_setup_parse_rtltcp_input(opts);
-    if (dsd_engine_setup_parse_soapy_input(opts) != 0) {
-        return -1;
-    }
-    if (dsd_normalize_airspy_input_spec(opts) != 0) {
+    if (dsd_engine_setup_parse_radio_specs(opts) != 0) {
         return -1;
     }
     if (dsd_engine_setup_check_analog_width(opts) != 0) {
@@ -1311,14 +1350,12 @@ m17_finalize_userdata_log(dsd_state* state) {
     /* The stream encoder keeps one input sample in INPUT_RATE / 8000: a rate below 8000 kept none and hung reading
        nothing, and one between the multiples fed codec2 audio at the wrong rate. */
     if (state->m17_rate < 8000 || state->m17_rate > 48000 || (state->m17_rate % 8000) != 0) {
-        LOG_WARN("M17: INPUT_RATE %d is not a multiple of 8000 up to 48000; using 48000", state->m17_rate);
+        LOG_WARN("M17: INPUT_RATE %d is not a multiple of 8000 up to 48000; using 48000\n", state->m17_rate);
         state->m17_rate = 48000;
     }
-    LOG_INFO("NOTICE:  M17:%d:%s:%s:%d;", state->m17_can_en, state->str50c, state->str50b, state->m17_rate);
-    if (state->m17_vox == 1) {
-        LOG_INFO("NOTICE: VOX;");
-    }
-    LOG_INFO("NOTICE: \n");
+    /* One line, after the fields are read (issue #743 B10). */
+    LOG_INFO("NOTICE: M17 User Data: M17:%d:%s:%s:%d;%s\n", state->m17_can_en, state->str50c, state->str50b,
+             state->m17_rate, state->m17_vox == 1 ? "VOX;" : "");
 }
 
 static void
@@ -1329,7 +1366,6 @@ dsd_engine_parse_m17_userdata(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    LOG_INFO("NOTICE: M17 User Data: ");
     m17_uppercase_inplace(state->m17dat);
     m17_parse_userdata_fields(state);
     m17_finalize_userdata_log(state);
@@ -1368,6 +1404,13 @@ no_carrier_reset_nxdn_scan_markers(dsd_state* state) {
     state->nxdn_last_ran = -1;
 }
 
+/* Whether the legacy rigctl leg has a peer to tune: rigctl is on and the input's tuning is not fixed. Beside an I/Q
+ * replay or stream the peer moves a radio the session does not hear, so it is no front end there (issue #743 B12). */
+static int
+legacy_rigctl_leg_present(const dsd_opts* opts) {
+    return opts->use_rigctl == 1 && !dsd_opts_input_has_fixed_tuning(opts);
+}
+
 /* The legacy rigctl leg: the untyped -Y step and the direct control-channel return. On audio input a rigctl peer
  * demodulates (issue #621) it asks for the passband the analog monitor runs -- the configured width, the AM default, or
  * -B standing in for an unset NFM width -- or for the -B a digital mode is heard through, through the capturing call,
@@ -1380,7 +1423,7 @@ no_carrier_reset_nxdn_scan_markers(dsd_state* state) {
  * afterwards is the one last sent (dsd_opts::rigctl_sent_freq_hz). */
 static dsd_trunk_tune_result
 no_carrier_tune_rigctl_if_needed(dsd_opts* opts, const dsd_state* state, long int freq) {
-    if (opts->use_rigctl != 1) {
+    if (!legacy_rigctl_leg_present(opts)) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
     const dsd_rigctl_passband passband = dsd_rigctl_passband_of(opts, NULL);
@@ -1516,9 +1559,11 @@ walk_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t h
     return moved ? DSD_UNTYPED_STEP_FAILED_MOVED : DSD_UNTYPED_STEP_FAILED;
 }
 
+/* A front end the untyped list can tune: a rigctl peer (legacy_rigctl_leg_present()) or a radio DSD-neo tunes. An I/Q
+   replay or stream is neither, rigctl or not (issue #743). */
 static int
 untyped_front_end_present(const dsd_opts* opts) {
-    return opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL;
+    return legacy_rigctl_leg_present(opts) || dsd_opts_radio_can_tune(opts);
 }
 
 /* Puts every configured front end on @p freq for @p row of the untyped list, the rigctl leg first. @p moved is set once
@@ -1536,7 +1581,7 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int w
     }
     /* The output generation before any leg moves: only a newer capture can be the row's (issue #834). */
     dsd_engine_scan_landing_note_tune(state);
-    if (opts->use_rigctl == 1) {
+    if (legacy_rigctl_leg_present(opts)) {
         if (no_carrier_tune_rigctl_if_needed(opts, state, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
             return DSD_UNTYPED_STEP_FAILED;
         }
@@ -2609,7 +2654,7 @@ no_carrier_helper_result_is_deferred(int helper_attempted, dsd_trunk_tune_result
 
 static int
 no_carrier_apply_direct_cc_return(dsd_opts* opts, dsd_state* state, long cc, int helper_attempted) {
-    if (opts->use_rigctl == 1) {
+    if (legacy_rigctl_leg_present(opts)) {
         if (no_carrier_tune_rigctl_if_needed(opts, state, cc) != DSD_TRUNK_TUNE_RESULT_OK) {
             return 0;
         }
@@ -3756,12 +3801,29 @@ carrier_source_hash(const char* text) {
     return hash != 0U ? hash : 1U;
 }
 
-/* The source a radio stream runs, as a key: the kind of device and which one, never its settings or tuning. */
+/* A raw I/Q stream's key (issue #743): its whole spec in canonical form, so another endpoint, rate, format or receiver
+   frequency (FREQ) is another source, and one spec written two ways is the same. */
+static void
+carrier_source_key_iq_stream(const char* dev, char* key, size_t key_size) {
+    dsd_iq_net_spec spec;
+    char canonical[DSD_IQ_NET_SPEC_TEXT_MAX];
+    if (dsd_iq_net_spec_parse(dev, &spec, NULL, 0U) == 0
+        && dsd_iq_net_spec_format(&spec, canonical, sizeof canonical) >= 0) {
+        DSD_SNPRINTF(key, key_size, "%s", canonical);
+    } else {
+        DSD_SNPRINTF(key, key_size, "%s", dev);
+    }
+}
+
+/* The source a radio stream runs, as a key: the kind of device and which one, never its settings or tuning. A raw I/Q
+   stream, which DSD-neo cannot tune, is keyed by everything its spec names, its receiver frequency included. */
 static uint64_t
 carrier_source_key(const dsd_opts* opts) {
     char key[sizeof opts->audio_in_dev + 32];
     const char* dev = opts->audio_in_dev;
-    if (dsd_opts_audio_in_dev_is_iqreplay_spec(dev) || dsd_opts_audio_in_dev_is_soapy_spec(dev)) {
+    if (dsd_opts_audio_in_dev_is_iq_stream_spec(dev)) {
+        carrier_source_key_iq_stream(dev, key, sizeof key);
+    } else if (dsd_opts_audio_in_dev_is_iqreplay_spec(dev) || dsd_opts_audio_in_dev_is_soapy_spec(dev)) {
         DSD_SNPRINTF(key, sizeof key, "%s", dev);
     } else if (dsd_opts_audio_in_dev_is_rtltcp_spec(dev)) {
         DSD_SNPRINTF(key, sizeof key, "rtltcp/%s/%d", opts->rtltcp_hostname, opts->rtltcp_portno);
@@ -3773,11 +3835,52 @@ carrier_source_key(const dsd_opts* opts) {
     return carrier_source_hash(key);
 }
 
+/* A raw I/Q stream that started (issue #743): the receiver is on the stream's FREQ, 0 when its spec names none (never
+   the 850 MHz default, a replay's centre or another stream's), which the protocols' frequency readers and every
+   frontend read (dsd_opts_tuned_freq_hz()); a UDP stream, bound and read from now, says where, which is the line a
+   sender waits for; and a start the startup did not announce (a config apply, a remembered radio row, a re-plan) says
+   its rate notes. */
+static void
+note_iq_stream_started(dsd_opts* opts) {
+    dsd_iq_net_spec spec;
+    if (!dsd_opts_input_is_iq_stream(opts) || dsd_iq_net_spec_parse(opts->audio_in_dev, &spec, NULL, 0U) != 0) {
+        return;
+    }
+    opts->rtlsdr_center_freq = spec.freq_hz;
+    dsd_opts_forget_iq_replay_center(opts);
+    if (spec.kind == DSD_IQ_NET_KIND_UDP) {
+        LOG_INFO("NOTICE: I/Q stream: receiving on %s:%d (%s, %u samples/s)\n", spec.host, spec.port,
+                 dsd_iq_net_format_name(spec.format), spec.rate_hz);
+    }
+#ifdef USE_RADIO
+    if (s_iq_stream_notes_said_before_open) {
+        s_iq_stream_notes_said_before_open = 0;
+    } else {
+        iq_stream_rate_notes(opts, &spec);
+    }
+#endif
+}
+
+void
+dsd_engine_note_iq_stream_tetra(const dsd_opts* opts) {
+#ifdef USE_RADIO
+    dsd_iq_net_spec spec;
+    if (!opts || opts->frame_tetra != 1 || s_iq_stream_tetra_notes_said || !dsd_opts_input_is_iq_stream(opts)
+        || dsd_iq_net_spec_parse(opts->audio_in_dev, &spec, NULL, 0U) != 0) {
+        return;
+    }
+    iq_stream_rate_notes(opts, &spec);
+#else
+    (void)opts;
+#endif
+}
+
 void
 dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) {
     if (!opts || !state) {
         return;
     }
+    note_iq_stream_started(opts);
     const uint64_t key = carrier_source_key(opts);
 #ifdef USE_RADIO
     /* The decoder takes the stream's discontinuity count up at every start: a gap is raised only for samples read
@@ -3787,6 +3890,11 @@ dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) 
     if (state->carrier_source_key != 0U
         && (key != state->carrier_source_key || dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev))) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SOURCE, guard_held);
+    } else if (state->carrier_source_key != 0U) {
+        /* A reopen of the same live source (a restart for a gain, PPM, bandwidth or mode change, or the recovery
+           after one that failed) lost the samples between the stop and the start: what was being decoded across them
+           cannot go on, as at any stream gap on the carrier (issue #743 B19). */
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, guard_held);
     }
     /* A stream started, on the same source or not, opens wherever it is told: no landing a scan confirmed before it
        says the receiver is on that row (issue #644). */

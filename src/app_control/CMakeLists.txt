@@ -29,6 +29,7 @@ target_sources(
         menu_services.c
         next_start_check.c
         notification_status.c
+        radio_source_view.c
         rigctl_connect.c
         rigctl_passband.c
         rr_apply_verdict.c
@@ -82,6 +83,7 @@ target_link_libraries(
         dsd-neo_engine
         dsd-neo_io_audio
         dsd-neo_io_control
+        dsd-neo_io_iq
         dsd-neo_io_radio
         dsd-neo_proto_dmr
         dsd-neo_proto_nxdn

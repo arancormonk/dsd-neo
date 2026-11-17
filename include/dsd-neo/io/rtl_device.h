@@ -257,9 +257,14 @@ void rtl_device_destroy(struct rtl_device* dev);
 /**
  * @brief Set device center frequency.
  *
+ * An I/Q replay has no tuner: this setter and every other tuner setter below (sample rate, gain, nearest gain, PPM,
+ * direct sampling, offset tuning, tuner bandwidth, bias tee, rtl_tcp autotune, xtal, test mode, IF gain) return
+ * DSD_ERR_NOT_SUPPORTED on it, an unchanged value included, before they change or cache anything. The getters go on
+ * reporting what the capture recorded.
+ *
  * @param dev RTL-SDR device handle.
  * @param frequency Frequency in Hz.
- * @return 0 on success, negative on failure.
+ * @return 0 on success, DSD_ERR_NOT_SUPPORTED on an I/Q replay, negative on failure.
  */
 int rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency);
 
@@ -291,7 +296,10 @@ int rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested
  *
  * An Airspy and a SoapySDR device may force their own rate and step it to the DSP bandwidth; an RTL-SDR, rtl_tcp and
  * no device at all (NULL) run the rate asked for. An I/Q replay plans its chain itself and answers
- * DSD_RATE_PLAN_BACKEND_REPLAY_EXACT, which never steps.
+ * DSD_RATE_PLAN_BACKEND_REPLAY_EXACT, which never steps, whether or not its reader resamples. A raw I/Q stream
+ * (issue #743) answers the backend its general plan names (dsd_iq_plan_general_rate()): REPLAY_RESAMPLED when its
+ * reader resamples it to the DSP input rate, REPLAY_EXACT when it runs at its own rate. Neither steps, so the
+ * difference only labels the stream's chain; a replay's answer stays as it was.
  *
  * @return A dsd_rate_plan_backend value.
  */

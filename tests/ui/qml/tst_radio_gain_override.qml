@@ -49,6 +49,34 @@ Item {
             tryVerify(function () { return metrics.tunerGainRowOverride === true });
         }
 
+        // Issue #743: a radio input DSD-neo cannot tune shows no gain or PPM rows,
+        // and says why where they were: an I/Q stream names its sending program,
+        // an I/Q replay what was recorded. Squelch stays.
+        function test_fixed_input_hides_the_tuner_rows() {
+            var gain = findChild(sheet, "radioGainRows");
+            var ppm = findChild(sheet, "radioPpmRows");
+            var note = findChild(sheet, "radioTunerNote");
+            verify(gain !== null && ppm !== null && note !== null, "a tuner row is missing");
+            verify(gain.visible && ppm.visible && !note.visible, "a live tuner hid its rows");
+            try {
+                testContext.setMetric("tunable", false);
+                tryVerify(function () { return !gain.visible && !ppm.visible && note.visible }, 2000,
+                          "a stream kept its tuner rows");
+                compare(note.text, "An I/Q stream has no tuner controls: adjust the radio in the sending program.");
+                verify(findChild(sheet, "radioSquelchValue").visible, "the squelch went with the tuner rows");
+                testContext.setMetric("replayInput", true);
+                tryVerify(function () { return note.text === "An I/Q replay has no tuner controls: it plays what was recorded." });
+                testContext.setMetric("replayInput", false);
+                testContext.setMetric("radioInput", false);
+                tryVerify(function () { return gain.visible && ppm.visible && !note.visible }, 2000,
+                          "audio input lost the rows that set up the radio");
+            } finally {
+                testContext.setMetric("replayInput", false);
+                testContext.setMetric("radioInput", true);
+                testContext.setMetric("tunable", true);
+            }
+        }
+
         function test_no_override_shows_one_value_and_no_badge() {
             testContext.setMetric("tunerGainDb", 22);
             testContext.setMetric("configuredTunerGainDb", 22);

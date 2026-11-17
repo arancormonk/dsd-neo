@@ -3708,6 +3708,70 @@ test_heard_channel_taken(void) {
     session_close(&s);
 }
 
+/* Issue #743 (G7): a raw I/Q stream's FREQ is the receiver frequency TETRA ties trunked speech to its call with, as a
+ * replay's centre is. The engine puts the receiver on it when the stream starts (dsd_engine_note_stream_source()): with
+ * the right FREQ the heard timeslot is the call's its allocation names, with a wrong one it is no call's, and with none
+ * (0) it is no call's either, while speech still decodes as anonymous speech and direct mode calls still publish. */
+static void
+test_stream_freq_ties_speech_to_its_allocation(void) {
+    static const struct {
+        uint32_t freq_hz;
+        int tied;
+    } cases[] = {{(uint32_t)CARRIER_HZ(100), 1}, {(uint32_t)CARRIER_HZ(130), 0}, {0U, 0}};
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        session s = session_open();
+        s.opts->trunk_enable = 0;
+        tetra_sm_tick(s.opts, s.state);
+        s.opts->audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(s.opts->audio_in_dev, sizeof s.opts->audio_in_dev, "iqtcp:127.0.0.1:1234:72000:cf32%s%u",
+                     cases[i].freq_hz ? ":" : "", cases[i].freq_hz);
+        if (cases[i].freq_hz == 0U) {
+            s.opts->audio_in_dev[strlen(s.opts->audio_in_dev) - 1] = '\0'; /* no FREQ field */
+        }
+        s.opts->rtlsdr_center_freq = cases[i].freq_hz;
+        assert(dsd_opts_input_is_iq_stream(s.opts) && dsd_opts_tuned_freq_hz(s.opts) == cases[i].freq_hz);
+        send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100); /* TN2 of carrier 100 */
+        const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0C);
+        assert(c != NULL);
+        assert((tetra_calls_on_timeslot(s.opts, s.state, 2) == c) == (cases[i].tied != 0));
+        tetra_state_t* const ts = tetra_st(s.state);
+        ts->tdma_valid = 1;
+        ts->tn = 2;
+        tetra_speech sp;
+        assert(tetra_voice_gate(s.opts, s.state, &sp));
+        assert(cases[i].tied ? (sp.kind == TETRA_SPEECH_CALL && sp.call_id == 0x0C) : sp.kind == TETRA_SPEECH_ANON);
+        session_close(&s);
+    }
+
+    /* Direct mode needs no frequency: a DMO call on a stream publishes with FREQ or without, and its history row
+       records the receiver frequency the stream names as it names it (right, wrong, or none: 0, never the 850 MHz
+       default). */
+    static const struct {
+        const char* spec;
+        uint32_t freq_hz;
+    } dmo[] = {{"iqudp:0.0.0.0:7356:36000:cs16", 0U},
+               {"iqudp:0.0.0.0:7356:36000:cs16:420012500", 420012500U},
+               {"iqudp:0.0.0.0:7356:36000:cs16:460000000", 460000000U}};
+
+    for (size_t i = 0; i < sizeof dmo / sizeof dmo[0]; i++) {
+        session s = session_open();
+        session_history(&s);
+        s.opts->audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(s.opts->audio_in_dev, sizeof s.opts->audio_in_dev, "%s", dmo[i].spec);
+        s.opts->rtlsdr_center_freq = dmo[i].freq_hz;
+        dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+        const dsd_call_snapshot call = canonical(s.state);
+        assert(call.phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_TETRA(call.protocol));
+        assert(call.ota_target_id == 0x800001u && call.ota_source_id == 100u);
+        dsd_event_sync_slot(s.opts, s.state, 0U);
+        const Event_History* row = &s.state->event_history_s[0].Event_History_Items[0];
+        assert(strstr(row->event_string, "TETRA DMO TGT: 08388609; SRC: 00000100;") != NULL);
+        assert(row->freq_hz == (int64_t)dmo[i].freq_hz);
+        session_close(&s);
+    }
+}
+
 /* A D-SETUP of call @p call_id to @p ssi whose allocation assigns @p up_down (table 21.87: 01 the downlink, 10 the
  * uplink) of @p timeslots on carrier 120, as the MLE hands it to the call records. */
 static void
@@ -4864,6 +4928,7 @@ main(void) {
     test_tune_answered_mid_burst();
     test_burst_sees_one_state_machine();
     test_heard_channel_taken();
+    test_stream_freq_ties_speech_to_its_allocation();
     test_other_channels_take_nothing();
     test_every_allocation_takes_the_channel();
     test_heard_call_identifier_let_go();

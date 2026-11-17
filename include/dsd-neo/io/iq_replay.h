@@ -326,13 +326,8 @@ int dsd_iq_replay_configured_gain_db(const dsd_iq_replay_config* cfg, int curren
  *   meets both.
  * Only a KEEP plan steps, so a replay never resamples twice. Its forced flag is the sidecar's, else derived.
  *
- * Otherwise (a WAV, an explicit request, or a recorded chain the mode cannot run), with D = @p target_dsp_hz: a
- * capture at D x 2^k (k up to 10) decimates by 2^k with no resampling; any other is resampled to R = D x 2^k, the
- * largest at or below the capture's rate (R = D when the capture is slower than D), and decimated by 2^k, with
- * post_downsample 1 and the demodulator at D. These run no step, as forced.
- *
- * Refused: a capture below DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ, an upsample past DSD_IQ_REPLAY_MAX_UPSAMPLE_RATIO, a
- * capture 2 x 2^10 x D or faster (the resampler would decimate by 2 or more), and a target of 0.
+ * Otherwise (a WAV, an explicit request, or a recorded chain the mode cannot run) the general rule plans it,
+ * dsd_iq_plan_general_rate() for the capture's rate and D = @p target_dsp_hz, with its refusals.
  *
  * @param out_plan [out] The plan; set only on success.
  * @return DSD_IQ_OK, DSD_IQ_ERR_RATE_CHAIN with the reason in @p err_buf, or DSD_IQ_ERR_INVALID_ARG.
@@ -340,6 +335,38 @@ int dsd_iq_replay_configured_gain_db(const dsd_iq_replay_config* cfg, int curren
 int dsd_iq_replay_plan_rate(const dsd_iq_replay_config* cfg, uint32_t target_dsp_hz,
                             uint32_t cqpsk_required_multiple_hz, int explicit_target, uint32_t max_complex_rate_hz,
                             dsd_iq_replay_rate_plan* out_plan, char* err_buf, size_t err_buf_size);
+
+/** What a general rate plan is made for (dsd_iq_plan_general_rate()): it sets the plan's origin and the words its
+    refusals use. */
+typedef enum {
+    DSD_IQ_PLAN_SOURCE_SIDECAR = 0, /**< a sidecar capture: origin RESAMPLED or EXACT, refusals name the capture */
+    DSD_IQ_PLAN_SOURCE_WAV = 1,     /**< a WAV recording: origin WAV, refusals name the capture */
+    /** a raw I/Q stream (`iqtcp:` / `iqudp:`, issue #743): origin RESAMPLED or EXACT, as a sidecar's, so its plan is
+        the one an explicit request on a sidecar at its rate gets; refusals name the stream */
+    DSD_IQ_PLAN_SOURCE_STREAM = 2,
+} dsd_iq_plan_source;
+
+/**
+ * @brief The general rate plan (issues #701, #743): a source at @p source_rate_hz to the DSP rate D =
+ *        @p target_dsp_hz, whatever reads it (a WAV, a sidecar asked for a bandwidth or whose recorded chain the mode
+ *        cannot run, a raw I/Q stream).
+ *
+ * A source at D x 2^k (k up to DSD_IQ_REPLAY_MAX_PLAN_PASSES) decimates by 2^k with no resampling; any other is
+ * resampled to R = D x 2^k, the largest at or below its rate (R = D when it is slower than D), and decimated by 2^k,
+ * with post_downsample 1 and the demodulator at D. The plan runs no step, as forced (DSD_IQ_REPLAY_FORCED_PLAN), and
+ * its capture_rate_hz is the source's rate. The plan always lands on D, so the DSP rate is known before the source
+ * opens.
+ *
+ * Refused: a source below DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ, a stream above DSD_IQ_NET_MAX_RATE_HZ, an upsample past
+ * DSD_IQ_REPLAY_MAX_UPSAMPLE_RATIO, a source 2 x 2^10 x D or faster (the resampler would decimate by 2 or more), and a
+ * target of 0.
+ *
+ * @param out_plan [out] The plan; set only on success.
+ * @return DSD_IQ_OK, DSD_IQ_ERR_RATE_CHAIN with the reason in @p err_buf (may be NULL), or DSD_IQ_ERR_INVALID_ARG for
+ *         a NULL @p out_plan.
+ */
+int dsd_iq_plan_general_rate(dsd_iq_plan_source source, uint32_t source_rate_hz, uint32_t target_dsp_hz,
+                             dsd_iq_replay_rate_plan* out_plan, char* err_buf, size_t err_buf_size);
 
 /** @brief Whether @p a and @p b are the same rate chain, field for field (the planner's message aside). */
 int dsd_iq_replay_rate_plan_equal(const dsd_iq_replay_rate_plan* a, const dsd_iq_replay_rate_plan* b);
@@ -372,6 +399,18 @@ int dsd_iq_replay_apply_rate_plan(dsd_iq_replay_config* cfg, const dsd_iq_replay
  * @return The chunk in bytes, or 0 for a rate of 0 or a format with no sample size.
  */
 size_t dsd_iq_replay_chunk_bytes_for(dsd_iq_sample_format format, uint32_t capture_hz, uint32_t dsp_in_hz);
+
+/**
+ * @brief Complex samples in one demod block of a live source that hands the demodulator whole blocks at
+ *        @p dsp_in_hz, after any resampling (a raw I/Q stream, issue #743).
+ *
+ * The replay chunk's span at the DSP input rate: @p dsp_in_hz x DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES /
+ * DSD_IQ_REPLAY_CHUNK_REFERENCE_RATE_HZ, held to 1..DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES (256 at 48 kHz, 384 at 72 kHz, 768
+ * at 144 kHz, 6144 at 1.152 MS/s), so up to 1.536 MS/s a block lasts the 16/3 ms a replay chunk and a live RTL-SDR
+ * transfer last, and its per-block decisions run at their cadence whatever the network delivers. No sample format: it
+ * counts samples after conversion and resampling, not the source bytes dsd_iq_replay_chunk_bytes_for() counts.
+ */
+uint32_t dsd_iq_live_block_samples(uint32_t dsp_in_hz);
 
 /**
  * @brief Check that the replay of @p cfg can resume at @p ckpt, and give the centre in force there (issue #701).

@@ -24,8 +24,8 @@
 
 static const dsdcfg_schema_entry_t s_schema[] = {
     /* [input] section */
-    {"input", "source", "Input source type", "pulse", "pulse|rtl|rtltcp|soapy|airspy|file|tcp|udp", DSDCFG_TYPE_ENUM, 0,
-     0},
+    {"input", "source", "Input source type", "pulse", "pulse|rtl|rtltcp|soapy|airspy|file|tcp|udp|iqtcp|iqudp",
+     DSDCFG_TYPE_ENUM, 0, 0},
     {"input", "pulse_source", "PulseAudio source device name", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
     {"input", "rtl_device", "RTL-SDR device index (0-based)", "0", NULL, DSDCFG_TYPE_INT, 0, 255},
     {"input", "rtl_freq", "RTL-SDR frequency (supports K/M/G suffix)", "851.375M", NULL, DSDCFG_TYPE_FREQ, 0, 0},
@@ -78,6 +78,14 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"input", "tcp_port", "TCP direct input port", "7355", NULL, DSDCFG_TYPE_INT, 1, 65535},
     {"input", "udp_addr", "UDP input bind address", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0},
     {"input", "udp_port", "UDP input port", "7355", NULL, DSDCFG_TYPE_INT, 1, 65535},
+    {"input", "iq_host", "I/Q stream server (iqtcp) or bind address (iqudp)", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0,
+     0},
+    {"input", "iq_port", "I/Q stream port", "1234", NULL, DSDCFG_TYPE_INT, 1, 65535},
+    {"input", "iq_rate", "I/Q stream sample rate in samples per second (supports k/M suffix)", "240k", NULL,
+     DSDCFG_TYPE_STRING, 0, 0},
+    {"input", "iq_format", "I/Q stream sample format", "cs16", "cu8|cs8|cs16|cs32|cf32", DSDCFG_TYPE_ENUM, 0, 0},
+    {"input", "iq_freq", "I/Q stream receiver (centre) frequency; empty for unknown (supports K/M/G suffix)", "", NULL,
+     DSDCFG_TYPE_FREQ, 0, 0},
     {"input", "input_warn_db", "Low input-level advisory threshold in dBFS", "-40.0", NULL, DSDCFG_TYPE_DOUBLE, -200,
      0},
 

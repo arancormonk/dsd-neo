@@ -42,7 +42,8 @@ rr_refuse(char* why, size_t why_size, const char* text) {
 static int
 rr_input_is_iq(int input_kind) {
     return input_kind == DSD_APP_RR_INPUT_RTL || input_kind == DSD_APP_RR_INPUT_SOAPY
-           || input_kind == DSD_APP_RR_INPUT_AIRSPY || input_kind == DSD_APP_RR_INPUT_IQ_REPLAY;
+           || input_kind == DSD_APP_RR_INPUT_AIRSPY || input_kind == DSD_APP_RR_INPUT_IQ_REPLAY
+           || input_kind == DSD_APP_RR_INPUT_IQ_STREAM;
 }
 
 /* TETRA by input (the verdict table of issue #803). */
@@ -62,7 +63,10 @@ rr_tetra_verdict(const dsd_app_rr_receiver_facts* f, char* why, size_t why_size)
                to it, issue #806), and 72 kHz the one TETRA is set up for (-fT). Changing it here would reopen the
                radio, which restarts an --iq-capture from its start, so the operator sets it. */
             return f->rtl_dsp_bw_khz == DSD_TETRA_DSP_BW_KHZ ? 0 : rr_refuse(why, why_size, k_rr_why_tetra_rtl_bw);
-        default: return 0; /* an I/Q replay re-plans to a TETRA rate or refuses; a symbol capture has no rate */
+        default:
+            /* An I/Q replay or I/Q stream re-plans to a TETRA rate or refuses (the import's dry re-plan asks which); a
+               symbol capture has no rate. */
+            return 0;
     }
 }
 
@@ -88,10 +92,11 @@ dsd_app_rr_receiver_verdict(const dsd_app_rr_receiver_facts* facts, char* why, s
 }
 
 /* The input as the decode-mode input check sees it (dsd_decode_mode_runs_on_input()): a radio input is I/Q, a symbol
-   capture is symbols, anything else is audio. A replay is the replay spec in force (dsd_opts_input_is_iq_replay()), as
-   every other import check asks it, never dsd_opts::iq_replay_active, which an input switch does not clear; among the
-   other radio specs the device sets the rate (SoapySDR, Airspy), else the RTL DSP bandwidth does, as the stream start
-   classifies them (detect_radio_source()). */
+   capture is symbols, anything else is audio. A replay is the replay spec in force (dsd_opts_input_is_iq_replay()), and
+   an I/Q stream the stream spec in force (issue #743), which re-plans as a replay does, as every other import check
+   asks it, never dsd_opts::iq_replay_active, which an input switch does not clear; among the other radio specs the
+   device sets the rate (SoapySDR, Airspy), else the RTL DSP bandwidth does, as the stream start classifies them
+   (detect_radio_source()). */
 static int
 rr_input_kind(const dsd_opts* opts) {
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
@@ -102,6 +107,9 @@ rr_input_kind(const dsd_opts* opts) {
     }
     if (dsd_opts_input_is_iq_replay(opts)) {
         return DSD_APP_RR_INPUT_IQ_REPLAY;
+    }
+    if (dsd_opts_input_is_iq_stream(opts)) {
+        return DSD_APP_RR_INPUT_IQ_STREAM;
     }
     if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         return DSD_APP_RR_INPUT_AIRSPY;

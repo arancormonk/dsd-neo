@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/udp_comp_ports.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -39,6 +40,7 @@
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/spec_fields.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
 #include <limits.h>
@@ -334,22 +336,15 @@ copy_token_string(char* dst, size_t dst_size, const char* src) {
     dst[dst_size - 1] = '\0';
 }
 
+/* The spec's first @p max_tokens fields, each in its place, empty ones included, as the engine reads them
+   (dsd_spec_split_fields()); 0 when @p in does not fit @p scratch. */
 static size_t
 split_colon_tokens(char* scratch, size_t scratch_size, const char* in, char** out_tokens, size_t max_tokens) {
-    if (!scratch || scratch_size == 0 || !in || !out_tokens || max_tokens == 0) {
+    const int count = dsd_spec_split_fields(in, scratch, scratch_size, out_tokens, max_tokens);
+    if (count < 0) {
         return 0;
     }
-
-    DSD_SNPRINTF(scratch, scratch_size, "%.*s", (int)(scratch_size - 1), in);
-    scratch[scratch_size - 1] = '\0';
-
-    size_t count = 0;
-    char* save = NULL;
-    for (char* tok = dsd_strtok_r(scratch, ":", &save); tok && count < max_tokens;
-         tok = dsd_strtok_r(NULL, ":", &save)) {
-        out_tokens[count++] = tok;
-    }
-    return count;
+    return (size_t)count < max_tokens ? (size_t)count : max_tokens;
 }
 
 static void
@@ -365,9 +360,10 @@ snapshot_parse_optional_int_token(char* const* tokens, size_t token_count, size_
     }
 }
 
+/* An empty field leaves @p dst: the spec leaves that place at its default. */
 static void
 snapshot_copy_optional_token(char* const* tokens, size_t token_count, size_t index, char* dst, size_t dst_size) {
-    if (tokens && index < token_count) {
+    if (tokens && index < token_count && tokens[index][0] != '\0') {
         copy_token_string(dst, dst_size, tokens[index]);
     }
 }
@@ -575,30 +571,40 @@ snapshot_apply_live_soapy_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 }
 
 static void
-snapshot_parse_rtl_device_spec(const char* audio_in_dev, dsdneoUserConfig* cfg) {
-    if (!audio_in_dev || !cfg) {
+snapshot_parse_rtl_device_spec(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    if (!opts || !cfg) {
         return;
     }
 
-    char buf[1024];
+    char buf[sizeof opts->audio_in_dev];
     char* tok[9] = {0};
-    size_t n = split_colon_tokens(buf, sizeof buf, audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
-    snapshot_parse_optional_int_token(tok, n, 1, &cfg->rtl_device, NULL);
+    size_t n = split_colon_tokens(buf, sizeof buf, opts->audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
+    /* An empty device field is the device the session opens, its default. */
+    if (n > 1 && tok[1][0] == '\0') {
+        cfg->rtl_device = opts->rtl_dev_index;
+    } else {
+        snapshot_parse_optional_int_token(tok, n, 1, &cfg->rtl_device, NULL);
+    }
     snapshot_copy_optional_token(tok, n, 2, cfg->rtl_freq, sizeof cfg->rtl_freq);
     snapshot_parse_rtl_tuning_tokens(tok, n, 3, cfg);
 }
 
 static void
-snapshot_parse_rtltcp_device_spec(const char* audio_in_dev, dsdneoUserConfig* cfg) {
-    if (!audio_in_dev || !cfg) {
+snapshot_parse_rtltcp_device_spec(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    if (!opts || !cfg) {
         return;
     }
 
-    char buf[1024];
+    char buf[sizeof opts->audio_in_dev];
     char* tok[10] = {0};
-    size_t n = split_colon_tokens(buf, sizeof buf, audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
+    size_t n = split_colon_tokens(buf, sizeof buf, opts->audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
+    /* An empty host or port field is the one the session connects to, its default. */
+    copy_token_string(cfg->rtltcp_host, sizeof cfg->rtltcp_host, opts->rtltcp_hostname);
     snapshot_copy_optional_token(tok, n, 1, cfg->rtltcp_host, sizeof cfg->rtltcp_host);
-    snapshot_parse_optional_int_token(tok, n, 2, &cfg->rtltcp_port, NULL);
+    cfg->rtltcp_port = opts->rtltcp_portno;
+    if (n > 2 && tok[2][0] != '\0') {
+        snapshot_parse_optional_int_token(tok, n, 2, &cfg->rtltcp_port, NULL);
+    }
     snapshot_copy_optional_token(tok, n, 3, cfg->rtl_freq, sizeof cfg->rtl_freq);
     snapshot_parse_rtl_tuning_tokens(tok, n, 4, cfg);
 }
@@ -615,23 +621,31 @@ snapshot_parse_soapy_device_spec(const char* audio_in_dev, dsdneoUserConfig* cfg
     }
 }
 
+/* The host and port of a `tcp:` or `udp:` spec; an empty or missing field is @p default_host or @p default_port, the
+   session's, as the engine reads it. */
 static void
-snapshot_parse_host_port_spec(const char* audio_in_dev, char* host, size_t host_size, int* port) {
+snapshot_parse_host_port_spec(const char* audio_in_dev, const char* default_host, int default_port, char* host,
+                              size_t host_size, int* port) {
     if (!audio_in_dev || !host || host_size == 0 || !port) {
         return;
     }
 
-    char buf[512];
+    char buf[2048];
     char* tok[4] = {0};
     size_t n = split_colon_tokens(buf, sizeof buf, audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
-    if (n > 1) {
-        copy_token_string(host, host_size, tok[1]);
-    }
-    if (n > 2) {
+    copy_token_string(host, host_size, n > 1 && tok[1][0] != '\0' ? tok[1] : default_host);
+    *port = default_port;
+    if (n > 2 && tok[2][0] != '\0') {
         if (dsd_parse_int_strict(tok[2], 10, INT_MIN, INT_MAX, port) != 0) {
             *port = 0;
         }
     }
+}
+
+/* The address a `udp:` input with an empty bind field binds: the one the engine set, else its default. */
+static const char*
+snapshot_udp_bind_default(const dsd_opts* opts) {
+    return opts->udp_in_bindaddr[0] != '\0' ? opts->udp_in_bindaddr : "127.0.0.1";
 }
 
 static void
@@ -893,6 +907,8 @@ render_input_source(FILE* out, dsdneoUserInputSource source) {
         case DSDCFG_INPUT_FILE: DSD_FPRINTF(out, "source = \"file\"\n"); break;
         case DSDCFG_INPUT_TCP: DSD_FPRINTF(out, "source = \"tcp\"\n"); break;
         case DSDCFG_INPUT_UDP: DSD_FPRINTF(out, "source = \"udp\"\n"); break;
+        case DSDCFG_INPUT_IQTCP: DSD_FPRINTF(out, "source = \"iqtcp\"\n"); break;
+        case DSDCFG_INPUT_IQUDP: DSD_FPRINTF(out, "source = \"iqudp\"\n"); break;
         default: break;
     }
 }
@@ -1027,6 +1043,37 @@ render_input_udp(FILE* out, const dsdneoUserConfig* cfg) {
     }
 }
 
+/* A raw I/Q stream (issue #743): the spec's fields, then the keys that act on it (the DSP bandwidth request, the
+   squelch, the monitor volume, the digital resample policy). No tuner key: the sending program tunes. */
+static void
+render_input_iq_stream(FILE* out, const dsdneoUserConfig* cfg) {
+    if (cfg->iq_host[0]) {
+        DSD_FPRINTF(out, "iq_host = \"%s\"\n", cfg->iq_host);
+    }
+    if (cfg->iq_port) {
+        DSD_FPRINTF(out, "iq_port = %d\n", cfg->iq_port);
+    }
+    if (cfg->iq_rate[0]) {
+        DSD_FPRINTF(out, "iq_rate = \"%s\"\n", cfg->iq_rate);
+    }
+    if (cfg->iq_format[0]) {
+        DSD_FPRINTF(out, "iq_format = \"%s\"\n", cfg->iq_format);
+    }
+    if (cfg->iq_freq[0]) {
+        DSD_FPRINTF(out, "iq_freq = \"%s\"\n", cfg->iq_freq);
+    }
+    if (cfg->rtl_bw_khz) {
+        DSD_FPRINTF(out, "rtl_bw_khz = %d\n", cfg->rtl_bw_khz);
+    }
+    render_input_pcm_squelch(out, cfg);
+    if (cfg->rtl_volume) {
+        DSD_FPRINTF(out, "rtl_volume = %d\n", cfg->rtl_volume);
+    }
+    if (cfg->digital_resample[0]) {
+        DSD_FPRINTF(out, "digital_resample = \"%s\"\n", cfg->digital_resample);
+    }
+}
+
 static void
 render_input_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "[input]\n");
@@ -1055,6 +1102,8 @@ render_input_section(FILE* out, const dsdneoUserConfig* cfg) {
             render_input_udp(out, cfg);
             render_input_pcm_squelch(out, cfg);
             break;
+        case DSDCFG_INPUT_IQTCP:
+        case DSDCFG_INPUT_IQUDP: render_input_iq_stream(out, cfg); break;
         default: break;
     }
     DSD_FPRINTF(out, "input_warn_db = %.1f\n", cfg->input_warn_db);
@@ -1476,6 +1525,67 @@ format_soapy_input_spec(const dsdneoUserConfig* cfg, char* out, size_t out_size)
 /* An Airspy [input] opens the first Airspy; its serial and settings travel in dsd_opts.airspy, not in the spec. */
 static const char kAirspyInputSpec[] = "airspy";
 
+/* A raw I/Q stream [input] (issue #743): iqtcp:iq_host:iq_port:iq_rate:iq_format[:iq_freq] in its canonical form (the
+   form a -i spec takes too), so a config naming the running stream another way builds the same spec. -1, with the
+   parser's reason in @p why (may be NULL), when the fields build no spec. */
+static int
+format_iq_stream_input_spec_field(const dsdneoUserConfig* cfg, char* out, size_t out_size, char* why, size_t why_size,
+                                  dsd_iq_net_field* bad_field) {
+    char text[DSD_IQ_NET_SPEC_TEXT_MAX + 128];
+    DSD_SNPRINTF(text, sizeof text, "%s:%s:%d:%s:%s%s%s", cfg->input_source == DSDCFG_INPUT_IQUDP ? "iqudp" : "iqtcp",
+                 cfg->iq_host, cfg->iq_port, cfg->iq_rate, cfg->iq_format, cfg->iq_freq[0] ? ":" : "", cfg->iq_freq);
+    dsd_iq_net_spec spec;
+    if (dsd_iq_net_spec_parse_field(text, &spec, why, why_size, bad_field) != 0) {
+        return -1;
+    }
+    if (dsd_iq_net_spec_format(&spec, out, out_size) < 0) {
+        if (why && why_size > 0U) {
+            DSD_SNPRINTF(why, why_size, "%s", "the I/Q stream spec does not fit");
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int
+format_iq_stream_input_spec(const dsdneoUserConfig* cfg, char* out, size_t out_size, char* why, size_t why_size) {
+    return format_iq_stream_input_spec_field(cfg, out, out_size, why, why_size, NULL);
+}
+
+const char*
+dsd_user_config_iq_stream_bad_key(const dsdneoUserConfig* cfg) {
+    if (!cfg || !cfg->has_input
+        || (cfg->input_source != DSDCFG_INPUT_IQTCP && cfg->input_source != DSDCFG_INPUT_IQUDP)) {
+        return NULL;
+    }
+    char spec[DSD_IQ_NET_SPEC_TEXT_MAX];
+    dsd_iq_net_field field = DSD_IQ_NET_FIELD_NONE;
+    if (format_iq_stream_input_spec_field(cfg, spec, sizeof spec, NULL, 0U, &field) == 0) {
+        return NULL;
+    }
+    switch (field) {
+        case DSD_IQ_NET_FIELD_HOST: return "iq_host";
+        case DSD_IQ_NET_FIELD_PORT: return "iq_port";
+        case DSD_IQ_NET_FIELD_RATE: return "iq_rate";
+        case DSD_IQ_NET_FIELD_FORMAT: return "iq_format";
+        case DSD_IQ_NET_FIELD_FREQ: return "iq_freq";
+        default: return "source";
+    }
+}
+
+int
+dsd_user_config_iq_stream_input_spec(const dsdneoUserConfig* cfg, char* out, size_t out_size, char* why,
+                                     size_t why_size) {
+    if (why && why_size > 0U) {
+        why[0] = '\0';
+    }
+    if (!cfg || !out || out_size == 0U || !cfg->has_input
+        || (cfg->input_source != DSDCFG_INPUT_IQTCP && cfg->input_source != DSDCFG_INPUT_IQUDP)) {
+        return -1;
+    }
+    return format_iq_stream_input_spec(cfg, out, out_size, why, why_size);
+}
+
 int
 dsd_user_config_radio_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* out, size_t out_size) {
     if (!cfg || !opts || !out || out_size == 0U || !cfg->has_input) {
@@ -1486,7 +1596,30 @@ dsd_user_config_radio_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* op
         case DSDCFG_INPUT_RTLTCP: return format_rtltcp_input_spec(cfg, opts, out, out_size);
         case DSDCFG_INPUT_SOAPY: format_soapy_input_spec(cfg, out, out_size); return 0;
         case DSDCFG_INPUT_AIRSPY: DSD_SNPRINTF(out, out_size, "%s", kAirspyInputSpec); return 0;
+        case DSDCFG_INPUT_IQTCP:
+        case DSDCFG_INPUT_IQUDP: return format_iq_stream_input_spec(cfg, out, out_size, NULL, 0U);
         default: return -1;
+    }
+}
+
+int
+dsd_user_config_input_sets_device(const dsdneoUserConfig* cfg) {
+    if (!cfg || !cfg->has_input) {
+        return 0;
+    }
+    char spec[DSD_IQ_NET_SPEC_TEXT_MAX];
+    switch (cfg->input_source) {
+        case DSDCFG_INPUT_PULSE:
+        case DSDCFG_INPUT_SOAPY:
+        case DSDCFG_INPUT_AIRSPY: return 1;
+        case DSDCFG_INPUT_RTL: return cfg->rtl_freq[0] != '\0';
+        case DSDCFG_INPUT_RTLTCP: return cfg->rtltcp_host[0] != '\0';
+        case DSDCFG_INPUT_FILE: return cfg->file_path[0] != '\0';
+        case DSDCFG_INPUT_TCP: return cfg->tcp_host[0] != '\0';
+        case DSDCFG_INPUT_UDP: return cfg->udp_addr[0] != '\0';
+        case DSDCFG_INPUT_IQTCP:
+        case DSDCFG_INPUT_IQUDP: return format_iq_stream_input_spec(cfg, spec, sizeof spec, NULL, 0U) == 0;
+        default: return 0;
     }
 }
 
@@ -1527,6 +1660,30 @@ apply_input_source_rtltcp(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (format_rtltcp_input_spec(cfg, opts, spec, sizeof spec) == 0) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
         apply_rtl_sql_level_beneath_auto(cfg, opts);
+    }
+}
+
+static void apply_pcm_squelch_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts);
+
+/* A raw I/Q stream [input] (issue #743): the spec it builds is the input, rtl_bw_khz the DSP bandwidth request its rate
+   is planned to, and the squelch and monitor volume act on it as on any radio input. Gain, PPM, auto-PPM and rtl_freq
+   belong to inputs DSD-neo tunes: they are not applied (the sending program tunes; iq_freq names its frequency).
+   Fields that build no spec leave the input as it was, which --validate-config reports. */
+static void
+apply_input_source_iq_stream(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    char spec[sizeof opts->audio_in_dev];
+    char why[DSD_IQ_NET_SPEC_TEXT_MAX + 128];
+    if (format_iq_stream_input_spec(cfg, spec, sizeof spec, why, sizeof why) != 0) {
+        LOG_WARN("Config: [input] source = \"%s\" builds no I/Q stream (%s); the input is left as it was\n",
+                 cfg->input_source == DSDCFG_INPUT_IQUDP ? "iqudp" : "iqtcp", why);
+        return;
+    }
+    apply_input_rtl_bw_request(cfg, opts);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
+    opts->rtltcp_enabled = 0;
+    apply_pcm_squelch_from_config(cfg, opts);
+    if (cfg->rtl_volume) {
+        opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(cfg->rtl_volume);
     }
 }
 
@@ -1628,6 +1785,8 @@ apply_input_source_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply
         case DSDCFG_INPUT_FILE: apply_input_source_file(cfg, opts, apply_file_input_rate_now); break;
         case DSDCFG_INPUT_TCP: apply_input_source_tcp(cfg, opts); break;
         case DSDCFG_INPUT_UDP: apply_input_source_udp(cfg, opts); break;
+        case DSDCFG_INPUT_IQTCP:
+        case DSDCFG_INPUT_IQUDP: apply_input_source_iq_stream(cfg, opts); break;
         default: break;
     }
 }
@@ -2095,31 +2254,98 @@ dsd_finalize_user_config_file_input_after_cli(const dsdneoUserConfig* cfg, dsd_o
     }
 }
 
+/* A bare "tcp" connects to the session's TCP endpoint, localhost:7355 unless something moved it, so it saves as that
+   tcp source rather than as a file named "tcp" (issue #743). */
 static void
-snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
-    cfg->has_input = 1;
+snapshot_tcp_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    cfg->input_source = DSDCFG_INPUT_TCP;
+    if (strcmp(opts->audio_in_dev, "tcp") == 0) {
+        DSD_SNPRINTF(cfg->tcp_host, sizeof cfg->tcp_host, "%s",
+                     opts->tcp_hostname[0] ? opts->tcp_hostname : "localhost");
+        cfg->tcp_port = opts->tcp_portno > 0 ? opts->tcp_portno : 7355;
+    } else {
+        snapshot_parse_host_port_spec(opts->audio_in_dev, opts->tcp_hostname, opts->tcp_portno, cfg->tcp_host,
+                                      sizeof cfg->tcp_host, &cfg->tcp_port);
+    }
+    snapshot_pcm_squelch_values(opts, state, cfg);
+}
+
+/* A bare "udp" binds the session's UDP address, 127.0.0.1:7355 unless something moved it: saved as that udp source. */
+static void
+snapshot_udp_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    cfg->input_source = DSDCFG_INPUT_UDP;
+    if (strcmp(opts->audio_in_dev, "udp") == 0) {
+        DSD_SNPRINTF(cfg->udp_addr, sizeof cfg->udp_addr, "%s",
+                     opts->udp_in_bindaddr[0] ? opts->udp_in_bindaddr : "127.0.0.1");
+        cfg->udp_port = opts->udp_in_portno > 0 ? opts->udp_in_portno : 7355;
+    } else {
+        snapshot_parse_host_port_spec(opts->audio_in_dev, snapshot_udp_bind_default(opts), opts->udp_in_portno,
+                                      cfg->udp_addr, sizeof cfg->udp_addr, &cfg->udp_port);
+    }
+    snapshot_pcm_squelch_values(opts, state, cfg);
+}
+
+/* A raw I/Q stream (issue #743) saves as its own source, its spec's fields in the canonical text, with the keys that
+   act on it: the DSP bandwidth, the squelch, the monitor volume and the digital resample policy. No gain, PPM, auto-PPM
+   or rtl_freq: the sending program tunes, and the session's values of those belong to the inputs DSD-neo tunes. A spec
+   that does not read saves no [input]. */
+static void
+snapshot_iq_stream_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    dsd_iq_net_spec spec;
+    if (dsd_iq_net_spec_parse(opts->audio_in_dev, &spec, NULL, 0U) != 0) {
+        cfg->has_input = 0;
+        return;
+    }
+    cfg->input_source = spec.kind == DSD_IQ_NET_KIND_UDP ? DSDCFG_INPUT_IQUDP : DSDCFG_INPUT_IQTCP;
+    DSD_SNPRINTF(cfg->iq_host, sizeof cfg->iq_host, "%s", spec.host);
+    cfg->iq_port = spec.port;
+    DSD_SNPRINTF(cfg->iq_rate, sizeof cfg->iq_rate, "%u", spec.rate_hz);
+    DSD_SNPRINTF(cfg->iq_format, sizeof cfg->iq_format, "%s", dsd_iq_net_format_name(spec.format));
+    if (spec.freq_hz != 0U) {
+        DSD_SNPRINTF(cfg->iq_freq, sizeof cfg->iq_freq, "%u", spec.freq_hz);
+    }
+    cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;
+    snapshot_squelch_values(opts, state, cfg);
+    cfg->rtl_sql_is_set = 1;
+    cfg->rtl_volume = opts->rtl_volume_multiplier;
+    if (opts->digital_resample_mode != 0) {
+        copy_token_string(cfg->digital_resample, sizeof cfg->digital_resample,
+                          digital_resample_mode_name(opts->digital_resample_mode));
+    }
+}
+
+/* An RTL-SDR, rtl_tcp, SoapySDR or raw I/Q stream input saved as its source; 0 when @p opts runs none of them. */
+static int
+snapshot_radio_spec_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     /* A bare "rtl" or "rtltcp" too: the RTL-SDR row names its device "rtl" when no radio ran (issue #634). */
     if (dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)) {
         cfg->input_source = DSDCFG_INPUT_RTL;
-        snapshot_parse_rtl_device_spec(opts->audio_in_dev, cfg);
+        snapshot_parse_rtl_device_spec(opts, cfg);
         snapshot_apply_live_rtl_values(opts, state, cfg);
     } else if (dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)) {
         cfg->input_source = DSDCFG_INPUT_RTLTCP;
-        snapshot_parse_rtltcp_device_spec(opts->audio_in_dev, cfg);
+        snapshot_parse_rtltcp_device_spec(opts, cfg);
         snapshot_apply_live_rtl_values(opts, state, cfg);
     } else if ((strcmp(opts->audio_in_dev, "soapy") == 0) || (strncmp(opts->audio_in_dev, "soapy:", 6) == 0)) {
         cfg->input_source = DSDCFG_INPUT_SOAPY;
         snapshot_parse_soapy_device_spec(opts->audio_in_dev, cfg);
         snapshot_apply_live_rtl_values(opts, state, cfg);
         snapshot_apply_live_soapy_values(opts, cfg);
-    } else if (strncmp(opts->audio_in_dev, "tcp:", 4) == 0) {
-        cfg->input_source = DSDCFG_INPUT_TCP;
-        snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->tcp_host, sizeof cfg->tcp_host, &cfg->tcp_port);
-        snapshot_pcm_squelch_values(opts, state, cfg);
-    } else if (strncmp(opts->audio_in_dev, "udp:", 4) == 0) {
-        cfg->input_source = DSDCFG_INPUT_UDP;
-        snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->udp_addr, sizeof cfg->udp_addr, &cfg->udp_port);
-        snapshot_pcm_squelch_values(opts, state, cfg);
+    } else if (dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)) {
+        snapshot_iq_stream_input_config(opts, state, cfg);
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+/* A TCP, UDP, Pulse or file input saved as its source. */
+static void
+snapshot_pcm_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    if (dsd_opts_audio_in_dev_is_tcp_spec(opts->audio_in_dev)) {
+        snapshot_tcp_input_config(opts, state, cfg);
+    } else if (dsd_opts_audio_in_dev_is_udp_spec(opts->audio_in_dev)) {
+        snapshot_udp_input_config(opts, state, cfg);
     } else if (strncmp(opts->audio_in_dev, "pulse", 5) == 0) {
         cfg->input_source = DSDCFG_INPUT_PULSE;
         const char* dev = NULL;
@@ -2140,7 +2366,14 @@ snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneo
             (opts->audio_in_type == AUDIO_IN_WAV) ? opts->wav_sample_rate : dsd_opts_requested_file_sample_rate(opts);
         snapshot_pcm_squelch_values(opts, state, cfg);
     }
+}
 
+static void
+snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    cfg->has_input = 1;
+    if (!snapshot_radio_spec_input_config(opts, state, cfg)) {
+        snapshot_pcm_input_config(opts, state, cfg);
+    }
     if (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP) {
         cfg->rtl_auto_ppm = opts->rtl_auto_ppm ? 1 : 0;
     }
@@ -2148,6 +2381,13 @@ snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneo
 
 static void
 snapshot_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    /* An I/Q replay has no INI form: its session saves the [input] of the config it loaded as it was loaded, with none
+       of the replay's own centre or gain, or no [input] at all when it loaded none (issue #743). Written as a file
+       input, it broke the config: the next start refuses a direct iqreplay: input. */
+    if (dsd_opts_input_is_iq_replay(opts)) {
+        (void)dsd_user_config_retained_input(state, cfg);
+        return;
+    }
     if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         cfg->has_input = 1;
         cfg->input_source = DSDCFG_INPUT_AIRSPY;
@@ -2432,6 +2672,17 @@ snapshot_next_start_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 
 void
 dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    if (!opts || !state || !cfg) {
+        return;
+    }
+    dsd_snapshot_opts_to_user_config_as_run(opts, state, cfg);
+    /* Last, over the next-start values too: a save beside an I/Q stream [input] (a replay session's retained one) must
+       start (issue #743, D8). */
+    dsd_user_config_turn_off_beside_iq_stream(cfg);
+}
+
+void
+dsd_snapshot_opts_to_user_config_as_run(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     if (!opts || !state || !cfg) {
         return;
     }

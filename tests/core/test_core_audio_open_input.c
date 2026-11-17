@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/log.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -75,6 +76,16 @@ __wrap_dsd_audio_close(dsd_audio_stream* stream) {
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 static int g_failures;
+/* The last error message, as written. */
+static char g_last_error[512];
+
+static void
+note_error(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)ctx;
+    if (level == LOG_LEVEL_ERROR && text) {
+        DSD_SNPRINTF(g_last_error, sizeof g_last_error, "%s", text);
+    }
+}
 
 static void
 expect_int(const char* label, long long got, long long want) {
@@ -198,8 +209,15 @@ main(void) {
     opts->pulse_digi_in_channels = 1;
     const uint32_t start = opts->pcm_input_generation;
 
+    dsd_neo_log_set_tap(note_error, NULL);
     g_fail_opens = 1;
     expect_int("a failed open reports it", openAudioInput(opts), -1);
+    /* Issue #743 B4: the error ends its line; it ran on into the Pulse fallback's message after a TCP input ended. */
+    const size_t error_len = strlen(g_last_error);
+    expect_int("a failed open says so in a line of its own",
+               strstr(g_last_error, "Failed to open audio input: ") != NULL && error_len > 0
+                   && g_last_error[error_len - 1] == '\n',
+               1);
     expect_int("a failed open leaves no stream", opts->audio_in_stream == NULL, 1);
     expect_int("a failed open is no new stream", opts->pcm_input_generation, start);
 

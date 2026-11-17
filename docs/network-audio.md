@@ -5,6 +5,10 @@ intentionally simple: they are headerless streams/datagrams with no framing meta
 
 If you just want “what flag do I type”, start with `docs/cli.md`.
 
+These inputs carry demodulated PCM audio, not I/Q, so they cannot feed TETRA, AM or any other mode that needs I/Q.
+For raw I/Q that another program streams over the network (SDR++'s IQ Exporter, GNU Radio, a forwarder), use
+`-i iqtcp:...` or `-i iqudp:...`; see "Raw I/Q Over The Network" in `docs/iq-capture-replay.md`.
+
 ## PCM Input (`-i tcp`, `-i udp`, `-i -`)
 
 DSD-neo accepts raw PCM input in three equivalent ways:
@@ -39,14 +43,16 @@ Notes:
   between transmissions, menu commands still apply after about half a second; a sender that stops in the middle of a
   frame is waited for, as before.
 - A TCP connection stays up however long its sender is silent, in every mode. Only a connection the producer closes, or
-  one that fails, is lost: decoding then reconnects, while an EDACS analog call and the M17 stream encoder (`-fZ`) end
-  the session. A sender that goes away without closing the connection (its machine lost power, or the network dropped)
-  is found by TCP keepalive: dsd-neo treats the connection as failed about 35 seconds after the last data came in (15
-  seconds idle, then 4 probes 5 seconds apart). On a system that does not let a program set the keepalive timing, its
-  own system-wide timing applies, which can be much longer. During an EDACS analog call, on TCP or UDP, a sender silent
-  for half a second or more sounds like a quiet channel, and the call ends as it would on one; a shorter network stall
-  is waited out. Ctrl-C ends a silent TCP or stdin wait at once. On Windows, stdin is waited on this way only when it is
-  a pipe; console input and a redirected file block in their read.
+  one that fails, is lost. dsd-neo then waits a short backoff (300 ms by default) and tries to reconnect once. If that
+  attempt fails, the input falls back to Pulse audio input, or the session ends when Pulse cannot open. An M17-only
+  session (`-fz`) keeps trying until it reconnects or you stop it. An EDACS analog call and the M17 stream encoder
+  (`-fZ`) end the session. A sender that goes away without closing the connection (its machine lost power, or the
+  network dropped) is found by TCP keepalive: dsd-neo treats the connection as failed about 35 seconds after the last
+  data came in (15 seconds idle, then 4 probes 5 seconds apart). On a system that does not let a program set the
+  keepalive timing, its own system-wide timing applies, which can be much longer. During an EDACS analog call, on TCP or
+  UDP, a sender silent for half a second or more sounds like a quiet channel, and the call ends as it would on one; a
+  shorter network stall is waited out. Ctrl-C ends a silent TCP or stdin wait at once. On Windows, stdin is waited on
+  this way only when it is a pipe; console input and a redirected file block in their read.
 
 ### Squelch on PCM input
 

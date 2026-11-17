@@ -253,10 +253,15 @@ wire_recording_status(QQmlApplicationEngine& engine, DecoderHost* host, UiContro
     return recordingStatus;
 }
 
-// The call log, the two views that filter it, and History's export.
+// The call log, the two views that filter it, and History's export. Each view that shows the call log owns its filter
+// state: the history tab's search and pills must not silently filter the monitor's recent-calls pane.
 static void
-publish_history_context(QQmlContext* context, CallHistoryModel* history, CallHistoryFilterModel* historyView,
-                        CallHistoryFilterModel* monitorView, CallHistoryExporter* historyExport) {
+publish_history_context(QQmlContext* context, CallHistoryModel* history, CallHistoryExporter* historyExport,
+                        QObject* owner) {
+    auto* historyView = new CallHistoryFilterModel(owner);
+    historyView->setSourceModel(history);
+    auto* monitorView = new CallHistoryFilterModel(owner);
+    monitorView->setSourceModel(history);
     context->setContextProperty(QStringLiteral("callHistory"), history);
     context->setContextProperty(QStringLiteral("historyView"), historyView);
     context->setContextProperty(QStringLiteral("monitorView"), monitorView);
@@ -472,12 +477,6 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* spectrum = new SpectrumModel(&engine);
     auto* knownFrequencies = new KnownFrequencyIndex(systems, scanLists, &engine);
     auto* signalSearch = new SignalSearchModel(host, knownFrequencies, &engine);
-    // Each view that shows the call log owns its filter state: the history tab's
-    // search and pills must not silently filter the monitor's recent-calls pane.
-    auto* historyView = new CallHistoryFilterModel(&engine);
-    historyView->setSourceModel(history);
-    auto* monitorView = new CallHistoryFilterModel(&engine);
-    monitorView->setSourceModel(history);
     auto* radioReference = new RadioReferenceModel(prefs, importedFiles, host, &engine);
     auto* controller = new UiController(host, metrics, history, talkgroups, &engine);
     controller->setCommandBridge(commands);
@@ -518,7 +517,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
     context->setContextProperty(QStringLiteral("replayFiles"), replays);
     publish_radio_reference(context, radioReference, systems, &engine);
-    publish_history_context(context, history, historyView, monitorView, historyExport);
+    publish_history_context(context, history, historyExport, &engine);
     publish_recording_context(context, recordings, recordingStatus);
     publish_unit_activity(context, controller, &engine);
     context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);

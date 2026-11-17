@@ -1768,6 +1768,17 @@ test_additional_prompt_and_toggle_actions(void) {
     act_freq_key(&ctx);
     rc |= expect_int("freq key replay opens no prompt", g_prompt.calls, 0);
     rc |= expect_str("freq key replay reason", g_help, "An I/Q replay cannot retune: it plays the tuning it recorded.");
+    /* Issue #743: an I/Q stream names the program that picks its channel, TCP or UDP. */
+    static const char* const k_streams[] = {"iqtcp:127.0.0.1:5000:240000:cs16", "iqudp:0.0.0.0:5000:48000:cu8"};
+    for (size_t i = 0; i < sizeof k_streams / sizeof k_streams[0]; i++) {
+        reset_capture();
+        g_freq_offered = 0;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", k_streams[i]);
+        act_freq_key(&ctx);
+        rc |= expect_int("freq key stream opens no prompt", g_prompt.calls, 0);
+        rc |= expect_str("freq key stream reason", g_help,
+                         "An I/Q stream cannot retune: change the channel in the sending program.");
+    }
     opts.audio_in_dev[0] = '\0';
     opts.audio_in_type = published_in_type;
     opts.rtlsdr_center_freq = 0U;
@@ -3337,6 +3348,39 @@ test_scan_lists_action(void) {
     return rc;
 }
 
+/* Issue #743: the tuner rows (gain, PPM, autogain, bias tee, device, Auto-PPM & rtl_tcp) are hidden on a radio input
+   DSD-neo cannot tune, an I/Q replay or I/Q stream, as on an Airspy; a live RTL-SDR or rtl_tcp radio shows them, and so
+   does an audio input, whose rows set up the RTL-SDR a switch opens. */
+static int
+test_tuner_rows_follow_tunability(void) {
+    static const struct {
+        const char* dev;
+        int type;
+        bool offered;
+    } rows[] = {
+        {"rtl:0:851.0125M", AUDIO_IN_RTL, true},
+        {"rtltcp:127.0.0.1:1234", AUDIO_IN_RTL, true},
+        {"airspy", AUDIO_IN_RTL, false},
+        {"iqreplay:capture.iq.json", AUDIO_IN_RTL, false},
+        {"iqtcp:127.0.0.1:1234:240000:cs16", AUDIO_IN_RTL, false},
+        {"iqudp:0.0.0.0:7355:48000:cu8", AUDIO_IN_RTL, false},
+        {"pulse", AUDIO_IN_PULSE, true},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx = {&opts, &state};
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        opts.audio_in_type = rows[i].type;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", rows[i].dev);
+        rc |= expect_int(rows[i].dev, tuner_rows_offered(&ctx), rows[i].offered);
+    }
+    opts.audio_in_dev[0] = '\0';
+    opts.audio_in_type = 0;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3361,6 +3405,7 @@ main(void) {
     rc |= test_signal_chain_rows();
     rc |= test_config_and_pulse_failure_variants();
     rc |= test_context_actions_without_a_context();
+    rc |= test_tuner_rows_follow_tunability();
 #if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
     rc |= expect_int("menu actions leave FTZ/DAZ as it was", (int)(_mm_getcsr() & DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS),
                      (int)ftz_daz_before);

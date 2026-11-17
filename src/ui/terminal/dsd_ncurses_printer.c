@@ -28,6 +28,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/radio_source_view.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
@@ -595,55 +596,139 @@ ui_print_rtl_auto_ppm_status(const dsd_opts* opts, const dsd_state* state) {
 #endif
 }
 
+/* The source row's readings at fixed widths, the tuned frequency last (issue #669): gain and PPM for an input whose
+   tuner DSD-neo sets (@p tuner), then the monitor multiplier and DSP width every radio input has. */
+static void
+ui_row_receiver_fields(ui_row* row, const dsd_opts* opts, const dsd_state* state, int tuner) {
+    if (tuner) {
+        ui_row_rtl_gain_field(row, opts, state);
+        ui_row_rtl_ppm_field(row, opts, state);
+    }
+    ui_row_field(row, " Mon: %dX;", opts->rtl_volume_multiplier);
+    ui_row_field(row, " DSP-BW: %2d kHz;", opts->rtl_dsp_bw_khz);
+    /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575), in MHz to the Hz in the
+       eleven places any 32-bit Hz value takes (4294.967295), none (0) a dash in the same room, so a Soapy
+       device's arguments after it hold their column across a retune (issue #670). */
+    const uint32_t tuned_hz = dsd_opts_tuned_freq_hz(opts);
+    char frq[16] = "-";
+    if (tuned_hz != 0U) {
+        (void)dsd_freq_hz_mhz_text(tuned_hz, frq, sizeof frq);
+    }
+    ui_row_field(row, " FRQ: %11s MHz;", frq);
+}
+
+/* An I/Q stream's identity row (issue #743): where it comes from, its samples, and where it stands, last, since only
+   that changes ("connected", "waiting for data", "no input", dsd_app_frontend_iq_stream_state()). */
+/* Cut @p endpoint's host so the endpoint takes at most @p room characters, its ":PORT" kept and the cut marked "...":
+   a long host would otherwise push the samples and the state, the field that changes, off the row. Left as it is when
+   it fits, or when no room is left for a host at all. */
+static void
+ui_cut_endpoint_host(char* endpoint, size_t endpoint_size, int room) {
+    const size_t len = strlen(endpoint);
+    const char* port = strrchr(endpoint, ':');
+    if (room <= 0 || len <= (size_t)room || !port) {
+        return;
+    }
+    const size_t port_len = strlen(port);
+    if ((size_t)room < port_len + 4U) {
+        return;
+    }
+    char cut[DSD_APP_RADIO_SOURCE_NAME_MAX];
+    DSD_SNPRINTF(cut, sizeof cut, "%.*s...%s", (int)((size_t)room - port_len - 3U), endpoint, port);
+    DSD_SNPRINTF(endpoint, endpoint_size, "%s", cut);
+}
+
+static void
+ui_row_iq_stream_identity(ui_row* row, const dsd_opts* opts) {
+    char endpoint[DSD_APP_RADIO_SOURCE_NAME_MAX];
+    char detail[64];
+    const char* standing = dsd_app_frontend_iq_stream_state(opts);
+    if (!standing) {
+        standing = "stopped";
+    }
+    if (dsd_app_iq_stream_describe(opts->audio_in_dev, endpoint, sizeof endpoint, detail, sizeof detail) != 0) {
+        ui_row_field(row, "| I/Q stream;");
+    } else {
+        /* The row's last column wraps: what the endpoint may take is the width less everything else on the row. */
+        const int rest = (int)(strlen("| I/Q stream: ;") + strlen(" ;") + strlen(detail) + 1U + strlen(standing));
+        ui_cut_endpoint_host(endpoint, sizeof endpoint, ui_get_panel_cols() - 1 - rest);
+        ui_row_field(row, "| I/Q stream: %s;", endpoint);
+        ui_row_field(row, " %s;", detail);
+    }
+    ui_row_field(row, " %s", standing);
+}
+
+/* A radio input named on a row of its own, ahead of its readings (issue #669; #743 B5): an Airspy's serial and rate,
+   an rtl_tcp server, an I/Q replay's file and an I/Q stream, whose names leave the readings no room at 80 columns.
+   Returns 1 when it drew one: the readings row then starts with its own border. */
+static int
+ui_render_radio_identity_row(const dsd_opts* opts) {
+    const char* dev = opts->audio_in_dev;
+    ui_row row;
+    ui_io_row_begin(&row);
+    if (dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
+        ui_row_field(&row, "| Airspy: %s;", opts->airspy_info.serial);
+        ui_row_field(&row, " %u samples/s;", opts->airspy_info.sample_rate);
+    } else if (dsd_opts_audio_in_dev_is_iq_stream_spec(dev)) {
+        ui_row_iq_stream_identity(&row, opts);
+    } else if (dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
+        /* The capture's file name, as the Input menu names it ("I/Q replay capture.iq.json"). */
+        static const char k_replay[] = "I/Q replay ";
+        char name[DSD_APP_RADIO_SOURCE_NAME_MAX];
+        dsd_app_radio_source_name(opts, dev, name, sizeof name);
+        if (strncmp(name, k_replay, sizeof k_replay - 1U) == 0) {
+            ui_row_field(&row, "| I/Q replay: %s;", name + sizeof k_replay - 1U);
+        } else {
+            ui_row_field(&row, "| I/Q replay;");
+        }
+    } else if (dsd_opts_audio_in_dev_is_rtltcp_spec(dev)) {
+        ui_row_field(&row, "| rtl_tcp: %s:%d;", opts->rtltcp_hostname, opts->rtltcp_portno);
+    } else {
+        return 0;
+    }
+    ui_row_end(&row);
+    return 1;
+}
+
 /* A radio input's rows (issue #669): the source row with the receiver's readings at fixed widths and the tuned
-   frequency last, then the channel row, then Auto PPM. An Airspy names itself on a row of its own first; a Soapy
-   device's arguments, free-form configuration, go last on the source row. */
+   frequency last, then the channel row, then Auto PPM. An Airspy, rtl_tcp server, I/Q replay or I/Q stream names
+   itself on a row of its own first (ui_render_radio_identity_row()); a replay or stream shows no gain, PPM or Auto
+   PPM, which its capture or sending program set (issue #743); a Soapy device's arguments, free-form configuration, go
+   last on the source row. */
 static void
 ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        int soapy_input = ui_audio_in_is_soapy(opts);
-        ui_row row;
-        ui_io_row_begin(&row);
-        if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
-            ui_row_field(&row, "| Airspy: %s;", opts->airspy_info.serial);
-            ui_row_field(&row, " %u samples/s;", opts->airspy_info.sample_rate);
-            ui_row_end(&row);
-            ui_io_row_begin(&row);
-            ui_row_field(&row, "|");
-        } else if (soapy_input) {
-            /* The short name (-i soapy) leaves room at 80 columns for the frequency ahead of the arguments' cut. */
-            ui_row_field(&row, "| Soapy;");
-        } else {
-            ui_row_field(&row, "| RTL: %d;", opts->rtl_dev_index);
-        }
-        ui_row_rtl_gain_field(&row, opts, state);
-        ui_row_rtl_ppm_field(&row, opts, state);
-        ui_row_field(&row, " Mon: %dX;", opts->rtl_volume_multiplier);
-        ui_row_field(&row, " DSP-BW: %2d kHz;", opts->rtl_dsp_bw_khz);
-        /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575), in MHz to the Hz in the
-           eleven places any 32-bit Hz value takes (4294.967295), none (0) a dash in the same room, so a Soapy
-           device's arguments after it hold their column across a retune (issue #670). */
-        const uint32_t tuned_hz = dsd_opts_tuned_freq_hz(opts);
-        char frq[16] = "-";
-        if (tuned_hz != 0U) {
-            (void)dsd_freq_hz_mhz_text(tuned_hz, frq, sizeof frq);
-        }
-        ui_row_field(&row, " FRQ: %11s MHz;", frq);
-        if (soapy_input && strncmp(opts->audio_in_dev, "soapy:", 6) == 0 && opts->audio_in_dev[6] != '\0') {
-            ui_row_field(&row, " Args: %s;", opts->audio_in_dev + 6);
-        }
-        ui_row_end(&row);
-        ui_render_channel_row(opts, state);
-        ui_print_rtl_auto_ppm_status(opts, state);
-        if (!soapy_input && opts->rtl_udp_port != 0) {
-            printw("| External RTL Tuning on UDP: %s:%i\n", opts->rtl_udp_bindaddr, opts->rtl_udp_port);
-        }
-        /* Show compact DSP status directly above audio sections (optional) */
-        if (opts->frontend_display.show_dsp_panel) {
-            print_dsp_status(opts, state);
-        }
-        /* Signal quality is shown inline above; no duplicate line here. */
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
     }
+    const int soapy_input = ui_audio_in_is_soapy(opts);
+    const int fixed = dsd_opts_input_has_fixed_tuning(opts);
+    ui_row row;
+    ui_io_row_begin(&row);
+    if (ui_render_radio_identity_row(opts)) {
+        ui_row_field(&row, "|");
+    } else if (soapy_input) {
+        /* The short name (-i soapy) leaves room at 80 columns for the frequency ahead of the arguments' cut. */
+        ui_row_field(&row, "| Soapy;");
+    } else {
+        ui_row_field(&row, "| RTL: %d;", opts->rtl_dev_index);
+    }
+    ui_row_receiver_fields(&row, opts, state, !fixed);
+    if (soapy_input && strncmp(opts->audio_in_dev, "soapy:", 6) == 0 && opts->audio_in_dev[6] != '\0') {
+        ui_row_field(&row, " Args: %s;", opts->audio_in_dev + 6);
+    }
+    ui_row_end(&row);
+    ui_render_channel_row(opts, state);
+    if (!fixed) {
+        ui_print_rtl_auto_ppm_status(opts, state);
+    }
+    if (!soapy_input && !fixed && opts->rtl_udp_port != 0) {
+        printw("| External RTL Tuning on UDP: %s:%i\n", opts->rtl_udp_bindaddr, opts->rtl_udp_port);
+    }
+    /* Show compact DSP status directly above audio sections (optional) */
+    if (opts->frontend_display.show_dsp_panel) {
+        print_dsp_status(opts, state);
+    }
+    /* Signal quality is shown inline above; no duplicate line here. */
 }
 
 /* Input level health: the status word and the three readings at fixed widths, then the advice, which changes only
@@ -678,14 +763,10 @@ ui_render_input_level_status(const dsd_opts* opts, const dsd_state* state) {
     ui_row_field(&row, " rms %s dBFS", ui_num(rms, sizeof rms, level->rms_dbfs, 6, 1, 0));
     ui_row_field(&row, " peak %s dBFS", ui_num(peak, sizeof peak, level->peak_dbfs, 6, 1, 0));
     ui_row_field(&row, " clip %s%%", ui_num(clip, sizeof clip, level->clip_pct, 5, 1, 0));
-    if (level->status == DSD_INPUT_LEVEL_LOW) {
-        ui_row_field(&row, " %s",
-                     dsd_input_level_source_is_rf(level->source) ? "raise RF gain if signal is present"
-                                                                 : "raise source/input volume if signal is present");
-    } else if (level->status == DSD_INPUT_LEVEL_HOT || level->status == DSD_INPUT_LEVEL_CLIPPING) {
-        ui_row_field(&row, " %s",
-                     dsd_input_level_source_is_rf(level->source) ? "lower RF gain or add filtering/attenuation"
-                                                                 : "lower source/input volume");
+    /* The warning's own advice (B8: a replay's level was set when it was recorded). */
+    const char* advice = dsd_input_level_advice(level, dsd_opts_input_is_iq_replay(opts));
+    if (advice) {
+        ui_row_field(&row, " %s", advice);
     }
     ui_row_end(&row);
 }
@@ -1607,6 +1688,10 @@ ui_render_rtl_visual_aids(dsd_opts* opts, dsd_state* state) {
             title = "Airspy Visual Aids";
         } else if (ui_audio_in_is_soapy(opts)) {
             title = "SoapySDR Visual Aids";
+        } else if (dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)) {
+            title = "I/Q Stream Visual Aids"; /* issue #743: named for the input, as the source row is */
+        } else if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
+            title = "I/Q Replay Visual Aids";
         }
         ui_print_header(title);
         dsd_frontend_metrics metrics;

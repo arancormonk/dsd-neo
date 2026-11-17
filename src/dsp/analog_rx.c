@@ -528,6 +528,13 @@ typedef struct {
     /** Input that may pause: the monotonic ms past which the next read arrives after a pause
         (published as dsd_analog_rx_publication::stale_after_ms); 0 = no read to measure from. */
     uint64_t stale_after_ms;
+    /** Whether the input may pause (analog_rx_input_may_pause()), asked of the input type and the radio source the
+        stream last started on (dsd_state::carrier_source_key) noted beside it, and asked again only when either moves:
+        every stream start rewrites the source, a config apply that moves a replay onto a live radio included, so a
+        read pays two compares for it. pause_input_type -1: not asked yet. */
+    int input_may_pause;
+    int pause_input_type;
+    uint64_t pause_source_key;
     /** Samples of the monitor block the symbol path is assembling that the tap has read, or
         set aside at a reset or when detection started. */
     unsigned int block_taken;
@@ -791,6 +798,7 @@ analog_rx_session_create(const dsd_opts* opts, dsd_state* state) {
     session->log_key = ANALOG_RX_LOG_UNSET;
     session->log_generation = session->core.resets;
     session->read_rate_hz = analog_rx_rate_hz(opts);
+    session->pause_input_type = -1;
     session->detecting = dsd_analog_tone_detection_active(opts);
     dsd_analog_tone_policy_init(&session->policy);
     dsd_analog_tone_policy_init(&session->policy_logged);
@@ -972,9 +980,22 @@ analog_rx_input_may_pause(const dsd_opts* opts) {
         case AUDIO_IN_STDIN:
         case AUDIO_IN_UDP:
         case AUDIO_IN_TCP: return 1;
-        case AUDIO_IN_RTL: return opts->iq_replay_active == 0U;
+        case AUDIO_IN_RTL: return !dsd_opts_input_is_iq_replay(opts);
         default: return 0;
     }
+}
+
+/* analog_rx_input_may_pause() as @p session last noted it, asked again when the input type or the stream's source has
+   moved since. */
+static int
+analog_rx_input_may_pause_noted(const dsd_opts* opts, const dsd_state* state, analog_rx_session* session) {
+    if ((int)opts->audio_in_type != session->pause_input_type
+        || state->carrier_source_key != session->pause_source_key) {
+        session->input_may_pause = analog_rx_input_may_pause(opts);
+        session->pause_input_type = (int)opts->audio_in_type;
+        session->pause_source_key = state->carrier_source_key;
+    }
+    return session->input_may_pause;
 }
 
 /*
@@ -984,8 +1005,9 @@ analog_rx_input_may_pause(const dsd_opts* opts) {
  * same deadline, so the row stops claiming a carrier while the input is quiet.
  */
 static int
-analog_rx_input_paused(const dsd_opts* opts, analog_rx_session* session, unsigned int count, int rate_hz) {
-    if (!analog_rx_input_may_pause(opts) || rate_hz <= 0) {
+analog_rx_input_paused(const dsd_opts* opts, const dsd_state* state, analog_rx_session* session, unsigned int count,
+                       int rate_hz) {
+    if (!analog_rx_input_may_pause_noted(opts, state, session) || rate_hz <= 0) {
         session->stale_after_ms = 0;
         return 0;
     }
@@ -1282,7 +1304,7 @@ static int
 analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_session* session, unsigned int count,
                            int rate_hz) {
     const int moved = analog_rx_generation_moved(opts, session);
-    const int paused = analog_rx_input_paused(opts, session, count, rate_hz);
+    const int paused = analog_rx_input_paused(opts, state, session, count, rate_hz);
     const int rate_moved = analog_rx_rate_moved(session, rate_hz);
     if (!moved && !paused && !rate_moved) {
         return 0;

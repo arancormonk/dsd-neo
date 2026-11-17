@@ -48,6 +48,18 @@ tetra_rate_replay_advice(int rate_hz, const char* rate_text, int brief, char* ou
     }
 }
 
+/* A raw I/Q stream re-plans its rate to TETRA's when TETRA comes on (issue #743), through a restart, so only a stream
+   whose rate no plan resamples to a TETRA rate reaches its text. The fix is the sending program's sample rate, in plain
+   words, with the rates the senders' recipes use (docs/iq-capture-replay.md): 48 or 96 kHz. The DSP rate it would run
+   at is no number the user sets, so neither form names it. The brief form fits a toast. */
+static void
+tetra_rate_stream_advice(int brief, char* out, size_t out_size) {
+    DSD_SNPRINTF(out, out_size, "%s",
+                 brief ? "TETRA cannot use this I/Q stream's rate; send 48 or 96 kHz instead"
+                       : "TETRA cannot decode at this I/Q stream's sample rate; set the sending program's sample rate "
+                         "to 48 or 96 kHz");
+}
+
 /* A live radio runs at its DSP bandwidth (an RTL-SDR's cascade lands on it, a SoapySDR or Airspy device is stepped to
    it, issue #806), so the fix is the 72 kHz bandwidth in the input's spec form. TETRA switched on at another one stays
    on but decodes nothing, and the bandwidth is the operator's to change: dsd-neo never moves it on its own, which the
@@ -75,8 +87,11 @@ dsd_tetra_dsp_rate_advice(const dsd_opts* opts, int rate_hz, int brief, char* ou
     }
     char rate_text[DSD_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_analog_width_format(rate_hz, rate_text, sizeof rate_text);
-    if (dsd_input_dsp_rate_policy(opts).source == DSD_ANALOG_RATE_CAPTURE) {
+    const int source = dsd_input_dsp_rate_policy(opts).source;
+    if (source == DSD_ANALOG_RATE_CAPTURE) {
         tetra_rate_replay_advice(rate_hz, rate_text, brief, out, out_size);
+    } else if (source == DSD_ANALOG_RATE_PLANNED) {
+        tetra_rate_stream_advice(brief, out, out_size);
     } else {
         tetra_rate_live_advice(opts, rate_text, brief, out, out_size);
     }

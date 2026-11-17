@@ -73,11 +73,13 @@ Display, then housekeeping. Put another way: to find a setting, ask which signal
 ### Menu map
 
 Bracketed states and values are examples. `(status)` marks a read-only row; `─────` a separator. Rows marked
-*radio input only* appear while a radio is the input (an RTL-SDR, an rtl_tcp server, a SoapySDR device or an Airspy),
-*Airspy input only* while an Airspy is, and *not on an Airspy* while any other input is. The `RTL-SDR` submenu under
-Input holds the tuning of whichever radio runs; `Frequency...` sits in Input itself, since it also tunes a rigctl peer
-from audio input. Rows marked *radio builds* need a build with the radio pipeline (any
-SDR backend), and *RadioReference builds* one with libcurl and expat.
+*radio input only* appear while a radio is the input (an RTL-SDR, an rtl_tcp server, a SoapySDR device, an Airspy, an
+I/Q replay or an I/Q stream), *Airspy input only* while an Airspy is, and *not on an Airspy* while any other input is.
+The `RTL-SDR` submenu under Input holds the tuning of whichever radio runs; `Frequency...` sits in Input itself, since
+it also tunes a rigctl peer from audio input. On an I/Q replay or I/Q stream, whose tuning is fixed, the submenu is
+titled `I/Q replay` or `I/Q stream`, and its rows marked *not on an Airspy* are hidden too, as are `Frequency...` and
+`Rigctl` (and on a stream `Rigctl setmod bandwidth...`). Rows marked *radio builds* need a build with the radio
+pipeline (any SDR backend), and *RadioReference builds* one with libcurl and expat.
 
 ```text
 Main Menu
@@ -92,7 +94,7 @@ Main Menu
 │   │   ├── UDP audio...
 │   │   ├── WAV / raw file...
 │   │   └── Symbol file (.bin/.raw/.sym)...
-│   ├── Frequency... [769.768750 MHz]            =   (radio input, or any input with a rigctl peer; not during an I/Q replay)
+│   ├── Frequency... [769.768750 MHz]            =   (radio input or a rigctl peer; not on an I/Q replay or stream)
 │   ├── Input volume... [4X]                     v
 │   ├── Squelch... [off]                         (radio and audio input: a level in dB, off, auto[+N] or noise[+N])
 │   ├── NFM bandwidth... [default]               (-fA, or a width set; radio, or audio input with rigctl)
@@ -381,8 +383,8 @@ frame is waited for, as before.
 ### Frequency entry
 
 Input > `Frequency...`, or `=` from the main screen (a build without radio support included, for a rigctl peer), tunes
-the radio that runs, or the rigctl peer (`-U`) when one is connected, from any input but an I/Q replay; with a rigctl
-peer on a radio input the peer is the one tuned. The row
+the radio that runs, or the rigctl peer (`-U`) when one is connected, from any input but an I/Q replay or I/Q
+stream; with a rigctl peer on a radio input the peer is the one tuned. The row
 reads the tuned frequency in MHz (`Frequency... [851.012500 MHz]`, `[-]` while none is known); on audio input it reads
 the frequency last sent to the rigctl peer since it connected, `[-]` before the first. Its prompt,
 `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)`, opens empty and reads a number the way a radio keypad does
@@ -419,8 +421,9 @@ the same way. During single-system P25 trunking the entry selects a new control 
 An accepted tune wins over a running scan (issue #671): a `-Y` scan or a `--trunk-scan` pauses, keeping its list,
 avoids, edits and place, and the receiver stays on the frequency typed. `y` resumes it (see the `y` row below and
 "Channel Labels"); a refused tune leaves the scan running. The row is hidden during an I/Q replay, which plays the
-tuning its capture recorded, and on audio input without a connected rigctl peer; there `=` opens one line of help
-instead (`An I/Q replay cannot retune: it plays the tuning it recorded.`, or
+tuning its capture recorded, on an I/Q stream, whose channel the sending program picks, and on audio input without a
+connected rigctl peer; there `=` opens one line of help instead (`An I/Q replay cannot retune: it plays the tuning it
+recorded.`, `An I/Q stream cannot retune: change the channel in the sending program.`, or
 `Nothing to tune: this input needs a connected rigctl peer (key 9, or Input > Rigctl).`).
 
 A frequency in the scan's own list is the exception (issue #644): a running or paused scan goes to that row, or
@@ -608,7 +611,12 @@ The squelch readout keeps the room of the longest status its setting can show, s
 from `(learning)` to `(quieting   23 dB)`. The UDP counters take six places each: up to 999999 as digits, then tenths
 of a unit (`1.2M`, `4.2G`). `FRQ:` is the tuned frequency in MHz to the Hz, in the eleven places the highest
 frequency takes (`FRQ: 4294.967295 MHz;`), and `FRQ:           - MHz;` while none is known. An Airspy names itself on a
-row of its own (`| Airspy: <serial>; <rate> samples/s;`) above its receiver row (`| G: ...`). A SoapySDR device's source
+row of its own (`| Airspy: <serial>; <rate> samples/s;`) above its receiver row (`| G: ...`), and so do an rtl_tcp
+server (`| rtl_tcp: <host>:<port>;`), an I/Q replay (`| I/Q replay: <file>;`) and an I/Q stream
+(`| I/Q stream: 127.0.0.1:1234; cs16, 48 kHz; connected`, over UDP `| I/Q stream: UDP 127.0.0.1:7355; ...`, or
+`UDP :7355` when it binds every address, its state last: `connecting`, `reconnecting` or `connected` over TCP,
+`opening` or `receiving` over UDP, `waiting for data` or `no input`); the receiver row of a replay or stream
+has no gain or PPM. A SoapySDR device's source
 row starts `| Soapy;` and ends with its arguments (`Args: driver=...;`), so at 80 columns `FRQ:` still fits ahead of
 the cut. Auto PPM and `External RTL Tuning on UDP` are rows of their own. Rows whose text changes only with
 configuration or with a scan target wrap as before, so a key or a file path is never hidden: the trunking and EDACS

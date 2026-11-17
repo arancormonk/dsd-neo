@@ -742,6 +742,74 @@ test_input_and_audio_labels(void) {
     rc |= expect_str("source soapy", lbl_current_input(&ctx, b, sizeof(b)), "Source: SoapySDR [driver=test]");
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "soapy");
     rc |= expect_str("source soapy bare", lbl_current_input(&ctx, b, sizeof(b)), "Source: SoapySDR");
+    /* Issue #743 (B5): each radio input by its own kind, where rtl_tcp, Airspy and a replay read "RTL-SDR dev N". */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtltcp:radio.example:1234");
+    DSD_SNPRINTF(opts.rtltcp_hostname, sizeof(opts.rtltcp_hostname), "%s", "radio.example");
+    opts.rtltcp_portno = 1234;
+    rc |= expect_str("source rtl_tcp", lbl_current_input(&ctx, b, sizeof(b)), "Source: rtl_tcp radio.example:1234");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "airspy");
+    rc |= expect_str("source airspy", lbl_current_input(&ctx, b, sizeof(b)), "Source: Airspy");
+    DSD_SNPRINTF(opts.airspy_info.serial, sizeof(opts.airspy_info.serial), "%s", "0123456789abcdef");
+    rc |= expect_str("source airspy serial", lbl_current_input(&ctx, b, sizeof(b)), "Source: Airspy 0123456789abcdef");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:/data/captures/capture.iq.json");
+    rc |= expect_str("source replay", lbl_current_input(&ctx, b, sizeof(b)), "Source: I/Q replay capture.iq.json");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqtcp:127.0.0.1:1234:240000:cs16:851012500");
+    rc |= expect_str("source stream tcp", lbl_current_input(&ctx, b, sizeof(b)),
+                     "Source: I/Q stream 127.0.0.1:1234 (cs16, 240 kHz)");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqudp:0.0.0.0:7355:48254:cf32");
+    rc |= expect_str("source stream udp", lbl_current_input(&ctx, b, sizeof(b)),
+                     "Source: I/Q stream UDP :7355 (cf32, 48.254 kHz)");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqudp:192.0.2.20:7355:1152000:cu8");
+    rc |= expect_str("source stream udp bound", lbl_current_input(&ctx, b, sizeof(b)),
+                     "Source: I/Q stream UDP 192.0.2.20:7355 (cu8, 1152 kHz)");
+    /* A label too narrow for the host cuts the host, so the samples after it stay. */
+    char narrow[48];
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s",
+                 "iqtcp:a-sending-program-host-with-a-long-name.example:1234:240000:cs16");
+    rc |= expect_str("source stream long host", lbl_current_input(&ctx, narrow, sizeof(narrow)),
+                     "Source: I/Q stream a-sending... (cs16, 240 kHz)");
+
+    /* Input > Switch source's radio row names the input it opens: an RTL-SDR plainly, a remembered stream or rtl_tcp
+       server by its kind. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "pulse");
+    opts.radio_in_dev[0] = '\0';
+    rc |= expect_str("switch row with no context", lbl_src_rtl(NULL, b, sizeof(b)), "RTL-SDR");
+    rc |= expect_str("radio submenu with no context", lbl_input_rtl(NULL, b, sizeof(b)), "RTL-SDR");
+    rc |= expect_str("switch row rtl", lbl_src_rtl(&ctx, b, sizeof(b)), "RTL-SDR");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof(opts.radio_in_dev), "%s", "rtl:1:851.0125M");
+    rc |= expect_str("switch row remembered rtl", lbl_src_rtl(&ctx, b, sizeof(b)), "RTL-SDR");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof(opts.radio_in_dev), "%s", "iqtcp:127.0.0.1:1234:240000:cs16");
+    rc |= expect_str("switch row remembered stream", lbl_src_rtl(&ctx, b, sizeof(b)),
+                     "I/Q stream 127.0.0.1:1234 (cs16, 240 kHz)");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof(opts.radio_in_dev), "%s", "rtltcp:radio.example:1235:851.0125M");
+    rc |= expect_str("switch row remembered rtl_tcp", lbl_src_rtl(&ctx, b, sizeof(b)), "rtl_tcp radio.example:1235");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof(opts.radio_in_dev), "%s", "airspy");
+    rc |= expect_str("switch row skips a remembered airspy", lbl_src_rtl(&ctx, b, sizeof(b)), "RTL-SDR");
+    opts.radio_in_dev[0] = '\0';
+
+    /* Input's radio submenu is named for the input it sets up. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl:0:851.0125M");
+    rc |= expect_str("radio submenu rtl", lbl_input_rtl(&ctx, b, sizeof(b)), "RTL-SDR");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtltcp:radio.example:1234");
+    rc |= expect_str("radio submenu rtl_tcp", lbl_input_rtl(&ctx, b, sizeof(b)), "RTL-SDR");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqtcp:127.0.0.1:1234:240000:cs16");
+    rc |= expect_str("radio submenu stream", lbl_input_rtl(&ctx, b, sizeof(b)), "I/Q stream");
+    rc |= expect_int("rigctl connect hidden on a stream", rigctl_connect_offered(&ctx), 0);
+    rc |= expect_int("rigctl setmod hidden on a stream", rigctl_setmod_offered(&ctx), 0);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqudp:0.0.0.0:7355:48000:cu8");
+    rc |= expect_int("rigctl connect hidden on a UDP stream", rigctl_connect_offered(&ctx), 0);
+    rc |= expect_int("rigctl setmod hidden on a UDP stream", rigctl_setmod_offered(&ctx), 0);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    rc |= expect_str("radio submenu replay", lbl_input_rtl(&ctx, b, sizeof(b)), "I/Q replay");
+    rc |= expect_int("rigctl connect hidden on a replay", rigctl_connect_offered(&ctx), 0);
+    rc |= expect_int("rigctl setmod kept on a replay", rigctl_setmod_offered(&ctx), 1);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "pulse");
+    rc |= expect_int("rigctl connect kept on audio input", rigctl_connect_offered(&ctx), 1);
+    rc |= expect_int("rigctl setmod kept on audio input", rigctl_setmod_offered(&ctx), 1);
+    rc |= expect_int("rigctl rows with no context", rigctl_connect_offered(NULL) && rigctl_setmod_offered(NULL), 1);
     opts.audio_in_type = AUDIO_IN_PULSE;
     rc |= expect_str("source pulse", lbl_current_input(&ctx, b, sizeof(b)), "Source: Pulse");
     opts.audio_in_type = AUDIO_IN_STDIN;

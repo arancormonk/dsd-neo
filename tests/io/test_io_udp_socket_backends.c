@@ -515,6 +515,14 @@ test_udp_bind_paths(void) {
     assert(strcmp(g_last_resolve_host, "127.0.0.1") == 0);
     assert(g_last_bind_port == 17005);
     assert(g_recv_timeout_count == 1);
+
+    /* Issue #743 B15: a port htons() would narrow is refused before any socket, the 0.0.0.0 bind (no lookup) too;
+       70000 bound port 4464. */
+    reset_stubs();
+    assert(UDPBind(any, 70000) == DSD_INVALID_SOCKET);
+    assert(UDPBind(any, -1) == DSD_INVALID_SOCKET);
+    assert(g_create_count == 0);
+    assert(g_bind_count == 0);
     return 0;
 }
 

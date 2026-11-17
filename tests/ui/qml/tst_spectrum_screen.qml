@@ -207,7 +207,7 @@ Item {
                     verify(!button.visible, "a replay offered to explore from here")
                     verify(!screen.tuneTo(spectrum.centerFreqHz + 100000), "tuneTo() asked a replay to retune")
                     verify(reason !== null && reason.visible, "a replay did not say why it is view-only")
-                    compare(reason.text, "An I/Q replay cannot retune.")
+                    compare(reason.text, "An I/Q replay cannot retune: it plays the tuning it recorded.")
 
                     mouseClick(tc.area, tc.xOf(testContext.spectrumPeakHz()), tc.area.height * 0.75)
                     tc.wait(50)
@@ -220,6 +220,65 @@ Item {
                 }
             } finally {
                 testContext.setMetric("replayInput", false)
+                screen.exploring = true
+            }
+        }
+
+        // Issue #743: an I/Q stream is a radio input DSD-neo cannot tune either
+        // (tunable false): view-only with no way out, and the reason names the
+        // program that picks its channel. Nothing a tap, a drag or Go to asks
+        // reaches the engine.
+        function test_03g2_an_iq_stream_is_view_only_with_its_reason() {
+            var screen = screenLoader.item
+            var tuning = findChild(screen, "spectrumTuning")
+            var button = findChild(screen, "spectrumExploreFromHere")
+            var resume = findChild(screen, "spectrumResumeScan")
+            var reason = findChild(screen, "spectrumReplayReason")
+            var sheet = findChild(screen, "spectrumGoToSheet")
+            verify(tuning !== null && button !== null && resume !== null && sheet !== null, "a tuning control is missing")
+            try {
+                for (var exploring of [true, false]) {
+                    screen.exploring = exploring
+                    testContext.setMetric("tunable", false)
+                    tryVerify(function () { return screen.viewOnly && screen.fixedInput }, 2000, "a stream offered tuning")
+                    verify(!screen.goToAllowed, "a stream allowed Go to")
+                    verify(!tuning.visible, "a stream showed the tuning controls")
+                    verify(!button.visible, "a stream offered to explore from here")
+                    verify(!screen.tuneTo(spectrum.centerFreqHz + 100000), "tuneTo() asked a stream to retune")
+                    verify(reason !== null && reason.visible, "a stream did not say why it is view-only")
+                    compare(reason.text, "An I/Q stream cannot retune: change the channel in the sending program.")
+                    testContext.setMetric("scanPaused", true)
+                    verify(!resume.visible, "a stream offered to resume a scan")
+                    testContext.setMetric("scanPaused", false)
+
+                    mouseClick(tc.area, tc.xOf(testContext.spectrumPeakHz()), tc.area.height * 0.75)
+                    tc.wait(50)
+                    compare(testContext.manualTuneCalls(), 0)
+                    compare(testContext.releaseTunerCalls(), 0)
+                    compare(testContext.tuneHzCalls(), 0)
+
+                    testContext.setMetric("tunable", true)
+                    tryVerify(function () { return !reason.visible }, 2000, "the reason outlived the stream")
+                    compare(screen.viewOnly, !exploring)
+                }
+                // Audio input is not tunable either, but it is no radio: it is not a fixed input.
+                testContext.setMetric("radioInput", false)
+                testContext.setMetric("tunable", false)
+                verify(!screen.fixedInput, "audio input read as a fixed radio input")
+                // A stream that begins under Go to closes it, with no hint left behind.
+                testContext.setMetric("radioInput", true)
+                testContext.setMetric("tunable", true)
+                screen.exploring = true
+                sheet.open(spectrum.centerFreqHz)
+                verify(sheet.visible)
+                testContext.setMetric("tunable", false)
+                tryVerify(function () { return !sheet.visible }, 2000, "Go to outlived the stream starting")
+                compare(screen.hint, "", "a stream start left a tuning hint behind")
+            } finally {
+                sheet.visible = false
+                testContext.setMetric("scanPaused", false)
+                testContext.setMetric("radioInput", true)
+                testContext.setMetric("tunable", true)
                 screen.exploring = true
             }
         }

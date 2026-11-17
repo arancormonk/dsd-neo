@@ -1,6 +1,7 @@
 # IQ Capture And Replay
 
-This guide covers `dsd-neo` RF/baseband I/Q capture and replay.
+This guide covers `dsd-neo` RF/baseband I/Q capture and replay, and raw I/Q that another program streams over the
+network (see [Raw I/Q Over The Network](#raw-iq-over-the-network)).
 
 Capture writes a raw I/Q data file plus a metadata sidecar. Replay reads that metadata/data pair, or a two-channel WAV
 I/Q recording made by other SDR software, and feeds the same RTL demodulation path used by live radio input.
@@ -415,19 +416,233 @@ failed change starts its input again: from the capture's start, with decode time
 
 ## Raw I/Q Over The Network
 
-The network input that carries raw I/Q is rtl_tcp: `-i rtltcp:host:port:freq:gain:ppm:bw` connects to a server that
-speaks the rtl_tcp protocol, `rtl_tcp` itself or another that implements it. The server sends unsigned 8-bit I/Q
-(`cu8`) after its `RTL0` header, and dsd-neo sets its frequency, sample rate, gain and correction over the
-connection, so the server must honour those commands. For TETRA give it TETRA's 72 kHz DSP bandwidth:
+dsd-neo decodes raw I/Q that another program sends over the network while it runs: SDR++, GNU Radio, a forwarder
+script, or anything else that writes plain samples to a socket. Two inputs take it:
+
+- `-i iqtcp:HOST:PORT:RATE:FORMAT[:FREQ]`: dsd-neo connects to a TCP server at HOST:PORT and reads what it sends.
+  HOST is an IPv4 address or a host name.
+- `-i iqudp:BIND:PORT:RATE:FORMAT[:FREQ]`: dsd-neo binds BIND:PORT and reads the UDP datagrams sent there. Bind
+  `127.0.0.1` for a sending program on the same computer, and `0.0.0.0` only when it runs on another one. The stream
+  has no password or encryption.
+
+```bash
+dsd-neo -fT -i iqtcp:127.0.0.1:1234:48k:cs16:426.7M
+dsd-neo -f1 -i iqudp:127.0.0.1:7355:48k:cf32
+```
+
+The samples carry no header: interleaved I then Q, little-endian, and nothing else. Nothing in the stream says its
+rate, format or frequency, so the spec gives them:
+
+- RATE: complex samples per second, as the sending program sends them. A whole number of Hz, with an optional `k` or
+  `M` (`48k`, `240000`, `1.152M`), from 8000 to 3200000. 3.2 MS/s is the most a live receiver captures at, and what
+  dsd-neo's input is sized for. A faster stream is a whole band, not a channel: set the sending program to send the
+  one channel (SDR++'s `VFO` mode, below). A RATE above it stops the start with exit status 1, as a refused plan
+  does: `I/Q stream: the stream's rate (24000000 Hz) is above 3200000 Hz; send one channel (the sending program's VFO
+  mode).`
+- FORMAT: the sample type, scaled to the floats a live receiver delivers:
+
+  | FORMAT | Sample | Scaling | Sent by, for example |
+  | --- | --- | --- | --- |
+  | `cu8` | unsigned 8-bit | (x - 127.5) / 127.5 | `rtl_sdr` piped to the network |
+  | `cs8` | signed 8-bit | x / 128 | SDR++ Int8, `hackrf_transfer` |
+  | `cs16` | signed 16-bit | x / 32768 | SDR++ Int16, SDRangel's UDP Sink at 16 bits |
+  | `cs32` | signed 32-bit | x / 2^31 | SDR++ Int32 |
+  | `cf32` | 32-bit float | as it is | SDR++ Float32, GNU Radio's complex type |
+
+  A `cf32` value that is not a finite number, or that is 2^60 or more, reads as 0. Values above full scale pass as they
+  are.
+- FREQ (optional): the frequency the stream is centred on, in Hz or with `k`, `M` or `G` (`426.7M`), up to
+  4294.967295 MHz. dsd-neo tunes nothing with it. It is the frequency the receiver reports: call history and event
+  rows carry it, and TETRA needs it to tie a trunked call's speech to the call its allocation announced. Without it
+  TETRA still decodes signalling and speech and records DMO calls, but it records no trunked call, as for a replay
+  with an unknown centre. A start under `-fT` without FREQ says so: `NOTICE: I/Q stream: no receiver frequency (FREQ)
+  was given, so TETRA decodes signalling and speech but cannot tie trunked calls to the channels their allocations
+  name.` So does every later start under TETRA (a loaded config, the RTL-SDR row bringing the stream back, a re-plan),
+  and a switch to TETRA while the stream runs, once for each start.
+
+Every field is checked before anything opens. A missing or bad one stops startup with exit status 1 and names the
+field: `-i: iqtcp: PORT '0' is not a port number from 1 to 65535 (expected iqtcp:HOST:PORT:RATE:FORMAT[:FREQ])`. The
+input is then shown and saved in one form, RATE and FREQ in Hz: `iqtcp:127.0.0.1:1234:48000:cs16:426700000`. A config
+names the same stream with `[input] source = "iqtcp"` or `"iqudp"` and the keys `iq_host`, `iq_port`, `iq_rate`,
+`iq_format` and `iq_freq` (see `docs/config-system.md`). A build without radio support refuses the input.
+
+### Rate chain and minimum rates
+
+The stream runs through the I/Q front end a replay uses, planned as a WAV recording at RATE would be (see
+[Rate Chain And Resampling](#rate-chain-and-resampling)). The DSP rate D is the DSP bandwidth asked for (the DSP
+bandwidth row, the control API's `RTL_SET_BW`, or `rtl_bw_khz` in a config whose `[input]` is the stream), else the
+mode's preset (72 kHz under `-fT`, 24 kHz under the EDACS/ProVoice presets), else 48 kHz. Under TETRA a D that is not
+a multiple of 18 kHz from 36 to 144 kHz becomes 72 kHz. A RATE of D x 2^k is only decimated; any other RATE is
+resampled first, with the replay's resampler and its limits. The plan is refused for a RATE above 3200000 (above), and
+for one that would need more than a 9x upsample to reach D. A refused plan stops the start with exit status 1 before
+anything connects, naming the reason; `--validate-config` reports it on `iq_rate`, and a config loaded into a running
+session is refused with it. The log shows the chain:
+
+```text
+I/Q stream: resampling the 48000 Hz stream to 72000 Hz (L/M=3/2, +0.00 ppm, 44 taps per phase, group delay 0.45 ms).
+Rate chain: capture=48000 Hz resampled to 72000 Hz (L/M=3/2, +0.00 ppm), base_decim=1, post=1 -> demod=72000 Hz; ...
+```
+
+A RATE the planner takes can still be too narrow for the signal. dsd-neo warns below these rates (TETRA's and the
+12.5 kHz digital modes' were measured; the others follow the channel width):
+
+| Decoding | Lowest RATE |
+| --- | --- |
+| TETRA | 25 kHz from a sending program that centres the channel exactly, else 36 kHz |
+| Analog FM or AM, and every digital mode but TETRA, NXDN48 and dPMR | 16 kHz |
+| NXDN48 or dPMR alone | 12 kHz |
+
+A start below its rate is not refused: it warns, for example `WARNING: I/Q stream: 24000 samples/s is below the 25000
+that TETRA needs (36000 when the sending program does not centre the channel exactly); decoding may fail. Raise the
+sample rate in the sending program.` Every start warns, not only the first, and so does a switch to TETRA while the
+stream runs, once for each start. For TETRA, 48 or 96 kHz is a comfortable rate. The sending program's own channel
+filter must be as wide as the signal: a TETRA carrier fills 25 kHz (its signal reaches 12.15 kHz either side of the
+centre), so a 12.5 or 18 kHz filter cuts it. Set at least 25 kHz there. No AGC is needed in the sending program; dsd-neo
+sets its own levels.
+
+A change that needs another chain restarts the stream at the new one: a switch to TETRA (or back), a new DSP bandwidth,
+or a loaded config whose `[mode]` or `rtl_bw_khz` plans another. A TCP stream reconnects, and a UDP stream binds again.
+The log says `I/Q stream: re-planning the rate chain for the TETRA decoder; the stream reconnects.`, and a mode
+switch's message names the new rate (`Decoding TETRA: I/Q stream reconnected at 72 kHz`). A plan no chain reaches is
+refused before anything stops: the stream keeps running, and the mode and DSP bandwidth go back to what they were. A
+TCP sending program must accept a new connection for this, as SDR++'s TCP server and GNU Radio's TCP Sink in server
+mode do. A UDP sending program does not notice the new bind.
+
+### Connections, silence and lost samples
+
+TCP:
+
+- The first connection must succeed. dsd-neo waits up to 10 s for it, and a start that cannot connect ends with exit
+  status 1 (`I/Q stream: cannot connect to 127.0.0.1:1234 (connection refused).`), so start the sending program first.
+  The start logs `NOTICE: I/Q stream: connecting to 127.0.0.1:1234 (cs16, 48000 samples/s)`.
+- A connection that closes or fails is reconnected for as long as dsd-neo runs: at once, then after a wait that grows
+  by 0.2 s each try, up to 2 s. The log says `I/Q stream: lost the connection to 127.0.0.1:1234 (the sending program
+  closed it); reconnecting`, then `I/Q stream: reconnected to 127.0.0.1:1234`. A host name is looked up again at each
+  try, so a sending program whose address changed is found again; a slow name server never holds up a stop or a
+  restart of the input.
+- A sending program that goes quiet but keeps the connection open is a stall (below), not a loss.
+
+UDP:
+
+- A port another program holds stops the start with exit status 1. Once bound, the log says
+  `NOTICE: I/Q stream: receiving on 127.0.0.1:7355 (cf32, 48000 samples/s)`, and at the first datagram
+  `I/Q stream: receiving from 127.0.0.1:<port>`.
+- Every datagram must hold whole samples: its size must be a multiple of the sample size (2 bytes for `cu8` and `cs8`,
+  4 for `cs16`, 8 for `cs32` and `cf32`). Any other datagram is dropped whole, with one warning per run:
+  `I/Q stream: dropped a 1470-byte datagram from 127.0.0.1:<port> that does not hold whole cf32 samples; set the
+  sending program's packet size to a multiple of 8 bytes`. Its samples are lost, so the front end starts over as after
+  a gap (below).
+- Empty datagrams, which GNU Radio and gqrx send when they stop, are ignored.
+- One sending program is read at a time. The first that sends valid data is the one read; datagrams from any other
+  address or port are dropped, with one notice. After a 2 s stall the next program that sends valid data is read.
+- A datagram can be up to 64 KiB. dsd-neo asks the system for a 4 MiB receive buffer (Linux caps it at
+  `net.core.rmem_max`). A datagram the network or the system drops is gone: UDP does not send it again.
+
+Both:
+
+- A stall is 2 s with no valid sample: `I/Q stream: no samples from 127.0.0.1:1234 for 2 s`. The level meter shows
+  `No input`. dsd-neo keeps waiting; a stall never ends the run. When samples come again the log says
+  `I/Q stream: samples from 127.0.0.1:1234 again`.
+- A gap is a reconnect, a new UDP sending program, or samples again after a stall. Before the first sample after a gap,
+  the front end starts over and samples from before the gap still waiting are dropped. The decoder treats it as a fade,
+  as after an rtl_tcp reconnect: the frame it was reading is dropped and calls end. Inside dsd-neo these gaps are named
+  `net_reconnect` (a new connection or UDP sending program) and `net_resume` (samples after a stall), beside rtl_tcp's
+  `tcp_reconnect` and the RTL-SDR's `usb_recovery`. A stream cannot be captured, so they never appear in a sidecar.
+- dsd-neo reads the socket all the time, whatever the decoder is doing. When the decoder falls behind, its input buffer
+  holds 2 s of samples; what does not fit is dropped in whole blocks and decoding goes on, as with a SoapySDR or Airspy
+  overflow. On a host too busy to read the socket at all, the sending program may drop samples on its side (SDR++ drops
+  what its socket will not take), and dsd-neo cannot see that.
+- The samples carry no sequence numbers, so dsd-neo cannot count lost ones. It measures the rate instead: after 5 s,
+  in 10 s windows (a window with a gap, a stall or a drop does not count). When three windows in a row all run more
+  than 10% below, or all more than 10% above, RATE, it warns once per connection: `I/Q stream: about 24000 samples/s
+  are arriving, but the input is set to 48000. If nothing decodes, check that the rate in the spec matches the sending
+  program's sample rate.` The usual cause is a RATE that does not match the sending program's.
+
+### A fixed channel
+
+The stream carries the one channel the sending program picked. dsd-neo cannot retune it or set its gain, so:
+
+- `-T`, `-Y`, `--trunk-scan`, `-U` and `--rtl-udp-control` beside a stream stop startup with exit status 1:
+  `-T: an I/Q stream cannot retune; it decodes only the channel the sending program streams.` So do `--auto-ppm` and
+  `--rtltcp-autotune`: `--auto-ppm: an I/Q stream has no tuner controls; adjust the radio in the sending program.`
+- A config that turns on `[trunking] enabled`, `[trunking] scanner` or `[trunk_scan] enabled` beside a stream is
+  refused at startup, by `--validate-config` and when it is loaded into a running session (see `docs/cli.md`).
+- While a stream runs, the frontends and the control API refuse what would retune it, with `An I/Q stream cannot
+  retune: change the channel in the sending program.`: a frequency entry or manual tune, trunking or the `-Y` scanner
+  turned on, a scan resume, hold or list, Signal search, a return to the control channel, the channel cycle, and a
+  rigctl connection. Gain, PPM, bias tee, tuner autogain and the rtl_tcp and Auto-PPM settings are refused with
+  `An I/Q stream has no tuner controls: adjust the radio in the sending program.` Turning trunking or a scan off, and
+  the DSP bandwidth, still work. The API's status reports `tunable: false` (see `docs/api.md`).
+- The input level meter works as on any radio input; its advice says `raise the gain in the sending program` or
+  `lower the gain in the sending program`.
+- The terminal names the input (`Source: I/Q stream 127.0.0.1:1234 (cs16, 48 kHz)`; over UDP `I/Q stream UDP :7355
+  (...)` when it binds every address, `0.0.0.0`, else `I/Q stream UDP 127.0.0.1:7355 (...)`) and shows its state on
+  the I/O pane: `| I/Q stream: 127.0.0.1:1234; cs16, 48 kHz; connected`, or `| I/Q stream: UDP 127.0.0.1:7355; ...`
+  over UDP. The state is
+  `connecting`, `reconnecting` or `connected` for TCP, `opening` or `receiving` for UDP, and `waiting for data` or
+  `no input` for either.
+- The Qt and Android apps have no I/Q stream source. A saved system whose extra decoder arguments carry
+  `-i iqtcp:` or `-i iqudp:` does not start: `An I/Q stream input is not available from saved systems yet. Run
+  dsd-neo from the command line, or remove the -i option from the extra decoder arguments.`
+
+`--iq-capture` is refused with a stream: `--iq-capture: an I/Q stream cannot be recorded here; record it in the sending
+program instead (an SDR++ baseband WAV plays back with --iq-replay).`
+
+Limits: IPv4 only; little-endian samples only; no framed formats (VITA-49, SoapyRemote, ZeroMQ, SDRangel's Remote
+Sink). Loss shows only through the rate check.
+
+### Sending programs
+
+**SDR++ (IQ Exporter).** The IQ Exporter module ships with SDR++ but is not on by default.
+
+1. In Module Manager, add an IQ Exporter instance.
+2. Set its Mode to `VFO`. It then sends the channel under its VFO, centred at 0 Hz, wherever the VFO sits. `Baseband`
+   sends SDR++'s whole band, centred on SDR++'s centre frequency; dsd-neo decodes only the centre of it.
+3. For TETRA set its sample rate to 48k or 96k; its 24k is too narrow. 24k or 48k serve the 12.5 kHz modes.
+4. Keep Protocol `TCP (Server)`, the host `localhost` and port 1234, the defaults. For dsd-neo on another computer,
+   use host `0.0.0.0`, and give dsd-neo the SDR++ computer's address as HOST.
+5. Keep the sample type `Int16` (`cs16`). `Int8` is `cs8`, `Int32` is `cs32` and `Float32` is `cf32`.
+6. Put the VFO on the carrier and start the exporter, then dsd-neo, with the VFO's frequency as FREQ:
+
+```bash
+dsd-neo -fT -i iqtcp:127.0.0.1:1234:48k:cs16:426.7M
+```
+
+SDR++'s server takes a new connection whenever one drops, so reconnects and re-plans work. Its `UDP` protocol works
+too, with `-i iqudp:` on the port it sends to; its packets always hold whole samples.
+
+**GNU Radio.** Use the UDP Sink with Header `None`: the other headers put a sequence number in front of the samples,
+which dsd-neo would read as samples. Its payload size must be a multiple of the sample size; the default 1472 bytes
+is a multiple of 8, so it suits every format. Type `Complex` sends `cf32`. Point it at the address and port dsd-neo
+binds:
+
+```bash
+dsd-neo -f1 -i iqudp:127.0.0.1:7355:48k:cf32
+```
+
+The TCP Sink in server mode also works, with `-i iqtcp:`, and takes a new connection after one drops. In client mode
+it connects only once, so dsd-neo, a client too, cannot use it.
+
+**Narda SignalShark.** Its own I/Q stream is VITA-49: packets with headers and context packets, in big-endian byte
+order. dsd-neo cannot read that directly. A small forwarder program must take the samples out of the packets and send
+them on as plain `cs16` little-endian, over TCP or UDP, at the rate the SignalShark streams. For TETRA, set the
+SignalShark's bandwidth to at least 25 kHz. A TCP forwarder should accept a new connection whenever one drops, since
+dsd-neo reconnects after a loss and at every re-plan.
+
+**SDRangel.** Its UDP Sink channel sends `cs16` when set to 16 bits. Its 24-bit setting puts 24 bits in 32-bit
+samples, which read as `cs32` 48 dB too quietly, so use 16 bits.
+
+**rtl_tcp.** A server that speaks the rtl_tcp protocol (`rtl_tcp` itself, or another that implements it) is read
+with `-i rtltcp:host:port:freq:gain:ppm:bw`, not with these inputs. The server sends `cu8` after its `RTL0` header, and
+dsd-neo sets its frequency, sample rate, gain and correction over the connection, so it can retune, trunk and scan.
+For TETRA give it TETRA's 72 kHz DSP bandwidth:
 
 ```bash
 dsd-neo -fT -i rtltcp:192.168.1.10:1234:426.7M:22:0:72
 ```
 
 `-i tcp` and `-i udp` carry demodulated PCM audio, not I/Q (see `docs/network-audio.md`), so they cannot feed TETRA or
-any other mode that needs I/Q. dsd-neo has no input for headerless I/Q streamed over TCP or UDP (`cf32` or otherwise)
-from other SDR software. To decode TETRA from another SDR program, record a WAV I/Q recording there, centred on the
-carrier (in SDR++, see [SDR++ Baseband Recordings](#sdr-baseband-recordings)), and replay it with `--iq-replay`.
+any other mode that needs I/Q.
 
 ## Replay Pacing And The Decode Clock
 
@@ -610,11 +825,11 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   on does not log it, nor does an `--iq-loop` pass that handed the demodulator nothing, so a log without it did not
   replay the whole capture.
 - Only the metadata-scheduled replay events retune a replay. The retunes a user asks for are refused during one, from
-  the terminal, Qt/Android and the control API alike, with "An I/Q replay cannot retune.", as a failed command rather
-  than a tune that never lands: a manual tune, a frequency entry, the tuner release, the return to the control
-  channel (`return_cc`), and the channel cycle (`channel_cycle` and `channel_cycle_prev`, the terminal's `L` and `J`:
-  the next or previous LCN, P25 control channel candidate or `-Y` row; `--trunk-scan` refuses a replay input
-  altogether). The terminal hides its `Frequency...` row during a replay
+  the terminal, Qt/Android and the control API alike, with "An I/Q replay cannot retune: it plays the tuning it
+  recorded.", as a failed command rather than a tune that never lands: a manual tune, a frequency entry, the tuner
+  release, the return to the control channel (`return_cc`), and the channel cycle (`channel_cycle` and
+  `channel_cycle_prev`, the terminal's `L` and `J`: the next or previous LCN, P25 control channel candidate or `-Y`
+  row; `--trunk-scan` refuses a replay input altogether). The terminal hides its `Frequency...` row during a replay
   rather than open a prompt whose answer is refused. Commands whose main effect is not a retune still act: the scan
   hold and avoid, skip and lockout. The retunes trunking and the conventional scanner ask for are ignored, as
   described above.

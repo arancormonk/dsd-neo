@@ -56,6 +56,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/iq_capture.h>
@@ -1250,7 +1251,8 @@ capture_gain_now(rig& r, const char* data_path, const char* meta_path, char* out
     return meta;
 }
 
-/* A replay device opened on @p meta: the mode it reports is its capture's, whatever its gain setters are asked. */
+/* A replay device opened on @p meta: the mode it reports is its capture's, whatever its gain setters are asked, and
+ * the setters say the control is not there (issue #743 B2). */
 void
 expect_replay_keeps_gain_mode(const dsd_iq_replay_config& meta, int want_auto, int want_tenths) {
     input_ring_state ring{};
@@ -1267,11 +1269,58 @@ expect_replay_keeps_gain_mode(const dsd_iq_replay_config& meta, int want_auto, i
         }
         /* The stream's start asks for its configured gain, a scan target's profile for another; none changes it. */
         if (pass == 0) {
-            assert(rtl_device_set_gain(dev, want_auto ? 300 : -100) == 0);
+            assert(rtl_device_set_gain(dev, want_auto ? 300 : -100) == DSD_ERR_NOT_SUPPORTED);
         } else if (pass == 1) {
-            int selected = 0;
-            assert(rtl_device_set_gain_nearest(dev, 150, &selected) == 0);
+            int selected = 4242;
+            assert(rtl_device_set_gain_nearest(dev, 150, &selected) == DSD_ERR_NOT_SUPPORTED && selected == 4242);
         }
+    }
+    rtl_device_destroy(dev);
+    input_ring_destroy(&ring);
+}
+
+/* Issue #743 B2: a replay of the manual capture @p meta (297 tenths of a dB) has no tuner, so every tuner setter refuses
+ * with DSD_ERR_NOT_SUPPORTED, an unchanged value included (the centre and rate the capture recorded, the PPM correction
+ * it runs, 0, which a cached-success shortcut used to answer), and its getters still report the capture. */
+void
+expect_replay_setters_not_supported(const dsd_iq_replay_config& meta) {
+    const uint32_t center_hz = (uint32_t)meta.capture_center_frequency_hz;
+    const uint32_t rate_hz = meta.sample_rate_hz;
+    input_ring_state ring{};
+    assert(input_ring_init(&ring, 1U << 16) == 0);
+    rtl_device* dev = rtl_device_create_iq_replay(&meta, &ring, nullptr);
+    assert(dev != nullptr);
+    for (int pass = 0; pass < 2; pass++) {
+        int selected = 4242;
+        assert(rtl_device_set_frequency(dev, center_hz) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_frequency(dev, center_hz + 25000U) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_sample_rate(dev, rate_hz) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_sample_rate(dev, rate_hz / 2U) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_gain(dev, 297) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_gain_nearest(dev, 297, &selected) == DSD_ERR_NOT_SUPPORTED && selected == 4242);
+        assert(rtl_device_set_ppm(dev, 0) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_ppm(dev, 5) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_direct_sampling(dev, 0) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_direct_sampling(dev, 2) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_offset_tuning_enabled(dev, 0) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_offset_tuning_enabled(dev, 1) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_tuner_bandwidth(dev, 0U) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_tuner_bandwidth(dev, 200000U) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_bias_tee(dev, 0) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_bias_tee(dev, 1) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_tcp_autotune(dev, 1) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_xtal_freq(dev, 28800000U, 0U) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_testmode(dev, 0) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_testmode(dev, 1) == DSD_ERR_NOT_SUPPORTED);
+        assert(rtl_device_set_if_gain(dev, 1, 60) == DSD_ERR_NOT_SUPPORTED);
+        /* The getters report what the capture recorded, before and after every refusal. */
+        int gain = 0;
+        assert(rtl_device_get_sample_rate(dev) == (int)rate_hz);
+        assert(rtl_device_get_tuner_gain(dev, &gain) == 0 && gain == 297);
+        assert(rtl_device_is_auto_gain(dev) == 0);
+        assert(rtl_device_get_offset_tuning(dev) == 0 && rtl_device_get_offset_tuning_hz(dev) == 0U);
+        assert(rtl_device_supports_ppm(dev) == 0);
+        assert(rtl_device_get_native_sample_format(dev) == DSD_IQ_FORMAT_CU8);
     }
     rtl_device_destroy(dev);
     input_ring_destroy(&ring);
@@ -1316,6 +1365,7 @@ test_capture_records_gain_mode(void) {
     rig_close(r);
 
     expect_replay_keeps_gain_mode(manual, 0, 297);
+    expect_replay_setters_not_supported(manual);
     expect_replay_keeps_gain_mode(automatic, 1, 0);
     dsd_iq_replay_config_clear(&manual);
     dsd_iq_replay_config_clear(&automatic);

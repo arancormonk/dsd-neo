@@ -84,6 +84,7 @@ typedef enum {
     DSD_APP_RR_INPUT_AIRSPY = 3,    /**< an Airspy, whose DSP rate is its DSP bandwidth too (issue #806) */
     DSD_APP_RR_INPUT_IQ_REPLAY = 4, /**< an I/Q replay, which a mode change re-plans or refuses (issue #701) */
     DSD_APP_RR_INPUT_SYMBOLS = 5,   /**< a symbol capture (.bin dibits, or float symbols) */
+    DSD_APP_RR_INPUT_IQ_STREAM = 6, /**< a raw I/Q stream, which a mode change re-plans or refuses (issue #743) */
 } dsd_app_rr_input_kind;
 
 /**

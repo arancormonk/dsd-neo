@@ -1669,6 +1669,95 @@ test_backend_tune_refuses_past_the_tuner_limit(void) {
 #endif
 }
 
+/* One of the four public tune entries, by number, for test_fixed_tuning_refused_at_every_tune_entry(). */
+static dsd_trunk_tune_result
+tune_entry(int entry, dsd_opts* opts, dsd_state* state, uint64_t* scan_request) {
+    switch (entry) {
+        case 0: return dsd_engine_trunk_tune_to_freq_request(opts, state, 852000000, 10, 0U);
+        case 1: return dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U);
+        case 2: return dsd_engine_return_to_cc_request(opts, state, 0U);
+        default: return dsd_engine_scan_tune_to_freq(opts, state, 852000000, 10, scan_request);
+    }
+}
+
+/*
+ * Issue #743 B12: an input with fixed tuning (an I/Q replay, an I/Q stream over TCP or UDP) is refused at each public
+ * tune entry before anything changes, with a rigctl peer connected beside it: a replay answers DEFERRED, so the
+ * trunking machines retry it as any deferral, and a stream FAILED. The peer used to take the tune and move a radio the
+ * session does not hear while the replay went on playing its capture. Neither the peer nor the RTL stream is asked, no
+ * retune profile is queued, no audio drained, no request ID begun (the scan tune hands back none), the cached centre
+ * and the frequency last sent stay, the voice channel is not released, and the scan row's timed digital family is not
+ * spent.
+ */
+static void
+test_fixed_tuning_refused_at_every_tune_entry(void) {
+    static const struct {
+        const char* dev;
+        dsd_trunk_tune_result want;
+    } inputs[] = {
+        {"iqreplay:capture.iq.json", DSD_TRUNK_TUNE_RESULT_DEFERRED},
+        {"iqtcp:127.0.0.1:5000:240k:cs16", DSD_TRUNK_TUNE_RESULT_FAILED},
+        {"iqudp:0.0.0.0:5000:240k:cu8", DSD_TRUNK_TUNE_RESULT_FAILED},
+    };
+
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    for (size_t i = 0; i < sizeof inputs / sizeof inputs[0]; i++) {
+        for (int entry = 0; entry < 4; entry++) {
+            DSD_MEMSET(opts, 0, sizeof(*opts));
+            DSD_MEMSET(state, 0, sizeof(*state));
+            opts->audio_in_type = AUDIO_IN_RTL;
+            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", inputs[i].dev);
+            opts->use_rigctl = 1;
+            opts->rigctl_sockfd = 5;
+            opts->trunk_enable = 1;
+            opts->trunk_is_tuned = 1;
+            opts->rtlsdr_center_freq = 853000000U;
+            opts->rigctl_sent_freq_hz = 853000000U;
+            state->rtl_ctx = (RtlSdrContext*)state;
+            state->p25_cc_freq = 851000000;
+            state->trunk_cc_freq = 851000000;
+            state->p25_vc_freq[0] = 853000000;
+            g_setfreq_result = true;
+            g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+            rtl_stream_clear_pending_retune_profile();
+            g_scan_row_timed_digital_family = 1;
+            const int setfreq_before = g_setfreq_calls;
+            const int setmod_before = g_setmod_calls;
+            const int rtl_before = g_rtl_tune_calls;
+            const int analog_before = g_rtl_analog_prepare_calls;
+            const int drain_before = g_drain_audio_calls;
+            const uint64_t request_before = g_tune_request_next;
+            uint64_t scan_request = UINT64_C(77);
+
+            const dsd_trunk_tune_result got = tune_entry(entry, opts, state, &scan_request);
+            if (got != inputs[i].want || g_setfreq_calls != setfreq_before) {
+                DSD_FPRINTF(stderr, "%s, entry %d: result %d, %d peer tunes (want %d, none)\n", inputs[i].dev, entry,
+                            (int)got, g_setfreq_calls - setfreq_before, (int)inputs[i].want);
+            }
+            assert(got == inputs[i].want);
+            assert(g_setfreq_calls == setfreq_before);
+            assert(g_setmod_calls == setmod_before);
+            assert(g_rtl_tune_calls == rtl_before);
+            assert(g_rtl_pending_active == 0);
+            assert(g_rtl_analog_prepare_calls == analog_before);
+            assert(g_drain_audio_calls == drain_before);
+            assert(g_tune_request_next == request_before);
+            assert(entry != 3 || scan_request == 0U);
+            assert(opts->rtlsdr_center_freq == 853000000U);
+            assert(opts->rigctl_sent_freq_hz == 853000000U);
+            assert(opts->trunk_is_tuned == 1);
+            assert(state->p25_vc_freq[0] == 853000000);
+            assert(state->trunk_cc_freq == 851000000);
+            assert(g_scan_row_timed_digital_family == 1);
+        }
+    }
+    g_scan_row_timed_digital_family = 0;
+    free(state);
+    free(opts);
+}
+
 #ifdef USE_RADIO
 /* A -Y row tuned with the RTL front end set up for @p freq_hz from the AM monitor's WIDE channel, with nothing queued
    for its retune unless @p stale_symbol_profile queues a P25 C4FM symbol profile for the same target first. Returns the
@@ -2825,6 +2914,7 @@ main(void) {
 
     test_backend_tune_updates_center_freq_cache();
     test_backend_tune_refuses_past_the_tuner_limit();
+    test_fixed_tuning_refused_at_every_tune_entry();
 #ifdef USE_RADIO
     test_analog_scan_row_queues_analog_profile();
 #endif

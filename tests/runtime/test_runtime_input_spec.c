@@ -7,6 +7,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/spec_fields.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -790,6 +791,242 @@ test_spec_gain_overflow_refused(void) {
     return rc;
 }
 
+/* Issue #743 B7: an empty field keeps its place and leaves its option at the default the options hold: `rtl::851M`
+   read the frequency as the device and every later field one place early (`rtl::851.0125M:20:3` tuned 20 Hz at gain
+   3), and `rtltcp:host::851M` read the frequency as the port. */
+static int
+test_spec_empty_device_keeps_its_place(void) {
+    int rc = 0;
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return 1;
+    }
+    opts->rtl_dev_index = 2;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl::851.0125M:20:3");
+    if (dsd_rtl_input_spec_apply(opts) != 1 || opts->rtl_dev_index != 2 || opts->rtlsdr_center_freq != 851012500U
+        || opts->rtl_gain_value != 20 || opts->rtlsdr_ppm_error != 3 || opts->rtl_dsp_bw_khz != 48) {
+        DSD_FPRINTF(stderr, "rtl::851.0125M:20:3: dev %d freq %u gain %d ppm %d bw %d\n", opts->rtl_dev_index,
+                    opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz);
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
+static int
+test_spec_empty_port_keeps_its_place(void) {
+    int rc = 0;
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return 1;
+    }
+    opts->rtltcp_portno = 1234;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1::851.0125M:20:0");
+    if (dsd_rtl_input_spec_apply(opts) != 1 || strcmp(opts->rtltcp_hostname, "127.0.0.1") != 0
+        || opts->rtltcp_portno != 1234 || opts->rtlsdr_center_freq != 851012500U || opts->rtl_gain_value != 20
+        || opts->rtlsdr_ppm_error != 0) {
+        DSD_FPRINTF(stderr, "rtltcp:127.0.0.1::851.0125M:20:0: host %s port %d freq %u gain %d ppm %d\n",
+                    opts->rtltcp_hostname, opts->rtltcp_portno, opts->rtlsdr_center_freq, opts->rtl_gain_value,
+                    opts->rtlsdr_ppm_error);
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
+/* Empty tuning fields between set ones: each keeps what the options held, the DSP bandwidth its source too. */
+static int
+test_spec_empty_tuning_fields_keep_the_options(void) {
+    int rc = 0;
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", "seed.example");
+    opts->rtltcp_portno = 1234;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp::5000::22::::2:");
+    g_log_text[0] = '\0';
+    if (dsd_rtl_input_spec_apply(opts) != 1 || strcmp(opts->rtltcp_hostname, "seed.example") != 0
+        || opts->rtltcp_portno != 5000 || opts->rtlsdr_center_freq != 155340000U || opts->rtl_gain_value != 22
+        || opts->rtlsdr_ppm_error != -7 || opts->rtl_dsp_bw_khz != 48
+        || opts->rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT || fabs(opts->rtl_squelch_level - 0.25) > 1e-12
+        || opts->rtl_volume_multiplier != 2 || g_log_text[0] != '\0') {
+        DSD_FPRINTF(stderr, "rtltcp::5000::22::::2: host %s port %d freq %u gain %d ppm %d bw %d vol %d log '%s'\n",
+                    opts->rtltcp_hostname, opts->rtltcp_portno, opts->rtlsdr_center_freq, opts->rtl_gain_value,
+                    opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, opts->rtl_volume_multiplier, g_log_text);
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
+static int
+test_spec_empty_fields_keep_their_place(void) {
+    return test_spec_empty_device_keeps_its_place() | test_spec_empty_port_keeps_its_place()
+           | test_spec_empty_tuning_fields_keep_the_options();
+}
+
+/* Issue #743 B15: an rtl_tcp port that is not a whole number from 1 to 65535 is refused with a message naming it, and
+   the spec changes nothing; it was narrowed to 16 bits (99999 connected to 34463), or read as its leading digits (12x
+   as 12). An empty port keeps the default (test_spec_empty_fields_keep_their_place()). */
+static int
+test_spec_rtltcp_port_refused(void) {
+    int rc = 0;
+    static const char* const refused[] = {"12x", "99999", "65536", "0", "-1", "0x50", "abc"};
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", "seed.example");
+        opts->rtltcp_portno = 1234;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:radio.example:%s:851M", refused[i]);
+        g_log_text[0] = '\0';
+        char quoted[32];
+        DSD_SNPRINTF(quoted, sizeof quoted, "\"%s\"", refused[i]);
+        if (dsd_rtl_input_spec_apply(opts) != -1 || opts->rtltcp_portno != 1234
+            || strcmp(opts->rtltcp_hostname, "seed.example") != 0 || opts->rtlsdr_center_freq != 155340000U
+            || !strstr(g_log_text, quoted) || !strstr(g_log_text, "65535")) {
+            DSD_FPRINTF(stderr, "port %s: host %s port %d freq %u log '%s'\n", refused[i], opts->rtltcp_hostname,
+                        opts->rtltcp_portno, opts->rtlsdr_center_freq, g_log_text);
+            rc = 1;
+        }
+        free(opts);
+    }
+    static const int accepted[] = {1, 65535};
+    for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:radio.example:%d", accepted[i]);
+        if (dsd_rtl_input_spec_apply(opts) != 1 || opts->rtltcp_portno != accepted[i]) {
+            DSD_FPRINTF(stderr, "port %d: got %d\n", accepted[i], opts->rtltcp_portno);
+            rc = 1;
+        }
+        free(opts);
+    }
+    return rc;
+}
+
+/* The field splitter every network and RTL-family spec reads through keeps empty fields in their places. */
+static int
+test_split_fields_keeps_empty_fields(void) {
+    int rc = 0;
+
+    static const struct {
+        const char* spec;
+        int count;
+        const char* fields[4];
+    } cases[] = {
+        {"rtl::851M", 3, {"rtl", "", "851M", NULL}},
+        {"udp", 1, {"udp", NULL, NULL, NULL}},
+        {"", 1, {"", NULL, NULL, NULL}},
+        {"tcp:", 2, {"tcp", "", NULL, NULL}},
+        {"::", 3, {"", "", "", NULL}},
+        {"a:b:c:d", 4, {"a", "b", "c", "d"}},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char buf[64];
+        char* fields[4] = {NULL, NULL, NULL, NULL};
+        const int count = dsd_spec_split_fields(cases[i].spec, buf, sizeof buf, fields, 4);
+        int ok = count == cases[i].count;
+        for (int f = 0; ok && f < count; f++) {
+            ok = fields[f] && strcmp(fields[f], cases[i].fields[f]) == 0;
+        }
+        if (!ok) {
+            DSD_FPRINTF(stderr, "split '%s': %d fields, want %d\n", cases[i].spec, count, cases[i].count);
+            rc = 1;
+        }
+    }
+    /* More fields than room: the count says so, and the first ones are stored. */
+    char buf[64];
+    char* fields[2] = {NULL, NULL};
+    if (dsd_spec_split_fields("a:b:c", buf, sizeof buf, fields, 2) != 3 || strcmp(fields[0], "a") != 0
+        || strcmp(fields[1], "b") != 0) {
+        DSD_FPRINTF(stderr, "split past max_fields\n");
+        rc = 1;
+    }
+    char small[4];
+    if (dsd_spec_split_fields("abcd", small, sizeof small, fields, 2) != -1
+        || dsd_spec_split_fields(NULL, buf, sizeof buf, fields, 2) != -1
+        || dsd_spec_split_fields("a", buf, sizeof buf, fields, 0) != -1) {
+        DSD_FPRINTF(stderr, "split refusals\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+static int
+test_spec_parse_port(void) {
+    int rc = 0;
+
+    static const struct {
+        const char* text;
+        int min_port;
+        int want;
+    } accepted[] = {{"1", 1, 1}, {"65535", 1, 65535}, {"0", 0, 0}, {"007355", 1, 7355}};
+
+    for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
+        int port = -5;
+        if (dsd_spec_parse_port(accepted[i].text, accepted[i].min_port, &port) != 0 || port != accepted[i].want) {
+            DSD_FPRINTF(stderr, "port '%s': got %d\n", accepted[i].text, port);
+            rc = 1;
+        }
+    }
+    static const char* const refused[] = {"", "0", "65536", "99999", "-1", "+80", " 80", "80 ", "12x", "0x50", "1e3"};
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        int port = -5;
+        if (dsd_spec_parse_port(refused[i], 1, &port) != -1 || port != -5) {
+            DSD_FPRINTF(stderr, "port '%s' not refused (%d)\n", refused[i], port);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+/* `kind[:host[:port]]`: an empty or missing field keeps the caller's default; a bad port refuses the spec unchanged. */
+static int
+test_endpoint_spec_read(void) {
+    int rc = 0;
+
+    static const struct {
+        const char* spec;
+        int min_port;
+        int result;
+        const char* host;
+        int port;
+    } cases[] = {
+        {"tcp:radio.example:7356", 1, 0, "radio.example", 7356},
+        {"udp::17355", 0, 0, "default", 17355},
+        {"udp:0.0.0.0:", 0, 0, "0.0.0.0", 1000},
+        {"udp:0.0.0.0:0", 0, 0, "0.0.0.0", 0},
+        {"udp", 0, 0, "default", 1000},
+        {"m17udp::", 1, 0, "default", 1000},
+        {"tcp:h:7356:ignored", 1, 0, "h", 7356},
+        {"tcp:h:0", 1, -1, "default", 1000},
+        {"tcp:h:12x", 1, -1, "default", 1000},
+        {"udp:h:105659", 0, -1, "default", 1000},
+        {"tcp:a-host-name-longer-than-sixteen:1", 1, -1, "default", 1000},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char host[16];
+        DSD_SNPRINTF(host, sizeof host, "%s", "default");
+        int port = 1000;
+        g_log_text[0] = '\0';
+        const int result = dsd_endpoint_spec_read(cases[i].spec, cases[i].min_port, host, sizeof host, &port);
+        if (result != cases[i].result || strcmp(host, cases[i].host) != 0 || port != cases[i].port
+            || (result != 0 && !strstr(g_log_text, cases[i].spec))) {
+            DSD_FPRINTF(stderr, "endpoint '%s': %d host %s port %d log '%s'\n", cases[i].spec, result, host, port,
+                        g_log_text);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -808,5 +1045,10 @@ main(void) {
     rc |= test_soapy_invalid_tuning_field_fallback();
     rc |= test_soapy_suffixed_frequency_out_of_range();
     rc |= test_spec_monitor_volume_range();
+    rc |= test_spec_empty_fields_keep_their_place();
+    rc |= test_spec_rtltcp_port_refused();
+    rc |= test_split_fields_keeps_empty_fields();
+    rc |= test_spec_parse_port();
+    rc |= test_endpoint_spec_read();
     return rc;
 }

@@ -2462,7 +2462,7 @@ cannot report it. History rows open full details, including timestamps and messa
 
 The Spectrum view is view-only during an I/Q replay: the replay plays the tuning its
 capture recorded, so tapping, stepping, **Go to** and **Explore from here** are not
-offered, and the view says **An I/Q replay cannot retune.**
+offered, and the view says **An I/Q replay cannot retune: it plays the tuning it recorded.**
 
 A typed frequency wins over a scan; a tap or a drag does not. While a scan list runs,
 its Spectrum view stays **VIEW ONLY** for taps and drags, but **Go to** is offered and

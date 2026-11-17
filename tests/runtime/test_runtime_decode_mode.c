@@ -962,6 +962,27 @@ test_tetra_rate_rules(void) {
                               "DSP rate 162 kHz is outside 36 to 144 kHz, and this replay cannot be resampled to one");
     rc |= expect_tetra_advice("replay, brief", &opts, 50000, 1,
                               "DSP rate 50 kHz is no multiple of 18 kHz, and this replay cannot be resampled to one");
+    /* Issue #743: a raw I/Q stream re-plans to TETRA's rate through a restart, so only a rate no plan resamples to one
+       reaches the advice, which names the sending program's rate as the fix, never a DSP bandwidth in a spec. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:1234:240000:cs16");
+    rc |= expect_tetra_advice("stream at 48 kHz", &opts, 48000, 0,
+                              "TETRA cannot decode at this I/Q stream's sample rate; set the sending program's sample "
+                              "rate to 48 or 96 kHz");
+    rc |= expect_tetra_advice("stream at 48 kHz, brief", &opts, 48000, 1,
+                              "TETRA cannot use this I/Q stream's rate; send 48 or 96 kHz instead");
+    rc |= expect_tetra_advice("stream at 72 kHz", &opts, 72000, 0, "");
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    /* Issue #743 (B14): a session started as a replay keeps its replay flags after a config apply moves it onto a live
+       rtl_tcp radio. That radio gets the live advice, never the replay's. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    opts.iq_replay_requested = 1;
+    opts.iq_replay_active = 1;
+    rc |=
+        expect_tetra_advice("live rtl_tcp after a replay", &opts, 48000, 0,
+                            "TETRA needs a 72 kHz DSP bandwidth, not 48 kHz; dsd-neo does not change it on its own, so "
+                            "set it to 72 kHz (-i rtltcp:host:port:freq:gain:ppm:72)");
     char tiny[1];
     if (dsd_tetra_dsp_rate_advice(&opts, 48000, 0, NULL, 8U) != -1
         || dsd_tetra_dsp_rate_advice(&opts, 48000, 0, tiny, 0U) != -1) {

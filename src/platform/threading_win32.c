@@ -67,6 +67,15 @@ dsd_thread_join(dsd_thread_t thread) {
     return EINVAL;
 }
 
+int
+dsd_thread_detach(dsd_thread_t thread) {
+    if (thread == NULL || thread == INVALID_HANDLE_VALUE) {
+        return EINVAL;
+    }
+    /* The thread runs on; closing the last handle lets Windows free it once it returns. */
+    return CloseHandle(thread) ? 0 : dsd_win32_thread_errno(GetLastError());
+}
+
 dsd_thread_t
 dsd_thread_self(void) {
     return GetCurrentThread();

@@ -1411,15 +1411,16 @@ expect_source_policy_matrix(void) {
     static constexpr int kRadioSourceRtlTcp = 1;
     static constexpr int kRadioSourceSoapy = 2;
     static constexpr int kRadioSourceIqReplay = 3;
+    static constexpr int kRadioSourceNetIq = 5;
 
     int rc = 0;
 
-    int kinds[8] = {};
-    int rtltcp[8] = {};
-    int soapy[8] = {};
-    int replay[8] = {};
-    int family[8] = {};
-    char names[96] = {};
+    int kinds[10] = {};
+    int rtltcp[10] = {};
+    int soapy[10] = {};
+    int replay[10] = {};
+    int family[10] = {};
+    char names[128] = {};
     char soapy_args[64] = {};
     rc |= expect_int_eq("source policy rejects null kind",
                         rtl_stream_test_source_policy_matrix(NULL, rtltcp, soapy, replay, family,
@@ -1447,7 +1448,7 @@ expect_source_policy_matrix(void) {
                                                              soapy_args, sizeof(soapy_args)),
                         -1);
     rc |= expect_int_eq("source policy rejects short arrays",
-                        rtl_stream_test_source_policy_matrix(kinds, rtltcp, soapy, replay, family, 7U, names,
+                        rtl_stream_test_source_policy_matrix(kinds, rtltcp, soapy, replay, family, 9U, names,
                                                              sizeof(names), soapy_args, sizeof(soapy_args)),
                         -1);
     rc |= expect_int_eq("source policy rejects null names",
@@ -1483,6 +1484,9 @@ expect_source_policy_matrix(void) {
     rc |= expect_int_eq("soapy arg source", kinds[5], kRadioSourceSoapy);
     rc |= expect_int_eq("iq replay source", kinds[6], kRadioSourceIqReplay);
     rc |= expect_int_eq("rtl spec source", kinds[7], kRadioSourceRtlUsb);
+    rc |= expect_int_eq("iq stream TCP source", kinds[8], kRadioSourceNetIq);
+    rc |= expect_int_eq("iq stream UDP source", kinds[9], kRadioSourceNetIq);
+    rc |= expect_int_eq("iq stream is no replay", replay[8] + replay[9], 0);
     rc |= expect_int_eq("rtltcp predicate only matches rtltcp", rtltcp[2] + rtltcp[3], 2);
     rc |= expect_int_eq("soapy predicate only matches soapy", soapy[4] + soapy[5], 2);
     rc |= expect_int_eq("replay predicate only matches replay", replay[6], 1);
@@ -1490,7 +1494,7 @@ expect_source_policy_matrix(void) {
         rc |= expect_int_eq("radio-family predicate covers known source", family[i], 1);
     }
     rc |= expect_int_eq("perf source names stable",
-                        std::strcmp(names, "rtl|rtl|rtltcp|rtltcp|soapy|soapy|iq_replay|rtl"), 0);
+                        std::strcmp(names, "rtl|rtl|rtltcp|rtltcp|soapy|soapy|iq_replay|rtl|iq_stream|iq_stream"), 0);
     rc |= expect_int_eq("soapy args extraction stable", std::strcmp(soapy_args, "|||driver=rtlsdr"), 0);
     return rc;
 }

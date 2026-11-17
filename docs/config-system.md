@@ -58,7 +58,7 @@ Example:
 
 ```ini
 [input]
-source = "rtl"              # pulse / rtl / rtltcp / soapy / file / tcp / udp
+source = "rtl"              # pulse / rtl / rtltcp / soapy / airspy / file / tcp / udp / iqtcp / iqudp
 rtl_device = 0
 rtl_freq = "851.375M"       # supports K/M/G suffix or raw Hz
 
@@ -224,6 +224,9 @@ explicitly requested.
 - Environment: `DSD_NEO_CONFIG=/path/to/config.ini`
 - Explicit paths may be absolute, relative to the current working directory, or use `~`/environment expansion.
 
+`--no-config` is still accepted from older command lines, but it does nothing: dsd-neo prints a NOTICE saying so. To
+start without a config, leave out `--config` and any `.ini` argument, and unset `DSD_NEO_CONFIG`.
+
 When multiple config-path sources are present, explicit CLI paths win:
 
 1. `--config PATH` or a single positional `*.ini`
@@ -274,6 +277,23 @@ line and log say so. Two startup refusals are not checked here, because the save
 scan needs an RTL-family input or rigctl tuning (`-U`, which no config key holds), and `frontend = terminal` needs a
 build with the terminal UI.
 
+An I/Q stream input (`source = "iqtcp"` or `"iqudp"`, or `-i iqtcp:` / `-i iqudp:`) decodes the one channel another
+program sends, and nothing can retune it (issue #743). So `[trunking] enabled`, `[trunking] scanner` and
+`[trunk_scan] enabled` cannot be on beside one, by one rule everywhere:
+
+- `--validate-config` reports each as an error (`trunking.enabled cannot be used with an I/Q stream input; it decodes
+  only the channel the sending program streams`).
+- Startup stops with exit status 1, before anything connects, when the input that starts is a stream and the loaded
+  config's own setting is on, even when the command line would have turned that setting off for this run:
+  `[trunking] enabled: an I/Q stream cannot retune; it decodes only the channel the sending program streams. Turn
+  [trunking] enabled off in the config file, or start without that file (no --config, no .ini file argument, and
+  DSD_NEO_CONFIG unset).` This holds for a config loaded through `DSD_NEO_CONFIG` too.
+- A config loaded into a running session that would leave a stream beside one of them is not applied, whether it
+  changes the input, the trunking keys or both, and so is a switch back to a remembered stream while one is on.
+- A config that names a stream `[input]` while a `-Y` scan or trunk scan runs is not applied either. The log says
+  `Config not applied: an I/Q stream input cannot run a scan; stop the scan first.`, and the status line
+  `Config not applied: stop the scan first`.
+
 Terminal Config > Load points the autosave at the file it loads, and a profile load turns the autosave off, only once
 the config is applied; a load that is not applied leaves the autosave as it was, so exit never writes the session into
 that file.
@@ -300,6 +320,24 @@ autosave records the input that runs. A switch to an audio input keeps the radio
 own `RTL-SDR` row; it is not saved. A file the switch opened by its `-i` extension rule (`.raw`/`.sym` as symbol
 streams, `.bin` as a capture) is saved by its path, so startup opens it the same way.
 
+An I/Q replay (`--iq-replay`) has no `[input]` form. A session that runs one saves (the exit autosave, Save,
+`--print-config`) the `[input]` of the config it loaded, exactly as loaded, or no `[input]` when it loaded none. When
+that `[input]` is an I/Q stream (`iqtcp` or `iqudp`), the save writes `[trunking] enabled`, `[trunking] scanner` and
+`[trunk_scan] enabled` off, even if the replay ran trunking or a scan (`-T`, `-Y`, `--trunk-scan`): the next start of
+the saved file runs the stream, which cannot run beside them. A config file loaded during the replay (Config > Load) whose `[input]` leaves the replay running is saved in its place. A
+config patch (the API's `config_apply`) changes only the `[input]` keys it names: one that sets `input_warn_db` alone
+keeps the saved source and its endpoint. A config without an `[input]`, or one that is not applied, keeps the saved one.
+Once the session leaves the replay, it saves the input it runs again; the RTL-SDR row that returns it to the replay
+keeps saving the input it left. An `[input]` no config can start (a file input whose `file_path` is an `iqreplay:...`
+spec) is never kept for a save, and `--validate-config` reports such a `file_path` as an error. A bare `-i tcp` or
+`-i udp` is saved as the `tcp` or `udp` source it opens (the session's endpoint, `localhost:7355` or `127.0.0.1:7355` by
+default).
+
+An I/Q stream (`-i iqtcp:` or `-i iqudp:`) is saved as its own `iqtcp` or `iqudp` source, its fields as it runs them
+(`iq_rate` and `iq_freq` in Hz), with `rtl_bw_khz`, the squelch keys and `rtl_volume`, but no gain, PPM or frequency
+key. A `file_path` that holds an `iqtcp:` or `iqudp:` spec is an error for `--validate-config`: a file input cannot
+start one.
+
 ---
 
 ## Precedence Rules
@@ -325,14 +363,14 @@ the session; they never write the process environment.
 **[input] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `source` | ENUM | Input source type (`pulse|rtl|rtltcp|soapy|file|tcp|udp`) | `pulse` |
+| `source` | ENUM | Input source type (`pulse|rtl|rtltcp|soapy|airspy|file|tcp|udp|iqtcp|iqudp`) | `pulse` |
 | `pulse_source` | STRING | PulseAudio source device | (empty) |
 | `pulse_input` | STRING | Deprecated read alias for `pulse_source` | (empty) |
 | `rtl_device` | INT (0-255) | RTL-SDR device index | `0` |
 | `rtl_freq` | FREQ | RTL-SDR frequency in Hz, or with a K/M/G suffix (`851.375M`). A number without a suffix is Hz, as in `-i`: the terminal `Frequency...` prompt's MHz rule does not apply here. A value of 64 characters or more is refused with a warning (`too long`) rather than cut, and the key keeps the value it had (unset unless an earlier line set it). Saving during trunking or scanning records the accepted tune target, not the startup frequency | `851.375M` |
 | `rtl_gain` | INT (0-49) | RTL-SDR tuner gain: `0` is automatic (the tuner's automatic gain where it has one, plus the RTL2832U's digital AGC unless `DSD_NEO_RTL_AGC=0`), `1`-`49` a manual gain in dB run at the nearest step the tuner has (over rtl_tcp, the nearest step of the server's tuner, or the gain as written when the server's tuner is not one librtlsdr lists gains for; see `docs/cli.md`). A save writes the configured gain (`0` when it is automatic), and a load applies it like any other gain (an omitted key keeps the gain running). Loading a config applies its gain even when its `[input]` is otherwise the input that runs: the input restarts on the new gain at the frequency and DSP bandwidth it runs (a SoapySDR `[input]` too, whose spec names no gain; its own frequency and bandwidth wait for an `[input]` that reopens the device) | `0` |
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
-| `rtl_bw_khz` | INT (4, 6, 8, 12, 16, 24, 48 or 72) | DSP bandwidth (72 for TETRA) of every radio input: an `rtl` or `rtltcp` source halves its rate to it, and a `soapy` or `airspy` device's own rate is halved and resampled to it exactly; `--validate-config` warns about any other value, which runs at the default. Set under an `rtl`, `rtltcp`, `soapy` or `airspy` source, it is also the DSP bandwidth an `--iq-replay` started with this config plans its rate chain for, ahead of the bandwidth the capture's sidecar recorded (a decode-mode preset on the command line, such as `-fT`, replaces it); loaded into a running replay that it leaves running, it re-plans the replay (see `docs/iq-capture-replay.md`) | `48` |
+| `rtl_bw_khz` | INT (4, 6, 8, 12, 16, 24, 48 or 72) | DSP bandwidth (72 for TETRA) of every radio input: an `rtl` or `rtltcp` source halves its rate to it, and a `soapy` or `airspy` device's own rate is halved and resampled to it exactly; `--validate-config` warns about any other value, which runs at the default. Set under an `rtl`, `rtltcp`, `soapy` or `airspy` source, it is also the DSP bandwidth an `--iq-replay` started with this config plans its rate chain for, ahead of the bandwidth the capture's sidecar recorded (a decode-mode preset on the command line, such as `-fT`, replaces it); loaded into a running replay that it leaves running, it re-plans the replay (see `docs/iq-capture-replay.md`). Under an `iqtcp` or `iqudp` source it is the DSP bandwidth the stream's rate is planned to, and loaded into a running stream it re-plans it through a restart | `48` |
 | `rtl_sql` | INT (-120-0) | Squelch threshold in dB; `0` switches squelch off (a disabled squelch is saved as `0`; the unset default is -110 dB, saved as `-110`). The default a scan row's `--squelch-db` overrides and every row without one inherits; a save during a row override writes this default, not the row's value. Under `rtl_sql_mode = auto` or `noise` it is kept as the level a switch back to `level` returns to. The three squelch keys are read and written under the audio sources too (`pulse`, `file`, `tcp`, `udp`): a save writes them (off as `rtl_sql = 0`), and a load applies them only when the section sets one, so a config saved before audio input had a squelch leaves the running one alone, and an `rtl_sql` left in such a section by hand now applies | `0` |
 | `rtl_sql_mode` | ENUM (`level`, `auto`, `noise`) | `level` gates on `rtl_sql`; `auto` is the [auto squelch](cli.md#auto-squelch---squelch-auto), which opens `rtl_sql_margin_db` over the noise floor the demodulator learns on each analog channel; `noise` is the [noise squelch](cli.md#noise-squelch---squelch-noise), which opens an FM channel at `rtl_sql_margin_db` of quieting (as auto on AM). Auto runs on radio inputs; noise runs on radio inputs and, from a reference it learns, on audio input ([noise squelch on audio input](cli.md#noise-squelch-on-audio-input)). Both are off on digital channels. Written only when it is not `level`; `--squelch` and a spec's `sql` field win over it | `level` |
 | `rtl_sql_margin_db` | INT (3-30) | The auto squelch's margin over the learned noise floor, or the noise squelch's quieting, in dB; written with `rtl_sql_mode = auto` or `noise` | `10` |
@@ -356,6 +394,11 @@ the session; they never write the process environment.
 | `tcp_port` | INT (1-65535) | TCP PCM input port | `7355` |
 | `udp_addr` | STRING | UDP bind address | `127.0.0.1` |
 | `udp_port` | INT (1-65535) | UDP port | `7355` |
+| `iq_host` | STRING | I/Q stream (`iqtcp`, `iqudp`): the TCP server to connect to, or the address to bind for UDP | `127.0.0.1` |
+| `iq_port` | INT (1-65535) | I/Q stream port | `1234` |
+| `iq_rate` | STRING | I/Q stream sample rate, complex samples per second: whole Hz, or with a `k` or `M` suffix (`48k`), from 8000 to 3200000. Saved in Hz | `240k` |
+| `iq_format` | ENUM | I/Q stream sample format (`cu8|cs8|cs16|cs32|cf32`), interleaved I then Q, little-endian | `cs16` |
+| `iq_freq` | FREQ | I/Q stream receiver (centre) frequency, in Hz or with a K/M/G suffix; empty when unknown. Saved in Hz. Nothing is tuned to it; TETRA needs it to tie trunked calls to their allocations | (empty) |
 | `input_warn_db` | DOUBLE (-200-0) | Low input-level advisory threshold in dBFS | `-40.0` |
 
 **[output] section:**
@@ -612,8 +655,11 @@ The config system validates files and reports issues with line numbers:
 
 - **Error**: Invalid enum value, type mismatch, parse failure, an `[analog]` width outside its range or one the
   configured RTL DSP bandwidth cannot filter (for an `rtl`/`rtltcp` input with `rtl_freq` under `decode = "analog"` or
-  `"am"`), a refused `[analog] tone_list`, or `tone_filter = allow` or `block` without a list
-- **Warning**: Unknown key or section, integer out of range
+  `"am"`), a refused `[analog] tone_list`, or `tone_filter = allow` or `block` without a list; for an I/Q stream
+  `[input]`, a key that builds no spec, an `iq_rate` no rate chain reaches, and `[trunking] enabled`,
+  `[trunking] scanner` or `[trunk_scan] enabled` beside it
+- **Warning**: Unknown key or section, integer out of range; `rtl_gain`, `rtl_ppm`, `auto_ppm` or `rtl_freq` under an
+  I/Q stream `[input]`, which does not use them
 
 ```bash
 # Validate a config file
@@ -656,7 +702,7 @@ Output format:
 
 [input]
 # Input source type
-# Allowed: pulse|rtl|rtltcp|soapy|file|tcp|udp
+# Allowed: pulse|rtl|rtltcp|soapy|airspy|file|tcp|udp|iqtcp|iqudp
 # source = "pulse"
 
 # RTL-SDR device index (0-based)
@@ -712,6 +758,22 @@ Output format:
 - **UDP (`source = "udp"`)**: Set `udp_addr` (port optional) to switch
   the input to UDP PCM audio (PCM16LE datagrams). Sample rate uses the
   global `-s` CLI setting (default 48000).
+
+- **I/Q stream (`source = "iqtcp"` or `"iqudp"`)**: Raw I/Q that another program streams over the network (see "Raw I/Q
+  Over The Network" in `docs/iq-capture-replay.md`). `iq_host`, `iq_port`, `iq_rate` and `iq_format` build the spec
+  `iqtcp:iq_host:iq_port:iq_rate:iq_format[:iq_freq]` (or `iqudp:...`) that `-i` takes, and all four are needed;
+  `iq_freq` is optional. Fields that build no spec stop startup with exit status 1, naming the key at fault, as a bad
+  `-i` spec does
+  (`Invalid I/Q stream input: [input] iq_port: iqtcp: PORT '0' is not a port number from 1 to 65535 ...`), unless `-i`
+  or `--iq-replay` on the command line names the input to run, whichever it names. A config loaded into a running
+  session with such fields is not applied at all, and `--validate-config` reports an error on the same key, as it does
+  for an `iq_rate` no rate chain reaches at the DSP bandwidth the config runs (TETRA's under `[mode] decode = "tetra"`).
+  `rtl_bw_khz` is the DSP bandwidth request, and the squelch keys and `rtl_volume` apply as on any radio input.
+  `rtl_gain`, `rtl_ppm`, `auto_ppm` and `rtl_freq` are not used, since the sending program runs the radio;
+  `--validate-config` warns about each. A stream cannot run beside `[trunking] enabled`, `[trunking] scanner` or
+  `[trunk_scan] enabled` (see "Config Discovery and Locations"), so a save with a stream `[input]` writes those three
+  off. A save writes the stream's fields as it runs them (`iq_rate` and `iq_freq` in Hz) and no gain, PPM or frequency
+  key.
 
 - **File (`source = "file"`)**: Set `file_path` to switch the input to a file
   input (WAV/BIN/RAW/SYM). Use `file_sample_rate` for PCM16 WAV/RAW inputs that

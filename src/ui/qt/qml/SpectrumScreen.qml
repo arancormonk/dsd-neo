@@ -49,7 +49,12 @@ Item {
     // tuning its capture recorded, and the engine refuses every other tune and
     // the tuner release, whatever this session's intent.
     readonly property bool replayInput: metrics ? metrics.replayInput : false
-    readonly property bool viewOnly: !screen.exploring || screen.tunerHeld || screen.replayInput
+    // An I/Q stream is the same (issue #743): the program sending it picks the
+    // channel. Both are a radio input DSD-neo cannot tune, which the model says
+    // through the predicate the engine refuses every tune on.
+    readonly property bool fixedInput: metrics ? (metrics.replayInput === true || (metrics.radioInput === true && metrics.tunable === false)) : false
+    readonly property string fixedReason: screen.replayInput ? qsTr("An I/Q replay cannot retune: it plays the tuning it recorded.") : qsTr("An I/Q stream cannot retune: change the channel in the sending program.")
+    readonly property bool viewOnly: !screen.exploring || screen.tunerHeld || screen.fixedInput
 
     // A scan running, and one the operator paused (issue #671). Read apart from
     // tunerHeld because a scan gives way to a typed frequency: Go to pauses it,
@@ -60,7 +65,7 @@ Item {
     // purpose wins over a scan (it pauses), where a tap or a drag does not. A
     // saved system's scan is still that system and stays watched until Explore
     // from here; anything else holding the tuner, or a replay, refuses it.
-    readonly property bool goToAllowed: !screen.replayInput && ((screen.exploring && !screen.tunerHeld) || (screen.scanList && screen.scanOwnsTuner) || screen.scanPaused)
+    readonly property bool goToAllowed: !screen.fixedInput && ((screen.exploring && !screen.tunerHeld) || (screen.scanList && screen.scanOwnsTuner) || screen.scanPaused)
 
     // The frame's own center is what the bins were measured at; the options
     // reading is only a fallback for the moment before the first frame lands.
@@ -115,12 +120,12 @@ Item {
             screen.stopSweep();
     }
 
-    // A replay that begins under a sheet leaves it nothing to do: the release
-    // the confirm would ask for and the tune Go to would submit are both ones
-    // the engine refuses, and Go to would answer "Cannot tune to ..." rather
-    // than say why.
-    onReplayInputChanged: {
-        if (replayInput) {
+    // A replay or stream that begins under a sheet leaves it nothing to do: the
+    // release the confirm would ask for and the tune Go to would submit are both
+    // ones the engine refuses, and Go to would answer "Cannot tune to ..."
+    // rather than say why.
+    onFixedInputChanged: {
+        if (fixedInput) {
             confirmExplore.visible = false;
             goToSheet.visible = false;
         }
@@ -128,12 +133,13 @@ Item {
 
     // The same for anything else that takes the tuner while Go to is open: a
     // Tune that could only be refused is closed now, with the reason, rather
-    // than answered "Cannot tune to ..." later. A replay says why on its own.
+    // than answered "Cannot tune to ..." later. A replay or stream says why on
+    // its own.
     onGoToAllowedChanged: {
         if (goToAllowed || !goToSheet.visible)
             return;
         goToSheet.visible = false;
-        if (!replayInput)
+        if (!fixedInput)
             screen.hint = screen.scanOwnsTuner ? qsTr("Go to closed: the scan has the tuner") : metrics.trunkingEnabled ? qsTr("Go to closed: trunking has the tuner") : qsTr("Go to closed: the tuner is in use");
     }
 
@@ -1319,7 +1325,7 @@ Item {
             anchors.right: parent.right
             anchors.bottom: tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : parent.bottom)
             anchors.bottomMargin: tuning.visible || exploreButton.visible ? Theme.gap : 0
-            visible: screen.scanPaused && !screen.replayInput && decoderHost.sessionActive
+            visible: screen.scanPaused && !screen.fixedInput && decoderHost.sessionActive
             text: qsTr("Resume scan")
             enabled: metrics.scanResumable
             onClicked: {
@@ -1338,7 +1344,7 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            visible: screen.viewOnly && !screen.replayInput && decoderHost.sessionActive
+            visible: screen.viewOnly && !screen.fixedInput && decoderHost.sessionActive
             text: qsTr("Explore from here")
             onClicked: {
                 // Nothing is holding the tuner, so there is nothing to warn about
@@ -1351,8 +1357,9 @@ Item {
         }
 
         // Where the way out would be, why there is none: a replay is a recording
-        // of where the receiver went, and nothing here can move it. The engine's
-        // own words, so this and a refused command never disagree.
+        // of where the receiver went, and a stream's channel is its sending
+        // program's; nothing here can move either. The engine's own words, so
+        // this and a refused command never disagree.
         ReadableText {
             id: replayReason
 
@@ -1360,8 +1367,8 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            visible: screen.replayInput && decoderHost.sessionActive
-            text: qsTr("An I/Q replay cannot retune.")
+            visible: screen.fixedInput && decoderHost.sessionActive
+            text: screen.fixedReason
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
             font.family: Theme.sans

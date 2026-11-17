@@ -1192,8 +1192,8 @@ struct channel_level {
    requests measure every channel through this. The window assumes the tap is the whole capture shifted circularly by
    the rotation, as every live capture is. A shifted I/Q replay resampled to another rate keeps only the band around
    its rotated DC, so a channel far from it would read another channel's bins: such a capture is safe only because
-   measurement is refused on replay, which callers key on the stream (opts->iq_replay_active / iq_replay_requested),
-   never on the decode clock. */
+   measurement is refused on replay, which callers key on the input in force (dsd_opts_radio_can_tune()), never on the
+   decode clock. */
 template <typename S>
 channel_level
 measure_channel(const S& bins, const dsd_signal_capture& capture, int n, double frequency_hz, double width, double norm,

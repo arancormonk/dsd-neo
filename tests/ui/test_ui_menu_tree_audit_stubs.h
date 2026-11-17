@@ -240,6 +240,8 @@
     X(lbl_cosine)                                                                                                      \
     X(lbl_crc_relax)                                                                                                   \
     X(lbl_current_input)                                                                                               \
+    X(lbl_src_rtl)                                                                                                     \
+    X(lbl_input_rtl)                                                                                                   \
     X(lbl_current_output)                                                                                              \
     X(lbl_decode_mode)                                                                                                 \
     X(lbl_deemph)                                                                                                      \
@@ -373,6 +375,8 @@
     X(provoice_active)                                                                                                 \
     X(group_list_reload_offered)                                                                                       \
     X(input_freq_offered)                                                                                              \
+    X(rigctl_connect_offered)                                                                                          \
+    X(rigctl_setmod_offered)                                                                                           \
     X(rr_feature_available)                                                                                            \
     X(rr_imports_available_and_feature)                                                                                \
     X(rr_key_prompt_offered_and_feature)                                                                               \
@@ -388,6 +392,7 @@
     X(is_airspy_input)                                                                                                 \
     X(is_non_airspy_input)                                                                                             \
     X(is_not_qpsk)                                                                                                     \
-    X(is_ted_allowed)
+    X(is_ted_allowed)                                                                                                  \
+    X(tuner_rows_offered)
 
 #endif /* DSD_NEO_TESTS_UI_TEST_UI_MENU_TREE_AUDIT_STUBS_H_ */

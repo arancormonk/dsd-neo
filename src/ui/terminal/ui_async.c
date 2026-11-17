@@ -151,13 +151,13 @@ ui_handle_normal_input(int ch, const dsd_opts* osnap, const dsd_state* ssnap) {
 /*
  * The wheel steps channels only while the setting is on, a -Y or --trunk-scan rotation runs (a paused scan does not),
  * no menu, prompt or other overlay is open (the `=` prompt is one), keys are read at all (not with STDIN input), the
- * input is no I/Q replay (which refuses every retune, so a notch could only toast) and the terminal can report the
- * wheel. Decided from the frame's snapshots, never the decoder's live structs.
+ * input's tuning is not fixed (an I/Q replay refuses every retune, so a notch could only toast) and the terminal can
+ * report the wheel. Decided from the frame's snapshots, never the decoder's live structs.
  */
 static int
 ui_wheel_capture_wanted(const dsd_opts* osnap, const dsd_state* ssnap) {
     if (osnap->frontend_terminal_display.mouse_wheel == 0 || osnap->audio_in_type == AUDIO_IN_STDIN
-        || dsd_opts_input_is_iq_replay(osnap)) {
+        || dsd_opts_input_has_fixed_tuning(osnap)) {
         return 0;
     }
     if (ui_menu_is_open()) {

@@ -2715,6 +2715,148 @@ confirmed_rows_are(const char* tag, const dsd_state* state, int row0, int row1) 
     return 0;
 }
 
+/* Issue #743: the analog tap notes whether its input may pause beside the source the stream last started on
+   (dsd_state::carrier_source_key) and asks again only when that moves. A config apply that moves an I/Q replay onto a
+   live rtl_tcp radio restarts the stream there, and that start moves the key, so the tap's answer follows the switch
+   (DSP_SYMBOL_REPLAY's stalled-stream case). */
+static int
+test_stream_source_key_moves_off_a_replay(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:capture.iq.json");
+    dsd_engine_note_stream_source(opts, state, 0);
+    const uint64_t replay_key = state->carrier_source_key;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    DSD_SNPRINTF(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", "127.0.0.1");
+    opts->rtltcp_portno = 1234;
+    dsd_engine_note_stream_source(opts, state, 0);
+    const int rc =
+        expect_true("a live rtl_tcp start after a replay moves the source key",
+                    replay_key != 0U && state->carrier_source_key != 0U && state->carrier_source_key != replay_key);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #743: a raw I/Q stream that starts puts the receiver on its FREQ, or on none when its spec names none (never
+   the 850 MHz default or a replay's centre), which every frontend and the protocols' frequency readers then read; its
+   source key is its whole spec, so a restart of the same stream (spelled either way) is a stream gap on its carrier,
+   and one with another FREQ, endpoint or rate is another source. A stream never reads as the place a pending tune was
+   going (dsd_engine_stream_reopened_on()). */
+static int
+test_iq_stream_start_sets_freq_and_source(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 850000000U;
+    opts->iq_replay_center_freq = 851012500U;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqudp:127.0.0.1:7356:240000:cs16");
+    dsd_engine_note_stream_source(opts, state, 0);
+    rc |= expect_true("no FREQ: the receiver is on none",
+                      opts->rtlsdr_center_freq == 0U && dsd_opts_tuned_freq_hz(opts) == 0U);
+    const uint64_t no_freq_key = state->carrier_source_key;
+
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqudp:127.0.0.1:7356:240000:cs16:851012500");
+    uint32_t seq = state->carrier_seq;
+    dsd_engine_note_stream_source(opts, state, 0);
+    const uint64_t freq_key = state->carrier_source_key;
+    rc |= expect_true("FREQ: the receiver is on it",
+                      opts->rtlsdr_center_freq == 851012500U && dsd_opts_tuned_freq_hz(opts) == 851012500U);
+    rc |= expect_true("another FREQ is another source", freq_key != no_freq_key && state->carrier_seq != seq);
+
+    /* The same stream spelled another way restarts on its own source: a stream gap (B19), the key kept. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqudp:127.0.0.1:7356:240k:CS16:851.0125M");
+    seq = state->carrier_seq;
+    dsd_engine_note_stream_source(opts, state, 0);
+    rc |= expect_true("the same stream restarted keeps its key",
+                      state->carrier_source_key == freq_key && state->carrier_seq == seq + 1U);
+
+    static const char* const k_others[] = {
+        "iqudp:127.0.0.1:7357:240000:cs16:851012500", "iqudp:127.0.0.1:7356:48000:cs16:851012500",
+        "iqudp:127.0.0.1:7356:240000:cu8:851012500", "iqtcp:127.0.0.1:7356:240000:cs16:851012500"};
+    for (size_t i = 0; i < sizeof k_others / sizeof k_others[0]; i++) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", k_others[i]);
+        dsd_engine_note_stream_source(opts, state, 0);
+        rc |= expect_true("another endpoint, rate, format or kind is another source",
+                          state->carrier_source_key != freq_key);
+    }
+
+    /* A tune the stop dropped never lands on a stream, even one whose FREQ is the tune's target. */
+    state->rtl_ctx = (RtlSdrContext*)opts;
+    rc |= expect_true("a stream is no landing",
+                      dsd_engine_stream_reopened_on(opts, state, state->carrier_source_key, 851012500U) == 0);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851.0125M");
+    dsd_engine_note_stream_source(opts, state, 0);
+    opts->rtlsdr_center_freq = 851012500U;
+    rc |= expect_true("an RTL-SDR on the target is",
+                      dsd_engine_stream_reopened_on(opts, state, state->carrier_source_key, 851012500U) == 1);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #743 B12: beside an input with fixed tuning (an I/Q replay or stream) a rigctl peer moves a radio the session
+   does not hear, so the legacy legs outside the trunk tuning entries see no front end there: the untyped -Y step, a
+   Next walk and the direct control-channel return send the peer nothing, and the frequency last sent stays. */
+static int
+test_fixed_tuning_legacy_legs_send_the_peer_nothing(void) {
+    static const char* const kInputs[] = {"iqreplay:capture.iq.json", "iqtcp:127.0.0.1:5000:240k:cs16",
+                                          "iqudp:0.0.0.0:5000:240k:cu8"};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof kInputs / sizeof kInputs[0]; i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        if (setup_untyped_keyed_list(opts, state, 943012500, 943037500) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", kInputs[i]);
+        /* A connected peer: the SetFreq stub counts every ask, whatever socket it is handed. */
+        opts->use_rigctl = 1;
+        opts->rigctl_sockfd = (dsd_socket_t)5;
+        opts->setmod_bw = 0;
+        opts->rigctl_sent_freq_hz = 940012500U;
+        g_rigctl_setfreq_ok = 1;
+        g_rigctl_setfreq_calls = 0;
+        const int rtl_before = g_rtl_tune_calls;
+        rc |= expect_true("the step has no front end",
+                          dsd_engine_scan_untyped_enter_row(opts, state, 1, (double)time(NULL))
+                              == DSD_UNTYPED_STEP_FAILED);
+        rc |= expect_true("the walk is refused",
+                          dsd_engine_channel_scan_walk_row(opts, state, 1, 1) == DSD_SCAN_WALK_REFUSED);
+        rc |= expect_true("the step and walk tune no radio",
+                          g_rigctl_setfreq_calls == 0 && g_rtl_tune_calls == rtl_before);
+
+        /* The direct return with the voice channel gone quiet, and no stream for its RTL leg. */
+        opts->scanner_mode = 0;
+        opts->trunk_enable = 1;
+        opts->trunk_is_tuned = 1;
+        opts->frame_nxdn48 = 1;
+        opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = 0;
+        state->rtl_ctx = NULL;
+        state->trunk_cc_freq = 942212500L; // a frequency no other case uses
+        state->p25_cc_freq = 942212500L;
+        state->lastsynctype = DSD_SYNC_NXDN_POS;
+        state->last_vc_sync_time = 0;
+        noCarrier(opts, state);
+        rc |= expect_true("the direct return sends the peer nothing", g_rigctl_setfreq_calls == 0);
+        rc |= expect_true("the frequency last sent stays", opts->rigctl_sent_freq_hz == 940012500U);
+        g_rigctl_setfreq_ok = 0;
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* Issue #644: a -Y row is confirmed on air only by the landing the scan confirmed last, and every later tune
    attempt or displacement takes that away, whatever frequency the receiver may still be on. */
 static int
@@ -14758,6 +14900,9 @@ main(void) {
     rc |= test_legacy_step_failure_reconciles_the_cached_centre();
     rc |= test_untyped_find_and_enter_row();
     rc |= test_untyped_row_confirmed_only_by_its_landing();
+    rc |= test_stream_source_key_moves_off_a_replay();
+    rc |= test_iq_stream_start_sets_freq_and_source();
+    rc |= test_fixed_tuning_legacy_legs_send_the_peer_nothing();
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
     rc |= test_live_loop_syncs_move_the_quiet_sync_sequence();
     rc |= test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict();

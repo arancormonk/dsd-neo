@@ -1961,6 +1961,62 @@ test_replay_input() {
 }
 
 /*
+ * Issue #743: tunable says whether DSD-neo can tune the radio feeding the session, by the predicate app-control refuses
+ * every tuner command on (dsd_opts_radio_can_tune()): a live RTL-SDR, rtl_tcp or Airspy can; an I/Q replay and an I/Q
+ * stream, radio inputs with fixed tuning, cannot; nor can audio input. It rides the control group and a cleared model
+ * reports it off.
+ */
+static void
+test_tunable() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int controls = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++controls; });
+
+    static const struct {
+        const char* dev;
+        dsd_audio_in_type type;
+        bool radio;
+        bool tunable;
+    } rows[] = {
+        {"rtl:0:851.0125M", AUDIO_IN_RTL, true, true},
+        {"iqtcp:127.0.0.1:1234:240000:cs16", AUDIO_IN_RTL, true, false},
+        {"rtltcp:127.0.0.1:1234", AUDIO_IN_RTL, true, true},
+        {"iqudp:0.0.0.0:7355:48000:cu8:426700000", AUDIO_IN_RTL, true, false},
+        {"airspy", AUDIO_IN_RTL, true, true},
+        {"iqreplay:capture.iq.json", AUDIO_IN_RTL, true, false},
+        {"capture.wav", AUDIO_IN_WAV, false, false},
+    };
+
+    for (const auto& row : rows) {
+        opts.audio_in_type = row.type;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", row.dev);
+        model.refresh(&opts, &state);
+        expect(row.dev, model.radioInput() == row.radio && model.tunable() == row.tunable);
+        expect("the predicate agrees", model.tunable() == (dsd_opts_radio_can_tune(&opts) != 0));
+        expect("only a replay is a replay", model.replayInput() == (dsd_opts_input_is_iq_replay(&opts) != 0));
+    }
+    /* From a tunable radio to a stream and back, the control group hears each change. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.0125M");
+    model.refresh(&opts, &state);
+    int before = controls;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:1234:240000:cs16");
+    model.refresh(&opts, &state);
+    expect("a stream notifies the control group", controls > before && !model.tunable() && !model.replayInput());
+    before = controls;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.0125M");
+    model.refresh(&opts, &state);
+    expect("leaving the stream notifies it too", controls > before && model.tunable());
+    model.clear();
+    expect("a cleared model reports nothing tunable", !model.tunable());
+    freeState(&state);
+}
+
+/*
  * The receiver the session runs on, in the Qt start path's source names, from the options snapshot: what a Signal
  * search screen reattaching to a running search after Activity recreation restores its receiver from. It notifies
  * the control group, and a cleared model names none.
@@ -2003,7 +2059,8 @@ test_radio_source() {
                && rtltcp.value(QStringLiteral("port")).toInt() == 1235);
 
     /* No Qt start offers these receivers, and audio input has none. */
-    for (const char* dev : {"soapy:driver=rtlsdr", "iqreplay:capture.iq.json"}) {
+    for (const char* dev : {"soapy:driver=rtlsdr", "iqreplay:capture.iq.json", "iqtcp:127.0.0.1:1234:240000:cs16",
+                            "iqudp:0.0.0.0:7355:48000:cu8"}) {
         DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", dev);
         model.refresh(&opts, &state);
         expect("a receiver no Qt start offers names no source", model.radioSource().isEmpty());
@@ -3086,6 +3143,7 @@ main(int argc, char** argv) {
     test_rigctl_audio_passband();
     test_options_readiness();
     test_replay_input();
+    test_tunable();
     test_radio_source();
     test_decode_clock_readings();
     test_temporary_lockout_metrics();

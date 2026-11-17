@@ -1211,7 +1211,9 @@ MetricsModel::airspyView(const dsd_opts* opts_snapshot) {
 }
 
 /* The source vocabulary is session_args' append_input_args(): "usb" builds an rtl spec, "airspy" an airspy spec,
-   "rtltcp" an rtltcp spec. The rtl_tcp server is the one the engine parsed from that spec. */
+   "rtltcp" an rtltcp spec. The rtl_tcp server is the one the engine parsed from that spec. An I/Q replay or I/Q stream
+   (issue #743) is no source a saved system starts, so it maps to no sourceType: a view keyed on one offers nothing
+   to tune it with. */
 QVariantMap
 MetricsModel::radioSourceView(const dsd_opts* opts_snapshot) {
     QVariantMap source;
@@ -1310,6 +1312,8 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot, 
     /* An I/Q replay refuses every tune and the tuner release (issue #575): the predicate app-control refuses on, read
      * from the same snapshot as radio_input, so a view never offers a tune the command queue then turns down. */
     next.replay_input = dsd_opts_input_is_iq_replay(opts_snapshot) != 0;
+    /* An I/Q stream refuses them too, and its sending program sets the gain (issue #743): the tuner predicate. */
+    next.tunable = dsd_opts_radio_can_tune(opts_snapshot) != 0;
 
     /* Sync is held for a moment after the last synced frame rather than sampled;
      * the hold decays on its own rather than being cleared on a retune (a new scan

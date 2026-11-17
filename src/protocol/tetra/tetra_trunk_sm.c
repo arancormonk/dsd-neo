@@ -662,14 +662,11 @@ tetra_sm_receiver_freq(const dsd_opts* opts, const dsd_state* state) {
     return (long)dsd_opts_tuned_freq_hz(opts);
 }
 
-/* A receiver the state machine can move: a live radio stream (an I/Q replay plays the tuning its capture recorded) or a
- * connected rigctl peer behind an audio input. A symbol capture has neither. */
+/* A receiver the state machine can move: a radio DSD-neo tunes (an I/Q replay plays the tuning its capture recorded) or
+ * a connected rigctl peer behind an audio input. A symbol capture has neither. */
 static int
 sm_input_tunable(const dsd_opts* opts) {
-    if (dsd_opts_input_is_radio(opts)) {
-        return !dsd_opts_input_is_iq_replay(opts);
-    }
-    return dsd_opts_input_is_pcm_audio(opts) && dsd_opts_rigctl_live(opts);
+    return dsd_opts_session_can_tune(opts, dsd_opts_input_is_pcm_audio(opts) && dsd_opts_rigctl_live(opts));
 }
 
 /* Whether a receiver on @p rx_hz is on main carrier @p hz. One the state machine can move is on it only at the exact

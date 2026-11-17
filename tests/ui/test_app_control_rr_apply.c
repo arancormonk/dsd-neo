@@ -131,9 +131,9 @@ int __real_svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const 
 int __wrap_svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
                                         svc_replay_profile_restore_fn restore, const void* restore_ctx,
                                         uint32_t* out_dsp_rate_hz, int* out_resampled, char* why, size_t why_size);
-int __real_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+int __real_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped, int capture_before,
                                            const dsd_input_failure* failure_before, int* out_capture_stopped);
-int __wrap_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+int __wrap_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped, int capture_before,
                                            const dsd_input_failure* failure_before, int* out_capture_stopped);
 int __real_rtl_stream_check_analog_profile(int family, int kind, int width_hz);
 int __wrap_rtl_stream_check_analog_profile(int family, int kind, int width_hz);
@@ -200,14 +200,16 @@ __wrap_svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char
 }
 
 int
-__wrap_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+__wrap_svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped, int capture_before,
                                        const dsd_input_failure* failure_before, int* out_capture_stopped) {
     if (g_replan_result == RR_SCRIPT_REAL) {
-        return __real_svc_rtl_restart_recovery_locked(opts, state, stream_stopped, failure_before, out_capture_stopped);
+        return __real_svc_rtl_restart_recovery_locked(opts, state, stream_stopped, capture_before, failure_before,
+                                                      out_capture_stopped);
     }
     (void)opts;
     (void)state;
     (void)stream_stopped;
+    (void)capture_before;
     (void)failure_before;
     g_recovery_calls++;
     if (out_capture_stopped) {
@@ -1200,6 +1202,42 @@ test_apply_replay_never_tunes(void) {
     }
     return rc;
 }
+
+/* Issue #743: an import on an I/Q stream never tunes either, TCP or UDP: the sending program picks the channel. The
+   import's mode and files apply; no tune is asked, no pending manual tune is superseded, no receiver-move boundary
+   forgets the carrier's codes, and the toast names no tune. A conventional import, so the stream's next-start rules
+   (no trunking beside a stream) have nothing to refuse. */
+static int
+test_apply_iq_stream_never_tunes(void) {
+    static const char* const k_streams[] = {"iqtcp:127.0.0.1:5000:240000:cs16", "iqudp:0.0.0.0:5000:48000:cu8"};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+    for (size_t i = 0; i < sizeof k_streams / sizeof k_streams[0]; i++) {
+        init_test_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", k_streams[i]);
+        DSD_MEMSET(&p, 0, sizeof p);
+        p.decode_mode = (int32_t)DSDCFG_MODE_TDMA;
+        p.trunking = 0U;
+        p.tune_hz = 851012500U;
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        seed_carrier_codes(&state);
+        state.ui_msg[0] = '\0';
+        const char* what = k_streams[i];
+        rc |= expect_int(what, dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("stream import: no tune", g_io_control_tune_calls, 0);
+        rc |= expect_int("stream import: no pending record", g_manual_tune_supersedes, 0);
+        rc |= expect_carrier_codes("stream import: no boundary", &state, 0);
+        rc |= expect_contains(what, state.ui_msg, "Applied: RR import");
+        rc |= expect_int("stream import: no tune message", strstr(state.ui_msg, "tune") == NULL, 1);
+        rc |= expect_int("stream import: its mode", opts.frame_dmr, 1);
+        freeState(&state);
+    }
+    return rc;
+}
 #endif
 
 #if defined(DSD_NEO_TEST_RR_APPLY_WRAP) && defined(USE_RADIO)
@@ -1252,6 +1290,39 @@ test_apply_replay_replan_refused_before_commit(void) {
                                 "Failed: RR import -> no rate chain this capture can run");
     rc |= expect_int("p25: no reopen tried", g_replan_calls, 0);
     state.rtl_ctx = NULL;
+    freeState(&state);
+
+    /* Issue #743: a running raw I/Q stream is asked its spec's plan instead. A 150 MS/s stream, above the 3.2 MS/s
+       ceiling no start lets run, set up as running at a 96 kHz DSP bandwidth anyway: no plan takes it to TETRA's
+       72 kHz, so it is refused before the commit point with the rate it keeps, nothing restarted. */
+    replay_session(&opts, &state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:1234:150000000:cs16");
+    dsd_opts_set_rtl_dsp_bw(&opts, 96, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    g_request_rate_hz = 96000;
+    tetra_payload(&p);
+    p.trunking = 0U;
+    p.tune_hz = 0U;
+    rc |= expect_refused_import(
+        "tetra on a 150 MS/s stream", &opts, &state, &p,
+        "Failed: RR import -> TETRA cannot use this I/Q stream's rate; send 48 or 96 kHz instead");
+    rc |= expect_int("stream: no replay check or reopen", g_replan_check_calls == 0 && g_replan_calls == 0, 1);
+    state.rtl_ctx = NULL;
+    freeState(&state);
+
+    /* The same stream not running (stopped, or its start failed): its spec's plan is refused, with the ceiling it is
+       above, as its start would be. */
+    replay_session(&opts, &state);
+    state.rtl_ctx = NULL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:1234:150000000:cs16");
+    dsd_opts_set_rtl_dsp_bw(&opts, 96, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    g_request_rate_hz = 0;
+    tetra_payload(&p);
+    p.trunking = 0U;
+    p.tune_hz = 0U;
+    rc |= expect_refused_import("tetra on a stopped 150 MS/s stream", &opts, &state, &p,
+                                "Failed: RR import -> the stream's rate (150000000 Hz) is above 3200000 Hz; send one "
+                                "channel (the sending program's VFO mode)");
+    rc |= expect_int("stopped stream: no replay check or reopen", g_replan_check_calls == 0 && g_replan_calls == 0, 1);
     freeState(&state);
     reset_replay_script();
     (void)remove(k_tetra_group_csv);
@@ -1703,6 +1774,7 @@ main(void) {
     rc |= test_apply_requests_the_tune();
     rc |= test_apply_tune_forgets_the_carrier_codes();
     rc |= test_apply_replay_never_tunes();
+    rc |= test_apply_iq_stream_never_tunes();
 #endif
 #ifdef DSD_NEO_TEST_RR_APPLY_WRAP
     rc |= test_apply_partial_files();

@@ -20,6 +20,8 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -57,14 +59,30 @@ int dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied);
  * `rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]` the host and port, then the tuning fields in order:
  * the frequency (Hz, or with a k/M/G suffix), the tuner gain, the PPM, the DSP bandwidth (a selectable one,
  * dsd_analog_rtl_dsp_bw_is_selectable(); anything else reads as the 48 kHz default), the squelch (dsd_squelch_level_from_sql(); a field that is not a number leaves it),
- * the monitor volume and, after all of those, `bias` tokens. A spec that stops early sets what it has; a number that
- * does not parse leaves its option. The engine reads the spec this way when the input opens, and --print-config before
- * that, so both report the same settings.
+ * the monitor volume and, after all of those, `bias` tokens. Each field is read in its place
+ * (dsd_spec_split_fields()): an empty field, like one the spec stops before, leaves its option at what it holds, so
+ * `rtl::851M` keeps the device. A tuning number that does not parse leaves its option; an rtl_tcp port that is not a
+ * whole number from 1 to 65535 is logged and refuses the spec, which then changes nothing. The engine reads the spec
+ * this way when the input opens, and --print-config before that, so both report the same settings.
  *
  * @return 1 when @p opts holds such a spec and it was read, 0 for any other input (nothing changed), -1 on bad
- *         arguments.
+ *         arguments or a refused port.
  */
 int dsd_rtl_input_spec_apply(dsd_opts* opts);
+
+/**
+ * @brief Read the host and port of a `kind[:host[:port]]` spec: `-i tcp:`, `-i udp:`, `-i m17udp:`, `-o udp:` and
+ *        `-o m17udp:`.
+ *
+ * Each field is read in its place (dsd_spec_split_fields()), the kind's included but not checked here. An empty or
+ * missing host or port field leaves @p host or @p port at what it holds, the caller's default: `udp::17355` keeps the
+ * default bind address. A port field must be a whole decimal number from @p min_port to 65535, and a host must fit
+ * @p host; anything else is logged with the spec and refuses it, with @p host and @p port unchanged. Fields after the
+ * port are not read.
+ *
+ * @return 0 when read, -1 when refused or on bad arguments.
+ */
+int dsd_endpoint_spec_read(const char* spec, int min_port, char* host, size_t host_size, int* port);
 
 /**
  * @brief The DSP bandwidth a spec's bandwidth field @p token names, in kHz: a selectable one

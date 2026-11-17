@@ -354,21 +354,24 @@ uint32_t rtl_stream_session_generation(void);
 uint64_t rtl_stream_discontinuity_seq(void);
 
 /** The capture event reasons of the stream gaps rtl_stream_note_discontinuity() records, which an I/Q replay of the
- *  capture applies as gaps again. */
+ *  capture applies as gaps again. A raw I/Q stream (issue #743) notes its own: a new connection or a new UDP sender
+ *  (net_reconnect), and samples again after a stall (net_resume). */
 #define RTL_STREAM_GAP_REASON_USB_RECOVERY  "usb_recovery"
 #define RTL_STREAM_GAP_REASON_TCP_RECONNECT "tcp_reconnect"
+#define RTL_STREAM_GAP_REASON_NET_RECONNECT "net_reconnect"
+#define RTL_STREAM_GAP_REASON_NET_RESUME    "net_resume"
 
 /**
- * @brief Note a gap in the running stream on the same carrier (issue #518 D5): a USB recovery or an rtl_tcp reconnect.
+ * @brief Note a gap in the running stream on the same carrier (issue #518 D5): a USB recovery, an rtl_tcp reconnect,
+ * or a raw I/Q stream's new connection or resume after a stall (issue #743).
  *
  * Records the gap in the I/Q capture, when one is being written, as a RETUNE and a RESET on the centre in force with
  * @p reason, which a replay of the capture applies as the same gap, then moves the discontinuity count
- * (rtl_stream_discontinuity_seq()), which every read the decoder makes checks. The caller is the stream's controller
- * inside its boundary transaction, after the purge and before the producer resumes, so no sample past the gap can be
- * read before the count moves, nor captured before the events.
+ * (rtl_stream_discontinuity_seq()), which every read the decoder makes checks. The caller runs the stream's boundary
+ * transaction (the controller, or a raw I/Q stream's reader), after the purge and before the producer resumes, so no
+ * sample past the gap can be read before the count moves, nor captured before the events.
  *
- * @param reason RTL_STREAM_GAP_REASON_USB_RECOVERY or RTL_STREAM_GAP_REASON_TCP_RECONNECT; NULL records a USB
- *               recovery's.
+ * @param reason One of the RTL_STREAM_GAP_REASON_* names; NULL records a USB recovery's.
  */
 void rtl_stream_note_discontinuity(const char* reason);
 

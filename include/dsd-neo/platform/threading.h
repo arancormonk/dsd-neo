@@ -131,6 +131,21 @@ int dsd_thread_join(dsd_thread_t thread);
 #endif
 
 /**
+ * @brief Let a thread end on its own: nothing joins it, and its resources go when it returns. The handle is no longer
+ *        valid after the call.
+ *
+ * For work that may outlast the one who started it, such as a name lookup a stop must not wait for.
+ *
+ * @param thread    Thread handle from dsd_thread_create().
+ * @return 0 on success, non-zero error code on failure.
+ */
+#if !DSD_PLATFORM_WIN_NATIVE && !defined(DSD_NEO_THREADING_NO_INLINE_CREATE)
+#define dsd_thread_detach(thread) pthread_detach((thread))
+#else
+int dsd_thread_detach(dsd_thread_t thread);
+#endif
+
+/**
  * @brief Get handle/ID of the calling thread.
  *
  * @return Thread handle of caller.

@@ -1607,6 +1607,671 @@ test_snapshot_names_switched_inputs(void) {
     return rc;
 }
 
+/* Issue #743: a bare "tcp" or "udp" (-i tcp, -i udp) saves as the tcp or udp source it opens, the session's endpoint or
+   the default one, not as a file named "tcp"; a saved and reloaded one opens that same endpoint. "-" (stdin) and
+   "m17udp:" have no [input] source of their own and stay file inputs that reload as themselves. */
+static int
+test_snapshot_bare_network_inputs_save_as_their_source(void) {
+    static const struct {
+        const char* dev;
+        const char* tcp_host;
+        int tcp_port;
+        const char* udp_addr;
+        int udp_port;
+        int source;
+        const char* reopens;
+    } cases[] = {
+        {"tcp", "", 0, "", 0, DSDCFG_INPUT_TCP, "tcp:localhost:7355"},
+        {"tcp", "audio.example", 7400, "", 0, DSDCFG_INPUT_TCP, "tcp:audio.example:7400"},
+        {"udp", "", 0, "", 0, DSDCFG_INPUT_UDP, "udp:127.0.0.1:7355"},
+        {"udp", "", 0, "0.0.0.0", 7360, DSDCFG_INPUT_UDP, "udp:0.0.0.0:7360"},
+        {"-", "", 0, "", 0, DSDCFG_INPUT_FILE, "-"},
+        {"m17udp:127.0.0.1:17000", "", 0, "", 0, DSDCFG_INPUT_FILE, "m17udp:127.0.0.1:17000"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_opts_and_state(opts, state);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", cases[i].dev);
+        DSD_SNPRINTF(opts.tcp_hostname, sizeof opts.tcp_hostname, "%s", cases[i].tcp_host);
+        opts.tcp_portno = cases[i].tcp_port;
+        DSD_SNPRINTF(opts.udp_in_bindaddr, sizeof opts.udp_in_bindaddr, "%s", cases[i].udp_addr);
+        opts.udp_in_portno = cases[i].udp_port;
+        static dsdneoUserConfig snap;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        if (!snap.has_input || snap.input_source != cases[i].source) {
+            DSD_FPRINTF(stderr, "FAIL: bare input %s saved as source %d, want %d\n", cases[i].dev, snap.input_source,
+                        cases[i].source);
+            rc |= 1;
+            continue;
+        }
+        char path[DSD_TEST_PATH_MAX];
+        static dsdneoUserConfig loaded;
+        char rendered[8192];
+        if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0
+            || write_temp_config(rendered, path, sizeof path) != 0) {
+            return 1;
+        }
+        const int load_rc = dsd_user_config_load(path, &loaded);
+        (void)remove(path);
+        reset_opts_and_state(opts, state);
+        if (load_rc == 0) {
+            dsd_apply_user_config_to_opts(&loaded, &opts, &state);
+        }
+        if (load_rc != 0 || strcmp(opts.audio_in_dev, cases[i].reopens) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: bare input %s reloads as \"%s\", want \"%s\"\n", cases[i].dev, opts.audio_in_dev,
+                        cases[i].reopens);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+/* The session of an I/Q replay of @p replay_dev, which runs its capture's own centre and gain. */
+static void
+set_iq_replay_session(dsd_opts& opts, const char* replay_dev) {
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.iq_replay_requested = 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", replay_dev);
+    opts.rtlsdr_center_freq = 460125000U;
+    opts.iq_replay_center_freq = 460125000U;
+    opts.rtl_gain_value = 44;
+    opts.input_warn_db = -12.0;
+}
+
+/*
+ * Issue #743 (B1): an I/Q replay has no INI form, so a replay session saves the [input] of the config it loaded as it
+ * loaded it (none of the replay's centre, gain or input threshold), or no [input] when it loaded none. Before, it saved
+ * source = "file" with file_path = "iqreplay:...", which the next start refuses.
+ */
+static int
+test_replay_snapshot_saves_the_loaded_input(void) {
+    static const char* ini = "[input]\n"
+                             "source = \"rtltcp\"\n"
+                             "rtltcp_host = \"radio.example\"\n"
+                             "rtltcp_port = 1235\n"
+                             "rtl_freq = \"851.0125M\"\n"
+                             "rtl_gain = 12\n"
+                             "rtl_bw_khz = 24\n"
+                             "input_warn_db = -30.0\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    static dsdneoUserConfig cfg;
+    const int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: replay [input] config did not load\n");
+        return 1;
+    }
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    set_iq_replay_session(opts, "iqreplay:/captures/site.iq.json");
+    rc |= dsd_user_config_retain_input(&state, &cfg) == 0 ? 0 : 1;
+    static dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        dsd_state_ext_free_all(&state);
+        return 1;
+    }
+    rc |= expect_contains("replay save: the loaded source", rendered, "[input]\nsource = \"rtltcp\"\n");
+    rc |= expect_contains("replay save: the loaded host", rendered, "rtltcp_host = \"radio.example\"\n");
+    rc |= expect_contains("replay save: the loaded port", rendered, "rtltcp_port = 1235\n");
+    rc |= expect_contains("replay save: the loaded frequency, as written", rendered, "rtl_freq = \"851.0125M\"\n");
+    rc |= expect_contains("replay save: the loaded gain, not the replay's", rendered, "rtl_gain = 12\n");
+    rc |= expect_contains("replay save: the loaded bandwidth", rendered, "rtl_bw_khz = 24\n");
+    rc |= expect_contains("replay save: the loaded input threshold", rendered, "input_warn_db = -30.0\n");
+    rc |= expect_absent_quiet("replay save: no replay spec", rendered, "iqreplay");
+    rc |= expect_absent_quiet("replay save: no file input", rendered, "source = \"file\"");
+
+    /* A session that loaded no config (or one without an [input]) saves no [input]. */
+    dsd_user_config_forget_retained_input(&state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.has_input) {
+        DSD_FPRINTF(stderr, "FAIL: replay save with no loaded [input] wrote one (source %d)\n", snap.input_source);
+        rc |= 1;
+    }
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        dsd_state_ext_free_all(&state);
+        return 1;
+    }
+    rc |= expect_absent_quiet("replay save without a config: no [input]", rendered, "[input]");
+    rc |= expect_absent_quiet("replay save without a config: no replay spec", rendered, "iqreplay");
+
+    /* A session that is no replay saves its own input, whatever was retained. */
+    reset_opts_and_state(opts, state);
+    rc |= dsd_user_config_retain_input(&state, &cfg) == 0 ? 0 : 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.has_input || snap.input_source != DSDCFG_INPUT_PULSE) {
+        DSD_FPRINTF(stderr, "FAIL: a live session saved source %d, want its own pulse input\n", snap.input_source);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* Whether @p snap, saved and read back, passes --validate-config: no error, an I/Q stream rule included. */
+static int
+expect_snapshot_validates(const char* label, const dsdneoUserConfig* snap) {
+    static char rendered[32768];
+    char path[DSD_TEST_PATH_MAX];
+    if (render_config_to_buffer(snap, rendered, sizeof rendered) != 0
+        || write_temp_config(rendered, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof diags);
+    const int validate_rc = dsd_user_config_validate(path, &diags);
+    (void)remove(path);
+    int rc = 0;
+    if (validate_rc != 0 || diags.error_count != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the save does not validate (rc=%d, %d error(s))\n", label, validate_rc,
+                    diags.error_count);
+        for (int d = 0; d < diags.count; d++) {
+            DSD_FPRINTF(stderr, "  [%s] %s: %s\n", diags.items[d].section, diags.items[d].key, diags.items[d].message);
+        }
+        rc = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    return rc;
+}
+
+/*
+ * Issue #743 (D8 over B1): a replay session that loaded an I/Q stream [input] saves that [input], and the next start
+ * refuses a stream beside trunking, the -Y scanner or a trunk scan. A replay runs them, so the session's save writes each
+ * of them off: autosave, Save and --print-config leave a config the next start runs. Before, the save wrote the stream
+ * [input] with the replay's trunking on, and the next start of that config exited 1. A live stream session saves the
+ * same way; any other retained [input] keeps the session's trunking.
+ */
+static int
+test_replay_snapshot_turns_off_tuning_beside_a_stream_input(void) {
+    static const char* stream_ini = "[input]\n"
+                                    "source = \"iqtcp\"\n"
+                                    "iq_host = \"127.0.0.1\"\n"
+                                    "iq_port = 1234\n"
+                                    "iq_rate = \"240k\"\n"
+                                    "iq_format = \"cs16\"\n"
+                                    "[trunking]\n"
+                                    "enabled = false\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(stream_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    static dsdneoUserConfig stream_cfg;
+    const int load_rc = dsd_user_config_load(path, &stream_cfg);
+    (void)remove(path);
+    if (load_rc != 0 || stream_cfg.input_source != DSDCFG_INPUT_IQTCP) {
+        DSD_FPRINTF(stderr, "FAIL: stream [input] config did not load\n");
+        return 1;
+    }
+
+    static const struct {
+        const char* label;
+        int replay;
+        int trunk;
+        int scanner;
+        int trunk_scan;
+        int next_start_trunk_scan;
+    } cases[] = {
+        {"replay with trunking", 1, 1, 0, 0, 0},
+        {"replay with the -Y scanner", 1, 0, 1, 0, 0},
+        {"replay with trunking and the scanner it outranks", 1, 1, 1, 0, 0},
+        {"replay with a trunk scan", 1, 0, 0, 1, 0},
+        {"replay with a trunk scan waiting for the next start", 1, 0, 0, 0, 1},
+        {"replay with all of them", 1, 1, 1, 1, 1},
+        {"live stream with trunking", 0, 1, 1, 1, 0},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig snap;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_opts_and_state(opts, state);
+        dsd_apply_user_config_to_opts(&stream_cfg, &opts, &state);
+        if (cases[i].replay) {
+            set_iq_replay_session(opts, "iqreplay:/captures/site.iq.json");
+            rc |= dsd_user_config_retain_input(&state, &stream_cfg) == 0 ? 0 : 1;
+        }
+        opts.trunk_enable = cases[i].trunk;
+        opts.scanner_mode = cases[i].scanner;
+        opts.trunk_scan_enabled = cases[i].trunk_scan;
+        if (cases[i].next_start_trunk_scan) {
+            opts.next_start.pending |= DSD_NEXT_START_TRUNK_SCAN;
+            opts.next_start.trunk_scan_enabled = 1;
+        }
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        if (!snap.has_input || snap.input_source != DSDCFG_INPUT_IQTCP || snap.trunk_enabled != 0
+            || snap.trunk_scanner != 0 || snap.trunk_scan_enabled != 0) {
+            DSD_FPRINTF(
+                stderr, "FAIL: %s: saved source %d, trunking %d, scanner %d, trunk scan %d; want iqtcp, all off\n",
+                cases[i].label, snap.input_source, snap.trunk_enabled, snap.trunk_scanner, snap.trunk_scan_enabled);
+            rc |= 1;
+        }
+        char why[256];
+        if (dsd_user_config_check_trunk_scan_startable(&snap, nullptr, why, sizeof why) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s: the save breaks a next-start rule: %s\n", cases[i].label, why);
+            rc |= 1;
+        }
+        rc |= expect_snapshot_validates(cases[i].label, &snap);
+        dsd_state_ext_free_all(&state);
+    }
+
+    /* Any other retained [input] keeps the session's trunking. */
+    static const char* rtltcp_ini = "[input]\n"
+                                    "source = \"rtltcp\"\n"
+                                    "rtltcp_host = \"radio.example\"\n"
+                                    "rtltcp_port = 1235\n";
+    if (write_temp_config(rtltcp_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    static dsdneoUserConfig rtltcp_cfg;
+    const int rtltcp_rc = dsd_user_config_load(path, &rtltcp_cfg);
+    (void)remove(path);
+    if (rtltcp_rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: rtltcp [input] config did not load\n");
+        return 1;
+    }
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&rtltcp_cfg, &opts, &state);
+    set_iq_replay_session(opts, "iqreplay:/captures/site.iq.json");
+    rc |= dsd_user_config_retain_input(&state, &rtltcp_cfg) == 0 ? 0 : 1;
+    opts.trunk_enable = 1;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.input_source != DSDCFG_INPUT_RTLTCP || snap.trunk_enabled != 1) {
+        DSD_FPRINTF(stderr, "FAIL: replay beside an rtltcp [input] saved source %d, trunking %d; want rtltcp, on\n",
+                    snap.input_source, snap.trunk_enabled);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* The retained [input] as a config, for the merge rows below. */
+static const dsdneoUserConfig*
+retained_of(const dsd_state* state) {
+    static dsdneoUserConfig out;
+    dsd_user_config_init(&out);
+    (void)dsd_user_config_retained_input(state, &out);
+    return &out;
+}
+
+/*
+ * Issue #743 (G4): a config patch applied during a replay (the control API's config_apply, built from
+ * dsd_user_config_init() and the keys given) merges the [input] keys it sets into the retained [input]: one naming no
+ * source keeps the source and endpoint; a flagged key merges by its flag, explicit 0 included; a patch naming a source
+ * changes it. An [input] no config can start (a file input of an iqreplay: spec, as the B1 bug saved) is never
+ * retained, whole or merged: the copy held stays, and bootstrap retains none.
+ */
+static int
+test_retained_input_merges_a_patch(void) {
+    static dsd_state state;
+    static dsdneoUserConfig loaded;
+    static dsdneoUserConfig patch;
+    static dsd_state empty_state;
+    int rc = 0;
+    dsd_user_config_init(&loaded);
+    loaded.has_input = 1;
+    loaded.input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(loaded.rtltcp_host, sizeof loaded.rtltcp_host, "%s", "radio.example");
+    loaded.rtltcp_port = 1235;
+    DSD_SNPRINTF(loaded.rtl_freq, sizeof loaded.rtl_freq, "%s", "851.0125M");
+    loaded.rtl_gain = 12;
+    loaded.rtl_gain_is_set = 1;
+    rc |= dsd_user_config_retain_input(&state, &loaded) == 0 ? 0 : 1;
+
+    dsd_user_config_init(&patch);
+    patch.has_input = 1;
+    patch.input_warn_db = -20.0;
+    patch.input_warn_db_is_set = 1;
+    patch.rtl_gain = 0; /* explicit AGC */
+    patch.rtl_gain_is_set = 1;
+    rc |= dsd_user_config_merge_retained_input(&state, &patch) == 0 ? 0 : 1;
+    const dsdneoUserConfig* kept = retained_of(&state);
+    if (kept->input_source != DSDCFG_INPUT_RTLTCP || strcmp(kept->rtltcp_host, "radio.example") != 0
+        || kept->rtltcp_port != 1235 || strcmp(kept->rtl_freq, "851.0125M") != 0 || !kept->input_warn_db_is_set
+        || fabs(kept->input_warn_db - (-20.0)) > 1e-9 || !kept->rtl_gain_is_set || kept->rtl_gain != 0) {
+        DSD_FPRINTF(stderr, "FAIL: sourceless patch: source %d host \"%s\" freq \"%s\" warn %.1f/%d gain %d/%d\n",
+                    kept->input_source, kept->rtltcp_host, kept->rtl_freq, kept->input_warn_db,
+                    kept->input_warn_db_is_set, kept->rtl_gain, kept->rtl_gain_is_set);
+        rc |= 1;
+    }
+
+    dsd_user_config_init(&patch);
+    patch.has_input = 1;
+    patch.input_source = DSDCFG_INPUT_RTL;
+    patch.rtl_bw_khz = 24;
+    rc |= dsd_user_config_merge_retained_input(&state, &patch) == 0 ? 0 : 1;
+    kept = retained_of(&state);
+    if (kept->input_source != DSDCFG_INPUT_RTL || kept->rtl_bw_khz != 24 || strcmp(kept->rtl_freq, "851.0125M") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: source patch: source %d bw %d freq \"%s\"\n", kept->input_source, kept->rtl_bw_khz,
+                    kept->rtl_freq);
+        rc |= 1;
+    }
+
+    /* A broken B1 [input] is retained neither merged nor whole; with none held, nothing is retained. */
+    dsd_user_config_init(&patch);
+    patch.has_input = 1;
+    patch.input_source = DSDCFG_INPUT_FILE;
+    DSD_SNPRINTF(patch.file_path, sizeof patch.file_path, "%s", "iqreplay:/captures/site.iq.json");
+    rc |= dsd_user_config_merge_retained_input(&state, &patch) == 0 ? 0 : 1;
+    rc |= dsd_user_config_retain_input(&state, &patch) == 0 ? 0 : 1;
+    kept = retained_of(&state);
+    if (kept->input_source != DSDCFG_INPUT_RTL || kept->file_path[0] != '\0') {
+        DSD_FPRINTF(stderr, "FAIL: broken file [input] retained: source %d file \"%s\"\n", kept->input_source,
+                    kept->file_path);
+        rc |= 1;
+    }
+    rc |= dsd_user_config_retain_input(&empty_state, &patch) == 0 ? 0 : 1;
+    if (dsd_user_config_retained_input(&empty_state, &patch) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a broken file [input] was retained with none held\n");
+        rc |= 1;
+    }
+    if (dsd_user_config_file_path_is_input_spec("iqreplay:/x.iq.json") != 1
+        || dsd_user_config_file_path_is_input_spec("/captures/iqreplay.wav") != 0
+        || dsd_user_config_file_path_is_input_spec(NULL) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: dsd_user_config_file_path_is_input_spec()\n");
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(&empty_state);
+    return rc;
+}
+
+/* Issue #743 (B1): --validate-config refuses a file_path that is an I/Q replay spec, which no config can start; a file
+   input named like a network input (the "tcp" an older save wrote) still opens it, and validates. */
+static int
+test_validate_refuses_a_replay_file_path(void) {
+    static const struct {
+        const char* ini;
+        const char* section;
+        const char* key;
+        int errors;
+    } cases[] = {
+        {"[input]\nsource = \"file\"\nfile_path = \"iqreplay:/captures/site.iq.json\"\n", "input", "file_path", 1},
+        {"[profile.replay]\ninput.source = \"file\"\ninput.file_path = \"iqreplay:/captures/site.iq.json\"\n",
+         "profile.replay", "input.file_path", 1},
+        {"[input]\nsource = \"file\"\nfile_path = \"tcp\"\n", "", "", 0},
+        {"[input]\nsource = \"file\"\nfile_path = \"/captures/iqreplay.wav\"\n", "", "", 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(cases[i].ini, path, sizeof path) != 0) {
+            return 1;
+        }
+        dsdcfg_diagnostics_t diags;
+        DSD_MEMSET(&diags, 0, sizeof diags);
+        const int validate_rc = dsd_user_config_validate(path, &diags);
+        (void)remove(path);
+        int named = cases[i].errors == 0;
+        for (int d = 0; d < diags.count && !named; d++) {
+            named = diags.items[d].level == DSDCFG_DIAG_ERROR && strcmp(diags.items[d].section, cases[i].section) == 0
+                    && strcmp(diags.items[d].key, cases[i].key) == 0
+                    && strstr(diags.items[d].message, "--iq-replay <path>") != NULL;
+        }
+        if ((validate_rc != 0) != (cases[i].errors != 0) || diags.error_count != cases[i].errors || !named) {
+            DSD_FPRINTF(stderr, "FAIL: validate case %zu: rc=%d errors=%d (want %d), named=%d\n", i, validate_rc,
+                        diags.error_count, cases[i].errors, named);
+            rc |= 1;
+        }
+        dsdcfg_diags_free(&diags);
+    }
+    return rc;
+}
+
+/* Issue #743: an [input] source = "iqtcp" | "iqudp" loads its iq_* keys, applies the canonical spec they build, its
+   rtl_bw_khz as the DSP bandwidth request, the squelch and the monitor volume, and none of the tuner keys of the inputs
+   DSD-neo tunes (gain, PPM, auto-PPM, rtl_freq). A save of the session writes the stream back as its own source, with
+   no tuner key, which loads to the same input; keys that build no spec leave the input as it was. */
+static int
+test_iq_stream_input_load_apply_snapshot(void) {
+    static const char* ini = "[input]\n"
+                             "source = \"iqudp\"\n"
+                             "iq_host = \"0.0.0.0\"\n"
+                             "iq_port = 7356\n"
+                             "iq_rate = \"1.152M\"\n"
+                             "iq_format = \"CF32\"\n"
+                             "iq_freq = \"851.0125M\"\n"
+                             "rtl_bw_khz = 24\n"
+                             "rtl_sql = -50\n"
+                             "rtl_volume = 3\n"
+                             "rtl_gain = 30\n"
+                             "rtl_ppm = 5\n"
+                             "auto_ppm = true\n"
+                             "rtl_freq = \"460.5M\"\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    static dsdneoUserConfig cfg;
+    const int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    int rc = 0;
+    if (load_rc != 0 || !cfg.has_input || cfg.input_source != DSDCFG_INPUT_IQUDP || strcmp(cfg.iq_host, "0.0.0.0") != 0
+        || cfg.iq_port != 7356 || strcmp(cfg.iq_rate, "1.152M") != 0 || strcmp(cfg.iq_format, "CF32") != 0
+        || strcmp(cfg.iq_freq, "851.0125M") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: iqudp load: rc=%d source %d host \"%s\" port %d rate \"%s\"\n", load_rc,
+                    cfg.input_source, cfg.iq_host, cfg.iq_port, cfg.iq_rate);
+        rc |= 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    opts.rtl_gain_value = 7;
+    opts.rtlsdr_ppm_error = 1;
+    opts.rtlsdr_center_freq = 850000000U;
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (strcmp(opts.audio_in_dev, "iqudp:0.0.0.0:7356:1152000:cf32:851012500") != 0 || opts.rtl_dsp_bw_khz != 24
+        || opts.rtl_dsp_bw_source != DSD_RTL_DSP_BW_SOURCE_EXPLICIT || opts.rtl_volume_multiplier != 3
+        || opts.rtl_squelch_mode != DSD_SQUELCH_MODE_LEVEL) {
+        DSD_FPRINTF(stderr, "FAIL: iqudp apply: dev \"%s\" bw %d (%d) vol %d\n", opts.audio_in_dev, opts.rtl_dsp_bw_khz,
+                    opts.rtl_dsp_bw_source, opts.rtl_volume_multiplier);
+        rc |= 1;
+    }
+    if (opts.rtl_gain_value != 7 || opts.rtlsdr_ppm_error != 1 || opts.rtl_auto_ppm != 0
+        || opts.rtlsdr_center_freq != 850000000U) {
+        DSD_FPRINTF(stderr, "FAIL: iqudp apply set a tuner key: gain %d ppm %d auto %d centre %u\n",
+                    opts.rtl_gain_value, opts.rtlsdr_ppm_error, opts.rtl_auto_ppm, opts.rtlsdr_center_freq);
+        rc |= 1;
+    }
+    char spec[256];
+    if (dsd_user_config_radio_input_spec(&cfg, &opts, spec, sizeof spec) != 0
+        || strcmp(spec, "iqudp:0.0.0.0:7356:1152000:cf32:851012500") != 0
+        || dsd_user_config_input_sets_device(&cfg) != 1) {
+        DSD_FPRINTF(stderr, "FAIL: iqudp radio input spec \"%s\"\n", spec);
+        rc |= 1;
+    }
+
+    /* The save: the stream as its own source, canonical text, no tuner key; and it loads to the same input. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    static dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    static char text[16384];
+    rc |= render_config_to_buffer(&saved, text, sizeof text);
+    rc |= expect_contains("stream save source", text, "source = \"iqudp\"\n");
+    rc |= expect_contains("stream save host", text, "iq_host = \"0.0.0.0\"\n");
+    rc |= expect_contains("stream save port", text, "iq_port = 7356\n");
+    rc |= expect_contains("stream save rate", text, "iq_rate = \"1152000\"\n");
+    rc |= expect_contains("stream save format", text, "iq_format = \"cf32\"\n");
+    rc |= expect_contains("stream save freq", text, "iq_freq = \"851012500\"\n");
+    rc |= expect_contains("stream save bw", text, "rtl_bw_khz = 24\n");
+    rc |= expect_contains("stream save volume", text, "rtl_volume = 3\n");
+    rc |= expect_contains("stream save squelch", text, "rtl_sql = -50\n");
+    for (const char* tuner : {"rtl_gain", "rtl_ppm", "auto_ppm", "rtl_freq", "rtl_device", "file_path"}) {
+        rc |= expect_absent_quiet("stream save tuner key", text, tuner);
+    }
+    if (write_temp_config(text, path, sizeof path) != 0) {
+        return 1;
+    }
+    static dsdneoUserConfig reloaded;
+    const int reload_rc = dsd_user_config_load(path, &reloaded);
+    (void)remove(path);
+    if (reload_rc != 0 || dsd_user_config_radio_input_spec(&reloaded, &opts, spec, sizeof spec) != 0
+        || strcmp(spec, opts.audio_in_dev) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: stream save reloads as \"%s\"\n", spec);
+        rc |= 1;
+    }
+
+    /* Keys that build no spec leave the input as it was. */
+    cfg.iq_port = 0;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (strcmp(opts.audio_in_dev, "pulse") != 0 || dsd_user_config_input_sets_device(&cfg) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a stream with no port replaced the input: \"%s\"\n", opts.audio_in_dev);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/* Issue #743: --validate-config judges a raw I/Q stream [input] by the spec its keys build, an error on the key whose
+   field the parser refuses, and on iq_rate for a rate no plan takes to the DSP target the config runs (TETRA's under
+   decode = tetra); the tuner keys of the inputs DSD-neo tunes are warnings; a file_path naming a stream is an error. */
+static int
+test_validate_iq_stream_input(void) {
+    static const char base[] = "[input]\nsource = \"iqtcp\"\niq_host = \"127.0.0.1\"\niq_port = 1234\n"
+                               "iq_rate = \"240k\"\niq_format = \"cs16\"\n";
+
+    static const struct {
+        const char* extra; /* after base's keys, in [input] unless it opens a section */
+        const char* base;  /* NULL: base */
+        int level;         /* DSDCFG_DIAG_ERROR or _WARNING; -1 for no diagnostic */
+        const char* section;
+        const char* key;
+        const char* text;
+    } cases[] = {
+        {"", NULL, -1, "", "", ""},
+        {"", "[input]\nsource = \"iqtcp\"\niq_port = 1234\niq_rate = \"240k\"\niq_format = \"cs16\"\n",
+         DSDCFG_DIAG_ERROR, "input", "iq_host", "HOST is empty"},
+        {"", "[input]\nsource = \"iqudp\"\niq_host = \"0.0.0.0\"\niq_rate = \"240k\"\niq_format = \"cs16\"\n",
+         DSDCFG_DIAG_ERROR, "input", "iq_port", "PORT"},
+        {"",
+         "[input]\nsource = \"iqudp\"\niq_host = \"0.0.0.0\"\niq_port = 1\niq_rate = \"7k\"\niq_format = \"cs16\"\n",
+         DSDCFG_DIAG_ERROR, "input", "iq_rate", "RATE '7k' is outside"},
+        {"", "[input]\nsource = \"iqudp\"\niq_host = \"0.0.0.0\"\niq_port = 1\niq_rate = \"8k\"\niq_format = \"s16\"\n",
+         DSDCFG_DIAG_ERROR, "input", "iq_format", "'s16'"},
+        {"iq_freq = \"5G\"\n", NULL, DSDCFG_DIAG_ERROR, "input", "iq_freq", "FREQ '5G' is above"},
+        {"iq_rate = \"49152000\"\nrtl_bw_khz = 24\n", NULL, DSDCFG_DIAG_ERROR, "input", "iq_rate",
+         "the stream's rate (49152000 Hz) is above 3200000 Hz; send one channel (the sending program's VFO mode)"},
+        {"iq_rate = \"3200001\"\n", NULL, DSDCFG_DIAG_ERROR, "input", "iq_rate",
+         "the stream's rate (3200001 Hz) is above 3200000 Hz"},
+        {"iq_rate = \"3.2M\"\n[mode]\ndecode = \"tetra\"\n", NULL, -1, "", "", ""},
+        {"iq_rate = \"8000\"\n[mode]\ndecode = \"tetra\"\n", NULL, -1, "", "", ""},
+        {"rtl_bw_khz = 16\n[mode]\ndecode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 25000\n", NULL, DSDCFG_DIAG_ERROR,
+         "analog", "nfm_bandwidth_hz", "does not fit the 16 kHz DSP rate"},
+        {"rtl_gain = 30\n", NULL, DSDCFG_DIAG_WARNING, "input", "rtl_gain", "rtl_gain is not used by an I/Q stream"},
+        {"rtl_ppm = 3\n", NULL, DSDCFG_DIAG_WARNING, "input", "rtl_ppm", "rtl_ppm is not used by an I/Q stream"},
+        {"auto_ppm = true\n", NULL, DSDCFG_DIAG_WARNING, "input", "auto_ppm", "auto_ppm is not used"},
+        {"rtl_freq = \"851M\"\n", NULL, DSDCFG_DIAG_WARNING, "input", "rtl_freq",
+         "give its receiver frequency as iq_freq"},
+        {"[trunking]\nenabled = true\n", NULL, DSDCFG_DIAG_ERROR, "trunking", "enabled",
+         "trunking.enabled cannot be used with an I/Q stream input"},
+        {"[trunking]\nscanner = true\n", NULL, DSDCFG_DIAG_ERROR, "trunking", "scanner",
+         "trunking.scanner cannot be used with an I/Q stream input"},
+        {"[trunk_scan]\nenabled = true\ntargets_csv = \"t.csv\"\n", NULL, DSDCFG_DIAG_ERROR, "trunk_scan", "enabled",
+         "trunk_scan.enabled cannot be used with an I/Q stream input"},
+        {"[profile.net]\ninput.rtl_gain = 30\ntrunking.enabled = true\n", NULL, DSDCFG_DIAG_ERROR, "profile.net",
+         "trunking.enabled", "cannot be used with an I/Q stream input"},
+        {"[profile.net]\ninput.rtl_gain = 30\n", NULL, DSDCFG_DIAG_WARNING, "profile.net", "input.rtl_gain",
+         "rtl_gain is not used"},
+        {"", "[input]\nsource = \"file\"\nfile_path = \"iqtcp:127.0.0.1:1234:240k:cs16\"\n", DSDCFG_DIAG_ERROR, "input",
+         "file_path", "use source = \"iqtcp\""},
+        {"", "[input]\nsource = \"file\"\nfile_path = \"iqudp:0.0.0.0:1234:240k:cs16\"\n", DSDCFG_DIAG_ERROR, "input",
+         "file_path", "use source = \"iqudp\""},
+        {"", "[input]\nsource = \"rtl\"\nrtl_freq = \"851M\"\n[trunking]\nenabled = true\n", -1, "", "", ""},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char ini[1024];
+        DSD_SNPRINTF(ini, sizeof ini, "%s%s", cases[i].base ? cases[i].base : base, cases[i].extra);
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(ini, path, sizeof path) != 0) {
+            return 1;
+        }
+        dsdcfg_diagnostics_t diags;
+        DSD_MEMSET(&diags, 0, sizeof diags);
+        const int validate_rc = dsd_user_config_validate(path, &diags);
+        (void)remove(path);
+        int found = cases[i].level < 0 ? (diags.count == 0) : 0;
+        for (int d = 0; d < diags.count && !found; d++) {
+            found = (int)diags.items[d].level == cases[i].level && strcmp(diags.items[d].section, cases[i].section) == 0
+                    && strcmp(diags.items[d].key, cases[i].key) == 0
+                    && strstr(diags.items[d].message, cases[i].text) != NULL;
+        }
+        const int want_rc = cases[i].level == DSDCFG_DIAG_ERROR ? -1 : 0;
+        if (!found || validate_rc != want_rc) {
+            DSD_FPRINTF(stderr, "FAIL: stream validate case %zu: rc=%d, %d diagnostic(s)%s%s\n", i, validate_rc,
+                        diags.count, diags.count ? ", first: " : "", diags.count ? diags.items[0].message : "");
+            rc |= 1;
+        }
+        dsdcfg_diags_free(&diags);
+    }
+    return rc;
+}
+
+/* Issue #743 (D8): the next-start rules hold a raw I/Q stream input to trunking, the -Y scanner and a trunk scan being
+   off; a save that newly breaks one is refused, one the session's own save broke already is not, and a save that
+   leaves the stream while trunking turns on starts. */
+static int
+test_check_iq_stream_startable(void) {
+    static dsdneoUserConfig before;
+    static dsdneoUserConfig after;
+    char why[256];
+    int rc = 0;
+    DSD_MEMSET(&before, 0, sizeof before);
+    before.has_input = 1;
+    before.input_source = DSDCFG_INPUT_IQTCP;
+    before.has_trunking = 1;
+    after = before;
+    after.trunk_enabled = 1;
+    if (dsd_user_config_check_trunk_scan_startable(&after, &before, why, sizeof why) == 0
+        || strncmp(why, "trunking.enabled cannot be used with an I/Q stream input", 56) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: stream startable, trunking: \"%s\"\n", why);
+        rc |= 1;
+    }
+    after = before;
+    after.trunk_scanner = 1;
+    if (dsd_user_config_check_trunk_scan_startable(&after, &before, why, sizeof why) == 0
+        || strncmp(why, "trunking.scanner cannot be used with an I/Q stream input", 56) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: stream startable, scanner: \"%s\"\n", why);
+        rc |= 1;
+    }
+    after = before;
+    after.trunk_scan_enabled = 1;
+    after.trunk_scan_list_count = 1;
+    DSD_SNPRINTF(after.trunk_scan_lists[0].path, sizeof after.trunk_scan_lists[0].path, "%s", "t.csv");
+    if (dsd_user_config_check_trunk_scan_startable(&after, &before, why, sizeof why) == 0
+        || strncmp(why, "trunk_scan.enabled cannot be used with an I/Q stream input", 58) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: stream startable, trunk scan: \"%s\"\n", why);
+        rc |= 1;
+    }
+    /* Broken already: the session's. */
+    after = before;
+    after.trunk_enabled = 1;
+    if (dsd_user_config_check_trunk_scan_startable(&after, &after, why, sizeof why) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a rule the save broke already refused: \"%s\"\n", why);
+        rc |= 1;
+    }
+    /* Leaving the stream while trunking turns on. */
+    after.input_source = DSDCFG_INPUT_RTL;
+    if (dsd_user_config_check_trunk_scan_startable(&after, &before, why, sizeof why) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: an RTL input with trunking refused: \"%s\"\n", why);
+        rc |= 1;
+    }
+    return rc;
+}
+
 /* Issue #671: under --trunk-scan the parked target's type sets the live trunking flag, so a save writes the configured
    setting the coordinator publishes; with no target published (no scan, or before the first target), the live flag. */
 static int
@@ -5843,6 +6508,14 @@ main(void) {
     rc |= test_load_and_apply_rtl_digital_resample();
     rc |= test_snapshot_digital_resample_mode();
     rc |= test_snapshot_names_switched_inputs();
+    rc |= test_snapshot_bare_network_inputs_save_as_their_source();
+    rc |= test_replay_snapshot_saves_the_loaded_input();
+    rc |= test_replay_snapshot_turns_off_tuning_beside_a_stream_input();
+    rc |= test_retained_input_merges_a_patch();
+    rc |= test_validate_refuses_a_replay_file_path();
+    rc |= test_iq_stream_input_load_apply_snapshot();
+    rc |= test_validate_iq_stream_input();
+    rc |= test_check_iq_stream_startable();
     rc |= test_snapshot_trunking_reads_the_trunk_scan_configured_value();
     rc |= test_snapshot_scanner_saves_a_paused_scan();
     rc |= test_snapshot_never_saves_a_scan_hold();

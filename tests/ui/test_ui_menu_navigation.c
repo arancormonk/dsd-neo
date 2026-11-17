@@ -272,6 +272,24 @@ static const NcMenuItem EMPTIABLE_ROOT_ITEMS[] = {
     {.id = "root6", .label = "Root 6", .on_select = act_root6},
 };
 
+/* A submenu row whose label is rendered (as Input's radio submenu names its input, issue #743). */
+static const char* g_rendered_title = "I/Q stream";
+
+static const char*
+lbl_rendered(const void* ctx, char* out, size_t out_size) {
+    (void)ctx;
+    DSD_SNPRINTF(out, out_size, "%s", g_rendered_title);
+    return out;
+}
+
+static const NcMenuItem RENDERED_ROOT_ITEMS[] = {
+    {.id = "input.rtl",
+     .label_fn = lbl_rendered,
+     .submenu = SUB_ITEMS,
+     .submenu_len = sizeof SUB_ITEMS / sizeof SUB_ITEMS[0]},
+    {.id = "root5", .label = "Root 5", .submenu = SUB_ITEMS, .submenu_len = sizeof SUB_ITEMS / sizeof SUB_ITEMS[0]},
+};
+
 static const NcMenuItem ROOT_ITEMS[] = {
     {.id = "root0", .label = "Root 0", .on_select = act_root0},
     {.id = "root1", .label = "Root 1", .is_enabled = item_disabled, .on_select = act_root0},
@@ -390,6 +408,9 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
     } else if (g_fixture == 5) {
         items = EMPTIABLE_ROOT_ITEMS;
         n = sizeof EMPTIABLE_ROOT_ITEMS / sizeof EMPTIABLE_ROOT_ITEMS[0];
+    } else if (g_fixture == 6) {
+        items = RENDERED_ROOT_ITEMS;
+        n = sizeof RENDERED_ROOT_ITEMS / sizeof RENDERED_ROOT_ITEMS[0];
     }
     if (out_items) {
         *out_items = items;
@@ -653,10 +674,14 @@ ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* ctx, 
     return vis;
 }
 
+/* The title of the frame laid out last. */
+static char g_layout_title[96];
+
 void
 ui_overlay_layout(UiMenuFrame* f, const void* ctx) {
     (void)ctx;
     assert(f != NULL);
+    DSD_SNPRINTF(g_layout_title, sizeof g_layout_title, "%s", f->title ? f->title : "");
     f->h = 11; // 4 visible rows -> page step of 3
     f->w = 40;
     f->y = 0;
@@ -697,6 +722,40 @@ resize_term(int lines, int columns) {
     (void)lines;
     (void)columns;
     return OK;
+}
+
+/* Issue #743: a submenu row that renders its label titles its frame (the breadcrumb) with that label, as the radio
+   submenu names its input; before, the frame took the row's id ("Main Menu > Input > input.rtl"). The title is drawn
+   anew each tick, so an input switched with the submenu open renames it. A row with a static label keeps it. */
+static void
+test_rendered_label_titles_its_submenu(const dsd_opts* opts, const dsd_state* state) {
+    static const char* const k_names[] = {"RTL-SDR", "I/Q stream", "I/Q replay"};
+    for (size_t i = 0; i < sizeof k_names / sizeof k_names[0]; i++) {
+        g_fixture = 6;
+        g_rendered_title = k_names[i];
+        reset_capture();
+        ui_menu_open_async(opts, state);
+        assert(ui_menu_handle_key('\n', opts, state) == 1);
+        assert(strcmp(g_layout_title, k_names[i]) == 0);
+        ui_overlays_shutdown();
+    }
+    /* The input switched while the submenu is open (from Qt or the API): the next draw renames it. */
+    g_fixture = 6;
+    g_rendered_title = "I/Q stream";
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    assert(strcmp(g_layout_title, "I/Q stream") == 0);
+    g_rendered_title = "RTL-SDR";
+    ui_menu_tick(opts, state);
+    assert(strcmp(g_layout_title, "RTL-SDR") == 0);
+    ui_overlays_shutdown();
+    g_fixture = 6;
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    assert(strcmp(g_layout_title, "Root 5") == 0);
+    ui_overlays_shutdown();
+    g_fixture = 0;
 }
 
 /* Issue #672 (B17): exit closes every overlay - help, the prompt (whose cancel may open a chooser), the chooser and every
@@ -1243,6 +1302,7 @@ main(void) {
     assert(ui_menu_is_open() == 0);
 
     test_overlays_shutdown_and_restart(opts, state);
+    test_rendered_label_titles_its_submenu(opts, state);
 
     /* A submenu emptied while open (issue #672: Clear avoids outside a running scan hides all three Avoids rows) goes
        back to its parent at the next tick, rather than drawing a frame with only its separator and nothing to rest

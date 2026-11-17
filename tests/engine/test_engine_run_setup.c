@@ -120,6 +120,10 @@ static int g_tcp_refused_connects = 0;
 static int g_rigctl_rebind_calls = 0;
 static dsd_socket_t g_rigctl_rebind_old = 0;
 static dsd_socket_t g_rigctl_rebind_new = 0;
+/* Issue #743: every Connect() the run made, and the host and port of the last one. */
+static int g_connect_calls = 0;
+static char g_connect_host[64];
+static int g_connect_port = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -127,6 +131,9 @@ dsd_socket_t __real_Connect(char* hostname, int portno);
 
 dsd_socket_t
 __wrap_Connect(char* hostname, int portno) {
+    g_connect_calls++;
+    DSD_SNPRINTF(g_connect_host, sizeof g_connect_host, "%s", hostname ? hostname : "");
+    g_connect_port = portno;
     if (g_rigctl_fake_port != 0 && portno == g_rigctl_fake_port) {
         return (dsd_socket_t)777;
     }
@@ -729,12 +736,13 @@ test_tcp_connection_failure_is_fatal(void) {
     }
 
     opts->frame_m17 = 0;
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "tcp:127.0.0.1:0");
+    /* Port 1, where nothing listens: port 0 is refused before any connect now (issue #743 B15). */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "tcp:127.0.0.1:1");
     int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = expect_true("TCP connection failure rejects setup", rc != 0);
     test_rc |= expect_true("TCP connection failure preserves requested input",
-                           strcmp(opts->audio_in_dev, "tcp:127.0.0.1:0") == 0);
+                           strcmp(opts->audio_in_dev, "tcp:127.0.0.1:1") == 0);
     test_rc |= expect_true("TCP connection failure does not select Pulse", opts->audio_in_type != AUDIO_IN_PULSE);
 
     free_test_runtime(opts, state);
@@ -803,6 +811,227 @@ run_lifecycle_capturing_banner(dsd_opts* opts, dsd_state* state, char* buf, size
         return 1;
     }
     return dsd_test_capture_stderr_read(&cap, buf, buf_size) != 0;
+}
+
+/* Issue #743 B10: every occurrence of @p needle starts a line. A startup notice built from several LOG_INFO() calls
+   repeated its prefix mid-line ("NOTICE: TCP Direct Link: NOTICE: 127.0.0.1:NOTICE: 7355 "), and an error that
+   followed one ran on from it. */
+static int
+expect_line_starts(const char* tag, const char* text, const char* needle) {
+    for (const char* at = strstr(text, needle); at != NULL; at = strstr(at + 1, needle)) {
+        if (at != text && at[-1] != '\n') {
+            DSD_FPRINTF(stderr, "%s failed: \"%s\" in the middle of a line in [%s]\n", tag, needle, text);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Run the setup on input @p in and output @p out with the banner captured; the options stay for the caller to check
+   and free. */
+static int
+run_specs_capturing_banner(const char* in, const char* out, dsd_opts** opts_out, dsd_state** state_out, char* banner,
+                           size_t banner_size, int* rc_out) {
+    *opts_out = NULL;
+    *state_out = NULL;
+    if (init_test_runtime(opts_out, state_out) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = *opts_out;
+    if (in) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", in);
+    }
+    if (out) {
+        DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", out);
+    }
+    banner[0] = '\0';
+    return run_lifecycle_capturing_banner(opts, *state_out, banner, banner_size, rc_out);
+}
+
+/* The banner of a run on @p in and @p out holds @p line, and every notice in it is a whole line. */
+static int
+expect_notice_line(const char* in, const char* out, int monitor, const char* line) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    char banner[8192];
+    int rc = 0;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->monitor_input_audio = monitor;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", in);
+    DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", out);
+    banner[0] = '\0';
+    int test_rc = run_lifecycle_capturing_banner(opts, state, banner, sizeof banner, &rc);
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof tag, "notice for -i %s -o %s", in, out);
+    test_rc |= expect_contains(tag, banner, line);
+    test_rc |= expect_line_starts(tag, banner, "NOTICE: ");
+    free_test_runtime(opts, state);
+    return test_rc;
+}
+
+/* Issue #743 B10: each network input and output says what it opens in one line, with the port it opens. */
+static int
+test_network_notices_are_one_line(void) {
+    int rc = 0;
+    rc |= expect_notice_line("udp:127.0.0.1:17356", "null", 0, "NOTICE: UDP Direct Input: 127.0.0.1:17356\n");
+    rc |=
+        expect_notice_line("m17udp:rx.example:17000", "null", 0, "NOTICE: M17 UDP IP Frame Input: rx.example:17000\n");
+    rc |= expect_notice_line("pulse", "m17udp:tx.example:17001", 0,
+                             "NOTICE: M17 UDP IP Frame Output: tx.example:17001\n");
+    rc |= expect_notice_line("pulse", "udp:127.0.0.1:23456", 0, "NOTICE: UDP Blaster Output: 127.0.0.1:23456\n");
+    rc |=
+        expect_notice_line("pulse", "udp:127.0.0.1:23456", 1, "NOTICE: UDP Blaster Output (Analog): 127.0.0.1:23458\n");
+    rc |= expect_notice_line("rtltcp:radio.local:1234:769.00625M", "null", 0,
+                             "NOTICE: RTL_TCP Input: radio.local:1234\n");
+    rc |= expect_notice_line("rtltcp:radio.local:1235:769.00625M:28:3:24:-47:3:bias=on", "null", 0,
+                             "NOTICE: RTL_TCP Input: radio.local:1235 (bias=on)\n");
+    rc |= expect_notice_line("soapy:driver=test,serial=ABC:450.5M:7:2:12:-33:3", "null", 0,
+                             "NOTICE: SoapySDR Input: driver=test,serial=ABC\n");
+    rc |= expect_notice_line("soapy", "null", 0, "NOTICE: SoapySDR Input: default device args\n");
+#ifdef DSD_NEO_TEST_RIGCTL_WRAP
+    g_tcp_refusing_port = 45324;
+    g_tcp_refused_connects = 0;
+    rc |= expect_notice_line("tcp:127.0.0.1:45324", "null", 0, "NOTICE: TCP Direct Link: 127.0.0.1:45324\n");
+    g_tcp_refusing_port = 0;
+    dsd_exitflag_store(0);
+#endif
+    /* `-M M17:...`: the user data the encoder keys with, read and said in one line, VOX included. */
+    {
+        dsd_opts* m17_opts = NULL;
+        dsd_state* m17_state = NULL;
+        char m17_banner[8192];
+        int m17_rc = 0;
+        if (init_test_runtime(&m17_opts, &m17_state) != 0) {
+            return 1;
+        }
+        DSD_SNPRINTF(m17_state->m17dat, sizeof m17_state->m17dat, "%s", "M17:7:n0call:all:16000:1");
+        m17_banner[0] = '\0';
+        rc |= run_lifecycle_capturing_banner(m17_opts, m17_state, m17_banner, sizeof m17_banner, &m17_rc);
+        rc |=
+            expect_contains("m17 user data notice", m17_banner, "NOTICE: M17 User Data: M17:7:N0CALL:ALL:16000;VOX;\n");
+        rc |= expect_line_starts("m17 user data notice", m17_banner, "NOTICE: ");
+        free_test_runtime(m17_opts, m17_state);
+    }
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_START_WRAP)
+    /* With no dongle the error is a line of its own; with one, the device list follows the notice's line. */
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    char banner[8192];
+    int run_rc = 0;
+    reset_rtl_start_fakes(0, 0);
+    if (run_specs_capturing_banner("rtl:0", "null", &opts, &state, banner, sizeof banner, &run_rc) != 0) {
+        rc = 1;
+    } else {
+        rc |= expect_line_starts("rtl notice", banner, "NOTICE: ");
+        rc |= expect_line_starts("rtl notice", banner, "No supported devices found.");
+    }
+    free_test_runtime(opts, state);
+    dsd_exitflag_store(0);
+#endif
+    return rc;
+}
+
+/* A run on @p in and @p out that the spec's port refuses: setup fails before anything opens, the spec stays as typed,
+   and the error quotes the field (@p field) and the range. */
+static int
+expect_port_refused(const char* in, const char* out, const char* field) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    char banner[8192];
+    int rc = 0;
+#ifdef DSD_NEO_TEST_RIGCTL_WRAP
+    g_connect_calls = 0;
+#endif
+    if (run_specs_capturing_banner(in, out, &opts, &state, banner, sizeof banner, &rc) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof tag, "port refused for -i %s -o %s", in, out);
+    int test_rc = expect_true(tag, rc != 0);
+    test_rc |= expect_true(tag, strcmp(opts->audio_in_dev, in) == 0 && strcmp(opts->audio_out_dev, out) == 0);
+    char quoted[64];
+    DSD_SNPRINTF(quoted, sizeof quoted, "\"%s\"", field);
+    test_rc |= expect_contains(tag, banner, quoted);
+    test_rc |= expect_contains(tag, banner, "65535");
+#ifdef DSD_NEO_TEST_RIGCTL_WRAP
+    test_rc |= expect_true(tag, g_connect_calls == 0);
+#endif
+    free_test_runtime(opts, state);
+    dsd_exitflag_store(0);
+    return test_rc;
+}
+
+/* Issue #743 B15: a port that is not a whole number from 1 (0 for a UDP input, where 0 is the default 7355) to 65535
+   is refused before anything opens; it used to be narrowed to 16 bits (`tcp:127.0.0.1:105659` connected to 40123) or,
+   when it was not a number, dropped for the default. */
+static int
+test_network_spec_ports_refused(void) {
+    int rc = 0;
+    rc |= expect_port_refused("tcp:127.0.0.1:105659", "null", "105659");
+    rc |= expect_port_refused("tcp:127.0.0.1:0", "null", "0");
+    rc |= expect_port_refused("tcp:127.0.0.1:12x", "null", "12x");
+    rc |= expect_port_refused("udp:127.0.0.1:105659", "null", "105659");
+    rc |= expect_port_refused("udp:127.0.0.1:-1", "null", "-1");
+    rc |= expect_port_refused("udp:127.0.0.1:12x", "null", "12x");
+    rc |= expect_port_refused("m17udp:127.0.0.1:70000", "null", "70000");
+    rc |= expect_port_refused("m17udp:127.0.0.1:0", "null", "0");
+    rc |= expect_port_refused("pulse", "m17udp:127.0.0.1:65536", "65536");
+    rc |= expect_port_refused("pulse", "m17udp:127.0.0.1:abc", "abc");
+    rc |= expect_port_refused("pulse", "udp:127.0.0.1:99999", "99999");
+    rc |= expect_port_refused("pulse", "udp:127.0.0.1:0", "0");
+    rc |= expect_port_refused("rtltcp:127.0.0.1:99999:851M", "null", "99999");
+    rc |= expect_port_refused("rtltcp:127.0.0.1:12x:851M", "null", "12x");
+    return rc;
+}
+
+/* Issue #743 B7: an empty field keeps its place and means the default for it: `udp::17356` binds the default address
+   on 17356 (it bound host "17356" on 7355), and `tcp::<port>` connects to the default host. */
+static int
+test_network_spec_empty_fields(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    char banner[8192];
+    int rc = 0;
+    if (run_specs_capturing_banner("udp::17356", "null", &opts, &state, banner, sizeof banner, &rc) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    int test_rc = expect_true("udp empty bind address runs", rc == 0);
+    test_rc |= expect_true("udp empty bind address is the default",
+                           strcmp(opts->udp_in_bindaddr, "127.0.0.1") == 0 && opts->udp_in_portno == 17356);
+    free_test_runtime(opts, state);
+
+    if (run_specs_capturing_banner("udp:0.0.0.0:0", "null", &opts, &state, banner, sizeof banner, &rc) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    test_rc |= expect_true("udp port 0 is the default", rc == 0 && opts->udp_in_portno == 7355);
+    free_test_runtime(opts, state);
+
+    if (run_specs_capturing_banner("m17udp::17005", "m17udp::", &opts, &state, banner, sizeof banner, &rc) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    test_rc |= expect_true("m17 empty fields run", rc == 0);
+    test_rc |= expect_true("m17 empty host is the default", strcmp(opts->m17_hostname, "127.0.0.1") == 0);
+    /* The output's empty port keeps the input's, which the input set first. */
+    test_rc |= expect_true("m17 empty output port keeps the port", opts->m17_portno == 17005);
+    free_test_runtime(opts, state);
+#ifdef DSD_NEO_TEST_RIGCTL_WRAP
+    g_tcp_refusing_port = 45325;
+    g_tcp_refused_connects = 0;
+    g_connect_calls = 0;
+    test_rc |= run_specs_capturing_banner("tcp::45325", "null", &opts, &state, banner, sizeof banner, &rc);
+    test_rc |= expect_true("tcp empty host connects to the default host",
+                           g_connect_calls == 1 && strcmp(g_connect_host, "localhost") == 0 && g_connect_port == 45325);
+    free_test_runtime(opts, state);
+    g_tcp_refusing_port = 0;
+    dsd_exitflag_store(0);
+#endif
+    return test_rc;
 }
 
 static int
@@ -914,8 +1143,9 @@ test_rtltcp_invalid_and_partial_tuning_tokens(void) {
         return 1;
     }
 
+    /* An empty port field is the default port; one that is not a port is refused (test_network_spec_ports_refused()). */
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s",
-                 "rtltcp:bad-port.example:not-a-port:not-a-freq:bad-gain:bad-ppm:bogus-bw:-35:7:bias=0");
+                 "rtltcp:bad-port.example::not-a-freq:bad-gain:bad-ppm:bogus-bw:-35:7:bias=0");
     opts->rtl_gain_value = 14;
     opts->rtlsdr_ppm_error = -2;
     opts->rtl_squelch_level = 0.25;
@@ -925,7 +1155,7 @@ test_rtltcp_invalid_and_partial_tuning_tokens(void) {
     int test_rc = 0;
     test_rc |= expect_true("rtltcp invalid run ok", rc == 0);
     test_rc |= expect_true("rtltcp invalid host", strcmp(opts->rtltcp_hostname, "bad-port.example") == 0);
-    test_rc |= expect_true("rtltcp invalid port defaults", opts->rtltcp_portno == 1234);
+    test_rc |= expect_true("rtltcp empty port defaults", opts->rtltcp_portno == 1234);
     test_rc |= expect_true("rtltcp invalid freq becomes zero", opts->rtlsdr_center_freq == 0U);
     test_rc |= expect_true("rtltcp invalid gain and ppm preserved",
                            opts->rtl_gain_value == 14 && opts->rtlsdr_ppm_error == -2);
@@ -2136,6 +2366,9 @@ main(void) {
     rc |= test_udp_input_defaults_and_null_output();
     rc |= test_udp_output_connection_failure_is_fatal();
     rc |= test_tcp_connection_failure_is_fatal();
+    rc |= test_network_notices_are_one_line();
+    rc |= test_network_spec_ports_refused();
+    rc |= test_network_spec_empty_fields();
 #ifndef USE_RADIO
     rc |= test_unavailable_radio_inputs_are_rejected();
 #endif

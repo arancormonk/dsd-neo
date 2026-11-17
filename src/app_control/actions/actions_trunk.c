@@ -51,6 +51,19 @@ trunk_refused_under_trunk_scan(const dsd_opts* opts, dsd_state* state) {
     return 1;
 }
 
+/* An I/Q stream decodes the one channel its sending program streams (issue #743): trunking turned on, or a scan started
+   or resumed, would only ask for tunes it cannot make. Refused with the stream's reason (svc_fixed_tuning_reason());
+   turning either off is always allowed. An I/Q replay keeps trunking and -Y as its start allowed them: its retunes
+   defer by design (issue #575). */
+static int
+tuning_refused_on_iq_stream(const dsd_opts* opts, dsd_state* state) {
+    if (!dsd_opts_input_is_iq_stream(opts)) {
+        return 0;
+    }
+    trunk_action_toast(state, 3, svc_fixed_tuning_reason(opts));
+    return 1;
+}
+
 static void
 trunk_enable_on(dsd_opts* opts, dsd_state* state) {
     /* Leave the conventional row and transfer tuner ownership as one guarded
@@ -80,6 +93,8 @@ ui_handle_trunk_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     }
     if (opts->trunk_enable == 1) {
         opts->trunk_enable = 0;
+    } else if (tuning_refused_on_iq_stream(opts, state)) {
+        return TRUNK_ACTION_REFUSED;
     } else {
         trunk_enable_on(opts, state);
     }
@@ -106,6 +121,9 @@ ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     }
     DSD_MEMCPY(&want, c->data, sizeof(int32_t));
     const int on = (want != 0) ? 1 : 0;
+    if (on && tuning_refused_on_iq_stream(opts, state)) {
+        return TRUNK_ACTION_REFUSED;
+    }
     if (on) {
         trunk_enable_on(opts, state);
     } else {
@@ -118,6 +136,9 @@ ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
    neither tunes again nor ends a call. */
 static int
 scan_resume_channel(dsd_opts* opts, dsd_state* state) {
+    if (tuning_refused_on_iq_stream(opts, state)) {
+        return TRUNK_ACTION_REFUSED;
+    }
     if (state->lcn_scan_resume_pending) {
         trunk_action_toast(state, 3, "Resuming scan: waiting for the tune");
         return TRUNK_ACTION_DONE;
@@ -137,6 +158,9 @@ scan_resume_channel(dsd_opts* opts, dsd_state* state) {
    on the status line. */
 static int
 scan_resume_trunk(dsd_opts* opts, dsd_state* state) {
+    if (tuning_refused_on_iq_stream(opts, state)) {
+        return TRUNK_ACTION_REFUSED;
+    }
     const int rc = svc_resume_trunk_scan(opts, state);
     if (rc == 0 || rc == 1) {
         trunk_action_toast(state, 3, "Trunk scan resumed");
@@ -151,6 +175,13 @@ scan_resume_trunk(dsd_opts* opts, dsd_state* state) {
 static int
 trunk_scan_is_paused(const dsd_opts* opts, const dsd_state* state) {
     return opts->trunk_scan_enabled == 1 && state->trunk_scan_paused;
+}
+
+/* Whether SCAN_RESUME would move a scan on: one paused, a -Y resume waiting on its row, or a scan held on an entry. */
+static int
+scan_resume_would_tune(const dsd_opts* opts, const dsd_state* state) {
+    return trunk_scan_is_paused(opts, state) || state->lcn_scan_paused || state->lcn_scan_resume_pending
+           || state->lcn_scan_entry_hold || state->trunk_scan_entry_hold;
 }
 
 /* The save a -Y start leaves (svc_check_next_start()): the scanner on, trunking off. */
@@ -209,7 +240,7 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
         return scan_resume_channel(opts, state);
     }
     if (!opts->scanner_mode) {
-        if (scanner_start_refused_for_next_start(opts, state)) {
+        if (tuning_refused_on_iq_stream(opts, state) || scanner_start_refused_for_next_start(opts, state)) {
             return TRUNK_ACTION_REFUSED;
         }
         /* The calls heard so far end as they began, the operator's or trunking's, then the tuner is the scan's (issue
@@ -237,6 +268,11 @@ ui_handle_scan_resume(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     (void)c;
     if (!state) {
         return TRUNK_ACTION_DONE;
+    }
+    /* On a stream a resume or an entry hold's release could only ask for tunes it cannot make; with nothing paused or
+       held the answer stays the no-scan one below. */
+    if (scan_resume_would_tune(opts, state) && tuning_refused_on_iq_stream(opts, state)) {
+        return TRUNK_ACTION_REFUSED;
     }
     if (svc_scan_entry_continue(opts, state)) {
         return TRUNK_ACTION_DONE;

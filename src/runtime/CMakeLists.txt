@@ -6,10 +6,12 @@ target_sources(
     PRIVATE
         state_ext.c
         analog_channel.c
+        input_dsp_rate.c
         config.cpp
         config_user.cpp
         config_user_loader.cpp
         config_user_validation.cpp
+        config_retained_input.c
         config_schema.c
         decode_clock.c
         decode_mode.c
@@ -31,6 +33,7 @@ target_sources(
         analog_tones.c
         receive_policy.c
         input_spec.c
+        spec_fields.c
         airspy_config.c
         input_level.c
         input_failure.c

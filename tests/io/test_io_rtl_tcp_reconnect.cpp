@@ -54,6 +54,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "fake_getaddrinfo.h"
 #include "rtl_stream_test_support.h"
 #include "test_env.h"
 #include "test_support.h"
@@ -678,13 +679,13 @@ rig_open_capture(dev_rig& r) {
     assert(rc == DSD_IQ_OK && r.writer != nullptr);
 }
 
-/* Open the device on the fake server: its first connection, the controller, the ring's reader and, with
- * @p capture, an I/Q capture. With @p offset hardware offset tuning is on, so nothing rotates the ring's I/Q. */
+/* Open the device on the fake server, named @p host: its first connection, the controller, the ring's reader and,
+ * with @p capture, an I/Q capture. With @p offset hardware offset tuning is on, so nothing rotates the ring's I/Q. */
 void
-rig_open(dev_rig& r, int capture, int offset) {
+rig_open(dev_rig& r, int capture, int offset, const char* host = "127.0.0.1") {
     assert(input_ring_init(&r.ring, 1U << 20) == 0);
     assert(dsd_mutex_init(&r.phases_lock) == 0);
-    r.dev = rtl_device_create_tcp("127.0.0.1", g_srv.port, &r.ring, 0);
+    r.dev = rtl_device_create_tcp(host, g_srv.port, &r.ring, 0);
     assert(r.dev != nullptr);
     rtl_device_set_recovery_callback(r.dev, rig_post, &r);
     if (offset != 0) {
@@ -1125,6 +1126,43 @@ test_latest_effective_settings_replayed(void) {
     const std::vector<uint32_t> tuner_xtal{28800400U};
     assert(server_params(1, 0x0B) == rtl_xtal);
     assert(server_params(1, 0x0C) == tuner_xtal);
+    rig_close(r);
+}
+
+/* reconnect_looks_the_host_up_again (issue #743 B18): a host name is looked up through getaddrinfo(), for IPv4, at the
+ * first connection and again at each reconnect attempt, on the reader's thread, and the attempt goes where the new
+ * answer points (gethostbyname(), which this replaced, is not thread-safe). On Linux the record first moves to
+ * 127.0.0.2, where nothing listens (the server binds 127.0.0.1 only): the reconnects fail there and never reach the old
+ * address; once it moves back the next attempt recovers. Elsewhere 127.0.0.2 may not answer at once, so only the
+ * repeated lookup is checked. */
+void
+test_reconnect_looks_the_host_up_again(void) {
+    server_reset(default_script());
+    dsd_fake_resolver_reset(0x7F000001U, 0x7F000001U);
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
+    rig_open(r, 0, 0, DSD_FAKE_RESOLVER_HOST);
+    configure(r.dev);
+    const int at_open = dsd_fake_resolver_lookups();
+    assert(at_open >= 1);
+    rig_start(r);
+#if defined(__linux__)
+    assert(wait_until([] { return g_srv.connected.load() != 0; }, kWaitMs));
+    dsd_fake_resolver_set_later(0x7F000002U);
+    const size_t conns = server_conn_count();
+    server_kill();
+    assert(wait_until([&] { return dsd_fake_resolver_lookups() >= at_open + 2; }, kWaitMs));
+    assert(rig_generation(r) == 0U);
+    assert(server_conn_count() == conns);
+    dsd_fake_resolver_set_later(0x7F000001U);
+    wait_generation(r, 2U);
+    assert(server_conn_count() == conns + 1U);
+#else
+    lose_connection(r);
+    wait_generation(r, 2U);
+    assert(dsd_fake_resolver_lookups() > at_open);
+#endif
+    assert(dsd_fake_resolver_non_ipv4_lookups() == 0);
     rig_close(r);
 }
 
@@ -2519,6 +2557,44 @@ test_preconfig_backlog_discarded(void) {
     assert(dsd_test_remove_temp_dir(r.dir, kCaptureFiles) == 0);
 }
 
+/* restart_without_capture_keeps_the_file (issue #743 B16, the stream's half): a stream that recorded to the capture
+ * stops, and the stream after it starts with the capture off, as app-control restarts a recording stream
+ * (svc_rtl_restart_locked()), the path still set. The second stream runs on samples and never opens the path: the file
+ * the first one recorded and its sidecar keep every byte. */
+void
+test_restart_without_capture_keeps_the_file(void) {
+    conn_script big;
+    /* Large chunks: the second stream's samples below take a few dozen sleeps, not the thousand a slow runner's timer
+       stretches past the wait (macOS). */
+    big.chunks = {65536U};
+    server_reset(big);
+    stream_rig r;
+    stream_open(r, 1, 1);
+    assert(wait_until([&] { return r.reader.samples.load() > 4096U; }, kWaitMs));
+    stream_close(r);
+    const std::vector<unsigned char> data = read_file(r.data_path);
+    const std::vector<unsigned char> meta = read_file(r.meta_path);
+    assert(data.size() > 4096U && !meta.empty());
+
+    stream_rig again;
+    stream_opts(again, 0);
+    DSD_SNPRINTF(again.opts->iq_capture_path, sizeof again.opts->iq_capture_path, "%s", r.data_path);
+    dsd_input_failure_clear();
+    dsd_exitflag_store(0);
+    assert(rtl_stream_create(again.opts.get(), &again.ctx) == 0 && again.ctx != nullptr);
+    assert(rtl_stream_start(again.ctx) == 0);
+    again.dev = rtl_stream_test_device();
+    again.reader.ctx = again.ctx;
+    start_thread(&again.reader.thread, read_output, &again.reader);
+    again.reader.started = 1;
+    assert(wait_until([&] { return again.reader.samples.load() > 65536U; }, kWaitMs));
+    stream_close(again);
+
+    assert(read_file(r.data_path) == data);
+    assert(read_file(r.meta_path) == meta);
+    assert(dsd_test_remove_temp_dir(r.dir, kCaptureFiles) == 0);
+}
+
 /* stop_with_handoff_queued_and_claimed: a stop with the hand-off queued behind a retune, and one with the hand-off
  * taken (the controller inside its stream boundary), joins; the reconnected connection is closed. */
 std::atomic<int> g_stop_at_gate{0};
@@ -2903,6 +2979,7 @@ const named_test kTests[] = {
     {"stop_during_silent_header", test_stop_during_silent_header},
     {"setting_change_while_disconnected_fails", test_setting_change_while_disconnected_fails},
     {"latest_effective_settings_replayed", test_latest_effective_settings_replayed},
+    {"reconnect_looks_the_host_up_again", test_reconnect_looks_the_host_up_again},
     {"hops_write_every_setting", test_hops_write_every_setting},
     {"capture_records_automatic_gain", test_capture_records_automatic_gain},
     {"replay_failure_not_published", test_replay_failure_not_published},
@@ -2932,6 +3009,7 @@ const named_test kTests[] = {
     {"unavailable_server_command_applies", test_unavailable_server_command_applies},
     {"tcp_gain_stream_copy_follows_reconnect", test_tcp_gain_stream_copy_follows_reconnect},
     {"preconfig_backlog_discarded", test_preconfig_backlog_discarded},
+    {"restart_without_capture_keeps_the_file", test_restart_without_capture_keeps_the_file},
     {"stop_with_handoff_queued_and_claimed", test_stop_with_handoff_queued_and_claimed},
     {"stop_waits_for_demod_block_before_retune", test_stop_waits_for_demod_block_before_retune},
     {"full_output_write_gives_up_on_stop", test_full_output_write_gives_up_on_stop},

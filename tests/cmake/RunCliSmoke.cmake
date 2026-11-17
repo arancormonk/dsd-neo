@@ -3,7 +3,7 @@
 # Runs dsd-neo once per named mode and checks the exit code with the output
 # together: CTest's PASS_REGULAR_EXPRESSION alone ignores the exit code.
 #
-# Expected -D inputs: DSD_NEO_CLI, DSD_NEO_CLI_SMOKE_MODE.
+# Expected -D inputs: DSD_NEO_CLI, DSD_NEO_CLI_SMOKE_MODE; DSD_NEO_IQ_FIXTURE for the modes that replay one.
 
 if(NOT DEFINED DSD_NEO_CLI)
     message(FATAL_ERROR "DSD_NEO_CLI is required")
@@ -38,6 +38,299 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "missing-argument")
     set(_want_rc 1)
     set(_want_stdout_regex "Usage: dsd-neo \\[options\\]")
     set(_want_stderr_regex "Option -o requires an argument")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-rtltcp-bad-port")
+    # Issue #743 B15: an rtl_tcp port that is not one fails --print-config, which
+    # reads the spec as the engine will, with the field named; nothing is exported.
+    set(_args "--no-config" "-i" "rtltcp:radio.local:12x:851M" "--print-config")
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "\"12x\".*65535")
+    set(_forbid_output_regex "rtltcp_port")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "no-config-notice")
+    # --no-config was accepted and silently did nothing once config loading became opt-in: it says so now, once,
+    # and the run goes on.
+    set(_args "--no-config" "--print-config")
+    set(_want_rc 0)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "NOTICE: --no-config has no effect: a config loads only with --config, a single [.]ini file argument, or DSD_NEO_CONFIG[.]"
+    )
+    set(_forbid_output_regex "Loaded user config")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-iq-stream")
+    # Issue #743: an I/Q stream exports as its own [input] source with the spec's fields in canonical text (RATE and
+    # FREQ in Hz) and none of the tuner keys of the inputs DSD-neo tunes; nothing connects.
+    set(_args
+        "--no-config"
+        "-i"
+        "iqtcp:127.0.0.1:1234:240k:cs16:851.0125M"
+        "--print-config"
+    )
+    set(_want_rc 0)
+    set(_want_stdout_regex
+        "source = \"iqtcp\"\niq_host = \"127[.]0[.]0[.]1\"\niq_port = 1234\niq_rate = \"240000\"\niq_format = \"cs16\"\niq_freq = \"851012500\"\n"
+    )
+    set(_want_stderr_regex "")
+    set(_forbid_output_regex "rtl_gain|rtl_ppm|auto_ppm|rtl_freq|connecting to")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-replay-save-validates")
+    # Issue #743 (D8 over B1): a replay of a capture under a config whose [input] is an I/Q stream, with -T, saves that
+    # [input] with trunking off, so the next start of the config runs: the shutdown autosave and --print-config both
+    # pass --validate-config. Before, both wrote the stream with trunking on, which the next start refuses (exit 1).
+    if(NOT DEFINED DSD_NEO_IQ_FIXTURE)
+        message(FATAL_ERROR "DSD_NEO_IQ_FIXTURE is required")
+    endif()
+    set(_stream_ini
+        "[input]\nsource = \"iqtcp\"\niq_host = \"127.0.0.1\"\niq_port = 1234\niq_rate = \"240k\"\n"
+        "iq_format = \"cs16\"\n[trunking]\nenabled = false\n"
+    )
+    set(_cleanup_file "${CMAKE_CURRENT_BINARY_DIR}/iq_stream_replay_save.ini")
+    set(_printed
+        "${CMAKE_CURRENT_BINARY_DIR}/iq_stream_replay_save_printed.ini"
+    )
+    file(WRITE "${_cleanup_file}" ${_stream_ini})
+    execute_process(
+        COMMAND
+            "${CMAKE_COMMAND}" -E env --unset=DSD_NEO_CONFIG "${DSD_NEO_CLI}"
+            --config "${_cleanup_file}" --iq-replay "${DSD_NEO_IQ_FIXTURE}" -T
+            --print-config
+        RESULT_VARIABLE _pre_rc
+        OUTPUT_FILE "${_printed}"
+        ERROR_VARIABLE _pre_err
+        TIMEOUT 25
+    )
+    if(NOT _pre_rc EQUAL 0)
+        file(REMOVE "${_cleanup_file}" "${_printed}")
+        message(
+            FATAL_ERROR
+            "--print-config of the replay failed (rc=${_pre_rc})\n${_pre_err}"
+        )
+    endif()
+    execute_process(
+        COMMAND
+            "${CMAKE_COMMAND}" -E env --unset=DSD_NEO_CONFIG "${DSD_NEO_CLI}"
+            --validate-config "${_printed}"
+        RESULT_VARIABLE _pre_rc
+        OUTPUT_VARIABLE _pre_out
+        ERROR_VARIABLE _pre_err
+        TIMEOUT 25
+    )
+    file(READ "${_printed}" _printed_text)
+    file(REMOVE "${_printed}")
+    if(NOT _pre_rc EQUAL 0 OR NOT _printed_text MATCHES "source = \"iqtcp\"")
+        file(REMOVE "${_cleanup_file}")
+        message(
+            FATAL_ERROR
+            "--print-config of the replay does not validate as the stream config (rc=${_pre_rc})\n${_pre_out}\n${_pre_err}\n${_printed_text}"
+        )
+    endif()
+    execute_process(
+        COMMAND
+            "${CMAKE_COMMAND}" -E env --unset=DSD_NEO_CONFIG "${DSD_NEO_CLI}"
+            --config "${_cleanup_file}" --iq-replay "${DSD_NEO_IQ_FIXTURE}" -T
+            --frontend none -o null
+        RESULT_VARIABLE _pre_rc
+        OUTPUT_VARIABLE _pre_out
+        ERROR_VARIABLE _pre_err
+        TIMEOUT 25
+    )
+    file(READ "${_cleanup_file}" _saved_text)
+    if(
+        NOT _pre_rc EQUAL 0
+        OR NOT _saved_text MATCHES "source = \"iqtcp\"[^[]*\\[output\\]"
+    )
+        file(REMOVE "${_cleanup_file}")
+        message(
+            FATAL_ERROR
+            "the replay did not run and autosave its stream config (rc=${_pre_rc})\n${_pre_out}\n${_pre_err}\n${_saved_text}"
+        )
+    endif()
+    # The autosaved file, as the next start reads it.
+    set(_args --validate-config "${_cleanup_file}")
+    set(_want_rc 0)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex "iq_stream_replay_save[.]ini: OK")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-needs-radio")
+    # Issue #743: a build without radio support reads an I/Q stream spec and refuses it, as it refuses --iq-replay.
+    set(_args
+        "--no-config"
+        "-i"
+        "iqudp:127.0.0.1:7356:48k:cu8"
+        "-o"
+        "null"
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "-i iqudp: requires a build with radio pipeline support"
+    )
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused-iq-stream")
+    # Issue #743: an I/Q stream runs at the target its RATE is planned to, known from its spec, so a width that target
+    # cannot filter is refused before the stream connects, as for a live radio: the config's 16 kHz DSP bandwidth
+    # request plans a 240 kS/s stream to 16 kHz. Nothing listens on port 1.
+    set(_cleanup_file "${CMAKE_CURRENT_BINARY_DIR}/iq_stream_width_refused.ini")
+    file(
+        WRITE "${_cleanup_file}"
+        "[input]\nsource = \"iqtcp\"\niq_host = \"127.0.0.1\"\niq_port = 1\niq_rate = \"240k\"\n"
+        "iq_format = \"cs16\"\nrtl_bw_khz = 16\n[mode]\ndecode = \"analog\"\n[analog]\n"
+        "nfm_bandwidth_hz = 25000\n"
+    )
+    set(_args
+        --config
+        "${_cleanup_file}"
+        --frontend
+        none
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "NFM bandwidth 25 kHz does not fit the 16 kHz DSP rate [(]the largest width it fits is 13[.]2 kHz[)]; set the DSP bandwidth to 48 or 72 kHz"
+    )
+    set(_forbid_output_regex "radio stream")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-tcp-no-listener")
+    # Issue #743: a TCP stream says where it connects, warns a rate under TETRA's 25 kHz (36 kHz when the sending
+    # program's centring is approximate) and notes that no FREQ was given; with nothing listening the connect fails
+    # and the start exits 1. Nothing listens on port 1.
+    set(_args
+        --no-config
+        --frontend
+        none
+        -fT
+        -i
+        iqtcp:127.0.0.1:1:20000:cs16
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "I/Q stream: connecting to 127[.]0[.]0[.]1:1 [(]cs16, 20000 samples/s[)].*20000 samples/s is below the 25000 that TETRA needs [(]36000 when the sending program does not centre the channel exactly[)]; decoding may fail[.] Raise the sample rate in the sending program[.].*no receiver frequency [(]FREQ[)] was given.*Add the sending program's centre frequency.*cannot connect to 127[.]0[.]0[.]1:1.*Failed to open radio stream"
+    )
+    set(_forbid_output_regex "receiving on")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-narrow")
+    # A session that decodes only 6.25 kHz channels (NXDN48) is warned under 12 kHz; no TETRA notes.
+    set(_args
+        --no-config
+        --frontend
+        none
+        -fi
+        -i
+        iqtcp:127.0.0.1:1:8000:cs16
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "8000 samples/s is below the 12000 that NXDN48 or dPMR needs; decoding may fail"
+    )
+    set(_forbid_output_regex "36000|no receiver frequency")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-wide")
+    # A DMR session is warned under 16 kHz; at 48 kHz with a FREQ it is warned of nothing.
+    set(_args
+        --no-config
+        --frontend
+        none
+        -fs
+        -i
+        iqtcp:127.0.0.1:1:12000:cs16
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "12000 samples/s is below the 16000 that a 12[.]5 kHz digital channel needs; decoding may fail"
+    )
+    set(_forbid_output_regex "36000|no receiver frequency")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-analog")
+    # An analog session is warned for its FM or AM channel, not as a digital mode.
+    set(_args
+        --no-config
+        --frontend
+        none
+        -fA
+        -i
+        iqtcp:127.0.0.1:1:12000:cs16
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "12000 samples/s is below the 16000 that an analog FM channel needs; decoding may fail"
+    )
+    set(_forbid_output_regex "digital channel|36000|no receiver frequency")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-rate-above-ceiling")
+    # A RATE above the live-device capture ceiling (a typo such as 24M for 240k) is refused before anything connects,
+    # with the limit and the fix named, rather than sizing a ring and a chain for it.
+    set(_args
+        --no-config
+        --frontend
+        none
+        -i
+        iqtcp:127.0.0.1:1:24M:cs16
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "I/Q stream: the stream's rate [(]24000000 Hz[)] is above 3200000 Hz; send one channel [(]the sending program's VFO mode[)]"
+    )
+    set(_forbid_output_regex "connecting to")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-config-rate-above-ceiling")
+    # The same RATE from a config's [input] is refused alike at startup.
+    set(_cleanup_file
+        "${CMAKE_CURRENT_BINARY_DIR}/iq_stream_rate_above_ceiling.ini"
+    )
+    file(
+        WRITE "${_cleanup_file}"
+        "[input]\nsource = \"iqtcp\"\niq_host = \"127.0.0.1\"\niq_port = 1\niq_rate = \"24M\"\n"
+        "iq_format = \"cs16\"\n"
+    )
+    set(_args
+        --config
+        "${_cleanup_file}"
+        --frontend
+        none
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "I/Q stream: the stream's rate [(]24000000 Hz[)] is above 3200000 Hz; send one channel [(]the sending program's VFO mode[)]"
+    )
+    set(_forbid_output_regex "connecting to")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "iq-stream-min-rate-met")
+    set(_args
+        --no-config
+        --frontend
+        none
+        -fT
+        -i
+        iqtcp:127.0.0.1:1:48000:cs16:420.0125M
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "I/Q stream: connecting to 127[.]0[.]0[.]1:1 [(]cs16, 48000 samples/s[)]"
+    )
+    set(_forbid_output_regex "is below the|no receiver frequency")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused")
     # Issue #525: an explicit NFM width the rtl_tcp input's 24 kHz DSP
     # bandwidth cannot filter is refused before the device opens, with the
@@ -299,13 +592,20 @@ else()
     )
 endif()
 
+# A config in the caller's environment never reaches a row: --no-config does nothing (it says so).
 execute_process(
-    COMMAND "${DSD_NEO_CLI}" ${_args}
+    COMMAND
+        "${CMAKE_COMMAND}" -E env --unset=DSD_NEO_CONFIG "${DSD_NEO_CLI}"
+        ${_args}
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _stdout
     ERROR_VARIABLE _stderr
     TIMEOUT 25
 )
+
+if(DEFINED _cleanup_file)
+    file(REMOVE "${_cleanup_file}")
+endif()
 
 set(_combined "${_stdout}\n${_stderr}")
 

@@ -616,7 +616,7 @@ count_rows_running(const NcMenuItem* items, size_t n, nc_action_fn on_select) {
 
 /* Issue #697: the rigctl peer is a receiver, so Rigctl (`9`) and Rigctl setmod bandwidth... sit in Input right after
    the width rows it is asked for, in every build, and nowhere else; Trunking keeps no separator or rigctl row for
-   them. */
+   them. Issue #743: the connect row is hidden on any input with fixed tuning, setmod only on an I/Q stream. */
 static void
 audit_rigctl_rows(const NcMenuItem* root, size_t n) {
     const size_t am = input_row_index("input.am_bw");
@@ -629,9 +629,13 @@ audit_rigctl_rows(const NcMenuItem* root, size_t n) {
     if (!rig->id || strcmp(rig->id, "input.rigctl") != 0 || rig->on_select != io_rigctl_config
         || rig->label_fn != lbl_rigctl || !rig->hotkey || strcmp(rig->hotkey, "9") != 0) {
         fail("root/input", rig->id, "Rigctl (9) does not follow the AM width row");
+    } else if (rig->is_enabled != rigctl_connect_offered) {
+        fail("root/input", rig->id, "Rigctl is not hidden on an input with fixed tuning");
     }
     if (!setmod->id || strcmp(setmod->id, "input.setmod") != 0 || setmod->on_select != act_setmod_bw) {
         fail("root/input", setmod->id, "Rigctl setmod bandwidth... does not follow Rigctl");
+    } else if (setmod->is_enabled != rigctl_setmod_offered) {
+        fail("root/input", setmod->id, "Rigctl setmod bandwidth... is not hidden on an I/Q stream");
     }
     if (count_rows_running(root, n, io_rigctl_config) != 1 || count_rows_running(root, n, act_setmod_bw) != 1) {
         fail("root", "rigctl", "a rigctl row outside Input");

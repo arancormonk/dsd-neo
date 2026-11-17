@@ -93,6 +93,20 @@ int svc_open_symbol_out(dsd_opts* opts, dsd_state* state, const char* filename);
  * encoder fixes its input rate when it starts.
  */
 const char* svc_input_switch_unsupported(const dsd_opts* opts);
+/**
+ * @brief Why nothing can move the receiver of an input with fixed tuning (dsd_opts_input_has_fixed_tuning(), issues
+ * #575, #743), as the toast every refused tune, scan or trunking start gives: "An I/Q replay cannot retune: it plays
+ * the tuning it recorded." or "An I/Q stream cannot retune: change the channel in the sending program."; NULL on any
+ * other input.
+ */
+const char* svc_fixed_tuning_reason(const dsd_opts* opts);
+/**
+ * @brief Why an input with fixed tuning takes no tuner control, gain, PPM, bias tee, device or the automatic ones
+ * (issue #743), as the toast each refused control gives: "An I/Q replay has no tuner controls: it plays what was
+ * recorded." or "An I/Q stream has no tuner controls: adjust the radio in the sending program."; NULL on any other
+ * input.
+ */
+const char* svc_fixed_tuner_reason(const dsd_opts* opts);
 /** @brief 1 while the input is a playback: a WAV or raw file, or a symbol file. */
 int svc_playback_running(const dsd_opts* opts);
 /** @brief Open a file as `-i` opens it (dsd_audio_path_input_kind()): Input > Switch source > WAV / raw file. */
@@ -1082,16 +1096,18 @@ int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief The DSP rate a running I/Q replay will run at for a DSP bandwidth request of @p bw_khz from @p bw_source with
- *        the TETRA decoder on or off (@p frame_tetra), when that request re-plans it (issue #701). Decoder thread.
+ * @brief The DSP rate a running I/Q replay, or raw I/Q stream (issue #743), will run at for a DSP bandwidth request of
+ *        @p bw_khz from @p bw_source with the TETRA decoder on or off (@p frame_tetra), when that request re-plans it
+ *        (issue #701). Decoder thread.
  *
  * For a check made before a change puts the request in force (a config's preflight, RTL_SET_BW's and a mode change's
  * width checks): a width the change leaves in force is held to this rate, not the running stream's.
  *
  * @return The rate in Hz when the input in force is a replay with a stream running and the request plans a chain other
- *         than the one it runs (rtl_stream_replay_replan_check_request()); 0 otherwise: no replay runs, it keeps its
- *         chain (the running stream's rate holds), or no chain reaches the request (the re-plan refuses it, with the
- *         planner's reason).
+ *         than the one it runs (rtl_stream_replay_replan_check_request()), or a stream whose spec plans a rate other
+ *         than the one it runs (dsd_input_dsp_stream_plan_check()); 0 otherwise: no replay or stream runs, it keeps
+ *         its chain (the running stream's rate holds), or no chain reaches the request (the re-plan refuses it, with
+ *         the planner's reason).
  */
 int svc_replay_planned_rate_hz(const dsd_opts* opts, const dsd_state* state, int bw_khz, int bw_source, int frame_tetra,
                                int analog_family);
@@ -1128,6 +1144,26 @@ typedef void (*svc_replay_profile_restore_fn)(dsd_opts* opts, dsd_state* state, 
 int svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
                                  svc_replay_profile_restore_fn restore, const void* restore_ctx,
                                  uint32_t* out_dsp_rate_hz, int* out_resampled, char* why, size_t why_size);
+
+/**
+ * @brief Re-plan a running raw I/Q stream for the decode mode and DSP bandwidth the options now hold, through a restart
+ *        that reconnects (issue #743, D7). Caller holds the P25 SM tick guard; decoder thread.
+ *
+ * The stream twin of svc_rtl_replay_replan_locked(). Does nothing unless the input in force is a stream
+ * (dsd_opts_input_is_iq_stream()) with a stream running, and nothing when its spec plans the rate it runs. The plan is
+ * asked from the spec before anything stops (dsd_input_dsp_stream_plan_check()): one no chain reaches is refused,
+ * @p restore puts the caller's profile back and @p why gets the planner's reason, the stream running on. Otherwise the
+ * stream restarts (svc_rtl_restart_locked(): it reconnects, or binds again, and the decoder takes a stream gap). A
+ * start that fails puts the profile back and starts the previous chain again, and the refusal is reported; when that
+ * start fails too, no stream runs and the caller's start-failure path runs.
+ *
+ * @param reason          What changed, for the log.
+ * @param out_dsp_rate_hz [out] The DSP rate the plan lands on; may be NULL.
+ * @return An svc_replay_replan_result.
+ */
+int svc_iq_stream_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
+                                svc_replay_profile_restore_fn restore, const void* restore_ctx,
+                                uint32_t* out_dsp_rate_hz, char* why, size_t why_size);
 /**
  * @brief Start the input the options describe again after the start on the input that replaced it failed, or ran but
  * was undone, without acquiring; caller holds the P25 SM tick guard (issue #578).
@@ -1167,12 +1203,15 @@ int svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* r
  *
  * @param stream_stopped 1 when a radio stream ran before the change (state->rtl_ctx), which the change stopped: the
  *                       input's own, or one running behind a PCM input.
+ * @param capture_before 1 when the I/Q capture was on before the change (dsd_opts::iq_capture_requested): a restart of
+ *                       a stream that ran turns it off before its start (svc_rtl_restart_locked(), issue #743 B16),
+ *                       so one the change found on and that is off now stopped during the change.
  * @param failure_before The input failure latched before the change started anything (dsd_input_failure_get()); NULL
  *                       leaves the latch alone.
- * @param out_capture_stopped Set to 1 when the capture was turned off here, else 0 (may be NULL).
+ * @param out_capture_stopped Set to 1 when the capture was turned off here or during the change, else 0 (may be NULL).
  * @return 0 when the input runs again; nonzero otherwise, as svc_rtl_restart_locked().
  */
-int svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+int svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped, int capture_before,
                                     const dsd_input_failure* failure_before, int* out_capture_stopped);
 /**
  * @brief Select the Airspy with @p config and reopen it, without acquiring; caller holds the P25 SM tick guard.
@@ -1218,9 +1257,11 @@ int svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_c
 /** Apply and roll back without acquiring; caller holds the P25 SM tick guard. */
 int svc_airspy_apply_config_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
                                    const svc_airspy_tuning* previous_tuning);
-/** @brief Set RTL device index and mark stream for restart (applied immediately if active). */
+/** @brief Set RTL device index and mark stream for restart (applied immediately if active). DSD_ERR_NOT_SUPPORTED, with
+ * nothing changed, on an input with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
 int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
-/** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
+/** @brief Set RTL manual gain (0–49), clamping and restarting if needed. DSD_ERR_NOT_SUPPORTED, with nothing changed and
+ * no restart, on an input with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /**
  * @brief Set RTL DSP baseband bandwidth (kHz, dsd_analog_rtl_dsp_bw_is_selectable()), restarting if needed.
@@ -1253,7 +1294,8 @@ int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, 
 int svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
 /** @brief Set RTL monitor/non-symbol gain multiplier (clamped to 0–3). */
 int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
-/** @brief Toggle RTL bias tee (applied live when stream active). */
+/** @brief Toggle RTL bias tee (applied live when stream active). DSD_ERR_NOT_SUPPORTED, with nothing changed, on an input
+ * with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
 int svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on);
 /**
  * @brief Why a radio control failed when the receiver itself was the cause, as the reason a "Failed:" toast gives
@@ -1267,9 +1309,11 @@ int svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on);
  * @return The reason, or NULL when the receiver is not the cause.
  */
 const char* svc_radio_control_unavailable_text(int device_rc);
-/** @brief Toggle RTL-TCP adaptive networking and propagate to env/stream. */
+/** @brief Toggle RTL-TCP adaptive networking and propagate to env/stream. DSD_ERR_NOT_SUPPORTED, with nothing changed,
+ * on an input with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
 int svc_rtltcp_set_autotune(dsd_opts* opts, const dsd_state* state, int on);
-/** @brief Toggle carrier/error-based auto PPM and propagate to env/stream. */
+/** @brief Toggle carrier/error-based auto PPM and propagate to env/stream. DSD_ERR_NOT_SUPPORTED, with nothing changed,
+ * on an input with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
 int svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on);
 #endif
 

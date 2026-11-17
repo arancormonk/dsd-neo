@@ -32,6 +32,8 @@ bool scan_rotation_active(const void* ctx);
 bool scan_avoids_manageable(const void* ctx);
 bool scan_lists_offered(const void* ctx);
 bool input_freq_offered(const void* ctx);
+bool rigctl_connect_offered(const void* ctx);
+bool rigctl_setmod_offered(const void* ctx);
 bool freq_entry_offered(const dsd_opts* opts);
 bool provoice_active(const void* ctx);
 bool const_view_active(const void* ctx);
@@ -118,6 +120,8 @@ const char* lbl_key_hytera(const void* v, char* b, size_t n);
 
 // Input / Audio
 const char* lbl_current_input(const void* vctx, char* b, size_t n);
+const char* lbl_src_rtl(const void* vctx, char* b, size_t n);
+const char* lbl_input_rtl(const void* vctx, char* b, size_t n);
 const char* lbl_current_output(const void* vctx, char* b, size_t n);
 const char* lbl_input_volume(const void* vctx, char* b, size_t n);
 const char* lbl_input_warn(const void* v, char* b, size_t n);

@@ -131,10 +131,19 @@ void dsd_engine_note_input_replaced(dsd_state* state);
 /** Note the source a radio stream just started on (issue #575): its kind of device and which one, never its settings
  *  or tuning (an RTL-SDR index, an rtl_tcp host and port, an Airspy serial, a SoapySDR device, a replay capture). A start
  *  on another source than the stream before it, or of a replay, which plays its capture again from the start, is a
- *  carrier boundary (dsd_engine_carrier_boundary(), DSD_CARRIER_BOUNDARY_SOURCE); the first start of a session, and a
- *  same-source reopen for a gain, PPM, bandwidth or squelch change, are not. Every stream start runs it, so a new
- *  command that changes the source and restarts the stream needs nothing of its own. @p guard_held as for the boundary. */
+ *  carrier boundary (dsd_engine_carrier_boundary(), DSD_CARRIER_BOUNDARY_SOURCE); the first start of a session is not.
+ *  A reopen of the same live source (a restart for a gain, PPM, bandwidth or mode change, or a recovery's start)
+ *  stays on the carrier but lost the samples between the stop and the start, so it is a stream gap
+ *  (DSD_CARRIER_BOUNDARY_STREAM_GAP, issue #743 B19). A replay that resumes at its checkpoint (issue #701) is not noted
+ *  at all. Every stream start runs it, so a new command that changes the source and restarts the stream needs nothing
+ *  of its own. @p guard_held as for the boundary. */
 void dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held);
+
+/** A raw I/Q stream switched to TETRA with no restart, its plan unchanged (issue #743): say what a start under TETRA
+ *  says, once per stream start, a rate under TETRA's and, with no FREQ in its spec, that trunked calls cannot be tied
+ *  to their allocations. Nothing when TETRA is off, the input is no stream, or the start in force said them already.
+ *  Decoder thread. */
+void dsd_engine_note_iq_stream_tetra(const dsd_opts* opts);
 
 /** An I/Q replay's retune the capture recorded, which the read path adopted (dsd_frame_sync_note_replay_center()),
  * before it returns the first sample the new carrier carries (issue #575). With trunking off it is another

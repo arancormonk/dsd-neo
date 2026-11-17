@@ -18,6 +18,7 @@
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stddef.h>
@@ -551,6 +552,7 @@ ui_snapshot_publish(const dsd_state* state) {
     dsd_mutex_lock(&g_mu);
     ui_snapshot_copy_render_state(&g_pub, &g_pub_marks, state, &k_live_marks);
     dsd_scan_mode_copy_snapshot(&g_pub, state);
+    dsd_user_config_copy_retained_input(&g_pub, state);
     ui_snapshot_copy_trunk_cc_candidates(&g_pub, state, &g_pub_cc_candidates);
     // Clone canonical calls, recent activity, and history under the core transaction lock.
     if (state->event_history_s != NULL) {
@@ -619,6 +621,7 @@ dsd_app_get_latest_snapshot(void) {
     if (g_consume_seq != g_pub_seq || g_consume_needs_retry) {
         ui_snapshot_copy_render_state(&g_consume, &g_consume_marks, &g_pub, &g_pub_marks);
         dsd_scan_mode_copy_snapshot(&g_consume, &g_pub);
+        dsd_user_config_copy_retained_input(&g_consume, &g_pub);
         ui_snapshot_copy_trunk_cc_candidates(&g_consume, &g_pub, &g_consume_cc_candidates);
         (void)dsd_call_state_copy_to_state(&g_consume, &g_pub);
         g_consume_seq = g_pub_seq;

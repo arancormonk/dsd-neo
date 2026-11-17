@@ -2731,6 +2731,33 @@ main(void) {
     rc |= expect_true("xpt site status emits grant", dmr_sm_get_ctx()->vc_tg == 77);
     dsd_state_ext_free_all(&xpt_st);
 
+    /* Issue #743 (G7): on a raw I/Q stream the receiver frequency is the stream's FREQ, which the engine puts the
+       receiver on at its start: an XPT site status caches it as the control channel as the stream names it (the
+       site's 461.25 MHz, or a wrong 470 MHz, which nothing here can tell from a right one), and caches nothing on a
+       stream without FREQ (0), rather than the 850 MHz default the options start with. */
+    static const struct {
+        const char* spec;
+        uint32_t freq_hz;
+    } streams[] = {{"iqtcp:127.0.0.1:1234:48000:cs16:461250000", 461250000U},
+                   {"iqtcp:127.0.0.1:1234:48000:cs16:470000000", 470000000U},
+                   {"iqtcp:127.0.0.1:1234:48000:cs16", 0U}};
+
+    for (size_t i = 0; i < sizeof streams / sizeof streams[0]; i++) {
+        init_env(&xpt_opts, &xpt_st);
+        xpt_opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(xpt_opts.audio_in_dev, sizeof xpt_opts.audio_in_dev, "%s", streams[i].spec);
+        xpt_opts.rtlsdr_center_freq = streams[i].freq_hz;
+        xpt_st.trunk_cc_freq = 0;
+        xpt_st.trunk_chan_map[1] = 461262500L;
+        xpt_st.last_vc_sync_time = time(NULL) - 10;
+        build_xpt_site_status(bits, bytes, 0U, 2U, xpt_status, xpt_tg);
+        dmr_cspdu(&xpt_opts, &xpt_st, bits, bytes, 1U, 0U);
+        rc |= expect_true("xpt site status on a stream caches its FREQ, or nothing without one",
+                          xpt_st.trunk_cc_freq == (long)streams[i].freq_hz
+                              && xpt_opts.trunk_is_tuned == (streams[i].freq_hz != 0U ? 1 : 0));
+        dsd_state_ext_free_all(&xpt_st);
+    }
+
     /* Issue #637: a candidate the receive policy rejects is passed over, so an allowed TS2 call after a rejected TS1
        one is followed. */
     init_env(&xpt_opts, &xpt_st);

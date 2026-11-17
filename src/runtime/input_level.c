@@ -78,7 +78,8 @@ dsd_input_level_source_is_rf(dsd_input_level_source source) {
         case DSD_INPUT_LEVEL_SOURCE_RTL_TCP_CU8:
         case DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16:
         case DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32:
-        case DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32: return 1;
+        case DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32:
+        case DSD_INPUT_LEVEL_SOURCE_NET_IQ: return 1;
         case DSD_INPUT_LEVEL_SOURCE_PCM:
         case DSD_INPUT_LEVEL_SOURCE_UNKNOWN:
         default: return 0;
@@ -510,18 +511,44 @@ input_level_should_suppress_tcp_pcm_toast(const dsd_opts* opts, const dsd_state*
     return state->carrier == 0 || (snapshot->status == DSD_INPUT_LEVEL_LOW && input_level_is_digital_silence(snapshot));
 }
 
+const char*
+dsd_input_level_advice(const dsd_input_level_snapshot* snapshot, int replay) {
+    if (!snapshot) {
+        return NULL;
+    }
+    const int low = snapshot->status == DSD_INPUT_LEVEL_LOW;
+    if (!low && snapshot->status != DSD_INPUT_LEVEL_HOT && snapshot->status != DSD_INPUT_LEVEL_CLIPPING) {
+        return NULL;
+    }
+    /* Short enough that the advisory line keeps to 80 columns (issue #743). */
+    if (replay) {
+        /* The capture fixed the level when it was recorded: nothing here can change it (B8). */
+        return low ? "recorded too quietly; use more gain next time" : "recorded too strong; use less gain next time";
+    }
+    if (snapshot->source == DSD_INPUT_LEVEL_SOURCE_NET_IQ) {
+        /* The sending program sets the level of the samples it sends. */
+        return low ? "raise the gain in the sending program" : "lower the gain in the sending program";
+    }
+    if (dsd_input_level_source_is_rf(snapshot->source)) {
+        return low ? "raise RF gain if signal is present" : "lower RF gain or add filtering/attenuation";
+    }
+    return low ? "raise source/input volume if signal is present" : "lower source/input volume";
+}
+
 int
 dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, char* out, size_t out_size) {
+    return dsd_input_level_format_advisory_for(snapshot, 0, out, out_size);
+}
+
+int
+dsd_input_level_format_advisory_for(const dsd_input_level_snapshot* snapshot, int replay, char* out, size_t out_size) {
     if (!snapshot || !out || out_size == 0U) {
         return -1;
     }
     const char* label = dsd_input_level_display_label(snapshot->source);
     const char* status = dsd_input_level_status_label(snapshot->status);
-    const char* advice = dsd_input_level_source_is_rf(snapshot->source) ? "lower RF gain or add filtering/attenuation"
-                                                                        : "lower source/input volume";
+    const char* advice = dsd_input_level_advice(snapshot, replay);
     if (snapshot->status == DSD_INPUT_LEVEL_LOW) {
-        advice = dsd_input_level_source_is_rf(snapshot->source) ? "raise RF gain if signal is present"
-                                                                : "raise source/input volume if signal is present";
         char rms[32];
         (void)dsd_number_text(rms, sizeof rms, snapshot->rms_dbfs, 0, 1, 0);
         DSD_SNPRINTF(out, out_size, "%s %s %s dBFS: %s", label, status, rms, advice);
@@ -581,12 +608,12 @@ input_level_publish_notifies(const dsd_opts* opts, const dsd_state* state, const
     /* A live receiver's level that real time has left behind is the last one of a receiver that stopped: no warning
        about it. A replay's levels keep their warnings, which follow the capture: one that pauses (a slow decoder, a
        jittered read) prints the same ones in every run. Read only when a warning would print. */
-    return (opts && opts->iq_replay_active) || !dsd_input_level_is_stale(next, dsd_realtime_mono_ms());
+    return dsd_opts_input_is_iq_replay(opts) || !dsd_input_level_is_stale(next, dsd_realtime_mono_ms());
 }
 
 static void
 input_level_refresh_live(const dsd_opts* opts, dsd_input_level_snapshot* next) {
-    if (!opts || opts->iq_replay_active || !dsd_input_level_source_is_rf(next->source)) {
+    if (!opts || dsd_opts_input_is_iq_replay(opts) || !dsd_input_level_source_is_rf(next->source)) {
         return;
     }
     const uint64_t now_ms = dsd_realtime_mono_ms();
@@ -631,7 +658,7 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
     }
 
     char msg[sizeof(state->ui_msg)];
-    if (dsd_input_level_format_advisory(&next, msg, sizeof(msg)) != 0) {
+    if (dsd_input_level_format_advisory_for(&next, dsd_opts_input_is_iq_replay(opts), msg, sizeof(msg)) != 0) {
         return;
     }
     LOG_WARN("WARNING: %s\n", msg);

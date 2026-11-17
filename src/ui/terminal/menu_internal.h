@@ -34,6 +34,10 @@ typedef struct {
     int hi;
     int top;
     const char* title;
+    /* The row that opened this frame (NULL for the root), and the title its label_fn rendered (the radio submenu names
+       its input), which @c title points into; rendered again at each draw, so it follows an input switch. */
+    const NcMenuItem* owner;
+    char title_buf[96];
     WINDOW* win;
     int w, h;
     int y, x;

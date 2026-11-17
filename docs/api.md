@@ -339,8 +339,27 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
 ### `status`: decoder status and command context
 
 `available`, `protocol`, `vc_freq_hz`, `cc_freq_hz`, `center_freq_hz`,
-`radio_input`, `trunking`, `trunk_tuned`, `lead_slot`, per-slot
+`radio_input`, `tunable`, `trunking`, `trunk_tuned`, `lead_slot`, per-slot
 `slots[{slot,state,name,src_text,tg_id,emergency,enc}]`, `synctype`, and:
+
+* `tunable`: `true` while DSD-neo can tune the radio that feeds it (a live
+  RTL-SDR, rtl_tcp, SoapySDR or Airspy input). It is `false` on an I/Q replay
+  and on an I/Q stream (`-i iqtcp:` / `-i iqudp:`), whose channel is fixed, and
+  on audio input, which has no radio of its own.
+  * While `radio_input` is `true` and `tunable` is `false` (a replay or a
+    stream), grey out tuning, gain and PPM controls: the decoder refuses those
+    commands there.
+  * On audio input (`radio_input` is `false`) `tunable` says nothing about those
+    controls: a frequency still tunes a connected rigctl peer, and the gain and
+    PPM settings set up the radio a later switch opens.
+  * On an I/Q stream the decoder also refuses what would only ask for retunes:
+    `trunk_toggle` and `trunk_set` turning trunking on, `scanner_toggle`
+    starting or resuming a scan, `scan_resume`, `scan_list_set`,
+    `rigctl_connect` and `rigctl_connect_cfg`. The reason in `status.message`
+    is `An I/Q stream cannot retune: change the channel in the sending
+    program.`, or, for gain, PPM, bias tee, the other tuner settings and
+    `rigctl_set_mod_bw`, `An I/Q stream has no tuner controls: adjust the radio
+    in the sending program.` Turning trunking or a scan off still works.
 
 * `message`: `{text, expires}` while the decoder shows a notice (for example the
   reason it refused a queued command), else `null`.
@@ -843,12 +862,14 @@ avoids and call skips, as an import does.
   on a radio input (RTL-SDR, rtl_tcp, SoapySDR or Airspy) off the 72 kHz DSP
   bandwidth (`Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and
   import again`), or in a `--tetra-uplink` session; an AM or Analog width the front end cannot take; a
-  running I/Q replay that cannot run the mode; and a CSV that cannot be read.
+  running I/Q replay that cannot run the mode, or an I/Q stream whose rate cannot
+  (`TETRA cannot use this I/Q stream's rate; send 48 or 96 kHz instead`); and a
+  CSV that cannot be read.
   After that, a mode change that fails (a replay that does not reopen at the
   new rate, say) keeps its own message, which names the reason, and the import
   goes no further; a CSV that cannot be loaded by then is reported as a partial
   apply naming what did take (`Failed: RR import -> channel map not loaded;
-  mode and talkgroups applied`). On an I/Q replay the
+  mode and talkgroups applied`). On an I/Q replay or an I/Q stream the
   import never tunes, even with a rigctl radio connected. Success reads
   `Applied: RR import (<mode>)`, with what the mode change had to say (a
   replay's new rate) in place of the reminder to save. The tune's outcome
@@ -862,7 +883,7 @@ avoids and call skips, as an import does.
   import -> tune to <MHz> MHz; ...`) replaces the import's message only while
   it is still up.
 * **`rtl_set_freq`**: tunes to `value` Hz, as the terminal's frequency entry
-  does. It is refused during an I/Q replay and for `0`.
+  does. It is refused during an I/Q replay or I/Q stream and for `0`.
   * When `value` is exactly the frequency of a row of the scan in force (a `-Y`
     list of your own, running or paused, or a trunk-scan target), the scan goes
     to that row and holds it there with the row's own settings: its mode,
@@ -903,7 +924,7 @@ avoids and call skips, as an import does.
 * **`channel_cycle`** and **`channel_cycle_prev`**: one step forward or back
   through the list the session runs: the trunk-scan targets, a `-Y` channel
   map, the P25 control-channel candidates (`-^`) or the channel list, with the
-  same skip rules either way. Each is refused during an I/Q replay, while
+  same skip rules either way. Each is refused during an I/Q replay or I/Q stream, while
   Signal search runs, while the scan is paused, and without a tuner (a radio
   input or a rigctl peer); `status.message` gives the reason.
 * **`tuner_release`**: hands the tuner to the operator. Trunking (`-T`) stops; a

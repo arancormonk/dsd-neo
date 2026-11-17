@@ -212,6 +212,7 @@ void act_freq_key(void* v);
 #ifdef USE_RADIO
 bool is_airspy_input(const void* v);
 bool is_non_airspy_input(const void* v);
+bool tuner_rows_offered(const void* v);
 void ui_airspy_set_serial(void* v);
 void ui_airspy_set_sample_rate(void* v);
 void ui_airspy_set_gain_mode(void* v);

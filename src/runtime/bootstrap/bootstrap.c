@@ -10,6 +10,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -90,6 +91,7 @@ typedef struct {
     const char* profile_cli;
     const char* validate_path_cli;
     int cfg_path_positional_ini;
+    int no_config_cli; /* --no-config: accepted, but it does nothing since config loading became opt-in */
 } bootstrap_cli_args;
 
 static void
@@ -213,6 +215,9 @@ bootstrap_parse_cli_args(int argc, char** argv, bootstrap_cli_args* args) {
         if (bootstrap_cli_try_flag(arg, "--list-profiles", &args->list_profiles_cli)) {
             continue;
         }
+        if (bootstrap_cli_try_flag(arg, "--no-config", &args->no_config_cli)) {
+            continue;
+        }
         (void)bootstrap_cli_try_file_rate_override(argc, argv, &i, args);
     }
 }
@@ -259,6 +264,10 @@ bootstrap_handle_loaded_user_config(dsd_opts* opts, dsd_state* state, const boot
                                     int* user_cfg_loaded, const char* cfg_path) {
     dsd_apply_user_config_to_opts_pre_cli(user_cfg, opts, state);
     *user_cfg_loaded = 1;
+    /* What a session the command line turns into an I/Q replay saves as its [input] (issue #743). */
+    if (dsd_user_config_retain_input(state, user_cfg) != 0) {
+        LOG_WARN("WARNING: Out of memory keeping the config's [input]; an I/Q replay session saves none.\n");
+    }
     if (explicit_profile_selected) {
         state->config_autosave_enabled = 0;
         LOG_INFO("NOTICE: Autosave disabled for profiled config %s to avoid overwriting profile sections.\n", cfg_path);
@@ -490,8 +499,11 @@ bootstrap_handle_print_config(const bootstrap_cli_args* args, dsd_opts* opts, co
     }
     /* An RTL-SDR or rtl_tcp spec sets its tuning when the input opens, which --print-config comes before: read it now,
        as the engine will, or the export reports the option defaults instead of the spec's gain, frequency and the rest
-       (issue #518 follow-up). */
-    (void)dsd_rtl_input_spec_apply(opts);
+       (issue #518 follow-up). A port it refuses fails the export, as it would fail the start. */
+    if (dsd_rtl_input_spec_apply(opts) < 0) {
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return DSD_BOOTSTRAP_ERROR;
+    }
     dsdneoUserConfig eff;
     dsd_snapshot_opts_to_user_config(opts, state, &eff);
     dsd_user_config_render_ini(&eff, stdout);
@@ -730,6 +742,105 @@ bootstrap_handle_post_parse_actions(const bootstrap_cli_args* args, dsd_opts* op
     return bootstrap_handle_list_profiles(args, config_env, out_exit_rc);
 }
 
+/* The trunking, -Y scanner and trunk-scan flags @p judged carries for bootstrap_config_tuning_key(): the loaded
+   config's (@p cfg, NULL for none) or the session's. */
+static void
+bootstrap_config_tuning_flags(const dsd_opts* opts, const dsdneoUserConfig* cfg, dsdneoUserConfig* judged) {
+    const int trunking = cfg && cfg->has_trunking;
+    const int trunk_scan = cfg && cfg->has_trunk_scan;
+    judged->has_trunking = 1;
+    judged->trunk_enabled = ((trunking && cfg->trunk_enabled) || opts->trunk_enable == 1) ? 1 : 0;
+    judged->trunk_scanner = ((trunking && cfg->trunk_scanner) || opts->scanner_mode == 1) ? 1 : 0;
+    judged->has_trunk_scan = 1;
+    judged->trunk_scan_enabled = ((trunk_scan && cfg->trunk_scan_enabled) || opts->trunk_scan_enabled == 1) ? 1 : 0;
+}
+
+/* The [trunking] or [trunk_scan] key that turns on trunking or a scan beside the stream, written "[section] key" into
+   @p out; 0 for none, -1 out of memory. The loaded config's own keys count as it wrote them, before the command line's
+   trunking override or its -i drops them for the session (bootstrap_apply_trunk_cli_gating(),
+   bootstrap_apply_trunk_scan_pre_cli_gating()): the rule is the config's, as --validate-config and the next-start rules
+   judge it. The session's flags are asked too, for a config the profile composed. The command line's own -T, -Y and
+   --trunk-scan were refused while it was parsed. Which key is the next-start rule table's
+   (dsd_user_config_iq_stream_refused_key()), asked of a config of the stream with those flags
+   (bootstrap_config_tuning_flags()). */
+static int
+bootstrap_config_tuning_key(const dsd_opts* opts, const dsdneoUserConfig* cfg, char* out, size_t out_size) {
+    dsdneoUserConfig* judged = (dsdneoUserConfig*)calloc(1, sizeof *judged);
+    if (!judged) {
+        return -1;
+    }
+    judged->has_input = 1;
+    judged->input_source =
+        dsd_opts_audio_in_dev_is_iqudp_spec(opts->audio_in_dev) ? DSDCFG_INPUT_IQUDP : DSDCFG_INPUT_IQTCP;
+    bootstrap_config_tuning_flags(opts, cfg, judged);
+    const char* section = NULL;
+    const char* key = NULL;
+    const int refused = dsd_user_config_iq_stream_refused_key(judged, &section, &key);
+    free(judged);
+    if (!refused) {
+        return 0;
+    }
+    DSD_SNPRINTF(out, out_size, "[%s] %s", section, key);
+    return 1;
+}
+
+/* An I/Q stream input decodes the one channel its sending program streams (issue #743, D8): a loaded config that turns
+   on trunking, the -Y scanner or a trunk scan beside one, the stream named in the config or on the command line, is
+   refused at startup, before anything opens, naming the key and the fix, as --validate-config and a runtime config
+   apply refuse it (the next-start rules, issue #671). @p cfg is the loaded config, NULL for none. */
+static int
+bootstrap_refuse_config_tuning_on_iq_stream(const dsd_opts* opts, const dsdneoUserConfig* cfg, int* out_exit_rc) {
+    if (!dsd_opts_audio_in_dev_is_iq_stream_spec(opts->audio_in_dev)) {
+        return DSD_BOOTSTRAP_CONTINUE;
+    }
+    char key[64];
+    const int found = bootstrap_config_tuning_key(opts, cfg, key, sizeof key);
+    if (found == 0) {
+        return DSD_BOOTSTRAP_CONTINUE;
+    }
+    if (found < 0) {
+        LOG_ERROR("Out of memory checking the config beside the I/Q stream.\n");
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return DSD_BOOTSTRAP_ERROR;
+    }
+    LOG_ERROR(
+        "%s: an I/Q stream cannot retune; it decodes only the channel the sending program streams. Turn %s off in "
+        "the config file, or start without that file (no --config, no .ini file argument, and DSD_NEO_CONFIG unset).\n",
+        key, key);
+    bootstrap_set_exit_rc(out_exit_rc, 1);
+    return DSD_BOOTSTRAP_ERROR;
+}
+
+/* A loaded config whose [input] source is iqtcp or iqudp but whose keys build no stream spec (issue #743) is refused at
+   startup with exit 1, naming the key and the parser's reason, as a bad -i spec is: the session would otherwise run the
+   input from before the config. Not when the command line names the input (-i, --iq-replay), which the session runs
+   instead of the config's, whatever it names. --validate-config reports the same key, and a runtime config apply
+   refuses the config whole. @p cfg is the loaded config, NULL for none. */
+static int
+bootstrap_refuse_config_iq_stream_without_spec(const dsd_opts* opts, const dsdneoUserConfig* cfg, int* out_exit_rc) {
+    const char* key = cfg ? dsd_user_config_iq_stream_bad_key(cfg) : NULL;
+    if (!key || opts->input_cli_seen || opts->iq_replay_requested) {
+        return DSD_BOOTSTRAP_CONTINUE;
+    }
+    char spec[sizeof opts->audio_in_dev];
+    char why[DSD_IQ_NET_SPEC_TEXT_MAX + 128];
+    (void)dsd_user_config_iq_stream_input_spec(cfg, spec, sizeof spec, why, sizeof why);
+    LOG_ERROR("Invalid I/Q stream input: [input] %s: %s\n", key, why);
+    bootstrap_set_exit_rc(out_exit_rc, 1);
+    return DSD_BOOTSTRAP_ERROR;
+}
+
+/* The loaded config's refusals around an I/Q stream (issue #743): an [input] that builds none, then trunking or a scan
+   beside one. */
+static int
+bootstrap_refuse_config_on_iq_stream(const dsd_opts* opts, const dsdneoUserConfig* cfg, int* out_exit_rc) {
+    const int rc = bootstrap_refuse_config_iq_stream_without_spec(opts, cfg, out_exit_rc);
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        return rc;
+    }
+    return bootstrap_refuse_config_tuning_on_iq_stream(opts, cfg, out_exit_rc);
+}
+
 static void
 bootstrap_log_startup_banner(void) {
     LOG_INFO("NOTICE: ------------------------------------------------------------------------------\n");
@@ -791,6 +902,13 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     bootstrap_cli_args args;
     bootstrap_parse_cli_args(argc, argv, &args);
     bootstrap_apply_positional_ini_shortcut(argc, argv, &args);
+    /* Config loading has been opt-in since --no-config stopped doing anything; it is still accepted, so a command line
+       that passes it to keep a config out says it keeps nothing out. */
+    if (args.no_config_cli) {
+        LOG_INFO(
+            "NOTICE: --no-config has no effect: a config loads only with --config, a single .ini file argument, or "
+            "DSD_NEO_CONFIG.\n");
+    }
 
     const char* config_env = bootstrap_get_config_env_path();
 
@@ -800,6 +918,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     DSD_MEMSET(&user_cfg, 0, sizeof user_cfg);
 
     bootstrap_disable_autosave(state);
+    dsd_user_config_forget_retained_input(state);
 
     int boot_rc = bootstrap_load_user_config_if_requested(opts, state, &args, config_env, explicit_profile_selected,
                                                           &user_cfg, &user_cfg_loaded, out_exit_rc);
@@ -824,6 +943,10 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
         return boot_rc;
     }
     boot_rc = bootstrap_handle_post_parse_actions(&args, opts, state, config_env, out_exit_rc);
+    if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
+        return boot_rc;
+    }
+    boot_rc = bootstrap_refuse_config_on_iq_stream(opts, user_cfg_loaded ? &user_cfg : NULL, out_exit_rc);
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
         return boot_rc;
     }
