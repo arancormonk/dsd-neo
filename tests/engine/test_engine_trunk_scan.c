@@ -25651,6 +25651,10 @@ test_scan_quiet_more_mutation_sites_decline_a_ready_result(void) {
         }
         rc |= quiet_to_ready(&opts, &state);
         const dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(&state);
+        if (qt_expect("an owner", owner != NULL) != 0) {
+            quiet_rig_finish(&opts, &state, dir, path);
+            return 1;
+        }
         const uint64_t inv = owner->quiet_inv_seq;
         const int setup_failed = k_sites[i].fn(&opts, &state);
         const int moved = owner->quiet_inv_seq != inv;
@@ -25683,6 +25687,11 @@ test_scan_quiet_trunk_goto_and_resume_sites(void) {
     quiet_land_again(&state, k_qt_hz_b);
     rc |= quiet_to_ready(&opts, &state);
     const dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(&state);
+    if (qt_expect("an owner", owner != NULL) != 0) {
+        quiet_rig_finish(&opts, &state, dir, path);
+        (void)remove(keys);
+        return 1;
+    }
     uint64_t inv = owner->quiet_inv_seq;
     dsd_key_set_test_alloc_fail_after(0);
     const dsd_scan_goto_result got = goto_target(&opts, &state, 0, NULL);
@@ -25700,6 +25709,10 @@ test_scan_quiet_trunk_goto_and_resume_sites(void) {
         return 1;
     }
     owner = dsd_engine_scan_owner_get(&state);
+    if (qt_expect("an owner for the park", owner != NULL) != 0) {
+        quiet_rig_finish(&opts, &state, dir, path);
+        return 1;
+    }
     const uint32_t session = dsd_engine_scan_landing_get(&state)->session;
     g_scan_tune_to_freq_pending = 1;
     rc |= qt_expect("go-to b waits on its park", goto_target(&opts, &state, 1, NULL) == DSD_SCAN_GOTO_PENDING);
@@ -26297,6 +26310,10 @@ test_scan_quiet_y_ready_declines_at_its_own_sites(void) {
         quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
         rc |= qt_expect("a -Y READY result", quiet_service_after(&opts, &state, 5U) == DSD_SCAN_QUIET_HAND_BACK);
         const dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(&state);
+        if (qt_expect("an owner", owner != NULL) != 0) {
+            quiet_rig_finish(&opts, &state, dir, path);
+            return 1;
+        }
         const uint64_t inv = owner->quiet_inv_seq;
         (void)k_sites[i].fn(&opts, &state);
         const int moved = owner->quiet_inv_seq != inv;
