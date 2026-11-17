@@ -344,9 +344,10 @@ def dsd_command(args, port, lists):
 
 
 def stamp_lines(pipe, log):
-    """Each line dsd-neo writes, prefixed with the monotonic time it arrived (the retune log's clock)."""
+    """Each line dsd-neo writes, prefixed with the monotonic time it arrived (the retune log's clock). A line's end is
+    LF, or CRLF where dsd-neo runs on Windows: either is taken off, so no line keeps a carriage return."""
     for raw in pipe:
-        text = ANSI.sub("", raw.decode("utf-8", "replace")).rstrip("\n")
+        text = ANSI.sub("", raw.decode("utf-8", "replace")).rstrip("\r\n")
         log.write(f"{time.monotonic():.3f} {text}\n")
 
 

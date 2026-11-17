@@ -89,5 +89,26 @@ class ByMode(unittest.TestCase):
         self.assertEqual(sum(row["visits"] for row in out.values()), 8)
 
 
+class StampedLines(unittest.TestCase):
+    """dsd-neo's output, as stamp_lines() logs it, ends each line with one newline whatever the child wrote: LF, or CRLF
+    on Windows. The log's readers match its lines up to their end."""
+
+    def stamp(self, data):
+        log = io.StringIO()
+        with mock.patch.object(bench.time, "monotonic", return_value=12.5):
+            bench.stamp_lines(io.BytesIO(data), log)
+        return log.getvalue()
+
+    def test_lf_lines(self):
+        self.assertEqual(self.stamp(b"one\n\x1b[1mtwo\x1b[0m\n"), "12.500 one\n12.500 two\n")
+
+    def test_crlf_lines_keep_no_carriage_return(self):
+        logged = self.stamp(b"one\r\n\x1b[1mtwo\x1b[0m\r\n")
+        self.assertNotIn("\r", logged)
+        self.assertEqual(logged, "12.500 one\n12.500 two\n")
+        stamped = [bench.STAMPED.match(line) for line in logged.splitlines()]
+        self.assertEqual([match.group(2) for match in stamped], ["one", "two"])
+
+
 if __name__ == "__main__":
     unittest.main()

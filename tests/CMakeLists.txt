@@ -26445,6 +26445,16 @@ if(Python3_Interpreter_FOUND)
                 TIMEOUT 120
         )
     endif()
+    # tests/analog_audio_out_check.py reads the analog host's lines with CRLF ends
+    # (Windows) as it does with LF ones. Stdlib only, so it runs wherever Python does.
+    add_test(
+        NAME TOOLS_ANALOG_AUDIO_OUT_CHECK
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_analog_audio_out_check.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(TOOLS_ANALOG_AUDIO_OUT_CHECK PROPERTIES TIMEOUT 60)
 endif()
 
 # WP-F4: real event synchronization and published snapshots for late emergency metadata.

@@ -22,6 +22,18 @@ METRIC = re.compile(r"^ANALOG METRIC: .* rms_dbfs=(-?[0-9]+\.[0-9]+) ", re.MULTI
 AUDIO_OUT = re.compile(r"^ANALOG AUDIO OUT: rate_hz=([0-9]+) samples=([0-9]+)$", re.MULTILINE)
 
 
+def host_text(stdout, stderr):
+    """The host's stderr then its stdout as text. Windows writes its lines with CRLF ends: each is read as one newline,
+    so the line patterns' end anchors match there as they do elsewhere."""
+    text = stderr.decode("utf-8", "replace") + stdout.decode("utf-8", "replace")
+    return text.replace("\r\n", "\n")
+
+
+def metric_lines(text):
+    """The ANALOG METRIC and ANALOG AUDIO OUT matches in the host's output (None where a line is missing)."""
+    return METRIC.search(text), AUDIO_OUT.search(text)
+
+
 def require(condition, message):
     """Fail the check with @p message unless @p condition holds (explicit, so python -O cannot strip it)."""
     if not condition:
@@ -40,14 +52,13 @@ def main():
         command = [str(Path(args.binary).resolve()), "--frontend", "none", *shlex.split(args.mode),
                    "--analog-audio-out", str(path), "--iq-replay", str(Path(args.fixture).resolve()), "-o", "null"]
         result = subprocess.run(command, capture_output=True, timeout=110, check=False)
-        err = result.stderr.decode("utf-8", "replace") + result.stdout.decode("utf-8", "replace")
+        err = host_text(result.stdout, result.stderr)
         require(result.returncode == 0, f"the host exited {result.returncode}\n{err}")
         require(not SANITIZER.search(err), f"sanitizer report\n{err}")
         forbidden = re.search(args.not_expected, err)
         require(forbidden is None, f"forbidden output /{args.not_expected}/ matched\n{err}")
         require("ANALOG AUDIO OK" in err, f"no ANALOG AUDIO OK\n{err}")
-        metric = METRIC.search(err)
-        out = AUDIO_OUT.search(err)
+        metric, out = metric_lines(err)
         require(metric and out, f"no ANALOG METRIC rms_dbfs or ANALOG AUDIO OUT line\n{err}")
         samples = int(out.group(2))
         data = path.read_bytes()
