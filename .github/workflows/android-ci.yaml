@@ -337,7 +337,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          cmake --build --preset dev-debug -j \
+          cmake --build --preset dev-debug -j "$(nproc)" \
             --target dsd-neo_test_ui_qt_qml \
             dsd-neo_test_ui_qt_site_groups \
             dsd-neo_test_ui_qt_site_roaming \
@@ -417,7 +417,7 @@ jobs:
             -DDSD_ENABLE_QT_UI=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build --preset dev-debug -j \
+          cmake --build --preset dev-debug -j "$(nproc)" \
             --target dsd-neo_test_ui_qt_radio_reference_model
           ctest --preset dev-debug -R '^UI_QT_RADIO_REFERENCE$' --parallel 2 --output-on-failure
 

@@ -380,7 +380,7 @@ jobs:
             -DDSD_REQUIRE_SOAPYSDR=ON
 
       - name: Build
-        run: cmake --build --preset dev-debug -j
+        run: cmake --build --preset dev-debug -j "$(nproc)"
 
   fuzz-smoke:
     needs: changes
