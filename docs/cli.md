@@ -219,7 +219,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-Z` Log MBE/PDU payloads to stderr (verbose), including encrypted P25 voice frames when media is gated, the raw
   bytes of DMR short data in a format dsd-neo does not decode (`Short Data Raw`) and of NXDN UDCH data with their ASCII
   form (`UDCH Data`), the D-STAR slow-data GPS blocks as they arrive (`GPS DATA:`, a part of a D-PRS record or NMEA
-  sentence each; a whole D-PRS record whose CRC matches still prints its position without `-Z`), and an NXDN frame sync whose LICH then fails (`Sync: NXDN96 LICH ERR`), which otherwise prints
+  sentence each, wherever in the superframe they sit; a whole D-PRS record whose CRC matches still prints its position
+  without `-Z`, and the `_UNK:` dump of slow data of no known kind never holds GPS bytes), and an NXDN frame sync whose LICH then fails (`Sync: NXDN96 LICH ERR`), which otherwise prints
   nothing.
   With `--frontend terminal` / `-N`, redirect stderr to capture them:
   `dsd-neo -Z --frontend terminal 2> console_log.txt`. The terminal frontend suppresses stderr when it is a TTY
