@@ -28,7 +28,9 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -782,6 +784,155 @@ test_reserved_source(void) {
     }
 }
 
+/* A voice-user link control of the call (hard decode unless @p soft) from @p src: Group Voice Channel User (LCO $00,
+ * with the Source ID Extension Required flag @p ext), Unit to Unit Voice Channel User (LCO $03, target TG_A), its
+ * Extended form (LCO $4A) or the Motorola LCGRGR (MFID $90 LCO $00, supergroup TG_A). */
+static void
+send_voice_user(fixture* f, uint8_t format, uint8_t mfid, uint32_t src, int ext, int soft) {
+    const uint8_t s0 = (uint8_t)(src >> 16);
+    const uint8_t s1 = (uint8_t)(src >> 8);
+    const uint8_t s2 = (uint8_t)src;
+    /* LCO $00 and LCGRGR: service options, reserved + S, group, source. LCO $03 and $4A: service options, target,
+       source. */
+    const uint8_t group[PART_OCTETS] = {0x00, (uint8_t)(ext ? 0x01 : 0x00), 0x00, (uint8_t)TG_A, s0, s1, s2};
+    const uint8_t unit[PART_OCTETS] = {0x00, 0x00, 0x00, (uint8_t)TG_A, s0, s1, s2};
+    send_lc(f, format, mfid, (format == 0x03 || format == 0x4A) ? unit : group, soft);
+}
+
+/* The GPS link control after the voice user: an L3Harris pair or a Motorola APX report; the record it gave names @p
+ * src (0: anonymous). */
+static void
+expect_gps_names(fixture* f, int apx, uint32_t src, const char* tag) {
+    /* Each report 31 s after the last, past the feed's 30 s repeat window, so an equal report is kept again. */
+    static int64_t at_s = T0_S;
+    at_s += 31;
+    set_clock_s(at_s);
+    body_fields b = fields_default();
+    uint8_t body[BODY_OCTETS];
+    make_body(&b, body);
+    const uint8_t apx_lc[PART_OCTETS] = {0x00, 0x20, 0x00, 0x00, 0x30, 0x00, 0x00};
+    if (apx) {
+        send_lc(f, 0x06, 0x90, apx_lc, 0);
+    } else {
+        send_update(f, LCO_A_ODD, LCO_B_ODD, body);
+    }
+    dsd_position_fix fix;
+    const int kept = feed_next(f, &fix);
+    if (!kept || fix.source_id != src || ((fix.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) != 0U) != (src == 0U)) {
+        DSD_FPRINTF(stderr, "FAIL: %s (%s): kept %d source %u flags %04X (want %u)\n", tag, apx ? "APX" : "Harris",
+                    kept, kept ? fix.source_id : 0U, kept ? fix.flags : 0U, src);
+        g_fail = 1;
+    }
+    char want[32];
+    char last[256];
+    DSD_SNPRINTF(want, sizeof want, "\t%08u\t", (unsigned)src);
+    expect_true(tag, lrrp_rows(f, last) > 0 && strstr(last, want) != NULL);
+}
+
+static dsd_trunk_tune_result
+tune_ok(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    if (freq <= 0) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    opts->trunk_is_tuned = 1;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static dsd_trunk_tune_result
+return_ok(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)state;
+    (void)request_id;
+    opts->trunk_is_tuned = 0;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+/* Trunking on, following a checked FDMA grant by SRC_A of TG_A (@p private_call: to unit TG_A): the voice-user link
+ * controls that follow are the assignment's voice starts. */
+static void
+follow_fdma_grant(fixture* f, int private_call) {
+    enum { CHANNEL = 0x1234 };
+
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = tune_ok,
+        .tune_to_cc_request = tune_ok,
+        .return_to_cc_request = return_ok,
+    });
+    f->opts->trunk_enable = 1;
+    f->opts->trunk_hangtime = 2.0f;
+    f->opts->trunk_tune_group_calls = 1;
+    f->opts->trunk_tune_private_calls = 1;
+    f->st->p25_cc_freq = 851000000L;
+    f->st->trunk_chan_map[CHANNEL] = 851500000L;
+    f->st->p25_chan_tdma_explicit[1] = 1;
+    p25_sm_init_ctx(p25_sm_get_ctx(), f->opts, f->st);
+    p25_sm_event_t grant = private_call ? p25_sm_ev_indiv_grant(CHANNEL, 851500000L, (int)TG_A, (int)SRC_A, 0x00)
+                                        : p25_sm_ev_group_grant(CHANNEL, 851500000L, (int)TG_A, (int)SRC_A, 0x00);
+    grant.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
+    p25_sm_event(p25_sm_get_ctx(), f->opts, f->st, &grant);
+    if (p25_sm_get_ctx()->state != P25_SM_TUNED) {
+        DSD_FPRINTF(stderr, "grant not followed\n");
+        exit(2);
+    }
+}
+
+/* Issue #800, fail closed: the evidence a hard-decoded voice user gave (p25_p1_lc_attribution) names the sender of a
+ * later GPS link control only while no later voice user of the call says otherwise. After SRC_A's checked voice user, a
+ * voice user of the same call naming a special address ($FFFFFC-$FFFFFF), a source that is not a complete local
+ * address (LCO $00 or LCGRGR with Source ID Extension Required, LCO $4A), or another radio by a soft decode takes it
+ * away, whether or not the call keeps SRC_A for display (a trunked assignment does): the next L3Harris or APX report
+ * is anonymous until a checked voice user names a radio again. A soft-decoded repeat of SRC_A, or a source of 0 (an
+ * omitted field, as the trunk state machine reads it), changes nothing. The private cases open the call with a Unit to
+ * Unit Voice Channel User. */
+static void
+test_voice_user_withdraws_evidence(void) {
+    static const struct {
+        const char* tag;
+        uint8_t format, mfid;
+        uint32_t src;
+        int ext, soft, keeps;
+    } cases[] = {
+        {"special FFFFFC", 0x00, 0x00, 0xFFFFFCU, 0, 0, 0},
+        {"special FFFFFD", 0x00, 0x00, 0xFFFFFDU, 0, 0, 0},
+        {"special FFFFFF", 0x00, 0x00, 0xFFFFFFU, 0, 0, 0},
+        {"special FFFFFD soft", 0x00, 0x00, 0xFFFFFDU, 0, 1, 0},
+        {"regroup special FFFFFD", 0x00, 0x90, 0xFFFFFDU, 0, 0, 0},
+        {"private special FFFFFD", 0x03, 0x00, 0xFFFFFDU, 0, 0, 0},
+        {"source id extension required", 0x00, 0x00, SRC_A, 1, 0, 0},
+        {"regroup source id extension required", 0x00, 0x90, SRC_A, 1, 0, 0},
+        {"private extended", 0x4A, 0x00, SRC_A, 0, 0, 0},
+        {"other radio, soft", 0x00, 0x00, SRC_B, 0, 1, 0},
+        {"no source", 0x00, 0x00, 0U, 0, 0, 1},
+        {"same radio, soft", 0x00, 0x00, SRC_A, 0, 1, 1},
+        {"same radio, hard", 0x00, 0x00, SRC_A, 0, 0, 1},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        for (int k = 0; k < 4; k++) {
+            const int apx = k & 1;
+            const int trunked = (k & 2) != 0;
+            const uint8_t opener = (cases[i].format == 0x03 || cases[i].format == 0x4A) ? 0x03 : 0x00;
+            char tag[128];
+            DSD_SNPRINTF(tag, sizeof tag, "%s, %s", cases[i].tag, trunked ? "trunked" : "conventional");
+            fixture f;
+            fixture_open(&f);
+            if (trunked) {
+                follow_fdma_grant(&f, opener == 0x03);
+            }
+            send_voice_user(&f, opener, 0x00, SRC_A, 0, 0);
+            expect_gps_names(&f, apx, SRC_A, "withdraw: before");
+            send_voice_user(&f, cases[i].format, cases[i].mfid, cases[i].src, cases[i].ext, cases[i].soft);
+            expect_gps_names(&f, apx, cases[i].keeps ? SRC_A : 0U, tag);
+            send_voice_user(&f, opener, 0x00, SRC_A, 0, 0);
+            expect_gps_names(&f, apx, SRC_A, "withdraw: named again");
+            p25_sm_init_ctx(p25_sm_get_ctx(), f.opts, f.st);
+            fixture_close(&f);
+        }
+    }
+}
+
 /* V1, V3, the time field, quality, emergency and speed, through the decoder with a checked context. */
 static int
 decode(fixture* f, const body_fields* b, dsd_position_fix* fix) {
@@ -895,6 +1046,7 @@ main(void) {
     test_checks();
     test_uncorrectable_verdict();
     test_reserved_source();
+    test_voice_user_withdraws_evidence();
     test_fields();
     dsd_decode_clock_use_system();
     if (g_fail) {

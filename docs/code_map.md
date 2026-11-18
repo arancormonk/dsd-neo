@@ -12444,7 +12444,13 @@ Private per-protocol modules worth knowing about:
   report only through it (Core, position producers), so a call followed from a CRC-failed grant under `-F` names no
   radio on its positions until a checked message names the unchecked fields (a MAC_PTT, MAC_ACTIVE or voice user, or a
   checked repeat of the grant); a private call's destination comes only from its grant. Phase 1 positions use the
-  hard-decoded voice-user LC record (`p25_p1_lc_attribution`, `p25_lcw.c`), which follows the same rule. A link control
+  hard-decoded voice-user LC record (`p25_p1_lc_attribution`, `p25_lcw.c` `p25_lcw_note_checked_identity()`), which
+  follows the same rule and fails closed: any later voice user of the call (LCO $00, $03, $4A, LCGRGR) that does not
+  record a radio takes the record away, unless it only repeats the record's source by a soft decode or names source 0
+  (an omitted field). That is one naming a special address, a source that is not a complete local address (the Source
+  ID Extension Required flag, octet 3 bit 0, or LCO $4A, whose Source ID always needs the extension), another radio by
+  a soft decode, or a radio the call does not hold, whether or not a trunked assignment keeps the earlier talker for
+  display (test `P25_P1_HARRIS_GPS`). A link control
   counts as hard-decoded only when no soft-erasure retry recovered it and the caller's `irrecoverable_errors` verdict is
   0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A special address (`0xFFFFFC`-`0xFFFFFF`) is never a checked source
   (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet, so
