@@ -39,12 +39,15 @@ Package hints:
 - Windows: source builds use the `win-msvc-*` presets in `CMakePresets.json` with vcpkg; set `VCPKG_ROOT` first.
   The presets build with Ninja and the compiler of the Visual Studio you use: open the folder in Visual Studio, or run
   `cmake` from a Developer PowerShell or x64 Native Tools prompt. vcpkg also builds the SoapySDR Airspy, HackRF and
-  Airspy HF+ modules. `SoapySDR.dll` looks for modules relative to its own folder, so a `dsd-neo.exe` run from the
-  build tree finds them only through `SOAPY_SDR_PLUGIN_PATH`: set it to
-  `vcpkg_installed\x64-windows-dynamic-release\lib\SoapySDR\modules0.8` for `win-msvc-release`, or
-  `vcpkg_installed\x64-windows-dynamic\debug\lib\SoapySDR\modules0.8` for `win-msvc-debug`. The modules' own DLLs
-  (`hackrf.dll`, `airspyhf.dll`) are not copied next to `dsd-neo.exe`, since only the modules use them, so also put
-  the same triplet's DLL folder first on `PATH`: `vcpkg_installed\x64-windows-dynamic-release\bin` for Release,
+  Airspy HF+ modules. `SoapySDR.dll` looks for modules relative to its own folder (`lib\SoapySDR\modules0.8` one
+  level above it). By default the build copies `SoapySDR.dll` next to `dsd-neo.exe` (vcpkg's app-local copy), where
+  there are no modules, so a `dsd-neo.exe` run from the build tree finds them only through `SOAPY_SDR_PLUGIN_PATH`: set
+  it to `vcpkg_installed\x64-windows-dynamic-release\lib\SoapySDR\modules0.8` for `win-msvc-release`, or
+  `vcpkg_installed\x64-windows-dynamic\debug\lib\SoapySDR\modules0.8` for `win-msvc-debug`. Configured with
+  `-DVCPKG_APPLOCAL_DEPS=OFF` (as a Windows CI job is), `dsd-neo.exe` loads `SoapySDR.dll` from the triplet's DLL
+  folder on `PATH`, next to the right modules already: leave `SOAPY_SDR_PLUGIN_PATH` unset then, or SoapySDR searches
+  that folder twice. Either way the modules' own DLLs (`hackrf.dll`, `airspyhf.dll`) are not copied next to
+  `dsd-neo.exe`, since only the modules use them, so also put the same triplet's DLL folder first on `PATH`: `vcpkg_installed\x64-windows-dynamic-release\bin` for Release,
   `vcpkg_installed\x64-windows-dynamic\debug\bin` for Debug. Without it the modules are found but fail to load
   (`LoadLibrary() failed`). Never mix the two: Release and Debug modules both report module ABI `0.8`, so SoapySDR
   does not reject a module built for the other configuration, which can then fail or crash. `SoapySDRUtil.exe` is

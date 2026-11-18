@@ -172,7 +172,7 @@ above it, and the start says so once:
 
 - HackRF at 10 MS/s: 5.5 MHz (was 1.75 MHz).
 - SDRplay at 2 MS/s: 1.536 MHz; at 1 MS/s: 600 kHz (was 200 kHz).
-- ADALM-Pluto at 2 MS/s: 2 MHz; at 1 MS/s: 1 MHz (was 200 kHz).
+- ADALM-Pluto, which runs the rate dsd-neo asks for (1.536 MS/s, say): 1 MHz (was 200 kHz).
 - LimeSDR: unchanged; its narrowest filter, 1.4 MHz, is already wide enough at the rates dsd-neo runs it.
 
 ```text
@@ -410,8 +410,11 @@ dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan
 - `RX stream formats do not include CF32 or CS16.`:
   The current backend cannot consume that driver stream format.
 - `SoapySDR: RX overflow count=...`:
-  Host or USB bus is falling behind. Try reducing throughput by lowering `rtl_bw_khz` (config key; for example 48 -> 16)
-  and/or overriding tuner bandwidth (env `DSD_NEO_TUNER_BW_HZ=<Hz|auto>`), then reduce system load or adjust driver settings.
+  The computer or the USB bus is falling behind the radio. For most radios a lower `rtl_bw_khz` (config key; for
+  example 48 -> 16) asks for a lower sample rate. A HackRF runs 10 MS/s whatever `rtl_bw_khz` is; to lower its rate,
+  set `soapy_profile = "generic"` (1 or 2 MS/s). The tuner filter (`DSD_NEO_TUNER_BW_HZ`) does not change the USB
+  traffic, and a narrow one can cut out the channel. Otherwise plug the radio into a USB port of its own (not a hub),
+  close other programs that load the computer, or adjust the driver's settings.
 - Discovery/plugin issues:
   Confirm `SOAPY_SDR_PLUGIN_PATH` includes the module directory for your Soapy drivers. The Windows release zip ships
   the Airspy, HackRF and Airspy HF+ modules and `bin\SoapySDRUtil.exe`; see section 0a for adding others and the
