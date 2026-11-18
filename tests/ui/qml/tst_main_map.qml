@@ -95,12 +95,14 @@ Item {
             var idle = findChild(app, "idleHistoryScreen");
             var button = findChild(idle, "historyMapButton");
             verify(button.visible, "offered with no calls logged too");
+            button.forceActiveFocus();
             button.activate();
             verify(app.mapOpen);
             verify(!findChild(app, "idleHistoryScreen").parent.visible || findChild(app, "idleHistoryScreen").parent.opacity === 0, "the tab shell hides under the map");
             app.requestBack();
             verify(!app.mapOpen);
             compare(app.currentTab, 1);
+            tryVerify(function () { return button.activeFocus; }, 1000, "the focus comes back to History's Map");
 
             testContext.setLifecyclePhase(2);
             chooseFromSessionMenu("History");
@@ -151,6 +153,8 @@ Item {
             wait(50);
             verify(!sheet.visible);
             verify(!app.mapOpen);
+            tryVerify(function () { return findChild(history, "callLogList").activeFocus; }, 1000,
+                      "the row gone, the focus goes to the History list");
         }
 
         // A close the app makes (a file another app opened) opens no sheet again.

@@ -140,6 +140,79 @@ Item {
             verify(node.name.indexOf("Unit") === 0 || node.name.indexOf("Radio") === 0 || node.name.indexOf("Unconfirmed") === 0, node.name);
         }
 
+        // Review P7 #1: an open detail sheet changes in place. The clock moving (every second while the map shows)
+        // and a new fix for its radio rename lines; no line is built or destroyed, nothing under the sheet shows or
+        // hides, and each line is the same object it was.
+        function test_open_sheet_updates_in_place() {
+            testContext.pushPosition({source: 4001, label: "Engine 7", lat: 10.0, lon: 20.0, errM: 20, speedDkmh: 300,
+                                      headingDdeg: 900, altitudeDm: 100, targetId: 100, group: true, fixAgeSeconds: 3});
+            var id = 0;
+            for (var t = 1; t < 20000 && id === 0; t++) {
+                if (positions.trackFor(t).label === "Engine 7")
+                    id = t;
+            }
+            verify(id > 0);
+            screen.openTrack(id, false);
+            var sheet = item("mapPositionSheet");
+            verify(sheet.visible);
+            // Every text the sheet holds, by object, and the Speed line among them.
+            var texts = function () {
+                var found = [];
+                var walk = function (node) {
+                    if (!node)
+                        return;
+                    if (node.text !== undefined && typeof node.text === "string")
+                        found.push(node);
+                    for (var c = 0; c < node.children.length; c++)
+                        walk(node.children[c]);
+                    if (node.contentItem)
+                        walk(node.contentItem);
+                };
+                walk(sheet);
+                return found;
+            };
+            var lines = texts();
+            var speed = lines.filter(function (line) { return line.visible && line.text.indexOf("Speed") === 0; })[0];
+            verify(speed !== undefined, "the Speed line shows");
+            testContext.startAccessibilityCount();
+            for (var r = 1; r <= 10; r++) {
+                testContext.setPositionWallSeconds(testContext.positionWallStart() + r);
+                testContext.refreshPositionAges();
+                if (r % 3 === 0)
+                    testContext.pushPosition({source: 4001, label: "Engine 7", lat: 10.0 + 0.001 * r, lon: 20.0, errM: 20,
+                                              speedDkmh: 300 + r, headingDdeg: 900, altitudeDm: 100, targetId: 100,
+                                              group: true, fixAgeSeconds: 3});
+            }
+            wait(20);
+            compare(showHide(sheet), 0, churn());
+            var after = texts();
+            compare(after.length, lines.length, "no line built or destroyed");
+            for (var i = 0; i < lines.length; i++)
+                verify(after[i] === lines[i], "line " + i + " is the same object");
+            verify(speed.text.indexOf("Speed") === 0, "renamed in place: " + speed.text);
+            var node = testContext.accessibleNode(speed);
+            verify(node.inTree);
+            sheet.visible = false;
+        }
+
+        // Review P7 #4: the History pin is a List row a screen reader reaches, named and pressable.
+        function test_pin_row_is_a_node() {
+            screen.showPin({uid: 9, name: "CALL 009", when: 1700000000, position: {latitude: 10.0, longitude: 20.0,
+                            kindText: "LIP", validityUnknown: true}});
+            screen.mapShown = false;
+            var row = item("mapPinRow");
+            var node = testContext.accessibleNode(row);
+            verify(node.inTree && node.focusable);
+            compare(node.name, "Saved position from History: CALL 009");
+            verify(testContext.pressAccessible(row));
+            verify(item("mapPositionSheet").visible);
+            item("mapPositionSheet").visible = false;
+            var chip = item("mapPinChipAction");
+            screen.mapShown = true;
+            verify(testContext.accessibleNode(chip).inTree, "on the map, its chip's button is the node");
+            screen.clearPin();
+        }
+
         // Each age pill is a checkable node; only the chosen one is checked.
         function test_age_pills_say_which_is_checked() {
             for (var i = 0; i < 3; ++i) {

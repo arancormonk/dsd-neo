@@ -124,6 +124,8 @@ Item {
             compare(testContext.mapTileRequests(), before, "tiles off: nothing asked");
             var prompt = item("mapTilesPrompt");
             verify(prompt.visible);
+            var area = item("mapArea");
+            verify(area.y >= prompt.y + prompt.height, "the prompt sits above the canvas, over no radio");
             verify(item("mapTilesPromptHost").text.indexOf("tile.openstreetmap.org") >= 0, item("mapTilesPromptHost").text);
             item("mapLoadTiles").activate();
             verify(screen.tilesEnabled);
@@ -138,7 +140,8 @@ Item {
             verify(item("mapEmptyState").visible);
             compare(title.text, "No positions yet");
             verify(item("mapEmptyDetail").text.indexOf("LRRP") >= 0);
-            verify(item("mapEmptyLoadTiles").visible, "tiles off: the empty state offers them");
+            verify(item("mapTilesPrompt").visible && !item("mapEmptyLoadTiles").visible,
+                   "tiles off: offered once, by the prompt above the canvas");
             push({source: 1001, lat: 10.0, lon: 20.0, ageSeconds: 2000});
             verify(!item("mapEmptyState").visible);
             item("mapAge0").activate();
@@ -314,8 +317,42 @@ Item {
                 verify(words.indexOf(w) >= 0, "the pin's sheet says \"" + w + "\":\n" + words);
             verify(!item("mapPositionFollow").visible, "a pin has nothing to follow");
             sheet().visible = false;
+            // Show every radio shows the pin too, however far the tracks are.
+            push({source: 1001, lat: 10.5, lon: 20.5, label: "Engine 7"});
+            canvas().centerOn(10.5, 20.5, 14);
+            item("mapFit").activate();
+            waitForRendering(screen);
+            var marker = c.markerPoint(trackNamed("Engine 7"));
+            for (var p of [Qt.point(pin.tipX, pin.tipY), marker])
+                verify(p.x >= 0 && p.x <= c.width && p.y >= 0 && p.y <= c.height, "in view after a fit: " + p);
             screen.clearPin();
             verify(!pin.visible);
+        }
+
+        // Spec 4.6, review P7 #4: the drawn pin is not a node, so it has a chip with a button on the map and a row
+        // at the top of the List, each opening its sheet.
+        function test_10b_the_pin_is_reachable_without_seeing_it() {
+            screen.showPin({uid: 42, name: "CALL 042", when: 1700000000, tg: 0, src: 0, sourceName: "",
+                            position: {latitude: 10.0, longitude: 20.0, validityUnknown: false, provisional: true,
+                                       weakCheck: false, anonymous: false, emergency: false, kindText: "LRRP"}});
+            var chip = item("mapPinChip");
+            verify(chip.visible);
+            verify(chip.text.indexOf("CALL 042") >= 0, chip.text);
+            item("mapPinChipAction").activate();
+            verify(sheet().visible && sheet().pin !== null, "the chip's Details opens the pin's sheet");
+            sheet().visible = false;
+            screen.mapShown = false;
+            verify(!item("mapEmptyState").visible);
+            var row = item("mapPinRow");
+            verify(row.visible);
+            compare(row.Accessible.role, Accessible.Button);
+            compare(row.Accessible.name, "Saved position from History: CALL 042");
+            verify(row.Accessible.description.indexOf("Format not confirmed by a published specification") >= 0, row.Accessible.description);
+            row.activate();
+            verify(sheet().visible && sheet().pin !== null, "the List row opens the pin's sheet");
+            sheet().visible = false;
+            screen.clearPin();
+            verify(!row.visible && !item("mapPinChip").visible);
         }
 
         // Map settings: https only with {z}{x}{y}, the host named, Save applies, an edit asks before it goes.
@@ -342,6 +379,23 @@ Item {
             discard.activate();
             verify(!settings.visible);
             compare(screen.tileAttribution, screen.defaultAttribution);
+        }
+
+        // Review P7 #2: set aside, the tiles prompt stays away for the app's run (closing and opening the map does not
+        // bring it back), and the empty state offers tiles instead.
+        function test_11b_a_dismissed_tiles_prompt_stays_dismissed() {
+            var prompt = item("mapTilesPrompt");
+            verify(prompt.visible);
+            verify(!item("mapEmptyLoadTiles").visible, "the prompt above already offers tiles");
+            item("mapTilesNotNow").activate();
+            verify(!prompt.visible);
+            compare(item("mapArea").y, item("mapAgeFilter").mapToItem(screen, 0, item("mapAgeFilter").height).y + 10,
+                    "the canvas takes the room back");
+            verify(item("mapEmptyLoadTiles").visible, "the empty state offers tiles once the prompt is set aside");
+            screen.visible = false;
+            screen.visible = true;
+            verify(!prompt.visible, "not asked again on the next visit");
+            screen.tilesPromptDismissed = false;
         }
 
         // Clear asks first, then empties the map (History keeps its rows).
@@ -393,6 +447,60 @@ Item {
             compare(locate.Accessible.name, "Locate me", "a moved view locates again");
         }
 
+        // Review P7 #3: Follow my position holds the "map" lease only while the map shows in the foreground; the app
+        // leaving lets it go and its return takes it again while follow is on; the List lets it go; a coarse-only
+        // permission ends follow with words. The feed itself starts the platform feed once per take.
+        function test_14b_follow_holds_the_lease_only_in_the_foreground() {
+            testContext.setLifecycleLocationSupported(true);
+            testContext.useLifecycleHost(true);
+            verify(item("mapLocate").visible);
+            var locator = item("mapLocator");
+            locator.readyToFollow = true;
+            compare(item("mapLocate").Accessible.name, "Follow my position");
+            item("mapLocate").activate();
+            verify(locator.followMe);
+            verify(locationFeed.holds("map"), "following on a shown map holds the lease");
+            var starts = testContext.roamingHostCalls().streamStarts;
+            compare(starts, 1);
+            // A live fix moves the dot; it is never saved.
+            var savedAt = prefs.lastFixAt;
+            testContext.emitLocationStreamUpdate({generation: 1, state: "ok", hasFix: true, provider: "gps", measurementNs: 1,
+                                                  lat: 10.25, lon: 20.25, accuracyM: 8, fixAtMs: 1000});
+            verify(locator.live);
+            tryVerify(function () { return Math.abs(canvas().deviceLatitude - 10.25) < 1e-9; });
+            compare(prefs.lastFixAt, savedAt, "a live fix is not saved");
+            testContext.emitApplicationState(Qt.ApplicationHidden);
+            verify(!locationFeed.holds("map"), "the app away: let go");
+            compare(testContext.roamingHostCalls().streamActive, false);
+            testContext.emitApplicationState(Qt.ApplicationActive);
+            verify(locationFeed.holds("map"), "back with follow on: taken again");
+            compare(testContext.roamingHostCalls().streamStarts, starts + 1, "one start for the return, not two");
+            screen.mapShown = false;
+            verify(!locationFeed.holds("map"), "the List lets it go");
+            screen.mapShown = true;
+            verify(locationFeed.holds("map"));
+            testContext.emitLocationStreamUpdate({generation: 1, state: "approximateOnly", hasFix: false});
+            verify(!locator.followMe);
+            verify(!locationFeed.holds("map"));
+            compare(item("mapLocationNotice").text, "Live position needs precise location.");
+            locator.clearNotice();
+            testContext.useLifecycleHost(false);
+            testContext.setLifecycleLocationSupported(false);
+            testContext.setLocationSupported(true);
+            testContext.useAppPrefs(true);
+        }
+
+        // Review P7 minor 4: a stopped replay's fix has no age; the line under an invalid newer fix still reads whole.
+        function test_14c_a_fix_with_no_age_still_reads_whole() {
+            sheet().pin = null;
+            sheet().trackId = 0;
+            sheet().take({trackId: 7, label: "Unit 41", validityUnknown: true, hasPosition: true, hasUnknownFix: true,
+                          ageSeconds: -1, unknownAgeSeconds: -1});
+            sheet().visible = true;
+            compare(item("mapPositionLastValid").text, "The last valid position is still shown");
+            sheet().visible = false;
+        }
+
         // A large text size: nothing in the top bar, the filter or the controls runs off the screen's sides.
         function test_15_large_text_clips_nothing() {
             push({source: 1001, lat: 10.0, lon: 20.0});
@@ -409,6 +517,7 @@ Item {
                         verify(left >= -0.5 && right <= screen.width + 0.5,
                                name + " runs off the side at scale " + scale + ", width " + width + ": " + left + ".." + right);
                     }
+                    verify(!item("mapAttributionText").truncated, "the attribution is owed whole, wrapped not cut");
                     var chrome = item("mapAgeFilter");
                     verify(chrome.mapToItem(screen, 0, chrome.height).y < screen.height / 2, "the map keeps most of the screen");
                 }

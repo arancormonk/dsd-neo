@@ -39,7 +39,7 @@ function agoText(seconds, timeText) {
 }
 
 // The name a track goes by: its label, else its callsign, else its radio ID,
-// as the map's labels name it. An anonymous track has no name it can be
+// exactly as the map's labels name it. An anonymous track has no name it can be
 // trusted with.
 function trackName(track) {
     if (!track || track.gap)
@@ -50,8 +50,9 @@ function trackName(track) {
         return track.label
     if (track.sourceText && track.sourceText.length > 0)
         return track.sourceText
+    // The bare number, as the map's label shows it, so the two can be matched.
     if (track.sourceId !== undefined && track.sourceId > 0)
-        return qsTr("Radio %1").arg(Math.round(track.sourceId))
+        return String(Math.round(track.sourceId))
     return qsTr("Unnamed radio")
 }
 

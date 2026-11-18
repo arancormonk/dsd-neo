@@ -14,6 +14,14 @@ Item {
     // row's "Show on map" with the sheet to return to.
     signal openMap
     signal showOnMap(var record, var sheet)
+    // Back from the map when the row it showed has left the log: the focus
+    // goes to the list, where the row was.
+    function focusList() {
+        if (!logList.visible || !Navigation.allows(logList))
+            return false;
+        logList.forceActiveFocus();
+        return true;
+    }
 
     // Hand off pending text before another History instance can accept input.
     // Otherwise this screen's older timer could overwrite the new editor.

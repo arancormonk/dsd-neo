@@ -23,6 +23,11 @@ Item {
     // Whether the map is on screen (the map, not the List): the live lease is
     // held only then.
     property bool shown: false
+    // Whether the app is in the foreground: the lease is let go while it is
+    // away (an Item stays visible then) and taken again on return while follow
+    // is on. The feed itself only restarts leases still held, so the two never
+    // both start the platform feed.
+    property bool foreground: true
     property bool followMe: false
     // Set once a Locate me centred the view on the dot, until the view moves.
     property bool readyToFollow: false
@@ -103,7 +108,7 @@ Item {
     }
 
     // The live lease: held exactly while following on a shown map.
-    readonly property bool leaseWanted: supported && followMe && shown
+    readonly property bool leaseWanted: supported && followMe && shown && foreground
     onLeaseWantedChanged: syncLease()
     function syncLease() {
         if (leaseWanted) {

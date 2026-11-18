@@ -296,6 +296,8 @@ class MapViewItem : public QQuickItem {
     Q_INVOKABLE void zoomOut();
     /** @brief Show every marker drawn, and the device's dot when valid, animated. False when there is nothing. */
     Q_INVOKABLE bool fitAll();
+    /** @brief fitAll() with (@p lat, @p lon) shown too: a pin the screen draws over the map (a History row's fix). */
+    Q_INVOKABLE bool fitAllWith(double lat, double lon);
     /** @brief Centre on track @p trackId's marker (its current position, else its open ring), animated. */
     Q_INVOKABLE bool centerOnTrack(qulonglong trackId);
     /** @brief Centre on the device's position, animated. False while it is not valid. */
@@ -466,6 +468,8 @@ class MapViewItem : public QQuickItem {
     map_math::Viewport viewportForSize() const;
 
     std::vector<map_math::WorldPoint> markerPoints() const;
+    /** @brief Fit @p points and the device's dot when valid (fitAll()'s body). */
+    bool fitPoints(std::vector<map_math::WorldPoint> points);
     const TrackDraw* findTrack(qulonglong trackId) const;
     std::vector<TileDraw> tileDraws(double ratio) const;
     const std::vector<SpriteQuad>& spriteQuads();

@@ -23,6 +23,9 @@ ModalSheet {
     // row's uid, and Back from the map opens the sheet again by it.
     property bool showMap: true
     readonly property bool rowHasPosition: !!sheet.record.position && sheet.record.position.latitude !== undefined
+    // What had the focus when the sheet opened (its row), kept past the
+    // close a "Show on map" makes, for the focus to come back to.
+    property var mapOpener: null
     signal showOnMapRequested(var record)
     // Issue #667: an analog reception has no access code. Its tone ("CTCSS
     // 100.0 Hz") takes the code's line, and what it was heard in ("Analog
@@ -144,6 +147,7 @@ ModalSheet {
         text: qsTr("Show on map")
         onClicked: {
             var record = sheet.record;
+            sheet.mapOpener = sheet.previousFocus;
             sheet.visible = false;
             sheet.showOnMapRequested(record);
         }

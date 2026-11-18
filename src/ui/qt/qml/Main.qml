@@ -998,14 +998,16 @@ Window {
     property var mapReturn: null
     function openMap() {
         mapLoader.active = true;
-        mapReturn = null;
+        // The control that opened it (History's Map, or the session's
+        // screen under the menu) takes the focus back on Back.
+        mapReturn = {focus: mainRoot.activeFocusItem};
         if (mapLoader.item)
             mapLoader.item.clearPin();
         mapOpen = true;
     }
     function openMapFor(record, sheet) {
         mapLoader.active = true;
-        mapReturn = {uid: record.uid, sheet: sheet};
+        mapReturn = {uid: record.uid, sheet: sheet, focus: sheet.mapOpener};
         mapOpen = true;
         if (mapLoader.item)
             mapLoader.item.showPin(record);
@@ -1021,15 +1023,28 @@ Window {
         mapOpen = false;
         if (mapLoader.item)
             mapLoader.item.clearPin();
-        if (returning && back && back.sheet)
+        if (returning && back)
             Qt.callLater(mainRoot.returnFromMap, back);
     }
+    function focusBack(item) {
+        if (!item || !Navigation.presented(item) || !item.enabled || !Navigation.allows(item))
+            return false;
+        item.forceActiveFocus();
+        return true;
+    }
     function returnFromMap(back) {
-        if (mapOpen || !back.sheet)
+        if (mapOpen)
             return;
-        if (callHistory.rowForUid(back.uid) >= 0 && back.sheet.parent && Navigation.presented(back.sheet.parent) && Navigation.allows(back.sheet.parent))
+        if (!back.sheet) {
+            focusBack(back.focus);
+            return;
+        }
+        var host = back.sheet.parent;
+        if (callHistory.rowForUid(back.uid) >= 0 && host && Navigation.presented(host) && Navigation.allows(host))
             back.sheet.open(callHistory.recordFor(back.uid));
-        else
+        // The row gone (or its screen covered): the list it was in, else what
+        // opened the sheet, else the sheet's screen.
+        else if (!(host && typeof host.focusList === "function" && host.focusList()) && !focusBack(back.focus))
             back.sheet.restoreFocus(null);
     }
     property bool radioReferenceAccountOpen: false

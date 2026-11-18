@@ -14,15 +14,19 @@ import "MapText.js" as MapText
 // nothing depends on seeing the marker.
 //
 // It follows its track while open: a new fix, a label learned, ages moving.
-// The ages are paced for a screen reader (LiveText); the rest renames only
-// when the fix changes. A track cleared while open keeps the last copy read
-// and says so.
+// Every line is a fixed slot (issue #782): nothing is built or destroyed
+// while it is open, a line comes and goes only by `visible`, and its words
+// change in place. The ages move every second on their own (`ages`), read at
+// a screen reader's pace (LiveText); the rest renames only when the fix
+// changes. A track cleared while open keeps the last copy read and says so.
 ModalSheet {
     id: sheet
 
-    // The track shown (0 for a pin), and the last copy read of it.
+    // The track shown (0 for a pin), the last copy read of it without its
+    // ages, and its ages ({ageSeconds, unknownAgeSeconds, reportAgeSeconds}).
     property double trackId: 0
     property var track: ({})
+    property var ages: ({})
     property bool trackGone: false
     // A History row's pin: {name, when, tg, src, sourceName, position: {...}}.
     property var pin: null
@@ -44,8 +48,8 @@ ModalSheet {
 
     objectName: "mapPositionSheet"
     accessibleName: pin ? qsTr("Saved position") : qsTr("Position details")
-    // Centred, the panel stops twice the reserve short so its bottom clears it.
-    maximumHeight: Math.max(0, Math.min(height, keyboardTop) - 2 * Theme.screenPadding - 2 * bottomReserve)
+    // The panel is centred in the room above the reserve.
+    bottomInset: bottomReserve
 
     readonly property bool metric: typeof prefs !== "undefined" && prefs ? prefs.metricUnits !== false : true
     readonly property var pinPosition: pin && pin.position ? pin.position : ({})
@@ -54,12 +58,13 @@ ModalSheet {
         pin = null;
         trackId = id;
         trackGone = false;
-        track = positions.trackFor(id);
+        take(positions.trackFor(id));
         visible = true;
     }
     function openPin(record) {
         trackId = 0;
         track = ({});
+        ages = ({});
         trackGone = false;
         pin = record;
         visible = true;
@@ -72,8 +77,22 @@ ModalSheet {
             trackGone = true;
             return;
         }
-        if (JSON.stringify(fresh) !== JSON.stringify(track))
-            track = fresh;
+        take(fresh);
+    }
+    readonly property var ageKeys: ["ageSeconds", "unknownAgeSeconds", "reportAgeSeconds", "shown"]
+    // A copy read: its ages go to `ages`, the rest to `track`, each only when
+    // it changed, so a tick of the clock touches the age lines alone.
+    function take(fresh) {
+        var rest = Object.assign({}, fresh);
+        var moved = {};
+        for (var key of ageKeys) {
+            moved[key] = fresh[key];
+            delete rest[key];
+        }
+        if (JSON.stringify(rest) !== JSON.stringify(track))
+            track = rest;
+        if (JSON.stringify(moved) !== JSON.stringify(ages))
+            ages = moved;
     }
     Connections {
         target: positions
@@ -87,67 +106,52 @@ ModalSheet {
     }
 
     readonly property string title: pin ? (pin.name || pin.sourceName || qsTr("Saved position")) : MapText.trackName(track)
-    readonly property double newestAge: MapText.newestAge(track)
-    readonly property var stateLines: pin ? MapText.stateWords(pinPosition) : MapText.stateWords(track)
+    readonly property double newestAge: MapText.newestAge(Object.assign({}, track, ages))
+    // The states in fixed slots: emergency, validity, source, format, check.
+    readonly property var stateSlots: {
+        var t = pin ? pinPosition : track;
+        return [t.emergency ? qsTr("Emergency") : "", t.validityUnknown ? qsTr("Fix may be old or invalid") : "",
+                t.anonymous ? qsTr("Radio not confirmed") : "",
+                t.provisional ? qsTr("Format not confirmed by a published specification") : "",
+                t.weakCheck ? qsTr("Weak error check") : ""];
+    }
     readonly property bool hasFix: pin ? pinPosition.latitude !== undefined : (track.hasPosition === true || track.hasUnknownFix === true)
     // Where the fix shown is: a pin's, else the current position, else the
     // open ring's; 0 until there is one (hasFix says whether there is).
     readonly property double shownLatitude: Number(pin ? pinPosition.latitude : track.hasPosition ? track.latitude : track.unknownLatitude) || 0
     readonly property double shownLongitude: Number(pin ? pinPosition.longitude : track.hasPosition ? track.longitude : track.unknownLongitude) || 0
 
-    function identityLines() {
-        var lines = [];
-        if (pin) {
-            if (pin.sourceName && pin.sourceName !== title)
-                lines.push(pin.sourceName);
-            if (pin.src > 0)
-                lines.push(qsTr("Radio ID %1").arg(Util.idText(pin.src)));
-            if (pin.tg > 0)
-                lines.push(qsTr("Talkgroup %1").arg(Util.idText(pin.tg)));
-            return lines;
-        }
-        if (track.anonymous)
-            return [qsTr("The radio that sent this could not be confirmed, so it has no name or trail.")];
-        if (track.label && track.label.length > 0 && track.label !== title)
-            lines.push(qsTr("Label %1").arg(track.label));
-        if (track.sourceText && track.sourceText.length > 0 && track.sourceText !== title)
-            lines.push(qsTr("Callsign %1").arg(track.sourceText));
-        if (track.sourceId > 0)
-            lines.push(qsTr("Radio ID %1").arg(Util.idText(track.sourceId)));
-        if (track.targetId > 0)
-            lines.push(track.targetGroup ? qsTr("Talkgroup %1").arg(Util.idText(track.targetId)) : qsTr("Sent to radio %1").arg(Util.idText(track.targetId)));
-        return lines;
-    }
-    function reportLines() {
-        var lines = [];
-        var kind = pin ? pinPosition.kindText : track.kindText;
-        if (kind && kind.length > 0)
-            lines.push(qsTr("Report type %1").arg(kind));
-        if (hasFix)
-            lines.push(qsTr("Position %1").arg(MapText.coordinateText(shownLatitude, shownLongitude)));
-        if (hasFix && deviceKnown) {
-            var away = MapText.lengthText(MapText.distanceMetres(deviceLatitude, deviceLongitude, shownLatitude, shownLongitude), metric);
-            if (away.length > 0)
-                lines.push(qsTr("%1 from your saved location").arg(away));
-        }
-        var accuracy = pin ? MapText.accuracyText(pinPosition.errorM, pinPosition.errorLowerBound, metric) : MapText.accuracyText(track.errorM, track.errorLowerBound, metric);
-        if (accuracy.length > 0)
-            lines.push(accuracy);
+    // The detail lines in fixed slots, "" for one not known: who (label or
+    // the row's name, callsign, radio ID, talkgroup or target), then the
+    // report (format, position, distance, accuracy, speed, heading, altitude,
+    // satellites, frequency).
+    function identitySlots() {
         if (pin)
-            return lines;
-        var parts = [MapText.speedText(track.speedDkmh, track.speedLowerBound, metric), MapText.headingText(track.headingDdeg, track.headingAmbiguous), MapText.altitudeText(track.altitudeDm, metric)];
-        for (var i = 0; i < parts.length; i++) {
-            if (parts[i].length > 0)
-                lines.push(parts[i]);
-        }
-        if (track.sats > 0)
-            lines.push(qsTr("%1 satellites").arg(track.sats));
-        if (track.freqHz > 0)
-            lines.push(qsTr("Frequency %1").arg(Util.fmtMhz(track.freqHz)));
-        return lines;
+            return [pin.sourceName && pin.sourceName !== title ? pin.sourceName : "", "",
+                    pin.src > 0 ? qsTr("Radio ID %1").arg(Util.idText(pin.src)) : "",
+                    pin.tg > 0 ? qsTr("Talkgroup %1").arg(Util.idText(pin.tg)) : ""];
+        if (track.anonymous)
+            return [qsTr("The radio that sent this could not be confirmed, so it has no name or trail."), "", "", ""];
+        return [track.label && track.label.length > 0 && track.label !== title ? qsTr("Label %1").arg(track.label) : "",
+                track.sourceText && track.sourceText.length > 0 && track.sourceText !== title ? qsTr("Callsign %1").arg(track.sourceText) : "",
+                track.sourceId > 0 ? qsTr("Radio ID %1").arg(Util.idText(track.sourceId)) : "",
+                track.targetId > 0 ? (track.targetGroup ? qsTr("Talkgroup %1").arg(Util.idText(track.targetId)) : qsTr("Sent to radio %1").arg(Util.idText(track.targetId))) : ""];
+    }
+    function reportSlots() {
+        var kind = pin ? pinPosition.kindText : track.kindText;
+        var away = hasFix && deviceKnown ? MapText.lengthText(MapText.distanceMetres(deviceLatitude, deviceLongitude, shownLatitude, shownLongitude), metric) : "";
+        var t = pin ? ({}) : track;
+        return [kind && kind.length > 0 ? qsTr("Report type %1").arg(kind) : "",
+                hasFix ? qsTr("Position %1").arg(MapText.coordinateText(shownLatitude, shownLongitude)) : "",
+                away.length > 0 ? qsTr("%1 from your saved location").arg(away) : "",
+                pin ? MapText.accuracyText(pinPosition.errorM, pinPosition.errorLowerBound, metric) : MapText.accuracyText(t.errorM, t.errorLowerBound, metric),
+                MapText.speedText(t.speedDkmh, t.speedLowerBound, metric), MapText.headingText(t.headingDdeg, t.headingAmbiguous),
+                MapText.altitudeText(t.altitudeDm, metric), t.sats > 0 ? qsTr("%1 satellites").arg(t.sats) : "",
+                t.freqHz > 0 ? qsTr("Frequency %1").arg(Util.fmtMhz(t.freqHz)) : ""];
     }
     // Every property the two read is a dependency of this binding.
-    readonly property var lines: identityLines().concat(reportLines())
+    readonly property var lineSlots: identitySlots().concat(reportSlots())
+    readonly property int lineSlotCount: 13
 
     // The radio's name, the one heading.
     ReadableText {
@@ -165,18 +169,18 @@ ModalSheet {
     // The states, each a line of words: an emergency in the alert colour and
     // weight (the word is the state, the colour only repeats it).
     Repeater {
-        model: sheet.stateLines
+        model: 5
         ReadableText {
-            required property string modelData
             required property int index
             objectName: "mapPositionState" + index
             width: parent.width
-            text: modelData
+            visible: text.length > 0
+            text: sheet.stateSlots[index]
             wrapMode: Text.Wrap
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(15)
             font.weight: Font.DemiBold
-            color: modelData === qsTr("Emergency") ? Theme.alert : Theme.textPrimary
+            color: index === 0 ? Theme.alert : Theme.textPrimary
         }
     }
 
@@ -205,7 +209,7 @@ ModalSheet {
         width: parent.width
         visible: text.length > 0
         step: String(sheet.trackId) + ":" + (sheet.track.fixTime || 0)
-        text: !sheet.pin && sheet.track.fixTime > 0 ? qsTr("Measured %1").arg(MapText.agoText(sheet.track.reportAgeSeconds, Qt.formatDateTime(new Date(sheet.track.fixTime * 1000), "hh:mm:ss"))) : ""
+        text: !sheet.pin && sheet.track.fixTime > 0 ? qsTr("Measured %1").arg(MapText.agoText(sheet.ages.reportAgeSeconds, Qt.formatDateTime(new Date(sheet.track.fixTime * 1000), "hh:mm:ss"))) : ""
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(15)
@@ -217,7 +221,9 @@ ModalSheet {
         width: parent.width
         visible: text.length > 0
         step: String(sheet.trackId) + ":" + (sheet.track.receivedTime || 0)
-        text: !sheet.pin && sheet.track.validityUnknown && sheet.track.hasPosition ? qsTr("Last valid position received %1").arg(MapText.agoText(sheet.track.ageSeconds, "")) : ""
+        // A stopped replay's fix has no age: then the line says only that it is kept.
+        readonly property string ago: MapText.agoText(sheet.ages.ageSeconds, "")
+        text: !sheet.pin && sheet.track.validityUnknown && sheet.track.hasPosition ? (ago.length > 0 ? qsTr("Last valid position received %1").arg(ago) : qsTr("The last valid position is still shown")) : ""
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(15)
@@ -225,11 +231,13 @@ ModalSheet {
     }
 
     Repeater {
-        model: sheet.lines
+        model: sheet.lineSlotCount
         ReadableText {
-            required property string modelData
+            required property int index
+            objectName: "mapPositionLine" + index
             width: parent.width
-            text: modelData
+            visible: text.length > 0
+            text: sheet.lineSlots[index] || ""
             wrapMode: Text.Wrap
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(15)

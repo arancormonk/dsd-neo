@@ -4674,6 +4674,16 @@ class Setup : public QObject {
         }
     }
 
+    /**
+     * @brief Issue #800: tell everything that follows the application's state (Qt.application, the location feed,
+     * the map item, the track model) that it is now @p state (Qt::ApplicationState), as the platform would. The
+     * real state is left as it is; pass Qt.ApplicationActive to end the case where it began.
+     */
+    Q_INVOKABLE void
+    emitApplicationState(int state) {
+        Q_EMIT qGuiApp->applicationStateChanged(static_cast<Qt::ApplicationState>(state));
+    }
+
     /** @brief Issue #800: read every track's age again now, as the map's one-second timer does. */
     Q_INVOKABLE void
     refreshPositionAges() {

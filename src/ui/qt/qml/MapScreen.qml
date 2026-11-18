@@ -41,10 +41,23 @@ Item {
     property bool mapShown: true
     // A History row's saved fix dropped as one pin ("Show on map"), or null.
     property var pin: null
-    // The tiles prompt set aside for this visit.
+    // The tiles prompt set aside: for the rest of the app's run (the screen
+    // is kept between visits). A listener who keeps tiles off on purpose is
+    // not asked again on every open.
     property bool tilesPromptDismissed: false
     // Whether the camera was set up once; the view keeps its place after.
     property bool cameraPlaced: false
+    // Whether the app is in the foreground. On Android an Item stays visible
+    // while the app is hidden, so the live position and the age clock follow
+    // the application's state, not only `visible`. Inactive (a dialog on top)
+    // still counts as foreground, as the location feed reads it.
+    property bool appForeground: Qt.application.state !== Qt.ApplicationHidden && Qt.application.state !== Qt.ApplicationSuspended
+    Connections {
+        target: Qt.application
+        function onStateChanged(state) {
+            screen.appForeground = state !== Qt.ApplicationHidden && state !== Qt.ApplicationSuspended;
+        }
+    }
     // Moves on every track change, for bindings that look a track up by id.
     property int tracksRevision: 0
     Connections {
@@ -73,7 +86,6 @@ Item {
     onVisibleChanged: {
         if (visible) {
             map.resetCameraUsedDevicePosition();
-            tilesPromptDismissed = false;
             Qt.callLater(screen.placeCamera);
             Qt.callLater(function () {
                 if (screen.visible && Navigation.allows(screen))
@@ -110,6 +122,13 @@ Item {
     function clearPin() {
         pin = null;
     }
+    // The pin's sheet: from a tap on it, its chip on the map, or its List row.
+    function openPinDetails() {
+        if (!pin)
+            return;
+        selectTrack(0);
+        positionSheet.openPin(pin);
+    }
 
     function selectTrack(id) {
         map.selectedTrackId = id;
@@ -139,8 +158,7 @@ Item {
             return;
         }
         if (pin && pinMark.visible && Math.abs(x - pinMark.tipX) <= map.hitRadius && y <= pinMark.tipY + 6 && y >= pinMark.tipY - 34) {
-            selectTrack(0);
-            positionSheet.openPin(pin);
+            openPinDetails();
             return;
         }
         selectTrack(0);
@@ -290,12 +308,29 @@ Item {
         }
     }
 
+    // ---- Tiles off: the prompt, between the bar and the map ----
+    // Laid out above the canvas rather than over it, so it never covers a
+    // radio and a fit ("Show every radio") has the whole canvas to show them
+    // in. Set aside, it stays away for the app's run; the empty state and
+    // Map settings still offer tiles.
+    MapTilesPrompt {
+        id: tilesPrompt
+        objectName: "mapTilesPrompt"
+        x: Theme.screenPadding
+        y: chrome.y + chrome.height + 10
+        width: Math.max(0, screen.width - 2 * Theme.screenPadding)
+        visible: screen.mapShown && !screen.tilesEnabled && screen.tilesAvailable && !screen.tilesPromptDismissed
+        host: screen.tilesHost
+        onLoad: screen.tilesEnabled = true
+        onDismiss: screen.tilesPromptDismissed = true
+    }
+
     // ---- The canvas and the List ----
     Item {
         id: area
         objectName: "mapArea"
 
-        anchors.top: chrome.bottom
+        anchors.top: tilesPrompt.visible ? tilesPrompt.bottom : chrome.bottom
         anchors.topMargin: 10
         anchors.left: parent.left
         anchors.right: parent.right
@@ -350,9 +385,10 @@ Item {
             labelFont.weight: Font.DemiBold
             emergencyText: qsTr("Emergency")
             hitRadius: Theme.minimumTouchSize / 2
-            // Room for a label beside a marker at the edge, less on a short
-            // landscape canvas, where it would cost the fit most of its zoom.
-            fitPadding: Math.min(72, Math.min(width, height) / 5)
+            // Room for a label beside a marker at the edge (more at a larger
+            // text size), less on a short landscape canvas, where it would
+            // cost the fit most of its zoom.
+            fitPadding: Math.min(Math.round(72 * Theme.fontSize(12) / 12), Math.min(width, height) / 5)
             cameraDurationMs: Theme.reducedMotion ? 0 : 250
 
             deviceValid: locator.deviceValid
@@ -475,6 +511,16 @@ Item {
                     : tiles.state === MapTileSource.Unavailable ? qsTr("Online map tiles are not available in this build")
                     : qsTr("The tile address is not valid. Check Map settings.")
             }
+            // The pin's words and its button: the drawn pin is not a node,
+            // so this is how a screen reader or keyboard reaches its sheet.
+            MapChip {
+                objectName: "mapPinChip"
+                visible: screen.pin !== null
+                text: screen.pin ? qsTr("Saved position from History: %1").arg(screen.pin.name || screen.pin.sourceName || qsTr("unnamed")) : ""
+                actionText: qsTr("Details")
+                actionName: qsTr("Details of the saved position")
+                onAction: screen.openPinDetails()
+            }
             MapChip {
                 objectName: "mapFollowing"
                 visible: map.followTrackId > 0 || locator.followMe
@@ -498,14 +544,6 @@ Item {
                     locator.openNoticeAction();
                     locator.clearNotice();
                 }
-            }
-            MapTilesPrompt {
-                objectName: "mapTilesPrompt"
-                width: parent.width
-                visible: !screen.tilesEnabled && screen.tilesAvailable && !screen.tilesPromptDismissed && !screen.emptyLog && !screen.emptyFilter
-                host: screen.tilesHost
-                onLoad: screen.tilesEnabled = true
-                onDismiss: screen.tilesPromptDismissed = true
             }
         }
 
@@ -566,8 +604,10 @@ Item {
                 enabled: map.markerCount > 0 || locator.deviceValid || screen.pin !== null
                 onClicked: {
                     screen.userMovedCamera();
-                    if (!map.fitAll() && screen.pin)
-                        map.centerOn(screen.pin.position.latitude, screen.pin.position.longitude);
+                    if (screen.pin)
+                        map.fitAllWith(screen.pin.position.latitude, screen.pin.position.longitude);
+                    else
+                        map.fitAll();
                 }
             }
             MapControlButton {
@@ -613,7 +653,8 @@ Item {
                 filtered: screen.emptyFilter
                 hiddenCount: positions.count
                 filterName: positions.ageFilterSeconds === 900 ? qsTr("the last 15 minutes") : qsTr("the last hour")
-                showTilesPrompt: screen.mapShown && !screen.tilesEnabled && screen.tilesAvailable
+                // Offered here only once the prompt above is set aside.
+            showTilesPrompt: screen.mapShown && !screen.tilesEnabled && screen.tilesAvailable && screen.tilesPromptDismissed
                 tilesHost: screen.tilesHost
                 onShowAll: positions.ageFilterSeconds = 0
                 onLoadTiles: screen.tilesEnabled = true
@@ -630,9 +671,11 @@ Item {
             deviceKnown: locator.deviceValid
             deviceLatitude: locator.deviceLatitude
             deviceLongitude: locator.deviceLongitude
+            pin: screen.pin
             onActivated: function (trackId) {
                 screen.openTrack(trackId, true);
             }
+            onPinActivated: screen.openPinDetails()
         }
     }
 
@@ -649,7 +692,7 @@ Item {
         anchors.leftMargin: 8
         anchors.bottomMargin: 4
         width: Math.min(chip.implicitWidth, area.width - controls.width - 3 * 12)
-        height: Theme.minimumTouchSize
+        height: Math.max(Theme.minimumTouchSize, chip.height + 8)
         // What the detail sheet leaves clear: the chip as drawn, not its touch area.
         readonly property real chipHeight: chip.height + chip.anchors.bottomMargin + anchors.bottomMargin
 
@@ -686,13 +729,17 @@ Item {
             border.width: 1
             border.color: Theme.panelBorder
 
+            // Wraps rather than cuts: the credit is owed whole, at any text size.
             Text {
                 id: attributionText
+                objectName: "mapAttributionText"
                 x: 8
                 anchors.verticalCenter: parent.verticalCenter
                 width: Math.min(implicitWidth, parent.width - 16)
                 text: screen.tileAttribution
                 textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                maximumLineCount: 3
                 elide: Text.ElideRight
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(11)
@@ -709,6 +756,7 @@ Item {
         id: locator
         objectName: "mapLocator"
         shown: screen.visible && screen.mapShown
+        foreground: screen.appForeground
         onLocated: {
             screen.userMovedCamera();
             locator.readyToFollow = true;
@@ -722,7 +770,7 @@ Item {
     Binding {
         target: positions
         property: "ageing"
-        value: screen.visible
+        value: screen.visible && screen.appForeground
     }
 
     // Spec 4.8: the age filter and the view are kept between visits.

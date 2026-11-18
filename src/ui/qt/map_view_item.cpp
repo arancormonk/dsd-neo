@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <dsd-neo/core/position.h>
 #include <iterator>
+#include <utility>
 #include <vector>
 
 #include "map_geometry.h"
@@ -543,7 +544,20 @@ MapViewItem::findTrack(qulonglong trackId) const {
 
 bool
 MapViewItem::fitAll() {
+    return fitPoints(markerPoints());
+}
+
+bool
+MapViewItem::fitAllWith(double lat, double lon) {
     std::vector<mm::WorldPoint> points = markerPoints();
+    if (std::isfinite(lat) && std::isfinite(lon) && std::fabs(lat) <= 90.0 && std::fabs(lon) <= 180.0) {
+        points.push_back(mm::world_from_lat_lon(lat, lon));
+    }
+    return fitPoints(std::move(points));
+}
+
+bool
+MapViewItem::fitPoints(std::vector<mm::WorldPoint> points) {
     mm::WorldPoint device{};
     const bool withDevice = deviceWorld(&device);
     if (withDevice) {

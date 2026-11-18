@@ -12,7 +12,8 @@ import "MapText.js" as MapText
 // fix's states in words on the third. Rows update in place and never move
 // (the model's rule); a row's spoken name follows its age at a screen
 // reader's pace. A tap opens the same sheet a marker opens, with the same
-// Follow. One gap row says where positions may be missing.
+// Follow. One gap row says where positions may be missing. A History row's
+// pin ("Show on map") leads the list as its own row, as it leads the map.
 Item {
     id: list
 
@@ -26,17 +27,135 @@ Item {
     // The widest the rows grow on a tablet; centred beyond it.
     property real maximumRowWidth: 840
 
+    // A History row's pin ({name, when, position: {...}}), or null.
+    property var pin: null
+
     signal activated(double trackId)
+    signal pinActivated
 
     readonly property bool metric: typeof prefs !== "undefined" && prefs ? prefs.metricUnits !== false : true
     readonly property alias view: rows
     readonly property int count: rows.count
 
+    // The pin's row: what it is, whose, and its states, in the rows' grammar.
+    Item {
+        id: pinRow
+        objectName: "mapPinRow"
+
+        readonly property var position: list.pin && list.pin.position ? list.pin.position : ({})
+        readonly property string name: list.pin ? (list.pin.name || list.pin.sourceName || qsTr("Saved position")) : ""
+        readonly property string when: list.pin && (pinRow.position.receivedTime > 0 || list.pin.when > 0)
+            ? Qt.formatDateTime(new Date((pinRow.position.receivedTime > 0 ? pinRow.position.receivedTime : list.pin.when) * 1000), "hh:mm:ss") : ""
+        readonly property string states: MapText.stateWords(pinRow.position).join(" · ")
+
+        visible: list.pin !== null
+        x: rows.anchors.leftMargin
+        width: rows.width
+        height: visible ? Math.max(Theme.rowHeight, pinLabels.implicitHeight + 24) : 0
+
+        activeFocusOnTab: (navigationAllowed && visible) || activeFocus
+        Accessible.role: Accessible.Button
+        Accessible.name: navigationAllowed && visible ? qsTr("Saved position from History: %1").arg(name) : ""
+        Accessible.description: navigationAllowed && visible ? [when.length > 0 ? qsTr("received at %1").arg(when) : "", pinRow.position.kindText || "", states].filter(function (part) {
+            return part.length > 0;
+        }).join(", ") : ""
+        readonly property bool navigationAllowed: Navigation.allows(pinRow)
+        Accessible.focusable: navigationAllowed && visible
+        Accessible.ignored: !navigationAllowed || !visible
+        Accessible.onPressAction: activate()
+        function activate() {
+            if (visible && Navigation.allows(pinRow))
+                list.pinActivated();
+        }
+        Keys.onPressed: function (event) {
+            if (Navigation.activationPress(event, Window.activeFocusItem))
+                activate();
+        }
+        Keys.onReleased: function (event) {
+            Navigation.activationRelease(event);
+        }
+        FocusFrame {}
+        GatedTapHandler {
+            onAllowedTap: pinRow.activate()
+        }
+
+        Column {
+            id: pinLabels
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: 18
+            anchors.rightMargin: 18
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 3
+
+            Item {
+                width: parent.width
+                height: Math.max(pinName.implicitHeight, pinWhen.implicitHeight)
+                Text {
+                    id: pinName
+                    anchors.left: parent.left
+                    anchors.right: pinWhen.left
+                    anchors.rightMargin: 12
+                    text: Util.oneLine(pinRow.name)
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(16)
+                    font.weight: Font.DemiBold
+                    color: pinRow.position.emergency ? Theme.alert : Theme.textPrimary
+                }
+                Text {
+                    id: pinWhen
+                    anchors.right: parent.right
+                    anchors.baseline: pinName.baseline
+                    text: pinRow.when
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(12)
+                    color: Theme.textSubdued
+                }
+            }
+            Text {
+                width: parent.width
+                text: [qsTr("Saved position from History"), pinRow.position.kindText || ""].filter(function (part) {
+                    return part.length > 0;
+                }).join(" · ")
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(14)
+                color: Theme.textSecondary
+            }
+            Text {
+                width: parent.width
+                visible: text.length > 0
+                text: pinRow.states
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                font.weight: Font.DemiBold
+                color: Theme.textPrimary
+            }
+        }
+
+        Rectangle {
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: 18
+            height: 1
+            color: Theme.divider
+        }
+    }
+
     ListView {
         id: rows
         objectName: "mapList"
 
-        anchors.fill: parent
+        anchors.top: pinRow.visible ? pinRow.bottom : parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
         anchors.topMargin: 4
         anchors.leftMargin: Math.max(0, (parent.width - list.maximumRowWidth) / 2)
         anchors.rightMargin: anchors.leftMargin
