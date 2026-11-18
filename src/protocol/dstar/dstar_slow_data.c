@@ -411,11 +411,33 @@ dstar_sd_bound_call(const dsd_state* state, const dstar_sd_binding* b, dsd_call_
            && call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_DSTAR(call->protocol) && call->epoch == b->call_epoch;
 }
 
+/* 1 when the record's own APRS source (its text up to '>', inside the CRC-covered text), without its -SSID, is the
+ * callsign of @p source: the bound call's MY field as the call state keeps it (the callsign, then a space and the
+ * suffix when one was sent). A record whose source does not read as a callsign before '>' matches nothing. */
+static int
+dstar_dprs_source_is(const dstar_dprs_assembly* a, const char* source) {
+    const uint8_t* body = a->text + DSTAR_DPRS_PREFIX_LEN;
+    const size_t len = (size_t)a->len - DSTAR_DPRS_PREFIX_LEN;
+    size_t base = 0U;
+    while (base < len && body[base] != '>' && body[base] != '-' && body[base] != ':') {
+        base++;
+    }
+    size_t end = base;
+    while (end < len && body[end] != '>' && body[end] != ':') {
+        end++;
+    }
+    const size_t mine = strcspn(source, " /");
+    return base != 0U && end < len && body[end] == '>' && mine == base && memcmp(body, source, base) == 0;
+}
+
 /*
  * An admitted D-PRS position: its check is the record's own CRC; its source is the callsign of the call a checked
  * header of the record's transmission named before the record's first byte (dstar_header_observe()), and it reaches
- * only that call's row. A record bound to no named call (late entry, an RF header that failed its CRC, a blank MY
- * field) has no checked source and reaches no row; the feed still takes it, anonymous.
+ * only that call's row -- and only when the record's own APRS source names that callsign too
+ * (dstar_dprs_source_is()): a record from another station, heard while a call whose boundaries were missed stays
+ * ACTIVE, is not that call's. A record bound to no named call (late entry, an RF header that failed its CRC, a blank MY
+ * field), or one whose APRS source is another station, has no checked source and reaches no row; the feed still takes
+ * it, anonymous.
  */
 static void
 dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_dprs_assembly* a,
@@ -428,7 +450,8 @@ dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_dprs_asse
     fix.lat_e7 = dstar_aprs_e7(pos->lat_deg, pos->lat_min, pos->lat_hund, pos->lat_hemi == 'S');
     fix.lon_e7 = dstar_aprs_e7(pos->lon_deg, pos->lon_min, pos->lon_hund, pos->lon_hemi == 'W');
     dsd_call_snapshot call;
-    const int on_call = dstar_sd_bound_call(state, &a->bind, &call) && call.source_text[0] != '\0';
+    const int on_call = dstar_sd_bound_call(state, &a->bind, &call) && call.source_text[0] != '\0'
+                        && dstar_dprs_source_is(a, call.source_text);
     if (on_call) {
         DSD_SNPRINTF(fix.source_text, sizeof(fix.source_text), "%s", call.source_text);
     }

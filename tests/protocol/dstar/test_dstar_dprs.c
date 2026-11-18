@@ -145,6 +145,14 @@ record_for(char* out, size_t cap, const char* body) {
     DSD_SNPRINTF(out, cap, "$$CRC%04X,%s", (unsigned)x25(body, strlen(body)), body);
 }
 
+/* The published vector's position, sent by @p from (its APRS source, -SSID included when given), its CRC correct. */
+static void
+record_from(char* out, size_t cap, const char* from) {
+    char body[96];
+    DSD_SNPRINTF(body, sizeof(body), "%s>API51,DSTAR*:!2230.00N/04500.00E>test\r", from);
+    record_for(out, cap, body);
+}
+
 /* The superframe's 60 bytes, scrambled and bit-ordered as processDSTAR_SD() reads them. */
 static void
 pack_slow_data(const uint8_t bytes[60], uint8_t bits[480]) {
@@ -232,6 +240,35 @@ test_assemblies_in_protocol_extension(void) {
     send_gps(&r, k_vector + 25U, strlen(k_vector) - 25U, 0);
     dsd_position_fix f[2];
     expect_int("the last run's half record completes nothing", feed_records(&r, f, 2U), 0);
+    rig_close(&r);
+}
+
+/* Issue #800 (g62-r9 review): N0OLD's call is ACTIVE and named (its terminator and the next transmission's RF header
+ * missed, no slow-data header heard since). A CRC-valid record whose own APRS source is N0NEW is not N0OLD's: it
+ * reaches the feed anonymous and no row. One whose source is N0OLD with an SSID is N0OLD's. */
+static void
+test_record_from_another_station_is_not_the_calls(void) {
+    rig r;
+    rig_open(&r);
+    open_call(&r, "N0OLD");
+    char record[128];
+    record_from(record, sizeof(record), "N0NEW");
+    send_gps(&r, record, strlen(record), 0);
+    dsd_position_fix f[2];
+    expect_int("another station's record admitted", feed_records(&r, f, 2U), 1);
+    expect_str("another station's record names nobody", f[0].source_text, "");
+    expect_int("another station's record is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
+               DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    expect_int("N0OLD's row takes no position", r.history[0].Event_History_Items[0].pos.valid, 0);
+    rig_close(&r);
+
+    rig_open(&r);
+    open_call(&r, "N0OLD");
+    record_from(record, sizeof(record), "N0OLD-7");
+    send_gps(&r, record, strlen(record), 0);
+    expect_int("the caller's record admitted", feed_records(&r, f, 2U), 1);
+    expect_str("the caller's record (SSID aside) is N0OLD's", f[0].source_text, "N0OLD");
+    expect_int("N0OLD's row takes the position", r.history[0].Event_History_Items[0].pos.valid, 1);
     rig_close(&r);
 }
 
@@ -611,7 +648,9 @@ test_failed_header_leaves_records_anonymous(void) {
                DSD_POS_FLAG_SOURCE_UNVERIFIED);
     send_slow_data_header(&r, "N0TWO");
     expect_int("a checked header names the transmission", r.state->dstar_tx_call_epoch != 0U, 1);
-    send_gps(&r, k_vector, strlen(k_vector), 0);
+    char two[128];
+    record_from(two, sizeof(two), "N0TWO");
+    send_gps(&r, two, strlen(two), 0);
     expect_int("record after the checked header admitted", feed_records(&r, f, 3U), 3);
     expect_str("record after the checked header is N0TWO's", f[2].source_text, "N0TWO");
     expect_int("record after the checked header is checked", f[2].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED, 0);
@@ -933,11 +972,13 @@ test_header_blocks_are_never_text_or_gps(void) {
     expect_str("row keeps its message", open_row(&r)->text_message, "HELLO");
 
     const size_t half = 25U;
-    send_gps(&r, k_vector, half, 0);
+    char record[128];
+    record_from(record, sizeof(record), "N0TEXT");
+    send_gps(&r, record, half, 0);
     build_slow_data_header(bytes, "N0TEXT", 0x00U);
     bytes[24] = 0x35U; /* block 4's mini-header */
     send_superframe(&r, bytes);
-    send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
+    send_gps(&r, record + half, strlen(record) - half, 0);
     dsd_position_fix f[2];
     expect_int("record across the header superframe admitted", feed_records(&r, f, 2U), 1);
     expect_str("record is N0TEXT's", f[0].source_text, "N0TEXT");
@@ -974,6 +1015,7 @@ int
 main(void) {
     test_vector_position();
     test_assemblies_in_protocol_extension();
+    test_record_from_another_station_is_not_the_calls();
     test_crc_mismatch();
     test_literal_alone_is_no_evidence();
     test_time_stamps();

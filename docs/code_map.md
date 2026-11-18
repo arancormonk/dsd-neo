@@ -2761,7 +2761,9 @@ suite runs under this compiler.
     starts the next message, its block 0 missed, the same way), and a D-PRS record is checked against its binding before its CRC counts as
     evidence. What an assembly
     produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
-    the row takes its position only through it (otherwise the feed takes the record anonymous), and the message reaches
+    the row takes its position only through it, and only when the record's own CRC-covered APRS source, its -SSID
+    aside, is that callsign too (`dstar_dprs_source_is()`: another station's record, heard while a call whose
+    boundaries were missed stays ACTIVE, is not the call's; otherwise the feed takes the record anonymous), and the message reaches
     the row only when every block, its first (place 0) among them, was heard while the transmission was confirmed.
     Otherwise slow data is display text alone. Both header paths (`dstar_header_decode_soft()` and the slow-data
     header) put a checked header on the call through `dstar_header_observe()`, which takes the MY field (with its
