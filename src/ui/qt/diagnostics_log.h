@@ -144,6 +144,9 @@ class DiagnosticsLog {
     void setIoFaultForTest(IoFault fault);
     static void setLoadHookForTest(LoadHook hook);
     static QString redact(QString text);
+    // redact() for a record loaded from a stored tail (issue #800, D10): it also removes a record under a label an
+    // older build printed a received position or a part of one with, whichever build wrote it.
+    static QString redactStored(const QString& text);
     // Test seam: whether a record carries a producer's label for a received position (issue #800, D10), the rule the
     // redaction rests on, without the backstop shapes.
     static bool namesPositionProducerForTest(const QString& text);

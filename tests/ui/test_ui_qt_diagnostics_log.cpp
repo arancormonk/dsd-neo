@@ -1931,6 +1931,68 @@ receivedPositionsAreRemoved() {
     }
 }
 
+// Issue #800, D10, fail closed: the text older builds printed a received position or a part of one with, under labels
+// the current producers no longer use. A stored tail holding them reloads with none of them, in the main ring and in
+// the host ring alike, so no Copy or Share after an upgrade discloses one; a stored line with no position survives.
+static void
+storedLegacyPositionFormsAreRemoved() {
+    static const char kPosition[] = "[redacted position]";
+    const QString deg = QString::fromUtf8("\xC2\xB0");
+    const QStringList legacyLines = {
+        // p25p1_pdu_data.c SAP 48 location service plain text, two decimal places, and dmr_block.c MNIS LOCN text.
+        QStringLiteral(" UTF8 Text: 22.50,45.00"),
+        QStringLiteral(" UTF8 Text: LOC 22 30 N 45 00 E"),
+        // dstar_slow_data.c fixed-form GPS data blocks printed as text.
+        QStringLiteral(" TEXT: 0,N,04500.0,E,0.0,0"),
+        // dmr_pdu.c dmr_lrrp_print_details(): each part of a report on a line of its own.
+        QStringLiteral(" Time: 2026.11.18 12:00:00"),
+        QStringLiteral(" Radius: 12.00m"),
+        QStringLiteral(" Alt Accuracy: 3.00m"),
+        QStringLiteral(" Speed: 1.00 mph 1.61 km/h 0.45 m/s"),
+        QStringLiteral(" Track: 90") + deg,
+        // m17.c GNSS packet radius line.
+        QStringLiteral("      Radius: 12.0; M17 Client; Mobile Station;"),
+        // dsd_gps.c nmea_sentence_checker(): a checked sentence of a type the shapes do not name.
+        QStringLiteral(" $PXXXX,22.5,45.0*3A"),
+    };
+    for (const auto& line : legacyLines) {
+        const QString record = QStringLiteral("[stderr] [info] ") + line;
+        checkLabelled(DiagnosticsLog::redactStored(record) == kPosition, "stored legacy form kept: " + line.toUtf8());
+    }
+    // The key rule stays first, and a line with no position under no legacy label is kept as redact() keeps it.
+    check(DiagnosticsLog::redactStored(QStringLiteral("[stderr] [info]  UTF8 Text: -1 9")) == kDropped,
+          "a key beside a legacy label is not dropped as a key");
+    const QString kept = QStringLiteral("[stderr] [info] Sync: +DMR  slot1 [VOICE] ");
+    check(DiagnosticsLog::redactStored(kept) == kept, "a stored line with no position changed");
+    // Live records keep the current producers' text messages: the legacy forms are judged only on load.
+    const QString liveText = QStringLiteral("[stderr] [info]  UTF8 Text: hello");
+    check(DiagnosticsLog::redact(liveText) == liveText, "a live text message was redacted");
+
+    QTemporaryDir old;
+    QByteArray stored;
+    for (const auto& line : legacyLines) {
+        stored += QStringLiteral("[stderr] [info] ").toUtf8() + line.toUtf8() + '\n';
+    }
+    stored += kept.toUtf8() + '\n';
+    QByteArray host;
+    for (const auto& line : legacyLines) {
+        host += QStringLiteral("[host] [info] ").toUtf8() + line.toUtf8() + '\n';
+    }
+    const std::pair<const char*, QByteArray> files[] = {{"tail.log", stored}, {"host.log", host}};
+    for (const auto& entry : files) {
+        QFile file(old.filePath(QString::fromLatin1(entry.first)));
+        check(file.open(QIODevice::WriteOnly) && file.write(entry.second) == entry.second.size(),
+              "older store written");
+    }
+    DiagnosticsLog reloaded(old.path());
+    const QString text = QString::fromUtf8(exportOf(reloaded));
+    check(text.count(QLatin1String(kPosition)) == 2 * legacyLines.size(), "a stored legacy form survived the reload");
+    for (const auto& line : legacyLines) {
+        checkLabelled(!text.contains(line), "reloaded legacy form kept: " + line.toUtf8());
+    }
+    check(text.contains(kept), "the reload dropped a line with no position");
+}
+
 namespace producers {
 
 /* A decoder rig: heap state as the decoder keeps it, with event history and the position feed. */
@@ -3302,6 +3364,7 @@ main(int argc, char** argv) {
     negativeMeasurementsDoNotCarryKeys();
     measurementCorpusSurvives();
     receivedPositionsAreRemoved();
+    storedLegacyPositionFormsAreRemoved();
     realProducersLabelReceivedPositions();
     everyProducerLabelsEveryPartOfItsReport();
     measurementExemptionsKeepKeyForms();

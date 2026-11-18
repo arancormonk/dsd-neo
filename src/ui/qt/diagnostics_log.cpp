@@ -701,6 +701,29 @@ const char* const kPositionShapes[] = {
     "[0-9]{4}\\.[0-9]{2}[NS].[0-9]{5}\\.[0-9]{2}[EW]",
 };
 
+/*
+ * Issue #800, D10, fail closed: the print text older builds (v2.10.0, the first with a saved tail, through the build
+ * before position labels) gave a received position or a part of one under a label kPositionMarkers does not hold. A
+ * stored tail cannot tell which build wrote a record, so a record loaded from it (redactStored()) that matches any of
+ * these goes too, whatever build wrote it: a current build's record under the same label (a DMR or UDT "UTF8 Text:"
+ * message, a D-STAR "TEXT:" message) is dropped on reload with them.
+ */
+const char* const kLegacyPositionForms[] = {
+    // p25p1_pdu_data.c SAP 48 location service plain text and dmr_block.c MNIS LOCN report text (utf8_to_text())
+    "\\bUTF8 Text\\s*:",
+    // dstar_slow_data.c fixed-form slow data other than D-PRS: the GPS data blocks, printed as " TEXT: "
+    "\\bTEXT:",
+    // dmr_pdu.c dmr_lrrp_print_details(): a report's time, radius, altitude accuracy, speed and track, each on a line of
+    // its own; m17.c GNSS packet: its radius on a line of its own, with the data source and station type after it
+    "\\bTime: [0-9]{4}\\.[0-9]{2}\\.[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}",
+    "\\bRadius\\s*:",
+    "\\bAlt Accuracy\\s*:",
+    "\\bSpeed\\s*:",
+    "\\bTrack\\s*:",
+    // dsd_gps.c nmea_sentence_checker(): a checked sentence of any type, printed bare after whatever came before it
+    "[$!][A-Z][A-Z0-9]{2,},[^*]*\\*[0-9A-Fa-f]{2}",
+};
+
 /** @brief One alternation of @p entries, each a QRegularExpression fragment. */
 template <size_t N>
 QRegularExpression
@@ -738,6 +761,14 @@ holdsReceivedPosition(const QString& text) {
         "(?<![0-9])[0-9]{4}(?:\\.[0-9]*)?\\s*,?\\s*[NS]\\b.{0,3}?(?<![0-9])[0-9]{5}(?:\\.[0-9]*)?\\s*,?\\s*"
         "[EW]\\b"));
     return namesPositionProducer(text) || text.contains(shapes) || text.contains(degrees) || text.contains(minutes);
+}
+
+/** @brief Whether @p text carries a label an older build printed a received position or a part of one under
+ * (kLegacyPositionForms). */
+bool
+holdsLegacyPosition(const QString& text) {
+    static const QRegularExpression forms = alternationOf(kLegacyPositionForms);
+    return text.contains(forms);
 }
 
 QString
@@ -846,7 +877,7 @@ droppedContext(const QList<QByteArray>& lines, std::initializer_list<qsizetype> 
         context.clear();
         for (const qsizetype at : contextAt) {
             if (at >= 0 && at < *keepFrom) {
-                context.append(DiagnosticsLog::redact(QString::fromUtf8(lines.at(at))));
+                context.append(DiagnosticsLog::redactStored(QString::fromUtf8(lines.at(at))));
             }
         }
         if (context.size() == reserved) {
@@ -1136,7 +1167,7 @@ DiagnosticsLog::redact(QString text) {
         return QLatin1String(kDroppedRecord);
     }
     // Issue #800, D10: after the key rule, which it leaves as it was. A stored record an older build kept is redacted
-    // again when it is loaded (seedRing()), so no copy or share of the log holds one either.
+    // again when it is loaded (redactStored()), so no copy or share of the log holds one either.
     if (holdsReceivedPosition(text)) {
         return QLatin1String(kPositionRecord);
     }
@@ -1145,6 +1176,16 @@ DiagnosticsLog::redact(QString text) {
     text.replace(QChar('\r'), QChar(' '));
     text.replace(QChar('\n'), QChar(' '));
     return text;
+}
+
+QString
+DiagnosticsLog::redactStored(const QString& text) {
+    QString redacted = redact(text);
+    // Issue #800, D10, fail closed: a record the key or position rule already removed stays as that rule left it.
+    if (redacted == QLatin1String(kDroppedRecord) || redacted == QLatin1String(kPositionRecord)) {
+        return redacted;
+    }
+    return holdsLegacyPosition(withoutAnsi(text)) ? QString::fromLatin1(kPositionRecord) : redacted;
 }
 
 bool
@@ -1322,7 +1363,7 @@ DiagnosticsLog::seedRing(const QByteArray& text) {
         m_protectedPrevious.append(pushRingLocked(line));
     }
     for (qsizetype i = keepFrom; i < lines.size(); ++i) {
-        const quint64 id = pushRingLocked(redact(QString::fromUtf8(lines.at(i))));
+        const quint64 id = pushRingLocked(redactStored(QString::fromUtf8(lines.at(i))));
         if (i == lastProcessAt || i == lastSessionAt) {
             m_protectedPrevious.append(id);
         }
@@ -1362,7 +1403,7 @@ DiagnosticsLog::seedHostRing(const QByteArray& text, qsizetype currentAt) {
         } else if (line.startsWith(kSessionPrefix)) {
             lastSession = line;
         }
-        lines.append(redact(QString::fromUtf8(line)));
+        lines.append(redactStored(QString::fromUtf8(line)));
     }
     // The newest records that fit beside the divider.
     lines = lines.mid(std::max<qsizetype>(0, lines.size() - (kHostRingLimit - 1)));

@@ -503,11 +503,13 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * label and its text message, each with the provenance the row's own fields carry. A row keeps one per fragment
      * (Row::parts), keyed by the fragment's ring identity, and is always the fold of its parts not withdrawn
      * (rebuild_from_parts()), so when a fragment turns out to be another call's (fragment_call_compatible()) the row
-     * rebuilds every field it gave from its other fragments' by the rules a merge folds them with.
+     * rebuilds every field it gave from its other fragments' by the rules a merge folds them with. A fragment's part is
+     * its newest reading, whole: nothing of an earlier reading outlives it.
      */
     struct FragmentPart {
-        /* The fragment's key (call_history_fragment_key()); empty for the part standing for what a row an older build
-         * stored without fragments held. */
+        /* The fragment's key (call_history_fragment_key()); for the part standing for what a row an older build stored
+         * without fragments held, a key of that row's own (`legacy|` and its seen key, legacy_part_key()), so two such
+         * rows folded together stay two parts. Empty only in a part an earlier build of this one stored. */
         QString fragment;
         /* The fragment's reading named another call than the row's: kept so the row knows the fragment, never
          * folded. */

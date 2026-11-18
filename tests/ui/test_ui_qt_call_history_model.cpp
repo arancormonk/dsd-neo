@@ -2923,7 +2923,8 @@ fnv1a32(const char* text) {
 /* The core can change a committed row's site text in place and nothing else (a reacquisition merge's union taking the
  * text that names Capacity Max): the mask, channel and stamps stay. The seen entry's text digest is what tells the row
  * has advanced. It is compared with the fragment last read, not with the row shown: a fragment read back to the
- * standard text re-reads too, and the row keeps the text the union prefers. */
+ * standard text re-reads too, and the row, whose only fragment it is, follows its newest reading (issue #800: a
+ * fragment's part is its newest reading, whole). */
 void
 test_site_text_changed_in_place_reingests(void) {
     resetStorage();
@@ -2961,7 +2962,11 @@ test_site_text_changed_in_place_reingests(void) {
     ring.touchCommitted(0);
     model.refresh(ring.state);
     expect("a text changed back re-reads, as the fragment last read differs", changed.count() > 0);
-    expect("and the row keeps the text that names Capacity Max", model.count() == 1 && site_text(model, 0) == capmax);
+    expect(
+        "and the row follows the text its only fragment now reads",
+        model.count() == 1
+            && site_text(model, 0)
+                   == u8("DMR \xC2\xB7 TIII Large \xC2\xB7 Net 2 \xC2\xB7 Site 2 \xC2\xB7 SYS 2101 \xC2\xB7 LPCN 38"));
     changed.clear();
     ring.touchCommitted(0);
     model.refresh(ring.state);
@@ -6915,6 +6920,150 @@ test_repeated_notice_compares_the_fix(void) {
     }
 }
 
+/* Fail closed, one model (issue #800): a log an older build stored before fragments were kept (no `fr`, no `fp`) is
+ * converted into the fragment-contributions model on load, each stored row a part of its own. Two adjacent rows of one
+ * talkgroup fold into one, and that row is the fold of both parts: the source ID and the emergency flag only the later
+ * row learned are kept, at load and after a save and reload. */
+void
+test_legacy_rows_fold_as_parts(void) {
+    resetStorage();
+    const qint64 when = 1754707300;
+    QJsonObject earlier{{QStringLiteral("when"), when},
+                        {QStringLiteral("end"), when + 3},
+                        {QStringLiteral("name"), QStringLiteral("Talkgroup 80701")},
+                        {QStringLiteral("tg"), 80701},
+                        {QStringLiteral("src"), 0},
+                        {QStringLiteral("durationSecs"), 3},
+                        {QStringLiteral("slot"), 0},
+                        {QStringLiteral("seq"), 1},
+                        {QStringLiteral("session"), 1}};
+    QJsonObject later = earlier;
+    later.insert(QStringLiteral("when"), when + 4);
+    later.insert(QStringLiteral("end"), when + 9);
+    later.insert(QStringLiteral("durationSecs"), 5);
+    later.insert(QStringLiteral("src"), 8701);
+    later.insert(QStringLiteral("em"), true);
+    later.insert(QStringLiteral("seq"), 2);
+    expect("legacy parts: an older build's store is written",
+           dsd_qt::json_store_save_array("call_history.json", QJsonArray{later, earlier}));
+    const auto folded = [when](const CallHistoryModel& model) {
+        const QModelIndex idx = model.index(0);
+        return model.count() == 1 && model.data(idx, CallHistoryModel::SrcRole).toULongLong() == 8701U
+               && model.data(idx, CallHistoryModel::EmergencyRole).toBool()
+               && model.data(idx, CallHistoryModel::WhenRole).toLongLong() == when
+               && model.data(idx, CallHistoryModel::DurationSecsRole).toInt() == 9;
+    };
+    {
+        CallHistoryModel model;
+        expect("legacy parts: the two rows fold into one that keeps what the later row learned", folded(model));
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    expect("legacy parts: the same after a save and reload", folded(reloaded));
+}
+
+/* Fail closed (issue #800): a destination is the call's, whoever sent the fragment that names it. Three D-STAR
+ * fragments on one named channel: N0CALL with no destination, an unknown caller to DEST-ONE, then N0CALL to DEST-TWO.
+ * The senderless fragment may join N0CALL's call, but its destination is the row's then, so the third fragment, naming
+ * another destination, is another call; the row shows DEST-ONE, the name its only destination gave it. */
+void
+test_senderless_fragment_keeps_its_destination(void) {
+    resetStorage();
+    const time_t when = 1754707400;
+    RingFixture ring;
+    CallHistoryModel model;
+    Event_History* first = ring.commit(0, 0U, 0U, when, when + 2, "", "", "Club channel");
+    first->systype = DSD_SYNC_DSTAR_HD_POS;
+    DSD_SNPRINTF(first->src_str, sizeof(first->src_str), "%s", "N0CALL");
+    model.refresh(ring.state);
+    Event_History* anonymous = ring.commit(0, 0U, 0U, when + 3, when + 5, "DEST-ONE", "", "Club channel");
+    anonymous->systype = DSD_SYNC_DSTAR_HD_POS;
+    model.refresh(ring.state);
+    expect("destination: the senderless fragment joins N0CALL's call", model.count() == 1);
+    Event_History* other = ring.commit(0, 0U, 0U, when + 6, when + 8, "DEST-TWO", "", "Club channel");
+    other->systype = DSD_SYNC_DSTAR_HD_POS;
+    DSD_SNPRINTF(other->src_str, sizeof(other->src_str), "%s", "N0CALL");
+    model.refresh(ring.state);
+    expect("destination: a fragment naming another destination is another call", model.count() == 2);
+    const int joined = model.count() == 2 ? 1 : 0;
+    expect("destination: the joined row shows the destination its senderless fragment named",
+           model.data(model.index(joined), CallHistoryModel::NameRole).toString() == QStringLiteral("DEST-ONE")
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("DEST-TWO"));
+    model.startSaveForTest();
+    model.waitForSaveForTest();
+    const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    expect("destination: the joined row stores its destination",
+           rows.size() == 2 && rows.at(1).toObject().value(QLatin1String("tgtText")).toString() == "DEST-ONE");
+}
+
+/* Fail closed (issue #800): a fragment's part is its newest reading, whole. A single M17 fragment reread from DEST-ONE
+ * to DEST-TWO shows DEST-TWO as its name beside its new message, live and after a reload: the name its destination gave
+ * it changes with the destination. */
+void
+test_reread_destination_renames_row(void) {
+    resetStorage();
+    const time_t when = 1754707500;
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* f = ring.commit(0, 0U, 0U, when, when + 3, "DEST-ONE");
+        f->systype = DSD_SYNC_M17_STR_POS;
+        DSD_SNPRINTF(f->src_str, sizeof(f->src_str), "%s", "N0CALL");
+        model.refresh(ring.state);
+        expect("rename: the row is named by its destination",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("DEST-ONE"));
+        f = &ring.rings[0].Event_History_Items[1];
+        DSD_SNPRINTF(f->tgt_str, sizeof(f->tgt_str), "%s", "DEST-TWO");
+        DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "For two");
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("rename: the reread destination names the row beside its message",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("DEST-TWO")
+                   && detail_of(model, 0) == QStringLiteral("For two"));
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    expect("rename: the same after a reload",
+           reloaded.count() == 1
+               && reloaded.data(reloaded.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("DEST-TWO"));
+}
+
+/* Fail closed (issue #800): a fragment first read with no source and a text message, then reread naming radio 9999 and
+ * no message, shows no message: the anonymous text its earlier reading carried is not attributed to that radio, live
+ * and after a reload. */
+void
+test_reread_sender_drops_withdrawn_text(void) {
+    resetStorage();
+    const time_t when = 1754707600;
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* f = ring.commit(0, 80702U, 0U, when, when + 3);
+        f->systype = DSD_SYNC_P25P1_POS;
+        DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "Anonymous text");
+        model.refresh(ring.state);
+        expect("sender: the anonymous reading shows its text",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("Anonymous text"));
+        f = &ring.rings[0].Event_History_Items[1];
+        f->source_id = 9999U;
+        f->text_message[0] = '\0';
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("sender: the named reading shows no withdrawn text",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 9999U
+                   && detail_of(model, 0).isEmpty());
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    expect("sender: the same after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+}
+
 } // namespace
 
 int
@@ -7074,6 +7223,10 @@ main(int argc, char** argv) {
     test_stored_identity_parts_are_validated();
     test_partial_identity_joins_fuller();
     test_repeated_notice_compares_the_fix();
+    test_legacy_rows_fold_as_parts();
+    test_senderless_fragment_keeps_its_destination();
+    test_reread_destination_renames_row();
+    test_reread_sender_drops_withdrawn_text();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {
