@@ -4032,6 +4032,30 @@ CallHistoryModel::stopBackgroundCapture() {
     return tapped.unwritten;
 }
 
+namespace {
+
+/**
+ * @brief Give a spilled reading @p row the GPS provenance the walk gave it (issue #800, 2.7), which a row stores only
+ * with GPS text or a position (row_payload_to_json()): its run's session ordinal (@p ordinal, the line's `ord`) and the
+ * ring's commit_rev when it was read (its fragment's version). So a reading whose GPS the core cleared while the app
+ * was away is still its fragment's (call_history_same_fragment()), and withdraws that fragment's fix when folded, as
+ * the same reading read live does.
+ */
+void
+spilled_reading_provenance(CallHistoryModel::Row& row, qint64 ordinal) {
+    if (row.fragments.size() != 1) {
+        return;
+    }
+    if (row.gpsOrd <= 0 && ordinal > 0) {
+        row.gpsOrd = ordinal;
+    }
+    if (row.gpsVer == 0U) {
+        row.gpsVer = row.fragmentVers.value(row.fragments.constFirst(), 0U);
+    }
+}
+
+} // namespace
+
 bool
 CallHistoryModel::foldSpill(const QByteArray& unwritten) {
     qint64 size = 0;
@@ -4134,10 +4158,12 @@ CallHistoryModel::foldSpillLine(const QByteArray& line, bool cleared, quint64* t
         foldSettledSeen(key, obj, folded);
         return false;
     }
-    const Row row = row_from_json(rowObj);
+    Row row = row_from_json(rowObj);
     const SeenState seen = seenEntryFromJson(obj.value(QLatin1String("seen")).toObject());
     // The ordinal the tap gave the row's ring is that ring's (issue #800): kept as it was, never given again.
-    adoptSessionOrdinal(seen.ring, json_i64_or(obj, "ord", 0));
+    const qint64 ordinal = json_i64_or(obj, "ord", 0);
+    adoptSessionOrdinal(seen.ring, ordinal);
+    spilled_reading_provenance(row, ordinal);
     if (spilledRowCleared(cleared, row, seen)) {
         // Cleared after the tap found it.
         return false;

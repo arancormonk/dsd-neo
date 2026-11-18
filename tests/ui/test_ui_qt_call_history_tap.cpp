@@ -225,6 +225,17 @@ struct Decoder {
         item->pos.rev = rev;
     }
 
+    /** The core withdraws the newest committed row's report in place: its GPS text and position cleared together. */
+    void
+    clearGpsNewest(int slot) {
+        Event_History_I* ring = &state->event_history_s[slot];
+        Event_History* item = &ring->Event_History_Items[1];
+        item->gps_s[0] = '\0';
+        DSD_MEMSET(&item->pos, 0, sizeof(item->pos));
+        ring->commit_rev++;
+        ring->revision++;
+    }
+
     /** Give the newest committed row a known reception, as the core stamps it (Event_History::rx_scope): one tuned
      * frequency, read under the record's first epoch. */
     void
@@ -1126,6 +1137,52 @@ test_failed_spill_read_after_a_newer_run(void) {
                && last.data(last.index(0), CallHistoryModel::DetailRole).toString() == QStringLiteral("GPS: C"));
 }
 
+/* Issue #800, 2.7: the core withdraws a committed fragment's fix (its GPS text and position cleared) while the app is
+ * away. The tap spills that reading with no GPS to carry its run and version; folded on the return, or by the relaunch
+ * after the process died in the background, it is still its fragment's reading and withdraws the fix, as the same
+ * reading read live does: the old fix neither shows nor is saved. */
+void
+test_background_gps_withdrawal(void) {
+    const time_t when = 1755100000;
+    for (int death = 0; death < 2; death++) {
+        resetStorage();
+        Decoder decoder;
+        {
+            CallHistoryModel model;
+            start_tap(model);
+            decoder.commit(0, 80801U, 8801U, when);
+            decoder.gpsNewest(0, "GPS: withdrawn", 225000000, 5U);
+            decoder.publish();
+            gui_ingest(model);
+            expect("withdrawal: the fix shows before the suspend",
+                   model.count() == 1
+                       && model.data(model.index(0), CallHistoryModel::DetailRole).toString()
+                              == QStringLiteral("GPS: withdrawn"));
+            set_app_state(Qt::ApplicationSuspended);
+            decoder.clearGpsNewest(0);
+            decoder.publish();
+            for (int poll = 0; poll < 6; poll++) {
+                model.waitForBackgroundPollForTest();
+            }
+            expect("withdrawal: the tap spills the cleared reading", spill_lines() == 1);
+            if (death == 0) {
+                set_app_state(Qt::ApplicationActive);
+                gui_ingest(model);
+                expect("withdrawal: the return takes the fix back",
+                       model.count() == 1
+                           && model.data(model.index(0), CallHistoryModel::DetailRole).toString().isEmpty());
+                model.saveNow();
+                settle_save(model);
+            }
+        } // with death: the process dies in the background, and the relaunch folds the spill
+        set_app_state(Qt::ApplicationActive);
+        CallHistoryModel relaunched;
+        expect(death == 0 ? "withdrawal: the saved row keeps no fix" : "withdrawal: the relaunch's fold takes it back",
+               relaunched.count() == 1
+                   && relaunched.data(relaunched.index(0), CallHistoryModel::DetailRole).toString().isEmpty());
+    }
+}
+
 /* The row with talkgroup @p tg, or -1. */
 int
 row_of_tg(const CallHistoryModel& model, qulonglong tg) {
@@ -1350,6 +1407,7 @@ main(int argc, char** argv) {
     test_tap_attributes_by_row_stamp();
     test_tap_saves_a_settled_site_text_digest();
     test_failed_spill_read_after_a_newer_run();
+    test_background_gps_withdrawal();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {
