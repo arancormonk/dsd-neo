@@ -15578,7 +15578,8 @@ Qt Quick frontend (`src/ui/qt`):
     system without the site) joins whichever compatible row it meets first, so a live session (oldest first) and a
     backlog (newest first) can group the same three fragments differently; L8, a fragment that later learns parts
     conflicting with the row it already folded into has its identity discarded whole, with its channel, never picked
-    part by part, and is not split back out of the row. Persistence: the row's `site` object (one key per part; the DMR
+    part by part, and is not split back out of the row (a row whose only fragment it is follows that fragment's newest
+    reading, issue #800). Persistence: the row's `site` object (one key per part; the DMR
     texts as strings) and `cch`/`cchKind`/`cchWhen`/`cchSeq`/`cchSlot` (the seen store keeps the part mask `sm`, the
     text digest `stx` (written even when 0), and `cch`/`cchKind`; an entry without `stx`, from an older build, takes the
     first digest read without counting it as an advance, and that read saves the seen store (`SeenSettled`; when the
@@ -15642,11 +15643,18 @@ Qt Quick frontend (`src/ui/qt`):
       fragments with the same start, push stamp and slot are never taken for one): span, crypto and emergency flags,
       frequency and access code, site and call channel, reception scope, receive evidence, service and the name it
       gave, decode session, its sender (source number and text, sender system), sync type and target text, its source
-      label and its text message, each with its provenance. A fragment's later reading folds into its own part by the
-      merge's rules (`accumulate_part()`: newest known value by provenance, site union, stronger scope, wider span),
-      and the row is the fold of its parts not withdrawn: what the row's other fragments gave (`rest_of_row()`), then
-      this fragment's part, so what the row held stays ahead of what an update now says (a conflicting site is
-      discarded). A part gives the sender, label and message only when it names the row's radio (`fold_part()`,
+      label and its text message, each with its provenance. Fail closed (gate g62-r5): a fragment's later reading
+      replaces its part whole (`merge_parts()`; a reading older by `Row::fragmentVers` changes nothing), so nothing an
+      earlier reading gave outlives it (a message, sender, destination, name, site text or anything else the ring
+      entry no longer carries is gone), and every row field a part gives is rebuilt from the parts on every fold
+      (`foldRow()`): what the row's other parts gave (`rest_of_row()`, which leaves out every part the reading gives
+      again), then each part the reading gives (`fold_reading_parts()`), so what the row held stays ahead of what an
+      update now says (a conflicting site is discarded); a row whose only fragment it is follows it. The sync type and
+      the raw destination are the call's, not the sender's: they fold from every part of the call
+      (`fold_call_identity()`), so a senderless fragment's destination keeps a later fragment naming another
+      destination off the row, and with the destination the row takes the name it gave its part when the row's own
+      name is only a label (a channel or a placeholder, not its service). A part gives the sender, label and message
+      only when it names the row's radio (`fold_part()`,
       `part_gives_sender()`: the radio the row named, while a part still names it; the first a part names when the row
       named none), so an anonymous fragment never enriches a named row, and one naming another radio (another number,
       callsign or sender system) keeps them to itself; when the only part naming the row's radio goes, the row names
@@ -15659,10 +15667,13 @@ Qt Quick frontend (`src/ui/qt`):
       code, site, service, flags, span and reception scope), then re-sorted; its GPS unit goes too, and so do its
       recordings (`recording_fragments()`). A later reading that agrees again gives its part back (`merge_parts()`).
       The parts are persisted (`fp`, `pv` 2 for a part that holds its sender; a part an earlier build stored without
-      one takes the row's). A row an older build stored without parts is given one per fragment before it next folds
-      (`ensure_parts()`, `legacy_part_of()`): each holds the row's values, and a value that carries provenance
-      (frequency, code, channel, label, message) only in the part of the fragment its slot and push stamp name; a row
-      with no fragments gets one part with no key. So withdrawing such a fragment takes back only those values: its
+      one takes the row's). A row an older build stored without parts is converted into the same model when it is
+      loaded (`row_from_json()`, `ensure_parts()`, `legacy_part_of()`): one part per fragment, each holding the row's
+      values, and a value that carries provenance (frequency, code, channel, label, message) only in the part of the
+      fragment its slot and push stamp name; a row with no fragments gets one part under a key of its own
+      (`legacy|` and its seen key, `legacy_part_key()`, stored in `fp` like a fragment key), so two such rows a load
+      merge folds together are two parts and the row keeps what either gave (the later row's source and emergency
+      flag). So withdrawing such a fragment takes back only those values: its
       sender and the rest stay, as nothing tells which fragment gave them. The GPS units are kept per fragment beside
       the parts (`Row::gpsOthers`, each a fragment's by its provenance and its run's session ordinal), and a reading
       gives its own only when it names the row's radio (`fold_gps()`). The texts anonymous fragments gave are
