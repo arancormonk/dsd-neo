@@ -508,11 +508,11 @@ newest_row(const dsd_state* state, uint8_t slot) {
 // Issue #746: a SAP 3 (compressed UDP/IPv4) PDU through the real header, assembler and decoders. `user` octets
 // follow the header; `blocks` rate-1/2 blocks carry them, the pad octets the header announces and the CRC32.
 static void
-send_sap3(dsd_opts* opts, dsd_state* state, const uint8_t* user, size_t user_len, uint8_t blocks, int payload_ok) {
+send_sap3_poc(dsd_opts* opts, dsd_state* state, const uint8_t* user, size_t user_len, uint8_t blocks, uint8_t poc,
+              int payload_ok) {
     uint8_t pdu[48] = {0};
     const size_t total = (size_t)blocks * 12U;
-    assert(blocks >= 1 && blocks <= 4 && user_len + 4U <= total);
-    const uint8_t poc = (uint8_t)(total - 4U - user_len);
+    assert(blocks >= 1 && blocks <= 4 && user_len + 4U <= total && poc < 32U);
     uint8_t hdr[12] = {0x02, 0, 0, 0, 42, 0, 0, 24, (uint8_t)(0x80U | blocks), 0, 0, 0};
     hdr[0] = (uint8_t)(hdr[0] | ((poc & 0x10U) ? 0x10U : 0U));
     hdr[1] = (uint8_t)(0x30U | (poc & 0x0FU));
@@ -523,6 +523,11 @@ send_sap3(dsd_opts* opts, dsd_state* state, const uint8_t* user, size_t user_len
     for (uint8_t b = 0; b < blocks; ++b) {
         dmr_block_assembler(opts, state, pdu + (size_t)b * 12U, 12, 0x07, 1);
     }
+}
+
+static void
+send_sap3(dsd_opts* opts, dsd_state* state, const uint8_t* user, size_t user_len, uint8_t blocks, int payload_ok) {
+    send_sap3_poc(opts, state, user, user_len, blocks, (uint8_t)((size_t)blocks * 12U - 4U - user_len), payload_ok);
 }
 
 // The same, RC4-encrypted behind a Motorola encryption P_HEAD (DPF 15, MFID 0x10, ALG 1, ENC 1).
@@ -1030,6 +1035,62 @@ test_mnis_long_lrrp_document(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* Issue #800, fail closed: a data header whose pad octet count is more than its packet's blocks hold after the CRC32
+ * leaves no user data, so a checked packet's octets never reach a position decoder under lengths that disagree. Two
+ * rate-1/2 blocks carry 20 octets after the CRC32 (the MNIS header's 7 and Motorola's unchecked octet less): a
+ * compressed UDP/IPv4 LRRP report (SAP 3) and an MNIS LRRP report each give their position with the pad count that
+ * fits, and none, in a notice or -L, when the header declares 31 pad octets. */
+static int
+test_impossible_padding_gives_no_position(dsd_opts* opts, dsd_state* state) {
+    static const uint8_t lrrp_doc[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dmr-impossible-poc");
+    if (fd < 0 || dsd_close(fd) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", path);
+    opts->lrrp_file_output = 1;
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    opts->payload = 0;
+    state->currentslot = 0;
+    int rc = 0;
+    for (int mnis = 0; mnis <= 1; ++mnis) {
+        for (int impossible = 0; impossible <= 1; ++impossible) {
+            const int rows_before = count_location_rows(path);
+            const uint64_t before = state->event_history_s[0].push_seq;
+            if (mnis) {
+                uint8_t pdu[34] = {0x1F, 0x10, 0x02, 0x01, 0x11, 0x00, 0x01};
+                DSD_MEMCPY(pdu + 7, lrrp_doc, sizeof lrrp_doc);
+                send_mnis_packet(opts, state, pdu, 2U, impossible ? 31U : 9U, 0);
+            } else {
+                uint8_t user[20] = {0x00, 0x20, 0x00, 0x3F, 0x00, 0x0F, 0xA1};
+                DSD_MEMCPY(user + 7, lrrp_doc, sizeof lrrp_doc);
+                send_sap3_poc(opts, state, user, sizeof user, 2, impossible ? 31U : 0U, 1);
+            }
+            const int rows = count_location_rows(path) - rows_before;
+            const Event_History* notice = newest_row(state, 0);
+            const int emitted = state->event_history_s[0].push_seq == before + 1U;
+            const int located = notice->pos.valid == 1U && notice->pos.lat_e7 == 112500000
+                                && notice->pos.lon_e7 == 450000000 && rows == 1;
+            // SAP 3 has no datagram left to decode, so it adds no notice; an MNIS packet's notice names its endpoints.
+            const int none =
+                rows == 0 && (!emitted || (notice->pos.valid == 0U && notice->gps_s[0] == '\0')) && emitted == mnis;
+            if (rows_before < 0 || (impossible ? !none : !(located && emitted))) {
+                DSD_FPRINTF(stderr, "\n%s LRRP, %s pad count: emitted %d, -L rows %d, position valid %u (%d, %d)\n",
+                            mnis ? "MNIS" : "SAP 3", impossible ? "impossible" : "fitting", emitted, rows,
+                            (unsigned)notice->pos.valid, notice->pos.lat_e7, notice->pos.lon_e7);
+                rc = 1;
+            }
+        }
+    }
+    opts->lrrp_file_output = 0;
+    if (remove(path) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
+
 /* Issue #800, fail closed: the LRRP summary is the packet's notice text, so it carries the speed and heading of an
  * admitted report only. A report whose packet failed its CRC32 (decoded under -F) shows neither, with -Z or without;
  * the explicit payload diagnostics keep them under -Z. */
@@ -1250,6 +1311,7 @@ main(void) {
     rc |= test_mnis_unchecked_trailer(opts, state);
     rc |= test_mnis_locn_text_needs_admission(opts, state);
     rc |= test_mnis_long_lrrp_document(opts, state);
+    rc |= test_impossible_padding_gives_no_position(opts, state);
     rc |= test_lrrp_summary_motion(opts, state);
     rc |= test_confirmed_127_blocks(opts, state);
     rc |= test_t3_mbc_grant_channel_provenance(opts, state);

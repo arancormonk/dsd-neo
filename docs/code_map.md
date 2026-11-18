@@ -1943,7 +1943,10 @@ suite runs under this compiler.
   `<dsd-neo/core/udp_comp_ports.h>`) supplies a site's linkage, and an unlinked index is decoded only when its payload
   is exactly one ARS message of that specification's section 3.4 (`dmr_ars_record_is_exact()`; a TMS ack shares the
   0xBF header octet and differs by length; length-value sizes are octets). The SAP length handed to every SAP decoder
-  is what the blocks carried (`data_byte_ctr`) less the CRC32 and the pad octets (TS 102 361-1 9.3.22); the decrypt
+  is what the blocks carried (`data_byte_ctr`) less the CRC32 and the pad octets (TS 102 361-1 9.3.22); a pad count
+  larger than the octets the blocks hold after the CRC32 (after the MNIS header's 7 for MNIS) leaves no user data at all,
+  whatever the header's check said, so no SAP or MNIS decoder (LRRP, LIP, LOCN among them) reads a packet whose lengths
+  disagree (`dmr_block_type1_checked_len()`, issue #800 fail closed; test `DMR_EVENT_CRC`); the decrypt
   window and the AES-ECB block count are bounded the same way. A standard header resets confirmed mode, the MNIS
   P_HEAD flag and the assembler's arming, which only DPF 0-3 with blocks to follow and DD/R_HEAD with appended blocks
   set; `data_block_crc_valid` holds the header plus 127 block verdicts.
