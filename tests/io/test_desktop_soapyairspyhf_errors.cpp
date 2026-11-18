@@ -16,11 +16,16 @@
 #include <cmath>
 #include <dsd-neo/core/safe_api.h>
 #include <exception>
+#include <libairspyhf/airspyhf.h>
 #include <memory>
 #include <stdint.h>
 #include <stdio.h>
 #include <string>
 #include <vector>
+
+namespace SoapySDR {
+class Stream;
+}
 
 namespace {
 
@@ -298,11 +303,12 @@ read_with_refused_pending_rate_is_reported(void) {
     expect(name, dev->activateStream(stream) == 0, "activation");
     stream = setup_stream(*dev);
     g_stub.fail_set_samplerate = 1;
-    std::vector<float> samples(2 * 64);
+    const size_t elems = 64;
+    std::vector<float> samples(2 * elems); /* complex float pairs */
     void* buffs[] = {samples.data()};
     int flags = 0;
     long long time_ns = 0;
-    expect(name, dev->readStream(stream, buffs, 64, flags, time_ns, 1000) == SOAPY_SDR_STREAM_ERROR,
+    expect(name, dev->readStream(stream, buffs, elems, flags, time_ns, 1000) == SOAPY_SDR_STREAM_ERROR,
            "a read whose rate write fails returns a stream error");
     g_stub.fail_set_samplerate = 0;
     expect(name, dev->deactivateStream(stream) == 0, "deactivation");
