@@ -26208,10 +26208,11 @@ if(Python3_Interpreter_FOUND)
                 ${Python3_EXECUTABLE}
                 ${PROJECT_SOURCE_DIR}/tests/tools/test_stage_runtime_dlls.py
         )
+        # About 25 runs of the script under pwsh: a busy machine can take minutes.
         set_tests_properties(
             TOOLS_STAGE_RUNTIME_DLLS
             PROPERTIES
-                TIMEOUT 120
+                TIMEOUT 300
                 ENVIRONMENT "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS}"
         )
         # tools/windows/stage_release_tree.ps1 over a fake vcpkg tree,
