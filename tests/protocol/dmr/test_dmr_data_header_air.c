@@ -19,6 +19,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -153,6 +154,7 @@ receive_burst(dsd_opts* opts, dsd_state* state, const burst_source* from, unsign
     state->synctype = from->synctype;
     state->lastsynctype = from->synctype;
     state->dmr_dm_sync_slot = from->dm_slot;
+    dsd_rxid_note_sync(state, state->synctype); /* as processFrame() notes every frame it dispatches */
     dmrMSData(opts, state);
     return 1;
 }
@@ -212,19 +214,23 @@ reset_state(dsd_state* state) {
     state->dmr_color_code = 16;
 }
 
-/* Send the header from @p header_from and the block from @p block_from; 1 when the feed then holds the report as
-   radio 123456's, 0 when it holds none, -1 for anything else. */
+/* Send the header from @p header_from, an idle burst from @p between_from (none when NULL), and the block from
+   @p block_from; 1 when the feed then holds the report as radio 123456's, 0 when it holds none, -1 for anything else. */
 static int
-send_packet(dsd_opts* opts, dsd_state* state, const burst_source* header_from, const burst_source* block_from) {
+send_packet(dsd_opts* opts, dsd_state* state, const burst_source* header_from, const burst_source* between_from,
+            const burst_source* block_from) {
     reset_state(state);
     if (dsd_position_feed_start(state) != 0) {
         return -1;
     }
     uint8_t hdr[12];
     uint8_t block[12];
+    static const uint8_t idle[12] = {0};
     udt_header(hdr);
     udt_block(block);
-    if (!receive_burst(opts, state, header_from, 0x06U, hdr) || !receive_burst(opts, state, block_from, 0x07U, block)) {
+    if (!receive_burst(opts, state, header_from, 0x06U, hdr)
+        || (between_from != NULL && !receive_burst(opts, state, between_from, 0x09U, idle))
+        || !receive_burst(opts, state, block_from, 0x07U, block)) {
         return -1;
     }
     dsd_position_fix kept[4];
@@ -280,24 +286,30 @@ main(void) {
     }
     opts.aggressive_framesync = 1;
 
+    /* A burst of another mode between the header and its block (issue #800, fail closed): the transmission the header
+       began was interrupted, so a block of the header's own mode after it is not shown to be that packet's. */
     static const struct {
         const burst_source* header;
+        const burst_source* between;
         const burst_source* block;
         int want;
         const char* tag;
     } cases[] = {
-        {&k_direct_ts2, &k_direct_ts2, 1, "direct mode, header and block on slot 2"},
-        {&k_direct_ts1, &k_direct_ts1, 1, "direct mode, header and block on slot 1"},
-        {&k_direct_ts2, &k_direct_ts1, 0, "direct mode, header on slot 2, block on slot 1"},
-        {&k_direct_ts1, &k_direct_ts2, 0, "direct mode, header on slot 1, block on slot 2"},
-        {&k_direct_ts1, &k_ms, 0, "direct-mode header, repeater-mode (MS-sourced) block"},
-        {&k_ms, &k_direct_ts1, 0, "repeater-mode (MS-sourced) header, direct-mode block"},
-        {&k_ms, &k_ms, 1, "repeater-mode (MS-sourced) header and block"},
+        {&k_direct_ts2, NULL, &k_direct_ts2, 1, "direct mode, header and block on slot 2"},
+        {&k_direct_ts1, NULL, &k_direct_ts1, 1, "direct mode, header and block on slot 1"},
+        {&k_direct_ts2, NULL, &k_direct_ts1, 0, "direct mode, header on slot 2, block on slot 1"},
+        {&k_direct_ts1, NULL, &k_direct_ts2, 0, "direct mode, header on slot 1, block on slot 2"},
+        {&k_direct_ts1, NULL, &k_ms, 0, "direct-mode header, repeater-mode (MS-sourced) block"},
+        {&k_ms, NULL, &k_direct_ts1, 0, "repeater-mode (MS-sourced) header, direct-mode block"},
+        {&k_ms, NULL, &k_ms, 1, "repeater-mode (MS-sourced) header and block"},
+        {&k_direct_ts2, &k_direct_ts2, &k_direct_ts2, 1, "direct mode, an idle burst of the same mode between"},
+        {&k_direct_ts2, &k_ms, &k_direct_ts2, 0, "direct mode, a repeater-mode burst between header and block"},
+        {&k_ms, &k_direct_ts1, &k_ms, 0, "repeater mode, a direct-mode burst between header and block"},
     };
 
     int failed = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
-        const int got = send_packet(&opts, &state, cases[i].header, cases[i].block);
+        const int got = send_packet(&opts, &state, cases[i].header, cases[i].between, cases[i].block);
         if (got != cases[i].want) {
             DSD_FPRINTF(stderr, "\n%s: got %d, want %d\n", cases[i].tag, got, cases[i].want);
             failed = 1;

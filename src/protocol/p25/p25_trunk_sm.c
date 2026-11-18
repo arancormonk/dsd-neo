@@ -1467,11 +1467,16 @@ p25_source_id_known(int src) {
  *    through such a message is never checked (issue #800, fail closed); so is one whose source is not a complete
  *    local address (p25_sm_event_t::source_nonlocal: a home SUID of another or an unknown system, a Phase 1 link
  *    control needing a Source ID Extension), which keeps its value for display but is never checked;
- *  - the flags count only under the reception they were earned under (identity_rx_epoch, published.rx_epoch): a message
- *    applied after the received identity's epoch moved first drops every flag inherited from the old one, then records
- *    the fields it checked itself under the current one (p25_slot_bind_reception()); every path that reuses a stored
- *    flag (a voice start inheriting the assignment's or the canonical call's talker, target or kind) reads it through
- *    p25_sm_verdicts_now(), which gives none earned under another reception;
+ *  - the flags count only under the reception they were earned under: the whole reception generation
+ *    (dsd_state_reception_generation(): the received identity's epoch, every applied trunking retune and every change
+ *    of P25 phase; identity_rx_gen, published.rx_gen), so a Phase 2 talker never names a later call after a Phase 1
+ *    transmission came between (issue #800, fail closed). A message applied after the generation moved first drops
+ *    every flag inherited from the old one, then records the fields it checked itself under the current one
+ *    (p25_slot_bind_reception()); every path that reuses a stored flag (a voice start inheriting the assignment's or
+ *    the canonical call's talker, target or kind) reads it through p25_sm_verdicts_now(), which gives none earned under
+ *    another generation. The one carry is a grant's: it stores its verdicts under the generation its own retune
+ *    reached (p25_grant_store_slot_context(), after the tune), so its checked talker carries to the channel it sends
+ *    the receiver to, and only there;
  *  - a new call epoch, a release or a reset clears all three.
  * A failed check never sets a flag. A claim carries only the fields the message itself named.
  */
@@ -1489,23 +1494,28 @@ p25_source_id_is_placeholder(int src) {
     return (uint8_t)(src > 0 && !p25_source_id_is_subscriber((uint32_t)src));
 }
 
-/* The slot's verdicts belong to the reception they were earned under: once the received identity's epoch has moved
- * (another access code, system or site named on the carrier), every flag the assignment holds is dropped and the
- * assignment is rebound to the current reception, so the message applied next records only what it checked itself. */
+/* The slot's verdicts belong to the reception they were earned under: once the reception generation has moved
+ * (another access code, system or site named on the carrier, a retune, a change of P25 phase), every flag the
+ * assignment holds is dropped and the assignment is rebound to the current reception, so the message applied next
+ * records only what it checked itself. */
 static void
 p25_slot_bind_reception(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state) {
-    if (state == NULL || slot_ctx->identity_rx_epoch == state->rx_id.epoch) {
+    if (state == NULL) {
+        return;
+    }
+    const uint64_t gen = dsd_state_reception_generation(state);
+    if (slot_ctx->identity_rx_gen == gen) {
         return;
     }
     slot_ctx->identity_checked = 0U;
-    slot_ctx->identity_rx_epoch = state->rx_id.epoch;
+    slot_ctx->identity_rx_gen = gen;
 }
 
-/* The verdicts @p checked, earned under the reception whose epoch is @p rx_epoch, as they count now: all of them under
- * the current reception, none under another (or with no state to tell). The one read of a stored verdict. */
+/* The verdicts @p checked, earned under the reception generation @p rx_gen, as they count now: all of them under the
+ * current generation, none under another (or with no state to tell). The one read of a stored verdict. */
 static uint8_t
-p25_sm_verdicts_now(const dsd_state* state, uint8_t checked, uint32_t rx_epoch) {
-    if (state == NULL || rx_epoch != state->rx_id.epoch) {
+p25_sm_verdicts_now(const dsd_state* state, uint8_t checked, uint64_t rx_gen) {
+    if (state == NULL || rx_gen != dsd_state_reception_generation(state)) {
         return 0U;
     }
     return (uint8_t)(checked & P25_SM_IDENTITY_CHECKED_ALL);
@@ -1514,13 +1524,13 @@ p25_sm_verdicts_now(const dsd_state* state, uint8_t checked, uint32_t rx_epoch) 
 /* The slot assignment's verdicts as they count now (p25_sm_verdicts_now()). */
 static uint8_t
 p25_slot_verdicts_now(const p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state) {
-    return p25_sm_verdicts_now(state, slot_ctx->identity_checked, slot_ctx->identity_rx_epoch);
+    return p25_sm_verdicts_now(state, slot_ctx->identity_checked, slot_ctx->identity_rx_gen);
 }
 
 /* The canonical call record's verdicts as they count now (p25_sm_verdicts_now()). */
 static uint8_t
 p25_published_verdicts_now(const p25_sm_published_identity* published, const dsd_state* state) {
-    return p25_sm_verdicts_now(state, published->checked, published->rx_epoch);
+    return p25_sm_verdicts_now(state, published->checked, published->rx_gen);
 }
 
 int
@@ -1660,8 +1670,8 @@ p25_slot_note_voice_user(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state, co
 }
 
 /* Brings the record @p rec of the slot's canonical call up to date after a message naming @p claim. The record takes
- * the call's current source, target and kind, its epoch and protocol, and the reception's epoch; a field keeps its flag
- * only within the same epoch, under the same reception and with the same value (the source's not past a special
+ * the call's current source, target and kind, its epoch and protocol, and the reception generation; a field keeps its
+ * flag only within the same epoch, under the same reception generation and with the same value (the source's not past a special
  * address in the message's source field), and gains the message's verdict where the message named the value the call
  * now holds. A call that is not ACTIVE leaves no record. */
 static void
@@ -1688,7 +1698,6 @@ p25_sm_merge_published_identity(p25_sm_published_identity* rec, const dsd_state*
     rec->epoch = call.epoch;
     rec->source = source;
     rec->target = target;
-    rec->rx_epoch = state->rx_id.epoch;
     rec->rx_gen = gen;
     rec->protocol = call.protocol;
     rec->kind = kind;
@@ -2373,7 +2382,8 @@ p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const dsd_state* state, const p2
     slot_ctx->dst = ev->dst;
     slot_ctx->is_group = ev->is_group ? 1 : 0;
     slot_ctx->identity_checked = p25_sm_event_verdicts(ev);
-    slot_ctx->identity_rx_epoch = state ? state->rx_id.epoch : 0U;
+    /* After the tune (p25_grant_try_tune_vc()): the grant's verdicts count on the channel it sends the receiver to. */
+    slot_ctx->identity_rx_gen = dsd_state_reception_generation(state);
     slot_ctx->data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
     slot_ctx->svc_bits = ev->svc_bits;
     slot_ctx->enc_override_clear = (eval_ctx && eval_ctx->enc_override_clear) ? 1 : 0;
@@ -4548,7 +4558,7 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     slot_ctx->src = call_ev->src;
     slot_ctx->is_group = call_ev->is_group ? 1 : 0;
     slot_ctx->identity_checked = verdicts;
-    slot_ctx->identity_rx_epoch = state->rx_id.epoch; // the verdicts were all read as they count now
+    slot_ctx->identity_rx_gen = dsd_state_reception_generation(state); // the verdicts were all read as they count now
     slot_ctx->svc_bits = call_ev->svc_bits;
     slot_ctx->enc_override_clear = eval_ctx->enc_override_clear ? 1 : 0;
     p25_slot_note_grant(slot_ctx, now_m);

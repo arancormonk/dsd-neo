@@ -2500,8 +2500,8 @@ suite runs under this compiler.
   group/private from checked provenance). Admission refuses without `pos_verified`, when the receive policy rejects
   the protocol and slot, when a multi-fragment report's first fragment was heard under another reception generation
   (`dsd_position_origin_capture()`/`_matches()`: the reception generation, `dsd_state_reception_generation()`, which
-  moves with the received identity's epoch, every applied trunking retune and every change of P25 phase, together with
-  the trunk tuning generation), or
+  moves with the received identity's epoch, every applied trunking retune and every change of P25 phase or DMR burst
+  mode, together with the trunk tuning generation), or
   for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays) and
   a source that names no radio (`dsd_position_source_names_radio()`: a P25 special address, `$FFFFFC`-`$FFFFFF`,
   destination kept),
@@ -2657,8 +2657,10 @@ suite runs under this compiler.
     `dsd_position_attribution_call_from_closing()`); its protocol class (`dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, else the
     protocol family) is the report's and the evidence's; it is the epoch the evidence was learned in, or for DMR the
     transmission (a healed fade keeps it); the reception generation (`dsd_state_reception_generation()`, moved by
-    another access code, system, site or family, an applied trunking retune or a change of P25 phase: a Phase 1 call
-    left open across Phase 2 frames names no later report's sender) is the one it was learned under (the reception
+    another access code, system, site or family, an applied trunking retune or a change of P25 phase or DMR burst
+    mode: a Phase 1 call left open across Phase 2 frames names no later report's sender, nor a direct-mode call's
+    talker a direct-mode burst after a repeater-mode one came between, test `DMR_EMBEDDED_GPS_ATTRIBUTION`
+    `test_direct_mode_after_an_interruption()`) is the one it was learned under (the reception
     rule, `dsd_position_same_reception()`, on the generation alone: the evidence keeps no scope); for DMR, the
     burst carrying the report has the evidence's burst identity (`dsd_position_attribution::air`,
     `dsd_position_dmr_air_same()`: the sender kind by its sync word and the single-slot decoder's over-the-air slot), so
@@ -2667,12 +2669,16 @@ suite runs under this compiler.
     call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
     The P25 trunk SM binds its published record to the generation of its last publication
     (`p25_sm_published_identity::rx_gen`, which the attribution rule reads; a flag kept from a publication of another
-    generation is dropped when the record is published again) and keeps the reception its flags were earned under
-    (`rx_epoch`) there and in
-    the slot's assignment (`identity_rx_epoch`, rebound by every message applied after the epoch moved:
+    generation is dropped when the record is published again; its flags count only under that generation) and binds
+    the slot's assignment the same way (`identity_rx_gen`, rebound by every message applied after the generation moved:
     `p25_slot_bind_reception()`), and every path that reuses a stored flag (an addressless or source-less voice start
     inheriting the canonical call's talker, or the assignment's source, target or kind) reads it through
-    `p25_sm_verdicts_now()`, which counts none earned under another reception (test `P25_P2_HARRIS_GPS`). The other
+    `p25_sm_verdicts_now()`, which counts none earned under another reception generation, so Phase 1 frames heard
+    between two Phase 2 messages of one call end the talker's verdict (test `P25_P2_HARRIS_GPS`
+    `test_phase_change_reuse()`). The one carry is a grant's: `p25_grant_store_slot_context()` runs after the retune
+    the grant causes (`p25_grant_try_tune_vc()`, which applies to the reception at once on the decoder thread), so the
+    grant's checked talker counts on the channel it sends the receiver to, and only there
+    (`test_grant_carry_across_its_retune()`). The other
     producers name the sender from the report's own carrier
     (a data header bound to its assembly by an origin, an LSF, a TETRA SDS), which admission's origin check binds to
     the reception. Test: `CORE_POSITION_ATTRIBUTION` (a matrix per producer), with the per-producer tests above.
@@ -3912,8 +3918,11 @@ suite runs under this compiler.
   protocol that notes nothing the protocol itself) moves the epoch even when neither noted anything (issue #800, fail
   closed: a D-STAR call, an M17 BERT frame and D-STAR again are three receptions, so a D-STAR header's naming and every
   multi-fragment report's origin end at the switch; both P25 phases, every DMR burst and both polarities are one
-  protocol, but a P25 sync of the other phase than the last P25 sync moves `dsd_state::rx_phase_seq`, and so the
-  reception generation, keeping the record); the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
+  protocol, but a P25 sync of the other phase than the last P25 sync, or a DMR sync of another burst mode than the
+  last DMR sync (`dsd_state::rx_dmr_mode`: a repeater's BS-sourced burst, a radio's MS-sourced one, direct mode by its
+  sync word; an RC burst names none), moves `dsd_state::rx_mode_seq`, and so the reception generation, keeping the
+  record; an applied retune starts the carrier reached's phase and burst mode afresh, so a Phase 2 voice channel a
+  Phase 1 control channel granted moves the generation once, by the retune); the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
   finds it taken leaves the step to the next, as it leaves the playout drain) marks every part stale and keeps the
   values; every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control channel
   return or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), requests `dsd_rxid_trunk_tune()`, which drops the
@@ -12527,10 +12536,10 @@ Private per-protocol modules worth knowing about:
   start (a MAC_ACTIVE with no voice user) takes the canonical call's talker only while that call is the assignment's
   (same kind and target, `p25_voice_assignment_call_src()`), so a talker of another talkgroup is never paired with
   the assignment's talkgroup.
-  The record holds the call's current source, target and kind, its protocol and the reception (received identity
-  epoch) its flags were earned under; `p25_sm_merge_published_identity()` keeps a flag only within the same epoch,
-  reception and value, and an assignment's verdicts are carried into it only under the reception the assignment was
-  accepted under (`identity_rx_epoch`). Decoders publish through `p25_sm_emit_voice_start()` with the bits they set; the
+  The record holds the call's current source, target and kind, its protocol and the reception generation its flags
+  were earned under (`rx_gen`); `p25_sm_merge_published_identity()` keeps a flag only within the same epoch, reception
+  generation and value, and an assignment's verdicts are carried into it only under the reception generation the
+  assignment was accepted under (`identity_rx_gen`; a grant's, after the retune it causes). Decoders publish through `p25_sm_emit_voice_start()` with the bits they set; the
   older convenience emitters publish unchecked, and the event builders default to unchecked.
   `p25_sm_checked_call_identity()` returns the record only while the call is ACTIVE on that epoch with that source,
   target and kind, all three checked and a source named, and by the attribution rule (Core, position producers) for the
@@ -12572,8 +12581,9 @@ Private per-protocol modules worth knowing about:
   carry one do; the SUID is only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
   A foreign unit's home ID alone therefore never names a report's sender, a sender scope or a local radio-list label.
   The
-  verdicts are bound to their reception: a claim applied after the received identity's epoch moved first drops every
-  flag the assignment earned under the old one and rebinds `identity_rx_epoch` (`p25_slot_bind_reception()`: voice
+  verdicts are bound to their reception: a claim applied after the reception generation moved (another access code
+  or system, a retune, a change of P25 phase) first drops every flag the assignment earned under the old one and
+  rebinds `identity_rx_gen` (`p25_slot_bind_reception()`: voice
   starts, promotions, repeated grants, voice users), so a checked PTT naming the talker under the new reception names
   the next report, and nothing checked under the old one is inherited. Tests: `P25_P2_HARRIS_GPS`,
   `P25_P2_XCCH_HELPERS`.

@@ -136,7 +136,8 @@ dsd_rxid_reset(dsd_state* state) {
         rxid_clear(&state->rx_id);
         state->rx_id_trunk_tune_pending = 0U; /* a retune of the carrier left, whose code is gone with the rest */
         state->rx_sync_protocol = 0U;         /* nothing heard on the carrier reached yet */
-        state->rx_p25_phase = 0U;             /* rx_phase_seq never goes back: the epoch moved instead */
+        state->rx_p25_phase = 0U;             /* rx_mode_seq never goes back: the epoch moved instead */
+        state->rx_dmr_mode = 0U;
     }
 }
 
@@ -159,6 +160,25 @@ rxid_sync_protocol(int synctype, dsd_rxid_family family) {
     return (uint16_t)(0x100U + (unsigned)synctype);
 }
 
+/* dsd_state::rx_dmr_mode for a sync of @p synctype: by its sync word, a repeater's BS-sourced burst (1), a direct-mode
+   one (3: frame sync names its slot, dsd_state::dmr_dm_sync_slot) or another MS-sourced one (2); 0 for another
+   protocol; RXID_DMR_MODE_KEEP for an RC burst, which names no mode. */
+#define RXID_DMR_MODE_KEEP 0xFFU
+
+static uint8_t
+rxid_dmr_mode(const dsd_state* state, int synctype) {
+    if (!DSD_SYNC_IS_DMR(synctype)) {
+        return 0U;
+    }
+    if (synctype == DSD_SYNC_DMR_RC_DATA) {
+        return RXID_DMR_MODE_KEEP;
+    }
+    if (DSD_SYNC_IS_DMR_BS(synctype)) {
+        return 1U;
+    }
+    return (state->dmr_dm_sync_slot == 1U || state->dmr_dm_sync_slot == 2U) ? 3U : 2U;
+}
+
 void
 dsd_rxid_note_sync(dsd_state* state, int synctype) {
     const dsd_rxid_family family = dsd_rxid_family_for_sync(synctype);
@@ -179,9 +199,19 @@ dsd_rxid_note_sync(dsd_state* state, int synctype) {
        report's origin, every sender evidence and every history row compares. */
     const uint8_t phase = DSD_SYNC_IS_P25P1(synctype) ? 1U : (DSD_SYNC_IS_P25P2(synctype) ? 2U : 0U);
     if (phase != 0U && state->rx_p25_phase != 0U && state->rx_p25_phase != phase) {
-        state->rx_phase_seq++;
+        state->rx_mode_seq++;
     }
     state->rx_p25_phase = phase;
+    /* Likewise a DMR burst of another mode than the last DMR sync's (a repeater's, a radio's MS-sourced one, direct
+       mode): a direct-mode call whose terminator was missed and the repeater-mode one after it are two receptions, and
+       so is a return to direct mode after it, whatever evidence or header each kept. */
+    const uint8_t mode = rxid_dmr_mode(state, synctype);
+    if (mode != RXID_DMR_MODE_KEEP) {
+        if (mode != 0U && state->rx_dmr_mode != 0U && state->rx_dmr_mode != mode) {
+            state->rx_mode_seq++;
+        }
+        state->rx_dmr_mode = mode;
+    }
 }
 
 void
@@ -196,6 +226,10 @@ dsd_rxid_trunk_tune(dsd_state* state) {
     if (state != NULL) {
         rxid_drop(&state->rx_id, DSD_RXID_ACCESS);
         state->rx_tune_seq++; /* another carrier: another reception generation, the system kept (issue #800) */
+        /* The carrier reached starts its own phase and burst mode: the retune already moved the generation, so its first
+           sync, whatever phase or mode (a Phase 2 voice channel a Phase 1 control channel granted), moves nothing more. */
+        state->rx_p25_phase = 0U;
+        state->rx_dmr_mode = 0U;
     }
 }
 

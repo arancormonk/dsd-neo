@@ -320,6 +320,7 @@ burst_from(fixture* f, int direct) {
     f->st->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
     f->st->dmr_dm_sync_slot = direct ? 2U : 0U;
     f->st->dmr_mono_rx_slot = direct ? DSD_DMR_MONO_RX_TS2 : DSD_DMR_MONO_RX_PENDING;
+    dsd_rxid_note_sync(f->st, f->st->synctype); /* as processFrame() notes every frame it dispatches */
 }
 
 /* Issue #800, fail closed: the sync words tell a direct-mode transmission from a repeater-mode one. A direct-mode voice
@@ -353,6 +354,37 @@ test_direct_to_repeater_transition(void) {
     fixture_close(&f);
 }
 
+/* Issue #800, fail closed: evidence of a direct-mode call does not come back after a burst-mode interruption. A
+ * direct-mode voice header names SOURCE; with its terminator missed, a repeater-mode (MS-sourced) burst follows and its
+ * embedded GPS is anonymous. Direct mode on slot 2 then returns with no new naming LC: the burst identity is the
+ * header's again, but the transmission was interrupted, so its fix stays anonymous until a checked LC names the talker.
+ * Without the interruption the direct-mode call's fixes keep their sender. */
+static void
+test_direct_mode_after_an_interruption(void) {
+    for (int interrupted = 0; interrupted <= 1; interrupted++) {
+        fixture f;
+        fixture_open(&f);
+        dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+        burst_from(&f, 1);
+        voice_lc(&f, 1U);
+        embedded_gps(&f);
+        expect_fix(&f, "interruption: direct mode, slot 2", 1);
+        if (interrupted) {
+            burst_from(&f, 0);
+            embedded_gps(&f);
+            expect_fix(&f, "interruption: the repeater-mode burst", 0);
+        }
+        burst_from(&f, 1);
+        expect_true("interruption: call kept", call_open(&f));
+        embedded_gps(&f);
+        expect_fix(&f, interrupted ? "interruption: direct mode again, no new LC" : "interruption: none", !interrupted);
+        voice_lc(&f, 3U);
+        embedded_gps(&f);
+        expect_fix(&f, "interruption: named by a checked LC of the direct-mode transmission", 1);
+        fixture_close(&f);
+    }
+}
+
 int
 main(void) {
     test_reception_change();
@@ -360,6 +392,7 @@ main(void) {
     test_failed_report_prints_no_content();
     test_single_slot_decoder_publishes_proven_slot();
     test_direct_to_repeater_transition();
+    test_direct_mode_after_an_interruption();
     dsd_decode_clock_use_system();
     if (g_fail) {
         return 1;

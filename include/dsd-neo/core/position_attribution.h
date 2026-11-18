@@ -17,9 +17,10 @@
  *    the evidence's: a call of another protocol, or of the other P25 phase, still open on the slot is not this one;
  *  - it is the call the evidence was learned in: the same epoch, or for a producer that binds to the transmission
  *    (DMR, whose call layer heals a fade into a new epoch of one transmission) the same transmission;
- *  - the reception has not changed since: the received identity's epoch (dsd_received_identity::epoch, moved by
- *    another access code, system, site or family on the carrier) is the one the evidence was learned under. A trunk
- *    follow keeps that epoch; a carrier change ends the call or clears the evidence;
+ *  - the reception has not changed since: the reception generation (dsd_state_reception_generation(), moved by
+ *    another access code, system, site or family on the carrier, an applied retune, a change of P25 phase or of DMR
+ *    burst mode) is the one the evidence was learned under, so evidence of a direct-mode call does not come back
+ *    after a repeater-mode burst came between;
  *  - the call still names the evidence's source (and, for the target, its target);
  *  - for DMR, the burst carrying the report is the evidence's: the same sender kind by its sync word (a repeater's
  *    BS-sourced burst, a radio's MS-sourced one, direct mode's) on the same over-the-air slot
@@ -119,7 +120,7 @@ int dsd_position_attribution_call_from_closing(const struct dsd_event_closing_ca
  * @brief Record that content of @p call whose own check passed named @p source (and @p target with @p group).
  *
  * Recorded only while @p call is open and holds that source (a target the call does not hold is left out): @p out then
- * takes the call, its protocol, the binding @p bind, the reception's epoch and, for a DMR call, the identity of the
+ * takes the call, its protocol, the binding @p bind, the reception generation and, for a DMR call, the identity of the
  * burst that carried the content (dsd_position_dmr_air()), and 1 is returned. Otherwise @p out is left as it was and 0
  * is returned.
  */

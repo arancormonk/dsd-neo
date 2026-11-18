@@ -1281,7 +1281,8 @@ test_retune_rebinds_identity(void) {
         expect_true("rebind: call names the talker", slot0_call_names(TG_A, talkers[i], f.st));
         send_gps(&f, 0);
         expect_report(&f, talkers[i] == SRC_B ? "rebind: new talker" : "rebind: same talker", talkers[i], TG_A, 1);
-        expect_true("rebind: assignment rebound", p25_sm_get_ctx()->slots[0].identity_rx_epoch == f.st->rx_id.epoch);
+        expect_true("rebind: assignment rebound",
+                    p25_sm_get_ctx()->slots[0].identity_rx_gen == dsd_state_reception_generation(f.st));
         fixture_close(&f);
     }
 }
@@ -1326,6 +1327,97 @@ test_reception_change_reuse(void) {
         expect_report(&f, tag, 0U, 0U, 0);
         fixture_close(&f);
     }
+}
+
+/* Issue #800, fail closed: a stored verdict counts only under the whole reception generation it was earned under, and
+ * a change of P25 phase keeps the received identity's epoch. A trunked Phase 2 call's talker is named by a checked PTT
+ * or SACCH voice user; Phase 1 frames are then heard on the carrier and Phase 2 comes back with no grant in between.
+ * An addressless MAC_ACTIVE and a source-less MAC_ACTIVE or voice user keep the call's talker for display, but neither
+ * the assignment nor the canonical call's record lends it the verdict: the next report is anonymous. Without the
+ * Phase 1 frames the talker the call holds still names it. */
+static void
+test_phase_change_reuse(void) {
+    for (int variant = 0; variant < 8; variant++) {
+        const int by_voice_user = (variant & 1) != 0;
+        const int then_voice_user = (variant & 2) != 0;
+        const int change = (variant & 4) != 0;
+        char tag[160];
+        DSD_SNPRINTF(tag, sizeof tag, "reuse %s a phase change (%s, then a source-less %s)",
+                     change ? "after" : "without", by_voice_user ? "voice user" : "ptt",
+                     then_voice_user ? "voice user" : "mac_active");
+        fixture f;
+        fixture_open(&f);
+        dsd_rxid_note_sync(f.st, DSD_SYNC_P25P2_POS);
+        dsd_rxid_note_p25_network(f.st, 0xBEE00U, 0x1A3U);
+        group_grant(&f, SRC_A, 1);
+        if (by_voice_user) {
+            sacch_group_voice_user(&f, TG_A, SRC_A);
+        } else {
+            mac_ptt(&f, TG_A, SRC_A);
+        }
+        send_gps(&f, 0);
+        expect_report(&f, "phase reuse: before", SRC_A, TG_A, 1);
+        const uint32_t epoch = f.st->rx_id.epoch;
+        if (change) {
+            dsd_rxid_note_sync(f.st, DSD_SYNC_P25P1_POS);
+            dsd_rxid_note_sync(f.st, DSD_SYNC_P25P2_POS);
+        }
+        expect_true("phase reuse: the epoch stays", f.st->rx_id.epoch == epoch);
+        mac_active_addressless(&f);
+        if (then_voice_user) {
+            sacch_group_voice_user(&f, TG_A, 0U);
+        } else {
+            mac_active(&f, TG_A, 0U);
+        }
+        expect_true("phase reuse: call still names the talker", slot0_call_names(TG_A, SRC_A, f.st));
+        send_gps(&f, 0);
+        expect_report(&f, tag, change ? 0U : SRC_A, change ? 0U : TG_A, change ? 0 : 1);
+        fixture_close(&f);
+    }
+}
+
+/* The engine's trunk tuning: the retune is applied to the received identity at once (dsd_rxid_trunk_tune()), as on the
+ * decoder thread inside a frame dispatch. */
+static dsd_trunk_tune_result
+tune_and_retune(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    const dsd_trunk_tune_result result = tune_ok(opts, state, freq, ted_sps, request_id);
+    if (dsd_trunk_tune_result_is_ok(result)) {
+        dsd_rxid_trunk_tune(state);
+    }
+    return result;
+}
+
+/* Issue #800: a grant's checked talker carries to the channel the grant sends the receiver to, and only there. A
+ * checked grant heard on a Phase 1 control channel retunes to a Phase 2 voice channel (another reception generation, and
+ * the voice channel's first sync of the other phase moves nothing more); an addressless MAC_ACTIVE starts the call with
+ * the grant's talker, and the report names it. Phase 1 frames heard on the voice channel and Phase 2 again end the
+ * carry: the next source-less start lends the talker no verdict. */
+static void
+test_grant_carry_across_its_retune(void) {
+    fixture f;
+    fixture_open(&f);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = tune_and_retune,
+        .tune_to_cc_request = tune_and_retune,
+        .return_to_cc_request = return_ok,
+    });
+    dsd_rxid_note_sync(f.st, DSD_SYNC_P25P1_POS);
+    dsd_rxid_note_p25_network(f.st, 0xBEE00U, 0x1A3U);
+    const uint64_t cc_gen = dsd_state_reception_generation(f.st);
+    group_grant(&f, SRC_A, 1);
+    expect_true("grant carry: the grant retuned", dsd_state_reception_generation(f.st) != cc_gen);
+    dsd_rxid_note_sync(f.st, DSD_SYNC_P25P2_POS);
+    mac_active_addressless(&f);
+    expect_true("grant carry: the grant's talker", slot0_call_names(TG_A, SRC_A, f.st));
+    send_gps(&f, 0);
+    expect_report(&f, "grant carry: on the granted channel", SRC_A, TG_A, 1);
+    dsd_rxid_note_sync(f.st, DSD_SYNC_P25P1_POS);
+    dsd_rxid_note_sync(f.st, DSD_SYNC_P25P2_POS);
+    mac_active(&f, TG_A, 0U);
+    expect_true("grant carry: call still names the talker", slot0_call_names(TG_A, SRC_A, f.st));
+    send_gps(&f, 0);
+    expect_report(&f, "grant carry: after a phase change on the channel", 0U, 0U, 0);
+    fixture_close(&f);
 }
 
 /* Issue #800: an anonymous Phase 2 report stays off a Phase 1 call. A conventional Phase 1 group call whose voice user
@@ -1458,6 +1550,8 @@ main(void) {
     test_special_address_source();
     test_retune_rebinds_identity();
     test_reception_change_reuse();
+    test_phase_change_reuse();
+    test_grant_carry_across_its_retune();
     test_special_address_voice_user();
     test_foreign_home_id();
     test_anonymous_phase2_report_stays_off_phase1_row();
