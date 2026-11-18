@@ -927,7 +927,7 @@ test_header_blocks_are_never_text_or_gps(void) {
     expect_str("first block on the row", open_row(&r)->text_message, "HELLO");
     uint8_t bytes[60];
     build_slow_data_header(bytes, "N0TEXT", 0x00U);
-    bytes[3U * 6U] = 0x41U;
+    bytes[18] = 0x41U; /* block 3's mini-header */
     send_superframe(&r, bytes);
     expect_str("header octets are no text", r.state->dstar_txt, "HELLO");
     expect_str("row keeps its message", open_row(&r)->text_message, "HELLO");
@@ -935,7 +935,7 @@ test_header_blocks_are_never_text_or_gps(void) {
     const size_t half = 25U;
     send_gps(&r, k_vector, half, 0);
     build_slow_data_header(bytes, "N0TEXT", 0x00U);
-    bytes[4U * 6U] = 0x35U;
+    bytes[24] = 0x35U; /* block 4's mini-header */
     send_superframe(&r, bytes);
     send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
     dsd_position_fix f[2];

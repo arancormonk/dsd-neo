@@ -77,7 +77,7 @@ typedef struct dstar_sd_state {
 dstar_sd_state* dstar_sd_st(dsd_state* state);
 
 /** @brief Empty both assemblies, when the extension exists (never creates it). */
-void dstar_sd_state_clear(dsd_state* state);
+void dstar_sd_state_clear(const dsd_state* state);
 
 #ifdef __cplusplus
 }

@@ -34,11 +34,12 @@ dstar_sd_st(dsd_state* state) {
 }
 
 void
-dstar_sd_state_clear(dsd_state* state) {
+dstar_sd_state_clear(const dsd_state* state) {
     if (!state) {
         return;
     }
-    dstar_sd_state* sd = DSD_STATE_EXT_GET_AS(dstar_sd_state, state, DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA);
+    /* The extension is the module's own storage: emptying it changes nothing of dsd_state itself. */
+    dstar_sd_state* sd = (dstar_sd_state*)dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA);
     if (sd) {
         DSD_MEMSET(sd, 0, sizeof(*sd));
     }
