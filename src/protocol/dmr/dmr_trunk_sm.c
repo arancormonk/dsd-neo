@@ -375,15 +375,47 @@ set_state(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dmr_sm_state_e new_state, con
     }
 }
 
+/* The carrier judgement a tracked tune waited on (dmr_sm_note_tracked_carrier_tune()), now that its request is
+   settled: @p landed says whether the receiver may have left (the tune landed, or the machine gave it up unresolved, as
+   at its deadline, when it may still land), else the backend reported it failed and the receiver stayed, which leaves
+   nothing. Either way the judgement is spent. */
+static void
+dmr_sm_leave_judgement_settle(dmr_sm_ctx_t* ctx, dsd_state* state, int landed) {
+    if (ctx->cc_leave_request_id == 0U) {
+        return;
+    }
+    const long from_hz = ctx->cc_leave_from_hz;
+    const long to_hz = ctx->cc_leave_to_hz;
+    ctx->cc_leave_request_id = 0U;
+    ctx->cc_leave_from_hz = 0;
+    ctx->cc_leave_to_hz = 0;
+    if (landed && state) {
+        dmr_sm_note_carrier_tune(state, from_hz, to_hz);
+    }
+}
+
+/* A judgement whose request the machine stops tracking without resolving it (a follow replaced it, a park, a new
+   tracked tune): settled by what the request says now, a pending one as landed. */
+static void
+dmr_sm_leave_judgement_abandon(dmr_sm_ctx_t* ctx, dsd_state* state) {
+    if (ctx->cc_leave_request_id == 0U) {
+        return;
+    }
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(ctx->cc_leave_request_id, NULL);
+    dmr_sm_leave_judgement_settle(ctx, state, result != DSD_TRUNK_TUNE_RESULT_FAILED);
+}
+
 /* Resolve completion before accepting any heartbeat. A successful backend tune
- * is an acquisition boundary, not decoded control-channel evidence. */
+ * is an acquisition boundary, not decoded control-channel evidence. The carrier judgement the request carries is
+ * settled with it (dmr_sm_leave_judgement_settle()). */
 static int
-dmr_cc_resolve_pending(dmr_sm_ctx_t* ctx, const dsd_opts* opts, double now_m) {
+dmr_cc_resolve_pending(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m) {
     if (ctx->cc_tune_request_id == 0U) {
         return 1;
     }
     double completed_m = 0.0;
     dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(ctx->cc_tune_request_id, &completed_m);
+    int expired = 0;
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         if (now_m < ctx->cc_tune_deadline_m) {
             return 0;
@@ -393,6 +425,10 @@ dmr_cc_resolve_pending(dmr_sm_ctx_t* ctx, const dsd_opts* opts, double now_m) {
         dsd_trunk_tuning_request_publish(ctx->cc_tune_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
         result = dsd_trunk_tuning_request_status(ctx->cc_tune_request_id, &completed_m);
         sm_recovery_log(opts, "cc-tune-timeout");
+        expired = 1; /* the backend may still land it: the receiver may have left */
+    }
+    if (ctx->cc_leave_request_id == ctx->cc_tune_request_id) {
+        dmr_sm_leave_judgement_settle(ctx, state, expired || result == DSD_TRUNK_TUNE_RESULT_OK);
     }
     ctx->cc_tune_request_id = 0U;
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
@@ -408,14 +444,27 @@ dmr_cc_resolve_pending(dmr_sm_ctx_t* ctx, const dsd_opts* opts, double now_m) {
 }
 
 void
-dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, long freq_hz,
+dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, long freq_hz,
                             uint64_t request_id) {
     if (!ctx || !state || freq_hz <= 0) {
         return;
     }
     const int site_without_cc = ctx->site_without_cc; // the same system: what it identified itself as stays
+    /* A carrier judgement this acquisition's own request carries (dmr_sm_note_tracked_carrier_tune()) waits on it; any
+       other is settled by its own request first. */
+    const int keep_leave = request_id != 0U && ctx->cc_leave_request_id == request_id;
+    const long leave_from_hz = ctx->cc_leave_from_hz;
+    const long leave_to_hz = ctx->cc_leave_to_hz;
+    if (!keep_leave) {
+        dmr_sm_leave_judgement_abandon(ctx, state);
+    }
     dmr_sm_init_ctx(ctx, opts, state);
     ctx->site_without_cc = site_without_cc;
+    if (keep_leave) {
+        ctx->cc_leave_request_id = request_id;
+        ctx->cc_leave_from_hz = leave_from_hz;
+        ctx->cc_leave_to_hz = leave_to_hz;
+    }
     ctx->cc_freq_hz = freq_hz;
     ctx->cc_probe_freq_hz = freq_hz;
     ctx->cc_acquiring = 1;
@@ -427,7 +476,7 @@ dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_s
         ctx->cc_rx_freq_hz = freq_hz;
         ctx->cc_rx_generation = dsd_trunk_tuning_generation();
     }
-    (void)dmr_cc_resolve_pending(ctx, opts, ctx->cc_acquire_start_m);
+    (void)dmr_cc_resolve_pending(ctx, opts, state, ctx->cc_acquire_start_m);
 }
 
 dsd_trunk_tune_result
@@ -510,8 +559,10 @@ dmr_sm_ctx_receiver_frequency(dmr_sm_ctx_t* ctx, const dsd_opts* opts) {
 }
 
 /* Where the machine last put the receiver, without asking the tuner (0: unknown): the carrier it follows, else the one
-   a tune of this generation put it on, else the RTL centre. For a probe or settle, which runs on the hunt's cadence
-   and must not add a rigctl round trip; read before its tune. */
+   a tune of this generation put it on, else, on a rigctl peer, the frequency it last confirmed on this connection
+   (dsd_opts::rigctl_sent_freq_hz, which every rigctl leg sets once the peer took it; 0 after a connect), else the RTL
+   centre. For a probe or settle, which runs on the hunt's cadence and must not add a rigctl round trip; read before
+   its tune. */
 static long
 dmr_sm_attributed_receiver(const dmr_sm_ctx_t* ctx, const dsd_opts* opts) {
     if (ctx->state == DMR_SM_TUNED && ctx->vc_freq_hz > 0) {
@@ -520,7 +571,10 @@ dmr_sm_attributed_receiver(const dmr_sm_ctx_t* ctx, const dsd_opts* opts) {
     if (ctx->cc_rx_freq_hz > 0 && ctx->cc_rx_generation == dsd_trunk_tuning_generation()) {
         return ctx->cc_rx_freq_hz;
     }
-    return (opts->use_rigctl != 1 && opts->audio_in_type == AUDIO_IN_RTL) ? (long)opts->rtlsdr_center_freq : 0;
+    if (opts->use_rigctl == 1) {
+        return (long)opts->rigctl_sent_freq_hz;
+    }
+    return opts->audio_in_type == AUDIO_IN_RTL ? (long)opts->rtlsdr_center_freq : 0;
 }
 
 /* Whether a follow to @p freq_hz leaves the carrier the receiver was on before its tune (@p receiver_hz; unknown counts
@@ -603,8 +657,10 @@ dmr_sm_cold_start_window_expired(const dmr_sm_ctx_t* ctx, const dsd_state* state
 /* Leave the startup hunt for IDLE, dropping the probe's attribution: only once the tuning layer is settled, or when
    trunking or the input went away, or where validated control named an owner. */
 static void
-dmr_sm_cold_start_park_now(dmr_sm_ctx_t* ctx, const dsd_opts* opts, int keep_window, const char* reason) {
+dmr_sm_cold_start_park_now(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int keep_window,
+                           const char* reason) {
     const double armed_m = ctx->cold_start_armed_m;
+    dmr_sm_leave_judgement_abandon(ctx, state);
     ctx->cc_tune_request_id = 0U;
     ctx->cc_acquiring = 0;
     ctx->cc_probe_freq_hz = 0;
@@ -627,7 +683,7 @@ dmr_sm_cold_start_park_now(dmr_sm_ctx_t* ctx, const dsd_opts* opts, int keep_win
 static int
 dmr_sm_settle_step(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     if (ctx->cc_tune_request_id != 0U) {
-        (void)dmr_cc_resolve_pending(ctx, opts, now_m);
+        (void)dmr_cc_resolve_pending(ctx, opts, state, now_m);
         if (ctx->cc_tune_request_id != 0U) {
             return 1;
         }
@@ -637,15 +693,17 @@ dmr_sm_settle_step(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double n
         if (dsd_trunk_tuning_request_status(newest, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
             return 1;
         }
-        const long receiver = dmr_sm_attributed_receiver(ctx, opts);
         const long freq = dmr_cc_tuner_frequency(opts, ctx);
+        /* On a rigctl peer the settle tunes it to the frequency it just reported, the receiver's own: that reading is
+           where it is. */
+        const long receiver = opts->use_rigctl == 1 ? freq : dmr_sm_attributed_receiver(ctx, opts);
         const long alias_before = state->trunk_cc_freq;
         uint64_t request_id = 0U;
         const dsd_trunk_tune_result result =
             freq > 0 ? dmr_sm_tune_to_cc(opts, state, freq, &request_id) : DSD_TRUNK_TUNE_RESULT_FAILED;
         state->trunk_cc_freq = alias_before;
         if (dsd_trunk_tune_result_is_ok(result)) {
-            dmr_sm_note_carrier_tune(state, receiver, freq);
+            dmr_sm_note_tracked_carrier_tune(ctx, state, result, request_id, receiver, freq);
             ctx->cc_probe_freq_hz = freq; // its attribution goes with the settle
             ctx->cc_tune_request_id = request_id;
             ctx->cc_tune_deadline_m = now_m + DMR_CC_TUNE_TIMEOUT_S;
@@ -664,7 +722,7 @@ dmr_sm_cold_start_settle(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, do
     if (dmr_sm_settle_step(ctx, opts, state, now_m)) {
         return;
     }
-    dmr_sm_cold_start_park_now(ctx, opts, keep_window, reason);
+    dmr_sm_cold_start_park_now(ctx, opts, state, keep_window, reason);
 }
 
 /* After an operator move: the tuning layer settles first, a failure the move left being replaced by a settle tune to
@@ -705,14 +763,14 @@ dmr_sm_cold_start_gate(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, doub
             dmr_sm_cold_start_clear(ctx);
             sm_recovery_log(opts, "cold-start-owner-named");
         } else {
-            dmr_sm_cold_start_park_now(ctx, opts, 0, "cold-start-owner-named");
+            dmr_sm_cold_start_park_now(ctx, opts, state, 0, "cold-start-owner-named");
         }
         return 0;
     }
     if (opts->trunk_enable != 1 || state->input_boundary != 0) {
         // The tuning layer retires failures once no tune owner is active, and the engine resets its requests when the
         // input is replaced: nothing is left for this hunt to settle.
-        dmr_sm_cold_start_park_now(ctx, opts, 0, "cold-start-trunking-or-input-left");
+        dmr_sm_cold_start_park_now(ctx, opts, state, 0, "cold-start-trunking-or-input-left");
         return 0;
     }
     if ((ctx->state == DMR_SM_TUNED || opts->trunk_is_tuned == 1) && !dmr_sm_hunt_eligible(ctx, opts, state)) {
@@ -739,7 +797,7 @@ dmr_sm_cold_start_gate(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, doub
 }
 
 static dmr_sm_ctx_t*
-dmr_cc_activity_context(const dsd_opts* opts, const dsd_state* state) {
+dmr_cc_activity_context(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->trunk_enable != 1 || opts->trunk_is_tuned == 1) {
         return NULL;
     }
@@ -747,7 +805,7 @@ dmr_cc_activity_context(const dsd_opts* opts, const dsd_state* state) {
         return NULL;
     }
     dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
-    if (!dmr_cc_resolve_pending(ctx, opts, dsd_decode_now_mono_s())) {
+    if (!dmr_cc_resolve_pending(ctx, opts, state, dsd_decode_now_mono_s())) {
         return NULL;
     }
     return ctx;
@@ -804,9 +862,9 @@ dmr_sm_note_cc_activity(const dsd_opts* opts, dsd_state* state, long freq_hz) {
 }
 
 static void
-dmr_cc_note_heartbeat_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+dmr_cc_note_heartbeat_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx || !opts || !state || opts->trunk_is_tuned == 1 || !ctx->cc_confirmed || ctx->cc_acquiring
-        || !dmr_cc_resolve_pending(ctx, opts, dsd_decode_now_mono_s())) {
+        || !dmr_cc_resolve_pending(ctx, opts, state, dsd_decode_now_mono_s())) {
         return;
     }
     /* A heartbeat is in the decode hot path. Attribute it to the completed
@@ -818,7 +876,7 @@ dmr_cc_note_heartbeat_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_sta
 }
 
 void
-dmr_sm_note_cc_heartbeat(const dsd_opts* opts, const dsd_state* state) {
+dmr_sm_note_cc_heartbeat(const dsd_opts* opts, dsd_state* state) {
     dmr_sm_ctx_t* ctx = dmr_cc_activity_context(opts, state);
     dmr_cc_note_heartbeat_ctx(ctx, opts, state);
 }
@@ -945,14 +1003,14 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         sm_recovery_log(opts, "cc-probe-deferred-or-failed");
         return;
     }
-    dmr_sm_note_carrier_tune(state, receiver, freq);
+    dmr_sm_note_tracked_carrier_tune(ctx, state, result, request_id, receiver, freq);
     ctx->cc_probe_freq_hz = freq;
     ctx->cc_acquiring = 1;
     ctx->cc_acquire_start_m = dsd_decode_now_mono_s();
     ctx->cc_tune_request_id = request_id;
     ctx->cc_tune_deadline_m = ctx->cc_acquire_start_m + DMR_CC_TUNE_TIMEOUT_S;
     set_state(ctx, opts, DMR_SM_ON_CC, "cc-probe");
-    (void)dmr_cc_resolve_pending(ctx, opts, ctx->cc_acquire_start_m);
+    (void)dmr_cc_resolve_pending(ctx, opts, state, ctx->cc_acquire_start_m);
     if (sm_status_log_enabled(opts)) {
         DSD_FPRINTF(stderr, "\n[DMR SM] CC probe %.6lf MHz; acquisition %.2f s\n", (double)freq / 1000000.0,
                     DMR_CC_PROBE_GRACE_S);
@@ -1042,6 +1100,42 @@ dmr_sm_note_carrier_tune(dsd_state* state, long receiver_hz, long freq_hz) {
 }
 
 void
+dmr_sm_note_tracked_carrier_tune(dmr_sm_ctx_t* ctx, dsd_state* state, dsd_trunk_tune_result result, uint64_t request_id,
+                                 long receiver_hz, long freq_hz) {
+    if (!ctx || !state) {
+        return;
+    }
+    dmr_sm_leave_judgement_abandon(ctx, state);
+    if (result == DSD_TRUNK_TUNE_RESULT_PENDING && request_id != 0U) {
+        if (dmr_sm_follow_leaves(receiver_hz, freq_hz)) {
+            ctx->cc_leave_request_id = request_id;
+            ctx->cc_leave_from_hz = receiver_hz;
+            ctx->cc_leave_to_hz = freq_hz;
+        }
+        return;
+    }
+    dmr_sm_note_carrier_tune(state, receiver_hz, freq_hz);
+}
+
+void
+dmr_sm_resolve_tracked_tune(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    if (ctx->cc_leave_request_id == 0U) {
+        return;
+    }
+    if (ctx->cc_leave_request_id == ctx->cc_tune_request_id) {
+        (void)dmr_cc_resolve_pending(ctx, opts, state, dsd_decode_now_mono_s());
+        return;
+    }
+    if (dsd_trunk_tuning_request_status(ctx->cc_leave_request_id, NULL) != DSD_TRUNK_TUNE_RESULT_PENDING) {
+        dmr_sm_leave_judgement_abandon(ctx, state);
+    }
+}
+
+void
 dmr_sm_note_operator_leave(dsd_opts* opts, dsd_state* state, long receiver_hz, long freq_hz) {
     if (opts && state && dmr_sm_follow_leaves(receiver_hz, freq_hz)) {
         dmr_sm_leave_carrier(opts, state);
@@ -1066,6 +1160,7 @@ dmr_sm_release_without_cc(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     }
     ctx->cc_acquiring = 0;
     ctx->cc_confirmed = 0;
+    dmr_sm_leave_judgement_abandon(ctx, state);
     ctx->cc_tune_request_id = 0U;
 }
 
@@ -2237,6 +2332,7 @@ dmr_sm_take_grant(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_event_t* ev,
     ctx->t_carrier_m = leaves ? now_m : 0.0;
     ctx->t_voice_m = 0.0;
     ctx->cc_acquiring = 0;
+    dmr_sm_leave_judgement_abandon(ctx, state);
     ctx->cc_tune_request_id = 0U;
     ctx->cc_tune_superseded = 0; // a call followed since an operator move ends that move's listening window
     state->dmr_mono_slot = ctx->vc_slot;
@@ -2457,6 +2553,7 @@ dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dm
     ctx->t_carrier_m = now_m;
     ctx->t_voice_m = 0.0;
     ctx->cc_acquiring = 0;
+    dmr_sm_leave_judgement_abandon(ctx, state);
     ctx->cc_tune_request_id = 0U;
     ctx->cc_tune_superseded = 0;
     state->dmr_mono_slot = new_slot;
@@ -2771,7 +2868,7 @@ dmr_sm_tick_ready(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
     if (dmr_sm_settle_after_move(ctx, opts, state, now_m)) {
         return 0;
     }
-    return dmr_cc_resolve_pending(ctx, opts, now_m);
+    return dmr_cc_resolve_pending(ctx, opts, state, now_m);
 }
 
 void
@@ -2961,6 +3058,7 @@ dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int sl
     ctx->t_carrier_m = leaves ? ctx->t_tune_m : 0.0;
     ctx->t_voice_m = 0.0;
     ctx->cc_acquiring = 0;
+    dmr_sm_leave_judgement_abandon(ctx, state);
     ctx->cc_tune_request_id = 0U;
     ctx->cc_tune_superseded = 0; // a call followed since an operator move ends that move's listening window
     ctx->vc_status_grant = 0;

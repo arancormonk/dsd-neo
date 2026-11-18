@@ -432,7 +432,7 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state)
 }
 
 void
-dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, long freq_hz,
+dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, long freq_hz,
                             uint64_t request_id) {
     (void)freq_hz;
     (void)request_id;

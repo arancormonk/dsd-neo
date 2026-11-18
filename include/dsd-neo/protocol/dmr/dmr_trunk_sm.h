@@ -212,6 +212,12 @@ typedef struct {
     double cc_retry_after_m;
     double cc_tune_deadline_m;
     uint64_t cc_tune_request_id;
+    /* A tracked tune's carrier judgement (dmr_sm_note_tracked_carrier_tune(), issue #834): the request it waits on (0:
+       none), the receiver the tune would leave and where it goes. Judged once that request lands, dropped when the
+       backend reports it failed (the receiver stayed). Decoder thread only. */
+    uint64_t cc_leave_request_id;
+    long cc_leave_from_hz;
+    long cc_leave_to_hz;
     int cc_acquiring;
     int cc_confirmed;
 
@@ -267,7 +273,7 @@ void dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* s
 
 /** Hand an accepted CC tune to the DMR owner. Clears outgoing voice/probe state;
  * a nonzero request ID is resolved before starting the acquisition deadline. */
-void dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, long freq_hz,
+void dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, long freq_hz,
                                  uint64_t request_id);
 /** Return to the explicit DMR control/rest frequency, clearing an obsolete P25
  * alias only on acceptance. Preserve the previous destination on failure. */
@@ -282,7 +288,7 @@ void dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
  * current generation; nonzero frequency must match the received channel. */
 void dmr_sm_note_cc_activity(const dsd_opts* opts, dsd_state* state, long freq_hz);
 /** Retain an already confirmed CC only; never validate a probe from raw/relaxed evidence. */
-void dmr_sm_note_cc_heartbeat(const dsd_opts* opts, const dsd_state* state);
+void dmr_sm_note_cc_heartbeat(const dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Process an event and update state machine.
@@ -339,6 +345,22 @@ long dmr_sm_receiver_frequency(const dsd_opts* opts);
  *  left. A tune that stays on the carrier keeps everything: this judgement alone decides, never the engine's reading
  *  of the tuner. */
 void dmr_sm_note_carrier_tune(dsd_state* state, long receiver_hz, long freq_hz);
+
+/** @brief dmr_sm_note_carrier_tune() for a tune the machine tracks by @p request_id (a control channel probe, a settle
+ *  tune, the Capacity Plus rest move), whose @p result may be PENDING: the receiver has not moved yet, and an RTL tune
+ *  that later fails leaves it where it was. A pending tune that would leave the carrier is judged once its request
+ *  lands, before the machine or a DMR frame reads anything the carrier it reached sends (dmr_sm_resolve_tracked_tune()),
+ *  and the judgement is dropped if the backend reports it failed, so the calls of the carrier the receiver never left
+ *  keep their decryption. A request the machine gives up on before it resolves (its deadline, a follow) is judged as
+ *  landed, the safe side: the receiver may still reach it. Any other result is judged at once. An earlier judgement
+ *  still waiting is settled first, by its own request. */
+void dmr_sm_note_tracked_carrier_tune(dmr_sm_ctx_t* ctx, dsd_state* state, dsd_trunk_tune_result result,
+                                      uint64_t request_id, long receiver_hz, long freq_hz);
+
+/** @brief Before a DMR frame is read: a tracked tune whose judgement still waits (dmr_sm_note_tracked_carrier_tune())
+ *  and whose request has resolved is settled now, so the frame of the carrier it reached is never read with the calls
+ *  it left. One load while nothing waits. */
+void dmr_sm_resolve_tracked_tune(const dsd_opts* opts, dsd_state* state);
 
 /** @brief An operator's move the tuner accepted, from @p receiver_hz (dmr_sm_receiver_frequency() read before the tune;
  *  0 unknown) to @p freq_hz: a manual return to the control channel, a lockout or skip return, a channel or candidate

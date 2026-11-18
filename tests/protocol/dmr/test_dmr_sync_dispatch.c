@@ -15,6 +15,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -31,6 +32,10 @@ static int ms_data_calls;
 static int open_left_calls;
 static int rc_calls;
 static int close_protocol_synctype = DSD_SYNC_NONE;
+/* The tracked DMR tune's judgement the dispatcher settles before a frame is read (dmr_sm_resolve_tracked_tune()), and
+   how many had run when the data handler read its frame. */
+static int resolve_calls;
+static int resolved_before_data_sync;
 
 static void
 reset_calls(void) {
@@ -44,6 +49,15 @@ reset_calls(void) {
     open_left_calls = 0;
     rc_calls = 0;
     close_protocol_synctype = DSD_SYNC_NONE;
+    resolve_calls = 0;
+    resolved_before_data_sync = -1;
+}
+
+void
+dmr_sm_resolve_tracked_tune(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    resolve_calls++;
 }
 
 /* The capture opener the dispatcher called before issue #661, kept with its counter so this harness also links and
@@ -112,6 +126,7 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     data_sync_calls++;
+    resolved_before_data_sync = resolve_calls;
 }
 
 void
@@ -459,6 +474,7 @@ test_bs_data_routes_to_data_sync(void) {
     assert(strcmp(state.slot1light, " slot1 ") == 0);
     assert(strcmp(state.slot2light, " slot2 ") == 0);
     assert(data_sync_calls == 1);
+    assert(resolve_calls == 1 && resolved_before_data_sync == 1);
     assert(ms_data_calls == 0);
     assert(close_left_calls == 1);
     assert(close_right_calls == 1);

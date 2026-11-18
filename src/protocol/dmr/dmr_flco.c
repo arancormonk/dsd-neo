@@ -1982,8 +1982,9 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
         return;
     }
     /* The rest channel may carry voice (a Capacity Plus rest channel is a repeater): the left calls' ALG, key ID and MI
-       decrypt none of its frames. */
-    dmr_sm_note_carrier_tune(state, receiver, state->trunk_cc_freq);
+       decrypt none of its frames. A hop still pending is judged once it lands, and one that fails leaves nothing
+       (dmr_sm_note_tracked_carrier_tune()); the acquisition below keeps that judgement with its request. */
+    dmr_sm_note_tracked_carrier_tune(dmr_sm_get_ctx(), state, tune_result, request_id, receiver, state->trunk_cc_freq);
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;

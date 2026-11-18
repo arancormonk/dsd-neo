@@ -12628,8 +12628,19 @@ Private per-protocol modules worth knowing about:
     forget the same privacy bit, ALG, key ID, MI and MI chain, and hold the next carrier's voice, once the tune is
     accepted (`dmr_sm_note_carrier_tune()`, given the receiver's frequency before the tune): the Capacity Plus rest move
     (`dmr_slco_tune_and_reset()`), the Connect Plus data tune, a control channel probe and a settle tune (these two read
-    it from the machine's own attribution, `dmr_sm_attributed_receiver()`, so the hunt adds no rigctl round trip). They
-    keep the FID. The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
+    it from the machine's own attribution, `dmr_sm_attributed_receiver()`, so the hunt adds no rigctl round trip: the
+    carrier it follows, else the one a tune of this generation put it on, else on a rigctl peer the frequency the peer
+    last confirmed, `dsd_opts::rigctl_sent_freq_hz`, else the RTL centre; a rigctl settle tunes the peer to the
+    frequency it just reported, which is where the receiver is, so it never leaves). They keep the FID. The tunes the
+    machine tracks by request (the probe, the settle and the rest move, `dmr_sm_note_tracked_carrier_tune()`) may be
+    pending: an RTL tune that timed out has not moved the receiver, and one that later fails leaves it where it was. A
+    pending tune that would leave the carrier is judged once its request lands (the request's resolution,
+    `dmr_cc_resolve_pending()`, and before any DMR frame is read, `dmr_sm_resolve_tracked_tune()` in the DMR
+    dispatcher), and the judgement is dropped when the backend reports the tune failed, so the calls of the carrier the
+    receiver never left keep their ALG, key ID, MI and privacy; a request the machine gives up on unresolved (its
+    deadline, a follow or park that replaces it) is judged as landed, the safe side (`ENGINE_DMR_CC_RECOVERY`
+    `dmr_probe_judges_its_carrier_once_landed()`, `dmr_rigctl_probe_judged_from_the_confirmed_frequency()`,
+    `dmr_settle_tune_deadline()`). The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
     reading of the tuner (`dsd_engine_receiver_hz()`): the machine's own tunes go through `dmr_sm_tune_to_freq()` and
     `dmr_sm_tune_to_cc()`, which mark them as judged by their caller for the engine's hook
     (`dsd_trunk_tuning_caller_judges()`, the marker a trunk-scan park, a return to the control channel and an operator's
