@@ -551,8 +551,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         QString service;
         /* The decode session the reading came from (Row::session): the row is the newest session's of its parts. */
         qint64 session = 0;
-        /* The sender and the call it names (Row's fields of the same names). */
+        /* The sender and the call it names (Row's fields of the same names): the numeric target is the call's, as
+         * the target text is, and a fragment whose later reading learns it gives it to the row. */
         int protocol = -1;
+        qulonglong tg = 0;
         qulonglong src = 0;
         QString sourceText;
         QString targetText;

@@ -1784,6 +1784,7 @@ take_part_message(FragmentPart& part, const CallHistoryModel::Row& row) {
 void
 take_part_sender(FragmentPart& to, const FragmentPart& from) {
     to.protocol = from.protocol;
+    to.tg = from.tg;
     to.src = from.src;
     to.sourceText = from.sourceText;
     to.targetText = from.targetText;
@@ -1835,6 +1836,7 @@ fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment) {
     part.service = row.service;
     part.session = row.session;
     part.protocol = row.protocol;
+    part.tg = row.tg;
     part.src = row.src;
     part.sourceText = row.sourceText;
     part.targetText = row.targetText;
@@ -1883,6 +1885,7 @@ row_of_part(const FragmentPart& part) {
     row.service = part.service;
     row.session = part.session;
     row.protocol = part.protocol;
+    row.tg = part.tg;
     row.src = part.src;
     row.sourceText = part.sourceText;
     row.targetText = part.targetText;
@@ -2130,22 +2133,29 @@ part_gives_sender(const CallHistoryModel::Row& rebuilt, const CallHistoryModel::
 }
 
 /**
- * @brief Fold the call identity part @p from gives into @p rebuilt, whoever sent it: the sync type and the raw
- * destination the row does not know yet (fragment_call_compatible() already found them agreeing), and with the
- * destination the name it gave the part (row_take_name(): its target text) when the row's own name is only a label
- * (a channel or a placeholder, not its service). A destination is the call's, not the sender's: a senderless fragment's
- * keeps a later fragment naming another destination off the row (rows_mergeable()).
+ * @brief Fold the call identity part @p from gives into @p rebuilt, whoever sent it: the sync type, the numeric target
+ * and the raw destination the row does not know yet (fragment_call_compatible() already found them agreeing), and with
+ * a target or destination the name it gave the part (row_take_name(): its alias, target text or placeholder) when the
+ * row's own name is only a label (a channel or a placeholder, not its service). A target or destination is the call's,
+ * not the sender's: the core fills a committed call's unknown target in place (watchdog_event_merge_identity_fields()),
+ * and a senderless fragment's keeps a later fragment naming another destination off the row (rows_mergeable()).
  */
 void
 fold_call_identity(CallHistoryModel::Row& rebuilt, const CallHistoryModel::Row& from) {
     if (call_history_protocol_family(rebuilt.protocol) < 0) {
         rebuilt.protocol = from.protocol;
     }
+    const bool nameIsLabel = rebuilt.service.isEmpty() || rebuilt.name != rebuilt.service;
+    if (rebuilt.tg == 0U && from.tg != 0U) {
+        rebuilt.tg = from.tg;
+        if (nameIsLabel) {
+            rebuilt.name = from.name;
+        }
+    }
     const QString destination = from.targetText.simplified();
     if (destination.isEmpty() || !rebuilt.targetText.simplified().isEmpty()) {
         return;
     }
-    const bool nameIsLabel = rebuilt.service.isEmpty() || rebuilt.name != rebuilt.service;
     rebuilt.targetText = from.targetText;
     if (nameIsLabel && from.name.simplified() == destination) {
         rebuilt.name = from.name;
@@ -2194,6 +2204,7 @@ take_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& r
     existing.service = rebuilt.service;
     existing.session = rebuilt.session;
     existing.protocol = rebuilt.protocol;
+    existing.tg = rebuilt.tg;
     existing.src = rebuilt.src;
     existing.sourceText = rebuilt.sourceText;
     existing.targetText = rebuilt.targetText;
@@ -2583,11 +2594,11 @@ CallHistoryModel::keyFor(const Row& row) {
 
 void
 CallHistoryModel::settleMerged(int merged) {
-    static const QVector<int> mergeRoles = {WhenRole,         SrcRole,          SourceNameRole, EncRole,
-                                            DurationSecsRole, DayLabelRole,     TimeTextRole,   EmergencyRole,
-                                            SessionRole,      FreqHzRole,       AccessCodeRole, AccessCodeTextRole,
-                                            ServiceNameRole,  ReceivedToneRole, NameRole,       RecordingsRole,
-                                            HasRecordingRole, SiteTextRole,     AnalogModeRole, DetailRole};
+    static const QVector<int> mergeRoles = {
+        WhenRole,           TgRole,          SrcRole,          SourceNameRole, EncRole,        DurationSecsRole,
+        DayLabelRole,       TimeTextRole,    EmergencyRole,    SessionRole,    FreqHzRole,     AccessCodeRole,
+        AccessCodeTextRole, ServiceNameRole, ReceivedToneRole, NameRole,       RecordingsRole, HasRecordingRole,
+        SiteTextRole,       AnalogModeRole,  DetailRole};
     (void)nameChannel(m_rows[merged]);
     const QModelIndex idx = index(merged);
     Q_EMIT dataChanged(idx, idx, mergeRoles);
@@ -3251,6 +3262,8 @@ part_from_json(const QJsonObject& entry, const QString& fragment, const CallHist
     // The sender, call identity and message, as a row's (`proto`, `srcText`, `tgtText`, `sscope`, `rx`, `msg*`).
     row_payload_from_json(fields, entry);
     fields.src = static_cast<qulonglong>(qMax<qint64>(json_i64_or(entry, "src", 0), 0));
+    // A part an earlier build of this one stored keeps no target: every part of a row then had the row's.
+    fields.tg = static_cast<qulonglong>(qMax<qint64>(json_i64_or(entry, "tg", static_cast<qint64>(row.tg)), 0));
     fields.sourceName = entry.value(QLatin1String("srcName")).toString();
     fields.sourceNameWhen = json_i64_or(entry, "srcNameWhen", fields.when);
     fields.sourceNameSeq = static_cast<qulonglong>(json_i64_or(entry, "srcNameSeq", 0));
@@ -3419,6 +3432,7 @@ row_parts_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
         row_carrier_to_json(fields, entry);
         row_site_to_json(fields, entry);
         row_payload_to_json(fields, entry);
+        entry.insert(QLatin1String("tg"), static_cast<qint64>(fields.tg));
         if (fields.src != 0U) {
             entry.insert(QLatin1String("src"), static_cast<qint64>(fields.src));
         }

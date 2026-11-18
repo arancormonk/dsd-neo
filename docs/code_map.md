@@ -15737,16 +15737,17 @@ Qt Quick frontend (`src/ui/qt`):
       fragment's contribution is a `Row::FragmentPart`, keyed by its fragment key (its ring identity, so two rings'
       fragments with the same start, push stamp and slot are never taken for one): span, crypto and emergency flags,
       frequency and access code, site and call channel, reception scope, receive evidence, service and the name it
-      gave, decode session, its sender (source number and text, sender system), sync type and target text, its source
-      label and its text message, each with its provenance. Fail closed (gate g62-r5): a fragment's later reading
+      gave, decode session, its sender (source number and text, sender system), sync type, numeric target and target
+      text, its source label and its text message, each with its provenance. Fail closed (gate g62-r5): a fragment's later reading
       replaces its part whole (`merge_parts()`; a reading older by `Row::fragmentVers` changes nothing), so nothing an
       earlier reading gave outlives it (a message, sender, destination, name, site text or anything else the ring
       entry no longer carries is gone), and every row field a part gives is rebuilt from the parts on every fold
       (`foldRow()`): what the row's other parts gave (`rest_of_row()`, which leaves out every part the reading gives
       again), then each part the reading gives (`fold_reading_parts()`), so what the row held stays ahead of what an
-      update now says (a conflicting site is discarded); a row whose only fragment it is follows it. The sync type and
-      the raw destination are the call's, not the sender's: they fold from every part of the call
-      (`fold_call_identity()`), so a senderless fragment's destination keeps a later fragment naming another
+      update now says (a conflicting site is discarded); a row whose only fragment it is follows it. The sync type, the
+      numeric target and the raw destination are the call's, not the sender's: they fold from every part of the call
+      (`fold_call_identity()`; the core fills a committed call's unknown target in place on reacquisition,
+      `watchdog_event_merge_identity_fields()`, and the row takes it with the name the part gave, notifying `tg`), so a senderless fragment's destination keeps a later fragment naming another
       destination off the row, and with the destination the row takes the name it gave its part when the row's own
       name is only a label (a channel or a placeholder, not its service). A part gives the sender, label and message
       only when it names the row's radio (`fold_part()`,
@@ -15757,7 +15758,8 @@ Qt Quick frontend (`src/ui/qt`):
       found by its fragment, which is not merged again, is judged against what the row's other fragments gave
       (`fragment_call_compatible()`: one receive service by the merge's own rule, `receive_services_compatible()`, so a
       fragment that merged with its over-the-air slot pending and is then proven on another slot is another service's;
-      protocol family, reception and sender system, raw target text), never against
+      protocol family, reception and sender system, numeric target and raw target text, a target either side does not
+      know no conflict), never against
       its own earlier readings: one that names another call (another system, or a callsign or dial-string destination
       other than the row's) is withdrawn (`withdraw_part()`) and gives nothing, and the row is rebuilt from the rest,
       every field it gave taken back together (its sender and radio, label, message, destination, session, frequency,

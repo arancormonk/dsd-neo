@@ -401,7 +401,9 @@ receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryMod
 
 /**
  * @brief Whether fragment @p row is of @p existing's call (issue #800, B2, B4 and B5): one protocol family, reception
- * system and sender system, no other raw target text, and one receive service (receive_services_compatible()).
+ * system and sender system, no other numeric target or raw target text, and one receive service
+ * (receive_services_compatible()). A target either does not know is no conflict: the core fills a committed call's
+ * unknown target in place.
  *
  * An update found by its fragment (CallHistoryModel::rowHoldingFragment()) is not merged again, so its later reading
  * may name what the merge (rows_identity_compatible(), the destination rule, receive_services_compatible()) would have
@@ -411,7 +413,7 @@ receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryMod
  */
 bool
 fragment_call_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    return receive_services_compatible(existing, row)
+    return !(existing.tg != 0U && row.tg != 0U && existing.tg != row.tg) && receive_services_compatible(existing, row)
            && call_history_protocols_compatible(existing.protocol, row.protocol)
            && call_history_scopes_compatible(existing.rxScope, row.rxScope)
            && call_history_scopes_compatible(existing.sourceScope, row.sourceScope)

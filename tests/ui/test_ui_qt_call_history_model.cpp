@@ -5674,6 +5674,46 @@ test_update_proving_other_slot_is_taken_back(void) {
     expect("slot proof: none of it after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
 }
 
+/* Issue #800: the core fills a committed call's unknown target in place when a reacquired segment names it
+ * (watchdog_event_merge_identity_fields()), without moving the row's push stamp. The reading is found by its fragment,
+ * and the row takes the numeric target with it, as it takes the fix: a scan-channel DMR call that learns talkgroup 100
+ * shows it (TgRole, notified) beside its fix, and keeps both after a reload, whether the learning fragment is the row's
+ * only one or one of two. */
+void
+test_fragment_update_learns_target(void) {
+    const time_t when = kCaptureStart + 470;
+    for (int fragments = 1; fragments <= 2; fragments++) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            if (fragments == 2) {
+                ring.commit(0, 0U, 3001U, when - 6, when - 2, "", "", "Scan A");
+                model.refresh(ring.state);
+            }
+            Event_History* item = ring.commit(0, 0U, 3001U, when, when + 4, "", "", "Scan A");
+            model.refresh(ring.state);
+            expect("target: the call is one row with no target",
+                   model.count() == 1 && model.data(model.index(0), CallHistoryModel::TgRole).toULongLong() == 0U);
+            QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+            item->target_id = 100U;
+            with_gps(item, "GPS: learned", 225000000, 450000000, 3U);
+            ring.touchCommitted(0);
+            model.refresh(ring.state);
+            expect("target: the row shows the target its fragment learned, beside the fix",
+                   model.count() == 1 && model.data(model.index(0), CallHistoryModel::TgRole).toULongLong() == 100U
+                       && detail_of(model, 0) == QStringLiteral("GPS: learned"));
+            expect("target: the learned target is notified", data_changed_with(changed, {CallHistoryModel::TgRole}));
+            model.startSaveForTest();
+            model.waitForSaveForTest();
+        }
+        CallHistoryModel reloaded;
+        expect("target: the learned target and the fix after a reload",
+               reloaded.count() == 1 && reloaded.data(reloaded.index(0), CallHistoryModel::TgRole).toULongLong() == 100U
+                   && detail_of(reloaded, 0) == QStringLiteral("GPS: learned"));
+    }
+}
+
 /* Issue #800: a long call folds many short fragments, each into a row holding all the earlier ones. A fold looks every
  * fragment of the row up among its parts; done by a scan per fragment that is N^2 for the row of N, N^3 over the call,
  * and the UI thread stalls. The lookups read a bounded number of parts per part the row holds, per fold. */
@@ -7495,6 +7535,7 @@ main(int argc, char** argv) {
     test_restamped_fragment_withdraws_its_fix();
     test_restamped_fragment_found_by_identity();
     test_update_proving_other_slot_is_taken_back();
+    test_fragment_update_learns_target();
     test_long_call_fold_lookups_stay_linear();
     test_spill_replay_keeps_newer_message();
     test_fragment_texts_follow_the_rows_radio();
