@@ -394,6 +394,14 @@ test_zoom_keeps_the_anchor(void) {
     const mm::Viewport in = mm::zoom_about(edge, 8.0, 10.0, 200.0);
     const mm::ScreenPoint s = mm::screen_from_world(in, west_of_edge);
     assert(near(s.x, 10.0, 1.0e-5) && near(s.y, 200.0, 1.0e-5));
+    /* A pinch out past the view's minimum zoom (the world filling its width) stops at that floor, and the place
+     * under the fingers stays there: the floor is applied before the centre is solved, not after. */
+    const mm::Viewport wide = mm::clamp_viewport(view(0.5, 0.5, 1.97, 1000.0, 600.0));
+    const mm::WorldPoint held = mm::world_from_screen(wide, 100.0, 300.0);
+    const mm::Viewport floored = mm::zoom_about(wide, 1.0, 100.0, 300.0);
+    assert(near(floored.zoom, mm::min_zoom_for_width(1000.0), kTol));
+    const mm::ScreenPoint still = mm::screen_from_world(floored, held);
+    assert(near(still.x, 100.0, 1.0e-5) && near(still.y, 300.0, 1.0e-5));
     /* The zoom is clamped; a non-finite anchor zooms about the centre. */
     const mm::Viewport too_far = mm::zoom_about(vp, 40.0, ax, ay);
     assert(near(too_far.zoom, mm::kMaxZoom, kTol));

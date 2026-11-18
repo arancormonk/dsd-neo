@@ -316,7 +316,9 @@ pan(Viewport vp, double dx, double dy) {
  * @brief The view at @p new_zoom with the world point under (@p ax, @p ay) still under it.
  *
  * A pinch or a wheel step that slides the map out from under the fingers reads
- * as broken. Near the north or south edge the clamp may still move the anchor:
+ * as broken. The zoom stops at the same range clamp_viewport() allows, its
+ * floor included (the world filling the view's width), and the anchor holds
+ * there too. Near the north or south edge the clamp may still move the anchor:
  * there is nothing past the edge to keep it over.
  */
 inline Viewport
@@ -327,7 +329,9 @@ zoom_about(Viewport vp, double new_zoom, double ax, double ay) {
         ay = vp.height / 2.0;
     }
     const WorldPoint anchor = world_from_screen_raw(vp, ax, ay);
-    vp.zoom = clamp_zoom(new_zoom);
+    /* The same floor clamp_viewport() applies, before the centre is solved: raised after, it would move the
+     * anchor. */
+    vp.zoom = std::max(clamp_zoom(new_zoom), min_zoom_for_width(vp.width));
     const double world = world_size_px(vp.zoom);
     vp.center_x = anchor.x - ((ax - (vp.width / 2.0)) / world);
     vp.center_y = anchor.y - ((ay - (vp.height / 2.0)) / world);
