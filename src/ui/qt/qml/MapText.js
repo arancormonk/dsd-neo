@@ -56,15 +56,6 @@ function trackName(track) {
     return qsTr("Unnamed radio")
 }
 
-// The newest report's age: the open ring's when that is the newest, else the
-// current position's.
-function newestAge(track) {
-    if (!track)
-        return -1
-    var age = track.validityUnknown && track.hasUnknownFix ? track.unknownAgeSeconds : track.ageSeconds
-    return typeof age === "number" && isFinite(age) ? age : -1
-}
-
 // The states a fix is in, in the words the detail sheet and the List use.
 // Each is also a visual variable on the map; here none depends on seeing it.
 function stateWords(track) {
@@ -109,6 +100,8 @@ function ringWords(ring) {
     var text = ring.newest ? qsTr("Newer report may be old or invalid") : qsTr("An earlier report may be old or invalid")
     if (ring.provisional)
         text = qsTr("%1, format not confirmed by a published specification").arg(text)
+    if (ring.weakCheck)
+        text = qsTr("%1, weak error check").arg(text)
     return text
 }
 

@@ -648,7 +648,28 @@ Item {
             }
         }
 
+        MapList {
+            id: positionList
+            objectName: "mapPositionList"
+            anchors.fill: parent
+            // Shown when filtered empty too: its gap row still says where
+            // positions may be missing, above the empty state's Show all.
+            visible: !screen.mapShown && !screen.emptyLog
+            selectedTrackId: map.selectedTrackId
+            followTrackId: map.followTrackId
+            deviceKnown: locator.deviceValid
+            deviceLatitude: locator.deviceLatitude
+            deviceLongitude: locator.deviceLongitude
+            pin: screen.pin
+            onActivated: function (trackId) {
+                screen.openTrack(trackId, true);
+            }
+            onPinActivated: screen.openPinDetails()
+        }
+
         // ---- Empty ----
+        // Declared after the List: Tab and a screen reader follow item order,
+        // so the List's gap row above it is read first (final review F2-M1).
         // Beside the controls, never over them: centred while it fits, and
         // scrolling from the top when a short landscape screen or a large
         // text size makes it taller than the room.
@@ -688,25 +709,6 @@ Item {
                 onShowAll: positions.ageFilterSeconds = 0
                 onLoadTiles: screen.tilesEnabled = true
             }
-        }
-
-        MapList {
-            id: positionList
-            objectName: "mapPositionList"
-            anchors.fill: parent
-            // Shown when filtered empty too: its gap row still says where
-            // positions may be missing, above the empty state's Show all.
-            visible: !screen.mapShown && !screen.emptyLog
-            selectedTrackId: map.selectedTrackId
-            followTrackId: map.followTrackId
-            deviceKnown: locator.deviceValid
-            deviceLatitude: locator.deviceLatitude
-            deviceLongitude: locator.deviceLongitude
-            pin: screen.pin
-            onActivated: function (trackId) {
-                screen.openTrack(trackId, true);
-            }
-            onPinActivated: screen.openPinDetails()
         }
     }
 

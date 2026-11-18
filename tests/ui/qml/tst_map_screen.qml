@@ -535,7 +535,7 @@ Item {
         function test_14d_the_sheet_and_list_describe_the_shown_fix() {
             push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7", weakCheck: true, provisional: true, speedDkmh: 420,
                   ageSeconds: 30});
-            push({source: 1001, lat: 10.01, lon: 20.01, label: "Engine 7", validityUnknown: true, altitudeDm: 1230});
+            push({source: 1001, lat: 10.01, lon: 20.01, label: "Engine 7", validityUnknown: true, weakCheck: true, altitudeDm: 1230});
             var id = trackNamed("Engine 7");
             screen.openTrack(id, false);
             var states = [0, 1, 2].map(function (i) { return item("mapShownFixState" + i); }).filter(function (t) {
@@ -570,8 +570,42 @@ Item {
             var row = list.itemAtIndex(positionView.rowForTrack(id));
             var said = row.node.Accessible.description;
             verify(said.indexOf("Weak error check") >= 0 && said.indexOf("Format not confirmed by a published specification") >= 0, said);
-            verify(said.indexOf("Newer report may be old or invalid") >= 0, said);
+            verify(said.indexOf("Newer report may be old or invalid, weak error check") >= 0, "F2 review M2: the ring's own weak check: " + said);
             screen.mapShown = true;
+        }
+
+        // F2 review: the words follow the marks the map draws under the active filter. "Last 15 min" hides Engine 7's
+        // 40-minute-old weak fix but shows its 5-minute-old error-7 ring: the List row says the ring's age and states
+        // (no weak check, no "Newer report"), and the sheet's one block is the ring, under "Position".
+        function test_14f_a_filtered_out_fix_is_not_described() {
+            push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7", weakCheck: true, speedDkmh: 420, ageSeconds: 2400});
+            push({source: 1001, lat: 10.01, lon: 20.01, label: "Engine 7", validityUnknown: true, ageSeconds: 300});
+            positions.ageFilterSeconds = 900;
+            var id = trackNamed("Engine 7");
+            compare(positions.trackFor(id).currentShown, false);
+            compare(positions.trackFor(id).unknownShown, true);
+            screen.mapShown = false;
+            var list = item("mapList");
+            tryVerify(function () { return list.itemAtIndex(positionView.rowForTrack(id)) !== null; });
+            var row = list.itemAtIndex(positionView.rowForTrack(id));
+            compare(row.ageShown, "5 min", "the drawn ring's age");
+            var said = row.node.Accessible.description;
+            verify(said.indexOf("Fix may be old or invalid") >= 0, said);
+            verify(said.indexOf("Weak error check") < 0 && said.indexOf("Newer report") < 0, said);
+            screen.mapShown = true;
+            screen.openTrack(id, false);
+            compare(item("mapShownFixHeading").text, "Position");
+            compare(item("mapShownFixState0").text, "Fix may be old or invalid");
+            verify(!item("mapRingFix").visible, "no second block for a ring that is the only mark drawn");
+            var lines = [];
+            for (var i = 0; i < 9; ++i) {
+                if (item("mapShownFixLine" + i).visible)
+                    lines.push(item("mapShownFixLine" + i).text);
+            }
+            verify(lines.indexOf("Position 10.01000° N, 20.01000° E") >= 0, JSON.stringify(lines));
+            verify(!lines.some(function (t) { return t.indexOf("Speed") === 0; }), "not the hidden fix's speed");
+            sheet().visible = false;
+            positions.ageFilterSeconds = 0;
         }
 
         // Final review M2: after a loss (a gap row), a filter that hides every radio still shows the filtered-empty
@@ -590,6 +624,11 @@ Item {
             verify(item("mapPositionList").visible && item("mapEmptyState").visible);
             var show = item("mapShowAll");
             verify(show.visible);
+            // F2 review M1: the gap row is read and tabbed before the empty state below it (item order).
+            var area = item("mapArea");
+            var kids = area.children;
+            var at = function (it) { for (var k = 0; k < kids.length; ++k) { if (kids[k] === it) return k; } return -1; };
+            verify(at(item("mapPositionList")) < at(item("mapEmptyScroll")), "the List comes before the empty state");
             verify(show.mapToItem(screen, 0, 0).y >= list.mapToItem(screen, 0, list.itemAtIndex(0).height).y - 1,
                    "Show all sits below the gap row");
             show.activate();

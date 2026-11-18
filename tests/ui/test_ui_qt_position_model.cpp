@@ -424,6 +424,30 @@ test_shown_fix_records() {
     CHECK(ring.value(QStringLiteral("validityUnknown")).toBool() && ring.value(QStringLiteral("newest")).toBool());
     CHECK(ring.value(QStringLiteral("altitudeDm")).toInt() == 1230 && !ring.contains(QStringLiteral("speedDkmh")));
     CHECK(std::fabs(ring.value(QStringLiteral("latitude")).toDouble() - (kLat + 3) / 1e7) < 1e-9);
+    CHECK(track.value(QStringLiteral("currentShown")).toBool() && track.value(QStringLiteral("unknownShown")).toBool());
+
+    // F2 review: the words follow what the canvas draws. A filter that hides the 40-minute-old current fix but shows
+    // the 5-minute-old ring: currentShown goes false, unknownShown stays true, and an age tick announces it.
+    Fresh g;
+    const uint64_t s2 = 22U;
+    dsd_position_fix old_fix = fix_of(8U, 0, kT0);
+    dsd_position_fix newer = fix_of(8U, 1, kT0 + 2100);
+    newer.flags = DSD_POS_FLAG_VALIDITY_UNKNOWN;
+    g_wall = kT0 + 2400;
+    publish(s2, {old_fix, newer}, sample_of(s2, DSD_DECODE_CLOCK_SYSTEM, kT0 + 2400, true));
+    g.model.poll();
+    QSignalSpy changed(&g.model, &QAbstractItemModel::dataChanged);
+    g.model.setAgeFilterSeconds(900);
+    const PositionModel::Row* eight = track_of(g.model, 8U);
+    CHECK(eight != nullptr);
+    const QVariantMap filtered = g.model.trackFor(eight->id);
+    CHECK(!filtered.value(QStringLiteral("currentShown")).toBool());
+    CHECK(filtered.value(QStringLiteral("unknownShown")).toBool());
+    bool announced = false;
+    for (const QList<QVariant>& args : changed) {
+        announced = announced || qvariant_cast<QList<int>>(args.at(2)).contains(PositionModel::CurrentShownRole);
+    }
+    CHECK(announced);
 }
 
 /* Final review M2: the filter's track count leaves the gap row out, so a filter that hides every radio reads as no

@@ -129,6 +129,10 @@ class PositionModel : public QAbstractListModel {
         CurrentFixRole,
         /** The newest validity-unknown report (the open ring), in the same keys; {} when none. */
         UnknownFixRole,
+        /** Whether the canvas draws the current marker / the open ring now (the age filter can hide either): the
+         *  sheet and the List describe what is drawn. Age roles: they change with the filter and the clock. */
+        CurrentShownRole,
+        UnknownShownRole,
     };
 
     /** @brief One trail point. */

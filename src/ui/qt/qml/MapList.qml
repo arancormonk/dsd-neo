@@ -177,15 +177,19 @@ Item {
             readonly property bool selected: !gap && list.selectedTrackId > 0 && model.trackId === list.selectedTrackId
             readonly property bool followed: !gap && list.followTrackId > 0 && model.trackId === list.followTrackId
             readonly property string name: MapText.trackName(model)
-            // Final review M1: the row describes the fix the map draws for it:
-            // the filled marker's (currentFix), else the open ring's, with
-            // that report's own age, format and states; a ring beside a
-            // current position gets its own words.
-            readonly property var shownFix: gap ? ({}) : model.hasPosition ? (model.currentFix || ({})) : (model.unknownFix || ({}))
-            readonly property double age: gap ? -1 : model.hasPosition ? model.ageSeconds : model.unknownAgeSeconds
+            // Final review M1 and its review: the row describes the marks the
+            // map draws for it under the active filter: the filled marker's
+            // report (currentFix) while it is drawn, else the open ring's,
+            // each with its own age, format and states; a drawn ring beside a
+            // drawn marker gets its own words.
+            readonly property bool currentDrawn: !gap && model.currentShown === true
+            readonly property bool ringDrawn: !gap && model.unknownShown === true
+            readonly property bool currentFirst: currentDrawn || (!ringDrawn && model.hasPosition === true)
+            readonly property var shownFix: gap ? ({}) : currentFirst ? (model.currentFix || ({})) : (model.unknownFix || ({}))
+            readonly property double age: gap ? -1 : currentFirst ? model.ageSeconds : model.unknownAgeSeconds
             readonly property string ageShown: gap ? "" : MapText.ageText(age).length > 0 ? MapText.ageText(age) : (shownFix.timeText || "")
-            readonly property double fixLat: Number(model.hasPosition ? model.latitude : model.unknownLatitude) || 0
-            readonly property double fixLon: Number(model.hasPosition ? model.longitude : model.unknownLongitude) || 0
+            readonly property double fixLat: Number(shownFix.latitude) || 0
+            readonly property double fixLon: Number(shownFix.longitude) || 0
             readonly property string what: {
                 if (gap)
                     return "";
@@ -203,7 +207,7 @@ Item {
             // Emergency has its tag; the rest of the states are words here: the
             // shown fix's, the track's source, then the ring's beside it.
             readonly property var states: gap ? [] : MapText.fixWords(shownFix).concat(model.anonymous ? [qsTr("Radio not confirmed")] : [])
-                .concat(model.hasPosition && model.hasUnknownFix ? [MapText.ringWords(model.unknownFix)] : [])
+                .concat(currentDrawn && ringDrawn ? [MapText.ringWords(model.unknownFix)] : [])
             readonly property string gapTitle: model.timeText && model.timeText.length > 0 ? qsTr("Positions may be missing from %1").arg(model.timeText) : qsTr("Positions may be missing")
             readonly property string gapDetail: qsTr("Reports that came while the app could not read them were lost. Trails break here.")
             readonly property string spokenNow: gap ? gapTitle : (MapText.agoText(age, shownFix.timeText).length > 0 ? name + ", " + MapText.agoText(age, shownFix.timeText) : name)

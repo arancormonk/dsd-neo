@@ -107,8 +107,9 @@ sample_moved(const dsd_app_position_sample& before, const dsd_app_position_sampl
 
 const QList<int>&
 age_roles() {
-    static const QList<int> roles = {PositionModel::AgeSecondsRole, PositionModel::UnknownAgeSecondsRole,
-                                     PositionModel::ReportAgeSecondsRole, PositionModel::ShownRole};
+    static const QList<int> roles = {PositionModel::AgeSecondsRole,       PositionModel::UnknownAgeSecondsRole,
+                                     PositionModel::ReportAgeSecondsRole, PositionModel::ShownRole,
+                                     PositionModel::CurrentShownRole,     PositionModel::UnknownShownRole};
     return roles;
 }
 
@@ -297,6 +298,9 @@ PositionModel::value(const Row& row, int role) {
     if (role == UnknownFixRole) {
         return row.hasUnknown ? fix_record(row.unknown, row.latestIsUnknown) : QVariantMap();
     }
+    if (role == CurrentShownRole || role == UnknownShownRole) {
+        return role == CurrentShownRole ? row.hasCurrent && row.currentShown : row.hasUnknown && row.unknownShown;
+    }
     QVariant flag;
     if (flag_value(role, row.latest().flags, &flag)) {
         return flag;
@@ -359,7 +363,9 @@ PositionModel::roleNames() const {
             {ShownRole, QByteArrayLiteral("shown")},
             {PointCountRole, QByteArrayLiteral("pointCount")},
             {CurrentFixRole, QByteArrayLiteral("currentFix")},
-            {UnknownFixRole, QByteArrayLiteral("unknownFix")}};
+            {UnknownFixRole, QByteArrayLiteral("unknownFix")},
+            {CurrentShownRole, QByteArrayLiteral("currentShown")},
+            {UnknownShownRole, QByteArrayLiteral("unknownShown")}};
 }
 
 /* The first row whose order is at most @p order: where a row of that order is, or goes. */

@@ -83,7 +83,7 @@ ModalSheet {
         }
         take(fresh);
     }
-    readonly property var ageKeys: ["ageSeconds", "unknownAgeSeconds", "reportAgeSeconds", "shown"]
+    readonly property var ageKeys: ["ageSeconds", "unknownAgeSeconds", "reportAgeSeconds", "shown", "currentShown", "unknownShown"]
     // A copy read: its ages go to `ages`, the rest to `track`, each only when
     // it changed, so a tick of the clock touches the age lines alone.
     function take(fresh) {
@@ -117,8 +117,14 @@ ModalSheet {
     // ring's report when the track has both.
     readonly property var current: track.currentFix || ({})
     readonly property var ring: track.unknownFix || ({})
-    readonly property bool hasCurrent: current.latitude !== undefined
-    readonly property bool hasRing: ring.latitude !== undefined
+    // What the canvas draws now under the age filter: the words follow the
+    // drawn marks (a filtered-out fix is not described as on the map).
+    readonly property bool currentDrawn: current.latitude !== undefined && ages.currentShown === true
+    readonly property bool ringDrawn: ring.latitude !== undefined && ages.unknownShown === true
+    // A track the filter hides altogether (the filter changed while the
+    // sheet is open) keeps describing the fixes it has.
+    readonly property bool hasCurrent: currentDrawn || (!ringDrawn && current.latitude !== undefined)
+    readonly property bool hasRing: ringDrawn || (!currentDrawn && ring.latitude !== undefined)
     readonly property var shownFix: pin ? pinPosition : hasCurrent ? current : ring
     readonly property double shownAge: pin ? -1 : hasCurrent ? (Number(ages.ageSeconds) >= 0 ? ages.ageSeconds : -1) : (Number(ages.unknownAgeSeconds) >= 0 ? ages.unknownAgeSeconds : -1)
     // The track's own states, which belong to no one report: an emergency (the

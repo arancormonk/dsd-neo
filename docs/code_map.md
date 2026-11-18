@@ -18136,13 +18136,16 @@ Qt Quick frontend (`src/ui/qt`):
     List's filter; a 1 s timer runs while `ageing` (the map screen shows). Rows never move once placed (a11y).
     The flat roles (flags, readings, `kindText`, `fixTime`) describe a track's newest report; `currentFix` and
     `unknownFix` (maps, `{}` when none) describe the filled marker's own report and the open ring's, each with its
-    flags, readings, times and `newest`. The detail sheet and the List describe the fix drawn from those (final review
-    M1): the sheet's "Position" block is the shown fix (marker, else ring, else a History pin) with its own states and
-    readings, and a ring beside a current position gets a "Newer report"/"Earlier report" block; a List row says the
-    shown fix's states, format and age, and "Newer report may be old or invalid" (with its format) for the ring. The
-    distance line says "from you" while the live position is followed, "from your saved location" for the saved fix.
-    `positionView.trackCount` leaves the gap row out, so the filtered-empty state ("No positions in …", Show all)
-    shows after a loss too, on the map and below the List's gap row.
+    flags, readings, times and `newest`. `currentShown`/`unknownShown` (age roles, so a filter change or an age tick
+    announces them) say whether the canvas draws the marker and the ring under the age filter. The detail sheet and
+    the List describe only what is drawn (final review M1): the sheet's "Position" block is the drawn marker's report,
+    else the drawn ring's (else a History pin), with its own states, readings and age; a drawn ring beside a drawn
+    marker gets a "Newer report"/"Earlier report" block; a List row says the shown report's states, format, distance
+    and age, and "Newer report may be old or invalid" (with its format and weak check) only for a drawn ring beside
+    the marker. The distance line says "from you" while the live position is followed, "from your saved location"
+    for the saved fix. `positionView.trackCount` leaves the gap row out, so the filtered-empty state ("No positions
+    in …", Show all) shows after a loss too, on the map and below the List's gap row (declared after the List, so
+    the gap row is read and tabbed first).
   - `position_tap.{h,cpp}` (`PositionTap`): the History tap pattern (`call_history_tap.h`) for positions. Started on
     Hidden/Suspended, a `std::thread` polls every second into a 20,000-record queue (oldest dropped, counted, marked as
     a loss) and hands it over at the first poll after the app shows again. `position_read_page()` is the cursor read
