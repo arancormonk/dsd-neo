@@ -6099,6 +6099,53 @@ test_weaker_identity_joins_stronger(void) {
     expect("B5: two full P25 scopes that differ are two calls", model.count() == 2);
 }
 
+/* B2/B5: an update found by its fragment is not merged again, so its reception system is checked before it gives the
+ * row anything. A P25 call row heard on one full system (its sender scope unknown: no fix yet) merges a NAC-only
+ * fragment of the same radio; when that fragment's later reading names another full system and brings a fix local to
+ * that system, the row keeps no position from it, live and after a reload. The same update from the row's own system
+ * gives it the fix. */
+void
+test_late_position_rechecks_reception_system(void) {
+    const time_t when = 1754706600;
+    for (int sameSystem = 0; sameSystem < 2; sameSystem++) {
+        resetStorage();
+        RingFixture ring;
+        const uint32_t sysid = sameSystem != 0 ? 0x1A3U : 0x1A4U;
+        {
+            CallHistoryModel model;
+            Event_History* a = ring.commit(0, 80621U, 8621U, when, when + 3);
+            a->systype = DSD_SYNC_P25P1_POS;
+            with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+            Event_History* b = ring.commit(0, 80621U, 8621U, when + 5, when + 8);
+            b->systype = DSD_SYNC_P25P1_POS;
+            with_rx(b, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 851012500);
+            model.refresh(ring.state);
+            expect("late position: the NAC-only fragment joins the call", model.count() == 1);
+            b = &ring.rings[0].Event_History_Items[1];
+            with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, sysid, 0);
+            with_gps(b, "GPS: B", 225000000, 450000000, 7U);
+            b->pos.scope.kind = DSD_POS_SCOPE_P25;
+            b->pos.scope.a = 0xBEE00U;
+            b->pos.scope.b = sysid;
+            ring.touchCommitted(0);
+            model.refresh(ring.state);
+            expect(sameSystem != 0 ? "late position: the row's own system gives it the fix"
+                                   : "late position: another system's fix stays off the row",
+                   model.count() == 1 && (detail_of(model, 0) == QStringLiteral("GPS: B")) == (sameSystem != 0));
+            model.startSaveForTest();
+            model.waitForSaveForTest();
+        }
+        const QJsonObject stored = stored_row_with(80621U, 8621U);
+        expect(sameSystem != 0 ? "late position: the own system's fix is saved"
+                               : "late position: another system's fix is not saved",
+               stored.contains(QLatin1String("pos")) == (sameSystem != 0)
+                   && stored.value(QLatin1String("rx")).toObject().value(QLatin1String("b")).toInt() == 0x1A3);
+        CallHistoryModel reloaded;
+        expect("late position: the same after a reload",
+               reloaded.count() == 1 && (detail_of(reloaded, 0) == QStringLiteral("GPS: B")) == (sameSystem != 0));
+    }
+}
+
 /* A notice decoded again is the logged one only when it is the same fix: the same text with another position is another
  * delivery. The rev and the process of a decode in a fresh ring differ and do not count. */
 void
@@ -6275,6 +6322,7 @@ main(int argc, char** argv) {
     test_textual_destinations_under_one_service_stay_apart();
     test_system_identity_splits_conventional_systems();
     test_weaker_identity_joins_stronger();
+    test_late_position_rechecks_reception_system();
     test_repeated_notice_compares_the_fix();
 
     QDir(dataDir).removeRecursively();

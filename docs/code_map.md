@@ -15564,7 +15564,10 @@ Qt Quick frontend (`src/ui/qt`):
       scope, protocol, target and source texts, source number and source label only when it names the same radio
       (`fragment_identity_compatible()`): an anonymous fragment never enriches a named row, and one naming another
       radio (another number, callsign or sender system; also an update found by its fragment, which is not merged
-      again) keeps all of them to itself and leaves the row's own as they were. The texts anonymous fragments gave are
+      again) keeps all of them to itself and leaves the row's own as they were. So does one heard on a reception
+      system the row's own is not compatible with (`call_history_scopes_compatible()` on `rxScope`): an update found by
+      its fragment can name another system than the one it merged under, and a late position from it never lands on
+      the row. The texts anonymous fragments gave are
       dropped when the row learns its radio. The reception scope folds by strength from any
       fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
       greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and

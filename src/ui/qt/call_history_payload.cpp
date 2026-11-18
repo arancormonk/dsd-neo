@@ -326,16 +326,19 @@ gps_units_to_json(const QList<CallHistoryModel::GpsUnit>& units, QJsonObject& ob
 
 /**
  * @brief Whether fragment @p row may give @p existing its text message, GPS text and position (issue #800, B2): one
- * protocol family and sender system, and the same radio.
+ * protocol family, reception system and sender system, and the same radio.
  *
  * An anonymous fragment never enriches a row that names its source, and a fragment that names another source than the
  * row's keeps them to itself: the row keeps its original radio (foldRow()), so a position never crosses radios. The
  * row's source label follows the same rule (foldRow()): a fragment of another radio, by number, callsign or sender
- * system, never names the row.
+ * system, never names the row. Nor does a fragment heard on another system than the row's: an update found by its
+ * fragment (CallHistoryModel::rowHoldingFragment()) is not merged again, and its later reading may name a reception
+ * system the row's own disagrees with, which the merge (rows_identity_compatible()) would have refused.
  */
 bool
 fragment_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
     if (!call_history_protocols_compatible(existing.protocol, row.protocol)
+        || !call_history_scopes_compatible(existing.rxScope, row.rxScope)
         || !call_history_scopes_compatible(existing.sourceScope, row.sourceScope)) {
         return false;
     }
