@@ -569,6 +569,49 @@ test_p25_sap48(void) {
     CHECK(strstr(notice_row()->text_message, "HELLO") != NULL || strstr(notice_row()->gps_s, "HELLO") != NULL);
 }
 
+/* A SAP 48 packet whose CRC failed (-F) gives neither a report nor text, printed or stored: a damaged first octet makes
+   an NMEA report read as text ($GPRMC arriving as %GPRMC), and the service's text can hold a position in any form. The
+   packet keeps its notice, without the payload. */
+static void
+test_p25_sap48_failed_packet_no_text(void) {
+    char s[128];
+    sentence(s, sizeof s, "GPRMC,120000,A,2230.0000,N,04500.0000,E,010.0,090.0,150626,,,A", "\r\n");
+    char damaged[128];
+    DSD_SNPRINTF(damaged, sizeof damaged, "%s", s);
+    damaged[0] = '%';
+    const char* payloads[] = {damaged, s, "AT 2230.0000N 04500.0000E"};
+    for (size_t i = 0; i < sizeof payloads / sizeof payloads[0]; i++) {
+        reset_fixture();
+        dsd_test_capture_stderr cap;
+        char out[4096];
+        out[0] = '\0';
+        if (dsd_test_capture_stderr_begin(&cap, "sap48_failed") == 0) {
+            p25_sap48(payloads[i], 1);
+            dsd_test_capture_stderr_end(&cap);
+            CHECK(dsd_test_capture_stderr_read(&cap, out, sizeof out) == 0);
+        } else {
+            CHECK(0);
+        }
+        CHECK(strstr(out, "2230") == NULL && strstr(out, "GPRMC") == NULL);
+        CHECK(strstr(out, "payload withheld (CRC ERR)") != NULL);
+        dsd_position_fix recs[4];
+        CHECK(feed_records(recs, 4) == 0);
+        int notices = 0;
+        for (int r = 0; r < DSD_EVENT_HISTORY_LEN; r++) {
+            const Event_History* row = &g_history[0].Event_History_Items[r];
+            CHECK(strstr(row->text_message, "2230") == NULL && strstr(row->gps_s, "2230") == NULL);
+            CHECK(strstr(row->event_string, "2230") == NULL);
+            notices += strstr(row->event_string, "payload withheld") != NULL;
+        }
+        CHECK(notices == 1);
+        CHECK(strstr(dsd_event_staged_text(&g_state, 0), "2230") == NULL);
+        CHECK(strstr(dsd_event_staged_gps(&g_state, 0), "2230") == NULL);
+        char lrrp[512];
+        read_lrrp_file(lrrp, sizeof lrrp);
+        CHECK(lrrp[0] == '\0');
+    }
+}
+
 /* An inbound SAP 48 packet whose LLID is a fixed-network ID (0xFFFFFD, 0xFFFFFF) names no radio: its checked report is
    kept anonymous, never as a track of the reserved ID. */
 static void
@@ -847,6 +890,7 @@ main(void) {
     test_producer_sentence_choice();
     test_producer_withholds_unadmitted_sentences();
     test_p25_sap48();
+    test_p25_sap48_failed_packet_no_text();
     test_p25_sap48_reserved_source();
     test_p25_sap48_long_payload();
     test_p25_origin();

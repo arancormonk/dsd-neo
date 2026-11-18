@@ -2658,7 +2658,11 @@ suite runs under this compiler.
     0, 0 alone) `NMEA withheld (no admitted position)`, since its sentences can hold the coordinates the decoder
     rejected. A payload is NMEA
     when the parser frames it so (`nmea_payload_framed()`: line ends, then `$` or `!`), and then none of it is ever
-    plain text (P25 SAP 48's text fallback), whether or not its sentences pass. The sentences and the report are read
+    plain text (P25 SAP 48's text fallback), whether or not its sentences pass. A SAP 48 packet whose CRC failed (`-F`)
+    takes neither branch (`p25_handle_sap48_location_data()`, fail closed): a damaged first octet makes an NMEA report
+    read as text, and the service's text can hold a position in any form, so its payload is never printed, staged or
+    kept as text or GPS; its notice says `P25 Location Service: payload withheld (CRC ERR);` (the raw MPDU dump stays
+    with `-Z`; test `CORE_NMEA_SENTENCE`). The sentences and the report are read
     from the whole payload (up to `NMEA_PAYLOAD_MAX_BYTES`, more than any P25 packet or NXDN data call carries; only
     the kept text is bounded).
   - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data

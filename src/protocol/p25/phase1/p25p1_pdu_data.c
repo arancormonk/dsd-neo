@@ -953,6 +953,19 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         span = P25_PDU_MAX_DECODE_BYTES;
     }
 
+    /* The packet's verdict: the MDPU decodes this packet inside its CRC scope on slot 0 (p25p1_mdpu.c). */
+    const int packet_verified = state->event_crc_invalid[0] == 0U;
+    if (!packet_verified) {
+        /* A packet whose CRC failed (-F) keeps its notice, never its payload: a damaged octet can turn an NMEA report
+           into what reads as text, and the location service's text can hold a position in any form, so neither branch
+           below prints or stages any of it (issue #800, fail closed). The raw dump stays with -Z. */
+        DSD_FPRINTF(stderr, " P25 Location Service: payload withheld (CRC ERR);");
+        DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]),
+                     "P25 Location Service: payload withheld (CRC ERR);");
+        p25_emit_pdu_json_for_fields(pdu, len, encrypted, "");
+        return status;
+    }
+
     uint8_t payload_bits[P25_PDU_MAX_DECODE_BYTES * 8];
     DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
     dsd_unpack_bytes_to_bits(payload, (size_t)span, payload_bits, sizeof(payload_bits), (size_t)span);
@@ -967,16 +980,14 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         // --dmr-tg-key-csv lookup treat this address as one.
         state->dmr_data_target_is_group[slot] = 0;
         state->dmr_data_checked_group[slot] = 0;
-        /* The packet's verdict: the MDPU decodes this packet inside its CRC scope on slot 0 (p25p1_mdpu.c). */
-        const int packet_verified = state->event_crc_invalid[0] == 0U;
         /* The reception the MDPU's header was heard on (processMPDU()); none for a packet that did not come through
            it. */
         const dsd_position_origin* origin = state->p25_mdpu_origin.valid ? &state->p25_mdpu_origin : NULL;
         status.data_notice_emitted =
             nmea_sentence_checker(opts, state, payload_bits, slot, span, packet_verified, origin) != 0U;
     } else {
-        /* Only a payload that is not NMEA is plain text: sentences whose checksums failed are never shown or kept as
-           text, since their coordinates were not checked (issue #800 2.4). The location service's text can hold a
+        /* Only a checked packet's payload that is not NMEA is plain text: sentences whose checksums failed are never
+           shown or kept as text, since their coordinates were not checked (issue #800 2.4). The location service's text can hold a
            position in any form, so its line names the service (issue #800, D10): the diagnostics log removes it. */
         uint8_t write_history = (state != NULL && state->event_history_s != NULL) ? 1U : 0U;
         utf8_to_text_labelled(state, write_history, (uint16_t)span, payload, "P25 Location Service Text");

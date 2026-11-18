@@ -2353,7 +2353,8 @@ setting, shown apart from what is received, and it is off by default: then the o
   Positions never come from content `-F` let through. A DMR or P25 data report (LRRP, LOCN, LIP, UDT NMEA, ASCII
   NMEA) or a DMR embedded GPS LC whose check failed, or that was accepted as RAS, still prints, and its data notice is
   kept marked `[CRC ERR]` or `[RAS]`, but without coordinates (`Position: (suppressed; CRC ERR)`): nothing reaches
-  History's position, `-L` or the API, and a failed P25 packet keeps none of its NMEA sentences. A DMR USBD LIP
+  History's position, `-L` or the API, and a failed P25 location-service (SAP 48) packet keeps none of its payload,
+  NMEA sentences or text: it prints `P25 Location Service: payload withheld (CRC ERR);` instead. A DMR USBD LIP
   reply whose CRC failed leaves no notice at all. A position heard during a P25 Phase 2 call that was followed from a
   grant whose CRC failed names no radio (`SRC: unverified;`, `00000000` in `-L`) until a checked MAC_PTT or
   MAC_ACTIVE names the source, talkgroup and kind again. An M17 LSF that failed its CRC still sets up the stream, but
