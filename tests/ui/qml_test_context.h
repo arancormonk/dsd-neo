@@ -2552,6 +2552,8 @@ class CallLogStore : public QAbstractListModel {
         /* Issue #708: the stable row identity and the row's call recordings (the provider's maps), oldest first. */
         qint64 uid = 0;
         QVariantList recordings;
+        /* Issue #800: the saved fix as CallHistoryModel's position role reads it, {} without one. */
+        QVariantMap position;
     };
 
     int
@@ -2669,6 +2671,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::UidRole: return row.uid;
             case CallHistoryModel::RecordingsRole: return row.recordings;
             case CallHistoryModel::HasRecordingRole: return !row.recordings.isEmpty();
+            case CallHistoryModel::PositionRole: return row.position;
             default: return {};
         }
     }
@@ -2701,7 +2704,8 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::AnalogModeRole, "analogMode"},
                 {CallHistoryModel::UidRole, "uid"},
                 {CallHistoryModel::RecordingsRole, "recordings"},
-                {CallHistoryModel::HasRecordingRole, "hasRecording"}};
+                {CallHistoryModel::HasRecordingRole, "hasRecording"},
+                {CallHistoryModel::PositionRole, "position"}};
     }
 
     /** @brief CallHistoryModel::rowForUid(): where the row with @p uid is now, or -1. */
@@ -2791,6 +2795,7 @@ class CallLogStore : public QAbstractListModel {
             {"siteText", CallHistoryModel::SiteTextRole},
             {"analog", CallHistoryModel::AnalogRole},
             {"analogMode", CallHistoryModel::AnalogModeRole},
+            {"position", CallHistoryModel::PositionRole},
         };
 
         bool parsed = false;
@@ -2866,6 +2871,22 @@ class CallLogStore : public QAbstractListModel {
         m_rows[row].recordings = recordings;
         const QModelIndex idx = index(row);
         Q_EMIT dataChanged(idx, idx, {CallHistoryModel::RecordingsRole, CallHistoryModel::HasRecordingRole});
+        return true;
+    }
+
+    /**
+     * @brief Give the row with @p uid the saved fix @p position (issue #800), in the keys CallHistoryModel's position
+     * role uses ({latitude, longitude, errorM, validityUnknown, ...}; {} for none): dataChanged on that role.
+     */
+    Q_INVOKABLE bool
+    setRowPosition(qint64 uid, const QVariantMap& position) {
+        const int row = rowForUid(uid);
+        if (row < 0) {
+            return false;
+        }
+        m_rows[row].position = position;
+        const QModelIndex idx = index(row);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::PositionRole});
         return true;
     }
 
@@ -4572,8 +4593,8 @@ class Setup : public QObject {
      *
      * @p fix: `source` (a radio ID; 0 or absent with `anonymous`: no checked source), `lat`/`lon` (degrees; made-up
      * places only), `ageSeconds` (received that long before the canned wall clock; default 0), `errM` (position
-     * error, metres), `label`, and the flags `anonymous`, `provisional`, `validityUnknown`, `emergency`. Heard on a
-     * made-up DMR system on the system clock.
+     * error, metres), `label`, and the flags `anonymous`, `provisional`, `validityUnknown`, `emergency`, `group` (the
+     * target is a talkgroup), with pushPositionDetails()'s fields. Heard on a made-up DMR system on the system clock.
      */
     Q_INVOKABLE void
     pushPosition(const QVariantMap& fix, bool read = true) {
@@ -4592,6 +4613,7 @@ class Setup : public QObject {
         f.sender_scope = f.reception_scope;
         const bool anonymous = fix.value(QStringLiteral("anonymous")).toBool();
         f.source_id = anonymous ? 0U : fix.value(QStringLiteral("source"), 1001).toUInt();
+        pushPositionDetails(fix, &f);
         unsigned flags = 0U;
 
         const struct {
@@ -4609,12 +4631,54 @@ class Setup : public QObject {
         if (anonymous) {
             flags |= DSD_POS_FLAG_SOURCE_UNVERIFIED;
         }
+        if (fix.value(QStringLiteral("group")).toBool()) {
+            flags |= DSD_POS_FLAG_TARGET_GROUP;
+        }
         f.flags = static_cast<uint16_t>(flags);
         const QByteArray label = fix.value(QStringLiteral("label")).toString().toUtf8();
         DSD_SNPRINTF(f.label, sizeof f.label, "%s", label.constData());
         dsd_neo_qml_stub::map_publish_fix(f);
         if (read) {
             readPositions();
+        }
+    }
+
+    /**
+     * @brief The optional report fields pushPosition() takes: speedDkmh, headingDdeg, altitudeDm, fixAgeSeconds (the
+     * report's own time that long before now), targetId, freqHz and kind (dsd_position_kind). Absent keys stay unknown.
+     */
+    static void
+    pushPositionDetails(const QVariantMap& fix, dsd_position_fix* f) {
+        const auto has = [&fix](const char* key) { return fix.contains(QString::fromLatin1(key)); };
+        const auto num = [&fix](const char* key) { return fix.value(QString::fromLatin1(key)).toLongLong(); };
+        if (has("speedDkmh")) {
+            f->speed_dkmh = static_cast<uint16_t>(num("speedDkmh"));
+        }
+        if (has("headingDdeg")) {
+            f->heading_ddeg = static_cast<uint16_t>(num("headingDdeg"));
+        }
+        if (has("altitudeDm")) {
+            f->alt_dm = static_cast<int32_t>(num("altitudeDm"));
+        }
+        if (has("fixAgeSeconds")) {
+            f->fix_time_s = dsd_neo_qml_stub::map_wall_seconds() - num("fixAgeSeconds");
+        }
+        if (has("targetId")) {
+            f->target_id = static_cast<uint32_t>(num("targetId"));
+        }
+        if (has("freqHz")) {
+            f->freq_hz = num("freqHz");
+        }
+        if (has("kind")) {
+            f->kind = static_cast<uint8_t>(num("kind"));
+        }
+    }
+
+    /** @brief Issue #800: read every track's age again now, as the map's one-second timer does. */
+    Q_INVOKABLE void
+    refreshPositionAges() {
+        if (m_positions != nullptr) {
+            m_positions->refreshAges();
         }
     }
 
@@ -4656,6 +4720,12 @@ class Setup : public QObject {
     Q_INVOKABLE int
     mapTileRequests() const {
         return dsd_neo_qml_stub::map_tile_requests();
+    }
+
+    /** @brief Issue #800: the canned tile server answers 503 from now on (true), or the canned tile again (false). */
+    Q_INVOKABLE void
+    setMapTilesFailing(bool failing) {
+        dsd_neo_qml_stub::set_map_tiles_failing(failing);
     }
 
     /**
@@ -7272,6 +7342,8 @@ class Setup : public QObject {
          * desktop host brokers no USB device and applies no screen policy,
          * which is the arrangement this offscreen run matches. */
         host[QStringLiteral("screenPolicySupported")] = false;
+        /* Issue #800: no platform request to stop animating; the map's camera glides. */
+        host[QStringLiteral("reducedMotion")] = false;
         host[QStringLiteral("localDeviceBrokered")] = false;
         host[QStringLiteral("localDeviceSource")] = QStringLiteral("usb");
         /* Nothing plugged in, which is also what a desktop host answers. */

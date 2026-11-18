@@ -49,6 +49,8 @@ Item {
     // Issue #801: a pinned shortcut was tapped; Main resolves @a kind and
     // @a uid at that moment (Main.startPin()).
     signal startPin(string kind, string uid)
+    // Issue #800: a recent call's "Show on map", with the sheet to return to.
+    signal showOnMap(var record, var sheet)
     // The receiver a tap on the Explore card starts on. Main binds it to the
     // remembered radio resolved against what is plugged in, so the card states
     // what the tap will do.
@@ -2054,5 +2056,8 @@ Item {
     HistoryDetailSheet {
         id: recentDetail
         objectName: "homeRecentDetailSheet"
+        onShowOnMapRequested: function (record) {
+            screen.showOnMap(record, recentDetail);
+        }
     }
 }

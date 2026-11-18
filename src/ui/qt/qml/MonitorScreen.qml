@@ -37,6 +37,8 @@ Item {
     signal openSites
     signal openSessionMenu
     signal openTalkgroups
+    // Issue #800: a recent call's "Show on map", with the sheet to return to.
+    signal showOnMap(var record, var sheet)
     // Issue #644: what the channel the operator tuned to can be started as,
     // with its own settings (Main's listenActions), and the ask; Main starts
     // the one there is, or opens the menu of several.
@@ -2601,6 +2603,9 @@ Item {
     HistoryDetailSheet {
         id: historyDetail
         objectName: "monitorHistoryDetail"
+        onShowOnMapRequested: function (record) {
+            screen.showOnMap(record, historyDetail);
+        }
     }
 
     ActionMenu {

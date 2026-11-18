@@ -31,6 +31,7 @@ std::vector<dsd_position_fix> g_fixes;
 uint64_t g_stream = 1;
 qint64 g_wall = kMapWallSeconds;
 std::atomic<int> g_tile_requests{0};
+std::atomic<bool> g_tiles_failing{false};
 
 char*
 dup_bytes(const QByteArray& bytes, size_t* len) {
@@ -60,6 +61,12 @@ int
 canned_perform(void* /*ctx*/, const dsd_tile_fetch_request* /*req*/, dsd_tile_fetch_exchange* ex) {
     static const QByteArray body = canned_tile_png();
     g_tile_requests.fetch_add(1);
+    if (g_tiles_failing.load()) {
+        const QByteArray failed = "HTTP/1.1 503 Service Unavailable\r\n\r\n";
+        ex->http_status = 503;
+        ex->headers = dup_bytes(failed, &ex->headers_len);
+        return 0;
+    }
     const QByteArray headers = "HTTP/1.1 200 OK\r\nCache-Control: no-store\r\n\r\n";
     ex->http_status = 200;
     ex->headers = dup_bytes(headers, &ex->headers_len);
@@ -142,6 +149,11 @@ set_map_wall_seconds(qint64 seconds) {
 int
 map_tile_requests() {
     return g_tile_requests.load();
+}
+
+void
+set_map_tiles_failing(bool failing) {
+    g_tiles_failing.store(failing);
 }
 
 MapTileSourceStub::MapTileSourceStub(QObject* parent) : dsd_qt::MapTileWorker(canned_options(), parent) {}

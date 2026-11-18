@@ -38,6 +38,7 @@
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/safe_api.h>
@@ -61,6 +62,7 @@
 #include "call_recording_provider.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "json_store.h"
+#include "position_kind_text.h"
 #include "realtime_clock.h"
 #include "teardown_trace.h"
 
@@ -450,7 +452,38 @@ row_site_text(const CallHistoryModel::Row& row) {
     return QString::fromUtf8(text);
 }
 
-/** @brief The frequency, access-code and site roles. Their texts are app-control's, spelled at read time. */
+/**
+ * @brief A row's saved fix as the map's "Show on map" pin reads it (issue #800): {latitude, longitude, errorM,
+ * errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, kindText, receivedTime}, or an empty
+ * map when the row has none. errorM and receivedTime are left out when not known (0). Degrees are for display only.
+ */
+QVariantMap
+position_record(const CallHistoryModel::Position& pos) {
+    QVariantMap out;
+    if (!pos.valid) {
+        return out;
+    }
+    const auto flag = [&pos](unsigned bit) { return (pos.flags & bit) != 0U; };
+    out.insert(QStringLiteral("latitude"), static_cast<double>(pos.latE7) / 1.0e7);
+    out.insert(QStringLiteral("longitude"), static_cast<double>(pos.lonE7) / 1.0e7);
+    if (pos.errM > 0U) {
+        out.insert(QStringLiteral("errorM"), pos.errM);
+    }
+    out.insert(QStringLiteral("errorLowerBound"), flag(DSD_POS_FLAG_ERR_LOWER_BOUND));
+    out.insert(QStringLiteral("validityUnknown"), flag(DSD_POS_FLAG_VALIDITY_UNKNOWN));
+    out.insert(QStringLiteral("provisional"), flag(DSD_POS_FLAG_FORMAT_PROVISIONAL));
+    out.insert(QStringLiteral("weakCheck"), flag(DSD_POS_FLAG_WEAK_CHECK));
+    out.insert(QStringLiteral("anonymous"),
+               pos.anonymous || flag(DSD_POS_FLAG_SOURCE_HASHED) || flag(DSD_POS_FLAG_SOURCE_UNVERIFIED));
+    out.insert(QStringLiteral("emergency"), flag(DSD_POS_FLAG_EMERGENCY));
+    out.insert(QStringLiteral("kindText"), position_kind_text(pos.kind));
+    if (pos.rxTimeS > 0) {
+        out.insert(QStringLiteral("receivedTime"), static_cast<double>(pos.rxTimeS));
+    }
+    return out;
+}
+
+/** @brief The frequency, access-code, site and position roles. Their texts are app-control's, spelled at read time. */
 QVariant
 row_carrier_value(const CallHistoryModel::Row& row, int role) {
     switch (role) {
@@ -467,6 +500,7 @@ row_carrier_value(const CallHistoryModel::Row& row, int role) {
             return QString::fromLatin1(text);
         }
         case CallHistoryModel::SiteTextRole: return row_site_text(row);
+        case CallHistoryModel::PositionRole: return position_record(row.pos);
         default: return row_identity_value(row, role);
     }
 }
@@ -639,6 +673,7 @@ CallHistoryModel::recordFor(const QString& uid) const {
         {"siteText", SiteTextRole},
         {"analog", AnalogRole},
         {"analogMode", AnalogModeRole},
+        {"position", PositionRole},
     };
 
     bool parsed = false;
@@ -796,6 +831,7 @@ CallHistoryModel::roleNames() const {
     roles.insert(SiteTextRole, QByteArrayLiteral("siteText"));
     roles.insert(AnalogRole, QByteArrayLiteral("analog"));
     roles.insert(AnalogModeRole, QByteArrayLiteral("analogMode"));
+    roles.insert(PositionRole, QByteArrayLiteral("position"));
     return roles;
 }
 

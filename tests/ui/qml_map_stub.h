@@ -46,6 +46,8 @@ void set_map_wall_seconds(qint64 seconds);
 
 /** @brief Requests the canned tile transport has answered so far. */
 int map_tile_requests();
+/** @brief Whether the canned transport answers 503 (a server in trouble) instead of the canned tile. */
+void set_map_tiles_failing(bool failing);
 
 /** @brief The production tile worker on the canned transport: registered as MapTileSource in the QML suite. */
 class MapTileSourceStub : public dsd_qt::MapTileWorker {

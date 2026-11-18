@@ -10,6 +10,10 @@ Item {
     id: screen
 
     property bool showTitle: true
+    // Issue #800: the map (its kept tracks stay reachable after Stop), and a
+    // row's "Show on map" with the sheet to return to.
+    signal openMap
+    signal showOnMap(var record, var sheet)
 
     // Hand off pending text before another History instance can accept input.
     // Otherwise this screen's older timer could overwrite the new editor.
@@ -262,13 +266,13 @@ Item {
                 id: header
 
                 readonly property real titleHeight: screen.showTitle ? Math.max(48, Theme.fontSize(24) + 20) : 0
-                readonly property bool buttonsShown: callHistory.count > 0
-                readonly property bool stacked: screen.showTitle && buttonsShown
+                // Map is always offered (issue #800); Export… and Clear only with calls.
+                readonly property bool stacked: screen.showTitle
                                                  && historyTitle.implicitWidth + Theme.gap + headerButtons.implicitWidth > width
 
                 width: parent.width
                 height: stacked ? titleHeight + headerButtons.implicitHeight
-                                : Math.max(titleHeight, buttonsShown ? headerButtons.implicitHeight : 0)
+                                : Math.max(titleHeight, headerButtons.implicitHeight)
                 visible: height > 0
 
                 ReadableText {
@@ -292,10 +296,22 @@ Item {
                     anchors.right: parent.right
                     y: header.stacked ? header.titleHeight : (header.height - height) / 2
                     spacing: 10
-                    visible: header.buttonsShown
+
+                    // A glyph, as the top bars' other icon actions, so the
+                    // title, Export… and Clear still share one line on a phone.
+                    MapControlButton {
+                        objectName: "historyMapButton"
+                        anchors.verticalCenter: parent.verticalCenter
+                        framed: false
+                        shape: "map"
+                        accessibleName: qsTr("Map")
+                        accessibleDescription: qsTr("Positions radios sent, on a map")
+                        onClicked: screen.openMap()
+                    }
 
                     OutlineButton {
                         objectName: "historyExportButton"
+                        visible: callHistory.count > 0
                         text: qsTr("Export…")
                         accessibleName: qsTr("Export history as a CSV file")
                         // Held while this screen's picker is out, while either
@@ -308,6 +324,7 @@ Item {
                     OutlineButton {
                         id: clearHistory
                         objectName: "clearHistoryButton"
+                        visible: callHistory.count > 0
                         text: qsTr("Clear")
                         onClicked: confirmClear.open()
                     }
@@ -566,6 +583,9 @@ Item {
     HistoryDetailSheet {
         id: detailSheet
         objectName: "historyDetailSheet"
+        onShowOnMapRequested: function (record) {
+            screen.showOnMap(record, detailSheet);
+        }
     }
 
     // Keeps the newest call in view for a reader parked at the top of the log.

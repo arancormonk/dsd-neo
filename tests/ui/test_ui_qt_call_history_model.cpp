@@ -80,6 +80,7 @@
 #include <QtGlobal>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_channel.h>
@@ -3263,7 +3264,8 @@ test_record_for_uid(void) {
                 {"receivedTone", CallHistoryModel::ReceivedToneRole},
                 {"siteText", CallHistoryModel::SiteTextRole},
                 {"analog", CallHistoryModel::AnalogRole},
-                {"analogMode", CallHistoryModel::AnalogModeRole}};
+                {"analogMode", CallHistoryModel::AnalogModeRole},
+                {"position", CallHistoryModel::PositionRole}};
 
     expect("the map has one key per detail", record.size() == static_cast<int>(sizeof(keys) / sizeof(keys[0])));
     for (const auto& key : keys) {
@@ -5317,6 +5319,45 @@ test_voice_row_keeps_gps_and_message(void) {
     expect("B2: a late message joins the GPS text",
            model.count() == 3
                && detail_of(model, row_with_tg(model, 80002U)) == u8("On my way \xC2\xB7 GPS: Protected"));
+}
+
+/* Issue #800, P7: the map's "Show on map" pin reads a row's saved fix through the position role and recordFor(): its
+ * place, error, states and format, and nothing for a row without one. */
+void
+test_position_role_feeds_the_map_pin(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754701000;
+    Event_History* call = ring.commit(0, 80051U, 8051U, when, when + 5);
+    with_gps(call, "GPS: 22.50000 45.00000", 225000000, -450000000, 3U);
+    call->pos.flags = static_cast<uint16_t>(DSD_POS_FLAG_VALIDITY_UNKNOWN | DSD_POS_FLAG_FORMAT_PROVISIONAL
+                                            | DSD_POS_FLAG_ERR_LOWER_BOUND | DSD_POS_FLAG_EMERGENCY);
+    call->pos.rx_time_s = when + 2;
+    ring.commit(0, 80052U, 8052U, when + 20, when + 25);
+    model.refresh(ring.state);
+    const int withFix = row_with_tg(model, 80051U);
+    const int without = row_with_tg(model, 80052U);
+    expect("P7: both rows land", withFix >= 0 && without >= 0);
+    const QVariantMap pos = model.data(model.index(withFix), CallHistoryModel::PositionRole).toMap();
+    expect("P7: the role is named for QML", model.roleNames().value(CallHistoryModel::PositionRole) == "position");
+    expect("P7: the pin's place in degrees",
+           std::fabs(pos.value(QStringLiteral("latitude")).toDouble() - 22.5) < 1e-9
+               && std::fabs(pos.value(QStringLiteral("longitude")).toDouble() + 45.0) < 1e-9);
+    expect("P7: the error and that it is a lower bound", pos.value(QStringLiteral("errorM")).toUInt() == 10U
+                                                             && pos.value(QStringLiteral("errorLowerBound")).toBool());
+    expect("P7: the states in their own keys",
+           pos.value(QStringLiteral("validityUnknown")).toBool() && pos.value(QStringLiteral("provisional")).toBool()
+               && pos.value(QStringLiteral("emergency")).toBool() && !pos.value(QStringLiteral("anonymous")).toBool()
+               && !pos.value(QStringLiteral("weakCheck")).toBool());
+    expect("P7: the format in words",
+           pos.value(QStringLiteral("kindText")).toString() == QStringLiteral("DMR embedded GPS"));
+    expect("P7: when it was received", pos.value(QStringLiteral("receivedTime")).toLongLong() == when + 2);
+    expect("P7: a row without a fix has none",
+           model.data(model.index(without), CallHistoryModel::PositionRole).toMap().isEmpty());
+    const QString uid = model.data(model.index(withFix), CallHistoryModel::UidRole).toString();
+    expect("P7: the detail sheet's record carries it",
+           model.recordFor(uid).value(QStringLiteral("position")).toMap() == pos);
 }
 
 /* B2: the texts and the structured position survive a save, a reload and the spill, and a reloaded or spilled seen
@@ -7704,6 +7745,7 @@ main(int argc, char** argv) {
     test_startless_fold_keeps_later_end();
     test_row_without_start_time_reads_unknown();
     test_voice_row_keeps_gps_and_message();
+    test_position_role_feeds_the_map_pin();
     test_texts_and_position_survive_save_reload_and_spill();
     test_spill_replay_keeps_newer_revision();
     test_spill_text_only_replay_keeps_saved_position();

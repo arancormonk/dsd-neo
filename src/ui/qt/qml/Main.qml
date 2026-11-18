@@ -748,7 +748,7 @@ Window {
         // So does a permission prompt of the host's own, until it is answered or expires (#647),
         // and a close for a restart once it has begun, until the app is gone (#830).
         // #786: so does a GPS roam under way, and a restart the user asked for.
-        value: siteRoaming.transactionActive || mainRoot.pendingRestart !== null || mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || (!!decoderHost && decoderHost.localDeviceRequestPending === true) || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive || restartCloser.active || incomingDocument.busy
+        value: siteRoaming.transactionActive || mainRoot.pendingRestart !== null || mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.mapOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || (!!decoderHost && decoderHost.localDeviceRequestPending === true) || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive || restartCloser.active || incomingDocument.busy
     }
     Connections {
         target: uiController
@@ -810,6 +810,7 @@ Window {
         diagnosticsOpen = false;
         licensesOpen = false;
         callRecordingsOpen = false;
+        closeMap(false);
         spectrumOpen = false;
         talkgroupsOpen = false;
         // Imports kept over the session's Settings is closed first when they
@@ -967,6 +968,12 @@ Window {
         onLeave: mainRoot.callRecordingsOpen = false
     }
     NavigationLayer {
+        id: mapLayer
+        surface: mapLoader
+        active: mainRoot.mapOpen
+        onLeave: mainRoot.closeMap(true)
+    }
+    NavigationLayer {
         id: radioReferenceAccountLayer
         surface: radioReferenceAccountScreen
         active: mainRoot.radioReferenceAccountOpen
@@ -983,6 +990,48 @@ Window {
     property bool signalSearchOpen: typeof signalSearch !== "undefined" && decoderHost.sessionActive && !!signalSearch.status.owned
     property bool licensesOpen: false
     property bool callRecordingsOpen: false // issue #708
+    // Issue #800: the map, pushed from the session menu or History, over the
+    // tab shell and the session tools alike. It stays open across a Stop
+    // (its tracks are the app's, not the session's). mapReturn is the History
+    // row a "Show on map" came from ({uid, sheet}), for Back to reopen.
+    property bool mapOpen: false
+    property var mapReturn: null
+    function openMap() {
+        mapLoader.active = true;
+        mapReturn = null;
+        if (mapLoader.item)
+            mapLoader.item.clearPin();
+        mapOpen = true;
+    }
+    function openMapFor(record, sheet) {
+        mapLoader.active = true;
+        mapReturn = {uid: record.uid, sheet: sheet};
+        mapOpen = true;
+        if (mapLoader.item)
+            mapLoader.item.showPin(record);
+    }
+    // @p returning: Back from a "Show on map" opens its row's sheet again
+    // when the row is still logged and its screen shows, else the focus goes
+    // back to that screen; a close the app makes (an intake) does neither.
+    function closeMap(returning) {
+        var back = mapReturn;
+        mapReturn = null;
+        if (!mapOpen)
+            return;
+        mapOpen = false;
+        if (mapLoader.item)
+            mapLoader.item.clearPin();
+        if (returning && back && back.sheet)
+            Qt.callLater(mainRoot.returnFromMap, back);
+    }
+    function returnFromMap(back) {
+        if (mapOpen || !back.sheet)
+            return;
+        if (callHistory.rowForUid(back.uid) >= 0 && back.sheet.parent && Navigation.presented(back.sheet.parent) && Navigation.allows(back.sheet.parent))
+            back.sheet.open(callHistory.recordFor(back.uid));
+        else
+            back.sheet.restoreFocus(null);
+    }
     property bool radioReferenceAccountOpen: false
     property bool diagnosticsOpen: false // WP-F5
     property bool importsOpen: false
@@ -1992,7 +2041,7 @@ Window {
         id: shell
 
         anchors.fill: safeArea
-        opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.scanListOpen || mainRoot.sessionDestination.length > 0 || !prefs.onboardingDone) ? 0.0 : 1.0
+        opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.mapOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.scanListOpen || mainRoot.sessionDestination.length > 0 || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
         enabled: opacity > 0.9 && !siteChooser.visible
 
@@ -2061,6 +2110,9 @@ Window {
             onStartPin: function (kind, uid) {
                 mainRoot.startPin(kind, uid);
             }
+            onShowOnMap: function (record, sheet) {
+                mainRoot.openMapFor(record, sheet);
+            }
         }
 
         HistoryScreen {
@@ -2071,6 +2123,10 @@ Window {
             width: parent.width - x
             height: parent.height - (mainRoot.expanded ? 0 : nav.height)
             visible: mainRoot.currentTab === 1
+            onOpenMap: mainRoot.openMap()
+            onShowOnMap: function (record, sheet) {
+                mainRoot.openMapFor(record, sheet);
+            }
         }
 
         SettingsScreen {
@@ -2216,7 +2272,7 @@ Window {
         // name for it stands in.
         scanListName: mainRoot.sessionLists.length > 1 ? mainRoot.sessionListName(metrics.scanActiveList) || metrics.scanListModel.listName(metrics.scanActiveList) : ""
         otherListCount: mainRoot.operatorHolds ? 0 : Math.max(0, mainRoot.sessionLists.length - 1)
-        sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
+        sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.mapOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
         onOpenSites: {
             mainRoot.cancelPendingRestart("sites");
             siteChooser.openFor(savedSystems.rowForUid(mainRoot.sessionSystem.uid));
@@ -2230,7 +2286,7 @@ Window {
         enabled: opacity > 0.9 && !mainRoot.signalSearchOpen && !mainRoot.wizardOpen && !mainRoot.spectrumOpen
             && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible
             && !siteChooser.visible && !sessionMenu.visible && !listenMenu.visible && !sessionRadio.visible
-            && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen
+            && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.mapOpen
             && !mainRoot.radioReferenceAccountOpen && !mainRoot.scanListOpen
             && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings")
             && mainRoot.sessionDestination.length === 0
@@ -2240,6 +2296,9 @@ Window {
             mainRoot.spectrumOpen = true;
         }
         onOpenTalkgroups: mainRoot.talkgroupsOpen = true
+        onShowOnMap: function (record, sheet) {
+            mainRoot.openMapFor(record, sheet);
+        }
         onOpenSessionMenu: sessionMenu.open()
         listenActions: mainRoot.listenActions
         onListenRequested: mainRoot.requestListen()
@@ -2532,7 +2591,7 @@ Window {
         onEnabledChanged: restoreLayerFocus()
         anchors.fill: safeArea
         visible: mainRoot.sessionDestination.length > 0
-        enabled: visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && !mainRoot.radioReferenceOpen
+        enabled: visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.mapOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && !mainRoot.radioReferenceOpen
         Rectangle {
             anchors.fill: parent
             color: Theme.bg
@@ -2577,6 +2636,10 @@ Window {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             visible: mainRoot.sessionDestination === "history"
+            onOpenMap: mainRoot.openMap()
+            onShowOnMap: function (record, sheet) {
+                mainRoot.openMapFor(record, sheet);
+            }
         }
         // The session's unit activity log; it has no screen outside a session.
         ActivityScreen {
@@ -2627,6 +2690,8 @@ Window {
                 items.push({text: qsTr("Scan lists"), key: "scanLists", objectName: "sessionMenuScanLists"});
             items.push({text: qsTr("Talkgroups"), key: "talkgroups", objectName: "sessionMenuTalkgroups"});
             items.push({text: qsTr("Activity"), key: "activity", objectName: "sessionMenuActivity"});
+            // Issue #800: every protocol can carry positions, so always offered.
+            items.push({text: qsTr("Map"), key: "map", objectName: "sessionMenuMap"});
             items.push({text: qsTr("History"), key: "history", objectName: "sessionMenuHistory"});
             items.push({text: qsTr("Settings"), key: "settings", objectName: "sessionMenuSettings"});
             items.push({text: qsTr("Diagnostics"), key: "diagnostics", objectName: "sessionMenuDiagnostics"});
@@ -2651,6 +2716,8 @@ Window {
                 mainRoot.sessionDestination = key;
             else if (key === "diagnostics")
                 mainRoot.diagnosticsOpen = true;
+            else if (key === "map")
+                mainRoot.openMap();
             else if (key === "edit" && mainRoot.sessionRow >= 0) {
                 wizard.openForEdit(mainRoot.sessionRow);
                 mainRoot.wizardOpen = true;
@@ -2727,6 +2794,25 @@ Window {
         visible: mainRoot.callRecordingsOpen
         enabled: visible
         onClosed: mainRoot.callRecordingsOpen = false
+    }
+
+    // ---- Map (issue #800) ----
+    // Built on first open, then kept: its view, its tile source and the List's
+    // place survive a close. Declared after the session tools, so it covers
+    // History in a session as well as the idle History tab.
+    Loader {
+        id: mapLoader
+        objectName: "mapLoader"
+        anchors.fill: safeArea
+        active: false
+        visible: mainRoot.mapOpen
+        enabled: visible
+        sourceComponent: Component {
+            MapScreen {
+                objectName: "mapScreen"
+                onClosed: mapLayer.leave()
+            }
+        }
     }
 
     RadioReferenceAccountScreen {

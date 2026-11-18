@@ -625,6 +625,15 @@ MapViewItem::markerPoint(qulonglong trackId) const {
     return QVariant(QPointF(s.x, s.y));
 }
 
+QVariant
+MapViewItem::pointFor(double lat, double lon) const {
+    if (!std::isfinite(lat) || !std::isfinite(lon) || std::fabs(lat) > 90.0 || std::fabs(lon) > 180.0) {
+        return QVariant();
+    }
+    const mm::ScreenPoint s = mm::screen_from_world(m_vp, mm::world_from_lat_lon(lat, lon));
+    return QVariant(QPointF(s.x, s.y));
+}
+
 // ---------------------------------------------------------- following ----
 
 void

@@ -136,7 +136,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         HasRecordingRole,   // whether the row has any
         SiteTextRole,       // "DMR · Con+ · Net 3 · Site 5 · Connect Plus · LCN 3" (site_identity_view.h), else empty
         AnalogRole,         // a conventional analog (NFM/AM) reception (issue #667)
-        AnalogModeRole      // an analog row's mode, "NFM" or "AM"; empty when not known, and on every other row
+        AnalogModeRole,     // an analog row's mode, "NFM" or "AM"; empty when not known, and on every other row
+        PositionRole        // issue #800: the row's saved fix for the map's pin (position_record()); {} without one
     };
 
     /** @brief What a row logs; pinned values because rows persist as JSON. */

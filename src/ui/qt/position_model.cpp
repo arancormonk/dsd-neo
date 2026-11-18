@@ -5,6 +5,8 @@
 
 #include "position_model.h"
 
+#include "position_kind_text.h"
+
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -42,25 +44,6 @@ fixed_text(const char* text, size_t size) {
 QString
 time_text(qint64 seconds) {
     return seconds > 0 ? QDateTime::fromSecsSinceEpoch(seconds).toString(QStringLiteral("HH:mm:ss")) : QString();
-}
-
-QString
-kind_text(int kind) {
-    switch (kind) {
-        case DSD_POS_DMR_LRRP: return QStringLiteral("LRRP");
-        case DSD_POS_DMR_LOCN: return QStringLiteral("DMR LOCN");
-        case DSD_POS_DMR_EMBEDDED: return QStringLiteral("DMR embedded GPS");
-        case DSD_POS_LIP_USBD: return QStringLiteral("LIP (USBD)");
-        case DSD_POS_LIP: return QStringLiteral("LIP");
-        case DSD_POS_NMEA: return QStringLiteral("NMEA");
-        case DSD_POS_P25_APX: return QStringLiteral("Motorola APX GPS");
-        case DSD_POS_P25_HARRIS: return QStringLiteral("L3Harris GPS");
-        case DSD_POS_NXDN_GPS: return QStringLiteral("NXDN GPS");
-        case DSD_POS_DSTAR_DPRS: return QStringLiteral("D-STAR DPRS");
-        case DSD_POS_M17_GNSS: return QStringLiteral("M17 GNSS");
-        case DSD_POS_TETRA_LIP: return QStringLiteral("TETRA LIP");
-        default: return QString();
-    }
 }
 
 bool
@@ -220,7 +203,7 @@ identity_value(const Row& row, int role) {
         case PositionModel::TargetIdRole: return known(fix.target_id != 0U, fix.target_id);
         case PositionModel::ProtocolRole: return fix.protocol;
         case PositionModel::KindRole: return fix.kind;
-        case PositionModel::KindTextRole: return kind_text(fix.kind);
+        case PositionModel::KindTextRole: return position_kind_text(fix.kind);
         default: return {};
     }
 }

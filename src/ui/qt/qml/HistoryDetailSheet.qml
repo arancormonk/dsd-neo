@@ -17,6 +17,13 @@ ModalSheet {
     // Issue #809: false where the receiver takes no hold (Signal search, which
     // refuses receiver commands): the Hold button and its reason are hidden.
     property bool showHold: true
+    // Issue #800: "Show on map" for a row that saved a position. False where
+    // the map is not reachable from the sheet's screen (Signal search, whose
+    // layers differ). The sheet closes first; its host opens the map with the
+    // row's uid, and Back from the map opens the sheet again by it.
+    property bool showMap: true
+    readonly property bool rowHasPosition: !!sheet.record.position && sheet.record.position.latitude !== undefined
+    signal showOnMapRequested(var record)
     // Issue #667: an analog reception has no access code. Its tone ("CTCSS
     // 100.0 Hz") takes the code's line, and what it was heard in ("Analog
     // NFM", "Analog AM", "Analog" when not known) the Encrypted line's.
@@ -129,6 +136,17 @@ ModalSheet {
         wrapMode: Text.Wrap
         visible: holdButton.visible && !holdButton.enabled
         text: !decoderHost.running ? qsTr("Start this system to hold") : !metrics.optionsKnown ? qsTr("Waiting for session settings") : !sheet.singleSystemSession || callHistory.sessionUid.length === 0 ? qsTr("Hold needs a single saved system") : qsTr("Heard on another system")
+    }
+    OutlineButton {
+        objectName: "historyShowOnMap"
+        width: parent.width
+        visible: sheet.showMap && sheet.rowHasPosition
+        text: qsTr("Show on map")
+        onClicked: {
+            var record = sheet.record;
+            sheet.visible = false;
+            sheet.showOnMapRequested(record);
+        }
     }
     OutlineButton {
         width: parent.width

@@ -306,6 +306,9 @@ class MapViewItem : public QQuickItem {
     Q_INVOKABLE qulonglong trackAt(double x, double y) const;
     /** @brief Where track @p trackId's marker is drawn now (item coordinates); undefined when it is not drawn. */
     Q_INVOKABLE QVariant markerPoint(qulonglong trackId) const;
+    /** @brief Where (@p lat, @p lon) is drawn now (item coordinates, the copy nearest the centre), for a pin the screen
+     *  draws over the map (a History row's saved fix); undefined for a position out of range. */
+    Q_INVOKABLE QVariant pointFor(double lat, double lon) const;
     /** @brief Start a new map session for cameraUsedDevicePosition (the screen calls it when the map opens). */
     Q_INVOKABLE void resetCameraUsedDevicePosition();
 

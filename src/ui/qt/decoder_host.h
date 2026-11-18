@@ -70,6 +70,8 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool usesPlatformFontScaling READ usesPlatformFontScaling CONSTANT)
     Q_PROPERTY(qreal keyboardTop READ keyboardTop NOTIFY keyboardChanged)
     Q_PROPERTY(int fontRevision READ fontRevision NOTIFY typographyChanged)
+    /* Issue #800: the platform asks for no animation (Android's "Remove animations"); the map's camera then jumps. */
+    Q_PROPERTY(bool reducedMotion READ reducedMotion NOTIFY reducedMotionChanged)
     Q_PROPERTY(int inputFailureKind READ inputFailureKind NOTIFY runResultChanged)
     Q_PROPERTY(int inputFailureCode READ inputFailureCode NOTIFY runResultChanged)
     Q_PROPERTY(int terminalReason READ terminalReason NOTIFY runResultChanged)
@@ -240,6 +242,12 @@ class DecoderHost : public QObject {
     virtual int
     fontRevision() const {
         return 0;
+    }
+
+    /** @brief Whether the platform asks apps not to animate (issue #800). A desktop host has no such setting. */
+    virtual bool
+    reducedMotion() const {
+        return false;
     }
 
     Q_INVOKABLE virtual qreal
@@ -1081,6 +1089,7 @@ class DecoderHost : public QObject {
   Q_SIGNALS:
     void backRequested();
     void typographyChanged();
+    void reducedMotionChanged();
     void keyboardChanged();
     void runResultChanged();
     void audioRouteChanged();

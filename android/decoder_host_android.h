@@ -55,6 +55,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     qreal fontPixelSize(qreal sp) const override;
 
+    bool
+    reducedMotion() const override {
+        return m_reduced_motion;
+    }
+
     qreal
     keyboardTop() const override {
         return m_scale.keyboardTop();
@@ -834,6 +839,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     uint64_t m_health_cleared_session = 0;
     QVariantMap m_receiver_health = DecoderHost::healthyReceiver();
     QString m_audio_route = QStringLiteral("System default");
+    /* Issue #800: animator duration scale 0 ("Remove animations"), read with the rest of the presentation. */
+    bool m_reduced_motion = false;
     bool m_notification_permission_needed = false;
     // #708: the open play's generation (0: nothing to poll), and the running transfer (0: none) with its total (-1
     // until the worker counted it).

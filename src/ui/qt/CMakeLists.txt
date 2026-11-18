@@ -234,6 +234,15 @@ qt_add_resources(
         qml/ToneFilterSheet.qml
         qml/ReceivePolicySheet.qml
         qml/TunerMarker.qml
+        # Issue #800: the map screen.
+        qml/MapScreen.qml
+        qml/MapList.qml
+        qml/MapPositionSheet.qml
+        qml/MapSettingsSheet.qml
+        qml/MapLocator.qml
+        qml/MapControlButton.qml
+        qml/MapGlyph.qml
+        qml/MapText.js
         qml/UiPanel.qml
         qml/WholeWordLabel.qml
         qml/WizardScreen.qml
@@ -302,4 +311,6 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_gain_editor.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_settings_tuner_gain.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_activity_screen.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_map_screen.qml" # #800
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_main_map.qml" # #800
 )
