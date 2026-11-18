@@ -771,6 +771,24 @@ test_header_bound_across_a_protocol_switch(void) {
     rig_close(&r);
 }
 
+/* Issue #800 (g62-r7): a new transmission whose first text block was missed starts its message empty. N0ONE's
+ * "ALICE MOBI" is shown; the next transmission's block 1 ("NEWER") shows alone at its place, never with the previous
+ * caller's characters around it ("ALICENEWER"), and reaches no row (its first block was not heard). */
+static void
+test_new_message_starts_empty(void) {
+    rig r;
+    rig_open(&r);
+    send_slow_data_header(&r, "N0ONE");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    send_text(&r, 0U, "ALICE MOBI", 2U);
+    expect_str("first caller's message shown", r.state->dstar_txt, "ALICE MOBI");
+    dstar_tx_begin(r.state);
+    send_text(&r, 1U, "NEWER", 1U);
+    expect_str("new transmission's block alone", r.state->dstar_txt, "     NEWER");
+    expect_str("row keeps the first caller's message", open_row(&r)->text_message, "ALICE MOBI");
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_vector_position();
@@ -793,6 +811,7 @@ main(void) {
     test_slow_data_suffix_alone_is_no_caller();
     test_header_bound_to_its_reception();
     test_header_bound_across_a_protocol_switch();
+    test_new_message_starts_empty();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSTAR_DPRS: %d failure(s)\n", g_failures);
         return 1;

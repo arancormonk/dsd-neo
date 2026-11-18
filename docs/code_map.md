@@ -2695,7 +2695,9 @@ suite runs under this compiler.
     still matches; 0 none, and 0 once a retune, target switch, another system's frame or another protocol's frame (an
     M17 frame between two D-STAR ones, `dsd_rxid_note_sync()`) moved the reception generation, whatever call stays
     ACTIVE across it), the confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
-    resets it, and a D-PRS record is checked against its binding before its CRC counts as evidence. What an assembly
+    resets it (a fresh text assembly starts from an empty message, so a new transmission whose block 0 was missed shows
+    none of the last message's characters), and a D-PRS record is checked against its binding before its CRC counts as
+    evidence. What an assembly
     produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
     the row takes its position only through it (otherwise the feed takes the record anonymous), and the message reaches
     the row only when every block, its first (place 0) among them, was heard while the transmission was confirmed.

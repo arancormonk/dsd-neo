@@ -569,7 +569,9 @@ dstar_sd_text_block(const uint8_t* raw, int b, unsigned* place) {
 /* Each block by its own mini-header: a text block's five characters go to their place in the message, and nothing of
  * another block (GPS data among them) ever does. A block 0 starts a new message; a later block of the message fills its
  * place in the one being shown. A message assembled under a binding that no longer holds is dropped before this
- * superframe's blocks: none of it is this message's. Returns 1 when the superframe held a text block. */
+ * superframe's blocks: none of it is this message's. The first block of a fresh assembly (a new transmission's, its
+ * block 0 missed among them) starts from an empty message, so no character of the last one is shown with it. Returns 1
+ * when the superframe held a text block. */
 static int
 dstar_sd_collect_text(const dsd_opts* opts, dsd_state* state, const uint8_t* raw) {
     char* const msg = state->dstar_txt;
@@ -585,7 +587,9 @@ dstar_sd_collect_text(const dsd_opts* opts, dsd_state* state, const uint8_t* raw
             msg[0] = '\0';
         }
         if (t->places == 0U) {
+            /* A fresh assembly: nothing shown so far is this message's, whichever block of it came first. */
             dstar_sd_bind(opts, state, &t->bind);
+            msg[0] = '\0';
         }
         size_t len = strnlen(msg, DSTAR_SD_TEXT_CHARS);
         if (place == 0U) {
