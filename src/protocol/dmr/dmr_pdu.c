@@ -1922,16 +1922,16 @@ dmr_locn_parse_time(const uint8_t* p, dmr_locn_data* d) {
     return 1;
 }
 
-// One coordinate: `deg_digits` degree digits, two minute digits, a separator, four digits of 1/10000 minute, after
-// the hemisphere letter at p[0]. Returns 1 when they are digits (the field is a coordinate field); *valid says
-// whether the value is in range (degrees <= max_deg, the boundary only with zero minutes, minutes <= 59).
+// One coordinate: `deg_digits` degree digits, two minute digits, the '.' separator, four digits of 1/10000 minute,
+// after the hemisphere letter at p[0]. Returns 1 when they have that shape (the field is a coordinate field); *valid
+// says whether the value is in range (degrees <= max_deg, the boundary only with zero minutes, minutes <= 59).
 static int
 dmr_locn_parse_coord(const uint8_t* p, size_t deg_digits, uint32_t max_deg, int negative, int32_t* e7, uint8_t* valid) {
     uint32_t deg = 0U;
     uint32_t min = 0U;
     uint32_t frac = 0U;
     if (!dmr_locn_digits(p + 1, deg_digits, &deg) || !dmr_locn_digits(p + 1 + deg_digits, 2U, &min)
-        || !dmr_locn_digits(p + 4 + deg_digits, 4U, &frac)) {
+        || p[3 + deg_digits] != (uint8_t)'.' || !dmr_locn_digits(p + 4 + deg_digits, 4U, &frac)) {
         return 0;
     }
     *valid = (uint8_t)(min <= 59U && (deg < max_deg || (deg == max_deg && min == 0U && frac == 0U)));

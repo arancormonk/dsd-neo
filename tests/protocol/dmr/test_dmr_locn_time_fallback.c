@@ -141,6 +141,9 @@ static const locn_case k_locn_cases[] = {
     {"past the date line", "W18000.0001N1000.0000", 0, 0, 0, NULL},
     // A non-digit is no field at all (it used to shift by a negative amount).
     {"non-digit", "N/430.0000E04500.0000", 0, 0, 0, ""},
+    // The separator is a '.': any other character there is no coordinate field, on either axis.
+    {"latitude separator", "N2230X1234E04500.0000", 0, 0, 0, ""},
+    {"longitude separator", "N2230.0000E04500,0000", 0, 0, 0, ""},
 };
 
 static int
