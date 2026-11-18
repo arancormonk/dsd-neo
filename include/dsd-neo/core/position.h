@@ -18,7 +18,7 @@
  *    protocol and slot; else DSD_POSITION_REFUSED.
  * 2. Identity: without source_verified (or with DSD_POS_FLAG_SOURCE_HASHED) the source, callsign, target and
  *    DSD_POS_FLAG_TARGET_GROUP are cleared; the report format (kind) is kept. A source that names no radio
- *    (dsd_position_source_names_radio(): a P25 fixed-network ID) is cleared alone, the destination kept.
+ *    (dsd_position_source_names_radio(): a P25 special address, $FFFFFC-$FFFFFF) is cleared alone, the destination kept.
  * 3. Origin: a multi-fragment report is refused when its first fragment was heard under another reception generation
  *    (dsd_position_origin_capture() / dsd_position_origin_matches()).
  * 4. Values: |lat| <= 90, |lon| <= 180, exactly (0,0) refused; an out-of-range heading becomes unknown.
@@ -219,6 +219,18 @@ typedef struct dsd_position_origin {
     uint8_t valid; /**< 1 once captured; a zeroed origin never matches */
 } dsd_position_origin;
 
+/**
+ * @brief Where a history row, a call or a report was heard, as the reception rule (dsd_position_same_reception())
+ * compares them.
+ */
+typedef struct dsd_position_reception {
+    int64_t identity_freq_hz; /**< the tuned frequency for a DSD_POS_SCOPE_P25_NAC scope, else 0 */
+    dsd_position_scope scope; /**< the reception scope (D7); DSD_POS_SCOPE_NONE when unknown */
+    uint32_t rx_epoch;        /**< the received identity's epoch (dsd_received_identity::epoch) it was read under */
+    uint8_t epoch_known;      /**< 1 when rx_epoch was read; 0: the generation is unknown */
+    uint8_t pad[7];           /**< always 0 */
+} dsd_position_reception;
+
 /** Where a reader of the feed stands (dsd_position_feed_copy_since()). */
 typedef struct {
     uint64_t stream_id;  /**< the ring's stream; 0 without a ring */
@@ -255,6 +267,27 @@ void dsd_position_origin_capture(const dsd_opts* opts, const dsd_state* state, d
 int dsd_position_origin_matches(const dsd_state* state, const dsd_position_origin* origin);
 
 /**
+ * @brief The reception rule (issue #800, fail closed): 1 when @p a and @p b were heard on one reception, so a position
+ * of one may land on (or merge into) the other.
+ *
+ * - Both scopes known (not DSD_POS_SCOPE_NONE) and equal, with the same identity discriminator: one reception, whatever
+ *   the generations; or
+ * - the same uninterrupted reception generation (both epochs known and equal) and nothing that says otherwise: a scope
+ *   that is unknown on either side, or two known scopes of which one only refines the other (a scope learned later in
+ *   the same generation: a NAC, then the WACN and SYSID; an EDACS site, then its system). Two known scopes of different
+ *   families, two tuned frequencies (a feed-only tuned-frequency scope or a NAC's discriminator) that differ, or two
+ *   scopes of one kind whose parts differ are two receptions, even within one generation.
+ *
+ * Anything else, an unknown side included, is not one reception. NULL is not.
+ */
+int dsd_position_same_reception(const dsd_position_reception* a, const dsd_position_reception* b);
+
+/** The reception of an admitted report @p fix into @p out: its reception scope, the tuned frequency as the
+ * discriminator of a P25 NAC scope, and the received identity epoch of its origin (the low 32 bits of origin_gen), known
+ * once admission stamped it (rev set). NULL @p fix gives an unknown reception; NULL @p out does nothing. */
+void dsd_position_fix_reception(const dsd_position_fix* fix, dsd_position_reception* out);
+
+/**
  * @brief Admit one position report (the file comment lists the steps).
  *
  * @param opts Decoder options (receive policy, tuned frequency); may be NULL.
@@ -283,9 +316,14 @@ struct dsd_received_identity;
  * @p out does nothing. */
 int dsd_position_scope_from_rxid(const struct dsd_received_identity* rx, uint32_t tuned_hz, dsd_position_scope* out);
 
-/** 1 when @p source names a radio of @p protocol (DSD_SYNC_*): not 0, and on P25 not a fixed-network ID ($FFFFFD, the
- * fixed network equipment, or $FFFFFF, all units; a P25 packet's IP source reduced to 24 bits reaches these too).
- * Admission clears such a source (step 2) and keeps the destination; a notice names no such sender either. */
+/** The first P25 unit address that names no radio: $FFFFFC-$FFFFFF are FNE use, System Default, Registration Default
+ * and ALL units (TIA-102.AABC-D Table 2.3.30-1). */
+#define DSD_POSITION_P25_FIRST_SPECIAL_ADDRESS 0xFFFFFCU
+
+/** 1 when @p source names a radio of @p protocol (DSD_SYNC_*): not 0, and on P25 not a special address
+ * (DSD_POSITION_P25_FIRST_SPECIAL_ADDRESS to $FFFFFF; a P25 packet's IP source reduced to 24 bits reaches these too).
+ * Admission clears such a source (step 2) and keeps the destination; a notice, its text and every record name no such
+ * sender either. */
 int dsd_position_source_names_radio(int protocol, uint64_t source);
 
 /** The protocol family a track belongs to (dsd_position_same_track()): one value per system type, so P25 Phase 1 and

@@ -23,6 +23,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
@@ -57,7 +58,7 @@
 
 /* A row stays comparable byte for byte (watchdog_event_commit_candidate()): its position has no padding. */
 _Static_assert(sizeof(dsd_event_pos) == 64U, "dsd_event_pos must stay free of padding");
-_Static_assert(sizeof(dsd_event_rx_scope) == 24U, "dsd_event_rx_scope must stay free of padding");
+_Static_assert(sizeof(dsd_event_rx_scope) == 32U, "dsd_event_rx_scope must stay free of padding");
 
 enum {
     DSD_EVENT_SUBTYPE_DMR_DATA_BURST = 6,
@@ -1191,31 +1192,47 @@ watchdog_event_merge_site(Event_History* retained, const Event_History* staged) 
     dsd_rxid_site_union(&retained->site_id, &staged->site_id, &retained->site_id);
 }
 
-/* Whether the segment's position may land on the row it merges into (issue #800): it was heard on the reception the
- * row was. A reacquired segment comes after a sync loss, so this is the position writers' rule for another reception
- * (dsd_event_pos_row_takes()): its scope and discriminator equal the row's, once the row has taken what the segment
- * learned (watchdog_event_rx_scope_learns()). Only a known mismatch refuses: a side that knows no reception (none
- * read, or a none scope) is no evidence of another one. */
-static int
-watchdog_event_rx_scope_admits_position(const dsd_event_rx_scope* row, const dsd_event_rx_scope* segment) {
-    if (!row->resolved || !segment->resolved || row->scope.kind == (uint8_t)DSD_POS_SCOPE_NONE
-        || segment->scope.kind == (uint8_t)DSD_POS_SCOPE_NONE) {
-        return 1;
+/* A row's reception as the reception rule reads it (dsd_position_same_reception()): its scope once resolved, else
+ * unknown, and the epoch it was read under when known. */
+static void
+watchdog_event_row_reception(const dsd_event_rx_scope* rx, dsd_position_reception* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (rx->resolved) {
+        out->scope.kind = rx->scope.kind;
+        out->scope.a = rx->scope.a;
+        out->scope.b = rx->scope.b;
+        out->identity_freq_hz = rx->identity_freq_hz;
     }
-    return row->scope.kind == segment->scope.kind && row->scope.a == segment->scope.a
-           && row->scope.b == segment->scope.b && row->identity_freq_hz == segment->identity_freq_hz;
+    out->rx_epoch = rx->rx_epoch;
+    out->epoch_known = rx->epoch_known;
 }
 
-// GPS text and position come from one side, so they never disagree (issue #800). With a position on either side the
-// newer report (greater rev: process-wide and monotonic, so a wall clock step cannot keep an older fix) supplies both,
-// but only one heard on the row's reception (watchdog_event_rx_scope_admits_position()): a newer rev never overrides a
-// known reception mismatch; a side without one never displaces a position. With none on either side the text merges
-// as other progressive detail, and a sender identity the row lacks is filled in. Returns 1 when the row's GPS text
-// changed.
+/* Whether the segment's GPS (its position, or GPS text without one) may land on the row it merges into (issue #800,
+ * fail closed): it was heard on the reception the row was, by the reception rule every position writer applies
+ * (dsd_position_same_reception()), once the row has taken what the segment learned
+ * (watchdog_event_rx_scope_learns()). A side whose reception is unknown is not the row's: the call rows still merge, the
+ * GPS stays where it was heard. */
+static int
+watchdog_event_rx_scope_admits_position(const dsd_event_rx_scope* row, const dsd_event_rx_scope* segment) {
+    dsd_position_reception r;
+    dsd_position_reception s;
+    watchdog_event_row_reception(row, &r);
+    watchdog_event_row_reception(segment, &s);
+    return dsd_position_same_reception(&r, &s);
+}
+
+// GPS text and position come from one side, so they never disagree (issue #800). Nothing of the segment's GPS lands on
+// a row heard on another or an unknown reception (watchdog_event_rx_scope_admits_position()). With a position on either
+// side the newer report (greater rev: process-wide and monotonic, so a wall clock step cannot keep an older fix)
+// supplies both; a side without one never displaces a position. With none on either side the text merges as other
+// progressive detail, and a sender identity the row lacks is filled in. Returns 1 when the row's GPS text changed.
 static uint8_t
 watchdog_event_merge_gps(Event_History* retained, const Event_History* staged) {
     const uint64_t retained_rev = retained->pos.valid ? retained->pos.rev : 0U;
     const uint64_t staged_rev = staged->pos.valid ? staged->pos.rev : 0U;
+    if (!watchdog_event_rx_scope_admits_position(&retained->rx_scope, &staged->rx_scope)) {
+        return 0U;
+    }
     if (retained_rev == 0U && staged_rev == 0U) {
         if (retained->pos.scope.kind == (uint8_t)DSD_POS_SCOPE_NONE) {
             retained->pos.scope = staged->pos.scope;
@@ -1224,8 +1241,7 @@ watchdog_event_merge_gps(Event_History* retained, const Event_History* staged) {
         return (uint8_t)watchdog_event_merge_text_progressive(retained->gps_s, staged->gps_s, sizeof(retained->gps_s),
                                                               0);
     }
-    if (staged_rev <= retained_rev
-        || !watchdog_event_rx_scope_admits_position(&retained->rx_scope, &staged->rx_scope)) {
+    if (staged_rev <= retained_rev) {
         return 0U;
     }
     const int changed = strncmp(retained->gps_s, staged->gps_s, sizeof(retained->gps_s)) != 0;
@@ -2029,12 +2045,15 @@ watchdog_event_current_load_system(const dsd_opts* opts, const dsd_state* state,
 }
 
 /* The reception identity of a row (dsd_event_rx_scope) from @p rx, with @p tuned_hz for a scope of the tuned frequency
- * and the P25 NAC discriminator; none for the callsign protocols (M17, D-STAR), whose positions carry none either. */
+ * and the P25 NAC discriminator, and the record's epoch; no scope for the callsign protocols (M17, D-STAR), whose
+ * positions carry none either. */
 static void
 watchdog_event_rx_scope_take(dsd_event_rx_scope* out, int protocol, const dsd_received_identity* rx,
                              uint32_t tuned_hz) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->resolved = 1U;
+    out->rx_epoch = rx->epoch;
+    out->epoch_known = 1U;
     if (DSD_SYNC_IS_M17(protocol) || DSD_SYNC_IS_DSTAR(protocol)) {
         return;
     }
@@ -2046,12 +2065,17 @@ watchdog_event_rx_scope_take(dsd_event_rx_scope* out, int protocol, const dsd_re
  * active on the carrier it began on, the live record (with the tuned frequency) is read again on every render: the
  * record fills in without moving its epoch, so a scope learned mid-call (a network after the NAC, an EDACS system after
  * the site) replaces a weaker one. Otherwise this epoch's row keeps what it read; a row that never read one takes the
- * record as the call ended, with the frequency this render gives the row (@p row_hz). Nothing playing back files. */
+ * record as the call ended, with the frequency this render gives the row (@p row_hz). Playing back files no scope is
+ * read: the row has only the generation its call began on. */
 static void
 watchdog_event_current_load_rx_scope(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
                                      Event_History* item, int staged_is_own, int64_t row_hz) {
     if (call == NULL || call->epoch == 0U || opts->playfiles != 0) {
         DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
+        if (call != NULL && call->epoch != 0U) {
+            item->rx_scope.rx_epoch = call->rx_id_epoch;
+            item->rx_scope.epoch_known = 1U;
+        }
         return;
     }
     if (call->phase == DSD_CALL_PHASE_ACTIVE && state->rx_id.epoch == call->rx_id_epoch) {
@@ -4030,13 +4054,22 @@ dsd_event_pos_callsign_matches(const char* text, const char* callsign) {
     return subject[n] == '\0' || cut;
 }
 
+/* A report of @p fix_protocol may describe a subject of @p protocol: one protocol class, as attribution compares
+ * them (dsd_position_attribution_class(): P25 Phase 1 and Phase 2 apart, else the protocol family). A Phase 2 report
+ * never lands on a Phase 1 call still open on the slot, named or anonymous. */
+static int
+dsd_event_pos_same_class(int protocol, int fix_protocol) {
+    return dsd_position_protocol_family(protocol) >= 0
+           && dsd_position_attribution_class(protocol) == dsd_position_attribution_class(fix_protocol);
+}
+
 /* The typed-source rule (spec 2.7): the report may describe the subject (a call or a notice) of @p protocol, numeric
- * @p source_id and callsign @p text: the same protocol family, the same source ID and callsign where the report names
- * them, and an anonymous report only for a subject that names no source (spec 2.14). */
+ * @p source_id and callsign @p text: the same protocol class (dsd_event_pos_same_class()), the same source ID and
+ * callsign where the report names them, and an anonymous report only for a subject that names no source (spec
+ * 2.14). */
 static int
 dsd_event_pos_source_compatible(int protocol, uint64_t source_id, const char* text, const dsd_position_fix* fix) {
-    const int family = dsd_position_protocol_family(protocol);
-    if (family < 0 || family != dsd_position_protocol_family(fix->protocol)) {
+    if (!dsd_event_pos_same_class(protocol, fix->protocol)) {
         return 0;
     }
     if (dsd_event_pos_fix_anonymous(fix)) {
@@ -4048,23 +4081,18 @@ dsd_event_pos_source_compatible(int protocol, uint64_t source_id, const char* te
     return fix->source_text[0] == '\0' || dsd_event_pos_callsign_matches(text, fix->source_text);
 }
 
-/* The report was heard where the row's call was (the sender scope is only the track key):
- * - on the same reception: the received identity epoch the report came from (the low half of its origin generation)
- *   is the one the call began on. The record may have learned more between the two reads, so the scopes are not
- *   compared; or
- * - on another reception (the record was reset since): the report's reception scope and discriminator equal the row's,
- *   and the row knows one. An unknown scope matches nothing across receptions.
+/* The report was heard where the row was, by the reception rule (dsd_position_same_reception(), fail closed): the
+ * row's own reception -- a row a reacquired segment merged into keeps the one it was heard on, never the closing
+ * call's -- and the report's reception scope, discriminator and origin epoch. The sender scope is only the track key.
  * And it is newer than the row's position. */
 static int
-dsd_event_pos_row_takes(const Event_History* item, const dsd_call_snapshot* call, const dsd_position_fix* fix) {
-    if ((uint32_t)(fix->origin_gen & 0xFFFFFFFFU) != call->rx_id_epoch) {
-        const dsd_event_rx_scope* rx = &item->rx_scope;
-        const int64_t fix_rx_hz = fix->reception_scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? fix->freq_hz : 0;
-        if (rx->scope.kind == (uint8_t)DSD_POS_SCOPE_NONE || rx->scope.kind != fix->reception_scope.kind
-            || rx->scope.a != fix->reception_scope.a || rx->scope.b != fix->reception_scope.b
-            || rx->identity_freq_hz != fix_rx_hz) {
-            return 0;
-        }
+dsd_event_pos_row_takes(const Event_History* item, const dsd_position_fix* fix) {
+    dsd_position_reception row_rx;
+    dsd_position_reception fix_rx;
+    watchdog_event_row_reception(&item->rx_scope, &row_rx);
+    dsd_position_fix_reception(fix, &fix_rx);
+    if (!dsd_position_same_reception(&row_rx, &fix_rx)) {
+        return 0;
     }
     return !item->pos.valid || fix->rev > item->pos.rev;
 }
@@ -4083,6 +4111,8 @@ dsd_event_pos_write_notice(Event_History* item, const dsd_position_fix* fix, con
     DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
     item->rx_scope.scope = fix->reception_scope;
     item->rx_scope.identity_freq_hz = fix->reception_scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? fix->freq_hz : 0;
+    item->rx_scope.rx_epoch = (uint32_t)(fix->origin_gen & 0xFFFFFFFFU);
+    item->rx_scope.epoch_known = 1U;
     item->rx_scope.resolved = 1U;
 }
 
@@ -4140,7 +4170,7 @@ dsd_event_enrich_position_locked(const dsd_opts* opts, dsd_state* state, uint8_t
     if (crc_flags) {
         dsd_event_enrich_mark_crc(ext, call, item, crc_flags);
     }
-    if (!dsd_event_pos_row_takes(item, call, fix)) {
+    if (!dsd_event_pos_row_takes(item, fix)) {
         if (item->crc_invalid != crc_before) {
             if (history_index != 0U) {
                 event_struct->commit_rev++; /* the committed row's marking changed */
@@ -4231,7 +4261,7 @@ dsd_event_set_open_call_position(dsd_state* state, uint8_t slot, const dsd_posit
     Event_History* item = &event_struct->Event_History_Items[0];
     int written = 0;
     if (watchdog_event_slot_call_is_open(call, &ext->events[slot]) && dsd_event_pos_call_compatible(call, fix)
-        && dsd_event_pos_row_takes(item, call, fix)) {
+        && dsd_event_pos_row_takes(item, fix)) {
         dsd_event_pos_write(item, fix, gps_text);
         dsd_event_history_mark_dirty(event_struct);
         written = 1;
@@ -4431,8 +4461,7 @@ watchdog_event_notice_set_gps(Event_History* item, const dsd_call_observation* o
         return;
     }
     const int cleared = (fix->flags & (uint16_t)(DSD_POS_FLAG_SOURCE_HASHED | DSD_POS_FLAG_SOURCE_UNVERIFIED)) != 0U;
-    const int family = dsd_position_protocol_family(observation->protocol);
-    if (cleared && family >= 0 && family == dsd_position_protocol_family(fix->protocol)) {
+    if (cleared && dsd_event_pos_same_class(observation->protocol, fix->protocol)) {
         /* Admission cleared the report's identity: the notice names nobody either, and keeps the position. */
         item->source_id = 0U;
         item->target_id = 0U;

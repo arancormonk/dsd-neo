@@ -200,6 +200,90 @@ dsd_position_origin_matches(const dsd_state* state, const dsd_position_origin* o
     return state && origin && origin->valid && origin->gen == pos_generation(state);
 }
 
+/* ---- The reception rule ---- */
+
+/* The system family a scope belongs to: P25 for both P25 kinds, the kind itself for the others, 0 for a feed-only
+ * frequency scope (any family can have one) and for none. */
+static int
+pos_scope_family(const dsd_position_scope* s) {
+    switch (s->kind) {
+        case DSD_POS_SCOPE_NONE:
+        case DSD_POS_SCOPE_FEED_CC_FREQ:
+        case DSD_POS_SCOPE_FEED_TUNED_FREQ: return 0;
+        case DSD_POS_SCOPE_P25_NAC: return DSD_POS_SCOPE_P25;
+        default: return s->kind;
+    }
+}
+
+/* The tuned frequency a reception names: a tuned-frequency scope's, a P25 NAC scope's discriminator; 0 for none. */
+static int64_t
+pos_reception_tuned_hz(const dsd_position_reception* r) {
+    if (r->scope.kind == DSD_POS_SCOPE_FEED_TUNED_FREQ) {
+        return (int64_t)r->scope.a;
+    }
+    return r->scope.kind == DSD_POS_SCOPE_P25_NAC ? r->identity_freq_hz : 0;
+}
+
+/* Two scopes of one kind agree on every part both know: an EDACS scope knows its site and its system apart (0 until
+ * known); every other kind is known whole. */
+static int
+pos_scope_parts_agree(const dsd_position_scope* x, const dsd_position_scope* y) {
+    if (x->kind == DSD_POS_SCOPE_FEED_EDACS) {
+        return (x->a == 0U || y->a == 0U || x->a == y->a) && (x->b == 0U || y->b == 0U || x->b == y->b);
+    }
+    return x->a == y->a && x->b == y->b;
+}
+
+/* Within one generation, one of two known scopes only refines the other: no two families, no two tuned frequencies,
+ * and one kind only with agreeing parts. */
+static int
+pos_reception_refines(const dsd_position_reception* a, const dsd_position_reception* b) {
+    const int fa = pos_scope_family(&a->scope);
+    const int fb = pos_scope_family(&b->scope);
+    if (fa != 0 && fb != 0 && fa != fb) {
+        return 0;
+    }
+    const int64_t ha = pos_reception_tuned_hz(a);
+    const int64_t hb = pos_reception_tuned_hz(b);
+    if (ha != 0 && hb != 0 && ha != hb) {
+        return 0;
+    }
+    return a->scope.kind != b->scope.kind || pos_scope_parts_agree(&a->scope, &b->scope);
+}
+
+int
+dsd_position_same_reception(const dsd_position_reception* a, const dsd_position_reception* b) {
+    if (!a || !b) {
+        return 0;
+    }
+    const int known_a = a->scope.kind != DSD_POS_SCOPE_NONE;
+    const int known_b = b->scope.kind != DSD_POS_SCOPE_NONE;
+    if (known_a && known_b && pos_scope_equal(&a->scope, &b->scope) && a->identity_freq_hz == b->identity_freq_hz) {
+        return 1;
+    }
+    if (!a->epoch_known || !b->epoch_known || a->rx_epoch != b->rx_epoch) {
+        return 0;
+    }
+    return !known_a || !known_b || pos_reception_refines(a, b);
+}
+
+void
+dsd_position_fix_reception(const dsd_position_fix* fix, dsd_position_reception* out) {
+    if (!out) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!fix) {
+        return;
+    }
+    out->scope.kind = fix->reception_scope.kind;
+    out->scope.a = fix->reception_scope.a;
+    out->scope.b = fix->reception_scope.b;
+    out->identity_freq_hz = fix->reception_scope.kind == DSD_POS_SCOPE_P25_NAC ? fix->freq_hz : 0;
+    out->rx_epoch = (uint32_t)(fix->origin_gen & 0xFFFFFFFFU);
+    out->epoch_known = (uint8_t)(fix->rev != 0U);
+}
+
 /* ---- Tracks ---- */
 
 /* The protocol family a track belongs to (dsd_sync_protocol_family()): P25 Phase 1 and 2, or DMR base and mobile
@@ -214,9 +298,10 @@ dsd_position_source_names_radio(int protocol, uint64_t source) {
     if (source == 0U) {
         return 0;
     }
-    /* TIA-102.AABC: WUID $FFFFFD is the fixed network equipment, $FFFFFF all units. A P25 packet's IP source takes the
-       low 24 address bits, so a network endpoint lands here too. */
-    return !(DSD_SYNC_IS_P25(protocol) && (source == 0xFFFFFDU || source == 0xFFFFFFU));
+    /* TIA-102.AABC-D Table 2.3.30-1: $FFFFFC-$FFFFFF are infrastructure (FNE use, System Default, Registration
+       Default, ALL units). A P25 packet's IP source takes the low 24 address bits, so a network endpoint lands here
+       too. */
+    return !(DSD_SYNC_IS_P25(protocol) && source >= DSD_POSITION_P25_FIRST_SPECIAL_ADDRESS && source <= 0xFFFFFFU);
 }
 
 int
@@ -252,13 +337,22 @@ dsd_position_same_track(const dsd_position_fix* a, const dsd_position_fix* b) {
            && a->source_id == b->source_id && strncmp(a->source_text, b->source_text, sizeof(a->source_text)) == 0;
 }
 
-/* Every field a reader shows of a report (spec 2.3 step 8): equal on all of them is a repeat. */
+/* Where a reader sees a report was heard, and the label it was shown under: its slot, tuned frequency, reception scope
+ * and label (the protocol family is the track's; a burst of the other polarity is the same carrier). */
+static int
+pos_reception_published_equal(const dsd_position_fix* a, const dsd_position_fix* b) {
+    return a->slot == b->slot && a->freq_hz == b->freq_hz && pos_scope_equal(&a->reception_scope, &b->reception_scope)
+           && strncmp(a->label, b->label, sizeof(a->label)) == 0;
+}
+
+/* Every field a reader shows of a report (spec 2.3 step 8), the measured values and where it was heard: equal on all
+ * of them is a repeat. The track (dsd_position_same_track()) holds the rest. */
 static int
 pos_observable_equal(const dsd_position_fix* a, const dsd_position_fix* b) {
     return a->kind == b->kind && a->lat_e7 == b->lat_e7 && a->lon_e7 == b->lon_e7 && a->alt_dm == b->alt_dm
            && a->speed_dkmh == b->speed_dkmh && a->heading_ddeg == b->heading_ddeg && a->err_m == b->err_m
            && a->age_class == b->age_class && a->sats == b->sats && a->target_id == b->target_id && a->flags == b->flags
-           && a->fix_time_s == b->fix_time_s;
+           && a->fix_time_s == b->fix_time_s && pos_reception_published_equal(a, b);
 }
 
 /* ---- Admission steps ---- */

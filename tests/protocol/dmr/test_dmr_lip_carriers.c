@@ -646,6 +646,9 @@ test_p25_fixed_network_source(dsd_opts* opts, dsd_state* state, const char* path
         const Event_History* notice = &state->event_history_s[0].Event_History_Items[1];
         CHECK(notice->pos.valid == 1U && notice->pos.lat_e7 == -225000000);
         CHECK(notice->source_id == (p25 ? 0U : 0xFFFFFDU));
+        // The notice's text names the sender the row names: a P25 endpoint is no radio there either.
+        CHECK((strstr(notice->event_string, "LIP SRC: 16777213;") != NULL) == !p25);
+        CHECK(!p25 || strstr(notice->event_string, "LIP SRC: 0;") != NULL);
 
         // LRRP on UDP 4001 from the same endpoint: an Immediate Location Response with a 2D point.
         static const uint8_t doc[] = {0x07, 0x09, 0x66, 0x10, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00};
@@ -668,6 +671,23 @@ test_p25_fixed_network_source(dsd_opts* opts, dsd_state* state, const char* path
         CHECK(rec.source_id == (p25 ? 0U : 0xFFFFFDU));
         CHECK(notice->pos.valid == 1U && notice->pos.kind == DSD_POS_DMR_LRRP);
         CHECK(notice->source_id == (p25 ? 0U : 0xFFFFFDU));
+        CHECK((strstr(notice->event_string, "16777213") != NULL) == !p25);
+    }
+    // The whole P25 special range ($FFFFFC-$FFFFFF) is no radio; $FFFFFB is one.
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    static const uint8_t last_octets[] = {251, 252, 253, 254, 255};
+    for (size_t i = 0; i < sizeof last_octets; i++) {
+        packet[15] = last_octets[i];
+        dsd_state_ext_free_all(state);
+        CHECK(dsd_position_feed_start(state) == 0);
+        CHECK(truncate_output(path));
+        CHECK(decode_ip_pdu(opts, state, sizeof packet, packet) == 1);
+        dsd_position_fix rec;
+        dsd_position_feed_meta meta;
+        CHECK(dsd_position_feed_copy_since(state, 0U, &rec, 1, &meta) == 1);
+        const uint32_t addr = 0xFFFF00U | last_octets[i];
+        CHECK(rec.source_id == (last_octets[i] == 251U ? addr : 0U));
+        CHECK(state->event_history_s[0].Event_History_Items[1].source_id == rec.source_id);
     }
     state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     return failed;

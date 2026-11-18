@@ -696,17 +696,21 @@ typedef struct {
 
 /**
  * Where a history row's call or notice was heard (issue #800, D7): the reception's scope (the alias scope, else a
- * feed-only EDACS, control-channel or tuned-frequency scope; dsd_position_scope_from_rxid()) and its identity
- * discriminator (the tuned frequency for a P25 NAC scope, else 0). A call row takes it by the rule its site follows
- * (Event_History::site_id: the live record only while the call is active on the carrier it began on, the record as the
- * call ended once it has), pinned once resolved; a data notice at emit. A position enriches a row only when its own
- * reception scope matches (or the row has none). Laid out without padding.
+ * feed-only EDACS, control-channel or tuned-frequency scope; dsd_position_scope_from_rxid()), its identity
+ * discriminator (the tuned frequency for a P25 NAC scope, else 0) and the received identity epoch it was read under. A
+ * call row takes it by the rule its site follows (Event_History::site_id: the live record only while the call is
+ * active on the carrier it began on, the record as the call ended once it has), pinned once resolved; a data notice at
+ * emit. A position lands on a row, or merges into it, only under the reception rule (dsd_position_same_reception()):
+ * both scopes known and equal, or the same generation with nothing that says otherwise; an unknown side never matches
+ * across generations. Laid out without padding.
  */
 typedef struct {
     int64_t identity_freq_hz; /**< the tuned frequency for a DSD_POS_SCOPE_P25_NAC scope, else 0 */
     dsd_position_scope scope; /**< DSD_POS_SCOPE_NONE when none is known */
+    uint32_t rx_epoch;        /**< dsd_received_identity::epoch of the record the reception was read from */
     uint8_t resolved;         /**< 1 once the row's reception was read (a none scope included); pinned from then */
-    uint8_t pad[3];           /**< always 0 */
+    uint8_t epoch_known;      /**< 1 when rx_epoch was read (playing back files: the call's own, with no scope) */
+    uint8_t pad[6];           /**< always 0 */
 } dsd_event_rx_scope;
 
 //event history (each item)

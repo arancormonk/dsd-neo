@@ -20,6 +20,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -272,14 +273,19 @@ test_closing_call(void) {
     free_state(st);
 }
 
-/* A P25 fixed-network ID names no radio; DMR and every other protocol keep the ID. Admission clears it alone, the
- * destination kept. */
+/* A P25 special address ($FFFFFC-$FFFFFF) names no radio; DMR and every other protocol keep the ID. Admission clears
+ * it alone, the destination kept. */
 static void
 test_fixed_network_source(void) {
+    expect_true("p25 FNE use", dsd_position_source_names_radio(DSD_SYNC_P25P1_POS, 0xFFFFFCU) == 0);
     expect_true("p25 FNE", dsd_position_source_names_radio(DSD_SYNC_P25P1_POS, 0xFFFFFDU) == 0);
+    expect_true("p25 registration default", dsd_position_source_names_radio(DSD_SYNC_P25P2_POS, 0xFFFFFEU) == 0);
     expect_true("p25 all units", dsd_position_source_names_radio(DSD_SYNC_P25P2_POS, 0xFFFFFFU) == 0);
     expect_true("p25 none", dsd_position_source_names_radio(DSD_SYNC_P25P1_POS, 0U) == 0);
-    expect_true("p25 radio", dsd_position_source_names_radio(DSD_SYNC_P25P1_POS, 0xFFFFFCU) == 1);
+    expect_true("p25 radio", dsd_position_source_names_radio(DSD_SYNC_P25P1_POS, 0xFFFFFBU) == 1);
+    expect_true("p25 subscriber table",
+                p25_source_id_is_subscriber(0xFFFFFBU) && !p25_source_id_is_subscriber(0xFFFFFCU)
+                    && !p25_source_id_is_subscriber(0xFFFFFEU) && !p25_source_id_is_subscriber(0U));
     expect_true("dmr keeps it", dsd_position_source_names_radio(DSD_SYNC_DMR_BS_DATA_POS, 0xFFFFFDU) == 1);
     expect_true("nxdn keeps it", dsd_position_source_names_radio(DSD_SYNC_NXDN_POS, 0xFFFFFFU) == 1);
 
@@ -304,6 +310,99 @@ test_fixed_network_source(void) {
     free_state(st);
 }
 
+static dsd_position_reception
+reception(uint8_t kind, uint32_t a, uint32_t b, int64_t freq_hz, uint32_t rx_epoch, uint8_t epoch_known) {
+    dsd_position_reception r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    r.scope.kind = kind;
+    r.scope.a = a;
+    r.scope.b = b;
+    r.identity_freq_hz = freq_hz;
+    r.rx_epoch = rx_epoch;
+    r.epoch_known = epoch_known;
+    return r;
+}
+
+/* The reception rule (dsd_position_same_reception(), fail closed): known and equal scopes match across generations;
+ * within one generation an unknown scope or a refinement matches; anything else -- an unknown side across generations,
+ * two families, two tuned frequencies, two values of one kind -- does not. Symmetric. */
+static void
+test_reception_rule(void) {
+    const uint8_t nac = DSD_POS_SCOPE_P25_NAC;
+    const uint8_t net = DSD_POS_SCOPE_P25;
+    const uint8_t tuned = DSD_POS_SCOPE_FEED_TUNED_FREQ;
+    const uint8_t none = DSD_POS_SCOPE_NONE;
+    static const char* const tags[] = {
+        "equal known scopes, other generations",
+        "equal NAC, other discriminator",
+        "unknown side, other generations",
+        "unknown generation",
+        "both unknown, same generation",
+        "one unknown, same generation",
+        "NAC refined to WACN/SYS",
+        "tuned refined to NAC",
+        "tuned frequency moved",
+        "NAC discriminator moved",
+        "two NACs",
+        "two families",
+        "two networks",
+        "EDACS site then system",
+        "EDACS two sites",
+    };
+
+    const struct {
+        dsd_position_reception a;
+        dsd_position_reception b;
+        int same;
+    } cases[] = {
+        {reception(net, 0xA1234U, 0x111U, 0, 1U, 1U), reception(net, 0xA1234U, 0x111U, 0, 2U, 1U), 1},
+        {reception(nac, 0x293U, 0U, 450000000, 1U, 1U), reception(nac, 0x293U, 0U, 451000000, 2U, 1U), 0},
+        {reception(net, 0xA1234U, 0x111U, 0, 1U, 1U), reception(none, 0U, 0U, 0, 2U, 1U), 0},
+        {reception(none, 0U, 0U, 0, 1U, 0U), reception(none, 0U, 0U, 0, 1U, 1U), 0},
+        {reception(none, 0U, 0U, 0, 7U, 1U), reception(none, 0U, 0U, 0, 7U, 1U), 1},
+        {reception(net, 0xA1234U, 0x111U, 0, 7U, 1U), reception(none, 0U, 0U, 0, 7U, 1U), 1},
+        {reception(nac, 0x293U, 0U, 450000000, 7U, 1U), reception(net, 0xA1234U, 0x111U, 0, 7U, 1U), 1},
+        {reception(tuned, 450000000U, 0U, 0, 7U, 1U), reception(nac, 0x293U, 0U, 450000000, 7U, 1U), 1},
+        {reception(tuned, 450000000U, 0U, 0, 7U, 1U), reception(tuned, 451000000U, 0U, 0, 7U, 1U), 0},
+        {reception(tuned, 450000000U, 0U, 0, 7U, 1U), reception(nac, 0x293U, 0U, 451000000, 7U, 1U), 0},
+        {reception(nac, 0x293U, 0U, 450000000, 7U, 1U), reception(nac, 0x294U, 0U, 450000000, 7U, 1U), 0},
+        {reception(net, 0xA1234U, 0x111U, 0, 7U, 1U), reception(DSD_POS_SCOPE_DMR, 17U, 0U, 0, 7U, 1U), 0},
+        {reception(net, 0xA1234U, 0x111U, 0, 7U, 1U), reception(net, 0xA1234U, 0x112U, 0, 7U, 1U), 0},
+        {reception(DSD_POS_SCOPE_FEED_EDACS, 0x10001U, 0U, 0, 7U, 1U),
+         reception(DSD_POS_SCOPE_FEED_EDACS, 0x10001U, 0x10002U, 0, 7U, 1U), 1},
+        {reception(DSD_POS_SCOPE_FEED_EDACS, 0x10001U, 0U, 0, 7U, 1U),
+         reception(DSD_POS_SCOPE_FEED_EDACS, 0x10003U, 0U, 0, 7U, 1U), 0},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        expect_true(tags[i], dsd_position_same_reception(&cases[i].a, &cases[i].b) == cases[i].same
+                                 && dsd_position_same_reception(&cases[i].b, &cases[i].a) == cases[i].same);
+    }
+    expect_true("NULL", dsd_position_same_reception(NULL, &cases[0].a) == 0);
+
+    /* An admitted report's reception: its scope, the NAC discriminator and its origin's epoch. */
+    dsd_state* st = new_state();
+    st->rx_id.family = DSD_RXID_FAMILY_P25;
+    st->rx_id.valid = DSD_RXID_ACCESS;
+    st->rx_id.access_kind = DSD_ACCESS_CODE_NAC;
+    st->rx_id.access = 0x293U;
+    st->rx_id.epoch = 9U;
+    dsd_position_fix fix;
+    dsd_position_fix_init(&fix);
+    fix.kind = DSD_POS_P25_HARRIS;
+    fix.protocol = DSD_SYNC_P25P1_POS;
+    fix.lat_e7 = 225000000;
+    fix.lon_e7 = 450000000;
+    dsd_position_reception r;
+    dsd_position_fix_reception(&fix, &r);
+    expect_true("unadmitted report: unknown generation", r.epoch_known == 0U);
+    expect_true("report admitted", dsd_position_admit(NULL, st, &fix, 1, 1, NULL) != DSD_POSITION_REFUSED);
+    dsd_position_fix_reception(&fix, &r);
+    expect_true("report reception", r.scope.kind == nac && r.scope.a == 0x293U && r.rx_epoch == 9U
+                                        && r.epoch_known == 1U && r.identity_freq_hz == fix.freq_hz);
+    free_state(st);
+}
+
 int
 main(void) {
     static const producer producers[] = {
@@ -322,6 +421,7 @@ main(void) {
     test_transmission_binding();
     test_closing_call();
     test_fixed_network_source();
+    test_reception_rule();
     if (g_fail) {
         return 1;
     }

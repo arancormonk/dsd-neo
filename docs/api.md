@@ -467,7 +467,8 @@ One line per position report the decoder kept in its position feed. These are
 the checked reports that History and `-L` take (only reports whose own check,
 a CRC, FEC or checksum, passed), D-STAR and M17 included, which `-L` leaves out.
 A report that repeats its radio's last kept one unchanged within 30 s is not
-kept again.
+kept again. Unchanged means where it was heard too: the same fix on the other
+slot, on another frequency, on another system or under a new label is kept.
 
 * `pos_stream` names the decoder run (a decimal string, like every 64-bit
   identifier) and `pos_seq` numbers the run's kept reports from `1`. A new run is
@@ -495,7 +496,7 @@ kept again.
 | `alt_dm`, `err_m`, `speed_dkmh`, `heading_ddeg` | Altitude in decimetres, position error in metres, speed in 0.1 km/h, heading in 0.1 degree (`0`-`3599`). `null` when the report did not carry it. |
 | `age_class`, `sats` | The LIP "time elapsed" code and the satellites in use; `null` when not sent. |
 | `fix_time` | The report's own UTC time (Unix seconds), `null` when it carried none. A date sent with a two-digit year (NMEA RMC, DMR LOCN) is read in the century that puts it closest to when it was received, so within 50 years of it (a replayed capture: of the capture's time); a date no century within 50 years gives (29 February of a year 00 received in 2080) is `null`. |
-| `source_id`, `target_id`, `source_text` | The sending radio (`0` for none), the target (`0` for none), and the callsign for D-STAR and M17 (empty otherwise). A report that carries no sender of its own (DMR embedded GPS, a P25 L3Harris or Motorola link control or MAC) names the radio a checked message of the same call named, on the same reception: after a colour code, NAC or system change without the call ending it is `0` until such a message names the radio again. A P25 fixed network ID (`16777213`, `16777215`; a packet from a network address takes its low 24 bits) is never a sending radio: `0`, the target kept. |
+| `source_id`, `target_id`, `source_text` | The sending radio (`0` for none), the target (`0` for none), and the callsign for D-STAR and M17 (empty otherwise). A report that carries no sender of its own (DMR embedded GPS, a P25 L3Harris or Motorola link control or MAC) names the radio a checked message of the same call named, on the same reception: after a colour code, NAC or system change without the call ending it is `0` until such a message names the radio again. A P25 special address (`16777212` to `16777215`; a packet from a network address takes its low 24 bits) is never a sending radio: `0`, the target kept. A P25 message from such an address is no evidence for the talker before it either: a report after it is `0` until a checked message names a radio. |
 | `label` | The source's name from the imported lists or a learned alias when the report was kept; empty when none. |
 | `sender_scope`, `reception_scope`, `identity_freq_hz` | The sender's system and the system the report was heard on: `kind` `0` none, `1` P25 (`a` WACN, `b` system ID), `2` DMR, `3` NXDN, `4` TETRA (`a` MCC, `b` MNC), `5` P25 NAC only (`a` NAC), `64` EDACS (`a` is `65536` plus the site, `b` `65536` plus the system, each `0` when not known), `65` a control channel (`a` its frequency in Hz), `66` a tuned frequency (`a` in Hz). They differ only for a TETRA radio of another network. `identity_freq_hz` is the tuned frequency when the sender scope is a NAC only (two systems can share a NAC), else `0`. A track is the protocol family, `sender_scope`, `identity_freq_hz` and `source_id` or `source_text`. |
 | `freq_hz` | The tuned frequency it was heard on, `0` when unknown. |

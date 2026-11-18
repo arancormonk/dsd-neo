@@ -69,10 +69,12 @@ enum {
     P25_SM_PTT_SIGNATURE_BYTES = 17,
 };
 
-/** Return non-zero only for a subscriber source ID, excluding network controllers. */
+/** Return non-zero only for a subscriber source ID: not 0, and not a special address ($FFFFFC-$FFFFFF: FNE use, System
+ * Default, Registration Default, ALL units; TIA-102.AABC-D Table 2.3.30-1), as dsd_position_source_names_radio()
+ * reads a P25 source. */
 static inline int
 p25_source_id_is_subscriber(uint64_t source) {
-    return source != 0U && source != 0xFFFFFDU && source != 0xFFFFFFU;
+    return source != 0U && !(source >= 0xFFFFFCU && source <= 0xFFFFFFU);
 }
 
 typedef enum {

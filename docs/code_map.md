@@ -2489,7 +2489,8 @@ suite runs under this compiler.
   the protocol and slot, when a multi-fragment report's first fragment was heard under another reception generation
   (`dsd_position_origin_capture()`/`_matches()`: the received identity's epoch with the trunk tuning generation), or
   for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays) and
-  a source that names no radio (`dsd_position_source_names_radio()`: a P25 fixed-network ID, destination kept),
+  a source that names no radio (`dsd_position_source_names_radio()`: a P25 special address, `$FFFFFC`-`$FFFFFF`,
+  destination kept),
   freezes the reception scope (the alias scope, else a feed-only EDACS, control-channel or tuned-frequency scope;
   none for M17/D-STAR), the sender scope (TETRA's calling party network when sent), the identity discriminator (the
   tuned frequency for a P25 NAC scope) and the label (a local sender, whose sender scope equals the reception scope of
@@ -2498,8 +2499,9 @@ suite runs under this compiler.
   `dsd_tg_policy_lookup_learned_label()`), and
   stamps the process-wide `rev`, `proc_instance`, `rx_time_s` and `rx_clock`. Only an admitted report may reach `-L`
   or history. The feed keeps an admitted report unless it repeats its track's last kept one (every observable field
-  equal, kept less than 30 s ago on the decode clock; anonymous sources never fold; 256 tracks, the least recently
-  kept forgotten). The ring holds 1,024 records by seq, created by `dsd_position_feed_start()` at every run start
+  equal, where it was heard included: slot, tuned frequency, reception scope and label, so the same fix on the other
+  slot or another visited network is a new record; kept less than 30 s ago on the decode clock; anonymous sources never
+  fold; 256 tracks, the least recently kept forgotten). The ring holds 1,024 records by seq, created by `dsd_position_feed_start()` at every run start
   (never on the decode path; a new `stream_id`, seq from 1) and freed with the extensions; without one admission
   still works and nothing is kept. The `stream_id` is the process instance (a nonce) plus the process's run count, so
   it never repeats in the process and a restarted process's runs have other streams: the API's `pos_stream` and
@@ -2517,15 +2519,24 @@ suite runs under this compiler.
   `DMR_FLCO_MONO_CRC_SCOPE`),
   `dsd_event_set_open_call_position()` (D-STAR slow data), `dsd_event_stage_position()` (the next data notice;
   `Event_History_Staged::pos_fix` keeps the whole record) and
-  `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol family; the
+  `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol class,
+  `dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, so an anonymous Phase 2 report never lands on an
+  anonymous Phase 1 call still open on the slot; the
   report's source ID and callsign, compared as call identity text, equal to the call's or the notice's; an anonymous
   report only where no source is named, and only while none is: `pos.anonymous` marks it, and a row that names its
   source later -- a fill in the same epoch or a reacquired segment's -- drops it with its GPS text,
   `dsd_event_pos_requalify_row()`, as History's fold does, `drop_anonymous_gps_of_named()`; a notice given a report
   whose identity admission cleared drops its own source and target), requires the report to have been heard where
-  the row was (on the received-identity epoch the call began on, else with a reception scope equal to the row's
-  known `Event_History::rx_scope`; an unknown one matches nothing
-  across receptions; the sender scope in `pos.scope` is only the track key), and lets only a newer `rev` replace a position. A call row takes
+  the row was, and lets only a newer `rev` replace a position. Where it was heard is one reception rule
+  (`dsd_position_same_reception()`, `<dsd-neo/core/position.h>`, fail closed), used by every row writer, the
+  reacquisition merge and the attribution rule: two receptions (`dsd_position_reception`: scope, NAC discriminator,
+  received identity epoch) are one when both scopes are known and equal, or when they share the received identity
+  epoch and nothing says otherwise (an unknown scope, or one scope only refining the other: a NAC then the WACN and
+  SYSID, an EDACS site then its system); two families, two tuned frequencies or two values of one kind are two
+  receptions within one epoch, and an unknown side never matches across epochs. The row side is the row's own
+  `Event_History::rx_scope` (with the epoch it was read under, `rx_epoch`), never the closing call's: a terminator's
+  GPS decoded after its segment merged into a row heard on another carrier is refused there. The sender scope in
+  `pos.scope` is only the track key. A call row takes
   its reception identity by the `site_id` rule (re-read from the live record on every render while active on the carrier it
   began on, so a scope learned mid-call replaces a weaker one; else kept, or the record as the call ended with the
   row's frequency; the reacquisition merge folds in a reacquired segment's identity when it is stronger and of the
@@ -2533,8 +2544,10 @@ suite runs under this compiler.
   WACN and SYSID read after a sync loss), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
   `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
   move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`, but a
-  segment's position only when it was heard on the row's reception (its `rx_scope` equal to the row's after the
-  merge folds in what the segment learned; a side that knows none is no mismatch; test `CORE_EVENT_POSITION`).
+  segment's GPS (a position, GPS text, a sender scope) only when it was heard on the row's reception by the reception
+  rule, after the merge folds in what the segment learned: a segment whose reception is unknown (a reacquisition with
+  only a colour code after a reset) or another merges as a call and keeps its GPS off the row (test
+  `CORE_EVENT_POSITION`).
   Every data notice stamps its reception identity, its sender identity (`pos.scope`, the reception's scope when it has
   no position) and its site (`site_id`, by the call rows' rule). The API row gains `"pos"` (lat/lon from the fixed point, `err_m`,
   `flags`, `rev`) and the event fingerprint hashes it, both only while `pos.valid`. Tests: `CORE_EVENT_POSITION`,
@@ -2599,16 +2612,22 @@ suite runs under this compiler.
     `dsd_position_attribution_call_from_closing()`); its protocol class (`dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, else the
     protocol family) is the report's and the evidence's; it is the epoch the evidence was learned in, or for DMR the
     transmission (a healed fade keeps it); the received identity's epoch (`dsd_received_identity::epoch`, moved by
-    another access code, system, site or family; a trunk follow keeps it) is the one it was learned under; and the
+    another access code, system, site or family; a trunk follow keeps it) is the one it was learned under (the
+    reception rule, `dsd_position_same_reception()`, on the epoch alone: the evidence keeps no scope); and the
     call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
     The P25 trunk SM keeps the same reception in its published record (`p25_sm_published_identity::rx_epoch`) and in
-    the slot's assignment (`identity_rx_epoch`). The other producers name the sender from the report's own carrier
+    the slot's assignment (`identity_rx_epoch`, rebound by every message applied after the epoch moved:
+    `p25_slot_bind_reception()`). The other producers name the sender from the report's own carrier
     (a data header bound to its assembly by an origin, an LSF, a TETRA SDS), which admission's origin check binds to
     the reception. Test: `CORE_POSITION_ATTRIBUTION` (a matrix per producer), with the per-producer tests above.
-  - A P25 fixed-network ID (`$FFFFFD`, `$FFFFFF`) names no radio wherever a report's source comes from
-    (`dsd_position_source_names_radio()`): admission clears such a source and keeps the destination, so a checked
-    report from a fixed network endpoint (P25 SAP 0/4 IP data takes the low 24 address bits as the source: LRRP, LOCN,
-    LIP over UDP from 10.255.255.253) is anonymous, and its data notice names no sender. DMR addressing is unchanged.
+  - A P25 special address (`$FFFFFC`-`$FFFFFF`: FNE use, System Default, Registration Default, ALL units; the table
+    the unit activity log uses) names no radio wherever a report's source comes from
+    (`dsd_position_source_names_radio()`, `p25_source_id_is_subscriber()`): admission clears such a source and keeps the
+    destination, so a checked report from a fixed network endpoint (P25 SAP 0/4 IP data takes the low 24 address bits
+    as the source: LRRP, LOCN, LIP over UDP from 10.255.255.253) is anonymous. The sender is sanitised once, where the
+    packet is read and before any text or record is made of it (`decode_ip_pdu()`; the MDPU header and its extended
+    address in `p25p1_pdu_data.c`), so the notice row, its text (`LIP SRC:`, the LRRP summary, `EXT ADD SRC:`) and the
+    report all name no sender; only the raw header dump prints the address as sent. DMR addressing is unchanged.
     Test: `DMR_LIP_CARRIERS`.
   - ASCII NMEA (`nmea_sentence_checker()`, the RMC/GGA parser in the core-private `src/core/gps/nmea_sentence.{h,c}`;
     P25 SAP 48, NXDN data format 0x06): the packet check plus each sentence's own checksum; the first RMC with status
@@ -12407,10 +12426,18 @@ Private per-protocol modules worth knowing about:
   checked repeat of the grant); a private call's destination comes only from its grant. Phase 1 positions use the
   hard-decoded voice-user LC record (`p25_p1_lc_attribution`, `p25_lcw.c`), which follows the same rule. A link control
   counts as hard-decoded only when no soft-erasure retry recovered it and the caller's `irrecoverable_errors` verdict is
-  0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A fixed-network ID (`0xFFFFFD`, `0xFFFFFF`) is never a checked source
+  0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A special address (`0xFFFFFC`-`0xFFFFFF`) is never a checked source
   (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet, so
   a report during such a call or from such an LLID is kept anonymous (and admission clears one that reaches a report
-  another way, `dsd_position_source_names_radio()`). Tests: `P25_P2_HARRIS_GPS`, `P25_P2_XCCH_HELPERS`.
+  another way, `dsd_position_source_names_radio()`). A message whose source field holds one is no evidence for any
+  talker either (fail closed, `p25_sm_identity_claim::source_placeholder`): the call may keep the assignment's talker
+  for display, as before, but that talker loses its checked flag in the assignment and in the record, so a dispatcher
+  or network PTT after a checked talker leaves the next report anonymous until a checked message names a radio. The
+  verdicts are bound to their reception: a claim applied after the received identity's epoch moved first drops every
+  flag the assignment earned under the old one and rebinds `identity_rx_epoch` (`p25_slot_bind_reception()`: voice
+  starts, promotions, repeated grants, voice users), so a checked PTT naming the talker under the new reception names
+  the next report, and nothing checked under the old one is inherited. Tests: `P25_P2_HARRIS_GPS`,
+  `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as

@@ -491,12 +491,64 @@ test_repeats(void) {
     other.sender_scope.kind = DSD_POS_SCOPE_DMR;
     other.sender_scope.a = 5U;
     assert(admit_fix(st, &other) == DSD_POSITION_ADMITTED_KEPT);
-    /* ... but a burst of the other DMR polarity, or the other slot, is the same radio. */
+    /* ... but a burst of the other DMR polarity is the same radio heard the same way. */
     other = base_fix();
-    other.protocol = DSD_SYNC_DMR_MS_DATA;
-    other.slot = 1U;
+    other.protocol = DSD_SYNC_DMR_BS_DATA_NEG;
     assert(admit_fix(st, &other) == DSD_POSITION_ADMITTED_NOT_KEPT);
     free_state(st);
+}
+
+/* Issue #800: an unchanged fix is a repeat only where a reader sees it heard the same way. The same radio's unchanged
+ * fix on the other slot, on another tuned frequency, under another reception scope (a sender with a fixed home network
+ * heard on another visited network: one track, two receptions) or shown under another label is a new record: the
+ * feed's reader would otherwise keep the old slot, frequency, network or name. */
+static dsd_position_fix
+home_network_fix(void) {
+    dsd_position_fix f = base_fix();
+    f.kind = DSD_POS_TETRA_LIP;
+    f.protocol = DSD_SYNC_TETRA_NDB_POS;
+    f.sender_scope.kind = DSD_POS_SCOPE_TETRA;
+    f.sender_scope.a = 901U;
+    f.sender_scope.b = 16U;
+    return f;
+}
+
+static void
+test_reception_change_is_not_a_repeat(void) {
+    static const char* const names[] = {"slot", "tuned frequency", "reception scope", "label"};
+    for (int change = 0; change < 4; change++) {
+        dsd_state* st = new_state();
+        dsd_opts* opts = new_opts();
+        assert(dsd_position_feed_start(st) == 0);
+        clock_at_ms(T0_MS);
+        set_tetra_net(st, 901U, 16U);
+        tune_rtl(opts, 450000000U);
+        dsd_position_fix f = home_network_fix();
+        assert(dsd_position_admit(opts, st, &f, 1, 1, NULL) == DSD_POSITION_ADMITTED_KEPT && f.label[0] == '\0');
+        clock_at_ms(T0_MS + 1000U);
+        f = home_network_fix();
+        assert(dsd_position_admit(opts, st, &f, 1, 1, NULL) == DSD_POSITION_ADMITTED_NOT_KEPT);
+        f = home_network_fix();
+        if (change == 0) {
+            f.slot = 1U;
+        } else if (change == 1) {
+            tune_rtl(opts, 451000000U);
+        } else if (change == 2) {
+            set_tetra_net(st, 901U, 17U);
+        } else {
+            const dsd_alias_scope home = {DSD_ALIAS_SCOPE_TETRA, 901U, 16U, 1U};
+            assert(dsd_alias_learn_radio(NULL, st, &home, 1234U, "Learned Name", NULL) == DSD_TG_POLICY_LEARN_ADDED);
+        }
+        const dsd_position_admit_result r = dsd_position_admit(opts, st, &f, 1, 1, NULL);
+        assert(dsd_position_same_track(&f, &f));
+        if (r != DSD_POSITION_ADMITTED_KEPT) {
+            DSD_FPRINTF(stderr, "FAIL: a change of %s was folded as a repeat\n", names[change]);
+            exit(1);
+        }
+        assert(change != 3 || strcmp(f.label, "Learned Name") == 0);
+        free(opts);
+        free_state(st);
+    }
 }
 
 static void
@@ -781,6 +833,7 @@ main(void) {
     test_repeats();
     test_anonymous_never_fold();
     test_every_observable_field_breaks_a_repeat();
+    test_reception_change_is_not_a_repeat();
     test_track_table_forgets_the_oldest();
     test_ring_wrap_and_read();
     test_read_edges();
