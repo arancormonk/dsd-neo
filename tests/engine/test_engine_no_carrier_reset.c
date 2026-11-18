@@ -4760,6 +4760,46 @@ test_dmr_mono_keeps_the_lane_call_through_the_other_slots_terminator(void) {
     return rc;
 }
 
+/* A direct-mode burst names its slot by its sync word: a slot 1 one (the sync hunter's dsd_state::dmr_dm_sync_slot 1)
+   read by the single-slot decoder's MS path, whose burst index is 0 for every slot, is slot 1's, not one of unknown
+   slot. While lane 0 carries a slot 2 call, its checked terminator leaves that call active and its PI header leaves
+   that call's crypto, as a repeater's slot 1 burst does. One whose sync word named no slot is still taken for the
+   lane's. */
+static int
+test_dmr_mono_direct_mode_slot1_burst_names_its_slot(void) {
+    int rc = 0;
+    for (int named = 0; named <= 1; named++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        dmr_mono_lane_call_on(opts, state, 1);
+        dsd_call_snapshot before;
+        rc |= expect_true("direct mode: a slot 2 call on lane 0",
+                          dsd_call_state_get(state, 0U, &before) > 0 && before.receive_identity.slot == 2U);
+        state->dmr_ms_mode = 1;
+        state->dmr_dm_sync_slot = named ? 1U : 0U;
+        state->dmr_mono_rx_slot = named ? DSD_DMR_MONO_RX_TS1 : DSD_DMR_MONO_RX_PENDING;
+        dmr_hop_pi_header_on(opts, state, 0, 0x21U);
+        state->dmr_mono_rx_slot = named ? DSD_DMR_MONO_RX_TS1 : DSD_DMR_MONO_RX_PENDING;
+        dmr_hop_lc_on(opts, state, 0, 2U, 1U, 0x00U, 0x00U, 202U);
+        dsd_call_snapshot after;
+        const int got = dsd_call_state_get(state, 0U, &after) > 0;
+        if (named) {
+            rc |= expect_true("direct mode: a slot 1 terminator leaves the slot 2 call active",
+                              got && after.epoch == before.epoch && after.phase == DSD_CALL_PHASE_ACTIVE);
+            rc |= expect_true("direct mode: a slot 1 PI header leaves the slot 2 call's crypto",
+                              after.algid == 0U && state->payload_algid == 0);
+        } else {
+            rc |= expect_true("direct mode: a terminator of no named slot is still the lane's",
+                              got && after.epoch == before.epoch && after.phase == DSD_CALL_PHASE_ENDED);
+        }
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* The hold's edges: what keys or ends it, per slot, on the single-slot decoder, and the one judge of a trunk move. */
 static int
 test_dmr_hold_edges(void) {
@@ -4784,6 +4824,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_mono_folds_slot2_pi_onto_lane0(frame);
     rc |= test_dmr_mono_keeps_slot2_pi_off_a_slot1_call(frame);
     rc |= test_dmr_mono_keeps_the_lane_call_through_the_other_slots_terminator();
+    rc |= test_dmr_mono_direct_mode_slot1_burst_names_its_slot();
     return rc;
 }
 
