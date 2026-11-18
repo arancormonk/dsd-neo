@@ -1317,8 +1317,7 @@ decode_cellocator(dsd_opts* opts, dsd_state* state, const uint8_t* input, int le
 /* ---- ASCII NMEA 0183 (P25 SAP 48, NXDN data call format 0x06) ---- */
 
 enum {
-    NMEA_PAYLOAD_MAX_BYTES = 1024, /* octets of a payload read for sentences */
-    NMEA_TEXT_MAX = 256,           /* the checked sentences kept as text */
+    NMEA_TEXT_MAX = 256, /* the checked sentences kept as text */
 };
 
 /* A packet's sentences: the checked ones joined by one space, and its position report (the first RMC with a measured
@@ -1512,11 +1511,12 @@ nmea_publish(const dsd_opts* opts, dsd_state* state, uint8_t slot, const nmea_pa
     }
 }
 
-/* The payload's octets (one bit per byte in @p input), at most NMEA_PAYLOAD_MAX_BYTES of them; returns the count. */
+/* The payload's octets (one bit per byte in @p input), every one of them: the caller holds @p len_bytes to
+ * NMEA_PAYLOAD_MAX_BYTES. Sentences and the fix chosen among them are read from the whole payload, never a prefix (a
+ * prefix could hold a GGA but not the RMC after it). */
 static size_t
 nmea_payload_octets(const uint8_t* input, int len_bytes, uint8_t* bytes) {
-    const size_t n =
-        ((size_t)len_bytes < (size_t)NMEA_PAYLOAD_MAX_BYTES) ? (size_t)len_bytes : (size_t)NMEA_PAYLOAD_MAX_BYTES;
+    const size_t n = (size_t)len_bytes;
     for (size_t i = 0U; i < n; i++) {
         bytes[i] = (uint8_t)convert_bits_into_output(input + (i * 8U), 8);
     }
@@ -1525,7 +1525,7 @@ nmea_payload_octets(const uint8_t* input, int len_bytes, uint8_t* bytes) {
 
 int
 nmea_payload_framed(const uint8_t* input, int len_bytes) {
-    if (input == NULL || len_bytes <= 0) {
+    if (input == NULL || len_bytes <= 0 || len_bytes > NMEA_PAYLOAD_MAX_BYTES) {
         return 0;
     }
     uint8_t bytes[NMEA_PAYLOAD_MAX_BYTES];
@@ -1539,6 +1539,11 @@ uint8_t
 nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
                       int packet_verified, const dsd_position_origin* origin) {
     if (opts == NULL || state == NULL || input == NULL || len_bytes <= 0) {
+        return 0U;
+    }
+    if (len_bytes > NMEA_PAYLOAD_MAX_BYTES) {
+        /* Longer than any carrier's payload (P25 SAP 48, NXDN format 0x06): never read in part. */
+        DSD_FPRINTF(stderr, " NMEA: payload too long (%d octets); not decoded;", len_bytes);
         return 0U;
     }
     const uint8_t slot_idx = (slot >= 2U) ? 1U : slot;

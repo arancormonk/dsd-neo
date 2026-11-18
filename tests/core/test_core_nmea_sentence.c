@@ -477,7 +477,7 @@ test_producer_reads_the_century_from_the_decode_clock(void) {
 
 static void
 p25_sap48(const char* text, int crc_invalid) {
-    uint8_t pdu[256];
+    static uint8_t pdu[2400];
     DSD_MEMSET(pdu, 0, sizeof pdu);
     pdu[0] = 0x10; /* fmt 16, io 0: the LLID is the source */
     pdu[1] = 48;   /* SAP 48 location service */
@@ -549,6 +549,36 @@ test_p25_sap48(void) {
     p25_sap48("HELLO", 0);
     CHECK(feed_records(recs, 4) == 0);
     CHECK(strstr(notice_row()->text_message, "HELLO") != NULL || strstr(notice_row()->gps_s, "HELLO") != NULL);
+}
+
+/* A SAP 48 packet longer than 1,024 octets is read whole: status sentences first, then the only RMC, after octet 1,024.
+ * That RMC is the report, and it wins over a GGA that came first, as in a short packet. */
+static void
+test_p25_sap48_long_payload(void) {
+    static char payload[2200];
+    char g[128];
+    char r[128];
+    char t[128];
+    sentence(g, sizeof g, "GPGGA,120000,1000.0000,N,02000.0000,E,1,05,1.0,10.0,M,,M,,", "\r\n");
+    sentence(r, sizeof r, "GPRMC,120000,A,2230.0000,N,04500.0000,E,010.0,090.0,150626,,,A", "\r\n");
+    sentence(t, sizeof t, "GPTXT,01,01,02,RECEIVER STATUS REPORT FILLER", "\r\n");
+    for (int with_gga = 0; with_gga <= 1; with_gga++) {
+        size_t at = 0U;
+        payload[0] = '\0';
+        if (with_gga) {
+            at += (size_t)DSD_SNPRINTF(payload + at, sizeof payload - at, "%s", g);
+        }
+        while (at <= 1100U) {
+            at += (size_t)DSD_SNPRINTF(payload + at, sizeof payload - at, "%s", t);
+        }
+        (void)DSD_SNPRINTF(payload + at, sizeof payload - at, "%s", r);
+        reset_fixture();
+        p25_sap48(payload, 0);
+        dsd_position_fix recs[4];
+        CHECK(feed_records(recs, 4) == 1);
+        CHECK(recs[0].lat_e7 == 225000000 && recs[0].lon_e7 == 450000000 && recs[0].heading_ddeg == 900U);
+        CHECK(recs[0].source_id == 1234U);
+    }
 }
 
 /* ---- P25: a report is admitted against the reception its MDPU's header was heard on (issue #800 2.3 step 3) ---- */
@@ -724,6 +754,7 @@ main(void) {
     test_producer_per_sentence();
     test_producer_sentence_choice();
     test_p25_sap48();
+    test_p25_sap48_long_payload();
     test_p25_origin();
     test_p25_destination();
     test_producer_reads_the_century_from_the_decode_clock();
