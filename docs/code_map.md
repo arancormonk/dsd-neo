@@ -12206,11 +12206,20 @@ Private per-protocol modules worth knowing about:
   publication wait for the confirmation, which the next frame's SCCH gives (a real IDAS message repeats; one acts a
   frame, 80 ms, later). `nxdn_scch_parse()` reads the field layout of NXDN TS 1-E §6.5 (its comment has the bit table;
   TS 2-B §5.1.2's test vectors pin it): the ID of an INFO2, INFO3 or INFO4 is always a unit or group ID (31 is a
-  standard ID), an INFO2, INFO3 or busy INFO4 with the reserved prefix 31 (Table 6.6-4) names no unit and acts on
-  nothing, and an INFO1 with its Spare bit set is not defined and acts on nothing. No SCCH carries an IV or writes
-  the decoder's scrambler register or IV (`payload_miN`): Type-D defines only Scramble (TS 1-E Table 6.6-31, TS 1-F
-  §16), and the bits some decoders read as IV parts go out only through the key redaction
-  (`test_type_d_scch_never_rewrites_cipher_state`). The "Type-D" category it names stays with its own frame only,
+  standard ID); the idle, halt, free repeater and site ID messages are outbound only (`nxdn_scch_is_status()`); an
+  INFO2, INFO3 or busy INFO4 with the reserved prefix 31 (Table 6.6-4) names no unit and changes nothing past its
+  frame, not even the area or the control channel sync clock (`nxdn_scch_info::reserved_prefix`); an INFO1 with its
+  Spare bit set is not defined and acts on nothing; and an INFO1 naming a cipher Type-D reserves (10, 11; shown as
+  DES/AES) selects it only with no key for it or once the call received an IV. No SCCH carries an IV or writes the
+  decoder's scrambler register or IV (`payload_miN`): Type-D defines only Scramble (TS 1-E Table 6.6-31, TS 1-F §16).
+  The SCCH channel decoder sets the register to its frame's position only from a CRC-verified SCCH
+  (`nxdn_deperm_scch_soft()`, as a SACCH sets it), and no NXDN crypto publication sources its MI from the register,
+  which a scrambled call loads from the key: the call's MI is an IV the air carried (`nxdn_live_call_received_mi()`),
+  and the terminal shows the scrambler seed only through the key redaction (`test_type_d_scch_never_rewrites_cipher_state`,
+  `test_type_d_scch_publishes_no_register_mi`, `test_scch_crc_gates_scrambler_reload`). The parsed SCCH diagnostics
+  print the bits some decoders read as IV parts only through the key redaction; the `-Z` raw payload dump after them
+  prints all four decoded bytes, which are on-air bits, not key material. The "Type-D" category it names stays with its
+  own frame only,
   the frame's FACCH1 reading it
   (`nxdn_decode_frame_channels()`); a single-frame DCR SACCH2's scrambler and crypto, and a non-superframe SACCH's
   release (`nxdn_message_type()`), Station ID event and control channel sync (`nxdn_element_mark_control_sync()`), the

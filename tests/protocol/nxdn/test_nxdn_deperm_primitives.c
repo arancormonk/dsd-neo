@@ -1236,6 +1236,100 @@ test_facch3_udch2_split_block_storage_and_crc_gate(void) {
     return rc;
 }
 
+/*
+ * The 60 soft bits of an SCCH (NXDN TS 1-E Fig 4.5-1) carrying @p payload's 25 bits: CRC-7 over them where the decoder
+ * reads its check (bits 25-31), four flush bits, the rate-1/2 K=5 code make_facch1_soft_bits() restates, the 12/5
+ * puncture nxdn_depuncture_12_5_rel() undoes (each 12 coded bits lose their 6th and 12th), then PERM_12_5.
+ */
+static void
+make_scch_soft_bits(uint8_t bits[60], const uint8_t payload[25], int corrupt_crc) {
+    static const uint8_t PARITY[32] = {0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+                                       1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1};
+    uint8_t trellis[36];
+    uint8_t coded[72];
+    uint8_t deperm[60];
+
+    DSD_MEMSET(trellis, 0, sizeof(trellis));
+    for (size_t i = 0U; i < 25U; i++) {
+        trellis[i] = (uint8_t)(payload[i] & 1U);
+    }
+    uint8_t crc = crc7_scch(trellis, 25);
+    if (corrupt_crc) {
+        crc ^= 1U;
+    }
+    write_bits_msb(trellis, 25U, 7U, crc);
+
+    unsigned int reg = 0U;
+    for (size_t i = 0U; i < sizeof(coded); i += 2U) {
+        reg = ((reg << 1U) | trellis[i >> 1U]) & 0x1FU;
+        coded[i] = PARITY[reg & 0x19U];
+        coded[i + 1U] = PARITY[reg & 0x17U];
+    }
+
+    size_t out = 0U;
+    for (size_t i = 0U; i < sizeof(coded); i++) {
+        const size_t k = i % 12U;
+        if (k != 5U && k != 11U) {
+            deperm[out++] = coded[i];
+        }
+    }
+
+    for (size_t i = 0U; i < 60U; i++) {
+        bits[i] = deperm[PERM_12_5[i]];
+    }
+}
+
+/*
+ * A scrambled Type-D call's register is loaded from the key at each superframe's first SCCH and runs on across its four
+ * frames (NXDN TS 1-F §16.4.2, Fig 16.4-1). Only an SCCH whose CRC-7 passed may say where in the superframe the frame
+ * is: a damaged one that reads as the first (Structure 11) mid-superframe leaves the register running, where a reload
+ * would garble the rest of the superframe. A verified SCCH sets the register to its frame's position.
+ */
+static int
+test_scch_crc_gates_scrambler_reload(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t payload[25];
+    uint8_t bits[60];
+    uint8_t reliab[60];
+    int rc = 0;
+    const unsigned long long key = 0x5A5AULL;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(reliab, 255, sizeof(reliab));
+    DSD_MEMSET(payload, 0, sizeof(payload));
+    payload[0] = 1U; /* Structure 11: INFO1, the superframe's first SCCH */
+    payload[1] = 1U;
+    write_bits_msb(payload, 3U, 5U, 2U);
+    write_bits_msb(payload, 8U, 5U, 3U);
+
+    for (int corrupt = 1; corrupt >= 0; corrupt--) {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.R = key;
+        state.nxdn_cipher_type = 1U;
+        state.payload_miN = 0x1234ULL; /* partway through the superframe */
+        make_scch_soft_bits(bits, payload, corrupt);
+        nxdn_deperm_scch_soft(&opts, &state, bits, reliab, 1U);
+        rc |= expect_int(corrupt ? "scch-bad-crc-keeps-register" : "scch-good-crc-reloads-register",
+                         state.payload_miN == (corrupt ? 0x1234ULL : key) ? 1 : 0, 1);
+        dsd_state_ext_free_all(&state);
+    }
+
+    /* A verified third SCCH (Structure 01, 3/4) puts the register two frames on from the key. */
+    payload[0] = 0U;
+    payload[1] = 1U;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.R = key;
+    state.nxdn_cipher_type = 1U;
+    state.payload_miN = 0x1234ULL;
+    make_scch_soft_bits(bits, payload, 0);
+    nxdn_deperm_scch_soft(&opts, &state, bits, reliab, 1U);
+    rc |=
+        expect_int("scch-good-crc-places-register", state.payload_miN == advance_nxdn_lfsr_seed(key, 2 * 4) ? 1 : 0, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1258,6 +1352,7 @@ main(void) {
     rc |= test_confirming_frame_reports_its_ran_to_search();
     rc |= test_facch3_udch2_crc_state_update();
     rc |= test_facch3_udch2_split_block_storage_and_crc_gate();
+    rc |= test_scch_crc_gates_scrambler_reload();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

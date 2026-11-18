@@ -3058,9 +3058,11 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
 }
 
 // @p received: the DSD_CALL_CRYPTO_RX_* fields this publication carries from a checked VCALL (0 for a republish).
+// @p mi: an IV the air carried (a VCALL_IV's), else the call's own (nxdn_live_call_received_mi()) -- never the working
+// register, which a scrambled call loads from the key.
 static void
 nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type, uint8_t key_id, uint8_t received,
-                          uint8_t contradicted, uint8_t enc_observed) {
+                          uint8_t contradicted, uint8_t enc_observed, unsigned long long mi) {
     if (!nxdn_live_call_is_nxdn(state)) {
         return; // another protocol's call on slot 0 takes no NXDN cipher
     }
@@ -3071,7 +3073,7 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
                                             : DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
         .algid = cipher_type,
         .kid = key_id,
-        .mi = state->payload_miN,
+        .mi = mi,
         .audio_permitted = (uint8_t)(cipher_type == 0U || has_key),
         .received = received,
         .contradicted = contradicted,
@@ -3149,7 +3151,8 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     // held) cipher is.
     nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, received,
                               contradicted,
-                              info->cipher_type != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR);
+                              info->cipher_type != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR,
+                              nxdn_live_call_received_mi(state));
     dsd_event_sync_slot(opts, state, 0U);
 }
 
@@ -3315,7 +3318,7 @@ NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
         nxdn_vcall_iv_prepare_cipher(state);
     }
     nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, 0U, 0U,
-                              DSD_CALL_ENC_OBSERVED_NONE);
+                              DSD_CALL_ENC_OBSERVED_NONE, nxdn_vcall_iv_extract(state, Message));
 }
 
 struct nxdn_scch_info {
@@ -3339,6 +3342,9 @@ struct nxdn_scch_info {
     uint8_t key_id;
     uint8_t cipher;
     uint16_t id;
+    /* An INFO2, INFO3 or busy INFO4 with the reserved prefix 31 (nxdn_scch_names_reserved_prefix()): it names no
+       unit and changes nothing past its own frame. */
+    uint8_t reserved_prefix;
 };
 
 /*
@@ -3378,6 +3384,25 @@ nxdn_scch_parse(const uint8_t* Message, uint8_t direction, time_t now, struct nx
     info->cipher = (uint8_t)convert_bits_into_output(&Message[16], 2);
 }
 
+/* The outbound status messages whose ID field is a fixed code rather than a unit (NXDN TS 1-E §6.5.3.1 Figs
+ * 6.5-5..6.5-8; INFO2 has INFO4's format, §6.5.3.3): idle (2046), halt (2045) and free (2044) repeater, and site ID
+ * (2041). The inbound INFO4 and INFO2 (Fig 6.5-1) have no such messages: their ID is a destination. */
+static int
+nxdn_scch_is_status(const struct nxdn_scch_info* info) {
+    if (info->direction != 1U || (info->sf != 0U && info->sf != 2U)) {
+        return 0;
+    }
+    return info->id == 2041U || info->id == 2044U || info->id == 2045U || info->id == 2046U;
+}
+
+/* Home Repeater / Prefix 31 is reserved (NXDN TS 1-E Table 6.6-4), and a reserved value's content is not valid (Table
+ * 9.1-1). A unit or group ID is unique only within its home repeater or prefix (§6.6.7, §6.6.8), so an INFO4, INFO3 or
+ * INFO2 with prefix 31 names no unit. The status messages' bits 8-12 are no prefix (a site code there may end in 31). */
+static int
+nxdn_scch_names_reserved_prefix(const struct nxdn_scch_info* info) {
+    return info->sf != 3U && info->rep2 == 31U && !nxdn_scch_is_status(info);
+}
+
 static void
 nxdn_scch_print_payload_label(const dsd_opts* opts, const struct nxdn_scch_info* info) {
     if (opts->payload != 1) {
@@ -3402,9 +3427,10 @@ nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nx
     /* The layout the frame's other channels read (a FACCH1 VCALL's 11-bit IDs): set for this frame whatever its
        confirmation, and kept past it only once the transmission is confirmed (nxdn_frame()). */
     DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "Type-D");
-    if (!info->acts) {
+    if (!info->acts || info->reserved_prefix) {
         /* SCCH carries a 7-bit CRC, which noise clears often enough that a RAN and a scan
-         * hold cannot rest on one (issue #398). */
+         * hold cannot rest on one (issue #398). A message with the reserved prefix is not valid content: its area,
+         * like the rest of it, is kept by nothing. */
         return;
     }
     /* The area bit, which the terminal shows as "IDAS - Area" where the RAN goes; not a RAN (issue #575). The received
@@ -3706,10 +3732,13 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     nxdn_scch_apply_busy_tune(opts, state, info);
 }
 
-/* The INFO4 messages whose ID field is a fixed code rather than a unit (NXDN TS 1-E §6.5.3.1 Figs 6.5-5..6.5-8): idle
- * (2046), halt (2045) and free (2044) repeater, and site ID (2041). Returns whether this was one. */
+/* An outbound status message (nxdn_scch_is_status()): idle, halt or free repeater, or site ID. Returns whether this was
+ * one. */
 static int
 nxdn_scch_handle_repeater_status(dsd_state* state, const struct nxdn_scch_info* info) {
+    if (!nxdn_scch_is_status(info)) {
+        return 0;
+    }
     if (info->id == 2046U) {
         DSD_FPRINTF(stderr, "Idle Repeater Message - ");
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);
@@ -3737,13 +3766,12 @@ nxdn_scch_handle_repeater_status(dsd_state* state, const struct nxdn_scch_info* 
     return 1;
 }
 
-/* Home Repeater / Prefix 31 is reserved (NXDN TS 1-E Table 6.6-4), and a reserved value's content is not valid (Table
- * 9.1-1). A unit or group ID is unique only within its home repeater or prefix (§6.6.7, §6.6.8), so an INFO4, INFO3 or
- * INFO2 with prefix 31 names no unit, and acts on nothing. Its ID field is printed only through the key redaction: some
- * decoders read part of an encryption IV there, which no NXDN specification defines. Returns whether it was one. */
+/* A message with the reserved prefix (nxdn_scch_names_reserved_prefix()) acts on nothing. Its ID field is printed only
+ * through the key redaction: some decoders read part of an encryption IV there, which no NXDN specification defines.
+ * Returns whether it was one. */
 static int
 nxdn_scch_reserved_prefix(const dsd_opts* opts, const struct nxdn_scch_info* info) {
-    if (info->rep2 != 31U) {
+    if (!info->reserved_prefix) {
         return 0;
     }
     char text[8];
@@ -3754,7 +3782,7 @@ nxdn_scch_reserved_prefix(const dsd_opts* opts, const struct nxdn_scch_info* inf
 
 static void
 nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
-    if (info->acts) {
+    if (info->acts && !info->reserved_prefix) {
         (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
     }
 
@@ -3813,7 +3841,7 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
     /* An outbound INFO2 has the INFO4 format (NXDN TS 1-E §6.5.3.3; TS 2-E Tables 5.1-2..5.1-4, "OSM INFO4 / INFO2"):
      * its idle, halt, free repeater and site ID messages carry a fixed code where a busy repeater message carries the
      * destination, and name no unit, so they never become the call's target. */
-    if (info->direction == 1U && nxdn_scch_handle_repeater_status(state, info)) {
+    if (nxdn_scch_handle_repeater_status(state, info)) {
         return;
     }
     DSD_FPRINTF(stderr, "Target Message - ");
@@ -3825,11 +3853,13 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
     DSD_FPRINTF(stderr, "\n%s ", KGRN);
     DSD_FPRINTF(stderr, " Target Update - Prefix CH: %d TGT: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
                 info->id);
-    /* As a busy repeater message's (nxdn_scch_handle_busy()): only for the receiver's own go-to repeater. */
+    /* As a busy repeater message's (nxdn_scch_handle_busy()): only for the receiver's own go-to repeater, its G/U bit
+     * (INFO2 has INFO4's format, NXDN TS 1-E §6.5.2.3, §6.5.3.3) classifying the target. */
     if (info->acts && info->now - state->last_vc_sync_time < 1
         && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
-        nxdn_scch_enrich_identity(state, 0U, info->id, DSD_CALL_KIND_UNKNOWN);
-        nxdn_call_identity_reconcile(opts, state, -1, 1);
+        nxdn_scch_enrich_identity(state, 0U, info->id,
+                                  info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
+        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
     }
 }
 
@@ -3845,6 +3875,21 @@ nxdn_scch_print_call_option(uint8_t call_opt) {
         DSD_FPRINTF(stderr, " Priority");
     }
     DSD_FPRINTF(stderr, " ");
+}
+
+/*
+ * Cipher Types 10 and 11 are reserved on Type-D (NXDN TS 1-E Table 6.6-31; DES and AES, as every known decoder names
+ * them, are Type-C's, TS 1-A). An INFO1 naming one may select it for the audio, or publish the call, only when it cannot
+ * make the call decryptable without an IV: with no key for it (the call is then encrypted and muted, as before), or once
+ * the call has received an IV (a VCALL_IV). With a key and no IV, it acts on nothing.
+ */
+static int
+nxdn_scch_info1_cipher_usable(const dsd_state* state, const struct nxdn_scch_info* info) {
+    if (info->cipher < 2U || !nxdn_vcall_has_key(state, info->cipher) || nxdn_live_call_received_mi(state) != 0ULL) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "(Reserved on Type-D; no IV received) ");
+    return 0;
 }
 
 /*
@@ -3873,7 +3918,7 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
         DSD_FPRINTF(stderr, "- %s - ", NXDN_Cipher_Type_To_Str(info->cipher));
         DSD_FPRINTF(stderr, "Key ID: %d; ", info->key_id);
     }
-    if (!info->acts) {
+    if (!info->acts || !nxdn_scch_info1_cipher_usable(state, info)) {
         return;
     }
     // One SCCH observation must not flip the classification the VCALLs established -- in
@@ -3882,7 +3927,7 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     state->nxdn_cipher_type = nxdn_cipher_observe(state, (uint8_t)info->cipher, 0);
     state->nxdn_key = info->key_id;
     nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, info->key_id, 0U, 0U,
-                              DSD_CALL_ENC_OBSERVED_NONE);
+                              DSD_CALL_ENC_OBSERVED_NONE, nxdn_live_call_received_mi(state));
 }
 
 /* One SCCH (NXDN TS 1-E §6.5): its structure names the message, INFO4 to INFO1, each decoded on its own. */
@@ -3892,6 +3937,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
     struct nxdn_scch_info info;
     nxdn_scch_parse(Message, direction, now, &info);
     info.acts = nxdn_confirm_is_confirmed(state);
+    info.reserved_prefix = (uint8_t)nxdn_scch_names_reserved_prefix(&info);
 
     DSD_FPRINTF(stderr, "\n "); //initial line break
     nxdn_scch_print_payload_label(opts, &info);

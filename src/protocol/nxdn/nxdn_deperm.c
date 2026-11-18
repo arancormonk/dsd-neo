@@ -840,7 +840,8 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
                                          : DSD_CALL_CRYPTO_UNKNOWN,
         .algid = cipher,
         .kid = 0U,
-        .mi = state->payload_miN,
+        /* DCR carries no IV; the working register a scrambled call loads from the key is never an MI. */
+        .mi = nxdn_live_call_received_mi(state),
         .audio_permitted = (uint8_t)(cipher == 0U || has_key),
         /* The CRC-checked SACCH-2's own cipher field, not the applied (held) cipher. */
         .enc_observed = ota_cipher == 0U   ? DSD_CALL_ENC_OBSERVED_CLEAR
@@ -1513,14 +1514,15 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
         check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
     }
 
-    const uint8_t sf = (trellis_buf[0] << 1) | trellis_buf[1];
-    const int part_of_frame = nxdn_sacch_part_of_frame(sf);
-
-    if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) {
-        nxdn_reset_payload_seed_if_forced(state);
-    }
-
     if (crc == check) {
+        /* The scrambler register is loaded from the key at each superframe's first SCCH and runs on across its four
+           frames (NXDN TS 1-F §16.4.2, Fig 16.4-1). Only a verified SCCH's structure places the frame: the register
+           is set to that frame's position, as a SACCH's sets it (nxdn_handle_sacch_superframe()). A failed SCCH
+           places nothing, and the register runs on. */
+        if (state->nxdn_cipher_type == 0x1) {
+            const uint8_t sf = (uint8_t)((trellis_buf[0] << 1) | trellis_buf[1]);
+            nxdn_prepare_sacch_payload_seed(state, nxdn_sacch_part_of_frame(sf));
+        }
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
         nxdn_confirm_note_scch(state);
         NXDN_decode_scch(opts, state, trellis_buf, direction);

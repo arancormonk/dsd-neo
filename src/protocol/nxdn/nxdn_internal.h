@@ -45,6 +45,18 @@ nxdn_live_call_is_nxdn(const dsd_state* state) {
     return dsd_call_state_get(state, 0U, &call) > 0 && DSD_SYNC_IS_NXDN(call.protocol);
 }
 
+/* The IV the live NXDN call on slot 0 received (a VCALL_IV's, nxdn_vcall_publish_crypto()), 0 when none: the only MI an
+   NXDN crypto publication may carry. The decoder's working register (dsd_state::payload_miN) is never one: on a
+   scrambled call it is loaded from the key. */
+static inline unsigned long long
+nxdn_live_call_received_mi(const dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || !DSD_SYNC_IS_NXDN(call.protocol)) {
+        return 0ULL;
+    }
+    return call.mi;
+}
+
 /* End the canonical call on slot 0 for NXDN end signalling, an NXDN call only, and sync its event row; returns whether
    a call ended. */
 static inline int

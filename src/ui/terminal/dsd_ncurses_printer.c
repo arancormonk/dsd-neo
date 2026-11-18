@@ -3091,6 +3091,18 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* The IV the live NXDN call received over the air (a VCALL_IV's, published as the call's MI), 0 when none. The decoder's
+   working register is not shown as one: on a scrambled call it is loaded from the key, and it may still hold that
+   state when the cipher changes. */
+static unsigned long long
+ui_nxdn_received_iv(const dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && DSD_SYNC_IS_NXDN(call.protocol)) {
+        return call.mi;
+    }
+    return 0ULL;
+}
+
 static void
 ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
     printw("\n|");
@@ -3112,7 +3124,10 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
             attron(COLOR_PAIR(3));
             if (state->R != 0) {
                 attron(COLOR_PAIR(1));
-                printw("Seed: %04llX ", state->payload_miN);
+                /* The scrambler register: the key itself at each superframe's start, key stream after. */
+                char seed_text[16];
+                printw("Seed: %s ",
+                       dsd_secret_format_hex(seed_text, sizeof seed_text, opts->show_keys, state->payload_miN, 4U, 0));
                 char key_text[16];
                 printw("Key: %s ", dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));
                 attron(COLOR_PAIR(3));
@@ -3120,7 +3135,7 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
             break;
         case 0x2:
             attron(COLOR_PAIR(1));
-            printw("IV: %016llX ", state->payload_miN);
+            printw("IV: %016llX ", ui_nxdn_received_iv(state));
             attron(COLOR_PAIR(2));
             printw("DES1 ");
             if (state->R != 0) {
@@ -3132,7 +3147,7 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
             break;
         case 0x3:
             attron(COLOR_PAIR(1));
-            printw("IV: %016llX ", state->payload_miN);
+            printw("IV: %016llX ", ui_nxdn_received_iv(state));
             attron(COLOR_PAIR(2));
             printw("AES-256 ");
             if (state->aes_key_loaded[0] == 1) {

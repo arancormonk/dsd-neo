@@ -2298,6 +2298,7 @@ nxdn_run_type_d_private_after_group_case(void) {
     at_seconds(9200.4);
     voice_live();
     build_scch_identity(message, 2U, 6U, 1450U); /* INFO2 target 1450 on the receiver's repeater */
+    message[24] = 1U;                            /* G/U: a unit (NXDN TS 1-E §6.5.3.3, INFO4's format) */
     NXDN_decode_scch(&g_opts, &g_state, message, 1U);
     rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1450U
                           && g_state.nxdn_call.private_call == 1U,
@@ -2362,10 +2363,9 @@ nxdn_run_type_d_private_info3_source_case(void) {
 }
 
 /* A Type-D private call to 1450 is on the receiver's repeater when an INFO2 target message there names another
- * destination, 1460: the call it names is not the private one, and INFO2 carries no class, so it is of no known class
- * until a classified message names it. The private class never moves to the new target, which would ignore the
- * priority-100 group range over it and let a p50 preempting group displace it: a held call of unknown class yields only
- * to Hold. */
+ * destination, 1460, a group by its G/U bit (INFO2 has INFO4's format, NXDN TS 1-E §6.5.3.3): the call it names is
+ * that group, never the private call's class, which would ignore the priority-100 group range over it and let a p50
+ * preempting group displace it. Held as the group it is, it yields only to Hold. */
 static int
 nxdn_run_type_d_info2_new_target_case(void) {
     static const char* const name = "type-d-info2-new-target";
@@ -2401,9 +2401,11 @@ nxdn_run_type_d_info2_new_target_case(void) {
     build_scch_identity(message, 2U, 6U, 1460U); /* INFO2 target 1460 on the receiver's repeater */
     NXDN_decode_scch(&g_opts, &g_state, message, 1U);
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.policy_target_id == 1460U
-                          && call.kind != DSD_CALL_KIND_PRIVATE_VOICE,
-                      name, "info2", "the call INFO2 names takes no private class from the previous call");
-    rc |= nxdn_expect(g_state.nxdn_call.valid == 0U, name, "info2", "the held call is of no known class");
+                          && call.kind == DSD_CALL_KIND_GROUP_VOICE,
+                      name, "info2", "the call INFO2 names takes its own G/U class, not the previous call's");
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1460U
+                          && g_state.nxdn_call.private_call == 0U,
+                      name, "info2", "the held call is the group INFO2 names");
 
     nxdn_case other = held;
     other.scch_gu = 0U;
