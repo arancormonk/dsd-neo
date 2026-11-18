@@ -911,6 +911,7 @@ jobs:
             licenses/ibm-plex-OFL-1.1.txt
             licenses/codec2-LGPL-2.1.txt
             licenses/codec2-NOTICES.txt
+            licenses/LicenseRef-codec2-varicode.txt
           )
           for f in "${required[@]}"; do
             # unzip exits 11 when the pattern matches no entry.

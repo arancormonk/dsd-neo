@@ -163,8 +163,9 @@ class InventoryTests(unittest.TestCase):
                                   packages["msvc-runtime"]["licenseConcluded"]), (runtime, runtime))
                 self.assertNotIn("licenseComments", packages["msvc-runtime"])
                 self.assertIn("Do not modify them.", notices[runtime])
-            # The custom texts of the Windows libraries come from their retained files; codec2's varicode grant is
-            # read as the LGPL 2.1 and needs none.
+            # The custom texts of the Windows libraries come from their retained files. codec2's varicode grant is
+            # read as the LGPL 2.1: its note file (LICENSES/LicenseRef-codec2-varicode.txt) records that reading and
+            # adds no license to any SBOM.
             for custom in ("LicenseRef-PDCurses-Public-Domain", "LicenseRef-OpenSSL-KISA-SEED", "LicenseRef-Sun-G72x"):
                 self.assertEqual(custom in notices, platform == "windows")
                 if platform == "windows":

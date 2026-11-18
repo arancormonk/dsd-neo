@@ -78,7 +78,8 @@ BSD_BINARY_CLAUSE = "Redistributions in binary form must reproduce the above cop
 # the copyright file its port installs and the notices of its pinned sources that file lacks.
 VCPKG_LIBRARY_NOTICES = {
     "codec2.dll": {"codec2-copyright.txt": "vcpkg:codec2", "codec2-LGPL-2.1.txt": "repo:LICENSES/codec2-LGPL-2.1.txt",
-                   "codec2-NOTICES.txt": "repo:LICENSES/codec2-NOTICES.txt"},
+                   "codec2-NOTICES.txt": "repo:LICENSES/codec2-NOTICES.txt",
+                   "LicenseRef-codec2-varicode.txt": "repo:LICENSES/LicenseRef-codec2-varicode.txt"},
     "portaudio.dll": {"portaudio-copyright.txt": "vcpkg:portaudio",
                       "portaudio-NOTICES.txt": "repo:packaging/windows/portaudio-NOTICES.txt"},
     "pdcurses.dll": {"LicenseRef-PDCurses-Public-Domain.txt": "repo:LICENSES/LicenseRef-PDCurses-Public-Domain.txt"},
@@ -418,7 +419,8 @@ class SoapyModulePackaging(unittest.TestCase):
         # and copied whole into the APK, and each package's check requires both files.
         component = next(c for c in json.loads(read("legal/components.json"))["components"] if c["id"] == "codec2")
         self.assertEqual(sorted(component["platforms"]), ["android", "linux", "windows"])
-        self.assertEqual(component["notices"], ["LICENSES/codec2-LGPL-2.1.txt", "LICENSES/codec2-NOTICES.txt"])
+        self.assertEqual(component["notices"], ["LICENSES/codec2-LGPL-2.1.txt", "LICENSES/codec2-NOTICES.txt",
+                                                "LICENSES/LicenseRef-codec2-varicode.txt"])
         self.assertEqual(component["pin"], "CODEC2_SHA")
         self.assertIn("DIRECTORY LICENSES/", read("CMakeLists.txt"))
         self.assertIn('file(COPY "${REPO_DIR}/LICENSES/" DESTINATION "${_doc_dir}/licenses")',
@@ -426,11 +428,19 @@ class SoapyModulePackaging(unittest.TestCase):
         appimage = re.search(r"required=\(([^\n]+)\)", read(".github/workflows/linux-appimage.yaml")).group(1).split()
         android = re.search(r"required=\(\n(.*?)\n\s*\)", read(".github/workflows/android-ci.yaml"), re.S).group(1).split()
         checklist = read("docs/release-assets-checklist.md")
-        for name in ("licenses/codec2-LGPL-2.1.txt", "licenses/codec2-NOTICES.txt"):
+        for name in ("licenses/codec2-LGPL-2.1.txt", "licenses/codec2-NOTICES.txt",
+                     "licenses/LicenseRef-codec2-varicode.txt"):
             with self.subTest(notice=name):
                 self.assertIn(name, appimage)
                 self.assertIn(name, android)
                 self.assertIn(name, checklist)
+        # The varicode files' grant ships unmodified in a note of its own that states how dsd-neo reads it; the reading
+        # is the LGPL 2.1, so no LicenseRef enters the license expression.
+        varicode = read("LICENSES/LicenseRef-codec2-varicode.txt")
+        self.assertIn("it under the terms of the GNU General Public License version 2.1,", varicode)
+        self.assertIn("records a reading, not a separate license", varicode)
+        self.assertNotIn("LicenseRef", component["license_declared"])
+        self.assertNotIn("General Public License version 2.1", read("LICENSES/codec2-NOTICES.txt"))
         # The LGPL text is codec2's own COPYING, unmodified.
         self.assertEqual([line.strip() for line in read("LICENSES/codec2-LGPL-2.1.txt").splitlines()[:2]],
                          ["GNU LESSER GENERAL PUBLIC LICENSE", "Version 2.1, February 1999"])

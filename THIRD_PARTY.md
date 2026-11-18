@@ -256,9 +256,9 @@ the ones those sources carry; where a port's `vcpkg.json` declares another, `leg
   commit `CODEC2_SHA` in `tools/ci-dependency-pins.env`) - LGPL-2.1-only AND LGPL-2.1-or-later AND BSD-3-Clause AND
   BSD-2-Clause. The Android app links the same overlay's static library and the AppImage bundles a shared library
   built from the same commit, so all three carry `licenses/codec2-LGPL-2.1.txt` (codec2's COPYING) and
-  `licenses/codec2-NOTICES.txt` (the holders, the kiss_fft and Mozilla BSD notices, the LGPL-2.1-or-later Valenti
-  notice, and the varicode files' "GNU General Public License version 2.1" grant, read as the LGPL 2.1 of codec2's
-  COPYING and README).
+  `licenses/codec2-NOTICES.txt` (the holders, the kiss_fft and Mozilla BSD notices and the LGPL-2.1-or-later Valenti
+  notice), and `licenses/LicenseRef-codec2-varicode.txt` (the varicode files' "GNU General Public License version 2.1"
+  grant, unmodified, with a note that dsd-neo reads it as the LGPL 2.1 of codec2's COPYING and README).
 - **PortAudio** (`portaudio.dll`; https://www.portaudio.com, release v19.7.0 through the `portaudio` overlay, pinned
   as `PORTAUDIO_SHA`; built without ASIO) - MIT. `licenses/portaudio-NOTICES.txt` adds the holders of the Windows
   host API sources.
