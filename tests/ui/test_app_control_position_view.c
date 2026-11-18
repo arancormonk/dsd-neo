@@ -370,9 +370,10 @@ test_no_allocation(dsd_state* st) {
     assert(allocs_end() == 0);
     assert(n == DSD_POSITION_FEED_CAPACITY);
 #ifdef DSD_TEST_POSITION_ALLOC_WRAP
-    /* The counter counts: a plain allocation is seen. */
+    /* The counter counts: a plain allocation is seen. The pointer goes through a volatile object, because an optimizer
+       may delete a malloc/free pair whose result is never used (clang does at -O2), and then nothing is counted. */
     allocs_begin();
-    void* p = malloc(16);
+    void* volatile p = malloc(16);
     assert(allocs_end() == 1);
     free(p);
 #endif
