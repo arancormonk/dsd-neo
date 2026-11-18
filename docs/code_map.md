@@ -2699,9 +2699,10 @@ suite runs under this compiler.
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
-    its own mini-header, wherever it sits in the superframe: only GPS blocks (0x3n) feed the record and the `GPS DATA:`
+    its own mini-header, wherever it sits in the superframe, a rebroadcast header's superframe included (the header's
+    nine 0x5n blocks first, then the block after them like any other): only GPS blocks (0x3n) feed the record and the `GPS DATA:`
     display (a raw dump, `-Z` only: a part of a record not yet checked or admitted), the `_UNK:` dump shows only blocks
-    of no known kind (never a GPS, text or filler block, so GPS bytes reach the output only through `-Z` or an admitted
+    of no known kind (never a GPS, text, header or filler block, so GPS bytes reach the output only through `-Z` or an admitted
     position), only text blocks
     (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
     rule (fail closed, `dstar_sd_binding` in `state.h`): from its first byte or block an assembly is bound to the
@@ -2712,7 +2713,8 @@ suite runs under this compiler.
     M17 frame between two D-STAR ones, `dsd_rxid_note_sync()`) moved the reception generation, whatever call stays
     ACTIVE across it), the confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
     resets it (a fresh text assembly starts from an empty message, so a new transmission whose block 0 was missed shows
-    none of the last message's characters), and a D-PRS record is checked against its binding before its CRC counts as
+    none of the last message's characters; a text block whose place is at or before one heard since the last block 0
+    starts the next message, its block 0 missed, the same way), and a D-PRS record is checked against its binding before its CRC counts as
     evidence. What an assembly
     produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
     the row takes its position only through it (otherwise the feed takes the record anonymous), and the message reaches
