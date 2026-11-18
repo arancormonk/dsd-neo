@@ -15723,6 +15723,16 @@ Qt Quick frontend (`src/ui/qt`):
       (`call_history_scope_learns()`; an EDACS site-only and a system-only identity stay two); a weaker one joins a
       stronger one of its family, and the row keeps the stronger. So two conventional systems on two frequencies, or two P25 channels sharing a NAC, are two
       rows, while a trunked call over several voice channels stays one. Rows saved without identity merge as before.
+      Fail closed (gate g62-r7): the row learns the fuller or stronger scope, and takes a fragment's fix, only from a
+      fragment heard on the row's reception (`fragment_same_reception()`, read on the row as it was before the reading
+      folds in anything): one protocol class (`call_history_position_class()`, the core's
+      `dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, a sync type known on both) and the core's
+      reception rule (`call_history_same_reception()`, `dsd_position_same_reception()` on History's rows: both scopes
+      known and equal with one discriminator, or the same received identity epoch of one ring, `Row::rxEpoch` and
+      `rxRing`, with nothing that says otherwise; two families, two tuned frequencies or two values of one kind are two
+      receptions, and an unknown side never matches across epochs or decoder runs). The merge of the conversation is
+      not gated: a call heard on 450 MHz with only a tuned-frequency scope and a fragment under a NAC on 451 MHz are one
+      row, which keeps its 450 MHz reception and none of the other carrier's fix; a Phase 1 row takes no Phase 2 fix.
     - Fold (`foldRow()`, `rebuild_from_parts()`, `fold_gps()`): one model holds what every fragment gave. Each
       fragment's contribution is a `Row::FragmentPart`, keyed by its fragment key (its ring identity, so two rings'
       fragments with the same start, push stamp and slot are never taken for one): span, crypto and emergency flags,
@@ -15765,9 +15775,10 @@ Qt Quick frontend (`src/ui/qt`):
       the parts (`Row::gpsOthers`, each a fragment's by its ring identity: its run's session ordinal, slot and push
       stamp, `call_history_same_fragment()`, never its start, which the core can fill in or move; only for a unit of an
       unknown run, an older store's, does the start guard the push stamp), and a reading
-      gives its own only when it names the row's radio (`fold_gps()`). The texts anonymous fragments gave are
-      dropped when the row learns its radio. The reception scope folds by strength from any
-      fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
+      gives its own only when it names the row's radio and was heard on the row's reception (`fold_gps()`,
+      `fragment_same_reception()`). The texts anonymous fragments gave are
+      dropped when the row learns its radio. The reception scope folds by strength from a fragment heard on the row's
+      reception, whoever sent it. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
       greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
       unkeyed ones follow provenance. Two readings of one fragment are ordered first by `gpsVer` (the ring's
       `commit_rev` when it was read, which every committed-row change moves and nothing resets): the later reading
@@ -15799,7 +15810,8 @@ Qt Quick frontend (`src/ui/qt`):
       compare their whole detail line. A fold looks a row's fragments up among its parts through an index
       (`PartLookup`) once both are more than a few, so a long call of many short fragments folds in time linear in its
       parts, not quadratic (`UI_QT_CALL_HISTORY_MODEL` counts the parts read). Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
-      `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
+      `rx`, `rxEp`/`rxRing` (the epoch the reception was read under and its ring, hex; both or neither),
+      `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
       `frv` (fragment key to reading version), `fp` (the fragment parts of a voice row of two or more fragments, each
       under its key `fr` with the row's own keys, `x` when withdrawn; a one-fragment row is its own part), each only

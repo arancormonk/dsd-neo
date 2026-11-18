@@ -196,6 +196,10 @@ struct RingFixture {
         DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", tgt_str);
         DSD_SNPRINTF(item->t_name, sizeof(item->t_name), "%s", t_name);
         DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", channel_label);
+        // Every row the core commits was read under the reception's received identity epoch (issue #800): one epoch
+        // for the whole fixture, as a run with no system change has, unless a test moves it (with_epoch()).
+        item->rx_scope.rx_epoch = 1U;
+        item->rx_scope.epoch_known = 1U;
         ring->push_seq++;
         ring->commit_rev++;
         ring->revision++;
@@ -6008,10 +6012,15 @@ test_fragment_label_follows_the_rows_radio(void) {
 
 /* 2.7: a merged row shows the fix of its newest fragment by run and rev, never by stamps. The run after a backward wall
  * clock step still orders by rev; a later run's fix wins over an earlier run's higher rev, read live or as a backlog; a
- * reload keeps the run ordinals, so a ring read again after a relaunch is the same run. */
+ * reload keeps the run ordinals, so a ring read again after a relaunch is the same run. Every fragment is heard on one
+ * known reception (the same tuned frequency): two runs' epochs say nothing of each other, so only a known, equal
+ * reception lets a later run's fix onto the row (call_history_same_reception()). */
 void
 test_position_order_follows_runs_and_revs(void) {
     const time_t when = 1754703000;
+    const auto heard = [](Event_History* item) {
+        return with_rx(item, DSD_POS_SCOPE_FEED_TUNED_FREQ, 450000000U, 0U, 0);
+    };
     for (int backlog = 0; backlog < 2; backlog++) {
         resetStorage();
         RingFixture first;
@@ -6019,17 +6028,17 @@ test_position_order_follows_runs_and_revs(void) {
         {
             CallHistoryModel model;
             // The second fragment starts before the first (the wall clock stepped back), but its fix is newer.
-            with_gps(first.commit(0, 80301U, 8301U, when + 10, when + 14), "GPS: A", 225000000, 450000000, 5U);
+            with_gps(heard(first.commit(0, 80301U, 8301U, when + 10, when + 14)), "GPS: A", 225000000, 450000000, 5U);
             if (backlog == 0) {
                 model.refresh(first.state);
             }
-            with_gps(first.commit(0, 80301U, 8301U, when + 2, when + 8), "GPS: B", 226000000, 451000000, 9U);
+            with_gps(heard(first.commit(0, 80301U, 8301U, when + 2, when + 8)), "GPS: B", 226000000, 451000000, 9U);
             model.refresh(first.state);
             expect("2.7: one run's fragments are one call", model.count() == 1);
             expect("2.7: within a run the higher rev wins, whatever the stamps",
                    detail_of(model, 0) == QStringLiteral("GPS: B"));
             // The next run counts its revs from the start again.
-            with_gps(second.commit(0, 80301U, 8301U, when + 20, when + 24), "GPS: C", 227000000, 452000000, 2U);
+            with_gps(heard(second.commit(0, 80301U, 8301U, when + 20, when + 24)), "GPS: C", 227000000, 452000000, 2U);
             model.refresh(second.state);
             expect("2.7: the next run's fragment joins the call", model.count() == 1);
             expect("2.7: a later run's fix beats an earlier run's higher rev",
@@ -6039,7 +6048,7 @@ test_position_order_follows_runs_and_revs(void) {
         expect("2.7: the reload shows the same fix",
                relaunched.count() == 1 && detail_of(relaunched, 0) == QStringLiteral("GPS: C"));
         // The running ring read again after the relaunch keeps its run: a fragment with a lower rev loses.
-        with_gps(second.commit(0, 80301U, 8301U, when + 26, when + 28), "GPS: D", 228000000, 453000000, 1U);
+        with_gps(heard(second.commit(0, 80301U, 8301U, when + 26, when + 28)), "GPS: D", 228000000, 453000000, 1U);
         relaunched.refresh(second.state);
         expect("2.7: a relaunch keeps the ring's run",
                relaunched.count() == 1 && detail_of(relaunched, 0) == QStringLiteral("GPS: C"));
@@ -6306,6 +6315,98 @@ test_weaker_identity_joins_stronger(void) {
     }
     model.refresh(ring.state);
     expect("B5: two full P25 scopes that differ are two calls", model.count() == 2);
+}
+
+/* Issue #800, fail closed: a fragment gives a merged row its fix, and the row learns a stronger reception scope from it,
+ * only when it was heard on the reception the row's other fragments were, read before anything is adopted (the core's
+ * reception rule, call_history_same_reception()). A P25 call heard on 450 MHz with only a tuned-frequency scope, then
+ * a fragment of the same talkgroup and radio under a NAC scoped to 451 MHz, in one epoch: the calls still merge, but
+ * the row keeps its 450 MHz reception and none of the 451 MHz fragment's fix, live and after a reload. A fragment of
+ * another decoder run with no known reception is no reception of the row's either: its epoch counts in another ring.
+ * The same fragments on one tuned frequency still give the row their fix. */
+void
+test_fix_stays_on_its_reception(void) {
+    const time_t when = 1754706400;
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        Event_History* first =
+            with_rx(ring.commit(0, 80621U, 8621U, when, when + 3), DSD_POS_SCOPE_FEED_TUNED_FREQ, 450000000U, 0U, 0);
+        first->systype = DSD_SYNC_P25P1_POS;
+        model.refresh(ring.state);
+        Event_History* second = with_gps(
+            with_rx(ring.commit(0, 80621U, 8621U, when + 5, when + 8), DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 451000000),
+            "GPS: other carrier", 225000000, 450000000, 4U);
+        second->systype = DSD_SYNC_P25P1_POS;
+        model.refresh(ring.state);
+        expect("reception: the two carriers' fragments still merge", model.count() == 1);
+        expect("reception: the other carrier's fix is not the row's",
+               model.count() == 1 && detail_of(model, 0).isEmpty());
+        // Another run's fragment with no known reception: its epoch says nothing of this ring's.
+        RingFixture other;
+        Event_History* unknown =
+            with_gps(other.commit(0, 80621U, 8621U, when + 10, when + 13), "GPS: other run", 226000000, 451000000, 2U);
+        unknown->systype = DSD_SYNC_P25P1_POS;
+        model.refresh(other.state);
+        expect("reception: another run's fragment of no known reception gives no fix",
+               model.count() == 1 && detail_of(model, 0).isEmpty());
+    } // destructor flushes the stores
+    const QJsonObject rx = stored_row_with(80621U, 8621U).value(QLatin1String("rx")).toObject();
+    expect("reception: the row keeps the reception it was heard on",
+           rx.value(QLatin1String("k")).toInt() == DSD_POS_SCOPE_FEED_TUNED_FREQ
+               && !stored_row_with(80621U, 8621U).contains(QLatin1String("gps")));
+    CallHistoryModel reloaded;
+    expect("reception: none of it after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+    resetStorage();
+    RingFixture same;
+    CallHistoryModel model;
+    for (int i = 0; i < 2; i++) {
+        Event_History* item = with_rx(
+            same.commit(0, 80622U, 8622U, when + 5 * static_cast<time_t>(i), when + 5 * static_cast<time_t>(i) + 3),
+            DSD_POS_SCOPE_FEED_TUNED_FREQ, 450000000U, 0U, 0);
+        item->systype = DSD_SYNC_P25P1_POS;
+        if (i == 1) {
+            with_gps(item, "GPS: same carrier", 225000000, 450000000, 4U);
+        }
+        model.refresh(same.state);
+    }
+    expect("reception: a fragment of the row's reception gives its fix",
+           model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: same carrier"));
+}
+
+/* Issue #800, fail closed: the two P25 phases may be one conversation (call_history_protocol_family()), but a fix is
+ * one protocol class's (call_history_position_class(), the core's dsd_position_attribution_class()). With the same
+ * known system, frequency, talkgroup and radio, a Phase 1 fragment then a Phase 2 fragment carrying a fix are one row,
+ * and the Phase 1 row takes none of the Phase 2 fix, in either order, live and after a reload. */
+void
+test_fix_stays_on_its_p25_phase(void) {
+    const time_t when = 1754706450;
+    for (int phase2First = 0; phase2First < 2; phase2First++) {
+        resetStorage();
+        {
+            RingFixture ring;
+            CallHistoryModel model;
+            for (int i = 0; i < 2; i++) {
+                const bool phase2 = (i == 0) == (phase2First != 0);
+                Event_History* item = with_rx(ring.commit(0, 80631U, 8631U, when + 5 * static_cast<time_t>(i),
+                                                          when + 5 * static_cast<time_t>(i) + 3),
+                                              DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+                item->freq_hz = 851000000;
+                item->systype = phase2 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+                if (i == 1) {
+                    with_gps(item, "GPS: other phase", 225000000, 450000000, 4U)->pos.kind = DSD_POS_P25_HARRIS;
+                }
+                model.refresh(ring.state);
+            }
+            expect("phase: the two phases' fragments are one row", model.count() == 1);
+            expect("phase: the other phase's fix is not the row's",
+                   model.count() == 1 && detail_of(model, 0).isEmpty());
+        } // destructor flushes the stores
+        expect("phase: no fix is stored", !stored_row_with(80631U, 8631U).contains(QLatin1String("gps")));
+        CallHistoryModel reloaded;
+        expect("phase: none after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+    }
 }
 
 /* B5: an identity known in part is the same system as one that knows more of it. An EDACS call whose first fragment knew
@@ -7405,6 +7506,8 @@ main(int argc, char** argv) {
     test_textual_destinations_under_one_service_stay_apart();
     test_system_identity_splits_conventional_systems();
     test_weaker_identity_joins_stronger();
+    test_fix_stays_on_its_reception();
+    test_fix_stays_on_its_p25_phase();
     test_late_position_rechecks_reception_system();
     test_fragment_on_another_system_withdraws_payload();
     test_fragment_on_another_system_withdraws_call_fields();

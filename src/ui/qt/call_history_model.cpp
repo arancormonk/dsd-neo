@@ -1419,6 +1419,7 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         }
         FreshRow row;
         row.row = row_from_item(item, walk.sessionLabel, walk.systemUid, slot, seq);
+        row.row.rxRing = instance;
         row.row.session = walk.session;
         row.row.gpsOrd = walk.sessionOrd;
         row.row.gpsVer = static_cast<quint64>(ring.commit_rev);
@@ -1827,6 +1828,9 @@ fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment) {
     part.cchSeq = row.cchSeq;
     part.cchSlot = row.cchSlot;
     part.rxScope = row.rxScope;
+    part.rxRing = row.rxRing;
+    part.rxEpoch = row.rxEpoch;
+    part.rxEpochKnown = row.rxEpochKnown;
     part.name = row.name;
     part.service = row.service;
     part.session = row.session;
@@ -1872,6 +1876,9 @@ row_of_part(const FragmentPart& part) {
     row.cchSeq = part.cchSeq;
     row.cchSlot = part.cchSlot;
     row.rxScope = part.rxScope;
+    row.rxRing = part.rxRing;
+    row.rxEpoch = part.rxEpoch;
+    row.rxEpochKnown = part.rxEpochKnown;
     row.name = part.name;
     row.service = part.service;
     row.session = part.session;
@@ -1892,12 +1899,13 @@ row_of_part(const FragmentPart& part) {
 }
 
 /** @brief The fields a fragment's part folds into its row (FragmentPart), from @p from: the reception scope by
- * strength, the receive evidence and service, the frequency and access code, the site and channel, the span and flags.
+ * strength, only from a fragment heard on the row's reception (reception_learns()), the receive evidence and service,
+ * the frequency and access code, the site and channel, the span and flags.
  */
 void
 fold_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& from) {
-    if (call_history_scope_learns(existing.rxScope, from.rxScope)) {
-        existing.rxScope = from.rxScope;
+    if (reception_learns(existing, from)) {
+        take_reception(existing, from);
     }
     fold_receive(existing, from);
     fold_carrier(existing, from);
@@ -2181,7 +2189,7 @@ take_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& r
     take_freq(existing, rebuilt);
     take_access_code(existing, rebuilt);
     take_site(existing, rebuilt);
-    existing.rxScope = rebuilt.rxScope;
+    take_reception(existing, rebuilt);
     existing.name = rebuilt.name;
     existing.service = rebuilt.service;
     existing.session = rebuilt.session;
@@ -2463,6 +2471,11 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     Row rest = existing;
     const bool restKnown = rest_of_row(rest, own);
     const bool callOk = !restKnown || fragment_call_compatible(rest, reading);
+    // A fix lands only where it was heard (issue #800, fail closed): on the reception the row's other fragments were
+    // heard on, read as they were before this reading folds in anything (a stronger scope it brings is the reading's
+    // own), by one protocol class (fragment_same_reception()). A conversation may still merge across carriers or both
+    // P25 phases; its fixes do not.
+    const bool positionHere = !restKnown || fragment_same_reception(rest, reading);
     if (callOk) {
         merge_parts(existing, reading);
     } else {
@@ -2483,8 +2496,8 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     }
     // The GPS units are kept per fragment beside the parts (Row::gpsOthers): a reading gives its own only when it names
     // the row's radio (fragment_identity_compatible(): an anonymous fragment never enriches a named row, and one naming
-    // another radio keeps its fix to itself), else its earlier unit goes.
-    fold_gps(existing, reading, callOk && fragment_identity_compatible(existing, reading),
+    // another radio keeps its fix to itself) and was heard where the row was (positionHere), else its earlier unit goes.
+    fold_gps(existing, reading, callOk && positionHere && fragment_identity_compatible(existing, reading),
              !namedBefore && row_names_source(existing));
     // The same analog reception read again: a row an older build stored learns the mode it did not keep.
     if (existing.analog && dsd_analog_mode_known(existing.analogMode) == 0) {

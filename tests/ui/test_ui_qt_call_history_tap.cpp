@@ -225,6 +225,19 @@ struct Decoder {
         item->pos.rev = rev;
     }
 
+    /** Give the newest committed row a known reception, as the core stamps it (Event_History::rx_scope): one tuned
+     * frequency, read under the record's first epoch. */
+    void
+    heardNewest(int slot) {
+        Event_History* item = &state->event_history_s[slot].Event_History_Items[1];
+        item->rx_scope.scope.kind = DSD_POS_SCOPE_FEED_TUNED_FREQ;
+        item->rx_scope.scope.a = 450000000U;
+        item->rx_scope.resolved = 1U;
+        item->rx_scope.rx_epoch = 1U;
+        item->rx_scope.epoch_known = 1U;
+        item->freq_hz = 450000000;
+    }
+
     /** Commit a data notice the way dsd_event_emit_data_notice() does. */
     void
     commitNotice(int slot, time_t when, const char* text) {
@@ -1055,9 +1068,13 @@ test_failed_spill_read_after_a_newer_run(void) {
                 atTapStart.insert(key, settings.value(key));
             }
         }
+        // Every fragment is heard on one known reception: two runs' epochs say nothing of each other, so only that
+        // lets one run's fix onto a row another run's fragment holds (call_history_same_reception()).
         first.commit(0, tg, src, when);
+        first.heardNewest(0);
         first.gpsNewest(0, "GPS: A", 225000000, 5U);
         first.commit(0, tg, src, when + 6);
+        first.heardNewest(0);
         first.gpsNewest(0, "GPS: B", 226000000, 9U);
         first.publish();
         for (int poll = 0; poll < 6; poll++) {
@@ -1084,6 +1101,7 @@ test_failed_spill_read_after_a_newer_run(void) {
         CallHistoryModel model;
         expect("2.7: the failed fold adds nothing", model.count() == 0 && g_spillReadWarnings == 1);
         second.commit(0, tg, src, when + 12);
+        second.heardNewest(0);
         second.gpsNewest(0, "GPS: C", 227000000, 2U);
         second.publish();
         gui_ingest(model);

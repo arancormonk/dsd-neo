@@ -35,11 +35,13 @@ using dsd_qt::call_history_gps_adopts;
 using dsd_qt::call_history_gps_withdraws;
 using dsd_qt::call_history_identity_digest;
 using dsd_qt::call_history_merge_within_window;
+using dsd_qt::call_history_position_class;
 using dsd_qt::call_history_position_digest;
 using dsd_qt::call_history_position_values_valid;
 using dsd_qt::call_history_protocol_family;
 using dsd_qt::call_history_protocols_compatible;
 using dsd_qt::call_history_provenance_compare;
+using dsd_qt::call_history_same_reception;
 using dsd_qt::call_history_scopes_compatible;
 using dsd_qt::call_history_seen_absorb;
 using dsd_qt::call_history_seen_absorb_fill;
@@ -51,6 +53,7 @@ using dsd_qt::call_history_site_text_digest;
 using dsd_qt::call_history_text_digest;
 using dsd_qt::CallHistoryPositionKey;
 using dsd_qt::CallHistoryProvenance;
+using dsd_qt::CallHistoryReception;
 using dsd_qt::CallHistoryScope;
 using dsd_qt::kCallHistoryMaxPlausibleDurationSecs;
 using dsd_qt::kCallMergeWindowSrcMatchedSecs;
@@ -803,6 +806,64 @@ test_identity_digest(void) {
            true);
 }
 
+/* Issue #800, fail closed: History's reception rule is the core's (dsd_position_same_reception()). Two known, equal
+ * scopes are one reception anywhere; otherwise only one received identity epoch of one ring is, with nothing that says
+ * otherwise. A fix is one protocol class's: the two P25 phases apart. */
+void
+test_reception_rule(void) {
+    CallHistoryReception tuned450;
+    tuned450.scope.kind = DSD_POS_SCOPE_FEED_TUNED_FREQ;
+    tuned450.scope.a = 450000000U;
+    tuned450.ring = 0x5EEDU;
+    tuned450.epoch = 4U;
+    tuned450.epochKnown = true;
+    CallHistoryReception nac451 = tuned450;
+    nac451.scope = CallHistoryScope();
+    nac451.scope.kind = DSD_POS_SCOPE_P25_NAC;
+    nac451.scope.a = 0x293U;
+    nac451.scope.freqHz = 451000000;
+    CallHistoryReception nac450 = nac451;
+    nac450.scope.freqHz = 450000000;
+    CallHistoryReception network = tuned450;
+    network.scope = CallHistoryScope();
+    network.scope.kind = DSD_POS_SCOPE_P25;
+    network.scope.a = 0xBEE00U;
+    network.scope.b = 0x1A3U;
+    CallHistoryReception unknown = tuned450;
+    unknown.scope = CallHistoryScope();
+    expect("a reception is its own", call_history_same_reception(tuned450, tuned450), true);
+    expect("two tuned frequencies in one epoch are two receptions", call_history_same_reception(tuned450, nac451),
+           false);
+    expect("a NAC on the tuned frequency refines it", call_history_same_reception(tuned450, nac450), true);
+    expect("a system refines a NAC in one epoch", call_history_same_reception(nac451, network), true);
+    expect("an unknown scope is the epoch's", call_history_same_reception(unknown, tuned450), true);
+    CallHistoryReception later = network;
+    later.epoch = 5U;
+    expect("a refinement across epochs is not known to be one", call_history_same_reception(nac451, later), false);
+    expect("equal known scopes are one across epochs", call_history_same_reception(network, later), true);
+    CallHistoryReception otherRun = unknown;
+    otherRun.ring = 0xBEEFU;
+    expect("an unknown scope never matches another run", call_history_same_reception(unknown, otherRun), false);
+    CallHistoryReception noEpoch = unknown;
+    noEpoch.epochKnown = false;
+    expect("an unknown scope with no epoch matches nothing", call_history_same_reception(noEpoch, noEpoch), false);
+    CallHistoryReception edacsSite = tuned450;
+    edacsSite.scope = CallHistoryScope();
+    edacsSite.scope.kind = DSD_POS_SCOPE_FEED_EDACS;
+    edacsSite.scope.a = 0x10005U;
+    CallHistoryReception edacsBoth = edacsSite;
+    edacsBoth.scope.b = 0x10007U;
+    CallHistoryReception edacsOther = edacsSite;
+    edacsOther.scope.a = 0x10006U;
+    expect("an EDACS site then its system is one reception", call_history_same_reception(edacsSite, edacsBoth), true);
+    expect("two EDACS sites are two", call_history_same_reception(edacsSite, edacsOther), false);
+    expect("the P25 phases are two position classes",
+           call_history_position_class(DSD_SYNC_P25P1_POS) == call_history_position_class(DSD_SYNC_P25P2_POS), false);
+    expect("one phase's polarities are one class",
+           call_history_position_class(DSD_SYNC_P25P2_POS) == call_history_position_class(DSD_SYNC_P25P2_NEG), true);
+    expect("an unknown sync type has no class", call_history_position_class(-1) < 0, true);
+}
+
 } // namespace
 
 int
@@ -827,6 +888,7 @@ main(void) {
     test_identity_compatibility();
     test_digests_and_stored_position();
     test_identity_digest();
+    test_reception_rule();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

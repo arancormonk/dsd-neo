@@ -99,6 +99,19 @@ bool fragment_call_compatible(const CallHistoryModel::Row& existing, const CallH
  * label: one protocol family and sender system, no other source number or text, and not anonymous beside a named row. */
 bool fragment_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
 
+/** @brief Whether fragment @p row was heard where @p existing was, as the core's position writers require (issue #800,
+ * fail closed): one protocol class (call_history_position_class(): the two P25 phases apart, a sync type known on
+ * both), and one reception by the reception rule (call_history_same_reception()). Gates a fix and a scope a row learns,
+ * never the merge of a conversation. */
+bool fragment_same_reception(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
+
+/** @brief Whether @p held learns a stronger reception scope from fragment @p seen: heard where it was
+ * (fragment_same_reception()), with a scope that names more (call_history_scope_learns()). */
+bool reception_learns(const CallHistoryModel::Row& held, const CallHistoryModel::Row& seen);
+
+/** @brief Give @p to the reception of @p from: its scope, epoch and ring. */
+void take_reception(CallHistoryModel::Row& to, const CallHistoryModel::Row& from);
+
 /** @brief Whether two rows' known identities agree: protocol family, reception and sender system, source and target
  * text. */
 bool rows_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);

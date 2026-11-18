@@ -520,6 +520,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         bool enc = false;
         bool emergency = false;
         bool receiveKnown = false;
+        /* Whether rxEpoch is known (Row::rxEpochKnown). */
+        bool rxEpochKnown = false;
         uint8_t callChannelKind = 0;
         qint64 when = 0;
         qint64 end = 0;
@@ -538,10 +540,13 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         int acSlot = 0;
         int cchSlot = 0;
         uint32_t callChannel = 0;
+        /* The received identity epoch the reception was read under, and the ring it counts in (Row::rxEpoch). */
+        uint32_t rxEpoch = 0;
         qint64 cchWhen = 0;
         qulonglong cchSeq = 0;
         dsd_received_identity siteId = {};
         CallHistoryScope rxScope;
+        quint64 rxRing = 0;
         QString name;
         QString service;
         /* The decode session the reading came from (Row::session): the row is the newest session's of its parts. */
@@ -679,6 +684,14 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         QString targetText;
         CallHistoryScope sourceScope;
         CallHistoryScope rxScope;
+        /* Issue #800. The received identity epoch rxScope was read under (Event_History::rx_scope.rx_epoch, while
+         * rxEpochKnown) and the ring that epoch counts in (Event_History_I::instance; 0 when not known): with rxScope,
+         * the reception the core's reception rule reads (call_history_same_reception()). A fragment gives the row its
+         * position, and the row learns a stronger scope from it, only when it was heard on the row's reception, by one
+         * protocol class (fragment_same_reception()). Persisted (`rxEp`, `rxRing`) while known. */
+        quint64 rxRing = 0;
+        uint32_t rxEpoch = 0;
+        bool rxEpochKnown = false;
         /* Issue #800, B2. The text message the row carries (Event_History::text_message), from the newest fragment
          * that had one, with that fragment's provenance. Persisted (`msg`, `msg*`). */
         QString messageText;
