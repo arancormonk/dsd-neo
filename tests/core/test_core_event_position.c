@@ -300,6 +300,43 @@ test_reacquired_segment_strengthens_reception_scope(void) {
     assert(row(1)->rx_scope.identity_freq_hz == 0);
 }
 
+/* Issue #800, fail closed: a reacquired segment's stronger identity is learned only when it names the reception the
+ * row was heard on (the reception rule, dsd_position_same_reception()). A P25 call committed on 450 MHz with only the
+ * tuned frequency known is reacquired on 451 MHz with a known NAC: a stronger identity, but of another carrier. The
+ * row keeps its 450 MHz reception, never a 451 MHz NAC discriminator, and the segment's position stays off it. On 450
+ * MHz both times the row learns the NAC and takes the position. */
+static void
+test_reacquired_stronger_scope_of_another_carrier(void) {
+    for (int moved = 0; moved <= 1; moved++) {
+        reset_fixture();
+        g_opts.audio_in_type = AUDIO_IN_RTL;
+        g_opts.rtlsdr_center_freq = 450000000U;
+        DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+        const uint64_t first = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+        end_call(DSD_CALL_END_SYNC_LOSS);
+        assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_FEED_TUNED_FREQ && row(1)->rx_scope.scope.a == 450000000U);
+        if (moved) {
+            g_opts.rtlsdr_center_freq = 451000000U;
+        }
+        dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+        const uint64_t second = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+        assert(second != first && row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_P25_NAC);
+        const dsd_position_fix f = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
+        assert(dsd_event_enrich_position(NULL, &g_state, 0U, second, &f, "segment fix") == 1);
+        end_call(DSD_CALL_END_SYNC_LOSS);
+        assert(row(1)->source_id == 111U && row(2)->source_id == 0U); /* one row */
+        if (moved) {
+            assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_FEED_TUNED_FREQ);
+            assert(row(1)->rx_scope.scope.a == 450000000U && row(1)->rx_scope.identity_freq_hz == 0);
+            assert(row(1)->pos.valid == 0U && row(1)->gps_s[0] == '\0');
+        } else {
+            assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_P25_NAC);
+            assert(row(1)->rx_scope.identity_freq_hz == 450000000);
+            expect_row_fix(row(1), &f, "segment fix");
+        }
+    }
+}
+
 /* Issue #800: a reacquired segment heard on another reception (here two conventional P25 segments with no system
  * identity, so the tuned frequency is the scope: 450 MHz, then 451 MHz after the sync loss) still merges as one row,
  * but its position, however newer its rev, never lands on a row heard somewhere else: the merged row keeps its own
@@ -800,6 +837,7 @@ main(void) {
     test_reception_scope_refines_mid_call();
     test_reacquired_segment_strengthens_reception_scope();
     test_reacquired_position_keeps_reception();
+    test_reacquired_stronger_scope_of_another_carrier();
     test_closing_fix_checks_the_merged_row();
     test_unknown_reception_never_merges_gps();
     test_reception_scope_of_a_call_ended_unseen();

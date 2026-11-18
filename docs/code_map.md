@@ -2543,7 +2543,10 @@ suite runs under this compiler.
   began on, so a scope learned mid-call replaces a weaker one; else kept, or the record as the call ended with the
   row's frequency; the reacquisition merge folds in a reacquired segment's identity when it is stronger and of the
   same family, or as strong and names more, by the strength rule History's merge uses, so a NAC-only row learns the
-  WACN and SYSID read after a sync loss), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
+  WACN and SYSID read after a sync loss, but only when the row and the segment were heard on one reception by the
+  reception rule, read on both as they were before anything is adopted: a stronger identity never overrides two known,
+  different tuned frequencies or NAC discriminators, so a row committed on one carrier keeps its frequency and
+  reception and refuses the other carrier's GPS, `watchdog_event_rx_scope_learns()`), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
   `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
   move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`, but a
   segment's GPS (a position, GPS text, a sender scope) only when it was heard on the row's reception by the reception
