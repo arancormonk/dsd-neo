@@ -10847,7 +10847,11 @@ Notes:
   the chunk may have been overwritten (the device wrote more than its buffer capacity past the chunk's position, which
   some input devices never report as an overrun: `aaudio_discard_chunk_may_be_new()`), ends the drop, and its chunk
   goes to the stream's carry (the same `struct audio_input_carry` PulseAudio uses, allocated with every input stream),
-  which `dsd_audio_read()` returns first; an earlier drop's carry no read took counts as the oldest audio held. PulseAudio
+  which `dsd_audio_read()` returns first; an earlier drop's carry no read took counts as the oldest audio held. The
+  memory a drop keeps audio in is taken before it reads (`audio_input_chunk_reserve()`, adopted by the carry with
+  `audio_input_carry_adopt()`; PulseAudio's ring of the newest frames becomes the carry itself), and a drop that cannot
+  get it reads nothing, so running out of memory never loses audio captured after the mark (the `without_memory`
+  cases of `PLATFORM_AUDIO_PULSE_HELPERS`, `PLATFORM_AUDIO_PORTAUDIO_RECOVERY`, `PLATFORM_AUDIO_AAUDIO`). PulseAudio
   takes no budget first: it reads what its client holds and keeps the newest frames by time, so a server overrun
   loses only old audio. The UDP ring never overwrites (samples that do not fit are dropped as they arrive, never
   written or counted) and drops under its lock; the TCP and stdin readers drop by byte count from a stream that loses
