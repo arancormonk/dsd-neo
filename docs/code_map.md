@@ -15544,7 +15544,10 @@ Qt Quick frontend (`src/ui/qt`):
       fragment read again with no key takes what it says. The row keeps every fragment's GPS unit, the latest reading
       of each (`Row::gpsOthers` beside the one shown), and shows the best of them: when the shown fragment's newer
       reading drops its fix, the best remaining fragment's fix shows, whatever order the readings arrive in and after
-      a reload; a named row drops only its anonymous units. The session ordinal is persisted per ring
+      a reload; a named row drops only its anonymous units. A whole reading older than one the row already folded from
+      the same fragment (`Row::fragmentVers`, the ring's `commit_rev` of the newest reading of each fragment) is stale
+      and folds in nothing (`foldRow()`), so an older spill line never brings back a label, message, frequency or code
+      the fragment has replaced since. The session ordinal is persisted per ring
       (`callHistory/sessionOrd/next` and `/rings`, the newest 64), given the first time a ring is read; the background
       tap takes a reserved block of 1,024 (`kTapOrdinalBlock`, saved before it starts) and hands its ring map back at
       every stop, so a later run's fix wins whatever order the fragments are read in.
@@ -15553,8 +15556,8 @@ Qt Quick frontend (`src/ui/qt`):
       is read once more. A repeated notice (`notices_same_delivery()`) must match the texts, the fix (coordinates,
       error, flags, kind), the raw target and identity. Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
       `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
-      `pos{lat,lon,err,flags,kind,rev,inst,rxt}` and `gpsAlt` (the other fragments' GPS units, each with those keys),
-      each only when known (`detail` only for a legacy text); spill lines
+      `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
+      `frv` (fragment key to reading version), each only when known (`detail` only for a legacy text); spill lines
       add `ord`. An impossible stored position loads as none, its text kept. Tests: `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_MERGE`, `UI_QT_CALL_HISTORY_TAP`.
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`

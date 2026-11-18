@@ -5503,6 +5503,53 @@ test_lost_fix_gives_way_to_remaining_fragment(void) {
     }
 }
 
+/* B2: a spill line kept after a failed read replays an older reading of a fragment whose newer reading the save
+ * already holds (the same fragment of the same run): nothing of the older reading comes back, neither its message nor
+ * its source label (an alias the core learned in place since), as no older GPS reading does. */
+void
+test_spill_replay_keeps_newer_message(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754703600;
+    QByteArray older;
+    {
+        CallHistoryModel model;
+        Event_History* call = ring.commit(0, 80501U, 8501U, when, when + 4);
+        DSD_SNPRINTF(call->text_message, sizeof(call->text_message), "%s", "Earlier");
+        DSD_SNPRINTF(call->s_name, sizeof(call->s_name), "%s", "Radio 8501");
+        model.refresh(ring.state);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        older = stores_as_spill_lines();
+        DSD_SNPRINTF(call->text_message, sizeof(call->text_message), "%s", "Updated");
+        DSD_SNPRINTF(call->s_name, sizeof(call->s_name), "%s", "Alias 8501");
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("B2 replay: the newer reading reads in place",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("Updated")
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Alias 8501"));
+    } // destructor flushes the stores
+    expect("B2 replay: the spill line holds the earlier reading",
+           older.contains("Earlier") && older.contains("Radio 8501"));
+    write_spill_beside_stores(older);
+    {
+        CallHistoryModel reloaded;
+        expect("B2 replay: the older spill line does not bring the earlier message back",
+               reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("Updated"));
+        expect("B2 replay: the older spill line does not bring the earlier label back",
+               reloaded.count() == 1
+                   && reloaded.data(reloaded.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Alias 8501"));
+        reloaded.startSaveForTest();
+        reloaded.waitForSaveForTest();
+    }
+    expect("B2 replay: the newer reading stays stored",
+           stored_row_with(80501U, 8501U).value(QLatin1String("msg")).toString() == QStringLiteral("Updated")
+               && stored_row_with(80501U, 8501U).value(QLatin1String("srcName")).toString()
+                      == QStringLiteral("Alias 8501"));
+}
+
 /* Spec 2.14: a row that names its source never shows an anonymous report. A ring row read while its call named no
  * source keeps its anonymous fix; once the same row names a radio with the fix still on it (as an older core left it),
  * the fix and its text go, also from a store that kept them. */
@@ -6170,6 +6217,7 @@ main(int argc, char** argv) {
     test_spill_replay_keeps_newer_revision();
     test_spill_text_only_replay_keeps_saved_position();
     test_lost_fix_gives_way_to_remaining_fragment();
+    test_spill_replay_keeps_newer_message();
     test_fragment_texts_follow_the_rows_radio();
     test_position_order_follows_runs_and_revs();
     test_callsign_callers_stay_apart();
