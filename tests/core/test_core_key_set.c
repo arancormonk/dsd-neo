@@ -612,10 +612,11 @@ seed_slot_keyed_from_tg(dsd_state* state) {
 /* Whether slot 1 holds no copy of a key, and the key its row shows on talkgroup 123 is none. */
 static int
 slot_key_copy_gone(const dsd_state* state) {
-    const unsigned char* bytes = (const unsigned char*)state->dmr_tg_autoload.slot_key;
-    for (size_t i = 0; i < sizeof(state->dmr_tg_autoload.slot_key); i++) {
-        if (bytes[i] != 0U) {
-            return 0;
+    for (size_t slot = 0; slot < 2U; slot++) {
+        for (size_t i = 0; i < 6U; i++) {
+            if (state->dmr_tg_autoload.slot_key[slot][i] != 0ULL) {
+                return 0;
+            }
         }
     }
     unsigned long long int words[6];
