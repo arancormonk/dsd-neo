@@ -980,6 +980,40 @@ test_ip_unbound_stream_repeat_includes_sender(void) {
     rig_close(&r);
 }
 
+/* Send frames @p first..@p last of an IP stream 0xBEEF carrying @p bits; the reports admitted meanwhile. */
+static long long
+send_ip_stream(rig* r, const uint8_t bits[LSF_BITS], uint16_t first, uint16_t last) {
+    uint8_t frame[54];
+    const uint64_t rev = dsd_position_last_rev();
+    for (uint16_t fn = first; fn <= last; fn++) {
+        build_ip_stream_frame_fn(frame, bits, 0xBEEFU, fn, 0);
+        m17_ip_dispatch_frame(r->opts, r->state, frame, (int)sizeof(frame));
+    }
+    return (long long)(dsd_position_last_rev() - rev);
+}
+
+/* Issue #800 (g62-r8): an IP stream of data type 0 opens no call. The same sender reusing stream ID 0xBEEF and the
+ * same GNSS META with no EOT between them is another transmission when its checked LSF names another destination, or
+ * when its frame numbers start again: each is admitted again. Within one stream the repeats stay one report. */
+static void
+test_ip_unbound_stream_repeat_includes_destination_and_frame_number(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    uint8_t bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    write_bits(bits + 96, m17_compose_frame_info(1U, 0U, 0U, 1U, 5U, 0U, 0U), 16U);
+    expect_int("first stream admitted once", send_ip_stream(&r, bits, 1U, 3U), 1);
+    m17_load_lsf_callsigns(bits, m17_encode_b40_callsign(0ULL, "N0DEST"),
+                           m17_encode_b40_callsign(0ULL, TEST_SRC_CALLSIGN));
+    expect_int("same sender, another destination, admitted once", send_ip_stream(&r, bits, 4U, 6U), 1);
+    expect_int("its stream's later frames are repeats", send_ip_stream(&r, bits, 7U, 9U), 0);
+    expect_int("the stream started again admitted once", send_ip_stream(&r, bits, 1U, 3U), 1);
+    rig_close(&r);
+}
+
 /* The console output of one checked RF LSF carrying @p meta (empty when stderr cannot be captured). */
 static int
 rf_lsf_output(rig* r, const uint8_t meta[M17_META_BYTES], const char* name, char* out, size_t cap) {
@@ -1062,6 +1096,7 @@ main(void) {
     test_lich_lsd_position();
     test_lich_lsd_bound_to_its_first_chunk();
     test_ip_unbound_stream_repeat_includes_sender();
+    test_ip_unbound_stream_repeat_includes_destination_and_frame_number();
     test_local_tx_monitor_gives_nothing();
     test_local_tx_stream_monitor_gives_nothing();
     test_ip_stream_position();

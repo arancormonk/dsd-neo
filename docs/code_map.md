@@ -2687,8 +2687,11 @@ suite runs under this compiler.
     packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
     monitor; one report per transmission and META content (keyed by the slot 0 call epoch, plus the stream ID on IP,
     so any end of the call -- stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync -- starts another
-    transmission; and by the checked LSF's sender and the reception generation, so two stations reusing one stream ID
-    with no call between them, or one report heard again on another reception, are two reports). The epoch is the call
+    transmission; by the whole checked LSF (sender, destination and type word), an IP stream frame's CRC-covered frame
+    number (a stream whose frame number starts again at or below the last one heard, its EOT missed, is another
+    transmission) and the reception generation, so two stations, or one station sending to another destination,
+    reusing one stream ID with no call between them, or one report heard again on another reception, are two reports;
+    the published target stays unknown). The epoch is the call
     the same LSF observed: an LSF that observes none (a stream of data type 0) is bound to no transmission, whatever M17
     call is still ACTIVE on the slot, so each such RF report is admitted again and none touches that call's row. An LSD
     assembled from LICH chunks (`m17_lich_assembly`) is bound from its first chunk to the transmission (the ACTIVE M17

@@ -79,10 +79,12 @@ static void decodeM17PKT(const dsd_opts* opts, dsd_state* state, const uint8_t* 
 typedef struct {
     uint8_t network; /* 1 for an IP stream or MPKT frame */
     uint16_t stream_id;
-    uint8_t call_observed; /* set by M17decodeLSF(): this LSF observed the slot's call (m17_publish_lsf()) */
+    uint8_t call_observed;    /* set by M17decodeLSF(): this LSF observed the slot's call (m17_publish_lsf()) */
+    uint8_t has_frame_number; /* 1 for an IP stream frame: its frame number (CRC-covered, EOT bit cleared) follows */
+    uint16_t frame_number;
 } m17_lsf_carrier;
 
-static const m17_lsf_carrier k_m17_rf_carrier = {0U, 0U, 0U};
+static const m17_lsf_carrier k_m17_rf_carrier = {0U, 0U, 0U, 0U, 0U};
 static void M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
 static void M17logLSFSummary(const struct m17_lsf_result* res);
@@ -635,20 +637,32 @@ m17_active_call(const dsd_state* state, dsd_call_snapshot* call) {
  * that observed none (a stream of data type 0) is bound to no call, whatever M17 call is still ACTIVE on the slot: that
  * call may be another station's. Nothing else in M17 carries a position (D13).
  */
-/* What tells one GNSS META report's transmission from another's (dsd_state::m17_gnss_tx_kind and the fields after it). */
+/* What tells one GNSS META report's transmission from another's (dsd_state::m17_gnss_tx_kind and the fields after it):
+ * the carrier and its call, the whole checked LSF (sender, destination, type word; the META is compared apart), the
+ * reception, and on an IP stream the frame number. */
 typedef struct {
     uint8_t kind;
     uint64_t id;
     uint64_t epoch;
     uint64_t src;
+    uint64_t dst;
+    uint16_t type_word;
     uint64_t gen;
+    uint8_t has_fn;
+    uint16_t fn;
 } m17_gnss_tx_key;
 
-/* 1 when the META now held repeats the last admitted one within the same transmission, sender and reception. */
+/* 1 when the META now held repeats the last admitted one within the same transmission, LSF and reception. A stream's
+ * frame numbers only rise within it: a frame number at or below the last one heard is another stream (one whose EOT
+ * was missed), never a repeat. */
 static int
 m17_gnss_is_repeat(const dsd_state* state, const m17_gnss_tx_key* key) {
+    if (key->has_fn != state->m17_gnss_tx_has_fn || (key->has_fn != 0U && key->fn <= state->m17_gnss_tx_fn)) {
+        return 0;
+    }
     return state->m17_gnss_tx_kind == key->kind && state->m17_gnss_tx_id == key->id
            && state->m17_gnss_tx_epoch == key->epoch && state->m17_gnss_tx_src == key->src
+           && state->m17_gnss_tx_dst == key->dst && state->m17_gnss_tx_type == key->type_word
            && state->m17_gnss_tx_gen == key->gen
            && memcmp(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES) == 0;
 }
@@ -659,7 +673,11 @@ m17_gnss_note_admitted(dsd_state* state, const m17_gnss_tx_key* key) {
     state->m17_gnss_tx_id = key->id;
     state->m17_gnss_tx_epoch = key->epoch;
     state->m17_gnss_tx_src = key->src;
+    state->m17_gnss_tx_dst = key->dst;
+    state->m17_gnss_tx_type = key->type_word;
     state->m17_gnss_tx_gen = key->gen;
+    state->m17_gnss_tx_has_fn = key->has_fn;
+    state->m17_gnss_tx_fn = key->fn;
     DSD_MEMCPY(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
 }
 
@@ -683,18 +701,26 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     /* One report per transmission and META content: an RF stream's call (the one m17_publish_lsf() just observed for
        this LSF), or a network stream's ID within its call. The call epoch is part of both, so however a call ended
        (stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync) the next one is another transmission. An LSF that
-       observed no call has no epoch, so the checked sender is part of the key too (two stations reusing one stream ID
-       are two transmissions), and the reception generation: a repeat is only ever one heard on the same reception. */
+       observed no call has no epoch, so the whole checked LSF is part of the key too (two stations, or one station
+       sending to another destination, reusing one stream ID are two transmissions), as is a stream's frame number
+       (one restarted with its EOT missed is another stream), and the reception generation: a repeat is only ever one
+       heard on the same reception. */
     m17_gnss_tx_key key;
+    DSD_MEMSET(&key, 0, sizeof(key));
     key.kind = carrier->network ? 2U : 1U;
     key.epoch = active ? call.epoch : 0U;
     key.id = carrier->network ? (uint64_t)carrier->stream_id : key.epoch;
     key.src = res->src;
+    key.dst = res->dst;
+    key.type_word = res->type_word;
+    key.has_fn = carrier->has_frame_number;
+    key.fn = carrier->frame_number;
     dsd_position_origin heard;
     dsd_position_origin_capture(opts, state, &heard);
     key.gen = heard.gen;
     if (m17_gnss_is_repeat(state, &key)) {
-        return M17_GNSS_ADMITTED; /* admitted already, on this reception, within this transmission */
+        state->m17_gnss_tx_fn = key.fn; /* the stream goes on: its next frame comes after this one */
+        return M17_GNSS_ADMITTED;       /* admitted already, on this reception, within this transmission */
     }
     if (dsd_position_admit(opts, state, &fix, 1, 1, NULL) == DSD_POSITION_REFUSED) {
         return M17_GNSS_REFUSED;
@@ -3866,7 +3892,7 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     const uint16_t crc_cmp = m17_crc16(ip_frame, 52);
     const int crc_valid = crc_ext == crc_cmp;
     if (crc_valid) {
-        const m17_lsf_carrier carrier = {1U, sid, 0U};
+        const m17_lsf_carrier carrier = {1U, sid, 0U, 1U, fn};
         M17decodeLSF(opts, state, 1, &carrier);
     }
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
@@ -3941,7 +3967,7 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     DSD_FPRINTF(stderr, "\n M17 IP   MPKT: %04X;", sid);
 
     if (crc_ext == crc_cmp) {
-        const m17_lsf_carrier carrier = {1U, sid, 0U};
+        const m17_lsf_carrier carrier = {1U, sid, 0U, 0U, 0U};
         M17decodeLSF(opts, state, 1, &carrier);
     }
     if (opts->payload == 1) {
