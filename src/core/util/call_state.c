@@ -40,7 +40,7 @@ static atomic_int g_call_state_alloc_mutex_state = 0; /* 0=uninit, 1=initing, 2=
 static long g_call_state_alloc_fail_after = -1;
 static long g_call_state_alloc_calls = 0;
 /* Whole-call snapshots dsd_call_state_get() copied out. */
-static atomic_long g_call_state_snapshot_copies = 0;
+static atomic_int g_call_state_snapshot_copies = 0;
 #endif
 
 static void
@@ -1554,7 +1554,7 @@ dsd_call_state_copy_to_state(dsd_state* dst, const dsd_state* src) {
 #ifdef DSD_NEO_TEST_HOOKS
 long
 dsd_call_state_test_snapshot_copies(void) {
-    return atomic_load(&g_call_state_snapshot_copies);
+    return (long)atomic_load(&g_call_state_snapshot_copies);
 }
 
 void
