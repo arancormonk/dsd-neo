@@ -16,7 +16,8 @@
  * cleanup still commits its last call. No session commits its last call twice.
  *
  * The final publish happens with the exit flag already set: the published position feed's clock sample reads the run
- * as stopped from that publish on (issue #800), even for a run that ended on its own with the flag clear.
+ * as stopped from that publish on (issue #800), even for a run that ended on its own with the flag clear, and also for
+ * a run with no lifecycle hooks whose embedder attached the telemetry itself.
  */
 
 #include <assert.h>
@@ -210,6 +211,26 @@ test_final_publish_stops_position_sample(void) {
     session_close(&s);
 }
 
+/* An embedder that attaches app-control telemetry itself and runs with no lifecycle hooks: the run still publishes its
+   final state, the last records and the stopped sample, before the cleanup frees the feed (issue #800). */
+static void
+test_final_publish_without_start_hook(void) {
+    session s = session_open();
+    s.opts->playfiles = 1;
+    s.state->cli_argc_effective = 0;
+    s.state->cli_argv = NULL;
+    dsd_app_frontend_runtime_start(s.opts, s.state);
+    (void)dsd_engine_run_with_lifecycle(s.opts, s.state, NULL);
+    /* The last publish is the run's own: its feed stream, read as stopped. */
+    dsd_app_position_cursor cursor;
+    assert(dsd_app_position_copy_since(0U, 0U, NULL, 0U, &cursor) == 0);
+    assert(cursor.stream_id != 0U && cursor.sample.stream_id == cursor.stream_id);
+    assert(cursor.sample.running == 0U);
+    dsd_app_frontend_runtime_stop();
+    dsd_exitflag_store(0);
+    session_close(&s);
+}
+
 int
 main(void) {
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){.publish_snapshot = count_publish});
@@ -218,6 +239,8 @@ main(void) {
     test_start_failure();
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
     test_final_publish_stops_position_sample();
+    dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
+    test_final_publish_without_start_hook();
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
     printf("engine lifecycle finalize test passed\n");
     return 0;
