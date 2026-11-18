@@ -2569,7 +2569,9 @@ suite runs under this compiler.
     P25 SAP 48, NXDN data format 0x06): the packet check plus each sentence's own checksum; the first RMC with status
     A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, is the report / the same packet, whose
     header also names the destination (`dmr_lrrp_target`; a P25 LLID is a radio, an NXDN header a group for call
-    type 0 or 1, kept in `dmr_data_checked_group`). A CRC-failed packet keeps no sentence text.
+    type 0 or 1, kept in `dmr_data_checked_group`). A CRC-failed packet keeps no sentence text. A payload is NMEA
+    when the parser frames it so (`nmea_payload_framed()`: line ends, then `$` or `!`), and then none of it is ever
+    plain text (P25 SAP 48's text fallback), whether or not its sentences pass.
   - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data
     call header bound to the same assembly (`nxdn_data_call.c`: `nxdn_data_origin`, `nxdn_data_header_ms`,
     `nxdn_data_carrier_seq`; a message lost on a channel that can carry a header -- a failed FACCH2/UDCH,

@@ -1492,6 +1492,29 @@ nmea_publish(const dsd_opts* opts, dsd_state* state, uint8_t slot, const nmea_pa
     }
 }
 
+/* The payload's octets (one bit per byte in @p input), at most NMEA_PAYLOAD_MAX_BYTES of them; returns the count. */
+static size_t
+nmea_payload_octets(const uint8_t* input, int len_bytes, uint8_t* bytes) {
+    const size_t n =
+        ((size_t)len_bytes < (size_t)NMEA_PAYLOAD_MAX_BYTES) ? (size_t)len_bytes : (size_t)NMEA_PAYLOAD_MAX_BYTES;
+    for (size_t i = 0U; i < n; i++) {
+        bytes[i] = (uint8_t)convert_bits_into_output(input + (i * 8U), 8);
+    }
+    return n;
+}
+
+int
+nmea_payload_framed(const uint8_t* input, int len_bytes) {
+    if (input == NULL || len_bytes <= 0) {
+        return 0;
+    }
+    uint8_t bytes[NMEA_PAYLOAD_MAX_BYTES];
+    const size_t n = nmea_payload_octets(input, len_bytes, bytes);
+    size_t pos = 0U;
+    nmea_sentence_span s;
+    return nmea_next_sentence(bytes, n, &pos, &s) == 1;
+}
+
 uint8_t
 nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
                       int packet_verified, const dsd_position_origin* origin) {
@@ -1501,10 +1524,7 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     const uint8_t slot_idx = (slot >= 2U) ? 1U : slot;
     uint8_t bytes[NMEA_PAYLOAD_MAX_BYTES];
     DSD_MEMSET(bytes, 0, sizeof(bytes));
-    const size_t n = ((size_t)len_bytes < sizeof(bytes)) ? (size_t)len_bytes : sizeof(bytes);
-    for (size_t i = 0U; i < n; i++) {
-        bytes[i] = (uint8_t)convert_bits_into_output(input + (i * 8U), 8);
-    }
+    const size_t n = nmea_payload_octets(input, len_bytes, bytes);
 
     nmea_packet pkt;
     DSD_MEMSET(&pkt, 0, sizeof(pkt));

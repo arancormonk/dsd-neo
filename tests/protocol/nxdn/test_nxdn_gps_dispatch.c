@@ -645,6 +645,20 @@ test_nmea_data_call(void) {
     CHECK((recs[0].flags & DSD_POS_FLAG_FORMAT_PROVISIONAL) == 0U);
     CHECK(strncmp(g_history[0].Event_History_Items[1].text_message, text, n - 2U) == 0);
     CHECK(strlen(g_history[0].Event_History_Items[1].text_message) == n - 2U);
+
+    /* Line ends before the first sentence are the parser's framing: the sentences are still read. */
+    reset_fixture();
+    DSD_MEMSET(payload, 0, sizeof payload);
+    payload[0] = 0x06U;
+    payload[1] = (uint8_t)'\r';
+    payload[2] = (uint8_t)'\n';
+    DSD_MEMCPY(payload + 3, text, n);
+    const size_t framed_total = 3U + n + 4U;
+    seal(payload, framed_total);
+    send_header(300U, framed_total, 1);
+    send_blocks(payload, framed_total);
+    CHECK(feed(recs, 4) == 1);
+    CHECK(recs[0].kind == DSD_POS_NMEA && recs[0].source_id == 300U && recs[0].lat_e7 == 100000000);
 }
 
 /* The checked data call header names the report's destination and, by its call type, whether that is a group: the same

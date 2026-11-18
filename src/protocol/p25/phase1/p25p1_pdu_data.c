@@ -944,13 +944,12 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         span = P25_PDU_MAX_DECODE_BYTES;
     }
 
-    uint8_t nmea_valid = 0;
-    const int nmea_shaped = payload[0] == (uint8_t)'$' || payload[0] == (uint8_t)'!';
+    uint8_t payload_bits[P25_PDU_MAX_DECODE_BYTES * 8];
+    DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
+    dsd_unpack_bytes_to_bits(payload, (size_t)span, payload_bits, sizeof(payload_bits), (size_t)span);
+    /* NMEA as its parser frames it, line ends before the first sentence included. */
+    const int nmea_shaped = nmea_payload_framed(payload_bits, span);
     if (nmea_shaped) {
-        uint8_t payload_bits[P25_PDU_MAX_DECODE_BYTES * 8];
-        DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
-        dsd_unpack_bytes_to_bits(payload, (size_t)span, payload_bits, sizeof(payload_bits), (size_t)span);
-
         uint8_t slot = (state->currentslot >= 2) ? 1U : (uint8_t)state->currentslot;
         state->dmr_lrrp_source[slot] = pdu->source_id;
         state->dmr_lrrp_target[slot] = pdu->target_id;
@@ -963,14 +962,12 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         /* The reception the MDPU's header was heard on (processMPDU()); none for a packet that did not come through
            it. */
         const dsd_position_origin* origin = state->p25_mdpu_origin.valid ? &state->p25_mdpu_origin : NULL;
-        nmea_valid = nmea_sentence_checker(opts, state, payload_bits, slot, span, packet_verified, origin);
-        status.data_notice_emitted = nmea_valid != 0U;
-    }
-
-    if (!nmea_valid) {
-        /* A payload shaped as NMEA whose sentences failed their checksums is shown, never kept as history text: its
-           coordinates were not checked (issue #800 2.4). */
-        uint8_t write_history = (!nmea_shaped && state != NULL && state->event_history_s != NULL) ? 1U : 0U;
+        status.data_notice_emitted =
+            nmea_sentence_checker(opts, state, payload_bits, slot, span, packet_verified, origin) != 0U;
+    } else {
+        /* Only a payload that is not NMEA is plain text: sentences whose checksums failed are never shown or kept as
+           text, since their coordinates were not checked (issue #800 2.4). */
+        uint8_t write_history = (state != NULL && state->event_history_s != NULL) ? 1U : 0U;
         utf8_to_text(state, write_history, (uint16_t)span, payload);
     }
     p25_store_lrrp_text_for_history(state);

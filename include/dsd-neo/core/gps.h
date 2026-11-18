@@ -174,6 +174,15 @@ enum { NMEA_UDT_SHORT_BITS = 80, NMEA_UDT_LONG_BITS = 112 };
  */
 uint8_t nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
                               int packet_verified, const struct dsd_position_origin* origin);
+/**
+ * @brief Whether a data payload is framed as NMEA 0183 the way nmea_sentence_checker() reads it: after any line ends
+ * (CR, LF), its first octet starts a sentence ('$' or '!'). Such a payload is NMEA whether or not its sentences pass
+ * their checksums, so none of it is ever kept as plain text.
+ *
+ * @param input The payload, one bit per byte, MSB first.
+ * @param len_bytes Octets of payload.
+ */
+int nmea_payload_framed(const uint8_t* input, int len_bytes);
 /** The bits an NXDN GPS report (nxdn_gps_report()) reads after its 0xFFFC marker: through the UTC seconds. */
 #define DSD_NXDN_GPS_REPORT_BITS 264U
 /**

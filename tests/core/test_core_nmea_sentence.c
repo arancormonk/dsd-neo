@@ -449,6 +449,33 @@ test_p25_sap48(void) {
     }
     CHECK(strstr(dsd_event_staged_text(&g_state, 0), "GPRMC") == NULL);
     CHECK(strstr(dsd_event_staged_gps(&g_state, 0), "GPRMC") == NULL);
+
+    /* Line ends before the first sentence are the parser's framing: the payload is NMEA. A checked sentence after them
+       is the report; a failed one is never text (2.4). */
+    char framed[160];
+    DSD_SNPRINTF(framed, sizeof framed, "\r\n%s", s);
+    reset_fixture();
+    p25_sap48(framed, 0);
+    CHECK(feed_records(recs, 4) == 1);
+    CHECK(recs[0].source_id == 1234U && recs[0].lat_e7 == 225000000);
+    CHECK(notice_row()->pos.valid == 1U);
+
+    reset_fixture();
+    p25_sap48("\n\r$GPRMC,120000,A,2230.0000,N,04500.0000,E,010.0,090.0,150626,,,A*00\r\n", 0);
+    CHECK(feed_records(recs, 4) == 0);
+    for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+        const Event_History* row = &g_history[0].Event_History_Items[i];
+        CHECK(strstr(row->text_message, "GPRMC") == NULL && strstr(row->text_message, "2230") == NULL);
+        CHECK(strstr(row->gps_s, "GPRMC") == NULL && strstr(row->gps_s, "2230") == NULL);
+    }
+    CHECK(strstr(dsd_event_staged_text(&g_state, 0), "GPRMC") == NULL);
+    CHECK(strstr(dsd_event_staged_gps(&g_state, 0), "GPRMC") == NULL);
+
+    /* Plain text is still text. */
+    reset_fixture();
+    p25_sap48("HELLO", 0);
+    CHECK(feed_records(recs, 4) == 0);
+    CHECK(strstr(notice_row()->text_message, "HELLO") != NULL || strstr(notice_row()->gps_s, "HELLO") != NULL);
 }
 
 /* ---- P25: a report is admitted against the reception its MDPU's header was heard on (issue #800 2.3 step 3) ---- */
