@@ -3394,7 +3394,9 @@ type_d_scch_live_call(dsd_opts** opts_out, dsd_state** state_out) {
 
 static void
 type_d_scch_free(dsd_opts* opts, dsd_state* state) {
-    dsd_state_ext_free_all(state);
+    if (state != NULL) {
+        dsd_state_ext_free_all(state);
+    }
     free(state);
     free(opts);
 }
@@ -3507,6 +3509,10 @@ decode_on_repeater_5(const uint8_t* message, uint8_t direction, int recent_voice
                      int* tunes_out, dsd_state** state_out, dsd_opts** opts_out) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
+    DSD_MEMSET(call_out, 0, sizeof(*call_out));
+    *tunes_out = 0;
+    *state_out = NULL;
+    *opts_out = NULL;
     if (type_d_scch_live_call(&opts, &state) != 0) {
         return 1;
     }
@@ -3558,8 +3564,11 @@ test_type_d_scch_reserved_prefix_names_no_unit(void) {
         if (dsd_test_capture_stderr_begin(&cap, "nxdn_scch_prefix31") != 0) {
             return 1;
         }
-        rc |= decode_on_repeater_5(message, 1U, 1, &call, &tunes, &state, &opts);
+        const int failed = decode_on_repeater_5(message, 1U, 1, &call, &tunes, &state, &opts);
         (void)dsd_test_capture_stderr_end(&cap);
+        if (failed) {
+            return 1;
+        }
         (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
         rc |= expect_u64(reserved ? "scch-prefix31-info3-source" : "scch-prefix3-info3-source", call.ota_source_id,
                          reserved ? 0x0123U : 1234U);
@@ -3571,14 +3580,18 @@ test_type_d_scch_reserved_prefix_names_no_unit(void) {
 
         /* OSM INFO2 for repeater 5, the receiver's: destination 1234, a private call. */
         write_scch_identity(message, 2U, 5U, prefix, 1234U, 1U);
-        rc |= decode_on_repeater_5(message, 1U, 1, &call, &tunes, &state, &opts);
+        if (decode_on_repeater_5(message, 1U, 1, &call, &tunes, &state, &opts) != 0) {
+            return 1;
+        }
         rc |= expect_u64(reserved ? "scch-prefix31-info2-target" : "scch-prefix3-info2-target", call.ota_target_id,
                          reserved ? 0x0456U : 1234U);
         type_d_scch_free(opts, state);
 
         /* Busy INFO4 for repeater 5 with no voice in the last second: followed, unless the prefix is reserved. */
         write_scch_identity(message, 0U, 5U, prefix, 1234U, 0U);
-        rc |= decode_on_repeater_5(message, 1U, 0, &call, &tunes, &state, &opts);
+        if (decode_on_repeater_5(message, 1U, 0, &call, &tunes, &state, &opts) != 0) {
+            return 1;
+        }
         rc |= expect_int(reserved ? "scch-prefix31-busy-no-tune" : "scch-prefix3-busy-tunes", tunes, reserved ? 0 : 1);
         rc |= expect_int(reserved ? "scch-prefix31-busy-no-activity" : "scch-prefix3-busy-activity",
                          recent_activity_entries(state), reserved ? 0 : 1);
@@ -3705,7 +3718,9 @@ test_type_d_scch_info2_classifies_its_target(void) {
     int rc = 0;
     for (uint8_t gu = 0U; gu <= 1U; gu++) {
         write_scch_identity(message, 2U, 5U, 1U, 31U, gu);
-        rc |= decode_on_repeater_5(message, 1U, 1, &call, &tunes, &state, &opts);
+        if (decode_on_repeater_5(message, 1U, 1, &call, &tunes, &state, &opts) != 0) {
+            return 1;
+        }
         rc |= expect_u64(gu ? "scch-info2-private-target" : "scch-info2-group-target", call.ota_target_id, 31U);
         rc |= expect_int(gu ? "scch-info2-private-kind" : "scch-info2-group-kind", call.kind,
                          gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
