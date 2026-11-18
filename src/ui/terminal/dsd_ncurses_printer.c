@@ -3121,7 +3121,10 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
             attron(COLOR_PAIR(3));
             if (state->R != 0) {
                 attron(COLOR_PAIR(1));
-                printw("Seed: %04llX ", state->payload_miN);
+                // The scrambler's LFSR, seeded from the key: shown, as the key is, only under --show-keys.
+                char seed_text[16];
+                printw("Seed: %s ",
+                       dsd_secret_format_hex(seed_text, sizeof seed_text, opts->show_keys, state->payload_miN, 4U, 0));
                 char key_text[16];
                 printw("Key: %s ", dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));
                 attron(COLOR_PAIR(3));
