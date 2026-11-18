@@ -16,6 +16,7 @@
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/platform/sockets.h>
@@ -28,7 +29,8 @@
 #include "services.h"
 
 /* The calls the service made, in order: C Connect(), G/g the P25 SM tick guard entered/left, R RigctlRebindPeer(),
- * X dsd_socket_close(), F the engine's tune cache forget, L its scan landing forget, A the session passband ask. */
+ * X dsd_socket_close(), F the engine's tune cache forget, L its scan landing forget, A the session passband ask, T the
+ * take of a retune posted while rigctl was in use. */
 static char g_calls[16];
 static size_t g_call_count = 0;
 
@@ -126,6 +128,14 @@ dsd_engine_rigctl_ask_session_passband(const dsd_opts* opts, const dsd_state* st
     g_ask_sock = opts->rigctl_sockfd;
     g_ask_use_rigctl = opts->use_rigctl;
     g_ask_state = state;
+}
+
+/* A retune posted while rigctl was in use, taken as a failed connect turns it off (issue #834). */
+void
+dsd_frame_sync_take_off_thread_unflushed_retunes(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    note_call('T');
 }
 
 void
@@ -265,7 +275,7 @@ test_failed_first_connection_records_the_endpoint(void) {
     opts.rigctl_sent_freq_hz = 851012500U; /* sent on a connection since dropped */
     g_connect_result = DSD_INVALID_SOCKET;
     assert(svc_rigctl_connect(&opts, &g_state, "rig.local", 4532) == -1);
-    assert(strcmp(g_calls, "CGLg") == 0 && g_landing_state == &g_state);
+    assert(strcmp(g_calls, "CGTLg") == 0 && g_landing_state == &g_state);
     assert(strcmp(opts.rigctlhostname, "rig.local") == 0);
     assert(opts.rigctlportno == 4532);
     assert(opts.rigctl_sockfd == DSD_INVALID_SOCKET);

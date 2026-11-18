@@ -7377,10 +7377,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   notice: the mark it took before its request, held in the backlog (`dsd_input_backlog_post()`; of two posts the later
   mark is held, in whatever order they come), and an atomic count, the decoder's cue. The decoder's next read takes it
   (`frame_sync_take_unflushed_retunes()`, inline in `frame_sync_unflushed.h`, with the take itself in
-  `frame_sync_unflushed.c`: one relaxed load per symbol read and per
-  EDACS triplet, with no measurable cost on a 120 s DMR decode), moving the epoch and asking for the drop with the
-  post's mark, so the watchdog's tunes drop at the next read after the post; the notice's reconcile
-  (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet. Every mark is measured when it is taken:
+  `frame_sync_unflushed.c`: one relaxed load per EDACS triplet, and per symbol read only while rigctl is in use
+  (`dsd_opts::use_rigctl`), the only time a post is made, so a run without rigctl loads no shared count per symbol,
+  which on the MSVC atomics fallback is a locked operation; `test_symbol_reader_checks_posts_only_with_rigctl()`),
+  moving the epoch and asking for the drop with the post's mark, so the watchdog's tunes drop at the next read after
+  the post; the notice's reconcile (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet, and a
+  failed rigctl reconnect takes one as it turns rigctl off (`svc_rigctl_connect()`). Every mark is measured when it is taken:
   the cutoff is what had arrived on the input then, nothing later. The TCP reconnect makes its new connection the
   measured input as soon as `tcp_connect` returns it (`dsd_input_backlog_opening()` in
   `<dsd-neo/platform/input_backlog_opening.h>`, apart from `input_backlog.h` because it takes a socket:

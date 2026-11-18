@@ -3778,8 +3778,13 @@ dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
 static float
 symbol_read(dsd_opts* opts, dsd_state* state, int have_sync) {
     /* A rigctl peer's confirmed retune left the frequency left's samples queued in the input (issue #834): this
-       decoder thread's, or one the P25 watchdog posted, taken here at the next read after it. */
-    frame_sync_take_unflushed_retunes(opts, state);
+       decoder thread's, or one the P25 watchdog posted, taken here at the next read after it. Only a rigctl retune is
+       posted, and only while rigctl is in use (dsd_engine_note_rigctl_retune()), so a run without it never loads the
+       shared count here (on the MSVC atomics fallback a locked operation per symbol); a post outstanding when rigctl
+       stops is taken there (svc_rigctl_connect()), and a tune notice's reconcile takes any post too. */
+    if (opts->use_rigctl == 1) {
+        frame_sync_take_unflushed_retunes(opts, state);
+    }
     if (state->input_drop_pending) {
         dsd_symbol_apply_input_drop(opts, state);
     }

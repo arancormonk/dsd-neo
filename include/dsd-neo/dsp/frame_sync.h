@@ -300,8 +300,9 @@ int dsd_frame_sync_request_input_drop(const dsd_opts* opts, dsd_state* state, co
  * @brief On the decoder thread, take an unflushed retune posted off it
  * (dsd_frame_sync_note_off_thread_unflushed_retune()) at once: the epoch moves and the input drop is asked for, unless
  * a newer cutoff stands (the decoder thread's own retune since the post, which moved the epoch). Every
- * input reader runs it before it reads (the symbol reader inline, EDACS analog voice through this), so a watchdog
- * tune's drop comes at the next read after its post. One relaxed load when nothing is posted.
+ * input reader runs it before it reads (the symbol reader inline while rigctl is in use, the only time a post is made;
+ * EDACS analog voice through this), so a watchdog tune's drop comes at the next read after its post, and a failed
+ * rigctl reconnect runs it as it turns rigctl off. One relaxed load when nothing is posted.
  */
 void dsd_frame_sync_take_off_thread_unflushed_retunes(const dsd_opts* opts, dsd_state* state);
 

@@ -1886,6 +1886,74 @@ test_staged_low_rate_pcm_from_a_file(void) {
     return rc;
 }
 
+/* A port nothing listens on: bound, then closed. */
+static int
+closed_tcp_port(void) {
+    dsd_socket_t s = dsd_socket_create(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == DSD_INVALID_SOCKET) {
+        return -1;
+    }
+    struct sockaddr_in sa;
+    DSD_MEMSET(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sa.sin_port = 0;
+    int port = -1;
+#if DSD_PLATFORM_WIN_NATIVE
+    int len = (int)sizeof sa;
+#else
+    socklen_t len = (socklen_t)sizeof sa;
+#endif
+    if (dsd_socket_bind(s, (struct sockaddr*)&sa, (int)sizeof sa) == 0
+        && getsockname(s, (struct sockaddr*)&sa, &len) == 0) {
+        port = (int)ntohs(sa.sin_port);
+    }
+    (void)dsd_socket_close(s);
+    return port;
+}
+
+/* Issue #834: only a rigctl peer's retune is posted off the decoder thread, and only while rigctl is in use, so the
+   symbol reader checks for a post only then: a run without rigctl pays no per-symbol load of the shared count (a
+   locked operation on the MSVC atomics fallback). A post still outstanding when rigctl stops being in use (a reconnect
+   that failed) is taken there, so none is left for the reader to miss. */
+static int
+test_symbol_reader_checks_posts_only_with_rigctl(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_PULSE) != 0) {
+        return expect_true("posts: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    opts->audio_in_stream = NULL; /* reads return at once */
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    dsd_frame_sync_note_off_thread_unflushed_retune(&cut);
+    uint32_t epoch = state->symbol_clock_epoch;
+    opts->use_rigctl = 0;
+    (void)getSymbol(opts, state, 0);
+    int rc = expect_true("posts: a read without rigctl checks no post", state->symbol_clock_epoch == epoch);
+    opts->use_rigctl = 1;
+    (void)getSymbol(opts, state, 0);
+    rc |= expect_true("posts: a read with rigctl takes it", state->symbol_clock_epoch == epoch + 1U);
+
+    /* A post outstanding when a failed reconnect turns rigctl off: taken there. */
+    dsd_input_backlog_mark(&cut);
+    dsd_frame_sync_note_off_thread_unflushed_retune(&cut);
+    epoch = state->symbol_clock_epoch;
+    const dsd_socket_t live = opts->rigctl_sockfd;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET; /* the connection was lost: a reconnect that fails turns rigctl off */
+    const int port = closed_tcp_port();
+    rc |=
+        expect_true("posts: the failed reconnect", port > 0 && svc_rigctl_connect(opts, state, "127.0.0.1", port) != 0);
+    rc |= expect_true("posts: rigctl is off", opts->use_rigctl == 0);
+    rc |= expect_true("posts: the post outstanding is taken as rigctl stops", state->symbol_clock_epoch == epoch + 1U);
+    opts->rigctl_sockfd = live;
+    opts->use_rigctl = 1;
+    rig_case_close(&c);
+    return rc;
+}
+
 /* Every input reader carries out a pending drop before it reads: the symbol reader and EDACS analog voice. */
 static int
 test_readers_carry_out_the_drop(void) {
@@ -1994,6 +2062,7 @@ main(void) {
     rc |= test_old_audio_while_the_passband_is_set();
     rc |= test_staged_low_rate_pcm();
     rc |= test_staged_low_rate_pcm_from_a_file();
+    rc |= test_symbol_reader_checks_posts_only_with_rigctl();
     rc |= test_readers_carry_out_the_drop();
     rc |= test_wav_input_unchanged();
     dsd_socket_cleanup();
