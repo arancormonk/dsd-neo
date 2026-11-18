@@ -8959,6 +8959,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/engine
         ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/dsp
         ${PROJECT_SOURCE_DIR}/src/protocol/dmr
         ${PROJECT_SOURCE_DIR}/src/protocol/edacs
         ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1

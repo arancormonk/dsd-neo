@@ -54,6 +54,11 @@ typedef struct dsd_input_cut {
     uint8_t measured; /**< whether a queue was attached to count */
 } dsd_input_cut;
 
+/** What a queue's drop of a cut returns when the decoder had already read past the cut's mark (the retune's
+ * confirmation was taken late, after the decoder read some of what arrived after the mark): nothing is dropped, and
+ * what the decoder holds of the input was read after the mark (issue #834). */
+#define DSD_INPUT_DISCARD_READ_PAST (-1L)
+
 /** @p queue is the input the decoder reads from now on, its count read by @p arrived. While an input is opening
  * (dsd_input_backlog_opening()), @p queue is that input's and its count goes on from the connection's: a post measured
  * on the connection stands on it. A post made while no input was attached is retired. */

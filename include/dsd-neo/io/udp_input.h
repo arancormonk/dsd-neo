@@ -63,7 +63,7 @@ int udp_input_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeou
  *
  * @param opts Decoder options containing UDP context.
  * @param cut  The mark of the retune (dsd_input_backlog_mark()).
- * @return The samples dropped.
+ * @return The samples dropped, or DSD_INPUT_DISCARD_READ_PAST when the decoder had read past the mark already.
  */
 long udp_input_discard_through(dsd_opts* opts, const dsd_input_cut* cut);
 

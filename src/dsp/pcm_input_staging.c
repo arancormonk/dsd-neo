@@ -149,3 +149,16 @@ dsd_pcm_input_stage_resampler_tail(dsd_opts* opts) {
     }
     return 1;
 }
+
+void
+dsd_pcm_input_forget_staged(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->input_upsample_len = 0;
+    opts->input_upsample_pos = 0;
+    opts->input_upsample_tail_blocks = 0;
+    opts->input_upsample_prev = 0.0f;
+    opts->input_upsample_prev_valid =
+        0; /* the next sample re-primes the FIR history (dsd_pcm_input_stage_resample()) */
+}

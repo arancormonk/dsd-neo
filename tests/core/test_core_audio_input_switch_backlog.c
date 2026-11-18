@@ -247,8 +247,8 @@ test_stdin_reader_kept(void) {
     int16_t s = 0;
     check(dsd_pcm_stream_read_wait(g_opts.audio_in_stdin, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 3,
           "stdin: and the new audio is read");
-    check(dsd_pcm_stream_discard_through(g_opts.audio_in_stdin, &before) == 0,
-          "stdin: the earlier mark's audio is gone already");
+    check(dsd_pcm_stream_discard_through(g_opts.audio_in_stdin, &before) == DSD_INPUT_DISCARD_READ_PAST,
+          "stdin: the earlier mark's audio is gone already: the reader read past it");
     dsd_pcm_stream_close(g_opts.audio_in_stdin);
     g_opts.audio_in_stdin = NULL;
     (void)close(fds[0]);

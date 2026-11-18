@@ -295,6 +295,9 @@ dsd_pcm_stream_discard_through(dsd_pcm_stream* stream, const dsd_input_cut* cut)
     /* Only whole samples that had arrived by the mark go; a part of one stays, so the samples after it stay whole. A
        later cut of the stream discards at least as much as an earlier one still owed. */
     const uint64_t used = pcm_stream_used(stream);
+    if (cut->arrived < used && !stream->owing) {
+        return DSD_INPUT_DISCARD_READ_PAST;
+    }
     const uint64_t through = cut->arrived > used ? used + ((cut->arrived - used) & ~(uint64_t)1U) : used;
     if (through > stream->drop_through) {
         stream->drop_through = through;

@@ -3754,16 +3754,23 @@ dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
     /* What the input held at the mark goes; what arrived after it is the new channel's. A device keeps the audio it
        captured since the mark; a stream or ring drops up to the count marked on it. */
     const dsd_input_cut* cut = &state->input_drop_cut;
+    long dropped = DSD_INPUT_DISCARD_READ_PAST;
     switch (opts->audio_in_type) {
         case AUDIO_IN_PULSE:
             if (opts->audio_in_stream) {
                 (void)dsd_audio_discard_input(opts->audio_in_stream, cut->marked_ns);
             }
             break;
-        case AUDIO_IN_UDP: (void)dsd_net_audio_input_hook_udp_discard_through(opts, cut); break;
-        case AUDIO_IN_TCP: (void)dsd_net_audio_input_hook_tcp_discard_through(opts->tcp_in_ctx, cut); break;
-        case AUDIO_IN_STDIN: (void)dsd_pcm_stream_discard_through(opts->audio_in_stdin, cut); break;
+        case AUDIO_IN_UDP: dropped = dsd_net_audio_input_hook_udp_discard_through(opts, cut); break;
+        case AUDIO_IN_TCP: dropped = dsd_net_audio_input_hook_tcp_discard_through(opts->tcp_in_ctx, cut); break;
+        case AUDIO_IN_STDIN: dropped = dsd_pcm_stream_discard_through(opts->audio_in_stdin, cut); break;
         default: break;
+    }
+    /* A low-rate stream's staged upsampled outputs and FIR history came from the last samples the decoder read: from
+       before the mark unless it had read past it already (a confirmation taken late), and then they go with the rest,
+       so no old-channel audio is mixed into the new channel's first samples. */
+    if (dropped != DSD_INPUT_DISCARD_READ_PAST && dsd_pcm_input_uses_staged_resampler(opts)) {
+        dsd_pcm_input_forget_staged(opts);
     }
 }
 

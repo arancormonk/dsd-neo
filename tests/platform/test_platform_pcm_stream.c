@@ -276,7 +276,8 @@ test_socket_discard_through(void) {
           "the part of a sample is kept: the next sample is whole");
     check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 6,
           "and what came after the mark is kept");
-    check(dsd_pcm_stream_discard_through(stream, &cut) == 0, "a second discard on the same mark drops nothing");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == DSD_INPUT_DISCARD_READ_PAST,
+          "a second discard on the same mark drops nothing: the reader read past it");
     dsd_pcm_stream_close(stream);
     check(dsd_input_backlog_cut_applies(&cut, stream) == 0, "a closed stream is no input to drop on");
     socket_pair_close(&pair);

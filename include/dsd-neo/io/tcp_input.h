@@ -65,7 +65,7 @@ int tcp_input_read_sample_wait(tcp_input_ctx* ctx, int16_t* out, unsigned int ti
  *
  * @param ctx TCP input context (may be NULL).
  * @param cut The mark of the retune (dsd_input_backlog_mark()).
- * @return The samples dropped.
+ * @return The samples dropped, or DSD_INPUT_DISCARD_READ_PAST when the decoder had read past the mark already.
  */
 long tcp_input_discard_through(tcp_input_ctx* ctx, const dsd_input_cut* cut);
 

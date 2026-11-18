@@ -60,7 +60,8 @@ int dsd_pcm_stream_read_wait(dsd_pcm_stream* stream, int16_t* out, unsigned int 
  * owes), before it returns a sample. A part of a sample is kept, so the samples after it
  * stay whole, and every byte that arrived after the mark is kept. A cut measured on another input or attachment
  * (dsd_input_backlog_cut_applies()) and a descriptor that is not a pipe, FIFO or socket (dsd_fd_is_stream(): a regular
- * file, a console) drop nothing. Returns the samples dropped (0 for NULL or an ended stream).
+ * file, a console) drop nothing. Returns the samples dropped (0 for NULL or an ended stream), or
+ * DSD_INPUT_DISCARD_READ_PAST when the decoder had read past the mark already.
  */
 long dsd_pcm_stream_discard_through(dsd_pcm_stream* stream, const dsd_input_cut* cut);
 

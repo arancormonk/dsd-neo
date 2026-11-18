@@ -53,6 +53,7 @@
 #include "edacs_internal.h"
 #include "engine_hooks_install.h"
 #include "p25p1_terminator_end.h"
+#include "pcm_input_staging.h"
 #include "services.h"
 #include "test_env.h"
 #include "test_support.h"
@@ -1765,6 +1766,73 @@ test_old_audio_while_the_passband_is_set(void) {
     return rc;
 }
 
+/* An 8 kHz stdin input, upsampled six times through the staged resampler (issue #834): the last sample the decoder read
+   left its upsampled outputs staged and its FIR history. Read before the mark, they are the old channel's, and the
+   drop takes them with the rest: the next sample re-primes the history. Read after the mark (a watchdog's confirmation
+   taken late), they are the new channel's, and are kept. */
+static int
+staged_after_read(dsd_opts* opts, int16_t want) {
+    int16_t s = pipe_next(opts);
+    if (s != want) {
+        return 0;
+    }
+    dsd_pcm_input_stage_resample(opts, (float)s);
+    opts->input_upsample_pos = 1; /* the decoder took the first of the staged outputs */
+    return opts->input_upsample_len == 6 && opts->input_upsample_prev_valid == 1;
+}
+
+static int
+test_staged_low_rate_pcm(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_STDIN) != 0) {
+        return expect_true("staged: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    opts->wav_sample_rate = 8000;
+    int fds[2] = {-1, -1};
+    int rc = expect_true("pipe", make_pipe(fds) == 0);
+    opts->audio_in_stdin = rc == 0 ? dsd_pcm_stream_open_fd(fds[0]) : NULL;
+    if (opts->audio_in_stdin == NULL) {
+        rig_case_close(&c);
+        return expect_true("stdin reader", 0);
+    }
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    state->symbol_clock_input = opts->pcm_input_generation;
+    rc |= expect_true("staged: an upsampled input", dsd_pcm_input_uses_staged_resampler(opts) == 1);
+    rc |= expect_true("staged: old samples", pipe_put(fds[1], 300) && pipe_put(fds[1], 301));
+    rc |= expect_true("staged: the decoder read an old sample", staged_after_read(opts, 300));
+    rc |= expect_true("staged: a hop", leg_trunk(opts, state, VC1_HZ));
+    dsd_symbol_apply_input_drop(opts, state);
+    char label[200];
+    DSD_SNPRINTF(
+        label, sizeof label,
+        "staged: the old sample's staged outputs and FIR history go with the drop (staged %d of %d, primed %d)",
+        opts->input_upsample_len - opts->input_upsample_pos, opts->input_upsample_len, opts->input_upsample_prev_valid);
+    rc |= expect_true(label,
+                      opts->input_upsample_pos >= opts->input_upsample_len && opts->input_upsample_prev_valid == 0);
+    rc |= expect_true("staged: the new channel's sample", pipe_put(fds[1], 400));
+    rc |= expect_true("staged: the old sample still queued went too", pipe_next(opts) == 400);
+
+    /* The watchdog's hop, its confirmation taken after the decoder read the new channel's first sample. */
+    rc |= expect_true("staged: the watchdog's hop", leg_watchdog(opts, state, VC2_HZ));
+    rc |= expect_true("staged: the new channel's samples", pipe_put(fds[1], 500) && pipe_put(fds[1], 501));
+    rc |= expect_true("staged: the decoder read a new sample first", staged_after_read(opts, 500));
+    take_at_the_next_read(opts, state);
+    rc |= expect_true("staged: what was staged after the mark is kept", opts->input_upsample_pos == 1
+                                                                            && opts->input_upsample_len == 6
+                                                                            && opts->input_upsample_prev_valid == 1);
+    rc |= expect_true("staged: and the input reads on", pipe_next(opts) == 501);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+
+    dsd_pcm_stream_close(opts->audio_in_stdin);
+    opts->audio_in_stdin = NULL;
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+    rig_case_close(&c);
+    return rc;
+}
+
 /* Every input reader carries out a pending drop before it reads: the symbol reader and EDACS analog voice. */
 static int
 test_readers_carry_out_the_drop(void) {
@@ -1871,6 +1939,7 @@ main(void) {
     rc |= test_newest_cutoff_wins();
     rc |= test_new_audio_before_the_reply();
     rc |= test_old_audio_while_the_passband_is_set();
+    rc |= test_staged_low_rate_pcm();
     rc |= test_readers_carry_out_the_drop();
     rc |= test_wav_input_unchanged();
     dsd_socket_cleanup();

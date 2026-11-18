@@ -481,7 +481,11 @@ udp_input_discard_through(dsd_opts* opts, const dsd_input_cut* cut) {
     const size_t used = ring_used(&ctx->ring);
     /* The samples read or dropped so far are those written less those the ring still holds. */
     const uint64_t gone = dsd_atomic_u64_load_relaxed(&ctx->ring.written) - (uint64_t)used;
-    const uint64_t owed = cut->arrived > gone ? cut->arrived - gone : 0U;
+    if (cut->arrived < gone) {
+        dsd_mutex_unlock(&ctx->ring.m);
+        return DSD_INPUT_DISCARD_READ_PAST;
+    }
+    const uint64_t owed = cut->arrived - gone;
     const size_t dropped = owed < (uint64_t)used ? (size_t)owed : used;
     ctx->ring.tail = (ctx->ring.tail + dropped) % ctx->ring.cap;
     dsd_mutex_unlock(&ctx->ring.m);

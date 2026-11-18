@@ -7304,9 +7304,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the frequency the peer is on, a refused request and a lost reply move nothing. The epoch moves at once, and the
   input's queued samples are asked to go: `dsd_state::input_drop_pending`, which the decoder thread carries out at its
   next input read (`dsd_symbol_apply_input_drop()` in `dsd_symbol.c`, called before the symbol reader reads and before
-  EDACS analog voice reads a triplet), never inside the tune or a tick. The drop takes only what the input held before
-  the leg asked the peer to move, never what arrived after it, also when the new channel's audio is what ended a read
-  that was waiting then: the request carries a mark of the input (`dsd_state::input_drop_cut`,
+  EDACS analog voice reads a triplet), never inside the tune or a tick. On a low-rate stream input (8 kHz TCP, UDP or
+  stdin, upsampled through the staged resampler) the outputs still staged from the last sample read and the FIR history
+  go with it (`dsd_pcm_input_forget_staged()`; the next sample re-primes the history), unless the decoder had read past
+  the mark already (a confirmation taken late: the queue's drop returns `DSD_INPUT_DISCARD_READ_PAST`), when they are
+  the new channel's and stay (`ENGINE_RIGCTL_RETUNE` `test_staged_low_rate_pcm()`). The drop takes only what the
+  input held before the leg asked the peer to move, never what arrived after it, also when the new channel's audio is
+  what ended a read that was waiting then: the request carries a mark of the input (`dsd_state::input_drop_cut`,
   `dsd_input_backlog_mark()` in `<dsd-neo/platform/input_backlog.h>`). Every leg takes that mark immediately before it
   sends the frequency (`F`), after any passband request, and installs it only once the peer answered `RPRT 0`: the peer
   is on the old frequency while it answers a passband request, so audio that arrives then goes
