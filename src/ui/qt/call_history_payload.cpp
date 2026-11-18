@@ -176,6 +176,16 @@ merge_gps_unit(QList<GpsUnit>& units, const GpsUnit& unit) {
     }
 }
 
+/** @brief Remove from @p units the unit of @p reading's fragment when @p reading, which holds no GPS text and no
+ * position, is a reading of it at least as late (call_history_gps_withdraws()). Returns whether one went. */
+bool
+withdraw_gps_unit(QList<GpsUnit>& units, const GpsUnit& reading) {
+    return units.removeIf([&reading](const GpsUnit& held) {
+        return call_history_gps_withdraws(gps_key(held), provenance(held.when, held.seq, held.slot), gps_key(reading),
+                                          provenance(reading.when, reading.seq, reading.slot));
+    }) > 0;
+}
+
 /** @brief Whether @p kind is a dsd_position_scope_kind a record can hold: an alias scope kind or a feed-only one. */
 bool
 scope_kind_valid(uint8_t kind) {
@@ -316,16 +326,19 @@ gps_units_to_json(const QList<CallHistoryModel::GpsUnit>& units, QJsonObject& ob
 
 /**
  * @brief Whether fragment @p row may give @p existing its text message, GPS text and position (issue #800, B2): one
- * protocol family and sender system, and the same radio.
+ * protocol family, reception system and sender system, and the same radio.
  *
  * An anonymous fragment never enriches a row that names its source, and a fragment that names another source than the
  * row's keeps them to itself: the row keeps its original radio (foldRow()), so a position never crosses radios. The
  * row's source label follows the same rule (foldRow()): a fragment of another radio, by number, callsign or sender
- * system, never names the row.
+ * system, never names the row. Nor does a fragment heard on another system than the row's: an update found by its
+ * fragment (CallHistoryModel::rowHoldingFragment()) is not merged again, and its later reading may name a reception
+ * system the row's own disagrees with, which the merge (rows_identity_compatible()) would have refused.
  */
 bool
 fragment_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
     if (!call_history_protocols_compatible(existing.protocol, row.protocol)
+        || !call_history_scopes_compatible(existing.rxScope, row.rxScope)
         || !call_history_scopes_compatible(existing.sourceScope, row.sourceScope)) {
         return false;
     }
@@ -519,7 +532,8 @@ take_message(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
  * radio it now names. So any order of the same fragments gives the same row. The message is the newest fragment's, as
  * the source label is (a stale reading of a fragment folds in nothing: foldRow()). The row keeps each fragment's GPS
  * unit, its latest reading, and shows the best (call_history_gps_adopts(): the greatest session ordinal and rev): when
- * a fragment's newer reading loses its fix, the best remaining fragment's shows, in any order.
+ * a fragment's newer reading loses its fix, the best remaining fragment's shows, in any order. A newer reading with no
+ * GPS text and no position removes that fragment's unit (call_history_gps_withdraws()).
  */
 void
 fold_payload(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
@@ -539,26 +553,32 @@ fold_payload(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
         take_message(existing, row);
     }
     const QList<GpsUnit> incoming = row_gps_units(row);
+    QList<GpsUnit> units = row_gps_units(existing);
     if (!incoming.isEmpty()) {
-        QList<GpsUnit> units = row_gps_units(existing);
         for (const GpsUnit& unit : incoming) {
             merge_gps_unit(units, unit);
         }
+        set_row_gps_units(existing, units);
+    } else if (row.fragments.size() == 1 && withdraw_gps_unit(units, shown_gps_unit(row))) {
+        // A later reading of one fragment with neither GPS text nor a position: the core withdrew that fragment's
+        // report, so the row shows the best remaining fragment's, or none.
         set_row_gps_units(existing, units);
     }
 }
 
 /**
  * @brief Fill what @p existing does not know of its raw identity from @p row (issue #800): the reception system when
- * @p row names it more strongly (call_history_scope_strength()); and, only from a fragment of the row's own radio
- * (fragment_identity_compatible()), the sync type, the target text, the source text and a stronger sender system.
+ * @p row names more of it (call_history_scope_learns(): a stronger scope, or the same one with a part the row did not
+ * know, such as an EDACS system beside its site); and, only from a fragment of the row's own radio
+ * (fragment_identity_compatible()), the sync type, the target text, the source text and a sender system the row learns
+ * more of the same way.
  * Other known values stay: a merge joins only rows whose known ones agree (rows_identity_compatible()).
  */
 void
 fill_identity(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
     // Where the row was heard is the reception's, whoever sent the fragment: the stronger of the two the merge found
     // compatible (a trunked call's NAC gives way to its system).
-    if (call_history_scope_strength(row.rxScope) > call_history_scope_strength(existing.rxScope)) {
+    if (call_history_scope_learns(existing.rxScope, row.rxScope)) {
         existing.rxScope = row.rxScope;
     }
     // The sender's identity only from a fragment of the row's own radio, as its texts and position (fold_payload()).
@@ -568,7 +588,7 @@ fill_identity(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row)
     if (call_history_protocol_family(existing.protocol) < 0) {
         existing.protocol = row.protocol;
     }
-    if (call_history_scope_strength(row.sourceScope) > call_history_scope_strength(existing.sourceScope)) {
+    if (call_history_scope_learns(existing.sourceScope, row.sourceScope)) {
         existing.sourceScope = row.sourceScope;
     }
     if (existing.targetText.simplified().isEmpty()) {

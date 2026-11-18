@@ -582,10 +582,12 @@ dstar_sd_handle_text_message(dsd_state* state) {
 }
 
 /* The GPS blocks' data (a D-PRS record or NMEA sentences), shown as it arrived. The "$$CRC" literal checks nothing: a
- * D-PRS record is evidence and a position only once it is whole and its CRC matches (dstar_sd_collect_gps()). */
+ * D-PRS record is evidence and a position only once it is whole and its CRC matches (dstar_sd_collect_gps()). The
+ * "GPS DATA:" label names what the blocks are whatever part of a record they hold, so the diagnostics log can remove
+ * them (issue #800, D10). */
 static void
 dstar_sd_handle_gps_data(const uint8_t* raw) {
-    DSD_FPRINTF(stderr, " DATA: ");
+    DSD_FPRINTF(stderr, " GPS DATA: ");
     for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
         const uint8_t* block = raw + ((size_t)b * (size_t)DSTAR_SD_BLOCK_BYTES);
         if ((block[0] & DSTAR_SD_TYPE_MASK) != DSTAR_SD_TYPE_GPS) {

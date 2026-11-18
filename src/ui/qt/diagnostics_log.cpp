@@ -637,82 +637,104 @@ holdsKeyLabel(const QString& text) {
 }
 
 /*
- * Issue #800, D10: what marks a record that holds a received position, or belongs to a PDU that carries one. Each entry
- * names the decoder paths whose print text it matches (at the time of writing); keep it in step when they change. A
- * record matching any entry is removed whole, its raw payload bytes with it when the path prints them on that line.
- * Dumps that do not say what they carry (the -Z payload lines "DMR PDU Payload", "P25 MBT Payload", "Short Data Raw",
- * NXDN "UDCH Data", D-STAR "SD:", M17 "LSF:"/"pkt:"/"PKT:", CSBK and voice bytes) are kept: they come before the decode
- * that names the PDU, and most carry no position. Without -Z no decoder prints a position-bearing payload in a form
- * these entries cannot recognise (dmr_pdu.c "Short Data Raw" and nxdn_deperm.c "UDCH Data" are -Z only). A contiguous
- * run of ten or more hex digits is redacted anyway (redact()).
+ * Issue #800, D10: what marks a record that holds a received position, or a part of one, or belongs to a PDU that
+ * carries one: the label its producer prints on that line. Each entry names the decoder paths whose print text it
+ * matches (at the time of writing); keep it in step when they change, and give every print of a received position or
+ * of a part of one a label here. A record matching any entry is removed whole, its raw payload bytes with it when the
+ * path prints them on that line. A label is the producer's, never the shape of what the air delivered: a part of a
+ * report can look like anything (a D-STAR GPS data block begins wherever the slow data split the record). Dumps that
+ * do not say what they carry (the -Z payload lines "DMR PDU Payload", "P25 MBT Payload", "Short Data Raw", NXDN
+ * "UDCH Data" and "DATA:", D-STAR "SD:", M17 "LSF:"/"pkt:"/"PKT:", CSBK and voice bytes) are kept: they come before
+ * the decode that names the PDU, and most carry no position. Without -Z every decoder line that prints a received
+ * position or a part of one carries one of these labels (UI_QT_DIAGNOSTICS_LOG drives the producers that print
+ * received text to check it). A contiguous run of ten or more hex digits is redacted anyway (redact()).
  */
 // One QRegularExpression fragment per entry; the comment names the decoder paths whose print text it matches.
 const char* const kPositionMarkers[] = {
-    // dsd_gps.c LIP, DMR embedded, APX, NXDN; dmr_pdu.c LRRP details; dstar_slow_data.c GPS-A/APRS
+    // dsd_gps.c LIP, DMR embedded, APX, NXDN; dmr_pdu.c LRRP details; dstar_slow_data.c APRS
     "\\b(?:Lat|Lon|Latitude|Longitude|Altitude)\\s*:",
     // dsd_gps.c GPS:/Harris GPS:/Embedded GPS:/NXDN GPS:; m17.c GNSS GPS:; p25_lcw.c (Harris) GPS Block;
-    // p25p2_vpdu.c L3Harris GPS Location
+    // p25p2_vpdu.c L3Harris GPS Location; dstar_slow_data.c "GPS DATA:", the GPS data blocks as they arrive, a part of
+    // a D-PRS record or NMEA sentence each
     "\\bGPS\\b",
     // m17.c META and packet GNSS
     "\\bGNSS\\b",
     // dmr_pdu.c LRRP; and Wrapped LRRP; dmr_block.c MNIS LRRP
     "\\bLRRP\\b",
-    // dmr_pdu.c NMEA / LOCN; dmr_block.c MNIS LOCN
+    // dmr_pdu.c NMEA / LOCN; dmr_block.c MNIS "LOCN Text:", the report's own text
     "\\bLOCN\\b",
-    // dsd_gps.c UDT and ASCII NMEA; dmr_block.c UDT NMEA
+    // dsd_gps.c UDT NMEA, "NMEA Fix:" and "NMEA:", the checked sentences as received; dmr_block.c UDT NMEA
     "\\bNMEA\\b",
-    // dsd_gps.c raw NMEA sentences (P25 SAP 48, NXDN, DMR)
-    "\\$[A-Z]{2}(?:RMC|GGA|GLL|GNS|VTG),",
     // dsd_gps.c LIP; dmr_dburst.c USBD service 0 ("Location Information Protocol") with its payload; TETRA SDS LIP
     "\\bLIP\\b|Location Information Protocol|Location Report",
     // dmr_pdu.c P25 Tier 2 Location Service
     "Location Service",
     // dsd_gps.c Position Error and Position Calculation Error; dmr_pdu.c Position: (suppressed)
     "\\bPosition\\b",
-    // dstar_slow_data.c APRS, DPRS and GPS-A ($$CRC)
-    "\\bAPRS\\b|\\bDPRS\\b|\\$\\$CRC",
+    // dstar_slow_data.c APRS and D-PRS
+    "\\bAPRS\\b|\\bD-?PRS\\b",
     // dmr_pdu.c and dsd_gps.c Cellocator time and location
     "\\bCellocator\\b",
-    // dmr_pdu.c LOCN text (dmr_locn_parse_fields()), the hemisphere before each number: a latitude field and a
-    // longitude field in either order, anything between them (dmr_block.c MNIS LOCN and raw short data print it as
-    // UTF8 Text); any character at the separator
-    "[NS][0-9]{4}.[0-9]{4}.*[EW][0-9]{5}.[0-9]{4}|[EW][0-9]{5}.[0-9]{4}.*[NS][0-9]{4}.[0-9]{4}",
-    // dstar_slow_data.c D-PRS (dstar_aprs_parse()): ddmm.hhN, the symbol table (an overlay letter or digit, or '/' or
-    // '\\'), dddmm.hhE
-    "[0-9]{4}\\.[0-9]{2}[NS].[0-9]{5}\\.[0-9]{2}[EW]",
-    // dstar_slow_data.c GPS data blocks as they arrive, a part of a record at a time; not TETRA's "DATA: 0x...;" or
-    // "DATA: N bits;" notice, NXDN's -Z "DATA: <hex>" dump or M17's A_DATA
-    "(?<!\\w)DATA: (?!0x|[0-9A-F]{2,}(?:\\s|$))",
     // dstar_slow_data.c slow data that opens with no known block type: GPS data blocks a record or sentence began in
     // an earlier superframe ("_UNK:" is D-STAR's alone)
     "\\b_UNK:",
 };
 
+/*
+ * A backstop beside the labels: the shapes a received position takes as text, for a line no label covers (a raw
+ * short-data payload printed as text, a stored tail from a build whose labels differed). The labels are what the
+ * redaction rests on (kPositionMarkers); no shape exempts anything.
+ */
+const char* const kPositionShapes[] = {
+    // raw NMEA sentences
+    "\\$[A-Z]{2}(?:RMC|GGA|GLL|GNS|VTG),",
+    // a D-PRS record's prefix
+    "\\$\\$CRC",
+    // the LOCN hemisphere form (dmr_locn_parse_fields()): a latitude field and a longitude field in either order,
+    // anything between them; any character at the separator
+    "[NS][0-9]{4}.[0-9]{4}.*[EW][0-9]{5}.[0-9]{4}|[EW][0-9]{5}.[0-9]{4}.*[NS][0-9]{4}.[0-9]{4}",
+    // the D-PRS form (dstar_aprs_parse()): ddmm.hhN, the symbol table (an overlay letter or digit, or '/' or '\\'),
+    // dddmm.hhE
+    "[0-9]{4}\\.[0-9]{2}[NS].[0-9]{5}\\.[0-9]{2}[EW]",
+};
+
+/** @brief One alternation of @p entries, each a QRegularExpression fragment. */
+template <size_t N>
+QRegularExpression
+alternationOf(const char* const (&entries)[N]) {
+    QStringList alternatives;
+    for (const char* entry : entries) {
+        alternatives.append(QStringLiteral("(?:") + QString::fromUtf8(entry) + QLatin1Char(')'));
+    }
+    return QRegularExpression(alternatives.join(QLatin1Char('|')));
+}
+
+/** @brief Whether @p text carries a producer's label for a received position (kPositionMarkers). */
+bool
+namesPositionProducer(const QString& text) {
+    static const QRegularExpression markers = alternationOf(kPositionMarkers);
+    return text.contains(markers);
+}
+
 /**
  * @brief Whether @p text holds a position received over the air (issue #800, D10), which no log or export keeps.
  *
- * A record matching kPositionMarkers, or holding a pair of decimal degrees with at least four places (the producers
- * print five or six; a frequency or a measurement with its unit is no coordinate), or a degrees-and-minutes pair (NMEA,
- * APRS; the minutes' fraction is optional, as nmea_parse_coordinate() reads it), so a line a decoder adds later is still
- * covered by its numbers. A marker can stand on a record with no
- * coordinates ("LIP: truncated;"); the record goes too. The device's own location is never logged.
+ * A record carrying a producer's label (kPositionMarkers); else, as a backstop, one matching a position's shape
+ * (kPositionShapes), holding a pair of decimal degrees with at least four places (the producers print five or six; a
+ * frequency or a measurement with its unit is no coordinate), or a degrees-and-minutes pair (NMEA, APRS; the minutes'
+ * fraction is optional, as nmea_parse_coordinate() reads it). A label can stand on a record with no coordinates
+ * ("LIP: truncated;"); the record goes too. The device's own location is never logged.
  */
 bool
 holdsReceivedPosition(const QString& text) {
-    static const QRegularExpression markers([]() {
-        QStringList alternatives;
-        for (const char* marker : kPositionMarkers) {
-            alternatives.append(QStringLiteral("(?:") + QString::fromUtf8(marker) + QLatin1Char(')'));
-        }
-        return QRegularExpression(alternatives.join(QLatin1Char('|')));
-    }());
+    static const QRegularExpression shapes = alternationOf(kPositionShapes);
     static const QRegularExpression degrees(
         QStringLiteral("(?<![0-9.])[-+]?[0-9]{1,3}\\.[0-9]{4,}(?![0-9])\\s*(?:\\x{00B0}|deg)?\\s*[NSns]?\\s*[,/;]?\\s*"
                        "[-+]?[0-9]{1,3}\\.[0-9]{4,}(?![0-9.])(?!\\s*(?:[kMG]?Hz|dB|ppm|ms\\b|s\\b|%))"));
     static const QRegularExpression minutes(QStringLiteral(
         "(?<![0-9])[0-9]{4}(?:\\.[0-9]*)?\\s*,?\\s*[NS]\\b.{0,3}?(?<![0-9])[0-9]{5}(?:\\.[0-9]*)?\\s*,?\\s*"
         "[EW]\\b"));
-    return text.contains(markers) || text.contains(degrees) || text.contains(minutes);
+    return namesPositionProducer(text) || text.contains(shapes) || text.contains(degrees) || text.contains(minutes);
 }
 
 QString
@@ -1120,6 +1142,11 @@ DiagnosticsLog::redact(QString text) {
     text.replace(QChar('\r'), QChar(' '));
     text.replace(QChar('\n'), QChar(' '));
     return text;
+}
+
+bool
+DiagnosticsLog::namesPositionProducerForTest(const QString& text) {
+    return namesPositionProducer(withoutAnsi(text));
 }
 
 std::pair<int, int>

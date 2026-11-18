@@ -485,7 +485,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /** @brief One fragment's GPS text and the position it describes, with the fragment and reading they came from
      * (issue #800, 2.7): its start, push stamp and slot, its run's session ordinal and the ring's commit_rev when it
-     * was read (Row::gpsWhen..gpsVer). */
+     * was read (Row::gpsWhen..gpsVer, gpsSlot). */
     struct GpsUnit {
         QString text;
         Position pos;
@@ -520,6 +520,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         QString systemName;
         QString systemUid;
         int kind = KindVoice;
+        /* Issue #800: the sync type the row was decoded from (Event_History::systype; -1 when not known), part of the
+         * raw identity described below. Kept beside kind so the two pack together. */
+        int protocol = -1;
         /* The scan channel the row was heard on: a -Y row name or a trunk-scan
          * target id. Empty when the receiver was not scanning. It is not the
          * system: the system is the saved entry the session runs, and stays so
@@ -593,13 +596,12 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * fragments whose version is known. */
         QHash<QString, quint64> fragmentVers;
         /* Issue #800. The row's raw identity, beside the display labels above: the sync type it was decoded from
-         * (Event_History::systype; -1 when not known), the source and target text as received (src_str, tgt_str:
+         * (protocol, above), the source and target text as received (src_str, tgt_str:
          * callsigns, dial strings), the sender's system (pos.scope with its discriminator) and where it was heard
          * (rx_scope, once resolved). A merge never joins two that differ (rows_mergeable(); systems only when known at
          * one strength, call_history_scopes_compatible(), and the row keeps the stronger), and a
          * fragment gives the row its text and position only when its identity agrees (fragment_identity_compatible()).
          * Persisted (`proto`, `srcText`, `tgtText`, `sscope`, `rx`) when known; rows older builds stored know none. */
-        int protocol = -1;
         QString sourceText;
         QString targetText;
         CallHistoryScope sourceScope;
@@ -610,6 +612,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         qint64 msgWhen = 0;
         qulonglong msgSeq = 0;
         int msgSlot = 0;
+        /* The GPS unit's fragment slot (with gpsWhen and gpsSeq below), beside msgSlot so the two pack together. */
+        int gpsSlot = 0;
         /* Issue #800, 2.7 and B2. The row's GPS text (Event_History::gps_s) and the admitted position it describes, as
          * one unit from one fragment: the one with the greatest (gpsOrd, pos.rev) (call_history_gps_adopts()). gpsOrd
          * is the session ordinal of that fragment's run (sessionOrdinalFor()); a fresh fragment carries its own.
@@ -619,7 +623,6 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         Position pos;
         qint64 gpsWhen = 0;
         qulonglong gpsSeq = 0;
-        int gpsSlot = 0;
         qint64 gpsOrd = 0;
         quint64 gpsVer = 0;
         /* The GPS units of the row's other fragments, one per fragment, beside the one shown above, which is the best

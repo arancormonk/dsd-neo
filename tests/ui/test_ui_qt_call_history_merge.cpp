@@ -32,6 +32,7 @@ using dsd_qt::call_history_duration_secs;
 using dsd_qt::call_history_fold_adopts;
 using dsd_qt::call_history_freq_known;
 using dsd_qt::call_history_gps_adopts;
+using dsd_qt::call_history_gps_withdraws;
 using dsd_qt::call_history_merge_within_window;
 using dsd_qt::call_history_position_digest;
 using dsd_qt::call_history_position_values_valid;
@@ -644,6 +645,26 @@ test_gps_fold_total_order(void) {
     }
 }
 
+/* 2.7: a reading of a fragment with neither GPS text nor a position withdraws that fragment's unit only when it is the
+ * same fragment and not an older reading of it; a reading of another fragment, or an older one (a spill line from
+ * before the fix), withdraws nothing. */
+void
+test_gps_withdrawal(void) {
+    const CallHistoryPositionKey held = {true, 1, 9U, 20U};
+    const CallHistoryProvenance fragment = {200, 1U, 0};
+    const CallHistoryProvenance other = {300, 2U, 0};
+    expect("a later empty reading of the fragment withdraws it",
+           call_history_gps_withdraws(held, fragment, {false, 1, 0U, 25U}, fragment), true);
+    expect("an older empty reading of the fragment withdraws nothing",
+           call_history_gps_withdraws(held, fragment, {false, 1, 0U, 12U}, fragment), false);
+    expect("an empty reading of another fragment withdraws nothing",
+           call_history_gps_withdraws(held, fragment, {false, 1, 0U, 25U}, other), false);
+    expect("an empty reading of another run withdraws nothing",
+           call_history_gps_withdraws(held, fragment, {false, 2, 0U, 25U}, fragment), false);
+    expect("the fragment read again with no version takes what it says",
+           call_history_gps_withdraws(held, fragment, {false, 1, 0U, 0U}, fragment), true);
+}
+
 void
 test_identity_compatibility(void) {
     expect("P25 phases are one family", call_history_protocols_compatible(DSD_SYNC_P25P1_POS, DSD_SYNC_P25P2_NEG),
@@ -694,6 +715,30 @@ test_identity_compatibility(void) {
     expect("Capacity Plus is a weak DMR scope", dsd_qt::call_history_scope_strength(capPlus) == 2, true);
     expect("a Tier III network is a full DMR scope", dsd_qt::call_history_scope_strength(tier3) == 3, true);
     expect("a weak DMR scope joins a full one", call_history_scopes_compatible(capPlus, tier3), true);
+    // Identities known in part: an EDACS site joins its site and system, never another system or a system-only one.
+    CallHistoryScope site;
+    site.kind = DSD_POS_SCOPE_FEED_EDACS;
+    site.a = 0x10000U | 5U;
+    CallHistoryScope siteSystem = site;
+    siteSystem.b = 0x10000U | 7U;
+    CallHistoryScope otherSystem = site;
+    otherSystem.b = 0x10000U | 8U;
+    CallHistoryScope systemOnly;
+    systemOnly.kind = DSD_POS_SCOPE_FEED_EDACS;
+    systemOnly.b = 0x10000U | 7U;
+    expect("an EDACS site joins its site and system", call_history_scopes_compatible(site, siteSystem), true);
+    expect("an EDACS site and system joins its site", call_history_scopes_compatible(siteSystem, site), true);
+    expect("two EDACS systems on one site are two", call_history_scopes_compatible(siteSystem, otherSystem), false);
+    expect("an EDACS site-only and system-only identity are two", call_history_scopes_compatible(site, systemOnly),
+           false);
+    expect("a row learns the EDACS system", dsd_qt::call_history_scope_learns(site, siteSystem), true);
+    expect("a row keeps what it knows over less", dsd_qt::call_history_scope_learns(siteSystem, site), false);
+    CallHistoryScope nacNoFreq = nac1;
+    nacNoFreq.freqHz = 0;
+    expect("a NAC with no frequency joins one with it", call_history_scopes_compatible(nacNoFreq, nac1), true);
+    expect("a row learns the NAC's frequency", dsd_qt::call_history_scope_learns(nacNoFreq, nac1), true);
+    expect("a row learns a stronger scope", dsd_qt::call_history_scope_learns(nac1, p25), true);
+    expect("nothing is learned from no scope", dsd_qt::call_history_scope_learns(nac1, none), false);
 }
 
 void
@@ -740,6 +785,7 @@ main(void) {
     test_seen_site_text_digest();
     test_site_fold_order_limit();
     test_gps_fold_total_order();
+    test_gps_withdrawal();
     test_identity_compatibility();
     test_digests_and_stored_position();
     if (g_failures != 0) {
