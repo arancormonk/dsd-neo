@@ -316,6 +316,16 @@ run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict 
     const int unchecked = expected_handler == TEST_HANDLER_X2TDMA || expected_handler == TEST_HANDLER_PROVOICE
                           || expected_handler == TEST_HANDLER_TETRA;
     assert(state->scan_y_unchecked_seq == (unchecked ? 1U : 0U));
+    /* Its -Y call marker moves only when its decoder took it, on the carrier it was dispatched on and uninterrupted:
+       a ProVoice sync its decoder has not confirmed (UNPRODUCTIVE), a TETRA burst whose CRC failed, a frame dropped or
+       cut, is no call. */
+    const int taken =
+        !dropped && !cut && (verdict == DSD_FRAME_VERDICT_PRODUCTIVE || verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    if (state->scan_y_call_seq != (unchecked && taken ? 1U : 0U)) {
+        DSD_FPRINTF(stderr, "the -Y call marker of synctype %d with verdict %d moved %u (want %u)\n", synctype,
+                    (int)verdict, (unsigned)state->scan_y_call_seq, (unsigned)(unchecked && taken ? 1U : 0U));
+    }
+    assert(state->scan_y_call_seq == (unchecked && taken ? 1U : 0U));
     g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
     free(state);
     free(opts);
@@ -609,6 +619,10 @@ main(void) {
     run_dispatch_case(DSD_SYNC_TETRA_NDB_POS, TEST_HANDLER_TETRA);
     run_dispatch_case(DSD_SYNC_TETRA_SB_NEG, TEST_HANDLER_TETRA);
     run_dispatch_case(DSD_SYNC_PROVOICE_NEG, TEST_HANDLER_PROVOICE);
+    /* Issue #834: one ProVoice sync its decoder has not confirmed, and a TETRA burst whose CRC failed, are no call. */
+    run_dispatch_case_verdict(DSD_SYNC_PROVOICE_NEG, TEST_HANDLER_PROVOICE, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);
+    run_dispatch_case_verdict(DSD_SYNC_TETRA_NDB_POS, TEST_HANDLER_TETRA, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);
+    run_dispatch_case_verdict(DSD_SYNC_TETRA_NDB_POS, TEST_HANDLER_TETRA, DSD_FRAME_VERDICT_PROFILE_PROVEN, 0);
     run_dispatch_case(DSD_SYNC_X2TDMA_DATA_NEG, TEST_HANDLER_X2TDMA);
     run_dispatch_case(DSD_SYNC_EDACS_POS, TEST_HANDLER_EDACS);
     run_dispatch_case(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1);

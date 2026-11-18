@@ -501,25 +501,24 @@ quiet_input_detail(const dsd_opts* opts) {
 }
 
 /* Whether the -Y stay on air has carried no call (issue #834 R8, "unsynced HANGTIME"), so its no-check status is shown:
-   no content a protocol's CRC/FEC gate passed, no frame of a protocol with no such gate (X2-TDMA, ProVoice, TETRA) and
-   no admitted analog call (dsd_state::scan_y_analog_call_seq; raw carrier, which a tone-rejected transmission has
-   too, is none) since its baseline. On a landed row that is the landing (dsd_engine_scan_landing::y_content_seq,
-   y_unchecked_seq, y_analog_call_seq); with no row landing in force (the start frequency before the first step, a step
-   that forgot the landing and then failed, an input switch) the stay's own start (dsd_state::scan_y_stay_content_seq,
-   scan_y_stay_unchecked_seq, scan_y_stay_analog_call_seq). A call explains the stay, so no no-check status is shown on it; a check under way still is (R1). A raw sync, which
-   NXDN48 and dPMR pass on noise several times a second, is no call, and neither is the scan's own re-arm of the
-   hangtime anchor (a landing, a hold released). */
+   no content a protocol's CRC/FEC gate passed and no call that no checked content shows (dsd_state::scan_y_call_seq:
+   an admitted analog call, or a frame a decoder of a protocol with no content check took, X2-TDMA, ProVoice once
+   confirmed, TETRA once a burst's CRC passed) since its baseline. On a landed row that is the landing
+   (dsd_engine_scan_landing::y_content_seq, y_call_seq); with no row landing in force (the start frequency before the
+   first step, a step that forgot the landing and then failed, an input switch) the stay's own start
+   (dsd_state::scan_y_stay_content_seq, scan_y_stay_call_seq). A call explains the stay, so no no-check status is shown
+   on it; a check under way still is (R1). A raw sync, which NXDN48 and dPMR pass on noise several times a second, is no
+   call, nor is one sync of a protocol whose decoder confirms a transmission first (ProVoice), nor raw carrier, which a
+   tone-rejected transmission has too, nor the scan's own re-arm of the hangtime anchor (a landing, a hold released). */
 static int
 quiet_y_visit_unexplained(const dsd_state* state) {
     const dsd_engine_scan_owner* owner = quiet_owner_const(state);
     if (owner && owner->landing.by == DSD_ENGINE_SCAN_LANDING_ROW) {
         return state->scan_y_content_seq == owner->landing.y_content_seq
-               && state->scan_y_unchecked_seq == owner->landing.y_unchecked_seq
-               && state->scan_y_analog_call_seq == owner->landing.y_analog_call_seq;
+               && state->scan_y_call_seq == owner->landing.y_call_seq;
     }
     return state->scan_y_content_seq == state->scan_y_stay_content_seq
-           && state->scan_y_unchecked_seq == state->scan_y_stay_unchecked_seq
-           && state->scan_y_analog_call_seq == state->scan_y_stay_analog_call_seq;
+           && state->scan_y_call_seq == state->scan_y_stay_call_seq;
 }
 
 /* NO_CHECK for @p reason on @p report, when its stay shows the status: on a -Y stay, only while it has carried no

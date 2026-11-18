@@ -1031,7 +1031,9 @@ __wrap_processFrame(dsd_opts* opts, dsd_state* state) {
         dsd_frame_sync_hook_content_evidence(opts, state, g_frame_evidence, g_frame_evidence_hold_ms);
     }
     if (g_frame_unchecked) {
+        /* An X2-TDMA frame its decoder took, as processFrame() notes it: for the -Y step and as a call. */
         state->scan_y_unchecked_seq++;
+        state->scan_y_call_seq++;
     }
     if (g_frame_count < FAKE_FRAMES_MAX) {
         g_frame_roll[g_frame_count] = state->lcn_freq_roll;
@@ -15173,9 +15175,11 @@ test_y_quiet_timing_says_why(void) {
                                  SCAN_QUIET_WARN_PROVOICE | SCAN_QUIET_WARN_X2TDMA, 0U, NULL, 0, (uint32_t)untyped_hz,
                                  0, 0U);
     rc |= expect_true("another decoder set: logged again", g_yq.warns == 2 && strcmp(g_yq.warn, want) == 0);
-    /* An X2-TDMA call on the row: processFrame() notes each frame it dispatches (scan_y_unchecked_seq, which
-       ENGINE_PROTOCOL_DISPATCH pins); the call explains the visit, so nothing is said of the check. */
+    /* An X2-TDMA call on the row: processFrame() notes each frame its decoder took (scan_y_unchecked_seq and
+       scan_y_call_seq, which ENGINE_PROTOCOL_DISPATCH pins); the call explains the visit, so nothing is said of the
+       check. */
     state->scan_y_unchecked_seq++;
+    state->scan_y_call_seq++;
     yq_timing_tick(opts, state);
     rc |= yq_expect_quiet(state, "an X2-TDMA call on the row", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
                           DSD_SCAN_QUIET_REASON_NONE);
@@ -15298,7 +15302,8 @@ test_y_quiet_input_shows_until_a_call(void) {
     yq_timing_tick(opts, state);
     rc |= yq_expect_quiet(state, "audio input, idle after the landing was forgotten", DSD_SCAN_STAY_HANGTIME,
                           DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
-    state->scan_y_unchecked_seq++; /* an X2-TDMA frame dispatched */
+    state->scan_y_unchecked_seq++; /* an X2-TDMA frame its decoder took, as processFrame() notes it */
+    state->scan_y_call_seq++;
     yq_timing_tick(opts, state);
     rc |= yq_expect_quiet(state, "audio input, a call after the landing was forgotten", DSD_SCAN_STAY_HANGTIME,
                           DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);

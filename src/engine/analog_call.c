@@ -856,7 +856,7 @@ analog_call_qualify(dsd_opts* opts, dsd_state* state, analog_call* call, double 
     call->candidate = 0;
     call->received = 0;
     /* An admitted call explains the -Y stay it is heard on (issue #834): no "No check" status for the rest of it. */
-    state->scan_y_analog_call_seq++;
+    state->scan_y_call_seq++;
     analog_call_note_media(opts, state, now_m);
 }
 

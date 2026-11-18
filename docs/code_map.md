@@ -678,8 +678,9 @@ Generated (do not edit/commit):
       with no such gate, `dsd_state::scan_y_unchecked_m`; PARTIAL never counts as content, it only delays the step by
       its hold, capped at `SCAN_QUIET_PENDING_MAX_MS`, so a D-STAR voice superframe still waiting on its header is not
       cut; nor does an X2-TDMA, ProVoice or TETRA frame, which `processFrame()` notes as it dispatches one
-      (`scan_y_unchecked_seq`) and which holds the row only while such frames keep coming, so the default set's -Y row
-      on NXDN48 or dPMR noise leaves like a typed one), nothing keeps the row
+      (`scan_y_unchecked_seq`, before the handler, so a first candidate holds the row too) and which holds the row
+      only while such frames keep coming, so the default set's -Y row on NXDN48 or dPMR noise leaves like a typed
+      one), nothing keeps the row
       (`live_scanner_y_frame_step_may_decide()`: hold, awaited tune, typed step in flight, avoided row, no other row),
       and it has not yielded for this stay and anchor yet (`dsd_engine_scan_owner::y_frame_yield_epoch`,
       `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the row is never repeated per frame. The stay is the
@@ -729,14 +730,15 @@ Generated (do not edit/commit):
       -Y's HANGTIME; a raw sync no longer ends the check (R1), so a -Y row's hangtime or qualify window shows CHECKING
       whether or not it has synced, and a check ended by checked content or a carrier is DONE, so NONE). NO_CHECK on -Y
       only while the row has carried no call this visit (R8's unsynced hangtime: `dsd_state::scan_y_content_seq`,
-      checked content, `scan_y_unchecked_seq`, an X2-TDMA, ProVoice or TETRA frame dispatched, and
-      `scan_y_analog_call_seq`, an analog call admitted, which `analog_call_qualify()` moves as the NFM call begins
-      once its reception passed every gate, never on raw carrier a tone check rejected, against the values the landing
-      recorded, `dsd_engine_scan_landing::y_content_seq`, `y_unchecked_seq`, `y_analog_call_seq`), since under the
+      checked content, and `scan_y_call_seq`, a call no checked content shows: an analog call admitted, which
+      `analog_call_qualify()` moves as the NFM call begins once its reception passed every gate, never on raw carrier
+      a tone check rejected, or a frame a decoder of a protocol with no content check took, which `processFrame()`
+      moves after the handler only for a verdict that took the frame on its carrier, uninterrupted: every X2-TDMA frame,
+      a ProVoice frame once a second sync confirmed the transmission, a TETRA burst whose CRC passed, never one sync,
+      against the values the landing recorded, `dsd_engine_scan_landing::y_content_seq`, `y_call_seq`), since under the
       legacy rule HANGTIME is the stay a call publishes from start to end; with no row landing in force (the start
       frequency before the first step, a step that forgot the landing and then failed, an input switch) against the
-      stay's own start instead (`dsd_state::scan_y_stay_content_seq`, `scan_y_stay_unchecked_seq`,
-      `scan_y_stay_analog_call_seq`, set by
+      stay's own start instead (`dsd_state::scan_y_stay_content_seq`, `scan_y_stay_call_seq`, set by
       `dsd_engine_scan_y_stay_begin()` at the run's start, a -Y scan's start and every landing forget), so the session's
       INPUT reason shows on an idle start frequency and goes while a call is heard there (`quiet_fill_no_check()`). A
       raw sync, which NXDN48 and dPMR pass on noise, is no

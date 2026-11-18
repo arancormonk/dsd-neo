@@ -32,6 +32,47 @@ dsd_find_protocol_handler(int synctype) {
     return NULL;
 }
 
+/* What retunes the P25 watchdog made since the last frame left, applied before this frame notes anything of the
+   carrier it reached. The decoder thread's own retunes, the frame's handler's included (dsd_rxid_request_trunk_tune(),
+   while frame_dispatch_active is set), apply theirs where they are made. */
+static void
+process_frame_apply_off_thread_retunes(dsd_state* state) {
+    /* The carrier's access code, and with it the carrier left's RAS evidence. */
+    if (dsd_rxid_apply_trunk_tune(state)) {
+        dmr_ras_reset(state);
+    }
+    /* What such a retune left of the DMR calls' decryption (dsd_engine_apply_dmr_leave()): one load while nothing
+       waits. */
+    if (state->dmr_leave_pending != 0U) {
+        (void)dsd_engine_apply_dmr_leave(state);
+    }
+}
+
+/* The handler's verdict, settled once the frame ran on @p carrier_seq, and the -Y stay's call marker. */
+static void
+process_frame_settle_verdict(dsd_state* state, uint32_t carrier_seq, int unchecked) {
+    /* A replay read that adopted a recorded retune ran the carrier boundary inside the frame (issue #575): its
+       decoder dropped what it read, as on a sync loss, so the frame validated nothing on either carrier, whatever
+       the handler reported for the symbols it read. */
+    if (state->carrier_seq != carrier_seq) {
+        state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_UNPRODUCTIVE;
+    } else if (state->input_interrupted) {
+        /* An input interruption cut the frame (a Signal search left it, or a live read gave up on a stalled
+           input): its decoder dropped it, so whatever the handler reported, a sticky confirmation or a proof, the
+           frame validated nothing. Nor did it fail anything: the cut was the engine's, not the signal's, so like a
+           frame the engine declined to dispatch it is withheld from the SPS hunt's accounting. */
+        state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
+    }
+    /* The -Y stay's call marker (issue #834) moves only for a frame of a protocol with no content check its decoder
+       took, on the carrier it was dispatched on and uninterrupted: X2-TDMA reports no verdict, ProVoice none until a
+       second sync confirms its transmission, TETRA none until a burst's CRC passes. One sync is no call. */
+    if (unchecked
+        && (state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PRODUCTIVE
+            || state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN)) {
+        state->scan_y_call_seq++;
+    }
+}
+
 void
 processFrame(dsd_opts* opts, dsd_state* state) {
 
@@ -48,24 +89,14 @@ processFrame(dsd_opts* opts, dsd_state* state) {
      * consumed nothing, so crediting it changes nothing either way. */
     state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
 
-    /* An accepted retune the P25 watchdog made since the last frame drops the carrier's access code before this frame
-       notes anything of the carrier it reached. The decoder thread's own retunes, the frame's handler's included
-       (dsd_rxid_request_trunk_tune(), while frame_dispatch_active is set), apply it where they are made. The carrier
-       left's RAS evidence goes with it. */
-    if (dsd_rxid_apply_trunk_tune(state)) {
-        dmr_ras_reset(state);
-    }
-    /* So does what such a retune left of the DMR calls' decryption (dsd_engine_apply_dmr_leave()): one load while
-       nothing waits. */
-    if (state->dmr_leave_pending != 0U) {
-        (void)dsd_engine_apply_dmr_leave(state);
-    }
+    process_frame_apply_off_thread_retunes(state);
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {
         /* A frame whose protocol has no content check the -Y step could read (issue #834): one store, whatever the
-           settings, so a real call of it keeps its -Y row while its frames come. */
-        if (DSD_SYNC_IS_X2TDMA(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)
-            || DSD_SYNC_IS_TETRA(state->synctype)) {
+           settings, so a real call of it keeps its -Y row while its frames come, its first candidate included. */
+        const int unchecked = DSD_SYNC_IS_X2TDMA(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)
+                              || DSD_SYNC_IS_TETRA(state->synctype);
+        if (unchecked) {
             state->scan_y_unchecked_seq++;
         }
         /* A frame of another protocol family replaces the identity the last one left, also when the new protocol
@@ -84,18 +115,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         state->frame_dispatch_active = 1;
         state->sps_hunt_last_frame_verdict = (int)handler->handle_frame(opts, state);
         state->frame_dispatch_active = 0;
-        /* A replay read that adopted a recorded retune ran the carrier boundary inside the frame (issue #575): its
-           decoder dropped what it read, as on a sync loss, so the frame validated nothing on either carrier, whatever
-           the handler reported for the symbols it read. */
-        if (state->carrier_seq != carrier_seq) {
-            state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_UNPRODUCTIVE;
-        } else if (state->input_interrupted) {
-            /* An input interruption cut the frame (a Signal search left it, or a live read gave up on a stalled
-               input): its decoder dropped it, so whatever the handler reported, a sticky confirmation or a proof, the
-               frame validated nothing. Nor did it fail anything: the cut was the engine's, not the signal's, so like a
-               frame the engine declined to dispatch it is withheld from the SPS hunt's accounting. */
-            state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
-        }
+        process_frame_settle_verdict(state, carrier_seq, unchecked);
     }
 }
 
