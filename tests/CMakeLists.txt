@@ -26439,6 +26439,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_map_tiles
         ui/test_ui_qt_map_tiles.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_http.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp
     )
     target_include_directories(

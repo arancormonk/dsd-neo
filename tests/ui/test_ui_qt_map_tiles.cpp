@@ -414,8 +414,12 @@ test_unreadable_and_oversized(const QString& root) {
     junk.close();
     expect("an unreadable entry is a miss", cache.lookup(k, fields()).reuse == MapTileCache::Reuse::Miss);
     expect("and is deleted", !QFileInfo::exists(cache.pathFor(k)));
-    expect("a PNG over 512 px is refused", dsd_qt::mapTileDecodePng(make_png(513, 256, Qt::red)).isNull());
-    expect("a 512 px PNG decodes", dsd_qt::mapTileDecodePng(make_png(512, 512, Qt::red)).width() == 512);
+    /* Each side is checked on its own, so the bounds are tested on narrow images: a conversion of more than 65536
+     * pixels runs on Qt's thread pool, whose hand-offs ThreadSanitizer cannot see into. */
+    expect("a PNG wider than 512 px is refused", dsd_qt::mapTileDecodePng(make_png(513, 64, Qt::red)).isNull());
+    expect("a PNG taller than 512 px is refused", dsd_qt::mapTileDecodePng(make_png(64, 513, Qt::red)).isNull());
+    expect("a 512 px wide PNG decodes", dsd_qt::mapTileDecodePng(make_png(512, 64, Qt::red)).width() == 512);
+    expect("a 512 px tall PNG decodes", dsd_qt::mapTileDecodePng(make_png(64, 512, Qt::red)).height() == 512);
     expect("a JPEG is not a PNG", [] {
         QImage image(16, 16, QImage::Format_RGB32);
         image.fill(Qt::blue);
@@ -480,6 +484,8 @@ struct FakeReply {
     dsd_tile_fetch_status failure = DSD_TILE_FETCH_OK;
     /* Hold the transfer until it is cancelled or released. */
     bool stall = false;
+    /* While stalled, ignore the cancel (an old libcurl in a name lookup), or the fetch finished as it was cancelled. */
+    bool ignoreCancel = false;
 };
 
 struct SeenRequest {
@@ -549,11 +555,11 @@ dup_bytes(const QByteArray& bytes, size_t* len) {
 
 /* Wait out a stalled reply; @return true when it was cancelled. */
 bool
-stall(FakeServer* server, std::unique_lock<std::mutex>& lock, const dsd_tile_fetch_request* req) {
+stall(FakeServer* server, std::unique_lock<std::mutex>& lock, const dsd_tile_fetch_request* req, bool ignoreCancel) {
     server->stalled++;
     server->release = false;
     while (!server->release) {
-        if (dsd_tile_fetch_cancel_requested(req->cancel) != 0) {
+        if (!ignoreCancel && dsd_tile_fetch_cancel_requested(req->cancel) != 0) {
             server->cancelled++;
             return true;
         }
@@ -577,7 +583,7 @@ fake_perform(void* ctx, const dsd_tile_fetch_request* req, dsd_tile_fetch_exchan
         reply = queue.front();
         queue.pop_front();
     }
-    if (reply.stall && stall(server, lock, req)) {
+    if (reply.stall && stall(server, lock, req, reply.ignoreCancel)) {
         ex->status = DSD_TILE_FETCH_ERR_CANCELLED;
         return -1;
     }
@@ -604,7 +610,10 @@ struct Delivered {
     quint64 generation = 0;
     MapTileKey key;
     bool stale = false;
+    QColor color;
 };
+
+bool wait_threads_gone();
 
 struct Harness {
     FakeServer server;
@@ -625,16 +634,25 @@ struct Harness {
         worker = new MapTileWorker(options);
         worker->setUrlTemplate(kTemplate);
         QObject::connect(worker, &MapTileWorker::tileReady, worker,
-                         [this](quint64 gen, int z, int x, int y, const QImage&, bool stale) {
+                         [this](quint64 gen, int z, int x, int y, const QImage& image, bool stale) {
                              Delivered d;
                              d.generation = gen;
                              d.key = key(z, x, y);
                              d.stale = stale;
+                             d.color = image.pixelColor(0, 0);
                              tiles.push_back(d);
                          });
     }
 
-    ~Harness() { delete worker; }
+    /* The transport and the fake server must outlive the worker's thread, not only the worker. */
+    ~Harness() {
+        delete worker;
+        server.releaseStall();
+        if (!wait_threads_gone()) {
+            DSD_FPRINTF(stderr, "FAIL: a worker thread outlived its harness\n");
+            abort();
+        }
+    }
 
     Harness(const Harness&) = delete;
     Harness& operator=(const Harness&) = delete;
@@ -903,6 +921,8 @@ test_templates() {
     expect("non-ASCII is refused",
            !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/é/{z}/{x}/{y}")));
     expect("no host is refused", !MapTileWorker::validTemplate(QStringLiteral("https:///{z}/{x}/{y}")));
+    expect("userinfo is refused, so no credential is shown as the server",
+           !MapTileWorker::validTemplate(QStringLiteral("https://user:secret@a.example.test/{z}/{x}/{y}.png")));
     expect("a template too long for the URL cap is refused",
            !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/") + QString(2010, QLatin1Char('a'))
                                          + QStringLiteral("/{z}/{x}/{y}")));
@@ -963,6 +983,126 @@ test_user_agent_stored_for_vary(const QString& root) {
                == MapTileCache::Reuse::Miss);
 }
 
+/* Template A's tile is revalidating when the template changes and the same tile is asked for again. */
+void
+template_change_during_fetch(const QString& root, bool ignoreCancel) {
+    Harness h(root);
+    h.worker->setEnabled(true);
+    const MapTileKey a = key(6, 9, 9);
+    FakeReply first;
+    first.headers = {"Cache-Control: max-age=60", "ETag: \"old\""};
+    first.body = make_png(256, 256, Qt::green);
+    h.server.script(a, first);
+    FakeReply revalidating = first;
+    revalidating.stall = true;
+    revalidating.ignoreCancel = ignoreCancel;
+    h.server.script(a, revalidating);
+    h.worker->requestTiles({a});
+    expect("template A's tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
+    g_wall += 120;
+    h.worker->requestTiles({a});
+    expect("its revalidation is in flight", wait_for([&h] { return h.server.stalledCount() == 1; }));
+    h.worker->setUrlTemplate(QStringLiteral("https://other.example.test/{z}/{x}/{y}.png"));
+    h.tiles.clear();
+    h.worker->requestTiles({a});
+    h.server.releaseStall();
+    expect("the tile for template B arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
+    settle();
+    expect("only B's tile, never A's", h.tiles.size() == 1U && h.tiles[0].color == QColor(Qt::gray));
+    const SeenRequest last = h.server.seenAt(h.server.seenCount() - 1U);
+    expect("B was asked once, without A's validators",
+           h.server.seenCount() == 3U && last.url.startsWith(QStringLiteral("https://other.example.test/"))
+               && last.ifNoneMatch.isEmpty());
+    expect("A's late outcome left B ready, with no backoff",
+           h.worker->state() == MapTileWorker::State::Ready && h.worker->backoffRemainingMsForTest() == 0);
+}
+
+void
+test_template_change_during_fetch(const QString& root) {
+    template_change_during_fetch(root + QStringLiteral("/switch-cancelled"), false);
+    template_change_during_fetch(root + QStringLiteral("/switch-finished"), true);
+}
+
+void
+test_tiles_off_during_fetch(const QString& root) {
+    Harness h(root + QStringLiteral("/off-in-flight"));
+    h.worker->setEnabled(true);
+    FakeReply failing;
+    failing.status = 503;
+    failing.stall = true;
+    failing.ignoreCancel = true;
+    h.server.script(key(3, 3, 3), failing);
+    FakeReply loading;
+    loading.headers = {"Cache-Control: max-age=600"};
+    loading.body = make_png(256, 256, Qt::green);
+    loading.stall = true;
+    loading.ignoreCancel = true;
+    h.server.script(key(3, 4, 4), loading);
+    h.worker->requestTiles({key(3, 3, 3)});
+    expect("a request is in flight", wait_for([&h] { return h.server.stalledCount() == 1; }));
+    h.worker->setEnabled(false);
+    h.server.releaseStall();
+    settle(100);
+    expect("a failure finishing while tiles are off leaves them Off", h.worker->state() == MapTileWorker::State::Off);
+    expect("and adds no backoff", h.worker->backoffRemainingMsForTest() == 0);
+    h.worker->setEnabled(true);
+    h.worker->requestTiles({key(3, 4, 4)});
+    expect("a second request is in flight", wait_for([&h] { return h.server.stalledCount() == 2; }));
+    h.worker->setEnabled(false);
+    h.server.releaseStall();
+    settle(100);
+    expect("a success finishing while tiles are off shows nothing and leaves them Off",
+           h.tiles.empty() && h.worker->state() == MapTileWorker::State::Off);
+}
+
+void
+test_shutdown_joins_threads(const QString& root) {
+    expect("no thread is left over before the shutdown test", wait_threads_gone());
+    (void)MapTileWorker::shutdownThreads(0);
+    {
+        Harness h(root + QStringLiteral("/shutdown-finished"));
+        h.worker->setEnabled(true);
+        h.worker->requestTiles({key(1, 1, 1)});
+        expect("a tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
+    }
+    MapTileWorker::ShutdownResult done = MapTileWorker::shutdownThreads(MapTileWorker::kShutdownJoinMs);
+    expect("a finished thread is joined", done.joined == 1 && done.released == 0);
+
+    Harness live(root + QStringLiteral("/shutdown-live"));
+    live.worker->setEnabled(true);
+    FakeReply stalled;
+    stalled.stall = true;
+    live.server.script(key(1, 0, 1), stalled);
+    live.worker->requestTiles({key(1, 0, 1)});
+    expect("a live worker's transfer stalls", wait_for([&live] { return live.server.stalledCount() == 1; }));
+    uint64_t before = dsd_realtime_mono_ms();
+    done = MapTileWorker::shutdownThreads(MapTileWorker::kShutdownJoinMs);
+    expect("a live worker's thread is stopped, cancelled and joined within the bound",
+           done.joined == 1 && done.released == 0 && dsd_realtime_mono_ms() - before < 2000U
+               && live.server.cancelledCount() == 1 && MapTileWorker::liveThreads() == 0);
+
+    const QString stuckRoot = root + QStringLiteral("/shutdown-stuck");
+    Harness stuck(stuckRoot);
+    stuck.worker->setEnabled(true);
+    FakeReply deaf = stalled;
+    deaf.ignoreCancel = true;
+    deaf.headers = {"Cache-Control: max-age=600"};
+    deaf.body = make_png(256, 256, Qt::green);
+    stuck.server.script(key(1, 1, 0), deaf);
+    stuck.worker->requestTiles({key(1, 1, 0)});
+    expect("a transfer that ignores the cancel stalls",
+           wait_for([&stuck] { return stuck.server.stalledCount() == 1; }));
+    before = dsd_realtime_mono_ms();
+    done = MapTileWorker::shutdownThreads(200);
+    const uint64_t took = dsd_realtime_mono_ms() - before;
+    expect("a thread still running when the wait runs out is released", done.joined == 0 && done.released == 1);
+    expect("after the wait, not much longer", took >= 190U && took < 1000U);
+    stuck.server.releaseStall();
+    expect("the released thread still ends", wait_threads_gone());
+    expect("without decoding or storing what its fetch brought after the stop",
+           !QFileInfo::exists(MapTileCache(stuckRoot, kTemplate, wall_now).pathFor(key(1, 1, 0))));
+}
+
 void
 test_teardown_during_stalled_transfer(const QString& root) {
     auto* h = new Harness(root + QStringLiteral("/teardown"));
@@ -1019,7 +1159,10 @@ main(int argc, char** argv) {
     test_invalid_template_and_unavailable(root);
     test_user_agent_stored_for_vary(root);
     expect("every worker thread so far ended", wait_threads_gone());
+    test_template_change_during_fetch(root);
+    test_tiles_off_during_fetch(root);
     test_teardown_during_stalled_transfer(root);
+    test_shutdown_joins_threads(root);
 
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);

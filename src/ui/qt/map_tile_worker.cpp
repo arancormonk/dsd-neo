@@ -6,6 +6,7 @@
 #include "map_tile_worker.h"
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QMetaObject>
 #include <Qt>
 #include <algorithm>
@@ -14,10 +15,13 @@
 #include <condition_variable>
 #include <deque>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <functional>
+#include <list>
 #include <mutex>
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "realtime_clock.h"
 
@@ -33,10 +37,11 @@ constexpr int kUserAgentCap = 128;
 constexpr int kZoomDigitsMax = 2;
 constexpr int kCoordDigitsMax = 10;
 
-/* One tile that needs the network, with the validators its cache lookup found. */
+/* One tile that needs the network, with the validators its cache lookup found in its epoch's template cache. */
 struct NetJob {
     MapTileKey key;
     quint64 generation = 0;
+    quint64 epoch = 0;
     QByteArray ifNoneMatch;
     QByteArray ifModifiedSince;
 };
@@ -56,6 +61,60 @@ struct FetchResult {
 bool
 visible_ascii(const QString& text) {
     return std::all_of(text.cbegin(), text.cend(), [](QChar c) { return c.unicode() > 0x20U && c.unicode() < 0x7FU; });
+}
+
+/* Every worker thread not yet joined. Joined when it has finished (reaped at the next start) or at shutdown; a thread
+ * still running when the shutdown's wait runs out is detached. Leaked on purpose: a detached thread may still look
+ * itself up after static destruction began. */
+struct ThreadEntry {
+    quint64 id = 0;
+    std::thread thread;
+    bool done = false;
+    std::function<void()> stop;
+};
+
+struct ThreadRegistry {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::list<ThreadEntry> entries;
+    quint64 nextId = 0;
+    bool postRoutineInstalled = false;
+};
+
+ThreadRegistry&
+registry() {
+    static auto* const instance = new ThreadRegistry();
+    return *instance;
+}
+
+void
+mark_thread_done(quint64 id) {
+    ThreadRegistry& r = registry();
+    std::lock_guard<std::mutex> lock(r.mutex);
+    for (ThreadEntry& entry : r.entries) {
+        if (entry.id == id) {
+            entry.done = true;
+        }
+    }
+    r.changed.notify_all();
+}
+
+/* Join the threads that have already finished; each join returns at once. Call with the registry's mutex held. */
+void
+reap_finished_locked(ThreadRegistry& r) {
+    for (auto it = r.entries.begin(); it != r.entries.end();) {
+        if (it->done) {
+            it->thread.join();
+            it = r.entries.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void
+shutdown_post_routine() {
+    (void)MapTileWorker::shutdownThreads(MapTileWorker::kShutdownJoinMs);
 }
 
 /* Count {z}, {x} and {y} in @p rest; @return false at any other brace. */
@@ -85,8 +144,8 @@ scan_placeholders(const QString& rest, int counts[3]) {
     return true;
 }
 
-/* The host and port at the start of @p rest (the template after its scheme); empty when there is none or it holds a
- * brace. */
+/* The host and port at the start of @p rest (the template after its scheme); empty when there is none, or it holds a
+ * brace or userinfo. */
 QString
 template_authority(const QString& rest) {
     int end = 0;
@@ -95,7 +154,9 @@ template_authority(const QString& rest) {
         ++end;
     }
     const QString authority = rest.left(end);
-    if (authority.contains(QLatin1Char('{')) || authority.contains(QLatin1Char('}'))) {
+    /* No userinfo: a credential there would be shown as the server's name and stored as the Host value. */
+    if (authority.contains(QLatin1Char('{')) || authority.contains(QLatin1Char('}'))
+        || authority.contains(QLatin1Char('@'))) {
         return QString();
     }
     return authority;
@@ -126,10 +187,15 @@ struct MapTileWorker::Core {
     bool inflight = false;
     MapTileKey inflightKey;
     quint64 inflightGeneration = 0;
+    /* The epoch the fetch in flight began in: a restart since then makes its outcome belong to nobody. */
+    quint64 inflightEpoch = 0;
     MapTileWorker* receiver = nullptr;
     qint64 backoffStepMs = 0;
     quint64 backoffUntilMs = 0;
     State lastPosted = State::Off;
+
+    /* Set by a stop; read without the mutex after a fetch returns, to skip decoding and storing at teardown. */
+    std::atomic<bool> stopping{false};
 
     /* Set before the thread starts, read-only after. */
     Options options;
@@ -156,12 +222,13 @@ struct MapTileWorker::Core {
         return options.wallSecs ? options.wallSecs() : realtimeSecsSinceEpoch();
     }
 
-    static void run(std::shared_ptr<Core> core);
+    static void run(std::shared_ptr<Core> core, quint64 registryId);
+    void requestStop();
     void lookupNext(std::unique_lock<std::mutex>& lock);
     void fetchNext(std::unique_lock<std::mutex>& lock);
-    FetchResult perform(const NetJob& job, const QString& url, const QString& templateText, quint64 serial);
-    FetchResult interpret(const NetJob& job, dsd_tile_fetch_response* resp, qint64 requestTime, qint64 responseTime,
-                          const MapTileRequestFields& fields);
+    FetchResult perform(const NetJob& job, const QString& url, MapTileCache& tiles, const MapTileRequestFields& fields);
+    static FetchResult interpret(const NetJob& job, dsd_tile_fetch_response* resp, MapTileCache& tiles,
+                                 qint64 requestTime, qint64 responseTime, const MapTileRequestFields& fields);
     void apply(const NetJob& job, const FetchResult& result);
     MapTileCache& cacheFor(const QString& templateText, quint64 serial);
     MapTileRequestFields fieldsFor(const QString& templateText) const;
@@ -170,7 +237,7 @@ struct MapTileWorker::Core {
 };
 
 void
-MapTileWorker::Core::run(std::shared_ptr<Core> core) {
+MapTileWorker::Core::run(std::shared_ptr<Core> core, quint64 registryId) {
     {
         std::unique_lock<std::mutex> lock(core->mutex);
         while (!core->stop) {
@@ -185,6 +252,21 @@ MapTileWorker::Core::run(std::shared_ptr<Core> core) {
     }
     core.reset();
     g_liveThreads.fetch_sub(1);
+    mark_thread_done(registryId);
+}
+
+void
+MapTileWorker::Core::requestStop() {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        stop = true;
+        receiver = nullptr;
+        pending.clear();
+        network.clear();
+    }
+    stopping.store(true);
+    dsd_tile_fetch_cancel_request(cancel);
+    wake.notify_all();
 }
 
 MapTileCache&
@@ -203,6 +285,10 @@ MapTileWorker::Core::fieldsFor(const QString& templateText) const {
     fields.userAgent = userAgent;
     QString host;
     (void)MapTileWorker::validTemplate(templateText, &host);
+    /* As libcurl sends Host: without the scheme's default port. */
+    if (host.endsWith(QStringLiteral(":443"))) {
+        host.chop(4);
+    }
     fields.host = host.toLatin1();
     return fields;
 }
@@ -255,6 +341,7 @@ MapTileWorker::Core::lookupNext(std::unique_lock<std::mutex>& lock) {
         NetJob job;
         job.key = key;
         job.generation = gen;
+        job.epoch = epoch;
         job.ifNoneMatch = found.ifNoneMatch;
         job.ifModifiedSince = found.ifModifiedSince;
         network.push_back(job);
@@ -281,9 +368,11 @@ MapTileWorker::Core::fetchNext(std::unique_lock<std::mutex>& lock) {
     inflight = true;
     inflightKey = job.key;
     inflightGeneration = job.generation;
+    inflightEpoch = job.epoch;
     dsd_tile_fetch_cancel_clear(cancel);
     lock.unlock();
-    const FetchResult result = perform(job, url, templateText, serial);
+    const MapTileRequestFields fields = fieldsFor(templateText);
+    const FetchResult result = perform(job, url, cacheFor(templateText, serial), fields);
     lock.lock();
     inflight = false;
     NetJob done = job;
@@ -292,7 +381,8 @@ MapTileWorker::Core::fetchNext(std::unique_lock<std::mutex>& lock) {
 }
 
 FetchResult
-MapTileWorker::Core::perform(const NetJob& job, const QString& url, const QString& templateText, quint64 serial) {
+MapTileWorker::Core::perform(const NetJob& job, const QString& url, MapTileCache& tiles,
+                             const MapTileRequestFields& fields) {
     const QByteArray urlBytes = url.toLatin1();
     dsd_tile_fetch_request req{};
     req.url = urlBytes.constData();
@@ -300,27 +390,31 @@ MapTileWorker::Core::perform(const NetJob& job, const QString& url, const QStrin
     req.if_modified_since = job.ifModifiedSince.isEmpty() ? nullptr : job.ifModifiedSince.constData();
     req.cancel = cancel;
     req.transport = options.transport;
-    const MapTileRequestFields fields = fieldsFor(templateText);
-    (void)cacheFor(templateText, serial);
     const qint64 requestTime = wallSecs();
     dsd_tile_fetch_response resp;
     (void)dsd_tile_fetch(&req, &resp);
     const qint64 responseTime = wallSecs();
-    const FetchResult result = interpret(job, &resp, requestTime, responseTime, fields);
+    FetchResult result;
+    if (stopping.load()) {
+        /* Torn down while it ran: no decode and no disk write, so the thread leaves as soon as libcurl has. */
+        result.outcome = Outcome::Cancelled;
+    } else {
+        result = interpret(job, &resp, tiles, requestTime, responseTime, fields);
+    }
     dsd_tile_fetch_response_free(&resp);
     return result;
 }
 
 FetchResult
-MapTileWorker::Core::interpret(const NetJob& job, dsd_tile_fetch_response* resp, qint64 requestTime,
-                               qint64 responseTime, const MapTileRequestFields& fields) {
+MapTileWorker::Core::interpret(const NetJob& job, dsd_tile_fetch_response* resp, MapTileCache& tiles,
+                               qint64 requestTime, qint64 responseTime, const MapTileRequestFields& fields) {
     FetchResult result;
     switch (resp->status) {
         case DSD_TILE_FETCH_OK: {
             const QByteArray png(reinterpret_cast<const char*>(resp->body), static_cast<qsizetype>(resp->body_len));
             result.image = mapTileDecodePng(png);
             if (!result.image.isNull()) {
-                (void)cache->store(job.key, *resp, png, result.image, requestTime, responseTime, fields);
+                (void)tiles.store(job.key, *resp, png, result.image, requestTime, responseTime, fields);
                 result.outcome = Outcome::Success;
             }
             return result;
@@ -328,7 +422,7 @@ MapTileWorker::Core::interpret(const NetJob& job, dsd_tile_fetch_response* resp,
         case DSD_TILE_FETCH_NOT_MODIFIED:
             /* A 304 to a request that carried no validator selects nothing. */
             if (!job.ifNoneMatch.isEmpty() || !job.ifModifiedSince.isEmpty()) {
-                result.image = cache->refresh(job.key, *resp, requestTime, responseTime, fields);
+                result.image = tiles.refresh(job.key, *resp, requestTime, responseTime, fields);
             }
             result.outcome = result.image.isNull() ? Outcome::Failure : Outcome::Success;
             result.dropValidators = result.image.isNull();
@@ -348,6 +442,12 @@ MapTileWorker::Core::interpret(const NetJob& job, dsd_tile_fetch_response* resp,
 
 void
 MapTileWorker::Core::apply(const NetJob& job, const FetchResult& result) {
+    /* Tiles were turned off or the template changed while it ran: no tile, no state, no backoff and no retry, so
+     * nothing of the old source reaches the new one (its validators included). A 200 it stored stays in its own
+     * template's cache. */
+    if (job.epoch != epoch) {
+        return;
+    }
     switch (result.outcome) {
         case Outcome::Success:
             backoffStepMs = 0;
@@ -403,16 +503,9 @@ MapTileWorker::MapTileWorker(Options options, QObject* parent) : QObject(parent)
 }
 
 MapTileWorker::~MapTileWorker() {
-    {
-        std::lock_guard<std::mutex> lock(m_core->mutex);
-        m_core->stop = true;
-        m_core->receiver = nullptr;
-        m_core->pending.clear();
-        m_core->network.clear();
-    }
-    dsd_tile_fetch_cancel_request(m_core->cancel);
-    m_core->wake.notify_all();
-    /* The thread was detached when it started; it holds its own reference to the core. */
+    /* Never waits: the thread holds its own reference to the core and ends by itself; the registry joins it later
+     * (at the next worker's start, or at application exit within kShutdownJoinMs). */
+    m_core->requestStop();
 }
 
 bool
@@ -420,13 +513,30 @@ MapTileWorker::ensureThread() {
     if (m_threadStarted) {
         return true;
     }
+    ThreadRegistry& r = registry();
+    std::lock_guard<std::mutex> lock(r.mutex);
+    reap_finished_locked(r);
+    if (!r.postRoutineInstalled && QCoreApplication::instance() != nullptr) {
+        qAddPostRoutine(shutdown_post_routine);
+        r.postRoutineInstalled = true;
+    }
+    ThreadEntry entry;
+    entry.id = ++r.nextId;
+    const std::weak_ptr<Core> weak = m_core;
+    entry.stop = [weak]() {
+        const std::shared_ptr<Core> core = weak.lock();
+        if (core) {
+            core->requestStop();
+        }
+    };
     g_liveThreads.fetch_add(1);
     try {
-        std::thread(&Core::run, m_core).detach();
+        entry.thread = std::thread(&Core::run, m_core, entry.id);
     } catch (const std::system_error&) {
         g_liveThreads.fetch_sub(1);
         return false;
     }
+    r.entries.push_back(std::move(entry));
     m_threadStarted = true;
     return true;
 }
@@ -535,7 +645,7 @@ MapTileWorker::requestTiles(const QList<MapTileKey>& keys) {
             if (!key.valid()) {
                 continue;
             }
-            if (m_core->inflight && key == m_core->inflightKey) {
+            if (m_core->inflight && m_core->inflightEpoch == m_core->epoch && key == m_core->inflightKey) {
                 keepInflight = true;
                 continue;
             }
@@ -649,6 +759,40 @@ MapTileWorker::retryAfterMs(const QByteArray& value, qint64 nowSecs, qint64* wai
 int
 MapTileWorker::liveThreads() {
     return g_liveThreads.load();
+}
+
+MapTileWorker::ShutdownResult
+MapTileWorker::shutdownThreads(int timeoutMs) {
+    ThreadRegistry& r = registry();
+    std::vector<std::function<void()>> stops;
+    {
+        std::lock_guard<std::mutex> lock(r.mutex);
+        for (const ThreadEntry& entry : r.entries) {
+            if (!entry.done) {
+                stops.push_back(entry.stop);
+            }
+        }
+    }
+    /* Outside the registry's mutex: a stop takes the core's, and a finishing thread takes the registry's. */
+    for (const std::function<void()>& stop : stops) {
+        stop();
+    }
+    ShutdownResult result;
+    std::unique_lock<std::mutex> lock(r.mutex);
+    (void)r.changed.wait_for(lock, std::chrono::milliseconds(std::max(0, timeoutMs)), [&r]() {
+        return std::all_of(r.entries.cbegin(), r.entries.cend(), [](const ThreadEntry& e) { return e.done; });
+    });
+    for (ThreadEntry& entry : r.entries) {
+        if (entry.done) {
+            entry.thread.join();
+            result.joined++;
+        } else {
+            entry.thread.detach();
+            result.released++;
+        }
+    }
+    r.entries.clear();
+    return result;
 }
 
 #ifdef DSD_NEO_TEST_HOOKS

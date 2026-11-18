@@ -23,10 +23,17 @@
  * - After a failure the worker waits before its next request: 1 s, doubling to 5 min, or the server's Retry-After
  *   (seconds or a date) when the failure carried one, never less than 1 s. A success resets the wait; so does a
  *   template change. Cache hits are still answered while it waits.
- * - The destructor never waits for the thread: it sets the stop flag and the cancel token and detaches. The thread
- *   ends on its own once the fetch in flight returns (about 100 ms after the cancel with libcurl 8.20 or later; an
- *   older libcurl stuck in a name lookup returns when the system resolver does). It shares nothing with the deleted
- *   object: its state is reference-counted, and no result is posted once the destructor has run.
+ * - The destructor never waits for the thread: it sets the stop flag and the cancel token. The thread ends on its own
+ *   once the fetch in flight returns (about 100 ms after the cancel with libcurl 8.20 or later; an older libcurl
+ *   stuck in a name lookup returns when the system resolver does), without decoding or storing what that fetch
+ *   brought. It shares nothing with the deleted object: its state is reference-counted, and no result is posted once
+ *   the destructor has run.
+ * - Every thread is joined: one that has finished at the next worker's start, and the rest at application exit,
+ *   where a post routine (qAddPostRoutine, run as QCoreApplication is destroyed) stops them all and joins them
+ *   within kShutdownJoinMs. Only a thread still inside libcurl when that runs out (an old libcurl in a name
+ *   lookup) is detached, and then leaves while the process exits.
+ * - Work begun before tiles were turned off or the template changed delivers nothing, posts no state, adds no
+ *   backoff and is not retried, so the new source never shows or revalidates the old one's tiles.
  * - The URL template may hold a key, so it is never logged, never put in an error and never written to disk (the
  *   cache directory is named by its hash).
  */
@@ -59,6 +66,8 @@ class MapTileWorker : public QObject {
     static constexpr const char* kDefaultTemplate = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
     static constexpr qint64 kBackoffFirstMs = 1000;
     static constexpr qint64 kBackoffMaxMs = 5LL * 60 * 1000;
+    /** How long the exit-time shutdown waits for every worker thread, in total. */
+    static constexpr int kShutdownJoinMs = 2000;
 
     enum class State {
         Off,           /**< Tiles are off: nothing is loaded. */
@@ -72,9 +81,11 @@ class MapTileWorker : public QObject {
     struct Options {
         /** Cache root; empty means MapTileCache::defaultRoot(). */
         QString cacheRoot;
-        /** Transport for every request; null means the built-in libcurl one. It must outlive the worker's thread. */
+        /** Transport for every request; null means the built-in libcurl one. It must outlive the worker's thread
+         *  (liveThreads() back to 0), not only the worker. */
         const dsd_tile_fetch_transport* transport = nullptr;
-        /** Wall-clock seconds for HTTP freshness and Retry-After dates; empty reads the real-time clock. */
+        /** Wall-clock seconds for HTTP freshness and Retry-After dates; empty reads the real-time clock. Like monoMs it
+         *  runs on the worker's thread and outlives the worker: it must not capture the owner. */
         std::function<qint64()> wallSecs;
         /** Monotonic milliseconds for the backoff; empty reads dsd_realtime_mono_ms(). */
         std::function<quint64()> monoMs;
@@ -117,7 +128,7 @@ class MapTileWorker : public QObject {
     /**
      * @brief Whether @p urlTemplate is a usable tile template.
      *
-     * It must be `https://` with a non-empty host free of placeholders, visible ASCII only, hold each of `{z}`, `{x}`
+     * It must be `https://` with a non-empty host free of placeholders and of userinfo, visible ASCII only, hold each of `{z}`, `{x}`
      * and `{y}` and no other brace, and still fit DSD_TILE_FETCH_URL_MAX bytes with the longest coordinates.
      *
      * @param host Receives the host (with any port) for the "sent to" line when valid.
@@ -139,6 +150,19 @@ class MapTileWorker : public QObject {
 
     /** @brief How many worker threads are still running, deleted workers' included. */
     static int liveThreads();
+
+    struct ShutdownResult {
+        int joined = 0;   /**< Threads that ended within the wait and were joined. */
+        int released = 0; /**< Threads still running when it ran out, detached. */
+    };
+
+    /**
+     * @brief Stop every worker thread and join each one that ends within @p timeoutMs in total.
+     *
+     * Run at application exit by a post routine the first worker thread installs; callable directly (tests). Live
+     * workers stop loading for good. GUI thread only.
+     */
+    static ShutdownResult shutdownThreads(int timeoutMs);
 
 #ifdef DSD_NEO_TEST_HOOKS
     /** @brief Wake the thread so it reads an injected clock again. */

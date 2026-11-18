@@ -48,6 +48,8 @@
 #include <dsd-neo/runtime/tile_fetch.h>
 #include <functional>
 
+#include "map_tile_http.h"
+
 namespace dsd_qt {
 
 /** @brief One Web Mercator tile: zoom @c z, column @c x, row @c y. */
@@ -77,49 +79,6 @@ inline size_t
 qHash(const MapTileKey& key, size_t seed = 0) {
     return qHashMulti(seed, key.z, key.x, key.y);
 }
-
-/** @brief Pure HTTP helpers the cache and the worker share (RFC 9110 / RFC 9111). */
-namespace map_tile_http {
-
-/** @brief The response directives a private tile cache acts on. Unknown directives are ignored. */
-struct CacheControl {
-    bool noStore = false;
-    bool noCache = false;
-    bool mustRevalidate = false;
-    bool hasMaxAge = false;
-    /** `max-age` without a valid delta-seconds value, or two `max-age` values that differ. */
-    bool maxAgeMalformed = false;
-    /** The value could not be split into directives (an unterminated quoted string): nothing in it can be trusted. */
-    bool syntaxError = false;
-    qint64 maxAge = 0;
-};
-
-/** @brief Parse a (possibly joined) Cache-Control value; names are case-insensitive, arguments token or quoted. */
-CacheControl parseCacheControl(const QByteArray& value);
-
-/**
- * @brief Parse delta-seconds (RFC 9111 §1.2.2): one or more digits, nothing else.
- *
- * A value past 2^31 reads as 2^31, as the RFC requires. @return false for anything else.
- */
-bool parseDeltaSeconds(const QByteArray& text, qint64* seconds);
-
-/**
- * @brief Parse an HTTP-date in any of its three forms (IMF-fixdate, RFC 850, asctime; RFC 9110 §5.6.7).
- *
- * @param nowSecs Wall-clock now, for the RFC 850 two-digit year (a year more than 50 years ahead is the century
- *                before). @return false when the text is not a valid date ("0" included).
- */
-bool parseHttpDate(const QByteArray& text, qint64 nowSecs, qint64* secs);
-
-/**
- * @brief Split a Vary value into lowercase field names.
- *
- * @param star Set when the value holds `*`, or anything that is not a field name (failing closed: never stored).
- */
-QList<QByteArray> parseVary(const QByteArray& value, bool* star);
-
-} // namespace map_tile_http
 
 /** @brief The request header fields as the app sends them, for Vary (RFC 9111 §4.1). */
 struct MapTileRequestFields {
