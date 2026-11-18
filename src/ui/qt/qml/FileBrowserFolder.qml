@@ -137,7 +137,9 @@ Item {
             readonly property bool inert: !folder && restartCloser.active
             readonly property bool navigationAllowed: Navigation.allows(entryRow)
             activeFocusOnTab: (navigationAllowed && visible && live) || activeFocus
-            Accessible.role: Accessible.Button
+            // Gated, a plain text with no press (the #830 rule): the list view
+            // can write this row's ignored flag back to false.
+            Accessible.role: navigationAllowed && visible && live ? Accessible.Button : Accessible.StaticText
             Accessible.name: navigationAllowed && live ? line : ""
             Accessible.focusable: navigationAllowed && visible && live
             Accessible.ignored: !navigationAllowed || !visible || !live

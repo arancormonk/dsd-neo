@@ -21,8 +21,12 @@ Rectangle {
     property string accessibleName: text
     // Held while it has the focus (see OutlineButton).
     activeFocusOnTab: (Navigation.allows(control) && enabled && visible) || activeFocus
-    Accessible.role: Accessible.Button
-    Accessible.name: accessibleName
+    // From the gate, never from Accessible.ignored read back (the #830 rule):
+    // a pill a list view lays out (Talkgroups' chips) has that flag written
+    // with no change signal, and a covered one came back with its name and
+    // press (issue #800, F1).
+    Accessible.role: navigationAllowed && visible ? Accessible.Button : Accessible.StaticText
+    Accessible.name: navigationAllowed && visible ? accessibleName : ""
     // Issue #782: focusable only while in the tree, so a copy Android still
     // holds of a covered or hidden control (no event tells it the control
     // left the tree) is not a swipe stop.

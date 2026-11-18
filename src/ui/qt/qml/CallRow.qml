@@ -16,14 +16,22 @@ Item {
     signal activated
     // Held while it has the focus (see OutlineButton).
     activeFocusOnTab: (Navigation.allows(row) && interactive && enabled) || activeFocus
-    Accessible.role: interactive ? Accessible.Button : Accessible.StaticText
-    Accessible.name: hasRecording ? qsTr("%1, has a recording").arg(accessibleName) : accessibleName
+    // Issue #800 (F1), the #830 rule: everything a screen reader could land on
+    // comes from the row's own gate, never from Accessible.ignored. A list view
+    // writes that flag on every row it lays out (a call landing under a pushed
+    // screen re-lays the Monitor's rows) with no change signal, so a covered
+    // row came back into the tree with its name and its press. Gated, it is a
+    // nameless, unfocusable text there, which offers nothing to stop on.
+    readonly property bool reachable: navigationAllowed && visible
+    Accessible.role: interactive && reachable ? Accessible.Button : Accessible.StaticText
+    Accessible.name: !reachable ? "" : hasRecording ? qsTr("%1, has a recording").arg(accessibleName) : accessibleName
+    Accessible.focusable: reachable
     // What the row shows besides its name (issue #782): the meta line, its
     // tags and its time, each once: a tag the meta line already says (History
     // puts EMERGENCY and "encrypted" there) and a time the caller's name
     // already reads are left out.
     readonly property string emergencyWords: emergency ? Util.shownText(emergencyTag) : ""
-    Accessible.description: [metaText,
+    Accessible.description: !reachable ? "" : [metaText,
         emergencyWords.length > 0 && metaText.indexOf(emergencyWords) < 0 ? emergencyWords : "",
         enc && metaText.indexOf(qsTr("encrypted")) < 0 ? Util.shownText(encTag) : "",
         !enc && accessibleName.indexOf(rightText) < 0 ? rightText : ""].filter(function (part) {
