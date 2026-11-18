@@ -11310,6 +11310,11 @@ rtl_stream_read_live_samples(float* out, float* voice, uint8_t* flags, size_t co
         if (got != 0) {
             return got;
         }
+        /* A reader that services its own waiters first (the decoder's hunt) hears of an empty output before any wait,
+           and reads again to wait. */
+        if ((wants & DSD_RTL_READ_WANT_EMPTY_RETURN) != 0) {
+            return DSD_RTL_READ_EMPTY;
+        }
         if (!gated) {
             RTL_LIVE_TEST_DECODER_IDLE();
         }
@@ -11572,10 +11577,12 @@ rtl_stream_read_replay(float* out, float* voice, uint8_t* flags, size_t count) {
  * @param state Decoder state (unused).
  * @param wants What the reader asks of a live read (DSD_RTL_READ_WANT_* bits): DSD_RTL_READ_NO_STREAM (the EDACS
  *                  analog call loop) in place of DSD_RTL_READ_YIELD, DSD_RTL_READ_IDLE (the decoder's hunt, issue
- *                  #834). An I/Q replay's reads take neither.
+ *                  #834), DSD_RTL_READ_EMPTY at once on an empty output (the decoder's hunt, before it waits). An I/Q
+ *                  replay's reads take none of them.
  * @return Number of samples read (>=1), 0 for an idle live NFM monitor or count==0, DSD_RTL_READ_YIELD or
  *         DSD_RTL_READ_NO_STREAM while a live device has no stream, DSD_RTL_READ_IDLE for a bounded live read that
- *         found nothing (rtl_stream_read_live_samples()), or -1 on exit.
+ *         found nothing (rtl_stream_read_live_samples()), DSD_RTL_READ_EMPTY for one that asked to hear of an empty
+ *         output before waiting, or -1 on exit.
  */
 extern "C" int
 dsd_rtl_stream_read_ex(float* out, float* voice, uint8_t* flags, size_t count, dsd_opts* opts,
