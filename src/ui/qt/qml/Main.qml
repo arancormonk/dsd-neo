@@ -996,13 +996,12 @@ Window {
     // row a "Show on map" came from ({uid, sheet}), for Back to reopen.
     property bool mapOpen: false
     property var mapReturn: null
-    function openMap(opener) {
+    function openMap() {
         mapLoader.active = true;
-        // The control that opened it takes the focus back on Back: History's
-        // Map, or the session menu's own opener (Session options), which the
-        // menu names because it has closed onto the covered monitor by now
-        // and the window root holds the focus.
-        mapReturn = {focus: opener || mainRoot.activeFocusItem};
+        // The control that opened it (History's Map) takes the focus back on
+        // Back; opened from the session menu, the session-menu return below
+        // gives it to Session options.
+        mapReturn = {focus: mainRoot.activeFocusItem};
         if (mapLoader.item)
             mapLoader.item.clearPin();
         mapOpen = true;
@@ -1033,6 +1032,54 @@ Window {
             return false;
         item.forceActiveFocus();
         return true;
+    }
+    // The session-menu return: every screen or sheet a session-menu row
+    // opens (History, Activity, Settings, Talkgroups, Diagnostics, Map,
+    // Spectrum, Sites, Radio, Scan lists, Edit) gives the keyboard focus back
+    // to Session options once the app is back on the session's screen, or to
+    // the screen underneath when a Stop took the session away meanwhile. By the
+    // time a row fires, the menu has closed onto the covered monitor and the
+    // window root holds the focus, so nothing else knows where to return.
+    // It runs after the closing screen's own restores (a sheet's opener, the
+    // map's), and only when those left no control focused.
+    property Item sessionMenuReturn: null
+    function noteSessionMenuReturn() {
+        sessionMenuReturn = monitor.sessionOptions;
+    }
+    function settleSessionMenuReturn() {
+        if (sessionMenuReturn === null || Navigation.layers.length > 0 || Navigation.modals.length > 0)
+            return;
+        Qt.callLater(function () {
+            sessionMenuReturnTimer.restart();
+        });
+    }
+    Timer {
+        id: sessionMenuReturnTimer
+        interval: 0
+        onTriggered: mainRoot.finishSessionMenuReturn()
+    }
+    function finishSessionMenuReturn() {
+        var target = sessionMenuReturn;
+        if (target === null || Navigation.layers.length > 0 || Navigation.modals.length > 0)
+            return;
+        sessionMenuReturn = null;
+        var item = mainRoot.activeFocusItem;
+        var surfaces = Navigation.rootSurfaces;
+        var onControl = item !== null && item !== mainRoot.contentItem && surfaces.indexOf(item) < 0
+            && Navigation.presented(item) && Navigation.allows(item);
+        if (onControl)
+            return;
+        if (!focusBack(target))
+            focusScreen();
+    }
+    Connections {
+        target: Navigation
+        function onLayersChanged() {
+            mainRoot.settleSessionMenuReturn();
+        }
+        function onModalsChanged() {
+            mainRoot.settleSessionMenuReturn();
+        }
     }
     function focusScreen() {
         var surfaces = Navigation.rootSurfaces;
@@ -2729,6 +2776,7 @@ Window {
         }
         onTriggered: function (index) {
             var key = actions[index].key;
+            mainRoot.noteSessionMenuReturn();
             if (key === "sites")
                 monitor.openSites();
             else if (key === "radio")
@@ -2745,11 +2793,13 @@ Window {
             else if (key === "diagnostics")
                 mainRoot.diagnosticsOpen = true;
             else if (key === "map")
-                mainRoot.openMap(monitor.sessionOptions);
+                mainRoot.openMap();
             else if (key === "edit" && mainRoot.sessionRow >= 0) {
                 wizard.openForEdit(mainRoot.sessionRow);
                 mainRoot.wizardOpen = true;
             }
+            // A row that opened nothing returns at once.
+            mainRoot.settleSessionMenuReturn();
         }
     }
     // Issue #644: the scan-list rows and saved systems on the tuned channel,

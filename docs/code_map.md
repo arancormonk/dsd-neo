@@ -18213,12 +18213,11 @@ Qt Quick frontend (`src/ui/qt`):
     map" closes the sheet first and opens the map with a return token (the row's uid); Back reopens that sheet when the
     row is still logged and its screen shows; when the row has left the log the focus goes to the History list
     (`HistoryScreen.focusList()`), else to the control that opened the sheet (`HistoryDetailSheet.mapOpener`, kept
-    past the close), else back to that screen (`restoreFocus(null)`). A plain `openMap(opener)` keeps `opener` (else the
-    focused control) in `mapReturn.focus` and Back gives it the focus again. The session menu passes its own opener
-    (`MonitorScreen.sessionOptions`): by the time its row fires, the menu has closed onto the covered monitor and the
-    window root holds the focus, so without it a keyboard user came back to no focused item and a dead Tab. When the
-    opener is gone (a Stop under the map took the monitor away), Back focuses the screen the map leaves to
-    (`focusScreen()`, the top root surface). A close the app makes (an incoming document) reopens nothing.
+    past the close), else back to that screen (`restoreFocus(null)`). A plain `openMap()` keeps the focused control in
+    `mapReturn.focus` and Back gives it the focus again; when that control is gone (a Stop under the map took its
+    screen away), Back focuses the screen the map leaves to (`focusScreen()`, the top root surface). Opened from the
+    session menu, the session-menu return ("Text a screen reader reaches") hands the focus to Session options. A
+    close the app makes (an incoming document) reopens nothing.
     Stop keeps the map open. The pin is the row's saved fix
     (`CallHistoryModel::PositionRole` "position", also `recordFor()["position"]`: `{latitude, longitude, errorM?,
     errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, kindText, receivedTime?}`, `{}`
@@ -20517,6 +20516,19 @@ reader on, the Map also moves the focus to its Back button on open, so TalkBack 
 opened it at once. Tests: `tst_a11y_covered_screens.qml` (nothing under a pushed screen, nor the Map List under its
 sheet, offers a name, focus, a control's role or any action; a touch walk on the canvas finds nothing that does;
 rows are nodes again on return), `tst_a11y_talkgroups.qml` (chips under the edit sheet).
+
+The session-menu return (issue #800, found with a hardware keyboard): every screen or sheet a session-menu row opens
+(Sites, Radio, Spectrum, Scan lists, Talkgroups, Activity, Map, History, Settings, Diagnostics, Edit, and any row
+added later) gives the keyboard focus back to Session options (`MonitorScreen.sessionOptions`) once Back has closed it
+and nothing else is pushed, or to the screen underneath (`focusScreen()`) when a Stop took the session away
+meanwhile. It is one rule in Main, not one per screen: the menu's `onTriggered` notes the return
+(`noteSessionMenuReturn()`) before it opens anything, and when `Navigation.layers` and `Navigation.modals` are both
+empty again `finishSessionMenuReturn()` runs, after the closing screen's own restores (a sheet's opener, the map's
+`returnFromMap`), and moves the focus only when they left no control focused (the window root, a root surface itself,
+or nothing). It is needed because the menu closes onto the covered monitor before its row fires, so the window root
+holds the focus by then and no screen knows its way back: Back used to leave no item focused and Tab did nothing.
+Test: `tst_main_session_tools.qml test_session_menu_return` (every row, opened by the keyboard; then the same with a
+Stop under it).
 
 A notice that is read out when it is set (a picker failure, an import problem, a Download-folder save's location;
 issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothing for an empty text or while

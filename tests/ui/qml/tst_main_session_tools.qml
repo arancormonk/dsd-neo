@@ -406,6 +406,73 @@ Item {
             compare(app.currentTab, 0);
             compare(uiController.autoStartBlocked, false);
         }
+        // Issue #800 (found on a device with a hardware keyboard): every screen or sheet a session-menu row opens hands
+        // the keyboard focus back to Session options on Back, and Tab moves on from there; when a Stop took the
+        // session away meanwhile, the screen underneath takes it. The menu closes onto the covered monitor before its
+        // row fires, so without the shared return Back left no item focused and Tab did nothing.
+        function test_session_menu_return_data() {
+            return [{tag: "Radio"}, {tag: "Sites"}, {tag: "Spectrum"}, {tag: "ScanLists"}, {tag: "Talkgroups"},
+                    {tag: "Activity"}, {tag: "Map"}, {tag: "History"}, {tag: "Settings"}, {tag: "Diagnostics"},
+                    {tag: "Edit"}];
+        }
+        function openFromSessionMenu(tag) {
+            var monitor = findChild(app, "monitorScreen");
+            var button = findChild(monitor, "sessionOptionsButton");
+            tryVerify(function () { return monitor.enabled && button.visible && button.enabled; }, 3000, "the monitor is up");
+            // The window may still be taking the activation on the first case.
+            tryVerify(function () { button.forceActiveFocus(); return button.activeFocus; }, 2000, "Session options takes the keyboard");
+            keyClick(Qt.Key_Return);
+            var menu = findChild(app, "sessionMenu");
+            tryVerify(function () { return menu.visible; }, 1000, "Return on Session options opens the menu");
+            var row = findChild(menu, "sessionMenu" + tag);
+            verify(row !== null && row.visible, tag + " is offered");
+            row.forceActiveFocus();
+            keyClick(Qt.Key_Return);
+            verify(!menu.visible);
+            verify(Ui.Navigation.layers.length + Ui.Navigation.modals.length > 0, tag + " opened a screen or sheet");
+            return button;
+        }
+        function backToTheSession() {
+            for (var i = 0; i < 4 && Ui.Navigation.layers.length + Ui.Navigation.modals.length > 0; ++i)
+                app.requestBack();
+            compare(Ui.Navigation.layers.length + Ui.Navigation.modals.length, 0, "Back left every screen");
+        }
+        function test_session_menu_return(data) {
+            testContext.setLifecyclePhase(0);
+            savedSystems.add({name: "Return site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5",
+                              rrSid: 97800, rrSiteId: 1, siteName: "Return site", hasSitePos: false});
+            var saved = savedSystems.count - 1;
+            try {
+                app.startSystem(saved);
+                testContext.setLifecyclePhase(2);
+                app.sessionScanList = true;
+                testContext.setMetric("scanListCount", 3);
+                compare(app.sessionRow, saved);
+
+                var button = openFromSessionMenu(data.tag);
+                backToTheSession();
+                tryVerify(function () { return button.activeFocus; }, 1000, data.tag + ": Session options takes the focus back");
+                keyClick(Qt.Key_Tab);
+                verify(app.activeFocusItem !== null && app.activeFocusItem !== button, data.tag + ": Tab moves on");
+
+                openFromSessionMenu(data.tag);
+                testContext.setLifecyclePhase(0);
+                if (Ui.Navigation.layers.length + Ui.Navigation.modals.length > 0)
+                    backToTheSession();
+                tryVerify(function () {
+                    var item = app.activeFocusItem;
+                    return item !== null && item !== app.contentItem && Ui.Navigation.presented(item) && Ui.Navigation.allows(item);
+                }, 1000, data.tag + ": after a Stop the screen underneath takes the focus");
+            } finally {
+                app.sessionScanList = false;
+                testContext.setMetric("scanListCount", 0);
+                app.wizardOpen = false;
+                app.talkgroupsOpen = false;
+                app.closeMap(false);
+                testContext.setLifecyclePhase(0);
+                savedSystems.remove(saved);
+            }
+        }
         // Activity is the session's own log: the session's end closes it and
         // leaves the tab where it was, with no screen of it outside a session.
         function test_activity_closes_with_the_session() {

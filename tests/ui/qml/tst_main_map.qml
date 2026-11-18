@@ -88,44 +88,6 @@ Item {
             compare(uiController.autoStartBlocked, false);
         }
 
-        // A keyboard user who opens the map from the session menu gets the focus back on Session options at Back,
-        // with Tab moving on from there; after a Stop under the map, Back lands the focus on the Listen screen. Found
-        // on a device with a hardware keyboard: the menu had already closed onto the covered monitor, so the map kept
-        // the window root as its opener and Back left no item focused, with Tab doing nothing.
-        function test_keyboard_back_from_the_session_menu_map() {
-            var monitor = findChild(app, "monitorScreen");
-            var button = findChild(monitor, "sessionOptionsButton");
-            tryVerify(function () { return monitor.enabled && button.visible && button.enabled; }, 3000);
-            button.forceActiveFocus();
-            verify(button.activeFocus);
-            keyClick(Qt.Key_Return);
-            var menu = findChild(app, "sessionMenu");
-            tryVerify(function () { return menu.visible; }, 1000, "Return on Session options opens the menu");
-            var row = findChild(menu, "sessionMenuMap");
-            row.forceActiveFocus();
-            keyClick(Qt.Key_Return);
-            verify(app.mapOpen);
-            app.requestBack();
-            verify(!app.mapOpen);
-            tryVerify(function () { return button.activeFocus; }, 1000, "Session options takes the focus back");
-            keyClick(Qt.Key_Tab);
-            verify(app.activeFocusItem !== null && app.activeFocusItem !== button, "Tab moves on from Session options");
-
-            button.forceActiveFocus();
-            keyClick(Qt.Key_Return);
-            tryVerify(function () { return menu.visible; }, 1000);
-            row.forceActiveFocus();
-            keyClick(Qt.Key_Return);
-            verify(app.mapOpen);
-            testContext.setLifecyclePhase(0);
-            app.requestBack();
-            verify(!app.mapOpen);
-            tryVerify(function () {
-                var item = app.activeFocusItem;
-                return item !== null && item !== app.contentItem && Ui.Navigation.presented(item) && Ui.Navigation.allows(item);
-            }, 1000, "after a Stop the focus lands on the screen under the map");
-        }
-
         // History's Map button, idle (after Stop the kept tracks stay reachable) and in a session.
         function test_history_opens_the_map_idle_and_in_a_session() {
             testContext.setLifecyclePhase(0);
