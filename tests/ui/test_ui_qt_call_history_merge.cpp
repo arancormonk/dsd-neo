@@ -815,8 +815,8 @@ test_reception_rule(void) {
     tuned450.scope.kind = DSD_POS_SCOPE_FEED_TUNED_FREQ;
     tuned450.scope.a = 450000000U;
     tuned450.ring = 0x5EEDU;
-    tuned450.epoch = 4U;
-    tuned450.epochKnown = true;
+    tuned450.gen = 4U;
+    tuned450.genKnown = true;
     CallHistoryReception nac451 = tuned450;
     nac451.scope = CallHistoryScope();
     nac451.scope.kind = DSD_POS_SCOPE_P25_NAC;
@@ -838,14 +838,14 @@ test_reception_rule(void) {
     expect("a system refines a NAC in one epoch", call_history_same_reception(nac451, network), true);
     expect("an unknown scope is the epoch's", call_history_same_reception(unknown, tuned450), true);
     CallHistoryReception later = network;
-    later.epoch = 5U;
+    later.gen = 5U;
     expect("a refinement across epochs is not known to be one", call_history_same_reception(nac451, later), false);
     expect("equal known scopes are one across epochs", call_history_same_reception(network, later), true);
     CallHistoryReception otherRun = unknown;
     otherRun.ring = 0xBEEFU;
     expect("an unknown scope never matches another run", call_history_same_reception(unknown, otherRun), false);
     CallHistoryReception noEpoch = unknown;
-    noEpoch.epochKnown = false;
+    noEpoch.genKnown = false;
     expect("an unknown scope with no epoch matches nothing", call_history_same_reception(noEpoch, noEpoch), false);
     CallHistoryReception edacsSite = tuned450;
     edacsSite.scope = CallHistoryScope();

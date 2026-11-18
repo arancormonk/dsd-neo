@@ -53,13 +53,15 @@ typedef enum {
 typedef struct dsd_position_attribution {
     uint64_t call_epoch;   /**< the call's epoch when learned; 0 = no evidence */
     uint64_t transmission; /**< the call's transmission when bound to it (BIND_TRANSMISSION); 0 binds to the epoch */
-    uint32_t source;       /**< the source the checked content named, which the call then held; never 0 */
-    uint32_t target;       /**< the target it named, which the call then held; 0 = not named */
-    uint32_t rx_epoch;     /**< dsd_state::rx_id epoch when learned */
-    int32_t protocol;      /**< the call's DSD_SYNC_* value */
-    uint8_t group;         /**< 1 when @c target is a talkgroup */
-    uint8_t air;           /**< DMR: the burst identity it was learned on (dsd_position_dmr_air()); else 0 */
-    uint8_t reserved[6];
+    /** The reception generation when learned (dsd_state_reception_generation(): a retune or a change of P25 phase
+     * since is another reception). */
+    uint64_t rx_gen;
+    uint32_t source;  /**< the source the checked content named, which the call then held; never 0 */
+    uint32_t target;  /**< the target it named, which the call then held; 0 = not named */
+    int32_t protocol; /**< the call's DSD_SYNC_* value */
+    uint8_t group;    /**< 1 when @c target is a talkgroup */
+    uint8_t air;      /**< DMR: the burst identity it was learned on (dsd_position_dmr_air()); else 0 */
+    uint8_t reserved[2];
 } dsd_position_attribution;
 
 /** The call a report would borrow from, as the producer sees it. */

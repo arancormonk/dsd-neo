@@ -731,7 +731,7 @@ typedef struct {
 /**
  * Where a history row's call or notice was heard (issue #800, D7): the reception's scope (the alias scope, else a
  * feed-only EDACS, control-channel or tuned-frequency scope; dsd_position_scope_from_rxid()), its identity
- * discriminator (the tuned frequency for a P25 NAC scope, else 0) and the received identity epoch it was read under. A
+ * discriminator (the tuned frequency for a P25 NAC scope, else 0) and the reception generation it was read under. A
  * call row takes it by the rule its site follows (Event_History::site_id: the live record only while the call is
  * active on the carrier it began on, the record as the call ended once it has), pinned once resolved; a data notice at
  * emit. A position lands on a row, or merges into it, only under the reception rule (dsd_position_same_reception()):
@@ -740,11 +740,13 @@ typedef struct {
  */
 typedef struct {
     int64_t identity_freq_hz; /**< the tuned frequency for a DSD_POS_SCOPE_P25_NAC scope, else 0 */
+    /** The reception generation the reception was read under (dsd_state_reception_generation(): the record's epoch,
+     * the retunes and the P25 phase changes). */
+    uint64_t rx_gen;
     dsd_position_scope scope; /**< DSD_POS_SCOPE_NONE when none is known */
-    uint32_t rx_epoch;        /**< dsd_received_identity::epoch of the record the reception was read from */
     uint8_t resolved;         /**< 1 once the row's reception was read (a none scope included); pinned from then */
-    uint8_t epoch_known;      /**< 1 when rx_epoch was read (playing back files: the call's own, with no scope) */
-    uint8_t pad[6];           /**< always 0 */
+    uint8_t epoch_known;      /**< 1 when rx_gen was read (playing back files: the call's own, with no scope) */
+    uint8_t pad[2];           /**< always 0 */
 } dsd_event_rx_scope;
 
 //event history (each item)
@@ -3400,6 +3402,19 @@ struct dsd_state {
        another protocol moves rx_id's epoch even when neither sent any identity (issue #800, fail closed). Decoder
        thread; outside every snapshot copy range. */
     uint16_t rx_sync_protocol;
+    /* The P25 phase the last frame sync named (1 or 2; 0 after a sync of another protocol or since the last
+       dsd_rxid_reset()): dsd_rxid_note_sync(). Decoder thread; outside every snapshot copy range. */
+    uint8_t rx_p25_phase;
+    /* Moves with every change of P25 phase between two P25 syncs (dsd_rxid_note_sync()), never back: a part of the
+       reception generation (dsd_state_reception_generation()), so a transmission of the other phase on the carrier is
+       another reception for every multi-part report, sender evidence and history row, while the system the two phases
+       share stays in rx_id (issue #800, fail closed). Never reset (a trunk-scan rollback restores rx_id, not this).
+       Decoder thread; outside every snapshot copy range. */
+    uint32_t rx_phase_seq;
+    /* Moves with every accepted trunking retune the decoder thread applies to rx_id (dsd_rxid_trunk_tune()), never
+       back: the other part of the reception generation that is not rx_id's epoch, which such a retune keeps (only the
+       access code goes). Decoder thread; outside every snapshot copy range. */
+    uint32_t rx_tune_seq;
 
     // Extension slots for module-owned per-state allocations (see core/state_ext.h).
     void* state_ext[DSD_STATE_EXT_MAX];
@@ -3439,6 +3454,23 @@ struct dsd_state {
    (input_interrupted: a Signal search left it, or a live read gave up on a stalled input), after which getSymbol()
    stood erasures in for every symbol. Either way part of the frame is not the transmission's, so nothing of it may
    decode, play or publish. */
+/**
+ * The reception generation @p state is in now (issue #800): the received identity's epoch (dsd_received_identity::epoch)
+ * in the low 32 bits; in the high 32, the accepted trunking retunes applied to it (rx_tune_seq) plus the P25 phase
+ * changes (rx_phase_seq), both only ever moving forward, so the sum is equal only while neither moved. Equal
+ * generations are one uninterrupted reception: no retune, no other system, access code or protocol, no other P25 phase
+ * in between. Every position origin (dsd_position_origin), sender evidence (dsd_position_attribution) and history row
+ * (dsd_event_rx_scope) compares it. 0 for NULL. Decoder thread.
+ */
+static inline uint64_t
+dsd_state_reception_generation(const dsd_state* state) {
+    if (state == NULL) {
+        return 0U;
+    }
+    const uint64_t carrier = (uint64_t)(uint32_t)(state->rx_tune_seq + state->rx_phase_seq);
+    return (carrier << 32) | (uint64_t)state->rx_id.epoch;
+}
+
 static inline int
 dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
     return state->carrier_seq != carrier_seq || state->input_interrupted != 0;

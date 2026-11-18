@@ -590,8 +590,9 @@ does.
     heading field does not stop the row: that field becomes unknown.
   - A report the [receive filters](#receive-filters-and-service-names) reject; a report in several parts (DMR and P25
     data packets, an NXDN data call, an L3Harris Part A and B, a TETRA concatenated SDS) whose parts were heard across
-    a retune or a trunk scan switch (an NMEA packet's sentences and a TETRA location report's notice are then left out
-    of the event log and History too); an NXDN GPS report not bound to the checked data header that opened it; an
+    a retune, a trunk scan switch or a change of P25 phase on the carrier (an NMEA packet's sentences, a P25 location
+    service packet's text and notice, and a TETRA location report's notice are then left out of the event log and
+    History too); an NXDN GPS report not bound to the checked data header that opened it; an
     L3Harris Part A and B that do not pair (another call, source or update, or more than 2 s apart); a TETRA
     concatenated SDS whose parts name no one addressed party.
   - A report shorter than its fields: a UDT NMEA report whose pad nibbles leave less than its format's 80 (short) or
@@ -614,7 +615,10 @@ does.
   P25 Phase 1 L3Harris and Motorola GPS take it only from a hard-decoded voice link control of the same active call,
   never from an ended one. P25 Phase 2 L3Harris takes it only when the call's source, talkgroup and kind all came from
   messages whose CRC passed: a call followed from a grant that failed its CRC under `-F` gets none until a checked
-  MAC_PTT or MAC_ACTIVE names all three again.
+  MAC_PTT or MAC_ACTIVE names all three again. A change of P25 phase on the carrier (Phase 2 frames heard during a
+  Phase 1 call whose terminator was missed, or the other way round) counts as another reception: a call left open
+  across it names no later report's sender until a checked voice link control or voice user of the call names it
+  again.
 
   Speed and heading: LRRP speed is km/h with three decimals (earlier versions wrote 0.01 mph); a LIP speed above 1043
   km/h is written as 1043 and an ambiguous LIP direction as 0; UDT NMEA above 126 knots is written as 233; L3Harris rows

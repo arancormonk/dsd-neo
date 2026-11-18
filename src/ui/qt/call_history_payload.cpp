@@ -12,14 +12,15 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QSet>
 #include <QString>
 #include <QtGlobal>
 #include <algorithm>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
-#include <limits>
 #include <stddef.h>
 #include <stdint.h>
+#include <utility>
 
 #include "call_history_merge.h"
 #include "call_history_model.h"
@@ -65,6 +66,14 @@ item_rx_scope(const Event_History* item) {
 }
 
 using GpsUnit = CallHistoryModel::GpsUnit;
+
+/** @brief The sync type a ring item names (Event_History::systype, a signed byte: DSD_SYNC_* or a negative "none"),
+ * every negative value read as -1. */
+int
+item_systype(const Event_History* item) {
+    const int8_t systype = item->systype;
+    return systype < 0 ? -1 : static_cast<int>(static_cast<uint8_t>(systype));
+}
 
 /** @brief Where a GPS unit stands in the order that picks a merged row's one (call_history_gps_adopts()). */
 CallHistoryPositionKey
@@ -154,7 +163,7 @@ set_row_gps_units(CallHistoryModel::Row& row, QList<GpsUnit> units) {
     row.gpsSlot = shown.slot;
     row.gpsOrd = shown.ord;
     row.gpsVer = shown.ver;
-    row.gpsOthers = units;
+    row.gpsOthers = std::move(units);
 }
 
 /** @brief Put @p unit among @p units: in place of an earlier reading of its fragment that it replaces
@@ -320,7 +329,7 @@ position_to_json(const CallHistoryModel::Position& pos, QJsonObject& obj) {
 QList<CallHistoryModel::GpsUnit>
 gps_units_from_json(const QJsonValue& value, const CallHistoryModel::Row& row) {
     QList<CallHistoryModel::GpsUnit> units;
-    for (const QJsonValue& entry : value.toArray()) {
+    for (const auto& entry : value.toArray()) {
         const QJsonObject stored = entry.toObject();
         CallHistoryModel::GpsUnit unit;
         unit.text = stored.value(QLatin1String("gps")).toString();
@@ -445,8 +454,8 @@ row_reception(const CallHistoryModel::Row& row) {
     CallHistoryReception reception;
     reception.scope = row.rxScope;
     reception.ring = row.rxRing;
-    reception.epoch = row.rxEpoch;
-    reception.epochKnown = row.rxEpochKnown;
+    reception.gen = row.rxGen;
+    reception.genKnown = row.rxGenKnown;
     return reception;
 }
 
@@ -466,8 +475,8 @@ void
 take_reception(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
     to.rxScope = from.rxScope;
     to.rxRing = from.rxRing;
-    to.rxEpoch = from.rxEpoch;
-    to.rxEpochKnown = from.rxEpochKnown;
+    to.rxGen = from.rxGen;
+    to.rxGenKnown = from.rxGenKnown;
 }
 
 /** @brief Keep the newest kMaxSessionOrdinals of @p rings, by ordinal. */
@@ -553,14 +562,14 @@ raw_identity_text(int protocol, bool source, const QString& text) {
  */
 void
 row_take_payload(CallHistoryModel::Row& row, const Event_History* item) {
-    row.protocol = item->systype;
+    row.protocol = item_systype(item);
     row.sourceText = raw_identity_text(row.protocol, true, item_text(item->src_str, sizeof(item->src_str)));
     row.targetText = raw_identity_text(row.protocol, false, item_text(item->tgt_str, sizeof(item->tgt_str)));
     row.sourceScope = item_sender_scope(item);
     row.rxScope = item_rx_scope(item);
-    // The epoch the reception was read under counts in the item's ring, which the walk gives the row (Row::rxRing).
-    row.rxEpoch = item->rx_scope.rx_epoch;
-    row.rxEpochKnown = item->rx_scope.epoch_known != 0U;
+    // The generation the reception was read under counts in the item's ring, which the walk gives the row (Row::rxRing).
+    row.rxGen = item->rx_scope.rx_gen;
+    row.rxGenKnown = item->rx_scope.epoch_known != 0U;
     row.messageText = item_text(item->text_message, sizeof(item->text_message));
     row.msgWhen = row.when;
     row.msgSeq = row.seq;
@@ -582,6 +591,25 @@ row_take_payload(CallHistoryModel::Row& row, const Event_History* item) {
     row.gpsSeq = row.seq;
     row.gpsSlot = row.slot;
     drop_anonymous_gps_of_named(row);
+}
+
+QString
+gps_fragment_stamp(qint64 ord, int slot, qulonglong seq) {
+    return QStringLiteral("%1:%2:%3").arg(ord).arg(slot).arg(seq);
+}
+
+void
+drop_gps_units_of_stamps(CallHistoryModel::Row& row, const QSet<QString>& stamps) {
+    if (stamps.isEmpty()) {
+        return;
+    }
+    QList<GpsUnit> units = row_gps_units(row);
+    const qsizetype held = units.size();
+    units.removeIf(
+        [&stamps](const GpsUnit& unit) { return stamps.contains(gps_fragment_stamp(unit.ord, unit.slot, unit.seq)); });
+    if (units.size() != held) {
+        set_row_gps_units(row, units);
+    }
 }
 
 void
@@ -760,19 +788,21 @@ row_position_digest(const CallHistoryModel::Position& pos) {
                                         pos.procInstance);
 }
 
-/** @brief Read the received identity epoch a stored row's reception was read under and its ring (`rxEp`, `rxRing`):
- * known only when both are there and in range; a store an older build wrote has neither. */
+/** @brief Read the reception generation a stored row's reception was read under and its ring (`rxGen`, `rxRing`, both
+ * hex): known only when both are there and valid; a store an older build wrote has neither (an `rxEp` epoch it may hold
+ * counts in a ring no live reading shares, so it is not read). */
 static void
 reception_epoch_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
-    const qint64 epoch = obj.value(QLatin1String("rxEp")).toInteger(-1);
+    bool genOk = false;
+    const quint64 gen = obj.value(QLatin1String("rxGen")).toString().toULongLong(&genOk, 16);
     bool ringOk = false;
     const quint64 ring = obj.value(QLatin1String("rxRing")).toString().toULongLong(&ringOk, 16);
-    if (epoch < 0 || epoch > static_cast<qint64>(std::numeric_limits<uint32_t>::max()) || !ringOk || ring == 0U) {
+    if (!genOk || !ringOk || ring == 0U) {
         return;
     }
-    row.rxEpoch = static_cast<uint32_t>(epoch);
+    row.rxGen = gen;
     row.rxRing = ring;
-    row.rxEpochKnown = true;
+    row.rxGenKnown = true;
 }
 
 /**
@@ -822,8 +852,8 @@ row_payload_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
     }
     scope_to_json(row.sourceScope, "sscope", obj);
     scope_to_json(row.rxScope, "rx", obj);
-    if (row.rxEpochKnown && row.rxRing != 0U) {
-        obj.insert(QLatin1String("rxEp"), static_cast<qint64>(row.rxEpoch));
+    if (row.rxGenKnown && row.rxRing != 0U) {
+        obj.insert(QLatin1String("rxGen"), QString::number(row.rxGen, 16));
         obj.insert(QLatin1String("rxRing"), QString::number(row.rxRing, 16));
     }
     if (!row.messageText.isEmpty()) {

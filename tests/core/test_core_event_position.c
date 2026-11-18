@@ -22,6 +22,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -337,6 +338,50 @@ test_reacquired_stronger_scope_of_another_carrier(void) {
     }
 }
 
+/* Issue #800, fail closed: a trunking retune keeps the received identity's epoch (only the access code goes), but it
+ * is another reception. A NAC-only call on 450 MHz loses sync; after an applied retune to 451 MHz the same radio and
+ * NAC are reacquired and the WACN and SYSID are learned there. The call rows may still merge, but the 450 MHz row learns
+ * neither the second carrier's system nor its fix (the two scopes are no refinement across generations). With no
+ * retune, on 450 MHz both times, the row learns the system and takes the fix. */
+static void
+test_reacquired_scope_across_a_retune(void) {
+    for (int retuned = 0; retuned <= 1; retuned++) {
+        reset_fixture();
+        g_opts.audio_in_type = AUDIO_IN_RTL;
+        g_opts.rtlsdr_center_freq = 450000000U;
+        DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+        dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+        const uint64_t first = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+        end_call(DSD_CALL_END_SYNC_LOSS);
+        assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_P25_NAC && row(1)->rx_scope.identity_freq_hz == 450000000);
+        const uint32_t record_epoch = g_state.rx_id.epoch;
+        if (retuned) {
+            dsd_rxid_trunk_tune(&g_state);
+            g_opts.rtlsdr_center_freq = 451000000U;
+            dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+        }
+        dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x111U);
+        assert(g_state.rx_id.epoch == record_epoch);
+        const uint64_t second = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+        assert(second != first && row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_P25);
+        const dsd_position_fix f = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
+        assert(dsd_event_enrich_position(NULL, &g_state, 0U, second, &f, "segment fix") == 1);
+        end_call(DSD_CALL_END_SYNC_LOSS);
+        assert(row(1)->source_id == 111U && row(2)->source_id == 0U); /* one row */
+        if (retuned) {
+            if (row(1)->rx_scope.scope.kind != DSD_POS_SCOPE_P25_NAC || row(1)->pos.valid != 0U
+                || row(1)->gps_s[0] != '\0') {
+                DSD_FPRINTF(stderr, "FAIL: the 450 MHz row took the system or fix heard after a retune\n");
+                exit(1);
+            }
+            assert(row(1)->rx_scope.identity_freq_hz == 450000000);
+        } else {
+            assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_P25 && row(1)->rx_scope.scope.a == 0xA1234U);
+            expect_row_fix(row(1), &f, "segment fix");
+        }
+    }
+}
+
 /* Issue #800: a reacquired segment heard on another reception (here two conventional P25 segments with no system
  * identity, so the tuned frequency is the scope: 450 MHz, then 451 MHz after the sync loss) still merges as one row,
  * but its position, however newer its rev, never lands on a row heard somewhere else: the merged row keeps its own
@@ -401,7 +446,7 @@ test_closing_fix_checks_the_merged_row(void) {
         assert(row(1)->source_id == 111U && row(2)->source_id == 0U); /* one row */
         assert(row(1)->rx_scope.identity_freq_hz == 450000000);
         const dsd_position_fix f = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
-        assert((uint32_t)(f.origin_gen & 0xFFFFFFFFU) == g_state.rx_id.epoch);
+        assert(f.origin_gen == dsd_state_reception_generation(&g_state));
         const int written = dsd_event_enrich_position_closing(NULL, &g_state, &closing, &f, "terminator GPS");
         if (moved) {
             assert(written == 0 && row(1)->pos.valid == 0U && row(1)->gps_s[0] == '\0');
@@ -838,6 +883,7 @@ main(void) {
     test_reacquired_segment_strengthens_reception_scope();
     test_reacquired_position_keeps_reception();
     test_reacquired_stronger_scope_of_another_carrier();
+    test_reacquired_scope_across_a_retune();
     test_closing_fix_checks_the_merged_row();
     test_unknown_reception_never_merges_gps();
     test_reception_scope_of_a_call_ended_unseen();

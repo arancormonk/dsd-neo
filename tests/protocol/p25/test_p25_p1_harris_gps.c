@@ -574,6 +574,56 @@ test_reception_change(void) {
     }
 }
 
+/* Issue #800, fail closed: both P25 phases send one system's identity, but a transmission of the other phase is another
+ * reception. A Phase 1 call's Part A, then Phase 2 frames on the carrier (the Phase 1 terminator missed, the call left
+ * open), then Phase 1 again within the pairing window: a Part B pairs with no Part A heard before the change, so no
+ * fix; and the voice user named before the change no longer names a later update's sender, which counts only
+ * anonymous. Without the Phase 2 frames the same sequence gives radio 3001's fix. */
+static void
+test_phase_change(void) {
+    for (int change = 0; change <= 1; change++) {
+        fixture f;
+        fixture_open(&f);
+        dsd_rxid_note_sync(f.st, DSD_SYNC_P25P1_POS);
+        dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+        (void)start_call(&f, TG_A, SRC_A);
+        body_fields b = fields_default();
+        uint8_t body[BODY_OCTETS];
+        make_body(&b, body);
+        send_lc(&f, LCO_A_ODD, MFID_HARRIS, body, 0);
+        if (change) {
+            f.st->lastsynctype = DSD_SYNC_P25P2_POS;
+            dsd_rxid_note_sync(f.st, DSD_SYNC_P25P2_POS);
+            f.st->lastsynctype = DSD_SYNC_P25P1_POS;
+            dsd_rxid_note_sync(f.st, DSD_SYNC_P25P1_POS);
+        }
+        set_clock_ms(T0_S, 720U);
+        send_lc(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, 0);
+        dsd_position_fix fix;
+        const int kept = feed_next(&f, &fix);
+        char last[256];
+        const int rows = lrrp_rows(&f, last);
+        if (change) {
+            expect_true("phase: a Part A of the other side of a phase change pairs with nothing", !kept && rows == 0);
+        } else {
+            expect_true("phase: the same phase pairs", kept && fix.source_id == SRC_A && rows == 1);
+        }
+        /* A whole update after the change: its position counts, its sender only without the change. */
+        set_clock_ms(T0_S + 40, 0U);
+        b.lat_min = 31;
+        make_body(&b, body);
+        send_update(&f, LCO_A_EVEN, LCO_B_EVEN, body);
+        const int later = feed_next(&f, &fix);
+        if (change) {
+            expect_true("phase: a later update is anonymous",
+                        later && fix.source_id == 0U && (fix.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) != 0U);
+        } else {
+            expect_true("phase: a later update names the talker", later && fix.source_id == SRC_A);
+        }
+        fixture_close(&f);
+    }
+}
+
 /* Occurrences of @p needle in @p hay. */
 static int
 count_of(const char* hay, const char* needle) {
@@ -1094,6 +1144,7 @@ main(void) {
     test_ended_call();
     test_terminator();
     test_reception_change();
+    test_phase_change();
     test_event_log_one_label();
     test_checks();
     test_uncorrectable_verdict();

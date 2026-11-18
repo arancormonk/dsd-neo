@@ -235,7 +235,9 @@ void dsd_rxid_reset(dsd_state* state);
 /** Frame sync acquired @p synctype: a record of another family is dropped, and a sync of another protocol than the
  * last one's (dsd_state::rx_sync_protocol) moves the epoch even when neither protocol sent any identity (a D-STAR call,
  * then an M17 frame, then D-STAR again: three receptions). Both P25 phases, every DMR burst and both polarities of a
- * protocol are one protocol. No sync (DSD_SYNC_NONE) changes nothing. */
+ * protocol are one protocol; a P25 sync of the other phase than the last P25 sync keeps the record but moves
+ * dsd_state::rx_phase_seq, so the reception generation moves (dsd_state_reception_generation()). No sync
+ * (DSD_SYNC_NONE) changes nothing. */
 void dsd_rxid_note_sync(dsd_state* state, int synctype);
 /** The no-carrier pass: every part goes stale; the values stay. */
 void dsd_rxid_mark_stale(dsd_state* state);

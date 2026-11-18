@@ -1848,8 +1848,8 @@ fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment) {
     part.cchSlot = row.cchSlot;
     part.rxScope = row.rxScope;
     part.rxRing = row.rxRing;
-    part.rxEpoch = row.rxEpoch;
-    part.rxEpochKnown = row.rxEpochKnown;
+    part.rxGen = row.rxGen;
+    part.rxGenKnown = row.rxGenKnown;
     part.name = row.name;
     part.service = row.service;
     part.session = row.session;
@@ -1897,8 +1897,8 @@ row_of_part(const FragmentPart& part) {
     row.cchSlot = part.cchSlot;
     row.rxScope = part.rxScope;
     row.rxRing = part.rxRing;
-    row.rxEpoch = part.rxEpoch;
-    row.rxEpochKnown = part.rxEpochKnown;
+    row.rxGen = part.rxGen;
+    row.rxGenKnown = part.rxGenKnown;
     row.name = part.name;
     row.service = part.service;
     row.session = part.session;
@@ -2467,6 +2467,95 @@ newest_fragment_versions(const QHash<QString, quint64>& held, const QHash<QStrin
     return versions;
 }
 
+/** @brief The fragment key of @p row's anchor: its first part not withdrawn, whose sync type and reception the rebuilt
+ * row takes (rebuild_from_parts()); empty when none. */
+QString
+anchor_fragment(const CallHistoryModel::Row& row) {
+    const auto anchor =
+        std::find_if(row.parts.cbegin(), row.parts.cend(), [](const FragmentPart& part) { return !part.withdrawn; });
+    return anchor != row.parts.cend() ? anchor->fragment : QString();
+}
+
+/**
+ * @brief Give @p row the sync type and reception its parts give it in their order, the anchor first (rebuild_from_parts(),
+ * fold_part_fields()): the anchor's, with a stronger scope of the same reception a later part learned
+ * (reception_learns()). A rebuild that folds a new reading of the anchor after the rest (what the row held stays ahead
+ * of an update) would otherwise leave the row where the rest alone was heard (issue #800).
+ */
+void
+take_anchor_reception(CallHistoryModel::Row& row) {
+    qsizetype anchorAt = -1;
+    CallHistoryModel::Row anchored;
+    for (qsizetype i = 0; i < row.parts.size(); i++) {
+        if (row.parts.at(i).withdrawn) {
+            continue;
+        }
+        const CallHistoryModel::Row from = row_of_part(row.parts.at(i));
+        if (anchorAt < 0) {
+            anchorAt = i;
+            anchored = from;
+        } else if (reception_learns(anchored, from)) {
+            take_reception(anchored, from);
+        }
+    }
+    if (anchorAt >= 0) {
+        row.protocol = anchored.protocol;
+        take_reception(row, anchored);
+    }
+}
+
+/**
+ * @brief Take from @p row every GPS unit a fragment gave that was not heard where the row now is (issue #800, fail
+ * closed): a rebuild can change the row's sync type or reception (its anchor withdrawn, or another one first), and a
+ * fix kept from a fragment of the other P25 phase or another reception is then not the row's. The anchor's own unit
+ * stays; a fragment withdrawn from the row already took its unit back. A unit is its fragment's by the fragment's run
+ * (its ring's session ordinal in @p ordinals), slot and push stamp. One pass over the parts.
+ */
+void
+requalify_row_gps(CallHistoryModel::Row& row, const QHash<quint64, qint64>& ordinals) {
+    const QString anchor = anchor_fragment(row);
+    if (anchor.isEmpty() || !row_gps_known(row)) {
+        return;
+    }
+    QSet<QString> elsewhere;
+    for (const FragmentPart& part : row.parts) {
+        if (part.withdrawn || part.fragment == anchor) {
+            continue;
+        }
+        const QStringList key = part.fragment.split(QLatin1Char(':'));
+        bool ringOk = false;
+        bool slotOk = false;
+        bool seqOk = false;
+        const quint64 ring = key.size() == 3 ? key.at(0).toULongLong(&ringOk, 16) : 0U;
+        const int slot = key.size() == 3 ? key.at(1).toInt(&slotOk) : 0;
+        const qulonglong seq = key.size() == 3 ? key.at(2).toULongLong(&seqOk) : 0U;
+        if (ringOk && slotOk && seqOk && !fragment_same_reception(row, row_of_part(part))) {
+            elsewhere.insert(gps_fragment_stamp(ordinals.value(ring, 0), slot, seq));
+        }
+    }
+    drop_gps_units_of_stamps(row, elsewhere);
+}
+
+/**
+ * @brief Rebuild @p existing from @p rest (rest_of_row(): what its parts but the reading's, keys @p own, gave) and then
+ * the reading's parts, which merge_parts() or withdraw_parts() put in @p existing: what the row held stays ahead of
+ * what an update now says (a conflicting site is discarded, the row's radio stays its own), and a withdrawn reading
+ * (@p callOk false) leaves the rest alone. A new reading of the row's anchor (@p readsAnchor) leaves the row where the
+ * anchor was heard, not where the rest alone was (take_anchor_reception()).
+ */
+void
+fold_reading_after_rest(CallHistoryModel::Row& existing, CallHistoryModel::Row& rest, const QStringList& own,
+                        bool callOk, bool readsAnchor) {
+    rest.parts = existing.parts;
+    if (callOk) {
+        fold_reading_parts(rest, own);
+    }
+    take_part_fields(existing, rest);
+    if (readsAnchor && callOk) {
+        take_anchor_reception(existing);
+    }
+}
+
 } // namespace
 
 int
@@ -2513,27 +2602,26 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     // raw destination) gives nothing and takes back what its earlier readings gave; a later reading that agrees again
     // gives its part back (merge_parts()). Every row field a part gives is rebuilt from the parts on every fold.
     const QStringList own = reading_part_keys(reading);
+    // The row's anchor (its first fragment still folded in) gives it its sync type and reception: a new reading of the
+    // anchor is the row's own reception read again, so an update of its span or alias leaves the row where it was heard.
+    const QString anchor = anchor_fragment(existing);
+    const bool readsAnchor = !anchor.isEmpty() && own.contains(anchor);
     Row rest = existing;
     const bool restKnown = rest_of_row(rest, own);
     const bool callOk = !restKnown || fragment_call_compatible(rest, reading);
-    // A fix lands only where it was heard (issue #800, fail closed): on the reception the row's other fragments were
-    // heard on, read as they were before this reading folds in anything (a stronger scope it brings is the reading's
-    // own), by one protocol class (fragment_same_reception()). A conversation may still merge across carriers or both
-    // P25 phases; its fixes do not.
-    const bool positionHere = !restKnown || fragment_same_reception(rest, reading);
+    // A fix lands only where it was heard (issue #800, fail closed): on the row's reception, by one protocol class
+    // (fragment_same_reception()). For any fragment but the anchor that is the reception the row's other fragments,
+    // the anchor first, were heard on, read as they were before this reading folds in anything (a stronger scope it
+    // brings is the reading's own). A conversation may still merge across carriers or both P25 phases; its fixes do
+    // not.
+    const bool positionHere = !restKnown || readsAnchor || fragment_same_reception(rest, reading);
     if (callOk) {
         merge_parts(existing, reading);
     } else {
         withdraw_parts(existing, own);
     }
     if (restKnown) {
-        // The rest first, then this reading: what the row held stays ahead of what an update now says (a conflicting
-        // site is discarded, the row's radio stays its own), and a withdrawn reading leaves the rest alone.
-        rest.parts = existing.parts;
-        if (callOk) {
-            fold_reading_parts(rest, own);
-        }
-        take_part_fields(existing, rest);
+        fold_reading_after_rest(existing, rest, own, callOk, readsAnchor);
     } else {
         (void)rebuild_from_parts(existing, nullptr);
     }
@@ -2542,6 +2630,8 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     // another radio keeps its fix to itself) and was heard where the row was (positionHere), else its earlier unit goes.
     fold_gps(existing, reading, callOk && positionHere && fragment_identity_compatible(existing, reading),
              !namedBefore && row_names_source(existing));
+    // A rebuild may have moved the row to another sync type or reception: every fix it keeps is one heard there.
+    requalify_row_gps(existing, m_sessionOrdinals.rings);
     // The same analog reception read again: a row an older build stored learns the mode it did not keep.
     if (existing.analog && dsd_analog_mode_known(existing.analogMode) == 0) {
         existing.analogMode = row.analogMode;

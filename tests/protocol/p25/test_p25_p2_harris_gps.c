@@ -1023,6 +1023,36 @@ test_reception_change(void) {
     fixture_close(&f);
 }
 
+/* Issue #800, fail closed: both P25 phases send one system's identity, but a transmission of the other phase is another
+ * reception. A Phase 2 call named by a checked MAC_PTT stays open while Phase 1 frames are heard on the carrier and
+ * Phase 2 comes back: the talker named before the change no longer names a report after it, which counts anonymous,
+ * until a checked voice user names the talker again. Without the Phase 1 frames the report keeps its sender. */
+static void
+test_phase_change(void) {
+    for (int change = 0; change <= 1; change++) {
+        fixture f;
+        fixture_open(&f);
+        f.opts->trunk_enable = 0;
+        dsd_rxid_note_sync(f.st, DSD_SYNC_P25P2_POS);
+        dsd_rxid_note_p25_network(f.st, 0xBEE00U, 0x1A3U);
+        mac_ptt(&f, TG_A, SRC_A);
+        send_gps(&f, 0);
+        expect_report(&f, "phase: before", SRC_A, TG_A, 1);
+        if (change) {
+            dsd_rxid_note_sync(f.st, DSD_SYNC_P25P1_POS);
+            dsd_rxid_note_sync(f.st, DSD_SYNC_P25P2_POS);
+        }
+        expect_true("phase: call still open", slot0_call_names(TG_A, SRC_A, f.st));
+        send_gps(&f, 0);
+        expect_report(&f, change ? "phase: after the change" : "phase: no change", change ? 0U : SRC_A,
+                      change ? 0U : TG_A, change ? 0 : 1);
+        sacch_group_voice_user(&f, TG_A, SRC_A);
+        send_gps(&f, 0);
+        expect_report(&f, "phase: renamed", SRC_A, TG_A, 1);
+        fixture_close(&f);
+    }
+}
+
 /* One call's identity: a checked voice user of another talkgroup takes the slot from the assignment, and an addressless
  * MAC_ACTIVE then starts the assignment's call. Its talker is not the other talkgroup's: the report never pairs that
  * talker with the assignment's talkgroup, a pair no message named. */
@@ -1423,6 +1453,7 @@ main(void) {
     test_every_grant_kind();
     test_phase1_call_names_no_phase2_report();
     test_reception_change();
+    test_phase_change();
     test_addressless_active_after_other_talkgroup();
     test_special_address_source();
     test_retune_rebinds_identity();

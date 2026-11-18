@@ -198,7 +198,7 @@ struct RingFixture {
         DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", channel_label);
         // Every row the core commits was read under the reception's received identity epoch (issue #800): one epoch
         // for the whole fixture, as a run with no system change has, unless a test moves it (with_epoch()).
-        item->rx_scope.rx_epoch = 1U;
+        item->rx_scope.rx_gen = 1U;
         item->rx_scope.epoch_known = 1U;
         ring->push_seq++;
         ring->commit_rev++;
@@ -6481,6 +6481,88 @@ test_fix_stays_on_its_p25_phase(void) {
     }
 }
 
+/* One fragment of a merged P25 row (@p tg, @p src) heard on Phase 1 or 2 of one known system and frequency, with a
+ * Harris fix when @p gps is not null. */
+Event_History*
+commit_phase_fragment(RingFixture& ring, uint32_t tg, uint32_t src, time_t start, bool phase2, const char* gps) {
+    Event_History* item = with_rx(ring.commit(0, tg, src, start, start + 3), DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+    item->freq_hz = 851000000;
+    item->systype = phase2 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+    if (gps != nullptr) {
+        with_gps(item, gps, 225000000, 450000000, 4U)->pos.kind = DSD_POS_P25_HARRIS;
+    }
+    return item;
+}
+
+/* Issue #800, fail closed: a merged row stays anchored to the fragment it was first heard as. A Phase 1 fragment with
+ * a fix, then a Phase 2 fragment of the same conversation: a new reading of the first fragment that changes only its
+ * end leaves the row a Phase 1 row and keeps its fix (it was judged against the Phase 2 rest alone, which took it).
+ * Phase 1, Phase 2, then Phase 1 with a fix: the same update keeps the row on Phase 1 with the third fragment's fix
+ * (it was rebuilt Phase 2 first, keeping a Phase 1 fix on a Phase 2 row). And when the first fragment's new reading
+ * names another call, the row is rebuilt from the Phase 2 fragment: a retained Phase 1 fix is no longer the row's. */
+void
+test_merged_row_keeps_its_anchor(void) {
+    const time_t when = 1754706470;
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        commit_phase_fragment(ring, 80641U, 8641U, when, false, "GPS: phase one");
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80641U, 8641U, when + 5, true, nullptr);
+        model.refresh(ring.state);
+        expect("anchor: one row with the Phase 1 fix",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: phase one"));
+        ring.rings[0].Event_History_Items[2].event_time += 1; // the first fragment's end moves
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("anchor: an end update keeps the fix",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: phase one"));
+    } // destructor flushes the stores
+    expect("anchor: the row stays a Phase 1 row",
+           stored_row_with(80641U, 8641U).value(QLatin1String("proto")).toInt() == DSD_SYNC_P25P1_POS);
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        commit_phase_fragment(ring, 80642U, 8642U, when, false, nullptr);
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80642U, 8642U, when + 5, true, nullptr);
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80642U, 8642U, when + 10, false, "GPS: phase one again");
+        model.refresh(ring.state);
+        expect("anchor: the Phase 1 row takes the third fragment's fix",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: phase one again"));
+        ring.rings[0].Event_History_Items[3].event_time += 1;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("anchor: after the update the row keeps it",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: phase one again"));
+    }
+    expect("anchor: still a Phase 1 row",
+           stored_row_with(80642U, 8642U).value(QLatin1String("proto")).toInt() == DSD_SYNC_P25P1_POS);
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        commit_phase_fragment(ring, 80643U, 8643U, when, false, nullptr);
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80643U, 8643U, when + 5, true, nullptr);
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80643U, 8643U, when + 10, false, "GPS: phase one kept");
+        model.refresh(ring.state);
+        // The first fragment read again on another system: another call, withdrawn from the row.
+        (void)with_rx(&ring.rings[0].Event_History_Items[3], DSD_POS_SCOPE_P25, 0xBEE01U, 0x1A3U, 0);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("anchor: a Phase 2 row keeps no Phase 1 fix", detail_of(model, 0).isEmpty());
+    }
+    const QJsonObject rebuilt = stored_row_with(80643U, 8643U);
+    expect("anchor: the rebuilt row is a Phase 2 row with no fix",
+           rebuilt.value(QLatin1String("proto")).toInt() == DSD_SYNC_P25P2_POS
+               && !rebuilt.contains(QLatin1String("gps")));
+}
+
 /* B5: an identity known in part is the same system as one that knows more of it. An EDACS call whose first fragment knew
  * only the site joins the fragment that also learned the system, in either order, and the row keeps the site and the
  * system; a conventional P25 fragment whose tuned frequency was not known joins the one heard with it. Two fragments
@@ -7581,6 +7663,7 @@ main(int argc, char** argv) {
     test_weaker_identity_joins_stronger();
     test_fix_stays_on_its_reception();
     test_fix_stays_on_its_p25_phase();
+    test_merged_row_keeps_its_anchor();
     test_late_position_rechecks_reception_system();
     test_fragment_on_another_system_withdraws_payload();
     test_fragment_on_another_system_withdraws_call_fields();

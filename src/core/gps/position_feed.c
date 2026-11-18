@@ -174,12 +174,6 @@ dsd_position_scope_from_rxid(const struct dsd_received_identity* rx, uint32_t tu
     return pos_scope_feed_only(rx, tuned_hz, out);
 }
 
-/* The reception generation: the received identity's epoch low, the trunk tuning generation high. */
-static uint64_t
-pos_generation(const dsd_state* state) {
-    return ((dsd_trunk_tuning_generation() & 0xFFFFFFFFU) << 32) | (uint64_t)state->rx_id.epoch;
-}
-
 void
 dsd_position_origin_capture(const dsd_opts* opts, const dsd_state* state, dsd_position_origin* out) {
     if (!out) {
@@ -192,13 +186,15 @@ dsd_position_origin_capture(const dsd_opts* opts, const dsd_state* state, dsd_po
     const uint32_t tuned_hz = dsd_opts_tuned_freq_hz(opts);
     (void)dsd_position_scope_from_rxid(&state->rx_id, tuned_hz, &out->scope);
     out->freq_hz = (int64_t)tuned_hz;
-    out->gen = pos_generation(state);
+    out->gen = dsd_state_reception_generation(state);
+    out->tune_gen = dsd_trunk_tuning_generation();
     out->valid = 1U;
 }
 
 int
 dsd_position_origin_matches(const dsd_state* state, const dsd_position_origin* origin) {
-    return state && origin && origin->valid && origin->gen == pos_generation(state);
+    return state && origin && origin->valid && origin->gen == dsd_state_reception_generation(state)
+           && origin->tune_gen == dsd_trunk_tuning_generation();
 }
 
 /* ---- The reception rule ---- */
@@ -257,12 +253,15 @@ dsd_position_same_reception(const dsd_position_reception* a, const dsd_position_
     if (!a || !b) {
         return 0;
     }
+    if (a->protocol_class != 0 && b->protocol_class != 0 && a->protocol_class != b->protocol_class) {
+        return 0;
+    }
     const int known_a = a->scope.kind != DSD_POS_SCOPE_NONE;
     const int known_b = b->scope.kind != DSD_POS_SCOPE_NONE;
     if (known_a && known_b && pos_scope_equal(&a->scope, &b->scope) && a->identity_freq_hz == b->identity_freq_hz) {
         return 1;
     }
-    if (!a->epoch_known || !b->epoch_known || a->rx_epoch != b->rx_epoch) {
+    if (!a->epoch_known || !b->epoch_known || a->rx_gen != b->rx_gen) {
         return 0;
     }
     return !known_a || !known_b || pos_reception_refines(a, b);
@@ -281,7 +280,8 @@ dsd_position_fix_reception(const dsd_position_fix* fix, dsd_position_reception* 
     out->scope.a = fix->reception_scope.a;
     out->scope.b = fix->reception_scope.b;
     out->identity_freq_hz = fix->reception_scope.kind == DSD_POS_SCOPE_P25_NAC ? fix->freq_hz : 0;
-    out->rx_epoch = (uint32_t)(fix->origin_gen & 0xFFFFFFFFU);
+    out->rx_gen = fix->origin_gen;
+    out->protocol_class = fix->protocol != DSD_POSITION_PROTOCOL_NONE ? dsd_sync_protocol_class(fix->protocol) : 0;
     out->epoch_known = (uint8_t)(fix->rev != 0U);
 }
 
@@ -338,15 +338,18 @@ dsd_position_same_track(const dsd_position_fix* a, const dsd_position_fix* b) {
            && a->source_id == b->source_id && strncmp(a->source_text, b->source_text, sizeof(a->source_text)) == 0;
 }
 
-/* Where a reader sees a report was heard, and the label it was shown under: its slot, tuned frequency, reception scope
- * and label (the protocol family is the track's; a burst of the other polarity is the same carrier). */
+/* Where a reader sees a report was heard, and the label it was shown under: its protocol class, slot, tuned frequency,
+ * reception scope and label. The protocol family is the track's, and a burst of the other polarity is the same carrier;
+ * but P25 Phase 1 and Phase 2 are two receptions (dsd_sync_protocol_class(), issue #800), though Phase 1 and a
+ * Phase 2 report of TDMA slot 1 publish one slot value: a radio that changes phase keeps both records. */
 static int
 pos_reception_published_equal(const dsd_position_fix* a, const dsd_position_fix* b) {
     /* A slot nobody knows is no slot another report was heard on. */
     if (((a->flags | b->flags) & (unsigned)DSD_POS_FLAG_SLOT_UNKNOWN) != 0U) {
         return 0;
     }
-    return a->slot == b->slot && a->freq_hz == b->freq_hz && pos_scope_equal(&a->reception_scope, &b->reception_scope)
+    return dsd_sync_protocol_class(a->protocol) == dsd_sync_protocol_class(b->protocol) && a->slot == b->slot
+           && a->freq_hz == b->freq_hz && pos_scope_equal(&a->reception_scope, &b->reception_scope)
            && strncmp(a->label, b->label, sizeof(a->label)) == 0;
 }
 

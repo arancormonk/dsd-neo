@@ -311,14 +311,14 @@ test_fixed_network_source(void) {
 }
 
 static dsd_position_reception
-reception(uint8_t kind, uint32_t a, uint32_t b, int64_t freq_hz, uint32_t rx_epoch, uint8_t epoch_known) {
+reception(uint8_t kind, uint32_t a, uint32_t b, int64_t freq_hz, uint64_t rx_gen, uint8_t epoch_known) {
     dsd_position_reception r;
     DSD_MEMSET(&r, 0, sizeof r);
     r.scope.kind = kind;
     r.scope.a = a;
     r.scope.b = b;
     r.identity_freq_hz = freq_hz;
-    r.rx_epoch = rx_epoch;
+    r.rx_gen = rx_gen;
     r.epoch_known = epoch_known;
     return r;
 }
@@ -398,7 +398,7 @@ test_reception_rule(void) {
     expect_true("unadmitted report: unknown generation", r.epoch_known == 0U);
     expect_true("report admitted", dsd_position_admit(NULL, st, &fix, 1, 1, NULL) != DSD_POSITION_REFUSED);
     dsd_position_fix_reception(&fix, &r);
-    expect_true("report reception", r.scope.kind == nac && r.scope.a == 0x293U && r.rx_epoch == 9U
+    expect_true("report reception", r.scope.kind == nac && r.scope.a == 0x293U && (uint32_t)r.rx_gen == 9U
                                         && r.epoch_known == 1U && r.identity_freq_hz == fix.freq_hz);
     free_state(st);
 }
