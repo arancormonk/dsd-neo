@@ -44,6 +44,12 @@ $soapyNotices = [ordered]@{
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path (Join-Path $PSScriptRoot '..') '..')).Path
 $build = (Resolve-Path -LiteralPath $BuildDir).Path
 $installed = (Resolve-Path -LiteralPath $InstalledDir).Path
+# A used folder would mix two builds: stage_runtime_dlls.ps1 keeps a DLL already in
+# bin\ rather than copy the one vcpkg installed, so a new module could ship beside an
+# older library. Only an absent or empty folder is staged into.
+if ((Test-Path -LiteralPath $StageDir) -and @(Get-ChildItem -LiteralPath $StageDir -Force).Count -gt 0) {
+    throw "The staging folder is not empty: $((Resolve-Path -LiteralPath $StageDir).Path)"
+}
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 $stage = (Resolve-Path -LiteralPath $StageDir).Path
 $stageRuntimeDlls = Join-Path $PSScriptRoot 'stage_runtime_dlls.ps1'

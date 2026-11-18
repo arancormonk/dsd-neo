@@ -682,6 +682,20 @@ class SoapyReleaseScripts(unittest.TestCase):
         log = normalized((tools / "cmake.log").read_text(encoding="utf-8"))
         self.assertEqual(log, f"--install {build} --prefix {stage} --component legal\n")
 
+    def test_stage_release_tree_needs_an_empty_folder(self):
+        tools, build, installed, windows = self.fake_tree()
+        stage = self.work / "dist/dsd-neo-msvc"
+        stage.mkdir(parents=True)
+        rc, output, _ = self.stage(tools, build, installed, windows)
+        self.assertEqual(rc, 0, output)
+        # A second staging into the same folder would keep the first run's DLLs: the runtime staging keeps a DLL
+        # already in bin\, so a module from the new run would ship beside the old hackrf.dll.
+        (installed / "bin/hackrf.dll").write_bytes(b"MZ a newer hackrf.dll")
+        rc, output, _ = self.stage(tools, build, installed, windows)
+        self.assertEqual(rc, 1, output)
+        self.assertIn(f"is not empty: {stage}", output)
+        self.assertEqual((stage / "bin/hackrf.dll").read_bytes(), b"MZ hackrf.dll")
+
     def test_stage_release_tree_refusals(self):
         tools, build, installed, windows = self.fake_tree()
         modules = installed / "lib/SoapySDR/modules0.8"
