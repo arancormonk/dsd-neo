@@ -163,37 +163,64 @@ function Get-DllKind {
     return 'Other'
 }
 
+# Fills $Buffer from the stream's position; $false when the file ends first.
+function Read-StreamBytes {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.IO.Stream]$Stream,
+
+        [Parameter(Mandatory = $true)]
+        [byte[]]$Buffer
+    )
+
+    $filled = 0
+    while ($filled -lt $Buffer.Length) {
+        $count = $Stream.Read($Buffer, $filled, $Buffer.Length - $filled)
+        if ($count -le 0) {
+            return $false
+        }
+        $filled += $count
+    }
+    return $true
+}
+
 # Whether the file is a PE image Windows can load (an executable or a DLL), from its
-# own headers: the MZ header, the PE signature it points to, the image flag in the COFF
-# header and a PE32 or PE32+ optional header. An object file has none of these, though
-# llvm-objdump names its format as it names an image's (coff-x86-64) and lists no
-# imports for it.
+# own headers: the MZ header, the PE signature its e_lfanew points to (anywhere in the
+# file, past a DOS stub of any size), the image flag in the COFF header and a PE32 or
+# PE32+ optional header. An object file has none of these, though llvm-objdump names its
+# format as it names an image's (coff-x86-64) and lists no imports for it.
 function Test-PeImage {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path
     )
 
-    $bytes = New-Object byte[] 4096
     $stream = [System.IO.File]::OpenRead($Path)
     try {
-        $count = $stream.Read($bytes, 0, $bytes.Length)
+        $dos = New-Object byte[] 64
+        if (-not (Read-StreamBytes -Stream $stream -Buffer $dos) -or $dos[0] -ne 0x4D -or $dos[1] -ne 0x5A) {
+            return $false
+        }
+        # The PE signature, the 20-byte COFF header and the optional header's magic.
+        $pe = [System.BitConverter]::ToInt32($dos, 0x3C)
+        if ($pe -lt 64 -or [long]$pe + 26 -gt $stream.Length) {
+            return $false
+        }
+        $stream.Position = $pe
+        $header = New-Object byte[] 26
+        if (-not (Read-StreamBytes -Stream $stream -Buffer $header)) {
+            return $false
+        }
     } finally {
         $stream.Dispose()
     }
-    if ($count -lt 64 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+    if ($header[0] -ne 0x50 -or $header[1] -ne 0x45 -or $header[2] -ne 0 -or $header[3] -ne 0) {
         return $false
     }
-    $pe = [System.BitConverter]::ToInt32($bytes, 0x3C)
-    if ($pe -lt 64 -or $pe + 26 -gt $count) {
-        return $false
-    }
-    if ($bytes[$pe] -ne 0x50 -or $bytes[$pe + 1] -ne 0x45 -or $bytes[$pe + 2] -ne 0 -or $bytes[$pe + 3] -ne 0) {
-        return $false
-    }
-    $characteristics = [System.BitConverter]::ToUInt16($bytes, $pe + 22)
-    $magic = [System.BitConverter]::ToUInt16($bytes, $pe + 24)
-    return (($characteristics -band 0x0002) -ne 0) -and ($magic -eq 0x10B -or $magic -eq 0x20B)
+    $optionalHeaderSize = [System.BitConverter]::ToUInt16($header, 20)
+    $characteristics = [System.BitConverter]::ToUInt16($header, 22)
+    $magic = [System.BitConverter]::ToUInt16($header, 24)
+    return ($optionalHeaderSize -ge 2) -and (($characteristics -band 0x0002) -ne 0) -and ($magic -eq 0x10B -or $magic -eq 0x20B)
 }
 
 # Whether dumpbin reported on a loadable image: its File Type is DLL or EXECUTABLE

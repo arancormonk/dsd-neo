@@ -61,12 +61,13 @@ try {
 """
 
 
-def pe_image(tag=b"", dll=True):
+def pe_image(tag=b"", dll=True, stub=0):
     """The headers Windows reads to load a PE32+ (x64) image, then tag: what the staging checks before it asks a tool
-    for the imports. A DLL sets IMAGE_FILE_DLL as well as IMAGE_FILE_EXECUTABLE_IMAGE."""
-    dos = bytearray(64)
+    for the imports. A DLL sets IMAGE_FILE_DLL as well as IMAGE_FILE_EXECUTABLE_IMAGE. stub bytes of DOS stub sit
+    between the DOS header and the PE header, which e_lfanew points to."""
+    dos = bytearray(64 + stub)
     dos[:2] = b"MZ"
-    struct.pack_into("<I", dos, 0x3C, 64)
+    struct.pack_into("<I", dos, 0x3C, 64 + stub)
     coff = struct.pack("<HHIIIHH", 0x8664, 0, 0, 0, 0, 240, 0x2022 if dll else 0x0022)
     return bytes(dos) + b"PE\0\0" + coff + struct.pack("<H", 0x20B) + bytes(238) + tag
 
@@ -282,6 +283,22 @@ class StageRuntimeDlls(unittest.TestCase):
                 self.tool(tool)
                 self.respond(tool, "dsd-neo.exe", out=report)
                 self.assert_refused([tool, str(self.target)])
+
+    def test_pe_header_past_the_first_4096_bytes(self):
+        # e_lfanew may point anywhere in the file: a linker places the PE header after a DOS stub of any size.
+        self.target.write_bytes(pe_image(b"target", dll=False, stub=8192))
+        self.tool("dumpbin")
+        self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", []))
+        rc, output = self.stage()
+        self.assertEqual(rc, 0, output)
+        # An e_lfanew past the end of the file, or negative, names no PE header.
+        for label, lfanew in (("past the end", 1 << 20), ("negative", -64)):
+            with self.subTest(e_lfanew=label):
+                image = bytearray(pe_image(b"target", dll=False))
+                struct.pack_into("<i", image, 0x3C, lfanew)
+                self.target.write_bytes(bytes(image))
+                self.assert_refused(["not a PE image", str(self.target)])
+
 
 
 if __name__ == "__main__":
