@@ -2699,16 +2699,21 @@ suite runs under this compiler.
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
-    its own mini-header: only GPS blocks (0x3n) feed the record and the `GPS DATA:` display (a raw dump, `-Z` only: a part of a record not yet
-    checked or admitted), only text blocks
+    its own mini-header, wherever it sits in the superframe: only GPS blocks (0x3n) feed the record and the `GPS DATA:`
+    display (a raw dump, `-Z` only: a part of a record not yet checked or admitted), the `_UNK:` dump shows only blocks
+    of no known kind (never a GPS, text or filler block, so GPS bytes reach the output only through `-Z` or an admitted
+    position), only text blocks
     (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
     rule (fail closed, `dstar_sd_binding` in `state.h`): from its first byte or block an assembly is bound to the
     transmission (`dstar_tx_seq`, advanced by every RF header, decoded or not, and the carrier's end:
     `dstar_tx_begin()`), the call a checked header of that transmission named on the current reception
     (`dstar_tx_named_call()`: `dstar_tx_call_epoch` while `dstar_tx_call_origin`, the reception the header was heard on,
-    still matches; 0 none, and 0 once a retune, target switch or another system's frame moved the reception generation,
-    whatever call stays ACTIVE across it), the confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
-    resets it, and a D-PRS record is checked against its binding before its CRC counts as evidence. What an assembly
+    still matches; 0 none, and 0 once a retune, target switch, another system's frame or another protocol's frame (an
+    M17 frame between two D-STAR ones, `dsd_rxid_note_sync()`) moved the reception generation, whatever call stays
+    ACTIVE across it), the confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
+    resets it (a fresh text assembly starts from an empty message, so a new transmission whose block 0 was missed shows
+    none of the last message's characters), and a D-PRS record is checked against its binding before its CRC counts as
+    evidence. What an assembly
     produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
     the row takes its position only through it (otherwise the feed takes the record anonymous), and the message reaches
     the row only when every block, its first (place 0) among them, was heard while the transmission was confirmed.
@@ -2720,7 +2725,9 @@ suite runs under this compiler.
     sender's own MCC/MNC as the sender scope when sent.
   - Origin and `-L`. Multi-fragment producers capture the origin with the first fragment (`dmr_data_origin[slot]` at the
     DMR data header, `p25_mdpu_origin` at a P25 Phase 1 MDPU header block in `p25_mpdu_collect_blocks()`,
-    `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA concatenation) and pass it to admission (LRRP
+    `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA MAC-fragmented TM-SDU
+    (`tetra_mac_fragment::origin`, which `tetra_mac_sdu::origin` carries to the MLE) and each TETRA concatenation, whose
+    first part keeps its own first fragment's) and pass it to admission (LRRP
     and LOCN through `dmr_pdu_position_origin()`, LIP over UDT or UDP and UDT NMEA through `dsd_gps.c`'s
     `gps_packet_origin()`, both picking the DMR or the P25 one by the sync type), which refuses the report when a
     retune, target switch or reception change came in between. Such a report publishes nothing of its own under the
@@ -3852,7 +3859,11 @@ suite runs under this compiler.
   every retune of an advance failed puts back the record the advance started with (the coordinator's `rollback_rx_id`,
   taken with the scratch snapshot, again after a forced release); `processFrame()` calls `dsd_rxid_note_sync()` before
   each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA included, which note nothing) drops
-  the record; the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
+  the record, and a frame of another protocol than the last one's (`dsd_state::rx_sync_protocol`: the family, or for a
+  protocol that notes nothing the protocol itself) moves the epoch even when neither noted anything (issue #800, fail
+  closed: a D-STAR call, an M17 BERT frame and D-STAR again are three receptions, so a D-STAR header's naming and every
+  multi-fragment report's origin end at the switch; both P25 phases, every DMR burst and both polarities are one
+  protocol); the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
   finds it taken leaves the step to the next, as it leaves the playout drain) marks every part stale and keeps the
   values; every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control channel
   return or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), requests `dsd_rxid_trunk_tune()`, which drops the
@@ -12897,13 +12908,18 @@ its SYSINFO names another location area, whose call identifiers may differ (clau
 here tunes: a followed call of the last network is followed on as a channel without a call record until the grant
 timeout or the hangtime ends it. A fragmented TM-SDU (clause 23.4.3.1.1) is rebuilt per
 timeslot, the one the TDMA clock gives its first fragment: before the clock is set (a new carrier before its BSCH) a
-first fragment is not kept, since a continuation of any timeslot could join it (`start_fragment()`). It is dropped
+first fragment is not kept, since a continuation of any timeslot could join it (`start_fragment()`). The first fragment
+captures the reception it came from (`dsd_position_origin_capture()`), and a MAC-FRAG or MAC-END heard under another
+one (a retune however made, the trunking state machine's Next Channel with no carrier boundary among them, a trunk-scan
+switch, a received identity change) drops the TM-SDU instead of continuing it (`fragment_continues()`, issue #800, fail
+closed), so nothing rebuilt from two receptions reaches the MLE. It is dropped
 after N.203, four slots of its timeslot without a fragment, counted on the TDMA clock: the slots of
 the timeslot that went by undecoded count too (`catch_up_fragment()` in `tetra_mac.c`), so a late continuation cannot
 join an expired prefix. Tests: `TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_CMCE_PDUS`,
 `TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases, the sender's identity, the reassembly
 a network change drops),
-`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops, none without a timeslot),
+`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops, none without a timeslot), `TETRA_LIP`
+(a LIP report in a TM-SDU whose fragments straddle a retune or identity change gives nothing),
 `TETRA_TDMA_CLOCK`, `TETRA_CALLS` (the
 network, cell and location area boundaries), `TETRA_VOICE_PIPELINE` (the speech a cell or network change starts
 over).

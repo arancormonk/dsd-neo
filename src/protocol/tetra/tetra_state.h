@@ -9,6 +9,7 @@
 #ifndef DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_STATE_H_
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_STATE_H_
 
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <stdint.h>
@@ -377,7 +378,10 @@ typedef struct {
     double start_m;          /* decode clock at the first fragment: how long the TM-SDU took to arrive */
     int8_t cc;               /* colour code of the block that started the TM-SDU */
     tetra_mac_address addr;  /* address of the starting MAC-RESOURCE; MAC-FRAG and MAC-END carry none */
-    uint16_t nbits;          /* TM-SDU bits rebuilt so far */
+    /* The reception the first fragment came from (dsd_position_origin_capture()): a fragment heard on another one (a
+       retune, a trunk-scan switch, a received identity change since) never continues the TM-SDU. */
+    dsd_position_origin origin;
+    uint16_t nbits;                    /* TM-SDU bits rebuilt so far */
     uint8_t bits[TETRA_MAC_FRAG_BITS]; /* one bit per byte: the TM-SDU, encrypted with its MAC-END's allocation */
 } tetra_mac_fragment;
 

@@ -40,7 +40,6 @@ typedef struct dstar_sd_ctx_s {
     char str2[9];
     char str3[9];
     char str4[13];
-    char strf[60];
     char strt[60];
     uint16_t crc_ext;
     uint16_t crc_cmp;
@@ -112,7 +111,6 @@ dstar_sd_load_truncated_payload(const uint8_t* sd_bytes, uint8_t* hd_bytes, int 
 
 static void
 dstar_sd_init_display_buffers(dstar_sd_ctx* ctx) {
-    DSD_MEMSET(ctx->strf, 0x20, sizeof(ctx->strf));
     DSD_MEMSET(ctx->strt, 0x20, sizeof(ctx->strt));
 }
 
@@ -151,13 +149,9 @@ dstar_sd_sanitize_bytes(uint8_t* bytes) {
 
 static void
 dstar_sd_capture_display_strings(dstar_sd_ctx* ctx) {
-    for (int i = 0; i < 58; i++) {
-        ctx->strf[i] = (char)ctx->sd_bytes[i + 1];
-    }
     for (int i = 0; i < 48; i++) {
         ctx->strt[i] = (char)ctx->hd_bytes[i + 1];
     }
-    ctx->strf[59] = '\0';
     ctx->strt[59] = '\0';
 }
 
@@ -575,7 +569,9 @@ dstar_sd_text_block(const uint8_t* raw, int b, unsigned* place) {
 /* Each block by its own mini-header: a text block's five characters go to their place in the message, and nothing of
  * another block (GPS data among them) ever does. A block 0 starts a new message; a later block of the message fills its
  * place in the one being shown. A message assembled under a binding that no longer holds is dropped before this
- * superframe's blocks: none of it is this message's. Returns 1 when the superframe held a text block. */
+ * superframe's blocks: none of it is this message's. The first block of a fresh assembly (a new transmission's, its
+ * block 0 missed among them) starts from an empty message, so no character of the last one is shown with it. Returns 1
+ * when the superframe held a text block. */
 static int
 dstar_sd_collect_text(const dsd_opts* opts, dsd_state* state, const uint8_t* raw) {
     char* const msg = state->dstar_txt;
@@ -591,7 +587,9 @@ dstar_sd_collect_text(const dsd_opts* opts, dsd_state* state, const uint8_t* raw
             msg[0] = '\0';
         }
         if (t->places == 0U) {
+            /* A fresh assembly: nothing shown so far is this message's, whichever block of it came first. */
             dstar_sd_bind(opts, state, &t->bind);
+            msg[0] = '\0';
         }
         size_t len = strnlen(msg, DSTAR_SD_TEXT_CHARS);
         if (place == 0U) {
@@ -633,8 +631,8 @@ dstar_sd_handle_text_message(dsd_state* state) {
     }
 }
 
-/* The GPS blocks' data (a D-PRS record or NMEA sentences), shown as it arrived: a raw dump, like every payload dump,
- * only with the payload option (-Z). The "$$CRC" literal checks nothing, and a block is shown before its record is whole:
+/* The GPS blocks' data (a D-PRS record or NMEA sentences) of every GPS block, wherever it sits in the superframe,
+ * shown as it arrived: a raw dump, like every payload dump, only with the payload option (-Z). The "$$CRC" literal checks nothing, and a block is shown before its record is whole:
  * a D-PRS record is evidence and a position only once its CRC matches and admission admitted it (dstar_dprs_publish()
  * prints that one's position), so without -Z no part of a record reaches the output before then (issue #800, fail
  * closed). The "GPS DATA:" label names what the blocks are whatever part of a record they hold, so the diagnostics log
@@ -659,18 +657,63 @@ dstar_sd_handle_gps_data(const dsd_opts* opts, const uint8_t* raw) {
     }
 }
 
-/* A superframe that is no header: its text blocks and its GPS blocks, each chosen by its own mini-header. */
+/* What a slow-data block is, by its own mini-header: GPS data (0x3n), a text block (0x40-0x43), filler (0x66), or
+ * anything else. */
+enum { DSTAR_SD_BLOCK_OTHER = 0, DSTAR_SD_BLOCK_GPS, DSTAR_SD_BLOCK_TEXT, DSTAR_SD_BLOCK_FILLER };
+
+#define DSTAR_SD_FILLER 0x66U
+
+static int
+dstar_sd_block_kind(const uint8_t* raw, int b) {
+    const uint8_t mini = raw[(size_t)b * (size_t)DSTAR_SD_BLOCK_BYTES];
+    unsigned place = 0U;
+    if ((mini & DSTAR_SD_TYPE_MASK) == DSTAR_SD_TYPE_GPS) {
+        return DSTAR_SD_BLOCK_GPS;
+    }
+    if (dstar_sd_text_block(raw, b, &place)) {
+        return DSTAR_SD_BLOCK_TEXT;
+    }
+    return mini == DSTAR_SD_FILLER ? DSTAR_SD_BLOCK_FILLER : DSTAR_SD_BLOCK_OTHER;
+}
+
+/* The superframe's blocks of no known kind, shown as "_UNK:", printable bytes only; GPS, text and filler blocks are
+ * never part of it, so GPS data reaches the output only through dstar_sd_handle_gps_data() (-Z) or an admitted
+ * position. */
+static void
+dstar_sd_print_unknown(const uint8_t* raw) {
+    DSD_FPRINTF(stderr, " _UNK: ");
+    for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
+        if (dstar_sd_block_kind(raw, b) != DSTAR_SD_BLOCK_OTHER) {
+            continue;
+        }
+        const uint8_t* block = raw + ((size_t)b * (size_t)DSTAR_SD_BLOCK_BYTES);
+        for (int i = 0; i < DSTAR_SD_BLOCK_BYTES; i++) {
+            DSD_FPRINTF(stderr, "%c", dstar_sd_is_printable(block[i]) ? (char)block[i] : ' ');
+        }
+    }
+}
+
+/* A superframe that is no header: each block classified by its own mini-header, wherever it sits. Text blocks make the
+ * message; GPS blocks, any of them, the -Z "GPS DATA:" dump; the blocks of no known kind, when no text block came, the
+ * "_UNK:" dump. */
 static void
 dstar_sd_handle_non_header(const dsd_opts* opts, dsd_state* state, const dstar_sd_ctx* ctx) {
     const int text = dstar_sd_collect_text(opts, state, ctx->payload);
     if (text) {
         dstar_sd_handle_text_message(state);
     }
-    if ((ctx->payload[0] & DSTAR_SD_TYPE_MASK) == DSTAR_SD_TYPE_GPS) {
+    int gps = 0;
+    int other = 0;
+    for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
+        const int kind = dstar_sd_block_kind(ctx->payload, b);
+        gps |= kind == DSTAR_SD_BLOCK_GPS;
+        other |= kind == DSTAR_SD_BLOCK_OTHER;
+    }
+    if (gps) {
         dstar_sd_handle_gps_data(opts, ctx->payload);
-    } else if (!text) {
-        DSD_FPRINTF(stderr, " _UNK:");
-        DSD_FPRINTF(stderr, " %s", ctx->strf);
+    }
+    if (!text && other) {
+        dstar_sd_print_unknown(ctx->payload);
     }
 }
 

@@ -3390,6 +3390,11 @@ struct dsd_state {
        thread where no watchdog tick runs; outside every snapshot copy range (ui_snapshot.c pins it), so no frontend
        copy reads it. */
     uint8_t rx_id_trunk_tune_pending;
+    /* The protocol the last frame sync named (dsd_rxid_note_sync()): rx_id's family for a protocol that sends identity,
+       the protocol itself for one that sends none (D-STAR, YSF, X2-TDMA); 0 since the last dsd_rxid_reset(). A sync of
+       another protocol moves rx_id's epoch even when neither sent any identity (issue #800, fail closed). Decoder
+       thread; outside every snapshot copy range. */
+    uint16_t rx_sync_protocol;
 
     // Extension slots for module-owned per-state allocations (see core/state_ext.h).
     void* state_ext[DSD_STATE_EXT_MAX];

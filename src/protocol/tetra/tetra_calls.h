@@ -35,6 +35,7 @@
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_CALLS_H_
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <stdint.h>
@@ -85,6 +86,9 @@ typedef struct {
     uint16_t alloc_taker;      /**< its call identifier */
     uint8_t enc_mode;       /**< the PDU's encryption mode (TETRA_ENC_MODE_*); decrypted when not 00 and @c air_key */
     tetra_air_cand air_key; /**< the key that decrypted it (tetra_air_sig.c), when it was ciphertext */
+    /** A TM-SDU rebuilt from fragments: the reception its first fragment came from, which a report it carries keeps
+     * (dsd_position_admit()); NULL for one block's TM-SDU, which is the current reception's. */
+    const dsd_position_origin* origin;
 } tetra_mac_sdu;
 
 /**

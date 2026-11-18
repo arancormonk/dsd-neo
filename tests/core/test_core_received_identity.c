@@ -1114,6 +1114,49 @@ test_dmr_t3_capmax_marker_epoch(void) {
     free(state);
 }
 
+/* Issue #800 (g62-r7): a sync of another protocol is another reception even when neither protocol sent any identity.
+   D-STAR leaves no family and an M17 BERT frame notes no CAN, yet a D-STAR call, an M17 frame and D-STAR again are
+   three receptions: the epoch moves at each switch, so nothing captured under the first (a D-STAR header's naming)
+   holds under the third. Frames of one protocol (D-STAR header and voice, both polarities, both P25 phases, M17 LSF and
+   stream) keep it, and so does no sync. */
+static void
+test_protocol_switch_moves_the_epoch(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+    dsd_rxid_note_sync(state, DSD_SYNC_DSTAR_HD_POS);
+    const uint32_t first = id->epoch;
+    dsd_rxid_note_sync(state, DSD_SYNC_DSTAR_VOICE_POS);
+    dsd_rxid_note_sync(state, DSD_SYNC_DSTAR_VOICE_NEG);
+    dsd_rxid_note_sync(state, DSD_SYNC_NONE);
+    expect_u("one protocol keeps the epoch", id->epoch, first);
+    dsd_rxid_note_sync(state, DSD_SYNC_M17_BRT_POS);
+    expect_u("m17 after d-star moves the epoch", id->epoch, first + 1U);
+    expect_u("m17 frame noted no family", id->family, DSD_RXID_FAMILY_NONE);
+    dsd_rxid_note_sync(state, DSD_SYNC_M17_LSF_POS);
+    dsd_rxid_note_sync(state, DSD_SYNC_M17_STR_POS);
+    expect_u("m17 frames keep the epoch", id->epoch, first + 1U);
+    dsd_rxid_note_sync(state, DSD_SYNC_DSTAR_VOICE_POS);
+    expect_u("d-star again moves the epoch", id->epoch, first + 2U);
+    dsd_rxid_note_sync(state, DSD_SYNC_YSF_POS);
+    expect_u("ysf after d-star moves the epoch", id->epoch, first + 3U);
+    dsd_rxid_note_sync(state, DSD_SYNC_X2TDMA_DATA_POS);
+    dsd_rxid_note_sync(state, DSD_SYNC_X2TDMA_VOICE_NEG);
+    expect_u("x2-tdma data and voice are one protocol", id->epoch, first + 4U);
+
+    /* A carrier boundary starts over: the first sync after it is no switch. */
+    dsd_rxid_reset(state);
+    const uint32_t reset = id->epoch;
+    dsd_rxid_note_sync(state, DSD_SYNC_P25P1_POS);
+    dsd_rxid_note_sync(state, DSD_SYNC_P25P2_NEG);
+    expect_u("first sync after a reset and both p25 phases keep the epoch", id->epoch, reset);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_VOICE_POS);
+    dsd_rxid_note_sync(state, DSD_SYNC_DMR_MS_DATA);
+    expect_u("dmr after p25 moves the epoch once", id->epoch, reset + 1U);
+    expect_u("dmr after p25 drops the record", id->valid, 0U);
+    free(state);
+}
+
 int
 main(void) {
     test_parts_and_reset();
@@ -1141,6 +1184,7 @@ main(void) {
     test_dmr_t3_capmax_marker_pair();
     test_dmr_t3_capmax_marker_lifecycle();
     test_dmr_t3_capmax_marker_epoch();
+    test_protocol_switch_moves_the_epoch();
     dsd_rxid_reset(NULL);
     dsd_rxid_note_sync(NULL, DSD_SYNC_DMR_BS_DATA_POS);
     if (g_fail) {

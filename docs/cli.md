@@ -219,7 +219,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-Z` Log MBE/PDU payloads to stderr (verbose), including encrypted P25 voice frames when media is gated, the raw
   bytes of DMR short data in a format dsd-neo does not decode (`Short Data Raw`) and of NXDN UDCH data with their ASCII
   form (`UDCH Data`), the D-STAR slow-data GPS blocks as they arrive (`GPS DATA:`, a part of a D-PRS record or NMEA
-  sentence each; a whole D-PRS record whose CRC matches still prints its position without `-Z`), and an NXDN frame sync whose LICH then fails (`Sync: NXDN96 LICH ERR`), which otherwise prints
+  sentence each, wherever in the superframe they sit; a whole D-PRS record whose CRC matches still prints its position
+  without `-Z`, and the `_UNK:` dump of slow data of no known kind never holds GPS bytes), and an NXDN frame sync whose LICH then fails (`Sync: NXDN96 LICH ERR`), which otherwise prints
   nothing.
   With `--frontend terminal` / `-N`, redirect stderr to capture them:
   `dsd-neo -Z --frontend terminal 2> console_log.txt`. The terminal frontend suppresses stderr when it is a TTY
@@ -442,7 +443,8 @@ Windows console runs:
   (the hash is not a radio ID). A D-STAR position or text message joins a call only when a header of the same
   transmission whose check passed named the caller (a callsign suffix alone names no one), and a text message only
   when all of it, its first block included, was heard after the transmission proved itself; anything pieced together
-  across two transmissions, a retune or that moment is dropped. A call position decoded after the call's line was written (the L3Harris or Motorola
+  across two transmissions, a retune, a frame of another protocol (an M17 frame between two D-STAR ones) or that moment
+  is dropped. A call position decoded after the call's line was written (the L3Harris or Motorola
   report in the terminator that ends a P25 Phase 1 call) appends that call's `GPS:` line then, carrying the call
   line's stamp. A report with LIP position error 7 reads `fix may be old or invalid`. A voice
   transmission reacquired after a sync loss appends a `Reacquired:` continuation carrying the stamp of the row it

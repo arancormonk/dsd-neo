@@ -387,6 +387,37 @@ check_received_identity_follows_the_protocol(void) {
     free(opts);
 }
 
+/* Issue #800 (g62-r7): through the real dispatch, a frame of another protocol is another reception even when neither
+   protocol notes any identity: D-STAR, an M17 BERT frame, then D-STAR again move the received identity's epoch at each
+   switch (a D-STAR header heard before the M17 frame names no call after it); D-STAR frames in a row keep it. */
+static void
+check_protocol_switch_moves_the_reception(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+
+    static const struct {
+        int synctype;
+        int handler;
+        uint32_t epoch;
+    } frames[] = {
+        {DSD_SYNC_DSTAR_HD_POS, TEST_HANDLER_DSTAR, 0U},    {DSD_SYNC_DSTAR_VOICE_POS, TEST_HANDLER_DSTAR, 0U},
+        {DSD_SYNC_M17_BRT_POS, TEST_HANDLER_M17, 1U},       {DSD_SYNC_DSTAR_VOICE_POS, TEST_HANDLER_DSTAR, 2U},
+        {DSD_SYNC_DSTAR_VOICE_POS, TEST_HANDLER_DSTAR, 2U},
+    };
+
+    for (size_t i = 0; i < sizeof(frames) / sizeof(frames[0]); i++) {
+        state->synctype = frames[i].synctype;
+        g_called_handler = TEST_HANDLER_NONE;
+        processFrame(opts, state);
+        assert(g_called_handler == frames[i].handler);
+        assert(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE && state->rx_id.epoch == frames[i].epoch);
+    }
+    free(state);
+    free(opts);
+}
+
 /* A P25p1 word accepted within a tolerance (anchored or hunt-wide) may be no word at all: it leaves the DMR carrier's
    identity standing, for the P25p1 dispatcher to replace once the frame's NID passes its strict check. An exact one
    replaces it as before. */
@@ -524,6 +555,7 @@ check_trunk_tune_inside_the_frame_keeps_the_next_burst(void) {
 int
 main(void) {
     check_received_identity_follows_the_protocol();
+    check_protocol_switch_moves_the_reception();
     check_tolerant_p25p1_word_leaves_the_identity();
     check_trunk_tune_drop_applied_around_the_frame();
     check_trunk_tune_drop_resets_dmr_ras();

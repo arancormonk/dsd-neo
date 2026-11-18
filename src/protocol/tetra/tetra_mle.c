@@ -1083,7 +1083,12 @@ sds_concat_submit(const mle_ctx* ctx, const sds_concat_part* part, sds_concat_st
     const uint64_t now_ms = dsd_decode_now_mono_ms();
     sds_concat_ctx* c = sds_concat_find(ctx->state, store, part, now_ms);
     if (c->received_count == 0) {
-        dsd_position_origin_capture(ctx->opts, ctx->state, &c->origin);
+        /* The part's own reception: a part rebuilt from MAC fragments came from its first fragment's. */
+        if (ctx->sdu && ctx->sdu->origin) {
+            c->origin = *ctx->sdu->origin;
+        } else {
+            dsd_position_origin_capture(ctx->opts, ctx->state, &c->origin);
+        }
     }
     c->updated_ms = now_ms;
     const int result = sds_concat_store_part(c, part);
@@ -1393,7 +1398,7 @@ typedef struct {
 
 /* The SDS message's LIP PDU, when it is one: a whole message under PID 10, or a complete concatenated message whose
  * payload PID is 10 (clause 29.5.14.1: concatenation carries messages of any PID), with the reception its first part
- * came from. */
+ * came from (for a whole message rebuilt from MAC fragments, its first fragment's; NULL for one block's). */
 static int
 sds_lip_pdu(const mle_ctx* ctx, const tetra_sds_data* d, const sds_concat_status* concat, const uint8_t** bits,
             int* nbits, const dsd_position_origin** origin) {
@@ -1411,7 +1416,7 @@ sds_lip_pdu(const mle_ctx* ctx, const tetra_sds_data* d, const sds_concat_status
     }
     *bits = ctx->bits + d->payload_pos;
     *nbits = d->payload_bits;
-    *origin = NULL;
+    *origin = ctx->sdu ? ctx->sdu->origin : NULL; /* a TM-SDU rebuilt from fragments keeps its first one's */
     return 1;
 }
 

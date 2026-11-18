@@ -764,6 +764,58 @@ test_slow_data_unchecked_aprs_is_no_position(void) {
     free(history);
 }
 
+/* Issue #800 (g62-r7): every slow-data block is classified by its own mini-header, wherever it sits in the superframe.
+ * GPS bytes reach the output only through the -Z "GPS DATA:" dump: a GPS block after a block of no known kind (0x51)
+ * is never part of the "_UNK:" dump, -Z or not; a GPS block after a text block is dumped with -Z like one heading the
+ * superframe. */
+static void
+test_gps_blocks_classified_individually(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bytes[60];
+    uint8_t bits[480];
+    char out[8192];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    Event_History_I* history = (Event_History_I*)calloc(2u, sizeof(*history));
+    assert(history != NULL);
+    state.event_history_s = history;
+    open_dstar_call(&opts, &state);
+    sd_run run = {&opts, &state, bits};
+
+    static const uint8_t firsts[2] = {0x51, 0x40};
+    static const char* const first_data[2] = {"ABCDE", "HELLO"};
+    for (int i = 0; i < 2; i++) {
+        for (int payload = 0; payload <= 1; payload++) {
+            DSD_MEMSET(bytes, 0x66, sizeof(bytes));
+            bytes[0] = firsts[i];
+            DSD_MEMCPY(bytes + 1, first_data[i], 5U);
+            bytes[6] = 0x35;
+            DSD_MEMCPY(bytes + 7, "2230.", 5U);
+            opts.payload = payload;
+            pack_slow_data_bytes(bytes, bits);
+            capture_stderr_of(run_slow_data, &run, out, sizeof(out));
+            const char* gps = strstr(out, "GPS DATA: 2230.");
+            const char* coordinate = strstr(out, "2230.");
+            if (payload) {
+                /* Once, in the GPS dump. */
+                assert(gps != NULL && coordinate == gps + strlen("GPS DATA: "));
+                assert(strstr(coordinate + 1, "2230.") == NULL);
+            } else {
+                assert(gps == NULL && coordinate == NULL && strstr(out, "GPS DATA") == NULL);
+            }
+            if (i == 0) {
+                assert(strstr(out, "_UNK: QABCDE") != NULL); /* the unknown block alone */
+            } else {
+                assert(strstr(out, "_UNK") == NULL && strstr(out, "TEXT: HELLO") != NULL);
+            }
+        }
+    }
+    opts.payload = 0;
+    dsd_state_ext_free_all(&state);
+    free(history);
+}
+
 int
 main(void) {
     test_soft_decode_pipeline();
@@ -778,6 +830,7 @@ main(void) {
     test_slow_data_text_by_mini_header();
     test_slow_data_text_needs_a_confirmed_dstar_call();
     test_control_bytes_never_reach_display_text();
+    test_gps_blocks_classified_individually();
     test_slow_data_unchecked_aprs_is_no_position();
     return 0;
 }

@@ -48,7 +48,8 @@
  * note is refused, whichever decoder's own carrier check comes after it.
  *
  * Lifetime: dsd_rxid_reset() at every carrier boundary and trunk-scan target switch; dsd_rxid_note_sync() at frame
- * sync drops a record of another protocol family; every accepted trunking retune drops the carrier's access code and
+ * sync drops a record of another protocol family, and moves the epoch at a sync of another protocol than the last
+ * one's, whether or not either sent identity; every accepted trunking retune drops the carrier's access code and
  * keeps the system (a voice channel belongs to its control channel's system), requested by the engine's trunk tuning
  * (dsd_rxid_request_trunk_tune()) and applied by the decoder thread (dsd_rxid_apply_trunk_tune()): at once for a
  * retune the decoder thread makes, in a frame or between frames, so nothing it publishes or notes after the retune
@@ -231,7 +232,10 @@ dsd_rxid_family dsd_rxid_family_for_sync(int synctype);
 
 /** Forget everything (a carrier boundary, a trunk-scan target switch, a decoder reset). */
 void dsd_rxid_reset(dsd_state* state);
-/** Frame sync acquired @p synctype: a record of another family is dropped. No sync (DSD_SYNC_NONE) changes nothing. */
+/** Frame sync acquired @p synctype: a record of another family is dropped, and a sync of another protocol than the
+ * last one's (dsd_state::rx_sync_protocol) moves the epoch even when neither protocol sent any identity (a D-STAR call,
+ * then an M17 frame, then D-STAR again: three receptions). Both P25 phases, every DMR burst and both polarities of a
+ * protocol are one protocol. No sync (DSD_SYNC_NONE) changes nothing. */
 void dsd_rxid_note_sync(dsd_state* state, int synctype);
 /** The no-carrier pass: every part goes stale; the values stay. */
 void dsd_rxid_mark_stale(dsd_state* state);
