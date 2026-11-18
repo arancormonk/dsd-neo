@@ -647,7 +647,8 @@ holdsKeyLabel(const QString& text) {
  * "UDCH Data" and "DATA:", D-STAR "SD:", M17 "LSF:"/"pkt:"/"PKT:", CSBK and voice bytes) are kept: they come before
  * the decode that names the PDU, and most carry no position. Without -Z every decoder line that prints a received
  * position or a part of one carries one of these labels (UI_QT_DIAGNOSTICS_LOG drives the producers that print
- * received text to check it). A contiguous run of ten or more hex digits is redacted anyway (redact()).
+ * received text to check it, and every producer of a received position to check each part of its report). A contiguous
+ * run of ten or more hex digits is redacted anyway (redact()).
  */
 // One QRegularExpression fragment per entry; the comment names the decoder paths whose print text it matches.
 const char* const kPositionMarkers[] = {
@@ -657,9 +658,10 @@ const char* const kPositionMarkers[] = {
     // p25p2_vpdu.c L3Harris GPS Location; dstar_slow_data.c "GPS DATA:", the GPS data blocks as they arrive, a part of
     // a D-PRS record or NMEA sentence each
     "\\bGPS\\b",
-    // m17.c META and packet GNSS
+    // m17.c META and packet GNSS (its "GPS:" line carries the radius, source and station type)
     "\\bGNSS\\b",
-    // dmr_pdu.c LRRP; and Wrapped LRRP; dmr_block.c MNIS LRRP
+    // dmr_pdu.c LRRP; and Wrapped LRRP, with each line of a report's details (LRRP Time/Radius/Alt Accuracy/Speed/
+    // Track); dmr_block.c MNIS LRRP
     "\\bLRRP\\b",
     // dmr_pdu.c NMEA / LOCN; dmr_block.c MNIS "LOCN Text:", the report's own text
     "\\bLOCN\\b",
@@ -667,7 +669,8 @@ const char* const kPositionMarkers[] = {
     "\\bNMEA\\b",
     // dsd_gps.c LIP; dmr_dburst.c USBD service 0 ("Location Information Protocol") with its payload; TETRA SDS LIP
     "\\bLIP\\b|Location Information Protocol|Location Report",
-    // dmr_pdu.c P25 Tier 2 Location Service
+    // dmr_pdu.c P25 Tier 2 Location Service; p25p1_pdu_data.c the SAP 48 location service's plain text ("P25 Location
+    // Service Text:")
     "Location Service",
     // dsd_gps.c Position Error and Position Calculation Error; dmr_pdu.c Position: (suppressed)
     "\\bPosition\\b",

@@ -45,6 +45,8 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
+#include <dsd-neo/protocol/m17/m17_parse.h>
+#include <dsd-neo/protocol/p25/p25_pdu.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
@@ -59,6 +61,8 @@
 #include "diagnostics_log.h"
 extern "C" int dsd_test_diagnostics_drain(dsd_opts*, dsd_state*);
 #include "../../src/app_control/commands_internal.h"
+#include "../../src/protocol/m17/m17_algorithms.h"
+#include "../../src/protocol/m17/m17_internal.h"
 #include "session_args.h"
 #include "teardown_trace.h"
 extern "C" int dsd_test_diagnostics_direct_key_applied(dsd_opts*, dsd_state*, int, const char*);
@@ -2160,6 +2164,214 @@ realProducersLabelReceivedPositions() {
     }
 }
 
+namespace producers {
+
+/* @p width bits of @p value, most significant first, into one-bit-per-byte @p bits at @p offset. */
+void
+putBits(uint8_t* bits, size_t offset, unsigned width, uint32_t value) {
+    for (unsigned i = 0; i < width; ++i) {
+        bits[offset + i] = static_cast<uint8_t>((value >> (width - 1U - i)) & 1U);
+    }
+}
+
+/* A P25 Phase 1 SAP 48 (location service) packet from LLID 1234 carrying @p payload, decoded inside a passed CRC
+ * scope as the MDPU decodes it. */
+void
+sendP25Sap48(Rig& rig, const QByteArray& payload) {
+    static uint8_t pdu[512];
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    pdu[0] = 0x10; /* fmt 16, io 0: the LLID is the source */
+    pdu[1] = 48;   /* SAP 48 location service */
+    pdu[4] = 0x04;
+    pdu[5] = 0xD2; /* LLID 1234 */
+    pdu[6] = 0x05;
+    DSD_MEMCPY(pdu + 12, payload.constData(), static_cast<size_t>(payload.size()));
+    rig.state->event_crc_invalid[0] = 0U;
+    p25_decode_pdu_data(rig.opts, rig.state, pdu, static_cast<int>(12 + payload.size() + 4));
+}
+
+/* A CRC-valid RF M17 voice LSF from N0CALL whose GNSS META (subtype 1) holds every field: 22.5, 45, altitude 1000 m,
+ * 145.5 km/h, bearing 300, radius code 3, an OpenRTX handheld. */
+void
+sendM17Gnss(Rig& rig) {
+    uint8_t meta[M17_META_BYTES] = {0x12U, 0xF7U, 0x2CU, 0x20U, 0x00U, 0x00U, 0x20U,
+                                    0x00U, 0x00U, 0x0BU, 0xB8U, 0x12U, 0x30U, 0x00U};
+    uint8_t bits[M17_LSF_BYTES * 8];
+    uint8_t packed[M17_LSF_BYTES];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    m17_load_lsf_callsigns(bits, m17_encode_b40_callsign(0ULL, "CQCQCQ"), m17_encode_b40_callsign(0ULL, "N0CALL"));
+    putBits(bits, 96, 16, m17_compose_frame_info(1U, 2U, 0U, 1U, 5U, 0U, 0U));
+    for (size_t i = 0; i < M17_META_BYTES; i++) {
+        putBits(bits, 112U + (i * 8U), 8, meta[i]);
+    }
+    const uint16_t crc = m17_attach_lsf_crc(bits, packed);
+    DSD_MEMCPY(rig.state->m17_lsf, bits, sizeof(bits));
+    check(m17_finalize_lsf_crc(rig.opts, rig.state, packed, crc) == 0, "M17: the LSF passes its CRC");
+}
+
+/* Octets from hex text. */
+QByteArray
+fromHex(const char* hex) {
+    return QByteArray::fromHex(QByteArray(hex));
+}
+
+} // namespace producers
+
+/* Issue #800, D10 (g62 gate r4): every producer of a received position is driven through its real print path, without
+ * -Z, and every line it prints that holds any field of the report -- a coordinate, the fix time, the radius or error,
+ * the altitude and its accuracy, the speed and heading, the reason and the time elapsed, the source and station type
+ * -- carries its producer's label, so the diagnostics log removes it whole. Each part is a value of that report only:
+ * a line without a label that held one would keep it in Copy or Share. Among them the P25 location service's plain
+ * text ("51.50,12.34": no label of its own before, and too few decimals for the shape backstop), each line of an LRRP
+ * report's details, and the M17 GNSS radius line. */
+static void
+everyProducerLabelsEveryPartOfItsReport() {
+    using namespace producers;
+    {
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_P25P1_POS;
+        const QByteArray bytes = printed([&]() { sendP25Sap48(rig, QByteArray("51.50,12.34")); });
+        check(bytes.contains("51.50,12.34"), "P25 SAP 48: the plain text is shown");
+        check(checkReportRecords(bytes, {QStringLiteral("51.50"), QStringLiteral("12.34")}, "P25 SAP 48 text") >= 1,
+              "P25 SAP 48: the plain text line is removed");
+    }
+    {
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_P25P1_POS;
+        const QByteArray bytes = printed([&]() {
+            sendP25Sap48(rig, QByteArray("$GPRMC,120000,A,2230.0000,N,04500.0000,E,010.0,090.0,150626,,,A*7F\r\n"));
+        });
+        check(rig.admitted() == 1, "P25 SAP 48: the NMEA report is a checked position");
+        check(checkReportRecords(bytes,
+                                 {QStringLiteral("2230"), QStringLiteral("4500"), QStringLiteral("22.5"),
+                                  QStringLiteral("45.0"), QStringLiteral("18.5"), QStringLiteral("90.0")},
+                                 "P25 SAP 48 NMEA")
+                  >= 1,
+              "P25 SAP 48: the NMEA lines are removed");
+    }
+    {
+        /* LRRP circle-3d with its time, radius, altitude, altitude accuracy, speed and heading (a Capacity Max
+           report's layout, synthetic coordinates). */
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+        QByteArray doc = fromHex("0D252203000001341FA0491E4C552000000020000000407C815C144A5B6C0067566970404C653C");
+        const QByteArray bytes = printed([&]() {
+            dmr_lrrp(rig.opts, rig.state, static_cast<uint16_t>(doc.size()), 123U, 456U,
+                     reinterpret_cast<const uint8_t*>(doc.constData()), 1U);
+        });
+        check(rig.admitted() == 1, "LRRP: the report is a checked position");
+        check(bytes.contains("64.97") && bytes.contains("74.71") && bytes.contains("m/s"),
+              "LRRP: the report's details are shown");
+        check(checkReportRecords(bytes,
+                                 {QStringLiteral("2024."), QStringLiteral("22.5"), QStringLiteral("45.0"),
+                                  QStringLiteral("64.97"), QStringLiteral("220.16"), QStringLiteral("74.71"),
+                                  QStringLiteral("m/s"), QStringLiteral("km/h"), QStringLiteral("210")},
+                                 "LRRP")
+                  >= 6,
+              "LRRP: each detail line is removed");
+    }
+    {
+        Rig rig;
+        rig.state->m17_can_en = -1;
+        rig.opts->aggressive_framesync = 1;
+        const QByteArray bytes = printed([&]() { sendM17Gnss(rig); });
+        check(rig.admitted() == 1, "M17: the GNSS META is a checked position");
+        check(bytes.contains("Radius") && bytes.contains("OpenRTX"), "M17: the radius and the source are shown");
+        check(checkReportRecords(bytes,
+                                 {QStringLiteral("22.5"), QStringLiteral("45.0"), QStringLiteral("1000.0"),
+                                  QStringLiteral("145.5"), QStringLiteral("Radius"), QStringLiteral("OpenRTX"),
+                                  QStringLiteral("Handheld")},
+                                 "M17 GNSS")
+                  >= 1,
+              "M17: the GNSS lines are removed");
+    }
+    {
+        /* LIP short report: 22.5 S, 45 W, position error code 0, reason 32 (an immediate request's response). */
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+        uint8_t bits[76] = {0};
+        putBits(bits, 4, 1, 1);
+        putBits(bits, 5, 24, 0xC00000U);
+        putBits(bits, 29, 1, 1);
+        putBits(bits, 30, 23, 0x600000U);
+        putBits(bits, 68, 8, 32);
+        const dsd_gps_address addr = {1234U, 5678U, 0U};
+        const QByteArray bytes = printed([&]() { lip_pdu_decoder(rig.opts, rig.state, bits, sizeof(bits), &addr); });
+        check(rig.admitted() == 1, "LIP: the report is a checked position");
+        check(checkReportRecords(bytes,
+                                 {QStringLiteral("22.5"), QStringLiteral("45.0"), QStringLiteral("Less than"),
+                                  QStringLiteral("immediate"), QStringLiteral("< 5s")},
+                                 "LIP")
+                  >= 2,
+              "LIP: the report and its error line are removed");
+    }
+    {
+        /* Binary UDT NMEA, long form: 22 30 S, 45 W, 11:22:33 UTC. */
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+        uint8_t nmea[192] = {0};
+        putBits(nmea, 3, 1, 1);
+        putBits(nmea, 11, 7, 22);
+        putBits(nmea, 18, 6, 30);
+        putBits(nmea, 38, 8, 45);
+        putBits(nmea, 66, 5, 11);
+        putBits(nmea, 71, 6, 22);
+        putBits(nmea, 77, 6, 33);
+        const dsd_gps_address addr = {1234U, 5678U, 0U};
+        const QByteArray bytes =
+            printed([&]() { nmea_iec_61162_1(rig.opts, rig.state, nmea, NMEA_UDT_LONG_BITS, &addr, 2); });
+        check(rig.admitted() == 1, "UDT NMEA: the report is a checked position");
+        check(checkReportRecords(
+                  bytes,
+                  {QStringLiteral("22.5"), QStringLiteral("45.0"), QStringLiteral("knots"), QStringLiteral("11:22:33")},
+                  "UDT NMEA")
+                  >= 1,
+              "UDT NMEA: the report line is removed");
+    }
+    {
+        /* NXDN GPS report: 10 N, 22 30 E, 2025/06/21. */
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_NXDN_POS;
+        uint8_t bits[DSD_NXDN_GPS_REPORT_BITS] = {0};
+        putBits(bits, 168U - 16U, 16, 2230U);
+        putBits(bits, 200U - 16U, 16, 1000U);
+        putBits(bits, 152U - 16U, 7, 25U);
+        putBits(bits, 159U - 16U, 4, 6U);
+        putBits(bits, 163U - 16U, 5, 20U);
+        const QByteArray bytes =
+            printed([&]() { nxdn_gps_report(rig.opts, rig.state, bits, sizeof(bits), 1234U, nullptr); });
+        check(rig.admitted() == 1, "NXDN: the report is a checked position");
+        check(checkReportRecords(
+                  bytes,
+                  {QStringLiteral("22.5"), QStringLiteral("10.0"), QStringLiteral("k/h"), QStringLiteral("2025/")},
+                  "NXDN GPS")
+                  >= 1,
+              "NXDN: the report line is removed");
+    }
+    {
+        /* L3Harris GPS update body: 22 30 S, 45 W, a fix, on a checked Phase 2 MAC. */
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_P25P2_POS;
+        const uint8_t body[DSD_HARRIS_GPS_BODY_OCTETS] = {0x00, 0x00, 0x9E, 22,   0x00, 0x00, 0x80,
+                                                          45,   0x00, 0x00, 0x00, 0x00, 0x00, 0x10};
+        dsd_gps_report_ctx ctx;
+        DSD_MEMSET(&ctx, 0, sizeof(ctx));
+        ctx.protocol = DSD_SYNC_P25P2_POS;
+        ctx.slot = 1U;
+        ctx.source_id = 234567U;
+        ctx.source_verified = 1U;
+        ctx.pos_verified = 1U;
+        const QByteArray bytes = printed([&]() { (void)nmea_harris(rig.opts, rig.state, body, &ctx); });
+        check(rig.admitted() == 1, "Harris: the report is a checked position");
+        check(checkReportRecords(bytes,
+                                 {QStringLiteral("22.5"), QStringLiteral("45.0"), QStringLiteral("knots"),
+                                  QStringLiteral("SATS"), QStringLiteral("HEADING")},
+                                 "Harris GPS")
+                  >= 1,
+              "Harris: the report line is removed");
+    }
+}
+
 /* J2: a number leaves the key scan only as a labelled producer field, so the forms a command line takes still drop:
  * the reviewer's "args: -19 ppm" (-1 with RC4 key 9) and its units, punctuation and trailing text; the same with no
  * label; every argument echo of a negative-looking key, bare, labelled, JSON, list or shell-quoted; a key beside or
@@ -3091,6 +3303,7 @@ main(int argc, char** argv) {
     measurementCorpusSurvives();
     receivedPositionsAreRemoved();
     realProducersLabelReceivedPositions();
+    everyProducerLabelsEveryPartOfItsReport();
     measurementExemptionsKeepKeyForms();
     syncLabelsSurvive();
     everyExemptionYieldsToArgumentEcho();

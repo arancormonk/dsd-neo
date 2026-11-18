@@ -99,11 +99,12 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
+utf8_to_text_labelled(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input, const char* label) {
     (void)state;
     (void)wr;
     (void)len;
     (void)input;
+    (void)label;
     g_utf8_calls++;
 }
 

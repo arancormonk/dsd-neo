@@ -17127,9 +17127,11 @@ Qt Quick frontend (`src/ui/qt`):
   record that shows a position received over the air with `[redacted position]` (`holdsReceivedPosition()`). The rule
   rests on the producer's label, never on the shape of what the air delivered (a part of a report can look like
   anything): a line matching `kPositionMarkers`, one entry per producer's position, position-message or report-text
-  print (`Lat:`/`Lon:`, `GPS` with D-STAR's `GPS DATA:` slow-data blocks, `GNSS`, `LRRP`, `LOCN` with the MNIS
-  `LOCN Text:` report text, `NMEA` with the checked sentences' `NMEA:` line, LIP, `Location Service`, `Position`, APRS
-  and D-PRS, Cellocator, D-STAR `_UNK:` blocks). As a backstop, a line no label covers still goes when it matches
+  print (`Lat:`/`Lon:`, `GPS` with D-STAR's `GPS DATA:` slow-data blocks and the M17 GNSS line, which also carries
+  its radius, source and station type, `GNSS`, `LRRP` with each line of an LRRP report's details (`LRRP Time:`,
+  `LRRP Radius:`, `LRRP Alt Accuracy:`, `LRRP Speed:`, `LRRP Track:`), `LOCN` with the MNIS `LOCN Text:` report text,
+  `NMEA` with the checked sentences' `NMEA:` line, LIP, `Location Service` with the P25 SAP 48 plain text
+  (`P25 Location Service Text:`), `Position`, APRS and D-PRS, Cellocator, D-STAR `_UNK:` blocks). As a backstop, a line no label covers still goes when it matches
   `kPositionShapes` (raw RMC/GGA/GLL/GNS/VTG sentences, `$$CRC`, the LOCN hemisphere form, the D-PRS
   `ddmm.hhN?dddmm.hhE` form), holds a pair of decimal degrees with at least four places (not followed by a unit), or a
   degrees-and-minutes pair (the minutes' fraction optional, as the NMEA parser reads it); no shape exempts anything.
@@ -17139,7 +17141,10 @@ Qt Quick frontend (`src/ui/qt`):
   position; without `-Z` every line that prints a received position or a part of one carries a label. Keep
   `kPositionMarkers` in step with the producers' print text, give a new position print a label and a line in
   `UI_QT_DIAGNOSTICS_LOG` (`receivedPositionsAreRemoved()`), and drive a new producer of received report text through
-  its real path in `realProducersLabelReceivedPositions()` (`DiagnosticsLog::namesPositionProducerForTest()`).
+  its real path in `realProducersLabelReceivedPositions()` (`DiagnosticsLog::namesPositionProducerForTest()`), and a
+  new producer of a received position in `everyProducerLabelsEveryPartOfItsReport()`, which checks that every line
+  holding any field of the report (coordinates, time, radius or error, altitude, speed, heading, reason, source)
+  carries the label.
   The persistent tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
   `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every
   250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything before

@@ -3338,7 +3338,8 @@ m17_print_gnss(const struct m17_gnss_result* gnss) {
         }
     }
     if ((gnss->validity & M17_GNSS_VALID_RADIUS) != 0U) {
-        DSD_FPRINTF(stderr, "\n      Radius: %.1f;", gnss->radius_m);
+        /* On the GPS line: a part of the report carries the producer's label (issue #800, D10). */
+        DSD_FPRINTF(stderr, " Radius: %.1f m;", gnss->radius_m);
     }
     if (gnss->invalid_zero_fields != 0U) {
         DSD_FPRINTF(stderr, " Nonzero Invalid Fields: %X;", gnss->invalid_zero_fields);
