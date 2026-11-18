@@ -15618,7 +15618,11 @@ Qt Quick frontend (`src/ui/qt`):
     one that names Capacity Max with the mask, channel and stamps unchanged. H1: an update for a fragment is applied to
     the row that holds it, found through `m_fragmentIndex` (`rowHoldingFragment()`), and only then to a row it merges
     with, because a fragment that no longer passes the merge test with the row it was folded into would otherwise be
-    dropped. Decided limits: L7, with a split on conflicting parts a fragment that knows fewer parts (none, or the
+    dropped. Issue #800: so is any reading of a held fragment, an update or not: the seen key holds the row's start,
+    which the core can fill in or move later (`watchdog_event_merge_stamps()`; a row with no start reads its end), so
+    a reading the seen store takes for new is still the fragment its row holds by ring identity, and merging it by
+    content could land it on another row or log a second one. Decided limits: L7, with a split on conflicting parts a
+    fragment that knows fewer parts (none, or the
     system without the site) joins whichever compatible row it meets first, so a live session (oldest first) and a
     backlog (newest first) can group the same three fragments differently; L8, a fragment that later learns parts
     conflicting with the row it already folded into has its identity discarded whole, with its channel, never picked
@@ -15719,7 +15723,9 @@ Qt Quick frontend (`src/ui/qt`):
       merge folds together are two parts and the row keeps what either gave (the later row's source and emergency
       flag). So withdrawing such a fragment takes back only those values: its
       sender and the rest stay, as nothing tells which fragment gave them. The GPS units are kept per fragment beside
-      the parts (`Row::gpsOthers`, each a fragment's by its provenance and its run's session ordinal), and a reading
+      the parts (`Row::gpsOthers`, each a fragment's by its ring identity: its run's session ordinal, slot and push
+      stamp, `call_history_same_fragment()`, never its start, which the core can fill in or move; only for a unit of an
+      unknown run, an older store's, does the start guard the push stamp), and a reading
       gives its own only when it names the row's radio (`fold_gps()`). The texts anonymous fragments gave are
       dropped when the row learns its radio. The reception scope folds by strength from any
       fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the

@@ -5571,6 +5571,74 @@ test_cleared_fix_leaves_single_fragment_row(void) {
     expect("2.7 cleared fix: none after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
 }
 
+/* 2.7: a committed fragment with no start reads its end as its start; the core can fill the start in later
+ * (watchdog_event_merge_stamps()) or move the end, so the same fragment (ring, slot and push stamp) is read with another
+ * start. That reading still replaces and withdraws its own GPS unit: a fragment is known by its ring identity, never by
+ * its stamps, so an obsolete fix neither stays beside the new one nor outlives a reading that clears it, live and after
+ * a reload. */
+void
+test_restamped_fragment_withdraws_its_fix(void) {
+    const time_t when = 1754703800;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* call = with_gps(ring.commit(0, 80421U, 8421U, 0, when + 6), "GPS: A", 225000000, 450000000, 5U);
+        model.refresh(ring.state);
+        expect("restamped: the fix shows first", model.count() == 1 && detail_of(model, 0) == "GPS: A");
+        // The start is filled in and the report replaced: the row shows the new fix only, never the old one beside it.
+        call->event_start_time = when;
+        with_gps(call, "GPS: B", 226000000, 451000000, 6U);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("restamped: the new reading replaces the fragment's fix",
+               model.count() == 1 && detail_of(model, 0) == "GPS: B");
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        expect("restamped: the replaced fix is not kept beside the new one",
+               !stored_row_with(80421U, 8421U).contains(QLatin1String("gpsAlt")));
+        // The end moves and the core clears the report: the fragment's fix goes.
+        call->event_time = when + 9;
+        call->gps_s[0] = '\0';
+        call->pos.valid = 0U;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("restamped: a reading that clears the fix withdraws it",
+               model.count() == 1 && detail_of(model, 0).isEmpty());
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    const QJsonObject stored = stored_row_with(80421U, 8421U);
+    expect("restamped: no fix is saved", !stored.contains(QLatin1String("gps"))
+                                             && !stored.contains(QLatin1String("pos"))
+                                             && !stored.contains(QLatin1String("gpsAlt")));
+    CallHistoryModel reloaded;
+    expect("restamped: none after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+}
+
+/* 2.7: a fragment read again with another start is still the fragment its row holds, found by its ring identity
+ * however far down the log the row sits: no second row for it, however far the merge search reaches. */
+void
+test_restamped_fragment_found_by_identity(void) {
+    const time_t when = 1754704000;
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    Event_History* call = with_gps(ring.commit(0, 80431U, 8431U, 0, when + 6), "GPS: A", 225000000, 450000000, 5U);
+    model.refresh(ring.state);
+    ring.commitBatch(0, 40, 81000U, 9100U, when + 100);
+    model.refresh(ring.state);
+    expect("restamped far: 41 rows", model.count() == 41);
+    call = &ring.rings[0].Event_History_Items[41];
+    expect("restamped far: the ring row is the fragment", call->target_id == 80431U && call->source_id == 8431U);
+    call->event_start_time = when;
+    with_gps(call, "GPS: B", 226000000, 451000000, 6U);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("restamped far: no second row for the fragment", model.count() == 41);
+    expect("restamped far: its row reads the new fix", detail_of(model, 40) == "GPS: B");
+}
+
 /* B2: a spill line kept after a failed read replays an older reading of a fragment whose newer reading the save
  * already holds (the same fragment of the same run): nothing of the older reading comes back, neither its message nor
  * its source label (an alias the core learned in place since), as no older GPS reading does. */
@@ -7202,6 +7270,8 @@ main(int argc, char** argv) {
     test_spill_text_only_replay_keeps_saved_position();
     test_lost_fix_gives_way_to_remaining_fragment();
     test_cleared_fix_leaves_single_fragment_row();
+    test_restamped_fragment_withdraws_its_fix();
+    test_restamped_fragment_found_by_identity();
     test_spill_replay_keeps_newer_message();
     test_fragment_texts_follow_the_rows_radio();
     test_position_order_follows_runs_and_revs();

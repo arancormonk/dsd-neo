@@ -90,11 +90,11 @@ gps_unit_adopts(const GpsUnit& stored, const GpsUnit& incoming) {
                                    gps_key(incoming), provenance(incoming.when, incoming.seq, incoming.slot));
 }
 
-/** @brief Whether two GPS units are readings of one fragment: the same provenance and session ordinal. */
+/** @brief Whether two GPS units are readings of one fragment (call_history_same_fragment(): its ring identity). */
 bool
 gps_units_same_fragment(const GpsUnit& a, const GpsUnit& b) {
-    return call_history_provenance_compare(provenance(a.when, a.seq, a.slot), provenance(b.when, b.seq, b.slot)) == 0
-           && a.ord == b.ord;
+    return call_history_same_fragment(provenance(a.when, a.seq, a.slot), a.ord, provenance(b.when, b.seq, b.slot),
+                                      b.ord);
 }
 
 /** @brief The GPS unit a row shows (its gps* fields). */

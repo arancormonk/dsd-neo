@@ -2536,7 +2536,10 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // An update refines the row that already holds its fragment, found by the fragment (issue #799, H1). Merged again
     // by its content it could miss that row once it brings what the row's other fragments disagree with (a site the
     // core filled in later), and be dropped. A row an older build stored keeps no fragments, and is found by merging.
-    int merged = isUpdate ? rowHoldingFragment(row) : -1;
+    // A reading the seen store takes for new is still that row's when its fragment is held (issue #800, 2.7): the
+    // fragment's ring identity is stable, while its seen key holds its start, which the core can fill in or move later
+    // (watchdog_event_merge_stamps()); merged by content it could land on another row or log a second one.
+    int merged = rowHoldingFragment(row);
     if (merged >= 0) {
         foldRow(m_rows[merged], row);
     } else {

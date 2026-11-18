@@ -511,10 +511,33 @@ call_history_position_key_compare(const CallHistoryPositionKey& a, const CallHis
 }
 
 /**
+ * @brief Whether two readings are of one ring fragment (issue #800, 2.7): the same run (session ordinal),
+ * slot and push stamp, the fragment's stable ring identity (call_history_fragment_key()). Its start is not part of it:
+ * a committed fragment with no start reads its end as its start, and the core can fill the start in or move the end
+ * later (watchdog_event_merge_stamps()), so two readings of one fragment can carry different starts. Only when either
+ * run is not known (ordinal 0: an older store) does the start guard the push stamp, which a restarted run counts from
+ * zero again, as the seen key's does (seen_key()); fail closed, two such readings are one fragment only when every part
+ * of their provenance agrees.
+ *
+ * @param a     One reading's provenance.
+ * @param a_ord Its run's session ordinal, 0 when not known.
+ * @param b     The other's.
+ * @param b_ord Its run's session ordinal, 0 when not known.
+ */
+inline bool
+call_history_same_fragment(const CallHistoryProvenance& a, int64_t a_ord, const CallHistoryProvenance& b,
+                           int64_t b_ord) {
+    if (a_ord != b_ord || a.seq != b.seq || a.slot != b.slot) {
+        return false;
+    }
+    return a_ord > 0 || a.when == b.when;
+}
+
+/**
  * @brief Whether a fragment's GPS text and position replace the merged row's (issue #800, 2.7). They move together: the
  * text and the coordinates always come from one fragment.
  *
- * Two readings of the same fragment (the same provenance and ordinal) are ordered by their versions when both are
+ * Two readings of the same fragment (call_history_same_fragment()) are ordered by their versions when both are
  * known: the later reading wins, with or without a position, so the core's text-only GPS write (which drops the
  * position) still applies while an older spill line replayed over a newer save never does. Otherwise the fragment with
  * the greatest key wins, whatever order the fragments arrive in. A keyed fragment beats one with no key (a row an older
@@ -541,13 +564,14 @@ call_history_gps_adopts(bool stored_known, const CallHistoryPositionKey& stored_
         return true;
     }
     const int order = call_history_provenance_compare(incoming, stored);
-    const bool same_fragment = order == 0 && incoming_key.ord == stored_key.ord;
+    const bool same_fragment = call_history_same_fragment(incoming, incoming_key.ord, stored, stored_key.ord);
     if (same_fragment && incoming_key.version != 0U && stored_key.version != 0U) {
         return incoming_key.version >= stored_key.version;
     }
     if (stored_key.keyed && incoming_key.keyed) {
+        // The start orders distinct fragments only: the same fragment read again takes what it says now.
         const int keys = call_history_position_key_compare(incoming_key, stored_key);
-        return keys > 0 || (keys == 0 && order >= 0);
+        return keys > 0 || (keys == 0 && (same_fragment || order >= 0));
     }
     if (same_fragment && !incoming_key.keyed) {
         return true;
@@ -563,7 +587,7 @@ call_history_gps_adopts(bool stored_known, const CallHistoryPositionKey& stored_
  * fragment (issue #800, 2.7): the core cleared both (a report that no longer qualifies for the row), so the row no
  * longer shows or saves them.
  *
- * Only a reading of the same fragment (the same provenance and ordinal), and only one at least as late as the held one
+ * Only a reading of the same fragment (call_history_same_fragment()), and only one at least as late as the held one
  * by the rule call_history_gps_adopts() orders two readings of a fragment: by their versions when both are known, else
  * the fragment read again takes what it says now. A reading of another fragment never withdraws anything.
  *
@@ -575,7 +599,7 @@ call_history_gps_adopts(bool stored_known, const CallHistoryPositionKey& stored_
 inline bool
 call_history_gps_withdraws(const CallHistoryPositionKey& stored_key, const CallHistoryProvenance& stored,
                            const CallHistoryPositionKey& reading_key, const CallHistoryProvenance& reading) {
-    if (call_history_provenance_compare(reading, stored) != 0 || reading_key.ord != stored_key.ord) {
+    if (!call_history_same_fragment(reading, reading_key.ord, stored, stored_key.ord)) {
         return false;
     }
     if (reading_key.version != 0U && stored_key.version != 0U) {
