@@ -943,6 +943,43 @@ test_lich_lsd_bound_to_its_first_chunk(void) {
     }
 }
 
+/* Issue #800 (g62-r5): an IP stream of data type 0 opens no call, so nothing but its stream ID and sender tells two
+ * transmissions apart. Two stations reusing stream ID 0xBEEF with the same GNSS META and no EOT between them are two
+ * reports: both reach the feed. */
+static void
+test_ip_unbound_stream_repeat_includes_sender(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    uint8_t bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    uint8_t frame[54];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    write_bits(bits + 96, m17_compose_frame_info(1U, 0U, 0U, 1U, 5U, 0U, 0U), 16U);
+    const uint64_t rev = dsd_position_last_rev();
+    for (uint16_t fn = 1U; fn <= 3U; fn++) {
+        build_ip_stream_frame_fn(frame, bits, 0xBEEFU, fn, 0);
+        m17_ip_dispatch_frame(r.opts, r.state, frame, (int)sizeof(frame));
+    }
+    expect_int("first sender admitted once", (long long)(dsd_position_last_rev() - rev), 1);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_true("data type 0 opens no call",
+                dsd_call_state_get(r.state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+    m17_load_lsf_callsigns(bits, m17_encode_b40_callsign(0ULL, TEST_DST_CALLSIGN),
+                           m17_encode_b40_callsign(0ULL, "TEST2"));
+    for (uint16_t fn = 4U; fn <= 6U; fn++) {
+        build_ip_stream_frame_fn(frame, bits, 0xBEEFU, fn, 0);
+        m17_ip_dispatch_frame(r.opts, r.state, frame, (int)sizeof(frame));
+    }
+    expect_int("second sender on the same stream ID admitted once", (long long)(dsd_position_last_rev() - rev), 2);
+    dsd_position_fix f[4];
+    expect_int("both senders in the feed", feed_records(&r, f, 4U), 2);
+    expect_true("second record is the second sender's", strcmp(f[1].source_text, "TEST2") == 0);
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_rf_lsf_meta_position();
@@ -955,6 +992,7 @@ main(void) {
     test_meta_field_ranges();
     test_lich_lsd_position();
     test_lich_lsd_bound_to_its_first_chunk();
+    test_ip_unbound_stream_repeat_includes_sender();
     test_local_tx_monitor_gives_nothing();
     test_local_tx_stream_monitor_gives_nothing();
     test_ip_stream_position();

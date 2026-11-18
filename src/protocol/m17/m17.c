@@ -627,6 +627,34 @@ m17_active_call(const dsd_state* state, dsd_call_snapshot* call) {
  * that observed none (a stream of data type 0) is bound to no call, whatever M17 call is still ACTIVE on the slot: that
  * call may be another station's. Nothing else in M17 carries a position (D13).
  */
+/* What tells one GNSS META report's transmission from another's (dsd_state::m17_gnss_tx_kind and the fields after it). */
+typedef struct {
+    uint8_t kind;
+    uint64_t id;
+    uint64_t epoch;
+    uint64_t src;
+    uint64_t gen;
+} m17_gnss_tx_key;
+
+/* 1 when the META now held repeats the last admitted one within the same transmission, sender and reception. */
+static int
+m17_gnss_is_repeat(const dsd_state* state, const m17_gnss_tx_key* key) {
+    return state->m17_gnss_tx_kind == key->kind && state->m17_gnss_tx_id == key->id
+           && state->m17_gnss_tx_epoch == key->epoch && state->m17_gnss_tx_src == key->src
+           && state->m17_gnss_tx_gen == key->gen
+           && memcmp(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES) == 0;
+}
+
+static void
+m17_gnss_note_admitted(dsd_state* state, const m17_gnss_tx_key* key) {
+    state->m17_gnss_tx_kind = key->kind;
+    state->m17_gnss_tx_id = key->id;
+    state->m17_gnss_tx_epoch = key->epoch;
+    state->m17_gnss_tx_src = key->src;
+    state->m17_gnss_tx_gen = key->gen;
+    DSD_MEMCPY(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
+}
+
 static void
 m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
                           const struct m17_gnss_result* gnss, const m17_lsf_carrier* carrier) {
@@ -647,22 +675,27 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     /* One report per transmission and META content: an RF stream's call (the one m17_publish_lsf() just observed for
        this LSF), or a network stream's ID within its call. The call epoch is part of both, so however a call ended
        (stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync) the next one is another transmission. An LSF that
-       observed no call has no epoch. */
-    const uint8_t tx_kind = carrier->network ? 2U : 1U;
-    const uint64_t epoch = active ? call.epoch : 0U;
-    const uint64_t tx_id = carrier->network ? (uint64_t)carrier->stream_id : epoch;
-    if (state->m17_gnss_tx_kind == tx_kind && state->m17_gnss_tx_id == tx_id && state->m17_gnss_tx_epoch == epoch
-        && memcmp(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES) == 0) {
+       observed no call has no epoch, so the checked sender is part of the key too (two stations reusing one stream ID
+       are two transmissions), and the reception generation: a repeat is only ever one heard on the same reception. */
+    m17_gnss_tx_key key;
+    key.kind = carrier->network ? 2U : 1U;
+    key.epoch = active ? call.epoch : 0U;
+    key.id = carrier->network ? (uint64_t)carrier->stream_id : key.epoch;
+    key.src = res->src;
+    dsd_position_origin heard;
+    dsd_position_origin_capture(opts, state, &heard);
+    key.gen = heard.gen;
+    if (m17_gnss_is_repeat(state, &key)) {
         return;
     }
     if (dsd_position_admit(opts, state, &fix, 1, 1, NULL) == DSD_POSITION_REFUSED) {
         return;
     }
     /* An RF report with no active call has no transmission to repeat within: the next one is admitted again. */
-    state->m17_gnss_tx_kind = (carrier->network || tx_id != 0U) ? tx_kind : 0U;
-    state->m17_gnss_tx_id = tx_id;
-    state->m17_gnss_tx_epoch = epoch;
-    DSD_MEMCPY(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
+    if (!carrier->network && key.id == 0U) {
+        key.kind = 0U;
+    }
+    m17_gnss_note_admitted(state, &key);
     char text[128];
     m17_gnss_row_text(&fix, text, sizeof(text));
     if (active) {
