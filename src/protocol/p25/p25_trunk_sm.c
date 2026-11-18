@@ -7688,6 +7688,19 @@ p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uin
 }
 
 int
+p25_sm_call_source_withdrawn(const dsd_state* state, int slot, uint64_t epoch, uint32_t source) {
+    if (!state || slot < 0 || slot > 1 || epoch == 0U) {
+        return 0;
+    }
+    const p25_sm_published_identity* published = &p25_sm_get_ctx()->slots[slot].published;
+    if (published->epoch != epoch) {
+        return 0;
+    }
+    return published->source != source
+           || (p25_published_verdicts_now(published, state) & (uint8_t)P25_SM_IDENTITY_CHECKED_SOURCE) == 0U;
+}
+
+int
 p25_sm_checked_call_identity(const dsd_state* state, int slot, int report_protocol, p25_sm_published_identity* out) {
     if (out) {
         DSD_MEMSET(out, 0, sizeof(*out));

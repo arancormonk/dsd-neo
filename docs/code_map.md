@@ -12484,7 +12484,11 @@ Private per-protocol modules worth knowing about:
   (an omitted field). That is one naming a special address, a source that is not a complete local address (the Source
   ID Extension Required flag, octet 3 bit 0, or LCO $4A, whose Source ID always needs the extension), another radio by
   a soft decode, or a radio the call does not hold, whether or not a trunked assignment keeps the earlier talker for
-  display (test `P25_P1_HARRIS_GPS`). A link control
+  display (test `P25_P1_HARRIS_GPS`). The LC record also counts only while the state machine's record of the same
+  call has not withdrawn that talker (`p25_sm_call_source_withdrawn()`: it names another source, or that one without
+  its checked flag as it counts now), so any checked message the state machine applies to the call, a repeated grant
+  naming a special address or a non-local source among them, revokes the LC evidence as well (test
+  `P25_P1_HARRIS_GPS` `test_repeat_grant_withdraws_evidence()`). A link control
   counts as hard-decoded only when no soft-erasure retry recovered it and the caller's `irrecoverable_errors` verdict is
   0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A special address (`0xFFFFFC`-`0xFFFFFF`) is never a checked source
   (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet, so

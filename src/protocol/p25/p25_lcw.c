@@ -938,7 +938,10 @@ p25_lcw_gps_call_source(const p25_lcw_gps_call* call) {
 
 /* A GPS report's provenance (spec 2.2): the position is checked when its link control(s) passed a hard RS decode
  * (@p pos_verified); the source, target and group flag by the attribution rule from the evidence a hard-decoded
- * voice-user link control of this call gave (p25_lcw_note_checked_identity(), dsd_position_attribution_grant()). */
+ * voice-user link control of this call gave (p25_lcw_note_checked_identity(), dsd_position_attribution_grant()), and
+ * only while no other checked message of the call withdrew that talker: the trunk state machine's record of the call
+ * (a repeated grant naming a special address or another source, for one) is the one record every P25 message updates,
+ * so its withdrawal revokes this evidence too (p25_sm_call_source_withdrawn(), issue #800, fail closed). */
 static void
 p25_lcw_gps_report_ctx(const p25_lcw_ctx* ctx, const p25_lcw_gps_call* call, int pos_verified,
                        const dsd_position_origin* origin, dsd_gps_report_ctx* out) {
@@ -952,7 +955,8 @@ p25_lcw_gps_report_ctx(const p25_lcw_ctx* ctx, const p25_lcw_gps_call* call, int
     out->pos_verified = pos_verified ? 1U : 0U;
     dsd_position_attribution granted;
     if (dsd_position_attribution_grant(ctx->state, &ctx->state->p25_p1_lc_attribution, &call->view, out->protocol,
-                                       &granted)) {
+                                       &granted)
+        && !p25_sm_call_source_withdrawn(ctx->state, 0, call->view.epoch, granted.source)) {
         out->source_verified = 1U;
         out->target_id = granted.target;
         out->target_group = granted.group;

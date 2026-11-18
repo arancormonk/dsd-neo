@@ -941,6 +941,50 @@ test_voice_user_withdraws_evidence(void) {
     }
 }
 
+/* Issue #800, fail closed: on a trunked FDMA call, a checked repeat of the call's grant (same channel and talkgroup)
+ * whose source field names a special address ($FFFFFC-$FFFFFF) or a source that is no local address takes the talker
+ * away in the trunk state machine's record, though the call keeps SRC_A for display: the voice-user LC evidence of
+ * SRC_A goes with it, so the next L3Harris or APX report is anonymous until a checked voice user names a radio again. A
+ * repeat naming SRC_A itself changes nothing. */
+static void
+test_repeat_grant_withdraws_evidence(void) {
+    static const struct {
+        const char* tag;
+        uint32_t src;
+        int nonlocal;
+        int keeps;
+    } cases[] = {
+        {"repeat grant, special FFFFFD", 0xFFFFFDU, 0, 0},
+        {"repeat grant, special FFFFFC", 0xFFFFFCU, 0, 0},
+        {"repeat grant, non-local source", SRC_A, 1, 0},
+        {"repeat grant, same talker", SRC_A, 0, 1},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        for (int apx = 0; apx <= 1; apx++) {
+            fixture f;
+            fixture_open(&f);
+            follow_fdma_grant(&f, 0);
+            send_voice_user(&f, 0x00, 0x00, SRC_A, 0, 0);
+            expect_gps_names(&f, apx, SRC_A, "repeat grant: before");
+            p25_sm_event_t repeat = p25_sm_ev_group_grant(0x1234, 851500000L, (int)TG_A, (int)cases[i].src, 0x00);
+            repeat.identity_checked = P25_SM_IDENTITY_CHECKED_ALL;
+            repeat.source_nonlocal = (uint8_t)cases[i].nonlocal;
+            p25_sm_event(p25_sm_get_ctx(), f.opts, f.st, &repeat);
+            dsd_call_snapshot call;
+            char tag[128];
+            DSD_SNPRINTF(tag, sizeof tag, "%s: call kept with its talker", cases[i].tag);
+            expect_true(tag, dsd_call_state_get(f.st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                                 && call.ota_source_id == SRC_A);
+            expect_gps_names(&f, apx, cases[i].keeps ? SRC_A : 0U, cases[i].tag);
+            send_voice_user(&f, 0x00, 0x00, SRC_A, 0, 0);
+            expect_gps_names(&f, apx, SRC_A, "repeat grant: named again");
+            p25_sm_init_ctx(p25_sm_get_ctx(), f.opts, f.st);
+            fixture_close(&f);
+        }
+    }
+}
+
 /* V1, V3, the time field, quality, emergency and speed, through the decoder with a checked context. */
 static int
 decode(fixture* f, const body_fields* b, dsd_position_fix* fix) {
@@ -1055,6 +1099,7 @@ main(void) {
     test_uncorrectable_verdict();
     test_reserved_source();
     test_voice_user_withdraws_evidence();
+    test_repeat_grant_withdraws_evidence();
     test_fields();
     dsd_decode_clock_use_system();
     if (g_fail) {
