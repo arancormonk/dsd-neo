@@ -18,12 +18,14 @@ and those of the transfers never submitted. The callback keeps the slot when
 it resubmits; any other outcome (stopping, a failed status or resubmission)
 gives it back as its last touch of the device. A start that fails after
 submitting some of the batch (a refused submission, or a thread that cannot
-start) takes them back before it returns, as a stop would, so it leaves the
-device idle and a start can follow at once. The stop's single poll is
-replaced by a wait: cancel the transfers and handle events until the count is
-zero, with no timeout, since libusb guarantees each callback. Each pass
-cancels again, in case a callback on another thread resubmitted before it saw
-the stop; a poll that keeps failing backs off 1 ms instead of spinning.
+start) takes them back before it returns, as a stop would, and switches the
+receiver off again (best effort: the caller gets the start's own error), so
+it leaves the device idle and a start can follow at once. The stop's single
+poll is replaced by a wait: cancel the transfers and handle events until the
+count is zero, with no timeout, since libusb guarantees each callback. Each
+pass cancels again, in case a callback on another thread resubmitted before
+it saw the stop; a poll that keeps failing backs off 1 ms instead of
+spinning.
 
 A stream that ended by itself (a failed transfer or event poll, or the sample
 callback asking to stop) left its threads unjoined and its other transfers in
@@ -44,7 +46,7 @@ Windows, Linux AppImage and macOS releases.
 Generated against airspyone_host bd15be38e91ebaa3e0bebb1e320255bde4ccf059.
 
 diff --git a/libairspy/src/airspy.c b/libairspy/src/airspy.c
-index a2caf38..25b06e9 100644
+index a2caf38..6f70593 100644
 --- a/libairspy/src/airspy.c
 +++ b/libairspy/src/airspy.c
 @@ -33,6 +33,52 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
@@ -249,12 +251,9 @@ index a2caf38..25b06e9 100644
  {
 -	struct timeval timeout = { 0, 0 };
 +	struct timeval timeout = { 0, 500000 };
- 
--	if (device->stop_requested)
++
 +	while (shared_load(&device->transfers_outstanding) > 0)
- 	{
--		device->stop_requested = false;
--		device->streaming = false;
++	{
 +		cancel_transfers(device);
 +		if (libusb_handle_events_timeout_completed(device->usb_context, &timeout, NULL) < 0)
 +		{
@@ -267,11 +266,14 @@ index a2caf38..25b06e9 100644
 +		}
 +	}
 +}
-+
+ 
+-	if (device->stop_requested)
 +static int kill_io_threads(airspy_device_t* device)
 +{
 +	if (shared_load(&device->stop_requested))
-+	{
+ 	{
+-		device->stop_requested = false;
+-		device->streaming = false;
 +		shared_store(&device->stop_requested, false);
 +		shared_store(&device->streaming, false);
  		cancel_transfers(device);
@@ -360,7 +362,22 @@ index a2caf38..25b06e9 100644
  		iqconverter_float_reset(device->cnv_f);
  		iqconverter_int16_reset(device->cnv_i);
  
-@@ -1221,7 +1333,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+@@ -1212,6 +1324,14 @@ int airspy_list_devices(uint64_t *serials, int count)
+ 		{
+ 			device->ctx = ctx;
+ 			result = create_io_threads(device, callback);
++			if (result != AIRSPY_SUCCESS && result != AIRSPY_ERROR_BUSY)
++			{
++				/* The failed start took its transfers back; switch the
++				 * receiver off again too, as a stop would. Best effort:
++				 * the caller gets the start's own error. A busy device
++				 * is streaming already, so its receiver stays on. */
++				airspy_set_receiver_mode(device, RECEIVER_MODE_OFF);
++			}
+ 		}
+ 
+ 		return result;
+@@ -1221,7 +1341,7 @@ int airspy_list_devices(uint64_t *serials, int count)
  	{
  		int result1, result2;
  
@@ -369,7 +386,7 @@ index a2caf38..25b06e9 100644
  		result1 = airspy_set_receiver_mode(device, RECEIVER_MODE_OFF);
  		result2 = kill_io_threads(device);
  
-@@ -1658,7 +1770,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+@@ -1658,7 +1778,7 @@ int airspy_list_devices(uint64_t *serials, int count)
  
  	int ADDCALL airspy_set_conversion_filter_float32(struct airspy_device* device, const float *kernel, const uint32_t len)
  	{
@@ -378,7 +395,7 @@ index a2caf38..25b06e9 100644
  		{
  			return AIRSPY_ERROR_BUSY;
  		}
-@@ -1671,7 +1783,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+@@ -1671,7 +1791,7 @@ int airspy_list_devices(uint64_t *serials, int count)
  
  	int ADDCALL airspy_set_conversion_filter_int16(struct airspy_device* device, const int16_t *kernel, const uint32_t len)
  	{
@@ -387,7 +404,7 @@ index a2caf38..25b06e9 100644
  		{
  			return AIRSPY_ERROR_BUSY;
  		}
-@@ -1905,7 +2017,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+@@ -1905,7 +2025,7 @@ int airspy_list_devices(uint64_t *serials, int count)
  		uint8_t retval;
  		bool packing_enabled;
  
@@ -396,7 +413,7 @@ index a2caf38..25b06e9 100644
  		{
  			return AIRSPY_ERROR_BUSY;
  		}
-@@ -1928,7 +2040,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+@@ -1928,7 +2048,7 @@ int airspy_list_devices(uint64_t *serials, int count)
  		packing_enabled = value ? true : false;
  		if (packing_enabled != device->packing_enabled)
  		{
@@ -405,7 +422,7 @@ index a2caf38..25b06e9 100644
  			free_transfers(device);
  
  			device->packing_enabled = packing_enabled;
-@@ -1946,7 +2058,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+@@ -1946,7 +2066,7 @@ int airspy_list_devices(uint64_t *serials, int count)
  
  	int ADDCALL airspy_is_streaming(airspy_device_t* device)
  	{

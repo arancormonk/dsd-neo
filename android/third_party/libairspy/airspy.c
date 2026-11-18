@@ -1324,6 +1324,14 @@ int airspy_list_devices(uint64_t *serials, int count)
 		{
 			device->ctx = ctx;
 			result = create_io_threads(device, callback);
+			if (result != AIRSPY_SUCCESS && result != AIRSPY_ERROR_BUSY)
+			{
+				/* The failed start took its transfers back; switch the
+				 * receiver off again too, as a stop would. Best effort:
+				 * the caller gets the start's own error. A busy device
+				 * is streaming already, so its receiver stays on. */
+				airspy_set_receiver_mode(device, RECEIVER_MODE_OFF);
+			}
 		}
 
 		return result;

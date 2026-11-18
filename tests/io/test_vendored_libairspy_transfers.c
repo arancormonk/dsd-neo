@@ -224,6 +224,7 @@ static int g_cancels_while_parked;
 static int g_late_resubmits; /* resubmissions that went in after those cancels */
 static int g_park_done;      /* the parked resubmission has gone in */
 static int g_idle_polls;     /* polls in a row with nothing to deliver and no cancellation to come */
+static int g_receiver_mode;  /* the last receiver mode requested (RECEIVER_MODE_OFF or _RX); -1: none yet */
 static const char* g_case_name = "";
 static pthread_t g_main_thread;
 
@@ -422,15 +423,19 @@ libusb_handle_events_timeout_completed(libusb_context* ctx, struct timeval* tv, 
 }
 
 /* Receiver-mode and other OUT requests succeed, as does the packing request; the IN reads fail, so the open falls back
- * to its default sample rates. */
+ * to its default sample rates. The firmware's receiver mode is the last one requested. */
 int LIBUSB_CALL
 libusb_control_transfer(libusb_device_handle* dev_handle, uint8_t bmRequestType, uint8_t bRequest, uint16_t wValue,
                         uint16_t wIndex, unsigned char* data, uint16_t wLength, unsigned int timeout) {
     (void)dev_handle;
-    (void)wValue;
     (void)wIndex;
     (void)timeout;
     if ((bmRequestType & LIBUSB_ENDPOINT_IN) == 0) {
+        if (bRequest == AIRSPY_RECEIVER_MODE) {
+            pthread_mutex_lock(&g_mu);
+            g_receiver_mode = (int)wValue;
+            pthread_mutex_unlock(&g_mu);
+        }
         return (int)wLength;
     }
     if (bRequest == AIRSPY_SET_PACKING && wLength == 1) {
@@ -650,6 +655,7 @@ open_case(const char* name) {
     g_cancels_while_parked = 0;
     g_late_resubmits = 0;
     g_idle_polls = 0;
+    g_receiver_mode = -1;
     g_case_name = name;
     pthread_mutex_unlock(&g_mu);
 
@@ -810,8 +816,8 @@ restart_reuses_only_returned_transfers(int after_stop) {
 }
 
 /* The third submission of a start is refused: the two in flight come back only when cancelled, 50 ms later. The failed
- * start must take both back before it returns, so the device is idle: a start can follow at once, and the stop that
- * airspy_source makes after a failed start finds nothing to do. */
+ * start must take both back before it returns and switch the receiver it switched on off again, so the device is idle:
+ * a start can follow at once, and the stop that airspy_source makes after a failed start finds nothing to do. */
 static void
 partial_start_submit(int stop_first) {
     const char* name = stop_first ? "partial_start_submit (stop, then start)" : "partial_start_submit (start again)";
@@ -827,11 +833,13 @@ partial_start_submit(int stop_first) {
     expect(name, read_counter(&g_cancelled_callbacks) == 2,
            "both submitted transfers called back as cancelled before the failed start returned");
     expect(name, !airspy_is_streaming(dev), "not streaming after the failed start");
+    expect(name, read_counter(&g_receiver_mode) == RECEIVER_MODE_OFF, "the receiver is off after the failed start");
     if (stop_first) {
         expect(name, airspy_stop_rx(dev) == AIRSPY_SUCCESS, "stop after the failed start");
     }
     release_stream();
     stream_run(name, dev, "start after the failed start");
+    expect(name, read_counter(&g_receiver_mode) == RECEIVER_MODE_RX, "the receiver is on after the start");
     expect(name, read_counter(&g_busy_submits) == 0, "the start after the failed one submitted no transfer in flight");
     hold_stream();
     (void)airspy_stop_rx(dev);

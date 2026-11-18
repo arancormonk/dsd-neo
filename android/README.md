@@ -1835,8 +1835,8 @@ vendored copy, like the librtlsdr ones.
   keeps handling events until each has been called back, so `airspy_close()`
   never frees, and a restart (a retune's stop and start) never resubmits, a
   transfer libusb still owns. A start whose submission fails gives back the slots
-  of the transfers it never submitted and waits for the rest before it returns,
-  so a start can follow at once.
+  of the transfers it never submitted, waits for the rest and switches the
+  receiver off again before it returns, so a start can follow at once.
   A stream that ended by itself is reaped the same way before a start or a
   packing change reuses its transfers. `streaming` and `stop_requested` become
   atomic too, since the library's own threads share them.
