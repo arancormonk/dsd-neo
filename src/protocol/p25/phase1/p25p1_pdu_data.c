@@ -971,9 +971,10 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
             nmea_sentence_checker(opts, state, payload_bits, slot, span, packet_verified, origin) != 0U;
     } else {
         /* Only a payload that is not NMEA is plain text: sentences whose checksums failed are never shown or kept as
-           text, since their coordinates were not checked (issue #800 2.4). */
+           text, since their coordinates were not checked (issue #800 2.4). The location service's text can hold a
+           position in any form, so its line names the service (issue #800, D10): the diagnostics log removes it. */
         uint8_t write_history = (state != NULL && state->event_history_s != NULL) ? 1U : 0U;
-        utf8_to_text(state, write_history, (uint16_t)span, payload);
+        utf8_to_text_labelled(state, write_history, (uint16_t)span, payload, "P25 Location Service Text");
     }
     p25_store_lrrp_text_for_history(state);
     const char* summary = dsd_event_staged_text(state, 0);

@@ -201,8 +201,10 @@ typedef enum {
 /**
  * Write a protocol's decoded detail into the row of the slot's open call.
  *
- * Written only while the slot's canonical call is active and its epoch has been opened, so the staged row is that
- * call's own. Otherwise the detail is declined: decoded before any call for the transmission was observed (an RF
+ * Written only while the slot's canonical call is active, its epoch has been opened and it is a call of the detail's
+ * own protocol family (@p protocol, the sync type the detail was decoded under: dsd_sync_protocol_family()), so the
+ * staged row is that call's own. Another protocol's call still open on the slot is no call of the detail: D-STAR slow
+ * data decoded under one unconfirmed sync never reaches a DMR call's row. Otherwise the detail is declined: decoded before any call for the transmission was observed (an RF
  * header that failed its CRC, late entry, an alias ahead of the call message), or after the call ended, it has no row
  * to go to, and written into the staged row it would become a detail-only row or land on another call's row. Slow data
  * and aliases repeat, so declined detail lands once the call is open. Callers must not hold an event-history
@@ -210,7 +212,8 @@ typedef enum {
  *
  * @return 1 when written, 0 when declined, -1 for invalid arguments.
  */
-int dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value);
+int dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, int protocol, dsd_event_detail_field field,
+                                   const char* value);
 void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
 /**
  * Re-judge the rdio-scanner export of slot @p slot's staged row now, as its next render would (issue #773 D7), so a

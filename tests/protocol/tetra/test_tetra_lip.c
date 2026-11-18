@@ -156,9 +156,10 @@ sds_lip(uint32_t type, uint32_t ssi, uint32_t mcc, uint32_t mnc, const ttb_block
 
 /* Part @p sequence of 2 of concatenated message @p reference (tables 29.60, 29.62) under PID 12, or with
  * @p transport under PID 140 after an SDS-TRANSFER header (table 29.11), holding @p n bits of @p payload from SSI
- * @p ssi; part 1 names payload PID 10. */
+ * @p ssi; part 1 names payload PID @p payload_pid. */
 static ttb_block
-sds_concat_part(uint32_t ssi, int transport, uint32_t reference, uint32_t sequence, const uint8_t* payload, int n) {
+sds_concat_part_pid(uint32_t ssi, int transport, uint32_t reference, uint32_t sequence, uint32_t payload_pid,
+                    const uint8_t* payload, int n) {
     ttb_block c = {0};
     const int head = 8 + (transport ? 16 : 0) + 3 + 1 + 4 + 8 + 8 + (sequence == 1u ? 8 : 0);
     sds_head(&c, 1, ssi, 0, 0, head + n);
@@ -175,11 +176,17 @@ sds_concat_part(uint32_t ssi, int transport, uint32_t reference, uint32_t sequen
     ttb_put(&c, 2, 8);         /* parts */
     ttb_put(&c, sequence, 8);
     if (sequence == 1u) {
-        ttb_put(&c, 10, 8); /* PID of the whole message: location information protocol */
+        ttb_put(&c, payload_pid, 8); /* PID of the whole message */
     }
     ttb_put_bits(&c, payload, n);
     ttb_put(&c, 0, 1); /* O-bit */
     return c;
+}
+
+/* sds_concat_part_pid() whose part 1 names payload PID 10 (location information protocol). */
+static ttb_block
+sds_concat_part(uint32_t ssi, int transport, uint32_t reference, uint32_t sequence, const uint8_t* payload, int n) {
+    return sds_concat_part_pid(ssi, transport, reference, sequence, 10u, payload, n);
 }
 
 /* A MAC-RESOURCE to the SSI @p addressed (address type @p addr_type; for an event label alone, @p addressed is the
@@ -550,6 +557,43 @@ test_concatenated_one_recipient(void) {
     session_close(&s);
 }
 
+/* Two concatenated messages from one sender to one party can share a reference. A part 1 with the same bits as the
+ * one held but another payload PID is another message's part 1, never a repeat: the message held is discarded, and
+ * the part 2 that follows completes nothing, so no LIP position is read from bits a PID 64 message sent. With the
+ * same PID the repeat is a duplicate, and the message completes as one report. */
+static void
+test_concatenated_first_part_pid(void) {
+    const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
+    for (int transport = 0; transport < 2; transport++) {
+        session s = session_open();
+        ttb_block c = sds_concat_part_pid(SENDER_SSI, transport, 5, 1, 10u, lip.bits, 40);
+        send_sds(&s, &c, 0, 0);
+        c = sds_concat_part_pid(SENDER_SSI, transport, 5, 1, 64u, lip.bits, 40);
+        send_sds(&s, &c, 0, 0);
+        assert(strstr(s.log, "duplicate") == NULL);
+        c = sds_concat_part(SENDER_SSI, transport, 5, 2, lip.bits + 40, lip.n - 40);
+        send_sds(&s, &c, 0, 0);
+        dsd_position_fix rec[2];
+        assert(strstr(s.log, "TETRA SDS LIP") == NULL);
+        assert(feed_since(&s, 0, rec, 2) == 0);
+        char lfile[512];
+        read_lfile(&s, lfile, sizeof lfile);
+        assert(lfile[0] == '\0');
+        session_close(&s);
+
+        s = session_open();
+        c = sds_concat_part(SENDER_SSI, transport, 5, 1, lip.bits, 40);
+        send_sds(&s, &c, 0, 0);
+        send_sds(&s, &c, 0, 0);
+        assert(strstr(s.log, "duplicate") != NULL);
+        c = sds_concat_part(SENDER_SSI, transport, 5, 2, lip.bits + 40, lip.n - 40);
+        send_sds(&s, &c, 0, 0);
+        assert(strstr(s.log, "short location report; LIP: 22.50000") != NULL);
+        assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].lat_e7 == 225000000);
+        session_close(&s);
+    }
+}
+
 /* One SSI in the local network and in foreign ones, with a populated local radio list: a sender of the network the
  * decoder is on (calling party type 1, or type 2 naming it) takes the radio list's name; a sender naming another
  * network takes only a name learned in that network, never the local list's (spec 2.3 step 5). */
@@ -611,6 +655,7 @@ main(void) {
     test_undecoded();
     test_concatenated();
     test_concatenated_one_recipient();
+    test_concatenated_first_part_pid();
     test_sender_network_labels();
     DSD_FPRINTF(stdout, "TETRA_LIP: PASS\n");
     return 0;

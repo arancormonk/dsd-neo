@@ -477,8 +477,10 @@ test_slow_data_text_by_mini_header(void) {
     assert(state.event_history_s[0].Event_History_Items[0].text_message[0] == '\0');
     assert(history[0].revision == revision);
 
-    /* The decoder descrambles the block in place, so the repeat is packed afresh. */
+    /* The decoder descrambles the block in place, so the repeat is packed afresh. The transmission is confirmed (its
+       header's CRC passed), so its text reaches the call's row. */
     open_dstar_call(&opts, &state);
+    state.dstar_confirmed = 1;
     pack_slow_data_bytes(bytes, bits);
     revision = history[0].revision;
     processDSTAR_SD(&opts, &state, bits);
@@ -505,6 +507,62 @@ test_slow_data_text_by_mini_header(void) {
     assert(strstr(state.event_history_s[0].Event_History_Items[0].text_message, "0.00E") == NULL);
     dsd_state_ext_free_all(&state);
     free(history);
+}
+
+/* Slow data decodes after a single unconfirmed sync, so its text reaches a history row only from a confirmed D-STAR
+ * transmission and only through an open D-STAR call (issue #800). A DMR call still open on slot 0 takes none of it,
+ * confirmed or not: a filler block then a 0x42 text block leaves the DMR row as it was. An open D-STAR call takes it
+ * only once the transmission is confirmed. */
+static void
+test_slow_data_text_needs_a_confirmed_dstar_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bytes[60];
+    uint8_t bits[480];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    Event_History_I* history = (Event_History_I*)calloc(2u, sizeof(*history));
+    assert(history != NULL);
+    state.event_history_s = history;
+
+    dsd_call_observation dmr = dsd_call_observation_data(DSD_SYNC_DMR_BS_VOICE_POS, 0U, 1001U, 2002U);
+    dmr.kind = DSD_CALL_KIND_GROUP_VOICE;
+    assert(dsd_call_state_observe(&state, &dmr, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    static const uint8_t minis[2] = {0x66, 0x42};
+    static const char* const data[2] = {"fffff", "HELLO"};
+    for (int confirmed = 0; confirmed < 2; confirmed++) {
+        state.dstar_confirmed = confirmed;
+        state.dstar_txt[0] = '\0';
+        slow_data_blocks(bytes, minis, data, 2);
+        pack_slow_data_bytes(bytes, bits);
+        const uint64_t revision = history[0].revision;
+        processDSTAR_SD(&opts, &state, bits);
+        assert(strstr(state.dstar_txt, "HELLO") != NULL); /* the display keeps it */
+        assert(state.event_history_s[0].Event_History_Items[0].text_message[0] == '\0');
+        assert(history[0].revision == revision);
+    }
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) == 1 && DSD_SYNC_IS_DMR(call.protocol));
+    dsd_state_ext_free_all(&state);
+    free(history);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    Event_History_I* dstar_history = (Event_History_I*)calloc(2u, sizeof(*dstar_history));
+    assert(dstar_history != NULL);
+    state.event_history_s = dstar_history;
+    state.synctype = DSD_SYNC_DSTAR_VOICE_POS;
+    open_dstar_call(&opts, &state); /* the call is open, but this transmission has proved nothing yet */
+    slow_data_blocks(bytes, minis, data, 2);
+    pack_slow_data_bytes(bytes, bits);
+    processDSTAR_SD(&opts, &state, bits);
+    assert(state.event_history_s[0].Event_History_Items[0].text_message[0] == '\0');
+    state.dstar_confirmed = 1;
+    pack_slow_data_bytes(bytes, bits);
+    processDSTAR_SD(&opts, &state, bits);
+    assert(strstr(state.event_history_s[0].Event_History_Items[0].text_message, "HELLO") != NULL);
+    dsd_state_ext_free_all(&state);
+    free(dstar_history);
 }
 
 /* Whether @p text holds a byte below 0x20 other than a line break, or DEL. */
@@ -572,6 +630,7 @@ test_control_bytes_never_reach_display_text(void) {
     assert(history != NULL);
     state.event_history_s = history;
     open_dstar_call(&opts, &state);
+    state.dstar_confirmed = 1; /* its header's CRC passed */
     sd_run run = {&opts, &state, bits};
 
     static const uint8_t text_minis[2] = {0x40, 0x41};
@@ -692,6 +751,7 @@ main(void) {
     test_slow_data_header_accepts_wire_crc_order();
     test_slow_data_header_search_evidence_follows_the_published_call();
     test_slow_data_text_by_mini_header();
+    test_slow_data_text_needs_a_confirmed_dstar_call();
     test_control_bytes_never_reach_display_text();
     test_slow_data_unchecked_aprs_is_no_position();
     return 0;

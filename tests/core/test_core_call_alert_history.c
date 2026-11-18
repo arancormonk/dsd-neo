@@ -1119,12 +1119,16 @@ test_detail_before_the_call_opens_leaves_no_orphan_row(void) {
     int rc = expect_u64("call A commits one row", pushed_rows(&event_history[0]), 1U);
 
     // No call is open: a protocol's detail is declined.
-    rc |= expect_int("text with no open call is declined",
-                     dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_TEXT, "CQ CQ"), 0);
-    rc |= expect_int("GPS with no open call is declined",
-                     dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_GPS, "APRS - Lat: 41d"), 0);
-    rc |= expect_int("alias with no open call is declined",
-                     dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_ALIAS, "CSM 123; "), 0);
+    rc |= expect_int(
+        "text with no open call is declined",
+        dsd_event_set_open_call_detail(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_DETAIL_TEXT, "CQ CQ"), 0);
+    rc |= expect_int(
+        "GPS with no open call is declined",
+        dsd_event_set_open_call_detail(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_DETAIL_GPS, "APRS - Lat: 41d"),
+        0);
+    rc |= expect_int(
+        "alias with no open call is declined",
+        dsd_event_set_open_call_detail(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_DETAIL_ALIAS, "CSM 123; "), 0);
     rc |= expect_str_eq("the staged row stays blank", event_history[0].Event_History_Items[0].text_message, "");
 
     // Call B is observed but no sync has opened its epoch: enrichment for B is declined too.
@@ -1135,8 +1139,9 @@ test_detail_before_the_call_opens_leaves_no_orphan_row(void) {
     assert(dsd_call_state_get(&state, 0U, &call_b) == 1);
     rc |= expect_int("enrichment before the epoch opens is declined",
                      dsd_event_enrich_gps(&state, 0U, call_b.epoch, "APRS - Lat: 41d"), 0);
-    rc |= expect_int("direct detail before the epoch opens is declined",
-                     dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_TEXT, "CQ CQ"), 0);
+    rc |= expect_int(
+        "direct detail before the epoch opens is declined",
+        dsd_event_set_open_call_detail(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_DETAIL_TEXT, "CQ CQ"), 0);
 
     // The sync opens B's epoch and leaves no detail-only row behind.
     dsd_event_sync_slot(&opts, &state, 0U);
@@ -1145,8 +1150,15 @@ test_detail_before_the_call_opens_leaves_no_orphan_row(void) {
     // The detail repeats once B is open and lands on B's own row.
     rc |= expect_int("enrichment of the open call lands",
                      dsd_event_enrich_gps(&state, 0U, call_b.epoch, "APRS - Lat: 41d"), 1);
-    rc |= expect_int("direct detail for the open call lands",
-                     dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_TEXT, "CQ CQ"), 1);
+    // Detail of another protocol family is no detail of B: D-STAR slow data while B, a DMR call, is still open.
+    rc |= expect_int(
+        "another protocol's detail on the open call is declined",
+        dsd_event_set_open_call_detail(&state, 0U, DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_DETAIL_TEXT, "DSTAR TEXT"), 0);
+    rc |= expect_str_eq("B's row keeps no other protocol's text", event_history[0].Event_History_Items[0].text_message,
+                        "");
+    rc |= expect_int(
+        "direct detail for the open call lands",
+        dsd_event_set_open_call_detail(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_DETAIL_TEXT, "CQ CQ"), 1);
     assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     const Event_History* row_b = &event_history[0].Event_History_Items[1];
@@ -1236,8 +1248,10 @@ test_direct_detail_skips_an_ended_call(void) {
            == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
-    int rc = expect_int("detail after the call ended is declined",
-                        dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_GPS, "APRS - Lat: 41d"), 0);
+    int rc = expect_int(
+        "detail after the call ended is declined",
+        dsd_event_set_open_call_detail(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_DETAIL_GPS, "APRS - Lat: 41d"),
+        0);
     dsd_event_sync_slot(&opts, &state, 0U);
     rc |= expect_u64("the ended call commits one row", pushed_rows(&event_history[0]), 1U);
     rc |= expect_str_eq("the ended call's row carries no later detail", event_history[0].Event_History_Items[1].gps_s,

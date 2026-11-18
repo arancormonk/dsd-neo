@@ -410,7 +410,7 @@ nxdn_handle_dcr_csm_alias(const dsd_opts* opts, dsd_state* state, const uint8_t*
         // a CSM decoded ahead of the SACCH2 SB0 observation has no row of its own yet.
         char row_alias[sizeof(csm_alias) + 2U];
         DSD_SNPRINTF(row_alias, sizeof(row_alias), "%s; ", csm_alias);
-        (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_ALIAS, row_alias);
+        (void)dsd_event_set_open_call_detail(state, 0U, DSD_SYNC_NXDN_POS, DSD_EVENT_DETAIL_ALIAS, row_alias);
     } else if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Call Sign Memory: decode error; ");
     }

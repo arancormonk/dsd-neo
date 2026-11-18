@@ -3530,9 +3530,11 @@ watchdog_event_slot_call_is_open(const dsd_call_snapshot* call, const dsd_call_e
 // up next, not to the ended call's row. Opening the epoch first would not help either way, since no
 // call for the transmission has been observed. Slow data and aliases repeat, so declined detail
 // lands once the call is open. While the previous call is still active, the next transmission's
-// detail cannot be told apart from its own: none of these messages names its call.
+// detail cannot be told apart from its own: none of these messages names its call. A call of another
+// protocol family is never the detail's (a DMR call still open while D-STAR slow data decodes).
 int
-dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value) {
+dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, int protocol, dsd_event_detail_field field,
+                               const char* value) {
     if (!state || !state->event_history_s || slot > 1U || !value
         || (field != DSD_EVENT_DETAIL_ALIAS && field != DSD_EVENT_DETAIL_GPS && field != DSD_EVENT_DETAIL_TEXT)) {
         return -1;
@@ -3542,7 +3544,9 @@ dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_
         return 0;
     }
     dsd_call_state_ext_lock(ext);
-    if (!watchdog_event_slot_call_is_open(&ext->calls.slots[slot], &ext->events[slot])) {
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    if (!watchdog_event_slot_call_is_open(call, &ext->events[slot])
+        || dsd_sync_protocol_family(call->protocol) != dsd_sync_protocol_family(protocol)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }

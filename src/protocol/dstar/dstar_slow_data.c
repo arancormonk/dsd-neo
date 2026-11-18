@@ -585,8 +585,13 @@ dstar_sd_collect_text(dsd_state* state, const uint8_t* raw) {
 static void
 dstar_sd_handle_text_message(dsd_state* state) {
     DSD_FPRINTF(stderr, " TEXT: %s", state->dstar_txt);
-    // The display keeps the text either way; the history row takes it only through an open call.
-    (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_TEXT, state->dstar_txt);
+    // The display keeps the text either way. Slow data decodes after a single unconfirmed sync, so the history row takes
+    // it only once the transmission is confirmed (dstar_confirm.h), and only through an open D-STAR call: another
+    // protocol's call still open on the slot is no row of this text.
+    if (dstar_confirm_is_confirmed(state)) {
+        const int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_VOICE_POS;
+        (void)dsd_event_set_open_call_detail(state, 0U, protocol, DSD_EVENT_DETAIL_TEXT, state->dstar_txt);
+    }
 }
 
 /* The GPS blocks' data (a D-PRS record or NMEA sentences), shown as it arrived. The "$$CRC" literal checks nothing: a

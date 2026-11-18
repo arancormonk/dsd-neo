@@ -1970,7 +1970,9 @@ suite runs under this compiler.
   `dsd_event_note_current_call()`, never a raw `Items[0].internal_str` write, and it declines when the slot has no call
   to carry the note (none observed, or one that ended and committed its row). Detail a protocol decodes without naming
   its call -- D-STAR slow-data text and APRS, the NXDN alias and DCR call sign memory -- reaches a row only through
-  `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE and its epoch is open, and
+  `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE, its epoch is open and it is
+  a call of the detail's own protocol family (the caller passes the sync type it decoded under: D-STAR text never
+  lands on a DMR call still open on the slot), and
   `dsd_event_enrich_*()` declines a row-0 write while the call's epoch is not yet open (the live alias display and the
   call's CRC verdict still follow). DMR embedded talker alias and GPS LCs reach enrichment only when their 5-bit
   checksum passed (`dmr_flco.c`, all modes): a failed one still claims its FLCO, so it is never read as a voice LC, but
@@ -2631,13 +2633,17 @@ suite runs under this compiler.
     packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
     monitor; one report per transmission and META content (keyed by the slot 0 call epoch, plus the stream ID on IP,
     so any end of the call -- stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync -- starts another
-    transmission). The LSF's CAN is noted (`dsd_rxid_note_access()`) before
+    transmission). The epoch is the call the same LSF observed: an LSF that observes none (a stream of data type 0)
+    is bound to no transmission, whatever M17 call is still ACTIVE on the slot, so each such RF report is admitted
+    again and none touches that call's row. The LSF's CAN is noted (`dsd_rxid_note_access()`) before
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches; its source is the header callsign
     only when the record arrived within that call. Each slow-data block goes by its own mini-header: only GPS blocks
     (0x3n) feed the record and the `GPS DATA:` display, only text blocks (0x40-0x43) the 20-character message, each at
-    its place. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
+    its place. Slow data decodes after a single unconfirmed sync, so the message reaches a history row only once the
+    transmission is confirmed (`dstar_confirm.h`) and only through an open D-STAR call; until then it is display text
+    alone. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
     on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
     sender's own MCC/MNC as the sender scope when sent.
@@ -13529,7 +13535,8 @@ single "current call".
   PDU (issue #800, `sds_lip_*` in `tetra_mle.c`): whole, or a complete concatenated message that completed on the
   reception its first part arrived on (a reassembly begun on another reception is dropped before a new part is taken,
   so a message sent again whole completes), its parts addressed to one SSI (parts addressed by an event label alone name
-  no party, so their message's position is refused as `recipient unknown`). Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
+  no party, so their message's position is refused as `recipient unknown`). A repeated part 1 is a duplicate only with
+  the same bits and the same payload PID; under another PID it is another message's part 1 and discards the one held. Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
   position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
   one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling
   party's own network (MCC/MNC) when it is sent, else the decoded one; a foreign sender is named only by a label
@@ -17167,9 +17174,11 @@ Qt Quick frontend (`src/ui/qt`):
   record that shows a position received over the air with `[redacted position]` (`holdsReceivedPosition()`). The rule
   rests on the producer's label, never on the shape of what the air delivered (a part of a report can look like
   anything): a line matching `kPositionMarkers`, one entry per producer's position, position-message or report-text
-  print (`Lat:`/`Lon:`, `GPS` with D-STAR's `GPS DATA:` slow-data blocks, `GNSS`, `LRRP`, `LOCN` with the MNIS
-  `LOCN Text:` report text, `NMEA` with the checked sentences' `NMEA:` line, LIP, `Location Service`, `Position`, APRS
-  and D-PRS, Cellocator, D-STAR `_UNK:` blocks). As a backstop, a line no label covers still goes when it matches
+  print (`Lat:`/`Lon:`, `GPS` with D-STAR's `GPS DATA:` slow-data blocks and the M17 GNSS line, which also carries
+  its radius, source and station type, `GNSS`, `LRRP` with each line of an LRRP report's details (`LRRP Time:`,
+  `LRRP Radius:`, `LRRP Alt Accuracy:`, `LRRP Speed:`, `LRRP Track:`), `LOCN` with the MNIS `LOCN Text:` report text,
+  `NMEA` with the checked sentences' `NMEA:` line, LIP, `Location Service` with the P25 SAP 48 plain text
+  (`P25 Location Service Text:`), `Position`, APRS and D-PRS, Cellocator, D-STAR `_UNK:` blocks). As a backstop, a line no label covers still goes when it matches
   `kPositionShapes` (raw RMC/GGA/GLL/GNS/VTG sentences, `$$CRC`, the LOCN hemisphere form, the D-PRS
   `ddmm.hhN?dddmm.hhE` form), holds a pair of decimal degrees with at least four places (not followed by a unit), or a
   degrees-and-minutes pair (the minutes' fraction optional, as the NMEA parser reads it); no shape exempts anything.
@@ -17179,7 +17188,10 @@ Qt Quick frontend (`src/ui/qt`):
   position; without `-Z` every line that prints a received position or a part of one carries a label. Keep
   `kPositionMarkers` in step with the producers' print text, give a new position print a label and a line in
   `UI_QT_DIAGNOSTICS_LOG` (`receivedPositionsAreRemoved()`), and drive a new producer of received report text through
-  its real path in `realProducersLabelReceivedPositions()` (`DiagnosticsLog::namesPositionProducerForTest()`).
+  its real path in `realProducersLabelReceivedPositions()` (`DiagnosticsLog::namesPositionProducerForTest()`), and a
+  new producer of a received position in `everyProducerLabelsEveryPartOfItsReport()`, which checks that every line
+  holding any field of the report (coordinates, time, radius or error, altitude, speed, heading, reason, source)
+  carries the label.
   The persistent tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
   `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every
   250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything before

@@ -114,8 +114,13 @@ utf16le_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input
 
 void
 utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
+    utf8_to_text_labelled(state, wr, len, input, "UTF8 Text");
+}
+
+void
+utf8_to_text_labelled(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input, const char* label) {
     uint8_t slot = state->currentslot;
-    DSD_FPRINTF(stderr, "\n UTF8 Text: ");
+    DSD_FPRINTF(stderr, "\n %s: ", label != NULL ? label : "UTF8 Text");
 
     if (wr == 1) {
         dsd_event_stage_text(state, slot, "");
@@ -1722,9 +1727,11 @@ dmr_pdu_write_location_row(const dsd_opts* opts, const dsd_position_fix* fix) {
 static void
 dmr_lrrp_print_details(const dmr_lrrp_parse_result* best, const dsd_position_fix* fix, int admitted,
                        const dmr_lrrp_emit_context* ctx) {
+    /* Each line is a part of the report, so each carries the producer's label (issue #800, D10): the diagnostics log
+       removes them. */
     if (best->year) {
-        DSD_FPRINTF(stderr, "\n Time: %04d.%02d.%02d %02d:%02d:%02d", best->year, best->month, best->day, best->hour,
-                    best->minute, best->second);
+        DSD_FPRINTF(stderr, "\n LRRP Time: %04d.%02d.%02d %02d:%02d:%02d", best->year, best->month, best->day,
+                    best->hour, best->minute, best->second);
     }
     if (admitted) {
         const double lat = (double)fix->lat_e7 / 10000000.0;
@@ -1734,20 +1741,20 @@ dmr_lrrp_print_details(const dmr_lrrp_parse_result* best, const dsd_position_fix
         DSD_FPRINTF(stderr, "\n Position: (suppressed; %s)", ctx->suppressed_label);
     }
     if (best->have_rad) {
-        DSD_FPRINTF(stderr, "\n Radius: %.2lfm", dmr_lrrp_number_value(&best->radius));
+        DSD_FPRINTF(stderr, "\n LRRP Radius: %.2lfm", dmr_lrrp_number_value(&best->radius));
     }
     if (best->have_alt) {
         DSD_FPRINTF(stderr, "\n Altitude: %.2lfm", dmr_lrrp_number_value(&best->alt));
     }
     if (best->have_alt_acc) {
-        DSD_FPRINTF(stderr, "\n Alt Accuracy: %.2lfm", dmr_lrrp_number_value(&best->alt_acc));
+        DSD_FPRINTF(stderr, "\n LRRP Alt Accuracy: %.2lfm", dmr_lrrp_number_value(&best->alt_acc));
     }
     if (best->have_speed) {
         const double mps = dmr_lrrp_number_value(&best->speed);
-        DSD_FPRINTF(stderr, "\n Speed: %.2lf km/h %.2lf m/s", mps * 3.6, mps);
+        DSD_FPRINTF(stderr, "\n LRRP Speed: %.2lf km/h %.2lf m/s", mps * 3.6, mps);
     }
     if (best->have_heading) {
-        DSD_FPRINTF(stderr, "\n Track: %d%s", (int)best->heading_units * 2, dsd_degrees_glyph());
+        DSD_FPRINTF(stderr, "\n LRRP Track: %d%s", (int)best->heading_units * 2, dsd_degrees_glyph());
     }
 }
 

@@ -10,6 +10,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
@@ -49,7 +50,7 @@ nxdn_alias_publish(dsd_state* state, const char* alias) {
     // alias decoded ahead of the VCALL has no row of its own yet (it repeats once the call is open).
     char row_alias[sizeof(state->generic_talker_alias[0]) + 2U];
     DSD_SNPRINTF(row_alias, sizeof(row_alias), "%s; ", alias);
-    (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_ALIAS, row_alias);
+    (void)dsd_event_set_open_call_detail(state, 0U, DSD_SYNC_NXDN_POS, DSD_EVENT_DETAIL_ALIAS, row_alias);
 }
 
 static void

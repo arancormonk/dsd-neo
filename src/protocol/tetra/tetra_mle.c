@@ -1025,7 +1025,8 @@ sds_concat_assemble(const sds_concat_ctx* c, int* nbits) {
 }
 
 /* Store one part. An identical repeat is a duplicate; a different part under the same sequence number, or a changed
- * part count, discards the whole message. */
+ * part count, discards the whole message. Part 1 is identical only with its payload PID too: the PID says what the
+ * whole message is (a LIP PDU under PID 10), so a part 1 of the same bits under another PID is another message's. */
 static int
 sds_concat_store_part(sds_concat_ctx* c, const sds_concat_part* part) {
     uint8_t packed[SDS_CONCAT_PART_BYTES];
@@ -1041,7 +1042,8 @@ sds_concat_store_part(sds_concat_ctx* c, const sds_concat_part* part) {
         return SDS_CONCAT_REJECTED;
     }
     if (sds_concat_has_part(c, index)) {
-        if (c->part_bits[index] != (uint16_t)part_bits || memcmp(c->data[index], packed, sizeof packed) != 0) {
+        if (c->part_bits[index] != (uint16_t)part_bits || memcmp(c->data[index], packed, sizeof packed) != 0
+            || (part->sequence == 1 && (int)c->payload_pid != part->payload_pid)) {
             sds_concat_clear(c);
             return SDS_CONCAT_REJECTED;
         }

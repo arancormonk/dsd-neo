@@ -416,14 +416,17 @@ dsd_event_set_open_call_position(dsd_state* state, uint8_t slot, const dsd_posit
     return epoch != 0U ? stub_write_position(state, slot, epoch, 0, fix, gps_text) : 0;
 }
 
-// The open-call detail write, against the stub call: written while the slot's call is active, declined otherwise.
+// The open-call detail write, against the stub call: written while the slot's call is active and of the detail's
+// protocol family, declined otherwise.
 int
-dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value) {
+dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, int protocol, dsd_event_detail_field field,
+                               const char* value) {
     dsd_call_snapshot call;
     if (state == NULL || state->event_history_s == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || value == NULL) {
         return -1;
     }
-    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || dsd_sync_protocol_family(call.protocol) != dsd_sync_protocol_family(protocol)) {
         return 0;
     }
     Event_History* item = &state->event_history_s[slot].Event_History_Items[0];
