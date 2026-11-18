@@ -362,6 +362,47 @@ test_failed_header_unbinds_embedded_gps(dsd_opts* opts, dsd_state* state) {
     return failed;
 }
 
+/* A P25 call still open on the slot (its terminator missed) is not the call a DMR burst belongs to: the embedded GPS
+ * LC is judged by the receive policy as DMR, and names no one until a DMR call does (issue #800). With a color-code
+ * filter blocking the carrier's color code, the report is withheld even though no P25 filter is set. */
+static int
+test_other_protocol_call_gives_no_policy(dsd_opts* opts, dsd_state* state) {
+    int failed = 0;
+    for (int filtered = 0; filtered <= 1; filtered++) {
+        fixture(opts, state);
+        CHECK(dsd_position_feed_start(state) == 0);
+        dsd_call_observation p25;
+        DSD_MEMSET(&p25, 0, sizeof p25);
+        p25.protocol = DSD_SYNC_P25P1_POS;
+        p25.slot = 0U;
+        p25.kind = DSD_CALL_KIND_GROUP_VOICE;
+        p25.ota_target_id = 2002U;
+        p25.ota_source_id = 1001U;
+        CHECK(dsd_call_state_observe(state, &p25, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_event_sync_slot(opts, state, 0);
+        state->dmr_color_code = 5U;
+        opts->receive.filters[DSD_RECEIVE_DCC].enabled = filtered;
+        opts->receive.filters[DSD_RECEIVE_DCC].block.bits[0] = 1ULL << 5U;
+        uint8_t bits[96];
+        build_gps(bits);
+        send_lc(opts, state, bits, 1, 3);
+        dsd_position_fix recs[2];
+        dsd_position_feed_meta meta;
+        const int n = dsd_position_feed_copy_since(state, 0U, recs, 2, &meta);
+        if (filtered) {
+            CHECK(n == 0);
+            CHECK(strstr(state->dmr_embedded_gps[0], "GPS:") == NULL);
+        } else {
+            CHECK(n == 1);
+            CHECK(n == 1 && DSD_SYNC_IS_DMR(recs[0].protocol) && recs[0].source_id == 0U && recs[0].target_id == 0U);
+        }
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[0];
+        CHECK(row->gps_s[0] == '\0');
+        DSD_MEMSET(&opts->receive.filters[DSD_RECEIVE_DCC], 0, sizeof opts->receive.filters[DSD_RECEIVE_DCC]);
+    }
+    return failed;
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -382,6 +423,7 @@ main(void) {
     failed |= test_failed_lc_holds_no_scan(opts, state);
     failed |= test_checked_lc_names_destination(opts, state);
     failed |= test_failed_header_unbinds_embedded_gps(opts, state);
+    failed |= test_other_protocol_call_gives_no_policy(opts, state);
     dsd_state_ext_free_all(state);
     free(history);
     free(state);

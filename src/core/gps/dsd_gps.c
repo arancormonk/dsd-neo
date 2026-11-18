@@ -1084,12 +1084,23 @@ nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const d
 }
 
 //externalize embedded GPS - Confirmed working now on NE, NW, SE, and SW coordinates
-/* The embedded GPS LC's attribution (spec 2.2): the slot's ACTIVE call, and whether a checked full LC of that call's
- * transmission (a voice LC header or a late-entry LC, not a RAS acceptance) named its source. */
+/* The DMR burst that carried the embedded LC: its own sync type, which the receive policy judges the report by. */
+static int
+dmr_embedded_gps_protocol(const dsd_state* state) {
+    if (DSD_SYNC_IS_DMR(state->synctype)) {
+        return state->synctype;
+    }
+    return DSD_SYNC_IS_DMR(state->lastsynctype) ? state->lastsynctype : DSD_SYNC_DMR_BS_VOICE_POS;
+}
+
+/* The embedded GPS LC's attribution (spec 2.2): the slot's ACTIVE DMR call (a call of another protocol still open on
+ * the slot is not the one this burst belongs to), and whether a checked full LC of that call's transmission (a voice
+ * LC header or a late-entry LC, not a RAS acceptance) named its source. */
 static int
 dmr_embedded_gps_call(const dsd_state* state, uint8_t slot, dsd_call_snapshot* call, int* source_verified) {
     *source_verified = 0;
-    if (dsd_call_state_get(state, slot, call) <= 0 || call->phase != DSD_CALL_PHASE_ACTIVE) {
+    if (dsd_call_state_get(state, slot, call) <= 0 || call->phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_DMR(call->protocol)) {
         return 0;
     }
     *source_verified = call->ota_source_id != 0U && call->ota_source_id <= UINT32_MAX
@@ -1109,7 +1120,7 @@ static int
 dmr_embedded_gps_admit(const dsd_opts* opts, dsd_state* state, uint8_t slot, dmr_embedded_gps_admission* a) {
     int source_verified = 0;
     a->has_call = dmr_embedded_gps_call(state, slot, &a->call, &source_verified);
-    a->fix.protocol = (uint8_t)(a->has_call ? a->call.protocol : state->lastsynctype);
+    a->fix.protocol = (uint8_t)dmr_embedded_gps_protocol(state);
     a->fix.source_id = source_verified ? (uint32_t)a->call.ota_source_id : 0U;
     // The same checked LC's destination, while the call still names it.
     if (source_verified && state->dmr_lc_checked_target[slot] != 0U
