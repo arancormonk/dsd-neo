@@ -443,13 +443,13 @@ dmr_flco_handle_motorola_or_tait(dmr_flco_ctx* ctx) {
         DSD_FPRINTF(stderr, " Data Terminator (TD_LC) ");
         DSD_FPRINTF(stderr, "%s", KNRM);
 
-        ctx->state->data_header_format[ctx->slot] = 7;
-        ctx->state->data_header_sap[ctx->slot] = 0;
-        ctx->state->data_header_valid[ctx->slot] = 0;
-        ctx->state->data_conf_data[ctx->slot] = 0;
-        ctx->state->data_block_poc[ctx->slot] = 0;
-        ctx->state->data_byte_ctr[ctx->slot] = 0;
-        ctx->state->data_ks_start[ctx->slot] = 0;
+        ctx->state->data_header_format[ctx->slot_idx] = 7;
+        ctx->state->data_header_sap[ctx->slot_idx] = 0;
+        ctx->state->data_header_valid[ctx->slot_idx] = 0;
+        ctx->state->data_conf_data[ctx->slot_idx] = 0;
+        ctx->state->data_block_poc[ctx->slot_idx] = 0;
+        ctx->state->data_byte_ctr[ctx->slot_idx] = 0;
+        ctx->state->data_ks_start[ctx->slot_idx] = 0;
         return 1;
     }
 
