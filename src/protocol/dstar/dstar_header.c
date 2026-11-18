@@ -14,6 +14,15 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/protocol/dstar/dstar_header_utils.h"
 
+/* A header callsign field of @p len octets as text: shown and put on the call, so printable only. The CRC is taken over
+ * the raw header bytes. */
+static void
+dstar_header_copy_text(const char* field, size_t len, char* out) {
+    DSD_MEMCPY(out, field, len);
+    out[len] = '\0';
+    dstar_text_make_printable(out);
+}
+
 int
 dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS]) {
     uint16_t soft_costs[DSD_DSTAR_HEADER_CODED_BITS];
@@ -59,21 +68,10 @@ dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HE
     char str2[9];
     char str3[9];
     char str4[13];
-
-    DSD_MEMCPY(str1, radioheader + 3, 8);
-    DSD_MEMCPY(str2, radioheader + 11, 8);
-    DSD_MEMCPY(str3, radioheader + 19, 8);
-    DSD_MEMCPY(str4, radioheader + 27, 12);
-
-    str1[8] = '\0';
-    str2[8] = '\0';
-    str3[8] = '\0';
-    str4[12] = '\0';
-    /* Shown and put on the call: printable only. The CRC below is over the raw header bytes. */
-    dstar_text_make_printable(str1);
-    dstar_text_make_printable(str2);
-    dstar_text_make_printable(str3);
-    dstar_text_make_printable(str4);
+    dstar_header_copy_text(radioheader + 3, 8U, str1);
+    dstar_header_copy_text(radioheader + 11, 8U, str2);
+    dstar_header_copy_text(radioheader + 19, 8U, str3);
+    dstar_header_copy_text(radioheader + 27, 12U, str4);
 
     const uint16_t crc_ext = (uint16_t)(((uint8_t)radioheader[39] << 8U) | (uint8_t)radioheader[40]);
     const uint16_t crc_cmp = dstar_crc16((const uint8_t*)radioheader, 39U);

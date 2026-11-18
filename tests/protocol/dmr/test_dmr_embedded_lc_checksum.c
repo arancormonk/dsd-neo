@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/receive_types.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
