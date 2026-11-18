@@ -2,15 +2,17 @@
 # Checks a Windows release tree, as stage_release_tree.ps1 leaves it or as the ZIP
 # unpacks, without hardware:
 #   0. every release notice is in share\doc\dsd-neo;
-#   1. the bundled librtlsdr is the patched build, and every .exe and .dll under bin\
-#      and lib\SoapySDR\ passes check_release_hardening.ps1;
+#   1. the bundled librtlsdr is the patched build;
 #   2. the SoapySDR load path: one copy of each library, in bin\, each module and
 #      library linked to what it should be (dsd-neo.exe's native Airspy and RTL-SDR
 #      inputs and librtlsdr to the same airspy.dll and libusb-1.0.dll as the modules'
-#      libraries), every DLL a staged binary imports present in bin\ unless it is an
-#      API set or one of the Windows DLLs release_tree_checks.psm1 lists, no debug
-#      Visual C++ runtime, no Visual C++ runtime DLL that the msvc-runtime record the
-#      tree ships (share\doc\dsd-neo\legal\components.json) does not list;
+#      libraries), every file a binary of the tree imports, whatever its name ends in,
+#      a file in bin\ unless it is an API set or one of the Windows DLLs
+#      release_tree_checks.psm1 lists, no debug Visual C++ runtime, no Visual C++
+#      runtime DLL that the msvc-runtime record the tree ships
+#      (share\doc\dsd-neo\legal\components.json) does not list; the binaries are every
+#      .exe and .dll in bin\ and the module folder and every file they import, directly
+#      or not, and each passes check_release_hardening.ps1;
 #   3. dsd-neo.exe -h;
 #   4. SoapySDRUtil --check=<driver> finds each of the two drivers;
 #   5. SoapySDRUtil --info finds exactly the two modules under this root;
@@ -192,18 +194,17 @@ function Test-PatchedRtlsdr {
     Write-Host "OK: $($dlls[0].Name) is built with the librtlsdr transfer patches"
 }
 
+# Every binary Test-LoadPath found: each must pass check_release_hardening.ps1.
 function Test-Hardening {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$TreeRoot
+        [AllowEmptyCollection()]
+        [string[]]$Images
     )
 
-    $artifacts = @(Get-ChildItem -Path (Join-Path $TreeRoot 'bin') -File) +
-        @(Get-ChildItem -Path (Join-Path $TreeRoot 'lib/SoapySDR') -File -Recurse)
-    $artifacts = @($artifacts | Where-Object { $_.Extension -in @('.exe', '.dll') })
-    if ($artifacts.Count -eq 0) { throw "No PE files found under $TreeRoot" }
-    foreach ($artifact in $artifacts) {
-        & (Join-Path $PSScriptRoot '../check_release_hardening.ps1') $artifact.FullName
+    if ($Images.Count -eq 0) { throw 'No PE files found in the tree' }
+    foreach ($image in $Images) {
+        & (Join-Path $PSScriptRoot '../check_release_hardening.ps1') $image
     }
 }
 
@@ -256,17 +257,31 @@ function Test-LoadPath {
     }
 
     # Windows looks for a module's DLLs where it looks for the program's (bin\ first),
-    # never in the module's own folder, so every DLL a staged binary imports must be in
-    # bin\ unless it is part of Windows. The runner's System32 says nothing about that:
-    # it holds the Visual C++ redistributable and whatever its driver packages installed,
-    # which a user's may lack (Get-DllKind).
+    # never in the module's own folder, so every file a binary of the tree imports must
+    # be a file in bin\ unless it is part of Windows. The runner's System32 says nothing
+    # about that: it holds the Visual C++ redistributable and whatever its driver
+    # packages installed, which a user's may lack (Get-DllKind). Windows loads the file
+    # an import names whatever its name ends in (vendor.drv), so the binaries are every
+    # .exe and .dll in bin\ and the module folder and every file they import, directly
+    # or not; dumpbin refuses any that is not an image.
     # A Visual C++ runtime DLL the tree carries, imported or not, must be one the
     # msvc-runtime record lists with Microsoft's terms for it.
     $missing = New-Object 'System.Collections.Generic.List[string]'
     $debug = New-Object 'System.Collections.Generic.List[string]'
     $unrecorded = New-Object 'System.Collections.Generic.List[string]'
-    $binaries = @(Get-ChildItem -Path $bin -File) + @(Get-ChildItem -Path $moduleDir -File)
-    foreach ($binary in @($binaries | Where-Object { $_.Extension -in @('.exe', '.dll') })) {
+    $images = New-Object 'System.Collections.Generic.List[string]'
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $queue = New-Object 'System.Collections.Generic.Queue[System.IO.FileInfo]'
+    $roots = @(Get-ChildItem -Path $bin -File) + @(Get-ChildItem -Path $moduleDir -File)
+    foreach ($root in @($roots | Where-Object { $_.Extension -in @('.exe', '.dll') })) {
+        $queue.Enqueue($root)
+    }
+    while ($queue.Count -gt 0) {
+        $binary = $queue.Dequeue()
+        if (-not $seen.Add($binary.FullName)) {
+            continue
+        }
+        $images.Add($binary.FullName)
         $ownKind = Get-DllKind -Name $binary.Name
         if ($ownKind -eq 'DebugRuntime') {
             $debug.Add($binary.Name)
@@ -275,11 +290,16 @@ function Test-LoadPath {
         }
         foreach ($name in @(Get-ImageDependents $binary.FullName)) {
             $kind = Get-DllKind -Name $name
+            $path = Join-Path $bin $name
             if ($kind -eq 'DebugRuntime') {
                 $debug.Add("$($binary.Name) -> $name")
             } elseif ($kind -eq 'Redistributable' -and -not $RecordedRuntime.Contains($name)) {
                 $unrecorded.Add("$($binary.Name) -> $name")
-            } elseif ($kind -ne 'ApiSet' -and $kind -ne 'Windows' -and !(Test-Path -LiteralPath (Join-Path $bin $name))) {
+            } elseif ($kind -eq 'ApiSet' -or $kind -eq 'Windows') {
+                continue
+            } elseif (Test-Path -LiteralPath $path -PathType Leaf) {
+                $queue.Enqueue((Get-Item -LiteralPath $path))
+            } else {
                 $missing.Add("$($binary.Name) -> $name")
             }
         }
@@ -295,6 +315,7 @@ function Test-LoadPath {
     }
 
     Write-Host 'OK: the SoapySDR modules, their libraries and every DLL they import are in place'
+    return , $images.ToArray()
 }
 
 function Test-Drivers {
@@ -402,8 +423,8 @@ try {
     Write-Host "OK: every release notice is in $(Join-Path $treeRoot 'share/doc/dsd-neo')"
     $recordedRuntime = Get-RecordedRuntimeFiles -ComponentsPath (Join-Path $treeRoot 'share/doc/dsd-neo/legal/components.json')
     Test-PatchedRtlsdr -Bin (Join-Path $treeRoot 'bin')
-    Test-Hardening -TreeRoot $treeRoot
-    Test-LoadPath -TreeRoot $treeRoot -RecordedRuntime $recordedRuntime
+    $images = Test-LoadPath -TreeRoot $treeRoot -RecordedRuntime $recordedRuntime
+    Test-Hardening -Images $images
     Test-Drivers -TreeRoot $treeRoot
     Test-WithoutModules -TreeRoot $treeRoot -Scratch $scratch
     Test-WithoutHackrfLibrary -TreeRoot $treeRoot -Scratch $scratch

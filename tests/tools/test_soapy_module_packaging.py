@@ -551,7 +551,7 @@ RUNTIME_DLLS = ("MSVCP140.dll", "VCRUNTIME140.dll")
 
 
 # Fakes for running verify_release_tree.ps1 off Windows. dumpbin.exe answers /headers and /DEPENDENTS from
-# report.json beside it. SoapySDRUtil.exe and dsd-neo.exe model SoapySDR 0.8.1: they load each module in
+# report.json beside it (its "unhardened" files lack NX compatibility). SoapySDRUtil.exe and dsd-neo.exe model SoapySDR 0.8.1: they load each module in
 # <their folder>/../lib/SoapySDR/modules0.8, which fails when the module's library is not in their own folder, and
 # print what the real programs print (the probe messages are the drivers' own).
 FAKE_VERIFY_DUMPBIN = r"""#!{python} -I
@@ -566,7 +566,9 @@ kind = report.get("types", {{}}).get(name, "EXECUTABLE IMAGE" if name.endswith("
 lines = ["Microsoft (R) COFF/PE Dumper Version 14.44.35217.0", "", "Dump of file " + path, "", "File Type: " + kind, ""]
 if option == "/headers":
     lines += ["            8664 machine (x64)", "                   High Entropy Virtual Addresses",
-              "                   Dynamic base", "                   NX compatible"]
+              "                   Dynamic base"]
+    if name not in report.get("unhardened", []):
+        lines += ["                   NX compatible"]
 elif option == "/DEPENDENTS":
     lines += ["  Image has the following dependencies:", ""]
     lines += ["    " + dep for dep in report["dependents"].get(name, ["KERNEL32.dll"])]
@@ -1070,6 +1072,31 @@ class SoapyReleaseScripts(unittest.TestCase):
         # A dependency list line that is no DLL name stops the check.
         self.report["dependents"]["SoapySDR.dll"].append("C:\\vendor\\late.dll")
         self.assert_verify_refuses(tools, root, windows, "C:\\vendor\\late.dll", str(root / "bin/SoapySDR.dll"))
+
+    def test_verify_release_tree_follows_imports_whatever_the_suffix(self):
+        # Windows loads the file an import names whatever its suffix: a vendor.drv in bin\ that SoapySDR.dll imports
+        # is a binary of the release like a DLL. The DLLs it imports must be in bin\ as files, and it must be hardened.
+        tools, root, windows = self.release_tree()
+        bin_dir = root / "bin"
+        (bin_dir / "vendor.drv").write_bytes(b"MZ vendor driver")
+        self.report["dependents"]["SoapySDR.dll"].append("vendor.drv")
+        self.report["dependents"]["vendor.drv"] = ["late.dll", "KERNEL32.dll"]
+        self.assert_verify_refuses(tools, root, windows, "vendor.drv -> late.dll")
+        # A folder of that name is no DLL.
+        (bin_dir / "late.dll").mkdir()
+        self.assert_verify_refuses(tools, root, windows, "vendor.drv -> late.dll")
+        (bin_dir / "late.dll").rmdir()
+        (bin_dir / "late.dll").write_bytes(b"MZ late")
+        self.report["dependents"]["late.dll"] = ["KERNEL32.dll"]
+        for name in ("vendor.drv", "late.dll"):
+            with self.subTest(unhardened=name):
+                self.report["unhardened"] = [name]
+                self.assert_verify_refuses(tools, root, windows, "missing PE NX compatible", str(bin_dir / name))
+        del self.report["unhardened"]
+        self.write_report(tools)
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 0, output)
+        self.assertIn(f"Windows PE hardening OK: {bin_dir / 'vendor.drv'}", output)
 
     def test_verify_release_tree_needs_one_copy_of_each_shared_library(self):
         # dsd-neo.exe's native Airspy input and librtlsdr must load the airspy.dll and libusb-1.0.dll the modules and
