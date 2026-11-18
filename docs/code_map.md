@@ -13723,8 +13723,8 @@ single "current call".
   reception its first part arrived on (a reassembly begun on another reception is dropped before a new part is taken,
   so a message sent again whole completes), its parts addressed to one party, by value and identity space
   (`tetra_calls_addressed_party()`: an SSI, an SMI and a USSI of one value are three parties, so their parts never
-  join; parts
-  addressed by an event label alone name no party, so their message's position is refused as `recipient unknown`). A repeated part 1 is a duplicate only with
+  join; parts addressed by an event label alone name no party, so their message's position is refused as `recipient
+  unknown`). A repeated part 1 is a duplicate only with
   the same bits and the same payload PID; under another PID it is another message's part 1 and discards the one held. Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
   position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
   one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling
