@@ -135,7 +135,27 @@ dsd_rxid_reset(dsd_state* state) {
     if (state != NULL) {
         rxid_clear(&state->rx_id);
         state->rx_id_trunk_tune_pending = 0U; /* a retune of the carrier left, whose code is gone with the rest */
+        state->rx_sync_protocol = 0U;         /* nothing heard on the carrier reached yet */
     }
+}
+
+/* The protocol a sync of @p family names (dsd_state::rx_sync_protocol): the family itself for a protocol that sends
+   identity (both P25 phases, every DMR burst, both polarities are one); for one that sends none, the protocol. */
+static uint16_t
+rxid_sync_protocol(int synctype, dsd_rxid_family family) {
+    if (family != DSD_RXID_FAMILY_OTHER) {
+        return (uint16_t)family;
+    }
+    if (DSD_SYNC_IS_DSTAR(synctype)) {
+        return 0x10U;
+    }
+    if (DSD_SYNC_IS_YSF(synctype)) {
+        return 0x11U;
+    }
+    if (DSD_SYNC_IS_X2TDMA(synctype)) {
+        return 0x12U;
+    }
+    return (uint16_t)(0x100U + (unsigned)synctype);
 }
 
 void
@@ -145,9 +165,14 @@ dsd_rxid_note_sync(dsd_state* state, int synctype) {
         return;
     }
     dsd_received_identity* const id = &state->rx_id;
-    if (id->family != (uint8_t)DSD_RXID_FAMILY_NONE && id->family != (uint8_t)family) {
+    const uint16_t protocol = rxid_sync_protocol(synctype, family);
+    /* Another protocol on the carrier is another reception, also when neither sent any identity (a D-STAR call, then an
+       M17 BERT frame): what was heard under the last one, a D-STAR header's naming among it, holds no longer. */
+    if ((id->family != (uint8_t)DSD_RXID_FAMILY_NONE && id->family != (uint8_t)family)
+        || (state->rx_sync_protocol != 0U && state->rx_sync_protocol != protocol)) {
         rxid_clear(id);
     }
+    state->rx_sync_protocol = protocol;
 }
 
 void

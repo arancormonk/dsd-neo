@@ -734,6 +734,43 @@ test_header_bound_to_its_reception(void) {
     rig_close(&r);
 }
 
+/* Issue #800 (g62-r7): in Auto mode N0OLD's terminator is missed and its call stays ACTIVE while an M17 BERT frame
+ * intervenes. Neither D-STAR nor BERT notes any identity, yet the M17 frame is another reception: when D-STAR resumes
+ * with no new header, a whole, CRC-valid D-PRS record is anonymous (feed only, no row) and a fresh text message stays
+ * off N0OLD's row. */
+static void
+test_header_bound_across_a_protocol_switch(void) {
+    rig r;
+    rig_open(&r);
+    dsd_rxid_note_sync(r.state, DSD_SYNC_DSTAR_VOICE_POS);
+    send_slow_data_header(&r, "N0OLD");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    send_text(&r, 0U, "OLD MESSAGE TEXT    ", 4U);
+    expect_str("N0OLD's own message", open_row(&r)->text_message, "OLD MESSAGE TEXT");
+    expect_int("header names the call", r.state->dstar_tx_call_epoch != 0U, 1);
+
+    dsd_rxid_note_sync(r.state, DSD_SYNC_M17_BRT_POS);
+    dsd_rxid_note_sync(r.state, DSD_SYNC_DSTAR_VOICE_POS);
+    expect_int("no identity noted across the switch", r.state->rx_id.family, DSD_RXID_FAMILY_NONE);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("call still open", dsd_call_state_get(r.state, 0U, &call), 1);
+    expect_int("call still ACTIVE", call.phase, DSD_CALL_PHASE_ACTIVE);
+    expect_int("header naming bound to the protocol it was heard under",
+               dsd_position_origin_matches(r.state, &r.state->dstar_tx_call_origin), 0);
+
+    send_text(&r, 0U, "FRESH MESSAGE TEXT  ", 4U);
+    expect_str("text after the protocol switch is not N0OLD's", open_row(&r)->text_message, "OLD MESSAGE TEXT");
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    dsd_position_fix f[2];
+    expect_int("record admitted", feed_records(&r, f, 2U), 1);
+    expect_str("record after the protocol switch names nobody", f[0].source_text, "");
+    expect_int("record after the protocol switch is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
+               DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    expect_int("N0OLD's row takes no position", open_row(&r)->pos.valid, 0);
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_vector_position();
@@ -755,6 +792,7 @@ main(void) {
     test_text_withheld_from_the_previous_transmitters_call();
     test_slow_data_suffix_alone_is_no_caller();
     test_header_bound_to_its_reception();
+    test_header_bound_across_a_protocol_switch();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSTAR_DPRS: %d failure(s)\n", g_failures);
         return 1;

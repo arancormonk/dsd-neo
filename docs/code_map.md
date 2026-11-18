@@ -2690,8 +2690,9 @@ suite runs under this compiler.
     transmission (`dstar_tx_seq`, advanced by every RF header, decoded or not, and the carrier's end:
     `dstar_tx_begin()`), the call a checked header of that transmission named on the current reception
     (`dstar_tx_named_call()`: `dstar_tx_call_epoch` while `dstar_tx_call_origin`, the reception the header was heard on,
-    still matches; 0 none, and 0 once a retune, target switch or another system's frame moved the reception generation,
-    whatever call stays ACTIVE across it), the confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
+    still matches; 0 none, and 0 once a retune, target switch, another system's frame or another protocol's frame (an
+    M17 frame between two D-STAR ones, `dsd_rxid_note_sync()`) moved the reception generation, whatever call stays
+    ACTIVE across it), the confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
     resets it, and a D-PRS record is checked against its binding before its CRC counts as evidence. What an assembly
     produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
     the row takes its position only through it (otherwise the feed takes the record anonymous), and the message reaches
@@ -3836,7 +3837,11 @@ suite runs under this compiler.
   every retune of an advance failed puts back the record the advance started with (the coordinator's `rollback_rx_id`,
   taken with the scratch snapshot, again after a forced release); `processFrame()` calls `dsd_rxid_note_sync()` before
   each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA included, which note nothing) drops
-  the record; the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
+  the record, and a frame of another protocol than the last one's (`dsd_state::rx_sync_protocol`: the family, or for a
+  protocol that notes nothing the protocol itself) moves the epoch even when neither noted anything (issue #800, fail
+  closed: a D-STAR call, an M17 BERT frame and D-STAR again are three receptions, so a D-STAR header's naming and every
+  multi-fragment report's origin end at the switch; both P25 phases, every DMR burst and both polarities are one
+  protocol); the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
   finds it taken leaves the step to the next, as it leaves the playout drain) marks every part stale and keeps the
   values; every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control channel
   return or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), requests `dsd_rxid_trunk_tune()`, which drops the
