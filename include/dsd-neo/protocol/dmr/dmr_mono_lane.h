@@ -17,6 +17,7 @@
 
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
+#include "dsd-neo/core/state_fwd.h"
 
 #ifdef __cplusplus
 extern "C" {
