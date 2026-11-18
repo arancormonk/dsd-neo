@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
@@ -132,4 +133,6 @@ dstar_header_observe(dsd_state* state, int protocol, int data, const char* rpt2,
     dsd_call_snapshot call;
     state->dstar_tx_call_epoch =
         (named && dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) ? call.epoch : 0U;
+    /* The naming holds on this reception only (dstar_tx_named_call()). */
+    dsd_position_origin_capture(NULL, state, &state->dstar_tx_call_origin);
 }

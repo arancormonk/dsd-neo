@@ -980,6 +980,75 @@ test_ip_unbound_stream_repeat_includes_sender(void) {
     rig_close(&r);
 }
 
+/* The console output of one checked RF LSF carrying @p meta (empty when stderr cannot be captured). */
+static int
+rf_lsf_output(rig* r, const uint8_t meta[M17_META_BYTES], const char* name, char* out, size_t cap) {
+    dsd_test_capture_stderr cap_err;
+    out[0] = '\0';
+    if (dsd_test_capture_stderr_begin(&cap_err, name) != 0) {
+        return 0;
+    }
+    const int rc = rf_lsf(r, 0, 1U, meta, 0);
+    (void)dsd_test_capture_stderr_end(&cap_err);
+    (void)dsd_test_capture_stderr_read(&cap_err, out, cap);
+    expect_int("LSF passes", rc, 0);
+    return 1;
+}
+
+/* Issue #800 (g62-r6): the console shows a GNSS META's coordinates only after admission admitted the report. A checked
+ * LSF whose latitude/longitude validity bit is set with both values zero is refused (0, 0): the console says so and
+ * prints no coordinate pair, while its other fields stay. An admitted report prints its pair. */
+static void
+test_refused_meta_prints_no_coordinates(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    char out[4096];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, 0, 0);
+    if (rf_lsf_output(&r, meta, "m17_gnss_refused", out, sizeof(out))) {
+        expect_true("refused META says refused", strstr(out, "GPS: (refused);") != NULL);
+        expect_true("refused META prints no coordinates", strstr(out, "0.000000") == NULL);
+        expect_true("refused META keeps its other fields", strstr(out, "Altitude: 1000.0 m;") != NULL);
+    }
+    dsd_position_fix f[2];
+    expect_int("(0, 0) admits nothing", feed_records(&r, f, 2U), 0);
+
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    if (rf_lsf_output(&r, meta, "m17_gnss_admitted", out, sizeof(out))) {
+        expect_true("admitted META prints its coordinates", strstr(out, "GPS: (22.500003, 45.000005);") != NULL);
+        expect_true("admitted META is not refused", strstr(out, "(refused)") == NULL);
+    }
+    expect_int("admitted META kept", feed_records(&r, f, 2U), 1);
+    rig_close(&r);
+}
+
+/* Issue #800 (g62-r6): radius code 7 is every radius above 64 m, with no upper bound (M17 spec 2.0.11): the console
+ * shows it as a lower bound, as the record does (err_m 64, ERR_LOWER_BOUND), never as 128 m. Code 6 is 64 m. */
+static void
+test_radius_code_7_prints_a_lower_bound(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    char out[4096];
+    gnss_meta(meta, GNSS_ALL_VALID, 7U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    if (rf_lsf_output(&r, meta, "m17_gnss_radius7", out, sizeof(out))) {
+        expect_true("radius code 7 printed as more than 64 m", strstr(out, "Radius: >64 m;") != NULL);
+        expect_true("radius code 7 never printed as 128 m", strstr(out, "128") == NULL);
+    }
+    dsd_position_fix f[2];
+    expect_int("radius code 7 kept", feed_records(&r, f, 2U), 1);
+    expect_int("radius code 7 record lower bound", f[0].flags & DSD_POS_FLAG_ERR_LOWER_BOUND,
+               DSD_POS_FLAG_ERR_LOWER_BOUND);
+    rig_close(&r);
+
+    rig_open(&r);
+    gnss_meta(meta, GNSS_ALL_VALID, 6U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    if (rf_lsf_output(&r, meta, "m17_gnss_radius6", out, sizeof(out))) {
+        expect_true("radius code 6 printed as 64 m", strstr(out, "Radius: 64.0 m;") != NULL);
+    }
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_rf_lsf_meta_position();
@@ -1001,6 +1070,8 @@ main(void) {
     test_extended_callsign_meta_decodes();
     test_other_protocol_call_is_no_transmission();
     test_unbound_lsf_is_not_the_active_calls();
+    test_refused_meta_prints_no_coordinates();
+    test_radius_code_7_prints_a_lower_bound();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "M17_GNSS_POSITION: %d failure(s)\n", g_failures);
         return 1;

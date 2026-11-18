@@ -91,7 +91,15 @@ static void M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struc
                              const m17_lsf_carrier* carrier);
 static void m17_decode_pkt_print_extended_csd(const uint8_t* input, int len);
 static void m17_decode_pkt_print_meta_or_arb(dsd_state* state, const uint8_t* input, int len, uint32_t protocol);
-static void m17_print_gnss(const struct m17_gnss_result* gnss);
+
+/* What admission made of a GNSS META report: the console shows its coordinates only when admitted. */
+typedef enum {
+    M17_GNSS_NO_POSITION = 0, /* no valid, in-range latitude and longitude */
+    M17_GNSS_REFUSED = 1,     /* a position admission refused */
+    M17_GNSS_ADMITTED = 2,    /* admitted now, or the repeat of the one admitted in this transmission */
+} m17_gnss_verdict;
+
+static void m17_print_gnss(const struct m17_gnss_result* gnss, m17_gnss_verdict verdict);
 static void M17logLSFTrailer(const dsd_state* state, const struct m17_lsf_result* res);
 static int m17_can_matches_state(const dsd_state* state);
 static int m17_load_aes_key(const dsd_state* state, uint8_t subtype, uint8_t key[32]);
@@ -655,11 +663,11 @@ m17_gnss_note_admitted(dsd_state* state, const m17_gnss_tx_key* key) {
     DSD_MEMCPY(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
 }
 
-static void
+static m17_gnss_verdict
 m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
                           const struct m17_gnss_result* gnss, const m17_lsf_carrier* carrier) {
     if ((gnss->validity & M17_GNSS_VALID_LATLON) == 0U || (gnss->out_of_range_fields & M17_GNSS_VALID_LATLON) != 0U) {
-        return;
+        return M17_GNSS_NO_POSITION;
     }
     dsd_position_fix fix;
     dsd_position_fix_init(&fix);
@@ -686,10 +694,10 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     dsd_position_origin_capture(opts, state, &heard);
     key.gen = heard.gen;
     if (m17_gnss_is_repeat(state, &key)) {
-        return;
+        return M17_GNSS_ADMITTED; /* admitted already, on this reception, within this transmission */
     }
     if (dsd_position_admit(opts, state, &fix, 1, 1, NULL) == DSD_POSITION_REFUSED) {
-        return;
+        return M17_GNSS_REFUSED;
     }
     /* An RF report with no active call has no transmission to repeat within: the next one is admitted again. */
     if (!carrier->network && key.id == 0U) {
@@ -701,6 +709,7 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     if (active) {
         (void)dsd_event_enrich_position(opts, state, 0U, call.epoch, &fix, text);
     }
+    return M17_GNSS_ADMITTED;
 }
 
 static void
@@ -711,8 +720,10 @@ M17decodeMetaGnss(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_r
         DSD_FPRINTF(stderr, " Invalid GNSS META;");
         return;
     }
-    m17_print_gnss(&gnss);
-    m17_publish_gnss_position(opts, state, res, &gnss, carrier);
+    /* Admission first: the console shows the coordinates of an admitted report only (issue #800 position-producer
+       contract), a refused one its other fields. */
+    const m17_gnss_verdict verdict = m17_publish_gnss_position(opts, state, res, &gnss, carrier);
+    m17_print_gnss(&gnss, verdict);
 }
 
 /* The META field of an LSF whose CRC passed, decoded by its subtype straight from the 14 META bytes (issue #800 N1:
@@ -3401,9 +3412,11 @@ m17_decode_pkt_print_station_type(uint8_t station_type) {
 }
 
 static void
-m17_print_gnss(const struct m17_gnss_result* gnss) {
-    if ((gnss->validity & M17_GNSS_VALID_LATLON) != 0U && (gnss->out_of_range_fields & M17_GNSS_VALID_LATLON) == 0U) {
+m17_print_gnss(const struct m17_gnss_result* gnss, m17_gnss_verdict verdict) {
+    if (verdict == M17_GNSS_ADMITTED) {
         DSD_FPRINTF(stderr, "\n GPS: (%f, %f);", gnss->latitude_deg, gnss->longitude_deg);
+    } else if (verdict == M17_GNSS_REFUSED) {
+        DSD_FPRINTF(stderr, "\n GPS: (refused);");
     } else {
         DSD_FPRINTF(stderr, "\n GPS Not Valid;");
     }
@@ -3421,7 +3434,14 @@ m17_print_gnss(const struct m17_gnss_result* gnss) {
     }
     if ((gnss->validity & M17_GNSS_VALID_RADIUS) != 0U) {
         /* On the GPS line: a part of the report carries the producer's label (issue #800, D10). */
-        DSD_FPRINTF(stderr, " Radius: %.1f m;", gnss->radius_m);
+        if (gnss->radius_exponent >= 7U) {
+            /* Code 7 is every radius above 64 m (M17 spec 2.0.11: radii above 128 m are encoded as 7 too; the M17
+               Project's libm17 encoder gives 7 to any radius over 64 m): a lower bound, as m17_gnss_fill_fix() records
+               it, never 128 m. */
+            DSD_FPRINTF(stderr, " Radius: >64 m;");
+        } else {
+            DSD_FPRINTF(stderr, " Radius: %.1f m;", gnss->radius_m);
+        }
     }
     if (gnss->invalid_zero_fields != 0U) {
         DSD_FPRINTF(stderr, " Nonzero Invalid Fields: %X;", gnss->invalid_zero_fields);

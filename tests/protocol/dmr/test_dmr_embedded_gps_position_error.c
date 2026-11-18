@@ -613,7 +613,9 @@ main(void) {
         uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes, 1, NULL);
         rc |= expect_u8("nmea-valid", ok, 1U);
         if (st.event_history_s != NULL) {
-            rc |= expect_has_substr(dsd_event_staged_text(&st, 0), "$GPRMC,TEST*71", "nmea-valid-text");
+            // A checked sentence with no measured fix: its text is withheld like any unadmitted report's (issue #800).
+            rc |= expect_has_substr(dsd_event_staged_text(&st, 0), "NMEA withheld (no admitted position)",
+                                    "nmea-valid-text");
         } else {
             DSD_FPRINTF(stderr, "%s\n", "nmea-valid-text: event_history_s is NULL");
             rc |= 1;

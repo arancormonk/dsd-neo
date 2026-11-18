@@ -600,6 +600,8 @@ decode_ip_pdu_handle_icmp(dsd_opts* opts, dsd_state* state, size_t effective_len
         if (rem > UINT16_MAX) {
             rem = UINT16_MAX;
         }
+        /* The datagram the ICMP sender returns, often cut after its first octets: decoded only when whole
+           (decode_ip_pdu_whole()). */
         decode_ip_pdu(opts, state, (uint16_t)rem, input + attached_off);
     }
 }
@@ -972,7 +974,11 @@ decode_ip_pdu_handle_udp(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_
     size_t udp_payload_len = (udp_len >= 8u) ? ((size_t)udp_len - 8u) : 0u;
     size_t max_payload_len = (effective_len > udp_payload_off) ? (effective_len - udp_payload_off) : 0u;
     if (udp_payload_len > max_payload_len) {
-        udp_payload_len = max_payload_len;
+        /* The datagram says more payload than its IP datagram holds: the payload is cut short, and nothing of it is
+           decoded (as for a fragment, decode_ip_pdu_whole()). */
+        DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "Truncated UDP;");
+        DSD_FPRINTF(stderr, "Truncated UDP;");
+        return;
     }
     uint16_t payload_len = (uint16_t)udp_payload_len;
     const uint8_t* payload = input + udp_payload_off;
@@ -1005,6 +1011,46 @@ decode_ip_pdu_print_header(const dsd_opts* opts, const dmr_ip_pdu_header* hdr) {
         "%d; Protocol: 0x%02X; Checksum: %04X; PDU Len: %d;",
         hdr->version, hdr->ihl, hdr->tos, hdr->tlen, hdr->iden, hdr->ipf, hdr->offset, hdr->ttl, hdr->prot, hdr->hsum,
         hdr->len);
+}
+
+/* The one rule every IPv4 payload path goes through (issue #800, fail closed): the transport header and payload are
+ * read only from a whole datagram. A fragment -- More Fragments set, or a nonzero fragment offset -- is not
+ * reassembled: a later fragment's first octets are data, not a UDP header (they can look like any port and report),
+ * and the first fragment holds only part of the payload. A datagram whose total length the PDU does not hold (an ICMP
+ * error quotes only the first octets of the datagram it returns, which then reaches here through
+ * decode_ip_pdu_handle_icmp()) is cut short the same way. None of these names ports, reaches a service decoder or
+ * gives a position. Returns 1 for a whole datagram. */
+static int
+decode_ip_pdu_whole(const dmr_ip_pdu_header* hdr) {
+    const size_t header_len = (size_t)hdr->ihl * 4U;
+    return (hdr->ipf & 0x1U) == 0U && hdr->offset == 0U && (size_t)hdr->tlen >= header_len && hdr->tlen <= hdr->len;
+}
+
+/* The UDP ports of a whole datagram (decode_ip_pdu_whole()); left 0 when the datagram has no room for them. */
+static void
+decode_ip_pdu_udp_ports(const uint8_t* input, size_t effective_len, size_t ip_header_len, uint16_t* src_port,
+                        uint16_t* dst_port) {
+    if (effective_len >= ip_header_len + 8u) {
+        *src_port = (uint16_t)((input[ip_header_len + 0] << 8) | input[ip_header_len + 1]);
+        *dst_port = (uint16_t)((input[ip_header_len + 2] << 8) | input[ip_header_len + 3]);
+    }
+}
+
+/* The notice text and console line of a datagram decode_ip_pdu_whole() keeps from the decoders. */
+static void
+decode_ip_pdu_note_not_decoded(dsd_state* state, uint8_t slot, const dmr_ip_pdu_header* hdr, const uint8_t* input) {
+    const int fragment = (hdr->ipf & 0x1U) != 0U || hdr->offset != 0U;
+    const char* why = fragment ? "IP Fragment" : "Incomplete Datagram";
+    DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
+                 "IP SRC: %d.%d.%d.%d; DST: %d.%d.%d.%d; %s; not decoded;", input[12], input[13], input[14], input[15],
+                 input[16], input[17], input[18], input[19], why);
+    if (fragment) {
+        DSD_FPRINTF(stderr, "\n %s; Offset: %u; More Fragments: %u; not reassembled;", why, (unsigned)hdr->offset * 8U,
+                    (unsigned)(hdr->ipf & 0x1U));
+    } else {
+        DSD_FPRINTF(stderr, "\n %s; Total Len: %u; Held: %u; not decoded;", why, (unsigned)hdr->tlen,
+                    (unsigned)hdr->len);
+    }
 }
 
 static void
@@ -1115,19 +1161,21 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     const uint32_t addr24 = (uint32_t)((input[13] << 16) | (input[14] << 8) | input[15]);
     const uint32_t src24 = dsd_position_source_names_radio(state->lastsynctype, addr24) ? addr24 : 0U;
     uint32_t dst24 = (uint32_t)((input[17] << 16) | (input[18] << 8) | input[19]);
+    const int whole = decode_ip_pdu_whole(&hdr);
     uint16_t src_port = 0;
     uint16_t dst_port = 0;
-    if (prot == 0x11) {
-        if (effective_len >= ip_header_len + 8u) {
-            src_port = (uint16_t)((input[ip_header_len + 0] << 8) | input[ip_header_len + 1]);
-            dst_port = (uint16_t)((input[ip_header_len + 2] << 8) | input[ip_header_len + 3]);
-        }
+    if (whole && prot == 0x11) {
+        decode_ip_pdu_udp_ports(input, effective_len, ip_header_len, &src_port, &dst_port);
     }
-    decode_ip_pdu_print_endpoints(prot, addr24, dst24, src_port, dst_port, input);
+    decode_ip_pdu_print_endpoints(whole ? prot : 0U, addr24, dst24, src_port, dst_port, input);
     char previous_gps[sizeof state->dmr_embedded_gps[slot]];
     DSD_SNPRINTF(previous_gps, sizeof previous_gps, "%s", state->dmr_embedded_gps[slot]);
     state->dmr_embedded_gps[slot][0] = '\0';
-    decode_ip_pdu_dispatch(opts, state, slot, prot, src24, dst24, effective_len, ip_header_len, input);
+    if (whole) {
+        decode_ip_pdu_dispatch(opts, state, slot, prot, src24, dst24, effective_len, ip_header_len, input);
+    } else {
+        decode_ip_pdu_note_not_decoded(state, slot, &hdr, input);
+    }
 
     return decode_ip_pdu_emit_notice(opts, state, slot, prot, src24, dst24, src_port, dst_port, previous_gps);
 }

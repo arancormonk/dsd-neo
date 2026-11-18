@@ -693,6 +693,61 @@ test_p25_fixed_network_source(dsd_opts* opts, dsd_state* state, const char* path
     return failed;
 }
 
+/* A decoded datagram that is not whole gives nothing of its payload: no -L row, no position on its notice, no feed
+ * record, no service named from octets that are not a UDP header. */
+static int
+expect_not_decoded(dsd_opts* opts, dsd_state* state, const char* path, uint8_t* packet, uint16_t len,
+                   const char* label) {
+    int failed = 0;
+    const uint64_t rev = dsd_position_last_rev();
+    CHECK(truncate_output(path));
+    CHECK(decode_ip_pdu(opts, state, len, packet) == 1);
+    CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, label));
+    const Event_History* notice = &state->event_history_s[0].Event_History_Items[1];
+    CHECK(notice->pos.valid == 0U && notice->gps_s[0] == '\0');
+    CHECK(strstr(notice->event_string, "LIP") == NULL);
+    CHECK(strstr(notice->event_string, "not decoded") != NULL || strstr(notice->event_string, "Truncated") != NULL);
+    CHECK(dsd_position_last_rev() == rev);
+    if (failed) {
+        DSD_FPRINTF(stderr, "%s: notice '%s'\n", label, notice->event_string);
+    }
+    return failed;
+}
+
+/* Issue #800 (g62-r6): an IPv4 fragment is not reassembled, so nothing of its payload is decoded. A later fragment
+ * (offset 1, eight octets in) whose first octets look like UDP port 5017 followed by a LIP report, the first fragment
+ * of a datagram whose later fragments follow (More Fragments), a datagram whose total length the PDU does not hold
+ * and a UDP length past the datagram give no position. The same report in a whole datagram does. */
+static int
+test_ip_fragments_give_nothing(dsd_opts* opts, dsd_state* state, const char* path) {
+    int failed = 0;
+    reset_carrier_state(state);
+    uint8_t packet[38];
+
+    build_packet(packet);
+    packet[7] = 1; /* fragment offset 1 (eight octets): the "UDP header" is datagram data */
+    failed |= expect_not_decoded(opts, state, path, packet, sizeof packet, "non-initial fragment");
+
+    build_packet(packet);
+    packet[6] = 0x20; /* More Fragments */
+    failed |= expect_not_decoded(opts, state, path, packet, sizeof packet, "first fragment");
+
+    build_packet(packet);
+    packet[3] = 60; /* total length 60, 38 octets held */
+    failed |= expect_not_decoded(opts, state, path, packet, sizeof packet, "cut datagram");
+
+    build_packet(packet);
+    packet[25] = 30; /* UDP length 30, 18 held */
+    failed |= expect_not_decoded(opts, state, path, packet, sizeof packet, "cut UDP payload");
+
+    build_packet(packet);
+    CHECK(truncate_output(path));
+    CHECK(decode_ip_pdu(opts, state, sizeof packet, packet) == 1);
+    CHECK(expect_rows(path, 1, "00000111", "-22.500000", "-45.000000", 20, 0, "whole datagram after fragments"));
+    CHECK(notice_has_position(&state->event_history_s[0].Event_History_Items[1], 111U));
+    return failed;
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -730,6 +785,7 @@ main(void) {
     failed |= test_compressed_mixed_ports(&opts, &state);
     failed |= test_udt_nmea_dispatch(&opts, &state, path);
     failed |= test_udt_nmea_padding(&opts, &state, path);
+    failed |= test_ip_fragments_give_nothing(&opts, &state, path);
     dsd_state_ext_free_all(&state);
     free(state.event_history_s);
     (void)remove(path);

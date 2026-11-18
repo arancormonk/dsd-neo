@@ -1925,7 +1925,12 @@ suite runs under this compiler.
   dispatch, `dmr_udp_service_dispatch()`: the destination port when a decoder claims it, else a source port that names
   its service (4005, the radio's fixed ARS port per the MOTOTRBO ARS specification 4.4.2, and the ETSI radio-network
   defaults 5016/5017; a policy, so an ARS server on an already claimed port still selects that port's decoder).
-  `--lrrp-extra-port` ports are part of it. The compressed path passes the data header's LLIDs as the radios and a
+  `--lrrp-extra-port` ports are part of it. The IPv4 path dispatches only a whole datagram
+  (`decode_ip_pdu_whole()`, issue #800 fail closed): an IPv4 fragment (More Fragments set or a nonzero offset) is not
+  reassembled, and a datagram whose total length the PDU does not hold, or whose UDP length runs past it (an ICMP error
+  quoting the first octets of a returned datagram among them), is cut short; none of them names ports, reaches a
+  service decoder or gives a position, and its notice says `IP Fragment; not decoded;`, `Incomplete Datagram; not
+  decoded;` or `Truncated UDP;`. The compressed path passes the data header's LLIDs as the radios and a
   NULL IPv4 header (9361/49198 then print the LLIDs), and appends the decoder's slot string to its notice. TS 102 361-3
   leaves SPID/DPID 95-127 to the manufacturer with a per-radio linkage (table 7.17 note 2), so no index is mapped by
   default: `dsd_opts::dmr_udp_comp_ports` (`--dmr-udp-comp-port`, `mode.dmr_udp_comp_ports`,
@@ -2561,7 +2566,9 @@ suite runs under this compiler.
   `dsd_position_kind`) and admits it with verdicts from checks it ran itself: a zero `event_crc_invalid` proves
   nothing where no CRC scope exists (P25 link control and MAC, NXDN, M17, D-STAR, TETRA). Only an admitted record
   gets its GPS text, history position, `-L` row and feed record; a refused or unchecked report prints its fields
-  without coordinates (`Position: (suppressed; CRC ERR)`, `(suppressed; RAS)`, `(refused)`). Raw fields are checked
+  without coordinates (`Position: (suppressed; CRC ERR)`, `(suppressed; RAS)`, `(refused)`). Every producer prints
+  a report's coordinates only after admission admitted it (fail closed: M17 GNSS META `GPS: (refused);`, ASCII NMEA
+  sentences, D-STAR GPS blocks only under `-Z`); a raw dump that can hold a position prints only with `-Z`. Raw fields are checked
   before they are converted (degrees, minutes 0-59, fractions, a boundary degree only with zero minutes, dates per
   month, times of day): a bad coordinate refuses the report, any other bad field becomes unknown and is never folded
   (a heading outside 0-3599 tenths of a degree, a time past 23:59:59). The record names the destination
@@ -2645,7 +2652,11 @@ suite runs under this compiler.
     type 0 or 1, kept in `dmr_data_checked_group`). The RMC date's two-digit year is read in the century that puts the
     date closest to its reception on the decode clock, so within 50 years of it (`dsd_gps_two_digit_year_date()`; a
     replayed capture keeps its own century; with no century within 50 years, such as 29 February 00 received in 2080,
-    the fix time is unknown). A CRC-failed packet keeps no sentence text. A payload is NMEA
+    the fix time is unknown). The checked sentences' text reaches the console (`NMEA:`) and the notice only from a
+    packet whose report admission admitted (`nmea_packet_text()`, after admission): a CRC-failed packet's says
+    `NMEA withheld (CRC ERR)`, and one with no measured fix or a refused report (a status V RMC, an RMC at exactly
+    0, 0 alone) `NMEA withheld (no admitted position)`, since its sentences can hold the coordinates the decoder
+    rejected. A payload is NMEA
     when the parser frames it so (`nmea_payload_framed()`: line ends, then `$` or `!`), and then none of it is ever
     plain text (P25 SAP 48's text fallback), whether or not its sentences pass. The sentences and the report are read
     from the whole payload (up to `NMEA_PAYLOAD_MAX_BYTES`, more than any P25 packet or NXDN data call carries; only
@@ -2672,12 +2683,15 @@ suite runs under this compiler.
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
-    its own mini-header: only GPS blocks (0x3n) feed the record and the `GPS DATA:` display, only text blocks
+    its own mini-header: only GPS blocks (0x3n) feed the record and the `GPS DATA:` display (a raw dump, `-Z` only: a part of a record not yet
+    checked or admitted), only text blocks
     (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
     rule (fail closed, `dstar_sd_binding` in `state.h`): from its first byte or block an assembly is bound to the
     transmission (`dstar_tx_seq`, advanced by every RF header, decoded or not, and the carrier's end:
-    `dstar_tx_begin()`), the call a checked header of that transmission named (`dstar_tx_call_epoch`, 0 none), the
-    confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
+    `dstar_tx_begin()`), the call a checked header of that transmission named on the current reception
+    (`dstar_tx_named_call()`: `dstar_tx_call_epoch` while `dstar_tx_call_origin`, the reception the header was heard on,
+    still matches; 0 none, and 0 once a retune, target switch or another system's frame moved the reception generation,
+    whatever call stays ACTIVE across it), the confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
     resets it, and a D-PRS record is checked against its binding before its CRC counts as evidence. What an assembly
     produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
     the row takes its position only through it (otherwise the feed takes the record anonymous), and the message reaches
@@ -2710,7 +2724,8 @@ suite runs under this compiler.
     checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_attribution` and the L3Harris Part A, and every D-STAR RF
     header, whatever its CRC, begins another transmission (`dstar_tx_begin()`: the half-assembled D-PRS record and text
     message are dropped) whose slow data reaches no call, its D-PRS records anonymous, until a checked header, on RF or
-    in the slow data, names the transmission's MY callsign (`dstar_tx_call_epoch`; a checked header with a blank MY
+    in the slow data, names the transmission's MY callsign on the reception the slow data is heard on
+    (`dstar_tx_named_call()`; a checked header with a blank MY
     field names no one and leaves them anonymous too). Tests:
     `CORE_POSITION_FEED`, `CORE_CALL_STATE_ALLOC`, `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`,
     `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`, `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `P25_P1_TDULC`,

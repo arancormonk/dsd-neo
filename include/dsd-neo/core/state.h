@@ -625,9 +625,9 @@ typedef struct dmr_talker_alias_assembly {
 /**
  * What a D-STAR slow-data assembly (a D-PRS record, the text message) is bound to from its first byte or block
  * (src/protocol/dstar/dstar_slow_data.c, issue #800): the transmission (dsd_state::dstar_tx_seq), the call a checked
- * header of that transmission named (dsd_state::dstar_tx_call_epoch, 0: none), whether the transmission was confirmed
- * (dsd_state::dstar_confirmed) and the reception (dsd_position_origin_capture()). A block heard when any of them has
- * changed resets the assembly before it is used: nothing assembled across two transmissions, two receptions, a header
+ * header of that transmission named on the current reception (dstar_tx_named_call(), 0: none), whether the
+ * transmission was confirmed (dsd_state::dstar_confirmed) and the reception (dsd_position_origin_capture()). A block
+ * heard when any of them has changed resets the assembly before it is used: nothing assembled across two transmissions, two receptions, a header
  * naming another call or the confirmation reaches the evidence, a position or a call.
  */
 typedef struct dstar_sd_binding {
@@ -3017,9 +3017,13 @@ struct dsd_state {
      * or not, and the carrier's end (dstar_confirm_reset()). dstar_tx_call_epoch is the slot 0 call a header of this
      * transmission whose CRC passed named with a MY callsign; 0 until one has, after an RF header (the call left ACTIVE,
      * its terminator missed, may be another radio's), and after a checked header whose MY field is blank. Slow data
-     * reaches a call (its text, a D-PRS source, a D-PRS position) only when that call is the one named here. */
+     * reaches a call (its text, a D-PRS source, a D-PRS position) only when that call is the one named here.
+     * dstar_tx_call_origin is the reception that header was heard on: once the reception generation moves (a retune,
+     * another system's frame noted between the header and the slow data), the header names no call any more
+     * (dstar_slow_data.c dstar_tx_named_call()), whatever stays ACTIVE. */
     uint32_t dstar_tx_seq;
     uint64_t dstar_tx_call_epoch;
+    dsd_position_origin dstar_tx_call_origin;
 
     //M17 Storage
     uint8_t m17_lsf[360];
