@@ -16,6 +16,12 @@
 # non-overlapping matches of it, 0 included),
 # and AUDIO_MIN_BYTES with WORK_DIR (the run's decoded-audio WAV, -w, must hold
 # at least that many bytes, not all of them zero).
+#
+# Optional -DREFERENCE_FIXTURE: another recording of the same signal (its native
+# rate, say). EXPECTED is then a pattern for any value of a decoded field (an
+# identity); the reference run's first match is the value, and every match in
+# this run must be that value, which then counts toward MIN_MATCHES. So a case
+# checks the decoded field without the value typed into it.
 foreach(_var DSD_BIN MODE FIXTURE EXPECTED)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "iq_decode_check: missing -D${_var}")
@@ -75,6 +81,26 @@ if(DEFINED AUDIO_MIN_BYTES)
     set(_audio_args -w "${_audio_wav}")
 endif()
 
+set(_reference_value "")
+if(DEFINED REFERENCE_FIXTURE)
+    execute_process(
+        COMMAND
+            "${DSD_BIN}" --frontend none ${_mode_args} --iq-replay
+            "${REFERENCE_FIXTURE}" -o null
+        RESULT_VARIABLE _reference_rc
+        OUTPUT_VARIABLE _reference_out
+        ERROR_VARIABLE _reference_err
+        TIMEOUT 110
+    )
+    string(REGEX MATCH "${EXPECTED}" _reference_value "${_reference_out}\n${_reference_err}")
+    if(NOT "${_reference_rc}" STREQUAL "0" OR _reference_value STREQUAL "")
+        message(
+            FATAL_ERROR
+            "iq_decode_check: the reference /${EXPECTED}/ not decoded from ${REFERENCE_FIXTURE} (exit '${_reference_rc}')\n${_reference_out}\n${_reference_err}"
+        )
+    endif()
+endif()
+
 execute_process(
     COMMAND
         "${DSD_BIN}" --frontend none ${_mode_args} ${_event_args} ${_audio_args}
@@ -97,6 +123,20 @@ if(NOT "${_rc}" STREQUAL "0")
         FATAL_ERROR
         "iq_decode_check: dsd-neo exited with '${_rc}' (expected 0)\n${_all}"
     )
+endif()
+if(NOT _reference_value STREQUAL "")
+    # Every value this run decoded for the field is the reference's: the count of
+    # any value and of the reference value agree, and the latter is what counts.
+    dsd_test_count_regex_matches(_any_value_count "${EXPECTED}" "${_all}")
+    string(REGEX REPLACE "([][+.*()^$?|\\])" "\\\\\\1" _reference_regex "${_reference_value}")
+    dsd_test_count_regex_matches(_reference_count "${_reference_regex}" "${_all}")
+    if(NOT _any_value_count EQUAL _reference_count)
+        message(
+            FATAL_ERROR
+            "iq_decode_check: ${_any_value_count} matches of /${EXPECTED}/, of which ${_reference_count} are the reference's '${_reference_value}'\n${_all}"
+        )
+    endif()
+    set(EXPECTED "${_reference_regex}")
 endif()
 if(NOT "${_all}" MATCHES "${EXPECTED}")
     message(

@@ -21391,17 +21391,18 @@ if(DSD_HAS_RADIO)
     # through a resampled replay (288 kHz), not the recorded chain. TETRA_CALL_SOAPY_156K is the same TETRA excerpt as a
     # HackRF at 10 MS/s through SoapySDR leaves it after six half-band passes (156,250 Hz): one more pass to 78,125 Hz
     # and the 576/625 step, a ratio no other case runs. It covers that part of the chain only, not the live 10 MS/s
-    # ingest or the Fs/4 tuning.
+    # ingest or the Fs/4 tuning. Its cell identity is the one the same recording decodes at its native rate
+    # (REFERENCE_FIXTURE in iq_decode_check.cmake): every identity it decodes must be that one.
     foreach(
         _forced_case
         IN
         ITEMS
-            "P25P1_CQPSK_CC_AIRSPY_312K@@p25p1_cqpsk_cc_airspy_312k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel@@16@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
-            "P25P1_CQPSK_SIMULCAST_AIRSPY_375K@@p25p1_cqpsk_simulcast_airspy_375k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel Grant Update - Implicit@@16@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
-            "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161.[0-9: ]+P25p2 SACCH  MAC_IDLE@@1@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
-            "DMR_VOICE_AIRSPY_312K@@dmr_voice_airspy_312k@@-fs@@Color Code=02 \\| VC@@10@@Color Code=02 \\| VLC@@1@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
-            "TETRA_CALL_AIRSPY_375K@@tetra_call_airspy_375k@@-fT -Z@@\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=375000 Hz, base_decim=4, I/Q step L/M=96/125"
-            "TETRA_CALL_SOAPY_156K@@tetra_call_soapy_156k@@-fT -Z@@\\[TETRA BSCH\\] MCC=[0-9]+ MNC=[0-9]+ CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=156250 Hz, base_decim=2, I/Q step L/M=576/625"
+            "P25P1_CQPSK_CC_AIRSPY_312K@@p25p1_cqpsk_cc_airspy_312k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel@@16@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625@@-"
+            "P25P1_CQPSK_SIMULCAST_AIRSPY_375K@@p25p1_cqpsk_simulcast_airspy_375k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel Grant Update - Implicit@@16@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125@@-"
+            "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161.[0-9: ]+P25p2 SACCH  MAC_IDLE@@1@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125@@-"
+            "DMR_VOICE_AIRSPY_312K@@dmr_voice_airspy_312k@@-fs@@Color Code=02 \\| VC@@10@@Color Code=02 \\| VLC@@1@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625@@-"
+            "TETRA_CALL_AIRSPY_375K@@tetra_call_airspy_375k@@-fT -Z@@\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=375000 Hz, base_decim=4, I/Q step L/M=96/125@@-"
+            "TETRA_CALL_SOAPY_156K@@tetra_call_soapy_156k@@-fT -Z@@\\[TETRA BSCH\\] MCC=[0-9]+ MNC=[0-9]+ CC=0x[0-9a-f]+@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=156250 Hz, base_decim=2, I/Q step L/M=576/625@@tetra_call_real_air_72k"
     )
         string(REPLACE "@@" ";" _forced_fields "${_forced_case}")
         list(GET _forced_fields 0 _forced_name)
@@ -21412,11 +21413,18 @@ if(DSD_HAS_RADIO)
         list(GET _forced_fields 5 _forced_expected2)
         list(GET _forced_fields 6 _forced_min2)
         list(GET _forced_fields 7 _forced_chain)
+        list(GET _forced_fields 8 _forced_reference)
         set(_forced_second)
         if(NOT _forced_expected2 STREQUAL "-")
             set(_forced_second
                 "-DEXPECTED2=${_forced_expected2}"
                 "-DMIN_MATCHES2=${_forced_min2}"
+            )
+        endif()
+        if(NOT _forced_reference STREQUAL "-")
+            list(
+                APPEND _forced_second
+                "-DREFERENCE_FIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${_forced_reference}.iq.json"
             )
         endif()
         add_test(
