@@ -154,6 +154,47 @@ test_mark_counts_queued_datagrams(void) {
     return rc;
 }
 
+/* Issue #834: a mark is a complete count however long its drain is held up. 100 old datagrams wait in the socket (the
+   receive thread held), and the mark's drain is descheduled for 300 ms at its first read: it still takes all 100
+   before it returns, so none of them is counted after the cutoff and played on the new channel. Before, a drain that ran
+   250 ms on the real clock stopped after its first batch of 64 and returned that count as the mark. */
+static int
+test_mark_is_complete_after_a_stall(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.wav_sample_rate = 48000;
+    udp_input_test_hold_receive(1);
+    if (udp_input_start(&opts, "127.0.0.1", 0, 48000) != 0) {
+        udp_input_test_hold_receive(0);
+        DSD_FPRINTF(stderr, "udp_input_start failed\n");
+        return 1;
+    }
+    const int port = bound_port(opts.udp_in_sockfd);
+    dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    int rc = expect("a sender for the stalled mark", tx != DSD_INVALID_SOCKET && port > 0);
+    for (int16_t i = 1; rc == 0 && i <= 100; i++) {
+        rc |= expect("an old datagram sent", send_samples(tx, port, &i, 1U) == 0);
+    }
+    rc |= expect("they wait in the socket", rc == 0 && socket_holds_one(opts.udp_in_sockfd));
+    dsd_sleep_ms(20U); /* loopback has queued all of them */
+    if (rc == 0) {
+        udp_input_test_stall_next_read(300U);
+        dsd_input_cut cut;
+        dsd_input_backlog_mark(&cut);
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "a stalled mark still counts every queued datagram (counted %llu, want 100)",
+                     (unsigned long long)cut.arrived);
+        rc |= expect(label, cut.measured == 1U && cut.arrived == 100U);
+    }
+    udp_input_test_stall_next_read(0U);
+    udp_input_test_hold_receive(0);
+    if (tx != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(tx);
+    }
+    udp_input_stop(&opts);
+    return rc;
+}
+
 /* What the endless sender's case does on a thread of its own, so a lock held without end shows as a case that never
    finishes: a sample read, a mark taken and the input stopped, each while the socket never goes quiet. */
 typedef struct {
@@ -237,6 +278,7 @@ main(void) {
         return 1;
     }
     int rc = test_mark_counts_queued_datagrams();
+    rc |= test_mark_is_complete_after_a_stall();
     rc |= test_endless_sender_holds_no_lock();
     dsd_socket_cleanup();
     if (rc == 0) {

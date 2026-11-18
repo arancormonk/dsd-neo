@@ -12,7 +12,6 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
-#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <errno.h>
 #if !DSD_PLATFORM_WIN_NATIVE
@@ -72,9 +71,6 @@ typedef struct udp_input_ctx {
 /* The datagrams the receive thread moves into the ring per hold of the ring's lock: between two batches the decoder's
    reads, a stop and a backlog mark take the lock, however fast a sender keeps the socket readable. */
 #define UDP_INPUT_RX_BATCH        64U
-/* A backlog mark's drain stops after this long on the real clock, whatever it took: a sender that keeps the socket
-   readable faster than it is drained cannot hold a mark (or the decoder, waiting on the ring) any longer. */
-#define UDP_INPUT_MARK_MAX_MS     250U
 /* The receive buffer a backlog mark assumes when the system does not report its size: twice the 4 MiB asked for, as
    Linux reports a granted size. */
 #define UDP_INPUT_RCVBUF_FALLBACK (8U * 1024U * 1024U)
@@ -179,10 +175,24 @@ udp_input_test_endless_socket(int endless) {
 }
 #endif
 
+#ifdef DSD_NEO_TEST_HOOKS
+/* The next socket read waits this long first (milliseconds): a thread descheduled in the middle of a drain. */
+static atomic_int s_udp_test_stall_ms;
+
+void
+udp_input_test_stall_next_read(unsigned int ms) {
+    atomic_store(&s_udp_test_stall_ms, (int)ms);
+}
+#endif
+
 /* One datagram from the socket into ctx->rx_buf, without waiting: its size, or what dsd_socket_recv() returned. */
 static int
 udp_input_recv(udp_input_ctx* ctx) {
 #ifdef DSD_NEO_TEST_HOOKS
+    const int stall_ms = atomic_exchange(&s_udp_test_stall_ms, 0);
+    if (stall_ms > 0) {
+        dsd_sleep_ms((unsigned int)stall_ms);
+    }
     if (atomic_load(&s_udp_test_endless_socket)) {
         DSD_MEMSET(ctx->rx_buf, 0, 64U);
         return 64;
@@ -337,14 +347,14 @@ udp_input_bind_address(const char* bindaddr, int port, struct sockaddr_in* addr)
    thread was descheduled or not. The drain is bounded: datagrams leave the socket oldest first, and the socket held no
    more than its receive buffer at the mark, so once the datagrams taken are charged past that size every one queued at
    the mark is in the ring, and what a sender queued since is newer and goes too (a cutoff past the mark, never before
-   it). A drain that runs UDP_INPUT_MARK_MAX_MS stops there all the same. */
+   it). The bound is that work, never time: a drain held up (its thread descheduled before or between batches) still
+   takes every datagram queued at the mark before it returns, so the count it returns is always complete. */
 static uint64_t
 udp_input_arrived(const void* queue) {
     udp_input_ctx* ctx = (udp_input_ctx*)queue; /* the queue attached, which the count may move input into */
-    const uint64_t start_ms = dsd_realtime_mono_ms();
     uint64_t charged = 0U;
     dsd_mutex_lock(&ctx->ring.m);
-    while (charged <= ctx->rcvbuf_bytes && dsd_realtime_mono_ms() - start_ms < UDP_INPUT_MARK_MAX_MS) {
+    while (charged <= ctx->rcvbuf_bytes) {
         if (udp_input_take_queued_locked(ctx, UDP_INPUT_RX_BATCH, &charged) != UDP_TAKE_DATAGRAM) {
             break;
         }
