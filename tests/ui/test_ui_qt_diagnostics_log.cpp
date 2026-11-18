@@ -1808,9 +1808,9 @@ measurementCorpusSurvives() {
  * through the stream capture or stored, and a tail an older build stored with positions in it is redacted as it is
  * loaded. Every producer's position line (the measurement templates', which still leave the key scan, so a key beside
  * one still drops the record as a key), a label line with no coordinates, raw NMEA and APRS text, and a bare pair of
- * decimal degrees or of degrees and minutes; the USBD LIP line goes with its payload bytes. Lines that hold no position
- * (a frequency, a site's location ID, slicer statistics) and byte dumps of PDUs that carry none (CSBK, voice, a USBD of
- * another service) are kept as they were. */
+ * decimal degrees or of degrees and minutes; every USBD line goes with its payload bytes, the LIP service's and, fail
+ * closed, any other service's. Lines that hold no position (a frequency, a site's location ID, slicer statistics) and
+ * byte dumps of PDUs that carry none (CSBK, voice) are kept as they were. */
 static void
 receivedPositionsAreRemoved() {
     static const char kPosition[] = "[redacted position]";
@@ -1842,6 +1842,12 @@ receivedPositionsAreRemoved() {
         QStringLiteral("LIP: truncated;"),
         QStringLiteral(" USBD - Service: Location Information Protocol (0) - Payload: [0D][00][1A][2B][3C][4D][5E][6F]"
                        "[70][81][92][A]"),
+        // dmr_dburst.c prints every USBD's payload without -Z, and a reserved or manufacturer-specific service's bytes
+        // are not known to hold no position (TS 102 361-1 table 9.55): fail closed, its line goes too.
+        QStringLiteral(" USBD - Service: Standard Service 1 (1) - Payload: [0D][00][1A][2B][3C][4D][5E][6F][70][81]"
+                       "[92][A]"),
+        QStringLiteral(" USBD - Service: Reserved (standard) (12) - Payload: [4E][32][32][33][30][2E][30][45][30][34]"
+                       "[35][0]"),
         QStringLiteral(" L3Harris GPS Location"),
         QStringLiteral("$GPRMC,120000,A,2230.000,N,04500.000,E,0.0,0.0,171126,,,A*6C"),
         QStringLiteral(" APRS - N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test"),
@@ -1904,13 +1910,14 @@ receivedPositionsAreRemoved() {
         }
         check(text.contains(kept), "the reload dropped a line with no position");
     }
-    // Byte dumps that belong to no position-bearing PDU are kept: CSBK and voice bytes, a USBD of another service,
-    // the -Z payload lines that come before any decode.
+    // Byte dumps that belong to no position-bearing PDU are kept: CSBK and voice bytes, the -Z payload lines that come
+    // before any decode (DMR "Short Data Raw" and NXDN "UDCH Data" among them: live only, see
+    // storedLegacyPositionFormsAreRemoved()).
     const QStringList keptLines = {
         QStringLiteral(" CSBK 3D 00 1A 2B 3C 4D 5E 6F 70 81"),
         QStringLiteral(" DMR PDU Payload [01][02][03][04][05][06][07][08][09][0A][0B][0C]"),
-        QStringLiteral(" USBD - Service: Standard Service 1 (1) - Payload: [0D][00][1A][2B][3C][4D][5E][6F][70][81]"
-                       "[92][A]"),
+        QStringLiteral(" Short Data Raw: [4E][32][32][33][30][2E][30][30][30][30][45][30][34][35]"),
+        QStringLiteral(" UDCH Data: ASCII - 04500.000,E,1,08,0.9,"),
         QStringLiteral(" pkt:  0D 00 1A 2B 3C 4D"),
         QStringLiteral("WARNING: Scan channel 3 (851.012500 MHz): --squelch-db"),
         QStringLiteral("Retune 146.520000 MHz to 146.540000 MHz."),
@@ -1954,6 +1961,14 @@ storedLegacyPositionFormsAreRemoved() {
         QStringLiteral("      Radius: 12.0; M17 Client; Mobile Station;"),
         // dsd_gps.c nmea_sentence_checker(): a checked sentence of a type the shapes do not name.
         QStringLiteral(" $PXXXX,22.5,45.0*3A"),
+        // Raw dumps older builds printed without -Z (this build prints them only with it): dmr_pdu.c
+        // dmr_sd_pdu_print_raw() before the LOCN decode, its bytes bracketed; nxdn_deperm.c nxdn_print_udch_data(), the
+        // UDCH bytes and then their ASCII form, which can hold a part of an NMEA sentence or of a report no shape names.
+        QStringLiteral(" Short Data Raw: [4E][32][32][33][30][2E][30][30][30][30][45][30][34][35][30][30][2E][30]"),
+        QStringLiteral(" Short Data Raw: [00][01]"),
+        QStringLiteral(" UDCH Data: 2430343530302E3030302C452C312C30382C302E392C"),
+        QStringLiteral(" UDCH Data: ASCII - 04500.000,E,1,08,0.9,"),
+        QStringLiteral(" UDCH Data: ASCII - $GPGGA,120000,2230.0"),
     };
     for (const auto& line : legacyLines) {
         const QString record = QStringLiteral("[stderr] [info] ") + line;
@@ -1964,9 +1979,11 @@ storedLegacyPositionFormsAreRemoved() {
           "a key beside a legacy label is not dropped as a key");
     const QString kept = QStringLiteral("[stderr] [info] Sync: +DMR  slot1 [VOICE] ");
     check(DiagnosticsLog::redactStored(kept) == kept, "a stored line with no position changed");
-    // Live records keep the current producers' text messages: the legacy forms are judged only on load.
+    // Live records keep the current producers' text messages and -Z dumps: the legacy forms are judged only on load.
     const QString liveText = QStringLiteral("[stderr] [info]  UTF8 Text: hello");
     check(DiagnosticsLog::redact(liveText) == liveText, "a live text message was redacted");
+    const QString liveDump = QStringLiteral("[stderr] [info]  Short Data Raw: [00][01]");
+    check(DiagnosticsLog::redact(liveDump) == liveDump, "a live -Z dump was redacted");
 
     QTemporaryDir old;
     QByteArray stored;

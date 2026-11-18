@@ -17233,7 +17233,9 @@ Qt Quick frontend (`src/ui/qt`):
   its radius, source and station type, `GNSS`, `LRRP` with each line of an LRRP report's details (`LRRP Time:`,
   `LRRP Radius:`, `LRRP Alt Accuracy:`, `LRRP Speed:`, `LRRP Track:`), `LOCN` with the MNIS `LOCN Text:` report text,
   `NMEA` with the checked sentences' `NMEA:` line, LIP, `Location Service` with the P25 SAP 48 plain text
-  (`P25 Location Service Text:`), `Position`, APRS and D-PRS, Cellocator, D-STAR `_UNK:` blocks). As a backstop, a line no label covers still goes when it matches
+  (`P25 Location Service Text:`), `Position`, APRS and D-PRS, Cellocator, D-STAR `_UNK:` blocks, and every USBD
+  payload line (`USBD - Service`), printed without `-Z`: fail closed, a reserved or manufacturer-specific service's
+  bytes are not known to hold no position). As a backstop, a line no label covers still goes when it matches
   `kPositionShapes` (raw RMC/GGA/GLL/GNS/VTG sentences, `$$CRC`, the LOCN hemisphere form, the D-PRS
   `ddmm.hhN?dddmm.hhE` form), holds a pair of decimal degrees with at least four places (not followed by a unit), or a
   degrees-and-minutes pair (the minutes' fraction optional, as the NMEA parser reads it); no shape exempts anything.
@@ -17243,12 +17245,16 @@ Qt Quick frontend (`src/ui/qt`):
   the load also removes every record under a label an older build (v2.10.0, the first with a saved tail, onward)
   printed a received position or a part of one with (`kLegacyPositionForms`: `UTF8 Text:` from the P25 SAP 48 plain
   text and the MNIS LOCN text, D-STAR `TEXT:` from the fixed-form GPS data blocks, the LRRP `Time: yyyy.mm.dd`,
-  `Radius:`, `Alt Accuracy:`, `Speed:` and `Track:` lines, the M17 GNSS `Radius:` line, and a checked NMEA sentence of
-  any type printed bare), whichever build wrote it; a current build's text message under the same label (DMR or UDT
-  `UTF8 Text:`, D-STAR `TEXT:`) is kept live and dropped on reload. Keep the list in step when a release changes a
-  position print's label. Raw dumps under generic prefixes (`-Z`: DMR PDU, DMR
-  `Short Data Raw`, NXDN `UDCH Data` and `DATA:`, P25 MBT, M17 LSF and packet bytes) are kept and can hold an encoded
-  position; without `-Z` every line that prints a received position or a part of one carries a label. Keep
+  `Radius:`, `Alt Accuracy:`, `Speed:` and `Track:` lines, the M17 GNSS `Radius:` line, a checked NMEA sentence of
+  any type printed bare, and the raw dumps older builds printed without `-Z`: DMR `Short Data Raw:` with a LOCN
+  position's bracketed bytes and NXDN `UDCH Data:` with a data call's bytes and their ASCII form), whichever build
+  wrote it; a current build's text message or `-Z` dump under the same label (DMR or UDT `UTF8 Text:`, D-STAR
+  `TEXT:`, `Short Data Raw:`, `UDCH Data:`) is kept live and dropped on reload. The list is built from every
+  default-mode print of a received position, a part of one or the raw bytes of a message that carries one, v2.10.0
+  through this build; keep it in step when a release changes such a print's label. Raw dumps under generic prefixes
+  (`-Z`: DMR PDU, DMR `Short Data Raw`, NXDN `UDCH Data` and `DATA:`, P25 MBT, M17 LSF and packet bytes) are kept
+  live and can hold an encoded position; without `-Z` every line that prints a received position, a part of one or
+  the raw bytes of a message that can carry one carries a label. Keep
   `kPositionMarkers` in step with the producers' print text, give a new position print a label and a line in
   `UI_QT_DIAGNOSTICS_LOG` (`receivedPositionsAreRemoved()`), and drive a new producer of received report text through
   its real path in `realProducersLabelReceivedPositions()` (`DiagnosticsLog::namesPositionProducerForTest()`), and a
