@@ -250,6 +250,16 @@ Item {
             verify(outside > 20, "the emergency's label is drawn: " + outside)
         }
 
+        // A marker whose centre is just past the edge still shows, and keeps its label: an emergency there is not
+        // shown by colour alone.
+        function test_06e_a_marker_half_off_the_edge_keeps_its_label() {
+            var px = 360 / (256 * 4096)
+            push({ source: 1021, lat: 10.0, lon: 20.0 - (tc.cx + 3) * px, emergency: true })
+            compare(map.markerCount, 1)
+            var image = grabImage(root)
+            verify(countNear(image, 8, tc.cy - 12, 160, tc.cy + 12, 255, 128, 0, 50) > 20, "the word beside it")
+        }
+
         // The settings sheet checks a template and names the server the viewed area goes to.
         function test_14_the_tile_source_checks_a_template_for_the_settings_sheet() {
             verify(tiles.isValidTemplate("https://tiles.example.org/{z}/{x}/{y}.png"))

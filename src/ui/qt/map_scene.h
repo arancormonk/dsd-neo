@@ -396,6 +396,9 @@ struct LabelSpace {
     BoxGrid markers;
     BoxGrid keep_out;
     BoxGrid labels;
+    /** Half a marker's drawn size: a marker whose centre is this close past the view's edge still shows, and is
+     *  labelled. */
+    float marker_half = 0.0F;
 
     void
     reset(float width, float height, float cell) {
@@ -459,13 +462,22 @@ clear_side(const LabelRequest& r, float reach, const LabelBox& area, const Label
     return false;
 }
 
-/** @brief Whether @p r can be labelled at all: a label with size, for a marker inside @p area. */
+/** @brief Whether @p r can be labelled at all: a label with size, for a marker at least partly inside @p area
+ *         (its centre at most @p marker_half past an edge). */
 inline bool
-label_wanted(const LabelRequest& r, const LabelBox& area) {
-    const bool anchored =
-        r.x >= area.left && r.x <= area.left + area.width && r.y >= area.top && r.y <= area.top + area.height;
+label_wanted(const LabelRequest& r, const LabelBox& area, float marker_half) {
+    const float g = std::max(0.0F, marker_half);
+    const bool anchored = r.x >= area.left - g && r.x <= area.left + area.width + g && r.y >= area.top - g
+                          && r.y <= area.top + area.height + g;
     return anchored && r.width > 0.0F && r.height > 0.0F;
 }
+
+/** @brief LabelPlacement values in place_labels()'s @c keep. */
+enum LabelPlacement : uint8_t {
+    kLabelDropped = 0U, /**< not drawn */
+    kLabelClear = 1U,   /**< on a clear side */
+    kLabelCovering = 2U /**< an emergency's label with no clear side: it covers something, so it is drawn on a plate */
+};
 
 /**
  * @brief Place labels beside their markers: in the order given (highest priority first), each takes the first side
@@ -475,13 +487,14 @@ label_wanted(const LabelRequest& r, const LabelBox& area) {
  * An emergency's label (LabelRequest::urgent) is never dropped (spec 4.6: never hue alone): emergencies are placed
  * first, so every other label yields to them; one with no clear side takes least_covering_side() (it may cover a
  * marker, or another emergency's label: both are drawn). Any other label with no clear side is not drawn.
- * Only labels whose marker lies inside @p area are considered.
+ * Only labels whose marker shows at least partly inside @p area are considered (LabelSpace::marker_half).
  *
  * @param reach  From the marker's centre to the label's near edge: half the marker and a gap, so a label never
  *               covers its own marker.
  * @param space  Markers and keep-outs already added; each placed label is added to its labels.
  * @param placed @p count entries: the box of each placed label.
- * @param keep   @p count entries, 1 for a placed label and 0 otherwise.
+ * @param keep   @p count entries, a LabelPlacement: kLabelClear, kLabelCovering (drawn on a plate) or
+ *               kLabelDropped.
  * @return Labels placed.
  */
 inline int
@@ -499,18 +512,20 @@ place_labels(const LabelRequest* requests, int count, float reach, const LabelBo
                 continue;
             }
             keep[i] = 0U;
-            if (!label_wanted(r, area)) {
+            if (!label_wanted(r, area, space.marker_half)) {
                 continue;
             }
             LabelBox box{};
+            uint8_t how = kLabelClear;
             if (!clear_side(r, reach, area, space, &box)) {
                 if (!urgent) {
                     continue;
                 }
                 box = least_covering_side(r, reach, area, space);
+                how = kLabelCovering;
             }
             placed[i] = box;
-            keep[i] = 1U;
+            keep[i] = how;
             space.labels.add(box);
             kept++;
         }
@@ -644,9 +659,10 @@ view_transform(const map_math::Viewport& built, const map_math::Viewport& now) {
 /**
  * @brief Whether content built for @p built (clipped to its view grown by @p margin) can stand in for @p now, scaled.
  *
- * For a zoom in progress (a pinch, a zoom animation), at the same view size: the scale stays within 1 / @p max_scale .. @p max_scale (lines
- * and edges are drawn that much thicker or thinner until the zoom settles and the content is built again), and the
- * built area, carried by view_transform(), still covers the whole of @p now's view.
+ * For a zoom in progress (a pinch, a zoom animation), at the same view size: the scale stays within
+ * 1 / @p max_scale .. @p max_scale (lines and edges are drawn that much thicker or thinner until the zoom settles and
+ * the content is built again), and the built area, carried by view_transform(), still covers the whole of @p now's
+ * view.
  */
 inline bool
 reusable_scaled(const map_math::Viewport& built, const map_math::Viewport& now, double margin, double max_scale) {

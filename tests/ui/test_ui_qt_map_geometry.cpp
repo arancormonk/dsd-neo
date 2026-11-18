@@ -601,10 +601,20 @@ test_place_labels() {
     assert(near(placed[0].left, 111.0F, 0.0F) && near(placed[0].top, 104.0F, 0.0F)
            && !near(placed[1].left, 111.0F, 0.0F));
 
-    /* A marker off the view gets no label. */
+    /* A marker off the view gets no label; one whose centre is just past the edge still shows (half of it is drawn)
+     * and is labelled, as far as half a marker out. */
     const ms::LabelRequest outside{-30.0F, 100.0F, 60.0F, 16.0F};
     fresh_space(space, {}, {});
+    space.marker_half = 8.0F;
     assert(place(&outside, 1, space, placed, keep) == 0);
+    const ms::LabelRequest edge_on{-3.0F, 100.0F, 60.0F, 16.0F};
+    fresh_space(space, {-3.0F}, {100.0F});
+    space.marker_half = 8.0F;
+    assert(place(&edge_on, 1, space, placed, keep) == 1 && keep[0] == ms::kLabelClear
+           && near(placed[0].left, 8.0F, 0.0F));
+    fresh_space(space, {-3.0F}, {100.0F});
+    space.marker_half = 0.0F;
+    assert(place(&edge_on, 1, space, placed, keep) == 0);
 }
 
 /* An emergency's label is never dropped (never hue alone): it goes first, every other label yields to it, and with
@@ -619,7 +629,7 @@ test_place_emergency_labels() {
 
     /* Hemmed in by markers on every side: drawn anyway, on the side covering least (right: one marker's corner). */
     fresh_space(space, {200.0F, 232.0F, 140.0F, 200.0F, 200.0F}, {150.0F, 162.0F, 150.0F, 125.0F, 175.0F});
-    assert(place(&urgent, 1, space, placed, keep) == 1 && keep[0] == 1U);
+    assert(place(&urgent, 1, space, placed, keep) == 1 && keep[0] == ms::kLabelCovering);
     assert(near(placed[0].left, 211.0F, 0.0F));
 
     /* Every side touches something, the right only a keep-out: a side clear of keep-outs wins even covering more. */
@@ -649,7 +659,7 @@ test_place_emergency_labels() {
     fresh_space(space, {200.0F, 200.0F, 140.0F, 260.0F, 200.0F, 200.0F},
                 {150.0F, 150.0F, 150.0F, 150.0F, 125.0F, 175.0F});
     const ms::LabelRequest both[2] = {urgent, urgent};
-    assert(place(both, 2, space, placed, keep) == 2 && keep[0] == 1U && keep[1] == 1U);
+    assert(place(both, 2, space, placed, keep) == 2 && keep[0] != ms::kLabelDropped && keep[1] != ms::kLabelDropped);
 }
 
 /* The grid finds overlaps across cells, ignores what lies outside the view, takes boxes of any size (an infinite

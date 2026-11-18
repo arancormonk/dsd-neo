@@ -508,6 +508,7 @@ class MapViewItem : public QQuickItem {
     void prepareLabels();
     void ensureLabelCache(double ratio);
     const QImage& labelImage(const TrackDraw& t, double ratio);
+    QString plateLabelKey(const TrackDraw& t, double ratio);
     const QColor& labelColorFor(int role) const;
 
     QSGNode* updateGpuTree(QSGNode* old, QQuickWindow* win, double ratio);

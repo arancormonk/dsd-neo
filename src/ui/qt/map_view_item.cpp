@@ -309,7 +309,9 @@ track_draw(const PositionModel::Row& row, int fresh_s, int faded_s, MapViewItem:
 void
 MapViewItem::orderLabels() {
     /* Highest priority first: the selected track, emergencies, then the most recently heard. Labels are placed in this
-     * order, and one that cannot find a clear side is the one left out. */
+     * order, except that emergencies go first and every other label yields to them (place_labels()). A label that
+     * cannot find a clear side is left out, unless it is an emergency's: that one is never dropped, and may cover a
+     * marker or another emergency's label. */
     m_labelOrder.clear();
     for (size_t i = m_scene.size(); i-- > 0;) {
         if (!m_scene[i].label.isEmpty()) {

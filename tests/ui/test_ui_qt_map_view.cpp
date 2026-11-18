@@ -230,7 +230,8 @@ test_break_is_not_bridged() {
     delete root;
 }
 
-/* A pan within the margin moves the overlay by the markers' offset and rebuilds nothing; past it, or a zoom, rebuilds. */
+/* A pan within the margin moves the overlay by the markers' offset and rebuilds nothing; past it, or once a zoom has
+ * settled, it is built again. */
 void
 test_pan_moves_the_overlay() {
     Fixture f;
@@ -578,6 +579,48 @@ test_zoom_settles_by_itself() {
     delete root;
 }
 
+/* An emergency's label that has to cover a marker is drawn on a solid plate: the covered marker does not show between
+ * its letters. */
+void
+test_covering_label_has_a_plate() {
+    Fixture f;
+    const double px = 360.0 / (256.0 * 4096.0); /* degrees of longitude per pixel at zoom 12 */
+    const double py = px * std::cos(10.0 * 3.14159265358979323846 / 180.0);
+    push(2001U, 10.0, 20.0, 0U, DSD_POS_FLAG_EMERGENCY);
+    const double around_x[4] = {30.0, -30.0, 0.0, 0.0};
+    const double around_y[4] = {0.0, 0.0, -24.0, 24.0};
+    for (int k = 0; k < 4; k++) {
+        push(0U, 10.0 - (around_y[k] * py), 20.0 + (around_x[k] * px), 0U, DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    }
+    f.model.poll();
+    assert(f.map->markerCount() == 5);
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 1.0);
+    QRectF label;
+    {
+        const Layers now = layers(root);
+        assert(now.labels->childCount() == 1);
+        label = static_cast<QSGImageNode*>(now.labels->firstChild())->rect();
+    }
+    /* It does cover a neighbour's marker (precondition)... */
+    bool covers = false;
+    for (int k = 0; k < 4; k++) {
+        const QRectF marker(200.0 + around_x[k] - 8.0, 150.0 + around_y[k] - 8.0, 16.0, 16.0);
+        covers = covers || label.intersects(marker);
+    }
+    assert(covers);
+    /* ...and no pixel of it shows the marker colour (#E6EAF2): plate, alert-coloured letters and their halo only. */
+    const QImage image = f.map->testSoftwareImage(1.0);
+    int marker_coloured = 0;
+    for (int y = static_cast<int>(label.top()) + 1; y < static_cast<int>(label.bottom()) - 1; y++) {
+        for (int x = static_cast<int>(label.left()) + 1; x < static_cast<int>(label.right()) - 1; x++) {
+            const QColor c = image.pixelColor(x, y);
+            marker_coloured += (c.red() > 200 && c.green() > 200 && c.blue() > 200) ? 1 : 0;
+        }
+    }
+    assert(marker_coloured == 0);
+    delete root;
+}
+
 } // namespace
 
 int
@@ -592,6 +635,7 @@ main(int argc, char** argv) {
     test_labels_render_on_the_gui_thread();
     test_label_priority();
     test_zoom_settles_by_itself();
+    test_covering_label_has_a_plate();
     (void)dsd_qt::MapTileWorker::shutdownThreads(dsd_qt::MapTileWorker::kShutdownJoinMs);
     (void)DSD_FPRINTF(stdout, "UI_QT_MAP_VIEW: ok\n");
     return 0;

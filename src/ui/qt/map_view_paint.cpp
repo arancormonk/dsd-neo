@@ -390,7 +390,8 @@ MapViewItem::buildAtlas(double ratio) {
 namespace {
 
 QImage
-render_label(const QString& text, const QFont& font, const QColor& color, const QColor& halo, double ratio) {
+render_label(const QString& text, const QFont& font, const QColor& color, const QColor& halo, double ratio,
+             bool plate) {
     const QFontMetricsF fm(font);
     const double w = fm.horizontalAdvance(text) + (2.0 * kLabelHalo);
     const double h = fm.height() + (2.0 * kLabelHalo);
@@ -399,6 +400,13 @@ render_label(const QString& text, const QFont& font, const QColor& color, const 
     image.fill(Qt::transparent);
     QPainter p(&image);
     p.setRenderHint(QPainter::Antialiasing, true);
+    if (plate) {
+        /* An emergency's label that has to cover a marker: on a solid plate, so the marker cannot show between the
+         * letters. */
+        p.setPen(Qt::NoPen);
+        p.setBrush(halo);
+        p.drawRoundedRect(QRectF(0.0, 0.0, w, h), kLabelHalo, kLabelHalo);
+    }
     QPainterPath path;
     path.addText(kLabelHalo, kLabelHalo + fm.ascent(), font, text);
     QPen pen(halo);
@@ -450,9 +458,19 @@ MapViewItem::labelImage(const TrackDraw& t, double ratio) {
     auto found = m_labelImages.find(t.labelKey);
     if (found == m_labelImages.end()) {
         found = m_labelImages.insert(
-            t.labelKey, render_label(t.label, m_labelFont, labelColorFor(t.labelRole), m_haloColor, ratio));
+            t.labelKey, render_label(t.label, m_labelFont, labelColorFor(t.labelRole), m_haloColor, ratio, false));
     }
     return found.value();
+}
+
+QString
+MapViewItem::plateLabelKey(const TrackDraw& t, double ratio) {
+    const QString key = t.labelKey + QStringLiteral("\nplate");
+    if (!m_labelImages.contains(key)) {
+        m_labelImages.insert(key,
+                             render_label(t.label, m_labelFont, labelColorFor(t.labelRole), m_haloColor, ratio, true));
+    }
+    return key;
 }
 
 void
@@ -482,6 +500,7 @@ MapViewItem::buildLabels(double ratio) {
     const auto view_h = static_cast<float>(m_vp.height);
     m_labelSpace.reset(view_w, view_h, kLabelGridCell);
     const auto half = static_cast<float>((m_markerSize / 2.0) + 1.0);
+    m_labelSpace.marker_half = static_cast<float>(m_markerSize / 2.0);
     for (const MarkerDraw& m : m_markers) {
         const mm::ScreenPoint at = mm::screen_from_world(m_vp, m.at);
         m_labelSpace.markers.add(
@@ -517,9 +536,12 @@ MapViewItem::buildLabels(double ratio) {
     /* Drawn lowest priority first, so where two must overlap (two emergencies) the higher one is on top. */
     m_labels.clear();
     for (size_t i = m_labelRequests.size(); i-- > 0;) {
-        if (m_labelKeep[i] != 0U) {
+        if (m_labelKeep[i] != ms::kLabelDropped) {
             const ms::LabelBox& b = m_labelBoxes[i];
-            m_labels.push_back(LabelDraw{m_labelKeys[i], b.left, b.top, b.width, b.height});
+            const QString key = (m_labelKeep[i] == ms::kLabelCovering)
+                                    ? plateLabelKey(m_scene[static_cast<size_t>(m_labelOrder[i])], ratio)
+                                    : m_labelKeys[i];
+            m_labels.push_back(LabelDraw{key, b.left, b.top, b.width, b.height});
         }
     }
 }
