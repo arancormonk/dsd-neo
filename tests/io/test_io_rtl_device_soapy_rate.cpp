@@ -421,10 +421,10 @@ test_write_programs_asked_rate(void) {
     rtl_device_test_soapy_gain_device_free(dev);
 
     static const double near_10m[] = {2e6, 9999999.0};
-    rtl_device_test_soapy_gain_fake near = hackrf_fake();
-    near.listed_rates = near_10m;
-    near.listed_rate_count = 2U;
-    const programmed got = program(&near, 1536000U);
+    rtl_device_test_soapy_gain_fake matched = hackrf_fake();
+    matched.listed_rates = near_10m;
+    matched.listed_rate_count = 2U;
+    const programmed got = program(&matched, 1536000U);
     expect_eq("the advertised point is planned", got.nearest_hz, 9999999.0);
 }
 
