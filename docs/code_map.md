@@ -1925,7 +1925,12 @@ suite runs under this compiler.
   dispatch, `dmr_udp_service_dispatch()`: the destination port when a decoder claims it, else a source port that names
   its service (4005, the radio's fixed ARS port per the MOTOTRBO ARS specification 4.4.2, and the ETSI radio-network
   defaults 5016/5017; a policy, so an ARS server on an already claimed port still selects that port's decoder).
-  `--lrrp-extra-port` ports are part of it. The compressed path passes the data header's LLIDs as the radios and a
+  `--lrrp-extra-port` ports are part of it. The IPv4 path dispatches only a whole datagram
+  (`decode_ip_pdu_whole()`, issue #800 fail closed): an IPv4 fragment (More Fragments set or a nonzero offset) is not
+  reassembled, and a datagram whose total length the PDU does not hold, or whose UDP length runs past it (an ICMP error
+  quoting the first octets of a returned datagram among them), is cut short; none of them names ports, reaches a
+  service decoder or gives a position, and its notice says `IP Fragment; not decoded;`, `Incomplete Datagram; not
+  decoded;` or `Truncated UDP;`. The compressed path passes the data header's LLIDs as the radios and a
   NULL IPv4 header (9361/49198 then print the LLIDs), and appends the decoder's slot string to its notice. TS 102 361-3
   leaves SPID/DPID 95-127 to the manufacturer with a per-radio linkage (table 7.17 note 2), so no index is mapped by
   default: `dsd_opts::dmr_udp_comp_ports` (`--dmr-udp-comp-port`, `mode.dmr_udp_comp_ports`,
