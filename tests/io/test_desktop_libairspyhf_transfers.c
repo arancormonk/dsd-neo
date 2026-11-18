@@ -30,6 +30,9 @@
 #include <stdlib.h>
 #include <sys/types.h>
 
+/* The event poll stub takes one and never reads it. */
+struct timeval;
+
 enum { kMaxQueued = 64, kMaxQuarantined = 128 };
 
 /* g_events_mu is libusb's event lock: a poll holds it, callbacks included, so one thread handles events at a time.
