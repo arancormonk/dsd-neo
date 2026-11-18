@@ -6724,8 +6724,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     a decimal string, `pos_seq`) only while a client subscribes; with none it moves its cursor to the newest seq. A
     new stream is followed from its first record. `dsd_api_feed_start()` takes the baseline from the published ring
     (`dsd_app_position_copy_since()`), so a server started during a run sends none of the run's earlier records.
-    There is no backlog and no `get`; a gap in `pos_seq` is a report kept while unsubscribed or overwritten in the
-    1,024-record ring between two publishes
+    There is no backlog and no `get`: a batch can hold records kept since the previous publish, before a session
+    subscribed, so each session keeps its own cutoff (`pos_after_rev`, `dsd_position_last_rev()` when it subscribed to
+    positions) and `dsd_api_broadcast_positions()` queues it only the lines whose record `rev` is later (tests
+    `API_SERVER`, `API_FEED`). A line that cannot be built or appended stops the batch, and the feed's cursor moves only
+    past the lines gathered, so the next publish retries the rest. A gap in `pos_seq` is a report kept while
+    unsubscribed or overwritten in the 1,024-record ring between two publishes
   - `api_commands.c`: one table entry per `DSD_APP_CMD_*` (`API_COMMANDS` reads `commands.h` at run time and fails on a
     command without one), mapping `params` onto the exact payload through the same app-control submit functions the
     frontends use; each entry names its submit function and, for a string command, the longest value its handler

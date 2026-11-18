@@ -932,7 +932,7 @@ admit_position(dsd_state* state, int32_t step) {
 
 /* Issue #800: the positions topic is named in the welcome, in "all", and subscribes and unsubscribes like the others;
    a subscriber gets the reports kept after its subscription, each with its stream as a decimal string, and none of the
-   run's reports published before the server started. */
+   run's reports published before the server started, nor any kept before its own subscription. */
 static void
 test_positions_topic(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
@@ -975,6 +975,42 @@ test_positions_topic(void) {
     assert(await_line(c, "position", stream, 3000U));
     assert(strstr(g_line, "\"pos_seq\":4,") != NULL); /* 3 was kept while unsubscribed: never sent */
 
+    /* No backlog when reports were kept after the last publish and before the subscription: 40 kept with nobody
+       listening, then a subscription, then a publish with nothing new sends none of them; the next report is the first
+       line the subscriber gets. */
+    send_str(c, "{\"id\":4,\"cmd\":\"unsubscribe\",\"topics\":[\"all\"]}\n");
+    assert(await_text(c, "{\"id\":4,\"ok\":true,\"topics\":[]}", 5000U)); /* after the lines "all" had queued */
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    for (int32_t k = 4; k < 44; k++) {
+        admit_position(state, k); /* pos_seq 5..44 */
+    }
+    send_str(c, "{\"id\":5,\"cmd\":\"subscribe\",\"topics\":[\"positions\"]}\n");
+    expect_line(c, "{\"id\":5,\"ok\":true,\"topics\":[\"positions\"]}");
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(!await_line(c, "position", NULL, 300U));
+    admit_position(state, 44); /* pos_seq 45 */
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "position", stream, 3000U));
+    assert(strstr(g_line, "\"pos_seq\":45,") != NULL);
+
+    /* A client that subscribes while another one listens gets none of the reports kept before its subscription, though
+       the same publish sends them to the other client; both get the next one. */
+    dsd_socket_t c2 = connect_port(port);
+    expect_line(c2, "\"positions\"],");
+    admit_position(state, 45); /* pos_seq 46: kept before c2 subscribes */
+    admit_position(state, 46); /* pos_seq 47 */
+    send_str(c2, "{\"id\":1,\"cmd\":\"subscribe\",\"topics\":[\"positions\"]}\n");
+    expect_line(c2, "{\"id\":1,\"ok\":true,\"topics\":[\"positions\"]}");
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "position", stream, 3000U) && strstr(g_line, "\"pos_seq\":46,") != NULL);
+    assert(await_line(c, "position", stream, 3000U) && strstr(g_line, "\"pos_seq\":47,") != NULL);
+    assert(!await_line(c2, "position", NULL, 300U));
+    admit_position(state, 47); /* pos_seq 48 */
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "position", stream, 3000U) && strstr(g_line, "\"pos_seq\":48,") != NULL);
+    assert(await_line(c2, "position", stream, 3000U) && strstr(g_line, "\"pos_seq\":48,") != NULL);
+
+    dsd_socket_close(c2);
     dsd_socket_close(c);
     dsd_api_stop();
     dsd_app_frontend_runtime_stop();
