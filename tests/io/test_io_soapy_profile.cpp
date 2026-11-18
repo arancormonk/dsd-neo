@@ -465,8 +465,9 @@ test_offset_channel_floor(void) {
                         dsdneo::soapy_floor_bandwidth(1072000.0, {{200000.0, 8e6, 250000.0}}), 1200000.0);
     rc |= expect_double("stepped range on a step",
                         dsdneo::soapy_floor_bandwidth(1200000.0, {{200000.0, 8e6, 250000.0}}), 1200000.0);
+    /* None reaches 7.96 MHz: the widest step, 7.95 MHz (the 8 MHz maximum is not a step). */
     rc |= expect_double("stepped range past its last step",
-                        dsdneo::soapy_floor_bandwidth(7.96e6, {{200000.0, 8e6, 250000.0}}), 8e6);
+                        dsdneo::soapy_floor_bandwidth(7.96e6, {{200000.0, 8e6, 250000.0}}), 7.95e6);
     rc |= expect_double("narrowest of several ranges",
                         dsdneo::soapy_floor_bandwidth(1072000.0, {{2e6, 4e6, 0.0}, {1.5e6, 1.5e6, 0.0}}), 1.5e6);
     rc |= expect_double("no ranges keep the floor", dsdneo::soapy_floor_bandwidth(1072000.0, {}), 1072000.0);
@@ -475,6 +476,47 @@ test_offset_channel_floor(void) {
     rc |= expect_true("at the floor keeps", !dsdneo::soapy_bandwidth_cuts_offset(5072000.0, 10e6));
     rc |= expect_true("above the floor keeps", !dsdneo::soapy_bandwidth_cuts_offset(5.5e6, 10e6));
     rc |= expect_true("no rate never cuts", !dsdneo::soapy_bandwidth_cuts_offset(1.0, 0.0));
+    return rc;
+}
+
+/* @p got is @p want to within a micro-hertz: a driver that accepts only its listed values must get one exactly. */
+static int
+expect_point(const char* label, double got, double want) {
+    if (std::fabs(got - want) > 1e-6) {
+        DSD_FPRINTF(stderr, "%s: got %.6f want %.6f\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* Every rate and bandwidth these helpers return is a value the device advertises: the listed or range point that
+ * matched, never the preference or the floor itself. */
+static int
+test_returned_values_are_advertised(void) {
+    int rc = 0;
+    const dsdneo::SoapyProfile& hackrf = dsdneo::soapy_profile_by_id(SoapyProfileId::Hackrf);
+    bool adjusted = false;
+    rc |=
+        expect_point("preference matched by a listed point",
+                     dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {2e6, 9999999.0}, {}, &adjusted), 9999999.0);
+    rc |= expect_point("preference matched by a stepped range point",
+                       dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {}, {{0.5, 20e6 + 0.5, 1e6}}, &adjusted),
+                       10000000.5);
+    rc |= expect_point("widest step of a range no step of which reaches the floor",
+                       dsdneo::soapy_floor_bandwidth(5072000.0, {{200000.0, 5e6, 250000.0}}), 4950000.0);
+    rc |= expect_point("a point within 1 Hz below the floor",
+                       dsdneo::soapy_floor_bandwidth(5000000.5, {{5e6, 5e6, 0.0}}), 5e6);
+    rc |= expect_point("a continuous range's end within 1 Hz below the floor",
+                       dsdneo::soapy_floor_bandwidth(5000000.5, {{200000.0, 5e6, 0.0}}), 5e6);
+    rc |= expect_point("a discrete point within 1 Hz below the floor",
+                       dsdneo::soapy_floor_bandwidth(1000001.0, {{1e6, 1e6, 0.0}, {2e6, 2e6, 0.0}}), 1e6);
+    bool supported = false;
+    rc |= expect_point("nearest of a stepped range above its last step",
+                       dsdneo::soapy_nearest_in_ranges(6e6, {{200000.0, 5.1e6, 250000.0}}, &supported), 4950000.0);
+    rc |= expect_point("nearest rate of a stepped range above its last step",
+                       dsdneo::soapy_nearest_sample_rate(6e6, {}, {{200000.0, 5.1e6, 250000.0}}, &adjusted), 4950000.0);
+    rc |= expect_point("a stepped range's step within 1 Hz below the floor",
+                       dsdneo::soapy_floor_bandwidth(1200000.5, {{200000.0, 8e6, 250000.0}}), 1200000.0);
     return rc;
 }
 
@@ -490,6 +532,7 @@ main(void) {
     rc |= test_range_selection();
     rc |= test_profile_sample_rate();
     rc |= test_offset_channel_floor();
+    rc |= test_returned_values_are_advertised();
     rc |= test_join_and_scope_names();
     rc |= test_settings_parser_accepts_device_and_rx_scopes();
     rc |= test_settings_parser_rejects_invalid_items();

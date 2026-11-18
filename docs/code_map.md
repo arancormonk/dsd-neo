@@ -8908,40 +8908,56 @@ Key public headers:
     `IO_SOAPY_CS16_FULL_SCALE` (a real capture as 12-bit codes through the reader against the stand-in driver, whose
     `full_scale` field reports a native CS16 full scale, as CS16 at 2048 and as CF32: the ring bit for bit and the
     meter's level the same).
-  - SoapySDR rate, filter and capture ceiling (`soapy_profile.cpp`, `rtl_device.cpp`, `rtl_sdr_fm.cpp`). Rate: both
-    SoapySDR rate call sites (`rtl_device_set_sample_rate()`, `rtl_device_nearest_supported_rate()`) go through
-    `dsdneo::soapy_profile_sample_rate()`: a profile's `preferred_sample_rate_hz` when the device supports it exactly
-    (`soapy_rate_supported_exactly()`: a listed rate, or a range point `minimum + k * step`, within 1 Hz), else the
-    nearest rate as before. Only the HackRF profile has one (10 MS/s); the request stays RTL-shaped, so the planner
-    sees a device-forced rate and steps from it as for an Airspy, and `soapy_profile = "generic"` keeps the nearest
-    rate. Profile detection names an Airspy HF+ (`airspyhf`, `airspy hf`) before the `airspy` keyword and gives it the
-    generic profile; a key that names a profile ends the search. Filter: a SoapySDR capture always runs the Fs/4
-    shift, so a profile's default bandwidth that the device would snap below `soapy_fs4_channel_floor_hz()` (rate / 2
-    plus the widest DSP bandwidth, 72 kHz) opens to `soapy_floor_bandwidth()`, the narrowest the device admits at or
-    above it (`soapy_open_default_bandwidth()`, logged once per filter and rate); an explicit `soapy_bandwidth_hz` or
-    tuner bandwidth is applied as the device takes it, with one warning per filter and rate when it is narrower
-    (`soapy_warn_narrow_explicit_bandwidth()`); 0 stays driver-automatic and a device with no bandwidth range gets
-    none. SoapySDR rewrites the rate on every retune (`rtl_device_capture_settings_generation()`), and the bandwidth
-    follows each rate write, so the filter follows the rate the device reads back. Ceiling and ring: the capture
-    ceiling is per rate-plan backend (`capture_rate_ceiling_hz()`): 10 MS/s (`kMaxDeviceCaptureRateHz`, a native
-    Airspy's `DSD_AIRSPY_MAX_RATE`) for SoapySDR and the native Airspy, `kMaxCaptureRateHz` (3.2 MS/s) for RTL-SDR
-    and rtl_tcp; `kMaxCaptureRateHz` still bounds the request planner and the raw I/Q stream. The open's
-    `stream_open_validate_device_capture_rate()` is an early check on the rate the device advertises; the binding
-    check is `capture_rate_within_limits()` on the rate it delivers (read-back, else programmed), at the start
-    (`controller_take_initial_readback()`) and on every later read-back (`apply_actual_capture_rate()`, refused as a
-    rate-plan refusal with the existing rollback). The input ring holds the default ring's time at the capture rate
-    (`input_ring_capacity_for_rate()`: `kInputRingDefaultFloats` doubled until it does): a native Airspy's is sized
-    from its rate at open (`stream_open_init_airspy_input()`, which also keeps `airspy_info` and `centered_iq`), and
-    every radio's again for the delivered rate once the start is programmed (`stream_open_size_input_for_capture()`,
-    before any thread starts). `g_input_ring_rate_hz` records the rate the ring holds; the ring is never resized
-    under the stream's threads, so a later read-back above it is refused. Tests: `IO_SOAPY_PROFILE` (helpers, Airspy
-    HF+ detection), `IO_RTL_DEVICE_SOAPY_RATE` (HackRF, SDRplay, ADALM-Pluto, LimeSDR and Airspy HF+ stand-ins with
-    their drivers' lists: rate, opened filters, the explicit-bandwidth warning, a stream open's capture and ring, the
-    filter on retunes), `IO_RTL_CAPTURE_WRITES` (ceiling on the start's read-back, ring for a read-back above the
-    advertised rate, a retune above the ring refused and rolled back), `IO_RTL_STREAM_START_FAILURE` (a native
-    Airspy open: centred I/Q, no shift, ring for 10 MS/s), `DECODE_IQ_TETRA_CALL_SOAPY_156K` (the 576/625 step after
-    the last half-band pass), `IO_SOAPY_STREAM_LOSS` (the retune mute covers a HackRF's in-flight backlog at
-    10 MS/s).
+  - SoapySDR rate, filter and capture ceiling (`soapy_profile.cpp`, `rtl_device.cpp`, `rtl_sdr_fm.cpp`). Rate: the
+    plan's call, `rtl_device_nearest_supported_rate()`, goes through `dsdneo::soapy_profile_sample_rate()`: the
+    advertised point that matches a profile's `preferred_sample_rate_hz` (`soapy_rate_supported_point()`: a listed rate,
+    or a range point `minimum + k * step`, within 1 Hz), else the nearest rate as before. Only the HackRF profile has
+    one (10 MS/s); the request stays RTL-shaped, so the planner sees a device-forced rate and steps from it as for an
+    Airspy, and `soapy_profile = "generic"` keeps the nearest rate. The write, `rtl_device_set_sample_rate()`, programs
+    the advertised rate nearest the rate it is asked for and never the preference: the stream asks for the planned
+    rate, and a refused retune's rollback (`controller_restore_refused_capture()`) for the rate it saved, which must not
+    become the preferred rate again. Every rate and bandwidth these helpers return is a point a range holds (a step, or
+    for a range with no step a value within its ends), never the preference or the floor itself. Profile detection
+    names an Airspy HF+ (`airspyhf`, `airspy hf`) before the `airspy` keyword and gives it the generic profile; a key
+    that names a profile ends the search. Filter: while the capture runs the Fs/4 shift (`fs4_shift_capture_active()`;
+    not with `DSD_NEO_DISABLE_FS4_SHIFT=1`), a profile's default bandwidth that the device would snap below
+    `soapy_fs4_channel_floor_hz()` (rate / 2 plus the widest DSP bandwidth, 72 kHz) opens to `soapy_floor_bandwidth()`,
+    the narrowest the device admits at or above it, or its widest (`soapy_open_default_bandwidth()`); an explicit
+    `soapy_bandwidth_hz` or tuner bandwidth is applied as the device takes it; 0 stays driver-automatic and a device
+    with no bandwidth range gets none. Notices come after the write took and judge the filter the driver reports
+    (`soapy_bandwidth_readback_locked()`: `getBandwidth()`, else the value written): an opened default that keeps the
+    channel says so, and any filter narrower than the floor (explicit, kept by the driver, or the widest it has) is
+    warned about, each once per filter and rate (`soapy_note_bandwidth()`). SoapySDR rewrites the rate on every retune
+    (`rtl_device_capture_settings_generation()`), and the bandwidth follows each rate the chain accepts, a failed
+    write's read-back included (`capture_rate_write_failed()`). Ceiling and ring: the capture ceiling is per rate-plan
+    backend (`capture_rate_ceiling_hz()`): 10 MS/s (`kMaxDeviceCaptureRateHz`, a native Airspy's
+    `DSD_AIRSPY_MAX_RATE`) for SoapySDR and the native Airspy, `kMaxCaptureRateHz` (3.2 MS/s) for RTL-SDR and rtl_tcp;
+    `kMaxCaptureRateHz` still bounds the request planner and the raw I/Q stream. The open's
+    `stream_open_validate_device_capture_rate()` checks an advertised rate early for every backend but SoapySDR, whose
+    drivers may deliver another; the binding check is `capture_rate_within_limits()` on the rate a device delivers
+    (read-back, else programmed), at the start (`controller_take_initial_readback()`) and on every later read-back
+    (`apply_actual_capture_rate()`, refused as a rate-plan refusal with the existing rollback). The input ring holds the
+    default ring's time at the capture rate (`input_ring_capacity_for_rate()`: `kInputRingDefaultFloats` doubled until
+    it does): a native Airspy's is sized from its rate at open (`stream_open_init_airspy_input()`, which also keeps
+    `airspy_info` and `centered_iq`), and every radio's again for the delivered rate once the start is programmed
+    (`stream_open_size_input_for_capture()`, before any thread starts). Resizing goes through
+    `input_ring_reallocate()` (`runtime/input_ring.cpp`), which allocates the new buffer before releasing the old and
+    keeps the ring's lock and conditions, so a failed size leaves the teardown a ring to signal; the raw I/Q stream's
+    ring (`stream_open_size_net_input()`) is replaced the same way. `g_input_ring_rate_hz` records the rate the ring
+    holds; the ring is never resized under the stream's threads, so a later read-back above it is refused. Retune
+    backlog: a driver whose receive queue dsd-neo bounds (`dsdneo::soapy_driver_stream_queue()`, by driver key: a HackRF
+    gets `buffers=4` at `setupStream()`, `soapy_stream_args_for()`) reports what it can still hold after a retune
+    (`rtl_device_retune_backlog_samples()`: that queue and libhackrf's 4 transfers, 1,048,576 samples), and the default
+    retune mute never ends inside it (`retune_mute_bytes()`); an explicit `DSD_NEO_RETUNE_MUTE_MS` is kept. Tests:
+    `IO_SOAPY_PROFILE` (helpers, Airspy HF+ detection, advertised points), `IO_RTL_DEVICE_SOAPY_RATE` (HackRF, SDRplay,
+    ADALM-Pluto, LimeSDR and Airspy HF+ stand-ins with their drivers' lists: rate planned and written, a rollback to
+    the saved rate, opened filters, notices on the driver's read-back and after the write, a stream open's capture and
+    ring, an advertised rate above the ceiling, a failed ring size, the filter on retunes and after a failed rate
+    write), `IO_RTL_CAPTURE_WRITES` (ceiling on the start's read-back, ring for a read-back above the advertised rate, a
+    retune above the ring refused and rolled back), `IO_RTL_STREAM_START_FAILURE` (a native Airspy open: centred I/Q,
+    no shift, ring for 10 MS/s), `DECODE_IQ_TETRA_CALL_SOAPY_156K` (the 576/625 step after the last half-band pass,
+    its cell identity the native-rate recording's), `IO_SOAPY_STREAM_LOSS` (the retune mute covers a HackRF's whole
+    bounded backlog at 10 and 2 MS/s).
   - USB gain controls (`rtl_device.cpp`): demod register 0x19 holds test mode and the digital AGC both, and librtlsdr's
     setter for each writes it whole, so `rtl_usb_apply_register19()` resolves it from the record (test mode while on,
     else `digital_agc_wanted`: on only with automatic gain, per `DSD_NEO_RTL_AGC`) at every gain, AGC and test-mode

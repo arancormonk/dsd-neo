@@ -117,6 +117,19 @@ input_ring_discard_generation_matches(const struct input_ring_state* r, uint64_t
 int input_ring_init(struct input_ring_state* r, size_t capacity);
 
 /**
+ * @brief Give an initialized ring a new, empty buffer of @p capacity floats, keeping its lock and conditions.
+ *
+ * The new buffer is allocated before the old one is released, so on failure the ring is left as it was, still
+ * usable and still destroyable. Call only while no producer or consumer uses the ring. Space notifications start
+ * disabled and the counters at zero, as after input_ring_init().
+ *
+ * @param r Initialized input ring state.
+ * @param capacity Number of float elements in the new buffer (must be > 0).
+ * @return 0 on success, -1 on invalid args or allocation failure.
+ */
+int input_ring_reallocate(struct input_ring_state* r, size_t capacity);
+
+/**
  * @brief Destroy an initialized input ring.
  *
  * Safe to call multiple times; no-op on NULL.

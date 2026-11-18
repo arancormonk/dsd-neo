@@ -123,17 +123,33 @@ double soapy_nearest_sample_rate(double requested, const std::vector<double>& li
  * any point of a range with no step) within 1 Hz. */
 bool soapy_rate_supported_exactly(double rate_hz, const std::vector<double>& listed_rates,
                                   const std::vector<SoapyRange>& ranges);
-/* The rate a device with @p profile runs for @p requested: the profile's preferred rate when the device supports it
- * exactly, else soapy_nearest_sample_rate(). @p out_adjusted as there. */
+/* The rate a device with @p profile is planned at for @p requested: the advertised point that matches the profile's
+ * preferred rate when the device supports it exactly, else soapy_nearest_sample_rate(). @p out_adjusted as there. Only
+ * planning uses it; a rate write programs the advertised rate nearest the rate the plan chose (or a rollback restores),
+ * so a rate the stream asks for is never replaced by the preference. */
 double soapy_profile_sample_rate(const SoapyProfile& profile, double requested, const std::vector<double>& listed_rates,
                                  const std::vector<SoapyRange>& ranges, bool* out_adjusted);
+
+/* A driver whose receive queue dsd-neo bounds at setupStream(), so a retune's mute can swallow all of it. */
+struct SoapyStreamQueue {
+    const char* arg_key;    /* the stream argument that sets the queue depth */
+    const char* arg_value;  /* the depth dsd-neo asks for */
+    size_t backlog_samples; /* what the driver can still hold after a retune: that queue and its transfers in flight */
+};
+
+/* The receive queue of the driver keyed @p driver_key (getDriverKey(), any case) in @p out, or false for a driver whose
+ * queue dsd-neo does not set. SoapyHackRF queues 15 buffers of 131,072 samples unless told otherwise ("buffers"), and
+ * libhackrf keeps 4 more in flight: about 249 ms at 10 MS/s, longer than the 120 ms retune mute. dsd-neo asks for 4,
+ * which leaves 8 buffers (105 ms at 10 MS/s). */
+bool soapy_driver_stream_queue(const std::string& driver_key, SoapyStreamQueue* out);
 
 /* The narrowest tuner filter that keeps the channel whole at every DSP bandwidth while the capture runs the Fs/4
  * shift at @p capture_rate_hz: the channel sits a quarter of the rate off centre, so the filter's full width must
  * reach half the rate plus the widest DSP bandwidth (72 kHz). */
 double soapy_fs4_channel_floor_hz(double capture_rate_hz);
-/* The narrowest bandwidth @p ranges admit at or above @p floor_hz (a range's steps rounded up), or the widest they
- * admit when none reaches it; @p floor_hz when @p ranges admit none. */
+/* The narrowest bandwidth @p ranges admit at or above @p floor_hz (a range's steps rounded up; one within 1 Hz below
+ * counts), or the widest they admit when none reaches it; @p floor_hz when @p ranges admit none. Always a point a range
+ * holds: a step, or for a range with no step a value within its ends. */
 double soapy_floor_bandwidth(double floor_hz, const std::vector<SoapyRange>& ranges);
 /* Whether a filter of @p applied_hz is narrower than soapy_fs4_channel_floor_hz() at @p capture_rate_hz. */
 bool soapy_bandwidth_cuts_offset(double applied_hz, double capture_rate_hz);

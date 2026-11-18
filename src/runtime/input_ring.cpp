@@ -16,6 +16,20 @@
 extern "C" int dsd_rtl_stream_should_exit(void);
 #endif
 
+/* An empty ring over @p mem_ptr of @p capacity floats, its counters cleared. */
+static void
+input_ring_take_buffer(struct input_ring_state* r, void* mem_ptr, size_t capacity) {
+    r->buffer = static_cast<float*>(mem_ptr);
+    r->capacity = capacity;
+    r->head.store(0, std::memory_order_relaxed);
+    r->tail.store(0, std::memory_order_relaxed);
+    r->space_notify_enabled.store(0, std::memory_order_relaxed);
+    r->producer_drops.store(0, std::memory_order_relaxed);
+    r->read_timeouts.store(0, std::memory_order_relaxed);
+    r->discard_generation.store(0, std::memory_order_relaxed);
+    input_ring_reset_positions(r);
+}
+
 int
 input_ring_init(struct input_ring_state* r, size_t capacity) {
     if (!r || capacity == 0) {
@@ -50,15 +64,23 @@ input_ring_init(struct input_ring_state* r, size_t capacity) {
         return -1;
     }
 
-    r->buffer = static_cast<float*>(mem_ptr);
-    r->capacity = capacity;
-    r->head.store(0, std::memory_order_relaxed);
-    r->tail.store(0, std::memory_order_relaxed);
-    r->space_notify_enabled.store(0, std::memory_order_relaxed);
-    r->producer_drops.store(0, std::memory_order_relaxed);
-    r->read_timeouts.store(0, std::memory_order_relaxed);
-    r->discard_generation.store(0, std::memory_order_relaxed);
-    input_ring_reset_positions(r);
+    input_ring_take_buffer(r, mem_ptr, capacity);
+    return 0;
+}
+
+int
+input_ring_reallocate(struct input_ring_state* r, size_t capacity) {
+    if (!r || capacity == 0 || r->capacity == 0 || capacity > SIZE_MAX / sizeof(float)) {
+        return -1;
+    }
+    void* mem_ptr = dsd_neo_aligned_malloc(capacity * sizeof(float));
+    if (!mem_ptr) {
+        return -1;
+    }
+    if (r->buffer) {
+        dsd_neo_aligned_free(r->buffer);
+    }
+    input_ring_take_buffer(r, mem_ptr, capacity);
     return 0;
 }
 

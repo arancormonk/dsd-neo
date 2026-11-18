@@ -11,8 +11,9 @@
  * receiver; either wakes the demod waiting on the input ring. A stop, during setup, during the grace or while
  * streaming, is silent, and a monitor that cannot start fails the start.
  *
- * The retune mute a buffered backend arms swallows every stale sample a HackRF at 10 MS/s can still hand over after a
- * retune (its in-flight transfers and one queued driver buffer), and lets the new frequency's samples through.
+ * The retune mute swallows every stale sample a HackRF can still hand over after a retune, at 10 and at 2 MS/s: its
+ * in-flight transfers and its driver's whole queue at the depth dsd-neo sets, and lets the new frequency's samples
+ * through.
  */
 
 #include <assert.h>
@@ -32,6 +33,7 @@
 #include <memory>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
@@ -803,22 +805,21 @@ overflow_marks_gap_and_capture(input_ring_state* shared) {
     assert(dsd_test_remove_temp_dir(dir, kFiles) == 0);
 }
 
-/* The stale samples a HackRF can still hand over after a retune at 10 MS/s, by its sources: libhackrf keeps four
- * 262,144-byte transfers in flight (4 x 131,072 samples, 52.4 ms) and SoapyHackRF one more buffer queued ahead of the
- * reader (131,072 samples, 13.1 ms). Its queue holds 15 buffers when the reader falls behind; that bound is not
- * covered here. */
+/* What a HackRF can still hand over after a retune, by its sources: libhackrf keeps four transfers of 131,072 samples
+ * in flight, and SoapyHackRF queues up to the "buffers" stream argument of them (15 when none is given), dropping the
+ * oldest when the reader falls behind. A reader descheduled across a hop meets all of it. */
 constexpr size_t kHackrfBufferSamples = 131072U;
-constexpr size_t kRetuneStaleSamples = 5U * kHackrfBufferSamples;
-/* Samples from the new frequency after them: more than the mute leaves to swallow, so some reach the ring. */
-constexpr size_t kRetuneCleanSamples = 5U * kHackrfBufferSamples;
-constexpr uint32_t kHackrfRateHz = 10000000U;
+constexpr size_t kHackrfTransfersInFlight = 4U;
+constexpr size_t kSoapyHackrfDefaultBuffers = 15U;
 constexpr float kStaleMarker = 0.75f;
 
-/* A CF32 driver that delivers nothing until armed, then the stale backlog (kStaleMarker on I) and the clean samples
- * (zero) after it, an MTU at a time. */
+/* A CF32 driver that delivers nothing until armed, then @p stale backlog samples (kStaleMarker on I) and @p clean
+ * samples (zero) after them, an MTU at a time. */
 struct retune_backlog {
     std::atomic<int> armed{0};
     std::atomic<size_t> delivered{0U};
+    size_t stale = 0U;
+    size_t clean = 0U;
 };
 
 retune_backlog g_backlog;
@@ -834,7 +835,7 @@ int
 backlog_read(void* ctx, void* buff, size_t elems, long timeout_us) {
     (void)timeout_us;
     auto* backlog = static_cast<retune_backlog*>(ctx);
-    const size_t total = kRetuneStaleSamples + kRetuneCleanSamples;
+    const size_t total = backlog->stale + backlog->clean;
     const size_t done = backlog->delivered.load(std::memory_order_acquire);
     if (backlog->armed.load(std::memory_order_acquire) == 0 || done >= total) {
         dsd_sleep_ms(1U);
@@ -843,60 +844,95 @@ backlog_read(void* ctx, void* buff, size_t elems, long timeout_us) {
     const size_t n = elems < total - done ? elems : total - done;
     auto* iq = static_cast<float*>(buff);
     for (size_t i = 0; i < n; i++) {
-        iq[2U * i] = done + i < kRetuneStaleSamples ? kStaleMarker : 0.0f;
+        iq[2U * i] = done + i < backlog->stale ? kStaleMarker : 0.0f;
         iq[2U * i + 1U] = 0.0f;
     }
     backlog->delivered.store(done + n, std::memory_order_release);
     return (int)n;
 }
 
-/* A retune on a HackRF at 10 MS/s: the mute a buffered backend arms for it (120 ms of samples) swallows the whole
- * backlog the driver can hand over (65.5 ms), so no sample from the old frequency reaches the input ring, and the
- * samples after it do. */
+/* The "buffers" stream argument @p dev gives SoapyHackRF, or the driver's default when it gives none. */
+size_t
+hackrf_queue_buffers(const rtl_device* dev) {
+    char args[256];
+    assert(rtl_device_test_soapy_stream_args(dev, args, sizeof args) == 0);
+    const char* at = strstr(args, "buffers=");
+    if (at == nullptr) {
+        return kSoapyHackrfDefaultBuffers;
+    }
+    const char* digits = at + strlen("buffers=");
+    char* end = nullptr;
+    const long buffers = strtol(digits, &end, 10);
+    assert(end != digits && (*end == '\0' || *end == ','));
+    assert(buffers > 0);
+    return (size_t)buffers;
+}
+
+/* A retune on a HackRF at @p rate_hz whose reader fell behind: the driver hands over the whole backlog it can hold (its
+ * queue at the depth dsd-neo set it to, and the transfers in flight), then the new frequency's samples. The mute the
+ * stream arms swallows all of the backlog, and the samples after it reach the input ring. */
 void
-retune_mute_covers_hackrf_backlog(input_ring_state* ring) {
-    (void)ring;
+expect_retune_mute_covers_hackrf_queue(uint32_t rate_hz) {
     reset_session();
     auto own_ring = std::make_unique<input_ring_state>();
-    assert(input_ring_init(own_ring.get(), 1U << 20) == 0);
+    assert(input_ring_init(own_ring.get(), 1U << 23) == 0);
     g_backlog.armed.store(0);
     g_backlog.delivered.store(0U);
     rtl_device_test_soapy_driver driver = {backlog_setup, backlog_read, &g_backlog, 0, 0.0};
     rtl_device* dev = rtl_device_test_soapy_device(own_ring.get(), &driver);
     assert(dev);
-    assert(rtl_device_start_async(dev, kBufLen) == 0);
-
-    const int mute_bytes = rtl_stream_test_retune_mute_plan(kHackrfRateHz, 0, 0, 0, 1, kBufLen);
+    rtl_device_test_soapy_device_set_driver_key(dev, "HackRF");
+    g_backlog.stale = (hackrf_queue_buffers(dev) + kHackrfTransfersInFlight) * kHackrfBufferSamples;
+    const int mute_bytes = rtl_stream_test_retune_mute_bytes_for_device(dev, rate_hz, 0, 1);
     const size_t mute_samples = (size_t)mute_bytes / 2U;
-    assert(mute_samples > kRetuneStaleSamples);
-    assert(mute_samples < kRetuneStaleSamples + kRetuneCleanSamples);
+    /* Enough new samples to come out past the mute either way. */
+    g_backlog.clean = (mute_samples > g_backlog.stale ? mute_samples - g_backlog.stale : 0U) + kHackrfBufferSamples;
+    assert(rtl_device_start_async(dev, kBufLen) == 0);
     rtl_device_mute(dev, mute_bytes);
     g_backlog.armed.store(1, std::memory_order_release);
 
-    const size_t expected_floats = 2U * (kRetuneStaleSamples + kRetuneCleanSamples - mute_samples);
-    const bool arrived = wait_for([&] { return input_ring_used(own_ring.get()) >= expected_floats; }, 10000U);
+    const size_t total = g_backlog.stale + g_backlog.clean;
+    const size_t expected_floats = 2U * (total > mute_samples ? total - mute_samples : 0U);
+    const bool arrived = wait_for(
+        [&] {
+            return g_backlog.delivered.load(std::memory_order_acquire) >= total
+                   && input_ring_used(own_ring.get()) >= expected_floats;
+        },
+        10000U);
     (void)rtl_device_stop_async(dev);
     rtl_device_test_soapy_device_free(dev);
     assert(arrived);
-    assert(input_ring_used(own_ring.get()) == expected_floats);
 
-    std::unique_ptr<float[]> got(new float[expected_floats]);
+    const size_t used = input_ring_used(own_ring.get());
+    std::unique_ptr<float[]> got(new float[used > 0U ? used : 1U]);
     size_t read = 0U;
-    while (read < expected_floats) {
-        const int n = input_ring_read_block(own_ring.get(), got.get() + read, expected_floats - read);
+    while (read < used) {
+        const int n = input_ring_read_block(own_ring.get(), got.get() + read, used - read);
         assert(n > 0);
         read += (size_t)n;
     }
     size_t stale = 0U;
-    for (size_t i = 0; i < expected_floats; i++) {
+    for (size_t i = 0; i < used; i++) {
         stale += (got[i] > 0.5f || got[i] < -0.5f) ? 1U : 0U;
     }
-    if (stale != 0U) {
-        DSD_FPRINTF(stderr, "retune mute: %zu stale floats reached the ring\n", stale);
+    if (stale != 0U || used != expected_floats) {
+        DSD_FPRINTF(stderr,
+                    "retune mute at %u Hz: %zu stale floats reached the ring (%zu floats, %zu expected; backlog %zu, "
+                    "mute %zu samples)\n",
+                    rate_hz, stale, used, expected_floats, g_backlog.stale, mute_samples);
     }
     assert(stale == 0U);
+    assert(used == expected_floats);
     input_ring_destroy(own_ring.get());
     reset_session();
+}
+
+/* At 10 MS/s, where a HackRF runs, and at 2 MS/s, where soapy_profile = "generic" runs it. */
+void
+retune_mute_covers_hackrf_backlog(input_ring_state* ring) {
+    (void)ring;
+    expect_retune_mute_covers_hackrf_queue(10000000U);
+    expect_retune_mute_covers_hackrf_queue(2000000U);
 }
 
 const test_case kCases[] = {

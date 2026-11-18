@@ -5940,8 +5940,8 @@ capture_refusal_restore_chain(int refusal, const CaptureSettingsSnapshot* previo
     }
 }
 
-/* A rate write that failed (@p rc) after the frequency was set: the rate chain follows what the device runs now, or
- * goes back to @p previous when it cannot say. On an RTL-SDR or rtl_tcp the rate it reports is the read-back of the
+/* A rate write that failed (@p rc) after the frequency was set: the rate chain, and the tuner filter with it, follow
+ * what the device runs now, or go back to @p previous when it cannot say. On an RTL-SDR or rtl_tcp the rate it reports is the read-back of the
  * rate written, refused like any read-back out of tolerance (issue #806); an Airspy or a SoapySDR device chose the rate
  * it reports, which is planned as programmed. A device running another rate whose capture correction it does not take,
  * or whose rate chain is refused, sets @p out_refusal, as capture_rate_write_took() does for a readback after a rate
@@ -5957,7 +5957,11 @@ capture_rate_write_failed(uint32_t center_freq_hz, uint32_t capture_freq_hz, uin
         const int rtl = backend == DSD_RATE_PLAN_BACKEND_RTL_USB || backend == DSD_RATE_PLAN_BACKEND_RTL_TCP;
         const CaptureReadback rb = {center_freq_hz, capture_freq_hz, capture_rate_hz,
                                     rtl ? capture_rate_hz : (uint32_t)actual, (uint32_t)actual};
-        (void)apply_actual_capture_rate(&rb, NULL, out_refusal);
+        uint32_t running_rate_hz = capture_rate_hz;
+        if (apply_actual_capture_rate(&rb, &running_rate_hz, out_refusal) == 0) {
+            /* The chain runs the rate the device moved to, so its filter follows, as after a write that took. */
+            (void)apply_capture_tuner_bandwidth(running_rate_hz, g_stream ? g_stream->opts : NULL, 0);
+        }
         capture_refusal_restore_chain(*out_refusal, previous);
     } else {
         restore_capture_rate_settings(previous);
@@ -6181,13 +6185,19 @@ retune_mute_backend_is_buffered(void) {
     return 0;
 }
 
-/* The retune mute in bytes at @p sample_rate_hz on the open device, for a buffered backend when @p buffered_backend. */
+/* The retune mute in bytes at @p sample_rate_hz on the open device, for a buffered backend when @p buffered_backend.
+ * The default window never ends inside the backlog the device's driver can still hand over from before the retune
+ * (rtl_device_retune_backlog_samples(): a HackRF's bounded queue), whatever the rate; an explicit window is kept. */
 static int
 retune_mute_bytes(uint32_t sample_rate_hz, int post_retune, int buffered_backend) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    const int explicit_window = (cfg && cfg->retune_mute_ms_is_set && cfg->retune_mute_ms > 0) ? 1 : 0;
     uint64_t mute_ms = retune_mute_window_ms(cfg ? cfg->retune_mute_ms : 0, cfg ? cfg->retune_mute_ms_is_set : 0,
                                              post_retune, buffered_backend);
     uint64_t min_bytes = (ACTUAL_BUF_LENGTH > 0) ? (uint64_t)ACTUAL_BUF_LENGTH : (uint64_t)DEFAULT_BUF_LENGTH;
+    if (!explicit_window) {
+        min_bytes = std::max(min_bytes, 2U * rtl_device_retune_backlog_samples(rtl_device_handle));
+    }
     return retune_mute_bytes_for_window(sample_rate_hz, mute_ms, min_bytes);
 }
 
@@ -9805,13 +9815,15 @@ stream_open_finalize_analog_channel(const dsd_opts* opts) {
  * @brief Reject devices whose advertised rate exceeds the capture ceiling, before anything is programmed.
  *
  * The ceiling is the device's backend's (capture_rate_ceiling_hz()): an RTL-SDR's request window, or 10 MS/s for a
- * device that picks its own rate, whose input ring is scaled to it. This early check uses the rate the device says it
- * will deliver; the start's programming holds the rate it reads back to the same ceiling
- * (controller_take_initial_readback()), which also covers a device whose rate discovery failed here.
+ * native Airspy, whose input ring is scaled to it. A SoapySDR driver's advertised rate is only what it says before it is
+ * programmed, and some deliver another, so for one this check is left to the rate it reads back: the start's
+ * programming holds that rate to the same ceiling (controller_take_initial_readback()) before the ring is sized or
+ * anything streams, as it does for a device whose rate discovery fails here.
  */
 static int
 stream_open_validate_device_capture_rate(RadioSourceKind source_kind) {
-    if (radio_source_has_fixed_tuning(source_kind) || !rtl_device_handle) {
+    if (radio_source_has_fixed_tuning(source_kind) || !rtl_device_handle
+        || rate_chain_backend() == DSD_RATE_PLAN_BACKEND_SOAPY) {
         return 0;
     }
     int passes = rtl_downsample_passes_for_rate_in(demod.rate_in);
@@ -10294,27 +10306,30 @@ stream_open_finalize_rate_chain(RadioSourceKind source_kind, const dsd_opts* opt
 }
 
 /* An input ring with the default ring's time capacity at @p rate_hz (input_ring_capacity_for_rate()), allocated only
- * when the stream's ring is smaller; the open runs it before any thread starts. */
+ * when the stream's ring is smaller; the open runs it before any thread starts. The bigger buffer is allocated before
+ * the working one is released, so a failure leaves the ring (its lock and conditions with it) for the teardown. */
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 /* The open's input-ring sizing fails as when its memory is not there (rtl_stream_test_fail_input_ring_sizing()). */
 static int g_test_fail_input_ring_sizing = 0;
 #endif
 
+/* The stream's input ring with a new, empty buffer of @p capacity floats (input_ring_reallocate()), or the failure the
+ * test seam asks for. */
 static int
-input_ring_sizing_test_fails(void) {
+stream_input_ring_reallocate(size_t capacity) {
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
-    return g_test_fail_input_ring_sizing;
-#else
-    return 0;
+    if (g_test_fail_input_ring_sizing) {
+        return -1;
+    }
 #endif
+    return input_ring_reallocate(&input_ring, capacity);
 }
 
 static int
 stream_open_size_input_for_rate(uint32_t rate_hz) {
     const size_t capacity = input_ring_capacity_for_rate(rate_hz);
     if (capacity > input_ring.capacity) {
-        input_ring_destroy(&input_ring);
-        if (input_ring_sizing_test_fails() || input_ring_init(&input_ring, capacity) != 0) {
+        if (stream_input_ring_reallocate(capacity) != 0) {
             LOG_ERROR("Failed to size the input ring for %u Hz.\n", rate_hz);
             return -1;
         }
@@ -10356,8 +10371,8 @@ stream_open_size_net_input(uint32_t dsp_in_hz) {
     const uint64_t block = dsd_iq_live_block_samples(dsp_in_hz);
     const uint64_t blocks = ((uint64_t)dsp_in_hz * kNetIqRingSeconds + block - 1U) / block;
     const size_t block_floats = (size_t)block * 2U;
-    input_ring_destroy(&input_ring);
-    if (input_ring_init(&input_ring, (size_t)(blocks + 1U) * block_floats) != 0) {
+    /* Allocated before the default ring goes, so a failure leaves the teardown a ring to signal. */
+    if (stream_input_ring_reallocate((size_t)(blocks + 1U) * block_floats) != 0) {
         LOG_ERROR("Failed to initialize the I/Q stream's input ring.\n");
         return -1;
     }
@@ -14953,6 +14968,24 @@ rtl_stream_test_retune_mute_bytes_for_device(struct rtl_device* dev, uint32_t sa
     const int bytes = retune_mute_bytes(sample_rate_hz, post_retune, buffered_backend);
     rtl_device_handle = outer;
     return bytes;
+}
+
+extern "C" int
+rtl_stream_test_size_net_input(uint32_t dsp_in_hz, size_t* out_capacity_floats) {
+    if (!out_capacity_floats || g_stream || input_ring.capacity != 0U) {
+        return -1;
+    }
+    const int outer_centered = dongle.centered_iq;
+    const size_t outer_reserve = g_demod_input_reserve_floats.load(std::memory_order_relaxed);
+    int rc = input_ring_init(&input_ring, kInputRingDefaultFloats);
+    if (rc == 0) {
+        rc = stream_open_size_net_input(dsp_in_hz);
+    }
+    *out_capacity_floats = input_ring.capacity;
+    input_ring_destroy(&input_ring);
+    dongle.centered_iq = outer_centered;
+    g_demod_input_reserve_floats.store(outer_reserve, std::memory_order_relaxed);
+    return rc;
 }
 
 extern "C" void

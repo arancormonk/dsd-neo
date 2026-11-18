@@ -718,6 +718,13 @@ int rtl_device_control_unavailable(const struct rtl_device* dev);
 void rtl_device_mute(struct rtl_device* dev, int bytes);
 
 /**
+ * @brief Samples a device's driver can still hand over from before a retune, at most: a SoapySDR driver whose receive
+ * queue the device bounds (dsdneo::soapy_driver_stream_queue()) holds that queue and its transfers in flight. 0 when the
+ * bound is not known (every other device); the retune mute then follows its time window alone.
+ */
+uint64_t rtl_device_retune_backlog_samples(const struct rtl_device* dev);
+
+/**
  * @brief Enable or disable the RTL-SDR bias tee.
  *
  * USB (librtlsdr) backend uses `rtlsdr_set_bias_tee` when available at

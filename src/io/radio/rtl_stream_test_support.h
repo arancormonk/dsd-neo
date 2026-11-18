@@ -115,6 +115,9 @@ int rtl_stream_test_retune_mute_bytes_for_device(struct rtl_device* dev, uint32_
                                                  int buffered_backend);
 /* While @p on, the open's input-ring sizing fails as when its memory is not there. Set while no stream runs. */
 void rtl_stream_test_fail_input_ring_sizing(int on);
+/* A raw I/Q stream's input sizing for @p dsp_in_hz on the stream's default ring, as its open runs it: its result, and
+ * the ring's capacity after it in @p out_capacity_floats; the ring is freed afterwards. -1 with a stream open. */
+int rtl_stream_test_size_net_input(uint32_t dsp_in_hz, size_t* out_capacity_floats);
 int dsd_rtl_stream_test_retune_completion_result_binding(int* out_first_result, int* out_second_result);
 int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                  int* out_cache_pending_after, uint32_t* out_generation_before,

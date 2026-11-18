@@ -123,6 +123,9 @@ enum RtlUsbRecoveryRequest : int {
 #include <SoapySDR/Types.hpp>
 #include <exception>
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+#include <utility> /* the stream-argument seam walks the arguments' pairs */
+#endif
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 #include <stdexcept> /* the SoapySDR test drivers throw */
 #endif
 
@@ -5137,8 +5140,12 @@ soapy_capture_event_bytes(const struct rtl_device* dev, size_t elements) {
 /* The stream arguments setupStream() gets for @p dev's driver. */
 static SoapySDR::Kwargs
 soapy_stream_args_for(const struct rtl_device* dev) {
-    (void)dev;
-    return SoapySDR::Kwargs();
+    SoapySDR::Kwargs args;
+    dsdneo::SoapyStreamQueue queue{};
+    if (dev && dsdneo::soapy_driver_stream_queue(dev->soapy_driver_key, &queue)) {
+        args[queue.arg_key] = queue.arg_value;
+    }
+    return args;
 }
 
 /* Set up and activate the RX stream, under soapy_lock: 0, activateStream()'s error code, or -EIO for any other
@@ -10553,8 +10560,9 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
                     soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
                 std::vector<dsdneo::SoapyRange> ranges =
                     soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
-                applied = dsdneo::soapy_profile_sample_rate(rtl_device_soapy_profile(dev), requested, listed, ranges,
-                                                            &adjusted);
+                /* The rate asked for, as the device advertises it: the plan already chose the profile's preferred
+                   rate (rtl_device_nearest_supported_rate()), and a rollback asks for the rate it saved. */
+                applied = dsdneo::soapy_nearest_sample_rate(requested, listed, ranges, &adjusted);
             } catch (const std::exception&) {
                 applied = requested;
             }
@@ -11288,19 +11296,44 @@ soapy_open_default_bandwidth(const struct rtl_device* dev, const dsdneo::SoapyBa
     return *out_opened ? opened_hz : applied_hz;
 }
 
-/* An explicit bandwidth, as the device took it (@p applied_hz), narrower than the Fs/4 offset channel needs: applied
- * as asked, and said once for that filter and rate. */
+/* The filter the driver runs once @p written_hz was written: what getBandwidth() reports, or the value written when it
+ * reports none (SoapySDR's default) or fails. A driver can keep its old filter without throwing. */
+static double
+soapy_bandwidth_readback_locked(struct rtl_device* dev, double written_hz) {
+    try {
+        const double reported_hz = dev->soapy_dev->getBandwidth(SOAPY_SDR_RX, 0);
+        if (std::isfinite(reported_hz) && reported_hz > 0.0) {
+            return reported_hz;
+        }
+    } catch (const std::exception&) {
+        /* No report: the write stands for it. */
+        return written_hz;
+    }
+    return written_hz;
+}
+
+/* The notice for the filter the driver runs (@p running_hz) once the write took, once per filter and rate: a profile
+ * default opened (@p opened) to keep the channel says so; any filter, default or explicit, narrower than the Fs/4
+ * offset channel needs is warned about. */
 static void
-soapy_warn_narrow_explicit_bandwidth(struct rtl_device* dev, const dsdneo::SoapyBandwidthChoice& choice,
-                                     double applied_hz) {
-    if (!choice.explicit_request || !fs4_shift_capture_active(dev) || dev->rate == 0U
-        || !dsdneo::soapy_bandwidth_cuts_offset(applied_hz, (double)dev->rate)
-        || !soapy_bandwidth_notice_is_new(dev, applied_hz)) {
+soapy_note_bandwidth(struct rtl_device* dev, const dsdneo::SoapyBandwidthChoice& choice, bool opened,
+                     double running_hz) {
+    if (!fs4_shift_capture_active(dev) || dev->rate == 0U) {
+        return;
+    }
+    const bool cuts = dsdneo::soapy_bandwidth_cuts_offset(running_hz, (double)dev->rate);
+    if ((!cuts && !opened) || !soapy_bandwidth_notice_is_new(dev, running_hz)) {
+        return;
+    }
+    if (!cuts) {
+        DSD_FPRINTF(stderr,
+                    "SoapySDR: opened the profile's %d Hz bandwidth to %.0f Hz for the channel %u Hz off centre.\n",
+                    choice.bandwidth_hz, running_hz, dev->rate / 4U);
         return;
     }
     LOG_WARN("SoapySDR: bandwidth %.0f Hz is narrower than %.0f Hz, which keeps the channel (%u Hz off centre, a "
              "quarter of the %u Hz sample rate) at every DSP bandwidth.\n",
-             applied_hz, dsdneo::soapy_fs4_channel_floor_hz((double)dev->rate), dev->rate / 4U, dev->rate);
+             running_hz, dsdneo::soapy_fs4_channel_floor_hz((double)dev->rate), dev->rate / 4U, dev->rate);
 }
 
 static int
@@ -11330,17 +11363,12 @@ rtl_device_apply_soapy_bandwidth_locked(struct rtl_device* dev, const dsdneo::So
     }
     bool opened = false;
     applied_hz = soapy_open_default_bandwidth(dev, choice, ranges, applied_hz, &opened);
-    if (opened) {
-        if (soapy_bandwidth_notice_is_new(dev, applied_hz)) {
-            DSD_FPRINTF(stderr,
-                        "SoapySDR: opened the profile's %d Hz bandwidth to %.0f Hz for the channel %u Hz off centre.\n",
-                        choice.bandwidth_hz, applied_hz, dev->rate / 4U);
-        }
-    } else if (std::fabs(applied_hz - (double)choice.bandwidth_hz) > 0.5) {
+    /* A write the driver refuses throws past every notice: nothing is said about a filter it did not take. */
+    dev->soapy_dev->setBandwidth(SOAPY_SDR_RX, 0, applied_hz);
+    if (!opened && std::fabs(applied_hz - (double)choice.bandwidth_hz) > 0.5) {
         DSD_FPRINTF(stderr, "SoapySDR: adjusted bandwidth from %d Hz to %.0f Hz.\n", choice.bandwidth_hz, applied_hz);
     }
-    dev->soapy_dev->setBandwidth(SOAPY_SDR_RX, 0, applied_hz);
-    soapy_warn_narrow_explicit_bandwidth(dev, choice, applied_hz);
+    soapy_note_bandwidth(dev, choice, opened, soapy_bandwidth_readback_locked(dev, applied_hz));
     return 0;
 }
 #endif
@@ -12913,6 +12941,19 @@ rtl_device_test_usb_tuner_device_free(struct rtl_device* dev) {
     }
 }
 #endif
+
+uint64_t
+rtl_device_retune_backlog_samples(const struct rtl_device* dev) {
+#ifdef USE_SOAPYSDR
+    dsdneo::SoapyStreamQueue queue{};
+    if (dev && dev->backend == RTL_BACKEND_SOAPY && dsdneo::soapy_driver_stream_queue(dev->soapy_driver_key, &queue)) {
+        return (uint64_t)queue.backlog_samples;
+    }
+#else
+    (void)dev;
+#endif
+    return 0U;
+}
 
 /**
  * @brief Mute the incoming raw input stream for a specified number of bytes.

@@ -30,7 +30,9 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "rtl_stream_test_support.h"
 #include "test_env.h"
@@ -155,8 +157,9 @@ airspyhf_fake(void) {
     return fake;
 }
 
-/* The rate the device programs for @p request_hz, after the rate the stream plans it at, and the bandwidth it then
- * writes for the driver-automatic tuner bandwidth the stream asks for. */
+/* The rate the stream plans for @p request_hz and the rate it then programs (it writes the planned rate, as
+ * optimal_settings() and the programming after it do), and the bandwidth the device then writes for the
+ * driver-automatic tuner bandwidth the stream asks for. */
 struct programmed {
     double nearest_hz;
     double rate_hz;
@@ -174,7 +177,7 @@ program(rtl_device_test_soapy_gain_fake* fake, uint32_t request_hz) {
     uint32_t nearest = 0U;
     expect_true("nearest supported rate answers", rtl_device_nearest_supported_rate(dev, request_hz, &nearest) == 0);
     out.nearest_hz = nearest;
-    expect_true("rate write takes", rtl_device_set_sample_rate(dev, request_hz) == 0);
+    expect_true("rate write takes", rtl_device_set_sample_rate(dev, nearest) == 0);
     out.rate_hz = fake->rate_hz;
     (void)rtl_device_set_tuner_bandwidth(dev, 0U);
     out.bandwidth_hz = fake->last_bandwidth_hz;
@@ -400,6 +403,196 @@ test_filter_follows_rate_on_retune(void) {
     rtl_device_test_soapy_gain_device_free(dev);
 }
 
+/* The rate a write asks for is the rate programmed: the profile's preferred rate is chosen when the stream plans
+ * (rtl_device_nearest_supported_rate()), and a rollback that asks a HackRF for the 2 MS/s it ran gets 2 MS/s, not the
+ * 10 MS/s the profile prefers. An advertised point within 1 Hz of the preference is programmed as advertised. */
+void
+test_write_programs_asked_rate(void) {
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    if (!dev) {
+        return;
+    }
+    expect_true("rate write takes", rtl_device_set_sample_rate(dev, 2000000U) == 0);
+    expect_eq("HackRF asked for 2 MS/s", fake.rate_hz, 2000000.0);
+    uint32_t nearest = 0U;
+    expect_true("nearest answers", rtl_device_nearest_supported_rate(dev, 1536000U, &nearest) == 0);
+    expect_eq("HackRF plans its preferred rate", nearest, 10000000.0);
+    rtl_device_test_soapy_gain_device_free(dev);
+
+    static const double near_10m[] = {2e6, 9999999.0};
+    rtl_device_test_soapy_gain_fake near = hackrf_fake();
+    near.listed_rates = near_10m;
+    near.listed_rate_count = 2U;
+    const programmed got = program(&near, 1536000U);
+    expect_eq("the advertised point is planned", got.nearest_hz, 9999999.0);
+}
+
+/* A retune refused for a rate above the running input ring rolls back to the rate the stream ran, and the stream goes
+ * on: a HackRF that opened at 2 MS/s (10 MS/s not offered) then offers 10 MS/s too. */
+void
+test_rollback_restores_saved_rate(void) {
+    static const double only_2m[] = {2e6};
+    static const double both[] = {2e6, 10e6};
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    fake.listed_rates = only_2m;
+    fake.listed_rate_count = 1U;
+    fake.rate_ranges = nullptr;
+    fake.rate_range_count = 0U;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(-1);
+    if (!dev || !opts) {
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+        return;
+    }
+    dsd_exitflag_store(0);
+    rtl_stream_test_capture_result got{};
+    expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &got) == 0);
+    expect_eq("the start runs 2 MS/s", got.capture_rate_hz, 2000000.0);
+    fake.listed_rates = both;
+    fake.listed_rate_count = 2U;
+    /* 72 kHz asks for another rate than the start's, so the device is asked anew. */
+    expect_true("the retune runs", rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE,
+                                                                        kCenterHz + 25000U, 72000, &got)
+                                       == 0);
+    expect_true("the retune to 10 MS/s is refused", got.completion == RTL_STREAM_TUNE_FAILED);
+    expect_eq("the stream goes back on 2 MS/s", got.capture_rate_hz, 2000000.0);
+    expect_eq("the device goes back on 2 MS/s", fake.rate_hz, 2000000.0);
+    expect_true("the stream keeps running", dsd_exitflag_load() == 0);
+    rtl_stream_test_capture_session_end();
+    dsd_exitflag_store(0);
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
+/* A device that advertises a rate above the ceiling but delivers one within it starts: the ceiling holds on the rate
+ * read back, and the ring is sized for it. */
+void
+test_advertised_above_ceiling_delivers_within(void) {
+    static const double only_12m[] = {12e6};
+    rtl_device_test_soapy_gain_fake fake = {};
+    fake.driver_key = "generic";
+    fake.listed_rates = only_12m;
+    fake.listed_rate_count = 1U;
+    fake.readback_rate_hz = 8e6;
+    const rtl_stream_test_capture_result got = open_on(&fake);
+    expect_true("a device that delivers 8 MS/s starts", got.rc == 0);
+    expect_eq("it runs the read-back", got.capture_rate_hz, 8000000.0);
+    expect_eq("its ring holds 8 MS/s", (double)got.input_ring_capacity_floats, 8388608.0);
+}
+
+/* An input ring that cannot be sized for the rate leaves the stream's working ring in place, so the open fails cleanly
+ * and its teardown still has the ring's lock and conditions. */
+void
+test_failed_ring_sizing_keeps_ring(void) {
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    rtl_stream_test_fail_input_ring_sizing(1);
+    const rtl_stream_test_capture_result got = open_on(&fake);
+    rtl_stream_test_fail_input_ring_sizing(0);
+    expect_true("the open fails", got.rc != 0);
+    expect_eq("the working ring stays", (double)got.input_ring_capacity_floats, 2097152.0);
+
+    /* A raw I/Q stream's sizing, which replaces the default ring, keeps it on the same failure. */
+    size_t capacity = 0U;
+    rtl_stream_test_fail_input_ring_sizing(1);
+    const int net_rc = rtl_stream_test_size_net_input(48000U, &capacity);
+    rtl_stream_test_fail_input_ring_sizing(0);
+    expect_true("the I/Q stream sizing fails", net_rc != 0);
+    expect_eq("the I/Q stream keeps the default ring", (double)capacity, 2097152.0);
+    expect_true("the I/Q stream sizing takes", rtl_stream_test_size_net_input(48000U, &capacity) == 0 && capacity > 0U);
+}
+
+/* What the driver reports after a filter write is what the warnings judge: an ADALM-Pluto whose 2 MHz write left
+ * 200 kHz in place is warned about, and a default whose widest filter is still too narrow is not called opened. */
+void
+test_bandwidth_notices_follow_readback(void) {
+    rtl_device_test_soapy_gain_fake pluto = pluto_fake();
+    pluto.readback_bandwidth_hz = 200000.0;
+    dsd_test_capture_stderr cap;
+    expect_true("stderr capture begins", dsd_test_capture_stderr_begin(&cap, "soapy_rate") == 0);
+    (void)program(&pluto, 1536000U);
+    static const double only_10m[] = {10e6};
+    static const double narrow[] = {200000.0, 1000000.0};
+    rtl_device_test_soapy_gain_fake narrow_fake = sdrplay_fake();
+    narrow_fake.listed_rates = only_10m;
+    narrow_fake.listed_rate_count = 1U;
+    narrow_fake.bandwidths = narrow;
+    narrow_fake.bandwidth_count = 2U;
+    (void)program(&narrow_fake, 1536000U);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[8192];
+    expect_true("stderr capture reads", dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0);
+    expect_true("the filter the driver kept is warned about",
+                strstr(log, "200000 Hz is narrower than 1072000 Hz") != nullptr);
+    expect_true("the widest filter is warned about", strstr(log, "1000000 Hz is narrower than 5072000 Hz") != nullptr);
+    if (count_text(log, "opened the profile's") != 0) {
+        DSD_FPRINTF(stderr, "FAIL a filter that does not keep the channel is called opened; log:\n%s\n", log);
+        g_failures++;
+    }
+}
+
+/* The opened filter is reported once the driver took it: a write that throws says nothing, and the retry that takes
+ * it says so. */
+void
+test_opened_notice_after_write(void) {
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    fake.bandwidth_write_throws = 1;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    if (!dev) {
+        return;
+    }
+    dsd_test_capture_stderr cap;
+    expect_true("stderr capture begins", dsd_test_capture_stderr_begin(&cap, "soapy_rate") == 0);
+    expect_true("rate write takes", rtl_device_set_sample_rate(dev, 10000000U) == 0);
+    const int failed = rtl_device_set_tuner_bandwidth(dev, 0U);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[4096];
+    expect_true("stderr capture reads", dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0);
+    expect_true("the refused write fails", failed != 0);
+    if (count_text(log, "opened the profile's") != 0) {
+        DSD_FPRINTF(stderr, "FAIL a refused filter write is reported as opened; log:\n%s\n", log);
+        g_failures++;
+    }
+    expect_true("stderr capture begins again", dsd_test_capture_stderr_begin(&cap, "soapy_rate") == 0);
+    const int retried = rtl_device_set_tuner_bandwidth(dev, 0U);
+    (void)dsd_test_capture_stderr_end(&cap);
+    expect_true("stderr capture reads again", dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0);
+    expect_true("the retry takes", retried == 0);
+    expect_eq("the retry writes the opened filter", fake.last_bandwidth_hz, 5500000.0);
+    if (count_text(log, "opened the profile's") != 1) {
+        DSD_FPRINTF(stderr, "FAIL the retry that took the filter does not report it once; log:\n%s\n", log);
+        g_failures++;
+    }
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
+/* A retune whose rate write fails while the device moved to a rate the chain takes runs the filter for that rate:
+ * an SDRplay going from 2 MS/s to 1 MS/s narrows its filter from 1.536 MHz to 600 kHz. */
+void
+test_failed_rate_write_reapplies_filter(void) {
+    rtl_device_test_soapy_gain_fake fake = sdrplay_fake();
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(-1);
+    if (!dev || !opts) {
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+        return;
+    }
+    rtl_stream_test_capture_result got{};
+    expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &got) == 0);
+    expect_eq("filter at 2 MS/s", fake.last_bandwidth_hz, 1536000.0);
+    fake.rate_write_throws = 1;
+    (void)rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, kCenterHz + 25000U, 72000, &got);
+    fake.rate_write_throws = 0;
+    expect_eq("the device moved to 1 MS/s", fake.rate_hz, 1000000.0);
+    expect_eq("the stream runs the 1 MS/s read-back", got.capture_rate_hz, 1000000.0);
+    expect_eq("filter for 1 MS/s", fake.last_bandwidth_hz, 600000.0);
+    rtl_stream_test_capture_session_end();
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
 } // namespace
 
 int
@@ -425,6 +618,13 @@ main(int argc, char** argv) {
         {"explicit_warns", test_explicit_narrow_bandwidth_warns},
         {"open", test_open_capture_and_ring},
         {"filter_follows_rate", test_filter_follows_rate_on_retune},
+        {"write_programs_asked_rate", test_write_programs_asked_rate},
+        {"rollback_restores_saved_rate", test_rollback_restores_saved_rate},
+        {"advertised_above_ceiling", test_advertised_above_ceiling_delivers_within},
+        {"failed_ring_sizing_keeps_ring", test_failed_ring_sizing_keeps_ring},
+        {"bandwidth_notices_follow_readback", test_bandwidth_notices_follow_readback},
+        {"opened_notice_after_write", test_opened_notice_after_write},
+        {"failed_rate_write_reapplies_filter", test_failed_rate_write_reapplies_filter},
     };
 
     /* An argument runs that case alone. */
