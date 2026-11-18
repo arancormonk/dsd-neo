@@ -2719,8 +2719,11 @@ suite runs under this compiler.
     packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
     monitor; one report per transmission and META content (keyed by the slot 0 call epoch, plus the stream ID on IP,
     so any end of the call -- stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync -- starts another
-    transmission; and by the checked LSF's sender and the reception generation, so two stations reusing one stream ID
-    with no call between them, or one report heard again on another reception, are two reports). The epoch is the call
+    transmission; by the whole checked LSF (sender, destination and type word), an IP stream frame's CRC-covered frame
+    number (a stream whose frame number starts again at or below the last one heard, its EOT missed, is another
+    transmission) and the reception generation, so two stations, or one station sending to another destination,
+    reusing one stream ID with no call between them, or one report heard again on another reception, are two reports;
+    the published target stays unknown). The epoch is the call
     the same LSF observed: an LSF that observes none (a stream of data type 0) is bound to no transmission, whatever M17
     call is still ACTIVE on the slot, so each such RF report is admitted again and none touches that call's row. An LSD
     assembled from LICH chunks (`m17_lich_assembly`) is bound from its first chunk to the transmission (the ACTIVE M17
@@ -2731,9 +2734,10 @@ suite runs under this compiler.
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
-    its own mini-header, wherever it sits in the superframe: only GPS blocks (0x3n) feed the record and the `GPS DATA:`
+    its own mini-header, wherever it sits in the superframe, a rebroadcast header's superframe included (the header's
+    nine blocks first, then the block after them like any other): only GPS blocks (0x3n) feed the record and the `GPS DATA:`
     display (a raw dump, `-Z` only: a part of a record not yet checked or admitted), the `_UNK:` dump shows only blocks
-    of no known kind (never a GPS, text or filler block, so GPS bytes reach the output only through `-Z` or an admitted
+    of no known kind (never a GPS, text or filler block, nor a header's own blocks, so GPS bytes reach the output only through `-Z` or an admitted
     position), only text blocks
     (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
     rule (fail closed, `dstar_sd_binding` in `state.h`): from its first byte or block an assembly is bound to the
@@ -2744,14 +2748,17 @@ suite runs under this compiler.
     M17 frame between two D-STAR ones, `dsd_rxid_note_sync()`) moved the reception generation, whatever call stays
     ACTIVE across it), the confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
     resets it (a fresh text assembly starts from an empty message, so a new transmission whose block 0 was missed shows
-    none of the last message's characters), and a D-PRS record is checked against its binding before its CRC counts as
+    none of the last message's characters; a text block whose place is at or before one heard since the last block 0
+    starts the next message, its block 0 missed, the same way), and a D-PRS record is checked against its binding before its CRC counts as
     evidence. What an assembly
     produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
     the row takes its position only through it (otherwise the feed takes the record anonymous), and the message reaches
     the row only when every block, its first (place 0) among them, was heard while the transmission was confirmed.
     Otherwise slow data is display text alone. Both header paths (`dstar_header_decode_soft()` and the slow-data
     header) put a checked header on the call through `dstar_header_observe()`, which takes the MY field (with its
-    suffix) as the source only when its first eight octets name a station: a suffix alone is no caller. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
+    suffix) as the source only when its first eight octets name a station: a suffix alone is no caller. Every header
+    field either path acts on (the callsigns, and the DATA flag that keeps a slow-data header with it set from naming a
+    voice call) is read from the bytes its CRC covered, never from the printable display copy. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
     on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
     sender's own MCC/MNC as the sender scope when sent.

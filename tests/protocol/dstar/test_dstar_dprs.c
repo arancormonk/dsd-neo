@@ -516,13 +516,14 @@ test_late_entry_record_kept_unverified(void) {
     rig_close(&r);
 }
 
-/* A slow-data superframe carrying the voice header naming @p mycall, its CRC-16/X.25 correct: the header as it is
- * repeated through a transmission (a mini-header 0x55, then five bytes per six-byte block). */
+/* A slow-data superframe carrying the header naming @p mycall with the first flag byte @p flag1, its CRC-16/X.25
+ * correct: the header as it is repeated through a transmission (nine blocks, each a mini-header 0x55 and five bytes),
+ * the tenth block filler. */
 static void
-send_slow_data_header(rig* r, const char* mycall) {
-    uint8_t header[51];
+build_slow_data_header(uint8_t bytes[60], const char* mycall, uint8_t flag1) {
+    uint8_t header[45];
     DSD_MEMSET(header, 0x20, sizeof(header));
-    header[0] = 0x00U;
+    header[0] = flag1;
     header[1] = 0x00U;
     header[2] = 0x00U;
     DSD_MEMCPY(header + 3, "RPT2TST ", 8);
@@ -534,15 +535,18 @@ send_slow_data_header(rig* r, const char* mycall) {
     const uint16_t crc = dstar_crc16(header, 39U);
     header[39] = (uint8_t)(crc >> 8);
     header[40] = (uint8_t)(crc & 0xFFU);
-    uint8_t bytes[60];
-    DSD_MEMSET(bytes, 0x20, sizeof(bytes));
-    bytes[0] = 0x55U;
+    DSD_MEMSET(bytes, 0x66, 60U);
     size_t at = 0U;
-    for (size_t i = 1U; i < sizeof(bytes) && at < sizeof(header); i++) {
-        if (i % 6U != 0U) {
-            bytes[i] = header[at++];
-        }
+    for (size_t i = 0U; i < 54U; i++) {
+        bytes[i] = (i % 6U == 0U) ? 0x55U : header[at++];
     }
+}
+
+/* The voice header naming @p mycall, as build_slow_data_header() lays it out. */
+static void
+send_slow_data_header(rig* r, const char* mycall) {
+    uint8_t bytes[60];
+    build_slow_data_header(bytes, mycall, 0x00U);
     send_superframe(r, bytes);
 }
 
@@ -789,6 +793,79 @@ test_new_message_starts_empty(void) {
     rig_close(&r);
 }
 
+/* Issue #800 (g62-r8): a CRC-valid slow-data header whose first flag byte has the DATA bit set (0x80) is a data
+ * transmission's: it names no voice call. The DATA bit is read from the bytes the header CRC covers -- the display
+ * copy shows that byte as a space. A late-entry voice call open on the slot keeps no source and its row no position:
+ * the D-PRS record heard after the header reaches the feed anonymous. */
+static void
+test_data_header_names_no_voice_call(void) {
+    rig r;
+    rig_open(&r);
+    open_anonymous_call(&r);
+    uint8_t bytes[60];
+    build_slow_data_header(bytes, "N0DATA", 0x80U);
+    send_superframe(&r, bytes);
+    expect_int("data header names no call", (long long)r.state->dstar_tx_call_epoch, 0);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("call still open", dsd_call_state_get(r.state, 0U, &call), 1);
+    expect_str("data header is no voice call's source", call.source_text, "");
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    dsd_position_fix f[2];
+    expect_int("record admitted", feed_records(&r, f, 2U), 1);
+    expect_str("record after a data header names nobody", f[0].source_text, "");
+    expect_int("record after a data header is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
+               DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    expect_int("voice row takes no position", open_row(&r)->pos.valid, 0);
+    rig_close(&r);
+}
+
+/* Issue #800 (g62-r8): a rebroadcast header fills nine of a superframe's ten blocks; the tenth may be a text block.
+ * It is read like any other text block: the message's first block ("HELLO"), heard after the header that names
+ * N0TEXT, starts the message, and with the rest of it the whole message reaches N0TEXT's row. */
+static void
+test_text_block_after_a_header(void) {
+    rig r;
+    rig_open(&r);
+    send_slow_data_header(&r, "N0TEXT");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    uint8_t bytes[60];
+    build_slow_data_header(bytes, "N0TEXT", 0x00U);
+    bytes[54] = 0x40U;
+    DSD_MEMCPY(bytes + 55, "HELLO", 5U);
+    send_superframe(&r, bytes);
+    expect_str("text block after the header shown", r.state->dstar_txt, "HELLO");
+    send_text(&r, 1U, " WORLD TEST MSG", 3U);
+    expect_str("whole message shown", r.state->dstar_txt, "HELLO WORLD TEST MSG");
+    expect_str("whole message on the row", open_row(&r)->text_message, "HELLO WORLD TEST MSG");
+    rig_close(&r);
+}
+
+/* Issue #800 (g62-r8): the next message's first block is missed within the same transmission. Its later blocks start
+ * a new message (a place at or before one already heard since the last block 0): none of the previous message's
+ * characters is shown with them, and the row keeps the previous whole message. */
+static void
+test_missed_first_block_starts_a_new_message(void) {
+    rig r;
+    rig_open(&r);
+    send_slow_data_header(&r, "N0TEXT");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    send_text(&r, 0U, "FIRST MESSAGE TEXT  ", 4U);
+    expect_str("first message on the row", open_row(&r)->text_message, "FIRST MESSAGE TEXT");
+    send_text(&r, 1U, "D MESSAGE TEXT ", 3U);
+    expect_str("next message's blocks alone", r.state->dstar_txt, "     D MESSAGE TEXT");
+    expect_str("row keeps the whole first message", open_row(&r)->text_message, "FIRST MESSAGE TEXT");
+    /* Out of order too: block 2 after block 3 of one message is the next message's, and its row text stays. */
+    send_text(&r, 0U, "THIRD", 1U);
+    send_text(&r, 3U, "LATER", 1U);
+    char before[sizeof(open_row(&r)->text_message)];
+    DSD_SNPRINTF(before, sizeof(before), "%s", open_row(&r)->text_message);
+    send_text(&r, 2U, "AGAIN", 1U);
+    expect_str("a place before one heard starts afresh", r.state->dstar_txt, "          AGAIN");
+    expect_str("the fresh block reaches no row", open_row(&r)->text_message, before);
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_vector_position();
@@ -812,6 +889,9 @@ main(void) {
     test_header_bound_to_its_reception();
     test_header_bound_across_a_protocol_switch();
     test_new_message_starts_empty();
+    test_data_header_names_no_voice_call();
+    test_text_block_after_a_header();
+    test_missed_first_block_starts_a_new_message();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSTAR_DPRS: %d failure(s)\n", g_failures);
         return 1;
