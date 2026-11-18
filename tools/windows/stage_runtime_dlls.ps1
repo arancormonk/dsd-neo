@@ -205,19 +205,23 @@ if (Test-Path $system32) {
     $system32 = (Resolve-Path $system32).Path
 }
 
-$normalizedDirs = @()
-$normalizedDirs += $destinationFull
-$normalizedDirs += $SearchDirs
-$normalizedDirs += (Get-VsRedistDirs)
-if ($system32) {
-    $normalizedDirs += $system32
+function Get-NormalizedDirs {
+    param(
+        [AllowEmptyCollection()]
+        [string[]]$Dirs
+    )
+
+    return @($Dirs |
+        Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_.Trim().TrimEnd('\', '/') } |
+        Select-Object -Unique)
 }
 
-$normalizedDirs = $normalizedDirs |
-    Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace($_) } |
-    ForEach-Object { $_.Trim().TrimEnd('\', '/') } |
-    Select-Object -Unique
-
+# A library comes from the search folders only. A Visual C++ runtime DLL may also come
+# from Visual Studio's redistributable folders or the build machine's System32: a clean
+# Windows lacks it, so it is copied from wherever it is found (Get-DllKind).
+$libraryDirs = Get-NormalizedDirs (@($destinationFull) + $SearchDirs)
+$runtimeDirs = Get-NormalizedDirs ($libraryDirs + @(Get-VsRedistDirs) + @($system32))
 
 $queue = New-Object 'System.Collections.Generic.Queue[string]'
 $visited = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
@@ -235,8 +239,11 @@ while ($queue.Count -gt 0) {
     $deps = Get-DependentDllNames -BinaryPath $current -DumpbinPath $dumpbin -ObjdumpPath $objdump
     foreach ($dll in $deps) {
         $kind = Get-DllKind -Name $dll
-        if ($kind -eq 'ApiSet') {
+        if ($kind -eq 'ApiSet' -or $kind -eq 'Windows') {
             continue
+        }
+        if ($kind -eq 'DebugRuntime') {
+            throw "$current imports $dll, part of the debug Visual C++ runtime, which may not be redistributed: build it with the release runtime (/MD)"
         }
 
         $destDllPath = Join-Path $destinationFull $dll
@@ -245,8 +252,12 @@ while ($queue.Count -gt 0) {
             continue
         }
 
+        $dirs = $libraryDirs
+        if ($kind -eq 'Redistributable') {
+            $dirs = $runtimeDirs
+        }
         $sourcePath = $null
-        foreach ($dir in $normalizedDirs) {
+        foreach ($dir in $dirs) {
             $candidate = Join-Path $dir $dll
             if (Test-Path $candidate) {
                 $sourcePath = (Resolve-Path $candidate).Path
@@ -255,18 +266,7 @@ while ($queue.Count -gt 0) {
         }
 
         if (-not $sourcePath) {
-            $missing.Add($dll)
-            continue
-        }
-
-        $isSystem32 = $false
-        if ($system32) {
-            $isSystem32 = $sourcePath.StartsWith($system32, [System.StringComparison]::OrdinalIgnoreCase)
-        }
-
-        # A Windows DLL stays where Windows keeps it; a Visual C++ runtime DLL is
-        # copied even from System32, since a clean Windows lacks it (Get-DllKind).
-        if ($isSystem32 -and $kind -ne 'Redistributable') {
+            $missing.Add("$dll (imported by $current)")
             continue
         }
 
@@ -277,7 +277,7 @@ while ($queue.Count -gt 0) {
 
 if ($missing.Count -gt 0) {
     $unique = $missing | Sort-Object -Unique
-    throw ("Missing DLL dependencies (not found in search dirs):`n" + ($unique -join "`n"))
+    throw ("Missing DLL dependencies (not in the search folders; only the Windows DLLs release_tree_checks.psm1 lists may stay out of the release):`n" + ($unique -join "`n"))
 }
 
 $manifest = Join-Path $destinationFull 'dlls-manifest.txt'

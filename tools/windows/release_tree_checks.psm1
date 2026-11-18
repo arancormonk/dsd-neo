@@ -138,16 +138,31 @@ function Find-SoapyLoadError {
     return $null
 }
 
+# The Windows DLLs the release imports, each part of every Windows the release supports:
+# what the import tables of the 2.12.1 ZIP and of later nightly builds name, besides API
+# sets and the Visual C++ runtime. Only these stay out of bin\. Any other DLL, even one in
+# the build machine's System32 (a driver package's libusbK.dll, say), is missing on a
+# clean Windows, so the release carries it or staging fails; a new Windows DLL import is
+# added here once it is known to be part of Windows.
+$script:WindowsDlls = [System.Collections.Generic.HashSet[string]]::new(
+    [string[]]@('advapi32.dll', 'bcrypt.dll', 'crypt32.dll', 'gdi32.dll', 'iphlpapi.dll', 'kernel32.dll',
+        'ole32.dll', 'secur32.dll', 'setupapi.dll', 'shlwapi.dll', 'user32.dll', 'winmm.dll', 'ws2_32.dll'),
+    [System.StringComparer]::OrdinalIgnoreCase)
+
 # How a release treats a DLL a binary imports, shared by the staging and the checks:
 #   ApiSet           an API set name (api-ms-win-*, ext-ms-*), resolved by Windows itself;
+#   Windows          a Windows DLL on the list above, never copied;
+#   DebugRuntime     Microsoft's debug C and C++ runtime: ucrtbased.dll and the debug
+#                    builds of the Visual C++ runtime DLLs below (vcruntime140d.dll,
+#                    msvcp140d.dll, msvcp140d_atomic_wait.dll, vcruntime140_1d.dll,
+#                    concrt140d.dll, mfc140ud.dll and the like), which a /MDd build imports
+#                    and which may not be redistributed, so a release refuses it;
 #   Redistributable  a Visual C++ runtime DLL (vcruntime140*.dll, msvcp140*.dll,
 #                    concrt140, vccorlib140, vcomp140, vcamp140, mfc140*, and their
-#                    debug and Unicode builds), which comes
-#                    with the Visual C++ redistributable, never with Windows, so the
-#                    release carries it in bin\ even when the build machine's System32
-#                    holds a copy;
-#   Other            anything else: a Windows DLL when it is in System32, otherwise a
-#                    library the release carries.
+#                    Unicode and language builds), which comes with the Visual C++
+#                    redistributable, never with Windows, so the release carries it in
+#                    bin\ even when the build machine's System32 holds a copy;
+#   Other            anything else: a library the release carries in bin\.
 function Get-DllKind {
     param(
         [Parameter(Mandatory = $true)]
@@ -156,6 +171,12 @@ function Get-DllKind {
 
     if ($Name -match '^(?i)(api-ms-win-|ext-ms-).+\.dll$') {
         return 'ApiSet'
+    }
+    if ($script:WindowsDlls.Contains($Name)) {
+        return 'Windows'
+    }
+    if ($Name -match '^(?i)(ucrtbased|(vcruntime|msvcp|msvcr|concrt|vccorlib|vcomp|vcamp|mfcm?)[0-9]{3}u?(_[a-z0-9]+)?d(_[a-z0-9_]+)?)\.dll$') {
+        return 'DebugRuntime'
     }
     if ($Name -match '^(?i)(vcruntime|msvcp|concrt|vccorlib|vcomp|vcamp|mfcm?)[0-9]{3}[a-z]*(_[a-z0-9_]+)?\.dll$') {
         return 'Redistributable'

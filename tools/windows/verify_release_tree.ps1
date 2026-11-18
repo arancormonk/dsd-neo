@@ -5,8 +5,10 @@
 #   1. the bundled librtlsdr is the patched build, and every .exe and .dll under bin\
 #      and lib\SoapySDR\ passes check_release_hardening.ps1;
 #   2. the SoapySDR load path: one copy of each library, in bin\, each module and
-#      library linked to what it should be, every non-system DLL a staged binary
-#      imports present in bin\, and SoapyAirspyHF built with its gain controls;
+#      library linked to what it should be, every DLL a staged binary imports
+#      present in bin\ unless it is an API set or one of the Windows DLLs
+#      release_tree_checks.psm1 lists, no debug Visual C++ runtime, and
+#      SoapyAirspyHF built with its gain controls;
 #   3. dsd-neo.exe -h;
 #   4. SoapySDRUtil --check=<driver> finds each of the three drivers;
 #   5. SoapySDRUtil --info finds exactly the three modules under this root;
@@ -237,22 +239,24 @@ function Test-LoadPath {
 
     # Windows looks for a module's DLLs where it looks for the program's (bin\ first),
     # never in the module's own folder, so every DLL a staged binary imports must be in
-    # bin\ unless Windows itself provides it.
-    $system32 = Join-Path $env:SystemRoot 'System32'
+    # bin\ unless it is part of Windows. The runner's System32 says nothing about that:
+    # it holds the Visual C++ redistributable and whatever its driver packages installed,
+    # which a user's may lack (Get-DllKind).
     $missing = New-Object 'System.Collections.Generic.List[string]'
+    $debug = New-Object 'System.Collections.Generic.List[string]'
     $binaries = @(Get-ChildItem -Path $bin -File) + @(Get-ChildItem -Path $moduleDir -File)
     foreach ($binary in @($binaries | Where-Object { $_.Extension -in @('.exe', '.dll') })) {
         foreach ($name in @(Get-ImageDependents $binary.FullName)) {
             $kind = Get-DllKind -Name $name
-            if ($kind -eq 'ApiSet' -or (Test-Path -LiteralPath (Join-Path $bin $name))) {
-                continue
+            if ($kind -eq 'DebugRuntime') {
+                $debug.Add("$($binary.Name) -> $name")
+            } elseif ($kind -ne 'ApiSet' -and $kind -ne 'Windows' -and !(Test-Path -LiteralPath (Join-Path $bin $name))) {
+                $missing.Add("$($binary.Name) -> $name")
             }
-            # The runner's System32 holds the Visual C++ redistributable; a user's may not.
-            if ($kind -eq 'Other' -and (Test-Path -LiteralPath (Join-Path $system32 $name))) {
-                continue
-            }
-            $missing.Add("$($binary.Name) -> $name")
         }
+    }
+    if ($debug.Count -gt 0) {
+        throw "Staged binaries import the debug Visual C++ runtime, which may not be redistributed:`n$($debug -join "`n")"
     }
     if ($missing.Count -gt 0) {
         throw "DLLs the staged binaries import are missing from ${bin}:`n$($missing -join "`n")"

@@ -377,6 +377,29 @@ IMPORTS = dumpbin(["Dump of file airspyhfSupport.dll", "", "File Type: DLL", "",
                    "", "    SoapySDR.dll", "             180012100 Import Address Table", "",
                    "                         1A7 airspyhf_set_hf_lna", "", "  Summary", "", "        1000 .data", ""])
 
+# How the release scripts treat a DLL a binary imports (Get-DllKind).
+DLL_KINDS = {
+    # The Windows DLLs the release imports (the 2.12.1 ZIP and a later nightly), in the spellings the import tables
+    # use, and nothing else from System32: a driver package's DLL there, or one that comes with Windows but that no
+    # release binary imports yet, must be in bin\ until it is reviewed into the list.
+    **{name: "Windows" for name in ("ADVAPI32.dll", "bcrypt.dll", "CRYPT32.dll", "GDI32.dll", "IPHLPAPI.DLL",
+                                    "KERNEL32.dll", "ole32.dll", "Secur32.dll", "SETUPAPI.dll", "SHLWAPI.dll",
+                                    "USER32.dll", "WINMM.dll", "WS2_32.dll")},
+    **{name: "Other" for name in ("ucrtbase.dll", "mfc42.dll", "msvcp60.dll", "msvcrt.dll", "libusbK.dll",
+                                  "winusb.dll", "SHELL32.dll", "airspy.dll")},
+    "api-ms-win-crt-heap-l1-1-0.dll": "ApiSet", "ext-ms-win-ntuser-uicontext-ext-l1-1-0.dll": "ApiSet",
+    **{name: "Redistributable" for name in ("VCRUNTIME140.dll", "vcruntime140_1.dll", "VCRUNTIME140_THREADS.dll",
+                                            "MSVCP140.dll", "msvcp140_2.dll", "MSVCP140_ATOMIC_WAIT.dll",
+                                            "MSVCP140_CODECVT_IDS.dll", "concrt140.dll", "vcomp140.dll",
+                                            "mfc140u.dll", "mfc140enu.dll", "mfc140deu.dll")},
+    # Microsoft's debug runtime, which a /MDd build imports and which may not be redistributed.
+    **{name: "DebugRuntime" for name in ("msvcp140d.dll", "ucrtbased.dll", "VCRUNTIME140D.dll", "vcruntime140_1d.dll",
+                                         "VCRUNTIME140_THREADSD.dll", "MSVCP140D_ATOMIC_WAIT.dll",
+                                         "msvcp140d_codecvt_ids.dll", "msvcp140_2d.dll", "concrt140d.dll",
+                                         "vccorlib140d.dll", "vcomp140d.dll", "vcamp140d.dll", "mfc140d.dll",
+                                         "mfc140ud.dll", "mfcm140ud.dll", "msvcr120d.dll")},
+}
+
 # Runs the release scripts and the readers; prints the readers' results as JSON on its last line.
 READERS = r"""param([string]$Module, [string]$Fixtures)
 $ErrorActionPreference = 'Stop'
@@ -405,11 +428,8 @@ foreach ($pair in @(@('airspyhf.dll', 'airspyhf_set_hf_att'), @('airspyhf.dll', 
     $result['imports'][$pair[0] + ':' + $pair[1]] = Test-DumpbinImport -Text $text['imports'] -Dll $pair[0] -Function $pair[1]
 }
 $result['kinds'] = [ordered]@{}
-foreach ($name in 'KERNEL32.dll', 'ucrtbase.dll', 'mfc42.dll', 'msvcp60.dll', 'msvcrt.dll', 'api-ms-win-crt-heap-l1-1-0.dll',
-                  'ext-ms-win-ntuser-uicontext-ext-l1-1-0.dll', 'VCRUNTIME140.dll', 'vcruntime140_1.dll',
-                  'VCRUNTIME140_THREADS.dll', 'MSVCP140.dll', 'msvcp140_2.dll', 'MSVCP140_ATOMIC_WAIT.dll',
-                  'MSVCP140_CODECVT_IDS.dll', 'concrt140.dll', 'vcomp140.dll', 'mfc140u.dll', 'msvcp140d.dll') {
-    $result['kinds'][$name] = Get-DllKind -Name $name
+foreach ($name in $text['kinds'].Split("`n", [System.StringSplitOptions]::RemoveEmptyEntries)) {
+    $result['kinds'][$name.Trim()] = Get-DllKind -Name $name.Trim()
 }
 $result | ConvertTo-Json -Depth 5 -Compress
 """
@@ -622,7 +642,7 @@ class SoapyReleaseScripts(unittest.TestCase):
                            ("info_no_modules", INFO_NO_MODULES), ("info_release", INFO_RELEASE),
                            ("check_load_failed_stderr", CHECK_LOAD_FAILED_STDERR), ("probe_airspy", PROBE_AIRSPY),
                            ("probe_bare_no_modules", PROBE_BARE_NO_MODULES), ("dependents", DEPENDENTS),
-                           ("imports", IMPORTS)):
+                           ("imports", IMPORTS), ("kinds", "\r\n".join(DLL_KINDS))):
             (fixtures / f"{name}.txt").write_bytes(text.encode("utf-8"))
         rc, out, err = self.pwsh(READERS, "-Module", ROOT / "tools/windows/release_tree_checks.psm1",
                                  "-Fixtures", fixtures)
@@ -651,11 +671,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertEqual(list(result["probe_messages"]), ["airspy", "airspyhf", "hackrf", ""])
         self.assertEqual(result["dependents"], ["airspyhf.dll", "SoapySDR.dll", "MSVCP140.dll", "KERNEL32.dll",
                                                 "WS2_32.dll"])
-        system = ("KERNEL32.dll", "ucrtbase.dll", "mfc42.dll", "msvcp60.dll", "msvcrt.dll")
-        api_sets = ("api-ms-win-crt-heap-l1-1-0.dll", "ext-ms-win-ntuser-uicontext-ext-l1-1-0.dll")
-        self.assertEqual(result["kinds"], {name: "Other" if name in system else "ApiSet" if name in api_sets
-                                           else "Redistributable" for name in result["kinds"]})
-        self.assertEqual(len(result["kinds"]), 18)
+        self.assertEqual(result["kinds"], DLL_KINDS)
         self.assertEqual(result["imports"], {
             "airspyhf.dll:airspyhf_set_hf_att": True, "airspyhf.dll:airspyhf_set_hf_lna": False,
             "SoapySDR.dll:airspyhf_set_hf_lna": True, "airspyhf.dll:Import": False,
@@ -899,6 +915,44 @@ class SoapyReleaseScripts(unittest.TestCase):
         rc, output = self.verify(tools, root, windows)
         self.assertEqual(rc, 1, output)
         self.assertIn("does not import airspyhf_set_hf_lna", output)
+
+    def assert_verify_refuses(self, tools, root, windows, *messages):
+        self.write_report(tools)
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 1, output)
+        for message in messages:
+            self.assertIn(message, output)
+
+    def test_verify_release_tree_refuses_the_debug_runtime(self):
+        tools, root, windows = self.release_tree()
+        # A library built with /MDd imports Microsoft's debug runtime, which may not be redistributed, even when the
+        # tree carries a copy.
+        for name in ("MSVCP140D.dll", "ucrtbased.dll"):
+            with self.subTest(dll=name):
+                (root / "bin" / name).write_bytes(b"MZ debug runtime")
+                self.report["dependents"][name] = ["KERNEL32.dll"]
+                self.report["dependents"]["SoapySDR.dll"].append(name)
+                try:
+                    self.assert_verify_refuses(tools, root, windows, f"SoapySDR.dll -> {name}",
+                                               "debug Visual C++ runtime")
+                finally:
+                    self.report["dependents"]["SoapySDR.dll"].remove(name)
+                    (root / "bin" / name).unlink()
+
+    def test_verify_release_tree_refuses_dlls_only_the_build_machine_has(self):
+        tools, root, windows = self.release_tree()
+        # A DLL a driver package put in the build machine's System32 is not part of Windows: a clean machine lacks it.
+        (windows / "System32/libusbK.dll").write_bytes(b"MZ driver package")
+        self.report["dependents"]["libusb-1.0.dll"] = ["libusbK.dll", "KERNEL32.dll"]
+        self.assert_verify_refuses(tools, root, windows, "libusb-1.0.dll -> libusbK.dll")
+        # The listed Windows DLLs need no copy anywhere.
+        (windows / "System32/KERNEL32.dll").unlink()
+        self.report["dependents"]["libusb-1.0.dll"] = ["KERNEL32.dll", "ADVAPI32.dll"]
+        self.write_report(tools)
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 0, output)
+
+
 
 if __name__ == "__main__":
     unittest.main()

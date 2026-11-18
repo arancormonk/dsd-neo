@@ -284,6 +284,13 @@ class StageRuntimeDlls(unittest.TestCase):
                 self.respond(tool, "dsd-neo.exe", out=report)
                 self.assert_refused([tool, str(self.target)])
 
+    def reset_tools(self):
+        shutil.rmtree(self.tools)
+        self.tools.mkdir()
+        for staged in self.dest.iterdir():
+            if staged != self.target:
+                staged.unlink()
+
     def test_pe_header_past_the_first_4096_bytes(self):
         # e_lfanew may point anywhere in the file: a linker places the PE header after a DOS stub of any size.
         self.target.write_bytes(pe_image(b"target", dll=False, stub=8192))
@@ -298,6 +305,43 @@ class StageRuntimeDlls(unittest.TestCase):
                 struct.pack_into("<i", image, 0x3C, lfanew)
                 self.target.write_bytes(bytes(image))
                 self.assert_refused(["not a PE image", str(self.target)])
+
+    def test_debug_runtime_dlls_are_refused(self):
+        # A dependency built with /MDd imports Microsoft's debug runtime, which may not be redistributed: neither the
+        # copy in the search folders nor the one in System32 may be staged.
+        (self.system32 / "KERNEL32.dll").write_bytes(pe_image(b"system"))
+        for name, where in (("VCRUNTIME140D.dll", self.search), ("MSVCP140D.dll", self.search),
+                            ("ucrtbased.dll", self.system32), ("VCRUNTIME140_1D.dll", self.system32)):
+            with self.subTest(dll=name):
+                self.reset_tools()
+                self.tool("dumpbin")
+                self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", ["a.dll", "KERNEL32.dll"]))
+                (self.search / "a.dll").write_bytes(pe_image(b"a"))
+                self.respond("dumpbin", "a.dll", out=dumpbin_report("a.dll", [name, "KERNEL32.dll"]))
+                (where / name).write_bytes(pe_image(b"debug runtime"))
+                self.respond("dumpbin", name, out=dumpbin_report(name, ["KERNEL32.dll"]))
+                output = self.assert_refused([name, "debug Visual C++ runtime"])
+                self.assertIn(f"{self.dest / 'a.dll'} imports {name}", output)
+                self.assertFalse((self.dest / name).exists(), output)
+                (where / name).unlink()
+
+    def test_only_listed_windows_dlls_stay_out_of_bin(self):
+        # A DLL that a driver package put in the build machine's System32 is not part of Windows: a clean machine lacks
+        # it, so the release must carry it, and staging stops when it cannot.
+        self.tool("dumpbin")
+        self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", ["libusbK.dll", "KERNEL32.dll"]))
+        (self.system32 / "libusbK.dll").write_bytes(pe_image(b"driver package"))
+        (self.system32 / "KERNEL32.dll").write_bytes(pe_image(b"system"))
+        self.assert_refused(["Missing DLL dependencies", "libusbK.dll"])
+        self.assertFalse((self.dest / "libusbK.dll").exists())
+        # A Windows DLL on the list is never looked for or copied, wherever a copy happens to be.
+        self.reset_tools()
+        self.tool("dumpbin")
+        self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", ["WS2_32.dll", "IPHLPAPI.DLL"]))
+        (self.search / "WS2_32.dll").write_bytes(pe_image(b"stray copy"))
+        rc, output = self.stage()
+        self.assertEqual(rc, 0, output)
+        self.assertEqual([name for name in self.staged() if name.endswith(".dll")], [])
 
 
 
