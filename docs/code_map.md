@@ -2530,7 +2530,9 @@ suite runs under this compiler.
   same family, or as strong and names more, by the strength rule History's merge uses, so a NAC-only row learns the
   WACN and SYSID read after a sync loss), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
   `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
-  move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`.
+  move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`, but a
+  segment's position only when it was heard on the row's reception (its `rx_scope` equal to the row's after the
+  merge folds in what the segment learned; a side that knows none is no mismatch; test `CORE_EVENT_POSITION`).
   Every data notice stamps its reception identity, its sender identity (`pos.scope`, the reception's scope when it has
   no position) and its site (`site_id`, by the call rows' rule). The API row gains `"pos"` (lat/lon from the fixed point, `err_m`,
   `flags`, `rev`) and the event fingerprint hashes it, both only while `pos.valid`. Tests: `CORE_EVENT_POSITION`,
