@@ -15618,7 +15618,11 @@ Qt Quick frontend (`src/ui/qt`):
     one that names Capacity Max with the mask, channel and stamps unchanged. H1: an update for a fragment is applied to
     the row that holds it, found through `m_fragmentIndex` (`rowHoldingFragment()`), and only then to a row it merges
     with, because a fragment that no longer passes the merge test with the row it was folded into would otherwise be
-    dropped. Decided limits: L7, with a split on conflicting parts a fragment that knows fewer parts (none, or the
+    dropped. Issue #800: so is any reading of a held fragment, an update or not: the seen key holds the row's start,
+    which the core can fill in or move later (`watchdog_event_merge_stamps()`; a row with no start reads its end), so
+    a reading the seen store takes for new is still the fragment its row holds by ring identity, and merging it by
+    content could land it on another row or log a second one. Decided limits: L7, with a split on conflicting parts a
+    fragment that knows fewer parts (none, or the
     system without the site) joins whichever compatible row it meets first, so a live session (oldest first) and a
     backlog (newest first) can group the same three fragments differently; L8, a fragment that later learns parts
     conflicting with the row it already folded into has its identity discarded whole, with its channel, never picked
@@ -15704,7 +15708,9 @@ Qt Quick frontend (`src/ui/qt`):
       callsign or sender system) keeps them to itself; when the only part naming the row's radio goes, the row names
       no radio again, and no other radio's part names it. Its other fields fold from every part of the call. An update
       found by its fragment, which is not merged again, is judged against what the row's other fragments gave
-      (`fragment_call_compatible()`: protocol family, reception and sender system, raw target text), never against
+      (`fragment_call_compatible()`: one receive service by the merge's own rule, `receive_services_compatible()`, so a
+      fragment that merged with its over-the-air slot pending and is then proven on another slot is another service's;
+      protocol family, reception and sender system, raw target text), never against
       its own earlier readings: one that names another call (another system, or a callsign or dial-string destination
       other than the row's) is withdrawn (`withdraw_part()`) and gives nothing, and the row is rebuilt from the rest,
       every field it gave taken back together (its sender and radio, label, message, destination, session, frequency,
@@ -15719,7 +15725,9 @@ Qt Quick frontend (`src/ui/qt`):
       merge folds together are two parts and the row keeps what either gave (the later row's source and emergency
       flag). So withdrawing such a fragment takes back only those values: its
       sender and the rest stay, as nothing tells which fragment gave them. The GPS units are kept per fragment beside
-      the parts (`Row::gpsOthers`, each a fragment's by its provenance and its run's session ordinal), and a reading
+      the parts (`Row::gpsOthers`, each a fragment's by its ring identity: its run's session ordinal, slot and push
+      stamp, `call_history_same_fragment()`, never its start, which the core can fill in or move; only for a unit of an
+      unknown run, an older store's, does the start guard the push stamp), and a reading
       gives its own only when it names the row's radio (`fold_gps()`). The texts anonymous fragments gave are
       dropped when the row learns its radio. The reception scope folds by strength from any
       fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
@@ -15747,7 +15755,13 @@ Qt Quick frontend (`src/ui/qt`):
       whose system the core resolves in place is read again and its fragment checked against the row again; an entry
       without one (an older build's, or `load()`'s seed) takes the first read's without counting it as a change, as
       the site text digest does. A repeated notice (`notices_same_delivery()`) must match the texts, the fix
-      (coordinates, error, flags, kind), the raw target and identity. Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
+      (coordinates, error, flags, kind), the raw target and identity. Against a notice an older build stored (one
+      `detail`, no message or GPS text) the texts compared are the ones that build would have stored
+      (`notice_texts_same()`: the message, else the GPS text, and that as the name of a notice with no summary), so a
+      replay after an upgrade gives the stored row its parts rather than logging it again; two rows of this build
+      compare their whole detail line. A fold looks a row's fragments up among its parts through an index
+      (`PartLookup`) once both are more than a few, so a long call of many short fragments folds in time linear in its
+      parts, not quadratic (`UI_QT_CALL_HISTORY_MODEL` counts the parts read). Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
       `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
       `frv` (fragment key to reading version), `fp` (the fragment parts of a voice row of two or more fragments, each
@@ -17233,7 +17247,9 @@ Qt Quick frontend (`src/ui/qt`):
   its radius, source and station type, `GNSS`, `LRRP` with each line of an LRRP report's details (`LRRP Time:`,
   `LRRP Radius:`, `LRRP Alt Accuracy:`, `LRRP Speed:`, `LRRP Track:`), `LOCN` with the MNIS `LOCN Text:` report text,
   `NMEA` with the checked sentences' `NMEA:` line, LIP, `Location Service` with the P25 SAP 48 plain text
-  (`P25 Location Service Text:`), `Position`, APRS and D-PRS, Cellocator, D-STAR `_UNK:` blocks). As a backstop, a line no label covers still goes when it matches
+  (`P25 Location Service Text:`), `Position`, APRS and D-PRS, Cellocator, D-STAR `_UNK:` blocks, and every USBD
+  payload line (`USBD - Service`), printed without `-Z`: fail closed, a reserved or manufacturer-specific service's
+  bytes are not known to hold no position). As a backstop, a line no label covers still goes when it matches
   `kPositionShapes` (raw RMC/GGA/GLL/GNS/VTG sentences, `$$CRC`, the LOCN hemisphere form, the D-PRS
   `ddmm.hhN?dddmm.hhE` form), holds a pair of decimal degrees with at least four places (not followed by a unit), or a
   degrees-and-minutes pair (the minutes' fraction optional, as the NMEA parser reads it); no shape exempts anything.
@@ -17243,12 +17259,16 @@ Qt Quick frontend (`src/ui/qt`):
   the load also removes every record under a label an older build (v2.10.0, the first with a saved tail, onward)
   printed a received position or a part of one with (`kLegacyPositionForms`: `UTF8 Text:` from the P25 SAP 48 plain
   text and the MNIS LOCN text, D-STAR `TEXT:` from the fixed-form GPS data blocks, the LRRP `Time: yyyy.mm.dd`,
-  `Radius:`, `Alt Accuracy:`, `Speed:` and `Track:` lines, the M17 GNSS `Radius:` line, and a checked NMEA sentence of
-  any type printed bare), whichever build wrote it; a current build's text message under the same label (DMR or UDT
-  `UTF8 Text:`, D-STAR `TEXT:`) is kept live and dropped on reload. Keep the list in step when a release changes a
-  position print's label. Raw dumps under generic prefixes (`-Z`: DMR PDU, DMR
-  `Short Data Raw`, NXDN `UDCH Data` and `DATA:`, P25 MBT, M17 LSF and packet bytes) are kept and can hold an encoded
-  position; without `-Z` every line that prints a received position or a part of one carries a label. Keep
+  `Radius:`, `Alt Accuracy:`, `Speed:` and `Track:` lines, the M17 GNSS `Radius:` line, a checked NMEA sentence of
+  any type printed bare, and the raw dumps older builds printed without `-Z`: DMR `Short Data Raw:` with a LOCN
+  position's bracketed bytes and NXDN `UDCH Data:` with a data call's bytes and their ASCII form), whichever build
+  wrote it; a current build's text message or `-Z` dump under the same label (DMR or UDT `UTF8 Text:`, D-STAR
+  `TEXT:`, `Short Data Raw:`, `UDCH Data:`) is kept live and dropped on reload. The list is built from every
+  default-mode print of a received position, a part of one or the raw bytes of a message that carries one, v2.10.0
+  through this build; keep it in step when a release changes such a print's label. Raw dumps under generic prefixes
+  (`-Z`: DMR PDU, DMR `Short Data Raw`, NXDN `UDCH Data` and `DATA:`, P25 MBT, M17 LSF and packet bytes) are kept
+  live and can hold an encoded position; without `-Z` every line that prints a received position, a part of one or
+  the raw bytes of a message that can carry one carries a label. Keep
   `kPositionMarkers` in step with the producers' print text, give a new position print a label and a line in
   `UI_QT_DIAGNOSTICS_LOG` (`receivedPositionsAreRemoved()`), and drive a new producer of received report text through
   its real path in `realProducersLabelReceivedPositions()` (`DiagnosticsLog::namesPositionProducerForTest()`), and a

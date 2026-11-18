@@ -644,8 +644,10 @@ holdsKeyLabel(const QString& text) {
  * path prints them on that line. A label is the producer's, never the shape of what the air delivered: a part of a
  * report can look like anything (a D-STAR GPS data block begins wherever the slow data split the record). Dumps that
  * do not say what they carry (the -Z payload lines "DMR PDU Payload", "P25 MBT Payload", "Short Data Raw", NXDN
- * "UDCH Data" and "DATA:", D-STAR "SD:", M17 "LSF:"/"pkt:"/"PKT:", CSBK and voice bytes) are kept: they come before
- * the decode that names the PDU, and most carry no position. Without -Z every decoder line that prints a received
+ * "UDCH Data" and "DATA:", D-STAR "SD:", M17 "LSF:"/"pkt:"/"PKT:", CSBK and voice bytes) are kept live: they come
+ * before the decode that names the PDU, and most carry no position (older builds printed "Short Data Raw" and
+ * "UDCH Data" without -Z, so a stored one goes on load: kLegacyPositionForms). A dump printed without -Z of a PDU that
+ * can carry a position has an entry here. Without -Z every decoder line that prints a received
  * position or a part of one carries one of these labels (UI_QT_DIAGNOSTICS_LOG drives the producers that print
  * received text to check it, and every producer of a received position to check each part of its report). A contiguous
  * run of ten or more hex digits is redacted anyway (redact()).
@@ -669,6 +671,9 @@ const char* const kPositionMarkers[] = {
     "\\bNMEA\\b",
     // dsd_gps.c LIP; dmr_dburst.c USBD service 0 ("Location Information Protocol") with its payload; TETRA SDS LIP
     "\\bLIP\\b|Location Information Protocol|Location Report",
+    // dmr_dburst.c: every USBD's payload, printed without -Z. Fail closed: a reserved or manufacturer-specific
+    // service's bytes (TS 102 361-1 table 9.55) are not known to hold no position.
+    "\\bUSBD - Service\\b",
     // dmr_pdu.c P25 Tier 2 Location Service; p25p1_pdu_data.c the SAP 48 location service's plain text ("P25 Location
     // Service Text:")
     "Location Service",
@@ -706,7 +711,9 @@ const char* const kPositionShapes[] = {
  * before position labels) gave a received position or a part of one under a label kPositionMarkers does not hold. A
  * stored tail cannot tell which build wrote a record, so a record loaded from it (redactStored()) that matches any of
  * these goes too, whatever build wrote it: a current build's record under the same label (a DMR or UDT "UTF8 Text:"
- * message, a D-STAR "TEXT:" message) is dropped on reload with them.
+ * message, a D-STAR "TEXT:" message, a -Z "Short Data Raw" or "UDCH Data" dump) is dropped on reload with them. Built
+ * from every default-mode print of a received position, a part of one or the raw bytes of a message that carries one,
+ * from v2.10.0 through this build (the print text did not change between v2.10.0 and the base of issue #800).
  */
 const char* const kLegacyPositionForms[] = {
     // p25p1_pdu_data.c SAP 48 location service plain text and dmr_block.c MNIS LOCN report text (utf8_to_text())
@@ -722,6 +729,11 @@ const char* const kLegacyPositionForms[] = {
     "\\bTrack\\s*:",
     // dsd_gps.c nmea_sentence_checker(): a checked sentence of any type, printed bare after whatever came before it
     "[$!][A-Z][A-Z0-9]{2,},[^*]*\\*[0-9A-Fa-f]{2}",
+    // Raw dumps older builds printed without -Z, which this build prints only with it: dmr_pdu.c
+    // dmr_sd_pdu_print_raw() (a LOCN position's bytes, bracketed) and nxdn_deperm.c nxdn_print_udch_data() (a data
+    // call's bytes, then their ASCII form: a part of an NMEA sentence or of a report)
+    "\\bShort Data Raw\\s*:",
+    "\\bUDCH Data\\s*:",
 };
 
 /** @brief One alternation of @p entries, each a QRegularExpression fragment. */

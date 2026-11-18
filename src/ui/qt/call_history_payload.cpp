@@ -90,11 +90,11 @@ gps_unit_adopts(const GpsUnit& stored, const GpsUnit& incoming) {
                                    gps_key(incoming), provenance(incoming.when, incoming.seq, incoming.slot));
 }
 
-/** @brief Whether two GPS units are readings of one fragment: the same provenance and session ordinal. */
+/** @brief Whether two GPS units are readings of one fragment (call_history_same_fragment(): its ring identity). */
 bool
 gps_units_same_fragment(const GpsUnit& a, const GpsUnit& b) {
-    return call_history_provenance_compare(provenance(a.when, a.seq, a.slot), provenance(b.when, b.seq, b.slot)) == 0
-           && a.ord == b.ord;
+    return call_history_same_fragment(provenance(a.when, a.seq, a.slot), a.ord, provenance(b.when, b.seq, b.slot),
+                                      b.ord);
 }
 
 /** @brief The GPS unit a row shows (its gps* fields). */
@@ -379,17 +379,40 @@ row_names_source(const CallHistoryModel::Row& row) {
     return row.src != 0 || !row.sourceText.simplified().isEmpty();
 }
 
+/* Issue #637: two fragments are one service when their confirmed identities and labels agree. A fragment committed before its
+   access code or tone was confirmed carries no identity yet, and its label is at most a weaker (slot) name: it joins
+   the confirmed fragment, which tryMerge() lets name the row. Two unconfirmed fragments must agree on the label. The
+   over-the-air slot is proven on its own (receiveSlot, 0 while pending on the single-slot DMR decoder): two proven
+   slots that differ are two services whatever the codes, and a pending slot's fragment may carry no slot name. */
+bool
+receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryModel::Row& b) {
+    if (a.receiveSlot != 0 && b.receiveSlot != 0 && a.receiveSlot != b.receiveSlot) {
+        return false;
+    }
+    /* One fragment proved its slot and the other had it pending (FDMA rows carry no slot at all, on either side). */
+    const bool slotJustProven = (a.receiveSlot != 0) != (b.receiveSlot != 0);
+    if (a.receiveKnown && b.receiveKnown) {
+        /* The same confirmed service may gain the name it lacked (a name added, then the call reacquired). */
+        return a.receiveKind == b.receiveKind && a.receiveValue == b.receiveValue
+               && (a.service == b.service || slotJustProven || a.service.isEmpty() || b.service.isEmpty());
+    }
+    return a.receiveKnown || b.receiveKnown || a.service == b.service || slotJustProven;
+}
+
 /**
  * @brief Whether fragment @p row is of @p existing's call (issue #800, B2, B4 and B5): one protocol family, reception
- * system and sender system, and no other raw target text.
+ * system and sender system, no other raw target text, and one receive service (receive_services_compatible()).
  *
  * An update found by its fragment (CallHistoryModel::rowHoldingFragment()) is not merged again, so its later reading
- * may name what the merge (rows_identity_compatible(), the destination rule) would have refused: a reception or sender
- * system the row's disagrees with, or a callsign or dial-string destination other than the row's.
+ * may name what the merge (rows_identity_compatible(), the destination rule, receive_services_compatible()) would have
+ * refused: a reception or sender system the row's disagrees with, a callsign or dial-string destination other than the
+ * row's, or a receive service its other fragments' rule out (an over-the-air slot proven to be another, on the
+ * single-slot DMR decoder, after the fragment merged while its slot was pending).
  */
 bool
 fragment_call_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    return call_history_protocols_compatible(existing.protocol, row.protocol)
+    return receive_services_compatible(existing, row)
+           && call_history_protocols_compatible(existing.protocol, row.protocol)
            && call_history_scopes_compatible(existing.rxScope, row.rxScope)
            && call_history_scopes_compatible(existing.sourceScope, row.sourceScope)
            && !raw_texts_differ(existing.targetText, row.targetText);

@@ -14,6 +14,7 @@
 #include <QDateTime>
 #include <QFile>
 #include <QGuiApplication>
+#include <QHash>
 #include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -118,6 +119,8 @@ constexpr int kMergeScanRows = 32;
 
 #ifdef DSD_NEO_TEST_HOOKS
 std::atomic<void (*)(const QThread*)> g_store_build_observer{nullptr};
+/* The fragment parts the part lookups read or index (PartLookup, part_index()), for the fold's cost. */
+std::atomic<qint64> g_part_lookup_steps{0};
 /* The lines the next spill fold reads before its read fails (-1: it does not). */
 std::atomic<int> g_spill_read_fail_after{-1};
 
@@ -1456,26 +1459,6 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
 
 namespace {
 
-/* Two fragments are one service when their confirmed identities and labels agree. A fragment committed before its
-   access code or tone was confirmed carries no identity yet, and its label is at most a weaker (slot) name: it joins
-   the confirmed fragment, which tryMerge() lets name the row. Two unconfirmed fragments must agree on the label. The
-   over-the-air slot is proven on its own (receiveSlot, 0 while pending on the single-slot DMR decoder): two proven
-   slots that differ are two services whatever the codes, and a pending slot's fragment may carry no slot name. */
-bool
-receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryModel::Row& b) {
-    if (a.receiveSlot != 0 && b.receiveSlot != 0 && a.receiveSlot != b.receiveSlot) {
-        return false;
-    }
-    /* One fragment proved its slot and the other had it pending (FDMA rows carry no slot at all, on either side). */
-    const bool slotJustProven = (a.receiveSlot != 0) != (b.receiveSlot != 0);
-    if (a.receiveKnown && b.receiveKnown) {
-        /* The same confirmed service may gain the name it lacked (a name added, then the call reacquired). */
-        return a.receiveKind == b.receiveKind && a.receiveValue == b.receiveValue
-               && (a.service == b.service || slotJustProven || a.service.isEmpty() || b.service.isEmpty());
-    }
-    return a.receiveKnown || b.receiveKnown || a.service == b.service || slotJustProven;
-}
-
 /* Fold the identity evidence @p row carries into @p existing, which tryMerge() matched to it: a confirmed code the row
    holds and the row lacks, and a slot the row has proven, each on its own. Returns 1 when the row's service label,
    now the better-founded one, should name @p existing. */
@@ -1925,10 +1908,13 @@ fold_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& f
     existing.session = qMax(existing.session, from.session);
 }
 
-/** @brief The index of fragment @p fragment's part in @p row, or -1. */
+/** @brief The index of fragment @p fragment's part in @p row, or -1. For one lookup; PartLookup for many. */
 qsizetype
 part_index(const CallHistoryModel::Row& row, const QString& fragment) {
     for (qsizetype i = 0; i < row.parts.size(); i++) {
+#ifdef DSD_NEO_TEST_HOOKS
+        g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
         if (row.parts.at(i).fragment == fragment) {
             return i;
         }
@@ -1936,12 +1922,68 @@ part_index(const CallHistoryModel::Row& row, const QString& fragment) {
     return -1;
 }
 
+/**
+ * @brief Many lookups of fragments' parts in one row's parts: an index by fragment key, built once, when both the
+ * lookups and the parts are many, so a fold that looks every fragment of a long call up walks its parts once rather
+ * than once per fragment (a call of N short fragments would otherwise cost N^3 over its folds); a plain scan for a few,
+ * which costs less than building the index.
+ */
+class PartLookup {
+  public:
+    PartLookup(const QList<FragmentPart>& parts, qsizetype lookups) : m_parts(parts) {
+        if (lookups > kScanLimit && parts.size() > kScanLimit) {
+            m_index.reserve(parts.size());
+            for (qsizetype i = 0; i < parts.size(); i++) {
+                m_index.insert(parts.at(i).fragment, i);
+            }
+            m_indexed = true;
+#ifdef DSD_NEO_TEST_HOOKS
+            g_part_lookup_steps.fetch_add(parts.size(), std::memory_order_relaxed);
+#endif
+        }
+    }
+
+    /** @brief The index of fragment @p fragment's part, or -1. */
+    qsizetype
+    find(const QString& fragment) const {
+        if (m_indexed) {
+            return m_index.value(fragment, -1);
+        }
+        for (qsizetype i = 0; i < m_parts.size(); i++) {
+#ifdef DSD_NEO_TEST_HOOKS
+            g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
+            if (m_parts.at(i).fragment == fragment) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** @brief Note that fragment @p fragment's part now sits at @p at of the parts this lookup reads. */
+    void
+    added(const QString& fragment, qsizetype at) {
+        if (m_indexed) {
+            m_index.insert(fragment, at);
+        }
+    }
+
+  private:
+    static constexpr qsizetype kScanLimit = 8;
+    const QList<FragmentPart>& m_parts;
+    QHash<QString, qsizetype> m_index;
+    bool m_indexed = false;
+};
+
 /** @brief Whether every fragment of @p row has its part, so the row can be rebuilt from them. */
 bool
 parts_complete(const CallHistoryModel::Row& row) {
-    return !row.fragments.isEmpty()
-           && std::all_of(row.fragments.cbegin(), row.fragments.cend(),
-                          [&row](const QString& fragment) { return part_index(row, fragment) >= 0; });
+    if (row.fragments.isEmpty()) {
+        return false;
+    }
+    const PartLookup lookup(row.parts, row.fragments.size());
+    return std::all_of(row.fragments.cbegin(), row.fragments.cend(),
+                       [&lookup](const QString& fragment) { return lookup.find(fragment) >= 0; });
 }
 
 /** @brief Put the parts of @p row into @p existing: a fragment's part is replaced whole by a reading that is not older
@@ -1951,9 +1993,11 @@ parts_complete(const CallHistoryModel::Row& row) {
 void
 merge_parts(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
     QList<FragmentPart> parts = existing.parts;
+    PartLookup lookup(parts, row.parts.size());
     for (const FragmentPart& part : row.parts) {
-        const qsizetype held = part_index(existing, part.fragment);
+        const qsizetype held = lookup.find(part.fragment);
         if (held < 0) {
+            lookup.added(part.fragment, parts.size());
             parts.append(part);
         } else if (parts.at(held).withdrawn
                    || row.fragmentVers.value(part.fragment, 0U) >= existing.fragmentVers.value(part.fragment, 0U)) {
@@ -2039,8 +2083,10 @@ ensure_parts(CallHistoryModel::Row& row) {
         }
         return;
     }
+    PartLookup lookup(row.parts, row.fragments.size());
     for (const QString& fragment : row.fragments) {
-        if (part_index(row, fragment) < 0) {
+        if (lookup.find(fragment) < 0) {
+            lookup.added(fragment, row.parts.size());
             row.parts.append(legacy_part_of(row, fragment));
         }
     }
@@ -2227,8 +2273,9 @@ reading_part_keys(const CallHistoryModel::Row& reading) {
  * radio, when it names one, stays its own. Every part the reading gave folds, a legacy row's own part with the rest. */
 void
 fold_reading_parts(CallHistoryModel::Row& existing, const QStringList& keys) {
+    const PartLookup lookup(existing.parts, keys.size());
     for (const QString& fragment : keys) {
-        const qsizetype held = part_index(existing, fragment);
+        const qsizetype held = lookup.find(fragment);
         if (held < 0 || existing.parts.at(held).withdrawn) {
             continue;
         }
@@ -2287,14 +2334,54 @@ fill_carrier(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
     }
 }
 
+/** @brief Whether @p row is a notice an older build stored: one detail (legacyDetail), no text message or GPS text. */
+bool
+notice_is_legacy(const CallHistoryModel::Row& row) {
+    return row.messageText.isEmpty() && row.gpsText.isEmpty() && !row.legacyDetail.isEmpty();
+}
+
+/** @brief The one detail an older build stored for notice @p row: its text message when it has one, else its GPS text
+ * (that build's row_take_name()). */
+QString
+legacy_notice_detail(const CallHistoryModel::Row& row) {
+    return row.messageText.isEmpty() ? row.gpsText : row.messageText;
+}
+
+/** @brief The name an older build gave notice @p row: its summary, or with none its one detail
+ * (legacy_notice_detail()) where this build names it by its whole detail line. */
+QString
+legacy_notice_name(const CallHistoryModel::Row& row) {
+    const QString detail = row_detail_text(row);
+    return !detail.isEmpty() && row.name == detail ? legacy_notice_detail(row) : row.name;
+}
+
+/**
+ * @brief Whether notices @p a and @p b carry one name and detail (issue #800, B2). Two rows of this build compare their
+ * whole detail line; against a row an older build stored, the other row's text is what that build would have stored
+ * (legacy_notice_detail(), legacy_notice_name()), so a replay after an upgrade finds the stored row and gives it its
+ * parts (absorbRepeatedNotice()).
+ */
+bool
+notice_texts_same(const CallHistoryModel::Row& a, const CallHistoryModel::Row& b) {
+    const bool aLegacy = notice_is_legacy(a);
+    const bool bLegacy = notice_is_legacy(b);
+    if (aLegacy == bLegacy) {
+        return a.name == b.name && row_detail_text(a) == row_detail_text(b);
+    }
+    const CallHistoryModel::Row& legacy = aLegacy ? a : b;
+    const CallHistoryModel::Row& current = aLegacy ? b : a;
+    return legacy.name == legacy_notice_name(current) && legacy.legacyDetail == legacy_notice_detail(current);
+}
+
 /**
  * @brief Whether notice @p row is the delivery the logged notice @p existing is, decoded again: field for field, the
- * fix included (issue #800: the same text with another position is another delivery).
+ * fix included (issue #800: the same text with another position is another delivery); the texts as notice_texts_same()
+ * compares them.
  */
 bool
 notices_same_delivery(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    return existing.when == row.when && existing.tg == row.tg && existing.src == row.src && existing.name == row.name
-           && row_detail_text(existing) == row_detail_text(row) && positions_same_fix(existing.pos, row.pos)
+    return existing.when == row.when && existing.tg == row.tg && existing.src == row.src
+           && notice_texts_same(existing, row) && positions_same_fix(existing.pos, row.pos)
            && existing.systemName == row.systemName && existing.systemUid == row.systemUid
            && existing.channel == row.channel && receive_services_compatible(existing, row)
            && rows_identity_compatible(existing, row) && !raw_texts_differ(existing.targetText, row.targetText);
@@ -2536,7 +2623,10 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // An update refines the row that already holds its fragment, found by the fragment (issue #799, H1). Merged again
     // by its content it could miss that row once it brings what the row's other fragments disagree with (a site the
     // core filled in later), and be dropped. A row an older build stored keeps no fragments, and is found by merging.
-    int merged = isUpdate ? rowHoldingFragment(row) : -1;
+    // A reading the seen store takes for new is still that row's when its fragment is held (issue #800, 2.7): the
+    // fragment's ring identity is stable, while its seen key holds its start, which the core can fill in or move later
+    // (watchdog_event_merge_stamps()); merged by content it could land on another row or log a second one.
+    int merged = rowHoldingFragment(row);
     if (merged >= 0) {
         foldRow(m_rows[merged], row);
     } else {
@@ -3569,6 +3659,11 @@ CallHistoryModel::setStoreBuildObserverForTest(void (*observer)(const QThread* t
 void
 CallHistoryModel::failNextSpillReadAfterLinesForTest(int lines) {
     g_spill_read_fail_after.store(lines);
+}
+
+qint64
+CallHistoryModel::takePartLookupStepsForTest() {
+    return g_part_lookup_steps.exchange(0);
 }
 #endif
 

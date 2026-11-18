@@ -5571,6 +5571,194 @@ test_cleared_fix_leaves_single_fragment_row(void) {
     expect("2.7 cleared fix: none after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
 }
 
+/* Issue #800, B2: a notice an older build stored kept one detail, the text message when there was one, else the GPS
+ * text, and named an unsummarised notice by it. Re-delivered from a fresh ring after an upgrade (a replay), the same
+ * delivery now carries its message and its GPS text apart: it is matched against the field that build chose, so it
+ * joins the stored row and gives it its parts rather than logging a second row. A delivery whose message differs is
+ * another one. Rows of this build still compare in full. */
+void
+test_repeated_legacy_notice_matches_its_detail(void) {
+    resetStorage();
+    const time_t when = kCaptureStart + 90;
+    const char* sentence = "$GPRMC,120000,A,2230.000,N,04500.000,E,0.0,0.0,171126,,,A*6C";
+    const auto deliver = [&](RingFixture& ring, int slot, time_t at, const char* summary, const char* message) {
+        Event_History* item = ring.commitNotice(slot, at, summary);
+        DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", message);
+        return with_gps(item, "GPS: 22.50000, 45.00000", 225000000, 450000000, 3U);
+    };
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        RingFixture ring;
+        deliver(ring, 1, when, "2010-01-01 00:01:30 NMEA from 44", sentence);
+        deliver(ring, 1, when + 5, "2010-01-01 00:01:35 ", sentence);
+        model.refresh(ring.state);
+        expect("legacy notice: two notices are logged", model.count() == 2);
+    } // destructor flushes the stores
+    // Rewritten as the older build stored them: one detail, the message, and an unsummarised notice named by it.
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    for (qsizetype i = 0; i < rows.size(); i++) {
+        QJsonObject legacy = rows.at(i).toObject();
+        for (const QString& key : legacy.keys()) {
+            if (key.startsWith(QLatin1String("msg")) || key.startsWith(QLatin1String("gps"))
+                || key == QLatin1String("pos") || key == QLatin1String("fr") || key == QLatin1String("frv")) {
+                legacy.remove(key);
+            }
+        }
+        legacy.insert(QLatin1String("detail"), QString::fromLatin1(sentence));
+        if (legacy.value(QLatin1String("name")).toString() != QLatin1String("NMEA from 44")) {
+            legacy.insert(QLatin1String("name"), QString::fromLatin1(sentence));
+        }
+        rows.replace(i, legacy);
+    }
+    expect("legacy notice: the older store is written", dsd_qt::json_store_save_array("call_history.json", rows));
+    {
+        CallHistoryModel model;
+        expect("legacy notice: the stored rows show their one detail",
+               model.count() == 2 && detail_of(model, 0) == QLatin1String(sentence)
+                   && detail_of(model, 1) == QLatin1String(sentence));
+        model.beginSession();
+        RingFixture ring;
+        deliver(ring, 1, when, "2010-01-01 00:01:30 NMEA from 44", sentence);
+        deliver(ring, 1, when + 5, "2010-01-01 00:01:35 ", sentence);
+        model.refresh(ring.state);
+        expect("legacy notice: the deliveries heard again log no new row", model.count() == 2);
+        expect("legacy notice: the stored rows gain their message and GPS text",
+               model.count() == 2
+                   && detail_of(model, 0)
+                          == QString::fromLatin1(sentence) + QStringLiteral(" \u00B7 GPS: 22.50000, 45.00000")
+                   && detail_of(model, 1)
+                          == QString::fromLatin1(sentence) + QStringLiteral(" \u00B7 GPS: 22.50000, 45.00000"));
+        // Another message at the same stamp is another delivery.
+        deliver(ring, 1, when, "2010-01-01 00:01:30 NMEA from 44", "Another message");
+        model.refresh(ring.state);
+        expect("legacy notice: a delivery with another message is another row", model.count() == 3);
+    }
+}
+
+/* Issue #800, B5: on the single-slot DMR decoder a fragment whose over-the-air slot was still pending merges into a
+ * slot-1 call. When a later reading of it proves slot 2, that update (found by its fragment, never merged again) is
+ * held to the receive-service rule the merge applies: it is another service's, so its part and its fix are taken back
+ * and the slot-1 row shows none of it, live and after a reload. */
+void
+test_update_proving_other_slot_is_taken_back(void) {
+    const time_t when = kCaptureStart + 450;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* slot1 = ring.commit(0, 1101, 2101, when, when + 4, "", "", "Base channel");
+        slot1->receive_identity = {7, DSD_RECEIVE_DCC, 1, 1, 0};
+        DSD_SNPRINTF(slot1->service_label, sizeof slot1->service_label, "%s", "Dispatch");
+        model.refresh(ring.state);
+        Event_History* pending = with_gps(ring.commit(0, 1101, 2101, when + 5, when + 9, "", "", "Base channel"),
+                                          "GPS: P", 225000000, 450000000, 4U);
+        pending->receive_identity = {7, DSD_RECEIVE_DCC, 1, 0, 1};
+        model.refresh(ring.state);
+        expect("slot proof: the pending-slot fragment joins the slot-1 call",
+               model.count() == 1 && detail_of(model, 0) == "GPS: P");
+        pending->receive_identity = {7, DSD_RECEIVE_DCC, 1, 2, 0};
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("slot proof: the fragment proven on slot 2 gives the slot-1 row nothing",
+               model.count() == 1 && detail_of(model, 0).isEmpty()
+                   && model.data(model.index(0), CallHistoryModel::ServiceNameRole) == "Dispatch");
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    expect("slot proof: none of it after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+}
+
+/* Issue #800: a long call folds many short fragments, each into a row holding all the earlier ones. A fold looks every
+ * fragment of the row up among its parts; done by a scan per fragment that is N^2 for the row of N, N^3 over the call,
+ * and the UI thread stalls. The lookups read a bounded number of parts per part the row holds, per fold. */
+void
+test_long_call_fold_lookups_stay_linear(void) {
+    const time_t when = kCaptureStart + 900;
+    const qint64 fragments = 200;
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    (void)CallHistoryModel::takePartLookupStepsForTest();
+    for (qint64 i = 0; i < fragments; i++) {
+        ring.commit(0, 1201, 2201, when + 2 * i, when + 2 * i + 1);
+        model.refresh(ring.state);
+    }
+    const qint64 steps = CallHistoryModel::takePartLookupStepsForTest();
+    expect("long call: one row holds every fragment", model.count() == 1);
+    // A fold of a row of n parts reads at most ten per part: 10 * (1 + 2 + ... + fragments) over the call.
+    expect("long call: the part lookups stay linear per fold", steps <= 10 * fragments * (fragments + 1) / 2);
+}
+
+/* 2.7: a committed fragment with no start reads its end as its start; the core can fill the start in later
+ * (watchdog_event_merge_stamps()) or move the end, so the same fragment (ring, slot and push stamp) is read with another
+ * start. That reading still replaces and withdraws its own GPS unit: a fragment is known by its ring identity, never by
+ * its stamps, so an obsolete fix neither stays beside the new one nor outlives a reading that clears it, live and after
+ * a reload. */
+void
+test_restamped_fragment_withdraws_its_fix(void) {
+    const time_t when = 1754703800;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* call = with_gps(ring.commit(0, 80421U, 8421U, 0, when + 6), "GPS: A", 225000000, 450000000, 5U);
+        model.refresh(ring.state);
+        expect("restamped: the fix shows first", model.count() == 1 && detail_of(model, 0) == "GPS: A");
+        // The start is filled in and the report replaced: the row shows the new fix only, never the old one beside it.
+        call->event_start_time = when;
+        with_gps(call, "GPS: B", 226000000, 451000000, 6U);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("restamped: the new reading replaces the fragment's fix",
+               model.count() == 1 && detail_of(model, 0) == "GPS: B");
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        expect("restamped: the replaced fix is not kept beside the new one",
+               !stored_row_with(80421U, 8421U).contains(QLatin1String("gpsAlt")));
+        // The end moves and the core clears the report: the fragment's fix goes.
+        call->event_time = when + 9;
+        call->gps_s[0] = '\0';
+        call->pos.valid = 0U;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("restamped: a reading that clears the fix withdraws it",
+               model.count() == 1 && detail_of(model, 0).isEmpty());
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    const QJsonObject stored = stored_row_with(80421U, 8421U);
+    expect("restamped: no fix is saved", !stored.contains(QLatin1String("gps"))
+                                             && !stored.contains(QLatin1String("pos"))
+                                             && !stored.contains(QLatin1String("gpsAlt")));
+    CallHistoryModel reloaded;
+    expect("restamped: none after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+}
+
+/* 2.7: a fragment read again with another start is still the fragment its row holds, found by its ring identity
+ * however far down the log the row sits: no second row for it, however far the merge search reaches. */
+void
+test_restamped_fragment_found_by_identity(void) {
+    const time_t when = 1754704000;
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    Event_History* call = with_gps(ring.commit(0, 80431U, 8431U, 0, when + 6), "GPS: A", 225000000, 450000000, 5U);
+    model.refresh(ring.state);
+    ring.commitBatch(0, 40, 81000U, 9100U, when + 100);
+    model.refresh(ring.state);
+    expect("restamped far: 41 rows", model.count() == 41);
+    call = &ring.rings[0].Event_History_Items[41];
+    expect("restamped far: the ring row is the fragment", call->target_id == 80431U && call->source_id == 8431U);
+    call->event_start_time = when;
+    with_gps(call, "GPS: B", 226000000, 451000000, 6U);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("restamped far: no second row for the fragment", model.count() == 41);
+    expect("restamped far: its row reads the new fix", detail_of(model, 40) == "GPS: B");
+}
+
 /* B2: a spill line kept after a failed read replays an older reading of a fragment whose newer reading the save
  * already holds (the same fragment of the same run): nothing of the older reading comes back, neither its message nor
  * its source label (an alias the core learned in place since), as no older GPS reading does. */
@@ -7135,6 +7323,7 @@ main(int argc, char** argv) {
     test_carrier_filled_in_place_reingests();
     test_fragments_on_different_frequencies_merge();
     test_repeated_notice_gains_carrier();
+    test_repeated_legacy_notice_matches_its_detail();
     test_site_roles_and_text();
     test_site_survives_save_and_reload();
     test_store_without_site_keys_loads_unknown();
@@ -7202,6 +7391,10 @@ main(int argc, char** argv) {
     test_spill_text_only_replay_keeps_saved_position();
     test_lost_fix_gives_way_to_remaining_fragment();
     test_cleared_fix_leaves_single_fragment_row();
+    test_restamped_fragment_withdraws_its_fix();
+    test_restamped_fragment_found_by_identity();
+    test_update_proving_other_slot_is_taken_back();
+    test_long_call_fold_lookups_stay_linear();
     test_spill_replay_keeps_newer_message();
     test_fragment_texts_follow_the_rows_radio();
     test_position_order_follows_runs_and_revs();
