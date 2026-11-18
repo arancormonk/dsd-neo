@@ -4,8 +4,8 @@
  */
 
 /*
- * Shared libcurl helpers for runtime HTTP consumers (rdio-scanner uploads and the
- * RadioReference SOAP client).
+ * Shared libcurl helpers for runtime HTTP consumers (rdio-scanner uploads, the
+ * RadioReference SOAP client and the map tile fetch).
  *
  * Deliberately module-private rather than public: dsd_curl_apply_hardening() names
  * a libcurl type, and every header under include/dsd-neo/runtime must compile

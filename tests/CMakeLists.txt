@@ -7104,6 +7104,102 @@ target_link_libraries(
 )
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
 
+# Issue #800: the map's tile fetch. The public suite runs against the library as
+# shipped (with libcurl it also cancels a stalled HTTPS transfer on a loopback
+# socket). The NO_CURL build compiles tile_fetch.c alone without USE_CURL on
+# every configure, so the stub is pinned even where libcurl is installed.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_tile_fetch
+  HEADERS_PUBLIC_RUNTIME_TILE_FETCH
+  dsd-neo/runtime/tile_fetch.h
+  C
+)
+# Also as C++: the Qt tile worker is the consumer.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_tile_fetch_cxx
+  HEADERS_PUBLIC_RUNTIME_TILE_FETCH_CXX
+  dsd-neo/runtime/tile_fetch.h
+  CXX
+)
+add_executable(
+    dsd-neo_test_runtime_tile_fetch
+    runtime/test_runtime_tile_fetch.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_tile_fetch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_runtime_tile_fetch PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_TILE_FETCH COMMAND dsd-neo_test_runtime_tile_fetch)
+
+add_executable(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    runtime/test_runtime_tile_fetch.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/tile_fetch.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/runtime
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    PRIVATE DSD_TILE_FETCH_TEST_STANDALONE
+)
+target_link_libraries(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_TILE_FETCH_NO_CURL
+    COMMAND dsd-neo_test_runtime_tile_fetch_no_curl
+)
+
+# The built-in libcurl transport with every easy-handle call routed through the
+# test (DSD_TILE_FETCH_TEST_HOOKS): options and their values, fail-closed setup,
+# caps and cancel, with no network. Built a second time with the curl version
+# forced below 7.85 for the CURLOPT_PROTOCOLS branch. CURL_DISABLE_DEPRECATION
+# because both name CURLOPT_PROTOCOLS, deprecated in current headers.
+if(DSD_HAS_CURL)
+    foreach(
+        _tile_variant
+        IN
+        ITEMS
+            "tile_fetch_curl;RUNTIME_TILE_FETCH_CURL;"
+            "tile_fetch_curl_pre_7_85;RUNTIME_TILE_FETCH_CURL_PRE_7_85;DSD_TILE_FETCH_TEST_CURL_VERSION_NUM=0x075400"
+    )
+        list(GET _tile_variant 0 _tile_target)
+        list(GET _tile_variant 1 _tile_test)
+        list(GET _tile_variant 2 _tile_define)
+        add_executable(
+            dsd-neo_test_runtime_${_tile_target}
+            runtime/test_runtime_tile_fetch_curl.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/tile_fetch.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_runtime_${_tile_target}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_runtime_${_tile_target}
+            PRIVATE
+                DSD_TILE_FETCH_TEST_HOOKS
+                CURL_DISABLE_DEPRECATION
+                ${_tile_define}
+        )
+        target_link_libraries(
+            dsd-neo_test_runtime_${_tile_target}
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+        add_test(
+            NAME ${_tile_test}
+            COMMAND dsd-neo_test_runtime_${_tile_target}
+        )
+    endforeach()
+endif()
+
 # rr_import.c is pure policy - no transport, no parser - and compiles
 # unconditionally, so its suite is registered outside the expat gate below.
 # The android-shape job builds a configuration with no expat on purpose, and
