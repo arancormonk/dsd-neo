@@ -1669,7 +1669,7 @@ typedef struct {
     uint8_t is_request;
     uint8_t is_response;
     uint8_t lrrp_type;
-    uint8_t pos_verified;         // the packet's own checks passed (not RAS)
+    uint8_t pos_verified;         // the packet's own checks passed (not RAS) and it holds the whole document
     uint8_t guessed;              // only a resync guess found a position
     const char* suppressed_label; // why a decoded position is withheld
 } dmr_lrrp_emit_context;
@@ -1890,14 +1890,28 @@ dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, const dmr_lrrp_par
 }
 
 // Why a position is withheld before admission: the packet's checks (a RAS-accepted header alone is not a failed
-// check), else a reading only a resync guess found.
+// check), else a document the payload holds only part of, else a reading only a resync guess found.
 static const char*
-dmr_lrrp_suppressed_label(const dsd_state* state, uint8_t slot, uint8_t pos_verified) {
-    if (!pos_verified) {
+dmr_lrrp_suppressed_label(const dsd_state* state, uint8_t slot, uint8_t packet_ok, uint8_t complete) {
+    if (!packet_ok) {
         const uint8_t scope = state->event_crc_invalid[slot];
         return (!dsd_crc_is_failed(scope) && (scope & DSD_CRC_RAS_UNVERIFIED) != 0U) ? "RAS" : "CRC ERR";
     }
-    return "layout not confirmed";
+    return complete ? "layout not confirmed" : "incomplete document";
+}
+
+// The document's tokens in @p pdu (@p len octets from its type byte): their start in *start and their length, the
+// declared length or what the payload holds of it. *complete is 1 only when the payload holds the whole declared
+// document: a position is taken only from that (issue #800, fail closed), as the token that would rank highest may be in
+// the part missing. Every caller hands over its whole checked payload.
+static size_t
+dmr_lrrp_document_tokens(const uint8_t* pdu, uint16_t len, size_t* start, uint8_t* complete) {
+    uint32_t doc_len = 0U;
+    const size_t hdr = dmr_lrrp_read_doc_len(pdu, (size_t)len, &doc_len);
+    *start = 1U + hdr;
+    const size_t token_avail = (hdr != 0U && (size_t)len > *start) ? (size_t)len - *start : 0U;
+    *complete = (uint8_t)(hdr != 0U && (size_t)doc_len <= token_avail);
+    return ((size_t)doc_len < token_avail) ? (size_t)doc_len : token_avail;
 }
 
 void
@@ -1922,11 +1936,9 @@ dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, 
         }
     }
 
-    uint32_t doc_len = 0U;
-    const size_t hdr = dmr_lrrp_read_doc_len(DMR_PDU, (size_t)len, &doc_len);
-    const size_t start = 1u + hdr;
-    const size_t token_avail = (hdr != 0U && (size_t)len > start) ? (size_t)len - start : 0u;
-    const size_t token_len = ((size_t)doc_len < token_avail) ? (size_t)doc_len : token_avail;
+    size_t start = 0U;
+    uint8_t complete = 0U;
+    const size_t token_len = dmr_lrrp_document_tokens(DMR_PDU, len, &start, &complete);
 
     dmr_lrrp_parse_result best;
     dmr_lrrp_parse_result_init(&best);
@@ -1941,7 +1953,7 @@ dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, 
     }
     // The source is the caller's: every caller passes the source its notice observation names (IPv4 source address,
     // MNIS or compressed-header data header source), so the record and its notice agree even when it is 0.
-    const uint8_t pos_verified = (uint8_t)(pdu_crc_ok == 1U);
+    const uint8_t pos_verified = (uint8_t)(pdu_crc_ok == 1U && complete);
     dmr_lrrp_emit_context emit_ctx = {
         .source = source,
         .dest = dest,
@@ -1951,7 +1963,7 @@ dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, 
         .lrrp_type = lrrp_type,
         .pos_verified = pos_verified,
         .guessed = guessed,
-        .suppressed_label = dmr_lrrp_suppressed_label(state, slot, pos_verified),
+        .suppressed_label = dmr_lrrp_suppressed_label(state, slot, (uint8_t)(pdu_crc_ok == 1U), complete),
     };
     dmr_lrrp_emit_payload(opts, state, &best, &emit_ctx);
     DSD_FPRINTF(stderr, "%s", KNRM);

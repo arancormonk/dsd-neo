@@ -258,12 +258,12 @@ static const encoding_case k_encoding_cases[] = {
      1, ALT_NONE, 0U, 180U, 320U, 0, "18.000\t 32"},
     // Bug 2.5: 31 February 2024 is no date; 29 February 2024 is.
     {"31 February",
-     "071034"
+     "070F34"
      "1FA0BE0000"
      "66" LL,
      1, ALT_NONE, 0U, SPD_NONE, HDG_NONE, 0, "0.000\t 0"},
     {"29 February",
-     "071034"
+     "070F34"
      "1FA0BA0000"
      "66" LL,
      1, ALT_NONE, 0U, SPD_NONE, HDG_NONE, 1709164800, "0.000\t 0"},

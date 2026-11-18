@@ -143,7 +143,7 @@ main(void) {
     DSD_MEMSET(pdu, 0, sizeof pdu);
     int idx = 0;
     pdu[idx++] = 0x07; // response (fmt)
-    pdu[idx++] = 24;   // message_len placeholder
+    pdu[idx++] = 0;    // the document length, set below
     pdu[idx++] = 0x22; // typical pattern in responses
     pdu[idx++] = 0x00;
 
@@ -169,6 +169,8 @@ main(void) {
     pdu[idx++] = 0x00; // contributes to month/day/hour
     pdu[idx++] = 0x00; // minute
     pdu[idx++] = 0x00; // second
+
+    pdu[1] = (uint8_t)(idx - 2); // the whole document: one cut short gives no position
 
     // Call under test
     dmr_lrrp(&opts, &st, (uint16_t)idx, /*source=*/123, /*dest=*/456, pdu, 1);

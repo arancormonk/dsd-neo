@@ -611,7 +611,7 @@ test_sap3_ars_real_path(dsd_opts* opts, dsd_state* state) {
 static int
 test_sap3_lrrp_location_rows(dsd_opts* opts, dsd_state* state) {
     // POINT_2D response, as DMR_LRRP_EVENT_CRC_GATING sends it over IPv4: lat 11.25, lon 45.
-    static const uint8_t lrrp_doc[] = {0x07, 12, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    static const uint8_t lrrp_doc[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
     char path[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(path, sizeof path, "dmr-sap3-lrrp");
     if (fd < 0 || dsd_close(fd) != 0) {
@@ -662,7 +662,7 @@ test_sap3_lrrp_location_rows(dsd_opts* opts, dsd_state* state) {
 static void
 send_lrrp_packet(dsd_opts* opts, dsd_state* state, int retune) {
     // Compressed UDP/IPv4 on the LRRP port with a POINT_2D response (lat 11.25, lon 45), in three blocks.
-    static const uint8_t lrrp_doc[] = {0x07, 12, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    static const uint8_t lrrp_doc[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
     uint8_t pdu[36] = {0x00, 0x20, 0x00, 0x3F, 0x00, 0x0F, 0xA1};
     DSD_MEMCPY(pdu + 7, lrrp_doc, sizeof lrrp_doc);
     const uint8_t poc = (uint8_t)(sizeof pdu - 4U - 7U - sizeof lrrp_doc);
@@ -796,7 +796,7 @@ test_position_group_from_checked_header(dsd_opts* opts, dsd_state* state) {
         }
     }
     // A group-addressed LRRP header, its decryption-key qualifier cleared before the blocks arrive.
-    static const uint8_t lrrp_doc[] = {0x07, 12, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x30, 0, 0, 0};
+    static const uint8_t lrrp_doc[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x30, 0, 0, 0};
     uint8_t pdu[36] = {0x00, 0x20, 0x00, 0x3F, 0x00, 0x0F, 0xA1};
     DSD_MEMCPY(pdu + 7, lrrp_doc, sizeof lrrp_doc);
     const uint8_t poc = (uint8_t)(sizeof pdu - 4U - 7U - sizeof lrrp_doc);
@@ -861,6 +861,132 @@ test_position_origin_across_retune(dsd_opts* opts, dsd_state* state) {
     opts->lrrp_file_output = 0;
     if (remove(path) != 0) {
         rc = 1;
+    }
+    return rc;
+}
+
+/* One MNIS packet through the real headers and assembler: a standard header (@p poc pad octets), the DPF 15 MNIS
+ * extension carrying octets 0-9, then @p blocks rate-1/2 blocks. @p pdu holds 10 + 12 x @p blocks octets: the 7-octet
+ * MNIS header, the service payload, the pad octets, the octet before the CRC32 and the CRC32, which this computes over
+ * Motorola's span (octets 3 up to that octet, dmr_block_type1_update_crc()). @p corrupt fails it. */
+static void
+send_mnis_packet(dsd_opts* opts, dsd_state* state, uint8_t* pdu, size_t blocks, uint8_t poc, int corrupt) {
+    const size_t total = 10U + 12U * blocks;
+    assert(blocks >= 1U && blocks <= 30U && poc < 32U);
+    uint8_t span[384];
+    assert(total - 4U <= sizeof span);
+    DSD_MEMCPY(span, pdu + 3, total - 8U);
+    crc32_long(span, total - 4U);
+    DSD_MEMCPY(pdu + total - 4U, span + total - 8U, 4);
+    pdu[total - 1U] ^= (uint8_t)(corrupt ? 1U : 0U);
+    uint8_t hdr[12] = {(uint8_t)(0x02U | ((poc & 0x10U) ? 0x10U : 0U)),
+                       (uint8_t)(0x90U | (poc & 0x0FU)),
+                       0,
+                       0,
+                       42,
+                       0,
+                       0,
+                       24,
+                       (uint8_t)(0x80U | (blocks + 1U)),
+                       0,
+                       0,
+                       0};
+    uint8_t ext[12] = {0};
+    DSD_MEMCPY(ext, pdu, 10);
+    header(opts, state, hdr, 1);
+    header(opts, state, ext, 1);
+    for (size_t b = 0; b < blocks; ++b) {
+        dmr_block_assembler(opts, state, pdu + 10U + b * 12U, 12, 0x07, 1);
+    }
+}
+
+/* Issue #800, fail closed: Motorola's compressed MNIS data leaves the octet just before the CRC32 out of the CRC, so it
+ * is never payload. With no pad octets it follows the LOCN text directly; a longitude whose fourth fraction digit would
+ * be that octet is cut short, and the report gives no position whatever the octet holds (with it, 0 read as 45 E and
+ * 9 as 45.0000150 E). The same report with its last digit inside the checked span gives its position. */
+static int
+test_mnis_unchecked_trailer(dsd_opts* opts, dsd_state* state) {
+    static const uint8_t cut[] = " A123456070826N2230.0000E04500.000";
+    static const uint8_t whole[] = "A123456070826N2230.0000E04500.0000";
+    static const uint8_t trailers[] = {0x30, 0x39};
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    opts->payload = 0;
+    state->currentslot = 0;
+    int rc = 0;
+    for (size_t t = 0; t < 3U; ++t) {
+        const int checked = t == 2U;
+        uint8_t pdu[46] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x00, 0x01};
+        // Octets 7-40; octet 41 is the one the CRC leaves out.
+        DSD_MEMCPY(pdu + 7, checked ? whole : cut, sizeof whole - 1U);
+        pdu[41] = checked ? 0x00 : trailers[t];
+        const uint64_t before = state->event_history_s[0].push_seq;
+        send_mnis_packet(opts, state, pdu, 3U, 0U, 0);
+        const Event_History* notice = newest_row(state, 0);
+        const int ok = state->event_history_s[0].push_seq == before + 1U
+                       && (checked ? notice->pos.valid == 1U && notice->pos.lon_e7 == 450000000
+                                   : notice->pos.valid == 0U && notice->gps_s[0] == '\0');
+        if (!ok) {
+            DSD_FPRINTF(stderr, "\nMNIS LOCN, %s %02X: position valid %u (%d, %d)\n",
+                        checked ? "last digit checked, trailer" : "last digit in the unchecked octet", pdu[41],
+                        (unsigned)notice->pos.valid, notice->pos.lat_e7, notice->pos.lon_e7);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+/* An MNIS LRRP response document of more than 150 octets: a point-2d (11.25, 45) near its start, 150 one-octet
+ * tokens, then a circle-2d (22.5, 22.5) with a 10 m radius, which ranks above the point. @p declared_extra adds to the
+ * document length it declares (a document the payload holds only part of). Returns the octets used. */
+static size_t
+build_long_lrrp(uint8_t* pdu, size_t cap, uint32_t declared_extra) {
+    static const uint8_t point[] = {0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    static const uint8_t circle[] = {0x51, 0x20, 0, 0, 0, 0x10, 0, 0, 0, 0x0A, 0x00};
+    const size_t filler = 150U;
+    const uint32_t doc_len = (uint32_t)(sizeof point + filler + sizeof circle) + declared_extra;
+    assert(3U + sizeof point + filler + sizeof circle <= cap);
+    size_t n = 0;
+    pdu[n++] = 0x07;
+    pdu[n++] = (uint8_t)(0x80U | (doc_len >> 7));
+    pdu[n++] = (uint8_t)(doc_len & 0x7FU);
+    DSD_MEMCPY(pdu + n, point, sizeof point);
+    n += sizeof point;
+    DSD_MEMSET(pdu + n, 0x38, filler); // opaque one-octet tokens
+    n += filler;
+    DSD_MEMCPY(pdu + n, circle, sizeof circle);
+    n += sizeof circle;
+    return n;
+}
+
+/* Issue #800, fail closed: an MNIS LRRP document is parsed whole, however long, and the best-ranked shape gives the
+ * position (here the circle past octet 150, never the point before it); a document that declares more than the
+ * checked payload holds gives no position. */
+static int
+test_mnis_long_lrrp_document(dsd_opts* opts, dsd_state* state) {
+    enum { kBlocks = 16 };
+
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    opts->payload = 0;
+    state->currentslot = 0;
+    int rc = 0;
+    for (uint32_t extra = 0; extra <= 5U; extra += 5U) {
+        uint8_t pdu[10U + 12U * kBlocks] = {0x1F, 0x10, 0x02, 0x01, 0x11, 0x00, 0x01};
+        const size_t doc = build_long_lrrp(pdu + 7, sizeof pdu - 7U - 5U, extra);
+        const uint8_t poc = (uint8_t)(sizeof pdu - 7U - doc - 5U);
+        const uint64_t before = state->event_history_s[0].push_seq;
+        send_mnis_packet(opts, state, pdu, kBlocks, poc, 0);
+        const Event_History* notice = newest_row(state, 0);
+        const int emitted = state->event_history_s[0].push_seq == before + 1U;
+        const int circle =
+            notice->pos.valid == 1U && notice->pos.lat_e7 == 225000000 && notice->pos.lon_e7 == 225000000;
+        const int none = notice->pos.valid == 0U && notice->gps_s[0] == '\0';
+        if (!emitted || (extra == 0U ? !circle : !none)) {
+            DSD_FPRINTF(stderr, "\nLong MNIS LRRP (declared +%u): emitted %d, position valid %u (%d, %d)\n",
+                        (unsigned)extra, emitted, (unsigned)notice->pos.valid, notice->pos.lat_e7, notice->pos.lon_e7);
+            rc = 1;
+        }
     }
     return rc;
 }
@@ -1045,6 +1171,8 @@ main(void) {
     rc |= test_position_origin_across_retune(opts, state);
     rc |= test_position_group_from_checked_header(opts, state);
     rc |= test_failed_locn_prints_no_content(opts, state);
+    rc |= test_mnis_unchecked_trailer(opts, state);
+    rc |= test_mnis_long_lrrp_document(opts, state);
     rc |= test_confirmed_127_blocks(opts, state);
     rc |= test_t3_mbc_grant_channel_provenance(opts, state);
     dsd_state_ext_free_all(state);

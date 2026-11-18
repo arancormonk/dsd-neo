@@ -1142,6 +1142,9 @@ typedef struct {
     uint32_t crc_computed;
     uint32_t crc_extracted;
     uint32_t irrecoverable_errors;
+    /* Type 1: the end (exclusive) of the octets the packet CRC32 covers in dmr_pdu_sf (dmr_block_type1_update_crc()),
+       0 when none was computed. No payload decoder reads past it (issue #800, fail closed). */
+    uint16_t crc_end;
     uint8_t dmr_pdu_sf_bits[8 * 24 * 129];
     uint8_t mbc_crc_good[2];
 } dmr_block_assembler_ctx;
@@ -1266,6 +1269,7 @@ dmr_block_type1_update_crc(dmr_block_assembler_ctx* ctx, uint16_t ctr) {
         return;
     }
     const uint16_t crc_bytes = (uint16_t)(ctr - overhead);
+    ctx->crc_end = (uint16_t)(skip + crc_bytes);
     ctx->crc_extracted = dmr_block_type1_extract_crc32(ctx->state, slot_idx, ctr);
     dmr_block_type1_pack_crc_bits(pdu + skip, crc_bytes, ctx->dmr_pdu_sf_bits);
     const uint32_t crc_bits = ((uint32_t)(crc_bytes + 1U) & ~1U) * 8U;
@@ -1352,11 +1356,17 @@ dmr_block_type1_mnis_event_category(uint8_t mnis_type) {
     return (mnis_type == 0x33U || mnis_type == 0x88U) ? DSD_EVENT_CATEGORY_CONTROL : DSD_EVENT_CATEGORY_DATA;
 }
 
+/* The most of an MNIS LOCN report's text the console echoes; the decoder reads all of it. */
+#define DMR_BLOCK_LOCN_TEXT_ECHO_MAX 150U
+
 /* An MNIS LOCN report's own text, as utf8_to_text() shows text (a padding NUL as '_', another control byte as '-'),
  * under a label that names it: the text is a position report, whatever shape its fields take, so the diagnostics log
  * removes the line (issue #800, D10). */
 static void
 dmr_block_print_locn_text(const uint8_t* text, uint16_t len) {
+    if (len > DMR_BLOCK_LOCN_TEXT_ECHO_MAX) {
+        len = DMR_BLOCK_LOCN_TEXT_ECHO_MAX;
+    }
     DSD_FPRINTF(stderr, "\n LOCN Text: ");
     for (uint16_t i = 0; i < len; i++) {
         if (text[i] >= 0x20U && text[i] < 0x7FU) {
@@ -1365,6 +1375,23 @@ dmr_block_print_locn_text(const uint8_t* text, uint16_t len) {
             DSD_FPRINTF(stderr, "%c", text[i] == 0U ? '_' : '-');
         }
     }
+}
+
+/* The user data octets from @p start that the packet's own CRC32 covered (issue #800, fail closed): the octets the
+ * blocks carried less the CRC32 and the @p poc pad octets, and never past the CRC's span (ctx->crc_end), which for
+ * Motorola's compressed MNIS data leaves out the octet just before the CRC32. A pad count larger than the data
+ * (possible only from a header accepted under relaxed CRC) is ignored, so the header still prints. */
+static uint16_t
+dmr_block_type1_checked_len(const dmr_block_assembler_ctx* ctx, uint16_t start, uint8_t poc) {
+    const uint16_t received = dmr_block_type1_received_octets(ctx);
+    uint16_t end = (received >= 4U) ? (uint16_t)(received - 4U) : 0U;
+    if (end >= start && poc <= (uint16_t)(end - start)) {
+        end = (uint16_t)(end - poc);
+    }
+    if (end > ctx->crc_end) {
+        end = ctx->crc_end;
+    }
+    return (end > start) ? (uint16_t)(end - start) : 0U;
 }
 
 static void
@@ -1422,23 +1449,16 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
 
 static void
 dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx) {
-    uint16_t byte_count = ctx->state->data_byte_ctr[ctx->slot];
-    uint8_t poc = ctx->state->data_block_poc[ctx->slot];
-    // The payload starts at octet 7 of the stored proprietary header and the CRC32 trailer sits
-    // at the end, so 11 octets are never payload. A short PDU would wrap this subtraction to
-    // ~65k and then clamp to 150, handing the payload handlers a length far past the received
-    // bytes; treat it as empty instead.
-    uint16_t avail = (byte_count > 11U) ? (uint16_t)(byte_count - 11U) : 0U;
-    // Relaxed decoding may accept an unverified pad count. Bound it by received octets.
-    uint16_t len = (poc <= avail) ? (uint16_t)(avail - poc) : avail;
+    // The payload starts at octet 7 of the stored proprietary header and runs to the pad octets, within the span the
+    // packet CRC32 covered: Motorola's compressed data leaves the octet before the CRC32 out of it, so that octet is
+    // never payload (dmr_block_type1_checked_len()). The whole checked payload goes to the decoders; only the console
+    // echo of a LOCN report's text is bounded.
+    const uint16_t len = dmr_block_type1_checked_len(ctx, 7U, ctx->state->data_block_poc[ctx->slot]);
     uint32_t msrc = ctx->state->dmr_lrrp_source[ctx->slot];
     uint32_t mdst = ctx->state->dmr_lrrp_target[ctx->slot];
     uint8_t mnis_type = ctx->state->dmr_pdu_sf[ctx->slot][4];
     uint16_t mnis_ip_id;
 
-    if (len > 150) {
-        len = 150;
-    }
     DSD_FPRINTF(stderr, "\n SRC(MNIS): %08d; ", msrc);
     DSD_FPRINTF(stderr, "\n DST(MNIS): %08d; ", mdst);
     dmr_block_type1_print_mnis_type(mnis_type);
@@ -1524,16 +1544,10 @@ dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx) {
     }
 
     uint8_t sap = ctx->state->data_header_sap[ctx->slot];
-    // TS 102 361-1 9.3.22: the user data is what the blocks carried less the CRC32 and the pad octets.
-    // SAP 3 has no length of its own (TS 102 361-3 table 7.2 derives the UDP length from it). A pad
-    // count larger than the data, possible only from a header accepted under relaxed CRC, is ignored
-    // as on the MNIS path, so the header still prints.
-    const uint16_t received = dmr_block_type1_received_octets(ctx);
-    uint16_t len = (received >= 4U) ? (uint16_t)(received - 4U) : 0U;
-    const uint8_t poc = ctx->state->data_block_poc[ctx->slot];
-    if (poc <= len) {
-        len = (uint16_t)(len - poc);
-    }
+    // TS 102 361-1 9.3.22: the user data is what the blocks carried less the CRC32 and the pad octets
+    // (dmr_block_type1_checked_len()). SAP 3 has no length of its own (TS 102 361-3 table 7.2 derives the UDP
+    // length from it).
+    const uint16_t len = dmr_block_type1_checked_len(ctx, 0U, ctx->state->data_block_poc[ctx->slot]);
 
     if (sap == 4) {
         decode_ip_pdu(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot]);

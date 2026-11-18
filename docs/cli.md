@@ -597,7 +597,11 @@ does.
   - A report shorter than its fields: a UDT NMEA report whose pad nibbles leave less than its format's 80 (short) or
     112 (long) bits prints `truncated` and gives no position.
   - An LRRP position after a token whose layout is not confirmed (0x50, 0x52, 0x54, 0x68, 0x6A or an unknown
-    token): the report prints `Position: (suppressed; layout not confirmed)`.
+    token): the report prints `Position: (suppressed; layout not confirmed)`. An LRRP document that declares more
+    than its packet holds: `Position suppressed (incomplete document)`. A data packet whose IP datagram declares more
+    than the packet's user data holds (`Incomplete Datagram; not decoded;`): a pad or CRC octet never completes it.
+  - A DMR MNIS (Motorola) packet's octet just before its CRC32, which that CRC does not cover, is never read: a report
+    whose last digit would be in it gives no position.
 
   A position on the equator or the prime meridian is written; earlier versions dropped it.
 
