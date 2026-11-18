@@ -371,76 +371,34 @@ dmr_pi_run(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorr
     }
 }
 
-/* The index a PI header of over-the-air slot @p burst_slot acts on where the single-slot decoder folds it: lane 0 when
-   lane 0 carries that slot's active call (or the slot is not known), else index 1, the header kept for its slot's call
-   (dsd_state::dmr_mono_pi). */
-static uint8_t
-dmr_pi_mono_target(dsd_state* state, const uint8_t pi_bytes[], uint32_t crc_correct, uint8_t burst_slot) {
-    if (!dmr_mono_burst_slot_known(state, burst_slot)) {
-        return 0U;
-    }
-    if (dmr_mono_lane_call_slot(state) == (uint8_t)(burst_slot + 1U)) {
-        state->dmr_mono_pi[burst_slot].pending = 0U;
-        return 0U;
-    }
-    state->dmr_mono_pi[burst_slot].pending = 1U;
-    state->dmr_mono_pi[burst_slot].crc_invalid = state->event_crc_invalid[burst_slot];
-    state->dmr_mono_pi[burst_slot].crc_correct = crc_correct;
-    state->dmr_mono_pi[burst_slot].carrier_seq = state->carrier_seq;
-    state->dmr_mono_pi[burst_slot].m = dsd_decode_now_mono_s();
-    DSD_MEMCPY(state->dmr_mono_pi[burst_slot].bytes, pi_bytes, sizeof(state->dmr_mono_pi[burst_slot].bytes));
-    return 1U;
-}
-
-void
-dmr_pi_mono_take_pending(dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    if (state == NULL || slot > 1U || state->dmr_mono_pi[slot].pending == 0U) {
-        return;
-    }
-    state->dmr_mono_pi[slot].pending = 0U;
-    const double now_m = dsd_decode_now_mono_s();
-    const double held_m = state->dmr_mono_pi[slot].m;
-    if (state->dmr_mono_pi[slot].carrier_seq != state->carrier_seq || now_m < held_m
-        || now_m - held_m > DMR_PI_PRECALL_HOLD_S) {
-        return;
-    }
-    uint8_t bytes[10];
-    DSD_MEMCPY(bytes, state->dmr_mono_pi[slot].bytes, sizeof(bytes));
-    const int saved_slot = state->currentslot;
-    const uint8_t saved_crc = state->event_crc_invalid[0];
-    state->currentslot = 0;
-    state->event_crc_invalid[0] = state->dmr_mono_pi[slot].crc_invalid;
-    dmr_pi_run(opts, state, bytes, state->dmr_mono_pi[slot].crc_correct);
-    state->event_crc_invalid[0] = saved_crc;
-    state->currentslot = saved_slot;
-}
-
 void
 dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {
     if (IrrecoverableErrors != 0) {
         return;
     }
-    /* Where the single-slot decoder folds a burst onto lane 0 (dmr_mono_folds_standalone_burst()), a PI header reaches
-       the lane, where its voice decrypts from, only while the lane carries that slot's call: its ALG ID, key ID and MI
-       go there and the burst's CRC verdict, indexed by its own slot, follows it. Otherwise (the lane idle, or on the
-       other slot's call, or on a call of no known slot) it acts on the other index (1), as on the dual-slot decoder,
-       neither changing a call's crypto nor ending its hold, and is kept for its own slot's call, which gets it when
-       that slot takes the lane (dmr_pi_mono_take_pending(); AGENTS.md, CRC/FEC provenance). One whose slot is not
-       known (dmr_mono_burst_slot_known()) is folded as before. */
     const uint8_t burst_slot = (uint8_t)(state->currentslot == 1 ? 1 : 0);
-    uint8_t target = burst_slot;
-    if (dmr_mono_folds_standalone_burst(opts, state)) {
-        target = dmr_pi_mono_target(state, PI_BYTE, CRCCorrect, burst_slot);
+    if (!dmr_mono_folds_standalone_burst(opts, state)) {
+        dmr_pi_run(opts, state, PI_BYTE, CRCCorrect);
+        return;
     }
-    const uint8_t saved_crc = state->event_crc_invalid[target];
-    if (target != burst_slot) {
-        state->event_crc_invalid[target] |= state->event_crc_invalid[burst_slot];
-        state->currentslot = target;
+    /* Where the single-slot decoder folds a burst onto lane 0 (dmr_mono_folds_standalone_burst()), a PI header is applied
+       only while lane 0 carries that slot's active call: its ALG ID, key ID and MI go where the lane's voice decrypts
+       from, and the burst's CRC verdict, indexed by its own slot, follows it. One heard for a slot the lane is not
+       carrying (the lane idle, on the other slot's call, or on a call of no known slot) is discarded, neither applied nor
+       kept: that slot's call is held until its own checked LC, or a PI header heard while the lane carries it (a forced
+       key still plays; AGENTS.md, CRC/FEC provenance). One whose own slot is not known (dmr_mono_burst_slot_known()) is
+       taken for the lane's, as before. */
+    if (dmr_mono_burst_slot_known(state, burst_slot) && dmr_mono_lane_call_slot(state) != (uint8_t)(burst_slot + 1U)) {
+        DSD_FPRINTF(stderr, "%s\n Slot %u PI header not applied: the single-slot lane is not on that slot's call%s",
+                    KYEL, (unsigned)burst_slot + 1U, KNRM);
+        return;
     }
+    const uint8_t saved_crc = state->event_crc_invalid[0];
+    state->event_crc_invalid[0] |= state->event_crc_invalid[burst_slot];
+    state->currentslot = 0;
     dmr_pi_run(opts, state, PI_BYTE, CRCCorrect);
-    if (target != burst_slot) {
-        state->event_crc_invalid[target] = saved_crc;
-    }
+    state->event_crc_invalid[0] = saved_crc;
+    state->currentslot = burst_slot;
 }
 
 //Expand a 32-bit MI into a 64-bit IV for DES

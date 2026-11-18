@@ -3412,14 +3412,14 @@ suite runs under this compiler.
   before), the `-S` keystream, or `-4` with a Basic or Hytera key. On the single-slot decoder under trunking (`-fr -T`), whose voice runs on both slots, an LC
   decoded on its own stays on the slot its burst's CACH proved, as on the dual-slot decoder
   (`dmr_mono_folds_standalone_burst()`): its call, terminator, crypto, keys and release are that slot's. Without
-  trunking the single-slot decoder folds a slot 2 LC onto lane 0, where its voice is decoded. A PI header reaches lane
-  0 only while lane 0 carries that slot's active call (`dmr_pi()`, `dmr_mono_lane_call_slot()`); otherwise (lane idle,
-  on the other slot's call, or on a call of no known slot) it acts on index 1, ending no hold and keying no call there,
-  and is kept for its own slot (`dsd_state::dmr_mono_pi`): that slot's call gets it when the slot takes the lane, by a
-  checked LC of the lane's call of that slot (`dmr_flco_take_pending_pi()`) or the voice loop proving that slot
-  (`dmrMS()`), within `DMR_PI_PRECALL_HOLD_S` on the same carrier (`dmr_pi_mono_take_pending()`), and drops it at that
-  slot's terminator. So a slot 2 encrypted call's ALG ID, key ID and MI reach its voice, and never another slot's
-  call. A burst's slot is known from its repeater CACH, or on the MS path only where its direct-mode sync word named
+  trunking the single-slot decoder folds a slot 2 LC onto lane 0, where its voice is decoded. A PI header is applied
+  only while lane 0 carries that slot's active call (`dmr_pi()`, `dmr_mono_lane_call_slot()`): it goes to lane 0 then,
+  and the burst slot is put back after. One heard for a slot the lane is not carrying (lane idle, on the other slot's
+  call, or on a call of no known slot) is discarded: not applied anywhere (index 1's fields are a slot 2 data packet's),
+  not kept, not replayed. That slot's call is held until its own checked LC or a PI header heard while the lane
+  carries it (a forced key still plays). So a slot 2 encrypted call's ALG ID, key ID and MI reach its voice, and never
+  another slot's call. A rejected standalone burst clears the position cache of its own CACH slot, whatever index a
+  fold left in `currentslot` (`dmr_data_restore_voice_lane()`). A burst's slot is known from its repeater CACH, or on the MS path only where its direct-mode sync word named
   it (`dmr_mono_burst_slot_known()`, `dsd_state::dmr_dm_sync_slot`); one of no known slot is folded as before. While
   lane 0 carries an active call of the other slot (`dmr_mono_lane_call_is_other_slot()`), either way round, a
   terminator acts on index 1 (`dmr_flco_ctx_init()`), as the other slot's does on the dual-slot decoder, so the lane's
