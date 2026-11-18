@@ -335,6 +335,47 @@ short_data_raw_dump_needs_payload_option(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Issue #800: the defined short data header's bit padding is not user data. LOCN reads only whole user octets: with
+ * four pad bits the last octet's low nibble is padding, so the longitude's last digit was never sent (no position); with
+ * none, or a pad that leaves whole octets, the full report is the position. Padding longer than the data reads nothing. */
+static int
+short_data_locn_excludes_bit_padding(dsd_opts* opts, dsd_state* state, const char* path) {
+    static const uint8_t locn[] = "A123456070826N2230.0000E04500.0000";
+
+    static const struct {
+        uint8_t pad_bits;
+        uint16_t len;
+        int rows;
+    } cases[] = {
+        {0U, sizeof locn - 1U, 1}, {4U, sizeof locn - 1U, 0},   {8U, sizeof locn - 1U, 0},
+        {8U, sizeof locn, 1},      {255U, sizeof locn - 1U, 0},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        if (!truncate_output(path)) {
+            return 120;
+        }
+        state->currentslot = 0;
+        state->data_header_format[0] = 13;
+        state->data_header_dd_format[0] = 0x00;
+        state->data_header_bit_padding[0] = cases[i].pad_bits;
+        state->event_crc_invalid[0] = 0U;
+        state->dmr_lrrp_source[0] = 123456U + (uint32_t)i; /* another radio each time: never a repeat */
+        dsd_event_stage_clear(state, 0);
+        dmr_sd_pdu_process(opts, state, cases[i].len, locn, 1U);
+        char want_src[16];
+        DSD_SNPRINTF(want_src, sizeof want_src, "%08u", 123456U + (unsigned)i);
+        if (!expect_rows(path, cases[i].rows, want_src, "22.50000", "45.00000", "LOCN bit padding")
+            || !expect_staged(state, cases[i].rows, DSD_POS_DMR_LOCN, 225000000, 450000000, "LOCN bit padding")) {
+            DSD_FPRINTF(stderr, "\nLOCN bit padding case %zu\n", i);
+            return 121 + (int)i;
+        }
+    }
+    state->data_header_bit_padding[0] = 0U;
+    state->dmr_lrrp_source[0] = 123456U;
+    return 0;
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -363,6 +404,9 @@ main(void) {
     int rc = run_cases(&opts, &state, path);
     if (rc == 0) {
         rc = short_data_raw_dump_needs_payload_option(&opts, &state);
+    }
+    if (rc == 0) {
+        rc = short_data_locn_excludes_bit_padding(&opts, &state, path);
     }
     remove(path);
     free(state.event_history_s);

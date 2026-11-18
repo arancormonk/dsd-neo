@@ -1036,6 +1036,9 @@ nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message
 
 enum { NXDN_DCALL_MAX_BITS = 24 * 128, NXDN_DCALL_MAX_BYTES = NXDN_DCALL_MAX_BITS / 8 };
 
+/* A format 0x06 data call's NMEA sentences are read whole (issue #800): every data call this file assembles fits. */
+_Static_assert((int)NXDN_DCALL_MAX_BYTES <= (int)NMEA_PAYLOAD_MAX_BYTES, "an NXDN NMEA payload must be read whole");
+
 struct nxdn_dcall_data_context {
     int have_events;
     int byte_len;

@@ -321,6 +321,11 @@ dsd_gps_two_digit_year_date(uint32_t yy, uint32_t month, uint32_t day, int64_t r
     if (yy > 99U) {
         return 0;
     }
+
+    /* Within 50 years (of 365.25 days) of the reception: one of two neighbouring centuries' dates always is, unless the
+       day is a calendar date in only one of them (29 February), which then may be none. */
+    enum { NMEA_TWO_DIGIT_YEAR_WINDOW_DAYS = 18262 };
+
     const int64_t ref_days = nmea_floor_div(receive_utc_s, 86400);
     /* The receive year, near enough to pick the centuries around it (146097 days are 400 Gregorian years). */
     const int64_t ref_year = 1970 + nmea_floor_div(ref_days * 400, 146097);
@@ -336,6 +341,9 @@ dsd_gps_two_digit_year_date(uint32_t yy, uint32_t month, uint32_t day, int64_t r
         }
         const int64_t days = nmea_days_from_civil(year, month, day);
         const int64_t gap = days >= ref_days ? days - ref_days : ref_days - days;
+        if (gap > NMEA_TWO_DIGIT_YEAR_WINDOW_DAYS) {
+            continue;
+        }
         if (!found || gap < best_gap) {
             found = 1;
             best_year = year;

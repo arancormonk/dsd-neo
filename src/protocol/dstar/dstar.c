@@ -128,6 +128,12 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
         DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
         /* The capture of the transmission before it ends here (issue #661). */
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DSTAR_HD_POS);
+        /* Its callsigns are the call's now (dstar_header.c): a D-PRS record of this transmission is theirs. */
+        state->dstar_dprs_source_unchecked = 0U;
+    } else {
+        /* A header began another transmission, but whose is not known: the call it leaves ACTIVE (the last one's
+           terminator missed) may be another radio's, so no D-PRS record names a source until a checked header does. */
+        state->dstar_dprs_source_unchecked = 1U;
     }
     (void)processDSTAR(opts, state);
     return header_ok;

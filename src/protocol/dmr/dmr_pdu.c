@@ -171,6 +171,15 @@ dmr_sd_pdu_append_result_flags(char* summary, size_t summary_size, const dmr_tex
     }
 }
 
+/* The whole octets of user data in @p len assembled octets less the header's @p bit_padding (TS 102 361-1 9.3.25):
+ * an octet the pad bits reach is not the sender's, so a position parser never reads it. 0 when the padding is longer
+ * than the data. */
+static uint16_t
+dmr_sd_pdu_whole_user_octets(uint16_t len, uint8_t bit_padding) {
+    const size_t bits = (size_t)len * 8U;
+    return (size_t)bit_padding > bits ? 0U : (uint16_t)((bits - (size_t)bit_padding) / 8U);
+}
+
 void
 dmr_sd_pdu_process(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* dmr_pdu, uint8_t packet_crc_valid) {
     if (opts == NULL || state == NULL || (dmr_pdu == NULL && len != 0U)) {
@@ -222,8 +231,10 @@ dmr_sd_pdu_process(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t
             DSD_SNPRINTF(detail, sizeof(detail), "DD format 0x%02X; raw/unsupported encoding; ", dd_format);
             dsd_append(summary, sizeof(summary), detail);
             dmr_sd_pdu_print_raw(opts, dmr_pdu, len);
-            // An admitted LOCN position is staged for this packet's notice by dmr_locn() itself.
-            dmr_locn(opts, state, len, dmr_pdu);
+            // An admitted LOCN position is staged for this packet's notice by dmr_locn() itself. It reads the user
+            // data only: the header's bit padding fills the end of the last octet(s), and a digit it completes was
+            // never sent.
+            dmr_locn(opts, state, dmr_sd_pdu_whole_user_octets(len, state->data_header_bit_padding[slot]), dmr_pdu);
         }
     } else {
         uint16_t bounded_len = len;

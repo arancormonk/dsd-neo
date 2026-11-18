@@ -210,8 +210,15 @@ test_rmc_century(void) {
     int64_t year = 0;
     int64_t days = 0;
     CHECK(dsd_gps_two_digit_year_date(94U, 3U, 23U, RECEIVED_2026, &year, &days) == 1 && year == 1994);
-    /* 29 February 00 received in 2144: 2100 is closest but has no 29 February, nor has 2200, so it is 2000. */
-    CHECK(dsd_gps_two_digit_year_date(0U, 2U, 29U, 5490892800LL /* 2144-01-01 */, &year, &days) == 1 && year == 2000);
+    /* 29 February 00 received in 2080 or 2144: 2100 and 2200 have no 29 February, and 2000 is more than 50 years away,
+       so the date is no date at all; a fix time read from it is unknown. Received in 2049, 2000 is within the window. */
+    CHECK(dsd_gps_two_digit_year_date(0U, 2U, 29U, 3471292800LL /* 2080-01-01 */, &year, &days) == 0);
+    CHECK(dsd_gps_two_digit_year_date(0U, 2U, 29U, 5490892800LL /* 2144-01-01 */, &year, &days) == 0);
+    CHECK(dsd_gps_two_digit_year_date(0U, 2U, 29U, 2493072000LL /* 2049-01-01 */, &year, &days) == 1 && year == 2000);
+    CHECK(parse_body_at("GPRMC,000000,A,2230.0,N,04500.0,E,,,290200,,,A", 3471292800LL).fix_time_s == 0);
+    CHECK(parse_body_at("GPRMC,000000,A,2230.0,N,04500.0,E,,,290200,,,A", 3471292800LL).has_position);
+    /* The window's edge: 1 January 76 received on 1 January 2026 is 2076 (18262 days on), not 1976 (18263 back). */
+    CHECK(dsd_gps_two_digit_year_date(76U, 1U, 1U, 1767225600LL /* 2026-01-01 */, &year, &days) == 1 && year == 2076);
     CHECK(dsd_gps_two_digit_year_date(100U, 1U, 1U, RECEIVED_2026, &year, &days) == 0);
     CHECK(dsd_gps_two_digit_year_date(26U, 2U, 30U, RECEIVED_2026, &year, &days) == 0);
 }
@@ -477,7 +484,7 @@ test_producer_reads_the_century_from_the_decode_clock(void) {
 
 static void
 p25_sap48(const char* text, int crc_invalid) {
-    uint8_t pdu[256];
+    static uint8_t pdu[2400];
     DSD_MEMSET(pdu, 0, sizeof pdu);
     pdu[0] = 0x10; /* fmt 16, io 0: the LLID is the source */
     pdu[1] = 48;   /* SAP 48 location service */
@@ -575,6 +582,36 @@ test_p25_sap48_reserved_source(void) {
         CHECK(feed_records(recs, 4) == 1);
         CHECK(recs[0].source_id == 0U && (recs[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) == 0U);
         CHECK(notice_row()->pos.valid == 1U && notice_row()->source_id == 0U);
+    }
+}
+
+/* A SAP 48 packet longer than 1,024 octets is read whole: status sentences first, then the only RMC, after octet 1,024.
+ * That RMC is the report, and it wins over a GGA that came first, as in a short packet. */
+static void
+test_p25_sap48_long_payload(void) {
+    static char payload[2200];
+    char g[128];
+    char r[128];
+    char t[128];
+    sentence(g, sizeof g, "GPGGA,120000,1000.0000,N,02000.0000,E,1,05,1.0,10.0,M,,M,,", "\r\n");
+    sentence(r, sizeof r, "GPRMC,120000,A,2230.0000,N,04500.0000,E,010.0,090.0,150626,,,A", "\r\n");
+    sentence(t, sizeof t, "GPTXT,01,01,02,RECEIVER STATUS REPORT FILLER", "\r\n");
+    for (int with_gga = 0; with_gga <= 1; with_gga++) {
+        size_t at = 0U;
+        payload[0] = '\0';
+        if (with_gga) {
+            at += (size_t)DSD_SNPRINTF(payload + at, sizeof payload - at, "%s", g);
+        }
+        while (at <= 1100U) {
+            at += (size_t)DSD_SNPRINTF(payload + at, sizeof payload - at, "%s", t);
+        }
+        (void)DSD_SNPRINTF(payload + at, sizeof payload - at, "%s", r);
+        reset_fixture();
+        p25_sap48(payload, 0);
+        dsd_position_fix recs[4];
+        CHECK(feed_records(recs, 4) == 1);
+        CHECK(recs[0].lat_e7 == 225000000 && recs[0].lon_e7 == 450000000 && recs[0].heading_ddeg == 900U);
+        CHECK(recs[0].source_id == 1234U);
     }
 }
 
@@ -752,6 +789,7 @@ main(void) {
     test_producer_sentence_choice();
     test_p25_sap48();
     test_p25_sap48_reserved_source();
+    test_p25_sap48_long_payload();
     test_p25_origin();
     test_p25_destination();
     test_producer_reads_the_century_from_the_decode_clock();

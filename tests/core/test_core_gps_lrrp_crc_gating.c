@@ -413,8 +413,17 @@ run_udt_nmea_case(const dsd_opts* opts, dsd_state* state, const char* path, cons
     if (dsd_test_capture_stderr_begin(&cap, "udt_nmea") != 0) {
         return 0;
     }
-    nmea_iec_61162_1(opts, state, nmea, c->type == 1 ? NMEA_UDT_SHORT_BITS : NMEA_UDT_LONG_BITS,
-                     &(const dsd_gps_address){.source_id = 123456}, c->type);
+    /* The report in a buffer of exactly its format's bits (one byte per bit): a short report is read no further than
+       its 80 bits (the sanitizer presets catch a read past them). */
+    const size_t bits = c->type == 1 ? (size_t)NMEA_UDT_SHORT_BITS : (size_t)NMEA_UDT_LONG_BITS;
+    uint8_t* exact = (uint8_t*)malloc(bits);
+    if (exact == NULL) {
+        dsd_test_capture_stderr_end(&cap);
+        return 0;
+    }
+    DSD_MEMCPY(exact, nmea, bits);
+    nmea_iec_61162_1(opts, state, exact, bits, &(const dsd_gps_address){.source_id = 123456}, c->type);
+    free(exact);
     dsd_test_capture_stderr_end(&cap);
     char output[2048];
     if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {

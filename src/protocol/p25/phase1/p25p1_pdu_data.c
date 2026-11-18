@@ -52,6 +52,9 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
 
 enum { P25_PDU_MAX_DECODE_BYTES = 18 * 129 };
 
+/* A SAP 48 payload's NMEA sentences are read whole (issue #800): every payload this file decodes fits. */
+_Static_assert((int)P25_PDU_MAX_DECODE_BYTES <= (int)NMEA_PAYLOAD_MAX_BYTES, "a P25 NMEA payload must be read whole");
+
 typedef struct {
     uint8_t fmt;
     uint8_t sap;

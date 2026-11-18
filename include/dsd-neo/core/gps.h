@@ -157,10 +157,11 @@ void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
 /**
  * @brief A date sent with a two-digit year (NMEA RMC, DMR LOCN): the century that puts @p day / @p month / @p yy closest
  * to @p receive_utc_s (Unix seconds on the decode clock when the report was received), so the date is within 50 years
- * of its reception. A century in which the day is no calendar date (29 February) is no candidate.
+ * of its reception. A century in which the day is no calendar date (29 February) is no candidate, and neither is one
+ * whose date lies more than 50 years (18,262 days) from the reception: 29 February 00 received in 2080 is no date.
  *
  * @return 1 with the full year in @p year_out and the date's days since 1970-01-01 in @p days_out (either may be
- *         NULL); 0 when @p yy is over 99 or no century gives a calendar date.
+ *         NULL); 0 when @p yy is over 99 or no century within 50 years gives a calendar date.
  */
 int dsd_gps_two_digit_year_date(uint32_t yy, uint32_t month, uint32_t day, int64_t receive_utc_s, int64_t* year_out,
                                 int64_t* days_out);
@@ -168,6 +169,11 @@ int dsd_gps_two_digit_year_date(uint32_t yy, uint32_t month, uint32_t day, int64
 /** @brief The user data bits a binary UDT NMEA report's fields span: short format through the seconds code, long format
  * through the course over ground (TS 102 361-4 Figures B.23, B.24). */
 enum { NMEA_UDT_SHORT_BITS = 80, NMEA_UDT_LONG_BITS = 112 };
+
+/** @brief The longest data payload nmea_sentence_checker() and nmea_payload_framed() read, in octets: more than a P25
+ * packet data unit (P25_PDU_MAX_DECODE_BYTES) or an NXDN data call (NXDN_DCALL_MAX_BYTES) carries. The whole payload is
+ * read; a longer one is not NMEA to either of them (never read in part). */
+enum { NMEA_PAYLOAD_MAX_BYTES = 4096 };
 
 /**
  * @brief Decode the ASCII NMEA 0183 sentences of a data payload (P25 SAP 48, NXDN data call format 0x06).
@@ -177,7 +183,7 @@ enum { NMEA_UDT_SHORT_BITS = 80, NMEA_UDT_LONG_BITS = 112 };
  *
  * @param input The payload, one bit per byte, MSB first; it starts at the first sentence.
  * @param slot The slot whose history the notice goes to.
- * @param len_bytes Octets of payload (no CRC).
+ * @param len_bytes Octets of payload (no CRC), at most NMEA_PAYLOAD_MAX_BYTES (a longer payload decodes nothing).
  * @param packet_verified 1 when the packet's own check passed: then the position and the packet's source and
  *        destination (the slot's dmr_lrrp_source / dmr_lrrp_target, qualified by dmr_data_checked_group) may be
  *        published; otherwise no position and no sentence text is kept.
@@ -195,7 +201,7 @@ uint8_t nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint
  * their checksums, so none of it is ever kept as plain text.
  *
  * @param input The payload, one bit per byte, MSB first.
- * @param len_bytes Octets of payload.
+ * @param len_bytes Octets of payload, at most NMEA_PAYLOAD_MAX_BYTES (a longer one is not framed).
  */
 int nmea_payload_framed(const uint8_t* input, int len_bytes);
 /** The bits an NXDN GPS report (nxdn_gps_report()) reads after its 0xFFFC marker: through the UTC seconds. */

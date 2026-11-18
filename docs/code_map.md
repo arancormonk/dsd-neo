@@ -2551,9 +2551,11 @@ suite runs under this compiler.
     0x67, 0x69, 0x6B, 0x6C and document type 0x13 (of several shapes the lowest rank gives the position, but a shape
     at exactly 0, 0 never displaces another); a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
     parse, and a resync-guessed position is never published. UDT NMEA needs Q=1 and the format's fields (80 bits
-    short, 112 long) inside the UDT's user data, its pad nibbles left out (`nmea_iec_61162_1()` takes that length). These go to their own data notice
+    short, 112 long) inside the UDT's user data, its pad nibbles left out (`nmea_iec_61162_1()` takes that length, and a
+    short report is read no further than its 80 bits). These go to their own data notice
     (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no
-    specification); a valid `A` date and time is its fix time (`fix_time_s`, read as UTC, its two-digit year in the
+    specification) and is read from whole user octets only (defined short data, DPF 13: the header's bit padding comes
+    off first, so a digit the padding would complete was never sent); a valid `A` date and time is its fix time (`fix_time_s`, read as UTC, its two-digit year in the
     century closest to the decode clock's date as an RMC's), else the fix time is
     unknown, so two reports that differ only in time are not folded as a repeat.
   - DMR USBD LIP (`dmr_dburst.c`): the burst CRC and an MS-sourced repeater-mode data sync (`dmr_burst_origin`,
@@ -2582,9 +2584,12 @@ suite runs under this compiler.
     header also names the destination (`dmr_lrrp_target`; a P25 LLID is a radio, an NXDN header a group for call
     type 0 or 1, kept in `dmr_data_checked_group`). The RMC date's two-digit year is read in the century that puts the
     date closest to its reception on the decode clock, so within 50 years of it (`dsd_gps_two_digit_year_date()`; a
-    replayed capture keeps its own century). A CRC-failed packet keeps no sentence text. A payload is NMEA
+    replayed capture keeps its own century; with no century within 50 years, such as 29 February 00 received in 2080,
+    the fix time is unknown). A CRC-failed packet keeps no sentence text. A payload is NMEA
     when the parser frames it so (`nmea_payload_framed()`: line ends, then `$` or `!`), and then none of it is ever
-    plain text (P25 SAP 48's text fallback), whether or not its sentences pass.
+    plain text (P25 SAP 48's text fallback), whether or not its sentences pass. The sentences and the report are read
+    from the whole payload (up to `NMEA_PAYLOAD_MAX_BYTES`, more than any P25 packet or NXDN data call carries; only
+    the kept text is bounded).
   - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data
     call header bound to the same assembly (`nxdn_data_call.c`: `nxdn_data_origin`, `nxdn_data_header_ms`,
     `nxdn_data_carrier_seq`; a message lost on a channel that can carry a header -- a failed FACCH2/UDCH,
@@ -2620,9 +2625,13 @@ suite runs under this compiler.
     bit and from a LIP short report's reason for sending 2 (`lip_parse_short_report()`, so DMR and TETRA alike; never
     from user-defined data, and never from a USBD reply, whose 3-bit reason table has no emergency code). The records keyed to a call epoch or
     transmission (the DMR checked-LC source, `p25_p1_lc_checked_id`, the L3Harris Part A, a D-PRS record begun in a
-    call, the last admitted M17 META) are cleared when the call state starts over
-    (`call_state_forget_epoch_records()`: a new call-state extension restarts the epochs at 1, as another engine run on
-    a reused state does). Tests:
+    call, the last admitted M17 META) stay in their protocols, and the call state knows none of them: it never gives out
+    an epoch twice on one state (`dsd_state::call_epoch_floor`; a new call-state extension, as another engine run on a
+    reused state makes, goes on from the last one's epochs), so a record the last run left matches no call of the next.
+    A new transmission whose own header failed its check names no source: every DMR voice LC header clears the slot's
+    checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_checked_id` and the L3Harris Part A, and a D-STAR RF
+    header whose CRC failed leaves D-PRS records anonymous (`dstar_dprs_source_unchecked`) until a checked header, on
+    RF or in the slow data, names the transmission. Tests:
     `CORE_POSITION_FEED`, `CORE_CALL_STATE_ALLOC`, `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`,
     `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`, `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `P25_P1_TDULC`,
     `NXDN_GPS_DISPATCH`, `M17_GNSS_POSITION`, `DSTAR_DPRS`, `TETRA_LIP`.
@@ -13479,7 +13488,8 @@ single "current call".
   before its FCS, is discarded (clause 6.3.2), neither noted nor kept as the last one noted, since the channel CRC does
   not stand in for it. Cell reselection is not noted: it concerns one MS at a time. An SDS under PID 10 holds a LIP
   PDU (issue #800, `sds_lip_*` in `tetra_mle.c`): whole, or a complete concatenated message that completed on the
-  reception its first part arrived on, its parts addressed to one SSI (parts addressed by an event label alone name
+  reception its first part arrived on (a reassembly begun on another reception is dropped before a new part is taken,
+  so a message sent again whole completes), its parts addressed to one SSI (parts addressed by an event label alone name
   no party, so their message's position is refused as `recipient unknown`). Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
   position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
   one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling
