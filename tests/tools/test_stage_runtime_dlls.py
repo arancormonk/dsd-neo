@@ -6,7 +6,8 @@ tools.
 The release jobs stage the DLLs a Windows binary needs with this script. An inspection that failed or printed
 something other than a dependency report used to leave the binary with no dependencies, so nothing was staged and
 the script still succeeded. The fakes print what the real tools print (dumpbin's CRLF report, llvm-readobj's Import
-and DelayImport blocks, GNU objdump's pei-x86-64 and LLVM objdump's coff-x86-64 headers and data directory) and are
+and DelayImport blocks, GNU objdump's pei-x86-64 and LLVM objdump's coff-x86-64 headers, data directory, import and
+export tables, as GNU objdump 2.47 and LLVM 23 print them for images that lld-link and mingw-w64 GCC built) and are
 looked up through PATH as the script looks up the real ones.
 """
 
@@ -62,15 +63,19 @@ try {
 """
 
 
-def pe_image(tag=b"", dll=True, stub=0):
+def pe_image(tag=b"", dll=True, stub=0, machine=0x8664):
     """The headers Windows reads to load a PE32+ (x64) image, then tag: what the staging checks before it asks a tool
     for the imports. A DLL sets IMAGE_FILE_DLL as well as IMAGE_FILE_EXECUTABLE_IMAGE. stub bytes of DOS stub sit
-    between the DOS header and the PE header, which e_lfanew points to."""
+    between the DOS header and the PE header, which e_lfanew points to. Another machine (0x14C for x86, 0xAA64 for
+    ARM64) gets the optional header that machine's linker writes: PE32 for x86."""
     dos = bytearray(64 + stub)
     dos[:2] = b"MZ"
     struct.pack_into("<I", dos, 0x3C, 64 + stub)
-    coff = struct.pack("<HHIIIHH", 0x8664, 0, 0, 0, 0, 240, 0x2022 if dll else 0x0022)
-    return bytes(dos) + b"PE\0\0" + coff + struct.pack("<H", 0x20B) + bytes(238) + tag
+    pe32 = machine == 0x14C
+    coff = struct.pack("<HHIIIHH", machine, 0, 0, 0, 0, 224 if pe32 else 240,
+                       (0x2102 if dll else 0x0102) if pe32 else (0x2022 if dll else 0x0022))
+    optional = struct.pack("<H", 0x10B) + bytes(222) if pe32 else struct.pack("<H", 0x20B) + bytes(238)
+    return bytes(dos) + b"PE\0\0" + coff + optional + tag
 
 
 def coff_object(tag=b""):
@@ -101,30 +106,86 @@ DATA_DIRECTORY = ("Export Directory [.edata (or where ever we found it)]", "Impo
                   "CLR Runtime Header", "Reserved")
 
 
-def data_directory(delay_loaded):
+def data_directory(delay_loaded, imports=False):
     """The data directory as objdump prints it. Neither GNU nor LLVM objdump names a delay-loaded DLL: an image that
-    delay-loads one shows only a non-empty Delay Import Directory (entry d), as lld-link's /delayload output does."""
+    delay-loads one shows only a non-empty Delay Import Directory (entry d), as lld-link's /delayload output does. An
+    image that imports nothing has an empty Import Directory (entry 1)."""
     lines = ["The Data Directory"]
     for index, name in enumerate(DATA_DIRECTORY):
-        rva, size = ("0000000000002008", "00000040") if index == 0xD and delay_loaded else ("0" * 16, "0" * 8)
+        rva, size = "0" * 16, "0" * 8
+        if index == 0xD and delay_loaded:
+            rva, size = "0000000000002008", "00000040"
+        elif index == 1 and imports:
+            rva, size = "000000000000a000", "00000910"
         lines.append(f"Entry {index:x} {rva} {size} {name}")
     return "\n".join(lines) + "\n"
 
 
-def gnu_objdump_report(dependencies, delay_loaded=False):
-    imports = "".join(f"\n\tDLL Name: {d}\n\tvma:  Hint/Ord Member-Name Bound-To\n\t5338\t   27  ExitProcess\n"
-                      for d in dependencies)
+def gnu_import_table(dependencies, null_only=False):
+    """GNU objdump's import table: a row per import descriptor, each followed by its DLL Name and members, and the
+    all-zero row that ends the table. null_only is a table that holds only that row."""
+    lines = ["", "There is an import table in .idata at 0x14000a000", "",
+             "The Import Tables (interpreted .idata section contents)",
+             " vma:            Hint    Time      Forward  DLL       First",
+             "                 Table   Stamp     Chain    Name      Thunk"]
+    for index, dependency in enumerate([] if null_only else dependencies):
+        lines += [f" {0xa000 + 20 * index:08x}\t{0xa0c8 + 16 * index:08x} 00000000 00000000 "
+                  f"{0xa76c + 32 * index:08x} {0xa280 + 16 * index:08x}", "",
+                  f"\tDLL Name: {dependency}", "\tvma:     Ordinal  Hint  Member-Name  Bound-To",
+                  f"\t{0xa280 + 16 * index:08x}  <none>  0339  GetTickCount", ""]
+    count = 0 if null_only else len(dependencies)
+    lines += [f" {0xa000 + 20 * count:08x}\t00000000 00000000 00000000 00000000 00000000", ""]
+    return "\n".join(lines) + "\n"
+
+
+def gnu_export_table(name):
+    """GNU objdump's export table, which names the image itself."""
+    return ("\nThere is an export table in .edata at 0x140009000\n\n"
+            "The Export Tables (interpreted .edata section contents)\n\n"
+            "Export Flags \t\t\t0\nTime/Date stamp \t\t0\nMajor/Minor \t\t\t0/0\n"
+            f"Name \t\t\t\t0000000000009032 {name}\nOrdinal Base \t\t\t1\nNumber in:\n"
+            "\tExport Address Table \t\t00000001\n\t[Name Pointer/Ordinal] Table\t00000001\n"
+            "Table Addresses\n\tExport Address Table \t\t0000000000009028\n"
+            "\tName Pointer Table \t\t000000000000902c\n\tOrdinal Table \t\t\t0000000000009030\n\n"
+            "Export Address Table -- Ordinal Base 1\n\t          Ordinal  Address  Type\n"
+            "\t[   0] +base[   1] 00001580 Export RVA\n\n"
+            "[Ordinal/Name Pointer] Table -- Ordinal Base 1\n\t          Ordinal   Hint Name\n"
+            "\t[   0] +base[   1]  0000 demo_fn\n")
+
+
+def gnu_objdump_report(dependencies, delay_loaded=False, exports=None, imports=None):
+    """GNU objdump -p: the import table only for an image with an import directory, then the export table. imports
+    replaces the import table's text."""
+    has_imports = bool(dependencies) or imports is not None
+    if imports is None:
+        imports = gnu_import_table(dependencies) if dependencies else ""
     return ("\n{path}:     file format pei-x86-64\n\nCharacteristics 0x2022\n\texecutable\n\tlarge address aware\n"
-            "\n" + data_directory(delay_loaded) + "\nThe Import Tables (interpreted .rdata section contents)\n"
-            " vma:            Hint    Time      Forward  DLL       First\n" + imports)
+            "\n" + data_directory(delay_loaded, has_imports) + imports
+            + (gnu_export_table(exports) if exports else ""))
 
 
-def llvm_objdump_report(dependencies, delay_loaded=False):
-    imports = "".join(f"\n    DLL Name: {d}\n    vma:  Hint/Ord Member-Name Bound-To\n    0x5338    27  ExitProcess\n"
-                      for d in dependencies)
+def llvm_import_table(dependencies):
+    """LLVM objdump's import table: a lookup row per import descriptor, then its DLL Name and members."""
+    lines = ["The Import Tables:"]
+    for index, dependency in enumerate(dependencies):
+        lines += [f"  lookup {0xa0c8 + 16 * index:08x} time 00000000 fwd 00000000 name {0xa76c + 32 * index:08x} "
+                  f"addr {0xa280 + 16 * index:08x}", "", f"    DLL Name: {dependency}", "    Hint/Ord  Name",
+                  "         825  GetTickCount", ""]
+    return "\n".join(lines) + "\n"
+
+
+def llvm_export_table(name):
+    """LLVM objdump's export table, whose 'DLL name' is the image's own."""
+    return f"Export Table:\n DLL name: {name}\n Ordinal base: 1\n Ordinal      RVA  Name\n       1   0x1580  demo_fn\n"
+
+
+def llvm_objdump_report(dependencies, delay_loaded=False, exports=None, imports=None):
+    """LLVM objdump -p: the import table only for an image that imports a DLL, then the export table."""
+    if imports is None:
+        imports = llvm_import_table(dependencies) if dependencies else ""
     return ("\n{path}:\tfile format coff-x86-64\nCharacteristics 0x2022\n\texecutable\n\tlarge address aware\n"
-            "\n" + data_directory(delay_loaded) + "\nThe Import Tables:\n"
-            "  lookup 0000503c time 00000000 fwd 00000000 name 00005990 addr 0000519c\n" + imports)
+            "\n" + data_directory(delay_loaded, bool(dependencies)) + "\n" + imports
+            + (llvm_export_table(exports) if exports else ""))
 
 
 def llvm_readobj_report(dependencies, delay_loaded=()):
@@ -141,6 +202,10 @@ def llvm_readobj_report(dependencies, delay_loaded=()):
 def normalized(text):
     """Child output with CRLF line endings and pwsh's terminal styling removed."""
     return ANSI.sub("", text.replace("\r\n", "\n"))
+
+
+# stage()'s default: the developer shell of the first toolset visual_studio() made, if any.
+DEVELOPER_SHELL = object()
 
 
 @unittest.skipUnless(PWSH or REQUIRE_TOOLS, "pwsh is required")
@@ -164,6 +229,7 @@ class StageRuntimeDlls(unittest.TestCase):
         self.target = self.dest / "dsd-neo.exe"
         self.target.write_bytes(pe_image(b"target", dll=False))
         self.work = work
+        self.redist = None
 
     def tool(self, name):
         path = self.tools / name
@@ -178,7 +244,8 @@ class StageRuntimeDlls(unittest.TestCase):
         base.with_name(inspected + ".rc").write_text(str(rc))
 
     def visual_studio(self, version="14.51.36231", toolset="VC143"):
-        """A Visual Studio installation that vswhere finds; returns its redistributable runtime folder."""
+        """A Visual Studio installation that vswhere finds; returns its redistributable runtime folder. The first one
+        is the toolset of the developer shell stage() runs in."""
         install = self.work / "vs"
         installer = self.program_files / "Microsoft Visual Studio/Installer"
         installer.mkdir(parents=True, exist_ok=True)
@@ -187,14 +254,19 @@ class StageRuntimeDlls(unittest.TestCase):
         vswhere.chmod(0o755)
         crt = install / f"VC/Redist/MSVC/{version}/x64/Microsoft.{toolset}.CRT"
         crt.mkdir(parents=True)
+        if self.redist is None:
+            self.redist = install / f"VC/Redist/MSVC/{version}"
         return crt
 
-    def stage(self, search=None, redist=None):
+    def stage(self, search=None, redist=DEVELOPER_SHELL):
         # Only the fakes are on PATH, so no real dumpbin, objdump or llvm-objdump on the host can answer instead.
         env = dict(os.environ, PATH=str(self.tools), SystemRoot=str(self.work / "windows"))
         env["ProgramFiles(x86)"] = str(self.program_files)
-        # A Visual Studio developer shell names its toolset's redistributable folder here.
+        # A Visual Studio developer shell names its toolset's redistributable folder here; None is no developer
+        # shell.
         env.pop("VCToolsRedistDir", None)
+        if redist is DEVELOPER_SHELL:
+            redist = self.redist
         if redist is not None:
             env["VCToolsRedistDir"] = str(redist)
         runner = self.work / "run.ps1"
@@ -209,8 +281,8 @@ class StageRuntimeDlls(unittest.TestCase):
     def staged(self):
         return sorted(p.name for p in self.dest.iterdir() if p.name != "dsd-neo.exe")
 
-    def assert_refused(self, words):
-        rc, output = self.stage()
+    def assert_refused(self, words, **stage):
+        rc, output = self.stage(**stage)
         self.assertNotEqual(rc, 0, output)
         for word in words:
             self.assertIn(word, output)
@@ -291,31 +363,55 @@ class StageRuntimeDlls(unittest.TestCase):
         # from anywhere.
         (self.system32 / "VCRUNTIME140.dll").write_bytes(pe_image(b"system"))
         (self.search / "VCRUNTIME140.dll").write_bytes(pe_image(b"vcpkg"))
-        older = self.visual_studio(version="14.44.35207", toolset="VC143")
-        (older / "VCRUNTIME140.dll").write_bytes(pe_image(b"latest Visual Studio"))
         # The developer shell's toolset: Visual Studio 2026 names its folder Microsoft.VC145.CRT.
         shell = self.work / "vs18/VC/Redist/MSVC/14.51.36231"
         (shell / "x64/Microsoft.VC145.CRT").mkdir(parents=True)
         (shell / "x64/Microsoft.VC145.CRT/VCRUNTIME140.dll").write_bytes(pe_image(b"developer shell"))
+        # Another toolset the latest Visual Studio holds, newer than the one that built the binaries.
+        newer = self.visual_studio(version="14.52.36400", toolset="VC145")
+        (newer / "VCRUNTIME140.dll").write_bytes(pe_image(b"newest toolset"))
         self.runtime_import()
         rc, output = self.stage(redist=shell)
         self.assertEqual(rc, 0, output)
         self.assertEqual((self.dest / "VCRUNTIME140.dll").read_bytes(), pe_image(b"developer shell"))
-        # Without a developer shell, the newest toolset of the latest Visual Studio.
+        # Without a developer shell the toolset that built the binaries is unknown: the newest one installed may not
+        # be it, so nothing is taken from it.
         self.runtime_import()
-        rc, output = self.stage()
-        self.assertEqual(rc, 0, output)
-        self.assertEqual((self.dest / "VCRUNTIME140.dll").read_bytes(), pe_image(b"latest Visual Studio"))
+        output = self.assert_refused(["VCRUNTIME140.dll", "no Visual C++ runtime folder", "VCToolsRedistDir"],
+                                     redist=None)
+        self.assertFalse((self.dest / "VCRUNTIME140.dll").exists(), output)
         # A runtime DLL that the toolset's folder lacks is missing, whatever System32 or the search folders hold.
         self.runtime_import("MSVCP140.dll")
         for where in (self.system32, self.search):
             (where / "MSVCP140.dll").write_bytes(pe_image(b"elsewhere"))
-        output = self.assert_refused(["MSVCP140.dll", f"not in the Visual C++ runtime folder {older}"])
+        output = self.assert_refused(["MSVCP140.dll",
+                                      f"not in the Visual C++ runtime folder {shell / 'x64/Microsoft.VC145.CRT'}"],
+                                     redist=shell)
         self.assertFalse((self.dest / "MSVCP140.dll").exists(), output)
-        # Without Visual Studio there is no runtime to carry.
-        shutil.rmtree(self.program_files / "Microsoft Visual Studio")
+
+    def test_runtime_already_in_the_destination_is_the_toolsets_copy(self):
+        # Staging keeps a DLL already in the destination rather than copy it again (the release jobs stage three
+        # binaries into one bin\). A runtime DLL kept that way must still be the developer shell toolset's own copy.
+        crt = self.visual_studio()
+        (crt / "VCRUNTIME140.dll").write_bytes(pe_image(b"developer shell"))
         self.runtime_import()
-        self.assert_refused(["VCRUNTIME140.dll", "no Visual C++ runtime folder"])
+        (self.dest / "VCRUNTIME140.dll").write_bytes(pe_image(b"developer shell"))
+        rc, output = self.stage()
+        self.assertEqual(rc, 0, output)
+        for label, copy, stage, words in (
+                ("another toolset's copy", pe_image(b"another toolset"), {},
+                 ["differs from", str(crt / "VCRUNTIME140.dll")]),
+                ("no developer shell", pe_image(b"developer shell"), {"redist": None},
+                 ["no Visual C++ runtime folder", "VCToolsRedistDir"])):
+            with self.subTest(case=label):
+                self.runtime_import()
+                (self.dest / "VCRUNTIME140.dll").write_bytes(copy)
+                output = self.assert_refused([str(self.dest / "VCRUNTIME140.dll")] + words, **stage)
+                self.assertEqual((self.dest / "VCRUNTIME140.dll").read_bytes(), copy, output)
+        # The toolset's folder lacks the file kept in the destination.
+        self.runtime_import("MSVCP140.dll")
+        (self.dest / "MSVCP140.dll").write_bytes(pe_image(b"kept"))
+        self.assert_refused([str(self.dest / "MSVCP140.dll"), f"not in the Visual C++ runtime folder {crt}"])
 
     def test_unrecorded_runtime_dlls_are_refused(self):
         # A Visual C++ runtime DLL that the msvc-runtime record does not list has no recorded terms: staging stops,
@@ -539,6 +635,123 @@ class StageRuntimeDlls(unittest.TestCase):
                 self.tool(tool)
                 self.respond(tool, "dsd-neo.exe", out=report([]).replace(data_directory(False), ""))
                 self.assert_refused([tool, str(self.target), "Delay Import Directory"])
+
+    def test_export_table_names_no_dependency(self):
+        # An image that exports a function names itself in its export table, as LLVM objdump prints it: 'DLL name:',
+        # which differs from the import table's 'DLL Name:' only in case. Only the import table names dependencies.
+        self.target = self.work / "lib/demo.dll"
+        self.target.parent.mkdir()
+        self.target.write_bytes(pe_image(b"demo"))
+        (self.search / "a.dll").write_bytes(pe_image(b"a"))
+        for tool, report in (("objdump", gnu_objdump_report), ("llvm-objdump", llvm_objdump_report)):
+            for imports in ([], ["a.dll", "KERNEL32.dll"]):
+                with self.subTest(tool=tool, imports=imports):
+                    self.reset_tools()
+                    self.tool(tool)
+                    self.respond(tool, "demo.dll", out=report(imports, exports="demo.dll"))
+                    self.respond(tool, "a.dll", out=report([], exports="a.dll"))
+                    rc, output = self.stage()
+                    self.assertEqual(rc, 0, output)
+                    self.assertEqual([name for name in self.staged() if name.endswith(".dll")],
+                                     [name for name in imports if name == "a.dll"])
+
+    def test_empty_import_tables_are_valid(self):
+        # An image with no import directory imports no DLL, and GNU objdump prints no import table for it; an import
+        # directory that holds only the descriptor that ends it is empty too, and GNU objdump prints that one row.
+        # LLVM objdump prints no import table for either.
+        for tool, report in (("objdump", gnu_objdump_report([])),
+                             ("objdump", gnu_objdump_report([], imports=gnu_import_table([], null_only=True))),
+                             ("llvm-objdump", llvm_objdump_report([])),
+                             ("llvm-readobj", llvm_readobj_report([]))):
+            with self.subTest(tool=tool, report=report):
+                self.reset_tools()
+                self.tool(tool)
+                self.respond(tool, "dsd-neo.exe", out=report)
+                rc, output = self.stage()
+                self.assertEqual(rc, 0, output)
+                self.assertEqual([name for name in self.staged() if name.endswith(".dll")], [])
+
+    def test_import_tables_the_tool_could_not_read_stop_staging(self):
+        # GNU and LLVM objdump exit 0 when they cannot read an import table, or stop reading it part way: GNU objdump
+        # says so in its report, or prints a descriptor's row without its DLL Name, or no row that ends the table;
+        # LLVM objdump prints the table's heading without a descriptor, or a descriptor without its DLL Name.
+        # llvm-readobj and both objdumps print a warning when they read only part of the image.
+        gnu_table = gnu_import_table(["a.dll", "KERNEL32.dll"])
+        a_rows = gnu_table.split("\tDLL Name: a.dll\n")
+        last_row = gnu_table.rstrip("\n").rsplit("\n", 1)[0]
+        llvm_table = llvm_import_table(["a.dll", "KERNEL32.dll"])
+        cases = (
+            ("objdump", "no section", gnu_objdump_report([], imports=(
+                "\nThere is an import table, but the section containing it could not be found\n")),
+             ["There is an import table, but the section containing it could not be found"]),
+            ("objdump", "no contents", gnu_objdump_report([], imports=(
+                "\nThere is an import table in .bss, but that section has no contents\n")),
+             ["that section has no contents"]),
+            ("objdump", "no table", gnu_objdump_report([], imports=""), ["printed no import table"]),
+            ("objdump", "descriptor without a name", gnu_objdump_report(
+                [], imports=a_rows[0] + "\tDLL Name: a.dll\n".join(a_rows[1:]).replace(
+                    "\tDLL Name: KERNEL32.dll\n", "", 1)), ["import descriptor without a DLL name"]),
+            ("objdump", "no end of the table", gnu_objdump_report([], imports=last_row + "\n"),
+             ["did not print the end of the import table"]),
+            ("objdump", "unread members", gnu_objdump_report(
+                [], imports=gnu_table.replace("<none>  0339  GetTickCount", "<corrupt: 0x0000beef>", 1)),
+             ["<corrupt: 0x0000beef>"]),
+            ("objdump", "unread first thunk", gnu_objdump_report([], imports=gnu_table.replace(
+                "\tDLL Name: a.dll\n", "\tDLL Name: a.dll\n\nThere is a first thunk, but the section containing it "
+                "could not be found\n", 1)), ["There is a first thunk"]),
+            ("objdump", "warning", gnu_objdump_report([], imports=gnu_table.split(" 0000a014")[0]) +
+             "objdump: warning: private headers incomplete: file truncated\n", ["private headers incomplete"]),
+            ("llvm-objdump", "heading only", llvm_objdump_report(["a.dll"], imports="The Import Tables:\n"),
+             ["did not finish the import table"]),
+            ("llvm-objdump", "descriptor without a name", llvm_objdump_report(["a.dll"], imports=llvm_table.replace(
+                "    DLL Name: KERNEL32.dll\n", "", 1), exports="dsd-neo.exe"),
+             ["import descriptor without a DLL name"]),
+            ("llvm-objdump", "warning", llvm_objdump_report(["a.dll"]) +
+             "llvm-objdump: warning: '{path}': the import table could not be read\n", ["could not be read"]),
+            ("llvm-readobj", "warning in a block", llvm_readobj_report(["a.dll"]).replace(
+                "  Symbol: ExitProcess (27)\n", "  Symbol: ExitProcess (27)\n"
+                "llvm-readobj: warning: '{path}': unexpected end of the import table\n", 1),
+             ["unexpected end of the import table"]),
+        )
+        (self.search / "a.dll").write_bytes(pe_image(b"a"))
+        for tool, label, report, words in cases:
+            with self.subTest(tool=tool, case=label):
+                self.reset_tools()
+                self.tool(tool)
+                self.respond(tool, "dsd-neo.exe", out=report)
+                self.respond(tool, "a.dll", out={"objdump": gnu_objdump_report, "llvm-objdump": llvm_objdump_report,
+                                                 "llvm-readobj": llvm_readobj_report}[tool]([]))
+                output = self.assert_refused([tool, str(self.target)] + words)
+                self.assertNotIn("Traceback", output)
+
+    def test_images_of_another_machine_are_refused(self):
+        # The release is x64: Windows refuses to load an x86 or ARM64 DLL into its processes (ERROR_BAD_EXE_FORMAT),
+        # though dumpbin reports it as a DLL like any other. Every image staging reads must be x64.
+        for label, machine in (("x86", 0x14C), ("ARM64", 0xAA64)):
+            for where in ("target", "dependency"):
+                with self.subTest(machine=label, image=where):
+                    self.reset_tools()
+                    self.tool("dumpbin")
+                    self.target.write_bytes(pe_image(b"target", dll=False,
+                                                     machine=machine if where == "target" else 0x8664))
+                    (self.search / "a.dll").write_bytes(pe_image(b"a", machine=machine if where != "target"
+                                                                 else 0x8664))
+                    self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", ["a.dll"]))
+                    self.respond("dumpbin", "a.dll", out=dumpbin_report("a.dll", ["KERNEL32.dll"]))
+                    image = self.target if where == "target" else self.dest / "a.dll"
+                    self.assert_refused([str(image), f"0x{machine:04X}", "not x64"])
+        self.target.write_bytes(pe_image(b"target", dll=False))
+
+    def test_manifest_lists_hidden_dlls(self):
+        # The ZIP carries hidden files like any other, so the DLL list must name them too.
+        self.tool("dumpbin")
+        self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", ["KERNEL32.dll"]))
+        (self.dest / ".hidden.dll").write_bytes(pe_image(b"hidden"))
+        rc, output = self.stage()
+        self.assertEqual(rc, 0, output)
+        manifest = self.dest / "dlls-manifest.txt"
+        self.assertTrue(manifest.exists(), "staging wrote no DLL list: it saw no DLL in the destination")
+        self.assertEqual(normalized(manifest.read_text(encoding="utf-8-sig")).split(), [".hidden.dll"])
 
     def test_llvm_readobj_report_for_another_file_stops_staging(self):
         self.tool("llvm-readobj")

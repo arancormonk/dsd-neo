@@ -449,6 +449,12 @@ class SoapyModulePackaging(unittest.TestCase):
         # The staging, the librtlsdr probe and the smoke runs live in the scripts now.
         for old in ("Copy-Item", "no transfer left, canceling", "& $exe -h"):
             self.assertNotIn(old, release)
+        # The developer shell the build runs in sets VCToolsInstallDir and VCToolsRedistDir for the staging, which
+        # takes the Visual C++ runtime from that toolset's folder and checks that the build's compilers are its own.
+        for job in (pr, release):
+            self.assertEqual(job.count("uses: TheMrMilchmann/setup-msvc-dev@"), 1)
+            self.assertLess(job.index("uses: TheMrMilchmann/setup-msvc-dev@"), job.index("cmake --preset win-msvc-release"))
+            self.assertLess(job.index("cmake --preset win-msvc-release"), job.index(stage))
 
 
 # Output of Windows builds run under Wine, CRLF kept: a mingw-w64 SoapySDRUtil 0.8.1 with one module (SoapyAirspy)
@@ -656,8 +662,8 @@ PORTAUDIO_COPYRIGHT = b"PortAudio Portable Real-Time Audio Library\r\nCopyright 
 RUNTIME_DLLS = ("MSVCP140.dll", "VCRUNTIME140.dll")
 
 
-# Fakes for running verify_release_tree.ps1 off Windows. dumpbin.exe answers /headers and /DEPENDENTS from
-# report.json beside it (its "unhardened" files lack NX compatibility). SoapySDRUtil.exe and dsd-neo.exe model SoapySDR 0.8.1: they load each module in
+# Fakes for running verify_release_tree.ps1 off Windows. dumpbin.exe answers /HEADERS and /DEPENDENTS, in any case,
+# from report.json beside it (its "unhardened" files lack NX compatibility, its "machines" name a file's machine line). SoapySDRUtil.exe and dsd-neo.exe model SoapySDR 0.8.1: they load each module in
 # <their folder>/../lib/SoapySDR/modules0.8, which fails when the module's library is not in their own folder, and
 # print what the real programs print (the probe messages are the drivers' own).
 FAKE_VERIFY_DUMPBIN = r"""#!{python} -I
@@ -670,12 +676,14 @@ option, path = sys.argv[1], sys.argv[2]
 name = Path(path).name
 kind = report.get("types", {{}}).get(name, "EXECUTABLE IMAGE" if name.endswith(".exe") else "DLL")
 lines = ["Microsoft (R) COFF/PE Dumper Version 14.44.35217.0", "", "Dump of file " + path, "", "File Type: " + kind, ""]
-if option == "/headers":
-    lines += ["            8664 machine (x64)", "                   High Entropy Virtual Addresses",
-              "                   Dynamic base"]
+if option.upper() == "/HEADERS":
+    lines += ["PE signature found", "", "File Type: " + kind, "", "FILE HEADER VALUES"]
+    machine = report.get("machines", {{}}).get(name, "8664 machine (x64)")
+    lines += ["            " + machine] if machine else []
+    lines += ["                   High Entropy Virtual Addresses", "                   Dynamic base"]
     if name not in report.get("unhardened", []):
         lines += ["                   NX compatible"]
-elif option == "/DEPENDENTS":
+elif option.upper() == "/DEPENDENTS":
     lines += ["  Image has the following dependencies:", ""]
     lines += ["    " + dep for dep in report["dependents"].get(name, ["KERNEL32.dll"])]
 else:
@@ -909,13 +917,28 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.crt.mkdir(parents=True)
         for name in RUNTIME_DLLS:
             (self.crt / name).write_bytes(pe_image(name.encode()))
+        # The developer shell of the toolset that built the tree: its compilers, as CMake records them, and the
+        # variables it sets.
+        self.toolset = self.work / "vs/VC/Tools/MSVC/14.51.36231"
+        self.shell = {"VCToolsInstallDir": f"{self.toolset}/", "VCToolsRedistDir": f"{self.work}/vs/VC/Redist/MSVC/14.51.36231/"}
+        self.write_cache(build, self.toolset)
         return tools, build, installed, windows
+
+    def write_cache(self, build, toolset):
+        """The CMakeCache.txt of a build whose compilers are toolset's cl.exe, as CMake records the preset's cl."""
+        compiler = f"{toolset}/bin/Hostx64/x64/cl.exe"
+        (build / "CMakeCache.txt").write_text(
+            "# This is the CMakeCache file.\r\n"
+            f"CMAKE_CXX_COMPILER:STRING={compiler}\r\nCMAKE_CXX_COMPILER_LAUNCHER:STRING=sccache\r\n"
+            f"CMAKE_C_COMPILER:STRING={compiler}\r\nCMAKE_LINKER:FILEPATH={toolset}/bin/Hostx64/x64/link.exe\r\n")
 
     def stage(self, tools, build, installed, windows):
         stage = self.work / "dist/dsd-neo-msvc"
         env = dict(os.environ, PATH=str(tools), SystemRoot=str(windows))
         env["ProgramFiles(x86)"] = str(self.program_files)
-        env.pop("VCToolsRedistDir", None)
+        for name in ("VCToolsInstallDir", "VCToolsRedistDir"):
+            env.pop(name, None)
+        env.update(self.shell)
         rc, out, err = self.pwsh(STAGE, "-Script", ROOT / "tools/windows/stage_release_tree.ps1", "-Build", build,
                                  "-Stage", stage, "-Installed", installed, env=env)
         return rc, out + err, stage
@@ -1023,6 +1046,45 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertIn(f"MSVCP140.dll (imported by", output)
         self.assertIn(f"not in the Visual C++ runtime folder {self.crt}", output)
 
+
+    def test_stage_release_tree_needs_the_developer_shell_of_the_build(self):
+        # The runtime the release carries is that of the toolset that built it: staging takes it from the developer
+        # shell's VCToolsRedistDir, so the build's compilers must be that shell's, under its VCToolsInstallDir.
+        tools, build, installed, windows = self.fake_tree()
+        shell = dict(self.shell)
+        older = self.work / "vs/VC/Tools/MSVC/14.44.35207"
+        cases = (
+            ("built with another toolset", lambda: self.write_cache(build, older),
+             [f"was built with {older}/bin/Hostx64/x64/cl.exe", self.shell["VCToolsInstallDir"]]),
+            ("no VCToolsRedistDir", lambda: self.shell.pop("VCToolsRedistDir"), ["VCToolsRedistDir is not set"]),
+            ("no VCToolsInstallDir", lambda: self.shell.pop("VCToolsInstallDir"), ["VCToolsInstallDir is not set"]),
+            ("no CMake cache", lambda: (build / "CMakeCache.txt").unlink(), ["No CMakeCache.txt in"]),
+        )
+        for label, break_shell, words in cases:
+            with self.subTest(case=label):
+                break_shell()
+                rc, output, stage = self.stage(tools, build, installed, windows)
+                self.assertEqual(rc, 1, output)
+                for word in words:
+                    self.assertIn(word, output)
+                self.assertFalse((stage / "bin/VCRUNTIME140.dll").exists(), output)
+                self.shell = dict(shell)
+                self.write_cache(build, self.toolset)
+                shutil.rmtree(stage, ignore_errors=True)
+        # A cache that spells the toolset's folder with backslashes, as on Windows, names the same compilers.
+        cache = build / "CMakeCache.txt"
+        cache.write_text(cache.read_text().replace(f"{self.toolset}/bin/Hostx64/x64/",
+                                                   f"{self.toolset}\\bin\\Hostx64\\x64\\"))
+        rc, output, _ = self.stage(tools, build, installed, windows)
+        self.assertEqual(rc, 0, output)
+
+    def test_stage_release_tree_sees_hidden_modules(self):
+        # A hidden file in vcpkg's module folder is a module SoapySDR loads like any other: staging must see it.
+        tools, build, installed, windows = self.fake_tree()
+        (installed / "lib/SoapySDR/modules0.8/.SoapyRemoteSupport.dll").write_bytes(pe_image(b"hidden module"))
+        rc, output, _ = self.stage(tools, build, installed, windows)
+        self.assertEqual(rc, 1, output)
+        self.assertIn(".SoapyRemoteSupport.dll", output)
 
     def release_tree(self):
         """A release tree as stage_release_tree.ps1 leaves it, with fake programs and a fake dumpbin.exe."""
@@ -1278,6 +1340,63 @@ class SoapyReleaseScripts(unittest.TestCase):
             del self.report["dependents"][name]
         for dependents in self.report["dependents"].values():
             dependents[:] = [name for name in dependents if name not in RUNTIME_DLLS]
+        self.write_report(tools)
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 0, output)
+
+    def test_verify_release_tree_refuses_images_of_another_machine(self):
+        # An x64 process cannot load a DLL of another machine: a DLL delay-loaded only when a receiver is opened would
+        # pass the hardware-free runs below and fail on the user's machine. Every image the checks walk must be x64.
+        tools, root, windows = self.release_tree()
+        bin_dir = root / "bin"
+        (bin_dir / "late.dll").write_bytes(b"MZ late")
+        self.record_files(root, "late.dll")
+        self.report["dependents"]["late.dll"] = ["KERNEL32.dll"]
+        self.report["dependents"]["airspy.dll"].append("late.dll")
+        self.write_report(tools)
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 0, output)
+        for image, machine, label in (("late.dll", "14C machine (x86)", "0x014C"),
+                                      ("hackrf.dll", "AA64 machine (ARM64)", "0xAA64"),
+                                      ("airspySupport.dll", "14C machine (x86)", "0x014C"),
+                                      ("dsd-neo.exe", "AA64 machine (ARM64)", "0xAA64")):
+            with self.subTest(image=image, machine=machine):
+                self.report["machines"] = {image: machine}
+                self.assert_verify_refuses(tools, root, windows, f"{image} is built for COFF machine {label}",
+                                           "not x64")
+        # A header report that names no machine says nothing of the image.
+        self.report["machines"] = {"late.dll": ""}
+        self.assert_verify_refuses(tools, root, windows, "named 0 machine types", str(bin_dir / "late.dll"))
+        del self.report["machines"]
+
+    def test_verify_release_tree_sees_hidden_files(self):
+        # The ZIP carries hidden files and folders, and Windows loads them: every check of the tree must see them.
+        tools, root, windows = self.release_tree()
+        bin_dir = root / "bin"
+        modules = root / "lib/SoapySDR/modules0.8"
+        cases = (
+            ("an unrecorded file", bin_dir / ".vendor.txt", None, ["No component record", str(bin_dir / ".vendor.txt")]),
+            ("an unexpected module", modules / ".SoapyRemoteSupport.dll", None,
+             [f"Expected exactly airspySupport.dll, HackRFSupport.dll in {modules}", ".SoapyRemoteSupport.dll"]),
+            ("a second copy", root / "lib/.cache/airspy.dll", None,
+             ["Expected one airspy.dll", str(root / "lib/.cache/airspy.dll")]),
+            ("a binary with a missing import", bin_dir / ".vendor.dll", ["missing.dll", "KERNEL32.dll"],
+             [".vendor.dll -> missing.dll"]),
+        )
+        self.record_files(root, ".vendor.dll")
+        for label, path, imports, words in cases:
+            with self.subTest(case=label):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"MZ hidden")
+                if imports:
+                    self.report["dependents"][path.name] = imports
+                try:
+                    self.assert_verify_refuses(tools, root, windows, *words)
+                finally:
+                    path.unlink()
+                    if imports:
+                        del self.report["dependents"][path.name]
+        shutil.rmtree(root / "lib/.cache")
         self.write_report(tools)
         rc, output = self.verify(tools, root, windows)
         self.assertEqual(rc, 0, output)

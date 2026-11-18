@@ -35,6 +35,42 @@ $expectedModules = @('airspySupport.dll', 'HackRFSupport.dll')
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path (Join-Path $PSScriptRoot '..') '..')).Path
 $build = (Resolve-Path -LiteralPath $BuildDir).Path
 $installed = (Resolve-Path -LiteralPath $InstalledDir).Path
+
+# The Visual C++ runtime the release carries must be that of the toolset that built it
+# (legal/msvc-runtime.md). stage_runtime_dlls.ps1 takes it from VCToolsRedistDir, the
+# runtime folder of the developer shell's toolset, so the build's compilers must be that
+# toolset's: under VCToolsInstallDir, which the same shell sets.
+function Assert-BuildToolset {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Build
+    )
+
+    foreach ($variable in @('VCToolsInstallDir', 'VCToolsRedistDir')) {
+        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($variable))) {
+            throw "$variable is not set: run from the Visual Studio developer shell of the toolset that built $Build"
+        }
+    }
+    $toolset = $env:VCToolsInstallDir.Trim().Replace('\', '/').TrimEnd('/') + '/'
+    $cache = Join-Path $Build 'CMakeCache.txt'
+    if (!(Test-Path -LiteralPath $cache -PathType Leaf)) {
+        throw "No CMakeCache.txt in $Build, so the toolset that built it is unknown"
+    }
+    $lines = @(Get-Content -LiteralPath $cache)
+    foreach ($language in @('C', 'CXX')) {
+        $entries = @($lines | Where-Object { $_ -cmatch "^CMAKE_${language}_COMPILER:[A-Z]+=" })
+        if ($entries.Count -ne 1) {
+            throw "$cache names no CMAKE_${language}_COMPILER, so the toolset that built $Build is unknown"
+        }
+        $compiler = $entries[0].Substring($entries[0].IndexOf('=') + 1).Trim()
+        if (-not $compiler.Replace('\', '/').StartsWith($toolset, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "$Build was built with $compiler, not with the toolset of this developer shell ($env:VCToolsInstallDir), whose Visual C++ runtime the release would carry"
+        }
+    }
+}
+
+Assert-BuildToolset -Build $build
+
 # A used folder would mix two builds: stage_runtime_dlls.ps1 keeps a DLL already in
 # bin\ rather than copy the one vcpkg installed, so a new module could ship beside an
 # older library. Only an absent or empty folder is staged into.
@@ -80,7 +116,7 @@ $moduleSource = Join-Path $installed $moduleSubdir
 if (!(Test-Path -LiteralPath $moduleSource)) {
     throw "SoapySDR module folder not found: $moduleSource"
 }
-$modules = @(Get-ChildItem -LiteralPath $moduleSource -File -Filter '*.dll' | Sort-Object -Property Name)
+$modules = @(Get-ChildItem -LiteralPath $moduleSource -File -Force -Filter '*.dll' | Sort-Object -Property Name)
 $found = @($modules | Select-Object -ExpandProperty Name)
 if ((($found | Sort-Object) -join ', ') -cne (($expectedModules | Sort-Object) -join ', ')) {
     throw "Expected exactly the SoapySDR modules $($expectedModules -join ', ') in $moduleSource; found $($found -join ', ')"

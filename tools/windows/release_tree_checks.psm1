@@ -29,7 +29,7 @@ function Assert-ReleaseNotices {
 
     foreach ($notice in $script:ReleaseNotices) {
         $path = Join-Path $DocDir $notice
-        if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+        if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -Force -LiteralPath $path).Length -eq 0) {
             throw "Missing or empty required license file: $path"
         }
     }
@@ -249,7 +249,8 @@ function Get-ReleaseBinaryRecords {
 }
 
 # The files of a release tree that need a component record: every file in bin\ and
-# under lib\, except the DLL list stage_runtime_dlls.ps1 writes (bin\dlls-manifest.txt).
+# under lib\, hidden ones included (the ZIP carries them), except the DLL list
+# stage_runtime_dlls.ps1 writes (bin\dlls-manifest.txt).
 function Get-ReleaseTreeFiles {
     param(
         [Parameter(Mandatory = $true)]
@@ -262,9 +263,9 @@ function Get-ReleaseTreeFiles {
         $path = Join-Path $TreeRoot $folder
         if (Test-Path -LiteralPath $path -PathType Container) {
             if ($folder -eq 'bin') {
-                $bin = (Get-Item -LiteralPath $path).FullName
+                $bin = (Get-Item -Force -LiteralPath $path).FullName
             }
-            $files += @(Get-ChildItem -LiteralPath $path -File -Recurse)
+            $files += @(Get-ChildItem -LiteralPath $path -File -Recurse -Force)
         }
     }
     return @($files | Where-Object { -not ($_.Name -eq 'dlls-manifest.txt' -and $_.DirectoryName -eq $bin) } |
@@ -295,7 +296,7 @@ function Assert-ReleaseBinaryRecords {
         foreach ($record in $records[$file.Name]) {
             foreach ($notice in $record.Notices.Keys) {
                 $path = Join-Path $docDir $notice
-                if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+                if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -Force -LiteralPath $path).Length -eq 0) {
                     $missing.Add("$($file.Name) ($($record.Component)): $path")
                 }
             }
@@ -330,12 +331,17 @@ function Read-StreamBytes {
     return $true
 }
 
-# Whether the file is a PE image Windows can load (an executable or a DLL), from its
+# The COFF machine type of the release's binaries: IMAGE_FILE_MACHINE_AMD64. Windows
+# refuses to load an image of any other machine into an x64 process.
+$script:ReleaseMachine = 0x8664
+
+# The COFF machine type of a PE image Windows can load (an executable or a DLL), from its
 # own headers: the MZ header, the PE signature its e_lfanew points to (anywhere in the
 # file, past a DOS stub of any size), the image flag in the COFF header and a PE32 or
-# PE32+ optional header. An object file has none of these, though llvm-objdump names its
-# format as it names an image's (coff-x86-64) and lists no imports for it.
-function Test-PeImage {
+# PE32+ optional header. $null for any other file: an object file has none of these,
+# though llvm-objdump names its format as it names an image's (coff-x86-64) and lists no
+# imports for it.
+function Get-PeImageMachine {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path
@@ -345,28 +351,74 @@ function Test-PeImage {
     try {
         $dos = New-Object byte[] 64
         if (-not (Read-StreamBytes -Stream $stream -Buffer $dos) -or $dos[0] -ne 0x4D -or $dos[1] -ne 0x5A) {
-            return $false
+            return $null
         }
         # The PE signature, the 20-byte COFF header and the optional header's magic.
         $pe = [System.BitConverter]::ToInt32($dos, 0x3C)
         if ($pe -lt 64 -or [long]$pe + 26 -gt $stream.Length) {
-            return $false
+            return $null
         }
         $stream.Position = $pe
         $header = New-Object byte[] 26
         if (-not (Read-StreamBytes -Stream $stream -Buffer $header)) {
-            return $false
+            return $null
         }
     } finally {
         $stream.Dispose()
     }
     if ($header[0] -ne 0x50 -or $header[1] -ne 0x45 -or $header[2] -ne 0 -or $header[3] -ne 0) {
-        return $false
+        return $null
     }
+    $machine = [System.BitConverter]::ToUInt16($header, 4)
     $optionalHeaderSize = [System.BitConverter]::ToUInt16($header, 20)
     $characteristics = [System.BitConverter]::ToUInt16($header, 22)
     $magic = [System.BitConverter]::ToUInt16($header, 24)
-    return ($optionalHeaderSize -ge 2) -and (($characteristics -band 0x0002) -ne 0) -and ($magic -eq 0x10B -or $magic -eq 0x20B)
+    if (($optionalHeaderSize -ge 2) -and (($characteristics -band 0x0002) -ne 0) -and ($magic -eq 0x10B -or $magic -eq 0x20B)) {
+        return [int]$machine
+    }
+    return $null
+}
+
+# Whether the file is a PE image Windows can load (Get-PeImageMachine).
+function Test-PeImage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    return $null -ne (Get-PeImageMachine -Path $Path)
+}
+
+# Throws unless the machine type is the release's (x64): an x64 process that loads a DLL
+# of another machine, even only when a receiver is opened, fails with ERROR_BAD_EXE_FORMAT.
+function Assert-ReleaseMachine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Machine,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if ($Machine -ne $script:ReleaseMachine) {
+        throw ("{0} is built for COFF machine 0x{1:X4}, not x64 (0x{2:X4}): an x64 release cannot load it" -f $Path, $Machine, $script:ReleaseMachine)
+    }
+}
+
+# The COFF machine type dumpbin /HEADERS reports in its file header values
+# ("8664 machine (x64)"). Throws unless the report names exactly one.
+function Get-DumpbinMachine {
+    param(
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    $machines = @(ConvertTo-CheckLines $Text | Where-Object { $_ -match '^\s*([0-9A-Fa-f]{1,4}) machine( \(.*\))?\s*$' } |
+            ForEach-Object { [System.Convert]::ToInt32(($_.Trim() -split '\s+')[0], 16) })
+    if ($machines.Count -ne 1) {
+        throw "dumpbin /HEADERS named $($machines.Count) machine types, not one"
+    }
+    return $machines[0]
 }
 
 # Whether dumpbin reported on a loadable image: its File Type is DLL or EXECUTABLE
@@ -398,7 +450,9 @@ function Test-ImportName {
 }
 
 # The DLL names dumpbin /DEPENDENTS lists, delay-loaded ones included. Every line of a
-# dependency list is one name; a line that is not throws, so no dependency goes unread.
+# dependency list is one name; a line that is not throws, so no dependency goes unread,
+# and so does a warning or error dumpbin printed anywhere in the report: it read the
+# image only in part.
 function Get-DumpbinDependents {
     param(
         [AllowEmptyString()]
@@ -409,6 +463,9 @@ function Get-DumpbinDependents {
     $inList = $false
     foreach ($line in (ConvertTo-CheckLines $Text)) {
         $trimmed = $line.Trim()
+        if ($trimmed -match '^(DUMPBIN|LINK)\s*:\s*(fatal error|error|warning)\b') {
+            throw "dumpbin printed '$trimmed'"
+        }
         if ($trimmed -match '^Image has the following (delay load )?dependencies:$') {
             $inList = $true
         } elseif ($trimmed -eq 'Summary') {
@@ -494,5 +551,6 @@ function Invoke-IsolatedProcess {
 
 Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, ConvertTo-ComparablePath, Get-SoapyUtilInfo,
     Find-SoapyLoadError, Get-ReleaseNotices, Assert-ReleaseNotices, Get-ReleaseBinaryRecords, Get-ReleaseTreeFiles,
-    Assert-ReleaseBinaryRecords, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Get-RecordedRuntimeFiles, Test-PeImage, Test-DumpbinImageReport,
+    Assert-ReleaseBinaryRecords, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Get-RecordedRuntimeFiles,
+    Get-PeImageMachine, Test-PeImage, Assert-ReleaseMachine, Get-DumpbinMachine, Test-DumpbinImageReport,
     Test-ImportName, Get-DumpbinDependents, Invoke-IsolatedProcess

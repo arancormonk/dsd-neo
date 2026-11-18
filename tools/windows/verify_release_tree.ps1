@@ -12,8 +12,8 @@
 #      runtime DLL that the msvc-runtime record the tree ships
 #      (share\doc\dsd-neo\legal\components.json) does not list; the binaries are every
 #      .exe and .dll in bin\ and the module folder and every file they import, directly
-#      or not, and each passes check_release_hardening.ps1;
-#   3. every file in bin\ and lib\ is one a component record of the tree's
+#      or not, and each is an x64 image that passes check_release_hardening.ps1;
+#   3. every file in bin\ and lib\, hidden or not, is one a component record of the tree's
 #      components.json lists (windows_release), and the tree carries the notices of
 #      those records;
 #   4. dsd-neo.exe -h;
@@ -72,13 +72,23 @@ function Invoke-Dumpbin {
 }
 
 # The DLLs an image imports. A report that is not about a loadable image (an object
-# file, a library) would list none and pass every check below.
+# file, a library) would list none and pass every check below. An image of another
+# machine than x64 passes them too, and the hardening check, but an x64 process cannot
+# load it: a DLL the release delay-loads only when a receiver is opened would fail there,
+# on the user's machine, not in the checks here.
 function Get-ImageDependents {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path
     )
 
+    $headers = Invoke-Dumpbin '/HEADERS' $Path
+    try {
+        $machine = Get-DumpbinMachine $headers
+    } catch {
+        throw "dumpbin's header report for ${Path}: $($_.Exception.Message)`n$headers"
+    }
+    Assert-ReleaseMachine -Machine $machine -Path $Path
     $report = Invoke-Dumpbin '/DEPENDENTS' $Path
     if (-not (Test-DumpbinImageReport $report)) {
         throw "dumpbin did not report ${Path} as an executable or a DLL:`n$report"
@@ -188,7 +198,7 @@ function Test-PatchedRtlsdr {
     # The overlay applies the patches; this checks the DLL the tree ships came out of
     # that build. Only librtlsdr has a probe: the libairspy patch adds no mark to a
     # Windows build (tools/check_patched_usb_libs.sh probes it on Linux and macOS).
-    $dlls = @(Get-ChildItem -Path $Bin -File -Filter '*rtlsdr*.dll')
+    $dlls = @(Get-ChildItem -Path $Bin -File -Force -Filter '*rtlsdr*.dll')
     if ($dlls.Count -ne 1) { throw "Expected exactly one staged librtlsdr DLL, found $($dlls.Count)" }
     $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dlls[0].FullName))
     if (-not $text.Contains('no transfer left, canceling')) {
@@ -224,14 +234,15 @@ function Test-LoadPath {
     $bin = Join-Path $TreeRoot 'bin'
     $moduleDir = Join-Path $TreeRoot 'lib/SoapySDR/modules0.8'
 
+    # Hidden files too: the ZIP carries them, and Windows loads them.
     foreach ($name in @('airspy.dll', 'hackrf.dll', 'libusb-1.0.dll', 'pthreadVC3.dll', 'rtlsdr.dll', 'SoapySDR.dll')) {
-        $copies = @(Get-ChildItem -LiteralPath $TreeRoot -File -Recurse -Filter $name)
+        $copies = @(Get-ChildItem -LiteralPath $TreeRoot -File -Recurse -Force -Filter $name)
         if ($copies.Count -ne 1 -or $copies[0].DirectoryName -ine $bin) {
             $paths = @($copies | ForEach-Object { $_.FullName })
             throw "Expected one $name, in $bin; found $($paths.Count): $($paths -join ', ')"
         }
     }
-    $found = @(Get-ChildItem -Path $moduleDir -File | Select-Object -ExpandProperty Name | Sort-Object)
+    $found = @(Get-ChildItem -Path $moduleDir -File -Force | Select-Object -ExpandProperty Name | Sort-Object)
     $expected = @($Modules.Values | Sort-Object)
     if (($found -join ',') -ne ($expected -join ',')) {
         throw "Expected exactly $($expected -join ', ') in $moduleDir; found $($found -join ', ')"
@@ -266,7 +277,8 @@ function Test-LoadPath {
     # packages installed, which a user's may lack (Get-DllKind). Windows loads the file
     # an import names whatever its name ends in (vendor.drv), so the binaries are every
     # .exe and .dll in bin\ and the module folder and every file they import, directly
-    # or not; dumpbin refuses any that is not an image.
+    # or not; dumpbin refuses any that is not an image, and Get-ImageDependents any that
+    # is not x64.
     # A Visual C++ runtime DLL the tree carries, imported or not, must be one the
     # msvc-runtime record lists with Microsoft's terms for it.
     $missing = New-Object 'System.Collections.Generic.List[string]'
@@ -275,7 +287,7 @@ function Test-LoadPath {
     $images = New-Object 'System.Collections.Generic.List[string]'
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $queue = New-Object 'System.Collections.Generic.Queue[System.IO.FileInfo]'
-    $roots = @(Get-ChildItem -Path $bin -File) + @(Get-ChildItem -Path $moduleDir -File)
+    $roots = @(Get-ChildItem -Path $bin -File -Force) + @(Get-ChildItem -Path $moduleDir -File -Force)
     foreach ($root in @($roots | Where-Object { $_.Extension -in @('.exe', '.dll') })) {
         $queue.Enqueue($root)
     }
@@ -301,7 +313,7 @@ function Test-LoadPath {
             } elseif ($kind -eq 'ApiSet' -or $kind -eq 'Windows') {
                 continue
             } elseif (Test-Path -LiteralPath $path -PathType Leaf) {
-                $queue.Enqueue((Get-Item -LiteralPath $path))
+                $queue.Enqueue((Get-Item -Force -LiteralPath $path))
             } else {
                 $missing.Add("$($binary.Name) -> $name")
             }
