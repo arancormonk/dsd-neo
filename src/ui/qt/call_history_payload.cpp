@@ -20,6 +20,7 @@
 #include <limits>
 #include <stddef.h>
 #include <stdint.h>
+#include <utility>
 
 #include "call_history_merge.h"
 #include "call_history_model.h"
@@ -65,6 +66,14 @@ item_rx_scope(const Event_History* item) {
 }
 
 using GpsUnit = CallHistoryModel::GpsUnit;
+
+/** @brief The sync type a ring item names (Event_History::systype, a signed byte: DSD_SYNC_* or a negative "none"),
+ * every negative value read as -1. */
+int
+item_systype(const Event_History* item) {
+    const int8_t systype = item->systype;
+    return systype < 0 ? -1 : static_cast<int>(static_cast<uint8_t>(systype));
+}
 
 /** @brief Where a GPS unit stands in the order that picks a merged row's one (call_history_gps_adopts()). */
 CallHistoryPositionKey
@@ -154,7 +163,7 @@ set_row_gps_units(CallHistoryModel::Row& row, QList<GpsUnit> units) {
     row.gpsSlot = shown.slot;
     row.gpsOrd = shown.ord;
     row.gpsVer = shown.ver;
-    row.gpsOthers = units;
+    row.gpsOthers = std::move(units);
 }
 
 /** @brief Put @p unit among @p units: in place of an earlier reading of its fragment that it replaces
@@ -320,7 +329,7 @@ position_to_json(const CallHistoryModel::Position& pos, QJsonObject& obj) {
 QList<CallHistoryModel::GpsUnit>
 gps_units_from_json(const QJsonValue& value, const CallHistoryModel::Row& row) {
     QList<CallHistoryModel::GpsUnit> units;
-    for (const QJsonValue& entry : value.toArray()) {
+    for (const auto& entry : value.toArray()) {
         const QJsonObject stored = entry.toObject();
         CallHistoryModel::GpsUnit unit;
         unit.text = stored.value(QLatin1String("gps")).toString();
@@ -553,7 +562,7 @@ raw_identity_text(int protocol, bool source, const QString& text) {
  */
 void
 row_take_payload(CallHistoryModel::Row& row, const Event_History* item) {
-    row.protocol = item->systype;
+    row.protocol = item_systype(item);
     row.sourceText = raw_identity_text(row.protocol, true, item_text(item->src_str, sizeof(item->src_str)));
     row.targetText = raw_identity_text(row.protocol, false, item_text(item->tgt_str, sizeof(item->tgt_str)));
     row.sourceScope = item_sender_scope(item);
