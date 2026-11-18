@@ -215,7 +215,8 @@ reset_state(dsd_state* state) {
 }
 
 /* Send the header from @p header_from, an idle burst from @p between_from (none when NULL), and the block from
-   @p block_from; 1 when the feed then holds the report as radio 123456's, 0 when it holds none, -1 for anything else. */
+   @p block_from; 1 when the feed then holds the report as radio 123456's, 0 when it holds none, -1 for anything
+   else. */
 static int
 send_packet(dsd_opts* opts, dsd_state* state, const burst_source* header_from, const burst_source* between_from,
             const burst_source* block_from) {
@@ -286,8 +287,10 @@ main(void) {
     }
     opts.aggressive_framesync = 1;
 
-    /* A burst of another mode between the header and its block (issue #800, fail closed): the transmission the header
-       began was interrupted, so a block of the header's own mode after it is not shown to be that packet's. */
+    /* A burst of another mode between the header and its block on the header's lane (issue #800, fail closed): the
+       transmission the header began was interrupted there, so a block of the header's own mode after it is not shown to
+       be that packet's. A burst on another lane (direct mode's slot 2 is lane 1; an MS-sourced burst, which has no
+       slot, is read on lane 0) leaves the header's binding alone. */
     static const struct {
         const burst_source* header;
         const burst_source* between;
@@ -302,9 +305,10 @@ main(void) {
         {&k_direct_ts1, NULL, &k_ms, 0, "direct-mode header, repeater-mode (MS-sourced) block"},
         {&k_ms, NULL, &k_direct_ts1, 0, "repeater-mode (MS-sourced) header, direct-mode block"},
         {&k_ms, NULL, &k_ms, 1, "repeater-mode (MS-sourced) header and block"},
-        {&k_direct_ts2, &k_direct_ts2, &k_direct_ts2, 1, "direct mode, an idle burst of the same mode between"},
-        {&k_direct_ts2, &k_ms, &k_direct_ts2, 0, "direct mode, a repeater-mode burst between header and block"},
-        {&k_ms, &k_direct_ts1, &k_ms, 0, "repeater mode, a direct-mode burst between header and block"},
+        {&k_direct_ts1, &k_direct_ts1, &k_direct_ts1, 1, "direct mode, an idle burst of the same mode between"},
+        {&k_direct_ts1, &k_ms, &k_direct_ts1, 0, "direct mode, a repeater-mode burst between on its lane"},
+        {&k_ms, &k_direct_ts1, &k_ms, 0, "repeater mode, a direct-mode burst between on its lane"},
+        {&k_direct_ts2, &k_ms, &k_direct_ts2, 1, "direct mode slot 2, a repeater-mode burst on the other lane"},
     };
 
     int failed = 0;

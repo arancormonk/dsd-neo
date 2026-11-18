@@ -1388,9 +1388,9 @@ tune_and_retune(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, ui
 }
 
 /* Issue #800: a grant's checked talker carries to the channel the grant sends the receiver to, and only there. A
- * checked grant heard on a Phase 1 control channel retunes to a Phase 2 voice channel (another reception generation, and
- * the voice channel's first sync of the other phase moves nothing more); an addressless MAC_ACTIVE starts the call with
- * the grant's talker, and the report names it. Phase 1 frames heard on the voice channel and Phase 2 again end the
+ * checked grant heard on a Phase 1 control channel retunes to a Phase 2 voice channel (another reception generation,
+ * and the voice channel's first sync of the other phase moves nothing more); an addressless MAC_ACTIVE starts the call
+ * with the grant's talker, and the report names it. Phase 1 frames heard on the voice channel and Phase 2 again end the
  * carry: the next source-less start lends the talker no verdict. */
 static void
 test_grant_carry_across_its_retune(void) {

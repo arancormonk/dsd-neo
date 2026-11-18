@@ -1671,9 +1671,9 @@ p25_slot_note_voice_user(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state, co
 
 /* Brings the record @p rec of the slot's canonical call up to date after a message naming @p claim. The record takes
  * the call's current source, target and kind, its epoch and protocol, and the reception generation; a field keeps its
- * flag only within the same epoch, under the same reception generation and with the same value (the source's not past a special
- * address in the message's source field), and gains the message's verdict where the message named the value the call
- * now holds. A call that is not ACTIVE leaves no record. */
+ * flag only within the same epoch, under the same reception generation and with the same value (the source's not past
+ * a special address in the message's source field), and gains the message's verdict where the message named the value
+ * the call now holds. A call that is not ACTIVE leaves no record. */
 static void
 p25_sm_merge_published_identity(p25_sm_published_identity* rec, const dsd_state* state, int slot,
                                 const p25_sm_identity_claim* claim) {

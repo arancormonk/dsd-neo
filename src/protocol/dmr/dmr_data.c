@@ -344,6 +344,9 @@ dmr_data_collect_second_half(dmr_data_sync_ctx* ctx) {
 
 static void
 dmr_data_dispatch_burst(dmr_data_sync_ctx* ctx) {
+    /* A burst of another sender kind on the lane interrupts what the lane held (issue #800, fail closed), whatever the
+       burst itself turns out to carry. */
+    dmr_note_burst_lane(ctx->opts, ctx->state);
     if (ctx->confidence_reject != 0) {
         ctx->SlotTypeOk = 0;
         return;

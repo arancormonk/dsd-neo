@@ -13,6 +13,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
@@ -271,6 +272,13 @@ bool
 QR_16_7_6_decode(unsigned char* rxBits) {
     (void)rxBits;
     return true;
+}
+
+void
+dsd_position_dmr_note_lane_burst(dsd_state* state, uint8_t evidence_lane, uint8_t data_lane) {
+    (void)state;
+    (void)evidence_lane;
+    (void)data_lane;
 }
 
 void

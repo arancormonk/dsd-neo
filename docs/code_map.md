@@ -2298,8 +2298,8 @@ suite runs under this compiler.
   row had before one was decoded (0, so `P25_<NAC>` without a WACN and `EDACS_SITE_000`); dPMR, M17, YSF, D-STAR and
   X2-TDMA rows carry none. The row takes the parts whole from the record of the reception the call began on (the
   reception generation is the call's `dsd_call_snapshot::rx_gen`, `dsd_state_reception_generation()`: a retune or a
-  change of P25 phase or DMR burst mode keeps the record's epoch but is another reception, issue #800): the record keeps
-  them one consistent observation, and a note
+  change of P25 phase keeps the record's epoch but is another reception, issue #800): the record keeps them one
+  consistent observation, and a note
   naming another system, site or access code (an IDAS SCCH site ID that disagrees with the Type-D system ID, another
   EDACS or P25 system, another NAC on the carrier) moves the record's epoch, so the row keeps the identity it was heard
   under, never a mix. While the call is ACTIVE it takes the live record; once it has ENDED, the record the canonical
@@ -2505,8 +2505,8 @@ suite runs under this compiler.
   group/private from checked provenance). Admission refuses without `pos_verified`, when the receive policy rejects
   the protocol and slot, when a multi-fragment report's first fragment was heard under another reception generation
   (`dsd_position_origin_capture()`/`_matches()`: the reception generation, `dsd_state_reception_generation()`, which
-  moves with the received identity's epoch, every applied trunking retune and every change of P25 phase or DMR burst
-  mode, together with the trunk tuning generation), or
+  moves with the received identity's epoch, every applied trunking retune and every change of P25 phase, together with
+  the trunk tuning generation), or
   for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays) and
   a source that names no radio (`dsd_position_source_names_radio()`: a P25 special address, `$FFFFFC`-`$FFFFFF`,
   destination kept),
@@ -2564,8 +2564,7 @@ suite runs under this compiler.
   `dsd_event_rx_scope::tuned_hz`, a report's `freq_hz`), are never one; else they are one when both scopes are known
   and equal, or when they
   share the reception generation (`dsd_state_reception_generation()`: the received identity's epoch, plus the applied
-  trunking retunes, `dsd_state::rx_tune_seq`, and the changes of P25 phase or DMR burst mode, `dsd_state::rx_mode_seq`,
-  both of which keep
+  trunking retunes, `dsd_state::rx_tune_seq`, and the P25 phase changes, `dsd_state::rx_phase_seq`, both of which keep
   the system the record holds) and nothing says otherwise (an unknown scope, or one scope only refining the other: a
   NAC then the WACN and SYSID, an EDACS site then its system); two families, two tuned frequencies or two values of one
   kind are two receptions within one generation, and an unknown side never matches across generations, so a NAC heard
@@ -2672,15 +2671,22 @@ suite runs under this compiler.
     `dsd_position_attribution_call_from_closing()`); its protocol class (`dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, else the
     protocol family) is the report's and the evidence's; it is the epoch the evidence was learned in, or for DMR the
     transmission (a healed fade keeps it); the reception generation (`dsd_state_reception_generation()`, moved by
-    another access code, system, site or family, an applied trunking retune or a change of P25 phase or DMR burst
-    mode: a Phase 1 call left open across Phase 2 frames names no later report's sender, nor a direct-mode call's
-    talker a direct-mode burst after a repeater-mode one came between, test `DMR_EMBEDDED_GPS_ATTRIBUTION`
-    `test_direct_mode_after_an_interruption()`) is the one it was learned under (the reception
+    another access code, system, site or family, an applied trunking retune or a change of P25 phase: a Phase 1 call
+    left open across Phase 2 frames names no later report's sender) is the one it was learned under (the reception
     rule, `dsd_position_same_reception()`, on the generation alone: the evidence keeps no scope); for DMR, the
     burst carrying the report has the evidence's burst identity (`dsd_position_attribution::air`,
     `dsd_position_dmr_air_same()`: the sender kind by its sync word and the single-slot decoder's over-the-air slot), so
     a repeater-mode burst after a direct-mode call whose terminator was missed is not that call's, whatever the call
-    layer kept (test `DMR_EMBEDDED_GPS_ATTRIBUTION`); and the
+    layer kept (test `DMR_EMBEDDED_GPS_ATTRIBUTION`); and no burst of another sender kind came between on the
+    evidence's lane: every DMR burst reader, once the burst's slot is known (`dmr_note_burst_lane()` in
+    `dmr_mono_slot.h`, from `dmr_data_sync()`, the MS voice bootstrap and the BS burst readers), revokes the embedded
+    GPS evidence and the data header binding (`dmr_data_air`) of another sender kind held on that burst's lanes
+    (`dsd_position_dmr_note_lane_burst()`: the evidence lane is lane 0 where the single-slot output folds the burst's
+    LCs, the data lane the burst's slot), so a return to direct mode after a repeater-mode burst is not the direct-mode
+    call either (`test_direct_mode_after_an_interruption()`, `DMR_DATA_HEADER_AIR`). Another lane's bursts never touch
+    it, and the reception generation does not move with a DMR burst mode, so a carrier with BS-sourced bursts on one
+    slot and MS-sourced ones (which have no CACH and are read on lane 0) on the other keeps each lane's evidence
+    (`test_two_lanes_of_two_sender_kinds()`); and the
     call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
     The P25 trunk SM binds its published record to the generation of its last publication
     (`p25_sm_published_identity::rx_gen`, which the attribution rule reads; a flag kept from a publication of another
@@ -3933,11 +3939,9 @@ suite runs under this compiler.
   protocol that notes nothing the protocol itself) moves the epoch even when neither noted anything (issue #800, fail
   closed: a D-STAR call, an M17 BERT frame and D-STAR again are three receptions, so a D-STAR header's naming and every
   multi-fragment report's origin end at the switch; both P25 phases, every DMR burst and both polarities are one
-  protocol, but a P25 sync of the other phase than the last P25 sync, or a DMR sync of another burst mode than the
-  last DMR sync (`dsd_state::rx_dmr_mode`: a repeater's BS-sourced burst, a radio's MS-sourced one, direct mode by its
-  sync word; an RC burst names none), moves `dsd_state::rx_mode_seq`, and so the reception generation, keeping the
-  record; an applied retune starts the carrier reached's phase and burst mode afresh, so a Phase 2 voice channel a
-  Phase 1 control channel granted moves the generation once, by the retune); the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
+  protocol, but a P25 sync of the other phase than the last P25 sync moves `dsd_state::rx_phase_seq`, and so the
+  reception generation, keeping the record; an applied retune starts the carrier reached's phase afresh, so a Phase 2
+  voice channel a Phase 1 control channel granted moves the generation once, by the retune); the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
   finds it taken leaves the step to the next, as it leaves the playout drain) marks every part stale and keeps the
   values; every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control channel
   return or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), requests `dsd_rxid_trunk_tune()`, which drops the

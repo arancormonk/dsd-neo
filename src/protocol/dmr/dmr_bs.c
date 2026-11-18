@@ -16,6 +16,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -311,6 +312,7 @@ collect_dmr_bs_cach_and_tact(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) 
     ctx->internalslot = dmr_bs_next_slot(ctx);
     ctx->prev_slot = (int8_t)ctx->internalslot;
     state->currentslot = ctx->internalslot;
+    dmr_note_burst_lane(opts, state);
     return 1;
 }
 
@@ -829,6 +831,8 @@ decode_dmr_bs_bootstrap_cach_and_tact(dsd_state* state, dmr_bs_bootstrap_ctx* ct
 
     ctx->internalslot = ctx->tact_bits[1];
     state->currentslot = ctx->internalslot;
+    /* A repeater's burst on two-slot lanes: no single-slot fold (issue #800, fail closed). */
+    dsd_position_dmr_note_lane_burst(state, ctx->internalslot, ctx->internalslot);
     dmr_confidence_note_voice_sync(state, ctx->internalslot);
     reset_dmr_bs_slot_keystream_counters(state, ctx->internalslot);
     return 1;

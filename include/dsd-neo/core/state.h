@@ -745,7 +745,7 @@ typedef struct {
      * receptions, also of one system whose scope names no carrier. */
     int64_t tuned_hz;
     /** The reception generation the reception was read under (dsd_state_reception_generation(): the record's epoch,
-     * the retunes and the changes of P25 phase or DMR burst mode). */
+     * the retunes and the P25 phase changes). */
     uint64_t rx_gen;
     dsd_position_scope scope; /**< DSD_POS_SCOPE_NONE when none is known */
     uint8_t resolved;         /**< 1 once the row's reception was read (a none scope included); pinned from then */
@@ -3416,18 +3416,12 @@ struct dsd_state {
        dsd_rxid_reset() or since an applied trunking retune): dsd_rxid_note_sync(). Decoder thread; outside every
        snapshot copy range. */
     uint8_t rx_p25_phase;
-    /* The DMR burst mode the last frame sync named by its sync word (dsd_rxid_note_sync(): 1 a repeater's BS-sourced
-       burst, 2 a radio's MS-sourced one, 3 direct mode; an RC burst names none and leaves it; 0 after a sync of another
-       protocol, since the last dsd_rxid_reset() or since an applied trunking retune). Decoder thread; outside every
-       snapshot copy range. */
-    uint8_t rx_dmr_mode;
-    /* Moves with every change of P25 phase between two P25 syncs, and of DMR burst mode between two DMR syncs
-       (dsd_rxid_note_sync()), never back: a part of the reception generation (dsd_state_reception_generation()), so a
-       transmission of the other phase, or a direct-mode transmission after a repeater-mode one, on the carrier is
-       another reception for every multi-part report, sender evidence and history row, while the system both share
-       stays in rx_id (issue #800, fail closed). Never reset (a trunk-scan rollback restores rx_id, not this). Decoder
-       thread; outside every snapshot copy range. */
-    uint32_t rx_mode_seq;
+    /* Moves with every change of P25 phase between two P25 syncs (dsd_rxid_note_sync()), never back: a part of the
+       reception generation (dsd_state_reception_generation()), so a transmission of the other phase on the carrier is
+       another reception for every multi-part report, sender evidence and history row, while the system the two phases
+       share stays in rx_id (issue #800, fail closed). Never reset (a trunk-scan rollback restores rx_id, not this).
+       Decoder thread; outside every snapshot copy range. */
+    uint32_t rx_phase_seq;
     /* Moves with every accepted trunking retune the decoder thread applies to rx_id (dsd_rxid_trunk_tune()), never
        back: the other part of the reception generation that is not rx_id's epoch, which such a retune keeps (only the
        access code goes). Decoder thread; outside every snapshot copy range. */
@@ -3473,10 +3467,10 @@ struct dsd_state {
    decode, play or publish. */
 /**
  * The reception generation @p state is in now (issue #800): the received identity's epoch (dsd_received_identity::epoch)
- * in the low 32 bits; in the high 32, the accepted trunking retunes applied to it (rx_tune_seq) plus the changes of P25
- * phase and of DMR burst mode (rx_mode_seq), both only ever moving forward, so the sum is equal only while neither
- * moved. Equal generations are one uninterrupted reception: no retune, no other system, access code or protocol, no
- * other P25 phase or DMR burst mode in between. Every position origin (dsd_position_origin), sender evidence (dsd_position_attribution) and history row
+ * in the low 32 bits; in the high 32, the accepted trunking retunes applied to it (rx_tune_seq) plus the P25 phase
+ * changes (rx_phase_seq), both only ever moving forward, so the sum is equal only while neither moved. Equal
+ * generations are one uninterrupted reception: no retune, no other system, access code or protocol, no other P25 phase
+ * in between. Every position origin (dsd_position_origin), sender evidence (dsd_position_attribution) and history row
  * (dsd_event_rx_scope) compares it. 0 for NULL. Decoder thread.
  */
 static inline uint64_t
@@ -3484,7 +3478,7 @@ dsd_state_reception_generation(const dsd_state* state) {
     if (state == NULL) {
         return 0U;
     }
-    const uint64_t carrier = (uint64_t)(uint32_t)(state->rx_tune_seq + state->rx_mode_seq);
+    const uint64_t carrier = (uint64_t)(uint32_t)(state->rx_tune_seq + state->rx_phase_seq);
     return (carrier << 32) | (uint64_t)state->rx_id.epoch;
 }
 

@@ -646,63 +646,51 @@ test_generation_moves_with_retune_and_phase(void) {
     free_state(st);
 }
 
-/* Issue #800, fail closed: a change of DMR burst mode on the carrier (a repeater's BS-sourced bursts, a radio's
- * MS-sourced ones, direct mode) moves the reception generation as a change of P25 phase does, while another burst of the
- * same mode (the other polarity, the other direct-mode slot) and an RC burst do not. An applied retune moves it once:
- * the carrier reached starts its own phase and burst mode, so its first sync of either moves nothing more. */
+/* Issue #800: the reception generation is the carrier's, not a DMR lane's. A change of DMR burst mode on the carrier (a
+ * repeater's BS-sourced bursts, a radio's MS-sourced ones, direct mode, as a carrier relaying on its other slot may
+ * send) never moves it: a burst-mode interruption revokes only the evidence of the lane it came on
+ * (dsd_position_dmr_note_lane_burst()). An applied retune moves it once: the carrier reached starts its own P25 phase,
+ * so a Phase 2 voice channel a Phase 1 control channel granted moves it only by the retune. */
 static void
-test_generation_moves_with_dmr_burst_mode(void) {
+test_generation_keeps_dmr_burst_mode_and_retune_starts_phase(void) {
     dsd_state* st = new_state();
 
     const struct {
         int synctype;
         uint8_t dm_slot;
-        int moves;
     } steps[] = {
-        {DSD_SYNC_DMR_BS_DATA_POS, 0U, 0},  {DSD_SYNC_DMR_BS_VOICE_NEG, 0U, 0}, {DSD_SYNC_DMR_MS_DATA, 0U, 1},
-        {DSD_SYNC_DMR_MS_VOICE, 0U, 0},     {DSD_SYNC_DMR_MS_VOICE, 2U, 1},     {DSD_SYNC_DMR_MS_DATA, 1U, 0},
-        {DSD_SYNC_DMR_RC_DATA, 0U, 0},      {DSD_SYNC_DMR_MS_DATA, 2U, 0},      {DSD_SYNC_DMR_MS_VOICE, 0U, 1},
-        {DSD_SYNC_DMR_BS_VOICE_POS, 0U, 1},
+        {DSD_SYNC_DMR_BS_DATA_POS, 0U}, {DSD_SYNC_DMR_MS_DATA, 0U},  {DSD_SYNC_DMR_MS_VOICE, 2U},
+        {DSD_SYNC_DMR_RC_DATA, 0U},     {DSD_SYNC_DMR_MS_VOICE, 0U}, {DSD_SYNC_DMR_BS_VOICE_POS, 0U},
     };
 
     dsd_rxid_note_access(st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
-    const uint32_t record_epoch = st->rx_id.epoch;
-    uint64_t gen = dsd_state_reception_generation(st);
+    const uint64_t gen = dsd_state_reception_generation(st);
     for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
         st->dmr_dm_sync_slot = steps[i].dm_slot;
         dsd_rxid_note_sync(st, steps[i].synctype);
-        const uint64_t now = dsd_state_reception_generation(st);
-        if ((now != gen) != (steps[i].moves != 0) || st->rx_id.epoch != record_epoch) {
-            DSD_FPRINTF(stderr, "FAIL: DMR burst mode step %u %s the reception generation\n", (unsigned)i,
-                        steps[i].moves ? "left" : "moved");
+        if (dsd_state_reception_generation(st) != gen) {
+            DSD_FPRINTF(stderr, "FAIL: DMR burst mode step %u moved the reception generation\n", (unsigned)i);
             exit(1);
         }
-        gen = now;
     }
-    dsd_rxid_trunk_tune(st);
-    assert(dsd_state_reception_generation(st) != gen);
-    gen = dsd_state_reception_generation(st);
-    st->dmr_dm_sync_slot = 0U;
-    dsd_rxid_note_sync(st, DSD_SYNC_DMR_MS_DATA);
-    assert(dsd_state_reception_generation(st) == gen); /* the carrier reached starts its own mode */
     free_state(st);
 
-    /* The P25 phase likewise: a Phase 1 control channel's grant retunes to a Phase 2 voice channel. */
     st = new_state();
     dsd_rxid_note_sync(st, DSD_SYNC_P25P1_POS);
     dsd_rxid_trunk_tune(st);
-    gen = dsd_state_reception_generation(st);
+    const uint64_t tuned = dsd_state_reception_generation(st);
     dsd_rxid_note_sync(st, DSD_SYNC_P25P2_POS);
-    assert(dsd_state_reception_generation(st) == gen);
+    assert(dsd_state_reception_generation(st) == tuned);
     dsd_rxid_note_sync(st, DSD_SYNC_P25P1_POS);
-    assert(dsd_state_reception_generation(st) != gen);
+    assert(dsd_state_reception_generation(st) != tuned);
     free_state(st);
 }
 
 /* Issue #800, fail closed: two reports whose receptions no scope names are one reception only within one reception
  * generation. On conventional DMR heard from PCM input (no tuned frequency, no network identity) a colour-code change
  * moves the generation and leaves both reception scopes unknown: the same radio's unchanged checked report on colour
- * code 1, then on colour code 2 within the repeat window, is a new record. On colour code 1 both times it is a repeat. */
+ * code 1, then on colour code 2 within the repeat window, is a new record. On colour code 1 both times it is a repeat.
+ **/
 static void
 test_unscoped_generation_change_is_not_a_repeat(void) {
     for (int change = 0; change <= 1; change++) {
@@ -1016,7 +1004,7 @@ main(void) {
     test_reception_change_is_not_a_repeat();
     test_phase_change_is_not_a_repeat();
     test_generation_moves_with_retune_and_phase();
-    test_generation_moves_with_dmr_burst_mode();
+    test_generation_keeps_dmr_burst_mode_and_retune_starts_phase();
     test_unscoped_generation_change_is_not_a_repeat();
     test_track_table_forgets_the_oldest();
     test_ring_wrap_and_read();

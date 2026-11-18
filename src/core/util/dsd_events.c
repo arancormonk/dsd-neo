@@ -1193,8 +1193,8 @@ watchdog_event_merge_site(Event_History* retained, const Event_History* staged) 
 }
 
 /* A row's reception as the reception rule reads it (dsd_position_same_reception()): its scope and carrier once
- * resolved, else unknown, the generation it was read under when known, and the protocol class of the row's protocol @p systype (P25
- * Phase 1 and Phase 2 apart; none for a row of no protocol). */
+ * resolved, else unknown, the generation it was read under when known, and the protocol class of the row's protocol
+ * @p systype (P25 Phase 1 and Phase 2 apart; none for a row of no protocol). */
 static void
 watchdog_event_row_reception(const dsd_event_rx_scope* rx, int systype, dsd_position_reception* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
@@ -1897,10 +1897,9 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
 // While the call is active it takes the live record; once it has ended, the record the canonical layer captured at the
 // end transition (dsd_call_snapshot::ended_rx_id), so a part received after the last active render and before the end
 // (a Phase 2 MAC_IDLE handles its broadcast before the call ends) counts. A record of another reception (reset since
-// the call began: a boundary, a trunk-scan switch, another protocol; or kept across a retune or a change of P25 phase
-// or DMR burst mode, issue #800), or no capture, leaves the row what it took
-// last: a held drop-verdict or the finalize pass may run after a retune, a -Y hop or a trunk-scan switch, when the
-// record already describes the next carrier.
+// the call began: a boundary, a trunk-scan switch, another protocol; or kept across a retune or a change of P25 phase,
+// issue #800), or no capture, leaves the row what it took last: a held drop-verdict or the finalize pass may run after
+// a retune, a -Y hop or a trunk-scan switch, when the record already describes the next carrier.
 //
 // The row's site identity (Event_History::site_id: the site parts of the same record, which the event line prints
 // from) is taken, frozen and left alone by exactly the same rule, beside the sys ids.
@@ -2001,7 +2000,7 @@ watchdog_event_system_from_record(const dsd_state* state, const dsd_call_snapsho
         sys[2] = 0U;
     }
     /* The live record only while the reception is the one the call began on (its generation): a retune or a change of
-       P25 phase or DMR burst mode keeps the record's epoch, and the system it then holds is another carrier's. */
+       P25 phase keeps the record's epoch, and the system it then holds is another reception's. */
     if (dsd_state_reception_generation(state) == call->rx_gen) {
         watchdog_event_system_take(&state->rx_id, family, sys);
         watchdog_event_site_take(&state->rx_id, family, site);
@@ -2056,8 +2055,8 @@ watchdog_event_current_load_system(const dsd_opts* opts, const dsd_state* state,
 }
 
 /* The reception identity of a row (dsd_event_rx_scope) from @p rx, with @p tuned_hz as the carrier, for a scope of the
- * tuned frequency and the P25 NAC discriminator, and the reception generation @p rx was read under (@p gen); no scope for the callsign
- * protocols (M17, D-STAR), whose positions carry none either. */
+ * tuned frequency and the P25 NAC discriminator, and the reception generation @p rx was read under (@p gen); no scope
+ * for the callsign protocols (M17, D-STAR), whose positions carry none either. */
 static void
 watchdog_event_rx_scope_take(dsd_event_rx_scope* out, int protocol, const dsd_received_identity* rx, uint32_t tuned_hz,
                              uint64_t gen) {
@@ -2074,11 +2073,11 @@ watchdog_event_rx_scope_take(dsd_event_rx_scope* out, int protocol, const dsd_re
 }
 
 /* The row's reception identity, by the rule its site follows (watchdog_event_current_load_system()). While the call is
- * active on the reception it began on (its generation, dsd_state_reception_generation()), the live record (with the tuned frequency) is read again on every render: the
- * record fills in without moving its epoch, so a scope learned mid-call (a network after the NAC, an EDACS system after
- * the site) replaces a weaker one. Otherwise this epoch's row keeps what it read; a row that never read one takes the
- * record as the call ended, with the frequency this render gives the row (@p row_hz). Playing back files no scope is
- * read: the row has only the generation its call began on. */
+ * active on the reception it began on (its generation, dsd_state_reception_generation()), the live record (with the
+ * tuned frequency) is read again on every render: the record fills in without moving its epoch, so a scope learned
+ * mid-call (a network after the NAC, an EDACS system after the site) replaces a weaker one. Otherwise this epoch's row
+ * keeps what it read; a row that never read one takes the record as the call ended, with the frequency this render
+ * gives the row (@p row_hz). Playing back files no scope is read: the row has only the generation its call began on. */
 static void
 watchdog_event_current_load_rx_scope(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
                                      Event_History* item, int staged_is_own, int64_t row_hz) {

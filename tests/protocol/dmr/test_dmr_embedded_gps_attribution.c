@@ -18,6 +18,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -102,21 +103,26 @@ put_bits(uint8_t* bits, unsigned offset, unsigned width, uint32_t value) {
 }
 
 /* A group voice LC (FLCO 0) of SOURCE to TARGET whose own check passed: a voice LC header (@p type 1) or a late-entry
- * embedded LC (type 3), on slot 0. */
+ * embedded LC (type 3), on slot @p slot. */
 static void
-voice_lc(fixture* f, uint8_t type) {
+voice_lc_on(fixture* f, uint8_t type, uint8_t slot) {
     uint8_t bits[80];
     DSD_MEMSET(bits, 0, sizeof bits);
     put_bits(bits, 24U, 24U, TARGET);
     put_bits(bits, 48U, 24U, SOURCE);
     uint32_t irr = 0U;
-    f->st->currentslot = 0;
+    f->st->currentslot = slot;
     dmr_flco(f->opts, f->st, bits, 1U, &irr, type);
 }
 
-/* An embedded GPS LC (FLCO 0x08) at 22.5 N, 0 E whose checksum passed, on slot 0. */
 static void
-embedded_gps(fixture* f) {
+voice_lc(fixture* f, uint8_t type) {
+    voice_lc_on(f, type, 0U);
+}
+
+/* An embedded GPS LC (FLCO 0x08) at 22.5 N, 0 E whose checksum passed, on slot @p slot. */
+static void
+embedded_gps_on(fixture* f, uint8_t slot) {
     uint8_t bits[80];
     DSD_MEMSET(bits, 0, sizeof bits);
     put_bits(bits, 2U, 6U, 0x08U);
@@ -124,8 +130,13 @@ embedded_gps(fixture* f) {
     put_bits(bits, 20U, 3U, f->pos_err);
     put_bits(bits, 48U, 24U, 0x200000U);
     uint32_t irr = 0U;
-    f->st->currentslot = 0;
+    f->st->currentslot = slot;
     dmr_flco(f->opts, f->st, bits, 1U, &irr, 3U);
+}
+
+static void
+embedded_gps(fixture* f) {
+    embedded_gps_on(f, 0U);
 }
 
 static int
@@ -356,7 +367,59 @@ burst_from(fixture* f, int direct) {
     f->st->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
     f->st->dmr_dm_sync_slot = direct ? 2U : 0U;
     f->st->dmr_mono_rx_slot = direct ? DSD_DMR_MONO_RX_TS2 : DSD_DMR_MONO_RX_PENDING;
-    dsd_rxid_note_sync(f->st, f->st->synctype); /* as processFrame() notes every frame it dispatches */
+    /* As processFrame() notes every frame it dispatches, and the single-slot reader notes the burst on its lane 0
+       (dmr_note_burst_lane()). */
+    dsd_rxid_note_sync(f->st, f->st->synctype);
+    f->st->currentslot = 0;
+    dsd_position_dmr_note_lane_burst(f->st, 0U, 0U);
+}
+
+/* A burst on the two-slot decoder: a repeater's BS-sourced one on slot @p slot, or (@p bs 0) a radio's MS-sourced one,
+ * which has no CACH and is read on lane 0; noted as frame sync and the burst reader note it. */
+static void
+two_slot_burst(fixture* f, int bs, uint8_t slot) {
+    f->st->synctype = bs ? DSD_SYNC_DMR_BS_VOICE_POS : DSD_SYNC_DMR_MS_VOICE;
+    f->st->lastsynctype = f->st->synctype;
+    f->st->dmr_dm_sync_slot = 0U;
+    f->st->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
+    dsd_rxid_note_sync(f->st, f->st->synctype);
+    f->st->currentslot = bs ? slot : 0U;
+    dsd_position_dmr_note_lane_burst(f->st, (uint8_t)f->st->currentslot, (uint8_t)f->st->currentslot);
+}
+
+/* The slot's ACTIVE call names SOURCE to TARGET. */
+static int
+call_open_on(const fixture* f, uint8_t slot) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(f->st, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_source_id == SOURCE && call.ota_target_id == TARGET;
+}
+
+/* Issue #800: the revocation is per lane. On the two-slot decoder a carrier sends a repeater's BS-sourced bursts on
+ * slot 2 and a radio's MS-sourced bursts (read on lane 0) at the same time, interleaved: each lane's checked LC names
+ * its call's talker, and each lane's embedded GPS keeps its sender, however often the other lane's sender kind comes
+ * between. The reception generation does not move with the other lane's kind. */
+static void
+test_two_lanes_of_two_sender_kinds(void) {
+    fixture f;
+    fixture_open(&f);
+    dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    two_slot_burst(&f, 1, 1U);
+    voice_lc_on(&f, 1U, 1U);
+    two_slot_burst(&f, 0, 0U);
+    voice_lc_on(&f, 1U, 0U);
+    expect_true("two lanes: both calls open", call_open_on(&f, 0U) && call_open_on(&f, 1U));
+    const uint64_t gen = dsd_state_reception_generation(f.st);
+    for (int round = 0; round < 3; round++) {
+        two_slot_burst(&f, 1, 1U);
+        embedded_gps_on(&f, 1U);
+        expect_fix(&f, "two lanes: the BS-sourced slot keeps its sender", 1);
+        two_slot_burst(&f, 0, 0U);
+        embedded_gps_on(&f, 0U);
+        expect_fix(&f, "two lanes: the MS-sourced lane keeps its sender", 1);
+    }
+    expect_true("two lanes: one reception generation", dsd_state_reception_generation(f.st) == gen);
+    fixture_close(&f);
 }
 
 /* Issue #800, fail closed: the sync words tell a direct-mode transmission from a repeater-mode one. A direct-mode voice
@@ -430,6 +493,7 @@ main(void) {
     test_single_slot_decoder_publishes_proven_slot();
     test_direct_to_repeater_transition();
     test_direct_mode_after_an_interruption();
+    test_two_lanes_of_two_sender_kinds();
     dsd_decode_clock_use_system();
     if (g_fail) {
         return 1;

@@ -235,17 +235,17 @@ void dsd_rxid_reset(dsd_state* state);
 /** Frame sync acquired @p synctype: a record of another family is dropped, and a sync of another protocol than the
  * last one's (dsd_state::rx_sync_protocol) moves the epoch even when neither protocol sent any identity (a D-STAR call,
  * then an M17 frame, then D-STAR again: three receptions). Both P25 phases, every DMR burst and both polarities of a
- * protocol are one protocol; a P25 sync of the other phase than the last P25 sync, or a DMR sync of another burst mode
- * than the last DMR sync (a repeater's BS-sourced burst, a radio's MS-sourced one, direct mode; an RC burst names
- * none), keeps the record but moves dsd_state::rx_mode_seq, so the reception generation moves
- * (dsd_state_reception_generation()). No sync (DSD_SYNC_NONE) changes nothing. */
+ * protocol are one protocol; a P25 sync of the other phase than the last P25 sync keeps the record but moves
+ * dsd_state::rx_phase_seq, so the reception generation moves (dsd_state_reception_generation()). No sync
+ * (DSD_SYNC_NONE) changes nothing. */
 void dsd_rxid_note_sync(dsd_state* state, int synctype);
 /** The no-carrier pass: every part goes stale; the values stay. */
 void dsd_rxid_mark_stale(dsd_state* state);
 /** An accepted trunking retune (to a voice channel, or back to the control channel): the access code belonged to
  * the carrier left; the system stays. The reception generation moves (dsd_state::rx_tune_seq), and the carrier reached
- * starts its own P25 phase and DMR burst mode: its first sync moves nothing more. A refused retune must not call this. Decoder thread only: the engine's trunk
- * tuning, which the P25 watchdog also runs, requests it instead (dsd_rxid_request_trunk_tune()). */
+ * starts its own P25 phase: its first sync of either phase moves nothing more. A refused retune must not call this.
+ * Decoder thread only: the engine's trunk tuning, which the P25 watchdog also runs, requests it instead
+ * (dsd_rxid_request_trunk_tune()). */
 void dsd_rxid_trunk_tune(dsd_state* state);
 /** An accepted trunking retune made under the P25 SM tick guard, on the decoder thread or the P25 watchdog's: records
  * the drop dsd_rxid_trunk_tune() makes (dsd_state::rx_id_trunk_tune_pending), which the decoder thread applies

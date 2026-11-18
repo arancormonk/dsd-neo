@@ -299,8 +299,9 @@ int dsd_position_origin_matches(const dsd_state* state, const dsd_position_origi
 int dsd_position_same_reception(const dsd_position_reception* a, const dsd_position_reception* b);
 
 /** The reception of an admitted report @p fix into @p out: its reception scope, the tuned frequency (freq_hz, its
- * origin's) as the carrier and as the discriminator of a P25 NAC scope, its protocol class, and the reception generation of its origin (origin_gen), known
- * once admission stamped it (rev set). NULL @p fix gives an unknown reception; NULL @p out does nothing. */
+ * origin's) as the carrier and as the discriminator of a P25 NAC scope, its protocol class, and the reception
+ * generation of its origin (origin_gen), known once admission stamped it (rev set). NULL @p fix gives an unknown
+ * reception; NULL @p out does nothing. */
 void dsd_position_fix_reception(const dsd_position_fix* fix, dsd_position_reception* out);
 
 /**

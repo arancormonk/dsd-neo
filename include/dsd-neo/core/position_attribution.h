@@ -18,14 +18,15 @@
  *  - it is the call the evidence was learned in: the same epoch, or for a producer that binds to the transmission
  *    (DMR, whose call layer heals a fade into a new epoch of one transmission) the same transmission;
  *  - the reception has not changed since: the reception generation (dsd_state_reception_generation(), moved by
- *    another access code, system, site or family on the carrier, an applied retune, a change of P25 phase or of DMR
- *    burst mode) is the one the evidence was learned under, so evidence of a direct-mode call does not come back
- *    after a repeater-mode burst came between;
+ *    another access code, system, site or family on the carrier, an applied retune or a change of P25 phase) is the one
+ *    the evidence was learned under;
  *  - the call still names the evidence's source (and, for the target, its target);
  *  - for DMR, the burst carrying the report is the evidence's: the same sender kind by its sync word (a repeater's
  *    BS-sourced burst, a radio's MS-sourced one, direct mode's) on the same over-the-air slot
  *    (dsd_position_dmr_air_same()). A direct-mode call whose terminator was missed is not the repeater-mode call
- *    that follows it on the carrier, whatever the call layer kept.
+ *    that follows it on the carrier, whatever the call layer kept; and no burst of another sender kind came between on
+ *    the evidence's lane (dsd_position_dmr_note_lane_burst()), so a return to direct mode after such a burst is not
+ *    the direct-mode call either.
  * Anything else (a relock to another colour code, a NAC or system change, a new talker, another slot's or phase's
  * call) leaves the report anonymous. The evidence itself is only ever learned from content whose own check passed.
  */
@@ -100,6 +101,20 @@ uint8_t dsd_position_dmr_air(const dsd_state* state);
 /** 1 when two DMR burst identities (dsd_position_dmr_air()) are one sender's on one slot: equal, and neither
  * DSD_POSITION_DMR_AIR_UNKNOWN. */
 int dsd_position_dmr_air_same(uint8_t a, uint8_t b);
+
+/**
+ * @brief A DMR burst of the sender kind its own sync word names (a repeater's BS-sourced burst, a radio's MS-sourced
+ * one, direct mode) is being read on the decoder's lanes @p evidence_lane (the lane its embedded GPS evidence is kept
+ * under, dsd_state::dmr_lc_attribution) and @p data_lane (the lane its data assembly is kept under,
+ * dsd_state::dmr_data_air) (issue #800, fail closed).
+ *
+ * Evidence or a data header binding of another sender kind on that lane is revoked: the transmission it was learned in
+ * was interrupted on the lane, so a later burst of its own kind there is not shown to be the same transmission (a
+ * direct-mode call whose terminator was missed, a repeater-mode burst, then direct mode again). Another lane's bursts
+ * never touch it, so a carrier with BS-sourced bursts on one slot and MS-sourced ones on the other keeps each slot's
+ * evidence. The reception generation does not move. NULL does nothing. Decoder thread.
+ */
+void dsd_position_dmr_note_lane_burst(dsd_state* state, uint8_t evidence_lane, uint8_t data_lane);
 
 /** Zero @p a (no evidence). NULL does nothing. Inline, so state helpers that clear it need no core link. */
 static inline void

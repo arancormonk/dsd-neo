@@ -1054,7 +1054,7 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
 
 /* The system and site the call's carrier had named when the call ended, while the reception is still the one the call
    began on: the same reception generation (dsd_state_reception_generation()), so not reset or replaced since, and no
-   retune or change of P25 phase or DMR burst mode in between, which keep the record's epoch (issue #800, fail closed).
+   retune or change of P25 phase in between, which keep the record's epoch (issue #800, fail closed).
    Otherwise none: a row that never read its reception keeps an unknown one under the call's own generation, never the
    scope of the reception the receiver is on now. */
 static void

@@ -14,6 +14,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -178,6 +179,13 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
     (void)format;
     DSD_SNPRINTF(out, out_size, "%s", "00:00:00");
     return 1;
+}
+
+void
+dsd_position_dmr_note_lane_burst(dsd_state* state, uint8_t evidence_lane, uint8_t data_lane) {
+    (void)state;
+    (void)evidence_lane;
+    (void)data_lane;
 }
 
 void

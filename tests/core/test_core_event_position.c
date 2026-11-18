@@ -528,8 +528,9 @@ move_reception(int move) {
 /* Issue #800, fail closed: an ended call's scope is frozen only from its own reception. A NAC-only P25 call on 450 MHz
  * ends before any render; between its start and its end the receiver retunes (or hears the other P25 phase), which
  * keeps the record's epoch, and then learns a WACN and SYSID. The row takes neither that system nor the reception it
- * was learned on: none of the record, only its own carrier's frequency, under the call's own generation. With no move the system learned before the end
- * is the call's. The live render of an open call takes the system only by the same rule. */
+ * was learned on: none of the record, only its own carrier's frequency, under the call's own generation. With no move
+ * the system learned before the end is the call's. The live render of an open call takes the system only by the same
+ * rule. */
 static void
 test_ended_scope_of_the_calls_own_reception(void) {
     for (int move = 0; move <= 2; move++) {

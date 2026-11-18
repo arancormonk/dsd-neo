@@ -590,8 +590,7 @@ does.
     heading field does not stop the row: that field becomes unknown.
   - A report the [receive filters](#receive-filters-and-service-names) reject; a report in several parts (DMR and P25
     data packets, an NXDN data call, an L3Harris Part A and B, a TETRA concatenated SDS) whose parts were heard across
-    a retune, a trunk scan switch, a change of P25 phase or a change of DMR burst mode (repeater mode, a radio's
-    MS-sourced bursts, direct mode) on the carrier (an NMEA packet's sentences, a P25 location
+    a retune, a trunk scan switch or a change of P25 phase on the carrier (an NMEA packet's sentences, a P25 location
     service packet's text and notice, and a TETRA location report's notice are then left out of the event log and
     History too); an NXDN GPS report not bound to the checked data header that opened it; an
     L3Harris Part A and B that do not pair (another call, source or update, or more than 2 s apart); a TETRA
@@ -603,8 +602,8 @@ does.
     than its packet holds: `Position suppressed (incomplete document)`. A data packet whose IP datagram declares more
     than the packet's user data holds (`Incomplete Datagram; not decoded;`): a pad or CRC octet never completes it.
   - A DMR data packet whose blocks came in another slot, from another kind of sender (a direct-mode header, then
-    repeater-mode blocks), after a burst of another kind of sender came between, or after a retune: `Data block not
-    from its header's slot or reception; packet dropped;`. A
+    repeater-mode blocks), after a burst of another kind of sender came between on its slot, or after a retune:
+    `Data block not from its header's slot or reception; packet dropped;`. A
     DMR MNIS (Motorola) packet's octet just before its CRC32, which that CRC does not cover, is never read: a report
     whose last digit would be in it gives no position.
 

@@ -340,11 +340,11 @@ typedef struct {
     /**
      * The received identity record (dsd_state::rx_id) as it stood when this epoch ended, captured at that transition
      * while the reception was still the one the call began on (the same reception generation, rx_gen: no reset, other
-     * record, retune or change of P25 phase or DMR burst mode in between); otherwise, and while the call is active,
-     * empty (family DSD_RXID_FAMILY_NONE). Either way it describes the reception of rx_gen, never another. Call history freezes an ended call's system and site at it,
-     * so identity received after the last render and before the end counts, and identity received after the end, or
-     * on another carrier, does not. Reacquisition compares reacquire_rx_id instead, which outlives a record that moved
-     * before the end.
+     * record, retune or change of P25 phase in between); otherwise, and while the call is active, empty (family
+     * DSD_RXID_FAMILY_NONE). Either way it describes the reception of rx_gen, never another. Call history freezes an
+     * ended call's system and site at it, so identity received after the last render and before the end counts, and
+     * identity received after the end, or on another carrier, does not. Reacquisition compares reacquire_rx_id instead,
+     * which outlives a record that moved before the end.
      */
     dsd_received_identity ended_rx_id;
     /**

@@ -471,8 +471,7 @@ kept again. Unchanged means where it was heard too: the same fix on the other
 slot, on another frequency, on another system, on the other P25 phase or under
 a new label is kept. Where no system names the reception (`reception_scope`
 kind `0`), only an uninterrupted reception is the same place: the same fix after
-a colour code change, a retune, a change of P25 phase or of DMR burst mode
-(repeater mode, a radio's MS-sourced bursts, direct mode) is kept.
+a colour code change, a retune or a change of P25 phase is kept.
 
 * `pos_stream` names the decoder run (a decimal string, like every 64-bit
   identifier) and `pos_seq` numbers the run's kept reports from `1`. A new run is
